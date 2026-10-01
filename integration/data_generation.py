@@ -1,11 +1,15 @@
-"""Per-database commit generations backed by ``PRAGMA data_version``.
+"""Per-database commit generations backed by SQLite's existing metadata.
 
 One long-lived read-only monitor connection is kept per resolved database
-path. ``PRAGMA data_version`` changes on that connection whenever another
-connection in the process commits a write, but stays unchanged across
-read-only opens, ``PRAGMA wal_checkpoint`` runs, and ``-wal`` mtime flaps.
-Each distinct observed value bumps a monotonic counter so cache keys can
-use ``commit_generation()`` instead of file size/mtime fingerprints.
+path. ``PRAGMA data_version`` detects commits from other connections while
+the WAL contains frames. Each distinct observed state bumps a monotonic
+counter so caches can use ``commit_generation()`` instead of WAL mtimes.
+
+Some read-only WAL connections repeatedly advance data_version while the
+WAL is empty. In that state all committed content is in the main file; use
+its existing SQLite header and WAL-index counters to distinguish real
+changes from reads. Checkpoint metadata transitions may refresh a cache;
+repeated reads of unchanged content keep the same generation.
 """
 
 from __future__ import annotations
@@ -22,6 +26,43 @@ _MONITORS: dict[str, _GenerationMonitor] = {}
 _MONITOR_LIMIT = 64
 
 
+def _empty_wal_change_counter(path: Path) -> tuple | None:
+    wal = Path(f"{path}-wal")
+
+    def empty() -> bool:
+        try:
+            return wal.stat().st_size == 0
+        except FileNotFoundError:
+            return True
+
+    try:
+        if not empty():
+            return None
+        with path.open("rb") as database:
+            header = database.read(32)
+        # Check again so a writer starting a WAL while the header is read
+        # sends us back to SQLite's live connection version.
+        if len(header) < 32 or not empty():
+            return None
+        try:
+            with Path(f"{path}-shm").open("rb") as index:
+                wal_index = index.read(96)
+        except FileNotFoundError:
+            wal_index = b""
+        if wal_index and (len(wal_index) < 96 or wal_index[:48] != wal_index[48:96]):
+            return None
+        # The WAL-index commit counter survives TRUNCATE checkpoints even
+        # when the main-file counter and timestamp do not change. Its two
+        # header copies must agree; otherwise let SQLite handle the writer.
+        committed = (wal_index[8:12], wal_index[32:40]) if wal_index else None
+        if not empty():
+            return None
+        state = path.stat()
+        return (header[24:28], state.st_mtime_ns, state.st_size, committed)
+    except OSError:
+        return None
+
+
 def _file_identity(path: Path) -> tuple[int, int] | None:
     try:
         info = path.stat()
@@ -35,7 +76,7 @@ class _GenerationMonitor:
         self._path = path
         self._connection: sqlite3.Connection | None = None
         self._identity: tuple[int, int] | None = None
-        self._seen_version: int | None = None
+        self._seen_version: tuple | None = None
         self._counter = 0
 
     def _close(self) -> None:
@@ -78,8 +119,10 @@ class _GenerationMonitor:
             self._seen_version = None
             self._counter += 1
             return self._counter
-        if version != self._seen_version:
-            self._seen_version = version
+        main_counter = _empty_wal_change_counter(self._path)
+        observed = ("main", main_counter) if main_counter is not None else ("sqlite", version)
+        if observed != self._seen_version:
+            self._seen_version = observed
             self._counter += 1
         return self._counter
 
@@ -89,7 +132,8 @@ def commit_generation(db_path: _PATH_TYPE) -> int:
 
     The value increases whenever another connection commits a write to the
     database, when the file identity changes, or when the file cannot be
-    opened; it is stable across read-only opens and checkpoints.
+    opened. Repeated read-only opens are stable; checkpoint metadata
+    transitions may conservatively refresh a cache.
     """
 
     resolved = str(Path(db_path).resolve(strict=False))

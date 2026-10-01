@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
@@ -161,6 +163,110 @@ def test_failed_batch_item_can_be_retried_without_replacing_success(
 
     assert retried["status"] == "complete"
     assert retried["items"][0]["paper_instance_id"] == paper_id
+
+
+def test_parallel_class_freeze_keeps_individual_identity_and_source_checks(paper_workspace, monkeypatch):
+    module, _draft, db_path, data_root = paper_workspace
+    members = tuple(f"SYN-S{index:02}" for index in range(1, 9))
+    diagnosis = _diagnosis(student_ids=(members[0],))
+    prototype = diagnosis["students"][0]
+    diagnosis["students"] = [dict(deepcopy(prototype), student_id=sid, student_code=sid, student_name=f"合成学生{index}")
+                             for index, sid in enumerate(members, 1)]
+    recommendation = PersonalizedRecommendationModule(db_path=db_path, data_root=data_root, clock=lambda: NOW)
+    draft = recommendation.create(request_token="c" * 32, diagnosis=diagnosis,
+        config=PersonalizedRecommendationConfig(question_count=8, expected_minutes=120), actor_ref="teacher-1")
+    original_check = PersonalizedRecommendationModule.ensure_current
+    checks = []
+
+    def check(self, *args, **kwargs):
+        checks.append(1)
+        return original_check(self, *args, **kwargs)
+
+    monkeypatch.setattr(PersonalizedRecommendationModule, "ensure_current", check)
+    barrier = threading.Barrier(4, timeout=15)
+
+    original_create = module._create_review_instance_ready
+
+    def parallel_create(*args, **kwargs):
+        barrier.wait()
+        return original_create(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_create_review_instance_ready", parallel_create)
+    batch = module.create_review_batch(draft["draft_id"], operation_token="d" * 32,
+        expected_draft_revision=1, actor_ref="teacher-1", direct_freeze=True)
+    assert batch["status"] == "complete" and batch["succeeded_count"] == 8
+    assert [item["student_id"] for item in batch["items"]] == list(members)
+    assert len(checks) == 9  # Batch check plus the unchanged check for each student.
+    papers = module.list_for_draft(draft["draft_id"])
+    assert len({paper["paper_instance_id"] for paper in papers}) == 8
+    for paper in papers:
+        assert paper["status"] == "frozen" and len(paper["pages"]) == 2
+        with connect(db_path) as connection:
+            identities = [row["page_identity"] for row in connection.execute(
+                "SELECT page_identity FROM personalized_paper_pages WHERE paper_instance_id=? ORDER BY page_number",
+                (paper["paper_instance_id"],),
+            )]
+        assert all(module.verify_page_identity(identity)["paper_instance_id"] == paper["paper_instance_id"] for identity in identities)
+        pdf, _ = module.artifact_path(paper["paper_instance_id"], "frozen-pdf")
+        with fitz.open(pdf) as document:
+            assert all(paper["student_name"] in page.get_text() or paper["student_code"] in page.get_text() for page in document)
+    assert module.create_review_batch(draft["draft_id"], operation_token="d" * 32,
+        expected_draft_revision=1, actor_ref="teacher-1", direct_freeze=True) == batch
+
+
+@pytest.mark.parametrize("change_kind", ["source", "cancel"])
+def test_class_change_between_waves_preserves_finished_students(paper_workspace, monkeypatch, change_kind):
+    module, _draft, db_path, data_root = paper_workspace
+    members = tuple(f"SYN-S{index:02}" for index in range(1, 9))
+    diagnosis = _diagnosis(student_ids=(members[0],))
+    prototype = diagnosis["students"][0]
+    diagnosis["students"] = [dict(deepcopy(prototype), student_id=sid, student_code=sid, student_name=f"合成学生{index}")
+                             for index, sid in enumerate(members, 1)]
+    recommendation = PersonalizedRecommendationModule(db_path=db_path, data_root=data_root, clock=lambda: NOW)
+    draft = recommendation.create(request_token="e" * 32, diagnosis=diagnosis,
+        config=PersonalizedRecommendationConfig(question_count=8, expected_minutes=120), actor_ref="teacher-1")
+    qid = draft["students"][0]["items"][0]["question_id"]
+
+    def change_source():
+        with connect(db_path) as connection:
+            connection.execute("UPDATE questions SET question_text='TEST-出卷期间来源已修改' WHERE id=?", (qid,))
+
+    if change_kind == "source":
+        barrier = threading.Barrier(4, action=change_source, timeout=15)
+        original_freeze = module._freeze_rendered
+
+        def changing_freeze(*args, **kwargs):
+            barrier.wait()
+            return original_freeze(*args, **kwargs)
+
+        monkeypatch.setattr(module, "_freeze_rendered", changing_freeze)
+    else:
+        # Cancel only after the first wave is fully finished: cancellation
+        # already marks running students cancelled, so their completion cannot
+        # be counted as a successful item in the cancelled batch.
+        def cancel_after_wave():
+            current = module._batch_by_operation("f" * 32)
+            module.cancel_batch(current["batch_run_id"])
+
+        barrier = threading.Barrier(4, action=cancel_after_wave, timeout=15)
+        original_finish = module._finish_batch_item
+
+        def finishing_then_cancelling(*args, **kwargs):
+            result = original_finish(*args, **kwargs)
+            if kwargs.get("paper_instance_id"):
+                barrier.wait()
+            return result
+
+        monkeypatch.setattr(module, "_finish_batch_item", finishing_then_cancelling)
+    batch = module.create_review_batch(draft["draft_id"], operation_token="f" * 32,
+        expected_draft_revision=1, actor_ref="teacher-1", direct_freeze=True)
+    assert batch["status"] == ("partial" if change_kind == "source" else "cancelled")
+    assert batch["succeeded_count"] == 4 and batch["failed_count"] == 4
+    assert [item["student_id"] for item in batch["items"]] == list(members[:4])
+    assert all(item["status"] == "frozen" for item in batch["items"])
+    assert all(item["error_code"] == ("PaperSourceChanged" if change_kind == "source" else "batch_cancelled")
+               for item in batch["failures"])
+    assert all(paper["status"] == "frozen" for paper in module.list_for_draft(draft["draft_id"]))
 
 
 def test_freeze_stamps_every_page_and_rejects_identity_tampering(

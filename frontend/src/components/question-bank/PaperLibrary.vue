@@ -9,6 +9,7 @@ import {
   watch,
 } from 'vue'
 import { storeToRefs } from 'pinia'
+import StatePanel from '../design-system/StatePanel.vue'
 
 import type {
   QuestionBankPaper,
@@ -23,6 +24,7 @@ import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 import { ApiError, isAmbiguousWriteError } from '../../api/errors'
 import AppButton from '../design-system/AppButton.vue'
+import StatusBadge from '../design-system/StatusBadge.vue'
 import {
   isQuestionBankLibraryJob,
   jobBelongsToPaper,
@@ -1126,7 +1128,7 @@ async function confirmPermanentDelete(): Promise<void> {
         <span><strong>{{ store.papers.length }}</strong> 份试卷</span>
         <span><strong>{{ totalQuestions }}</strong> 道题</span>
         <span><strong>{{ completeQuestions }}</strong> 道联合分析完整</span>
-        <button
+        <AppButton variant="secondary"
           v-if="reviewQuestions > 0"
           type="button"
           class="paper-button is-review"
@@ -1134,7 +1136,7 @@ async function confirmPermanentDelete(): Promise<void> {
         >
           判定点需核对
           <strong>{{ reviewQuestions }}</strong>
-        </button>
+        </AppButton>
         <details ref="maintenanceMenu" class="paper-library__maintenance">
           <summary class="paper-button">维护</summary>
           <div class="paper-library__maintenance-items" @click="closeMaintenance">
@@ -1143,14 +1145,14 @@ async function confirmPermanentDelete(): Promise<void> {
           :disabled="retagAllBusy || retagBusyPaperId !== null"
           @click="fillAllTags"
         >{{ retagAllBusy && taggingMode === 'fill' ? '正在检查未完成题…' : '继续完成未完成题目' }}</AppButton>
-        <button
+        <AppButton variant="secondary"
           type="button"
           class="paper-button is-review"
           @click="emit('reviewTaxonomy')"
         >
           无法归类的新词
           <strong>{{ pendingTaxonomyLabel }}</strong>
-        </button>
+        </AppButton>
         <AppButton
           variant="secondary"
           :disabled="retagAllBusy || retagBusyPaperId !== null"
@@ -1166,9 +1168,9 @@ async function confirmPermanentDelete(): Promise<void> {
     </header>
 
     <section v-if="showStandard" class="paper-library__standard" aria-label="标准版本与缺口">
-      <div class="paper-library__standard-heading"><h2>标准版本与缺口</h2><button class="paper-button" @click="showStandard = false">收起</button></div>
+      <div class="paper-library__standard-heading"><h2>标准版本与缺口</h2><AppButton variant="secondary" class="paper-button" @click="showStandard = false">收起</AppButton></div>
       <p v-if="standardState === 'loading'" role="status">正在读取当前标准与关联情况…</p>
-      <p v-else-if="standardState === 'error'" role="alert">暂时无法读取。<button class="paper-button" @click="loadStandardSummary">重试</button></p>
+      <p v-else-if="standardState === 'error'" role="alert">暂时无法读取。<AppButton variant="secondary" class="paper-button" @click="loadStandardSummary">重试</AppButton></p>
       <template v-else-if="standardSummary">
         <p>当前标准：{{ standardSummary.active_release_id ?? '尚未启用' }} · 词表版本 {{ standardSummary.taxonomy_revision ?? '—' }}</p>
         <p>{{ standardSummary.question_count }} 道题中，{{ standardSummary.usable_question_count }} 道有当前可用判定点，{{ standardSummary.skill_question_count }} 道已关联技能。</p>
@@ -1184,25 +1186,25 @@ async function confirmPermanentDelete(): Promise<void> {
     <div class="paper-library__filters">
       <label class="paper-search">
         <span class="sr-only">搜索试卷</span>
-        <input v-model="keyword" type="search" placeholder="搜索试卷名称、地区或教材">
+        <input class="app-input" v-model="keyword" type="search" placeholder="搜索试卷名称、地区或教材">
       </label>
       <label>
         <span>年份</span>
-        <select v-model="year">
+        <select class="app-input" v-model="year">
           <option value="">全部年份</option>
           <option v-for="item in years" :key="item" :value="item">{{ item }}</option>
         </select>
       </label>
       <label>
         <span>试卷类型</span>
-        <select v-model="examType">
+        <select class="app-input" v-model="examType">
           <option value="">全部类型</option>
           <option v-for="item in examTypes" :key="item" :value="item">{{ item }}</option>
         </select>
       </label>
       <label>
         <span>文件</span>
-        <select v-model="sourceType">
+        <select class="app-input" v-model="sourceType">
           <option value="">全部文件</option>
           <option value="docx">Word</option>
           <option value="pdf">PDF</option>
@@ -1211,7 +1213,7 @@ async function confirmPermanentDelete(): Promise<void> {
       </label>
       <label>
         <span>标注</span>
-        <select v-model="progressStatus">
+        <select class="app-input" v-model="progressStatus">
           <option value="">全部进度</option>
           <option value="complete">已完成</option>
           <option value="pending">待完善</option>
@@ -1263,17 +1265,21 @@ async function confirmPermanentDelete(): Promise<void> {
       >取消选择</AppButton>
     </div>
 
-    <p v-if="store.papersState === 'loading'" class="paper-library__state" role="status">
-      正在读取试卷库…
-    </p>
-    <div v-else-if="store.papersState === 'error'" class="paper-library__state is-error" role="alert">
-      <span>试卷库暂时无法读取。</span>
-      <AppButton variant="secondary" @click="store.loadPapers()">重新读取</AppButton>
-    </div>
-    <div v-else-if="filteredPapers.length === 0" class="paper-library__state">
-      <strong>{{ store.papers.length ? '当前筛选下没有试卷' : '还没有导入试卷' }}</strong>
-      <p>{{ store.papers.length ? '可以清除筛选后再查看。' : '上传 Word 或 PDF 后，会在这里生成一张试卷卡片。' }}</p>
-    </div>
+    <StatePanel v-if="store.papersState === 'loading'" kind="loading" title="正在读取试卷库…" description="" />
+    <StatePanel
+      v-else-if="store.papersState === 'error'"
+      kind="error"
+      title="试卷库暂时无法读取。"
+      description=""
+      retry-label="重新读取"
+      @retry="store.loadPapers()"
+    />
+    <StatePanel
+      v-else-if="filteredPapers.length === 0"
+      kind="empty"
+      :title="store.papers.length ? '当前筛选下没有试卷' : '还没有导入试卷'"
+      :description="store.papers.length ? '可以清除筛选后再查看。' : '上传 Word 或 PDF 后，会在这里生成一张试卷卡片。'"
+    />
 
     <div v-else class="paper-folders">
       <section v-for="folder in pageFolders" :key="folder.key" class="paper-folder">
@@ -1347,18 +1353,10 @@ async function confirmPermanentDelete(): Promise<void> {
             }}
           </p>
           <div class="paper-card__progress-heading">
-            <span
-              class="paper-card__status"
-              :class="{
-                'is-complete': paper.question_count > 0 && paper.complete_analysis_count >= paper.question_count && !paper.criteria_needs_review_count,
-                'is-pending': paper.criteria_needs_review_count > 0 || paper.complete_analysis_count < paper.question_count,
-              }"
-            >
-              <template v-if="paper.criteria_needs_review_count">待审核判定点 {{ paper.criteria_needs_review_count }}</template>
-              <template v-else-if="!paper.question_count">暂无试题</template>
-              <template v-else-if="paper.complete_analysis_count < paper.question_count">待完善 {{ paper.question_count - paper.complete_analysis_count }} 道</template>
-              <template v-else>分析完整</template>
-            </span>
+            <StatusBadge
+              :tone="paper.criteria_needs_review_count > 0 || paper.complete_analysis_count < paper.question_count ? 'warning' : paper.question_count > 0 ? 'success' : 'neutral'"
+              :label="paper.criteria_needs_review_count ? `待审核判定点 ${paper.criteria_needs_review_count}` : !paper.question_count ? '暂无试题' : paper.complete_analysis_count < paper.question_count ? `待完善 ${paper.question_count - paper.complete_analysis_count} 道` : '分析完整'"
+            />
             <span>联合分析 <strong>{{ paper.complete_analysis_count }} / {{ paper.question_count }}</strong></span>
           </div>
           <p
@@ -1485,7 +1483,7 @@ async function confirmPermanentDelete(): Promise<void> {
           <form class="paper-editor__form" @submit.prevent="savePaperMetadata">
             <label class="is-wide">
               <span>试卷名称 <strong aria-hidden="true">*</strong></span>
-              <input
+              <input class="app-input"
                 v-model="paperDraft.title"
                 name="paper-title"
                 maxlength="255"
@@ -1497,7 +1495,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
             <label>
               <span>年份</span>
-              <input
+              <input class="app-input"
                 v-model="paperDraft.year"
                 name="paper-year"
                 maxlength="24"
@@ -1507,7 +1505,7 @@ async function confirmPermanentDelete(): Promise<void> {
             </label>
             <label>
               <span>试卷类型</span>
-              <input
+              <input class="app-input"
                 v-model="paperDraft.exam_type"
                 name="paper-exam-type"
                 list="paper-exam-type-options"
@@ -1525,7 +1523,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
             <label>
               <span>年级</span>
-              <input
+              <input class="app-input"
                 v-model="paperDraft.grade"
                 name="paper-grade"
                 list="paper-grade-options"
@@ -1540,7 +1538,7 @@ async function confirmPermanentDelete(): Promise<void> {
             </label>
             <label>
               <span>学期</span>
-              <input
+              <input class="app-input"
                 v-model="paperDraft.semester"
                 name="paper-semester"
                 list="paper-semester-options"
@@ -1555,7 +1553,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
             <label class="is-wide">
               <span>自定义文件夹（可选）</span>
-              <input
+              <input class="app-input"
                 v-model="paperDraft.folder_name"
                 name="paper-folder-name"
                 maxlength="80"
@@ -1566,7 +1564,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
             <label class="is-wide">
               <span>教材版本</span>
-              <input
+              <input class="app-input"
                 v-model="paperDraft.textbook_version"
                 name="paper-textbook-version"
                 maxlength="100"
@@ -1578,15 +1576,15 @@ async function confirmPermanentDelete(): Promise<void> {
               <legend>来源地区</legend>
               <label>
                 <span>省份</span>
-                <input v-model="paperDraft.province" name="paper-province" maxlength="48">
+                <input class="app-input" v-model="paperDraft.province" name="paper-province" maxlength="48">
               </label>
               <label>
                 <span>城市</span>
-                <input v-model="paperDraft.city" name="paper-city" maxlength="48">
+                <input class="app-input" v-model="paperDraft.city" name="paper-city" maxlength="48">
               </label>
               <label>
                 <span>区县</span>
-                <input v-model="paperDraft.district" name="paper-district" maxlength="48">
+                <input class="app-input" v-model="paperDraft.district" name="paper-district" maxlength="48">
               </label>
             </fieldset>
 
@@ -2050,18 +2048,6 @@ async function confirmPermanentDelete(): Promise<void> {
   padding-top: 14px;
 }
 
-.paper-card__status {
-  font-weight: var(--font-weight-semibold);
-}
-
-.paper-card__status.is-complete {
-  color: var(--color-success);
-}
-
-.paper-card__status.is-pending {
-  color: var(--color-warning);
-}
-
 .paper-card__progress-heading strong {
   color: var(--color-text-primary);
 }
@@ -2253,9 +2239,9 @@ async function confirmPermanentDelete(): Promise<void> {
   cursor: pointer;
   display: inline-flex;
   font: inherit;
-  font-size: 12px;
-  font-weight: 650;
-  min-height: 34px;
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-medium);
+  min-height: var(--control-height-default);
   justify-content: center;
   padding: 0 13px;
   white-space: nowrap;
@@ -2336,29 +2322,6 @@ async function confirmPermanentDelete(): Promise<void> {
   padding-inline: 0;
   font-size: 20px;
   line-height: 1;
-}
-
-.paper-library__state {
-  align-items: center;
-  background: var(--card);
-  border: 1px dashed var(--color-border-strong);
-  border-radius: var(--radius-panel);
-  color: var(--color-text-secondary);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  justify-content: center;
-  min-height: 180px;
-  padding: 24px;
-  text-align: center;
-}
-
-.paper-library__state p {
-  margin: 0;
-}
-
-.paper-library__state.is-error {
-  color: var(--color-danger);
 }
 
 .paper-library__notice {

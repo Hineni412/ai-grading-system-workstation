@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { jobApi, type JobResponse } from '../../api/jobs'
+import { exportsApi } from '../../api/exports'
 
 import {
   trainingApi,
@@ -17,6 +19,8 @@ import { knowledgeLeafLabel } from '../../api/question-bank'
 import { ApiError, isAmbiguousWriteError } from '../../api/errors'
 import { difficultyLevel } from '../../lib/utils'
 import AppButton from '../design-system/AppButton.vue'
+import StepProgress, { type StepProgressStep } from '../design-system/StepProgress.vue'
+import StatusBadge from '../design-system/StatusBadge.vue'
 import TrainingScanBatchPanel from './TrainingScanBatchPanel.vue'
 import QuestionPreviewDialog from './QuestionPreviewDialog.vue'
 import {
@@ -29,6 +33,10 @@ const props = defineProps<{
   diagnosis: TrainingDiagnosis | null
   scope: TrainingStudentScopeRequest
   examScope: TrainingExamScopeRequest
+  purpose?: 'training' | 'handout'
+  maxQuestionsPerSkill?: number
+  maxWrittenQuestions?: number
+  recentActivityCount?: number
   questionCount: number
   excludeCurrentExamOriginals: boolean
   paperMode?: 'individual' | 'shared'
@@ -49,6 +57,7 @@ const emit = defineEmits<{
   stageChange: [stage: 'diagnosis' | 'draft' | 'wps' | 'scan']
   stateChange: [state: RequestState]
   recoveryChange: [pending: boolean]
+  contextChange: [context: { mode: 'individual' | 'shared'; studentCount: number; questionCount: number; difficultyMax: number; purpose: 'training' | 'handout' } | null]
 }>()
 
 type RequestState = 'idle' | 'loading' | 'ready' | 'error' | 'editing'
@@ -64,6 +73,36 @@ const confirmDiscard = ref(false)
 const errorMessage = ref('')
 const actionMessage = ref('')
 const paperInstances = ref<PersonalizedPaperInstance[]>([])
+const handoutJob = ref<JobResponse | null>(null)
+const handoutRequestToken = ref('')
+const viewStep = ref<'review' | 'print' | 'scan'>('review')
+const scanProgress = ref({ received: 0, total: 0, completed: false })
+const effectivePaperMode = computed(() => (draft.value?.config.paper_mode ?? props.paperMode ?? 'individual') === 'shared' ? 'shared' : 'individual')
+const eligiblePaperCount = computed(() => draft.value?.students.filter(student => student.items.length > 0 && student.selection_mode !== 'maintenance_fallback').length ?? 0)
+const hasPrintablePapers = computed(() => paperInstances.value.some(instance => instance.status === 'frozen'))
+const allPapersReady = computed(() => {
+  const current = draft.value
+  if (!current?.students.length) return false
+  return current.students.every(student => paperInstances.value.some(instance => instance.student_id === student.student_id && instance.status === 'frozen' && instance.draft_revision === current.revision))
+})
+const workspaceSteps = computed<StepProgressStep[]>(() => [
+  { id: 'review', label: '审核题目', status: paperInstances.value.length || handoutJob.value?.status === 'succeeded' ? 'done' : 'in_progress', available: true },
+  { id: 'print', label: isHandout.value ? '导出讲义' : '打印试卷', status: allPapersReady.value || handoutJob.value?.status === 'succeeded' ? 'done' : paperBatch.value || viewStep.value === 'print' ? 'in_progress' : 'todo', available: Boolean(draft.value) },
+  ...(!isHandout.value ? [{ id: 'scan', label: '回收批改', status: scanProgress.value.completed ? 'done' as const : scanProgress.value.received ? 'in_progress' as const : 'todo' as const, available: hasPrintablePapers.value }] : []),
+])
+function selectWorkspaceStep(id: string): void {
+  if (id === 'review' || id === 'print' || (id === 'scan' && hasPrintablePapers.value)) viewStep.value = id
+}
+watch(() => draft.value?.draft_id, () => { viewStep.value = 'review'; scanProgress.value = { received: 0, total: 0, completed: false }; confirmDiscard.value = false })
+watch(draft, value => emit('contextChange', value ? {
+  mode: effectivePaperMode.value, studentCount: value.students.length,
+  questionCount: Number(value.config.question_count ?? props.questionCount), difficultyMax: Number(value.config.difficulty_max ?? difficultyMax.value),
+  purpose: value.config.purpose === 'handout' ? 'handout' : 'training',
+} : null))
+const isHandout = computed(() => (draft.value?.config.purpose ?? props.purpose ?? 'training') === 'handout')
+let handoutPollGeneration = 0
+let componentActive = true
+onBeforeUnmount(() => { componentActive = false; handoutPollGeneration += 1; paperBatchPollGeneration += 1 })
 const paperBusy = ref('')
 // 整卷体积上限对教师不可见：固定取最大档，硬上限（题量/判定点/图片/页数）仍会拦截。
 const PAPER_CONTEXT_WINDOW = 128000
@@ -98,10 +137,14 @@ const canGenerate = computed(() => (
   && !props.disabled
   && state.value !== 'loading'
   && state.value !== 'editing'
-  && props.questionCount >= 8
-  && props.questionCount <= 12
+  && Number.isInteger(props.questionCount)
+  && (props.purpose === 'handout' ? props.questionCount >= 1 : props.questionCount >= 8 && props.questionCount <= 12)
+  && Number.isInteger(props.maxQuestionsPerSkill ?? 1) && (props.maxQuestionsPerSkill ?? 1) >= 1 && (props.maxQuestionsPerSkill ?? 1) <= props.questionCount
+  && Number.isInteger(props.maxWrittenQuestions ?? 2) && (props.maxWrittenQuestions ?? 2) >= 0 && (props.maxWrittenQuestions ?? 2) <= props.questionCount
+  && Number.isInteger(props.recentActivityCount ?? 3) && (props.recentActivityCount ?? 3) >= 0
+  && Number.isInteger(difficultyMax.value)
   && difficultyMax.value >= 1
-  && difficultyMax.value <= 8
+  && difficultyMax.value <= 10
   && (
     (props.scopeKeys?.length ?? 0) > 0
     || !targetOptions.value.length
@@ -120,12 +163,18 @@ const canDiscardDraft = computed(() => (
   && state.value !== 'editing'
   && !paperInstances.value.length
   && !paperBatch.value
+  && !paperBusy.value
+  && (!handoutRequestToken.value || Boolean(handoutJob.value && ['succeeded', 'failed', 'cancelled'].includes(handoutJob.value.status)))
 ))
 
 // 出卷设置指纹：设置一致时才恢复上次草稿，设置变了必须重新生成。
 // rulesVersion 随选题规则升级递增，避免恢复规则升级前的旧草稿。
 const settingsFingerprint = computed(() => JSON.stringify({
-  rulesVersion: 10,
+  rulesVersion: 11,
+  purpose: props.purpose ?? 'training',
+  maxQuestionsPerSkill: props.maxQuestionsPerSkill ?? 1,
+  maxWrittenQuestions: props.maxWrittenQuestions ?? 2,
+  recentActivityCount: props.recentActivityCount ?? 3,
   scope: props.scope,
   examScope: props.examScope,
   questionCount: props.questionCount,
@@ -143,6 +192,7 @@ function rememberDraft(draftId: string): void {
   savePaperDraftSession({
     fingerprint: settingsFingerprint.value,
     draftId,
+    handoutRequestToken: handoutRequestToken.value || undefined,
   })
 }
 
@@ -155,13 +205,18 @@ async function restoreDraft(): Promise<void> {
   if (stored.fingerprint !== settingsFingerprint.value) {
     try {
       const previous = JSON.parse(stored.fingerprint)
-      previousRules = Number(previous.rulesVersion) < 10
+      previousRules = Number(previous.rulesVersion) < 11
       if (!previousRules) return
-      previous.rulesVersion = 10
+      previous.rulesVersion = 11
+      previous.purpose ??= 'training'
+      previous.maxQuestionsPerSkill ??= 1
+      previous.maxWrittenQuestions ??= 2
+      previous.recentActivityCount ??= 3
       for (const key of ['trainingIntent', 'expectedMinutes', 'difficultyMin', 'stageRatios']) delete previous[key]
       previous.teachingProgressChapterId ??= ''
-      previous.difficultyMax = difficultyMax.value
-      if (JSON.stringify(previous) !== settingsFingerprint.value) return
+      previous.difficultyMax ??= difficultyMax.value
+      const current = JSON.parse(settingsFingerprint.value)
+      if (Object.keys(current).some(key => JSON.stringify(current[key]) !== JSON.stringify(previous[key]))) return
     } catch { return }
   }
   restoring = true
@@ -182,9 +237,13 @@ async function restoreDraft(): Promise<void> {
     paperInstances.value = instances
     paperBatch.value = batches[0] ?? null
     selectedDraftStudentId.value = restored.students[0]?.student_id ?? ''
+    handoutRequestToken.value = stored.handoutRequestToken ?? ''
+    if (handoutRequestToken.value) void recoverHandoutExport()
     state.value = 'ready'
+    await Promise.resolve()
+    viewStep.value = instances.some(instance => instance.status === 'frozen') ? 'scan' : 'review'
     actionMessage.value = previousRules
-      ? '已恢复原草稿供查看；选题规则已更新，未冻结的草稿需按新规则重新生成，已生成训练卷仍可查看。'
+      ? '已恢复原草稿，沿用保存时的设置、来源和限制；已生成训练卷仍可查看。'
       : '已恢复上次生成的草稿，可继续审核。'
   } catch {
     clearPaperDraftSession()
@@ -203,6 +262,9 @@ function discardDraft(): void {
   paperInstances.value = []
   paperBusy.value = ''
   paperBatch.value = null
+  handoutJob.value = null
+  handoutRequestToken.value = ''
+  handoutPollGeneration += 1
   paperBatchPollGeneration += 1
   state.value = 'idle'
   errorMessage.value = ''
@@ -231,6 +293,9 @@ watch(
     paperInstances.value = []
     paperBusy.value = ''
     paperBatch.value = null
+    handoutJob.value = null
+    handoutRequestToken.value = ''
+    handoutPollGeneration += 1
     paperBatchPollGeneration += 1
     selectedTargets.value = [...(props.targetKeys ?? [])]
   },
@@ -265,7 +330,7 @@ function itemLabel(item: PersonalizedRecommendationItem): string {
   if (item.practice_purpose === 'new') return '新练习'
   if (item.practice_purpose === 'consolidation') return '巩固练习'
   if (item.selection_kind === 'task_matched') return item.match_label || '原小问任务匹配'
-  if (item.match_level && item.match_label) return `${item.match_level}级 · ${item.match_label}`
+  if (item.match_level && item.match_label) return `匹配${item.match_level}级 · ${item.match_label}`
   return item.selection_kind === 'supplement' ? '补充练习' : stageLabel(item.stage)
 }
 
@@ -417,7 +482,9 @@ function acceptGeneratedDraft(value: PersonalizedRecommendationDraft): void {
   selectedDraftStudentId.value = value.students[0]?.student_id ?? ''
   state.value = 'ready'
   errorMessage.value = ''
-  actionMessage.value = '草稿已生成并自动暂存，切页后返回会自动恢复；尚未形成正式训练卷。'
+  actionMessage.value = isHandout.value
+    ? '讲义草稿已生成并自动暂存，切页后返回会自动恢复；请核对题目后导出打印。'
+    : '草稿已生成并自动暂存，切页后返回会自动恢复；尚未形成正式训练卷。'
   rememberDraft(value.draft_id)
 }
 
@@ -455,6 +522,10 @@ async function generate(): Promise<void> {
       scope: props.scope,
       exam_scope: props.examScope,
       question_count: props.questionCount,
+      purpose: props.purpose ?? 'training',
+      max_questions_per_skill: props.maxQuestionsPerSkill ?? 1,
+      max_written_questions: props.maxWrittenQuestions ?? 2,
+      recent_activity_count: props.recentActivityCount ?? 3,
       difficulty_max: difficultyMax.value,
       paper_mode: props.paperMode ?? 'individual',
       target_keys: selectedTargetsAreGoverned.value ? selectedTargets.value : [],
@@ -517,8 +588,93 @@ function instancesForStudent(studentId: string): PersonalizedPaperInstance[] {
     .sort((left, right) => right.series_version - left.series_version)
 }
 
+async function trackHandoutJob(job: JobResponse): Promise<void> {
+  if (!componentActive) return
+  const generation = ++handoutPollGeneration
+  handoutJob.value = job
+  while (generation === handoutPollGeneration && ['queued', 'running'].includes(handoutJob.value.status)) {
+    await new Promise(resolve => globalThis.setTimeout(resolve, 500))
+    if (generation !== handoutPollGeneration) return
+    handoutJob.value = await jobApi.getJob(job.id)
+  }
+  if (generation !== handoutPollGeneration) return
+  if (handoutJob.value.status === 'succeeded') {
+    actionMessage.value = '讲义已导出，请下载后打印；不会产生训练证据。'
+  } else {
+    errorMessage.value = '讲义导出未完成，请重新核对草稿来源后再导出。'
+    handoutRequestToken.value = ''
+  }
+  if (draft.value) rememberDraft(draft.value.draft_id)
+}
+
+async function recoverHandoutExport(): Promise<void> {
+  if (!componentActive || !draft.value || !handoutRequestToken.value) return
+  const draftId = draft.value.draft_id
+  const token = handoutRequestToken.value
+  const fingerprint = settingsFingerprint.value
+  const stillCurrent = () => componentActive && token === handoutRequestToken.value && fingerprint === settingsFingerprint.value
+  paperBusy.value = 'handout'
+  try {
+    const job = await trainingApi.getHandoutExportByRequest(draftId, token)
+    if (!stillCurrent()) return
+    await trackHandoutJob(job)
+  } catch (error) {
+    if (!stillCurrent()) return
+    if (error instanceof ApiError && error.status === 404) {
+      handoutRequestToken.value = ''
+      rememberDraft(draft.value.draft_id)
+      actionMessage.value = '未找到导出任务，可以重新导出讲义。'
+    } else errorMessage.value = '暂时无法核对导出结果，请稍后再次核对。'
+  } finally { if (stillCurrent()) paperBusy.value = '' }
+}
+
+async function exportHandout(): Promise<void> {
+  if (!draft.value || !isHandout.value || paperBusy.value) return
+  if (handoutRequestToken.value && (!handoutJob.value || ['queued', 'running'].includes(handoutJob.value.status))) {
+    await recoverHandoutExport(); return
+  }
+  paperBusy.value = 'handout'
+  errorMessage.value = ''
+  actionMessage.value = ''
+  handoutRequestToken.value = requestToken()
+  const token = handoutRequestToken.value
+  const fingerprint = settingsFingerprint.value
+  handoutJob.value = null
+  rememberDraft(draft.value.draft_id)
+  try {
+    const job = await trainingApi.exportHandout(draft.value.draft_id, {
+      expected_revision: draft.value.revision, request_token: token,
+    })
+    if (!componentActive || token !== handoutRequestToken.value || fingerprint !== settingsFingerprint.value) return
+    await trackHandoutJob(job)
+  } catch (error) {
+    if (!componentActive || token !== handoutRequestToken.value || fingerprint !== settingsFingerprint.value) return
+    if (isAmbiguousWriteError(error) || (error instanceof ApiError && error.kind === 'contract') || handoutJob.value) errorMessage.value = '导出请求结果暂未确认，请核对导出结果。'
+    else {
+      handoutRequestToken.value = ''
+      rememberDraft(draft.value.draft_id)
+      errorMessage.value = safeError(error, '讲义暂时无法导出，请重新核对草稿来源。')
+    }
+  } finally { paperBusy.value = '' }
+}
+
+async function downloadHandout(): Promise<void> {
+  if (!handoutJob.value?.result.download_url || paperBusy.value) return
+  paperBusy.value = 'handout-download'
+  try {
+    const file = await exportsApi.downloadJobFile(handoutJob.value.id)
+    const url = URL.createObjectURL(file.blob)
+    const anchor = document.createElement('a')
+    anchor.href = url; anchor.download = file.filename; anchor.click()
+    URL.revokeObjectURL(url)
+    handoutJob.value = await jobApi.getJob(handoutJob.value.id)
+    actionMessage.value = '讲义已下载，本机副本已删除；需要时可以再次导出。'
+  } catch { errorMessage.value = '讲义暂时无法下载，请稍后重试。' }
+  finally { paperBusy.value = '' }
+}
+
 async function createPaperBatch(): Promise<void> {
-  if (!draft.value || paperBusy.value) return
+  if (!draft.value || paperBusy.value || isHandout.value) return
   const studentIds = draft.value.students
     .filter((student) => (
       student.items.length > 0
@@ -553,6 +709,7 @@ async function createPaperBatch(): Promise<void> {
         (item) => item.paper_instance_id === existing.paper_instance_id,
       )),
     ]
+    viewStep.value = 'print'
     actionMessage.value = paperBatch.value.status === 'cancelled'
       ? `批次已停止；已保留 ${paperBatch.value.succeeded_count} 份完成卷，未开始学生可另行重试。`
       : paperBatch.value.failed_count
@@ -706,857 +863,134 @@ async function editItem(
 </script>
 
 <template>
-  <section
-    :class="['personalized-draft', { 'is-external-setup': externalSetup }]"
-    :aria-labelledby="externalSetup ? undefined : 'personalized-draft-title'"
-    :aria-label="externalSetup ? '个性化训练草稿' : undefined"
-  >
-    <header v-if="!externalSetup">
-      <div>
-        <p class="training-eyebrow">P4 · 教师确认后出卷</p>
-        <h3 id="personalized-draft-title">{{ paperMode === 'shared' ? '多人同题草稿' : '一人一卷草稿' }}</h3>
-        <p>{{ paperMode === 'shared'
-          ? '题目和顺序一致，但每名学生仍保留独立姓名、二维码与回收身份。'
-          : '按每名学生证据分别选题；题目不足时会明确保留空缺。' }}</p>
-      </div>
-      <span v-if="draft">版本 {{ draft.revision }}</span>
-    </header>
-
-    <details v-if="!externalSetup" class="personalized-settings" :open="!draft">
-      <summary>训练设置</summary>
-      <section>
-    <div class="personalized-controls">
-      <label>
-        难度上限
-        <input v-model.number="difficultyMax" type="number" min="1" max="8">
-      </label>
-      <p>依据同技能多次作答匹配难度；允许巩固与新练习，每份训练同技能最多1道、解答题最多2道，最高8级。</p>
-    </div>
-
-    <fieldset v-if="targetOptions.length && targetKeys === undefined" class="personalized-targets">
-      <legend>本次训练目标</legend>
-      <label v-for="target in targetOptions" :key="target.key">
-        <input v-model="selectedTargets" type="checkbox" :value="target.key">
-        {{ target.label }}
-      </label>
-      <p v-if="!selectedTargets.length">请先人工勾选至少一个知识点；系统不会替教师默认决定训练重点。</p>
-    </fieldset>
-    <fieldset v-else-if="targetOptions.length" class="personalized-targets is-summary">
-      <legend>从知识结构中已选目标</legend>
-      <span v-for="target in selectedTargetLabels" :key="target">{{ target }}</span>
-      <p v-if="!selectedTargets.length">请回到上方知识结构，人工勾选至少一个知识点。</p>
-    </fieldset>
-    <p v-else class="training-empty is-compact">
-      当前没有可确认的薄弱目标；一人一卷需要范围内已有掌握证据才会配题。
-    </p>
-
-    <AppButton variant="secondary"
-      data-testid="generate-personalized-draft"
-      :disabled="!canGenerate"
-      @click="generate"
-    >
-      {{ state === 'loading' ? '正在生成并核对…' : pendingRequestToken ? '核对生成结果' : '生成个性化草稿' }}
-    </AppButton>
-      </section>
-    </details>
-
-    <p v-if="actionMessage" class="training-feedback" role="status">
-      {{ actionMessage }}
-    </p>
-    <p v-if="errorMessage" class="training-feedback is-warning" role="alert">
-      {{ errorMessage }}
-    </p>
+  <section :class="['personalized-draft', { 'is-external-setup': externalSetup }]" :aria-labelledby="externalSetup ? undefined : 'personalized-draft-title'" :aria-label="externalSetup ? '个性化训练草稿' : undefined">
+    <header v-if="!externalSetup"><h3 id="personalized-draft-title">{{ effectivePaperMode === 'shared' ? '多人同题草稿' : '一人一卷草稿' }}</h3></header>
+    <details v-if="!externalSetup" class="personalized-settings" :open="!draft"><summary>训练设置</summary><section>
+      <label class="personalized-edit-reason">难度上限<input v-model.number="difficultyMax" class="app-input" type="number" min="1" max="10"></label>
+      <fieldset v-if="targetOptions.length && targetKeys === undefined" class="personalized-targets"><legend>本次训练目标</legend><label v-for="target in targetOptions" :key="target.key"><input v-model="selectedTargets" type="checkbox" :value="target.key">{{ target.label }}</label><p v-if="!selectedTargets.length">请勾选至少一个知识点。</p></fieldset>
+      <fieldset v-else-if="targetOptions.length" class="personalized-targets"><legend>已选目标</legend><span v-for="target in selectedTargetLabels" :key="target">{{ knowledgeLeafLabel(target) }}</span><p v-if="!selectedTargets.length">请在知识结构中选择目标。</p></fieldset>
+      <p v-else class="training-empty is-compact">当前范围暂无可用掌握证据。</p>
+      <AppButton variant="primary" data-testid="generate-personalized-draft" :disabled="!canGenerate" @click="generate">{{ state === 'loading' ? '正在生成并核对…' : pendingRequestToken ? '核对生成结果' : '生成个性化草稿' }}</AppButton>
+    </section></details>
+    <p v-if="errorMessage" class="training-feedback is-warning" role="alert">{{ errorMessage }}</p>
 
     <template v-if="draft">
-      <div class="personalized-draft-toolbar">
-        <span class="personalized-draft-toolbar__status">
-          草稿已自动暂存（版本 {{ draft.revision }}）；切到其他页面再回来会自动恢复，不需要重新勾选。
-        </span>
-        <template v-if="canDiscardDraft">
-          <AppButton variant="ghost"
-            v-if="!confirmDiscard"
-            data-testid="discard-paper-draft"
-            @click="confirmDiscard = true"
-          >
-            放弃草稿
-          </AppButton>
-          <template v-else>
-            <span class="personalized-draft-toolbar__confirm">
-              确认放弃？该草稿不再自动恢复；勾选与出卷设置会保留。
-            </span>
-            <AppButton variant="secondary"
-              data-testid="confirm-discard-paper-draft"
-              @click="discardDraft"
-            >
-              确认放弃
-            </AppButton>
-            <AppButton variant="ghost" @click="confirmDiscard = false">取消</AppButton>
-          </template>
-        </template>
-        <small v-else class="personalized-draft-toolbar__locked">
-          已生成训练卷后不能再放弃草稿；如需重来请调整设置后生成新草稿。
-        </small>
-      </div>
-      <label class="personalized-edit-reason">
-        调整原因
-        <input v-model="editReason" maxlength="500">
-      </label>
+      <header class="draft-workflow-heading"><StepProgress :steps="workspaceSteps" :current="viewStep" @select="selectWorkspaceStep" /><span>自动保存 · V{{ draft.revision }}</span></header>
 
-      <ul v-if="draft.warnings.length" class="training-warning-list">
-        <li v-for="warning in draft.warnings" :key="warning">{{ warning }}</li>
-      </ul>
-
-      <div class="personalized-workbench">
-      <nav class="personalized-student-list" :aria-label="paperMode === 'shared' ? '同卷学生列表' : '一人一卷学生列表'">
-        <strong>学生与状态</strong>
-        <button
-          v-for="student in draft.students"
-          :key="student.student_id"
-          type="button"
-          :class="{ 'is-selected': selectedDraftStudent?.student_id === student.student_id }"
-          @click="selectedDraftStudentId = student.student_id"
-        >
-          <span>{{ student.student_name || student.student_code || student.student_id }}</span>
-          <small v-if="paperMode === 'shared'">{{ student.class_id }} · {{ student.student_code || student.student_id }}</small>
-          <small>
-            {{ instancesForStudent(student.student_id)[0]?.status === 'frozen'
-              ? '已冻结'
-              : instancesForStudent(student.student_id).length ? '待审核' : `${student.items.length} 题草稿` }}
-          </small>
-        </button>
-      </nav>
-
-      <template v-for="student in draft.students" :key="student.student_id">
-      <article v-if="selectedDraftStudent?.student_id === student.student_id" class="personalized-student">
-        <header>
-          <div>
-            <strong>{{ student.student_name || student.student_code || student.student_id }}</strong>
-            <span v-if="paperMode === 'shared'">{{ student.class_id }} · {{ student.student_code || student.student_id }}</span>
-            <span>
-              {{ student.items.length }} 题
-            </span>
-            <span v-if="student.items.length">{{ difficultySummary(student.items) }}</span>
-          </div>
-          <small>
-            {{ student.selection_mode === 'maintenance_fallback' ? '保守复习' : '按掌握证据推荐' }}
-            <template v-if="!externalSetup && student.targets.length">
-              · 细点 {{ student.targets.map((item) => String(item.display_name || item.stable_key || '')).filter(Boolean).join('、') }}
-            </template>
-          </small>
-        </header>
-
-        <template v-if="externalSetup">
-          <ol class="personalized-match-list">
-            <li v-for="item in student.items" :key="item.item_id" class="personalized-match">
-              <div class="personalized-match__evidence">
-                <strong>{{ item.practice_purpose === 'new' ? '新练习依据' : item.practice_purpose === 'consolidation' ? '巩固依据' : item.selection_kind === 'supplement' ? '补充依据' : '错题依据' }}</strong>
-                <template v-if="evidenceDisplayFor(student.student_id, item).representative">
-                  <span title="同目标作答依据">
-                    {{ evidenceRefLabel(evidenceDisplayFor(student.student_id, item).representative!) }}
-                  </span>
-                  <AppButton variant="ghost"
-                    v-if="evidenceDisplayFor(student.student_id, item).representative!.bank_question_id"
-                    @click="openPreview(evidenceDisplayFor(student.student_id, item).representative!.bank_question_id, '作答原题')"
-                  >
-                    预览
-                  </AppButton>
-                  <details
-                    v-if="evidenceDisplayFor(student.student_id, item).refs.length > 1"
-                    class="personalized-match__evidence-all"
-                  >
-                    <summary>全部 {{ evidenceDisplayFor(student.student_id, item).refs.length }} 条依据</summary>
-                    <span
-                      v-for="evidence in evidenceDisplayFor(student.student_id, item).refs"
-                      :key="`${evidence.session_id}-${evidence.question_id}-${evidence.bank_question_id}`"
-                    >
-                      {{ evidenceRefLabel(evidence) }}
-                      <AppButton variant="ghost"
-                        v-if="evidence.bank_question_id"
-                        @click="openPreview(evidence.bank_question_id, '作答原题')"
-                      >
-                        预览
-                      </AppButton>
-                    </span>
-                  </details>
-                </template>
-                <small v-else-if="item.selection_kind === 'supplement'">范围内的新练习，不认定为已证实薄弱；不设固定比例。</small>
-                <small v-else>该细点在当前范围内暂无逐题失分记录</small>
-              </div>
-              <span class="personalized-match__arrow" aria-hidden="true">→</span>
-              <div class="personalized-match__card">
-                <div class="personalized-match__head">
-                  <span class="personalized-match__order">第 {{ item.item_order }} 题</span>
-                  <span class="personalized-stage-badge" :class="`is-${item.stage}`">{{ itemLabel(item) }}</span>
-                  <strong :title="item.matched_name">{{ knowledgeLeafLabel(item.matched_name) }}</strong>
-                  <small v-if="knowledgeLeafLabel(item.matched_name) !== item.matched_name">{{ item.matched_name }}</small>
-                </div>
-                <p
-                  class="personalized-match__stem"
-                  :class="{ 'is-empty': !item.question_text }"
-                  :title="item.question_text || undefined"
-                >
-                  {{ item.question_text || '旧草稿未包含题干，重新生成后可见' }}
-                </p>
-                <small class="personalized-match__meta">
-                  <template v-if="item.difficulty_band">{{ { starter: '起步练习', consolidation: '巩固练习', stretch: '少量突破' }[item.difficulty_band] }} · </template>
-                  原卷第 {{ item.question_number }} 题 · {{ item.part_assessment ? '最难小问' : '整题难度' }} {{ item.difficulty }} ·
-                  {{ item.criterion_point_count }} 个判定点 · 来源：{{ item.source_paper }}
-                </small>
-                <small v-if="item.part_assessment" class="personalized-match__meta">
-                  小问公式难度（1–10）：{{ item.part_assessment.parts.map((part, index) => `${part.label || `(${index + 1})`} ${part.difficulty ?? '暂无'}${part.direct_keys.includes(item.matched_key) ? ' · 本次目标' : ''}`).join('；') }}。按整题出卷。
-                </small>
-                <small v-if="item.relation">
-                  已确认{{ item.relation.relation_type === 'prerequisite' ? '先修' : '相关' }}关系：
-                  {{ item.relation.rationale }}
-                </small>
-                <small class="personalized-match__reason">
-                  推荐理由：{{ item.reason }}
-                </small>
-                <div v-if="paperMode !== 'shared'" class="personalized-item-actions">
-                  <AppButton variant="ghost"
-                    @click="openPreview(item.question_id, '推荐题预览')"
-                  >
-                    预览
-                  </AppButton>
-                  <AppButton variant="ghost"
-                    :disabled="state === 'editing'"
-                    @click="editItem(student.student_id, item, item.locked ? 'unlock' : 'lock')"
-                  >
-                    {{ item.locked ? '解锁' : '锁定' }}
-                  </AppButton>
-                  <AppButton variant="ghost"
-                    :disabled="item.locked || state === 'editing'"
-                    @click="editItem(student.student_id, item, 'replace')"
-                  >
-                    替换
-                  </AppButton>
-                  <AppButton variant="ghost"
-                    :disabled="item.locked || state === 'editing'"
-                    @click="editItem(student.student_id, item, 'exclude')"
-                  >
-                    排除
-                  </AppButton>
-                </div>
-                <p v-else class="personalized-shared-note">同题模式不允许只改某一名学生；如需换题，请调整设置后重新生成整组草稿。</p>
-              </div>
-            </li>
-          </ol>
-          <ul v-if="student.shortages.length" class="personalized-shortages">
-            <li
-              v-for="shortage in student.shortages"
-              :key="String(shortage.stage)"
-              class="personalized-shortage"
-            >
-              <span class="personalized-stage-badge" :class="`is-${shortageStage(shortage)}`">
-                {{ stageLabel(shortageStage(shortage)) }}
-              </span>
-              <strong>待配 {{ Number(shortage.missing_count) || 0 }} 题</strong>
-            </li>
-          </ul>
-        </template>
-
-        <ol v-else>
-          <li v-for="item in student.items" :key="item.item_id">
-            <div class="personalized-item-main">
-              <span>第 {{ item.item_order }} 题 · {{ itemLabel(item) }}</span>
-              <strong>{{ item.matched_name }}</strong>
-              <p>推荐理由：{{ item.reason }}</p>
-              <small>
-                原卷第 {{ item.question_number }} 题 ·
-                {{ item.part_assessment ? '最难小问' : '整题难度' }} {{ item.difficulty }} ·
-                {{ item.criterion_point_count }} 个判定点
-              </small>
-              <small v-if="item.part_assessment">
-                小问公式难度（1–10）：{{ item.part_assessment.parts.map((part, index) => `${part.label || `(${index + 1})`} ${part.difficulty ?? '暂无'}${part.direct_keys.includes(item.matched_key) ? ' · 本次目标' : ''}`).join('；') }}。按整题出卷。
-              </small>
-              <small v-if="item.relation">
-                已确认{{ item.relation.relation_type === 'prerequisite' ? '先修' : '相关' }}关系：
-                {{ item.relation.rationale }}
-              </small>
-            </div>
-            <div v-if="paperMode !== 'shared'" class="personalized-item-actions">
-              <AppButton variant="ghost"
-                :disabled="state === 'editing'"
-                @click="editItem(student.student_id, item, item.locked ? 'unlock' : 'lock')"
-              >
-                {{ item.locked ? '解锁' : '锁定' }}
-              </AppButton>
-              <AppButton variant="ghost"
-                :disabled="item.locked || state === 'editing'"
-                @click="editItem(student.student_id, item, 'replace')"
-              >
-                替换
-              </AppButton>
-              <AppButton variant="ghost"
-                :disabled="item.locked || state === 'editing'"
-                @click="editItem(student.student_id, item, 'exclude')"
-              >
-                排除
-              </AppButton>
-            </div>
-            <p v-else class="personalized-shared-note">同题模式不允许只改某一名学生；如需换题，请调整设置后重新生成整组草稿。</p>
-          </li>
-        </ol>
-
-        <ul v-if="student.warnings.length" class="training-warning-list">
-          <li v-for="warning in student.warnings" :key="warning">{{ warning }}</li>
-        </ul>
-
-        <section class="personalized-paper-panel">
-          <p v-if="!instancesForStudent(student.student_id).length" class="training-empty is-compact">
-            尚未生成训练卷。先完成草稿调整，再使用页面底部的批量生成。
-          </p>
-
-          <article
-            v-for="instance in instancesForStudent(student.student_id)"
-            :key="instance.paper_instance_id"
-            class="personalized-paper-version"
-          >
-            <div>
-              <strong>V{{ instance.series_version }}</strong>
-              <span>
-                {{ instance.question_count }} 题 ·
-                {{ instance.criterion_point_count }} 个判定点 ·
-                {{ instance.status === 'frozen' ? `${instance.pages.length} 页冻结 PDF` : '待冻结 PDF' }}
-              </span>
-            </div>
-            <small v-if="instance.formula_fallbacks?.length" class="training-feedback is-warning">
-              {{ instance.formula_fallbacks.length }} 处公式无法转为可编辑公式，已保留原式或题图，打印前请预览核对。
-            </small>
-            <div class="personalized-paper-actions">
-              <AppButton variant="ghost"
-                v-if="instance.downloads.frozen_pdf"
-                :disabled="Boolean(paperBusy)"
-                @click="downloadPaper(instance, 'frozen_pdf')"
-              >
-                下载 PDF 试卷
-              </AppButton>
-              <AppButton variant="ghost"
-                v-if="instance.downloads.review_docx"
-                :disabled="Boolean(paperBusy)"
-                @click="downloadPaper(instance, 'review_docx')"
-              >
-                下载 DOCX 版（可选精修）
-              </AppButton>
-            </div>
-          </article>
-          <p class="personalized-paper-note">
-            PDF 试卷每页带身份码，用于打印后扫码归卷；系统不会自动打印。要改内容请调整草稿后重新生成。
-          </p>
-        </section>
-      </article>
-      </template>
-
-      </div>
-
-      <div class="personalized-aside">
-      <section class="personalized-batch-panel" aria-labelledby="personalized-batch-title">
-        <div>
-          <strong id="personalized-batch-title">{{ paperMode === 'shared' ? '批量生成实名同题卷' : '批量生成实名一人一卷' }}</strong>
-          <p>每名学生保持独立卷实例；成功卷不会因其他学生失败而丢失。生成的是可直接打印的 PDF 试卷。</p>
+      <section v-show="viewStep === 'review'" class="draft-review">
+        <div class="personalized-draft-toolbar">
+          <strong>{{ effectivePaperMode === 'shared' ? `共同试题 · ${draft.students.length} 人` : `${draft.students.length} 份个人草稿` }}</strong>
+          <details class="draft-data-notes"><summary>选题设置</summary><p>每卷 {{ draft.config.question_count ?? questionCount }} 题 · 难度 ≤ {{ draft.config.difficulty_max ?? difficultyMax }} 级 · 同技能 ≤ {{ draft.config.max_questions_per_skill ?? maxQuestionsPerSkill ?? 1 }} 道 · 解答题 ≤ {{ draft.config.max_written_questions ?? maxWrittenQuestions ?? 2 }} 道 · 排除最近 {{ draft.config.recent_activity_count ?? recentActivityCount ?? 3 }} 次原题</p></details>
+          <details v-if="draft.warnings.length" class="draft-data-notes"><summary>数据说明（{{ draft.warnings.length }}）</summary><ul><li v-for="warning in draft.warnings" :key="warning">{{ warning }}</li></ul></details>
+          <template v-if="canDiscardDraft"><AppButton v-if="!confirmDiscard" variant="ghost" data-testid="discard-paper-draft" @click="confirmDiscard = true">放弃草稿</AppButton><template v-else><span>放弃后不再自动恢复，出卷设置保留。</span><AppButton variant="secondary" data-testid="confirm-discard-paper-draft" @click="discardDraft">确认放弃</AppButton><AppButton variant="ghost" @click="confirmDiscard = false">取消</AppButton></template></template>
+          <AppButton variant="primary" :disabled="!eligiblePaperCount || Boolean(paperBusy)" @click="viewStep = 'print'">{{ isHandout ? '去导出讲义' : hasPrintablePapers ? '查看打印试卷' : '审核完成，去出卷' }}</AppButton>
         </div>
-        <AppButton variant="primary" :disabled="Boolean(paperBusy)" @click="createPaperBatch">
-          {{ paperBusy === 'batch' ? '正在逐人生成 PDF…' : '生成全部 PDF 试卷（可直接打印）' }}
-        </AppButton>
-        <AppButton variant="secondary"
-          v-if="paperBatch?.status === 'creating'"
-          :disabled="paperCancelBusy"
-          @click="cancelPaperBatch"
-        >
-          {{ paperCancelBusy ? '正在停止…' : '停止未开始学生' }}
-        </AppButton>
-        <div v-if="paperBatch" class="personalized-batch-result">
-          <span>成功 {{ paperBatch.succeeded_count }} / {{ paperBatch.requested_count }} 人</span>
-          <AppButton variant="ghost" v-if="paperBatch.downloads.frozen_bundle" @click="downloadBatch('frozen_bundle')">下载试卷 PDF ZIP</AppButton>
-          <AppButton variant="ghost" v-if="paperBatch.downloads.bundle" @click="downloadBatch('bundle')">下载 DOCX 版 ZIP</AppButton>
-          <AppButton variant="secondary" v-if="paperBatch.failures.length" :disabled="Boolean(paperBusy)" @click="retryFailedPaperBatch">
-            {{ paperBusy === 'batch-retry' ? '正在重试失败学生…' : `只重试失败的 ${paperBatch.failures.length} 人` }}
-          </AppButton>
-          <ul v-if="paperBatch.failures.length">
-            <li v-for="failure in paperBatch.failures" :key="failure.student_id">学生 {{ failure.student_id }}：生成失败，可单独重试</li>
-          </ul>
+        <details v-if="effectivePaperMode !== 'shared'" class="draft-edit-settings"><summary>调整原因</summary><label class="personalized-edit-reason">调整原因<input v-model="editReason" class="app-input" maxlength="500"></label></details>
+        <div class="personalized-workbench" :class="{ 'is-shared': effectivePaperMode === 'shared' }">
+          <nav class="personalized-student-list" :aria-label="effectivePaperMode === 'shared' ? '同卷学生列表' : '一人一卷学生列表'"><header>{{ effectivePaperMode === 'shared' ? '共同练习学生' : '学生草稿' }} <span>{{ draft.students.length }} 人</span></header><button v-for="student in draft.students" :key="student.student_id" type="button" :class="{ 'is-selected': selectedDraftStudent?.student_id === student.student_id }" :aria-pressed="selectedDraftStudent?.student_id === student.student_id" @click="selectedDraftStudentId = student.student_id"><strong>{{ student.student_name || student.student_code || student.student_id }}</strong><small>{{ student.class_id }} · {{ student.student_code || '' }}</small><span>{{ instancesForStudent(student.student_id)[0]?.status === 'frozen' ? '已出卷' : instancesForStudent(student.student_id).length ? '待审核' : `${student.items.length} 题草稿` }}</span></button></nav>
+          <template v-for="student in draft.students" :key="student.student_id"><article v-if="selectedDraftStudent?.student_id === student.student_id" class="personalized-student">
+            <header><div><strong>{{ effectivePaperMode === 'shared' ? '共同试题' : student.student_name || student.student_code || student.student_id }}</strong><span>{{ student.items.length }} 题<span v-if="student.items.length"> · {{ difficultySummary(student.items) }}</span></span></div><StatusBadge :tone="student.selection_mode === 'maintenance_fallback' ? 'warning' : 'info'" :label="student.selection_mode === 'maintenance_fallback' ? '保守复习' : '按掌握证据推荐'" /></header>
+            <p v-if="effectivePaperMode === 'shared'" class="personalized-shared-note">全组题目与题序相同；换题需调整设置后重新生成整组草稿。</p>
+            <ol class="personalized-match-list">
+              <li v-for="item in student.items" :key="item.item_id" class="personalized-match">
+                <div class="personalized-match__head"><strong>第 {{ item.item_order }} 题</strong><span class="personalized-stage-badge" :class="`is-${item.stage}`">{{ itemLabel(item) }}</span><span>{{ knowledgeLeafLabel(item.matched_name) }}</span><span class="personalized-match__difficulty">难度 {{ item.difficulty }} · {{ item.criterion_point_count }} 个判定点</span></div>
+                <p class="personalized-match__stem">{{ item.question_text || '旧草稿未包含题干，请预览原题。' }}</p>
+                <div class="personalized-item-actions">
+                  <AppButton variant="ghost" @click="openPreview(item.question_id, '推荐题预览')">预览</AppButton>
+                  <template v-if="effectivePaperMode !== 'shared'"><AppButton variant="ghost" :disabled="state === 'editing'" @click="editItem(student.student_id, item, item.locked ? 'unlock' : 'lock')">{{ item.locked ? '解锁' : '锁定' }}</AppButton><AppButton variant="ghost" :disabled="item.locked || state === 'editing'" @click="editItem(student.student_id, item, 'replace')">替换</AppButton><AppButton variant="ghost" :disabled="item.locked || state === 'editing'" @click="editItem(student.student_id, item, 'exclude')">排除</AppButton></template>
+                  <details class="personalized-match__evidence"><summary>推荐依据与来源</summary><p>{{ item.reason }}</p><p>{{ item.matched_name }}</p><p>{{ item.source_paper }} · 原卷第 {{ item.question_number }} 题<span v-if="item.difficulty_band"> · {{ { starter: '起步练习', consolidation: '巩固练习', stretch: '少量突破' }[item.difficulty_band] }}</span></p><p v-if="item.part_assessment">小问难度（1–10）：{{ item.part_assessment.parts.map((part, index) => `${part.label || `(${index + 1})`} ${part.difficulty ?? '暂无'}${part.direct_keys.includes(item.matched_key) ? ' · 本次目标' : ''}`).join('；') }}。按整题出卷。</p><p v-if="item.relation">已确认{{ item.relation.relation_type === 'prerequisite' ? '先修' : '相关' }}关系：{{ item.relation.rationale }}</p>
+                    <strong>{{ item.practice_purpose === 'new' ? '新练习依据' : item.practice_purpose === 'consolidation' ? '巩固依据' : item.selection_kind === 'supplement' ? '补充依据' : '错题依据' }}</strong>
+                    <template v-if="evidenceDisplayFor(student.student_id, item).refs.length"><div v-for="evidence in evidenceDisplayFor(student.student_id, item).refs" :key="`${evidence.session_id}-${evidence.question_id}-${evidence.bank_question_id}`"><span>{{ evidenceRefLabel(evidence) }}</span><AppButton v-if="evidence.bank_question_id" variant="ghost" @click="openPreview(evidence.bank_question_id, '作答原题')">预览原题</AppButton></div></template><small v-else>{{ item.selection_kind === 'supplement' ? '范围内的新练习，不认定为已证实薄弱。' : '当前范围暂无逐题失分记录。' }}</small>
+                  </details>
+                </div>
+              </li>
+            </ol>
+            <div v-if="student.shortages.length" class="personalized-shortages"><strong>题源不足，还需配 {{ student.shortages.reduce((sum, item) => sum + (Number(item.missing_count) || 0), 0) }} 题</strong><p>可返回设置调整范围、题量或近期原题排除次数。</p><details><summary>缺题详情</summary><p v-for="shortage in student.shortages" :key="String(shortage.stage)">{{ stageLabel(shortageStage(shortage)) }} · 待配 {{ Number(shortage.missing_count) || 0 }} 题</p></details></div>
+            <details v-if="student.warnings.length" class="draft-data-notes"><summary>选题说明（{{ student.warnings.length }}）</summary><ul><li v-for="warning in student.warnings" :key="warning">{{ warning }}</li></ul></details>
+          </article></template>
         </div>
       </section>
 
-      <TrainingScanBatchPanel
-        :instances="paperInstances"
-        @open-draft="openNextDraft"
-      />
-      </div>
-
-      <p class="personalized-footnote">
-        训练卷使用生成时的题目、推荐理由和判定点快照；以后来源变化不会改写旧卷。
-      </p>
+      <section v-show="viewStep === 'print'" class="personalized-print">
+        <section v-if="isHandout" class="personalized-batch-panel" aria-label="讲义导出"><div><h3>{{ effectivePaperMode === 'shared' ? '小组讲义' : '一人一份讲义' }}</h3><p>Word 格式，答案解析在末尾；讲义只打印，不回收、不更新掌握度。</p></div><AppButton variant="primary" data-testid="export-handout" :disabled="Boolean(paperBusy) || !eligiblePaperCount" @click="exportHandout">{{ paperBusy === 'handout' ? '正在导出讲义…' : handoutRequestToken && (!handoutJob || ['queued', 'running'].includes(handoutJob.status)) ? '核对导出结果' : '导出讲义' }}</AppButton><p v-if="handoutJob && ['queued', 'running'].includes(handoutJob.status)" role="status">正在导出讲义 · {{ Math.round(handoutJob.progress * 100) }}%</p><AppButton v-if="handoutJob?.result.download_url" variant="secondary" :disabled="Boolean(paperBusy)" @click="downloadHandout">下载讲义 {{ effectivePaperMode === 'shared' ? 'Word' : 'ZIP' }}</AppButton></section>
+        <section v-else class="personalized-batch-panel" aria-labelledby="personalized-batch-title">
+          <div><h3 id="personalized-batch-title">{{ hasPrintablePapers ? `${paperBatch?.succeeded_count ?? paperInstances.filter(item => item.status === 'frozen').length} 份 PDF 试卷已就绪` : effectivePaperMode === 'shared' ? `生成 ${draft.students.length} 份实名同题卷` : `生成 ${draft.students.length} 份个人训练卷` }}</h3><p>每人一份 PDF，每页带回收身份码。</p></div>
+          <AppButton v-if="!hasPrintablePapers" variant="primary" :disabled="Boolean(paperBusy) || !eligiblePaperCount" @click="createPaperBatch">{{ paperBusy === 'batch' ? '正在逐人生成 PDF…' : '生成全部 PDF 试卷（可直接打印）' }}</AppButton>
+          <AppButton v-if="paperBatch?.downloads.frozen_bundle" variant="primary" :disabled="Boolean(paperBusy)" @click="downloadBatch('frozen_bundle')">下载试卷 PDF ZIP</AppButton>
+          <AppButton v-if="hasPrintablePapers" variant="secondary" @click="viewStep = 'scan'">回收答卷并批改</AppButton>
+          <AppButton v-if="paperBatch?.status === 'creating'" variant="secondary" :disabled="paperCancelBusy" @click="cancelPaperBatch">{{ paperCancelBusy ? '正在停止…' : '停止未开始学生' }}</AppButton>
+          <div v-if="paperBatch" class="personalized-batch-result"><span>成功 {{ paperBatch.succeeded_count }} / {{ paperBatch.requested_count }} 人</span><AppButton v-if="paperBatch.failures.length" variant="secondary" :disabled="Boolean(paperBusy)" @click="retryFailedPaperBatch">{{ paperBusy === 'batch-retry' ? '正在重试失败学生…' : `只重试失败的 ${paperBatch.failures.length} 人` }}</AppButton><ul v-if="paperBatch.failures.length"><li v-for="failure in paperBatch.failures" :key="failure.student_id">{{ draft.students.find(student => student.student_id === failure.student_id)?.student_name || failure.student_id }}：生成失败</li></ul></div>
+          <details v-if="hasPrintablePapers" class="print-more"><summary>其他导出与重新出卷</summary><AppButton v-if="paperBatch?.downloads.bundle" variant="secondary" :disabled="Boolean(paperBusy)" @click="downloadBatch('bundle')">下载 DOCX 版 ZIP</AppButton><AppButton variant="secondary" :disabled="Boolean(paperBusy) || !eligiblePaperCount" @click="createPaperBatch">{{ paperBusy === 'batch' ? '正在逐人生成 PDF…' : '重新生成全部 PDF' }}</AppButton></details>
+        </section>
+        <div v-if="!isHandout && paperInstances.length" class="paper-download-list"><header><strong>学生试卷</strong><span>保留各版本，可分别下载</span></header><template v-for="student in draft.students" :key="student.student_id"><article v-for="instance in instancesForStudent(student.student_id)" :key="instance.paper_instance_id"><div><strong>{{ student.student_name || student.student_code || student.student_id }}</strong><span>V{{ instance.series_version }} · {{ instance.question_count }} 题 · {{ instance.pages.length }} 页</span></div><StatusBadge :tone="instance.status === 'frozen' ? 'success' : 'warning'" :label="instance.status === 'frozen' ? '可打印' : '待生成 PDF'" /><AppButton v-if="instance.downloads.frozen_pdf" variant="ghost" :disabled="Boolean(paperBusy)" @click="downloadPaper(instance, 'frozen_pdf')">下载 PDF 试卷</AppButton><AppButton v-if="instance.downloads.review_docx" variant="ghost" :disabled="Boolean(paperBusy)" @click="downloadPaper(instance, 'review_docx')">下载 DOCX</AppButton><p v-if="instance.formula_fallbacks?.length" class="formula-note">{{ instance.formula_fallbacks.length }} 处公式已保留原式或题图，打印前请预览核对。</p></article></template></div>
+        <p v-if="actionMessage" class="draft-action-message" role="status">{{ actionMessage }}</p>
+      </section>
+      <section v-if="!isHandout && hasPrintablePapers" v-show="viewStep === 'scan'" class="personalized-scan"><TrainingScanBatchPanel :instances="paperInstances" @progress-change="scanProgress = $event" @open-draft="openNextDraft" /></section>
     </template>
-
-    <QuestionPreviewDialog
-      :question-id="previewQuestionId"
-      :title="previewTitle"
-      @close="closePreview"
-    />
+    <p v-else-if="actionMessage" class="draft-action-message" role="status">{{ actionMessage }}</p>
+    <QuestionPreviewDialog :question-id="previewQuestionId" :title="previewTitle" @close="closePreview" />
   </section>
 </template>
 
 <style scoped>
-.personalized-draft {
-  margin-top: 1.25rem;
-  padding: 1rem;
-  border: 1px solid var(--line, var(--color-border-default));
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
-}
-
-.personalized-draft.is-external-setup {
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-
-.personalized-draft-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem 1rem;
-  margin-bottom: 1rem;
-  padding: 0.55rem 0.75rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-subtle);
-}
-
-.personalized-draft-toolbar__status {
-  color: var(--color-text-secondary);
-  font-size: 0.86rem;
-}
-
-.personalized-draft-toolbar__confirm {
-  color: var(--color-warning);
-  font-size: 0.86rem;
-}
-
-.personalized-draft-toolbar__locked {
-  color: var(--color-text-muted);
-  font-size: 0.84rem;
-}
-
-.personalized-draft-toolbar .training-button {
-  margin: 0;
-}
-
-.personalized-draft > header,
-.personalized-student > header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.personalized-draft h3,
-.personalized-draft p {
-  margin: 0.2rem 0;
-}
-
-.personalized-draft > header > span {
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-
-.personalized-controls {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.75rem;
-  margin: 1rem 0;
-}
-
-.personalized-settings {
-  margin: 1rem 0;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
-}
-
-.personalized-settings > summary {
-  padding: 0.75rem 0.9rem;
-  cursor: pointer;
-  font-weight: 700;
-}
-
-.personalized-settings > section {
-  padding: 0 0.9rem 0.9rem;
-}
-
-.personalized-workbench {
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  align-items: start;
-  gap: 1rem;
-  margin-top: 1rem;
-}
-
-.personalized-aside {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
-  align-items: stretch;
-  margin-top: 1rem;
-}
-
-.personalized-student-list {
-  display: grid;
-  gap: 0.45rem;
-  position: sticky;
-  top: calc(var(--shell-topbar-height, 64px) + 1rem);
-}
-
-.personalized-student-list > strong {
-  padding: 0.4rem 0.2rem;
-}
-
-.personalized-student-list button {
-  display: grid;
-  gap: 0.2rem;
-  padding: 0.65rem 0.75rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
-  text-align: left;
-  cursor: pointer;
-}
-
-.personalized-student-list button.is-selected {
-  border-color: var(--color-accent);
-  background: var(--color-accent-subtle);
-  box-shadow: inset 3px 0 0 var(--color-accent);
-}
-
-.personalized-student-list small {
-  color: var(--color-text-secondary);
-}
-
-.personalized-controls label,
-.personalized-edit-reason {
-  display: grid;
-  gap: 0.35rem;
-  color: var(--color-text-primary);
-  font-size: 0.9rem;
-}
-
-.personalized-controls input,
-.personalized-edit-reason input {
-  min-width: 0;
-  padding: 0.55rem 0.65rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
-}
-
-.personalized-targets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.65rem 1rem;
-  margin: 0 0 1rem;
-  padding: 0.75rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-control);
-}
-
-.personalized-targets legend {
-  padding: 0 0.35rem;
-  font-weight: 700;
-}
-
-.personalized-targets p {
-  flex-basis: 100%;
-  color: var(--color-warning);
-}
-
-.personalized-targets.is-summary > span {
-  padding: .35rem .55rem;
-  border-radius: 999px;
-  background: var(--color-accent-subtle);
-  color: var(--color-accent);
-  font-size: .84rem;
-}
-
-.personalized-edit-reason {
-  margin: 1rem 0;
-}
-
-.personalized-student {
-  grid-column: 2;
-  margin-top: 0;
-  padding: 0.85rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
-}
-
-.personalized-student header div,
-.personalized-item-main {
-  display: grid;
-  gap: 0.25rem;
-}
-
-.personalized-student ol {
-  display: grid;
-  gap: 0.65rem;
-  margin: 0.85rem 0 0;
-  padding-left: 1.4rem;
-}
-
-.personalized-student li {
-  padding: 0.7rem;
-  border-radius: 8px;
-  background: var(--color-bg-subtle);
-}
-
-.personalized-item-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.8rem;
-  margin-top: 0.55rem;
-}
-
-.personalized-shared-note {
-  margin-top: .55rem !important;
-  color: var(--color-text-secondary);
-  font-size: .84rem;
-}
-
-.personalized-student ol.personalized-match-list {
-  padding-left: 0;
-  list-style: none;
-}
-
-.personalized-student li.personalized-match {
-  display: grid;
-  grid-template-columns: minmax(180px, 0.85fr) 28px minmax(0, 1.65fr);
-  align-items: stretch;
-  gap: 0.75rem;
-  padding: 0.75rem;
-  border: 1px solid var(--color-border-default);
-  background: var(--color-bg-surface);
-}
-
-.personalized-match__evidence {
-  display: grid;
-  align-self: start;
-  align-content: start;
-  gap: 0.35rem;
-  padding: 0.55rem 0.65rem;
-  border-radius: 8px;
-  background: var(--color-bg-subtle);
-}
-
-.personalized-match__evidence > strong {
-  color: var(--color-text-secondary);
-  font-size: 0.84rem;
-  font-weight: 600;
-}
-
-.personalized-match__evidence > span {
-  color: var(--color-text-primary);
-  font-size: 0.86rem;
-}
-
-.personalized-match__evidence > small {
-  color: var(--color-text-muted);
-}
-
-.personalized-match__arrow {
-  align-self: center;
-  justify-self: center;
-  color: var(--color-accent);
-  font-weight: 700;
-}
-
-.personalized-match__card {
-  display: grid;
-  align-content: start;
-  gap: 0.3rem;
-}
-
-.personalized-match__head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.personalized-match__head small {
-  color: var(--color-text-muted);
-}
-
-.personalized-stage-badge {
-  padding: 0.12rem 0.5rem;
-  border-radius: 999px;
-  font-size: 0.78rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.personalized-stage-badge.is-direct {
-  background: var(--color-accent);
-  color: #ffffff;
-}
-
-.personalized-stage-badge.is-prerequisite {
-  background: var(--color-warning-subtle);
-  color: var(--color-warning);
-}
-
-.personalized-stage-badge.is-transfer {
-  background: var(--color-ai-subtle);
-  color: var(--color-ai);
-}
-
-.personalized-match__stem {
-  display: -webkit-box;
-  margin: 0;
-  padding: 0.5rem 0.65rem;
-  border-radius: 8px;
-  background: var(--color-bg-subtle);
-  font-family: var(--font-family-document);
-  font-size: 0.92rem;
-  line-height: var(--line-height-body);
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  overflow: hidden;
-}
-
-.personalized-match__stem.is-empty {
-  color: var(--color-text-muted);
-  font-family: var(--font-family-sans);
-}
-
-.personalized-match__meta {
-  color: var(--color-text-secondary);
-}
-
-.personalized-match__reason {
-  color: var(--color-text-muted);
-}
-
-.personalized-student ul.personalized-shortages {
-  display: grid;
-  gap: 0.5rem;
-  margin: 0.65rem 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.personalized-student li.personalized-shortage {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.55rem 0.75rem;
-  border: 1px dashed var(--color-warning);
-  background: var(--color-warning-subtle);
-}
-
-.personalized-paper-panel {
-  display: grid;
-  gap: 0.75rem;
-  margin-top: 1rem;
-  padding: 0.85rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-info-subtle);
-}
-
-.personalized-batch-panel {
-  display: grid;
-  grid-template-columns: 1fr;
-  align-items: center;
-  gap: 1rem;
-  margin: 0;
-  padding: 1rem;
-  border: 1px solid var(--color-accent);
-  border-radius: var(--radius-control);
-  background: var(--color-accent-subtle);
-}
-
-.personalized-match__evidence-all {
-  display: grid;
-  gap: 0.35rem;
-}
-
-.personalized-match__evidence-all > summary {
-  cursor: pointer;
-  color: var(--color-text-secondary);
-  font-size: 0.8rem;
-}
-
-.personalized-match__evidence-all > span {
-  display: block;
-  padding-top: 0.3rem;
-  color: var(--color-text-secondary);
-  font-size: 0.82rem;
-}
-
-.personalized-batch-panel p { margin: .25rem 0 0; color: var(--color-text-secondary); }
-.personalized-batch-panel label { display: flex; align-items: center; gap: .5rem; }
-.personalized-batch-result { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
-.personalized-batch-result ul { flex-basis: 100%; margin: 0; }
-
-.personalized-paper-version > div:first-child {
-  display: grid;
-  gap: 0.25rem;
-}
-
-.personalized-paper-version {
-  display: grid;
-  gap: 0.45rem;
-  padding: 0.75rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
-}
-
-.personalized-paper-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: 0.75rem;
-}
-
-.personalized-paper-note {
-  color: var(--color-text-secondary);
-  font-size: 0.84rem;
-}
-
-.personalized-footnote {
-  margin-top: 1rem !important;
-  color: var(--color-text-secondary);
-  font-size: 0.88rem;
-}
-
-@media (max-width: 760px) {
-  .personalized-controls {
-    grid-template-columns: 1fr;
-  }
-
-  .personalized-student li.personalized-match {
-    grid-template-columns: 1fr;
-  }
-
-  .personalized-match__arrow {
-    justify-self: start;
-    transform: rotate(90deg);
-  }
-
-  .personalized-workbench,
-  .personalized-aside {
-    grid-template-columns: 1fr;
-  }
-
-  .personalized-student-list,
-  .personalized-student {
-    grid-column: 1;
-    grid-row: auto;
-    position: static;
-  }
-}
+.personalized-draft{min-width:0;background:var(--color-bg-surface);border:1px solid var(--color-border-default);border-radius:var(--radius-panel);padding:var(--space-5)}
+.personalized-draft.is-external-setup{border:0;padding:0;background:transparent}
+.personalized-draft h3,.personalized-draft p{margin:0}
+.draft-workflow-heading{display:flex;justify-content:space-between;align-items:center;gap:var(--space-4);padding:var(--space-3) 0 var(--space-4);border-bottom:1px solid var(--color-border-default);margin-bottom:var(--space-4)}
+.draft-workflow-heading>span{font-size:var(--font-size-caption);color:var(--color-text-muted);white-space:nowrap}
+.personalized-draft-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-3);margin-bottom:var(--space-4);font-size:var(--font-size-dense)}
+.personalized-draft-toolbar>button:first-of-type{margin-left:auto}
+.draft-data-notes,.draft-edit-settings{font-size:var(--font-size-dense);color:var(--color-text-secondary)}
+.draft-data-notes summary,.draft-edit-settings summary{cursor:pointer}
+.draft-data-notes ul{padding-left:var(--space-5);font-size:var(--font-size-caption);max-width:80ch}
+.personalized-draft-toolbar .draft-data-notes{max-width:100%}
+.draft-edit-settings{margin-bottom:var(--space-3)}
+.personalized-edit-reason{display:grid;grid-template-columns:80px minmax(0,1fr);gap:var(--space-3);align-items:center;margin:var(--space-3) 0;font-size:var(--font-size-dense)}
+.personalized-workbench{display:grid;grid-template-columns:200px minmax(0,1fr);align-items:start;gap:var(--space-5)}
+.personalized-student-list{position:sticky;top:var(--space-4);min-width:0;border:1px solid var(--color-border-default);border-radius:var(--radius-control);overflow:hidden}
+.personalized-student-list header{display:flex;justify-content:space-between;gap:var(--space-2);padding:var(--space-3);background:var(--color-bg-subtle);font-size:var(--font-size-dense)}
+.personalized-student-list header span{color:var(--color-text-muted)}
+.personalized-student-list button{display:grid;gap:var(--space-1);width:100%;padding:var(--space-3);border:0;border-top:1px solid var(--color-border-subtle);background:var(--color-bg-surface);text-align:left;color:var(--color-text-primary);font:inherit;font-size:var(--font-size-dense);cursor:pointer}
+.personalized-student-list button.is-selected{box-shadow:inset 3px 0 var(--color-accent);background:var(--color-accent-subtle)}
+.personalized-student-list small,.personalized-student-list button>span{font-size:var(--font-size-caption);color:var(--color-text-secondary)}
+.personalized-student{min-width:0}
+.personalized-student>header{display:flex;justify-content:space-between;align-items:center;gap:var(--space-3);padding-bottom:var(--space-3)}
+.personalized-student>header>div{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--space-3)}
+.personalized-student>header span{font-size:var(--font-size-dense);color:var(--color-text-secondary)}
+.personalized-shared-note{font-size:var(--font-size-caption);color:var(--color-text-muted);margin-bottom:var(--space-3)!important}
+.personalized-match-list{list-style:none;padding:0;margin:0}
+.personalized-match{padding:var(--space-4) 0;border-top:1px solid var(--color-border-default)}
+.personalized-match__head{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2) var(--space-3);font-size:var(--font-size-dense)}
+.personalized-match__head>span:not(.personalized-stage-badge){color:var(--color-text-secondary)}
+.personalized-match__difficulty{margin-left:auto;font-size:var(--font-size-caption)}
+.personalized-stage-badge{padding:2px var(--space-2);border-radius:var(--radius-tag);font-size:var(--font-size-caption);background:var(--color-accent-subtle);color:var(--color-accent)}
+.personalized-stage-badge.is-prerequisite{background:var(--color-warning-subtle);color:var(--color-warning)}
+.personalized-stage-badge.is-transfer{background:var(--color-ai-subtle);color:var(--color-ai)}
+.personalized-match__stem{padding:var(--space-3) 0;font:16px/1.7 var(--font-family-document);white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto}
+.personalized-item-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:start}
+.personalized-match__evidence{flex:1;min-width:200px;font-size:var(--font-size-caption);color:var(--color-text-secondary);margin-left:auto;padding:var(--space-2) 0}
+.personalized-match__evidence summary{color:var(--color-accent);cursor:pointer;text-align:right}
+.personalized-match__evidence[open]{flex-basis:100%;border-top:1px solid var(--color-border-subtle);padding-top:var(--space-3);line-height:var(--line-height-relaxed)}
+.personalized-match__evidence p{margin:var(--space-2) 0}
+.personalized-match__evidence>div{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2)}
+.personalized-shortages{margin:var(--space-4) 0;padding:var(--space-4);border-radius:var(--radius-control);background:var(--color-warning-subtle);color:var(--color-warning);font-size:var(--font-size-dense)}
+.personalized-shortages p{margin-top:var(--space-2);color:var(--color-text-secondary)}
+.personalized-shortages details{margin-top:var(--space-3)}.personalized-shortages summary{cursor:pointer}
+.personalized-batch-panel{display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-3);padding:var(--space-5);border:1px solid var(--color-border-default);border-radius:var(--radius-panel);background:var(--color-bg-surface);box-shadow:var(--shadow-raised)}
+.personalized-batch-panel>div:first-child{flex:1 1 300px}
+.personalized-batch-panel h3{font-size:var(--font-size-h2);margin-bottom:var(--space-2)}
+.personalized-batch-panel p,.personalized-batch-result{font-size:var(--font-size-dense);color:var(--color-text-secondary)}
+.personalized-batch-result{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3);flex-basis:100%;padding-top:var(--space-3);border-top:1px solid var(--color-border-subtle)}
+.print-more{flex-basis:100%;font-size:var(--font-size-dense);color:var(--color-text-muted)}.print-more summary{cursor:pointer}.print-more button{margin:var(--space-3) var(--space-3) 0 0}
+.paper-download-list{margin-top:var(--space-5);border:1px solid var(--color-border-default);border-radius:var(--radius-panel);overflow:hidden;background:var(--color-bg-surface)}
+.paper-download-list>header{display:flex;justify-content:space-between;padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--color-border-default);background:var(--color-bg-subtle);font-size:var(--font-size-dense)}
+.paper-download-list header>span{font-size:var(--font-size-caption);color:var(--color-text-muted)}
+.paper-download-list article{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3);padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--color-border-subtle)}
+.paper-download-list article>div{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--space-3);flex:1 1 260px;font-size:var(--font-size-dense)}
+.paper-download-list article>div span{color:var(--color-text-muted);font-size:var(--font-size-caption)}
+.formula-note{flex-basis:100%;font-size:var(--font-size-caption);color:var(--color-warning)}
+.draft-action-message{font-size:var(--font-size-dense);color:var(--color-text-secondary);margin-top:var(--space-3)!important}
+.personalized-settings{padding:var(--space-3);margin-bottom:var(--space-4)}.personalized-settings summary{cursor:pointer}
+.personalized-targets{display:flex;flex-wrap:wrap;gap:var(--space-3);margin-bottom:var(--space-3);border:1px solid var(--color-border-default);font-size:var(--font-size-dense)}
+@media(max-width:760px){.draft-workflow-heading{flex-wrap:wrap}.personalized-workbench{grid-template-columns:minmax(0,1fr)}.personalized-student-list{display:flex;overflow:auto;position:static}.personalized-student-list header{display:none}.personalized-student-list button{flex:0 0 175px;border-right:1px solid var(--color-border-default);border-top:0}.personalized-student-list button.is-selected{box-shadow:inset 0 -3px var(--color-accent)}.personalized-match__head{gap:var(--space-2)}.personalized-match__difficulty{margin-left:0;flex-basis:100%}.personalized-batch-panel{padding:var(--space-4)}.personalized-batch-panel>button{flex:1 1 auto}.personalized-draft-toolbar>button:first-of-type{margin-left:0}.personalized-match__evidence{min-width:150px}.draft-workflow-heading :deep(.step-progress__connector){flex-basis:10px;margin-inline:var(--space-1)}}
 </style>

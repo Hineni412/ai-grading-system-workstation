@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { masteryDetail } from '../knowledge-overview/model'
+import AppButton from '@/components/design-system/AppButton.vue'
+
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import {
@@ -9,16 +11,20 @@ import {
   type TrainingFeedback,
   type TrainingPointState,
   type TrainingSubmission,
+  type TrainingScanPage,
 } from '../../api/training'
 import { ApiError, isAmbiguousWriteError } from '../../api/errors'
 import StatusBadge from '../design-system/StatusBadge.vue'
+import { knowledgeLeafLabel } from '../../api/question-bank'
 
 const props = defineProps<{
   submission: TrainingSubmission
+  pages?: TrainingScanPage[]
 }>()
 
 const emit = defineEmits<{
   openDraft: [draftId: string]
+  summaryChange: [summary: { label: string; tone: 'info' | 'success' | 'warning' | 'danger'; met: number; total: number; published: boolean }]
 }>()
 
 interface PointEdit {
@@ -29,6 +35,32 @@ interface PointEdit {
 
 const assessment = ref<TrainingAssessmentOutcome | null>(null)
 const feedback = ref<TrainingFeedback | null>(null)
+const feedbackIsCurrent = computed(() => feedback.value?.source_review_revision === assessment.value?.review_revision)
+const publishedCurrent = computed(() => feedback.value?.status === 'complete' && feedbackIsCurrent.value)
+const activeView = ref<'review' | 'feedback'>('review')
+const selectedPageId = ref('')
+const answerPages = computed(() => (props.pages ?? []).filter(page => page.state === 'assigned').sort((a, b) => (a.page_number ?? 0) - (b.page_number ?? 0)))
+const answerPage = computed(() => answerPages.value.find(page => page.scan_page_id === selectedPageId.value) ?? answerPages.value[0])
+const resultTotals = computed(() => ({
+  met: assessment.value?.questions.reduce((sum, question) => sum + question.met_count, 0) ?? 0,
+  total: assessment.value?.expected_point_count ?? 0,
+  pending: assessment.value?.questions.reduce((sum, question) => sum + question.uncertain_count + question.unreadable_count, 0) ?? 0,
+}))
+const skillChanges = computed(() => {
+  const changes = feedback.value?.mastery_changes ?? []
+  const skills = changes.filter(item => /^(sk_|ki_)/.test(String(item.stable_key)))
+  return skills.length ? skills : changes
+})
+const aggregateChanges = computed(() => (feedback.value?.mastery_changes ?? []).filter(item => !skillChanges.value.includes(item)))
+watch(feedback, value => { if (value && value.status !== 'withdrawn' && feedbackIsCurrent.value) activeView.value = 'feedback' })
+watch([assessment, feedback], () => {
+  const value = assessment.value
+  emit('summaryChange', {
+    label: publishedCurrent.value ? '已完成' : value ? statusLabel(value) : '待批改',
+    tone: publishedCurrent.value ? 'success' : value ? statusTone(value) : 'info',
+    met: resultTotals.value.met, total: resultTotals.value.total, published: publishedCurrent.value,
+  })
+})
 const edits = ref<Record<string, PointEdit>>({})
 const busy = ref('')
 const message = ref('')
@@ -166,14 +198,14 @@ function statusLabel(value: TrainingAssessmentOutcome): string {
   if (value.status === 'failed') return '判定失败'
   if (value.status === 'cancelled') return '已取消'
   if (value.status === 'running') return '判定进行中'
-  if (value.workflow_status === 'complete') return '复核完成'
-  return '需要复核'
+  if (['complete', 'completed'].includes(value.workflow_status)) return '待确认更新'
+  return '待复核'
 }
 
 function statusTone(value: TrainingAssessmentOutcome): 'info' | 'success' | 'warning' | 'danger' {
   if (value.status === 'failed' || value.status === 'cancelled') return 'danger'
   if (value.status === 'running') return 'info'
-  if (value.workflow_status === 'complete') return 'success'
+  if (['complete', 'completed'].includes(value.workflow_status)) return 'success'
   return 'warning'
 }
 
@@ -374,7 +406,7 @@ async function replayEvidence(): Promise<void> {
 }
 
 function masteryTitle(item: Record<string, unknown>): string {
-  return String(item.display_name || item.stable_key || '训练目标')
+  return knowledgeLeafLabel(String(item.display_name || item.stable_key || '训练目标'))
 }
 
 function masteryValue(
@@ -405,491 +437,133 @@ onBeforeUnmount(() => {
 <template>
   <section class="assessment-ledger" aria-label="训练判定与反馈">
     <header class="ledger-heading">
-      <div>
-        <span class="ledger-kicker">判定 → 复核 → 证据</span>
-        <h5>训练结果闭环</h5>
-      </div>
-      <StatusBadge
-        v-if="assessment"
-        class="ledger-status"
-        :tone="statusTone(assessment)"
-        :label="statusLabel(assessment)"
-      />
+      <div><h3>批改与反馈</h3><span v-if="assessment">达成 <b>{{ resultTotals.met }} / {{ resultTotals.total }}</b> 个判定点<span v-if="resultTotals.pending"> · {{ resultTotals.pending }} 点待复核</span></span></div>
+      <StatusBadge v-if="assessment" :tone="publishedCurrent ? 'success' : statusTone(assessment)" :label="publishedCurrent ? '已完成' : statusLabel(assessment)" />
     </header>
 
     <div v-if="!assessment" class="ledger-start">
-      <p>
-        页面已齐全。开始后会把这名学生的整卷合并为
-        <strong>1 次模型请求</strong>，失败不会自动追加请求。
-      </p>
-      <button
-        type="button"
-        class="training-button"
-        :disabled="Boolean(busy) || waitingForResult"
-        @click="startAssessment"
-      >
-        {{ busy === 'restore' ? '正在读取判定…' : waitingForResult ? '正在等待后台结果…' : busy === 'assess' ? '正在判定…' : '开始整卷判定（1 次请求）' }}
-      </button>
+      <p>整卷合并为 1 次模型请求；失败后由教师决定是否重试。</p>
+      <AppButton variant="primary" :disabled="Boolean(busy) || waitingForResult" @click="startAssessment">{{ busy === 'restore' ? '正在读取判定…' : waitingForResult ? '正在等待后台结果…' : busy === 'assess' ? '正在判定…' : '开始整卷判定（1 次请求）' }}</AppButton>
     </div>
-
-    <button v-if="queryPaused" type="button" class="training-link" :disabled="Boolean(busy)" @click="queryResult">重新查询结果</button>
+    <AppButton v-if="queryPaused" variant="secondary" :disabled="Boolean(busy)" @click="queryResult">重新查询结果</AppButton>
 
     <template v-if="assessment">
-      <div class="ledger-summary">
-        <span>{{ assessment.expected_question_count }} 题</span>
-        <span>{{ assessment.expected_point_count }} 个判定点</span>
-        <span>已请求 {{ assessment.request_count }} 次</span>
-        <span v-if="assessment.usage.total_tokens">
-          本次 {{ assessment.usage.total_tokens.toLocaleString() }} tokens
-        </span>
+      <nav class="ledger-tabs" aria-label="批改内容">
+        <button type="button" :aria-pressed="activeView === 'review'" @click="activeView = 'review'">逐题复核</button>
+        <button v-if="feedback" type="button" :aria-pressed="activeView === 'feedback'" @click="activeView = 'feedback'">掌握度反馈</button>
+        <details class="ledger-request"><summary>请求记录</summary><p>{{ assessment.expected_question_count }} 题 · 已请求 {{ assessment.request_count }} 次<span v-if="assessment.usage.total_tokens"> · {{ assessment.usage.total_tokens.toLocaleString() }} tokens</span></p></details>
+      </nav>
+      <p v-if="assessment.action_message && assessment.status !== 'succeeded'" class="ledger-action">{{ assessment.action_message }}</p>
+      <AppButton v-if="assessment.status === 'failed'" variant="secondary" :disabled="Boolean(busy)" @click="assessmentAction('retry')">{{ busy === 'retry' ? '正在重试…' : '教师确认后重试一次' }}</AppButton>
+      <AppButton v-else-if="assessment.status === 'running'" variant="secondary" :disabled="Boolean(busy)" @click="assessmentAction('recover')">接管中断状态</AppButton>
+
+      <div v-show="activeView === 'review'" class="ledger-publish">
+        <span>{{ publishedCurrent ? '掌握度已更新；修改判定后可再次确认。' : '确认已完成题目的结果，更新学生掌握度。' }}<small v-if="resultTotals.pending">不确定和无法辨认项保留待复核。</small></span>
+        <AppButton variant="primary" :disabled="Boolean(busy) || !canPublish" @click="syncEvidence('publish')">{{ busy === 'publish' ? '正在更新…' : '确认并更新掌握度' }}</AppButton>
       </div>
 
-      <p v-if="assessment.action_message" class="ledger-action">
-        {{ assessment.action_message }}
-      </p>
-
-      <div v-if="assessment.status === 'failed'" class="ledger-recovery">
-        <button
-          type="button"
-          class="training-link"
-          :disabled="Boolean(busy)"
-          @click="assessmentAction('retry')"
-        >
-          {{ busy === 'retry' ? '正在重试…' : '教师确认后重试一次' }}
-        </button>
-      </div>
-      <div v-else-if="assessment.status === 'running'" class="ledger-recovery">
-        <button
-          type="button"
-          class="training-link"
-          :disabled="Boolean(busy)"
-          @click="assessmentAction('recover')"
-        >
-          接管中断状态
-        </button>
-      </div>
-
-      <ol class="question-ledger">
-        <li
-          v-for="question in assessment.questions"
-          :key="question.task_item_code"
-        >
-          <header>
-            <div>
-              <strong>第 {{ question.item_order }} 题</strong>
-              <small>{{ question.task_item_code }}</small>
+      <div v-show="activeView === 'review'" class="review-workspace">
+        <ol class="question-ledger">
+          <li v-for="question in assessment.questions" :key="question.task_item_code">
+            <header><strong>第 {{ question.item_order }} 题</strong><span>{{ question.met_count }}/{{ question.total_count }} 个点达成</span></header>
+            <div class="point-list">
+              <details v-for="point in question.review_points" :key="point.point_id" :open="point.state === 'uncertain' || point.state === 'unreadable' || !point.state">
+                <summary><span>{{ point.content }}</span><em :class="`point-state is-${point.state || 'uncertain'}`">{{ stateLabel(point.state) }}{{ point.teacher_locked ? ' · 已锁定' : '' }}</em></summary>
+                <p v-if="point.evidence" class="point-evidence">{{ point.evidence }}</p>
+                <div class="point-review-form">
+                  <label>最终判定<select class="app-input" :value="editValue(question.task_item_code, point).state" :disabled="Boolean(busy)" @change="setEditField(question.task_item_code, point, 'state', $event)"><option value="met">已达成</option><option value="not_met">未达成</option><option value="uncertain">不确定</option><option value="unreadable">无法辨认</option></select></label>
+                  <label>教师核对依据<input class="app-input" :value="editValue(question.task_item_code, point).evidence" maxlength="500" :disabled="Boolean(busy)" @input="setEditField(question.task_item_code, point, 'evidence', $event)"></label>
+                  <label>锁定原因<input class="app-input" :value="editValue(question.task_item_code, point).reason" maxlength="500" :disabled="Boolean(busy)" @input="setEditField(question.task_item_code, point, 'reason', $event)"></label>
+                  <AppButton variant="secondary" :disabled="Boolean(busy)" @click="savePoint(question.task_item_code, point)">{{ busy === pointKey(question.task_item_code, point.point_id) ? '正在保存…' : '锁定此判定点' }}</AppButton>
+                </div>
+              </details>
             </div>
-            <span>
-              {{ question.met_count }}/{{ question.total_count }} 个点达成
-            </span>
-          </header>
-          <div class="point-list">
-            <details
-              v-for="point in question.review_points"
-              :key="point.point_id"
-              :open="point.state === 'uncertain' || point.state === 'unreadable' || !point.state"
-            >
-              <summary>
-                <span>{{ point.content }}</span>
-                <em :class="`point-state is-${point.state || 'uncertain'}`">
-                  {{ stateLabel(point.state) }}
-                  {{ point.teacher_locked ? ' · 教师已锁定' : '' }}
-                </em>
-              </summary>
-              <p v-if="point.evidence">{{ point.evidence }}</p>
-              <div class="point-review-form">
-                <label>
-                  最终判定
-                  <select
-                    :value="editValue(question.task_item_code, point).state"
-                    :disabled="Boolean(busy)"
-                    @change="setEditField(question.task_item_code, point, 'state', $event)"
-                  >
-                    <option value="met">已达成</option>
-                    <option value="not_met">未达成</option>
-                    <option value="uncertain">不确定</option>
-                    <option value="unreadable">无法辨认</option>
-                  </select>
-                </label>
-                <label>
-                  教师核对依据
-                  <input
-                    :value="editValue(question.task_item_code, point).evidence"
-                    maxlength="500"
-                    :disabled="Boolean(busy)"
-                    @input="setEditField(question.task_item_code, point, 'evidence', $event)"
-                  >
-                </label>
-                <label>
-                  锁定原因
-                  <input
-                    :value="editValue(question.task_item_code, point).reason"
-                    maxlength="500"
-                    :disabled="Boolean(busy)"
-                    @input="setEditField(question.task_item_code, point, 'reason', $event)"
-                  >
-                </label>
-                <button
-                  type="button"
-                  class="training-link"
-                  :disabled="Boolean(busy)"
-                  @click="savePoint(question.task_item_code, point)"
-                >
-                  {{ busy === pointKey(question.task_item_code, point.point_id) ? '正在保存…' : '锁定此判定点' }}
-                </button>
-              </div>
-            </details>
-          </div>
-        </li>
-      </ol>
-
-      <div class="ledger-publish">
-        <div>
-          <strong>更新学生掌握度</strong>
-          <p>确认后保存已完成题目的训练结果，并更新知识掌握度。不确定和无法辨认项保留待复核，不计作未达成。</p>
-        </div>
-        <div>
-          <button
-            type="button"
-            class="training-button"
-            :disabled="Boolean(busy) || !canPublish"
-            @click="syncEvidence('publish')"
-          >
-            {{ busy === 'publish' ? '正在更新…' : '确认并更新掌握度' }}
-          </button>
-          <button
-            v-if="feedback && feedback.status !== 'withdrawn'"
-            type="button"
-            class="training-link is-danger"
-            :disabled="Boolean(busy)"
-            @click="syncEvidence('withdraw')"
-          >
-            撤回本次证据
-          </button>
-        </div>
+          </li>
+        </ol>
+        <aside v-if="answerPage" class="answer-preview" aria-label="原始扫描答卷">
+          <header><strong>原始答卷</strong><a :href="answerPage.preview_url" target="_blank" rel="noopener">放大查看</a></header>
+          <a :href="answerPage.preview_url" target="_blank" rel="noopener"><img :src="answerPage.preview_url" :alt="`原始答卷第 ${answerPage.page_number} 页`"></a>
+          <nav aria-label="答卷页码"><button v-for="page in answerPages" :key="page.scan_page_id" type="button" :aria-pressed="page.scan_page_id === answerPage.scan_page_id" @click="selectedPageId = page.scan_page_id">第 {{ page.page_number }} 页</button></nav>
+        </aside>
       </div>
 
-      <section v-if="feedback" class="feedback-sheet" aria-label="学生训练反馈">
-        <header>
-          <div>
-            <span class="ledger-kicker">学生个人反馈</span>
-            <h6>{{ feedback.summary.message }}</h6>
-          </div>
-          <strong>
-            {{ feedback.summary.published_question_count }}/{{ feedback.summary.total_question_count }}
-            题已发布
-          </strong>
-        </header>
-
-        <button
-          v-if="feedback.status === 'publication_pending'"
-          type="button"
-          class="training-link"
-          :disabled="Boolean(busy)"
-          @click="replayEvidence"
-        >
-          {{ busy === 'replay' ? '正在补发…' : '安全补发未完成证据' }}
-        </button>
-
-        <div v-if="feedback.mastery_changes.length" class="mastery-strip">
-          <article
-            v-for="item in feedback.mastery_changes"
-            :key="String(item.stable_key)"
-          >
-            <strong>{{ masteryTitle(item) }}</strong>
-            <span>
-              {{ masteryValue(item, 'mastery_before') }}
-              <b aria-hidden="true">→</b>
-              {{ masteryValue(item, 'mastery_after') }}
-            </span>
-            <small>{{ String(item.reason || '') }}</small>
-          </article>
+      <section v-if="feedback" v-show="activeView === 'feedback'" class="feedback-sheet" aria-label="学生训练反馈">
+        <p v-if="!feedbackIsCurrent && feedback.status !== 'withdrawn'" class="feedback-message">判定已修改；以下为上次保存的反馈，请重新确认并更新掌握度。</p>
+        <header><h4>掌握度变化</h4><span>已保存 {{ feedback.summary.published_question_count }}/{{ feedback.summary.total_question_count }} 题证据</span><StatusBadge :tone="publishedCurrent ? 'success' : 'warning'" :label="feedback.status === 'withdrawn' ? '证据已撤回' : !feedbackIsCurrent ? '上次反馈' : feedback.status === 'complete' ? '已更新' : '部分更新'" /></header>
+        <p v-if="feedback.status !== 'complete'" class="feedback-message">{{ feedback.summary.message }}</p>
+        <AppButton v-if="feedback.status === 'publication_pending'" variant="secondary" :disabled="Boolean(busy)" @click="replayEvidence">{{ busy === 'replay' ? '正在补发…' : '安全补发未完成证据' }}</AppButton>
+        <div v-if="skillChanges.length" class="mastery-table">
+          <table><thead><tr><th>训练目标</th><th>训练前</th><th>训练后</th></tr></thead><tbody><tr v-for="item in skillChanges" :key="String(item.stable_key)"><td><details><summary>{{ masteryTitle(item) }}</summary><p>{{ String(item.display_name || '') }}</p><p>{{ String(item.reason || '') }}</p></details></td><td>{{ masteryValue(item, 'mastery_before') }}</td><td>{{ masteryValue(item, 'mastery_after') }}</td></tr></tbody></table>
         </div>
-
-        <div class="next-round-card">
-          <div>
-            <strong>下一轮：{{ feedback.next_round.status === 'draft' ? '草稿待确认' : '暂未生成草稿' }}</strong>
-            <p>{{ feedback.next_round.message }}</p>
-          </div>
-          <button
-            v-if="feedback.next_round.draft_id"
-            type="button"
-            class="training-button is-secondary"
-            @click="emit('openDraft', feedback.next_round.draft_id)"
-          >
-            打开下一轮草稿
-          </button>
-        </div>
-        <p class="feedback-safety">
-          下一轮不会自动冻结、打印或发送；只有教师确认后，才会生成正式训练卷。
-        </p>
+        <details v-if="aggregateChanges.length" class="aggregate-feedback"><summary>章节与小节汇总（{{ aggregateChanges.length }} 项）</summary><table><tbody><tr v-for="item in aggregateChanges" :key="String(item.stable_key)"><td><details><summary>{{ masteryTitle(item) }}</summary><p>{{ String(item.display_name || '') }}</p><p>{{ String(item.reason || '') }}</p></details></td><td>{{ masteryValue(item, 'mastery_before') }} → {{ masteryValue(item, 'mastery_after') }}</td></tr></tbody></table></details>
+        <div class="next-round-card"><div><strong>下一轮补练</strong><p>{{ feedback.next_round.message }}</p></div><AppButton v-if="feedback.next_round.draft_id" variant="primary" @click="emit('openDraft', feedback.next_round.draft_id)">打开下一轮草稿</AppButton></div>
+        <details v-if="feedback.status !== 'withdrawn'" class="feedback-maintenance"><summary>更正本次反馈</summary><AppButton variant="danger" :disabled="Boolean(busy)" @click="syncEvidence('withdraw')">撤回本次证据</AppButton></details>
       </section>
     </template>
-
-    <p v-if="message" class="training-notice">{{ message }}</p>
+    <p v-if="message && message !== assessment?.action_message" class="training-notice" role="status">{{ message }}</p>
     <p v-if="errorMessage" class="training-error" role="alert">{{ errorMessage }}</p>
   </section>
 </template>
 
 <style scoped>
-.assessment-ledger {
-  margin-top: 0.75rem;
-  padding: 0.85rem;
-  border: 1px solid var(--color-border-default);
-  border-left: 4px solid var(--color-success);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-subtle);
-}
-
-.ledger-heading,
-.question-ledger li > header,
-.ledger-publish,
-.feedback-sheet > header,
-.next-round-card {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.85rem;
-}
-
-.ledger-kicker {
-  display: block;
-  margin-bottom: 0.15rem;
-  color: var(--color-success);
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.assessment-ledger h5,
-.assessment-ledger h6,
-.assessment-ledger p {
-  margin: 0;
-}
-
-.ledger-status {
-  flex: 0 0 auto;
-}
-
-.ledger-start,
-.ledger-publish,
-.feedback-sheet {
-  margin-top: 0.75rem;
-}
-
-.ledger-start p,
-.ledger-action,
-.ledger-publish p,
-.feedback-sheet p,
-.point-list p {
-  color: var(--color-text-secondary);
-  font-size: 0.84rem;
-}
-
-.ledger-start .training-button {
-  margin-top: 0.65rem;
-}
-
-.ledger-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  margin-top: 0.7rem;
-}
-
-.ledger-summary span {
-  padding: 0.25rem 0.45rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: 4px;
-  background: var(--color-bg-surface);
-  color: var(--color-text-secondary);
-  font-size: 0.75rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.ledger-action,
-.ledger-recovery {
-  margin-top: 0.65rem !important;
-}
-
-.question-ledger {
-  display: grid;
-  gap: 0.65rem;
-  margin: 0.85rem 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.question-ledger > li {
-  padding: 0.7rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
-}
-
-.question-ledger header div,
-.point-list,
-.point-review-form {
-  display: grid;
-  gap: 0.45rem;
-}
-
-.question-ledger header small {
-  color: var(--color-text-muted);
-  font-size: 0.68rem;
-  letter-spacing: 0.04em;
-}
-
-.question-ledger header > span {
-  color: var(--color-success);
-  font-size: 0.8rem;
-  font-weight: 700;
-}
-
-.point-list {
-  margin-top: 0.55rem;
-}
-
-.point-list details {
-  padding-top: 0.45rem;
-  border-top: 1px dashed var(--color-border-default);
-}
-
-.point-list summary {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.65rem;
-  cursor: pointer;
-}
-
-.point-state {
-  color: var(--color-success);
-  font-size: 0.75rem;
-  font-style: normal;
-  font-weight: 700;
-}
-
-.point-state.is-uncertain,
-.point-state.is-unreadable {
-  color: var(--color-warning);
-}
-
-.point-review-form {
-  margin-top: 0.55rem;
-  padding: 0.65rem;
-  border-radius: calc(var(--radius) - 2px);
-  background: var(--color-bg-subtle);
-}
-
-.point-review-form label {
-  display: grid;
-  grid-template-columns: minmax(92px, 0.24fr) minmax(0, 1fr);
-  align-items: center;
-  gap: 0.55rem;
-  color: var(--color-text-secondary);
-  font-size: 0.78rem;
-}
-
-.point-review-form input,
-.point-review-form select {
-  min-width: 0;
-  padding: 0.42rem;
-}
-
-.ledger-publish {
-  padding: 0.75rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-success-subtle);
-}
-
-.ledger-publish > div:last-child {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 0.5rem;
-}
-
-.training-link.is-danger {
-  color: var(--color-danger);
-}
-
-.feedback-sheet {
-  padding: 0.8rem;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-warning-subtle);
-}
-
-.feedback-sheet h6 {
-  font-size: 0.95rem;
-}
-
-.feedback-sheet > header > strong {
-  color: var(--color-warning);
-  font-size: 0.8rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.mastery-strip {
-  display: grid;
-  gap: 0.45rem;
-  margin-top: 0.7rem;
-}
-
-.mastery-strip article {
-  display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) auto minmax(180px, 1.5fr);
-  align-items: center;
-  gap: 0.6rem;
-  padding-top: 0.45rem;
-  border-top: 1px solid var(--color-border-default);
-}
-
-.mastery-strip span {
-  font-variant-numeric: tabular-nums;
-}
-
-.mastery-strip b {
-  padding: 0 0.2rem;
-  color: var(--color-success);
-}
-
-.mastery-strip small {
-  color: var(--color-text-muted);
-}
-
-.next-round-card {
-  margin-top: 0.75rem;
-  padding-top: 0.7rem;
-  border-top: 2px solid var(--color-success);
-}
-
-.feedback-safety,
-.training-notice,
-.training-error {
-  margin-top: 0.65rem !important;
-}
-
-@media (max-width: 720px) {
-  .ledger-heading,
-  .question-ledger li > header,
-  .ledger-publish,
-  .feedback-sheet > header,
-  .next-round-card {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .point-list summary,
-  .point-review-form label,
-  .mastery-strip article {
-    grid-template-columns: 1fr;
-  }
-
-  .ledger-publish > div:last-child {
-    align-items: stretch;
-    flex-direction: column;
-  }
-}
+.assessment-ledger{min-width:0;padding:var(--space-5);background:var(--color-bg-surface)}
+.assessment-ledger h3,.assessment-ledger h4,.assessment-ledger p{margin:0}
+.assessment-ledger h3{font-size:var(--font-size-h3)}
+.ledger-heading,.feedback-sheet>header{display:flex;justify-content:space-between;align-items:center;gap:var(--space-3)}
+.ledger-heading>div{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--space-3)}
+.ledger-heading span,.feedback-sheet header>span{font-size:var(--font-size-dense);color:var(--color-text-secondary)}
+.ledger-tabs{display:flex;align-items:center;gap:var(--space-4);margin:var(--space-4) 0;border-bottom:1px solid var(--color-border-default)}
+.ledger-tabs>button{padding:var(--space-2) 0 var(--space-3);border:0;border-bottom:2px solid transparent;background:transparent;color:var(--color-text-secondary);font:inherit;font-size:var(--font-size-dense);cursor:pointer}
+.ledger-tabs>button[aria-pressed=true]{border-color:var(--color-accent);color:var(--color-accent);font-weight:600}
+.ledger-request{margin-left:auto;font-size:var(--font-size-caption);color:var(--color-text-muted);position:relative}
+.ledger-request summary{cursor:pointer}.ledger-request p{position:absolute;right:0;z-index:2;min-width:220px;padding:var(--space-3);background:var(--color-bg-surface);border:1px solid var(--color-border-default);border-radius:var(--radius-control);box-shadow:var(--shadow-floating)}
+.ledger-start{display:flex;justify-content:space-between;align-items:center;gap:var(--space-4);padding:var(--space-6) 0}
+.ledger-start p,.ledger-action,.feedback-message,.next-round-card p,.point-evidence{font-size:var(--font-size-dense);color:var(--color-text-secondary);line-height:var(--line-height-body)}
+.review-workspace{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--space-5);align-items:start}
+.review-workspace:has(.answer-preview){grid-template-columns:minmax(0,1.15fr) minmax(250px,.85fr)}
+.question-ledger{list-style:none;padding:0;margin:0;min-width:0}
+.question-ledger>li{padding:var(--space-3) 0;border-bottom:1px solid var(--color-border-default)}
+.question-ledger>li:first-child{padding-top:0}
+.question-ledger header{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);font-size:var(--font-size-dense)}
+.question-ledger header>span{color:var(--color-text-muted);font-variant-numeric:tabular-nums}
+.point-list details{margin-top:var(--space-2)}
+.point-list summary{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:var(--space-3);cursor:pointer;font-size:var(--font-size-dense);line-height:var(--line-height-body)}
+.point-list summary>span::before{content:'▸';display:inline-block;margin-right:var(--space-2);color:var(--color-text-muted)}.point-list details[open]>summary>span::before{content:'▾'}
+.point-state{font-style:normal;font-size:var(--font-size-caption);color:var(--color-success);white-space:nowrap}
+.point-state.is-not_met{color:var(--color-danger)}.point-state.is-uncertain,.point-state.is-unreadable{color:var(--color-warning)}
+.point-evidence{margin-top:var(--space-2)!important;padding:var(--space-2) var(--space-3);background:var(--color-bg-subtle);border-radius:var(--radius-control)}
+.point-review-form{display:grid;gap:var(--space-2);padding:var(--space-3);margin-top:var(--space-2);border:1px solid var(--color-border-subtle);border-radius:var(--radius-control)}
+.point-review-form label{display:grid;grid-template-columns:90px minmax(0,1fr);align-items:center;gap:var(--space-2);font-size:var(--font-size-dense);color:var(--color-text-secondary)}
+.point-review-form button{justify-self:end}
+.answer-preview{position:sticky;top:var(--space-4);min-width:0;border:1px solid var(--color-border-default);border-radius:var(--radius-control);overflow:hidden;background:var(--color-bg-subtle)}
+.answer-preview>header{display:flex;justify-content:space-between;align-items:center;padding:var(--space-3);font-size:var(--font-size-dense)}
+.answer-preview a{color:var(--color-accent)}
+.answer-preview img{display:block;width:100%;max-height:62vh;object-fit:contain;background:white}
+.answer-preview nav{display:flex;flex-wrap:wrap;gap:var(--space-2);padding:var(--space-3)}
+.answer-preview nav button{padding:var(--space-1) var(--space-2);border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface);font:inherit;font-size:var(--font-size-caption);cursor:pointer}
+.answer-preview nav button[aria-pressed=true]{background:var(--color-accent-subtle);color:var(--color-accent);border-color:var(--color-accent)}
+.ledger-publish{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);padding:0 0 var(--space-4);margin-bottom:var(--space-3);border-bottom:1px solid var(--color-border-default)}
+.ledger-publish>span{font-size:var(--font-size-dense);color:var(--color-text-secondary)}
+.ledger-publish small{display:block;color:var(--color-warning)}
+.feedback-sheet>header{flex-wrap:wrap;margin-bottom:var(--space-4)}
+.feedback-sheet h4{font-size:var(--font-size-h3)}
+.feedback-sheet header>span{margin-left:auto}
+.mastery-table,.aggregate-feedback{min-width:0;overflow-x:auto}
+.feedback-sheet table{width:100%;border-collapse:collapse;font-size:var(--font-size-dense)}
+.feedback-sheet th,.feedback-sheet td{padding:var(--space-3);text-align:left;border-bottom:1px solid var(--color-border-subtle)}
+.feedback-sheet th{color:var(--color-text-muted);font-weight:500;background:var(--color-bg-subtle)}
+.feedback-sheet td:nth-child(n+2){width:90px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.feedback-sheet td:nth-child(3){font-weight:600}
+.feedback-sheet td summary{cursor:pointer;line-height:var(--line-height-body)}
+.feedback-sheet td p{font-size:var(--font-size-caption);color:var(--color-text-secondary);margin-top:var(--space-2)}
+.aggregate-feedback{margin-top:var(--space-3);font-size:var(--font-size-dense);color:var(--color-text-secondary)}
+.aggregate-feedback>summary,.feedback-maintenance>summary{cursor:pointer}
+.next-round-card{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);margin-top:var(--space-5);padding-top:var(--space-4);border-top:1px solid var(--color-border-default)}
+.next-round-card p{margin-top:var(--space-1)}
+.feedback-maintenance{margin-top:var(--space-4);font-size:var(--font-size-caption);color:var(--color-text-muted)}
+.feedback-maintenance button{margin-top:var(--space-2)}
+.training-notice,.training-error{margin-top:var(--space-3)!important;font-size:var(--font-size-dense)}
+.training-error{color:var(--color-danger)}
+@media(max-width:1050px){.review-workspace:has(.answer-preview){grid-template-columns:minmax(0,1fr)}.answer-preview{position:static}.answer-preview img{max-height:48vh}}
+@media(max-width:760px){.assessment-ledger{padding:var(--space-4)}.ledger-heading,.ledger-start,.ledger-publish,.next-round-card{align-items:flex-start;flex-wrap:wrap}.point-list summary{gap:var(--space-2)}.feedback-sheet th,.feedback-sheet td{padding:var(--space-2)}.feedback-sheet td:nth-child(n+2){width:58px}.point-review-form label{grid-template-columns:1fr}.ledger-publish button{width:100%}}
 </style>

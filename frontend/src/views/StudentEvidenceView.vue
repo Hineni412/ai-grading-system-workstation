@@ -16,6 +16,7 @@ import {
   type StudentSummary,
 } from '../api/students'
 import AppButton from '../components/design-system/AppButton.vue'
+import WrongQuestionBookDialog from '../components/training/WrongQuestionBookDialog.vue'
 import QuestionContentRenderer from '../components/question-bank/QuestionContentRenderer.vue'
 import { loadEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
 import { useSessionStore } from '../stores/session'
@@ -86,6 +87,7 @@ const totalSessions = ref(0)
 const page = ref(1)
 const totalPages = ref(0)
 const onlyDeducted = ref(true)
+const exportDialogOpen = ref(false)
 const loadState = ref<'loading' | 'ready' | 'error'>('loading')
 const loadingMore = ref(false)
 const previewUrl = ref('')
@@ -384,6 +386,7 @@ function onPanelKeydown(event: KeyboardEvent): void {
 }
 
 function reloadSemester(): void {
+  exportDialogOpen.value = false
   if (curriculumScope.loadState !== 'ready') return
   sessions.value = []
   knowledgeSessions.value = []
@@ -423,8 +426,12 @@ onBeforeUnmount(() => {
         <button type="button" :class="{ 'is-active': onlyDeducted }" @click="toggleDeducted(true)">只看错题</button>
         <button type="button" :class="{ 'is-active': !onlyDeducted }" @click="toggleDeducted(false)">全部作答</button>
       </div>
+      <AppButton :disabled="!student || !curriculumScope.selectedVolumeId" @click="exportDialogOpen = true">导出错题本</AppButton>
       <span v-if="loadState === 'ready'">共 {{ totalSessions }} 场考试</span>
     </div>
+
+    <WrongQuestionBookDialog v-if="exportDialogOpen && student && curriculumScope.selectedVolumeId"
+      :student="student" :volume-id="curriculumScope.selectedVolumeId" @close="exportDialogOpen = false" />
 
     <p v-if="loadState === 'loading'" class="status-card">正在读取学生的作答证据……</p>
     <div v-else-if="loadState === 'error'" class="status-card error" role="alert">

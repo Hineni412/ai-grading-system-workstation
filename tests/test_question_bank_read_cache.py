@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -92,5 +94,64 @@ def test_uncommitted_writer_does_not_block_or_leak_into_reads(
 
         writer.commit()
         assert set(read_titles()) == {"Paper", "Uncommitted"}
+    finally:
+        writer.close()
+
+
+def test_empty_wal_read_version_noise_keeps_cache_and_real_commits_refresh(tmp_path, monkeypatch):
+    from integration import data_generation
+
+    database = tmp_path / "TEST-cache-generation.db"
+    _seed_paper(database)
+    original_open = data_generation._GenerationMonitor._open
+
+    class ReadVersionNoise:
+        """Reproduce repeated read-only data_version bumps seen on this PC."""
+        def __init__(self, connection):
+            self.connection = connection
+            self.reads = 0
+
+        def execute(self, statement, *args):
+            result = self.connection.execute(statement, *args)
+            wal = Path(f"{database}-wal")
+            if statement == "PRAGMA data_version" and (not wal.exists() or wal.stat().st_size == 0):
+                value = result.fetchone()[0]
+                self.reads += 1
+                return SimpleNamespace(fetchone=lambda: (value + self.reads,))
+            return result
+
+        def close(self):
+            self.connection.close()
+
+    monkeypatch.setattr(data_generation._GenerationMonitor, "_open",
+                        lambda monitor: ReadVersionNoise(original_open(monitor)))
+    first = data_generation.commit_generation(database)
+    assert [data_generation.commit_generation(database) for _ in range(6)] == [first] * 6
+    service = QuestionBankReadService(database)
+    assert [paper["title"] for paper in service.list_papers()] == ["Paper"]
+    cache_keys = tuple(read_module._READ_RESULT_CACHE)
+    assert service.list_papers()[0]["title"] == "Paper"
+    assert tuple(read_module._READ_RESULT_CACHE) == cache_keys
+
+    writer = sqlite3.connect(database)
+    try:
+        writer.execute("UPDATE papers SET title='TEST-committed' WHERE id=1")
+        assert service.list_papers()[0]["title"] == "Paper"
+        writer.commit()
+        assert data_generation.commit_generation(database) > first
+        assert service.list_papers()[0]["title"] == "TEST-committed"
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        settled = data_generation.commit_generation(database)
+        assert [data_generation.commit_generation(database) for _ in range(6)] == [settled] * 6
+
+        # A whole commit/checkpoint cycle between polls must also refresh,
+        # including when the filesystem timestamp is kept unchanged.
+        state = database.stat()
+        writer.execute("UPDATE papers SET title='TEST-second' WHERE id=1")
+        writer.commit()
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        os.utime(database, ns=(state.st_atime_ns, state.st_mtime_ns))
+        assert data_generation.commit_generation(database) > settled
+        assert service.list_papers()[0]["title"] == "TEST-second"
     finally:
         writer.close()

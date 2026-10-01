@@ -20,6 +20,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +114,7 @@ class TrainingPrewarmWorker:
         self._thread: threading.Thread | None = None
         self._seen_generations: tuple[int, int] | None = None
         self._startup_done = False
+        self._seen_day: str | None = None
         self.batches: list[tuple[int, float]] = []
 
     def start(self) -> None:
@@ -146,7 +148,8 @@ class TrainingPrewarmWorker:
             commit_generation(Path(self._paths.db_path)),
             commit_generation(Path(self._paths.qb_db_path)),
         )
-        if self._startup_done and generations == self._seen_generations:
+        day = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+        if self._startup_done and generations == self._seen_generations and day == self._seen_day:
             return False
         if self._jobs_active():
             return False
@@ -154,6 +157,7 @@ class TrainingPrewarmWorker:
         if not tasks:
             self._seen_generations = generations
             self._startup_done = True
+            self._seen_day = day
             return False
         started = time.monotonic()
         completed = 0
@@ -177,6 +181,7 @@ class TrainingPrewarmWorker:
         if not interrupted:
             self._seen_generations = generations
             self._startup_done = True
+            self._seen_day = day
         return True
 
     def _jobs_active(self) -> bool:
@@ -381,6 +386,9 @@ class TrainingPrewarmWorker:
 
         with request_read_context(self._paths) as ctx:
             service = ctx.diagnosis_service
+            # Only the existing idle background refresher writes derived local
+            # profiles. Foreground recommendation requests remain read-only.
+            service.persist_snapshots = True
             if kind == "overview":
                 overview_payload(
                     service,

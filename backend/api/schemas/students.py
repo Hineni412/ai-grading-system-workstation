@@ -5,6 +5,26 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
+class WrongQuestionBookPreviewRequest(BaseModel):
+    curriculum_volume_id: str = Field(min_length=1, max_length=100)
+    include_class: bool = False
+    session_ids: list[int] | None = None
+
+
+class WrongQuestionBookSubmitRequest(BaseModel):
+    curriculum_volume_id: str = Field(min_length=1, max_length=100)
+    student_ids: list[int] = Field(min_length=1)
+    session_ids: list[int] = Field(min_length=1)
+    client_request_token: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+    @field_validator("student_ids", "session_ids")
+    @classmethod
+    def _positive_ids(cls, values: list[int]) -> list[int]:
+        if any(value <= 0 for value in values):
+            raise ValueError("IDs must be positive")
+        return sorted(set(values))
+
+
 class StudentUpsertItem(BaseModel):
     student_code: str
     name: str

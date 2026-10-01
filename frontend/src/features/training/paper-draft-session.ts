@@ -4,6 +4,7 @@ export interface PaperDraftSession {
   fingerprint: string
   draftId: string
   requestToken?: string
+  handoutRequestToken?: string
 }
 
 export function loadPaperDraftSession(): PaperDraftSession | null {
@@ -19,7 +20,7 @@ export function loadPaperDraftSession(): PaperDraftSession | null {
     ) {
       return null
     }
-    return { fingerprint: parsed.fingerprint, draftId: parsed.draftId, requestToken: parsed.requestToken }
+    return { fingerprint: parsed.fingerprint, draftId: parsed.draftId, requestToken: parsed.requestToken, handoutRequestToken: /^[0-9a-f]{32}$/.test(parsed.handoutRequestToken ?? '') ? parsed.handoutRequestToken : undefined }
   } catch {
     return null
   }

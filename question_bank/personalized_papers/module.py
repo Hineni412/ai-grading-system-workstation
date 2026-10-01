@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from question_bank.atomic_files import replace_with_retry
+
 import hashlib
 import hmac
 import json
@@ -11,9 +13,10 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
-import time
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,6 +54,7 @@ from .rendering import (
     inspect_docx,
     page_signature,
     pdf_page_count,
+    prepare_identity_font,
     render_review_docx,
     stamp_frozen_pdf,
 )
@@ -69,6 +73,10 @@ _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _INSTANCE_PATTERN = _HASH_PATTERN
 _LOCKS_GUARD = threading.Lock()
 _LOCKS: dict[str, threading.Lock] = {}
+# WPS/Word COM conversion can share an application process. LaTeX runs in
+# separate temporary directories; only the Office fallback must stay serial.
+_PDF_CONVERSION_LOCK = threading.Lock()
+_PDF_FINALIZE_LOCK = threading.Lock()
 _MATH_RUN = re.compile(r"\$\$(.+?)\$\$|\$(.+?)\$", re.DOTALL)
 _GOVERNED_IMAGE_REFERENCE = re.compile(r"^sha256:([0-9a-f]{64})$")
 
@@ -286,6 +294,8 @@ class PersonalizedPaperModule:
                     command.expected_draft_revision,
                     int(draft["revision"]),
                 )
+            if draft.get("config", {}).get("purpose", "training") != "training":
+                raise PaperInvalid("讲义不能创建可回收训练卷，请重新生成训练卷草稿。")
             student = _student_from_draft(draft, command.student_id)
             if not student.get("items"):
                 raise PaperInvalid(
@@ -436,6 +446,8 @@ class PersonalizedPaperModule:
         paper_instance_id: str,
         *,
         command: CreatePaperCommand,
+        pdf_converter: PdfConversionAdapter | None = None,
+        identity_font_buffer: bytes | None = None,
     ) -> dict[str, Any]:
         """Freeze the freshly rendered review DOCX without a teacher upload."""
         row = self._instance_row(paper_instance_id)
@@ -478,6 +490,8 @@ class PersonalizedPaperModule:
                 publish_source=False,
                 command=freeze_command,
                 fingerprint=fingerprint,
+                pdf_converter=pdf_converter,
+                identity_font_buffer=identity_font_buffer,
             )
 
     def _convert_and_commit_frozen(
@@ -490,7 +504,10 @@ class PersonalizedPaperModule:
         publish_source: bool,
         command: FreezePaperCommand,
         fingerprint: str,
+        pdf_converter: PdfConversionAdapter | None = None,
+        identity_font_buffer: bytes | None = None,
     ) -> dict[str, Any]:
+        converter = pdf_converter or self.pdf_converter
         clean_id = str(row["paper_instance_id"])
         snapshot = json.loads(str(row["snapshot_json"]))
         items = _snapshot_items(snapshot)
@@ -530,7 +547,8 @@ class PersonalizedPaperModule:
                         f"{type(exc).__name__}: {exc}"[:200]
                     )
                     try:
-                        self.pdf_converter.convert(source_docx, converted)
+                        with _PDF_CONVERSION_LOCK:
+                            converter.convert(source_docx, converted)
                     except (
                         OSError,
                         subprocess.SubprocessError,
@@ -541,21 +559,22 @@ class PersonalizedPaperModule:
                         ) from convert_exc
             else:
                 try:
-                    self.pdf_converter.convert(source_docx, converted)
+                    with _PDF_CONVERSION_LOCK:
+                        converter.convert(source_docx, converted)
                 except (OSError, subprocess.SubprocessError, PaperRenderError) as exc:
                     raise PaperRenderUnavailable(
                         "reviewed DOCX could not be converted to PDF"
                     ) from exc
-            pages = pdf_page_count(converted)
-            if not publish_source and pages % 2 == 1:
-                # 直接出卷按一张 A4 双面印制：奇数页时追加一页演算草稿区
-                # 凑满双面；草稿页随后与其余页面一起盖章。教师上传的审阅
-                # 稿保持原样，不替教师改版面。
-                padded = temporary_path / "padded.pdf"
-                append_scratch_page(converted, padded)
-                converted = padded
+            with _PDF_FINALIZE_LOCK:
                 pages = pdf_page_count(converted)
-                render_info["scratch_page_added"] = True
+                if not publish_source and pages % 2 == 1:
+                    # 直接出卷按一张 A4 双面印制：奇数页时追加演算草稿区。
+                    # 教师上传的审阅稿保持原来的版面。
+                    padded = temporary_path / "padded.pdf"
+                    append_scratch_page(converted, padded, identity_font_buffer=identity_font_buffer)
+                    converted = padded
+                    pages = pdf_page_count(converted)
+                    render_info["scratch_page_added"] = True
             final_budget = _paper_budget(
                 items,
                 context_window_tokens=int(
@@ -569,19 +588,21 @@ class PersonalizedPaperModule:
             if final_budget["status"] != "ready":
                 raise PaperBudgetExceeded(final_budget)
             stamped = temporary_path / "frozen.pdf"
-            page_rows = stamp_frozen_pdf(
-                converted,
-                stamped,
-                paper_instance_id=clean_id,
-                paper_batch_id=str(row["paper_batch_id"]),
-                series_version=int(row["series_version"]),
-                student_name=str(row["student_name_snapshot"] or ""),
-                student_code=str(row["student_code_snapshot"] or ""),
-                class_id=str(row["class_id_snapshot"] or ""),
-                signing_secret=str(row["signing_secret"]),
-                reviewed_docx_sha256=reviewed_hash,
-                layout_version=str(row["layout_version"]),
-            )
+            with _PDF_FINALIZE_LOCK:
+                page_rows = stamp_frozen_pdf(
+                    converted,
+                    stamped,
+                    paper_instance_id=clean_id,
+                    paper_batch_id=str(row["paper_batch_id"]),
+                    series_version=int(row["series_version"]),
+                    student_name=str(row["student_name_snapshot"] or ""),
+                    student_code=str(row["student_code_snapshot"] or ""),
+                    class_id=str(row["class_id_snapshot"] or ""),
+                    signing_secret=str(row["signing_secret"]),
+                    reviewed_docx_sha256=reviewed_hash,
+                    layout_version=str(row["layout_version"]),
+                    identity_font_buffer=identity_font_buffer,
+                )
             pdf_hash = _file_sha256(stamped)
             pdf_relative = self._relative_artifact(
                 clean_id,
@@ -715,6 +736,8 @@ class PersonalizedPaperModule:
             raise PaperRevisionConflict(
                 int(expected_draft_revision), int(draft["revision"])
             )
+        if draft.get("config", {}).get("purpose", "training") != "training":
+            raise PaperInvalid("讲义不能创建可回收训练卷，请重新生成训练卷草稿。")
         available = {
             str(item.get("student_id") or ""): item
             for item in _mappings(draft.get("students"))
@@ -746,8 +769,6 @@ class PersonalizedPaperModule:
                 "actor_ref": actor_ref,
             }),
         )
-        created: list[dict[str, Any]] = []
-        failed: list[dict[str, str]] = []
         with connect(self.db_path) as connection:
             saved_items = connection.execute(
                 """
@@ -756,25 +777,26 @@ class PersonalizedPaperModule:
                 """,
                 (batch_run_id,),
             ).fetchall()
-        for saved in saved_items:
+        identity_font_buffer = None
+        if direct_freeze:
+            with _PDF_FINALIZE_LOCK:
+                identity_font_buffer = prepare_identity_font("".join(
+                    str(available.get(sid, {}).get(field) or "")
+                    for sid in targets for field in ("student_name", "student_code", "class_id")
+                ))
+        def create_item(saved: Mapping[str, Any]) -> None:
             if self._batch_is_cancelled(batch_run_id):
-                break
+                return
             student_id = str(saved["student_id"])
             if str(saved["status"]) == "succeeded":
-                created.append(self._get_ready(str(saved["paper_instance_id"])))
-                continue
+                return
             if str(saved["status"]) == "failed":
-                failed.append({
-                    "student_id": student_id,
-                    "error_code": str(saved["error_code"]),
-                })
-                continue
+                return
             self._start_batch_item(batch_run_id, student_id)
             if student_id not in available:
                 failure = {"student_id": student_id, "error_code": "student_not_in_draft"}
-                failed.append(failure)
                 self._finish_batch_item(batch_run_id, **failure)
-                continue
+                return
             per_student_token = hashlib.sha256(
                 f"{clean_token}:{student_id}".encode("utf-8")
             ).hexdigest()[:32]
@@ -822,8 +844,9 @@ class PersonalizedPaperModule:
                         instance = self._freeze_rendered(
                             str(instance["paper_instance_id"]),
                             command=per_student_command,
+                            pdf_converter=batch_converter,
+                            identity_font_buffer=identity_font_buffer,
                         )
-                created.append(instance)
                 self._finish_batch_item(
                     batch_run_id,
                     student_id=student_id,
@@ -840,8 +863,20 @@ class PersonalizedPaperModule:
                     "student_id": student_id,
                     "error_code": type(exc).__name__,
                 }
-                failed.append(failure)
                 self._finish_batch_item(batch_run_id, **failure)
+        # Submit one bounded wave at a time so cancellation leaves later
+        # students pending. Every worker retains its own source/revision check,
+        # identity, recovery event and per-student transaction.
+        converter_session = (
+            self.pdf_converter.batch_session()
+            if direct_freeze and isinstance(self.pdf_converter, OfficePdfConverter)
+            else nullcontext(self.pdf_converter)
+        )
+        with converter_session as batch_converter, ThreadPoolExecutor(max_workers=4, thread_name_prefix="training-paper") as pool:
+            for start in range(0, len(saved_items), 4):
+                if self._batch_is_cancelled(batch_run_id):
+                    break
+                list(pool.map(create_item, [dict(row) for row in saved_items[start:start + 4]]))
         self._fail_missing_batch_artifacts(batch_run_id)
         created, failed = self._batch_results(batch_run_id)
         downloads = self._publish_review_batch(
@@ -2620,27 +2655,15 @@ def _atomic_write_bytes(destination: Path, payload: bytes) -> None:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        _replace_with_retry(temporary, destination)
+        replace_with_retry(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
 
 
-def _replace_with_retry(source: Path, destination: Path) -> None:
-    # Windows file scanners can hold a freshly written file open briefly;
-    # retry the atomic rename a few times before giving up.
-    for attempt in range(12):
-        try:
-            os.replace(source, destination)
-            return
-        except PermissionError:
-            if attempt == 11:
-                raise
-            time.sleep(min(0.05 * (attempt + 1), 0.4))
-
 
 def _atomic_publish(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    _replace_with_retry(source, destination)
+    replace_with_retry(source, destination)
 
 
 def _file_sha256(path: Path) -> str:

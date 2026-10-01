@@ -122,6 +122,12 @@ def public_job_detail(job: JobRecord) -> str:
 
 
 def public_job_result(job: JobRecord) -> dict[str, Any]:
+    if job.job_type == "personalized_handout_export":
+        result = {key: job.result[key] for key in ("format", "question_count", "paper_count") if key in job.result}
+        if job.status == "succeeded" and str(job.result.get("file_path") or "").strip():
+            result["filename"] = _safe_filename(job.result.get("filename"))
+            result["download_url"] = f"/api/jobs/{job.id}/download"
+        return result
     if job.job_type.startswith("workspace_ai."):
         allowed = ("task_id", "status")
         return sanitize_public_mapping(
@@ -148,6 +154,14 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             )
             if filename:
                 result["filename"] = filename
+            result["download_url"] = f"/api/jobs/{job.id}/download"
+        return sanitize_public_mapping(result)
+    if job.job_type == "wrong_question_export":
+        result = {key: job.result[key] for key in (
+            "generated_students", "empty_students", "failed_students", "missing_items", "question_count",
+        ) if key in job.result}
+        if job.status == "succeeded" and job.result.get("file_path"):
+            result["filename"] = _safe_filename(job.result.get("filename"))
             result["download_url"] = f"/api/jobs/{job.id}/download"
         return sanitize_public_mapping(result)
     if job.job_type == "assembly_export":
@@ -351,6 +365,8 @@ def public_job_error(job: JobRecord) -> str | None:
 
 
 def public_job_payload(job: JobRecord) -> dict[str, Any]:
+    if job.job_type == "personalized_handout_export":
+        return {key: job.payload[key] for key in ("draft_id", "expected_revision", "client_request_token") if key in job.payload}
     if job.job_type.startswith("workspace_ai."):
         task_id = job.payload.get("task_id")
         return sanitize_public_mapping(
@@ -556,6 +572,8 @@ def submit_job(
         "tagging_sync",
         "taxonomy_suggestion",
         "assembly_export",
+        "wrong_question_export",
+        "personalized_handout_export",
         "ops_backup",
         "ops_restore_prepare",
         "ops_migration_prepare",

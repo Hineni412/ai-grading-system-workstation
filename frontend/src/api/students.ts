@@ -1,5 +1,55 @@
 import { apiClient } from './client'
+import { decodeJobResponse, type JobResponse } from './jobs'
 import { isNullableString, isRecord } from './validation'
+
+export interface WrongQuestionMissingItem {
+  student_id: number
+  student_name: string
+  session_id: number
+  session_name: string
+  question_id: string
+}
+
+export interface WrongQuestionBookPreview {
+  students: StudentSummary[]
+  sessions: Array<{ session_id: number; session_name: string; exam_created_at: string | null }>
+  session_ids: number[]
+  semester_label: string
+  question_count: number
+  missing_items: WrongQuestionMissingItem[]
+}
+
+function decodeWrongQuestionPreview(value: unknown): WrongQuestionBookPreview {
+  if (!isRecord(value) || !Array.isArray(value.students) || !value.students.every(isStudentSummary)
+    || !Array.isArray(value.sessions) || !value.sessions.every(item => isRecord(item)
+      && isInteger(item.session_id, 1) && typeof item.session_name === 'string' && isNullableString(item.exam_created_at))
+    || !Array.isArray(value.session_ids) || !value.session_ids.every(id => isInteger(id, 1))
+    || typeof value.semester_label !== 'string' || !isInteger(value.question_count, 0)
+    || !Array.isArray(value.missing_items) || !value.missing_items.every(item => isRecord(item)
+      && isInteger(item.student_id, 1) && typeof item.student_name === 'string'
+      && isInteger(item.session_id, 1) && typeof item.session_name === 'string' && typeof item.question_id === 'string')) {
+    throw new Error('Invalid wrong question book preview')
+  }
+  return value as unknown as WrongQuestionBookPreview
+}
+
+export function previewWrongQuestionBook(studentId: number, body: {
+  curriculum_volume_id: string; include_class: boolean; session_ids?: number[]
+}, signal?: AbortSignal): Promise<WrongQuestionBookPreview> {
+  return apiClient.request(`/api/students/${studentId}/wrong-question-book/preview`, {
+    method: 'POST', body, decode: decodeWrongQuestionPreview, signal,
+  })
+}
+
+export function submitWrongQuestionBooks(body: {
+  curriculum_volume_id: string; student_ids: number[]; session_ids: number[]; client_request_token: string
+}): Promise<JobResponse> {
+  return apiClient.request('/api/students/wrong-question-books', { method: 'POST', body, decode: decodeJobResponse })
+}
+
+export function findWrongQuestionBookRequest(token: string): Promise<JobResponse> {
+  return apiClient.request(`/api/students/wrong-question-books/by-request/${token}`, { decode: decodeJobResponse })
+}
 
 export interface StudentSummary {
   id: number

@@ -21,6 +21,7 @@ const props = defineProps<{
   title: string
   description: string
   selectionKind?: 'targets' | 'range'
+  compactRange?: boolean
 }>()
 const emit = defineEmits<{
   'update:modelValue': [keys: string[]]
@@ -35,6 +36,7 @@ const selectedCountLabel = computed(() => (
 ))
 
 const activeRootKey = ref('')
+const showDetailedStructure = ref(false)
 const expandedSectionKeys = ref<string[]>([])
 const showEmptyPoints = ref(true)
 const structureElement = ref<HTMLElement | null>(null)
@@ -248,6 +250,16 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
 
 <template>
   <section ref="structureElement" class="knowledge-structure" aria-labelledby="training-structure-title">
+    <div v-if="compactRange" class="compact-training-range">
+      <header><h3>章节与小节</h3><span>{{ selectedCountLabel }}</span></header>
+      <p>综合训练覆盖已学章节；专项训练仅使用勾选范围。</p>
+      <div class="compact-range-layout">
+        <nav aria-label="训练章节"><div v-for="root in tree" :key="root.key" :class="{ 'is-current': activeRoot?.key === root.key }"><input type="checkbox" :aria-label="`将${knowledgeLeafLabel(root.label)}加入训练范围`" :checked="modelValue.includes(root.key)" @change="toggleTarget(root.key)"><button type="button" :title="root.label" @click="activeRootKey = root.key">{{ root.label.split(/[|｜]/).slice(1).join('｜') || root.label }}<small>{{ masteryText(root) }}</small></button></div></nav>
+        <div v-if="activeRoot" class="compact-range-sections"><h4>{{ knowledgeLeafLabel(activeRoot.label) }}</h4><label v-for="section in activeRoot.children" :key="section.key"><input type="checkbox" :checked="modelValue.includes(section.key)" @change="toggleTarget(section.key)"><span>{{ knowledgeLeafLabel(section.label) }}</span><small>{{ masteryText(section) }}</small></label><p v-if="!activeRoot.children.length">勾选左侧章节即可纳入训练范围。</p></div>
+      </div>
+      <button type="button" class="compact-range-details" :aria-expanded="showDetailedStructure" @click="showDetailedStructure = !showDetailedStructure">{{ showDetailedStructure ? '收起知识与技能明细' : '查看知识与技能明细' }}</button>
+    </div>
+    <div v-show="!compactRange || showDetailedStructure">
     <header>
       <div>
         <p class="structure-eyebrow">{{ selectionKind === 'range' ? '先圈定章或小节，系统按每人的实际失分匹配知识与技能' : '查看知识与技能，选择训练目标' }}</p>
@@ -386,6 +398,7 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
       </div>
     </div>
     <p v-else class="structure-empty">当前范围没有可展示的知识结构。</p>
+    </div>
   </section>
 </template>
 
@@ -454,4 +467,19 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
   .structure-track, .structure-point > small { grid-column: 2 / -1; }
 }
 @media (max-width: 500px) { .structure-layout > nav { grid-template-columns: 1fr; } }
+.compact-training-range{padding:var(--space-4)}
+.compact-training-range>header{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3)}
+.compact-training-range h3,.compact-training-range h4{margin:0;font-size:var(--font-size-h3)}
+.compact-training-range>p,.compact-training-range header>span{font-size:var(--font-size-dense);color:var(--color-text-secondary)}
+.compact-range-layout{display:grid;grid-template-columns:210px minmax(0,1fr);gap:var(--space-4);margin-top:var(--space-4)}
+.compact-range-layout nav{display:grid;align-content:start;gap:var(--space-1);border-right:1px solid var(--color-border-default);padding-right:var(--space-3)}
+.compact-range-layout nav>div{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2);border-radius:var(--radius-control)}
+.compact-range-layout nav>div.is-current{background:var(--color-accent-subtle)}
+.compact-range-layout nav button{flex:1;text-align:left;border:0;background:transparent;cursor:pointer;font:inherit;font-size:var(--font-size-dense)}
+.compact-range-layout nav small{display:block;margin-top:var(--space-1);color:var(--color-text-muted)}
+.compact-range-sections h4{margin-bottom:var(--space-3)}
+.compact-range-sections label{display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3) 0;border-bottom:1px solid var(--color-border-subtle);font-size:var(--font-size-dense)}
+.compact-range-sections small{margin-left:auto;color:var(--color-text-muted);font-variant-numeric:tabular-nums}
+.compact-range-details{margin-top:var(--space-4);border:0;background:transparent;color:var(--color-accent);font:inherit;font-size:var(--font-size-dense);cursor:pointer;padding:0}
+@media(max-width:760px){.compact-range-layout{grid-template-columns:minmax(0,1fr)}.compact-range-layout nav{border-right:0;border-bottom:1px solid var(--color-border-default);padding:0 0 var(--space-3)}}
 </style>

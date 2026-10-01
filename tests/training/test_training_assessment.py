@@ -692,3 +692,20 @@ def test_next_round_token_matches_legacy_frozen_request(
     stored_request = json.loads(str(stored["request_json"]))
     assert stored_request["graded_activities"] == activities
     assert "_graded_activities" not in stored_request["diagnosis"]
+    inherited_config = PersonalizedRecommendationConfig(question_count=8, expected_minutes=120,
+        max_questions_per_skill=3, max_written_questions=5, difficulty_max=10, recent_activity_count=20).to_dict()
+    inherited_recent = {"SYN-001": [3]}
+    inherited = publisher._next_round({**context, "diagnosis": diagnosis, "graded_activities": activities,
+        "recommendation_config": inherited_config, "recent_question_ids": inherited_recent},
+        evidence_version="ev-2", actor_ref="synthetic", mastery_changes=[], publication_pending=False)
+    assert inherited["status"] == "draft", inherited
+    with connect(db_path) as connection:
+        saved = json.loads(connection.execute(
+            "SELECT request_json FROM personalized_recommendation_drafts WHERE draft_id=?",
+            (inherited["draft_id"],)).fetchone()[0])
+    for field in ("purpose", "max_questions_per_skill", "max_written_questions", "difficulty_max", "recent_activity_count"):
+        assert saved["config"][field] == inherited_config[field]
+    # A new draft calculates its own window. This unmarked synthetic paper
+    # has no completed activity, so the old frozen set must not be copied.
+    assert saved["recent_question_ids"] == {"SYN-001": []}
+    assert saved["graded_activities"] == activities

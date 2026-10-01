@@ -1090,6 +1090,10 @@ class TrainingEvidencePublisher:
                 **{
                     field: config_payload[field]
                     for field in (
+                        "purpose",
+                        "max_questions_per_skill",
+                        "max_written_questions",
+                        "recent_activity_count",
                         "question_count",
                         "expected_minutes",
                         "difficulty_min",
@@ -1122,6 +1126,9 @@ class TrainingEvidencePublisher:
                     "diagnosis": token_diagnosis,
                 }
             )[:32]
+            # A new round keeps the frozen exam scope, but recomputes the
+            # activity window so this just-graded training is excluded too.
+            # Only edits of the same draft reuse its frozen exclusion set.
             draft = PersonalizedRecommendationModule(
                 db_path=self.db_path,
                 data_root=self.data_root,
@@ -1133,6 +1140,7 @@ class TrainingEvidencePublisher:
                 config=config,
                 actor_ref=actor_ref,
                 graded_activities=graded_activities,
+                completed_paper_instance_id=context.get("paper_instance_id"),
             )
         except Exception:
             return {
@@ -1291,6 +1299,7 @@ class TrainingEvidencePublisher:
             "diagnosis": request.get("diagnosis"),
             "graded_activities": request.get("graded_activities"),
             "recommendation_config": request.get("config"),
+            "recent_question_ids": request.get("recent_question_ids"),
             "items": items,
         }
 

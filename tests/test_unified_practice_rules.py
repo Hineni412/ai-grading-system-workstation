@@ -263,7 +263,8 @@ def test_replacement_releases_old_skill_slot_but_cannot_add_a_second(replaced_qi
     from tests.training.test_personalized_recommendation import _selection_candidate
     candidates = [_selection_candidate(q, '', key='sk_a' if q in (1,4) else f'sk_{q}') for q in (1, 2, 3, 4)]
     target = {'stable_key': 'sk_a', 'source_question_refs': []}
-    draft = {'revision': 1, 'students': [{'student_id': 'A', 'warnings': [], 'items': [
+    draft = {'revision': 1, 'config': PersonalizedRecommendationConfig().to_dict(),
+             'students': [{'student_id': 'A', 'warnings': [], 'items': [
         {'question_id': q, 'item_id': str(q), 'slot': q, 'item_order': q, 'stage': 'direct',
          'selection_kind': 'direct', 'matched_key': 'sk_a', 'target': target, 'locked': False,
          'difficulty': 5, 'replacement_history': []} for q in (1, 2, 3)]}]}

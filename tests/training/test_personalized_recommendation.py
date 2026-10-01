@@ -789,6 +789,7 @@ def test_current_full_score_does_not_resurrect_historical_loss(direct_module):
 
 def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
     direct_module,
+    monkeypatch,
 ):
     from backend.api.app import create_app
     from backend.api.dependencies import (
@@ -858,11 +859,47 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
         "curriculum_volume_id": "bnu24-math-g8-upper",
     }
     settings = {"scope_keys": [BNU_CHAPTER4], "question_count": 10, "difficulty_max": 7}
+    metadata_reads = []
+    original_metadata = direct_module._source_practice_metadata
+
+    def read_metadata(diagnosis):
+        metadata_reads.append(len(diagnosis["students"]))
+        return original_metadata(diagnosis)
+
+    monkeypatch.setattr(direct_module, "_source_practice_metadata", read_metadata)
+    eligibility_reads = []
+    original_eligible = direct_module._eligible_candidates
+
+    def read_eligible(*args, **kwargs):
+        eligibility_reads.append(1)
+        return original_eligible(*args, **kwargs)
+
+    monkeypatch.setattr(direct_module, "_eligible_candidates", read_eligible)
     response = client.post(
         "/api/training/diagnosis",
         json={"scope": {"mode": "all"}, "exam_scope": exams, "grouping": settings},
     )
     assert response.status_code == 200, response.text
+    # Each group reuses the source snapshot covering the full selected roster.
+    assert metadata_reads == [len(source["students"])]
+    cached_eligibility_reads = len(eligibility_reads)
+    assert cached_eligibility_reads < len(source["students"])
+    original_entries = direct_module._candidate_entries
+
+    def entries_without_reuse(**kwargs):
+        kwargs.update(source_part_cache=None, target_match_cache=None, source_links=None, eligibility_cache=None)
+        return original_entries(**kwargs)
+
+    with monkeypatch.context() as uncached:
+        uncached.setattr(direct_module, "_candidate_entries", entries_without_reuse)
+        baseline = client.post(
+            "/api/training/diagnosis",
+            json={"scope": {"mode": "all"}, "exam_scope": exams, "grouping": settings},
+        )
+    # Reuse must preserve all members, per-student suitability and source versions.
+    assert baseline.status_code == 200, baseline.text
+    assert baseline.json() == response.json()
+    assert len(eligibility_reads) - cached_eligibility_reads > cached_eligibility_reads
     group = next(
         group
         for group in response.json()["grouping"]["groups"]
@@ -1486,3 +1523,387 @@ def test_printed_duplicates_are_excluded_from_generation_and_replacement(
             ),
         )
     assert direct_module.get(draft["draft_id"]) == draft
+
+
+def test_adjustable_rules_and_legacy_defaults(direct_module):
+    from question_bank.recommendation.personalized import (
+        _config_constructor, _difficulty_plan, _paper_diversity_allowed, _hash_payload,
+    )
+    from backend.api.schemas.training import TrainingGroupingRequest, PersonalizedRecommendationCreateRequest
+    from pydantic import ValidationError
+
+    defaults = PersonalizedRecommendationConfig()
+    relaxed = PersonalizedRecommendationConfig(max_questions_per_skill=3, max_written_questions=5,
+        recent_activity_count=0, difficulty_max=10)
+    candidates = [{"question_id": i, "stable_keys": ["sk_synthetic"], "question_type": "解答题",
+                   "question_text": f"题{i}"} for i in range(1, 8)]
+    assert _paper_diversity_allowed(candidates[1], candidates[:1], relaxed)
+    assert not _paper_diversity_allowed(candidates[1], candidates[:1], defaults)
+    assert not _paper_diversity_allowed(candidates[3], candidates[:3], relaxed)
+    different = [{**c, "stable_keys": [f"sk_{c['question_id']}"]} for c in candidates]
+    assert _paper_diversity_allowed(different[4], different[:4], relaxed)
+    assert not _paper_diversity_allowed(different[5], different[:5], relaxed)
+    assert not _paper_diversity_allowed(different[2], different[:2], defaults)
+    target = {"source_question_refs": [{"session_id": i, "question_id": "Q", "full_score": 5,
+        "score_awarded": 5, "question_difficulty": 9} for i in range(2)]}
+    assert _difficulty_plan({}, .9, 10, target)["maximum"] == 10
+    assert _difficulty_plan({}, .9, 8, target)["maximum"] == 8
+    assert _difficulty_plan({}, None, 10)["maximum"] == 3
+    handout = PersonalizedRecommendationConfig(purpose="handout", question_count=100,
+        max_questions_per_skill=20, max_written_questions=20, recent_activity_count=20, difficulty_max=10)
+    assert PersonalizedRecommendationConfig(**_config_constructor(handout.to_dict())) == handout
+    for cls, extra in ((TrainingGroupingRequest, {"scope_keys": [BNU_CHAPTER4]}),
+        (PersonalizedRecommendationCreateRequest, {"request_token": "e" * 32,
+         "scope": {"mode": "all"}, "exam_scope": {"mode": "semester"}})):
+        body = cls(**extra, purpose="handout", question_count=100, max_questions_per_skill=20,
+                   max_written_questions=20, recent_activity_count=20, difficulty_max=10)
+        assert body.question_count == 100 and body.recent_activity_count == 20
+        with pytest.raises(ValidationError):
+            cls(**extra, purpose="training", question_count=100)
+        with pytest.raises(ValidationError):
+            cls(**extra, purpose="handout", question_count=3, max_written_questions=4)
+    legacy = defaults.to_dict()
+    for field in ("purpose", "max_questions_per_skill", "max_written_questions", "recent_activity_count"):
+        legacy.pop(field)
+    assert PersonalizedRecommendationConfig(**_config_constructor(legacy)) == defaults
+    _seed_handout_pool(direct_module, count=20)
+    observed = {"students": [{"student_id": "A", "weak_points": [{"source_question_refs": [
+        {"session_id": 10000+i, "bank_question_id": 1000+i, "occurred_at": f"2026-07-{i+1:02d}T08:00:00+08:00"}
+        for i in range(20)]}]}]}
+    assert direct_module._recent_question_ids(("A",), diagnosis=observed, recent_activity_count=0) == {"A": set()}
+    assert direct_module._recent_question_ids(("A",), diagnosis=observed, recent_activity_count=3) == {"A": {1017, 1018, 1019}}
+    assert direct_module._recent_question_ids(("A",), diagnosis=observed, recent_activity_count=20) == {"A": set(range(1000, 1020))}
+
+    # Same student, same source: saved configurable rules are the only difference.
+    control = _make_direct(direct_module, token="1")
+    relaxed_draft = _make_direct(direct_module, token="2", max_questions_per_skill=3,
+        max_written_questions=5, recent_activity_count=0, difficulty_max=10)
+    assert relaxed_draft["config"]["difficulty_max"] == 10
+    assert relaxed_draft["students"][0]["structure"]["written_limit"] == 5
+    assert all(item["difficulty"] <= 10 for item in relaxed_draft["students"][0]["items"])
+    with connect(direct_module.db_path) as conn:
+        saved = json.loads(conn.execute("SELECT request_json FROM personalized_recommendation_drafts WHERE draft_id=?",
+            (relaxed_draft["draft_id"],)).fetchone()[0])
+        assert saved["recent_question_ids"] == {"A": []}
+        old_request = json.loads(conn.execute("SELECT request_json FROM personalized_recommendation_drafts WHERE draft_id=?",
+            (control["draft_id"],)).fetchone()[0])
+        old_config = {k: v for k, v in old_request["config"].items()
+                      if k not in {"purpose", "max_questions_per_skill", "max_written_questions"}}
+        conn.execute("UPDATE personalized_recommendation_drafts SET input_fingerprint=? WHERE draft_id=?",
+            (_hash_payload({"diagnosis": old_request["diagnosis"], "config": old_config}), control["draft_id"]))
+        for column in ("request_json", "draft_json"):
+            value = json.loads(conn.execute(f"SELECT {column} FROM personalized_recommendation_drafts WHERE draft_id=?",
+                (control["draft_id"],)).fetchone()[0])
+            for field in ("purpose", "max_questions_per_skill", "max_written_questions", "recent_activity_count"):
+                value["config"].pop(field)
+            value.pop("recent_question_ids", None)
+            conn.execute(f"UPDATE personalized_recommendation_drafts SET {column}=? WHERE draft_id=?",
+                (json.dumps(value), control["draft_id"]))
+    assert _make_direct(direct_module, token="1")["draft_id"] == control["draft_id"]
+    # Restored old input and current defaults select the same replacement.
+    current = _make_direct(direct_module, token="3")
+    item = next(i for i in control["students"][0]["items"] if i["question_id"] in range(100, 114))
+    def replace(draft, token):
+        return direct_module.edit(draft["draft_id"], RecommendationEditCommand(request_token=token * 32,
+            expected_revision=1, action="replace", student_id="A", item_id=item["item_id"],
+            actor_ref="synthetic", reason="旧草稿规则对照"))["students"][0]["items"]
+    assert [i["question_id"] for i in replace(control, "4")] == [i["question_id"] for i in replace(current, "5")]
+
+
+def _seed_handout_pool(module, count=120):
+    rows = tuple((1000+i, str(1000+i), "解答题" if i % 5 == 0 else "填空题",
+                  f"测例{i:03d}", "7", BNU_TARGET) for i in range(count))
+    with connect(module.db_path) as conn:
+        _insert_bnu24_questions(conn, rows)
+    _approve_synthetic_criteria(module.db_path, module.data_root, tuple(row[0] for row in rows))
+
+
+def _record_legacy_training(module, question_ids, *, student_id="A", name="SYN-TRAINING",
+                            occurred_at="2026-07-30T08:00:00+08:00", scored=True):
+    with connect(module.db_path) as conn:
+        task_id = conn.execute("INSERT INTO training_tasks(task_code) VALUES (?)", (name,)).lastrowid
+        variant_id = conn.execute(
+            "INSERT INTO training_variants(task_id,variant_key,variant_type) VALUES (?,'synthetic','individual')",
+            (task_id,),
+        ).lastrowid
+        for order, qid in enumerate(question_ids, 1):
+            code = f"{name}-Q{order}"
+            conn.execute(
+                "INSERT INTO training_task_items(variant_id,task_item_code,bank_question_id,item_order,stage) VALUES (?,?,?,?,'direct')",
+                (variant_id, code, qid, order),
+            )
+            if scored:
+                conn.execute(
+                    "INSERT INTO training_attempts(task_item_code,student_id,score_awarded,full_score,created_at) VALUES (?,?,3,5,?)",
+                    (code, student_id, occurred_at),
+                )
+
+
+@pytest.mark.parametrize("paper_mode", ["individual", "shared"])
+def test_recent_originals_follow_purpose_in_generation_preview_and_edit(direct_module, paper_mode):
+    from question_bank.services.source_question_link_service import SourceQuestionLinkService
+
+    _seed_handout_pool(direct_module, count=40)
+    diagnosis = _direct_diagnosis((("A", .9, 900, BNU_TARGET), ("B", .9, 900, BNU_TARGET)))
+    settings = dict(paper_mode=paper_mode, max_questions_per_skill=8, max_written_questions=8)
+    control = _make_direct(direct_module, diagnosis=diagnosis, recent_activity_count=0, **settings)
+    control_ids = [item["question_id"] for item in control["students"][0]["items"]]
+    assert len(control_ids) == len(set(control_ids)) == 8
+    exam_id, *training_ids = control_ids
+    SourceQuestionLinkService(direct_module.db_path).confirm_link(
+        grading_session_id=9, source_question_id="SYN-EXAM", bank_question_id=exam_id, link_method="synthetic")
+    # Only A has this history; the shared paper must apply the members' union.
+    diagnosis["_graded_activities"] = [{"student_id": "A", "session_id": "9", "occurred_at": "2026-07-29"}]
+    _record_legacy_training(direct_module, training_ids)
+    _record_legacy_training(direct_module, (1039,), name="SYN-UNMARKED", scored=False)
+    assert direct_module._recent_question_ids(("A",), diagnosis=diagnosis, purpose="handout",
+                                              recent_activity_count=1) == {"A": {exam_id}}
+    assert direct_module._recent_question_ids(("A",), diagnosis=diagnosis, purpose="handout",
+                                              recent_activity_count=0) == {"A": set()}
+    requests = {}
+    drafts = {}
+    for purpose, token in (("training", "b"), ("handout", "c")):
+        draft = _make_direct(direct_module, diagnosis=diagnosis, token=token, purpose=purpose, **settings)
+        drafts[purpose] = draft
+        ids = [item["question_id"] for item in draft["students"][0]["items"]]
+        assert len(ids) == len(set(ids)) == 8
+        assert exam_id not in ids
+        if purpose == "training":
+            assert set(ids).isdisjoint(training_ids)
+        else:
+            assert set(ids).intersection(training_ids)
+        with connect(direct_module.db_path) as conn:
+            request = json.loads(conn.execute(
+                "SELECT request_json FROM personalized_recommendation_drafts WHERE draft_id=?",
+                (draft["draft_id"],),
+            ).fetchone()[0])
+        requests[purpose] = request
+        assert set(request["recent_question_ids"]["A"]) == (
+            {exam_id, *training_ids} if purpose == "training" else {exam_id})
+        assert request["recent_question_ids"]["B"] == []
+        # Read-only evaluation, also used by the fixed class assembly helper.
+        config = PersonalizedRecommendationConfig(question_count=8, scope_keys=(BNU_CHAPTER4,), purpose=purpose, **settings)
+        evaluated = direct_module.evaluate_candidates(diagnosis=diagnosis, config=config)
+        pool_ids = {entry["candidate"]["question_id"] for entry in evaluated["pools"]["A"]}
+        assert exam_id not in pool_ids
+        assert bool(pool_ids.intersection(training_ids)) == (purpose == "handout")
+        if paper_mode == "shared":
+            preview = direct_module.chapter_groups(diagnosis=diagnosis,
+                config=PersonalizedRecommendationConfig(question_count=8, group_scope_keys=(BNU_CHAPTER4,),
+                    target_keys=(BNU_TARGET,), purpose=purpose, **settings), member_ids=("A", "B"))["selection"]
+            assert preview["available_question_count"] == 8
+            assert preview["source_version"]
+
+    # A later marked activity cannot change either stored exclusion snapshot.
+    _record_legacy_training(direct_module, (1001,), name="SYN-LATER", occurred_at="2026-07-31")
+    for purpose, request in requests.items():
+        assert direct_module._request_recent(request, ("A", "B")) == {
+            sid: set(ids) for sid, ids in request["recent_question_ids"].items()}
+        assert direct_module.get(drafts[purpose]["draft_id"]) == drafts[purpose]
+        assert direct_module.ensure_current(drafts[purpose]["draft_id"]) == drafts[purpose]
+
+    # For legacy requests without a frozen set, the saved purpose still applies.
+    for purpose, request in requests.items():
+        legacy = deepcopy(request)
+        legacy.pop("recent_question_ids")
+        recent = direct_module._request_recent(legacy, ("A", "B"))
+        assert recent["A"] == ({exam_id, *training_ids, 1001} if purpose == "training" else {exam_id})
+
+    # Shared drafts have no per-student edit operation in the existing flow.
+    if paper_mode == "shared":
+        return
+
+    # Choose an unselected historical training original through the real edit.
+    handout = drafts["handout"]
+    used = {item["question_id"] for item in handout["students"][0]["items"]}
+    candidate = next(iter(set(training_ids) - used), None)
+    if candidate is None:
+        candidate = training_ids[0]
+        item = next(item for item in handout["students"][0]["items"] if item["question_id"] == candidate)
+        handout = direct_module.edit(handout["draft_id"], RecommendationEditCommand(
+            request_token="d" * 32, expected_revision=1, action="exclude", student_id="A",
+            item_id=item["item_id"], actor_ref="synthetic", reason="合成讲义换题验收"))
+    item = handout["students"][0]["items"][0]
+    replaced = direct_module.edit(handout["draft_id"], RecommendationEditCommand(
+        request_token="e" * 32, expected_revision=handout["revision"], action="replace", student_id="A",
+        item_id=item["item_id"], replacement_question_id=candidate, actor_ref="synthetic", reason="复用历史训练题"))
+    assert any(item["question_id"] == candidate for item in replaced["students"][0]["items"])
+    with pytest.raises(RecommendationEditInvalid):
+        direct_module.edit(replaced["draft_id"], RecommendationEditCommand(
+            request_token="f" * 32, expected_revision=replaced["revision"], action="replace", student_id="A",
+            item_id=item["item_id"], replacement_question_id=exam_id, actor_ref="synthetic", reason="考试原题仍排除"))
+
+
+@pytest.mark.parametrize("recent_count", [0, 1, 3])
+def test_next_round_excludes_just_marked_paper_and_freezes_retry(direct_module, recent_count):
+    from backend.training_assessment.evidence import TrainingEvidencePublisher
+    from question_bank.personalized_papers import PersonalizedPaperModule, CreatePaperCommand
+    from question_bank.services.source_question_link_service import SourceQuestionLinkService
+
+    _seed_handout_pool(direct_module, count=40)
+    links = SourceQuestionLinkService(direct_module.db_path)
+    for session, qid in ((9, 1000), (10, 1001)):
+        links.confirm_link(grading_session_id=session, source_question_id="SYN-EXAM", bank_question_id=qid,
+                           link_method="synthetic")
+    activities = [{"student_id": "A", "session_id": "9", "occurred_at": "2026-07-29"}]
+    diagnosis = {**_direct_diagnosis(), "_graded_activities": activities}
+    first = _make_direct(direct_module, diagnosis=diagnosis, recent_activity_count=recent_count,
+                         max_questions_per_skill=8, max_written_questions=8)
+    first_ids = {item["question_id"] for item in first["students"][0]["items"]}
+    assert len(first_ids) == 8
+    papers = PersonalizedPaperModule(db_path=direct_module.db_path, data_root=direct_module.data_root, clock=direct_module.clock)
+    paper = papers.create_review_instance(first["draft_id"], CreatePaperCommand(operation_token="b" * 32,
+        expected_draft_revision=1, student_id="A", actor_ref="synthetic"))
+    pid = paper["paper_instance_id"]
+    # Generated but unmarked instances do not count as completed training.
+    assert direct_module._recent_question_ids(("A",), diagnosis=diagnosis, recent_activity_count=recent_count) == {
+        "A": {1000} if recent_count else set()}
+    batch_id, submission_id, run_id = "c" * 64, "d" * 64, "e" * 64
+    with connect(direct_module.db_path) as conn:
+        conn.execute("INSERT INTO training_scan_batches(batch_id,operation_token,operation_fingerprint,paper_batch_id,created_by) VALUES (?,?,?,?,?)",
+                     (batch_id, "c" * 32, "c" * 64, paper["paper_batch_id"], "synthetic"))
+        # Submitted before the frozen exam; just marked now. Next round must
+        # include it even with a one-activity window, without moving old events.
+        conn.execute("INSERT INTO training_submissions(submission_id,batch_id,paper_instance_id,student_id,status,expected_total_pages,created_at) VALUES (?,?,?,'A','ready',1,'2026-07-02')",
+                     (submission_id, batch_id, pid))
+        conn.execute("INSERT INTO training_assessment_runs(run_id,submission_id,submission_revision,status,expected_question_count,expected_point_count,finished_at) VALUES (?,?,1,'succeeded',8,8,'2026-07-30')",
+                     (run_id, submission_id))
+        for item in conn.execute("SELECT * FROM personalized_paper_items WHERE paper_instance_id=? ORDER BY item_order", (pid,)).fetchall():
+            result_id = hashlib.sha256(item["task_item_code"].encode()).hexdigest()
+            conn.execute("INSERT INTO training_question_results(question_result_id,run_id,submission_id,submission_revision,task_item_code,item_order,criterion_version_id,criterion_hash,status,met_count,total_count) VALUES (?,?,?,1,?,?,?,?, 'candidate',1,1)",
+                         (result_id, run_id, submission_id, item["task_item_code"], item["item_order"], item["criterion_version_id"], item["criterion_hash"]))
+    publisher = TrainingEvidencePublisher(db_path=direct_module.db_path, data_root=direct_module.data_root,
+                                         outcome_loader=lambda *args: None, clock=direct_module.clock)
+    context = publisher._context(submission_id, 1)
+    assert context["recent_question_ids"] == {"A": [1000] if recent_count else []}
+    next_round = publisher._next_round(context, evidence_version="SYN-EVIDENCE", actor_ref="synthetic",
+                                      mastery_changes=[], publication_pending=False)
+    assert next_round["status"] == "draft", next_round
+    next_ids = {item["question_id"] for item in next_round["student"]["items"]}
+    assert len(next_ids) == 8
+    assert len(first_ids & next_ids) == (0 if recent_count else 8)
+    with connect(direct_module.db_path) as conn:
+        request = json.loads(conn.execute("SELECT request_json FROM personalized_recommendation_drafts WHERE draft_id=?",
+            (next_round["draft_id"],)).fetchone()[0])
+    assert request["graded_activities"] == activities
+    assert request["config"] == first["config"]
+    expected = first_ids | ({1000} if recent_count > 1 else set()) if recent_count else set()
+    assert set(request["recent_question_ids"]["A"]) == expected
+    _record_legacy_training(direct_module, (1002,), name="SYN-AFTER-NEXT", occurred_at="2026-07-31")
+    retry = publisher._next_round(context, evidence_version="SYN-EVIDENCE", actor_ref="synthetic",
+                                 mastery_changes=[], publication_pending=False)
+    assert retry["draft_id"] == next_round["draft_id"] and retry["student"] == next_round["student"]
+    print(f"近期次数={recent_count}：首轮8题、下一轮8题，重复{len(first_ids & next_ids)}题；首轮={sorted(first_ids)}；下一轮={sorted(next_ids)}")
+
+
+def test_handout_100_exports_in_order_and_consumes_download_without_training(direct_module, tmp_path):
+    import zipfile
+    from io import BytesIO
+    from docx import Document
+    from fastapi.testclient import TestClient
+    from backend.api.app import create_app
+    from backend.api.dependencies import get_job_manager, get_job_file_service, get_personalized_recommendation_module
+    from backend.jobs.manager import JobManager
+    from backend.jobs.store import JobStore
+    from backend.jobs.training_handout import run_training_handout_export
+    from backend.files.service import JobFileService
+    from db_manager import DBManager
+    from question_bank.personalized_papers import PersonalizedPaperModule, CreatePaperCommand, PaperInvalid
+
+    direct_module.clock = lambda: datetime.now(UTC)
+    _seed_handout_pool(direct_module)
+    students = (("A", .9, 900, BNU_TARGET), ("B", .9, 900, BNU_TARGET))
+    draft = direct_module.create(request_token="a"*32, diagnosis=_direct_diagnosis(students),
+        config=PersonalizedRecommendationConfig(purpose="handout", question_count=100, max_questions_per_skill=100,
+            max_written_questions=100, recent_activity_count=0, scope_keys=(BNU_CHAPTER4,)), actor_ref="synthetic")
+    assert all(len(s["items"]) == 100 for s in draft["students"])
+    grading_path = tmp_path / "grading.db"
+    DBManager(grading_path).initialize()
+    reports = tmp_path / "reports"
+    manager = JobManager(JobStore(grading_path))
+    manager.register("personalized_handout_export", lambda context: run_training_handout_export(context=context,
+        question_bank_db_path=direct_module.db_path, data_root=direct_module.data_root, reports_dir=reports))
+    app = create_app()
+    app.dependency_overrides[get_job_manager] = lambda: manager
+    app.dependency_overrides[get_job_file_service] = lambda: JobFileService(reports)
+    app.dependency_overrides[get_personalized_recommendation_module] = lambda: direct_module
+    client = TestClient(app)
+    url = f"/api/training/personalized-drafts/{draft['draft_id']}/handout-exports"
+    body = {"request_token": "b"*32, "expected_revision": 1}
+    try:
+        assert client.post(url, json={**body, "expected_revision": 2}).status_code == 409
+        response = client.post(url, json=body)
+        assert response.status_code == 202, response.text
+        job_id = response.json()["id"]
+        assert client.post(url, json=body).json()["id"] == job_id
+        assert client.post(url, json={**body, "expected_revision": 2}).status_code == 409
+        manager.wait(job_id, timeout=60)
+        job = manager.store.get_job(job_id)
+        assert job.status == "succeeded", job.error
+        path = Path(job.result["file_path"])
+        response = client.get(f"/api/jobs/{job_id}/download")
+        assert response.status_code == 200
+        with zipfile.ZipFile(BytesIO(response.content)) as archive:
+            assert len(archive.namelist()) == 2
+            for name, student in zip(archive.namelist(), draft["students"], strict=True):
+                doc = Document(BytesIO(archive.read(name)))
+                text = [p.text for p in doc.paragraphs]
+                assert f"{student['student_name']} 讲义" in text
+                answer_start = text.index("答案")
+                expected = [i["question_id"] for i in sorted(student["items"], key=lambda i: i["item_order"])]
+                from question_bank.services.question_read_service import QuestionBankReadService
+                rows = QuestionBankReadService(direct_module.db_path).get_questions(expected)
+                by_id = {r["id"]: r for r in rows}
+                body_text = "\n".join(text[:answer_start])
+                offsets = [body_text.index(by_id[q]["question_text"]) for q in expected]
+                assert offsets == sorted(offsets)
+                assert len([p for p in text[answer_start:] if "合成答案" in p]) == 100
+        assert not path.exists()
+        assert client.get(f"/api/jobs/{job_id}/download").status_code == 410
+        assert "download_url" not in client.get(f"/api/jobs/{job_id}").json()["result"]
+        papers = PersonalizedPaperModule(db_path=direct_module.db_path, data_root=direct_module.data_root)
+        with pytest.raises(PaperInvalid, match="讲义"):
+            papers.create_review_instance(draft["draft_id"], CreatePaperCommand(operation_token="c"*32,
+                expected_draft_revision=1, student_id="A", actor_ref="synthetic"))
+        with pytest.raises(PaperInvalid, match="讲义"):
+            papers.create_review_batch(draft["draft_id"], operation_token="d"*32, expected_draft_revision=1,
+                actor_ref="synthetic")
+        with connect(direct_module.db_path) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM personalized_paper_instances").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM training_evidence_records").fetchone()[0] == 0
+        assert direct_module._recent_question_ids(("A", "B"), graded_activities=[],
+                                                  recent_activity_count=3) == {"A": set(), "B": set()}
+        # Shared handout publishes one Word, including a short handout that must stay unrecoverable.
+        shared = direct_module.create(request_token="e"*32, diagnosis=_direct_diagnosis(students),
+            config=PersonalizedRecommendationConfig(purpose="handout", paper_mode="shared", question_count=8,
+                target_keys=(BNU_TARGET,), max_written_questions=5, recent_activity_count=0), actor_ref="synthetic")
+        shared_url = f"/api/training/personalized-drafts/{shared['draft_id']}/handout-exports"
+        response = client.post(shared_url, json={"request_token": "f"*32, "expected_revision": 1})
+        assert response.status_code == 202, response.text
+        manager.wait(response.json()["id"], timeout=30)
+        job = manager.store.get_job(response.json()["id"])
+        assert job.status == "succeeded", job.error
+        assert job.result["paper_count"] == 1 and Path(job.result["file_path"]).suffix == ".docx"
+        with pytest.raises(PaperInvalid, match="讲义"):
+            papers.create_review_instance(shared["draft_id"], CreatePaperCommand(operation_token="0"*32,
+                expected_draft_revision=1, student_id="A", actor_ref="synthetic"))
+        with connect(direct_module.db_path) as conn:
+            conn.execute("UPDATE questions SET question_text=question_text || '已变化' WHERE id=1001")
+        assert client.post(url, json={"request_token": "0"*32, "expected_revision": 1}).status_code == 409
+    finally:
+        manager.shutdown()
+
+
+def test_handout_generation_timings_same_synthetic_class(direct_module):
+    from time import perf_counter
+    _seed_handout_pool(direct_module)
+    diagnosis = _direct_diagnosis(tuple((f"SYN-{i:02d}", .9, 900, BNU_TARGET) for i in range(30)))
+    for count, token in ((10, "a"), (50, "b"), (100, "c")):
+        started = perf_counter()
+        draft = direct_module.create(request_token=token*32, diagnosis=diagnosis,
+            config=PersonalizedRecommendationConfig(purpose="handout", question_count=count,
+                max_questions_per_skill=count, max_written_questions=count, recent_activity_count=0,
+                scope_keys=(BNU_CHAPTER4,)), actor_ref="synthetic")
+        elapsed = perf_counter() - started
+        assert all(len(s["items"]) == count for s in draft["students"])
+        print(f"HANDOUT_BENCH students=30 questions={count} seconds={elapsed:.3f}")

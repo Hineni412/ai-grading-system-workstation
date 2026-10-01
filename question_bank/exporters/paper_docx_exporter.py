@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from docx import Document
 from docx.enum.table import WD_ALIGN_VERTICAL
@@ -75,6 +77,7 @@ def _render_question_body(
     fallbacks: list[FormulaFallback],
     *,
     trailing_blank: int = 0,
+    include_answer_space: bool = True,
 ) -> None:
     """渲染单个题目的正文（题号 + 富文本/纯文本 + 图片）。
 
@@ -124,7 +127,7 @@ def _render_question_body(
         )
     elif missing_images:
         _add_images(document, missing_images)
-    if minimum_lines:
+    if minimum_lines and include_answer_space:
         add_answer_space(
             document,
             question_paragraphs=document.paragraphs[question_paragraph_start:],
@@ -217,6 +220,9 @@ def export_question_paper_docx(
     header_text: str | None = None,
     sections: list[SectionSpec] | None = None,
     config: ExportConfig | None = None,
+    include_answer_space: bool = True,
+    include_student_fields: bool = True,
+    page_header_text: str | None = None,
 ) -> Path:
     service = QuestionBankReadService(Path(db_path))
     questions = service.get_questions_for_export(question_ids)
@@ -241,6 +247,9 @@ def export_question_paper_docx(
     }
     fallbacks: list[FormulaFallback] = []
 
+    if page_header_text:
+        document.sections[0].header.paragraphs[0].text = page_header_text
+
     if header_text:
         header_p = document.add_paragraph()
         header_p.alignment = 1 # Center
@@ -249,7 +258,8 @@ def export_question_paper_docx(
         hrun.bold = True
 
     document.add_heading(title.strip() or _default_title(), level=0)
-    document.add_paragraph("姓名：________________    班级：________________    日期：________________")
+    if include_student_fields:
+        document.add_paragraph("姓名：________________    班级：________________    日期：________________")
     document.add_paragraph("")
 
 
@@ -277,7 +287,7 @@ def export_question_paper_docx(
 
             # 选择题答题区表格：段内若含选择题则触发
             choice_in_sec = [(idx, q) for idx, q in sec_questions if _canonical_type_group(q.get("question_type")) == "选择题"]
-            if choice_in_sec:
+            if choice_in_sec and include_answer_space:
                 _add_choice_answer_table(document, choice_in_sec)
 
             for idx, q in sec_questions:
@@ -290,6 +300,7 @@ def export_question_paper_docx(
                     data_root,
                     fallbacks,
                     trailing_blank=0,
+                    include_answer_space=include_answer_space,
                 )
 
             sections_indexed.append((sec.title.strip(), sec_questions))
@@ -331,11 +342,13 @@ def export_question_paper_docx(
 
         if choices:
             document.add_heading("一、选择题", level=1)
-            _add_choice_answer_table(document, choices)
+            if include_answer_space:
+                _add_choice_answer_table(document, choices)
             for index, question in choices:
                 _render_question_body(
                     document, question, index, active_config,
                     metadata_by_id, data_root, fallbacks, trailing_blank=0,
+                    include_answer_space=include_answer_space,
                 )
 
         if blanks:
@@ -345,6 +358,7 @@ def export_question_paper_docx(
                 _render_question_body(
                     document, question, index, active_config,
                     metadata_by_id, data_root, fallbacks, trailing_blank=0,
+                    include_answer_space=include_answer_space,
                 )
 
         if solutions:
@@ -359,12 +373,14 @@ def export_question_paper_docx(
                 _render_question_body(
                     document, question, index, active_config,
                     metadata_by_id, data_root, fallbacks, trailing_blank=0,
+                    include_answer_space=include_answer_space,
                 )
     else:
         for index, question in indexed_questions:
             _render_question_body(
                 document, question, index, active_config,
                 metadata_by_id, data_root, fallbacks, trailing_blank=0,
+                    include_answer_space=include_answer_space,
             )
 
     if include_answer:

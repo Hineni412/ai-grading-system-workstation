@@ -14,6 +14,9 @@ const trainingApiMock = vi.hoisted(() => ({
   uploadTrainingScan: vi.fn(),
   resolveTrainingScanPage: vi.fn(),
   cancelTrainingSubmission: vi.fn(),
+  getTrainingAssessment: vi.fn(),
+  getTrainingFeedback: vi.fn(),
+  startTrainingAssessment: vi.fn(),
 }))
 
 vi.mock('../api/training', async (importOriginal) => ({
@@ -138,6 +141,42 @@ afterEach(() => {
 
 describe('training scan batch panel', () => {
 
+  it('keeps unsaved point edits when switching students without starting an assessment', async () => {
+    const ready = { ...emptyBatch.submissions[0]!, status: 'ready' as const, missing_pages: [] }
+    const second = { ...ready, submission_id: '2'.repeat(64), student_id: 'SYN-S02', student_name: '第二名学生' }
+    const readyBatch = { ...emptyBatch, status: 'ready' as const, submissions: [ready, second] }
+    trainingApiMock.listTrainingScanBatches.mockResolvedValue([{ ...readyBatch, submission_count: 2 }])
+    trainingApiMock.getTrainingScanBatch.mockResolvedValue(readyBatch)
+    trainingApiMock.getTrainingAssessment.mockImplementation(async (id: string) => ({
+      run_id: id, submission_id: id, submission_revision: 1, status: 'complete',
+      workflow_status: 'completed', request_count: 1, expected_question_count: 1,
+      expected_point_count: 1, review_revision: 1, control_state: 'active',
+      usage: { total_tokens: 0 }, issue_codes: [], attempts: [],
+      questions: [{ task_item_code: 'Q1', item_order: 1, met_count: 1, total_count: 1,
+        uncertain_count: 0, unreadable_count: 0, review_points: [{ point_id: 'p1',
+          content: '核对结论', state: 'met', evidence: '原判定依据', teacher_locked: false }] }],
+    }))
+    trainingApiMock.getTrainingFeedback.mockRejectedValue(new Error('not found'))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(TrainingScanBatchPanel, { instances: [paper] })
+    mounted.push(app)
+    app.mount(host)
+    await settle()
+    const evidence = host.querySelector<HTMLInputElement>('.scan-submissions article input')!
+    evidence.value = '尚未保存的教师核对依据'
+    evidence.dispatchEvent(new Event('input'))
+    const students = host.querySelectorAll<HTMLButtonElement>('.scan-student-list button')
+    students[1]!.click()
+    await settle()
+    expect(host.querySelector<HTMLElement>('.scan-submissions article')?.style.display).toBe('none')
+    students[0]!.click()
+    await settle()
+    expect(evidence.value).toBe('尚未保存的教师核对依据')
+    expect(trainingApiMock.getTrainingAssessment).toHaveBeenCalledTimes(2)
+    expect(trainingApiMock.startTrainingAssessment).not.toHaveBeenCalled()
+  })
+
   it('restores the saved batch on reentry and can return from a new-batch form', async () => {
     trainingApiMock.listTrainingScanBatches.mockResolvedValue([{
       ...emptyBatch, submission_count: 1,
@@ -205,7 +244,7 @@ describe('training scan batch panel', () => {
     expect(host.textContent).toContain('页面身份无法读取')
     expect(host.textContent).toContain('人工匹配')
     expect(host.textContent).toContain('明确替换该页')
-    expect(host.textContent).toContain('不会根据 OCR 自动确认')
+    expect(host.textContent).toContain('缺页、重页或身份冲突解决后')
     expect(host.querySelector('img')?.getAttribute('src')).toBe(
       anomalyBatch.pages[0]?.preview_url,
     )

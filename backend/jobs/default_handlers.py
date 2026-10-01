@@ -28,6 +28,7 @@ from report import ReportGenerator
 
 from .answer_draft import run_answer_draft_job
 from .assembly_export import run_assembly_export_job
+from .wrong_question_export import run_wrong_question_export
 from .config_generation import run_config_generation_job
 from .criterion_backfill import run_criterion_backfill_job
 from .grading_run import run_grading_job
@@ -295,6 +296,20 @@ def register_default_job_handlers(
             assembly_export_runner=assembly_export_runner,
         ),
     )
+    manager.register(
+        "wrong_question_export",
+        lambda context: run_wrong_question_export(
+            context=context, db_path=Path(db_path),
+            question_bank_db_path=resolved_question_bank_db, reports_dir=Path(reports_dir),
+        ),
+    )
+    def training_handout_handler(context):
+        from .training_handout import run_training_handout_export
+        return run_training_handout_export(
+            context=context, question_bank_db_path=resolved_question_bank_db,
+            data_root=base_data_root, reports_dir=Path(reports_dir),
+        )
+    manager.register("personalized_handout_export", training_handout_handler)
     manager.register(
         "answer_draft",
         _build_answer_draft_handler(

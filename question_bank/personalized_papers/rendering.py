@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+from question_bank.atomic_files import replace_with_retry
+
 import hashlib
 import hmac
+import json
 import os
 import re
 import shutil
 import subprocess
-import time
+import threading
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict
+from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Any, Protocol
 
 import cv2
@@ -65,11 +71,86 @@ class OfficePdfConverter:
 
     def __init__(self, *, timeout_seconds: int = 120) -> None:
         self.timeout_seconds = int(timeout_seconds)
+        self._reuse_office = False
+        self._office_process = None
+        self._office_output: Queue = Queue()
+        self._office_reader = None
+
+    @contextmanager
+    def batch_session(self):
+        """Reuse one local Office process for this batch, opened only if needed."""
+        converter = OfficePdfConverter(timeout_seconds=self.timeout_seconds)
+        converter._reuse_office = os.name == "nt"
+        try:
+            yield converter
+        finally:
+            converter._close_office_session()
+
+    def _close_office_session(self) -> None:
+        process = self._office_process
+        self._office_process = None
+        if process is None:
+            return
+        try:
+            if process.poll() is None:
+                try:
+                    process.stdin.write("\n")
+                    process.stdin.flush()
+                    process.wait(timeout=10)
+                except (OSError, subprocess.TimeoutExpired):
+                    process.kill()
+                    process.wait()
+        finally:
+            if self._office_reader is not None:
+                self._office_reader.join(timeout=1)
+            process.stdin.close()
+            process.stdout.close()
+
+    def _convert_in_office_session(self, source: Path, destination: Path) -> bool:
+        script = Path(__file__).with_name("office_to_pdf.ps1")
+        pwsh = shutil.which("pwsh") or r"C:\Program Files\PowerShell\7\pwsh.exe"
+        if not Path(pwsh).is_file() or not script.is_file():
+            return False
+        if self._office_process is None:
+            self._office_output = Queue()
+            process = subprocess.Popen(
+                [str(pwsh), "-NoLogo", "-NoProfile", "-File", str(script), "-BatchMode"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            self._office_process = process
+            output = self._office_output
+
+            def read_responses():
+                try:
+                    for line in process.stdout:
+                        if line.startswith("P4PDF:"):
+                            output.put(line[6:].strip())
+                finally:
+                    output.put(None)
+
+            self._office_reader = threading.Thread(target=read_responses, daemon=True)
+            self._office_reader.start()
+        try:
+            process = self._office_process
+            process.stdin.write(json.dumps({"input": str(source), "output": str(destination)}, ensure_ascii=False) + "\n")
+            process.stdin.flush()
+            response = self._office_output.get(timeout=self.timeout_seconds)
+            if response is None or not json.loads(response).get("ok"):
+                self._close_office_session()
+                return False
+            return destination.is_file() and destination.stat().st_size > 0
+        except (OSError, Empty, ValueError):
+            self._close_office_session()
+            return False
 
     def convert(self, source_docx: Path, output_pdf: Path) -> None:
         source = Path(source_docx).resolve()
         destination = Path(output_pdf).resolve()
         destination.parent.mkdir(parents=True, exist_ok=True)
+        if self._reuse_office and self._convert_in_office_session(source, destination):
+            return
         if os.name == "nt":
             script = Path(__file__).with_name("office_to_pdf.ps1")
             pwsh = shutil.which("pwsh") or r"C:\Program Files\PowerShell\7\pwsh.exe"
@@ -118,7 +199,7 @@ class OfficePdfConverter:
             produced = destination.parent / f"{source.stem}.pdf"
             if completed.returncode == 0 and produced.is_file():
                 if produced != destination:
-                    _replace_with_retry(produced, destination)
+                    replace_with_retry(produced, destination)
                 if destination.stat().st_size > 0:
                     return
         raise PaperRenderError("no compatible DOCX to PDF converter is available")
@@ -284,6 +365,7 @@ def stamp_frozen_pdf(
     signing_secret: str,
     reviewed_docx_sha256: str,
     layout_version: str = LAYOUT_VERSION,
+    identity_font_buffer: bytes | None = None,
 ) -> tuple[dict[str, Any], ...]:
     source = fitz.open(source_pdf)
     try:
@@ -329,7 +411,8 @@ def stamp_frozen_pdf(
             font_path = _visible_identity_font()
             if font_path is not None:
                 visible_font = "p4-cjk"
-                page.insert_font(fontname=visible_font, fontfile=str(font_path))
+                font_buffer = identity_font_buffer or prepare_identity_font(visible_identity)
+                page.insert_font(fontname=visible_font, fontbuffer=font_buffer)
             else:
                 visible_identity = (
                     f"Student: {student_code or paper_instance_id[:12]}  "
@@ -402,6 +485,32 @@ def _visible_identity_font() -> Path | None:
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
     )
     return next((path for path in candidates if path.is_file()), None)
+
+
+def prepare_identity_font(text: str) -> bytes | None:
+    """Subset the existing footer font once; retain the original glyphs/style."""
+    path = _visible_identity_font()
+    if path is None:
+        return None
+    stat = path.stat()
+    characters = "".join(sorted(set(text + "姓名：班级：第页共0123456789 /Student-演算草稿区本页用于演算草稿，作答请写在题目下方的作答区。")))
+    return _identity_font_subset(str(path), stat.st_mtime_ns, stat.st_size, characters)
+
+
+@lru_cache(maxsize=32)
+def _identity_font_subset(path: str, modified_ns: int, size: int, characters: str) -> bytes:
+    # MuPDF's PDF subsets omit the reusable Unicode cmap. Subset the installed
+    # font itself so the same small buffer can be inserted into another PDF.
+    from fontTools import subset
+    from fontTools.ttLib import TTFont
+
+    with TTFont(path, fontNumber=0) as font:
+        subsetter = subset.Subsetter()
+        subsetter.populate(text=characters)
+        subsetter.subset(font)
+        output = BytesIO()
+        font.save(output)
+        return output.getvalue()
 
 
 def page_identity(
@@ -547,7 +656,7 @@ def pdf_page_count(path: Path) -> int:
         raise PaperRenderError("PDF output is invalid") from exc
 
 
-def append_scratch_page(source_pdf: Path, output_pdf: Path) -> None:
+def append_scratch_page(source_pdf: Path, output_pdf: Path, *, identity_font_buffer: bytes | None = None) -> None:
     """为奇数页的成品卷追加一页演算草稿区，凑满双面打印。
 
     一张 A4 双面是一所学校最常用的整卷印制单位；内容只有奇数页时，
@@ -572,9 +681,10 @@ def append_scratch_page(source_pdf: Path, output_pdf: Path) -> None:
         font_path = _visible_identity_font()
         if font_path is not None:
             fontname = "p4-cjk-scratch"
-            page.insert_font(fontname=fontname, fontfile=str(font_path))
             title = "演算草稿区"
             subtitle = "本页用于演算草稿，作答请写在题目下方的作答区。"
+            font_buffer = identity_font_buffer or prepare_identity_font(title + subtitle)
+            page.insert_font(fontname=fontname, fontbuffer=font_buffer)
         page.insert_textbox(
             fitz.Rect(0.0, 54.0, width, 76.0),
             title,
@@ -882,18 +992,6 @@ def _mappings(value: object) -> list[dict[str, Any]]:
         return []
     return [dict(item) for item in value if isinstance(item, Mapping)]
 
-
-def _replace_with_retry(source: Path, destination: Path) -> None:
-    # Windows file scanners can hold a freshly written file open briefly;
-    # retry the atomic rename a few times before giving up.
-    for attempt in range(12):
-        try:
-            os.replace(source, destination)
-            return
-        except PermissionError:
-            if attempt == 11:
-                raise
-            time.sleep(min(0.05 * (attempt + 1), 0.4))
 
 
 def _file_sha256(path: Path) -> str:
