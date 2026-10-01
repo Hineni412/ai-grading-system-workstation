@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from backend.api.schemas.jobs import JobResponse
 
@@ -35,6 +35,7 @@ class QuestionPaperListItem(_QuestionBankModel):
     criteria_question_count: int
     criteria_needs_review_count: int
     complete_analysis_count: int
+    skill_unlinked_question_count: int = 0
 
 
 class QuestionPaperListResponse(_QuestionBankModel):
@@ -282,6 +283,16 @@ class QuestionRichContentMetadata(_QuestionBankModel):
     answer_blocks: list[QuestionRichTextBlock]
 
 
+class QuestionDirectSkill(_QuestionBankModel):
+    stable_key: str
+    display_name: str
+
+
+class QuestionSkillHit(_QuestionBankModel):
+    point_id: str
+    point_label: str
+
+
 class QuestionListItem(_QuestionBankModel):
     id: int
     duplicate_of_question_id: int | None = None
@@ -313,6 +324,16 @@ class QuestionListItem(_QuestionBankModel):
     tags: list[QuestionTagResponse]
     asset_urls: list[str]
     rich_content: QuestionRichContentMetadata
+    skills: list[QuestionDirectSkill] | None = None
+    skill_hits: list[QuestionSkillHit] | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_optional_skills(self, handler):
+        result = handler(self)
+        for key in ("skills", "skill_hits"):
+            if result.get(key) is None:
+                result.pop(key, None)
+        return result
 
 
 class QuestionListResponse(_QuestionBankModel):

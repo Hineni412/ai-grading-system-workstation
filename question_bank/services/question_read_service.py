@@ -494,6 +494,8 @@ class _ActiveQuestionReadScope:
     connection: sqlite3.Connection
     current_knowledge: object = _CURRENT_KNOWLEDGE_NOT_LOADED
     identities: dict[str, dict[int, str]] = field(default_factory=dict)
+    skill_snapshot: dict[str, Any] | None = None
+    generation: tuple[object, ...] | None = None
 
 
 _ACTIVE_READ_SCOPE: ContextVar[_ActiveQuestionReadScope | None] = ContextVar(
@@ -570,6 +572,9 @@ class QuestionReadFilters:
     teaching_progress_chapter: str = ""
     collapse_duplicates: bool = False
     scope_mode: str = "any"
+    skill_keys: tuple[str, ...] = ()
+    skill_unlinked: bool = False
+    include_skills: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -588,11 +593,13 @@ def _read_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
     if active is not None and active.source == requested:
         yield active.connection
         return
+    generation = _source_generation_token(requested)
     connection = _open_direct_read_connection(requested)
     token = _ACTIVE_READ_SCOPE.set(
         _ActiveQuestionReadScope(
             source=requested,
             connection=connection,
+            generation=generation,
         )
     )
     try:
@@ -1112,6 +1119,44 @@ class QuestionBankReadService:
             return active.current_knowledge
         return None
 
+    def _skill_snapshot(self) -> dict[str, Any]:
+        from question_bank.services.question_skill_index import build_skill_snapshot
+
+        active = _ACTIVE_READ_SCOPE.get()
+        if active is not None and active.skill_snapshot is not None:
+            return active.skill_snapshot
+        generation = active.generation if active is not None else _source_generation_token(self.db_path)
+        key = ("skill_snapshot", generation, self._cache_data_root)
+        cached = _read_result_cache_get(key) if generation is not None and generation == _source_generation_token(self.db_path) else _CACHE_MISS
+        if cached is not _CACHE_MISS:
+            if active is not None:
+                active.skill_snapshot = cached
+            return cached
+        with _read_connection(self.db_path) as conn:
+            snapshot = build_skill_snapshot(conn, self.db_path, self.data_root)
+            scope = _ACTIVE_READ_SCOPE.get()
+            if scope is not None:
+                scope.skill_snapshot = snapshot
+        if generation is not None and generation == _source_generation_token(self.db_path):
+            _read_result_cache_put(key, snapshot)
+        return snapshot
+
+    def skill_index(self, curriculum_volume_id: str) -> dict[str, Any]:
+        from question_bank.services.question_skill_index import skill_index
+
+        generation = None if _ACTIVE_READ_SCOPE.get() is not None else _source_generation_token(self.db_path)
+        key = ("skill_index", generation, self._cache_data_root, curriculum_volume_id)
+        cached = _read_result_cache_get(key) if generation is not None else _CACHE_MISS
+        if cached is not _CACHE_MISS:
+            return cached
+        with _read_connection(self.db_path) as conn:
+            snapshot = self._skill_snapshot()
+            review_ids = _load_criteria_needs_review_ids(conn, list(snapshot["questions"]))
+        result = skill_index(snapshot, curriculum_volume_id, review_ids)
+        if generation is not None and generation == _source_generation_token(self.db_path):
+            _read_result_cache_put(key, result)
+        return result
+
     def standard_summary(self) -> dict[str, Any]:
         """Maintenance metadata, using the same current evidence and links as training."""
         from question_bank.solution_evidence.knowledge_links import load_point_links
@@ -1166,7 +1211,13 @@ class QuestionBankReadService:
             cached = _read_result_cache_get(key)
             if cached is not _CACHE_MISS:
                 return cached  # type: ignore[return-value]
-        items = self._list_papers(deleted=deleted)
+        with _read_connection(self.db_path):
+            items = self._list_papers(deleted=deleted)
+            snapshot = self._skill_snapshot() if not deleted else None
+        for item in items:
+            item["skill_unlinked_question_count"] = (
+                len(snapshot["members"].get(item["id"], set()) & snapshot["unlinked"]) if snapshot else 0
+            )
         if generation is not None and generation == _source_generation_token(self.db_path):
             _read_result_cache_put(key, items)
         return items
@@ -1442,6 +1493,15 @@ class QuestionBankReadService:
 
     def _read_filter_parts(self, filters: QuestionReadFilters, *, taxonomy_expansions: dict[str, tuple[str, ...]] | None = None):
         joins, where, params = _question_filter_parts(filters, current_knowledge=self.current_knowledge, taxonomy_expansions=taxonomy_expansions)
+        if filters.skill_keys or filters.skill_unlinked:
+            snapshot = self._skill_snapshot()
+            ids = set(snapshot["questions"])
+            if filters.skill_keys:
+                ids &= set().union(*(snapshot["by_skill"].get(key, set()) for key in filters.skill_keys))
+            if filters.skill_unlinked:
+                ids &= snapshot["unlinked"]
+            where.append("q.id IN (" + ",".join("?" for _ in ids) + ")" if ids else "1=0")
+            params.extend(sorted(ids))
         if filters.collapse_duplicates:
             from question_bank.services.duplicate_analysis_copy_service import (
                 canonical_question_ranks,
@@ -1587,6 +1647,15 @@ class QuestionBankReadService:
         ]
         for item in items:
             item["criteria_needs_review"] = int(item["id"]) in review_ids
+        if filters.include_skills:
+            from question_bank.services.question_skill_index import short_node_name
+            snapshot = self._skill_snapshot()
+            for item in items:
+                skills = snapshot["by_question"].get(int(item["id"]), {})
+                item["skills"] = [{"stable_key": key, "display_name": short_node_name(
+                    snapshot["nodes"].get(key, {}).get("display_name", key))} for key in skills]
+                item["skill_hits"] = list({hit["point_id"]: hit for key in filters.skill_keys
+                    for hit in skills.get(key, [])}.values())
         return QuestionReadPage(
             items=items,
             total=total,

@@ -41,6 +41,104 @@ def _seed_paper(db_path: Path, paper_id: int = 1, title: str = "Paper") -> None:
         connection.close()
 
 
+def _seed_skill_bank(tmp_path: Path, count: int = 6):
+    from question_bank.database.schema import connect
+    from question_bank.training_criteria import QuestionAnalysisInputLoader, solution_evidence_source_content_hash
+
+    db = tmp_path / "TEST-skill-index.db"
+    _seed_paper(db)
+    from tests.current_knowledge_support import install_current_knowledge
+    install_current_knowledge(db, taxonomy_revision=7)
+    with connect(db) as conn:
+        # Use catalog metadata exactly as the production volume filter does.
+        from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+        volume = curriculum_volume(volume_id="bnu24-math-g8-upper")
+        conn.execute("UPDATE papers SET grade=?,semester=?,textbook_version=? WHERE id=1",
+                     (volume["grade"], volume["semester"], volume["textbook_version"]))
+        release = conn.execute("SELECT release_id FROM knowledge_graph_releases WHERE status='active'").fetchone()[0]
+        keys = [row[0] for row in conn.execute(
+            "SELECT stable_key FROM knowledge_graph_node_profiles WHERE release_id=? "
+            "AND status='active' AND stable_key LIKE 'sk_bnu24_math_g8_upper_1_1_%' ORDER BY stable_key LIMIT 3", (release,))]
+        assert len(keys) == 3
+        conn.executemany("INSERT INTO questions(id,paper_id,question_number,question_text,question_type,difficulty) VALUES(?,1,?,?,'解答题',?)",
+                         [(qid, str(qid), f'TEST-合成技能题 {qid}', str(qid % 10 + 1)) for qid in range(1, count + 1)])
+    inputs = QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path).load(list(range(1, count + 1)))
+    with connect(db) as conn:
+        conn.execute("INSERT INTO knowledge_graph_releases(release_id,schema_version,taxonomy_revision,content_hash,payload_json,status,source_reference,created_by) "
+                     "VALUES('kgr_TEST_old','knowledge-graph-release-v1',1,?,'{}','retired','TEST','TEST')", ('f' * 64,))
+        for question in inputs:
+            qid = question.question_id
+            if qid == 3:
+                continue  # No usable evidence.
+            version = f'{qid:064x}'
+            payload = {"parts": [{"part_id": "part-1", "evidence_points": [
+                {"evidence_point_id": "p1", "target": "列式"}, {"evidence_point_id": "p2", "target": "求解"}]}]}
+            conn.execute("INSERT INTO question_solution_evidence_versions(evidence_version_id,question_id,source_content_hash,schema_version,content_hash,evidence_json,status,source_kind,source_reference,created_by,graph_release_id) "
+                         "VALUES(?,?,?,'question-solution-evidence-v2',?,?,'approved','combined_model','TEST','TEST',?)",
+                         (version, qid, solution_evidence_source_content_hash(question), version, json.dumps(payload), release))
+            if qid == 4:
+                continue  # Usable evidence without a skill.
+            for point, key in [('p1', keys[0]), ('p2', keys[1] if qid == 1 else keys[0])]:
+                conn.execute("INSERT INTO evidence_point_knowledge_links(evidence_version_id,question_id,part_id,evidence_point_id,graph_release_id,role,term_id,stable_key,resolution_status,source_kind) "
+                             "VALUES(?,?,'part-1',?,?,'direct',?,?,'resolved','link_job')",
+                             (version, qid, point, 'kgr_TEST_old' if qid == 2 else release, key, key))
+        if count == 6:
+            conn.execute("UPDATE questions SET is_deleted=1 WHERE id=6")
+            # Source-changed evidence cannot supply a skill.
+            conn.execute("UPDATE questions SET question_text='TEST-题面已经改变' WHERE id=5")
+            # An older superseded version must never add a third skill.
+            conn.execute("INSERT INTO question_solution_evidence_versions(evidence_version_id,question_id,source_content_hash,schema_version,content_hash,evidence_json,status,source_kind,source_reference,created_by,graph_release_id) "
+                         "SELECT ?,question_id,source_content_hash,schema_version,?,evidence_json,'superseded',source_kind,'TEST-old',created_by,graph_release_id "
+                         "FROM question_solution_evidence_versions WHERE question_id=1", ('e' * 64, 'e' * 64))
+            conn.execute("INSERT INTO evidence_point_knowledge_links(evidence_version_id,question_id,part_id,evidence_point_id,graph_release_id,role,term_id,stable_key,resolution_status,source_kind) "
+                         "VALUES(?,1,'part-1','p1',?,'direct',?,?,'resolved','link_job')", ('e' * 64, release, keys[2], keys[2]))
+    return QuestionBankReadService(db, data_root=tmp_path), db, keys
+
+
+def test_skill_index_current_versions_legacy_links_filters_and_cache(tmp_path):
+    from question_bank.database.schema import connect
+
+    service, db, keys = _seed_skill_bank(tmp_path)
+    index = service.skill_index('bnu24-math-g8-upper')
+    skills = {row['stable_key']: row for chapter in index['chapters']
+              for section in chapter['sections'] for row in section['skills']}
+    assert index['question_count'] == 5
+    assert index['unlinked'] == {'no_usable_evidence': 2, 'no_skill_link': 1}
+    assert [skills[key]['question_count'] for key in keys] == [2, 1, 0]
+    assert skills[keys[0]]['difficulty'] == {'min': 2.0, 'median': 2.5, 'max': 3.0}
+    page = service.list_questions(QuestionReadFilters(skill_keys=(keys[1],), include_skills=True))
+    assert [item['id'] for item in page.items] == [1]
+    assert len(page.items[0]['skills']) == 2
+    assert page.items[0]['skill_hits'] == [{'point_id': 'p2', 'point_label': '判定点 2：求解'}]
+    assert service.list_facets(QuestionReadFilters(skill_keys=(keys[1],)))['question_types'] == [{'value': '解答题', 'count': 1}]
+    assert {item['id'] for item in service.list_questions(QuestionReadFilters(skill_unlinked=True)).items} == {3, 4, 5}
+    assert 'skills' not in service.list_questions(QuestionReadFilters()).items[0]
+    assert service.list_papers()[0]['skill_unlinked_question_count'] == 3
+    with connect(db) as conn:
+        conn.execute("UPDATE questions SET is_deleted=1 WHERE id=2")
+    assert service.skill_index('bnu24-math-g8-upper')['question_count'] == 4
+    assert service.list_questions(QuestionReadFilters(skill_keys=(keys[0],))).total == 1
+
+
+def test_skill_index_1500_question_cold_and_hot_requests(tmp_path):
+    from time import perf_counter
+
+    service, _, keys = _seed_skill_bank(tmp_path, count=1500)
+    def measure():
+        started = perf_counter()
+        index = service.skill_index('bnu24-math-g8-upper')
+        page = service.list_questions(QuestionReadFilters(skill_keys=(keys[0],), include_skills=True))
+        facets = service.list_facets(QuestionReadFilters(skill_keys=(keys[0],)))
+        return (perf_counter() - started) * 1000, index, page, facets
+    cold, index, page, facets = measure()
+    hot, same_index, same_page, same_facets = measure()
+    assert index['question_count'] == 1500
+    assert same_index == index and same_page == page and same_facets == facets
+    assert page.total == 1498
+    print(f'TEST-1500 skill index + list + facets: cold={cold:.1f}ms hot={hot:.1f}ms')
+    assert hot < 300
+
+
 def test_paged_duplicate_groups_refresh_after_relabelling_and_keep_occurrence_numbers(tmp_path):
     from question_bank.database.schema import connect
     from question_bank.services.duplicate_analysis_copy_service import ensure_content_index
