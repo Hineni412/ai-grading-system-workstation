@@ -73,6 +73,7 @@ function clearPreloads(): void {
 
 function refreshPreloads(): void {
   clearPreloads()
+  if (reviewItem.value.media.originals_available === false) return
   const urls = [
     props.previousItem?.media.crop_url,
     props.nextItem?.media.crop_url,
@@ -218,7 +219,8 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="review-evidence-viewer" aria-label="答卷证据查看器">
-    <div class="review-evidence-toolbar" role="toolbar" aria-label="图片查看工具">
+    <p v-if="reviewItem.media.originals_available === false" class="review-evidence-cleared" role="status">原卷已清理，分数和作答记录仍保留。</p>
+    <div v-else class="review-evidence-toolbar" role="toolbar" aria-label="图片查看工具">
       <button type="button" @click="viewer.fitWidth">适应宽度</button>
       <button type="button" @click="viewer.setActualSize">原比例</button>
       <button type="button" @click="viewer.zoomBy(-0.25)">缩小</button>
@@ -230,6 +232,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div
+      v-if="reviewItem.media.originals_available !== false"
       ref="canvasElement"
       class="review-evidence-canvas"
       :class="{ 'is-dragging': isDragging }"
@@ -245,7 +248,7 @@ onBeforeUnmount(() => {
     >
       <img
         :key="imageRenderKey"
-        :src="sourceUrl"
+        :src="sourceUrl ?? undefined"
         :data-load-key="imageRenderKey"
         :alt="`${item.student_name} 的${sourceLabel}`"
         :style="{ transform: viewer.transform.value }"
@@ -264,6 +267,10 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <p class="review-evidence-help">可拖动图片或用方向键移动；使用上方工具缩放和旋转<span v-if="expandable !== false">，点击图片可弹窗放大</span>。</p>
+    <p v-if="reviewItem.media.originals_available !== false" class="review-evidence-help">可拖动图片或用方向键移动；使用上方工具缩放和旋转<span v-if="expandable !== false">，点击图片可弹窗放大</span>。</p>
   </section>
 </template>
+
+<style scoped>
+.review-evidence-cleared { display: grid; place-items: center; min-height: 260px; margin: 0; padding: 20px; color: var(--color-text-muted); background: var(--color-bg-subtle); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-panel); text-align: center; }
+</style>

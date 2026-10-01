@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import threading
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -353,6 +354,9 @@ class ScanGradingWorkspace:
         if self.job_manager is None:
             raise ScanGradingWorkspaceError("scan analysis job manager is unavailable")
         with self._lock(session_id):
+            from session_originals import originals_state, ScanSourcesReleased
+            if originals_state(self.data_root or self.exams_root.parent, session_id) != "complete":
+                raise ScanSourcesReleased()
             clean_payload = dict(payload)
             clean_payload["session_id"] = int(session_id)
             if self.upload_batch_exists(session_id):
@@ -421,6 +425,7 @@ class ScanGradingWorkspace:
         return summary
 
     def prepare_resume(self, session_id: int, run_id: int) -> dict[str, Any]:
+        self._require_original_pages(session_id)
         run, counts = self._require_run(session_id, run_id)
         if str(run.grading_mode) != "ai":
             raise LegacyGradingModeError(LEGACY_GRADING_MODE_MESSAGE)
@@ -492,6 +497,7 @@ class ScanGradingWorkspace:
         return summary
 
     def prepare_failed_retry(self, session_id: int, run_id: int) -> dict[str, Any]:
+        self._require_original_pages(session_id)
         run, counts = self._require_run(session_id, run_id)
         if str(run.grading_mode) != "ai":
             raise LegacyGradingModeError(LEGACY_GRADING_MODE_MESSAGE)
@@ -512,6 +518,7 @@ class ScanGradingWorkspace:
         return payload
 
     def prepare_supplement(self, session_id: int, run_id: int) -> dict[str, Any]:
+        self._require_original_pages(session_id)
         run, _counts = self._require_run(session_id, run_id)
         if str(run.grading_mode) != "ai":
             raise LegacyGradingModeError(LEGACY_GRADING_MODE_MESSAGE)
@@ -581,6 +588,7 @@ class ScanGradingWorkspace:
         requests_per_minute: int | None,
     ) -> dict[str, Any]:
         with self._lock(session_id):
+            self._require_original_pages(session_id)
             current_run = self.get_grading_run(session_id)
             if current_run is not None:
                 raise ScanGradingWorkspaceError(
@@ -1106,6 +1114,8 @@ class ScanGradingWorkspace:
                 "replacement cleanup is incomplete"
             ) from exc
         try:
+            from session_originals import receipt_path
+            receipt_path(self.data_root or self.exams_root.parent, session_id).unlink(missing_ok=True)
             self._replacement_commit_path(session_id).unlink(missing_ok=True)
         except OSError as exc:
             raise ScanReplacementCleanupIncompleteError(
@@ -1253,9 +1263,17 @@ class ScanGradingWorkspace:
             )
         return current
 
-    def get_preflight(self, session_id: int) -> dict[str, Any]:
+    def get_preflight(self, session_id: int, *, read_only: bool = False) -> dict[str, Any]:
         with self._lock(session_id):
-            manifest = self._load_or_create_manifest(session_id)
+            if read_only:
+                try:
+                    manifest = json.loads(self._manifest_path(session_id).read_text(encoding="utf-8"))
+                except (OSError, ValueError) as exc:
+                    raise ScanGradingWorkspaceError("scan upload batch is unavailable") from exc
+                if not isinstance(manifest, dict):
+                    raise ScanGradingWorkspaceError("scan upload batch is invalid")
+            else:
+                manifest = self._load_or_create_manifest(session_id)
             if manifest.get("state") != "frozen":
                 raise ScanGradingWorkspaceError("scan upload batch is not frozen")
             analysis, identity = self._read_analysis(session_id)
@@ -1839,10 +1857,18 @@ class ScanGradingWorkspace:
     def _media_url(session_id: int, target_type: str, target_id: str, side: str) -> str:
         return f"/api/sessions/{int(session_id)}/scan/preflight/media/{target_type}:{target_id}:{side}"
 
-    def _lock(self, session_id: int) -> threading.RLock:
+    def _require_original_pages(self, session_id: int) -> None:
+        from session_originals import require_original_pages
+        require_original_pages(self.data_root or self.exams_root.parent, session_id)
+
+    @contextmanager
+    def _lock(self, session_id: int):
+        from session_cleanup import session_lifecycle_guard
         key = f"{self.templates_root.resolve()}:{int(session_id)}"
         with self._locks_guard:
-            return self._locks.setdefault(key, threading.RLock())
+            lock = self._locks.setdefault(key, threading.RLock())
+        with session_lifecycle_guard(session_id), lock:
+            yield
 
     @staticmethod
     def _require_draft(manifest: dict[str, Any]) -> None:

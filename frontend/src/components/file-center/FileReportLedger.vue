@@ -21,6 +21,7 @@ defineProps<{
   rows: ReportRow[]
   historyOpen: Set<ReportType>
   isPopover: boolean
+  originalsAvailable?: boolean
 }>()
 const emit = defineEmits<{
   'generate': [type: ReportType, forceRegenerate: boolean]
@@ -74,6 +75,7 @@ const fileCenter = useFileCenterStore()
           @click="emit('open-review-notes')"
         >在成绩中心查看</button>
       </p>
+      <p v-if="row.type === 'annotated_original_pdf' && originalsAvailable === false" class="file-center__row-notes">原卷已清理，不能再导出批注原卷。</p>
       <div class="file-center__row-actions">
         <AppButton variant="danger"
           v-if="row.liveJob && !TERMINAL_JOB_STATUSES.has(row.liveJob.status)"
@@ -95,6 +97,7 @@ const fileCenter = useFileCenterStore()
           :disabled="
             fileCenter.submittingKey === `report:${row.type}`
             || fileCenter.reportContext?.has_results === false
+            || (row.type === 'annotated_original_pdf' && originalsAvailable === false)
           "
           @click="emit('generate', row.type, true)"
         >
@@ -106,6 +109,7 @@ const fileCenter = useFileCenterStore()
           :disabled="
             fileCenter.submittingKey === `report:${row.type}`
             || fileCenter.reportContext?.has_results === false
+            || (row.type === 'annotated_original_pdf' && originalsAvailable === false)
           "
           @click="emit('generate', row.type, false)"
         >
@@ -158,6 +162,7 @@ const fileCenter = useFileCenterStore()
               || reportDisplayStatus(job) === 'unavailable'
               || reportDisplayStatus(job) === 'stale'
             "
+            :disabled="row.type === 'annotated_original_pdf' && originalsAvailable === false"
             @click="emit('generate', job.payload.report_type as ReportType, true)"
           >
             重新生成
@@ -181,6 +186,7 @@ const fileCenter = useFileCenterStore()
           <th scope="row" :title="row.description">
             {{ row.title }}<span class="file-report-table__kind">{{ row.kind }}</span>
             <span v-if="row.latest" class="file-report-table__filename">{{ reportFilename(row.latest) }}</span>
+            <p v-if="row.type === 'annotated_original_pdf' && originalsAvailable === false" class="file-report-table__notes">原卷已清理，不能再导出批注原卷。</p>
             <p
               v-if="row.latest !== null && reviewNoteCount(row.latest) > 0"
               class="file-report-table__notes"
@@ -235,6 +241,7 @@ const fileCenter = useFileCenterStore()
               :disabled="
                 fileCenter.submittingKey === `report:${row.type}`
                 || fileCenter.reportContext?.has_results === false
+                || (row.type === 'annotated_original_pdf' && originalsAvailable === false)
               "
               @click="emit('generate', row.type, true)"
             >
@@ -246,6 +253,7 @@ const fileCenter = useFileCenterStore()
               :disabled="
                 fileCenter.submittingKey === `report:${row.type}`
                 || fileCenter.reportContext?.has_results === false
+                || (row.type === 'annotated_original_pdf' && originalsAvailable === false)
               "
               @click="emit('generate', row.type, false)"
             >
@@ -301,6 +309,7 @@ const fileCenter = useFileCenterStore()
                     || reportDisplayStatus(job) === 'unavailable'
                     || reportDisplayStatus(job) === 'stale'
                   "
+                  :disabled="row.type === 'annotated_original_pdf' && originalsAvailable === false"
                   @click="emit('generate', job.payload.report_type as ReportType, true)"
                 >
                   重新生成

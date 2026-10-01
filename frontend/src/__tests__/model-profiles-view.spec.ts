@@ -67,15 +67,15 @@ describe('ModelProfilesView', () => {
 
     await settle()
     await vi.waitFor(() => {
-      expect(host.textContent).toContain('请先在下方新增一个 API 站点')
+      expect(host.textContent).toContain('还没有服务账号')
     })
 
-    expect(host.querySelector('.settings-hub__section-heading h2')?.textContent).toBe('AI 服务')
-    expect(host.textContent).toContain('高级设置：API 站点、密钥与请求速度')
+    expect(host.querySelector('.page-tabs [aria-current=page]')?.textContent).toBe('AI 服务')
+    expect(host.textContent).toContain('添加服务')
     expect(host.textContent).not.toContain('班主任工作台')
-    expect(host.querySelectorAll('.model-task-row')).toHaveLength(2)
-    expect(host.querySelectorAll('.model-task-row select:disabled')).toHaveLength(2)
-    expect(host.querySelectorAll('.model-task-row input:disabled')).toHaveLength(2)
+    expect(host.querySelectorAll('.model-task-table tr')).toHaveLength(2)
+    expect(host.querySelectorAll('.model-task-table tr select:disabled')).toHaveLength(2)
+    expect(host.querySelectorAll('.model-task-table tr input:disabled')).toHaveLength(2)
   })
 
 
@@ -129,22 +129,21 @@ describe('ModelProfilesView', () => {
     app.mount(host)
     mounted.push(app)
 
-    await vi.waitFor(() => {
-      expect(host.querySelector<HTMLInputElement>('[name="request-timeout-seconds"]')).toBeTruthy()
-    })
+    await vi.waitFor(() => expect(host.textContent).toContain('校内模型'))
+    ;[...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '编辑')!.click()
+    await vi.waitFor(() => expect(document.querySelector('[name="request-timeout-seconds"]')).not.toBeNull())
 
-    expect(host.textContent).toContain('单次请求超时（秒）')
-    expect(host.textContent).toContain('对所有在线 AI 请求统一生效')
+    expect(document.body.textContent).toContain('等待超时（秒）')
+    expect(document.querySelector<HTMLInputElement>('[name="api-key"]')?.value).toBe('')
     expect(host.textContent).not.toContain('批量推理')
-    const timeoutInput = host.querySelector<HTMLInputElement>('[name="request-timeout-seconds"]')!
+    const timeoutInput = document.querySelector<HTMLInputElement>('[name="request-timeout-seconds"]')!
     expect(timeoutInput.value).toBe('90')
 
     timeoutInput.value = '45'
     timeoutInput.dispatchEvent(new Event('input', { bubbles: true }))
     await settle()
 
-    const saveButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('保存配置'))!
+    const saveButton = document.querySelector<HTMLButtonElement>('.settings-drawer button[type=submit]')!
     expect(saveButton.disabled).toBe(false)
     saveButton.click()
     await vi.waitFor(() => expect(saveSpy).toHaveBeenCalledTimes(1))

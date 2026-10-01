@@ -19,6 +19,7 @@ from backend.file_access import (
 )
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from question_id_contract import question_id_coordinates
+from session_originals import OriginalPagesCleared, require_original_pages
 
 IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".webp"})
 _CROP_RENDER_VERSION = "review-crop-v1"
@@ -70,6 +71,7 @@ class ReviewMediaService:
         page: str,
         variant: str,
     ) -> ResolvedFile:
+        require_original_pages(self.data_root, session_id)
         normalized_page = str(page or "").strip().lower()
         normalized_variant = str(variant or "").strip().lower()
         if normalized_page not in {"front", "back"}:
@@ -87,15 +89,18 @@ class ReviewMediaService:
             if (
                 context is None
                 or int(context["session_id"]) != int(session_id)
-                or annotated is None
-                or int(annotated["session_id"]) != int(session_id)
+                or (annotated is not None and int(annotated["session_id"]) != int(session_id))
             ):
                 raise ReviewMediaNotFound("Review media resource was not found.")
-            if not annotated.get("annotated_front_path") or not annotated.get("annotated_back_path"):
+            from manual_review_service import ManualReviewService
+            renderer = ManualReviewService(self.db, self.annotated_dir)
+            if not annotated or not all(renderer._is_cached_annotation(annotated.get(f"annotated_{side}_path")) for side in ("front", "back")):
                 from manual_review_service import ManualReviewService
 
                 try:
-                    ManualReviewService(self.db, self.annotated_dir).ensure_result_annotation(int(result_id))
+                    renderer.ensure_result_annotation(int(result_id))
+                except OriginalPagesCleared:
+                    raise
                 except Exception as exc:
                     raise ReviewMediaUnreadable("Annotation could not be refreshed; retry the image.") from exc
                 annotated = self.db.reviews.get_annotated_result(int(result_id))
@@ -106,12 +111,15 @@ class ReviewMediaService:
         else:
             raise ReviewMediaNotFound("Review media resource was not found.")
 
-        return resolve_controlled_file(
+        resolved = resolve_controlled_file(
             path_value,
             root=root,
             data_root=self.data_root,
             allowed_suffixes=IMAGE_SUFFIXES,
         )
+        if normalized_variant == "annotated":
+            os.utime(resolved.path, None)
+        return resolved
 
     def render_detail_crop(
         self,
@@ -119,6 +127,7 @@ class ReviewMediaService:
         result_id: int,
         detail_id: int,
     ) -> bytes:
+        require_original_pages(self.data_root, session_id)
         context = self.db.reviews.get_review_media_context(
             int(session_id),
             int(result_id),
@@ -159,6 +168,7 @@ class ReviewMediaService:
         back_source: Path | None,
     ) -> bytes:
         """Render one teacher-grading crop before an AI result exists."""
+        require_original_pages(self.data_root, session_id)
 
         region = self._find_region(
             int(session_id),

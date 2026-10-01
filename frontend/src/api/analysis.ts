@@ -27,7 +27,7 @@ export interface StudentAnalysisItem {
   deduction_amount: number | null
   deduction_reason: string | null
   needs_review: boolean
-  evidence_url: string
+  evidence_url: string | null
 }
 
 export interface AnalysisScope {
@@ -136,8 +136,7 @@ function isStudentItem(value: unknown): value is StudentAnalysisItem {
     (value.deduction_amount === null || value.deduction_amount >= 0) &&
     isNullableString(value.deduction_reason) &&
     typeof value.needs_review === 'boolean' &&
-    typeof value.evidence_url === 'string' &&
-    value.evidence_url.startsWith('/api/')
+    (value.evidence_url === null || (typeof value.evidence_url === 'string' && value.evidence_url.startsWith('/api/')))
   )
 }
 
@@ -178,8 +177,8 @@ function hasMatchingStudentScope(
   return response.items.every((item) => (
     item.question_id === scope.question_id &&
     (scope.class_name === null || item.class_name === scope.class_name) &&
-    item.evidence_url ===
-      `/api/sessions/${scope.session_id}/results/${item.result_id}/details/${item.detail_id}/crop`
+    (item.evidence_url === null || item.evidence_url ===
+      `/api/sessions/${scope.session_id}/results/${item.result_id}/details/${item.detail_id}/crop`)
   ))
 }
 

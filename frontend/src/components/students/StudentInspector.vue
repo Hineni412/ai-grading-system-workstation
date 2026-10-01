@@ -1,130 +1,54 @@
 <script setup lang="ts">
-import AppButton from '@/components/design-system/AppButton.vue'
-import StatePanel from '@/components/design-system/StatePanel.vue'
-
 import { computed, reactive, ref, watch } from 'vue'
-
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../ui/sheet'
+import AppButton from '../design-system/AppButton.vue'
 import { useStudentRosterStore } from '../../stores/students'
-
 const roster = useStudentRosterStore()
-const form = reactive({
-  student_code: '',
-  name: '',
-  class_name: '',
-})
+const form = reactive({ student_code: '', name: '', class_name: '' })
 const deleteConfirmation = ref('')
-
-watch(
-  () => roster.selectedStudent,
-  (student) => {
-    form.student_code = student?.student_code ?? ''
-    form.name = student?.name ?? ''
-    form.class_name = student?.class_name ?? ''
-    deleteConfirmation.value = ''
-  },
-  { immediate: true },
-)
-
-const canDelete = computed(() => (
-  roster.deletionState === 'ready'
-  && deleteConfirmation.value === roster.selectedStudent?.student_code
-))
-
-function save(): void {
-  void roster.saveStudent({
-    student_code: form.student_code,
-    name: form.name,
-    class_name: form.class_name.trim() || null,
-  })
-}
-
-function close(): void {
-  roster.selectStudent(null)
+const saving = ref(false)
+watch(() => roster.selectedStudent?.id, () => {
+  const student = roster.selectedStudent
+  form.student_code = student?.student_code ?? ''; form.name = student?.name ?? ''; form.class_name = student?.class_name ?? ''
+  deleteConfirmation.value = ''
+}, { immediate: true })
+const canDelete = computed(() => roster.deletionState === 'ready' && deleteConfirmation.value === roster.selectedStudent?.student_code)
+const busy = computed(() => saving.value || roster.deletionState === 'deleting')
+function close() { if (!busy.value) roster.selectStudent(null) }
+async function save() {
+  if (busy.value) return
+  saving.value = true
+  try {
+    if (await roster.saveStudent({ ...form, class_name: form.class_name.trim() || null })) {
+      roster.selectStudent(null)
+      await roster.load()
+    }
+  } finally { saving.value = false }
 }
 </script>
-
 <template>
-  <aside class="student-inspector" aria-labelledby="student-inspector-title">
-    <template v-if="roster.selectedStudent">
-      <div class="student-inspector__heading">
-        <div>
-          <p class="student-eyebrow">学生资料</p>
-          <h2 id="student-inspector-title">{{ roster.selectedStudent.name }}</h2>
+  <Sheet :open="Boolean(roster.selectedStudent)" @update:open="value => { if (!value) close() }">
+    <SheetContent class="settings-drawer" :aria-describedby="undefined" @interact-outside="event => { if (busy) event.preventDefault() }" @escape-key-down="event => { if (busy) event.preventDefault() }">
+      <SheetHeader class="settings-drawer__header"><SheetTitle>编辑学生</SheetTitle></SheetHeader>
+      <form v-if="roster.selectedStudent" class="settings-drawer__form" @submit.prevent="save">
+        <div class="settings-drawer__body">
+          <label class="settings-field"><span>学号</span><input v-model.trim="form.student_code" class="app-input" name="student-code" required :disabled="busy"></label>
+          <label class="settings-field"><span>姓名</span><input v-model.trim="form.name" class="app-input" name="student-name" required :disabled="busy"></label>
+          <label class="settings-field"><span>班级</span><input v-model.trim="form.class_name" class="app-input" name="student-class" placeholder="选填" :disabled="busy"></label>
+          <section class="student-danger" aria-label="删除学生">
+            <h3>删除学生</h3>
+            <AppButton v-if="roster.deletionState === 'idle' || roster.deletionState === 'error'" variant="ghost" class="settings-danger-ghost" data-action="review-deletion" @click="roster.loadDeletionImpact()">删除这名学生…</AppButton>
+            <p v-else-if="roster.deletionState === 'loading'" role="status">正在核对关联记录…</p>
+            <template v-if="roster.deletionImpact">
+              <p>将删除 {{ roster.deletionImpact.counts.deleted_results }} 份成绩、{{ roster.deletionImpact.counts.deleted_details }} 条评分明细、{{ roster.deletionImpact.counts.deleted_annotations }} 条批注记录和 {{ roster.deletionImpact.counts.deleted_attendance }} 条考勤记录，并解除 {{ roster.deletionImpact.counts.unlinked_papers }} 份答卷与该生的关联。删除前会自动备份。</p>
+              <label class="settings-field"><span>输入学号 {{ roster.selectedStudent.student_code }} 确认</span><input v-model="deleteConfirmation" class="app-input" name="delete-confirmation" autocomplete="off" :disabled="busy"></label>
+              <AppButton variant="danger" data-action="delete-student" :disabled="!canDelete || busy" @click="roster.deleteSelected()">{{ roster.deletionState === 'deleting' ? '正在备份并删除…' : '备份并删除' }}</AppButton>
+            </template>
+          </section>
+          <p v-if="roster.errorMessage" role="alert" class="settings-feedback is-error">{{ roster.errorMessage }}</p>
         </div>
-        <button type="button" class="student-link" aria-label="关闭学生资料" @click="close">
-          关闭
-        </button>
-      </div>
-
-      <form class="student-inspector__form" @submit.prevent="save">
-        <label>
-          <span>学号</span>
-          <input class="app-input" v-model.trim="form.student_code" name="student-code" required>
-        </label>
-        <label>
-          <span>姓名</span>
-          <input class="app-input" v-model.trim="form.name" name="student-name" required>
-        </label>
-        <label>
-          <span>班级</span>
-          <input class="app-input" v-model.trim="form.class_name" name="student-class">
-        </label>
-        <AppButton variant="primary"
-          type="submit"
-          class="student-button student-button--primary"
-          data-action="save-student"
-          :disabled="!form.student_code || !form.name"
-        >
-          保存学生信息
-        </AppButton>
+        <footer class="settings-drawer__footer"><AppButton variant="secondary" :disabled="busy" @click="close">取消</AppButton><AppButton variant="primary" type="submit" data-action="save-student" :disabled="!form.student_code || !form.name || busy">{{ saving ? '正在保存…' : '保存' }}</AppButton></footer>
       </form>
-
-      <section class="student-danger" aria-labelledby="student-danger-title">
-        <h3 id="student-danger-title">删除学生</h3>
-        <p>删除会同时清理该学生的成绩、明细和考勤关联。系统会先创建备份。</p>
-        <AppButton variant="secondary"
-          v-if="roster.deletionState === 'idle' || roster.deletionState === 'error'"
-          type="button"
-          class="student-button student-button--secondary"
-          data-action="review-deletion"
-          @click="roster.loadDeletionImpact()"
-        >
-          查看删除影响
-        </AppButton>
-        <span v-else-if="roster.deletionState === 'loading'" role="status">
-          正在核对关联记录…
-        </span>
-
-        <div v-if="roster.deletionImpact" class="student-danger__impact">
-          <strong>
-            将删除 {{ roster.deletionImpact.counts.deleted_results }} 份成绩记录、
-            {{ roster.deletionImpact.counts.deleted_details }} 条评分明细
-          </strong>
-          <span>
-            同时删除 {{ roster.deletionImpact.counts.deleted_annotations }} 条批注、
-            {{ roster.deletionImpact.counts.deleted_attendance }} 条考勤，并解除
-            {{ roster.deletionImpact.counts.unlinked_papers }} 份答卷的学生关联。
-          </span>
-          <label>
-            <span>输入学号 {{ roster.selectedStudent.student_code }} 确认</span>
-            <input class="app-input"
-              v-model="deleteConfirmation"
-              name="delete-confirmation"
-              autocomplete="off"
-            >
-          </label>
-          <AppButton variant="danger"
-            type="button"
-            class="student-button student-button--danger"
-            data-action="delete-student"
-            :disabled="!canDelete"
-            @click="roster.deleteSelected()"
-          >
-            创建备份并永久删除
-          </AppButton>
-        </div>
-      </section>
-    </template>
-    <StatePanel v-else kind="empty" title="选择一名学生" description="可在这里修改学号、姓名和班级，或核对删除影响。" />
-  </aside>
+    </SheetContent>
+  </Sheet>
 </template>

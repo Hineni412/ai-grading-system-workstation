@@ -87,3 +87,14 @@ def test_failed_database_activation_preserves_previous_template_files(tmp_path) 
 
     assert front.read_bytes() == b"previous-front"
     assert back.read_bytes() == b"previous-back"
+
+
+def test_template_upload_retains_two_pages_without_full_class_pdf(tmp_path) -> None:
+    db = open_grading_repositories(tmp_path / "grading.db")
+    db.initialize()
+    session_id = _create_session_with_config(db, tmp_path)
+    service = TemplateUploadService(tmp_path / "templates")
+    uploaded = service.upload(db=db, session_id=session_id, pdf_bytes=_two_page_pdf(), first_page_role="front")
+    assert uploaded.template_fingerprint == service.load_current(db=db, session_id=session_id).template_fingerprint
+    assert len(list((tmp_path / "templates").rglob("*.jpg"))) >= 2
+    assert not list((tmp_path / "templates").rglob("template_source_full_class.pdf"))

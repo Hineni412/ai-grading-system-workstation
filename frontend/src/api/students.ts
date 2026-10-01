@@ -127,7 +127,7 @@ export interface StudentExamResultItem {
   deduction_reason: string | null
   error_category: string | null
   error_summary: string | null
-  evidence_url: string
+  evidence_url: string | null
 }
 
 export interface StudentExamResultSession {
@@ -184,8 +184,7 @@ function isStudentExamResultItem(value: unknown): value is StudentExamResultItem
     isNullableString(value.deduction_reason) &&
     isNullableString(value.error_category) &&
     isNullableString(value.error_summary) &&
-    typeof value.evidence_url === 'string' &&
-    value.evidence_url.startsWith('/api/')
+    (value.evidence_url === null || (typeof value.evidence_url === 'string' && value.evidence_url.startsWith('/api/')))
   )
 }
 

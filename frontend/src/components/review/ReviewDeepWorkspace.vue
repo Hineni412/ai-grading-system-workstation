@@ -223,6 +223,7 @@ const emit = defineEmits<{
           题目与答案
         </button>
         <div
+          v-if="resolvedItem.media.originals_available !== false"
           class="review-deep-workspace__sources"
           role="group"
           aria-label="证据来源"

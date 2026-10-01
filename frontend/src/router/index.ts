@@ -51,9 +51,9 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
-    path: studentsRouteDefinition.path,
+    path: '/students',
     name: studentsRouteDefinition.id,
-    component: () => import('../views/StudentsView.vue'),
+    redirect: to => ({ path: '/settings', query: { ...to.query, section: 'students' } }),
     meta: {
       title: studentsRouteDefinition.title,
       description: studentsRouteDefinition.description,
@@ -196,7 +196,7 @@ const routes: RouteRecordRaw[] = [
     path: modelProfilesRouteDefinition.path,
     redirect: (to) => ({
       path: settingsRouteDefinition.path,
-      query: { ...to.query, section: 'models' },
+      query: { ...to.query, section: 'ai' },
     }),
     meta: {
       title: modelProfilesRouteDefinition.title,

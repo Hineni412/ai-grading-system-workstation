@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
@@ -38,6 +39,7 @@ from backend.review.service import (
     ReviewValidationError,
 )
 from backend.scan_grading.workspace import ScanGradingWorkspace
+from session_originals import originals_state
 
 router = APIRouter(prefix="/api", tags=["review"])
 
@@ -106,7 +108,7 @@ def list_review_question_items(
         manual_context=manual_context,
     )
     items = [
-        _review_item_response(item)
+        _review_item_response(item, data_root=workspace.data_root or workspace.exams_root.parent)
         for item in review_items
     ]
     return ReviewItemListResponse(items=items, total=len(items))
@@ -216,9 +218,12 @@ def confirm_review_question_items(
     return ReviewConfirmResponse.model_validate(result, from_attributes=True)
 
 
-def _review_item_response(item: object) -> ReviewItemResponse:
+def _review_item_response(item: object, *, data_root: Path | None = None) -> ReviewItemResponse:
     values = asdict(item)
     session_id = int(values["session_id"])
+    if originals_state(data_root, session_id) in {"clearing", "cleared"}:
+        values["media"] = ReviewMediaLinksResponse(originals_available=False)
+        return ReviewItemResponse.model_validate(values)
     metadata = values.get("metadata")
     if (
         isinstance(metadata, dict)

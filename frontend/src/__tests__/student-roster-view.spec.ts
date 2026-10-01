@@ -4,7 +4,8 @@ import { createApp, nextTick, type App } from 'vue'
 import { createMemoryHistory } from 'vue-router'
 
 import { createAppRouter } from '../router'
-import StudentsView from '../views/StudentsView.vue'
+import SettingsStudentsPanel from '../components/settings/SettingsStudentsPanel.vue'
+import { useStudentRosterStore } from '../stores/students'
 
 const student = {
   id: 12,
@@ -90,13 +91,14 @@ async function mountView() {
   await router.isReady()
   const host = document.createElement('div')
   document.body.append(host)
-  const app = createApp(StudentsView)
+  expect(router.currentRoute.value.fullPath).toBe('/settings?section=students')
+  const app = createApp(SettingsStudentsPanel)
   app.use(createPinia())
   app.use(router)
   app.mount(host)
   mounted.push(app)
   await settle()
-  return host
+  return document.body
 }
 
 beforeEach(() => {
@@ -149,7 +151,7 @@ afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount()
 })
 
-describe('StudentsView', () => {
+describe('SettingsStudentsPanel', () => {
 
   it('classifies file rows before enabling the confirmation write', async () => {
     const host = await mountView()
@@ -163,7 +165,9 @@ describe('StudentsView', () => {
 
     expect(apiMock.previewImport).toHaveBeenCalled()
     expect(host.textContent).toContain('新增 1')
-    expect(host.textContent).toContain('无效 1')
+    expect(host.textContent).toContain('有问题 1')
+    expect(host.textContent).toContain('只看有变化的行')
+    expect(host.textContent).toContain('写入名单（1 人）')
     const checkboxes = host.querySelectorAll<HTMLInputElement>(
       '[data-testid="import-preview-row"] input[type="checkbox"]',
     )
@@ -200,9 +204,11 @@ describe('StudentsView', () => {
       },
     )
 
+    host.querySelector<HTMLButtonElement>('[data-student-id="12"]')!.click()
+    await settle()
     host.querySelector<HTMLButtonElement>('[data-action="review-deletion"]')!.click()
     await settle()
-    expect(host.textContent).toContain('将删除 2 份成绩记录')
+    expect(host.textContent).toContain('将删除 2 份成绩')
     const deleteButton = host.querySelector<HTMLButtonElement>(
       '[data-action="delete-student"]',
     )!
@@ -215,5 +221,31 @@ describe('StudentsView', () => {
     confirmation.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
     expect(deleteButton.disabled).toBe(false)
+    deleteButton.click()
+    await settle()
+    expect(apiMock.deleteStudent).toHaveBeenCalled()
+  })
+
+  it('searches after typing and immediately filters class', async () => {
+    const host = await mountView()
+    const search = host.querySelector<HTMLInputElement>('input[type="search"]')!
+    search.value = 'S012'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.waitFor(() => expect(apiMock.getWorkspace).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'S012', page: 1 }), expect.any(AbortSignal)))
+  })
+
+  it('keeps the edited name when a pending roster refresh finishes', async () => {
+    const host = await mountView()
+    host.querySelector<HTMLButtonElement>('[data-student-id="12"]')!.click()
+    await nextTick()
+    const name = host.querySelector<HTMLInputElement>('[name="student-name"]')!
+    name.value = '正在编辑的名字'
+    name.dispatchEvent(new Event('input', { bubbles: true }))
+    await useStudentRosterStore().load()
+    await settle()
+    expect(name.value).toBe('正在编辑的名字')
+    host.querySelector<HTMLButtonElement>('[data-action="save-student"]')!.click()
+    await settle()
+    expect(apiMock.updateStudent).toHaveBeenCalledWith(12, 'a'.repeat(64), expect.objectContaining({ name: '正在编辑的名字' }))
   })
 })

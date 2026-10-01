@@ -235,7 +235,7 @@ export const useModelProfilesStore = defineStore('model-profiles', () => {
     noticeMessage.value = ''
     try {
       applyState(await api.saveTaskBindings(copyModelTaskBindings(bindings)))
-      noticeMessage.value = '四类工作的模型安排已保存；保存过程不会调用模型。'
+      noticeMessage.value = '工作模型已保存；保存过程不会调用 AI。'
       return true
     } catch (error) {
       errorMessage.value = friendlyModelProfileError(error, 'save')

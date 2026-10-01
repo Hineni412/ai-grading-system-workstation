@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from pathlib import Path
 from typing import Any
 
 from backend.repositories.base import RepositorySession, RepositorySessionProvider
@@ -234,6 +235,30 @@ class ReviewRepository:
             if old:
                 previous.append(old)
         return previous
+
+    def clear_session_annotation_paths(self, session_id: int, *, legacy_root: Path | None = None) -> None:
+        rows = self._session.connection.execute(
+            "SELECT result_id, annotated_front_path, annotated_back_path FROM annotated_results WHERE session_id = ?",
+            (int(session_id),),
+        ).fetchall()
+        for row in rows:
+            front, back = row["annotated_front_path"], row["annotated_back_path"]
+            if legacy_root is not None:
+                def legacy(value: str | None) -> bool:
+                    if not value:
+                        return False
+                    from session_cleanup import _resolve_stored_candidate, _is_under
+                    candidate = _resolve_stored_candidate(value, legacy_root.parent)
+                    # Also invalidate missing old files, which will be regenerated.
+                    fallback = Path(value)
+                    if not fallback.is_absolute():
+                        fallback = legacy_root.parent / fallback
+                    return _is_under(candidate or fallback, legacy_root)
+                front = None if legacy(front) else front
+                back = None if legacy(back) else back
+            else:
+                front = back = None
+            self.upsert_annotated_result(session_id, int(row["result_id"]), front, back)
 
     def list_teacher_score_locks(
         self,
@@ -1194,6 +1219,11 @@ class ReviewRepositoryGateway:
 
     def __init__(self, sessions: RepositorySessionProvider) -> None:
         self._sessions = sessions
+
+    def clear_session_annotation_paths(self, session_id: int, *, legacy_root: Path | None = None) -> None:
+        with self._sessions.session() as session:
+            with session.transaction():
+                ReviewRepository(session).clear_session_annotation_paths(session_id, legacy_root=legacy_root)
 
     def list_teacher_score_locks(
         self,

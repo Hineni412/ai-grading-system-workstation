@@ -18,6 +18,7 @@
 | `frontend/src/stores/review-queue.ts` | 复核队列、地址参数与选中状态同步；页面离开或考试切换后忽略旧加载结果 |
 | `frontend/src/components/` | 业务组件与共享控件 |
 | `path_manager.py` | 数据、配置、日志、输出与备份路径 |
+| `session_originals.py` | 原卷空间统计、文件清理及回执；复用考试生命周期锁和已有评分、复核状态，不修改分数归属 |
 
 核心业务包括考试配置、学生、扫描、阅卷、复核、结果、题库、组卷、知识图谱与训练。
 
@@ -27,6 +28,8 @@
 |---|---|
 | `user_data/databases/grading_system.db` | 考试、学生、阅卷、结果及共同任务元数据 |
 | `user_data/databases/question_bank.db` | 题目、标签、知识关系、组卷与训练 |
+| `user_data/exams/session_N/originals_receipt.json` | 原卷完整、扫描文件已释放、清理中或已清除状态及已释放空间；无回执表示完整 |
+| `user_data/cache/annotated_pages/session_N/` | 复核用时生成的批注页；数据库路径引用可失效，由阅卷媒体服务重新生成 |
 
 SQLite 结构由 `migrations/` 管理；空库初始化和已有库迁移有不同入口，见打包与更新文档。API 文件引用通过模块受控根目录解析，数据库保存业务标识或相对引用。
 

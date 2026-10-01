@@ -195,6 +195,10 @@ def get_annotated_dir() -> Path:
     return get_path_manager().annotated_dir
 
 
+def get_annotation_cache_dir() -> Path:
+    return get_path_manager().annotation_cache_dir
+
+
 def get_data_root() -> Path:
     return get_path_manager().data_root
 
@@ -389,7 +393,7 @@ def get_media_service(
     data_root: Path = Depends(get_data_root),
     exams_dir: Path = Depends(get_exams_dir),
     templates_dir: Path = Depends(get_templates_dir),
-    annotated_dir: Path = Depends(get_annotated_dir),
+    annotated_dir: Path = Depends(get_annotation_cache_dir),
 ) -> ReviewMediaService:
     return ReviewMediaService(
         db,
@@ -402,7 +406,7 @@ def get_media_service(
 
 def get_manual_review_service(
     db: GradingRepositoryAccess = Depends(get_grading_db),
-    annotated_dir: Path = Depends(get_annotated_dir),
+    annotated_dir: Path = Depends(get_annotation_cache_dir),
 ) -> ManualReviewService:
     return ManualReviewService(db, annotated_dir)
 

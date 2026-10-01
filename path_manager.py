@@ -215,6 +215,10 @@ class PathManager:
         return self._data_root / "annotated"
 
     @property
+    def annotation_cache_dir(self) -> Path:
+        return self._data_root / "cache" / "annotated_pages"
+
+    @property
     def reports_dir(self) -> Path:
         return self._data_root / "reports"
 

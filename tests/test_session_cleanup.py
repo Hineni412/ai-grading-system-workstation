@@ -44,6 +44,7 @@ def _make_deleted_session(db: DBManager, data_root: Path) -> tuple[int, list[Pat
     back_scan = _write(exams_dir / "back.jpg")
     annotated_front = _write(annotated_dir / "front.jpg")
     annotated_back = _write(annotated_dir / "back.jpg")
+    cached_annotation = _write(data_root / "cache" / "annotated_pages" / f"session_{session_id}" / "test_cached.jpg")
 
     template_id = db.templates.upsert_session_template(
         session_id, str(front_template), str(back_template)
@@ -126,6 +127,7 @@ def _make_deleted_session(db: DBManager, data_root: Path) -> tuple[int, list[Pat
         back_scan,
         annotated_front,
         annotated_back,
+        cached_annotation,
     ]
 
 

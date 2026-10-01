@@ -11,6 +11,7 @@ import { useConfigWorkspaceStore } from '../../../stores/config-workspace';
 
 import { useReviewDraftStore } from '../../../stores/review-drafts';
 import { useSessionStore } from '../../../stores/session';
+import { useJobStore } from '../../../stores/jobs';
 
 async function settleUi(): Promise<void> {
   await Promise.resolve()
@@ -72,6 +73,24 @@ beforeEach(() => {
 })
 
 describe('AppShell', () => {
+  it('opens task center from the sidebar and cancels through the existing job store', async () => {
+    const { app, host } = await mountShell({ path: '/question-bank', stubPages: true })
+    const jobs = useJobStore()
+    jobs.jobs[42] = { id: 42, job_type: 'ops_backup', status: 'running', progress: 0.5, stage: 'writing', detail: '测试备份', payload: {}, result: {}, error: null, cancel_requested: false, created_at: '2026-10-02T00:00:00', updated_at: '2026-10-02T00:00:00', started_at: null, finished_at: null }
+    vi.spyOn(jobs, 'initialize').mockResolvedValue()
+    vi.spyOn(jobs, 'refresh').mockResolvedValue()
+    const cancel = vi.spyOn(jobs, 'cancel').mockResolvedValue()
+    host.querySelector<HTMLButtonElement>('[aria-label="任务中心"]')!.click()
+    await settleUi()
+    const popover = document.body.querySelector('.task-center-popover')!
+    expect(popover.textContent).toContain('测试备份')
+    expect(popover.textContent).toContain('50%')
+    const button = [...popover.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === '取消任务')!
+    button.click()
+    await settleUi()
+    expect(cancel).toHaveBeenCalledWith(42)
+    app.unmount()
+  })
   it('preserves focus for question-bank bookmarks and focuses the heading on page navigation', async () => {
     const { app, host, router } = await mountShell({ path: '/question-bank', stubPages: true })
     const workspace = host.querySelector('#main-workspace')!

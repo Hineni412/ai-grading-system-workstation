@@ -8,6 +8,7 @@ import type {
   ReportType,
   ScoreExcelOptions,
 } from '../api/exports'
+import { storageApi } from '../api/ops'
 import { exportsApi } from '../api/exports'
 import {
   TERMINAL_JOB_STATUSES,
@@ -45,6 +46,7 @@ const jobStore = useJobStore()
 const resultsStore = useResultsCenterStore()
 const actionMessage = ref('')
 const actionError = ref('')
+const originalsAvailable = ref(true)
 const excelSettingsOpen = ref(false)
 const excelForceRegenerate = ref(false)
 const hideBottomEnabled = ref(true)
@@ -189,7 +191,13 @@ const refreshedTerminalReportIds = new Set<number>()
 
 watch(
   () => sessionStore.selectedSessionId,
-  (sessionId) => {
+  (sessionId, _previous, onCleanup) => {
+    let cancelled = false
+    onCleanup(() => { cancelled = true })
+    originalsAvailable.value = true
+    if (sessionId !== null) void storageApi.getOriginals(sessionId).then(value => {
+      if (!cancelled) originalsAvailable.value = !['clearing', 'cleared'].includes(value.originals_state)
+    }).catch(() => { /* Export service still enforces availability. */ })
     actionMessage.value = ''
     actionError.value = ''
     excelSettingsOpen.value = false
@@ -510,7 +518,7 @@ defineExpose({ dialogOpen })
         >
           正在读取文件记录…
         </div>
-        <FileReportLedger
+        <FileReportLedger :originals-available="originalsAvailable"
           v-else
           :rows="reportRows"
           :history-open="historyOpen"

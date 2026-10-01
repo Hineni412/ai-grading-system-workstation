@@ -41,6 +41,8 @@ class OriginalPaperExporter:
         self.output_dir = output_dir
 
     def export_session_originals(self, session_id: int) -> Path:
+        from session_originals import require_original_pages
+        require_original_pages(self._data_root(), session_id)
         results = self.db.results.get_session_results(session_id)
         if not results:
             raise ValueError("当前考试批改暂无结果，无法导出原卷。")

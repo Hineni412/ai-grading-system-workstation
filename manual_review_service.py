@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from question_id_contract import (
     canonicalize_question_document,
     resolve_known_question_id,
 )
+from session_originals import require_original_pages
 
 ANNOTATION_RETRY_MESSAGE = "Annotation rendering failed; retry required."
 _ANNOTATED_IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".webp"})
@@ -39,8 +41,9 @@ class ManualReviewService:
         if not context:
             return
         with get_answer_region_session_lock(self.annotated_dir / f"session_{context['session_id']}"):
+            require_original_pages(self._data_root(), int(context['session_id']))
             annotated = self.review.get_annotated_result(result_id)
-            if annotated and annotated.get("annotated_front_path") and annotated.get("annotated_back_path"):
+            if annotated and all(self._is_cached_annotation(annotated.get(f"annotated_{page}_path")) for page in ("front", "back")):
                 return
             details = self.results.get_result_details(result_id)
             self._render_result_annotation_locked(
@@ -83,6 +86,7 @@ class ManualReviewService:
             return None
 
         session_id = int(context["session_id"])
+        require_original_pages(self._data_root(), session_id)
         regions = answer_regions_with_template_source_sizes(
             self.db,
             session_id,
@@ -230,7 +234,40 @@ class ManualReviewService:
             previous,
             current_paths={str(front_path), str(back_path)},
         )
+        self._trim_annotation_cache(keep={Path(front_path), Path(back_path)})
         return {"front": str(front_path), "back": str(back_path)}
+
+    def _is_cached_annotation(self, value: object) -> bool:
+        if not isinstance(value, str) or not value:
+            return False
+        try:
+            path = Path(value).resolve()
+            path.relative_to(self.annotated_dir.resolve())
+            return path.is_file()
+        except (OSError, ValueError):
+            return False
+
+    def _trim_annotation_cache(self, max_bytes: int = 256 * 1024 * 1024, *, keep: set[Path] | None = None) -> None:
+        from session_originals import _files
+        entries = []
+        for path in _files(self.annotated_dir, self.annotated_dir):
+            if path.suffix.lower() == ".jpg" and path.parent.name.startswith("session_"):
+                try:
+                    entries.append((path.stat(), path))
+                except OSError:
+                    pass
+        total = sum(stat.st_size for stat, _ in entries)
+        keep = {path.resolve() for path in (keep or set())}
+        for stat, path in sorted(entries, key=lambda item: item[0].st_mtime):
+            if total <= max_bytes:
+                break
+            if path in keep or stat.st_mtime > time.time() - 600:
+                continue
+            try:
+                path.unlink()
+                total -= stat.st_size
+            except OSError:
+                pass
 
     def _cleanup_replaced_annotation_files(
         self,

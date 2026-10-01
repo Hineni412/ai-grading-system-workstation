@@ -12,6 +12,8 @@ from backend.scan_grading.workspace import (
 def current_manual_context(
     session_id: int,
     workspace: ScanGradingWorkspace,
+    *,
+    read_only: bool = False,
 ) -> dict[str, Any] | None:
     """Return the frozen scan batch context shared by all review surfaces.
 
@@ -22,7 +24,7 @@ def current_manual_context(
     try:
         # Preflight already checks that the current batch is frozen and that
         # its analysis belongs to that batch. Avoid loading grading jobs/runs.
-        preflight = workspace.get_preflight(session_id)
+        preflight = workspace.get_preflight(session_id, read_only=True) if read_only else workspace.get_preflight(session_id)
     except ScanGradingWorkspaceError:
         return None
     return {

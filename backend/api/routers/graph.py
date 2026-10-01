@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
+from session_originals import originals_state
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import get_request_diagnosis_profile_service
 from backend.api.schemas.graph import (
@@ -261,7 +262,7 @@ def _attach_assessment_evidence(
         item["evidence_url"] = (
             f"/api/sessions/{key[0]}/results/{row.get('result_id')}"
             f"/details/{row.get('detail_id')}/crop"
-        )
+        ) if originals_state(Path(diagnosis_service.db.db_path).parent.parent, key[0]) not in {"clearing", "cleared"} else None
 
 
 def _build_profile_dicts(

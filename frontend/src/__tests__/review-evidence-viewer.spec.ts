@@ -143,3 +143,13 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
+
+it('shows a quiet placeholder without requesting cleared originals', async () => {
+  const item = makeItem(2)
+  item.media = { originals_available: false, crop_url: null, original_front_url: null, original_back_url: null, annotated_front_url: null, annotated_back_url: null }
+  const { host } = await mountViewer({ item })
+  expect(host.textContent).toContain('原卷已清理')
+  expect(host.querySelector('img')).toBeNull()
+  expect(host.querySelector('button')).toBeNull()
+  expect(PreloadImageStub.instances).toHaveLength(0)
+})

@@ -41,6 +41,7 @@ from backend.jobs.manager import (
 )
 from backend.repositories.access import GradingRepositoryAccess
 from path_manager import resolve_stored_file_path
+from session_originals import OriginalPagesCleared
 
 router = APIRouter(prefix="/api", tags=["grading"])
 
@@ -115,6 +116,8 @@ def preview_session_grading(
         if str(upload_batch.get("state") or "") != "frozen":
             raise ScanGradingWorkspaceError("scan upload batch is not frozen")
         preflight = workspace.get_preflight(session_id)
+    except OriginalPagesCleared as exc:
+        raise ApiError(409, "original_pages_cleared", "这场考试的原卷已清理，不能再让 AI 批改。") from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(
             409,
@@ -181,6 +184,8 @@ def pause_session_grading(
     _require_session(db.sessions, session_id)
     try:
         result = workspace.pause_grading_run(session_id, run_id)
+    except OriginalPagesCleared as exc:
+        raise ApiError(409, "original_pages_cleared", "这场考试的原卷已清理，不能再让 AI 批改。") from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(409, "grading_run_not_pausable", "Grading run cannot be paused") from exc
     return GradingRunSummaryResponse.model_validate(result)
@@ -251,6 +256,8 @@ def resume_session_grading(
             "grading_config_changed",
             "Grading configuration changed; this run cannot be resumed",
         ) from exc
+    except OriginalPagesCleared as exc:
+        raise ApiError(409, "original_pages_cleared", "这场考试的原卷已清理，不能再让 AI 批改。") from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(409, "grading_run_not_resumable", "Grading run cannot be resumed") from exc
 
@@ -288,6 +295,8 @@ def retry_failed_session_grading(
             "job_type_not_supported",
             "Job type is not supported",
         ) from exc
+    except OriginalPagesCleared as exc:
+        raise ApiError(409, "original_pages_cleared", "这场考试的原卷已清理，不能再让 AI 批改。") from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(409, "grading_run_not_retryable", "Grading run has no retryable failures") from exc
 
@@ -331,6 +340,8 @@ def supplement_session_grading(
             "grading_config_changed",
             "Grading configuration changed; newly matched scans cannot be supplemented",
         ) from exc
+    except OriginalPagesCleared as exc:
+        raise ApiError(409, "original_pages_cleared", "这场考试的原卷已清理，不能再让 AI 批改。") from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(
             409,
@@ -379,6 +390,8 @@ def cancel_session_grading(
             job.id if job is not None else None,
             confirmed=confirmed,
         )
+    except OriginalPagesCleared as exc:
+        raise ApiError(409, "original_pages_cleared", "这场考试的原卷已清理，不能再让 AI 批改。") from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(409, "grading_run_not_cancellable", "Grading run cannot be cancelled") from exc
     return GradingRunSummaryResponse.model_validate(summary)
@@ -450,6 +463,8 @@ def run_session_grading(
                 "legacy_grading_mode_disabled",
                 LEGACY_GRADING_MODE_MESSAGE,
             ) from exc
+        except OriginalPagesCleared as exc:
+            raise ApiError(409, "original_pages_cleared", "这场考试的原卷已清理，不能再让 AI 批改。") from exc
         except ScanGradingWorkspaceError as exc:
             raise ApiError(409, "grading_input_not_ready", "Grading input is not ready") from exc
         except ActiveJobExistsError as exc:

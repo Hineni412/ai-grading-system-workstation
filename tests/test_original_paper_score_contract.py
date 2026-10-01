@@ -13,6 +13,15 @@ from original_paper_exporter import (
 )
 
 
+def test_cleared_original_export_fails_with_readable_message(tmp_path):
+    from session_originals import clear_session_originals, OriginalPagesCleared
+    from tests.test_review_media_service import _seed_media
+    seed = _seed_media(tmp_path)
+    clear_session_originals(seed.db, seed.data_root, seed.session_id, clear_crop_cache=lambda: 0)
+    with pytest.raises(OriginalPagesCleared, match="原卷已清理"):
+        OriginalPaperExporter(seed.db, seed.data_root / "reports").export_session_originals(seed.session_id)
+
+
 def test_original_export_detects_template_anchors_once_and_renders_every_student(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

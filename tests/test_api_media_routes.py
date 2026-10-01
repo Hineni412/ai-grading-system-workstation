@@ -51,3 +51,29 @@ def test_media_route_returns_expired_without_leaking_deleted_path(media_client) 
     assert response.json()["error"]["code"] == "media_expired"
     assert str(seed.front_path) not in str(response.json())
     assert response.headers["cache-control"] == "no-store"
+
+
+def test_media_routes_show_originals_cleared(media_client) -> None:
+    from session_originals import clear_session_originals
+    client, seed, _ = media_client
+    clear_session_originals(seed.db, seed.data_root, seed.session_id, clear_crop_cache=seed.service.clear_detail_crop_cache)
+    for suffix in ("front", "front?variant=annotated"):
+        response = client.get(f"/api/sessions/{seed.session_id}/results/{seed.result_id}/pages/{suffix}")
+        assert response.status_code == 410
+        assert response.json()["error"]["code"] == "original_pages_cleared"
+        assert response.headers["cache-control"] == "no-store"
+
+
+def test_analysis_keeps_scores_and_removes_evidence_links_after_cleanup(media_client) -> None:
+    from session_originals import clear_session_originals
+    client, seed, _ = media_client
+    url = f"/api/sessions/{seed.session_id}/analysis/questions/Q1/students"
+    before = client.get(url)
+    assert before.status_code == 200
+    item = before.json()["items"][0]
+    assert item["evidence_url"].endswith("/crop")
+    clear_session_originals(seed.db, seed.data_root, seed.session_id, clear_crop_cache=seed.service.clear_detail_crop_cache)
+    after = client.get(url)
+    assert after.status_code == 200
+    expected = {**item, "evidence_url": None}
+    assert after.json()["items"][0] == expected

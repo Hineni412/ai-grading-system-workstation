@@ -1,11 +1,12 @@
 
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, nextTick, type App as VueApp } from 'vue'
-import { createMemoryHistory, createRouter } from 'vue-router'
+import { createApp, h, nextTick, type App as VueApp } from 'vue'
+import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 
 import { aiDiagnosticsApi } from '../api/ai-diagnostics'
 import { modelProfilesApi } from '../api/model-profiles'
+import { studentRosterApi } from '../api/students'
 import { opsApi } from '../api/ops'
 import SettingsHubView from '../views/SettingsHubView.vue'
 
@@ -32,12 +33,12 @@ async function mountAt(path: string) {
   await router.isReady()
   const host = document.createElement('div')
   document.body.appendChild(host)
-  const app = createApp(SettingsHubView)
+  const app = createApp({ render: () => h(RouterView) })
   app.use(pinia)
   app.use(router)
   app.mount(host)
   mounted.push(app)
-  await vi.waitFor(() => expect(host.querySelector('.settings-hub__section-heading h2')).toBeTruthy())
+  await vi.waitFor(() => expect(host.querySelector('.page-tabs')).toBeTruthy())
   await Promise.resolve()
   await nextTick()
   return { host, router }
@@ -45,6 +46,7 @@ async function mountAt(path: string) {
 
 beforeEach(() => {
   localStorage.clear()
+  vi.spyOn(studentRosterApi, 'getWorkspace').mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50, total_pages: 0, class_names: [], roster_revision: 'a'.repeat(64) })
   vi.spyOn(modelProfilesApi, 'getState').mockResolvedValue(emptyModelState)
   vi.spyOn(opsApi, 'getSelfCheck').mockImplementation(() => new Promise(() => {}))
   vi.spyOn(opsApi, 'getBackups').mockImplementation(() => new Promise(() => {}))
@@ -64,24 +66,31 @@ afterEach(() => {
 })
 
 describe('SettingsHubView', () => {
-
-  it('keeps an unsaved AI service draft in place when the teacher declines to leave', async () => {
+  it('defaults to students and places four tabs in the title row', async () => {
     const { host, router } = await mountAt('/settings')
-    await vi.waitFor(() => expect(host.querySelector('[name="profile-name"]')).toBeTruthy(), { timeout: 5000 })
-    const input = host.querySelector<HTMLInputElement>('[name="profile-name"]')!
-    input.value = '尚未保存的站点'
+    await vi.waitFor(() => expect(router.currentRoute.value.query.section).toBe('students'))
+    expect([...host.querySelectorAll('.page-tabs button')].map(button => button.textContent)).toEqual(['学生名单', 'AI 服务', '数据与空间', '系统状态'])
+    expect(host.querySelector('.page-header .page-tabs')).not.toBeNull()
+  })
+  it.each([['backup', 'data'], ['maintenance', 'system'], ['models', 'ai'], ['ai-trace', 'system']])('maps old %s to %s', async (old, section) => {
+    const { router } = await mountAt(`/settings?section=${old}`)
+    await vi.waitFor(() => expect(router.currentRoute.value.query.section).toBe(section))
+    expect(router.currentRoute.value.hash).toBe(old === 'ai-trace' ? '#ai-call-log' : '')
+  })
+  it('keeps an unsaved service draft when leaving is declined', async () => {
+    const { host, router } = await mountAt('/settings?section=ai')
+    await vi.waitFor(() => expect(host.textContent).toContain('添加服务'), { timeout: 5000 })
+    const add = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '添加服务')!
+    add.click()
+    await vi.waitFor(() => expect(document.querySelector('[name="profile-name"]')).not.toBeNull())
+    const input = document.querySelector<HTMLInputElement>('[name="profile-name"]')!
+    input.value = '尚未保存的服务'
     input.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
     const confirm = vi.spyOn(globalThis, 'confirm').mockReturnValue(false)
-
-    const backupButton = [...host.querySelectorAll<HTMLButtonElement>('.settings-hub__menu button')]
-      .find((button) => button.textContent?.includes('备份与恢复'))!
-    backupButton.click()
-    await nextTick()
-
+    await router.replace('/settings?section=data')
     expect(confirm).toHaveBeenCalledOnce()
-    expect(router.currentRoute.value.query.section).not.toBe('backup')
-    expect(host.querySelector('.settings-hub__section-heading h2')?.textContent).toBe('AI 服务')
+    expect(router.currentRoute.value.query.section).toBe('ai')
+    expect(input.value).toBe('尚未保存的服务')
   })
-
 })
