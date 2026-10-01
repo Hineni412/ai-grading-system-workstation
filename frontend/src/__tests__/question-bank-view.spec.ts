@@ -4,6 +4,7 @@ import { createApp, h, nextTick } from 'vue'
 import { createMemoryHistory } from 'vue-router'
 
 import { questionBankApi, type QuestionBankPaper } from '../api/question-bank'
+import QuestionBankTodo from '../components/question-bank/QuestionBankTodo.vue'
 import QuestionSkillBrowser from '../components/question-bank/QuestionSkillBrowser.vue'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import PaperLibrary from '../components/question-bank/PaperLibrary.vue'
@@ -516,6 +517,42 @@ describe('question bank workspace', () => {
     await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ skillKeys: [], knowledgePoints: ['八年级上册/第一章/勾股定理'] })))
     expect(router.currentRoute.value.query.topic).toBe('kp_TEST_topic')
     expect(router.currentRoute.value.fullPath).not.toContain('勾股')
+  })
+
+  it('moves a paper through the existing revision-protected trash and restore API', async () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const pinia = createPinia(); const bank = useQuestionBankStore(pinia)
+    bank.papers = [paper]; bank.papersState = 'ready'
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const write = vi.spyOn(questionBankApi, 'changePaperState').mockResolvedValue({ id: paper.id, deleted: true, import_status: 'deleted', updated_at: '2026-10-01T10:00:00Z', affected_question_count: 1 })
+    const list = vi.spyOn(questionBankApi, 'listPapers').mockResolvedValue({ items: [], total: 0 })
+    const app = createApp(PaperLibrary); app.use(pinia).mount(host); mounted.push(app)
+    await openCardMenu(host, paper.title!); cardMenuItem('移入回收站').click(); await nextTick()
+    expect(write).not.toHaveBeenCalled()
+    confirm.mockReturnValue(true)
+    await openCardMenu(host, paper.title!); cardMenuItem('移入回收站').click()
+    await vi.waitFor(() => expect(write).toHaveBeenCalledWith(paper, true))
+    await vi.waitFor(() => expect(host.textContent).toContain('立即恢复'))
+    list.mockResolvedValue({ items: [paper], total: 1 })
+    const restore = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '立即恢复')!
+    restore.click()
+    await vi.waitFor(() => expect(write).toHaveBeenLastCalledWith(expect.objectContaining({ id: paper.id, updated_at: '2026-10-01T10:00:00Z' }), false))
+    await vi.waitFor(() => expect(bank.papers).toHaveLength(1))
+  })
+
+  it('shows actionable todo groups from existing read filters', async () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const pinia = createPinia(); useCurriculumScopeStore(pinia).selectedVolumeId = 'bnu24-math-g8-upper'
+    const load = vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [item], total: 1, page: 1, page_size: 20, total_pages: 1 })
+    const open = vi.fn()
+    const app = createApp({ render: () => h(QuestionBankTodo, { index: null, pendingCount: 2, onQuestion: open }) })
+    app.use(pinia).mount(host); mounted.push(app)
+    await vi.waitFor(() => expect(host.textContent).toContain('第 1 题 · 匿名期末试卷'))
+    expect(load).toHaveBeenCalledWith(expect.objectContaining({ criteriaNeedsReview: true }), expect.anything())
+    expect(load).toHaveBeenCalledWith(expect.objectContaining({ skillUnlinked: true }), expect.anything())
+    expect(load).toHaveBeenCalledWith(expect.objectContaining({ analysisStatus: 'incomplete' }), expect.anything())
+    const action = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '去处理 →')!
+    action.click(); expect(open).toHaveBeenCalledWith(item)
   })
 
   it('disables unchecked rows when the 500-question selection is full', async () => {
@@ -1301,7 +1338,7 @@ describe('question bank workspace', () => {
       .find((button) => button.textContent?.includes('确认彻底删除'))!
     confirm.click()
     await vi.waitFor(() => expect(store.papers).toHaveLength(0))
-    expect(host.textContent).not.toContain('试卷回收站')
+    expect(document.querySelector('[role=dialog][aria-label=试卷回收站]')).toBeNull()
   })
 
   it('reuses the permanent-delete request token when the first response is lost', async () => {
