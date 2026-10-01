@@ -1,8 +1,8 @@
 
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, nextTick } from 'vue';
-import { createMemoryHistory } from 'vue-router';
+import { createApp, h, nextTick } from 'vue';
+import { createMemoryHistory, createRouter } from 'vue-router';
 
 import type { SessionSummary } from '../../../api/sessions';
 import AppShell from '../../../layouts/AppShell.vue'
@@ -41,14 +41,15 @@ function switcherRows(popover: ParentNode): HTMLElement[] {
 async function mountShell({
   path = '/grading',
   prepareStore = true,
-}: { path?: string; prepareStore?: boolean } = {}) {
+  stubPages = false,
+}: { path?: string; prepareStore?: boolean; stubPages?: boolean } = {}) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const store = useSessionStore()
   if (prepareStore) await store.initialize(async () => [])
   const initialize = vi.spyOn(store, 'initialize')
   if (prepareStore) initialize.mockResolvedValue()
-  const router = createAppRouter(createMemoryHistory())
+  const router = stubPages ? createRouter({ history: createMemoryHistory(), routes: ['/question-bank', '/results'].map(path => ({ path, component: { render: () => h('section', [h('h1', { tabindex: -1 }, path === '/results' ? '合成结果页' : '合成题库页'), h('button', '合成题卡')]) } })) }) : createAppRouter(createMemoryHistory())
   await router.push(path)
   await router.isReady()
 
@@ -71,6 +72,18 @@ beforeEach(() => {
 })
 
 describe('AppShell', () => {
+  it('preserves focus for question-bank bookmarks and focuses the heading on page navigation', async () => {
+    const { app, host, router } = await mountShell({ path: '/question-bank', stubPages: true })
+    const workspace = host.querySelector('#main-workspace')!
+    const button = workspace.querySelector<HTMLButtonElement>('button')!
+    button.focus()
+    await router.replace({ query: { tab: 'skill', question: '17' } }); await settleUi()
+    expect(document.activeElement).toBe(button)
+    await router.push('/results'); await settleUi()
+    expect(document.activeElement?.textContent).toBe('合成结果页')
+    app.unmount(); host.remove()
+  })
+
 
   it.each(['review', 'config'] as const)('warns before leaving with dirty %s work', async (kind) => {
     const { app } = await mountShell()

@@ -109,6 +109,8 @@ def test_skill_index_current_versions_legacy_links_filters_and_cache(tmp_path):
     page = service.list_questions(QuestionReadFilters(skill_keys=(keys[1],), include_skills=True))
     assert [item['id'] for item in page.items] == [1]
     assert len(page.items[0]['skills']) == 2
+    assert page.items[0]['evidence_point_count'] == 2
+    assert all('/' not in row['display_name'] for row in skills.values())
     assert page.items[0]['skill_hits'] == [{'point_id': 'p2', 'point_label': '判定点 2：求解'}]
     assert service.list_facets(QuestionReadFilters(skill_keys=(keys[1],)))['question_types'] == [{'value': '解答题', 'count': 1}]
     assert {item['id'] for item in service.list_questions(QuestionReadFilters(skill_unlinked=True)).items} == {3, 4, 5}
@@ -157,6 +159,8 @@ def test_paged_duplicate_groups_refresh_after_relabelling_and_keep_occurrence_nu
     second = service.list_questions(QuestionReadFilters(collapse_duplicates=True, page_size=1, page=2))
     assert first.total == second.total == 2
     assert [first.items[0]["id"], second.items[0]["id"]] == [3, 1]
+    members = service.list_questions(QuestionReadFilters(collapse_duplicates=True, include_skills=True, page_size=1, page=2))
+    assert members.items[0]['duplicate_members'] == [{'id': 2, 'paper_id': 1, 'question_number': '2', 'paper_title': 'Paper'}]
     with connect(db) as conn:
         conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(2,'method','合成标注','manual')")
     refreshed = service.list_questions(QuestionReadFilters(collapse_duplicates=True, page_size=1, page=2))

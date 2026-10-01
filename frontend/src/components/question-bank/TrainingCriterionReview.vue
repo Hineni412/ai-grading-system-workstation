@@ -23,6 +23,8 @@ const props = defineProps<{ questionId: number; skillLabels?: string[];
 }>()
 
 const workspace = ref<TrainingCriterionWorkspace | null>(null)
+const emit = defineEmits<{ updated: [workspace: TrainingCriterionWorkspace] }>()
+watch(workspace, value => { if (value) emit('updated', value) })
 const loadState = ref<'loading' | 'ready' | 'error'>('loading')
 const writeState = ref<'idle' | 'saving' | 'generating'>('idle')
 const message = ref('')

@@ -33,7 +33,7 @@ export interface QuestionBankTag {
 // 知识点标签值是"册｜章｜小节｜细分点"全路径；界面只显示最末端节点名，
 // 完整路径保留在标签值本身（筛选、跨模块契约都依赖全名）。
 export function knowledgeLeafLabel(value: string): string {
-  const parts = value.split(/[|｜]/).map((part) => part.trim()).filter(Boolean)
+  const parts = value.split(/[|｜/]/).map((part) => part.trim()).filter(Boolean)
   return parts[parts.length - 1] ?? value
 }
 
@@ -61,6 +61,8 @@ export interface QuestionBankListItem {
   id: number
   duplicate_of_question_id?: number | null
   duplicate_labels_reused?: boolean
+  evidence_point_count?: number
+  duplicate_members?: { id: number; paper_id: number | null; question_number: string; paper_title: string | null }[]
   revision: string
   paper_id: number | null
   question_number: string
@@ -624,7 +626,7 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 
 function hasExactQuestionKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const base = Object.fromEntries(Object.entries(value).filter(([key]) =>
-    !['duplicate_of_question_id', 'duplicate_labels_reused', 'skills', 'skill_hits'].includes(key)))
+    !['duplicate_of_question_id', 'duplicate_labels_reused', 'skills', 'skill_hits', 'evidence_point_count', 'duplicate_members'].includes(key)))
   return hasExactKeys(base, keys)
 }
 
@@ -687,6 +689,8 @@ function isQuestionBankListItem(value: unknown): value is QuestionBankListItem {
 
 function hasQuestionBankListFields(value: Record<string, unknown>): boolean {
   return (
+    (value.evidence_point_count === undefined || isNonnegativeInteger(value.evidence_point_count)) &&
+    (value.duplicate_members === undefined || (Array.isArray(value.duplicate_members) && value.duplicate_members.every(member => isRecord(member) && hasExactKeys(member, ['id', 'paper_id', 'question_number', 'paper_title']) && isPositiveInteger(member.id) && isNullableInteger(member.paper_id) && typeof member.question_number === 'string' && isNullableString(member.paper_title)))) &&
     (value.skills === undefined || (Array.isArray(value.skills) && value.skills.every((item) =>
       isRecord(item) && hasExactKeys(item, ['stable_key', 'display_name'])
       && typeof item.stable_key === 'string' && item.stable_key.startsWith('sk_') && typeof item.display_name === 'string'))) &&

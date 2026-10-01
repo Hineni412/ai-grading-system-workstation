@@ -61,12 +61,10 @@ function attributeTags(type: string) { return (store.detail?.tags ?? []).filter(
 const attributes = computed(() => [
   { label: '教材', values: [...attributeTags('exam_scope'), ...attributeTags('knowledge_point')], tone: 'curriculum' },
   { label: '能力', values: attributeTags('ability'), tone: 'ability' },
-  { label: '方法', values: attributeTags('method'), tone: 'method' },
-  { label: '模型', values: attributeTags('model'), tone: 'model' },
-  { label: '思想', values: attributeTags('thought'), tone: 'thought' },
   { label: '特殊考法', values: attributeTags('special_type'), tone: 'special' },
   { label: '需先会', values: attributeTags('prerequisite'), tone: 'prerequisite' },
 ].filter(row => row.values.length))
+const solutionGroups = computed(() => ['method', 'model', 'thought'].map(tone => ({ tone, values: attributeTags(tone) })).filter(group => group.values.length))
 async function saveAnnotation() {
   const saved = await review.value?.saveDraft()
   if (saved) { editing.value = false; await store.loadQuestions(store.appliedFilters) }
@@ -350,14 +348,6 @@ async function save(): Promise<void> {
   await store.saveTags()
 }
 
-async function removeCurrent(): Promise<void> {
-  if (!store.detail) return
-  const confirmed = window.confirm(
-    `确认把第 ${store.detail.question_number || store.detail.id} 题移出当前题库吗？删除后可立即恢复。`,
-  )
-  if (confirmed) await store.deleteCurrent()
-}
-
 </script>
 <template>
   <div class="qb-annotation">
@@ -377,15 +367,16 @@ async function removeCurrent(): Promise<void> {
         <div class="qb-expanded-markings">
           <section class="qb-evidence-summary">
             <header class="qb-section-heading">
-              <h3>判定点 × 技能 <small v-if="points.length && criterion?.available && points.every(point => directSkills(point).length)">{{ points.length }} 个判定点 · 全部质检通过</small></h3>
+              <h3>判定点 × 技能 <small v-if="points.length && criterion?.available && criterion.current_version?.quality_status === 'passed' && !store.detail.criteria_needs_review && points.every(point => directSkills(point).length)">{{ points.length }} 个判定点 · 全部质检通过</small><small v-else-if="points.length">{{ points.length }} 个判定点</small></h3>
               <div><template v-if="editing"><AppButton variant="primary" @click="saveAnnotation">保存</AppButton><AppButton variant="ghost" @click="cancelAnnotation">取消</AppButton></template><AppButton v-else variant="secondary" @click="editing = true">编辑标注</AppButton></div>
             </header>
             <p v-if="editing" class="qb-help">修改不会改写已有考试成绩与报告</p>
             <p v-if="evidenceError" class="qb-feedback is-error" role="alert">{{ evidenceError }}</p>
             <p v-else-if="!points.length" class="qb-help">尚无可用判定点，请核对判定点。</p>
+            <div v-if="points.length && !editing" class="qb-evidence-columns"><span>编号</span><span>判定点内容</span><span>状态</span></div>
             <div v-for="(point, index) in points" v-show="!editing" :key="point.evidence_point_id" class="qb-evidence-row">
               <span>{{ index + 1 }}</span>
-              <div><strong>{{ point.target }}</strong><p>{{ point.observable_evidence }}</p>
+              <div><strong>{{ point.target }}</strong><p v-if="point.observable_evidence !== point.target">{{ point.observable_evidence }}</p>
                 <div class="qb-skill-capsules"><button v-for="skill in directSkills(point)" :key="skill.key" type="button" class="qb-skill-capsule" :class="{ 'is-current': skill.key === currentSkill }" @click="emit('skill', skill.key)">{{ skill.label }}</button>
                   <span v-for="link in point.fine_term_links.filter(link => link.role === 'direct' && link.core_resolution.stable_keys.some(key => key.startsWith('kp_')))" :key="link.fine_term_id" class="qb-topic-capsule">{{ knowledgeLeafLabel(link.fine_term_name) }}</span>
                 </div>
@@ -393,17 +384,17 @@ async function removeCurrent(): Promise<void> {
               </div>
               <small><span v-if="store.detail.criteria_needs_review">待审核</span><span v-if="!directSkills(point).length">未挂技能</span></small>
             </div>
-            <div v-show="editing"><TrainingCriterionReview v-if="store.selectedQuestionId" ref="review" :question-id="store.selectedQuestionId" :skill-labels="skillLabels" :loader="loadCriterion" :evidence-loader="loadEvidence" /></div>
+            <div v-show="editing"><TrainingCriterionReview v-if="store.selectedQuestionId" ref="review" :question-id="store.selectedQuestionId" :skill-labels="skillLabels" :loader="loadCriterion" :evidence-loader="loadEvidence" @updated="criterion = $event" /></div>
             <button v-if="!editing" type="button" class="qb-link" @click="editing = true">核对判定点 / 重新生成</button>
           </section>
-          <section class="qb-paper-section qb-patterns" aria-labelledby="qb-patterns-title">
+          <section v-if="wrongOptionRows.length || otherPatterns.length || patternEdit || patternError || patternMessage" class="qb-paper-section qb-patterns" aria-labelledby="qb-patterns-title">
             <header class="qb-section-heading">
               <div>
                 <p class="qb-eyebrow">TYPICAL ERRORS</p>
                 <h3 id="qb-patterns-title">本题典型错法</h3>
               </div>
             </header>
-            <p class="qb-help">预测可用于提醒和讲评；只有结合实际作答，才算学生出现。这里的调整不会自动改写已有考试成绩、历史报告或学生错因记录。</p>
+            <p v-if="patternEdit" class="qb-help">修改不会改写已有考试成绩与报告。</p>
             <div v-if="wrongOptionRows.length" class="qb-patterns__group">
               <h4>错误选项</h4>
               <div v-for="row in wrongOptionRows" :key="row.letter" class="qb-patterns__option">
@@ -459,6 +450,7 @@ async function removeCurrent(): Promise<void> {
             <div><dt>题型</dt><dd>{{ questionTypeWithSubtype(store.detail.question_type, store.detail.tags) }}</dd></div>
             <div><dt>难度</dt><dd><meter min="1" max="10" :value="Number(store.detail.difficulty) || 1" /> {{ store.detail.difficulty || '待定' }}<small v-for="part in evidence?.part_assessments ?? []" :key="part.part_id"> · {{ part.part_id }}：{{ part.difficulty ?? '待定' }}</small></dd></div>
             <div v-for="row in attributes" :key="row.label"><dt>{{ row.label }}</dt><dd :data-tone="row.tone"><span v-for="value in row.values" :key="value" :title="value">{{ row.tone === 'curriculum' ? value.split('｜').join(' › ') : knowledgeLeafLabel(value) }}</span></dd></div>
+            <div v-if="solutionGroups.length" class="qb-property-wide"><dt>解法</dt><dd class="qb-solution-tags"><template v-for="(group, index) in solutionGroups" :key="group.tone"><i v-if="index" aria-hidden="true">｜</i><span v-for="value in group.values" :key="value" :data-tone="group.tone">{{ knowledgeLeafLabel(value) }}</span></template></dd></div>
             <div v-if="!selectedSectionId"><dt>教材小节</dt><dd class="qb-warning">小节待标定</dd></div>
           </dl></section>
           <details class="qb-tags qb-property-editor"><summary>编辑题目属性 / 选择小节</summary>
@@ -578,7 +570,6 @@ async function removeCurrent(): Promise<void> {
               {{ store.writeState === 'saving' ? '正在保存…' : '保存标签' }}
             </AppButton>
           </details>
-          <details class="qb-danger"><summary>移出当前题库</summary><p>移出后可立即恢复。</p><AppButton variant="danger" :disabled="store.writeState === 'saving'" @click="removeCurrent">删除这道题</AppButton></details>
         </div>
       </div>
     </template>

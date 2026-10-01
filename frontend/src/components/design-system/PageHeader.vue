@@ -49,6 +49,7 @@ onBeforeUnmount(() => {
       <h1 :id="titleId" class="page-header__title" tabindex="-1">{{ title }}</h1>
       <div v-if="$slots.meta" class="page-header__meta"><slot name="meta" /></div>
     </div>
+    <div v-if="$slots.navigation" class="page-header__navigation"><slot name="navigation" /></div>
     <div v-if="$slots.actions" class="page-header__actions"><slot name="actions" /></div>
   </header>
 </template>
@@ -111,5 +112,16 @@ onBeforeUnmount(() => {
   gap: var(--space-2);
   flex-wrap: wrap;
   min-width: 0;
+}
+
+.page-header__navigation {
+  align-self: stretch;
+  display: flex;
+  align-items: stretch;
+  margin-inline-start: auto;
+}
+
+.page-header__navigation + .page-header__actions {
+  margin-inline-start: 0;
 }
 </style>

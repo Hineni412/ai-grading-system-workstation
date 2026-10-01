@@ -55,7 +55,7 @@
 | 样卷题框编辑 | `npm run e2e:template-regions` | 使用当前源码的开发服务，不需要预构建 |
 | 扫描与批改 | `npm run e2e:scan-grading` | 普通入口先构建，后端使用隔离测试数据 |
 | 学生管理 | `npm run e2e:students` | 普通入口先构建，后端使用隔离测试数据 |
-| 题库操作 | `npm run e2e:question-bank` | 普通入口先构建，后端使用隔离测试数据 |
+| 技能找题、原地标注、整卷、待处理与试卷篮 | `npm run e2e:question-bank` | 普通入口先构建，每次新建 TEST-question-bank 合成目录，独立端口；覆盖 1280/1440、Esc 与焦点返回 |
 | 训练推荐 | `npm run e2e:training-recommendations` | 普通入口先构建，后端使用隔离测试数据 |
 
 依赖前端成品的五组入口保留同名 `:prepared` 命令；已有当前且完整的构建产物时可直接运行，不重建共享 `frontend/dist`。题框编辑入口直接使用源码，没有单独的 prepared 命令。专项配置从项目 `runtime/python/python.exe` 启动后端，历史配置文件名保留，入口按业务操作命名。

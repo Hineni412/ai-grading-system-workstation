@@ -17,7 +17,7 @@ from question_bank.taxonomy.curriculum_catalog import (
 
 
 def short_node_name(value: str) -> str:
-    return value.replace("|", "｜").split("｜")[-1].strip().removeprefix("技能·")
+    return value.replace("/", "｜").replace("|", "｜").split("｜")[-1].strip().removeprefix("技能·")
 
 
 def build_skill_snapshot(conn: sqlite3.Connection, db_path: Path, data_root: Path | None) -> dict[str, Any]:
@@ -45,6 +45,7 @@ def build_skill_snapshot(conn: sqlite3.Connection, db_path: Path, data_root: Pat
     profiles = load_profiles(db_path, list(questions), connection=conn, data_root=data_root)
     usable = {qid: profile for qid, profile in profiles.items() if profile.get("available")}
     links = load_point_links(db_path, [profile["evidence_version_id"] for profile in usable.values()], release, connection=conn)
+    point_counts: dict[int, int] = {}
     by_skill: dict[str, set[int]] = defaultdict(set)
     by_question: dict[int, dict[str, list[dict[str, str]]]] = {}
     for qid, profile in usable.items():
@@ -61,6 +62,7 @@ def build_skill_snapshot(conn: sqlite3.Connection, db_path: Path, data_root: Pat
                         if hit not in skills.setdefault(link.stable_key, []):
                             skills[link.stable_key].append(hit)
                         by_skill[link.stable_key].add(qid)
+        point_counts[qid] = number
         by_question[qid] = skills
     topics: dict[str, set[int]] = defaultdict(set)
     topic_keys: dict[str, str] = {}
@@ -86,7 +88,7 @@ def build_skill_snapshot(conn: sqlite3.Connection, db_path: Path, data_root: Pat
             sections[str(row["tag_value"])].add(qid)
     return {"release": release, "nodes": nodes, "questions": questions, "members": dict(members),
             "volumes": dict(volumes), "by_skill": dict(by_skill), "by_question": by_question,
-            "no_usable": set(questions) - set(usable),
+            "point_counts": point_counts, "no_usable": set(questions) - set(usable),
             "unlinked": {qid for qid in questions if not by_question.get(qid)},
             "topics": dict(topics), "topic_keys": topic_keys, "sections": dict(sections)}
 
@@ -143,7 +145,7 @@ def skill_index(snapshot: dict[str, Any], volume_id: str, review_ids: set[int]) 
         for anchor in anchors:
             skill_rows[anchor].append({"stable_key": key, "display_name": short_node_name(node["display_name"]),
                 "full_name": node["display_name"], **stats(snapshot["by_skill"].get(key, set())),
-                "cross_section": len(anchors) > 1,
+                "cross_section": len(anchors) > 1 or any(curriculum_knowledge_node(key)["level"] == 1 for key in anchors),
                 "definition": {name: node[name] for name in ("observable_evidence", "include_scope", "exclude_scope")}})
     topic_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for value, question_ids in snapshot["topics"].items():

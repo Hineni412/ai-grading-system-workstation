@@ -5,7 +5,7 @@ import DifficultyRangeFilter from '../components/question-bank/DifficultyRangeFi
 
 const apps: Array<ReturnType<typeof createApp>> = []
 
-function mountFilter(min = 1, max = 8, ceiling = 10) {
+function mountFilter(min = 1, max = 8, ceiling = 10, compact = false) {
   const host = document.createElement('div')
   document.body.append(host)
   const updates: Array<[string, number]> = []
@@ -15,6 +15,7 @@ function mountFilter(min = 1, max = 8, ceiling = 10) {
         min,
         max,
         ceiling,
+        compact,
         'onUpdate:min': (value: number) => updates.push(['min', value]),
         'onUpdate:max': (value: number) => updates.push(['max', value]),
       })
@@ -31,6 +32,17 @@ afterEach(() => {
 })
 
 describe('difficulty range filter', () => {
+  it('shows the supplied compact bounds and caps selectable practice difficulty', async () => {
+    const { host, updates } = mountFilter(1, 8, 8, true)
+    const lower = host.querySelector<HTMLSelectElement>('[aria-label="最低难度"]')!
+    const upper = host.querySelector<HTMLSelectElement>('[aria-label="最高难度"]')!
+    expect(lower.value).toBe('1')
+    expect(upper.value).toBe('8')
+    expect([...upper.options].some(option => Number(option.value) > 8)).toBe(false)
+    upper.value = '6.5'; upper.dispatchEvent(new Event('change', { bubbles: true })); await nextTick()
+    expect(updates).toContainEqual(['max', 6.5])
+  })
+
   it('caps practice at eight while retaining the bank ten-level scale', async () => {
     const bank = mountFilter(1, 8)
     const practice = mountFilter(1, 7, 8)

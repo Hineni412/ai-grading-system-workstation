@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle } from 'reka-ui'
 
 import {
   knowledgeLeafLabel,
@@ -25,7 +26,13 @@ withDefaults(defineProps<{
 
 const emit = defineEmits<{ skill: [key: string] }>()
 const store = useQuestionBankStore()
-function onEscape(event: KeyboardEvent) { if (event.key === 'Escape') { if (similarSource.value) closeSimilar(); else void store.selectQuestion(null) } }
+function onEscape(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || event.defaultPrevented) return
+  const popover = document.querySelector<HTMLDetailsElement>('.qb-label-popover[open], .qb-card-menu[open], .qb-paper-more[open], .paper-library__maintenance[open]')
+  if (popover) { popover.open = false; popover.querySelector<HTMLElement>('summary')?.focus(); event.preventDefault(); return }
+  if (similarSource.value) closeSimilar()
+  else if (!document.querySelector('[role="dialog"][aria-modal="true"]')) void store.selectQuestion(null)
+}
 onMounted(() => document.addEventListener('keydown', onEscape))
 onBeforeUnmount(() => document.removeEventListener('keydown', onEscape))
 const assembly = useAssemblyStore()
@@ -173,13 +180,13 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
     </footer>
   </section>
 
-  <Teleport to="body">
-    <div v-if="similarSource" class="qb-drawer-layer" role="presentation" @click.self="closeSimilar">
-      <aside class="qb-similar-drawer" role="dialog" aria-modal="true" aria-labelledby="similar-title">
+  <DialogRoot :open="Boolean(similarSource)" @update:open="!$event && closeSimilar()"><DialogPortal>
+    <DialogOverlay class="qb-drawer-layer" />
+      <DialogContent v-if="similarSource" as="aside" class="qb-similar-drawer qb-similar-dialog" :aria-describedby="undefined">
         <header>
           <div>
             <p class="qb-eyebrow">LOCAL SIMILARITY</p>
-            <h2 id="similar-title">相似题推荐</h2>
+            <DialogTitle as="h2">相似题推荐</DialogTitle>
             <p>基于本机题库文本和标签匹配，不会调用大模型或产生费用。</p>
           </div>
           <button type="button" class="qb-drawer-close" aria-label="关闭相似题" @click="closeSimilar">×</button>
@@ -230,7 +237,6 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
             </footer>
           </article>
         </div>
-      </aside>
-    </div>
-  </Teleport>
+      </DialogContent>
+  </DialogPortal></DialogRoot>
 </template>

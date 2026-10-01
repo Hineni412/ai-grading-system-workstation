@@ -89,7 +89,7 @@ describe('class assembly assistant', () => {
     assistant.filters.question_type = '填空题'
     await nextTick()
     expect(nextHost.textContent).toContain('正在按新的选择更新候选题')
-    expect((nextHost.querySelector('.assistant-question footer .assembly-button') as HTMLButtonElement).disabled).toBe(true)
+    expect((nextHost.querySelector('.assistant-question > header button') as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('preselects a bookmarked target within current results without changing scope', async () => {

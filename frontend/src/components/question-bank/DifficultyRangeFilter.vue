@@ -20,6 +20,9 @@ const emit = defineEmits<{
 const summaryId = useId()
 const activeThumb = ref<'min' | 'max' | null>(null)
 const ticks = computed(() => Array.from({ length: props.ceiling }, (_value, index) => index + 1))
+const levels = computed(() => Array.from({ length: props.ceiling * 2 - 1 }, (_value, index) => 1 + index / 2))
+const minSelection = computed({ get: () => props.min, set: value => { updateMin(String(value)); finishMin() } })
+const maxSelection = computed({ get: () => props.max, set: value => { updateMax(String(value)); finishMax() } })
 
 function railPosition(value: number): string {
   const ratio = (value - 1) / (props.ceiling - 1)
@@ -105,7 +108,13 @@ function updateMaxFromKeyboard(event: KeyboardEvent): void {
 </script>
 
 <template>
-  <fieldset class="difficulty-range" :class="{ 'is-compact': compact }">
+  <div v-if="compact" class="difficulty-range-compact" role="group" aria-label="难度区间">
+    <span>难度</span>
+    <select v-model="minSelection" class="app-input" aria-label="最低难度"><option v-for="level in levels" :key="level" :value="level" :disabled="level > max">{{ level }}</option></select>
+    <span>–</span>
+    <select v-model="maxSelection" class="app-input" aria-label="最高难度"><option v-for="level in levels" :key="level" :value="level" :disabled="level < min">{{ level }}</option></select>
+  </div>
+  <fieldset v-else class="difficulty-range">
     <legend>
       <span>难度区间</span>
       <strong>{{ formatLevel(min) }}–{{ formatLevel(max) }}</strong>
