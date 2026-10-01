@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import {
   knowledgeLeafLabel,
   questionBankApi,
-  questionTypeWithSubtype,
   type QuestionBankListItem,
   type SimilarityReason,
   type SimilarityReasonKind,
@@ -14,15 +13,21 @@ import { useAssemblyStore } from '../../stores/assembly'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
+import QuestionCard from './QuestionCard.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 
 withDefaults(defineProps<{
   paperMode?: boolean
+  currentSkill?: string
 }>(), {
   paperMode: false,
 })
 
+const emit = defineEmits<{ skill: [key: string] }>()
 const store = useQuestionBankStore()
+function onEscape(event: KeyboardEvent) { if (event.key === 'Escape') { if (similarSource.value) closeSimilar(); else void store.selectQuestion(null) } }
+onMounted(() => document.addEventListener('keydown', onEscape))
+onBeforeUnmount(() => document.removeEventListener('keydown', onEscape))
 const assembly = useAssemblyStore()
 const similarItems = ref<SimilarQuestionItem[]>([])
 const similarSource = ref<QuestionBankListItem | null>(null)
@@ -36,12 +41,6 @@ const allOnPage = computed(() => (
 function changePage(next: number): void {
   if (next < 1 || next > store.totalPages || next === store.page) return
   void store.loadQuestions({ ...store.appliedFilters, page: next })
-}
-
-function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
-  return question.tags
-    .filter((tag) => tag.tag_type === tagType)
-    .map((tag) => tag.tag_value)
 }
 
 const basketIdSet = computed(() => new Set(assembly.draft.basket_ids))
@@ -160,92 +159,7 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
     <StatePanel v-else-if="store.listState === 'error'" kind="error" :title="store.listError" description="" retry-label="重新读取" @retry="store.loadQuestions(store.appliedFilters)" />
     <StatePanel v-else-if="store.listState === 'empty'" kind="empty" title="当前条件下没有试题，可以清除筛选后再查看。" description="" />
     <div v-else class="qb-question-list">
-      <article
-        v-for="question in store.questions"
-        :key="question.id"
-        class="qb-question-card"
-        :class="{
-          'is-current': store.selectedQuestionId === question.id,
-          'is-in-basket': isInBasket(question.id),
-        }"
-      >
-        <header class="qb-question-card__header">
-          <label class="qb-question-card__check">
-            <input
-              type="checkbox"
-              :aria-label="`选择第 ${question.question_number || question.id} 题`"
-              :checked="store.selectedQuestionIds.includes(question.id)"
-              :disabled="store.selectionIsFull && !store.selectedQuestionIds.includes(question.id)"
-              @change="store.toggleQuestionSelection(
-                question.id,
-                ($event.currentTarget as HTMLInputElement).checked,
-              )"
-            >
-            <span>第 {{ question.question_number || question.id }} 题</span>
-            <span
-              v-if="question.criteria_needs_review"
-              class="qb-question-card__review-flag"
-            >判定点待审核</span>
-          </label>
-          <div class="qb-question-card__source">
-            <strong>{{ question.paper_title || '未命名试卷' }}</strong>
-            <span>{{ [question.year, question.grade, question.exam_type].filter(Boolean).join(' · ') || '来源信息待补充' }}</span>
-          </div>
-        </header>
-
-        <p v-if="question.duplicate_of_question_id" class="qb-feedback">
-          与题库 <button type="button" class="qb-link" @click="store.selectQuestion(question.duplicate_of_question_id)">#{{ question.duplicate_of_question_id }}</button> 相同，{{ question.duplicate_labels_reused ? '已复用标签' : '已关联，标签待补齐' }}
-        </p>
-
-        <div class="qb-question-card__content">
-          <QuestionContentRenderer
-            :blocks="question.rich_content?.question_blocks"
-            :fallback="question.question_text"
-            image-alt="题目配图"
-            media-mode="list"
-            dense
-            paper-media-flow
-          />
-        </div>
-
-        <div class="qb-question-card__tags">
-          <span>{{ questionTypeWithSubtype(question.question_type, question.tags) }}</span>
-          <span>难度 {{ question.difficulty || '待定' }}</span>
-          <span
-            v-for="tag in [...tagsFor(question, 'knowledge_point'), ...tagsFor(question, 'skill')].slice(0, 3)"
-            :key="`knowledge:${tag}`"
-            :title="tag"
-          >
-            {{ knowledgeLeafLabel(tag) }}
-          </span>
-          <span v-for="tag in tagsFor(question, 'special_type').slice(0, 2)" :key="`special:${tag}`">
-            {{ tag }}
-          </span>
-          <span v-for="tag in tagsFor(question, 'exam_scope').slice(0, 2)" :key="`scope:${tag}`">
-            {{ tag }}
-          </span>
-        </div>
-
-        <footer class="qb-question-card__actions">
-          <span class="qb-question-card__updated">
-            {{ question.tags.length ? `${question.tags.length} 个标签` : '待标注' }}
-            <template v-if="question.has_images"> · 含图片</template>
-          </span>
-          <span>
-            <button type="button" class="qb-link" @click="store.selectQuestion(question.id)">查看详情与标注</button>
-            <button type="button" class="qb-link" @click="openSimilar(question)">相似题</button>
-            <AppButton variant="secondary"
-              type="button"
-              class="qb-button"
-              :class="{ 'is-selected': isInBasket(question.id) }"
-              :disabled="assembly.saveState === 'saving'"
-              @click="toggleBasket(question.id)"
-            >
-              {{ isInBasket(question.id) ? '移出试卷篮' : '加入试卷篮' }}
-            </AppButton>
-          </span>
-        </footer>
-      </article>
+      <QuestionCard v-for="question in store.questions" :key="question.id" :question="question" :paper-mode="paperMode" :current-skill="currentSkill" @similar="openSimilar" @skill="emit('skill', $event)" />
     </div>
 
     <footer v-if="store.totalPages > 1" class="qb-pagination">

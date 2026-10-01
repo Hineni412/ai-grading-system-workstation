@@ -3,7 +3,7 @@ import { createApp, nextTick } from 'vue'
 import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
-import QuestionInspector from '../QuestionInspector.vue'
+import QuestionAnnotationPanel from '../QuestionAnnotationPanel.vue'
 import { questionBankApi, type QuestionBankDetail, type QuestionErrorPattern } from '../../../api/question-bank'
 import { useQuestionBankStore } from '../../../stores/question-bank'
 
@@ -73,7 +73,7 @@ it('shows each wrong option, edits and rejects the shared question pattern, then
   })
   const host = document.createElement('div')
   document.body.append(host)
-  const app = createApp(QuestionInspector)
+  const app = createApp(QuestionAnnotationPanel)
   app.use(pinia)
   app.use(router)
   app.mount(host)
@@ -165,7 +165,7 @@ it('renders all linked skills with their derivation source', async () => {
   })
   const host = document.createElement('div')
   document.body.append(host)
-  const app = createApp(QuestionInspector)
+  const app = createApp(QuestionAnnotationPanel)
   app.use(pinia)
   app.use(router)
   app.mount(host)
