@@ -11,10 +11,22 @@ import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import DifficultyRangeFilter from '../question-bank/DifficultyRangeFilter.vue'
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
 
+const props = defineProps<{ initialSkill?: string }>()
+const initialSkillMessage = ref('')
+let appliedInitialSkill = ''
 const emit = defineEmits<{ edit: [] }>()
 const assistant = useAssemblyAssistantStore()
 const assembly = useAssemblyStore()
 const curriculum = useCurriculumScopeStore()
+watch([() => props.initialSkill, () => assistant.result], () => {
+  const key = props.initialSkill
+  if (!key || !assistant.result || appliedInitialSkill === key) return
+  if (assistant.result.weaknesses.some(target => target.knowledge_key === key)) {
+    appliedInitialSkill = key
+    initialSkillMessage.value = ''
+    assistant.selectTarget(key)
+  } else initialSkillMessage.value = '从题库带来的技能不在当前班级与章节结果中，请选择当前目标；范围保持不变。'
+}, { immediate: true })
 const classes = ref<string[]>([])
 const rosterState = ref<'loading' | 'ready' | 'error'>('loading')
 const expanded = ref(new Set<number>())
@@ -108,6 +120,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     <p v-if="assistant.message" class="assistant-notice" role="alert">{{ assistant.message }} <button v-if="assistant.state === 'error'" type="button" class="assembly-link" @click="assistant.resetTargets(); assistant.search()">重新查看班级薄弱点</button></p>
     <p v-if="assistant.isStale" class="assistant-notice" role="status">{{ busy ? '正在按新的选择更新候选题…' : '筛选条件已调整，更新后即可选题。' }}</p>
 
+    <p v-if="initialSkillMessage" class="assistant-state" role="status">{{ initialSkillMessage }}</p>
     <div v-if="assistant.result" class="assistant-evidence-summary">
       <strong>{{ assistant.filters.class_id }} · {{ assistant.result.student_count }} 人</strong>
       <span>本学期 {{ assistant.result.exam_count }} 场考试</span>

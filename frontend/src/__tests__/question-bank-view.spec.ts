@@ -4,6 +4,8 @@ import { createApp, h, nextTick } from 'vue'
 import { createMemoryHistory } from 'vue-router'
 
 import { questionBankApi, type QuestionBankPaper } from '../api/question-bank'
+import QuestionBasketDrawer from '../components/question-bank/QuestionBasketDrawer.vue'
+import { useAssemblyStore } from '../stores/assembly'
 import QuestionBankTodo from '../components/question-bank/QuestionBankTodo.vue'
 import QuestionSkillBrowser from '../components/question-bank/QuestionSkillBrowser.vue'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
@@ -553,6 +555,21 @@ describe('question bank workspace', () => {
     expect(load).toHaveBeenCalledWith(expect.objectContaining({ analysisStatus: 'incomplete' }), expect.anything())
     const action = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '去处理 →')!
     action.click(); expect(open).toHaveBeenCalledWith(item)
+  })
+
+  it('uses the shared basket draft and preserves it when a removal is rejected', async () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const pinia = createPinia(); const basket = useAssemblyStore(pinia)
+    basket.loadState = 'ready'; basket.draft.basket_ids = [17]; basket.draft.order_ids = [17]; basket.draft.practice_rules = true
+    basket.questions = [{ ...item, score_value: 0 }]
+    const remove = vi.spyOn(basket, 'removeQuestion').mockResolvedValue(false)
+    const router = createAppRouter(createMemoryHistory()); await router.push('/question-bank')
+    const app = createApp(QuestionBasketDrawer, { open: true }); app.use(pinia).use(router).mount(host); mounted.push(app)
+    await vi.waitFor(() => expect(document.querySelector('.qb-basket-drawer')?.textContent).toContain('同技能最多 1 道'))
+    const button = [...document.querySelectorAll<HTMLButtonElement>('.qb-basket-drawer button')].find(button => button.textContent === '移出')!
+    button.click(); await vi.waitFor(() => expect(remove).toHaveBeenCalledWith(17))
+    expect(basket.draft.basket_ids).toEqual([17])
+    expect(document.querySelector('.qb-basket-drawer a')?.getAttribute('href')).toBe('/question-assembly?mode=edit')
   })
 
   it('disables unchecked rows when the 500-question selection is full', async () => {
