@@ -17,7 +17,6 @@ from data_transfer_service import (
     normalize_export_scope,
 )
 from path_manager import PathManager
-from question_bank.services.question_read_service import captured_sqlite_snapshot_path
 from update_tools.backup_core import VALID_REASONS, preview_backup
 from update_tools.migrate_db import preview_migrations
 
@@ -425,6 +424,10 @@ class OpsWriteService:
         )
 
     def _migration_preview(self, target: str) -> dict[str, Any]:
+        from question_bank.services.question_read_service import (
+            captured_sqlite_snapshot_path,
+        )
+
         source = Path(self.paths.db_path if target == "grading" else self.paths.qb_db_path)
         with captured_sqlite_snapshot_path(source, required_tables=frozenset()) as candidate:
             return preview_migrations(

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +14,6 @@ from backend.ops.jobs import create_safety_backup
 from backend.ops.journal import OpsOperationJournal, OpsOperationManifest
 from backend.ops.offline import apply_pending_operation
 from backend.schema_migrations import ensure_schema_current
-
 
 OPERATION_ID = "11111111-1111-4111-8111-111111111111"
 
@@ -157,8 +159,8 @@ def test_restore_rechecks_source_overlays_files_and_backs_up_latest_state(
     paths.taxonomy_state_path.parent.mkdir()
     paths.taxonomy_state_path.write_text('{"decision":"old"}', encoding="utf-8")
     (paths.taxonomy_state_path.parent / "api_profiles.json").write_text('secret', encoding="utf-8")
-    from update_tools.backup_core import preview_backup
     from backend.ops.jobs import _backup_entries
+    from update_tools.backup_core import preview_backup
     preview = preview_backup(path_manager=paths)
     assert "config/taxonomy-governance/state.json" in preview["files"]
     assert not any("api_profiles" in name for name in preview["files"])
@@ -315,8 +317,8 @@ def test_all_migration_failure_rolls_back_both_databases(
             "user_data/databases/question_bank.db",
         ),
     )
-    from backend.ops.write_service import OpsWriteService
     from backend.ops.plan_store import OpsPlanStore
+    from backend.ops.write_service import OpsWriteService
 
     service = OpsWriteService(paths, plan_store=OpsPlanStore())
     journal = OpsOperationJournal(paths.ops_state_dir)
@@ -351,3 +353,35 @@ def test_all_migration_failure_rolls_back_both_databases(
     assert not _table_exists(paths.qb_db_path, "question_bank_added")
     assert not (paths.databases_dir / "backups").exists()
     assert journal.load_public(OPERATION_ID)["status"] == "rolled_back"
+
+
+def test_startup_entry_points_stay_light() -> None:
+    heavy_modules = {
+        "backend.api.app",
+        "openai",
+        "question_bank.services.question_read_service",
+        "backend.jobs.default_handlers",
+    }
+    repo_root = Path(__file__).resolve().parents[1]
+    probe = (
+        "import importlib, json, sys\n"
+        "importlib.import_module(sys.argv[1])\n"
+        "print(json.dumps(sorted(sys.modules)))\n"
+    )
+    for module in (
+        "tools.ensure_frontend",
+        "backend.api.launcher",
+        "backend.ops.offline",
+    ):
+        result = subprocess.run(
+            [sys.executable, "-c", probe, module],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        assert result.returncode == 0, (module, result.stderr[-2000:])
+        loaded = set(json.loads(result.stdout.strip().splitlines()[-1]))
+        leaked = sorted(loaded & heavy_modules)
+        assert not leaked, f"{module} loaded heavy modules: {leaked}"
