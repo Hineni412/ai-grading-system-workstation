@@ -4,7 +4,7 @@ import errno
 from pathlib import Path
 from typing import Annotated, Any, Literal, NoReturn
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
 from backend.api.app import ApiError, ErrorResponse
@@ -275,6 +275,19 @@ def get_standard_summary(
     service: QuestionBankReadService = Depends(get_question_bank_read_service),
 ) -> dict[str, Any]:
     return service.standard_summary()
+
+
+@router.get("/skill-index", responses=QUESTION_SNAPSHOT_ERROR_RESPONSES)
+def get_skill_index(
+    curriculum_volume_id: Annotated[str, Query(min_length=1)],
+    service: QuestionBankReadService = Depends(get_question_bank_read_service),
+) -> dict[str, Any]:
+    try:
+        return service.skill_index(curriculum_volume_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except QuestionBankSnapshotError as exc:
+        _raise_question_snapshot_api_error(exc)
 
 
 @router.get(
@@ -1958,6 +1971,8 @@ def list_question_facets(
     keyword: str | None = None,
     knowledge_point: str | None = None,
     knowledge_points: Annotated[list[str] | None, Query()] = None,
+    skill_keys: Annotated[list[str] | None, Query()] = None,
+    skill_unlinked: bool = False,
     abilities: Annotated[list[str] | None, Query()] = None,
     methods: Annotated[list[str] | None, Query()] = None,
     thoughts: Annotated[list[str] | None, Query()] = None,
@@ -1988,6 +2003,8 @@ def list_question_facets(
     try:
         facets = service.list_facets(
             QuestionReadFilters(
+                skill_keys=tuple(skill_keys or ()),
+                skill_unlinked=skill_unlinked,
                 question_number=question_number,
                 keyword=keyword,
                 knowledge_point=knowledge_point,
@@ -2035,6 +2052,9 @@ def list_questions(
     keyword: str | None = None,
     knowledge_point: str | None = None,
     knowledge_points: Annotated[list[str] | None, Query()] = None,
+    skill_keys: Annotated[list[str] | None, Query()] = None,
+    skill_unlinked: bool = False,
+    include_skills: bool = False,
     abilities: Annotated[list[str] | None, Query()] = None,
     methods: Annotated[list[str] | None, Query()] = None,
     thoughts: Annotated[list[str] | None, Query()] = None,
@@ -2083,6 +2103,9 @@ def list_questions(
     try:
         result = service.list_questions(
             QuestionReadFilters(
+                skill_keys=tuple(skill_keys or ()),
+                skill_unlinked=skill_unlinked,
+                include_skills=include_skills,
                 page=page,
                 page_size=page_size,
                 question_number=question_number,

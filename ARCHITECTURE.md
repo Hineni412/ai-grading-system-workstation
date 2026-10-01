@@ -62,6 +62,8 @@ JobManager 在应用进程内用线程池执行任务，阅卷与扫描流程使
 
 ## 领域代码入口
 
+题库技能索引、按技能筛题、标签筛选计数和试卷未挂技能数量共用 `question_bank/services/question_skill_index.py` 的只读投影，由题库读取服务按数据库变更编号缓存；当前可用判定版本和链接仍由原有 `load_profiles`、`load_point_links` 读取，历史发布兼容读法不变。数据库在请求期间变化时不保存该次缓存。
+
 | 领域 | 入口 |
 |---|---|
 | 当前知识标准 | `question_bank/taxonomy/curriculum_catalog.py` |

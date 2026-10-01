@@ -94,6 +94,21 @@ def question_bank_fixture(
     return QuestionBankReadService(db_path), db_path, before
 
 
+def test_skill_routes_remain_read_only_and_optional_list_fields(question_bank_fixture):
+    service, db_path, _ = question_bank_fixture
+    client = _question_bank_client(service, question_bank_db_path=db_path)
+    plain = client.get('/api/question-bank/questions').json()['items'][0]
+    assert 'skills' not in plain and 'skill_hits' not in plain
+    enriched = client.get('/api/question-bank/questions?include_skills=true').json()['items'][0]
+    assert enriched == {**plain, 'skills': [], 'skill_hits': []}
+    assert client.get('/api/question-bank/questions?skill_keys=sk_TEST_missing').json()['total'] == 0
+    assert client.get('/api/question-bank/facets?skill_keys=sk_TEST_missing').json()['question_types'] == []
+    assert client.get('/api/question-bank/skill-index?curriculum_volume_id=invalid').status_code == 422
+    index = client.get('/api/question-bank/skill-index?curriculum_volume_id=bnu24-math-g8-upper')
+    assert index.status_code == 200 and index.json()['model_calls'] == 0
+    assert client.get('/api/question-bank/papers').json()['items'][0]['skill_unlinked_question_count'] == 1
+
+
 @pytest.mark.parametrize("changed_content", ["stem", "answer", "media"])
 def test_solution_evidence_route_returns_latest_point_level_union(
     question_bank_fixture,

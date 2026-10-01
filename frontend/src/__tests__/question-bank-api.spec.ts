@@ -4,6 +4,25 @@ afterEach(() => vi.restoreAllMocks())
 
 describe('question bank API contracts', () => {
 
+  it('passes skill filters to lists and facets and validates the index', async () => {
+    const { questionBankApi } = await import('../api/question-bank')
+    const response = { graph_release_id: 'kgr_TEST', curriculum_volume_id: 'bnu24-math-g8-upper',
+      model_calls: 0, question_count: 0, unlinked: { no_usable_evidence: 0, no_skill_link: 0 }, chapters: [] }
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(response), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }))
+    await expect(questionBankApi.skillIndex('bnu24-math-g8-upper')).resolves.toEqual(response)
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toContain('/skill-index?curriculum_volume_id=bnu24-math-g8-upper')
+    fetchSpy.mockImplementation(async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }))
+    await expect(questionBankApi.listQuestions({ skillKeys: ['sk_TEST'], skillUnlinked: true, includeSkills: true })).rejects.toThrow()
+    expect(String(fetchSpy.mock.calls[1]?.[0])).toContain('skill_keys=sk_TEST')
+    expect(String(fetchSpy.mock.calls[1]?.[0])).toContain('skill_unlinked=true')
+    expect(String(fetchSpy.mock.calls[1]?.[0])).toContain('include_skills=true')
+    await expect(questionBankApi.listFacets({ skillKeys: ['sk_TEST'], includeSkills: true })).rejects.toThrow()
+    expect(String(fetchSpy.mock.calls[2]?.[0])).toContain('skill_keys=sk_TEST')
+    expect(String(fetchSpy.mock.calls[2]?.[0])).not.toContain('include_skills')
+  })
+
   it('stages one controlled file before creating and submitting its import request', async () => {
     const { questionBankApi } = await import('../api/question-bank')
     const uploadId = 'e'.repeat(32)

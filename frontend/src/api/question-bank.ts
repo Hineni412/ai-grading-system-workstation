@@ -37,6 +37,10 @@ export function knowledgeLeafLabel(value: string): string {
   return parts[parts.length - 1] ?? value
 }
 
+export function skillLeafLabel(value: string): string {
+  return knowledgeLeafLabel(value).replace(/^技能·/, '')
+}
+
 // 解答题的"画图/计算/证明"子类是 special_type 标签，不是题型枚举；
 // 题型显示时把命中的子类标签并到题型后（如"解答题 · 证明"）。
 export const ESSAY_SUBTYPE_TAGS = ['画图', '计算', '证明'] as const
@@ -88,6 +92,8 @@ export interface QuestionBankListItem {
    * structured preview yet. Network responses remain strict at decode time.
    */
   rich_content?: QuestionBankRichContent
+  skills?: { stable_key: string; display_name: string }[]
+  skill_hits?: { point_id: string; point_label: string }[]
 }
 
 export interface QuestionBankListResponse {
@@ -135,6 +141,7 @@ export interface QuestionBankPaper {
   criteria_question_count: number
   criteria_needs_review_count: number
   complete_analysis_count: number
+  skill_unlinked_question_count?: number
   source_type: 'docx' | 'pdf' | 'other'
 }
 
@@ -541,6 +548,9 @@ export type QuestionBankSort =
   | 'frequency_asc'
 
 export interface QuestionBankFilters {
+  skillKeys?: string[]
+  skillUnlinked?: boolean
+  includeSkills?: boolean
   page?: number
   pageSize?: number
   questionNumber?: string
@@ -614,7 +624,7 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 
 function hasExactQuestionKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const base = Object.fromEntries(Object.entries(value).filter(([key]) =>
-    key !== 'duplicate_of_question_id' && key !== 'duplicate_labels_reused'))
+    !['duplicate_of_question_id', 'duplicate_labels_reused', 'skills', 'skill_hits'].includes(key)))
   return hasExactKeys(base, keys)
 }
 
@@ -677,6 +687,12 @@ function isQuestionBankListItem(value: unknown): value is QuestionBankListItem {
 
 function hasQuestionBankListFields(value: Record<string, unknown>): boolean {
   return (
+    (value.skills === undefined || (Array.isArray(value.skills) && value.skills.every((item) =>
+      isRecord(item) && hasExactKeys(item, ['stable_key', 'display_name'])
+      && typeof item.stable_key === 'string' && item.stable_key.startsWith('sk_') && typeof item.display_name === 'string'))) &&
+    (value.skill_hits === undefined || (Array.isArray(value.skill_hits) && value.skill_hits.every((item) =>
+      isRecord(item) && hasExactKeys(item, ['point_id', 'point_label'])
+      && typeof item.point_id === 'string' && typeof item.point_label === 'string'))) &&
     isPositiveInteger(value.id) &&
     (value.duplicate_of_question_id === undefined || value.duplicate_of_question_id === null || isPositiveInteger(value.duplicate_of_question_id)) &&
     (value.duplicate_labels_reused === undefined || typeof value.duplicate_labels_reused === 'boolean') &&
@@ -896,7 +912,7 @@ export function decodeQuestionListResponse(value: unknown): QuestionBankListResp
 function isQuestionBankPaper(value: unknown): value is QuestionBankPaper {
   return (
     isRecord(value) &&
-    hasExactKeys(value, [
+    hasExactKeys(Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'skill_unlinked_question_count')), [
       'id',
       'title',
       'year',
@@ -949,6 +965,8 @@ function isQuestionBankPaper(value: unknown): value is QuestionBankPaper {
     isNonnegativeInteger(value.criteria_needs_review_count) &&
     Number(value.criteria_needs_review_count) <= Number(value.question_count) &&
     isNonnegativeInteger(value.complete_analysis_count) &&
+    (value.skill_unlinked_question_count === undefined || (isNonnegativeInteger(value.skill_unlinked_question_count)
+      && value.skill_unlinked_question_count <= Number(value.question_count))) &&
     Number(value.complete_analysis_count) <= Number(value.question_count) &&
     (value.source_type === 'docx' || value.source_type === 'pdf' || value.source_type === 'other')
   )
@@ -1718,6 +1736,9 @@ function questionListPath(filters: QuestionBankFilters): string {
   appendTexts(parameters, 'exam_scopes', filters.examScopes)
   appendTexts(parameters, 'curriculum_sections', filters.curriculumSections)
   appendTexts(parameters, 'knowledge_points', filters.knowledgePoints)
+  appendTexts(parameters, 'skill_keys', filters.skillKeys)
+  if (filters.skillUnlinked) parameters.set('skill_unlinked', 'true')
+  if (filters.includeSkills) parameters.set('include_skills', 'true')
   appendTexts(parameters, 'abilities', filters.abilities)
   appendTexts(parameters, 'methods', filters.methods)
   appendTexts(parameters, 'thoughts', filters.thoughts)
@@ -1750,6 +1771,7 @@ function questionFacetPath(filters: QuestionBankFilters): string {
   parameters.delete('page_size')
   parameters.delete('sort')
   parameters.delete('compact')
+  parameters.delete('include_skills')
   return `/api/question-bank/facets?${parameters.toString()}`
 }
 
@@ -1847,6 +1869,62 @@ export interface QuestionStandardSummary {
   model_calls: number
 }
 
+export interface QuestionSkillEntry {
+  stable_key: string
+  display_name: string
+  full_name: string
+  question_count: number
+  type_counts: Record<string, number>
+  difficulty: { min: number; median: number; max: number } | null
+  criteria_needs_review_count: number
+  cross_section: boolean
+  definition: { observable_evidence: string; include_scope: string; exclude_scope: string }
+}
+
+export interface QuestionTopicEntry extends Pick<QuestionSkillEntry, 'display_name' | 'question_count' | 'type_counts' | 'difficulty' | 'criteria_needs_review_count'> {
+  filter_value: string
+}
+
+export interface QuestionSkillIndex {
+  graph_release_id: string | null
+  curriculum_volume_id: string
+  model_calls: number
+  question_count: number
+  unlinked: { no_usable_evidence: number; no_skill_link: number }
+  chapters: {
+    id: string; label: string; question_count: number; cross_section_skills: QuestionSkillEntry[]
+    sections: { id: string; label: string; question_count: number; skills: QuestionSkillEntry[]; topics: QuestionTopicEntry[] }[]
+  }[]
+}
+
+export function decodeQuestionSkillIndex(value: unknown): QuestionSkillIndex {
+  function stats(row: unknown): row is Record<string, unknown> {
+    return isRecord(row) && typeof row.display_name === 'string' && isNonnegativeInteger(row.question_count)
+      && isNonnegativeInteger(row.criteria_needs_review_count) && isRecord(row.type_counts)
+      && ['选择题', '多选题', '填空题', '解答题'].every((key) => isNonnegativeInteger(row.type_counts && (row.type_counts as Record<string, unknown>)[key]))
+      && (row.difficulty === null || (isRecord(row.difficulty)
+        && ['min', 'median', 'max'].every((key) => isFiniteNumber((row.difficulty as Record<string, unknown>)[key]))))
+  }
+  function skill(row: unknown): boolean {
+    return stats(row) && typeof row.stable_key === 'string' && row.stable_key.startsWith('sk_')
+      && typeof row.full_name === 'string' && typeof row.cross_section === 'boolean' && isRecord(row.definition)
+      && ['observable_evidence', 'include_scope', 'exclude_scope'].every((key) => typeof (row.definition as Record<string, unknown>)[key] === 'string')
+  }
+  if (!isRecord(value) || !isNullableString(value.graph_release_id) || typeof value.curriculum_volume_id !== 'string'
+    || value.model_calls !== 0 || !isNonnegativeInteger(value.question_count) || !isRecord(value.unlinked)
+    || !isNonnegativeInteger(value.unlinked.no_usable_evidence) || !isNonnegativeInteger(value.unlinked.no_skill_link)
+    || !Array.isArray(value.chapters) || !value.chapters.every((chapter) => isRecord(chapter)
+      && typeof chapter.id === 'string' && typeof chapter.label === 'string' && isNonnegativeInteger(chapter.question_count)
+      && Array.isArray(chapter.cross_section_skills) && chapter.cross_section_skills.every(skill)
+      && Array.isArray(chapter.sections) && chapter.sections.every((section) => isRecord(section)
+        && typeof section.id === 'string' && typeof section.label === 'string' && isNonnegativeInteger(section.question_count)
+        && Array.isArray(section.skills) && section.skills.every(skill) && Array.isArray(section.topics)
+        && section.topics.every((topic) => stats(topic) && typeof topic.filter_value === 'string')))) {
+    throw new Error('技能索引格式不正确')
+  }
+  return value as unknown as QuestionSkillIndex
+}
+
 function decodeQuestionStandardSummary(value: unknown): QuestionStandardSummary {
   if (!isRecord(value) || !isNullableString(value.active_release_id)
     || !(value.taxonomy_revision === null || Number.isInteger(value.taxonomy_revision))
@@ -1863,6 +1941,10 @@ function decodeQuestionStandardSummary(value: unknown): QuestionStandardSummary 
 }
 
 export const questionBankApi = {
+  skillIndex(curriculumVolumeId: string, signal?: AbortSignal): Promise<QuestionSkillIndex> {
+    const parameters = new URLSearchParams({ curriculum_volume_id: curriculumVolumeId })
+    return apiClient.request(`/api/question-bank/skill-index?${parameters}`, { decode: decodeQuestionSkillIndex, signal })
+  },
   standardSummary(signal?: AbortSignal): Promise<QuestionStandardSummary> {
     return apiClient.request('/api/question-bank/standard-summary', { decode: decodeQuestionStandardSummary, signal })
   },
