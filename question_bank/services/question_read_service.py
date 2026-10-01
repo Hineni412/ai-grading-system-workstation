@@ -494,6 +494,7 @@ class _ActiveQuestionReadScope:
     connection: sqlite3.Connection
     current_knowledge: object = _CURRENT_KNOWLEDGE_NOT_LOADED
     identities: dict[str, dict[int, str]] = field(default_factory=dict)
+    duplicate_groups: dict[int, list[int]] = field(default_factory=dict)
     skill_snapshot: dict[str, Any] | None = None
     generation: tuple[object, ...] | None = None
 
@@ -1520,26 +1521,32 @@ class QuestionBankReadService:
                 # Page/sort changes share the same candidate set. Identity
                 # revisions still validate file edits; the DB token also
                 # invalidates representative choices after manual relabelling.
-                generation = _source_generation_token(self.db_path)
+                generation = scope.generation if scope is not None else _source_generation_token(self.db_path)
                 collapse_key = ("collapsed_ids", generation, self._cache_data_root, tuple(ids), tuple(identities.items()))
                 cached = _read_result_cache_get(collapse_key) if generation is not None else _CACHE_MISS
                 if cached is not _CACHE_MISS:
-                    hidden = cached
+                    hidden, groups = cached
+                    if scope is not None:
+                        scope.duplicate_groups = groups
                     if hidden:
                         where.append("q.id NOT IN (" + ",".join("?" for _ in hidden) + ")")
                         params.extend(hidden)
                     return joins, where, params
                 ranks = canonical_question_ranks(conn, ids)
-            seen = set()
+            representatives: dict[str, int] = {}
+            groups: dict[int, list[int]] = {}
             hidden = []
             for qid in sorted(ids, key=lambda qid: ranks[qid]):
                 key = identities.get(qid)
-                if key and key in seen:
+                if key and key in representatives:
                     hidden.append(qid)
+                    groups.setdefault(representatives[key], []).append(qid)
                 elif key:
-                    seen.add(key)
+                    representatives[key] = qid
+            if scope is not None:
+                scope.duplicate_groups = groups
             if generation is not None and generation == _source_generation_token(self.db_path):
-                _read_result_cache_put(collapse_key, hidden)
+                _read_result_cache_put(collapse_key, (hidden, groups))
             if hidden:
                 where.append("q.id NOT IN (" + ",".join("?" for _ in hidden) + ")")
                 params.extend(hidden)
@@ -1636,6 +1643,13 @@ class QuestionBankReadService:
                 conn,
                 [int(row["id"]) for row in rows],
             )
+            scope = _ACTIVE_READ_SCOPE.get()
+            groups = scope.duplicate_groups if scope and filters.collapse_duplicates else {}
+            member_ids = list({qid for parent in page_ids for qid in groups.get(parent, [])})
+            members = {int(row['id']): dict(row) for row in conn.execute(
+                "SELECT q.id,q.paper_id,q.question_number,p.title AS paper_title FROM questions q "
+                "LEFT JOIN papers p ON p.id=q.paper_id WHERE q.id IN (" + ','.join('?' for _ in member_ids) + ')', member_ids)} if member_ids else {}
+
 
         items = [
             self._public_question_with_rich_content(
@@ -1652,6 +1666,8 @@ class QuestionBankReadService:
             snapshot = self._skill_snapshot()
             for item in items:
                 skills = snapshot["by_question"].get(int(item["id"]), {})
+                item["evidence_point_count"] = snapshot["point_counts"].get(int(item["id"]), 0)
+                item["duplicate_members"] = [members[qid] for qid in groups.get(int(item["id"]), []) if qid in members]
                 item["skills"] = [{"stable_key": key, "display_name": short_node_name(
                     snapshot["nodes"].get(key, {}).get("display_name", key))} for key in skills]
                 item["skill_hits"] = list({hit["point_id"]: hit for key in filters.skill_keys

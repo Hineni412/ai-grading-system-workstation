@@ -8,10 +8,6 @@ import { useJobStore } from '../../stores/jobs'
 import AppButton from '../design-system/AppButton.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 
-const emit = defineEmits<{
-  browse: []
-}>()
-
 const assembly = useAssemblyStore()
 const jobs = useJobStore()
 const draggedQuestionId = ref<number | null>(null)
@@ -223,15 +219,6 @@ async function deleteRecord(recordId: string): Promise<void> {
 
 <template>
   <div class="assembly-editor">
-    <header class="assembly-editor__toolbar">
-      <AppButton variant="secondary" @click="emit('browse')">← 去题库选题</AppButton>
-      <div>
-        <strong>{{ assembly.draft.title || '未命名试卷' }}</strong>
-        <span>{{ assembly.selectedQuestionCount }} 道题 · {{ assembly.totalScore }} 已识别分值</span>
-      </div>
-      <span>{{ assembly.saveState === 'saving' ? '正在保存…' : '草稿已保存在本机' }}</span>
-    </header>
-
     <p v-if="assembly.message" class="assembly-feedback is-error" role="status">{{ assembly.message }}</p>
 
     <div class="assembly-editor__workspace">
@@ -254,7 +241,7 @@ async function deleteRecord(recordId: string): Promise<void> {
             >
           </label>
           <label>
-            <span>页眉说明</span>
+            <span>副标题</span>
             <input class="app-input"
               :value="assembly.draft.header_text"
               maxlength="200"
@@ -262,7 +249,7 @@ async function deleteRecord(recordId: string): Promise<void> {
               @change="assembly.updateSettings({ header_text: ($event.target as HTMLInputElement).value })"
             >
           </label>
-          <label>
+          <details class="assembly-more-settings"><summary>更多设置</summary>          <label>
             <span>预览版本</span>
             <select class="app-input"
               :value="assembly.draft.preview_mode"
@@ -297,13 +284,13 @@ async function deleteRecord(recordId: string): Promise<void> {
             >
             <span>导出时包含答案</span>
           </label>
+          </details>
         </div>
 
         <section class="assembly-section-editor">
           <header>
             <div>
-              <strong>手动分节</strong>
-              <small>用于按自定义大题组织试卷</small>
+              <strong>分节</strong>
             </div>
             <button type="button" class="assembly-link" @click="addSection">添加分节</button>
           </header>
@@ -319,8 +306,19 @@ async function deleteRecord(recordId: string): Promise<void> {
               <button type="button" aria-label="删除分节" @click="removeSection(section.id)">×</button>
             </div>
           </div>
-          <p v-else>需要自定义大题时再添加；当前不会制造空分节。</p>
+          <div v-else class="assembly-default-sections"><div v-for="section in previewSections" :key="section.id"><span>{{ section.title }}</span><small>{{ section.questions.length }} 题</small></div></div>
         </section>
+
+      </aside>
+
+      <main class="assembly-paper" aria-labelledby="assembly-preview-title">
+        <header class="assembly-paper__heading">
+          <div>
+            <p class="assembly-kicker">LIVE PREVIEW</p>
+            <h2 id="assembly-preview-title">题目顺序</h2>
+          </div>
+          <span>{{ assembly.selectedQuestionCount }} 题</span>
+        </header>
 
         <div v-if="assembly.orderedQuestions.length" class="assembly-tiles">
           <section
@@ -352,6 +350,8 @@ async function deleteRecord(recordId: string): Promise<void> {
                   @dragover.prevent.stop="dragOverTile($event, group.id, question.id)"
                   @drop.prevent.stop="dropOnSlot()"
                 >{{ orderIndexById.get(question.id) }}</span>
+                <span class="assembly-tile__text" :title="question.question_text || ''">{{ (question.question_text || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ') }}</span><span class="assembly-tile__type">{{ (question.question_type || '未分类').replace('题', '') }}</span><span class="assembly-tile__difficulty">{{ question.difficulty ?? '—' }}</span>
+                <button type="button" class="assembly-tile__move" :aria-label="`上移第 ${orderIndexById.get(question.id)} 题`" :disabled="assembly.saveState === 'saving' || orderIndexById.get(question.id) === 1" @click="assembly.moveQuestion(question.id, -1)">↑</button><button type="button" class="assembly-tile__move" :aria-label="`下移第 ${orderIndexById.get(question.id)} 题`" :disabled="assembly.saveState === 'saving' || orderIndexById.get(question.id) === assembly.selectedQuestionCount" @click="assembly.moveQuestion(question.id, 1)">↓</button>
                 <button
                   type="button"
                   class="assembly-tile__remove"
@@ -364,17 +364,7 @@ async function deleteRecord(recordId: string): Promise<void> {
           </section>
         </div>
         <p v-else class="assembly-editor-empty">试卷篮为空，请去题库选题。</p>
-      </aside>
-
-      <main class="assembly-paper" aria-labelledby="assembly-preview-title">
-        <header class="assembly-paper__heading">
-          <div>
-            <p class="assembly-kicker">LIVE PREVIEW</p>
-            <h2 id="assembly-preview-title">试卷预览</h2>
-          </div>
-          <span>{{ assembly.draft.preview_mode === 'teacher' ? '教师版' : '学生版' }}</span>
-        </header>
-
+        <details class="assembly-full-preview"><summary>预览试卷 · {{ assembly.draft.preview_mode === 'teacher' ? '教师版' : '学生版' }}</summary>
         <article class="assembly-sheet">
           <header>
             <h2>{{ assembly.draft.title || '未命名试卷' }}</h2>
@@ -432,7 +422,7 @@ async function deleteRecord(recordId: string): Promise<void> {
             </button>
           </section>
           <p v-if="!assembly.orderedQuestions.length" class="assembly-editor-empty">去题库选题，把题目加入试卷篮后会在这里生成预览。</p>
-        </article>
+        </article></details>
       </main>
 
       <aside class="assembly-editor-panel assembly-editor-panel--export" aria-labelledby="assembly-export-title">
@@ -481,7 +471,7 @@ async function deleteRecord(recordId: string): Promise<void> {
 
         <section class="assembly-record-section">
           <header>
-            <strong>最近导出</strong>
+            <strong>导出记录</strong>
             <span>{{ assembly.records.length }} 条</span>
           </header>
           <ul v-if="assembly.records.length" class="assembly-records">

@@ -293,6 +293,13 @@ class QuestionSkillHit(_QuestionBankModel):
     point_label: str
 
 
+class QuestionDuplicateMember(_QuestionBankModel):
+    id: int
+    paper_id: int | None
+    question_number: str
+    paper_title: str | None
+
+
 class QuestionListItem(_QuestionBankModel):
     id: int
     duplicate_of_question_id: int | None = None
@@ -324,13 +331,15 @@ class QuestionListItem(_QuestionBankModel):
     tags: list[QuestionTagResponse]
     asset_urls: list[str]
     rich_content: QuestionRichContentMetadata
+    evidence_point_count: int | None = None
+    duplicate_members: list[QuestionDuplicateMember] | None = None
     skills: list[QuestionDirectSkill] | None = None
     skill_hits: list[QuestionSkillHit] | None = None
 
     @model_serializer(mode="wrap")
     def serialize_optional_skills(self, handler):
         result = handler(self)
-        for key in ("skills", "skill_hits"):
+        for key in ("skills", "skill_hits", "evidence_point_count", "duplicate_members"):
             if result.get(key) is None:
                 result.pop(key, None)
         return result

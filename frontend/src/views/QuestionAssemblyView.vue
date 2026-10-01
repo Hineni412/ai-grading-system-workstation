@@ -21,9 +21,10 @@ onMounted(() => { if (assembly.loadState === 'idle') void assembly.load(); void 
 </script>
 <template>
   <section class="assembly is-workspace-wide">
-    <PageHeader title="组卷工作台"><template #meta>{{ assembly.selectedQuestionCount }} 道题 · {{ assembly.totalScore }} 已识别分值</template><template #actions><button class="qb-button" @click="goBank">去题库选题</button></template></PageHeader>
-    <nav class="page-tabs" aria-label="组卷流程"><button :class="{ 'is-active': mode === 'edit' }" :aria-current="mode === 'edit' ? 'page' : undefined" @click="setMode('edit')">试卷篮与导出</button><button :class="{ 'is-active': mode === 'assistant' }" :aria-current="mode === 'assistant' ? 'page' : undefined" @click="setMode('assistant')">学情组卷助手</button></nav>
+    <PageHeader title="组卷工作台"><template #meta>当前试卷篮 {{ assembly.selectedQuestionCount }} 题</template><template #navigation><nav class="page-tabs" aria-label="组卷流程"><button :class="{ 'is-active': mode === 'edit' }" :aria-current="mode === 'edit' ? 'page' : undefined" @click="setMode('edit')">试卷篮与导出</button><button :class="{ 'is-active': mode === 'assistant' }" :aria-current="mode === 'assistant' ? 'page' : undefined" @click="setMode('assistant')">学情组卷助手</button></nav></template><template #actions><button class="qb-button" @click="goBank">去题库选题</button></template></PageHeader>
+    <div class="qb-workspace">
     <AssemblyAssistantPanel v-if="mode === 'assistant'" :initial-skill="initialSkill" @edit="setMode('edit')" />
-    <AssemblyEditorWorkspace v-else @browse="goBank" />
+    <AssemblyEditorWorkspace v-else />
+    </div>
   </section>
 </template>

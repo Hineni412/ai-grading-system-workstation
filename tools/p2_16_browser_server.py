@@ -118,17 +118,21 @@ def _seed_visual_assets(asset_path: Path, preview_path: Path) -> None:
     preview.save(preview_path, format="PNG", optimize=True)
 
 
-def _prepare_paths(data_root: Path):
+def _prepare_paths(data_root: Path, *, fresh: bool = False):
     candidate = Path(os.path.abspath(data_root))
-    if candidate != ALLOWED_DATA_ROOT:
+    test_root = (REPO_ROOT / 'frontend' / 'test-results').resolve()
+    fresh_target = fresh and candidate.parent.resolve() == test_root and candidate.name.startswith('TEST-question-bank-')
+    if not fresh_target and candidate != ALLOWED_DATA_ROOT:
         raise RuntimeError("P2-16 browser data root must be the dedicated test directory")
     resolved = candidate.resolve(strict=False)
     if (
         not resolved.is_relative_to(REPO_ROOT.resolve())
-        or resolved != ALLOWED_DATA_ROOT.resolve(strict=False)
+        or (not fresh_target and resolved != ALLOWED_DATA_ROOT.resolve(strict=False))
     ):
         raise RuntimeError("P2-16 browser data root resolves outside the repository")
     if candidate.exists():
+        if fresh:
+            raise RuntimeError('Fresh browser test directory already exists; choose another test name')
         is_junction = getattr(candidate, "is_junction", lambda: False)
         if candidate.is_symlink() or is_junction():
             raise RuntimeError("P2-16 browser data root cannot be a link or junction")
@@ -142,10 +146,12 @@ def _prepare_paths(data_root: Path):
     paths._data_root = candidate / "data"
     paths._logs_root = candidate / "logs"
     paths._api_profiles_path = candidate / "machine-config" / "api_profiles.json"
+    paths._taxonomy_state_path = candidate / "machine-config" / "taxonomy_state_v2.json"
     paths._ops_state_dir = candidate / "ops"
     paths.ensure_directories()
     os.environ["AI_GRADING_DATA_DIR"] = str(paths.data_root)
     os.environ["AI_GRADING_API_PROFILES_PATH"] = str(paths.api_profiles_path)
+    os.environ["AI_GRADING_TAXONOMY_STATE_PATH"] = str(paths.taxonomy_state_path)
     os.environ["AI_GRADING_OPS_STATE_DIR"] = str(paths.ops_state_dir)
 
     import path_manager
@@ -268,9 +274,34 @@ def _seed_question_bank(paths) -> None:
         ),
         encoding="utf-8",
     )
-    (ALLOWED_DATA_ROOT / "anonymous-import.docx").write_bytes(
+    (paths.data_root.parent / "anonymous-import.docx").write_bytes(
         b"anonymous browser fixture"
     )
+
+
+def _seed_skill_browsing(paths) -> None:
+    from tests.current_knowledge_support import install_current_knowledge
+    from question_bank.database.schema import connect
+    from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+    from question_bank.training_criteria import QuestionAnalysisInputLoader, solution_evidence_source_content_hash
+    install_current_knowledge(paths.qb_db_path, taxonomy_revision=7)
+    with connect(paths.qb_db_path) as conn:
+        volume = curriculum_volume(volume_id='bnu24-math-g8-upper')
+        conn.execute('UPDATE papers SET grade=?,semester=?,textbook_version=? WHERE id=1', (volume['grade'], volume['semester'], volume['textbook_version']))
+        release = conn.execute("SELECT release_id FROM knowledge_graph_releases WHERE status='active'").fetchone()[0]
+        nodes = conn.execute("SELECT stable_key,display_name FROM knowledge_graph_node_profiles WHERE release_id=? AND status='active' AND stable_key LIKE 'sk_bnu24_math_g8_upper_1_1_%' ORDER BY stable_key LIMIT 2", (release,)).fetchall()
+    inputs = QuestionAnalysisInputLoader(db_path=paths.qb_db_path, data_root=paths.data_root).load([1, 2, 4, 5, 6, 7, 8])
+    with connect(paths.qb_db_path) as conn:
+        for question in inputs:
+            qid = question.question_id
+            source_hash = solution_evidence_source_content_hash(question)
+            version = f'{qid:064x}'
+            points = [{ 'evidence_point_id': f'p{number}', 'target': target, 'observable_evidence': target, 'equivalent_rules': [], 'counterexamples': [], 'fine_term_links': [{'fine_term_id': node['stable_key'], 'fine_term_name': node['display_name'], 'role': 'direct', 'core_resolution': { 'status': 'resolved', 'stable_keys': [node['stable_key']], 'reason': 'TEST' }}] if qid != 4 else [] } for number, (target, node) in enumerate(zip(['列式并确定数量关系', '计算并检验结论'], nodes), 1)]
+            payload = { 'schema_version': 'question-solution-evidence-v2', 'question_id': qid, 'source_content_hash': source_hash, 'content_hash': version, 'version_id': version, 'parts': [{ 'part_id': 'part-1', 'label': '本题', 'response_mode': 'process_required', 'canonical_answer': 'TEST-合成答案', 'accepted_forms': [], 'full_answer': 'TEST-合成解析', 'proof_obligations': [], 'visual_requirements': [], 'deduction_policy': [], 'allow_alternative_methods': True, 'evidence_points': points }], 'auxiliary_rules': [], 'rationale': 'TEST-页面验收', 'confidence': .9 }
+            conn.execute("INSERT INTO question_solution_evidence_versions(evidence_version_id,question_id,source_content_hash,schema_version,content_hash,evidence_json,status,source_kind,source_reference,created_by,graph_release_id) VALUES(?,?,?,'question-solution-evidence-v2',?,?,'approved','combined_model','TEST','TEST',?)", (version, qid, source_hash, version, json.dumps(payload, ensure_ascii=False), release))
+            if qid != 4:
+                for number, node in enumerate(nodes, 1):
+                    conn.execute("INSERT INTO evidence_point_knowledge_links(evidence_version_id,question_id,part_id,evidence_point_id,graph_release_id,role,term_id,stable_key,resolution_status,source_kind) VALUES(?,?,'part-1',?,?,'direct',?,?,'resolved','link_job')", (version, qid, f'p{number}', release, node['stable_key'], node['stable_key']))
 
 
 def _fake_tagging(context):
@@ -320,9 +351,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--port", type=int, default=8016)
+    parser.add_argument("--fresh", action="store_true")
+    parser.add_argument("--frontend-dist", type=Path)
     args = parser.parse_args()
-    paths = _prepare_paths(args.data_root)
+    paths = _prepare_paths(args.data_root, fresh=args.fresh)
     _seed_question_bank(paths)
+    _seed_skill_browsing(paths)
 
     from backend.api.app import create_app
     from backend.api.dependencies import get_job_manager
@@ -335,7 +369,7 @@ def main() -> None:
     manager.register("question_import", _fake_import)
     app = create_app(path_manager=paths)
     app.dependency_overrides[get_job_manager] = lambda: manager
-    frontend_dist = REPO_ROOT / "frontend" / "dist"
+    frontend_dist = args.frontend_dist.resolve() if args.frontend_dist else REPO_ROOT / "frontend" / "dist"
     if not (frontend_dist / "index.html").is_file():
         raise RuntimeError("build the frontend before running the P2-16 browser gate")
 
@@ -343,6 +377,7 @@ def main() -> None:
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
 
+    app.router.routes[:] = [route for route in app.router.routes if getattr(route, 'name', '') != "frontend-assets"]
     app.mount("/assets", StaticFiles(directory=frontend_dist / "assets"), name="p2-16-assets")
 
     @app.get("/{frontend_path:path}", include_in_schema=False)

@@ -100,7 +100,7 @@ def test_skill_routes_remain_read_only_and_optional_list_fields(question_bank_fi
     plain = client.get('/api/question-bank/questions').json()['items'][0]
     assert 'skills' not in plain and 'skill_hits' not in plain
     enriched = client.get('/api/question-bank/questions?include_skills=true').json()['items'][0]
-    assert enriched == {**plain, 'skills': [], 'skill_hits': []}
+    assert enriched == {**plain, 'skills': [], 'skill_hits': [], 'evidence_point_count': 0, 'duplicate_members': []}
     assert client.get('/api/question-bank/questions?skill_keys=sk_TEST_missing').json()['total'] == 0
     assert client.get('/api/question-bank/facets?skill_keys=sk_TEST_missing').json()['question_types'] == []
     assert client.get('/api/question-bank/skill-index?curriculum_volume_id=invalid').status_code == 422

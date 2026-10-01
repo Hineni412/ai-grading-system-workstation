@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { DialogRoot, DialogPortal, DialogContent, DialogTitle } from 'reka-ui'
 
 import {
   questionBankApi,
@@ -9,6 +10,7 @@ import AppButton from '../design-system/AppButton.vue'
 
 const props = defineProps<{
   open: boolean
+  returnFocus?: HTMLElement | null
 }>()
 
 const emit = defineEmits<{
@@ -79,22 +81,22 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <Teleport to="body">
+  <DialogRoot :open="open" @update:open="!$event && emit('close')"><DialogPortal>
     <div
       v-if="open"
       class="qb-drawer-layer taxonomy-review-layer"
       role="presentation"
       @click.self="emit('close')"
     >
-      <aside
+      <DialogContent as="aside"
         class="taxonomy-review criteria-review"
-        role="dialog"
-        aria-modal="true"
+        :aria-describedby="undefined"
         aria-labelledby="criteria-review-title"
+        @close-auto-focus="returnFocus && ($event.preventDefault(), returnFocus.focus())"
       >
         <header class="taxonomy-review__header">
           <div>
-            <h2 id="criteria-review-title">判定点待审核</h2>
+            <DialogTitle as="h2" id="criteria-review-title">判定点待审核</DialogTitle>
             <p>正常通过质检的判定点已自动可用。这里只列出仍无法确定的个别题目；点开后可修正或重新生成。</p>
           </div>
           <button
@@ -149,7 +151,7 @@ onBeforeUnmount(() => {
         <p v-if="loadState === 'ready' && total > items.length" class="criteria-review__empty">
           仅显示前 {{ items.length }} 道，其余请刷新或逐卷打开处理。
         </p>
-      </aside>
+      </DialogContent>
     </div>
-  </Teleport>
+  </DialogPortal></DialogRoot>
 </template>

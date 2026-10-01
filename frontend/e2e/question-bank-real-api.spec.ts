@@ -1,95 +1,128 @@
-import { resolve } from 'node:path'
 import { expect, test } from '@playwright/test'
 
-test('real API question bank handles scale, evidence, recovery and guarded writes', async ({ page }) => {
-  await page.goto('/question-bank')
+test('real API skill, paper, todo and shared basket flows preserve guarded edits', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('ai-grading:curriculum-scope:v1', 'bnu24-math-g8-upper'))
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  const requests: string[] = []
+  page.on('request', request => requests.push(new URL(request.url()).pathname))
+  await page.goto('/question-bank?tab=skill')
   await expect(page.getByRole('heading', { name: '题库管理', exact: true })).toBeVisible()
-  await expect(page.getByText('共 2005 题', { exact: true })).toBeVisible()
-  const fileInput = page.locator('input[type="file"]')
-  await fileInput.focus()
-  expect(await fileInput.evaluate((input) => {
-    const picker = input.closest('.qb-file-picker')
-    return picker ? getComputedStyle(picker).outlineStyle : 'none'
-  })).not.toBe('none')
-
-  const keyword = page.getByRole('searchbox', { name: '关键词' })
-  await keyword.fill('LONG_FORMULA')
-  await expect(page.getByText('共 2005 题', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '应用筛选' }).click()
-  await expect(page.getByText('共 1 题', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '打开第 1 题详情' }).click()
-  await expect(page.getByRole('heading', { name: '第 1 题' })).toBeVisible()
-  await expect(page.getByLabel('第 1 题', { exact: true }).getByText(/∑_\{k=1\}\^\{120\}/)).toBeVisible()
-  const questionAsset = page.getByAltText('题目图片素材')
-  await expect(questionAsset).toBeVisible()
-  expect(await questionAsset.evaluate((image) => ({
-    width: (image as HTMLImageElement).naturalWidth,
-    height: (image as HTMLImageElement).naturalHeight,
-  }))).toEqual({ width: 960, height: 360 })
-  await expect(page.getByRole('link', { name: /打开题目预览/ })).toBeVisible()
-  const previewResponse = await page.request.get(
-    '/api/question-bank/questions/1/previews/question',
-  )
-  expect(previewResponse.ok()).toBe(true)
-  const previewBytes = await previewResponse.body()
-  expect(previewBytes.subarray(12, 16).toString('ascii')).toBe('IHDR')
-  expect(previewBytes.readUInt32BE(16)).toBe(1200)
-  expect(previewBytes.readUInt32BE(20)).toBe(1600)
-  expect(previewBytes.byteLength).toBeGreaterThan(8_000)
-
-  await page.getByRole('button', { name: '添加标签' }).click()
-  const values = page.getByLabel(/标签值/)
-  await values.last().fill('函数建模')
-  await page.getByRole('button', { name: '保存标签' }).click()
-  await expect(page.getByText('标签已经保存。')).toBeVisible()
-
-  page.once('dialog', (dialog) => dialog.accept())
-  await page.getByRole('button', { name: '删除这道题' }).click()
-  await expect(page.getByRole('button', { name: '立即恢复' })).toBeVisible()
-  await page.getByRole('button', { name: '立即恢复' }).click()
-  await expect(page.getByText('题目已经恢复。')).toBeVisible()
-
-  await page.getByRole('button', { name: '清除' }).click()
-  await expect(page.getByText('共 2005 题', { exact: true })).toBeVisible()
-  await page.locator('.qb-ledger tbody input[type="checkbox"]').first().check()
-  await page.getByRole('button', { name: '下一页' }).click()
-  await expect(page.getByText('第 2 / 101 页', { exact: true })).toBeVisible()
-  await page.locator('.qb-ledger tbody input[type="checkbox"]').first().check()
-  await expect(page.locator('.qb-selection-bar')).toContainText(/已选\s*2\s*题\s*，其中 1 题在其他页/)
-
-  page.once('dialog', (dialog) => dialog.accept())
-  await page.getByRole('button', { name: 'AI 标注 2 题' }).click()
-  await expect(page.getByText(/部分完成：成功 1/)).toBeVisible()
-  page.once('dialog', async (dialog) => {
-    expect(dialog.message()).toContain('只重试 1 道失败题目')
-    await dialog.dismiss()
-  })
-  await page.getByRole('button', { name: '重试允许的失败项' }).click()
-  const downloadPromise = page.waitForEvent('download')
-  await page.getByRole('button', { name: '下载失败清单' }).click()
-  const download = await downloadPromise
-  expect(download.suggestedFilename()).toContain('失败清单.csv')
-
-  await page.reload()
-  await expect(page.getByText(/AI 标注 #/)).toBeVisible()
-  await expect(page.getByText(/部分完成：成功 1/)).toBeVisible()
-
-  await fileInput.setInputFiles(
-    resolve('test-results/p2-16-real/anonymous-import.docx'),
-  )
-  await expect(page.getByText(/已提交任务/)).toBeVisible()
-  await expect(page.getByText(/试卷导入 #/)).toBeVisible()
-
-  for (const viewport of [
-    { width: 1920, height: 1080 },
-    { width: 1440, height: 900 },
-    { width: 1366, height: 768 },
-    { width: 1280, height: 800 },
-    { width: 1024, height: 768 },
-  ]) {
-    await page.setViewportSize(viewport)
-    expect(await page.evaluate(
-      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
-    )).toBe(false)
+  await expect(page.locator('.qb-skill-row').first()).toBeVisible()
+  await expect(page.locator('.qb-question-card').first()).toBeVisible()
+  await expect(page.locator('.page-tabs .is-active')).toHaveText('按技能')
+  await expect(page.getByRole('checkbox', { name: '折叠重复题' })).toBeChecked()
+  for (const width of [1440, 1280]) {
+    await page.setViewportSize({ width, height: 900 })
+    const panes = await page.locator('.qb-skill-layout > .qb-browse-pane').evaluateAll(elements => elements.map(element => { const rect = element.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }))
+    expect(panes).toEqual([{ x: 200, y: 72, width: 240, height: 808 }, { x: 454, y: 72, width: 320, height: 808 }, { x: 788, y: 72, width: width - 808, height: 808 }])
+    await page.screenshot({ path: `test-results/question-bank-collapsed-${width}.png` })
   }
+  await page.getByRole('button', { name: '上传试卷', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '上传试卷与任务' })).toBeVisible()
+  await page.getByRole('button', { name: '关闭上传窗口' }).press('Escape')
+  await expect(page.getByRole('button', { name: '上传试卷', exact: true })).toBeFocused()
+  await page.getByRole('searchbox', { name: '搜题干' }).fill('LONG_FORMULA')
+  await expect(page.locator('.qb-question-card')).toHaveCount(1)
+  const heading = page.getByRole('button', { name: '第 1 题', exact: true })
+  await heading.click()
+  await expect(page.locator('.qb-annotation')).toBeVisible()
+  await expect(page.locator('.qb-evidence-row')).toHaveCount(2)
+  await expect(page.locator('.qb-inline-card__heading')).toHaveCSS('position', 'sticky')
+  for (const width of [1440, 1280]) {
+    await page.setViewportSize({ width, height: 900 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
+    await page.screenshot({ path: `test-results/question-bank-skill-${width}.png` })
+  }
+  expect(requests.filter(path => path === '/api/question-bank/questions/1')).toHaveLength(1)
+  expect(requests.filter(path => path === '/api/question-bank/questions/1/solution-evidence')).toHaveLength(1)
+  expect(requests.filter(path => path === '/api/question-bank/criteria/questions/1')).toHaveLength(1)
+  await page.locator('.qb-inline-card.is-expanded .qb-card-menu summary').click()
+  await page.locator('.qb-inline-card.is-expanded .qb-card-menu summary').press('Escape')
+  await expect(page.locator('.qb-inline-card.is-expanded .qb-card-menu')).not.toHaveAttribute('open')
+  await expect(page.locator('.qb-annotation')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(heading).toBeFocused()
+  await expect(page.locator('.qb-annotation')).toHaveCount(0)
+  await heading.click()
+  await page.getByText('编辑题目属性 / 选择小节', { exact: true }).click()
+  await page.getByLabel('要添加的标签类别').selectOption('ability')
+  await page.locator('.qb-tag-add').getByRole('button', { name: '添加', exact: true }).click()
+  await page.getByLabel('能力标签值').last().fill('运算能力')
+  await page.getByRole('button', { name: '保存标签', exact: true }).click()
+  await expect(page.getByText('标签已经保存。', { exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: '加入试卷篮', exact: true }).click()
+  const basketButton = page.getByRole('button', { name: /试卷篮 · 1/ })
+  await expect(basketButton).toBeVisible()
+  await basketButton.click()
+  await expect(page.getByRole('dialog').filter({ has: page.getByText('试卷篮 · 1', { exact: true }) })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(basketButton).toBeFocused()
+  await page.getByRole('button', { name: '按试卷', exact: true }).click()
+  const paperMenu = page.locator('.paper-card__more-toggle').first()
+  await paperMenu.click()
+  await page.getByRole('menuitem', { name: '编辑资料', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '编辑试卷资料' })).toBeVisible()
+  await page.getByRole('button', { name: '关闭试卷资料编辑' }).press('Escape')
+  await expect(paperMenu).toBeFocused()
+  const maintenance = page.locator('.paper-library__maintenance summary')
+  await maintenance.click()
+  await page.getByRole('button', { name: '标准版本与缺口', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '标准版本与缺口', exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(maintenance).toBeFocused()
+  await maintenance.click()
+  await page.getByRole('button', { name: '试卷回收站', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '试卷回收站', exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(maintenance).toBeFocused()
+  await maintenance.click()
+  await page.getByRole('button', { name: /无法归类的新词/ }).click()
+  await expect(page.getByRole('dialog', { name: '标签治理', exact: true })).toBeVisible()
+  await page.keyboard.press('Tab')
+  expect(await page.evaluate(() => !!document.activeElement?.closest('.taxonomy-review'))).toBe(true)
+  await page.keyboard.press('Escape')
+  await expect(maintenance).toBeFocused()
+  await page.getByRole('button', { name: '匿名九年级期末试卷', exact: true }).click()
+  await expect(page.locator('.qb-paper-detail .qb-question-card')).toHaveCount(2005, { timeout: 60000 })
+  await expect(page.locator('.qb-paper-detail .qb-number-nav button')).toHaveCount(2005)
+  await page.locator('.qb-number-nav button').first().click()
+  await expect(page.locator('.qb-paper-detail .qb-annotation')).toBeVisible()
+  await expect(page).toHaveURL(/question=1/)
+  await page.reload()
+  await expect(page.locator('.qb-paper-detail .qb-annotation')).toBeVisible({ timeout: 60000 })
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: '待处理', exact: true }).click()
+  await expect(page.locator('.qb-todo-stats')).toContainText('分析未完成')
+  await expect(page.locator('.qb-todo-group').first().getByRole('button', { name: '判定点批量审核' })).toBeVisible()
+  const criteriaButton = page.getByRole('button', { name: '判定点批量审核', exact: true })
+  await criteriaButton.click()
+  await expect(page.getByRole('dialog', { name: '判定点待审核', exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(criteriaButton).toBeFocused()
+  expect(await page.locator('.qb-todo-group').evaluateAll(elements => elements.every(element => element.scrollHeight <= element.clientHeight + 1))).toBe(true)
+  for (const width of [1440, 1280]) {
+    await page.setViewportSize({ width, height: 900 })
+    await page.screenshot({ path: `test-results/question-bank-todo-${width}.png` })
+  }
+  await page.locator('.qb-todo-group').filter({ has: page.getByRole('heading', { name: /^未挂技能/ }) }).getByRole('button', { name: '去处理 →' }).first().click()
+  await expect(page.locator('.qb-paper-detail .qb-annotation')).toBeVisible({ timeout: 60000 })
+  await expect(page.locator('.qb-paper-detail .qb-inline-card.is-expanded .qb-inline-card__title')).toBeInViewport()
+  for (const width of [1440, 1280]) {
+    await page.setViewportSize({ width, height: 900 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
+    await page.screenshot({ path: `test-results/question-bank-paper-${width}.png` })
+  }
+  await page.goto('/question-assembly?mode=browse')
+  await expect(page.locator('.page-tabs .is-active')).toHaveText('试卷篮与导出')
+  await expect(page.locator('.page-tabs button')).toHaveCount(2)
+  await expect(page.locator('.assembly-editor__workspace')).toBeVisible()
+  for (const width of [1440, 1280]) {
+    await page.setViewportSize({ width, height: 900 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
+    expect(await page.locator('.assembly-editor__workspace > *').evaluateAll(elements => elements.map(element => { const rect = element.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }))).toEqual([{ x: 200, y: 72, width: 280, height: 808 }, { x: 494, y: 72, width: width - 828, height: 808 }, { x: width - 320, y: 72, width: 300, height: 808 }])
+    await page.screenshot({ path: `test-results/question-assembly-${width}.png` })
+  }
+  await page.getByRole('button', { name: '去题库选题', exact: true }).first().click()
+  await expect(page).toHaveURL(/question-bank\?tab=skill/)
 })

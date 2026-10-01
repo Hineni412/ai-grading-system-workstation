@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { DialogRoot, DialogPortal, DialogContent, DialogTitle } from 'reka-ui'
 
 import {
   questionBankApi,
@@ -28,6 +29,7 @@ interface CandidateDraft {
 
 const props = defineProps<{
   open: boolean
+  returnFocus?: HTMLElement | null
 }>()
 
 const emit = defineEmits<{
@@ -571,35 +573,34 @@ function closeQuestionPreview(): void {
 
 function onKeydown(event: KeyboardEvent): void {
   if (!props.open || event.key !== 'Escape') return
-  if (previewState.value !== 'idle') closeQuestionPreview()
+  if (previewState.value !== 'idle') { event.preventDefault(); closeQuestionPreview() }
   else emit('close')
 }
 
-onMounted(() => window.addEventListener('keydown', onKeydown))
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKeydown)
   previewController?.abort()
   clearSuggestionTimer()
 })
 </script>
 
 <template>
-  <Teleport to="body">
+  <DialogRoot :open="open" @update:open="!$event && emit('close')"><DialogPortal>
     <div
       v-if="open"
       class="qb-drawer-layer taxonomy-review-layer"
       role="presentation"
       @click.self="emit('close')"
     >
-      <aside
+      <DialogContent as="aside"
         class="taxonomy-review"
-        role="dialog"
-        aria-modal="true"
+        :aria-describedby="undefined"
+        @escape-key-down="onKeydown"
         aria-labelledby="taxonomy-review-title"
+        @close-auto-focus="returnFocus && ($event.preventDefault(), returnFocus.focus())"
       >
         <header class="taxonomy-review__header">
           <div>
-            <h2 id="taxonomy-review-title">标签治理</h2>
+            <DialogTitle as="h2" id="taxonomy-review-title">标签治理</DialogTitle>
             <p>当前候选只在确认后写入；历史 AI 批次单独查看。</p>
           </div>
           <button
@@ -1072,29 +1073,28 @@ onBeforeUnmount(() => {
             </article>
           </section>
         </div>
-      </aside>
+      </DialogContent>
     </div>
-  </Teleport>
+  </DialogPortal></DialogRoot>
 
-  <Teleport to="body">
+  <DialogRoot :open="previewState !== 'idle'" @update:open="!$event && closeQuestionPreview()"><DialogPortal>
     <div
       v-if="previewState !== 'idle'"
       class="qb-drawer-layer taxonomy-question-preview-layer"
       role="presentation"
       @click.self="closeQuestionPreview"
     >
-      <aside
+      <DialogContent as="aside"
         class="taxonomy-question-preview"
-        role="dialog"
-        aria-modal="true"
+        :aria-describedby="undefined"
         aria-labelledby="taxonomy-question-preview-title"
       >
         <header class="qb-inspector__heading">
           <div>
             <p class="qb-eyebrow">QUESTION PREVIEW</p>
-            <h2 id="taxonomy-question-preview-title">
+            <DialogTitle as="h2" id="taxonomy-question-preview-title">
               题目 #{{ previewQuestionId }}
-            </h2>
+            </DialogTitle>
             <p>只读预览，用于判断新词应归并到哪些现有标签。</p>
           </div>
           <button
@@ -1152,7 +1152,7 @@ onBeforeUnmount(() => {
             />
           </details>
         </template>
-      </aside>
+      </DialogContent>
     </div>
-  </Teleport>
+  </DialogPortal></DialogRoot>
 </template>

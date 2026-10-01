@@ -10,6 +10,7 @@ import {
 } from 'vue'
 import { storeToRefs } from 'pinia'
 import StatePanel from '../design-system/StatePanel.vue'
+import { DialogRoot, DialogPortal, DialogContent, DialogTitle } from 'reka-ui'
 
 import type {
   QuestionBankPaper,
@@ -122,6 +123,9 @@ const examType = ref('')
 const sourceType = ref('')
 const progressStatus = ref('')
 const editingPaperId = ref<number | null>(null)
+let editorReturnTarget: HTMLElement | null = null
+function returnEditorFocus(event: Event) { event.preventDefault(); editorReturnTarget?.focus({ preventScroll: true }) }
+function returnMaintenanceFocus(event: Event) { event.preventDefault(); maintenanceMenu.value?.querySelector<HTMLElement>('summary')?.focus() }
 const pendingDeletePapers = ref<QuestionBankPaper[]>([])
 const selectedPaperIds = ref(new Set<number>())
 const openMenuPaperId = ref<number | null>(null)
@@ -1014,6 +1018,8 @@ async function fillAllTags(): Promise<void> {
 }
 
 function editPaper(paper: QuestionBankPaper): void {
+  const active = document.activeElement as HTMLElement | null
+  editorReturnTarget = active?.closest('.paper-card')?.querySelector<HTMLElement>('.paper-card__more-toggle') || active?.closest('details')?.querySelector<HTMLElement>('summary') || active
   editingPaperId.value = paper.id
   paperDraft.value = {
     title: paper.title ?? '',
@@ -1217,8 +1223,8 @@ async function confirmPermanentDelete(): Promise<void> {
       </div>
     </header>
 
-    <section v-if="showStandard" class="paper-library__standard" aria-label="标准版本与缺口">
-      <div class="paper-library__standard-heading"><h2>标准版本与缺口</h2><AppButton variant="secondary" class="paper-button" @click="showStandard = false">收起</AppButton></div>
+    <DialogRoot :open="showStandard" @update:open="showStandard = $event"><DialogPortal><div v-if="showStandard" class="qb-modal-layer" @click.self="showStandard = false"><DialogContent as="section" class="paper-library__standard qb-import-dialog" :aria-describedby="undefined" @close-auto-focus="returnMaintenanceFocus">
+      <div class="paper-library__standard-heading"><DialogTitle as="h2">标准版本与缺口</DialogTitle><AppButton variant="secondary" class="paper-button" @click="showStandard = false">收起</AppButton></div>
       <p v-if="standardState === 'loading'" role="status">正在读取当前标准与关联情况…</p>
       <p v-else-if="standardState === 'error'" role="alert">暂时无法读取。<AppButton variant="secondary" class="paper-button" @click="loadStandardSummary">重试</AppButton></p>
       <template v-else-if="standardSummary">
@@ -1228,17 +1234,15 @@ async function confirmPermanentDelete(): Promise<void> {
         <p>{{ standardSummary.older_link_question_count }} 道题正在沿用旧版本关联。查看不调用 AI、不收费；标准修订先预演影响，沿用未变化的关联，只处理受影响题目。</p>
         <ul><li v-for="version in standardSummary.versions" :key="version.release_id">{{ version.release_id }} · 词表 {{ version.taxonomy_revision }} · {{ version.status === 'active' ? '使用中' : version.status === 'candidate' ? '候选' : '历史' }} · {{ version.activated_at ?? version.created_at }}</li></ul>
       </template>
-    </section>
+    </DialogContent></div></DialogPortal></DialogRoot>
 
     <p v-if="retagMessage" class="paper-library__notice" role="status">{{ retagMessage }}</p>
     <p v-if="deleteNotice" class="paper-library__notice" role="status">{{ deleteNotice }} <button v-if="lastTrashed" class="qb-link" :disabled="stateBusy" @click="changePaperState(lastTrashed, false)">立即恢复</button></p>
 
-    <div class="paper-category-chips"><button v-for="value in ['', '真卷', '校本', '练习']" :key="value" class="qb-filter-chip" :class="{ 'is-active': category === value }" :aria-pressed="category === value" @click="category = value">{{ value || '全部' }}</button><label><input v-model="onlyIssues" type="checkbox">只看有问题</label></div>
-    <div class="paper-library__filters">
-      <label class="paper-search">
-        <span class="sr-only">搜索试卷</span>
-        <input class="app-input" v-model="keyword" type="search" placeholder="搜索试卷名称、地区或教材">
-      </label>
+    <div class="paper-library__tools">
+      <label class="paper-search"><span class="sr-only">搜索试卷</span><input class="app-input" v-model="keyword" type="search" placeholder="搜索试卷名称、地区或教材"></label>
+      <div class="paper-category-chips"><button v-for="value in ['', '真卷', '校本', '练习']" :key="value" class="qb-filter-chip" :class="{ 'is-active': category === value }" :aria-pressed="category === value" @click="category = value">{{ value || '全部' }}</button></div>
+      <div class="paper-library__tool-line"><label><input v-model="onlyIssues" type="checkbox">只看有问题</label><details class="paper-library__extra-filters"><summary>更多筛选</summary><div class="paper-library__filters">
       <label>
         <span>年份</span>
         <select class="app-input" v-model="year">
@@ -1272,7 +1276,7 @@ async function confirmPermanentDelete(): Promise<void> {
         </select>
       </label>
       <AppButton variant="ghost" @click="resetFilters">清除</AppButton>
-    </div>
+    </div></details></div></div>
 
     <div class="paper-batch-bar" :class="{ 'is-active': selectedCount > 0 }">
       <label class="paper-batch-bar__select-all">
@@ -1289,7 +1293,7 @@ async function confirmPermanentDelete(): Promise<void> {
         {{ selectedCount > 0 ? `已选 ${selectedCount} 份试卷` : '未选中试卷' }}
       </span>
       <span class="paper-batch-bar__spacer" />
-      <AppButton
+      <template v-if="selectedCount"><AppButton
         variant="primary"
         :disabled="batchActionsDisabled"
         @click="fillSelectedPapers"
@@ -1313,7 +1317,7 @@ async function confirmPermanentDelete(): Promise<void> {
         variant="secondary"
         :disabled="selectedCount === 0"
         @click="clearPaperSelection"
-      >取消选择</AppButton>
+      >取消选择</AppButton></template>
     </div>
 
     <StatePanel v-if="store.papersState === 'loading'" kind="loading" title="正在读取试卷库…" description="" />
@@ -1369,88 +1373,16 @@ async function confirmPermanentDelete(): Promise<void> {
             :class="{ 'is-selected': isPaperSelected(paper.id), 'is-current': activePaperId === paper.id }"
           >
         <div class="paper-card__body">
-          <div class="paper-card__topline">
-            <label class="paper-card__check" @click.stop>
-              <input
-                type="checkbox"
-                :checked="isPaperSelected(paper.id)"
-                :aria-label="`选择${paper.title || `试卷 ${paper.id}`}`"
-                @change="onPaperSelectChange(paper.id, $event)"
-              >
-            </label>
-            <span class="paper-chip is-format">{{ sourceLabel(paper.source_type) }}</span>
-            <span v-if="paper.year" class="paper-card__detail">{{ paper.year }}</span>
-            <span v-if="paper.exam_type" class="paper-card__detail">{{ paper.exam_type }}</span>
-            <span class="paper-card__question-count"><strong>{{ paper.question_count }}</strong> 道题</span>
+          <div class="paper-card__row">
+            <label class="paper-card__check" @click.stop><input type="checkbox" :checked="isPaperSelected(paper.id)" :aria-label="`选择${paper.title || `试卷 ${paper.id}`}`" @change="onPaperSelectChange(paper.id, $event)"></label>
+            <div class="paper-card__text"><h2><button type="button" class="paper-card__title" :title="paper.title || `未命名试卷 #${paper.id}`" @click="emit('open', paper)">{{ paper.title || `未命名试卷 #${paper.id}` }}</button></h2>
+              <div class="paper-card__compact-meta"><span>{{ paper.question_count }} 题</span><span>{{ sourceLabel(paper.source_type) }}</span><span>{{ formatDate(paper.updated_at) }}</span><span class="paper-card__compact-progress" role="progressbar" aria-label="联合分析完整度" :aria-valuenow="progressFor(paper)" aria-valuemin="0" aria-valuemax="100"><i :style="{ width: `${progressFor(paper)}%` }" /></span></div>
+            </div>
+            <div class="paper-card__statuses"><StatusBadge v-if="paper.criteria_needs_review_count" tone="warning" :label="`${paper.criteria_needs_review_count} 待审`" /><StatusBadge v-if="paper.skill_unlinked_question_count" tone="warning" :label="`${paper.skill_unlinked_question_count} 未挂`" /><span v-if="paper.question_count > 0 && paper.complete_analysis_count === paper.question_count && !paper.criteria_needs_review_count && !paper.skill_unlinked_question_count" class="paper-card__complete">✓ 完整</span><StatusBadge v-else-if="!paper.criteria_needs_review_count && !paper.skill_unlinked_question_count" tone="neutral" :label="paper.question_count ? `${paper.question_count - paper.complete_analysis_count} 未完成` : '暂无题'" /></div>
           </div>
-          <h2>
-            <button
-              type="button"
-              class="paper-card__title"
-              :title="paper.title || `未命名试卷 #${paper.id}`"
-              @click="emit('open', paper)"
-            >{{ paper.title || `未命名试卷 #${paper.id}` }}</button>
-          </h2>
-          <details class="paper-card__metadata"><summary>来源资料</summary><p class="paper-card__meta">
-            {{
-              [
-                paper.province,
-                paper.city,
-                paper.district,
-                paper.grade,
-                paper.semester,
-                paper.textbook_version,
-              ].filter(Boolean).join(' · ') || '来源信息待补充'
-            }}
-          </p>
-          </details><div class="paper-card__progress-heading">
-            <StatusBadge
-              :tone="paper.criteria_needs_review_count > 0 || paper.complete_analysis_count < paper.question_count ? 'warning' : paper.question_count > 0 ? 'success' : 'neutral'"
-              :label="paper.criteria_needs_review_count ? `待审核判定点 ${paper.criteria_needs_review_count}` : !paper.question_count ? '暂无试题' : paper.complete_analysis_count < paper.question_count ? `待完善 ${paper.question_count - paper.complete_analysis_count} 道` : '分析完整'"
-            />
-            <span v-if="paper.skill_unlinked_question_count" class="qb-warning">{{ paper.skill_unlinked_question_count }} 未挂</span><span>联合分析 <strong>{{ paper.complete_analysis_count }} / {{ paper.question_count }}</strong></span>
-          </div>
-          <p
-            v-if="paperStatusLines.get(paper.id)?.live"
-            class="paper-card__live"
-            role="status"
-          >
-            {{ paperStatusLines.get(paper.id)?.live }}
-          </p>
-          <div
-            v-if="paper.question_count > 0 && paper.complete_analysis_count < paper.question_count"
-            class="paper-card__progress"
-            role="progressbar"
-            aria-label="联合分析完整度"
-            :aria-valuenow="progressFor(paper)"
-            aria-valuemin="0"
-            aria-valuemax="100"
-          >
-            <span :style="{ width: `${progressFor(paper)}%` }" />
-          </div>
-          <p class="paper-card__progress-note">
-            标签 {{ paper.tagged_question_count }}/{{ paper.question_count }}
-            · 判定点 {{ paper.criteria_question_count }}/{{ paper.question_count }}
-          </p>
-          <ul
-            v-if="paperStatusLines.get(paper.id)?.leftovers.length"
-            class="paper-card__leftovers"
-          >
-            <li
-              v-for="line in paperStatusLines.get(paper.id)?.leftovers"
-              :key="line"
-            >
-              {{ line }}
-            </li>
-          </ul>
+          <p v-if="paperStatusLines.get(paper.id)?.live" class="paper-card__live" role="status">{{ paperStatusLines.get(paper.id)?.live }}</p>
+          <ul v-if="paperStatusLines.get(paper.id)?.leftovers.length" class="paper-card__leftovers"><li v-for="line in paperStatusLines.get(paper.id)?.leftovers" :key="line">{{ line }}</li></ul>
           <footer>
-            <span>更新于 {{ formatDate(paper.updated_at) }}</span>
-
-            <button
-              type="button"
-              class="paper-card__open"
-              @click="emit('open', paper)"
-            >查看试题 →</button>
             <div class="paper-card__more">
               <button
                 type="button"
@@ -1469,6 +1401,8 @@ async function confirmPermanentDelete(): Promise<void> {
                   role="menuitem"
                   @click="closePaperMenu(); editPaper(paper)"
                 >编辑资料</button>
+                <details class="paper-card__metadata"><summary>来源与分析资料</summary><p>{{ [paper.province, paper.city, paper.district, paper.grade, paper.semester, paper.textbook_version].filter(Boolean).join(' · ') || '来源信息待补充' }}</p><p>标签 {{ paper.tagged_question_count }}/{{ paper.question_count }} · 判定点 {{ paper.criteria_question_count }}/{{ paper.question_count }} · 完整 {{ paper.complete_analysis_count }}/{{ paper.question_count }}</p></details>
+
                 <button role="menuitem" :disabled="batchActionsDisabled && retagAllBusy" @click="closePaperMenu(); continuePaper(paper)">继续分析</button>
                 <button role="menuitem" :disabled="answerDraftBusy" @click="closePaperMenu(); answerPaper(paper)">生成答案草稿</button>
                 <button role="menuitem" :disabled="stateBusy" @click="closePaperMenu(); changePaperState(paper, true)">移入回收站</button>
@@ -1499,7 +1433,7 @@ async function confirmPermanentDelete(): Promise<void> {
       </section>
     </div>
 
-    <Teleport to="body"><div v-if="showTrash" class="qb-modal-layer" @click.self="showTrash = false"><section class="qb-import-dialog" role="dialog" aria-modal="true" aria-label="试卷回收站"><header><h2>试卷回收站</h2><button class="qb-link" @click="showTrash = false">关闭</button></header><p v-if="trashState === 'loading'">正在读取…</p><p v-else-if="trashState === 'error'" role="alert">读取失败 <button class="qb-link" @click="loadTrash">重试</button></p><p v-else-if="!trashPapers.length">回收站为空。</p><article v-for="paper in trashPapers" :key="paper.id" class="paper-trash-row"><strong>{{ paper.title }}</strong><span>{{ paper.question_count }} 题</span><button class="qb-link" :disabled="stateBusy" @click="changePaperState(paper, false)">恢复</button><button class="qb-link" @click="requestPermanentDelete(paper)">永久删除</button></article></section></div></Teleport>
+    <DialogRoot :open="showTrash" @update:open="showTrash = $event"><DialogPortal><div v-if="showTrash" class="qb-modal-layer" @click.self="showTrash = false"><DialogContent as="section" class="qb-import-dialog" :aria-describedby="undefined" @close-auto-focus="returnMaintenanceFocus"><header><DialogTitle as="h2">试卷回收站</DialogTitle><button class="qb-link" @click="showTrash = false">关闭</button></header><p v-if="trashState === 'loading'">正在读取…</p><p v-else-if="trashState === 'error'" role="alert">读取失败 <button class="qb-link" @click="loadTrash">重试</button></p><p v-else-if="!trashPapers.length">回收站为空。</p><article v-for="paper in trashPapers" :key="paper.id" class="paper-trash-row"><strong>{{ paper.title }}</strong><span>{{ paper.question_count }} 题</span><button class="qb-link" :disabled="stateBusy" @click="changePaperState(paper, false)">恢复</button><button class="qb-link" @click="requestPermanentDelete(paper)">永久删除</button></article></DialogContent></div></DialogPortal></DialogRoot>
 
     <nav v-if="paperPageCount > 1" class="paper-library__pagination" aria-label="试卷分页">
       <AppButton variant="secondary" :disabled="paperPage === 1" @click="changePaperPage(-1)">上一页</AppButton>
@@ -1507,22 +1441,22 @@ async function confirmPermanentDelete(): Promise<void> {
       <AppButton variant="secondary" :disabled="paperPage === paperPageCount" @click="changePaperPage(1)">下一页</AppButton>
     </nav>
 
-    <Teleport to="body">
+    <DialogRoot :open="editingPaperId !== null" @update:open="!$event && closePaperEditor()"><DialogPortal>
       <div
         v-if="editingPaperId !== null"
         class="paper-editor-layer"
         @click.self="closePaperEditor"
       >
-        <aside
+        <DialogContent as="aside"
           class="paper-editor"
-          role="dialog"
-          aria-modal="true"
+          :aria-describedby="undefined"
           aria-labelledby="paper-editor-title"
+          @close-auto-focus="returnEditorFocus"
         >
           <header class="paper-editor__header">
             <div>
               <p>试卷标签</p>
-              <h2 id="paper-editor-title">编辑试卷资料</h2>
+              <DialogTitle as="h2" id="paper-editor-title">编辑试卷资料</DialogTitle>
               <span>这里的内容会显示在试卷卡片，并用于题库筛选。</span>
             </div>
             <button
@@ -1673,22 +1607,22 @@ async function confirmPermanentDelete(): Promise<void> {
               </AppButton>
             </footer>
           </form>
-        </aside>
+        </DialogContent>
       </div>
-
+    </DialogPortal></DialogRoot>
+    <DialogRoot :open="Boolean(permanentDeleteImpact)" @update:open="!$event && cancelPermanentDelete()"><DialogPortal>
       <div
         v-if="permanentDeleteImpact"
         class="paper-trash-confirm-layer"
         @click.self="cancelPermanentDelete"
       >
-        <section
+        <DialogContent as="section"
           class="paper-trash-confirm"
-          role="dialog"
-          aria-modal="true"
+          :aria-describedby="undefined"
           aria-labelledby="paper-permanent-delete-title"
         >
           <p class="paper-trash-confirm__eyebrow">不可恢复</p>
-          <h2 id="paper-permanent-delete-title">确认彻底删除？</h2>
+          <DialogTitle as="h2" id="paper-permanent-delete-title">确认彻底删除？</DialogTitle>
           <strong v-if="pendingDeletePapers.length <= 1">
             {{ pendingDeletePapers[0]?.title || `未命名试卷 #${pendingDeletePapers[0]?.id}` }}
           </strong>
@@ -1734,22 +1668,22 @@ async function confirmPermanentDelete(): Promise<void> {
               @click="confirmPermanentDelete"
             >{{ permanentDeleteState === 'working' ? '正在彻底删除…' : '确认彻底删除' }}</AppButton>
           </footer>
-        </section>
+        </DialogContent>
       </div>
-
+    </DialogPortal></DialogRoot>
+    <DialogRoot :open="Boolean(pendingAnswerDraft)" @update:open="!$event && cancelAnswerDraft()"><DialogPortal>
       <div
         v-if="pendingAnswerDraft"
         class="paper-trash-confirm-layer"
         @click.self="cancelAnswerDraft"
       >
-        <section
+        <DialogContent as="section"
           class="paper-trash-confirm"
-          role="dialog"
-          aria-modal="true"
+          :aria-describedby="undefined"
           aria-labelledby="paper-answer-draft-title"
         >
           <p class="paper-trash-confirm__eyebrow">AI 补答案</p>
-          <h2 id="paper-answer-draft-title">确认生成答案草稿？</h2>
+          <DialogTitle as="h2" id="paper-answer-draft-title">确认生成答案草稿？</DialogTitle>
           <strong>
             选中的 {{ pendingAnswerDraft.paperCount }} 份试卷、共 {{ pendingAnswerDraft.questionIds.length }} 道题
           </strong>
@@ -1769,9 +1703,9 @@ async function confirmPermanentDelete(): Promise<void> {
               @click="confirmAnswerDraft"
             >{{ answerDraftBusy ? '正在提交…' : '确认生成' }}</AppButton>
           </footer>
-        </section>
+        </DialogContent>
       </div>
-    </Teleport>
+    </DialogPortal></DialogRoot>
   </section>
 </template>
 
@@ -2837,5 +2771,59 @@ async function confirmPermanentDelete(): Promise<void> {
 </style>
 
 <style scoped>
-.paper-library__grid{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}.paper-card{padding:10px;border-radius:var(--radius-control)}.paper-card.is-current{border-color:var(--color-accent);background:var(--color-accent-subtle)}.paper-card__body{gap:6px}.paper-card h2{font-size:14px;margin:0}.paper-card__topline{gap:6px;flex-wrap:wrap}.paper-card__progress-heading{flex-wrap:wrap;gap:6px;font-size:11px}.paper-card footer{flex-wrap:wrap;gap:5px;font-size:11px}.paper-card__metadata{font-size:11px;color:var(--color-text-secondary)}.paper-library__filters{display:flex;flex-wrap:wrap;gap:6px}.paper-library__filters label{min-width:0;flex:1 1 100px}.paper-library__filters .paper-search{flex-basis:100%}.paper-category-chips{display:flex;gap:5px;flex-wrap:wrap;align-items:center;font-size:12px}.paper-batch-bar{flex-wrap:wrap;gap:6px}.paper-folder__head{flex-wrap:wrap}.paper-folder__header{min-width:0;flex-wrap:wrap}.paper-trash-row{display:flex;gap:12px;flex-wrap:wrap;padding:12px;border-bottom:1px solid var(--color-border-default)}
+.paper-library { display: flex; flex-direction: column; gap: 0; height: 100%; min-height: 0; }
+.paper-library__tools { display: grid; gap: 8px; padding: 11px 12px 10px; border-bottom: 1px solid var(--color-border-subtle); }
+.paper-search .app-input { width: 100%; height: 30px; min-height: 30px; font-size: 12px; }
+.paper-category-chips, .paper-library__tool-line { display: flex; gap: 5px; align-items: center; font-size: 12px; }
+.paper-library__tool-line { justify-content: space-between; }
+.paper-library__tool-line > label { display: inline-flex; align-items: center; gap: 6px; }
+.paper-library__extra-filters { position: relative; }
+.paper-library__extra-filters summary { cursor: pointer; color: var(--color-text-secondary); font-size: 11.5px; }
+.paper-library__filters { position: absolute; z-index: 10; top: 24px; right: 0; display: grid; gap: 8px; width: 250px; padding: 12px; border: 1px solid var(--color-border-default); border-radius: 10px; background: var(--card); box-shadow: var(--shadow-overlay); }
+.paper-library__filters label { min-width: 0; }
+.paper-batch-bar { flex-wrap: wrap; gap: 6px; padding: 6px 12px; border: 0; border-bottom: 1px solid var(--color-border-subtle); border-radius: 0; box-shadow: none; min-height: 0; position: static; font-size: 11px; }
+.paper-batch-bar__info, .paper-batch-bar__select-all { font-size: 11px; }
+.paper-batch-bar.is-active { box-shadow: none; }
+.paper-folders { display: block; gap: 0; flex: 1; min-height: 0; overflow-y: auto; }
+.paper-folder { display: block; gap: 0; }
+.paper-folder__head { padding: 10px 12px 4px; gap: 6px; min-height: 0; border: 0; border-radius: 0; background: transparent; }
+.paper-folder__check { padding: 0; align-self: auto; }
+.paper-folder__header { gap: 6px; font-size: 11.5px; min-width: 0; min-height: 0; flex-wrap: nowrap; padding: 0; }
+.paper-folder__header strong { font-weight: 600; }
+.paper-folder__kind { display: none; }
+.paper-folder__count { font-size: 11px; margin-left: auto; }
+.paper-folder__chevron { width: 12px; height: 12px; }
+.paper-library__grid { display: grid; grid-template-columns: minmax(0,1fr); gap: 0; }
+.paper-card { position: relative; display: block; padding: 8px 10px 8px 12px; border: 0; border-left: 3px solid transparent; border-radius: 0; background: transparent; box-shadow: none; }
+.paper-card.is-current { border-left-color: var(--color-accent); background: var(--color-accent-subtle); }
+.paper-card.is-selected { border-left-color: var(--color-accent); box-shadow: none; }
+.paper-card:hover { background: var(--color-bg-subtle); transform: none; box-shadow: none; }
+.paper-card__body { display: grid; grid-template-columns: minmax(0,1fr); min-width: 0; gap: 4px; padding: 0; }
+.paper-card__row { display: flex; min-width: 0; gap: 7px; align-items: center; padding-right: 20px; }
+.paper-card__check { padding: 0; }
+.paper-card__check input, .paper-folder__check input { width: 12px; height: 12px; }
+.paper-card__text { flex: 1; min-width: 0; }
+.paper-card h2 { margin: 0; font-size: 12.5px; line-height: 1.5; }
+.paper-card__title { display: block; width: 100%; min-width: 0; min-height: 0; padding: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.paper-card__compact-meta { display: flex; align-items: center; gap: 6px; margin-top: 3px; color: var(--color-text-muted); font-size: 11px; white-space: nowrap; }
+.paper-card__compact-meta > span { overflow-wrap: normal; }
+.paper-card__compact-progress { flex: none; width: 48px; height: 4px; border-radius: 2px; background: var(--color-border-subtle); overflow: hidden; }
+.paper-card__compact-progress i { display: block; height: 100%; background: var(--color-accent); }
+.paper-card__statuses { flex: none; display: grid; gap: 3px; justify-items: end; }
+.paper-card__statuses :deep([data-slot='badge']) { font-size: 10px; padding: 1px 5px; }
+.paper-card__complete { color: var(--color-success); font-size: 11px; }
+.paper-card footer { position: absolute; right: 6px; top: 10px; display: flex; padding: 0; margin: 0; border: 0; }
+.paper-card__more-toggle { width: 22px; height: 22px; border: 0; background: transparent; }
+.paper-card__more-menu { min-width: 210px; }
+.paper-card__metadata { padding: 7px 10px; font-size: 11.5px; }
+.paper-card__metadata summary { cursor: pointer; }
+.paper-card__metadata p { margin: 6px 0; }
+.paper-library__filters { grid-template-columns: minmax(0,1fr); }
+.paper-library__tools { --app-control-height: 30px; }
+.paper-card__compact-meta { gap: 5px; font-size: 10.5px; }
+.paper-card__compact-progress { width: 32px; }
+.paper-card__live, .paper-card__leftovers { font-size: 11px; margin: 2px 0 0 18px; }
+.paper-library__pagination { padding: 8px 12px; border-top: 1px solid var(--color-border-subtle); font-size: 11px; flex-wrap: nowrap; gap: 8px; }
+.paper-library__pagination .app-button { --app-control-height: 26px; --app-control-font: 11px; --app-control-padding: 10px; }
+.paper-trash-row { display: flex; gap: 12px; flex-wrap: wrap; padding: 12px; border-bottom: 1px solid var(--color-border-default); }
 </style>

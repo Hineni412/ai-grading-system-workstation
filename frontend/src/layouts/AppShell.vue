@@ -12,6 +12,7 @@ import { useSessionStore } from '../stores/session'
 import { useJobStore } from '../stores/jobs'
 
 const route = useRoute()
+const questionWorkspace = computed(() => ['/question-bank', '/question-assembly'].includes(route.path))
 const sessionStore = useSessionStore()
 const draftStore = useReviewDraftStore()
 const configStore = useConfigWorkspaceStore()
@@ -30,7 +31,7 @@ let wideMediaQuery: MediaQueryList | null = null
 const sidebarOpen = computed(() => !narrowNavigation.value || navigationOpen.value)
 const sidebarMode = computed<'expanded' | 'rail' | 'drawer'>(() => {
   if (narrowNavigation.value) return 'drawer'
-  if (wideViewport.value && !sidebarCollapsed.value) return 'expanded'
+  if ((wideViewport.value || questionWorkspace.value) && !sidebarCollapsed.value) return 'expanded'
   return 'rail'
 })
 
@@ -73,8 +74,10 @@ function onBeforeUnload(event: BeforeUnloadEvent): void {
 
 watch(
   () => route.fullPath,
-  async () => {
+  async (_next, previous) => {
     navigationOpen.value = false
+    if (['/question-bank', '/question-assembly'].includes(route.path)
+      && previous?.split(/[?#]/)[0] === route.path) return
     await nextTick()
     /* 页面过渡期间旧视图仍挂在 DOM（page-leave-active 隐藏待卸载），跳过它取新页标题 */
     const headings = document.querySelectorAll<HTMLElement>('#main-workspace h1')
@@ -141,7 +144,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     class="app-shell"
-    :class="[`app-shell--${sidebarMode}`, { 'is-navigation-open': navigationOpen }]"
+    :class="[`app-shell--${sidebarMode}`, { 'is-navigation-open': navigationOpen, 'app-shell--question-workspace': questionWorkspace }]"
     data-testid="app-shell"
   >
     <AppSidebar

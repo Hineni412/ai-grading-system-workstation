@@ -99,7 +99,7 @@ async function mountView() {
     expect(host.textContent).toContain('匿名期末试卷')
   })
   const openPaper = [...host.querySelectorAll<HTMLButtonElement>('button')]
-    .find((button) => button.textContent?.includes('查看试题'))
+    .find((button) => button.classList.contains('paper-card__title'))
   openPaper?.click()
   await vi.waitFor(() => {
     expect(host.textContent).toContain('已知 x + y = 3')
@@ -189,9 +189,9 @@ describe('question bank workspace', () => {
     menu.querySelector('summary')!.click()
     const button = [...menu.querySelectorAll('button')].find((item) => item.textContent === '标准版本与缺口')!
     button.click()
-    await vi.waitFor(() => expect(host.textContent).toContain('kgr_test'))
-    expect(host.textContent).toContain('2 道题仍有只关联到小节')
-    expect(host.textContent).toContain('查看不调用 AI、不收费')
+    await vi.waitFor(() => expect(document.body.textContent).toContain('kgr_test'))
+    expect(document.body.textContent).toContain('2 道题仍有只关联到小节')
+    expect(document.body.textContent).toContain('查看不调用 AI、不收费')
   })
 
   it('does not download the full taxonomy catalog while opening the paper library', async () => {
@@ -460,6 +460,7 @@ describe('question bank workspace', () => {
     })
     app.mount(host)
     mounted.push(app)
+    await openCardMenu(host, '匿名期末试卷')
     expect(host.textContent).toContain('标签 7/12')
 
     useJobStore(pinia).track({
@@ -549,7 +550,7 @@ describe('question bank workspace', () => {
     const open = vi.fn()
     const app = createApp({ render: () => h(QuestionBankTodo, { index: null, pendingCount: 2, onQuestion: open }) })
     app.use(pinia).mount(host); mounted.push(app)
-    await vi.waitFor(() => expect(host.textContent).toContain('第 1 题 · 匿名期末试卷'))
+    await vi.waitFor(() => expect(host.querySelector('.qb-todo-group article')?.textContent).toContain('第1题匿名期末试卷'))
     expect(load).toHaveBeenCalledWith(expect.objectContaining({ criteriaNeedsReview: true }), expect.anything())
     expect(load).toHaveBeenCalledWith(expect.objectContaining({ skillUnlinked: true }), expect.anything())
     expect(load).toHaveBeenCalledWith(expect.objectContaining({ analysisStatus: 'incomplete' }), expect.anything())
@@ -1528,7 +1529,7 @@ describe('question bank workspace', () => {
     await nextTick()
 
     expect(host.textContent).toContain('未选中试卷')
-    expect(batchBarButton(host, '继续完成未完成题目').disabled).toBe(true)
+    expect([...host.querySelectorAll('.paper-batch-bar button')]).toHaveLength(0)
 
     const cardChecks = [...host.querySelectorAll<HTMLInputElement>('.paper-card__check input')]
     cardChecks[0]!.click()
@@ -1550,7 +1551,7 @@ describe('question bank workspace', () => {
     master.click()
     await nextTick()
     expect(host.textContent).toContain('未选中试卷')
-    expect(batchBarButton(host, '删除').disabled).toBe(true)
+    expect([...host.querySelectorAll('.paper-batch-bar button')]).toHaveLength(0)
   })
 
   it('asks once and submits a tagging job per selected paper for batch fill', async () => {
