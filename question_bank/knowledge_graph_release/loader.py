@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-from question_bank.knowledge_graph_release.contracts import KnowledgeGraphRelease
+from question_bank.knowledge_graph_release.contracts import (
+    KnowledgeGraphRelease,
+    _register_release,
+)
 
 DEFAULT_RELEASE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -58,8 +63,43 @@ _TAXONOMY_PATHS_BY_REVISION = {
 }
 
 
+_FILE_RELEASE_CACHE_LIMIT = 8
+_FILE_RELEASE_CACHE_LOCK = threading.Lock()
+_FILE_RELEASE_CACHE: OrderedDict[
+    tuple[str, int, int], KnowledgeGraphRelease
+] = OrderedDict()
+
+
 def load_release(path: Path | None = None) -> KnowledgeGraphRelease:
-    return KnowledgeGraphRelease.from_path(path or DEFAULT_RELEASE_PATH)
+    """Parse a release file once per (path, size, mtime); callers must treat the
+    returned object as read-only (``release.to_dict()`` gives a mutable copy)."""
+    source = Path(path or DEFAULT_RELEASE_PATH)
+    try:
+        resolved = source.resolve()
+        stat = resolved.stat()
+        key = (str(resolved), int(stat.st_size), int(stat.st_mtime_ns))
+    except OSError:
+        key = None
+    if key is not None:
+        with _FILE_RELEASE_CACHE_LOCK:
+            cached = _FILE_RELEASE_CACHE.get(key)
+            if cached is not None:
+                _FILE_RELEASE_CACHE.move_to_end(key)
+                return cached
+    release = KnowledgeGraphRelease.from_path(source)
+    _register_release(release)
+    if key is not None:
+        with _FILE_RELEASE_CACHE_LOCK:
+            _FILE_RELEASE_CACHE[key] = release
+            _FILE_RELEASE_CACHE.move_to_end(key)
+            while len(_FILE_RELEASE_CACHE) > _FILE_RELEASE_CACHE_LIMIT:
+                _FILE_RELEASE_CACHE.popitem(last=False)
+    return release
+
+
+def _clear_file_release_cache_for_tests() -> None:
+    with _FILE_RELEASE_CACHE_LOCK:
+        _FILE_RELEASE_CACHE.clear()
 
 
 def load_release_for_taxonomy_revision(revision: int) -> KnowledgeGraphRelease:

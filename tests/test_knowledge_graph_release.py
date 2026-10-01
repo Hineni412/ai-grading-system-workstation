@@ -11,13 +11,22 @@ from question_bank.knowledge_graph_release import (
     KnowledgeGraphReleaseConflict,
     active_release_id,
     activate_release,
+    load_active_release,
     load_release,
     load_release_for_taxonomy_revision,
     preview_install,
     rollback_release,
     stage_release,
 )
-from question_bank.knowledge_graph_release.contracts import compute_content_hash
+from question_bank.knowledge_graph_release.contracts import (
+    KnowledgeGraphReleaseError,
+    _clear_release_cache_for_tests,
+    cached_release_from_json,
+    compute_content_hash,
+)
+from question_bank.knowledge_graph_release.loader import (
+    _clear_file_release_cache_for_tests,
+)
 from question_bank.taxonomy.governance import TaxonomyGovernance
 
 
@@ -199,3 +208,91 @@ def test_maintenance_reuses_unchanged_links_and_limits_replacements(tmp_path):
         assert new == old
         assert conn.execute("SELECT COUNT(*) FROM evidence_point_knowledge_links").fetchone()[0] == 4
     assert active_release_id(db_path) == second.release_id
+
+
+def test_active_release_loads_share_one_cached_object(tmp_path: Path) -> None:
+    db_path = _database(tmp_path)
+    first = load_release_for_taxonomy_revision(3)
+    stage_release(
+        db_path, first, actor_ref="teacher:test", source_reference="test"
+    )
+    activate_release(
+        db_path,
+        first.release_id,
+        expected_active_release_id=None,
+        actor_ref="teacher:test",
+        reason="test first activation",
+    )
+    _clear_release_cache_for_tests()
+
+    one = load_active_release(db_path)
+    two = load_active_release(db_path)
+    assert one is not None
+    assert one is two
+    assert one.release_id == first.release_id
+
+    second = load_release_for_taxonomy_revision(4)
+    stage_release(
+        db_path, second, actor_ref="teacher:test", source_reference="test-v2"
+    )
+    activate_release(
+        db_path,
+        second.release_id,
+        expected_active_release_id=first.release_id,
+        actor_ref="teacher:test",
+        reason="test second activation",
+    )
+    three = load_active_release(db_path)
+    assert three is not None
+    assert three is not one
+    assert three.release_id == second.release_id
+
+
+def test_load_release_reparses_only_when_the_file_changes(tmp_path: Path) -> None:
+    import json
+    import os
+
+    payload = {
+        "schema_version": "knowledge-graph-release-v1",
+        "release_id": "kgr_loader_cache_test",
+        "taxonomy_revision": 3,
+        "core_nodes": [],
+        "mappings": [],
+        "relations": [],
+        "fine_term_dispositions": [],
+        "sources": [],
+    }
+    payload["content_hash"] = compute_content_hash(payload)
+    path = tmp_path / "release.json"
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+
+    _clear_file_release_cache_for_tests()
+    _clear_release_cache_for_tests()
+    first = load_release(path)
+    assert load_release(path) is first
+
+    # Same content, new mtime: a fresh parse replaces the cached object and
+    # re-registers the identity so DB loads reuse the new object too.
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    third = load_release(path)
+    assert third is not first
+    assert third.release_id == first.release_id
+    assert load_release(path) is third
+    assert (
+        cached_release_from_json(
+            json.dumps(payload, ensure_ascii=False),
+            release_id="kgr_loader_cache_test",
+            content_hash=payload["content_hash"],
+        )
+        is third
+    )
+
+    with pytest.raises(KnowledgeGraphReleaseError):
+        cached_release_from_json(
+            json.dumps(payload, ensure_ascii=False),
+            release_id="kgr_loader_cache_wrong_id",
+            content_hash=payload["content_hash"],
+        )

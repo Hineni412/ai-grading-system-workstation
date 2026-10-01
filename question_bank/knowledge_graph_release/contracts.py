@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -158,12 +160,65 @@ def stable_record_hash(namespace: str, *parts: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+_RELEASE_CACHE_LIMIT = 8
+_RELEASE_CACHE_LOCK = threading.Lock()
+_RELEASE_CACHE: OrderedDict[tuple[str, str], KnowledgeGraphRelease] = OrderedDict()
+
+
+def cached_release_from_json(
+    payload_json: str,
+    *,
+    release_id: str,
+    content_hash: str,
+) -> KnowledgeGraphRelease:
+    """Return the parsed release for a known immutable identity.
+
+    Releases are content-addressed, so a repeated load of the same
+    (release_id, content_hash) reuses one shared object. Callers must treat the
+    returned payload as read-only; use ``release.to_dict()`` for a mutable copy.
+    """
+    key = (
+        str(release_id or "").strip(),
+        str(content_hash or "").strip().casefold(),
+    )
+    with _RELEASE_CACHE_LOCK:
+        cached = _RELEASE_CACHE.get(key)
+        if cached is not None:
+            _RELEASE_CACHE.move_to_end(key)
+            return cached
+        release = KnowledgeGraphRelease.from_mapping(json.loads(str(payload_json)))
+        if (release.release_id, release.content_hash.casefold()) != key:
+            raise KnowledgeGraphReleaseError(
+                "release payload does not match its recorded identity"
+            )
+        _RELEASE_CACHE[key] = release
+        _RELEASE_CACHE.move_to_end(key)
+        while len(_RELEASE_CACHE) > _RELEASE_CACHE_LIMIT:
+            _RELEASE_CACHE.popitem(last=False)
+        return release
+
+
+def _register_release(release: KnowledgeGraphRelease) -> None:
+    key = (release.release_id, release.content_hash.casefold())
+    with _RELEASE_CACHE_LOCK:
+        _RELEASE_CACHE[key] = release
+        _RELEASE_CACHE.move_to_end(key)
+        while len(_RELEASE_CACHE) > _RELEASE_CACHE_LIMIT:
+            _RELEASE_CACHE.popitem(last=False)
+
+
+def _clear_release_cache_for_tests() -> None:
+    with _RELEASE_CACHE_LOCK:
+        _RELEASE_CACHE.clear()
+
+
 __all__ = [
     "KnowledgeGraphRelease",
     "KnowledgeGraphReleaseError",
     "SCHEMA_VERSION",
     "ValidationIssue",
     "ValidationReport",
+    "cached_release_from_json",
     "compute_content_hash",
     "stable_record_hash",
 ]

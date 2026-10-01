@@ -13,6 +13,7 @@ from question_bank.database.schema import connect
 from question_bank.knowledge_graph_release.contracts import (
     KnowledgeGraphRelease,
     KnowledgeGraphReleaseError,
+    cached_release_from_json,
     stable_record_hash,
 )
 from question_bank.knowledge_graph_release.loader import (
@@ -425,7 +426,7 @@ def load_active_release(db_path: Path) -> KnowledgeGraphRelease | None:
         with connect(Path(db_path)) as connection:
             row = connection.execute(
                 """
-                SELECT payload_json
+                SELECT release_id, content_hash, payload_json
                 FROM knowledge_graph_releases
                 WHERE status = 'active'
                 """
@@ -434,8 +435,10 @@ def load_active_release(db_path: Path) -> KnowledgeGraphRelease | None:
         return None
     if row is None:
         return None
-    return KnowledgeGraphRelease.from_mapping(
-        json.loads(str(row["payload_json"]))
+    return cached_release_from_json(
+        str(row["payload_json"]),
+        release_id=str(row["release_id"]),
+        content_hash=str(row["content_hash"]),
     )
 
 
