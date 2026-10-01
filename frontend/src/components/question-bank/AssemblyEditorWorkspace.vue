@@ -224,7 +224,7 @@ async function deleteRecord(recordId: string): Promise<void> {
 <template>
   <div class="assembly-editor">
     <header class="assembly-editor__toolbar">
-      <AppButton variant="secondary" @click="emit('browse')">← 返回选题</AppButton>
+      <AppButton variant="secondary" @click="emit('browse')">← 去题库选题</AppButton>
       <div>
         <strong>{{ assembly.draft.title || '未命名试卷' }}</strong>
         <span>{{ assembly.selectedQuestionCount }} 道题 · {{ assembly.totalScore }} 已识别分值</span>
@@ -363,7 +363,7 @@ async function deleteRecord(recordId: string): Promise<void> {
             </div>
           </section>
         </div>
-        <p v-else class="assembly-editor-empty">试卷篮为空，请返回选题。</p>
+        <p v-else class="assembly-editor-empty">试卷篮为空，请去题库选题。</p>
       </aside>
 
       <main class="assembly-paper" aria-labelledby="assembly-preview-title">
@@ -431,7 +431,7 @@ async function deleteRecord(recordId: string): Promise<void> {
               加载更多题目（还有 {{ section.questions.length - previewVisibleCount(section.id) }} 题）
             </button>
           </section>
-          <p v-if="!assembly.orderedQuestions.length" class="assembly-editor-empty">返回选题，把题目加入试卷篮后会在这里生成预览。</p>
+          <p v-if="!assembly.orderedQuestions.length" class="assembly-editor-empty">去题库选题，把题目加入试卷篮后会在这里生成预览。</p>
         </article>
       </main>
 

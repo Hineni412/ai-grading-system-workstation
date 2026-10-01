@@ -45,10 +45,10 @@ afterEach(() => {
   document.body.innerHTML = ''
   vi.restoreAllMocks()
 })
-async function mountPanel() {
+async function mountPanel(initialSkill?: string) {
   const host = document.createElement('div')
   document.body.append(host)
-  const app = createApp(AssemblyAssistantPanel)
+  const app = createApp(AssemblyAssistantPanel, { initialSkill })
   app.use(pinia).mount(host)
   mounted.push(app)
   await vi.waitFor(() => expect(useAssemblyAssistantStore().filters.class_id).toBe('9班'))
@@ -90,6 +90,25 @@ describe('class assembly assistant', () => {
     await nextTick()
     expect(nextHost.textContent).toContain('正在按新的选择更新候选题')
     expect((nextHost.querySelector('.assistant-question footer .assembly-button') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('preselects a bookmarked target within current results without changing scope', async () => {
+    await mountPanel('kp_two')
+    const assistant = useAssemblyAssistantStore()
+    assistant.filters.chapter_id = 'remembered-chapter'
+    await assistant.search()
+    await vi.waitFor(() => expect(assistant.filters.target_keys).toEqual(['kp_two']))
+    expect(assistant.filters.class_id).toBe('9班')
+    expect(assistant.filters.chapter_id).toBe('remembered-chapter')
+  })
+  it('explains an unavailable bookmarked target and preserves current scope', async () => {
+    const { host } = await mountPanel('sk_unavailable')
+    const assistant = useAssemblyAssistantStore()
+    assistant.filters.chapter_id = 'remembered-chapter'
+    await assistant.search()
+    await vi.waitFor(() => expect(host.textContent).toContain('技能不在当前班级与章节结果中'))
+    expect(assistant.filters.target_keys).not.toContain('sk_unavailable')
+    expect(assistant.filters.chapter_id).toBe('remembered-chapter')
   })
 
   it('discards a late result from another class and preserves the previous shortlist on failure', async () => {
