@@ -46,6 +46,7 @@
 | 教学技能标准发布文件重建 | `tools/build_release_v5.py` | 必须提供 `--teaching-standard` JSON；默认预演，`--write` 生成发布文件；数据库应用是另行授权的操作 |
 | 词表修订发布文件重建 | `tools/build_release_v7.py` | 默认读取已有输入并验证，`--write` 生成对应发布包和词表；不会自动切换数据库中的活动标准 |
 | 难度校准与推荐有效性回看 | `tools/difficulty_calibration_report.py`、`tools/recommendation_validity_report.py` | 按显式数据库路径读取统计结果，不改写评分、难度或推荐规则 |
+| 掌握度前向检验与参数选择 | `tools/mastery_validation.py` | `--volume` 指定教学学期；`--initial` 复现原型参数，`--grid` 选择参数；只读数据库，只向终端输出汇总数字，不调用模型、不落盘学生结果 |
 | 历史数据导出 | `tools/export_legacy_cli_data.py`、`tools/export_legacy_skill_data.py` | 保留退役数据的读取与导出能力，源数据库不改写 |
 | 本机空间盘点、维护预览 | `tools/storage_audit.py`、`tools/storage_maintenance.py` | 产物位置、保留范围及执行授权见存储与备份文档 |
 | 代理后台启动 | `tools/start_service.py` | 按项目运行约束使用；教师日常入口仍为 `运行.bat` |

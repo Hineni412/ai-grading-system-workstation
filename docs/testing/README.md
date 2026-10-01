@@ -64,6 +64,18 @@
 
 `npm run demo:review-batch` 单独启动批量复核演示服务，`npm run demo:test` 检查该服务的合成数据行为。正式改分保存与下载验收仍使用上面的 `review` 或 `full` 入口。
 
+## 掌握度前向检验
+
+维护人员在项目根目录运行：
+
+```powershell
+& .\runtime\python\python.exe tools\mastery_validation.py --volume bnu24-math-g8-upper
+& .\runtime\python\python.exe tools\mastery_validation.py --volume bnu24-math-g8-upper --initial
+& .\runtime\python\python.exe tools\mastery_validation.py --volume bnu24-math-g8-upper --grid
+```
+
+默认只读 `user_data`；`--data-root` 可指定已有数据位置，不创建副本或迁移。工具用较早考试及测试考试之前的已发布训练证据预测后一次考试，比较当前模型、仅整体能力与直接做除法，并列出方案记录的旧公式基线。对数损失、Brier 使用全部有效观测，AUC 仅使用完全对与完全错的观测；分档应验率只统计训练、测试中都直接观察到的学生与目标，证据不足不定义应验率。网格以最近考试的对数损失选参数，差异不超过 0.002 时优先保留更大的知识点层差异。输出只含汇总指标、校准、分档覆盖、档位变化与无身份个案计数，不保存逐生结果、不调用模型。参数选择用于提交检验依据，不自动改变产品常量。
+
 ## 隔离规则
 
 - 所有自动测试使用合成数据库、合成图片和测试替身；测试不得调用真实模型；子进程会移除模型密钥等敏感环境变量。

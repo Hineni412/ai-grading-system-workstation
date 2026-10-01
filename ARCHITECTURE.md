@@ -39,6 +39,8 @@ JobManager 在应用进程内用线程池执行任务，阅卷与扫描流程使
 
 知识与训练、组卷助手的只读接口通过只读事务直接读取题库数据库。一个后台刷新线程（环境变量 `AI_GRADING_PREWARM` 控制，默认开启，测试默认关闭；有排队或运行中的任务时跳过）在数据库提交后重新计算最近使用过的范围和启动范围，结果写入进程内缓存。SQLite 完整性检查和外键检查只在每个进程对每个数据库文件的首次结构检查时执行，之后的检查只验证结构与迁移记录；备份与恢复运维路径仍保留完整检查。
 
+掌握度全年级考试观测由诊断服务从已有只读证据投影取得；训练模块不读取阅卷数据库。诊断服务复用现有数据变更编号缓存，以教学学期、参数版本、自然周和排除训练证据的身份区分结果，先拟合全体学生再取请求范围。API 依赖装配将同一只读结果传给个性化推荐与训练发布；训练反馈的更新前结果在同一考试快照上排除本次证据后重算。模型拟合在内存完成，全年级当前结果复用已有本地学情快照保存与失效规则；排除本次证据的临时结果只留在内存，不新增数据库表。
+
 ## 模型通道
 
 样卷题框自动预框、姓名预检、原卷得分标注与文档准备中的本地文字识别共用 `local_ocr.py` 的 MinerU PP-OCRv6 ONNX 实例与识别锁，首次使用时加载模型，使用 CPU，不调用远程模型。`answer_region_auto_proposal.py` 通过只读 `GET /api/sessions/{session_id}/regions/auto-proposal` 生成建议，与原卷得分标注共用印刷题号候选提取；前端把建议交给现有草稿保存流程，正式题框与确认快照的归属不变。已确认样卷正反面的预检由本机识别卷面姓名与班级，按名单做一对一分配（`scan_identity.py`），不调用远程模型；仅当本地文字模型缺失或没有固定正反面时才走原有识别与远程兜底。整页 OCR 提供文字与位置，不等于完整 PDF 题目、公式和答案解析。
@@ -57,7 +59,7 @@ JobManager 在应用进程内用线程池执行任务，阅卷与扫描流程使
 |---|---|
 | 当前知识标准 | `question_bank/taxonomy/curriculum_catalog.py` |
 | 知识发布加载 | `question_bank/knowledge_graph_release/loader.py` |
-| 掌握度 | `question_bank/mastery/current.py` |
+| 掌握度 | `question_bank/mastery/current.py`（唯一入口）、`question_bank/mastery/model.py`（拟合与区间）；集成层 `DiagnosisProfileService.semester_mastery` 提供全年级结果 |
 | 训练卷冻结与导出 | `question_bank/personalized_papers/module.py` |
 | 普通备份 | `update_tools/backup_core.py` |
 
