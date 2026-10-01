@@ -140,7 +140,7 @@ const feedback = {
     stable_key: 'kp_alg_linear_equation',
     display_name: '一元一次方程',
     mastery_before: { value: 0.4 },
-    mastery_after: { value: 0.55 },
+    mastery_after: { value: 0.55, tier: 'weak', interval_low: .3, interval_high: .72, observation_count: 10, full_correct_count: 4 },
     reason: '按每题覆盖比例重算。',
   }],
   next_round: {
@@ -265,6 +265,8 @@ describe('training assessment panel', () => {
     )
     expect(host.textContent).toContain('40%')
     expect(host.textContent).toContain('55%')
+    expect(host.textContent).toContain('明显薄弱 · 掌握度 55%（30%–72%）')
+    expect(host.textContent).toContain('作答 10 处、全对 4 处')
     expect(host.textContent).toContain('草稿待确认')
     expect(host.textContent).toContain('不会自动冻结、打印或发送')
 

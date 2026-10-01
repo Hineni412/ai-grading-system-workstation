@@ -26,6 +26,21 @@ CHAPTER = VOLUME["chapters"][0]
 POINTS = CHAPTER["sections"][0]["knowledge_points"][:3]
 
 
+def test_class_weaknesses_use_backend_tiers_for_attention_and_order():
+    from question_bank.services.assembly_assistant import class_weaknesses
+    profile = diagnosis()
+    for index, student in enumerate(profile["students"][:4]):
+        student["weak_points"][0]["tier"] = "unsteady" if index < 3 else "stable"
+        student["weak_points"][1]["tier"] = "weak" if index == 0 else "insufficient"
+    points = class_weaknesses(profile, volume_id=VOLUME["id"], chapter_id=CHAPTER["id"])
+    assert points[0]["knowledge_key"] == POINTS[1]["id"]
+    assert points[0]["weak_tier_student_count"] == 1
+    assert points[0]["weak_student_count"] == 1
+    first = next(point for point in points if point["knowledge_key"] == POINTS[0]["id"])
+    assert first["weak_student_count"] == 3
+    assert first["evidence_student_count"] == 4
+
+
 def diagnosis():
     students = []
     for index in range(4):

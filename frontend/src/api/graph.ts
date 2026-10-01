@@ -32,6 +32,14 @@ export type GraphRelationBasis =
 export type GraphRelationStrength = 'required' | 'recommended' | 'contextual'
 
 export interface GraphMastery {
+  interval_low?: number | null
+  interval_high?: number | null
+  tier?: 'stable' | 'unsteady' | 'weak' | 'insufficient'
+  observation_count?: number
+  full_correct_count?: number
+  recent_trend?: string | null
+  tier_counts?: Partial<Record<'stable' | 'unsteady' | 'weak' | 'insufficient', number>>
+
   status: GraphMasteryStatus
   value: number | null
   evidence_count: number

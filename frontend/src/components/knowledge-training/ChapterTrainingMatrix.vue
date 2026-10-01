@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, useSlots, watch } from 'vue'
 import { RouterLink } from 'vue-router'
+import { tierClass, masteryDetail, parentMasteryDetails, tierOf } from '../knowledge-overview/model'
 
 import { knowledgeLeafLabel } from '../../api/question-bank'
 import type { TrainingDiagnosis, TrainingWeakPoint } from '../../api/training'
@@ -127,12 +128,7 @@ function percent(value: number | null | undefined): string {
   return value === null || value === undefined ? '—' : `${Math.round(value * 100)}%`
 }
 
-function heatClass(value: number | null | undefined): string {
-  if (value === null || value === undefined) return 'is-empty'
-  if (value < .6) return 'is-low'
-  if (value < .75) return 'is-mid'
-  return 'is-good'
-}
+function heatClass(tier: string | null | undefined): string { return tierClass(tier) }
 
 function toggleTarget(key: string): void {
   emit('update:modelValue', props.modelValue.includes(key)
@@ -164,6 +160,13 @@ const selectedStudent = computed(() => props.diagnosis.students.find(
 const selectedGroup = computed(() => selectedGroupKey.value
   ? groupMap.value.get(selectedGroupKey.value) ?? null
   : null)
+const parentReferences = computed(() => {
+  const selected = viewMode.value === 'student' ? selectedWeak.value : selectedGroup.value
+  if (!selected || tierOf(selected.tier) !== 'insufficient') return []
+  return parentMasteryDetails(selected.knowledge_key,
+    viewMode.value === 'student' ? selectedStudent.value?.weak_points ?? [] : props.diagnosis.group_weak_points ?? [],
+    catalog.value)
+})
 const groupRows = computed(() => visiblePoints.value.map((point) => {
   const aggregate = groupMap.value.get(point.knowledge_key) ?? null
   const contributorCount = props.diagnosis.students.filter((student) => (
@@ -190,7 +193,7 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
       <div class="chapter-training__modes" aria-label="章节训练展示方式">
         <button v-if="slots.recommendations" type="button" :class="{ 'is-active': viewMode === 'recommendations' }" @click="viewMode = 'recommendations'">推荐小组</button>
         <button type="button" :class="{ 'is-active': viewMode === 'student' }" @click="viewMode = 'student'">学生明细</button>
-        <button type="button" :class="{ 'is-active': viewMode === 'group' }" @click="viewMode = 'group'">群体加权</button>
+        <button type="button" :class="{ 'is-active': viewMode === 'group' }" @click="viewMode = 'group'">群体平均</button>
       </div>
     </header>
 
@@ -236,7 +239,7 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
         <header>
           <div>
             <span>{{ activeSectionKey ? sections.find((item) => item.knowledge_key === activeSectionKey)?.knowledge_point : activeChapter?.knowledge_point }}</span>
-            <h2>{{ viewMode === 'student' ? '学生 × 知识点' : '群体加权 × 知识点' }}</h2>
+            <h2>{{ viewMode === 'student' ? '学生 × 知识点' : '群体平均 × 知识点' }}</h2>
           </div>
           <div class="chapter-training__head-tools">
             <label class="chapter-training__toggle">
@@ -284,7 +287,7 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
                   <td v-for="point in visiblePoints" :key="point.knowledge_key">
                     <button
                       type="button"
-                      :class="[heatClass(weakFor(student.student_id, point.knowledge_key)?.mastery), { 'is-selected': selectedCell?.studentId === student.student_id && selectedCell?.knowledgeKey === point.knowledge_key }]"
+                      :class="[heatClass(weakFor(student.student_id, point.knowledge_key)?.tier), { 'is-selected': selectedCell?.studentId === student.student_id && selectedCell?.knowledgeKey === point.knowledge_key }]"
                       @click="selectedCell = { studentId: student.student_id, knowledgeKey: point.knowledge_key }"
                     >
                       {{ percent(weakFor(student.student_id, point.knowledge_key)?.mastery) }}
@@ -294,7 +297,7 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
               </tbody>
             </table>
           </div>
-          <footer><span>待补强 &lt;60%</span><span>需巩固 60–74%</span><span>较稳定 ≥75%</span><span>斜纹为无证据</span></footer>
+          <footer><span>明显薄弱</span><span>还不稳</span><span>较稳定</span><span>灰色为证据不足</span></footer>
         </template>
 
         <div v-else class="chapter-training__groups">
@@ -312,13 +315,13 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
             >
             <button type="button" :title="row.fullLabel" @click="selectedGroupKey = row.key">
               <strong>{{ row.label }}</strong>
-              <span class="chapter-training__bar"><i :class="heatClass(row.aggregate?.mastery)" :style="{ width: `${(row.aggregate?.mastery ?? 0) * 100}%` }"></i></span>
+              <span class="chapter-training__bar"><i :class="heatClass(row.aggregate?.tier)" :style="{ width: `${(row.aggregate?.mastery ?? 0) * 100}%` }"></i></span>
               <b>{{ percent(row.aggregate?.mastery) }}</b>
               <small>{{ row.contributorCount }} / {{ diagnosis.students.length }} 人有效</small>
               <small>{{ row.aggregate?.evidence_count ?? 0 }} 条证据</small>
             </button>
           </div>
-          <p class="chapter-training__group-note">群体掌握度直接使用后端证据加权结果；无证据学生不进入分母，也不按 0 分计算。</p>
+          <p class="chapter-training__group-note">群体掌握度是有证据学生的平均值；无证据学生不进入分母。群体颜色表示人数最多的档位。</p>
         </div>
         </template>
       </main>
@@ -328,7 +331,8 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
           <span>当前学生</span>
           <h2>{{ selectedStudent.student_name }}</h2>
           <strong :title="selectedWeak.knowledge_point">{{ knowledgeLeafLabel(selectedWeak.knowledge_point) }}</strong>
-          <div :class="['chapter-training__score', heatClass(selectedWeak.mastery)]">{{ percent(selectedWeak.mastery) }}</div>
+          <div :class="['chapter-training__score', heatClass(selectedWeak.tier)]">{{ percent(selectedWeak.mastery) }}</div><p>{{ masteryDetail(selectedWeak) }}</p>
+          <p v-for="reference in parentReferences" :key="reference">上级参考 · {{ reference }}</p>
           <dl><div><dt>证据</dt><dd>{{ selectedWeak.evidence_count }} 条</dd></div><div><dt>考试</dt><dd>{{ selectedWeak.exam_count }} 场</dd></div></dl>
           <p v-if="selectedEvidenceSummary">{{ selectedEvidenceSummary }}</p>
           <button type="button" @click="toggleTarget(selectedWeak.knowledge_key)">{{ modelValue.includes(selectedWeak.knowledge_key) ? '移出训练目标' : '加入训练目标' }}</button>
@@ -340,14 +344,15 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
         <template v-else-if="viewMode === 'group' && selectedGroup">
           <span>当前群体</span>
           <h2 :title="selectedGroup.knowledge_point">{{ knowledgeLeafLabel(selectedGroup.knowledge_point) }}</h2>
-          <div :class="['chapter-training__score', heatClass(selectedGroup.mastery)]">{{ percent(selectedGroup.mastery) }}</div>
+          <div :class="['chapter-training__score', heatClass(selectedGroup.tier)]">{{ percent(selectedGroup.mastery) }}</div><p>{{ masteryDetail(selectedGroup) }}</p>
+          <p v-for="reference in parentReferences" :key="reference">上级参考 · {{ reference }}</p>
           <dl><div><dt>有效证据</dt><dd>{{ selectedGroup.evidence_count }} 条</dd></div><div><dt>有效权重</dt><dd>{{ (selectedGroup.effective_weight ?? 0).toFixed(1) }}</dd></div></dl>
           <button type="button" @click="toggleTarget(selectedGroup.knowledge_key)">{{ modelValue.includes(selectedGroup.knowledge_key) ? '移出训练目标' : '加入训练目标' }}</button>
         </template>
         <template v-else>
           <span>当前范围</span>
           <h2>{{ viewMode === 'student' ? '选择一个掌握度格子' : '选择一行群体结果' }}</h2>
-          <p>{{ viewMode === 'student' ? '查看某名学生在具体知识点上的掌握情况。' : '查看当前筛选、某个班级或全部班级的证据加权结果。' }}</p>
+          <p>{{ viewMode === 'student' ? '查看某名学生在具体知识点上的掌握情况。' : '查看当前筛选、某个班级或全部班级的掌握平均值。' }}</p>
         </template>
         <section><strong>本次已选 {{ modelValue.length }} 项</strong><p v-if="!modelValue.length">尚未选择训练知识点。</p><ul v-else><li v-for="key in modelValue" :key="key">{{ knowledgeLeafLabel(catalog.find((item) => item.knowledge_key === key)?.knowledge_point ?? key) }}</li></ul></section>
       </aside>

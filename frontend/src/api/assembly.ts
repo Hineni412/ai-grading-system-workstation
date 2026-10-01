@@ -99,6 +99,8 @@ export interface AssemblyWeakness {
   knowledge_point: string
   mastery: number | null
   weak_student_count: number
+  weak_tier_student_count?: number
+  tier?: 'stable' | 'unsteady' | 'weak' | 'insufficient'
   evidence_student_count: number
   exam_score_rate: number | null
   evidence_count: number

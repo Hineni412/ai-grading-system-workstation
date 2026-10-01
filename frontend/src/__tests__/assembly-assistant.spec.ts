@@ -63,7 +63,7 @@ describe('class assembly assistant', () => {
     assistant.filters.chapter_id = 'remembered-chapter'
     await assistant.search()
     await nextTick()
-    expect(host.textContent).toContain('19 人需巩固 / 25 人有证据')
+    expect(host.textContent).toContain('19 人需关注 / 25 人有证据')
     expect(host.textContent).toContain(question.question_text)
     expect(api.assemblyApi.saveDraft).not.toHaveBeenCalled()
     const answer = [...host.querySelectorAll('button')].find(item => item.textContent === '查看解析')!

@@ -28,6 +28,7 @@ function makeNode(
       evidence_count: mastery.evidenceCount,
       parameter_version: null,
       reason: null,
+      tier: 'insufficient',
     },
     evidence: {
       student_count: 1,
@@ -98,6 +99,24 @@ describe('knowledge structure browser', () => {
     expect(host.textContent).not.toContain('51%')
     expect(points[0]!.textContent).toContain('46%')
     expect(points[1]!.textContent).toContain('68%')
+    // A percentage alone must never override the backend's uncertainty tier.
+    expect(points[1]!.classList.contains('is-empty')).toBe(true)
+  })
+
+  it('shows the backend interval and observation counts when opening a node', async () => {
+    const original = NODES[2]!.mastery
+    NODES[2]!.mastery = { ...original, value: .87, tier: 'insufficient', interval_low: .43, interval_high: .97,
+      observation_count: 10, full_correct_count: 8, recent_trend: '最近一次出错' }
+    try {
+      const { host } = mountBrowser()
+      await click(host.querySelectorAll('.structure-browser__chapter-button')[1]!)
+      await click(host.querySelector('.structure-browser__point')!)
+      expect(host.textContent).toContain('掌握度 87%（43%–97%）')
+      expect(host.textContent).toContain('作答 10 处、全对 8 处')
+      expect(host.textContent).toContain('最近一次出错')
+    } finally {
+      NODES[2]!.mastery = original
+    }
   })
 
 })

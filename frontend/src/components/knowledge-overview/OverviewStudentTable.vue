@@ -81,7 +81,7 @@ function openStudent(student: TrainingOverviewStudent): void {
             <th scope="col">技能</th>
             <th scope="col">
               <button type="button" class="overview-sort" @click="toggleSort('weak')">
-                待补强{{ sortKey === 'weak' ? (sortAsc ? ' ↑' : ' ↓') : '' }}
+                明显薄弱{{ sortKey === 'weak' ? (sortAsc ? ' ↑' : ' ↓') : '' }}
               </button>
             </th>
           </tr>
@@ -98,19 +98,19 @@ function openStudent(student: TrainingOverviewStudent): void {
             <td>{{ student.class_id || '—' }}</td>
             <td>{{ student.score_rate === null ? '—' : formatPercent(student.score_rate) }}</td>
             <td>
-              <span v-if="student.topics.evidence === 0" class="overview-tier-missing">证据不足</span>
+              <span v-if="student.topics.evidence === 0" class="overview-tier-insufficient">证据不足</span>
               <span v-else class="overview-tier-counts">
                 <i class="is-weak">{{ student.topics.weak }}</i>
-                <i class="is-review">{{ student.topics.review }}</i>
-                <i class="is-stable">{{ student.topics.stable }}</i>
+                <i class="is-unsteady">{{ student.topics.unsteady }}</i>
+                <i class="is-stable">{{ student.topics.stable }}</i><i class="is-insufficient">{{ student.topics.insufficient }}</i>
               </span>
             </td>
             <td>
-              <span v-if="student.skills.evidence === 0" class="overview-tier-missing">证据不足</span>
+              <span v-if="student.skills.evidence === 0" class="overview-tier-insufficient">证据不足</span>
               <span v-else class="overview-tier-counts">
                 <i class="is-weak">{{ student.skills.weak }}</i>
-                <i class="is-review">{{ student.skills.review }}</i>
-                <i class="is-stable">{{ student.skills.stable }}</i>
+                <i class="is-unsteady">{{ student.skills.unsteady }}</i>
+                <i class="is-stable">{{ student.skills.stable }}</i><i class="is-insufficient">{{ student.skills.insufficient }}</i>
               </span>
             </td>
             <td>{{ student.topics.weak + student.skills.weak }}</td>

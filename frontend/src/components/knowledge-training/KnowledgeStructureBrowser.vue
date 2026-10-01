@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
+import { tierClass, masteryDetail } from '../knowledge-overview/model'
 
 import type { GraphEdge, GraphNode } from '../../api/graph'
 
@@ -178,6 +179,21 @@ const selectedNode = computed(() => visibleItems.value.find((item) => item.node.
 
 const selectedIsSkill = computed(() => (selectedNode.value ? isSkillNode(selectedNode.value) : false))
 
+const parentReferences = computed(() => {
+  let key = selectedNode.value?.stable_key
+  const references: string[] = []
+  const seen = new Set<string>()
+  while (key && !seen.has(key)) {
+    seen.add(key)
+    const edge = props.edges.find(item => item.relation_type === 'parent' && item.source_key === key)
+    const parent = props.nodes.find(item => item.stable_key === edge?.target_key)
+    if (!parent) break
+    references.push(`${parent.display_name}：${masteryDetail(parent.mastery)}`)
+    key = parent.stable_key
+  }
+  return references.join('；')
+})
+
 const selectedEntry = computed(() => {
   const key = selectedNode.value?.stable_key
   if (!key) return null
@@ -229,12 +245,7 @@ function percentage(value: number | null): string {
   return value === null ? '证据不足' : `${Math.round(value * 100)}%`
 }
 
-function masteryClass(value: number | null): string {
-  if (value === null) return 'is-empty'
-  if (value < 0.6) return 'is-low'
-  if (value < 0.75) return 'is-mid'
-  return 'is-good'
-}
+function masteryClass(node: GraphNode): string { return tierClass(node.mastery.tier) }
 
 function toggleChapter(key: string): void {
   expandedChapterKeys.value = expandedChapterKeys.value.includes(key)
@@ -306,7 +317,7 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
         <strong v-else>{{ chapterCounts(activeChapter) }}</strong>
       </header>
       <div class="structure-browser__legend">
-        <span class="is-low">待补强</span><span class="is-mid">需巩固</span><span class="is-good">较稳定</span><span class="is-empty">证据不足</span>
+        <span class="is-low">明显薄弱</span><span class="is-mid">还不稳</span><span class="is-good">较稳定</span><span class="is-empty">证据不足</span>
       </div>
       <button
         v-if="activeSection && activeChapter"
@@ -322,7 +333,7 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
         <h3>{{ section.name }} <small>{{ observedCount(section.items) }}/{{ section.items.length }} 项有证据</small></h3>
         <div v-if="section.topics.length" class="structure-browser__points">
           <button v-for="item in section.topics" :key="item.node.stable_key" type="button"
-            :class="['structure-browser__point', masteryClass(ownMastery(item.node)), { 'is-selected': selectedNode?.stable_key === item.node.stable_key }]"
+            :class="['structure-browser__point', masteryClass(item.node), { 'is-selected': selectedNode?.stable_key === item.node.stable_key }]"
             :title="item.node.display_name" @click="emit('select', item.node.stable_key)">
             <span>{{ displayLabel(item) }}</span>
             <i><b :style="{ width: `${Math.round((ownMastery(item.node) ?? 0) * 100)}%` }" /></i>
@@ -334,7 +345,7 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
           <h4>可训练技能<small>{{ observedCount(section.skills) }}/{{ section.skills.length }} 项有证据</small></h4>
           <div class="structure-browser__points structure-browser__points--skills">
             <button v-for="item in section.skills" :key="item.node.stable_key" type="button"
-              :class="['structure-browser__point', masteryClass(ownMastery(item.node)), { 'is-selected': selectedNode?.stable_key === item.node.stable_key }]"
+              :class="['structure-browser__point', masteryClass(item.node), { 'is-selected': selectedNode?.stable_key === item.node.stable_key }]"
               :title="item.node.display_name" @click="emit('select', item.node.stable_key)">
               <span>{{ displayLabel(item) }}</span>
               <i><b :style="{ width: `${Math.round((ownMastery(item.node) ?? 0) * 100)}%` }" /></i>
@@ -353,11 +364,11 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
         <p v-if="selectedIsSkill && selectedEntry" class="structure-browser__skill-belong">
           属于：{{ selectedEntry.section.name }}
         </p>
-        <div :class="['structure-browser__score', masteryClass(ownMastery(selectedNode))]">
+        <div :class="['structure-browser__score', masteryClass(selectedNode)]">
           <strong>{{ percentage(ownMastery(selectedNode)) }}</strong><span>{{ selectedIsSkill ? '本技能掌握状况' : '本知识点掌握状况' }}</span>
         </div>
         <dl>
-          <div><dt>证据</dt><dd>{{ selectedNode.mastery.evidence_count }} 条</dd></div>
+          <div><dt>证据</dt><dd>{{ masteryDetail(selectedNode.mastery) }}</dd></div>
           <div><dt>学生</dt><dd>{{ selectedNode.evidence.student_count }} 人</dd></div>
           <div><dt>扣分</dt><dd>{{ selectedNode.evidence.deduction_count }} 次</dd></div>
         </dl>
@@ -375,8 +386,8 @@ function chooseSection(chapter: ChapterGroup, sectionName: string): void {
             {{ percentage(ownMastery(item.node)) }}
           </button>
         </section>
-        <p v-if="ownMastery(selectedNode) === null">{{ selectedIsSkill ? '本技能' : '本知识点' }}证据不足，不依据先修、相关关系或相邻章节推断掌握情况。</p>
-        <p v-else>仅根据本{{ selectedIsSkill ? '技能' : '知识点' }}已有作答与训练证据显示；安排练习时还会核对实际错题、解题要求与难度。</p>
+        <p v-if="selectedNode.mastery.tier === 'insufficient'">本项证据不足，估计仍有不确定性。<span v-if="parentReferences">所在小节、章参考：{{ parentReferences }}</span></p>
+        <p>估计综合该生本学期整体表现、节点作答和题目难度；安排练习时继续核对实际失分。</p>
         <RouterLink :to="{ name: 'training', query: { mode: 'chapter' } }">用本章安排训练</RouterLink>
       </template>
     </aside>

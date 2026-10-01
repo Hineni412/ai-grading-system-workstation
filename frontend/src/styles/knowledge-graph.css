@@ -740,8 +740,8 @@
 }
 
 .knowledge-graph-state-legend li[data-state="weak"] > span { color: var(--color-danger); }
-.knowledge-graph-state-legend li[data-state="review"] > span { color: var(--color-warning); }
-.knowledge-graph-state-legend li[data-state="slight"] > span { color: var(--color-info); }
+.knowledge-graph-state-legend li[data-state="unsteady"] > span { color: var(--color-warning); }
+.knowledge-graph-state-legend li[data-state="insufficient"] > span { color: var(--color-text-muted); }
 .knowledge-graph-state-legend li[data-state="stable"] > span { color: var(--color-success); }
 
 .knowledge-graph-path-copy {
@@ -771,8 +771,8 @@
 }
 
 .knowledge-graph-lane-legend li[data-band="weak"] { border-inline-start-color: var(--color-danger); }
-.knowledge-graph-lane-legend li[data-band="review"] { border-inline-start-color: var(--color-warning); }
-.knowledge-graph-lane-legend li[data-band="slight"] { border-inline-start-color: var(--color-info); }
+.knowledge-graph-lane-legend li[data-band="unsteady"] { border-inline-start-color: var(--color-warning); }
+.knowledge-graph-lane-legend li[data-band="insufficient"] { border-inline-start-color: var(--color-text-muted); }
 .knowledge-graph-lane-legend li[data-band="stable"] { border-inline-start-color: var(--color-success); }
 
 .knowledge-graph-lane-legend span {

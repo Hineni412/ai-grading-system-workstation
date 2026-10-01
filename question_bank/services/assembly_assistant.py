@@ -53,14 +53,15 @@ def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id
     for point in diagnosis.get("group_weak_points", []):
         key = point["knowledge_key"]
         evidence = list(members.get(key, {}).values())
-        weak = sum(float(item["mastery"]) < .8 for item in evidence)
+        weak = sum(item.get("tier") in {"weak", "unsteady"} for item in evidence)
+        clearly_weak = sum(item.get("tier") == "weak" for item in evidence)
         if not evidence or point.get("mastery") is None:
             continue
         score = sum(float(item.get("score_sum", 0)) for item in evidence)
         full = sum(float(item.get("full_score_sum", 0)) for item in evidence)
         result.append({
             "knowledge_key": key, "knowledge_point": point["knowledge_point"],
-            "mastery": point["mastery"], "weak_student_count": weak,
+            "mastery": point["mastery"], "weak_student_count": weak, "weak_tier_student_count": clearly_weak, "tier": point.get("tier", "insufficient"),
             "evidence_student_count": len(evidence),
             "exam_score_rate": round(score / full, 4) if full > 0 else None,
             "evidence_count": int(point.get("evidence_count", 0)),
@@ -72,9 +73,9 @@ def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id
     for key in sorted(allowed - present):
         node = resolver.node(key) if resolver else None
         result.append({"knowledge_key": key, "knowledge_point": node.display_name if node else names.get(key, key),
-                       "mastery": None, "weak_student_count": 0, "evidence_student_count": 0,
+                       "mastery": None, "weak_student_count": 0, "weak_tier_student_count": 0, "tier": "insufficient", "evidence_student_count": 0,
                        "exam_score_rate": None, "evidence_count": 0, "candidate_count": None, "target_difficulty": None})
-    return sorted(result, key=lambda item: (item["mastery"] is None, (item["mastery"] or 0) >= .8, -item["weak_student_count"], item["mastery"] or 0, -item["evidence_student_count"], item["knowledge_key"]))
+    return sorted(result, key=lambda item: (item["weak_student_count"] == 0, -item["weak_tier_student_count"], -item["weak_student_count"], item["mastery"] if item["mastery"] is not None else 1, item["knowledge_key"]))
 
 
 
