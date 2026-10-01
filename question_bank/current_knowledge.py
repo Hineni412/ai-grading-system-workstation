@@ -12,6 +12,7 @@ from typing import Any
 from question_bank.knowledge_graph_release.contracts import (
     KnowledgeGraphRelease,
     KnowledgeGraphReleaseError,
+    cached_release_from_json,
 )
 from question_bank.knowledge_graph_release.loader import (
     load_release,
@@ -366,8 +367,16 @@ class CurrentKnowledgeResolver:
         taxonomy_catalog: Mapping[str, Any] | None,
     ) -> CurrentKnowledgeResolver:
         try:
-            raw = json.loads(str(raw_value))
-            release = KnowledgeGraphRelease.from_mapping(raw)
+            if expected_identity is not None:
+                release = cached_release_from_json(
+                    str(raw_value),
+                    release_id=expected_identity[0],
+                    content_hash=expected_identity[1],
+                )
+            else:
+                release = KnowledgeGraphRelease.from_mapping(
+                    json.loads(str(raw_value))
+                )
             if expected_identity is not None and expected_identity != (
                 release.release_id,
                 release.content_hash,

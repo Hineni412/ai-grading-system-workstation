@@ -66,3 +66,35 @@ def test_active_release_switch_and_rollback_change_cache_identity(tmp_path) -> N
     assert switched.release_id == selected.release_id
     assert switched is not first
     assert restored is first
+
+
+def test_resolver_load_reuses_the_release_identity_cache(tmp_path, monkeypatch) -> None:
+    from question_bank import current_knowledge as current_module
+    from question_bank.knowledge_graph_release import contracts
+
+    database = tmp_path / "question_bank.db"
+    initialize_database(database)
+    ensure_checked_in_current_standard(database)
+    current_module._clear_resolver_cache_for_tests()
+    contracts._clear_release_cache_for_tests()
+
+    calls = 0
+    original = KnowledgeGraphRelease.from_mapping
+
+    def counting(cls, raw):
+        nonlocal calls
+        calls += 1
+        return original(raw)
+
+    monkeypatch.setattr(
+        KnowledgeGraphRelease, "from_mapping", classmethod(counting)
+    )
+
+    first = CurrentKnowledgeResolver.from_active_database(database)
+    assert calls == 1
+
+    current_module._clear_resolver_cache_for_tests()
+    second = CurrentKnowledgeResolver.from_active_database(database)
+    assert calls == 1
+    assert second is not first
+    assert second.release_id == first.release_id
