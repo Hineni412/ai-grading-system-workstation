@@ -145,13 +145,13 @@ describe('training knowledge structure hierarchy', () => {
     expect(host.querySelector('[data-node-key="sk_earlier"]')).toBeNull()
     expect(host.querySelector('.structure-layout > nav')?.textContent).not.toContain('七年级上册')
   })
-  it('separates topics from mastery and highlights both directions with association evidence', async () => {
+  it('shows topic and skill mastery and highlights both directions with association evidence', async () => {
     const diagnosis = makeDiagnosis()
     diagnosis.knowledge_catalog!.push({ knowledge_key: 'sk_synthetic', knowledge_point: '技能·正确合并指数', parent_knowledge_key: 'kp_c1_s1', node_kind: 'skill' })
     diagnosis.group_weak_points!.push(makeWeak('sk_synthetic', '技能·正确合并指数', .61, 5, 'kp_c1_s1'))
     diagnosis.knowledge_associations = [{ topic_key: 'kp_c1_s1_p1', skill_key: 'sk_synthetic', question_count: 7, same_part_question_count: 4, basis: 'same_part' }]
     const { host } = mount(TrainingKnowledgeStructure, { diagnosis, modelValue: [], title: '关联', description: '' })
-    expect(host.querySelector('.relationship-topics')?.textContent).not.toContain('52%')
+    expect(host.querySelector('.relationship-topics')?.textContent).toContain('52%')
     expect(host.querySelector('.relationship-skills')?.textContent).toContain('61%')
     host.querySelector<HTMLButtonElement>('[data-node-key="kp_c1_s1_p1"] button')!.click()
     await nextTick()

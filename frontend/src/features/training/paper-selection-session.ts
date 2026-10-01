@@ -26,6 +26,10 @@ export interface PaperSelectionSession {
   rulesVersion?: number
   targetKeys: string[]
   rangeKeys: string[]
+  purpose?: 'training' | 'handout'
+  maxQuestionsPerSkill?: number
+  maxWrittenQuestions?: number
+  recentActivityCount?: number
   questionCount: number
   expectedMinutes?: number
   difficultyMin?: number
@@ -77,8 +81,12 @@ export function loadPaperSelectionSession(): PaperSelectionSession | null {
       targetKeys,
       rangeKeys,
       questionCount,
-      difficultyMax: parsed.rulesVersion === 6 ? Math.min(8, difficultyMax) : 8,
-      rulesVersion: 6,
+      purpose: parsed.purpose === 'handout' ? 'handout' : 'training',
+      maxQuestionsPerSkill: parsed.maxQuestionsPerSkill ?? 1,
+      maxWrittenQuestions: parsed.maxWrittenQuestions ?? 2,
+      recentActivityCount: parsed.recentActivityCount ?? 3,
+      difficultyMax: (parsed.rulesVersion ?? 0) >= 7 ? difficultyMax : parsed.rulesVersion === 6 ? Math.min(8, difficultyMax) : 8,
+      rulesVersion: 7,
       excludeCurrentOriginals: true,
       paperMode,
       chapterKey: typeof parsed.chapterKey === 'string' ? parsed.chapterKey : '',
@@ -136,7 +144,7 @@ function validGroup(value: unknown): value is AdoptedChapterGroup {
 
 export function savePaperSelectionSession(selection: PaperSelectionSession): void {
   try {
-    globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify({ ...selection, rulesVersion: 6 }))
+    globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify({ ...selection, rulesVersion: 7 }))
   } catch {
     // Storage can be unavailable in private or restricted browser contexts.
   }

@@ -73,14 +73,29 @@ class TrainingExamScopeRequest(_TrainingModel):
         return result
 
 
-class TrainingGroupingRequest(_TrainingModel):
+class RecommendationRulesRequest(_TrainingModel):
+    purpose: Literal["training", "handout"] = "training"
+    question_count: int = Field(default=10, ge=1)
+    max_questions_per_skill: int = Field(default=1, ge=1)
+    max_written_questions: int = Field(default=2, ge=0)
+    recent_activity_count: int = Field(default=3, ge=0)
+    difficulty_max: int = Field(default=8, ge=1, le=10)
+
+    @model_validator(mode="after")
+    def validate_rules(self):
+        if self.purpose == "training" and not 8 <= self.question_count <= 12:
+            raise ValueError("training question_count must be between 8 and 12")
+        if self.max_questions_per_skill > self.question_count or self.max_written_questions > self.question_count:
+            raise ValueError("paper quotas cannot exceed question_count")
+        return self
+
+
+class TrainingGroupingRequest(RecommendationRulesRequest):
     scope_keys: list[str] = Field(min_length=1, max_length=50)
     member_ids: list[str] = Field(default_factory=list, max_length=500)
     target_keys: list[str] = Field(default_factory=list, max_length=50)
-    question_count: int = Field(default=10, ge=8, le=12)
     expected_minutes: int = 40  # 兼容输入，不参与推荐
     difficulty_min: int = Field(default=2, ge=1, le=10)
-    difficulty_max: int = Field(default=8, ge=1, le=8)
     exclude_current_exam_originals: bool = True
     curriculum_volume_id: str = ""
     training_intent: Literal["remediation", "challenge"] = "remediation"
@@ -98,12 +113,10 @@ class TrainingOverviewRequest(_TrainingModel):
     exam_scope: TrainingExamScopeRequest
 
 
-class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
+class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest, RecommendationRulesRequest):
     request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
-    question_count: int = Field(default=10, ge=8, le=12)
     expected_minutes: int = 45  # 兼容输入，不参与推荐
     difficulty_min: int = Field(default=1, ge=1, le=10)
-    difficulty_max: int = Field(default=8, ge=1, le=8)
     paper_mode: Literal["individual", "shared"] = "individual"
     target_keys: list[str] = Field(default_factory=list, max_length=50)
     scope_keys: list[str] = Field(default_factory=list, max_length=50)
@@ -164,6 +177,11 @@ class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
                 "shared paper mode requires teacher-selected targets"
             )
         return self
+
+
+class PersonalizedHandoutExportRequest(_TrainingModel):
+    expected_revision: int = Field(ge=1)
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
 
 
 class PersonalizedRecommendationEditRequest(_TrainingModel):

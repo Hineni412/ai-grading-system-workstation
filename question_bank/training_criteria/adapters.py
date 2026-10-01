@@ -6,6 +6,7 @@ import re
 import sqlite3
 import threading
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -486,8 +487,10 @@ class QuestionAnalysisInputLoader:
             self.db_path, ids
         )
         by_id = {int(row["id"]): row for row in rows}
-        result: list[QuestionAnalysisInput] = []
-        for question_id in ids:
+        # SQLite reads remain on the caller's thread, including when an
+        # external transaction was supplied. Only immutable rows and local
+        # assets are processed concurrently; map retains the requested order.
+        def load_one(question_id: int) -> QuestionAnalysisInput:
             row = by_id.get(question_id)
             if row is None or bool(row["is_deleted"]):
                 raise KeyError(question_id)
@@ -539,57 +542,58 @@ class QuestionAnalysisInputLoader:
             has_images = bool(row["has_images"]) or bool(
                 question_paths or answer_paths
             )
-            result.append(
-                QuestionAnalysisInput(
-                    question_id=question_id,
-                    tagging_context=TaggingContext(
-                        question_text=str(row["question_text"] or ""),
-                        answer_text=str(row["answer_text"] or ""),
-                        question_number=str(
-                            row["question_number"] or ""
-                        ),
-                        question_type=str(row["question_type"] or ""),
-                        grade=str(row["grade"] or ""),
-                        semester=str(row["semester"] or ""),
-                        textbook_version=str(
-                            row["textbook_version"] or ""
-                        ),
-                        curriculum_volume_id=str(
-                            curriculum_volume_id or ""
-                        ).strip(),
-                        exam_type=str(row["exam_type"] or ""),
-                        district=str(row["district"] or ""),
-                        has_images=has_images,
-                        existing_tags_by_dimension=(
-                            {"special_type": special_types_by_id[question_id]}
-                            if question_id in special_types_by_id
-                            else {}
-                        ),
-                        evidence_parts=tuple(
-                            evidence_parts_by_id.get(question_id, ())
-                        ),
+            return QuestionAnalysisInput(
+                question_id=question_id,
+                tagging_context=TaggingContext(
+                    question_text=str(row["question_text"] or ""),
+                    answer_text=str(row["answer_text"] or ""),
+                    question_number=str(
+                        row["question_number"] or ""
                     ),
-                    rich_question_blocks=tuple(
-                        _public_block(item) for item in question_blocks
+                    question_type=str(row["question_type"] or ""),
+                    grade=str(row["grade"] or ""),
+                    semester=str(row["semester"] or ""),
+                    textbook_version=str(
+                        row["textbook_version"] or ""
                     ),
-                    rich_answer_blocks=tuple(
-                        _public_block(item) for item in answer_blocks
+                    curriculum_volume_id=str(
+                        curriculum_volume_id or ""
+                    ).strip(),
+                    exam_type=str(row["exam_type"] or ""),
+                    district=str(row["district"] or ""),
+                    has_images=has_images,
+                    existing_tags_by_dimension=(
+                        {"special_type": special_types_by_id[question_id]}
+                        if question_id in special_types_by_id
+                        else {}
                     ),
-                    word_question_blocks=tuple(
-                        _word_block(item, image_hashes_by_path)
-                        for item in _question_content_blocks(question_blocks)
+                    evidence_parts=tuple(
+                        evidence_parts_by_id.get(question_id, ())
                     ),
-                    word_answer_blocks=tuple(
-                        _word_block(item, image_hashes_by_path)
-                        for item in answer_blocks
-                    ),
-                    images=images,
-                    taxonomy_contract=(
-                        (taxonomy_contracts or {}).get(question_id, {})
-                    ),
-                )
+                ),
+                rich_question_blocks=tuple(
+                    _public_block(item) for item in question_blocks
+                ),
+                rich_answer_blocks=tuple(
+                    _public_block(item) for item in answer_blocks
+                ),
+                word_question_blocks=tuple(
+                    _word_block(item, image_hashes_by_path)
+                    for item in _question_content_blocks(question_blocks)
+                ),
+                word_answer_blocks=tuple(
+                    _word_block(item, image_hashes_by_path)
+                    for item in answer_blocks
+                ),
+                images=images,
+                taxonomy_contract=(
+                    (taxonomy_contracts or {}).get(question_id, {})
+                ),
             )
-        return tuple(result)
+        if len(ids) < 8:
+            return tuple(load_one(question_id) for question_id in ids)
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="question-assets") as pool:
+            return tuple(pool.map(load_one, ids))
 
     def _images(
         self,

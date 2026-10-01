@@ -279,27 +279,32 @@ def test_teacher_final_total_does_not_restore_superseded_ai_step_scores():
     assert row["assessment"]["granularity"] == "whole_question"
 
 
-def test_mastery_uses_equal_point_mass_instead_of_exam_score_allocation():
+def test_mastery_uses_each_point_instead_of_exam_score_allocation():
     from datetime import datetime, timezone
-    from question_bank.mastery.current import _exam_evidence
+    from types import SimpleNamespace
+    from question_bank.mastery.current import CurrentMasteryCalculator
 
     reference = {
         "session_id": 1,
+        "question_id": "Q1",
         "score_awarded": 9,
         "full_score": 10,
         "assessment": {
             "granularity": "part",
             "point_observations": [
-                {"weight": 0.5, "achieved": 1},
-                {"weight": 0.5, "achieved": 0},
+                {"point_id": "p1", "stable_key": _SKILL_KEY, "weight": 0.5, "achieved": 1},
+                {"point_id": "p2", "stable_key": _SKILL_KEY, "weight": 0.5, "achieved": 0},
             ],
         },
     }
-    evidence = _exam_evidence(
-        reference,
-        student_id="1",
-        stable_key=_SKILL_KEY,
-        session_times={1: datetime(2026, 9, 17, tzinfo=timezone.utc)},
-    )
-    assert evidence.score_awarded == 0.5 and evidence.full_score == 1
-    assert evidence.evidence_weight == 1
+    calculator = object.__new__(CurrentMasteryCalculator)
+    calculator.resolver = SimpleNamespace(resolve=lambda key: [SimpleNamespace(stable_key=key)])
+    observations = calculator.exam_observations({
+        "students": [{"student_id": "1", "weak_points": [{
+            "knowledge_key": _SKILL_KEY, "source_question_refs": [reference],
+        }]}],
+        "_mastery_session_times": {1: datetime(2026, 9, 17, tzinfo=timezone.utc)},
+    })
+    assert [item["y"] for item in observations] == [1, 0]
+    assert [item["item"] for item in observations] == [(1, "Q1", "p1"), (1, "Q1", "p2")]
+    assert all(item["links"] == {_SKILL_KEY: 1} for item in observations)

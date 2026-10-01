@@ -43,6 +43,10 @@ const students = ref<StudentSummary[]>([])
 const referenceState = ref<ReferenceState>('loading')
 const selectedTargetKeys = ref<string[]>(savedPaperSelection?.targetKeys ?? [])
 const selectedRangeKeys = ref<string[]>(savedPaperSelection?.rangeKeys ?? [])
+const purpose = ref<'training' | 'handout'>(savedPaperSelection?.purpose ?? 'training')
+const maxQuestionsPerSkill = ref(savedPaperSelection?.maxQuestionsPerSkill ?? 1)
+const maxWrittenQuestions = ref(savedPaperSelection?.maxWrittenQuestions ?? 2)
+const recentActivityCount = ref(savedPaperSelection?.recentActivityCount ?? 3)
 const questionCount = ref(savedPaperSelection?.questionCount ?? 10)
 const teachingProgressChapterId = ref(savedPaperSelection?.teachingProgressChapterId ?? '')
 const scopeMode = ref<'comprehensive' | 'focused'>(savedPaperSelection?.scopeMode ?? 'comprehensive')
@@ -67,6 +71,7 @@ const arrangements = ref<AdoptedChapterGroup[]>(savedPaperSelection?.arrangement
 const groupMessage = ref('')
 const groupChecking = ref(false)
 const latestGroupDiagnosis = ref<TrainingDiagnosis | null>(null)
+const draftContext = ref<{ mode: 'individual' | 'shared'; studentCount: number; questionCount: number; difficultyMax: number; purpose: 'training' | 'handout' } | null>(null)
 const workflowStage = ref<'diagnosis' | 'draft' | 'wps' | 'scan'>('diagnosis')
 const draftRequestState = ref<'idle' | 'loading' | 'ready' | 'error' | 'editing'>('idle')
 const draftNeedsCheck = ref(false)
@@ -89,7 +94,7 @@ const pageCopy = computed(() => ({
     description: '选择学生并确认已学进度，默认综合训练覆盖已学章节；需要集中练某章或小节时，切换专项训练。',
   },
   paper: {
-    title: '生成试卷',
+    title: '出卷与回收',
     description: '在这里审核草稿、生成 PDF 试卷并扫描归卷；出卷设置在按章节/按学生训练页完成。',
   },
 }[trainingMode.value]))
@@ -132,10 +137,14 @@ const groupScopeLabel = computed(() => {
   return `全部班级 · ${selectedStudentCount.value} 人`
 })
 const paperNumericSettingsValid = computed(() => (
-  questionCount.value >= 8
-  && questionCount.value <= 12
+  Number.isInteger(questionCount.value)
+  && (purpose.value === 'training' ? questionCount.value >= 8 && questionCount.value <= 12 : questionCount.value >= 1)
+  && Number.isInteger(maxQuestionsPerSkill.value) && maxQuestionsPerSkill.value >= 1 && maxQuestionsPerSkill.value <= questionCount.value
+  && Number.isInteger(maxWrittenQuestions.value) && maxWrittenQuestions.value >= 0 && maxWrittenQuestions.value <= questionCount.value
+  && Number.isInteger(recentActivityCount.value) && recentActivityCount.value >= 0
+  && Number.isInteger(difficultyMax.value)
   && difficultyMax.value >= 1
-  && difficultyMax.value <= 8
+  && difficultyMax.value <= 10
 ))
 // 多人同一套卷用成员需求并集出题；一人一卷用章/节范围出题。
 // 出卷页按最后编辑页记录的模式（paperMode）取对应的校验。
@@ -179,6 +188,8 @@ const personalizedExamScope = computed<TrainingExamScopeRequest>(() => ({
 const groupingSettings = computed<TrainingGroupingRequest>(() => ({
   scope_keys: sectionKey.value || chapterKey.value ? [sectionKey.value || chapterKey.value] : [],
   question_count: questionCount.value,
+  purpose: purpose.value, max_questions_per_skill: maxQuestionsPerSkill.value,
+  max_written_questions: maxWrittenQuestions.value, recent_activity_count: recentActivityCount.value,
   difficulty_max: difficultyMax.value,
   exclude_current_exam_originals: excludeCurrentOriginals.value, curriculum_volume_id: curriculumScope.selectedVolumeId ?? '',
   teaching_progress_chapter_id: teachingProgressChapterId.value,
@@ -265,7 +276,7 @@ function adoptGroup(group: TrainingGroup, diagnosis: TrainingDiagnosis): void {
     targetKeys: [...selectedTargetKeys.value], scopeKeys: [...groupingSettings.value.scope_keys], sourceVersion: group.source_version }
   latestGroupDiagnosis.value = diagnosis
   paperMode.value = 'shared'
-  groupMessage.value = `已采用 ${group.members.length} 人的小组。请在下方核对出卷设置；原跨班推荐范围保留。`
+  groupMessage.value = `已选择 ${group.members.length} 人小组，请核对出卷设置。`
   void nextTick(() => document.querySelector('.paper-settings-panel')?.scrollIntoView?.({ behavior: 'smooth', block: 'center' }))
 }
 
@@ -293,9 +304,6 @@ const paperBackTarget = computed(() => (
   paperMode.value === 'shared'
     ? { name: 'training', query: { mode: 'chapter' } }
     : { name: 'training', query: { mode: 'student' } }
-))
-const paperBackLabel = computed(() => (
-  paperMode.value === 'shared' ? '回到按章节训练调整设置' : '回到按学生训练调整设置'
 ))
 
 function onPaperStageChange(stage: 'diagnosis' | 'draft' | 'wps' | 'scan'): void {
@@ -361,7 +369,7 @@ watch(
   [
     selectedTargetKeys,
     selectedRangeKeys,
-    questionCount,
+    questionCount, purpose, maxQuestionsPerSkill, maxWrittenQuestions, recentActivityCount,
     difficultyMax,
     teachingProgressChapterId,
     scopeMode,
@@ -374,6 +382,8 @@ watch(
       targetKeys: [...selectedTargetKeys.value],
       rangeKeys: [...selectedRangeKeys.value],
       questionCount: questionCount.value,
+      purpose: purpose.value, maxQuestionsPerSkill: maxQuestionsPerSkill.value,
+      maxWrittenQuestions: maxWrittenQuestions.value, recentActivityCount: recentActivityCount.value,
       difficultyMax: difficultyMax.value,
       teachingProgressChapterId: teachingProgressChapterId.value,
       scopeMode: scopeMode.value,
@@ -417,17 +427,8 @@ onBeforeUnmount(() => studentsController?.abort())
 <template>
   <section class="training-workspace" aria-labelledby="training-title">
     <header class="training-heading training-heading--compact">
-      <div>
-        <p class="training-eyebrow">知识与训练 · {{ curriculumScope.selectedVolume?.label ?? '未选择教学学期' }}</p>
-        <h1 id="training-title">{{ pageCopy.title }}</h1>
-        <p>{{ pageCopy.description }}</p>
-      </div>
-      <div v-if="training.diagnosis" class="training-basis">
-        <strong>{{ trainingMode === 'paper' ? paperStudentCount : selectedStudentCount }} 名{{ trainingMode === 'paper' ? '出卷' : '' }}学生</strong>
-        <span v-if="trainingMode === 'paper' && adoptedGroup && paperMode === 'shared'">推荐来源 {{ selectedStudentCount }} 人</span>
-        <span>{{ training.diagnosis.knowledge_catalog?.length ?? 0 }} 个结构节点</span>
-        <span>{{ selectedRangeKeys.length }} 个范围 · {{ selectedTargetKeys.length }} 项细点</span>
-      </div>
+      <h1 id="training-title">{{ pageCopy.title }}</h1>
+      <div class="training-page-summary"><span>{{ curriculumScope.selectedVolume?.label ?? '未选择教学学期' }}</span><span v-if="training.diagnosis">{{ trainingMode === 'paper' ? draftContext?.studentCount ?? paperStudentCount : selectedStudentCount }} 名学生</span></div>
     </header>
 
     <KnowledgeTrainingTabs />
@@ -458,8 +459,8 @@ onBeforeUnmount(() => studentsController?.abort())
     <section v-if="trainingMode !== 'paper'" class="training-mode-panel">
       <header class="training-mode-panel__heading">
         <div>
-          <p class="training-eyebrow">{{ trainingMode === 'chapter' ? '01 · 章节视角' : '02 · 学生视角' }}</p>
-          <h2>{{ trainingMode === 'chapter' ? '推荐共同训练小组' : '群体知识结构' }}</h2>
+
+          <h2>{{ trainingMode === 'chapter' ? '推荐共同训练小组' : '个人训练范围' }}</h2>
         </div>
         <span>{{ scoreSourceSummary }}</span>
       </header>
@@ -475,6 +476,7 @@ onBeforeUnmount(() => studentsController?.abort())
 
       <template v-else-if="training.diagnosis">
         <p v-if="training.analysisState === 'loading'" class="training-updating">正在更新掌握汇总…</p>
+        <div class="training-selection-layout">
         <ChapterTrainingMatrix
           v-if="trainingMode === 'chapter' && training.analysisState !== 'empty'"
           v-model="selectedTargetKeys"
@@ -507,8 +509,9 @@ onBeforeUnmount(() => studentsController?.abort())
           v-model="selectedRangeKeys"
           selection-kind="range"
           :diagnosis="training.diagnosis"
-          title="所选学生的知识与技能关联"
-          description="综合训练覆盖已学章节；勾选的章或小节仅在切换专项训练后限定选题范围。点击知识主题或技能可查看关联。"
+          compact-range
+          title="章节与小节"
+          description=""
           @focus="() => undefined"
         />
         <div v-else-if="training.analysisState === 'empty'" class="status-card empty-state">
@@ -527,6 +530,10 @@ onBeforeUnmount(() => studentsController?.abort())
           :selection-text="`${selectedTargetKeys.length} 项细点`"
           :valid="sharedSettingsValid"
           :generating="draftRequestState === 'loading'"
+          v-model:purpose="purpose"
+          v-model:max-questions-per-skill="maxQuestionsPerSkill"
+          v-model:max-written-questions="maxWrittenQuestions"
+          v-model:recent-activity-count="recentActivityCount"
           v-model:question-count="questionCount"
           v-model:difficulty-max="difficultyMax"
           v-model:teaching-progress-chapter-id="teachingProgressChapterId"
@@ -546,32 +553,21 @@ onBeforeUnmount(() => studentsController?.abort())
           v-model:scope-mode="scopeMode"
           :valid="individualSettingsValid"
           :generating="draftRequestState === 'loading'"
+          v-model:purpose="purpose"
+          v-model:max-questions-per-skill="maxQuestionsPerSkill"
+          v-model:max-written-questions="maxWrittenQuestions"
+          v-model:recent-activity-count="recentActivityCount"
           v-model:question-count="questionCount"
           v-model:difficulty-max="difficultyMax"
           v-model:teaching-progress-chapter-id="teachingProgressChapterId"
           :progress-chapters="progressChapters"
           @go-paper="goPaper('individual')"
         />
+        </div>
       </template>
     </section>
 
     <section v-else class="paper-workspace">
-      <header class="paper-workspace__heading">
-        <div v-if="workflowStage === 'diagnosis'">
-          <p class="training-eyebrow">03 · 出卷审核与导出</p>
-          <h2>生成草稿与出卷</h2>
-          <p>出卷设置在按章节/按学生训练页完成；本页只负责审核草稿、生成 PDF 试卷与扫描归卷。</p>
-        </div>
-        <div v-else>
-          <p class="training-eyebrow">04 · 草稿审核与匹配预览</p>
-          <h2>逐题核对错题依据与推荐题</h2>
-          <p>设置已锁定；回到“按学生训练”或“按章节训练”调整后会重新生成草稿。</p>
-        </div>
-        <div class="paper-workspace__scope">
-          <strong>{{ paperStudentCount }} 人</strong>
-          <span>{{ selectedRangeKeys.length }} 个范围 · {{ selectedTargetKeys.length }} 个细点</span>
-        </div>
-      </header>
 
       <div v-if="!training.diagnosis" class="status-card empty-state">
         请先回到“按章节训练”勾选细知识点，或回到“按学生训练”勾选章/节范围。
@@ -580,25 +576,14 @@ onBeforeUnmount(() => studentsController?.abort())
         <div class="paper-console is-reviewing">
           <div class="paper-console__main">
             <div class="paper-review-bar">
-              <span><b>{{ paperMode === 'individual' ? '一人一卷' : '多人同一套卷' }}</b></span>
-              <span v-if="paperMode === 'shared'">供 <b>{{ paperStudentCount }}</b> 名学生共同练习</span>
-              <span v-else><b>{{ paperStudentCount }}</b> 名学生</span>
-              <span v-if="paperMode === 'shared'"><b>{{ selectedTargetKeys.length }}</b> 项细点</span>
-              <span v-else>{{ individualScope.label }}</span>
-              <span>每卷 <b>{{ questionCount }}</b> 题</span>
-              <span>难度上限 <b>{{ difficultyMax }}</b> 级</span>
-              <span>已学到 {{ progressChapters.find(chapter => chapter.id === (paperMode === 'individual' ? individualScope.progressId : teachingProgressChapterId))?.label ?? '所选目标最晚章节' }}</span>
-              <span>排除最近3次已批改活动原题</span>
-              <RouterLink class="paper-review-bar__back" :to="paperBackTarget">{{ paperBackLabel }}</RouterLink>
-              <AppButton
-                v-if="workflowStage === 'diagnosis'"
-                variant="primary"
-                data-testid="generate-paper-draft"
-                :disabled="!paperSettingsValid || draftRequestState === 'loading' || groupChecking"
-                @click="generatePaperDraft"
-              >
-                {{ groupChecking ? '正在核对小组…' : draftRequestState === 'loading' ? '正在生成并核对…' : draftNeedsCheck ? '核对生成结果' : `生成 ${expectedPaperCount} 份草稿` }}
-              </AppButton>
+              <strong>{{ (draftContext?.mode ?? paperMode) === 'individual' ? '一人一卷' : '多人同一套卷' }}</strong>
+              <span v-if="(draftContext?.mode ?? paperMode) === 'shared'">供 <b>{{ draftContext?.studentCount ?? paperStudentCount }}</b> 名学生共同练习</span>
+              <span v-else>{{ draftContext?.studentCount ?? paperStudentCount }} 名学生</span>
+              <span>每卷 {{ draftContext?.questionCount ?? questionCount }} 题 · 难度 ≤ {{ draftContext?.difficultyMax ?? difficultyMax }} 级</span>
+              <span>{{ (draftContext?.purpose ?? purpose) === 'handout' ? '讲义 · 只打印' : '训练卷 · 可回收' }}</span>
+              <details v-if="!draftContext" class="paper-settings-summary"><summary>选题细则</summary><p>同技能最多 {{ maxQuestionsPerSkill }} 道 · 解答题最多 {{ maxWrittenQuestions }} 道</p><p>{{ recentActivityCount === 0 ? '不排除近期原题' : purpose === 'handout' ? `排除最近 ${recentActivityCount} 次已批改考试原题 · 可复用历史训练题` : `排除最近 ${recentActivityCount} 次已批改考试与训练原题` }}</p></details>
+              <RouterLink class="paper-review-bar__back" :to="paperBackTarget">调整出卷设置</RouterLink>
+              <AppButton v-if="workflowStage === 'diagnosis'" variant="primary" data-testid="generate-paper-draft" :disabled="!paperSettingsValid || draftRequestState === 'loading' || groupChecking" @click="generatePaperDraft">{{ groupChecking ? '正在核对小组…' : draftRequestState === 'loading' ? '正在生成并核对…' : draftNeedsCheck ? '核对生成结果' : `生成 ${expectedPaperCount} 份草稿` }}</AppButton>
             </div>
             <p v-if="workflowStage === 'diagnosis' && !paperSettingsValid" class="paper-review-hint">
               {{ paperMode === 'shared'
@@ -612,6 +597,10 @@ onBeforeUnmount(() => studentsController?.abort())
               :diagnosis="paperDiagnosis"
               :scope="personalizedScope"
               :exam-scope="personalizedExamScope"
+              :purpose="purpose"
+              :max-questions-per-skill="maxQuestionsPerSkill"
+              :max-written-questions="maxWrittenQuestions"
+              :recent-activity-count="recentActivityCount"
               :question-count="questionCount"
               :difficulty-max="difficultyMax"
               :teaching-progress-chapter-id="paperMode === 'individual' ? individualScope.progressId : teachingProgressChapterId"
@@ -624,6 +613,7 @@ onBeforeUnmount(() => studentsController?.abort())
               :group-source-version="paperMode === 'shared' ? adoptedGroup?.sourceVersion : undefined"
               :curriculum-volume-id="curriculumScope.selectedVolumeId"
               :disabled="!paperSettingsValid"
+              @context-change="draftContext = $event"
               @stage-change="onPaperStageChange"
               @state-change="draftRequestState = $event"
               @recovery-change="draftNeedsCheck = $event"
@@ -636,29 +626,38 @@ onBeforeUnmount(() => studentsController?.abort())
 </template>
 
 <style scoped>
-.training-workspace { grid-template-columns:minmax(0,1fr);min-width:0 }
-.training-adopted-group { display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.8rem 0;font-size:.85rem;color:var(--color-text-secondary) }
-.training-heading--compact { align-items: end; min-height: 96px; }
-.training-scope-filters { margin-top: var(--space-2); }
-.training-mode-panel,
-.paper-workspace { margin-top: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden; }
-.training-mode-panel__heading,
-.paper-workspace__heading { display: flex; justify-content: space-between; gap: var(--space-6); align-items: end; padding: var(--space-5) var(--space-6); border-bottom: 1px solid var(--border); }
-.training-mode-panel__heading h2,
-.paper-workspace__heading h2 { margin: var(--space-1) 0 0; }
-.training-mode-panel__heading > span { color: var(--color-text-muted); font-size: var(--font-size-dense); }
-.training-data-note { margin: var(--space-3) var(--space-6) var(--space-6); color: var(--color-text-muted); }
-.training-updating { margin: 0; padding: 8px var(--space-6); color: var(--color-text-muted); font-size: var(--font-size-caption); line-height: var(--line-height-body); }
-.paper-workspace__heading p { margin: var(--space-1) 0 0; color: var(--color-text-muted); }
-.paper-workspace__scope { display: grid; text-align: right; }
-.paper-console { display: grid; grid-template-columns: 1fr; gap: var(--space-5); padding: var(--space-5); background: var(--color-bg-subtle); }
-.paper-review-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
-.paper-review-bar span { color: var(--color-text-muted); font-size: var(--font-size-dense); }
-.paper-review-bar b { color: var(--color-text-primary); font-weight: 600; }
-.paper-review-bar__back { margin-left: auto; color: var(--color-accent-active); font-size: var(--font-size-dense); }
-.paper-review-bar button { margin-left: auto; }
-.paper-review-bar__back + button { margin-left: 0; }
-.paper-review-hint { margin: 0; color: var(--color-text-muted); font-size: var(--font-size-dense); }
-.paper-console__main { display: grid; min-width: 0; gap: var(--space-4); align-content: start; }
-@media(max-width:760px){.training-mode-panel__heading,.paper-workspace__heading,.training-adopted-group{align-items:flex-start;flex-direction:column}.paper-console{padding:var(--space-3)}.paper-workspace__scope{text-align:left}}
+.training-workspace{grid-template-columns:minmax(0,1fr);min-width:0;gap:var(--space-4);padding:var(--space-5) var(--space-6)}
+.training-heading--compact{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);padding:0;border:0;min-height:0}
+.training-heading h1{font-size:var(--font-size-h1);margin:0}
+.training-page-summary{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:var(--space-3);color:var(--color-text-muted);font-size:var(--font-size-dense)}
+.training-scope-filters{margin-top:0}
+.training-scope-filters :deep(.evidence-scope__quickbar){gap:var(--space-3);padding:var(--space-3) var(--space-4)}
+.training-scope-filters :deep(.evidence-scope__snapshot-text){flex-direction:column;gap:2px;border-left-width:2px;padding-block:0}
+.training-scope-filters :deep(.evidence-scope__snapshot-text strong){font-size:var(--font-size-caption);font-weight:500}
+.training-scope-filters :deep(.evidence-scope__quickbar>label){flex-basis:112px;min-width:112px}
+.training-mode-panel,.paper-workspace{min-width:0;background:var(--color-bg-surface);border:1px solid var(--color-border-default);border-radius:var(--radius-panel);overflow:clip;box-shadow:var(--shadow-raised)}
+.training-mode-panel__heading{display:flex;justify-content:space-between;align-items:center;gap:var(--space-4);padding:var(--space-4) var(--space-5);border-bottom:1px solid var(--color-border-default)}
+.training-mode-panel__heading h2{margin:0;font-size:var(--font-size-h3)}
+.training-mode-panel__heading>span{color:var(--color-text-muted);font-size:var(--font-size-caption)}
+.training-selection-layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;align-items:start;gap:var(--space-4);padding:var(--space-4)}
+.training-selection-layout>.paper-settings-panel{margin:0;position:sticky;top:var(--space-4)}
+.training-selection-layout>.training-data-note,.training-selection-layout>.training-adopted-group{grid-column:1/-1}
+.training-selection-layout>.training-data-note{grid-row:3;margin:0}
+.training-selection-layout>.training-adopted-group{grid-row:4}
+.training-selection-layout>.chapter-training,.training-selection-layout>.knowledge-structure{grid-column:1;grid-row:1/3;min-width:0}
+.training-selection-layout>.paper-settings-panel{grid-column:2;grid-row:1/3}
+.training-adopted-group{display:flex;justify-content:space-between;align-items:center;gap:var(--space-3);font-size:var(--font-size-dense);color:var(--color-text-secondary)}
+.training-data-note{font-size:var(--font-size-caption);color:var(--color-text-muted)}
+.training-data-note summary{cursor:pointer}
+.training-updating{margin:0;padding:var(--space-2) var(--space-5);color:var(--color-text-muted);font-size:var(--font-size-caption)}
+.paper-console{padding:var(--space-5);min-width:0}
+.paper-console__main{min-width:0;display:grid;gap:var(--space-3)}
+.paper-review-bar{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2) var(--space-4);padding-bottom:var(--space-3);font-size:var(--font-size-dense);border-bottom:1px solid var(--color-border-subtle)}
+.paper-review-bar>span{color:var(--color-text-secondary)}
+.paper-review-bar__back{margin-left:auto;color:var(--color-accent);font-size:var(--font-size-dense);text-decoration:none}
+.paper-review-hint{margin:0;font-size:var(--font-size-dense);color:var(--color-warning)}
+.paper-settings-summary{font-size:var(--font-size-caption);color:var(--color-text-muted)}.paper-settings-summary summary{cursor:pointer}.paper-settings-summary p{margin:var(--space-2) 0 0}
+.training-workspace :deep(.knowledge-training-tabs>span){display:none}
+@media(max-width:1100px){.training-selection-layout{grid-template-columns:minmax(0,1fr)}.training-selection-layout>.paper-settings-panel{position:static;grid-column:1;grid-row:auto}.training-selection-layout>.chapter-training,.training-selection-layout>.knowledge-structure{grid-row:auto}.training-selection-layout>.training-data-note,.training-selection-layout>.training-adopted-group{grid-row:auto}}
+@media(max-width:760px){.training-workspace{padding:var(--space-4);gap:var(--space-3)}.training-heading--compact{flex-wrap:wrap}.training-mode-panel__heading{padding:var(--space-3);flex-wrap:wrap}.training-selection-layout{padding:var(--space-3)}.paper-console{padding:var(--space-3)}.training-adopted-group{flex-wrap:wrap}.paper-review-bar__back{margin-left:0}}
 </style>

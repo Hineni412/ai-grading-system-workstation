@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import (
     get_diagnosis_profile_service,
+    get_job_manager,
     get_personalized_paper_module,
     get_personalized_recommendation_module,
     get_request_diagnosis_profile_service,
@@ -31,6 +32,7 @@ from backend.api.schemas.training import (
     PersonalizedRecommendationCreateRequest,
     PersonalizedRecommendationDraftResponse,
     PersonalizedRecommendationEditRequest,
+    PersonalizedHandoutExportRequest,
     TrainingAssessmentActionRequest,
     TrainingAssessmentOutcomeResponse,
     TrainingAssessmentReviewRequest,
@@ -50,6 +52,10 @@ from backend.api.schemas.training import (
     TrainingSubmissionCancelRequest,
 )
 from backend.public_data import sanitize_public_mapping
+from backend.api.routers.jobs import _job_response
+from backend.api.schemas.jobs import JobResponse
+from backend.jobs.manager import JobManager
+from backend.jobs.training_handout import checked_handout_draft
 from backend.training_assessment import (
     AssessmentActionCommand,
     AssessmentInputInvalid,
@@ -152,6 +158,8 @@ def build_training_diagnosis(
             grouping_config = PersonalizedRecommendationConfig(
                 paper_mode="shared", scope_keys=tuple(grouping.scope_keys),
                 group_scope_keys=tuple(grouping.scope_keys), question_count=grouping.question_count,
+                purpose=grouping.purpose, max_questions_per_skill=grouping.max_questions_per_skill,
+                max_written_questions=grouping.max_written_questions, recent_activity_count=grouping.recent_activity_count,
                 expected_minutes=grouping.expected_minutes, difficulty_min=grouping.difficulty_min,
                 difficulty_max=grouping.difficulty_max,
                 exclude_current_exam_originals=grouping.exclude_current_exam_originals,
@@ -335,6 +343,8 @@ def create_personalized_recommendation_draft(
             config=PersonalizedRecommendationConfig(
                 paper_mode=body.paper_mode,
                 question_count=body.question_count,
+                purpose=body.purpose, max_questions_per_skill=body.max_questions_per_skill,
+                max_written_questions=body.max_written_questions, recent_activity_count=body.recent_activity_count,
                 expected_minutes=body.expected_minutes,
                 difficulty_min=body.difficulty_min,
                 difficulty_max=body.difficulty_max,
@@ -516,6 +526,47 @@ def edit_personalized_recommendation_draft(
     return PersonalizedRecommendationDraftResponse.model_validate(
         _public_training_mapping(draft)
     )
+
+
+@router.post("/personalized-drafts/{draft_id}/handout-exports", response_model=JobResponse, status_code=202)
+def export_personalized_handout(
+    draft_id: str, body: PersonalizedHandoutExportRequest,
+    module: PersonalizedRecommendationModule = Depends(get_personalized_recommendation_module),
+    manager: JobManager = Depends(get_job_manager),
+) -> JobResponse:
+    payload = {"draft_id": draft_id, "expected_revision": body.expected_revision,
+               "client_request_token": body.request_token.lower()}
+    try:
+        existing = manager.store.find_export_job_by_request_token("personalized_handout_export", body.request_token.lower())
+        if existing is not None and existing.payload != payload:
+            raise ApiError(409, "personalized_handout_request_conflict", "本次请求编号已用于其他导出，请重新发起。")
+        if existing is None:
+            checked_handout_draft(module, draft_id, body.expected_revision)
+        job, _created = manager.submit_idempotent_export("personalized_handout_export", payload)
+    except RecommendationDraftNotFound as exc:
+        raise ApiError(404, "personalized_recommendation_not_found", "讲义草稿不存在。") from exc
+    except RecommendationRevisionConflict as exc:
+        raise ApiError(409, "personalized_recommendation_revision_conflict", "草稿已改变，请刷新后导出。",
+                       {"current_revision": exc.current_revision}) from exc
+    except RecommendationSourceChanged as exc:
+        raise ApiError(409, "personalized_recommendation_source_changed", "题目来源已变化，请先重新核对草稿。") from exc
+    except ValueError as exc:
+        raise ApiError(422, "personalized_handout_invalid", str(exc)) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(503, "training_database_unavailable", "训练数据暂时不可用。") from exc
+    return _job_response(job)
+
+
+@router.get("/personalized-drafts/{draft_id}/handout-exports/by-request/{request_token}", response_model=JobResponse)
+def get_handout_export_by_request(draft_id: str, request_token: str,
+    manager: JobManager = Depends(get_job_manager)) -> JobResponse:
+    try:
+        job = manager.store.find_export_job_by_request_token("personalized_handout_export", request_token.lower())
+    except ValueError as exc:
+        raise ApiError(422, "personalized_handout_invalid", "请求编号无效。") from exc
+    if job is None or job.payload.get("draft_id") != draft_id:
+        raise ApiError(404, "personalized_handout_not_found", "未找到本次讲义导出任务。")
+    return _job_response(job)
 
 
 @router.post(

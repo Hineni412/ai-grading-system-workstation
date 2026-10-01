@@ -1,4 +1,5 @@
 import { apiClient } from './client'
+import { decodeJobResponse, type JobResponse } from './jobs'
 import { assertNoPathLikeKeys, isRecord } from './validation'
 
 export type TrainingStudentScopeMode = 'all' | 'student' | 'selected' | 'class'
@@ -33,6 +34,10 @@ export interface TrainingGroupingRequest {
   scope_keys: string[]
   member_ids?: string[]
   target_keys?: string[]
+  purpose?: 'training' | 'handout'
+  max_questions_per_skill?: number
+  max_written_questions?: number
+  recent_activity_count?: number
   question_count: number
   expected_minutes?: number
   difficulty_min?: number
@@ -84,6 +89,10 @@ export interface TrainingGrouping {
 export interface PersonalizedRecommendationCreateRequest
   extends TrainingDiagnosisRequest {
   request_token: string
+  purpose?: 'training' | 'handout'
+  max_questions_per_skill?: number
+  max_written_questions?: number
+  recent_activity_count?: number
   question_count: number
   expected_minutes?: number
   difficulty_min?: number
@@ -1402,6 +1411,16 @@ async function fileSha256(file: File): Promise<string> {
 }
 
 export const trainingApi = {
+  exportHandout(draftId: string, body: { expected_revision: number; request_token: string }): Promise<JobResponse> {
+    return apiClient.request(`/api/training/personalized-drafts/${draftId}/handout-exports`, {
+      method: 'POST', body, decode: decodeJobResponse,
+    })
+  },
+  getHandoutExportByRequest(draftId: string, token: string): Promise<JobResponse> {
+    return apiClient.request(`/api/training/personalized-drafts/${draftId}/handout-exports/by-request/${token}`, {
+      decode: decodeJobResponse,
+    })
+  },
   overview(
     body: TrainingOverviewRequest,
     signal?: AbortSignal,
@@ -1424,7 +1443,8 @@ export const trainingApi = {
       body,
       decode: decodeTrainingDiagnosis,
       signal,
-      timeoutMs: 30_000,
+      // Group analysis also evaluates the common question pool for the roster.
+      timeoutMs: body.grouping ? 120_000 : 30_000,
     })
   },
 

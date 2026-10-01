@@ -8,15 +8,31 @@ import { createAppRouter } from '../router'
 import { useSessionStore } from '../stores/session'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import StudentEvidenceView from '../views/StudentEvidenceView.vue'
+import { ApiError } from '../api/errors'
+import { useJobStore } from '../stores/jobs'
 
 const fetchStudentExamResultsMock = vi.hoisted(() => vi.fn())
 const fetchGraphEvidenceMock = vi.hoisted(() => vi.fn())
 const getQuestionMock = vi.hoisted(() => vi.fn())
+const previewWrongBookMock = vi.hoisted(() => vi.fn())
+const submitWrongBookMock = vi.hoisted(() => vi.fn())
+const findWrongBookMock = vi.hoisted(() => vi.fn())
+const downloadWrongBookMock = vi.hoisted(() => vi.fn())
+const getJobMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../api/students', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/students')>(),
   fetchStudentExamResults: fetchStudentExamResultsMock,
+  previewWrongQuestionBook: previewWrongBookMock,
+  submitWrongQuestionBooks: submitWrongBookMock,
+  findWrongQuestionBookRequest: findWrongBookMock,
 }))
+
+vi.mock('../api/exports', () => ({ exportsApi: { downloadJobFile: downloadWrongBookMock } }))
+vi.mock('../api/jobs', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../api/jobs')>()
+  return { ...original, jobApi: { ...original.jobApi, getJob: getJobMock } }
+})
 
 vi.mock('../api/graph', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/graph')>(),
@@ -202,11 +218,95 @@ beforeEach(() => {
   localStorage.clear()
   fetchStudentExamResultsMock.mockResolvedValue(responseFor([sessionItem(7)]))
   getQuestionMock.mockResolvedValue(questionDetail)
+  previewWrongBookMock.mockImplementation(async (_id, body) => ({
+    students: body.include_class ? [student, { ...student, id: 13, name: '全对学生' }] : [student],
+    sessions: [7, 8].map(id => ({ session_id: id, session_name: `匿名考试${id}`, exam_created_at: null })),
+    session_ids: body.session_ids ?? [7, 8],
+    semester_label: '八年级上学期', question_count: 3,
+    missing_items: [{ student_id: 12, student_name: student.name, session_id: 7, session_name: '匿名考试7', question_id: 'Q9' }],
+  }))
+  downloadWrongBookMock.mockResolvedValue({ blob: new Blob(['test Word']), filename: '测试错题本.zip' })
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:wrong-book') })
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
 })
 
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount()
   document.body.innerHTML = ''
+})
+
+function wrongBookJob(status: 'running' | 'succeeded' = 'succeeded') {
+  return {
+    id: 71, job_type: 'wrong_question_export', payload: {},
+    result: status === 'succeeded' ? {
+      question_count: 3, download_url: '/api/jobs/71/download', filename: '测试错题本.zip',
+      generated_students: [{ student_id: 12, student_name: student.name }],
+      empty_students: [{ student_id: 13, student_name: '全对学生', reason: '没有错题' }],
+      missing_items: [{ student_id: 12, student_name: student.name, session_id: 7, session_name: '匿名考试7', question_id: 'Q9' }],
+      failed_students: [],
+    } : {},
+    status, progress: status === 'running' ? 0.5 : 1, stage: 'wrong_question_export',
+    detail: '已处理 1/2 名学生', error: null, cancel_requested: false,
+    created_at: '2026-09-30T10:00:00Z', started_at: '2026-09-30T10:00:00Z',
+    updated_at: status === 'running' ? '2026-09-30T10:00:01Z' : '2026-09-30T10:00:02Z',
+    finished_at: status === 'succeeded' ? '2026-09-30T10:00:02Z' : null,
+  }
+}
+
+describe('student evidence wrong question book', () => {
+  it('selects the class and exams, shows progress and omitted students, and downloads', async () => {
+    submitWrongBookMock.mockResolvedValue(wrongBookJob('running'))
+    getJobMock.mockResolvedValue(wrongBookJob())
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('匿名学生甲'))
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.trim() === '导出错题本')!
+    button.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('可导出 3 道错题'))
+    expect([...host.querySelectorAll<HTMLInputElement>('.wrong-book-dialog input[type="checkbox"]')].every(item => item.checked)).toBe(true)
+    const select = host.querySelector<HTMLSelectElement>('#wrong-book-students')!
+    select.selectedIndex = 1
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await vi.waitFor(() => expect(host.textContent).toContain('预计 2 名学生'))
+    const checkbox = host.querySelector<HTMLInputElement>('.wrong-book-dialog input[type="checkbox"]')!
+    checkbox.click()
+    await vi.waitFor(() => expect(previewWrongBookMock).toHaveBeenLastCalledWith(12, {
+      curriculum_volume_id: 'bnu24-math-g8-upper', include_class: true, session_ids: [8],
+    }, expect.any(AbortSignal)))
+    await vi.waitFor(() => expect(host.querySelector<HTMLFieldSetElement>('fieldset')?.disabled).toBe(false))
+    ;[...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.trim() === '导出')!.click()
+    await vi.waitFor(() => expect(host.querySelector('progress')).not.toBeNull())
+    expect(submitWrongBookMock).toHaveBeenCalledWith({
+      curriculum_volume_id: 'bnu24-math-g8-upper', student_ids: [12, 13], session_ids: [8], client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
+    })
+    await useJobStore().refresh(71)
+    await vi.waitFor(() => expect(host.textContent).toContain('全对学生（没有错题）'))
+    expect(host.textContent).toContain('匿名考试7 · Q9')
+    const anchor = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    ;[...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.trim() === '下载全部错题本')!.click()
+    await vi.waitFor(() => expect(downloadWrongBookMock).toHaveBeenCalledWith(71))
+    await vi.waitFor(() => expect(host.textContent).toContain('本机临时导出文件已清除'))
+    anchor.mockRestore()
+  })
+
+  it('queries an ambiguous submission and restores its token when reopened without resubmitting', async () => {
+    submitWrongBookMock.mockRejectedValue(new ApiError({ kind: 'timeout', status: null, code: 'request_timeout', message: '超时', details: {}, requestId: 'test', retryable: false }))
+    findWrongBookMock.mockRejectedValue(new Error('not found yet'))
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('匿名学生甲'))
+    const open = () => [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.trim() === '导出错题本')!.click()
+    open()
+    await vi.waitFor(() => expect(host.textContent).toContain('可导出 3 道错题'))
+    ;[...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.trim() === '导出')!.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('不会自动重复导出'))
+    const token = submitWrongBookMock.mock.calls[0]![0].client_request_token
+    host.querySelector<HTMLButtonElement>('.wrong-book-dialog__heading button')!.click()
+    await settle()
+    findWrongBookMock.mockResolvedValue(wrongBookJob())
+    open()
+    await vi.waitFor(() => expect(host.textContent).toContain('已完成'))
+    expect(findWrongBookMock).toHaveBeenLastCalledWith(token)
+    expect(submitWrongBookMock).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('student evidence view knowledge mode', () => {

@@ -266,7 +266,7 @@ afterEach(() => {
 })
 
 describe('training recommendations view', () => {
-  it.each(['comprehensive', 'focused'] as const)('sends learned chapters for %s and keeps the chosen range on return', async (scopeMode) => {
+  it.each([['comprehensive', 'training'], ['focused', 'training'], ['focused', 'handout']] as const)('sends learned chapters for %s / %s and keeps the chosen rules on return', async (scopeMode, purpose) => {
     const pinia = createPinia()
     const volumeId = 'bnu24-math-g8-upper'
     const chapterKeys = ['kp_bnu24_math_g8_upper_1', 'kp_bnu24_math_g8_upper_2']
@@ -278,22 +278,40 @@ describe('training recommendations view', () => {
       chapters: chapterKeys.map((key, i) => ({ id: `${volumeId}-c0${i + 1}`, knowledge_id: key, order: i + 1,
         number: String(i + 1), title: i ? '实数' : '勾股定理', label: i ? '第二章 实数' : '第一章 勾股定理',
         kind: 'chapter', display_name: key, source_ref: { node_id: '', relative_url: '' }, exam_scope_values: [], sections: [] })) }]
-    savePaperSelectionSession({ scopeMode, targetKeys: [], rangeKeys: [chapterKeys[1]!], questionCount: 10,
-      difficultyMax: 8, teachingProgressChapterId: `${volumeId}-c02`, excludeCurrentOriginals: true, paperMode: 'individual' })
+    savePaperSelectionSession({ scopeMode, purpose, maxQuestionsPerSkill: purpose === 'handout' ? 20 : 1,
+      maxWrittenQuestions: purpose === 'handout' ? 20 : 2, recentActivityCount: purpose === 'handout' ? 20 : 3,
+      targetKeys: [], rangeKeys: [chapterKeys[1]!], questionCount: purpose === 'handout' ? 100 : 10,
+      difficultyMax: purpose === 'handout' ? 10 : 8, teachingProgressChapterId: `${volumeId}-c02`, excludeCurrentOriginals: true, paperMode: 'individual' })
     const view = await mountView('/training?mode=student', pinia)
     await vi.waitFor(() => expect(view.host.querySelector('[data-testid="go-paper"]')).not.toBeNull())
     expect((view.host.querySelector('[aria-label="训练范围模式"]') as HTMLSelectElement).value).toBe(scopeMode)
+    const countInput = view.host.querySelector<HTMLInputElement>('[aria-label="每卷题数"]')!
+    expect(countInput.max).toBe(purpose === 'handout' ? '' : '12')
+    expect(view.host.querySelector<HTMLInputElement>('[aria-label="近期原题排除次数"]')!.max).toBe('')
+    expect(view.host.textContent).toContain(purpose === 'handout'
+      ? '排除近期考试原题，可复用历史训练题'
+      : '排除近期考试与训练原题，包含刚完成的训练')
     view.host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
     await vi.waitFor(() => expect(view.router.currentRoute.value.query.mode).toBe('paper'))
+    expect(view.host.textContent).toContain(purpose === 'handout'
+      ? '排除最近 20 次已批改考试原题 · 可复用历史训练题'
+      : '排除最近 3 次已批改考试与训练原题')
     view.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')!.click()
     await vi.waitFor(() => expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledOnce())
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({
       scope_keys: scopeMode === 'comprehensive' ? chapterKeys : [chapterKeys[1]], target_keys: [],
-      teaching_progress_chapter_id: `${volumeId}-c02`,
+      teaching_progress_chapter_id: `${volumeId}-c02`, purpose,
+      question_count: purpose === 'handout' ? 100 : 10,
+      max_questions_per_skill: purpose === 'handout' ? 20 : 1,
+      max_written_questions: purpose === 'handout' ? 20 : 2,
+      recent_activity_count: purpose === 'handout' ? 20 : 3,
+      difficulty_max: purpose === 'handout' ? 10 : 8,
     }))
     await view.router.push('/training?mode=student')
     await settle()
     expect((view.host.querySelector('[aria-label="训练范围模式"]') as HTMLSelectElement).value).toBe(scopeMode)
+    expect(view.host.querySelector<HTMLInputElement>('[aria-label="每卷题数"]')!.value).toBe(purpose === 'handout' ? '100' : '10')
+    expect(view.host.querySelector<HTMLSelectElement>('[aria-label="出卷用途"]')!.value).toBe(purpose)
   })
 
   it('sends the student score floor in diagnosis and restores it after leaving and returning', async () => {
@@ -389,10 +407,10 @@ describe('training recommendations view', () => {
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({
       paper_mode: 'shared', scope: expect.objectContaining({ student_ids: ids }), group_source_version: 'b'.repeat(64),
     }))
-    await vi.waitFor(() => expect(host.textContent).toContain('04 · 草稿审核与匹配预览'))
+    await vi.waitFor(() => expect(host.querySelector('.step-progress [aria-current="step"]')?.textContent).toBe('审核题目'))
     useTrainingStore(pinia).diagnosis = JSON.parse(JSON.stringify(data))
     await settle()
-    expect(host.textContent).toContain('04 · 草稿审核与匹配预览')
+    expect(host.querySelector('.step-progress [aria-current="step"]')?.textContent).toBe('审核题目')
     expect(trainingApiMock.getPersonalizedDraft).not.toHaveBeenCalled()
   })
 
@@ -407,7 +425,7 @@ describe('training recommendations view', () => {
     first.host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
     await vi.waitFor(() => expect(first.router.currentRoute.value.query.mode).toBe('paper'))
     first.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')!.click()
-    await vi.waitFor(() => expect(first.host.textContent).toContain('04 · 草稿审核与匹配预览'))
+    await vi.waitFor(() => expect(first.host.querySelector('.step-progress [aria-current="step"]')?.textContent).toBe('审核题目'))
     const mountedIndex = mounted.indexOf(first.app)
     if (mountedIndex >= 0) mounted.splice(mountedIndex, 1)
     first.app.unmount()
@@ -416,13 +434,12 @@ describe('training recommendations view', () => {
     const second = await mountView('/training?mode=paper')
     await vi.waitFor(() => expect(second.host.textContent).toContain('三角形全等'))
     await vi.waitFor(() => expect(second.host.textContent).toContain('已恢复上次生成的草稿'))
-    await vi.waitFor(() => expect(second.host.textContent).toContain('04 · 草稿审核与匹配预览'))
+    await vi.waitFor(() => expect(second.host.querySelector('.step-progress [aria-current="step"]')?.textContent).toBe('审核题目'))
     expect(trainingApiMock.getPersonalizedDraft).toHaveBeenCalledWith(paperDraft.draft_id)
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledTimes(1)
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({ difficulty_max: 8 }))
     expect(second.host.querySelector('[aria-label="训练强度"]')).toBeNull()
-    expect(second.host.querySelector('.personalized-draft-toolbar')?.textContent)
-      .toContain('草稿已自动暂存')
+    expect(second.host.querySelector('.draft-workflow-heading')?.textContent).toContain('自动保存')
   })
 
 })

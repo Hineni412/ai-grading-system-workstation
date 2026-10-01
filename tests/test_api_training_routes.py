@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import pickle
 import re
+import sqlite3
+import subprocess
+import sys
 from types import SimpleNamespace
 import warnings
 from pathlib import Path
@@ -22,6 +27,146 @@ from question_bank.database.schema import connect, initialize_database
 from question_bank.services.source_question_link_service import (
     SourceQuestionLinkService,
 )
+
+
+def _clear_profile_memory():
+    from integration import diagnosis_profile_service as profiles
+    from integration.data_generation import reset_commit_generations
+    with profiles._TAG_PROFILE_CACHE_LOCK:
+        profiles._TAG_PROFILE_CACHE.clear()
+    profiles._LOCAL_SOURCE_REVISIONS.clear()
+    reset_commit_generations()
+
+
+def test_saved_profiles_survive_new_process_and_wal_checkpoint(training_services):
+    service = training_services
+    scope, exams = {"mode": "all"}, {"mode": "current", "session_ids": [14]}
+    with sqlite3.connect(service.grading_db_path) as writer:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("UPDATE students SET name='合成学生龘' WHERE id=12")
+        writer.commit()
+        service.persist_snapshots = True
+        expected = service.build_profiles(scope=scope, exam_scope=exams)
+        class_profile = service.build_profiles(scope={"mode":"class", "class_id":"八年级1班"}, exam_scope=exams)
+        assert len(class_profile['students']) == 2
+        assert service._local_profile_path().is_file()
+        digest = hashlib.sha256(pickle.dumps((expected, service.latest_aggregated_mastery))).hexdigest()
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    _clear_profile_memory()
+    # A new interpreter has neither memory results nor process-local commit
+    # counters. Fail if it attempts any full diagnosis/model recalculation.
+    script = """
+import hashlib,json,pickle,sys
+from integration.diagnosis_profile_service import DiagnosisProfileService
+s=DiagnosisProfileService(sys.argv[1],sys.argv[2])
+def fail(**kwargs): raise AssertionError('recomputed saved diagnosis')
+s._compute_tag_profiles=fail
+d=s.build_profiles(scope={'mode':'all'},exam_scope={'mode':'current','session_ids':[14]})
+c=s.build_profiles(scope={'mode':'class','class_ids':['八年级1班']},exam_scope={'mode':'current','session_ids':[14]})
+assert len(c['students'])==2
+print(json.dumps({'digest':hashlib.sha256(pickle.dumps((d,s.latest_aggregated_mastery))).hexdigest(),'students':len(d['students'])}))
+"""
+    result = subprocess.run([sys.executable, "-c", script, str(service.grading_db_path),
+                             str(service.question_bank_db_path)], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"digest": digest, "students": 2}
+
+
+@pytest.mark.parametrize("change", ["teacher_score", "training_record", "knowledge", "parameters", "cause", "corrupt"])
+def test_local_profiles_refresh_changed_inputs_and_corrupt_cache(training_services, monkeypatch, change):
+    from integration import diagnosis_profile_service as profiles
+    service = training_services
+    scope, exams = {"mode": "all"}, {"mode": "current", "session_ids": [14]}
+    service.persist_snapshots = True
+    before = service.build_profiles(scope=scope, exam_scope=exams)
+    assert service._local_profile_path().is_file()
+    _clear_profile_memory()
+    if change == "teacher_score":
+        with sqlite3.connect(service.grading_db_path) as writer:
+            writer.execute("UPDATE session_details SET score_awarded=10 WHERE result_id=14001 AND question_id='Q1'")
+            writer.execute("UPDATE session_results SET student_score=15 WHERE id=14001")
+    elif change == "training_record":
+        with sqlite3.connect(service.question_bank_db_path) as writer:
+            # A committed training-side change must not reuse an earlier result,
+            # including when checkpointing folds it into the main file.
+            writer.execute("INSERT INTO training_tasks(task_code,status) VALUES('TEST-local-profile-refresh','completed')")
+    elif change == "knowledge":
+        with sqlite3.connect(service.question_bank_db_path) as writer:
+            writer.execute("UPDATE question_tags SET tag_value='合成更新主题' WHERE question_id=101 AND tag_type='knowledge_point'")
+    elif change == "parameters":
+        old = profiles._profile_semantics()
+        monkeypatch.setattr(profiles, "_profile_semantics", lambda: (*old, "TEST-new-parameters"))
+    elif change == "cause":
+        cause = service.data_root / "reports/.class_analysis/TEST-cause.json"
+        cause.parent.mkdir(parents=True, exist_ok=True)
+        cause.write_text('{}', encoding='utf-8')
+    else:
+        service._local_profile_path().write_bytes(b"TEST-truncated-snapshot")
+    fresh = DiagnosisProfileService(service.grading_db_path, service.question_bank_db_path)
+    compute = fresh._compute_tag_profiles
+    calls = []
+    def tracked(**kwargs):
+        calls.append(True)
+        return compute(**kwargs)
+    monkeypatch.setattr(fresh, "_compute_tag_profiles", tracked)
+    after = fresh.build_profiles(scope=scope, exam_scope=exams)
+    assert calls == [True]
+    if change == "teacher_score":
+        assert next(s for s in after['students'] if s['student_id'] == '12')['score_rate'] == pytest.approx(.75)
+        assert after != before
+    if change == "knowledge":
+        assert after != before
+
+
+def test_idle_prewarm_saves_local_profiles_without_blocking_grading(training_services, monkeypatch):
+    from integration.training_prewarm import TrainingPrewarmWorker
+    service = training_services
+    paths = SimpleNamespace(db_path=service.grading_db_path, qb_db_path=service.question_bank_db_path,
+                            data_root=service.data_root)
+    jobs = SimpleNamespace(active=True)
+    jobs.list = lambda **kwargs: ([{'status': 'running'}] if jobs.active else [], 0)
+    worker = TrainingPrewarmWorker(paths, jobs)
+    operation = lambda: worker._compute("diagnosis", {"mode":"all"}, {"mode":"current","session_ids":[14]}, {})
+    monkeypatch.setattr(worker, "_refresh_plan", lambda: [operation])
+    assert not worker.tick()
+    assert not service._local_profile_path().exists()
+    jobs.active = False
+    assert worker.tick()
+    assert worker.batches[-1][0] == 1
+    assert service._local_profile_path().exists()
+    _clear_profile_memory()
+    monkeypatch.setattr(DiagnosisProfileService, "_compute_tag_profiles",
+        lambda *args, **kwargs: pytest.fail("prewarm recomputed saved profile"))
+    worker._startup_done = False
+    assert worker.tick()
+    assert worker.batches[-1][0] == 1
+
+
+def test_local_snapshot_save_failure_preserves_profile_result(training_services, monkeypatch):
+    from integration import diagnosis_profile_service as profiles
+    service = training_services
+    service.persist_snapshots = True
+    monkeypatch.setattr(profiles.os, "replace", lambda *args: (_ for _ in ()).throw(PermissionError("TEST disk unavailable")))
+    result = service.build_profiles(scope={"mode":"all"}, exam_scope={"mode":"current","session_ids":[14]})
+    assert len(result['students']) == 2
+    assert not service._local_profile_path().exists()
+    assert not list(service._local_profile_path().parent.iterdir())
+
+
+def test_source_changed_during_preparation_does_not_publish_stale_snapshot(training_services, monkeypatch):
+    service = training_services
+    service.persist_snapshots = True
+    original = service._compute_tag_profiles
+    def changed_after_read(**kwargs):
+        result = original(**kwargs)
+        with sqlite3.connect(service.grading_db_path) as writer:
+            writer.execute("UPDATE students SET name='TEST-after-read' WHERE id=12")
+        return result
+    monkeypatch.setattr(service, "_compute_tag_profiles", changed_after_read)
+    result = service.build_profiles(scope={"mode":"all"}, exam_scope={"mode":"current","session_ids":[14]})
+    assert next(s for s in result['students'] if s['student_id']=='12')['student_name'] != 'TEST-after-read'
+    assert not service._local_profile_path().exists()
 
 
 @pytest.fixture

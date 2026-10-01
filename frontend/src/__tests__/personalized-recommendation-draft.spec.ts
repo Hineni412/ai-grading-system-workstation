@@ -7,6 +7,8 @@ import { ApiError } from '../api/errors';
 
 const trainingApiMock = vi.hoisted(() => ({
   createPersonalizedDraft: vi.fn(),
+  exportHandout: vi.fn(),
+  getHandoutExportByRequest: vi.fn(),
   getPersonalizedDraft: vi.fn(),
   getPersonalizedDraftByRequest: vi.fn(),
   editPersonalizedDraft: vi.fn(),
@@ -16,6 +18,11 @@ const trainingApiMock = vi.hoisted(() => ({
   createPaperBatch: vi.fn(),
   freezePaperInstance: vi.fn(),
   downloadPaperArtifact: vi.fn(),
+}))
+
+const jobApiMock = vi.hoisted(() => ({ getJob: vi.fn() }))
+vi.mock('../api/jobs', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../api/jobs')>(), jobApi: jobApiMock,
 }))
 
 const questionBankApiMock = vi.hoisted(() => ({
@@ -220,6 +227,46 @@ afterEach(() => {
 })
 
 describe('personalized recommendation draft', () => {
+  it.each(['success', 'uncertain response'])('exports a 100 question handout and restores the saved export after %s without creating a training paper', async (response) => {
+    const handout = { ...draft, config: { purpose: 'handout', question_count: 100 } }
+    const job = { id: 81, status: 'succeeded', progress: 1, result: { download_url: '/api/jobs/81/download' } }
+    trainingApiMock.createPersonalizedDraft.mockResolvedValue(handout)
+    trainingApiMock.getPersonalizedDraft.mockResolvedValue(handout)
+    trainingApiMock.exportHandout.mockResolvedValue(job)
+    if (response === 'uncertain response') trainingApiMock.exportHandout.mockRejectedValueOnce(new ApiError({
+      kind: 'contract', status: 202, code: 'invalid_response', message: '合成异常响应',
+      details: {}, requestId: 'synthetic', retryable: false,
+    }))
+    trainingApiMock.getHandoutExportByRequest.mockResolvedValue(job)
+    const props = { diagnosis, scope: diagnosis.scope, examScope: { mode: 'current' as const, session_ids: [7] },
+      questionCount: 100, purpose: 'handout', maxQuestionsPerSkill: 20, maxWrittenQuestions: 20,
+      recentActivityCount: 0, difficultyMax: 10, excludeCurrentExamOriginals: true,
+      targetKeys: ['kp_alg_linear_equation'] }
+    const host = document.createElement('div'); document.body.append(host)
+    const app = createApp(PersonalizedRecommendationDraftView, props)
+    const view = app.mount(host) as unknown as { generate: () => Promise<void> }
+    mounted.push(app)
+    await settle(); await view.generate(); await settle()
+    expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({
+      purpose: 'handout', question_count: 100, max_questions_per_skill: 20,
+      max_written_questions: 20, recent_activity_count: 0, difficulty_max: 10,
+    }))
+    expect(host.textContent).toContain('讲义只打印，不回收、不更新掌握度')
+    expect(host.textContent).not.toContain('生成全部 PDF')
+    expect(host.querySelector('.personalized-paper-panel')).toBeNull()
+    host.querySelector<HTMLButtonElement>('[data-testid="export-handout"]')!.click()
+    await vi.waitFor(() => expect(trainingApiMock.exportHandout).toHaveBeenCalledOnce())
+    await settle()
+    expect(trainingApiMock.exportHandout).toHaveBeenCalledExactlyOnceWith(draft.draft_id, expect.objectContaining({ expected_revision: 1 }))
+    expect(trainingApiMock.createPaperBatch).not.toHaveBeenCalled()
+    const token = trainingApiMock.exportHandout.mock.calls[0]![1].request_token
+    mounted.splice(mounted.indexOf(app), 1); app.unmount()
+    const returning = createApp(PersonalizedRecommendationDraftView, props)
+    mounted.push(returning); returning.mount(host)
+    await vi.waitFor(() => expect(trainingApiMock.getHandoutExportByRequest).toHaveBeenCalledWith(draft.draft_id, token))
+    expect(trainingApiMock.exportHandout).toHaveBeenCalledExactlyOnceWith(draft.draft_id, expect.objectContaining({ expected_revision: 1 }))
+  })
+
   it('lets the teacher select a target, generate, explain and lock an item', async () => {
     const host = document.createElement('div')
     document.body.append(host)
@@ -299,9 +346,11 @@ describe('personalized recommendation draft', () => {
     )
     expect(host.textContent).toContain('已生成 1 份实名 PDF 试卷')
     expect(host.textContent).toContain('V1')
-    expect(host.textContent).toContain('2 页冻结 PDF')
+    expect(host.textContent).toContain('2 页')
+    expect(host.textContent).toContain('可打印')
     expect(host.textContent).toContain('下载 PDF 试卷')
-    expect(host.textContent).toContain('不会自动打印')
+    expect(host.querySelector('.step-progress [aria-current="step"]')?.textContent).toBe('打印试卷')
+    expect(host.querySelector<HTMLDivElement>('.draft-review')?.style.display).toBe('none')
   })
 
   const externalProps = {
@@ -317,18 +366,21 @@ describe('personalized recommendation draft', () => {
   it('remembers an uncertain request on a return visit and only checks its saved result', async () => {
     trainingApiMock.createPersonalizedDraft.mockRejectedValueOnce(new ApiError({ kind: 'timeout', status: null,
       code: 'request_timeout', message: 'timeout', details: {}, requestId: 'synthetic', retryable: false }))
-    trainingApiMock.getPersonalizedDraftByRequest.mockRejectedValueOnce(new Error('not saved yet')).mockResolvedValueOnce(draft)
+    const recoveredDraft = { ...draft, config: { paper_mode: 'individual', question_count: 8 } }
+    trainingApiMock.getPersonalizedDraftByRequest.mockRejectedValueOnce(new Error('not saved yet')).mockResolvedValueOnce(recoveredDraft)
     const host = document.createElement('div'); document.body.append(host)
     const first = createApp(PersonalizedRecommendationDraftView, externalProps)
     const view = first.mount(host) as unknown as { generate: () => Promise<void> }
     await settle(); await view.generate(); await settle()
     expect(host.textContent).toContain('后台可能仍在处理')
     first.unmount()
-    const second = createApp(PersonalizedRecommendationDraftView, externalProps)
+    const contextChange = vi.fn()
+    const second = createApp(PersonalizedRecommendationDraftView, { ...externalProps, onContextChange: contextChange })
     mounted.push(second); second.mount(host)
     await vi.waitFor(() => expect(host.textContent).toContain('已取回上次请求生成的草稿'))
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledOnce()
     expect(trainingApiMock.getPersonalizedDraftByRequest).toHaveBeenCalledTimes(2)
+    expect(contextChange).toHaveBeenCalledWith(expect.objectContaining({ mode: 'individual', studentCount: 1, questionCount: 8 }))
   })
 
   it('ignores the saved draft when paper settings changed', async () => {

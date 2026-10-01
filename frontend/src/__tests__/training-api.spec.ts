@@ -78,7 +78,34 @@ function stubAssessmentResponse(value: unknown): void {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
+})
+
+describe('training group diagnosis api', () => {
+  it('accepts a group result after the former 30 second cutoff', async () => {
+    vi.useFakeTimers()
+    const diagnosis = {
+      diagnosis_identity: 'question_tag', scope: { mode: 'all', student_ids: [] },
+      exam_scope: { mode: 'semester', session_ids: [], sessions: [] }, students: [],
+      coverage: { covered_items: 0, total_items: 0, missing_items: {} },
+      confirmed_concept_ids: [], suggested_terms: [], unmapped_terms: [], warnings: [],
+      grouping: { groups: [], selection: null, unassigned: [], warnings: [] },
+    }
+    vi.stubGlobal('fetch', vi.fn((_url, options: RequestInit) => new Promise<Response>((resolve, reject) => {
+      options.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+      setTimeout(() => resolve(new Response(JSON.stringify(diagnosis), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      })), 40_000)
+    })))
+    const outcome = trainingApi.diagnose({ scope: { mode: 'all', student_ids: [] },
+      exam_scope: { mode: 'semester', session_ids: [] }, grouping: { scope_keys: ['chapter'],
+        question_count: 10, difficulty_max: 8, exclude_current_exam_originals: true, curriculum_volume_id: '' } })
+    await Promise.all([
+      expect(outcome).resolves.toMatchObject({ grouping: diagnosis.grouping }),
+      vi.advanceTimersByTimeAsync(40_000),
+    ])
+  })
 })
 
 describe('training assessment api', () => {

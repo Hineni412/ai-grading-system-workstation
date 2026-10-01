@@ -17,6 +17,10 @@ const emit = defineEmits<{ goPaper: [] }>()
 
 const questionCount = defineModel<number>('questionCount', { required: true })
 const difficultyMax = defineModel<number>('difficultyMax', { required: true })
+const purpose = defineModel<'training' | 'handout'>('purpose', { default: 'training' })
+const maxQuestionsPerSkill = defineModel<number>('maxQuestionsPerSkill', { default: 1 })
+const maxWrittenQuestions = defineModel<number>('maxWrittenQuestions', { default: 2 })
+const recentActivityCount = defineModel<number>('recentActivityCount', { default: 3 })
 const teachingProgressChapterId = defineModel<string>('teachingProgressChapterId', { default: '' })
 const scopeMode = defineModel<'comprehensive' | 'focused'>('scopeMode', { default: 'comprehensive' })
 
@@ -29,71 +33,46 @@ const modeNote = computed(() => (props.mode === 'shared'
 <template>
   <section class="paper-settings-panel" aria-labelledby="paper-settings-panel-title">
     <header>
-      <div>
-        <p class="training-eyebrow">出卷设置 · {{ modeLabel }}</p>
-        <h3 id="paper-settings-panel-title">在本页完成 {{ modeLabel }} 的出卷设置</h3>
-      </div>
-      <span>{{ studentCount }} 名学生 · {{ selectionText }}</span>
-    </header>
-
-    <div class="paper-settings__fit">
-      <label v-if="mode === 'individual'">训练范围<select v-model="scopeMode" aria-label="训练范围模式">
-        <option value="comprehensive">综合训练 · 覆盖已学章节</option>
-        <option value="focused">专项训练 · 仅勾选的章或节</option>
-      </select></label>
-      <label>已学到<select v-model="teachingProgressChapterId" aria-label="已学到的章节">
-        <option value="">{{ mode === 'individual' && scopeMode === 'comprehensive' ? '按已有作答及勾选范围的最晚章节' : '按所选训练目标的最晚章节' }}</option>
-        <option v-for="chapter in progressChapters ?? []" :key="chapter.id" :value="chapter.id">{{ chapter.label }}</option>
-      </select></label>
-    </div>
-    <p class="paper-settings-panel__hint">{{ scopeSummary ?? (mode === 'shared' ? '专项训练 · 按所选章节与共同目标选题' : '') }}</p>
-    <p class="paper-settings-panel__hint">依据同技能多次作答（包含正确与失分）判断适合难度。允许范围内新练习；整题所有小问均检查已学范围，同技能最多1道，相似题受限，解答题最多2道。</p>
-    <div class="paper-settings__grid">
-      <label>每卷题数<input v-model.number="questionCount" type="number" min="8" max="12"><small>8–12 题</small></label>
-      <label>难度上限<input v-model.number="difficultyMax" type="number" min="1" max="8"><small>最高 8 级</small></label>
-    </div>
-    <div class="paper-settings-panel__footer">
-      <label class="paper-settings-panel__exclude">
-        训练与考试合并，排除最近3次已有批改结果的原题
-      </label>
-      <span class="paper-settings-panel__note">{{ modeNote }}</span>
-      <AppButton
-        variant="primary"
-        data-testid="go-paper"
-        :disabled="!valid || generating"
-        @click="emit('goPaper')"
-      >
-        {{ generating ? '正在生成…' : '设置完成，去生成试卷' }}
+      <div><h3 id="paper-settings-panel-title">出卷设置</h3><span>{{ modeLabel }} · {{ studentCount }} 人 · {{ selectionText }}</span></div>
+      <AppButton variant="primary" data-testid="go-paper" :disabled="!valid || generating" @click="emit('goPaper')">
+        {{ generating ? '正在生成…' : purpose === 'handout' ? '审核讲义草稿' : '审核试卷草稿' }}
       </AppButton>
+    </header>
+    <div class="paper-settings__grid">
+      <label v-if="mode === 'individual'">训练范围<select v-model="scopeMode" class="app-input" aria-label="训练范围模式"><option value="comprehensive">综合训练 · 已学章节</option><option value="focused">专项训练 · 勾选范围</option></select></label>
+      <label>已学到<select v-model="teachingProgressChapterId" class="app-input" aria-label="已学到的章节"><option value="">{{ mode === 'individual' && scopeMode === 'comprehensive' ? '按已有作答及勾选范围' : '按所选目标的最晚章节' }}</option><option v-for="chapter in progressChapters ?? []" :key="chapter.id" :value="chapter.id">{{ chapter.label }}</option></select></label>
+      <label>用途<select v-model="purpose" class="app-input" aria-label="出卷用途"><option value="training">训练卷 · 回收批改</option><option value="handout">讲义 · 只打印</option></select></label>
+      <label>每卷题数 <small>{{ purpose === 'training' ? '8–12 题' : '至少 1 题' }}</small><input v-model.number="questionCount" class="app-input" aria-label="每卷题数" type="number" :min="purpose === 'training' ? 8 : 1" :max="purpose === 'training' ? 12 : undefined" step="1"></label>
+      <label>难度上限 <small>1–10 级</small><input v-model.number="difficultyMax" class="app-input" aria-label="难度上限" type="number" min="1" max="10" step="1"></label>
     </div>
-    <p v-if="!valid" class="paper-settings-panel__hint">
-      请先在本页完成学生与{{ mode === 'shared' ? '细知识点勾选' : '已学进度或专项范围设置' }}，并确认题量与难度上限。
-    </p>
+    <details class="paper-settings__more">
+      <summary>选题细则 <span>同技能 ≤ {{ maxQuestionsPerSkill }} 道 · 解答题 ≤ {{ maxWrittenQuestions }} 道 · 排除最近 {{ recentActivityCount }} 次原题</span></summary>
+      <div class="paper-settings__grid">
+        <label>同一技能最多<input v-model.number="maxQuestionsPerSkill" class="app-input" aria-label="同一技能最多" type="number" min="1" :max="questionCount" step="1"></label>
+        <label>解答题最多<input v-model.number="maxWrittenQuestions" class="app-input" aria-label="解答题最多" type="number" min="0" :max="questionCount" step="1"></label>
+        <label>近期原题排除次数<input v-model.number="recentActivityCount" class="app-input" aria-label="近期原题排除次数" type="number" min="0" step="1"><small>0 = 不排除</small></label>
+      </div>
+      <p>{{ modeNote }} {{ recentActivityCount === 0 ? '不排除近期原题。' : purpose === 'handout' ? '排除近期考试原题，可复用历史训练题。' : '排除近期考试与训练原题，包含刚完成的训练。' }}</p>
+    </details>
+    <p v-if="scopeSummary" class="paper-settings-panel__hint">{{ scopeSummary }}</p>
+    <p v-if="purpose === 'handout'" class="paper-settings-panel__hint">讲义不回收、不更新掌握度；题量较大时可放宽同技能上限。</p>
+    <p v-if="!valid" class="paper-settings-panel__hint" role="status">请确认学生、{{ mode === 'shared' ? '训练目标' : '已学进度或专项范围' }}与出卷设置。</p>
   </section>
 </template>
 
 <style scoped>
-.paper-settings-panel { margin: 0 var(--space-6) var(--space-6); padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
-.paper-settings-panel > header { display: flex; justify-content: space-between; align-items: end; gap: var(--space-4); }
-.paper-settings-panel > header > span { color: var(--color-text-muted); font-size: var(--font-size-caption); }
-.paper-settings-panel h3 { margin: var(--space-1) 0 0; }
-.paper-settings__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); margin-top: var(--space-3); }
-.paper-settings__grid label { display: grid; grid-template-columns: 1fr auto; gap: var(--space-1); color: var(--color-text-muted); font-size: var(--font-size-dense); }
-.paper-settings__grid input { grid-column: 1 / -1; width: 100%; }
-.paper-settings__fit { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); margin-top: var(--space-3); }
-.paper-settings__fit label { display: grid; gap: var(--space-1); color: var(--color-text-muted); font-size: var(--font-size-dense); }
-.paper-settings__fit select { width: 100%; min-width: 0; }
-.paper-settings__grid small { color: var(--color-text-muted); }
-.paper-settings-panel__footer { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-top: var(--space-3); }
-.paper-settings-panel__exclude { display: flex; gap: var(--space-2); align-items: center; }
-.paper-settings-panel__note { flex: 1 1 16rem; color: var(--color-text-muted); font-size: var(--font-size-dense); }
-.paper-settings-panel__footer button { margin-left: auto; }
-.paper-settings-panel__hint { margin: var(--space-2) 0 0; color: var(--color-text-muted); font-size: var(--font-size-dense); }
-.field-error { color: var(--destructive); }
-@media (max-width: 600px) {
-  .paper-settings-panel { margin: 0 var(--space-3) var(--space-3); }
-  .paper-settings-panel > header { align-items: start; flex-direction: column; }
-  .paper-settings__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .paper-settings__fit { grid-template-columns: minmax(0, 1fr); }
-}
+.paper-settings-panel{margin:var(--space-4) var(--space-5);padding:var(--space-4) var(--space-5);border:1px solid var(--color-border-default);border-radius:var(--radius-panel);background:var(--color-bg-surface);box-shadow:var(--shadow-raised)}
+.paper-settings-panel>header{display:flex;justify-content:space-between;align-items:center;gap:var(--space-4);margin-bottom:var(--space-4)}
+.paper-settings-panel h3{margin:0 0 var(--space-1);font-size:var(--font-size-h3)}
+.paper-settings-panel header span,.paper-settings-panel__hint,.paper-settings__more p{color:var(--color-text-secondary);font-size:var(--font-size-dense)}
+.paper-settings__grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--space-3)}
+.paper-settings__grid label{display:flex;flex-wrap:wrap;gap:var(--space-1);align-content:start;color:var(--color-text-secondary);font-size:var(--font-size-dense);min-width:0}
+.paper-settings__grid input,.paper-settings__grid select{width:100%;min-width:0;flex-basis:100%}
+.paper-settings__grid small{margin-left:auto;color:var(--color-text-muted);font-size:var(--font-size-caption)}
+.paper-settings__more{margin-top:var(--space-4);border-top:1px solid var(--color-border-subtle);padding-top:var(--space-3)}
+.paper-settings__more summary{cursor:pointer;font-size:var(--font-size-dense)}
+.paper-settings__more summary span{color:var(--color-text-muted);margin-left:var(--space-3)}
+.paper-settings__more .paper-settings__grid{margin-top:var(--space-3);max-width:680px}
+.paper-settings-panel__hint{margin:var(--space-3) 0 0}
+@media(max-width:760px){.paper-settings-panel{margin:var(--space-3);padding:var(--space-4)}.paper-settings-panel>header{flex-wrap:wrap}.paper-settings__grid{grid-template-columns:repeat(2,minmax(0,1fr))}.paper-settings__more summary span{display:block;margin:var(--space-1) 0 0}}
 </style>

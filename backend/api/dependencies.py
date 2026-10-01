@@ -3,7 +3,10 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from question_bank.authoring import AuthoringService
 
 from fastapi import Depends, Request
 

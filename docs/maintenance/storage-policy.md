@@ -9,6 +9,7 @@
 | 核心数据库 | `user_data/databases/` | 考试、批改、题库等正式状态 | 始终保留，不参与自动归档或去重 |
 | 原始业务文件 | `user_data/exams/`、`user_data/templates/`、`user_data/question_bank/` | 试卷、样卷、模板、题库原件及衍生素材 | 原件默认保留；只有明确可再生成的副本才进入维护候选 |
 | 批注与导出 | `user_data/annotated/`、`user_data/reports/` | 批注图片、成绩表、报告和报告页面 | 保留门槛见下；可再生成的页面目录可进入归档候选 |
+| 本地学情快照 | `user_data/reports/.training_diagnosis/profiles.cache` | 已有考试与训练记录计算出的逐生诊断及群体汇总，供重启后首次读取 | 应用后台保存，单文件最多 12 个当前来源版本的范围；版本不符或文件不可用时重算，不删除原始记录 |
 | 临时与工具输出 | `user_data/temp/`、`user_data/outputs/` | 临时文件、基准和比较结果 | 达到保留门槛后只列为候选，不自动删除 |
 | 备份与归档 | `user_data/backups/`、`user_data/archives/` | 数据库快照、完整备份和维护工具生成的压缩包 | 按下述数量和时间门槛保留 |
 | 配置与密钥 | `user_data/config/`、`%LOCALAPPDATA%\AIGradingSystem\config\` | 上传配置、本机设置和模型 profile；`运行.bat` 默认把 API profile 放在前一个目录 | 视为敏感配置，不进入项目仓库或业务导出 |
@@ -20,7 +21,7 @@
 
 - 核心数据库、样卷/模板/题库原件默认一直保留。
 - 答卷扫描增强成功后只保留工作图，不再另存未处理原图。
-- 成绩表、批注原卷 PDF 以及教师额外导出的训练 zip/docx/md 下载成功后删除本机副本，需要时再生成；批注图片仍按现有目录保留。
+- 成绩表、批注原卷 PDF、教师额外导出的训练 zip/docx/md、讲义和错题本 Word/ZIP 下载成功后删除本机副本，需要时再生成；讲义临时文件位于报告目录的 `training_handouts/`，错题本位于 `wrong_question_books/`，批注图片仍按现有目录保留。
 - 个性化训练每人保留一份冻结 PDF，供打印和回收扫描，不因下载删除。
 - 报告中的 `*_批注原卷页面_*` 目录超过 7 天后可列为归档候选。
 - `user_data/outputs/` 中 `benchmark_*` 目录超过 7 天、名称含 `comparison` 的目录超过 14 天后可列为归档候选。

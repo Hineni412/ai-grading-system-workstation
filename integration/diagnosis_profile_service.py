@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from question_bank.mastery.model import week_of
+import os
 import pickle
 import sqlite3
+import tempfile
 import threading
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -15,6 +20,7 @@ from backend.repositories.access import GradingRepositoryAccess, as_grading_repo
 from backend.repositories.grading_database import open_grading_repositories
 from integration.data_generation import commit_generation
 from integration.evidence_scope import EvidenceScopeResolver
+from integration.result_cache import ResultCache
 from integration.question_tag_projection_service import (
     QuestionTagProjection,
     QuestionTagProjectionService,
@@ -38,6 +44,8 @@ GENERIC_ERROR_REASONS = {
 
 _TAG_PROFILE_CACHE_LOCK = threading.RLock()
 _TAG_PROFILE_CACHE_LIMIT = 12
+_LOCAL_PROFILE_LOCK = threading.Lock()
+_LOCAL_SOURCE_REVISIONS = ResultCache(2)
 # Cached payloads are stored as pickle bytes: rebuilding a hit with
 # pickle.loads is far cheaper than deepcopy on large profiles, and bytes are
 # inherently isolated from caller mutation in both directions.
@@ -99,9 +107,74 @@ def _normalized_profile_scope(
     scope: Mapping[str, Any],
     exam_scope: Mapping[str, Any],
 ) -> Mapping[str, Any]:
+    normalized = dict(scope)
+    classes = _text_list(scope.get("class_ids"))
+    legacy_class = str(scope.get("class_id") or scope.get("class_name") or "").strip()
+    if not classes and legacy_class:
+        classes = [legacy_class]
+    if classes:
+        normalized["class_ids"] = classes
+        normalized.pop("class_id", None)
+        normalized.pop("class_name", None)
     if exam_scope.get("mode") == "semester":
-        return {**scope, "use_historical_fallback": False}
-    return scope
+        normalized["use_historical_fallback"] = False
+    return normalized
+
+
+def _profile_semantics() -> tuple:
+    """Versions of the calculation, separate from database commits."""
+    from question_bank.mastery.current import CURRENT_MASTERY_PARAMETERS
+
+    root = Path(__file__).resolve().parent.parent
+    files = (
+        Path(__file__), root / "integration/evidence_scope.py",
+        root / "integration/question_tag_projection_service.py",
+        root / "question_bank/mastery/current.py", root / "question_bank/mastery/model.py",
+        root / "question_bank/current_knowledge.py",
+    )
+    return (
+        datetime.now(timezone(timedelta(hours=8))).date().isoformat(),
+        CURRENT_MASTERY_PARAMETERS.version,
+        tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in files),
+    )
+
+
+def _database_content_revision(path: Path, connection: sqlite3.Connection | None = None) -> str:
+    """A read-only content version survives WAL checkpoints and app restarts.
+
+    SQLite serializes the transaction's logical pages, including WAL frames.
+    Ignore journal mode and bookkeeping fields in the first 100 bytes; retain
+    all schema/data pages. See https://www.sqlite.org/fileformat.html#the_database_header.
+    This is only a cache key, not a business-data validation requirement.
+    """
+    if connection is None:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as owned:
+            owned.execute("PRAGMA query_only = ON")
+            return _database_content_revision(path, owned)
+    content = memoryview(connection.serialize())
+    digest = hashlib.sha256()
+    for start, end in ((0, 18), (20, 24), (28, 92), (100, len(content))):
+        digest.update(content[start:end])
+    return digest.hexdigest()
+
+
+def _database_file_state(path: Path) -> tuple:
+    """Cheap memo key; a changed state rechecks logical content, not profiles."""
+    stat = path.stat()
+    wal = Path(f"{path}-wal")
+    try:
+        wal_stat = wal.stat()
+        wal_state = (wal_stat.st_size, wal_stat.st_mtime_ns) if wal_stat.st_size else None
+    except FileNotFoundError:
+        wal_state = None
+    try:
+        with Path(f"{path}-shm").open("rb") as index:
+            header = index.read(96)
+        index_state = (header[8:12], header[32:40], header[:48] == header[48:96])
+    except FileNotFoundError:
+        index_state = None
+    return (str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns,
+            wal_state, index_state)
 
 
 class DiagnosisSnapshot(TypedDict, total=False):
@@ -131,6 +204,7 @@ class DiagnosisProfileService:
         question_bank_connection: sqlite3.Connection | None = None,
         cache_identity: tuple[str, ...] | None = None,
         data_root: Path | None = None,
+        persist_snapshots: bool = False,
     ) -> None:
         self.grading_db_path = Path(grading_db_path)
         self.db = (
@@ -142,6 +216,7 @@ class DiagnosisProfileService:
         self.question_bank_connection = question_bank_connection
         self.data_root = Path(data_root) if data_root is not None else self.question_bank_db_path.parent.parent
         self.cache_identity = cache_identity
+        self.persist_snapshots = persist_snapshots
         self.latest_aggregated_mastery: dict[str, Any] = {}
 
     def build_profiles(
@@ -164,10 +239,10 @@ class DiagnosisProfileService:
         source_identity = self.cache_identity or (
             *_path_generation(self.grading_db_path),
             *_path_generation(self.question_bank_db_path),
-            # 错因整理物化在各场次 .class_analysis 状态文件里；其变化要让
-            # 诊断缓存失效，否则 error_categories/causes 看不到新结果。
-            *_dir_generation(self.data_root / "reports" / ".class_analysis"),
         )
+        source_identity = (*source_identity,
+            *_dir_generation(self.data_root / "reports" / ".class_analysis"),
+            json.dumps(_profile_semantics(), default=str))
         return (
             "\u0000".join(source_identity),
             "tag-profile-part-v10-mastery-v3",
@@ -272,6 +347,8 @@ class DiagnosisProfileService:
         cache_key = self.tag_profile_cache_key(scope=scope, exam_scope=exam_scope)
         cached = _claim_or_wait_tag_profile(cache_key)
         if cached is not None:
+            if self.persist_snapshots:
+                self._save_local_profile(cache_key, cached)
             self.latest_aggregated_mastery = pickle.loads(cached[1])
             result = pickle.loads(cached[0])
             if getattr(self, "persist_snapshots", False):
@@ -279,10 +356,14 @@ class DiagnosisProfileService:
             return result
         error: BaseException | None = None
         try:
-            result, aggregated = self._compute_tag_profiles(
-                scope=_normalized_profile_scope(scope, exam_scope),
-                exam_scope=exam_scope,
-            )
+            local = self._read_local_profile(cache_key)
+            if local is None:
+                result, aggregated = self._compute_tag_profiles(
+                    scope=_normalized_profile_scope(scope, exam_scope),
+                    exam_scope=exam_scope,
+                )
+            else:
+                result, aggregated = pickle.loads(local[0]), pickle.loads(local[1])
         except BaseException as exc:
             error = exc
             raise
@@ -295,10 +376,90 @@ class DiagnosisProfileService:
                 _TAG_PROFILE_CACHE[cache_key] = entry
                 while len(_TAG_PROFILE_CACHE) > _TAG_PROFILE_CACHE_LIMIT:
                     _TAG_PROFILE_CACHE.pop(next(iter(_TAG_PROFILE_CACHE)))
+            if self.persist_snapshots:
+                self._save_local_profile(cache_key, entry)
             self.latest_aggregated_mastery = dict(aggregated)
             return result
         finally:
             _release_tag_profile_flight(cache_key, error)
+
+    def _local_profile_path(self) -> Path:
+        return self.data_root / "reports" / ".training_diagnosis" / "profiles.cache"
+
+    def _local_profile_signature(self, cache_key: tuple[str, ...]) -> tuple | None:
+        try:
+            origins = self.cache_identity[:6] if self.cache_identity else ()
+            paths = ((Path(origins[0]), Path(origins[3])) if len(origins) == 6
+                     else (self.grading_db_path, self.question_bank_db_path))
+            live = (*_path_generation(paths[0]), *_path_generation(paths[1]))
+            expected = "\u0000".join((*live,
+                *_dir_generation(self.data_root / "reports" / ".class_analysis"),
+                json.dumps(_profile_semantics(), default=str)))
+            if cache_key[0] != expected:
+                return None  # A writer moved beyond the captured read transaction.
+            state = tuple(_database_file_state(path) for path in paths)
+            revisions = _LOCAL_SOURCE_REVISIONS.get_or_compute((live, state), lambda: (
+                _database_content_revision(self.grading_db_path),
+                _database_content_revision(self.question_bank_db_path, self.question_bank_connection),
+            ))
+            if live != (*_path_generation(paths[0]), *_path_generation(paths[1])):
+                return None
+            return (1, revisions, _profile_semantics(),
+                    _dir_generation(self.data_root / "reports" / ".class_analysis"))
+        except (OSError, sqlite3.Error, AttributeError, ValueError):
+            return None
+
+    def _read_local_profile(self, cache_key: tuple[str, ...]) -> tuple[bytes, bytes] | None:
+        try:
+            with self._local_profile_path().open("rb") as saved:
+                snapshot = pickle.load(saved)
+            entry = snapshot["entries"].get(cache_key[1:])
+            if (entry is None or snapshot["signature"] != self._local_profile_signature(cache_key)
+                    or len(entry) != 2 or not all(isinstance(part, bytes) for part in entry)):
+                return None
+            # Bad/incompatible local bytes must fall back before entering the
+            # shared memory cache; no official model is required for rebuilding.
+            if not all(isinstance(pickle.loads(part), dict) for part in entry):
+                return None
+            return entry
+        except (OSError, pickle.PickleError, EOFError, KeyError, TypeError, ValueError,
+                AttributeError, ImportError):
+            return None
+
+    def _save_local_profile(self, cache_key: tuple[str, ...], entry: tuple[bytes, bytes]) -> None:
+        signature = self._local_profile_signature(cache_key)
+        if signature is None:
+            return
+        path = self._local_profile_path()
+        temporary: Path | None = None
+        try:
+            with _LOCAL_PROFILE_LOCK:
+                entries = {}
+                try:
+                    with path.open("rb") as saved:
+                        previous = pickle.load(saved)
+                    if previous["signature"] == signature and isinstance(previous["entries"], dict):
+                        entries = previous["entries"]
+                except (OSError, pickle.PickleError, EOFError, KeyError, TypeError,
+                        ValueError, AttributeError, ImportError):
+                    pass
+                entries.pop(cache_key[1:], None)
+                entries[cache_key[1:]] = entry
+                while len(entries) > _TAG_PROFILE_CACHE_LIMIT:
+                    entries.pop(next(iter(entries)))
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as saved:
+                    temporary = Path(saved.name)
+                    pickle.dump({"signature": signature, "entries": entries}, saved, pickle.HIGHEST_PROTOCOL)
+                os.replace(temporary, path)
+        except OSError:
+            pass  # Saving a derived cache must not fail grading or recommendation.
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _compute_tag_profiles(
         self,

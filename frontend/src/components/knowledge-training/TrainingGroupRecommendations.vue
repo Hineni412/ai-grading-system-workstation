@@ -5,6 +5,7 @@ import { trainingApi, type TrainingDiagnosis, type TrainingGroup, type TrainingG
   type TrainingStudentScopeRequest, type TrainingExamScopeRequest } from '../../api/training'
 import type { ChapterGroupEditor, AdoptedChapterGroup, ChapterGroupSort } from '../../features/training/paper-selection-session'
 import AppButton from '../design-system/AppButton.vue'
+import StatusBadge from '../design-system/StatusBadge.vue'
 import { ApiError } from '../../api/errors'
 import { useTrainingStore } from '../../stores/training'
 
@@ -69,10 +70,6 @@ const ready = computed(() => editing.value && checked.value?.ready && !busy.valu
   && !props.disabled && (!overlaps.value.length || overlapConfirmed.value) && targetKeys.value.length > 0 && memberIds.value.length >= 2)
 
 function percent(value: number | null): string { return value === null ? '—' : `${Math.round(value * 100)}%` }
-function scoreTone(value: number | null): string {
-  if (value === null) return 'unscored'
-  return value >= .8 ? 'high' : value >= .6 ? 'middle' : 'low'
-}
 function classLabel(value: string): string {
   const name = value.trim()
   if (!name) return '未分班'
@@ -176,7 +173,7 @@ async function refresh(force = false): Promise<void> {
     if (current !== revision || next.signal.aborted) return
     stale.value = true
     message.value = error instanceof ApiError && error.kind === 'timeout'
-      ? '小组核对超过30秒未完成，当前名单和目标已保留。请刷新建议重试。'
+      ? '小组核对暂未完成，名单和目标已保留。请刷新建议重试。'
       : '小组建议暂时无法更新，当前名单和目标已保留。请重试。'
   } finally {
     if (current === revision) busy.value = false
@@ -265,44 +262,42 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
 <template>
   <section class="training-groups" aria-label="跨班训练小组">
     <header class="training-groups__heading">
-      <div><h2>{{ chapterName }}</h2><span>{{ effectiveDiagnosis.students.length }} 人参与推荐<span v-if="result">，{{ result.groups.length }} 个候选组</span></span></div>
+      <div><h2>{{ chapterName }}</h2><span>{{ effectiveDiagnosis.students.length }} 人<span v-if="result"> · {{ result.groups.length }} 个候选小组</span></span></div>
       <AppButton :disabled="busy || disabled" @click="refresh(true)">{{ busy ? '正在核对…' : '刷新建议' }}</AppButton>
     </header>
     <p v-if="scope.score_rate_min != null || scope.score_rate_max != null" class="training-groups__note">已启用辅助条件：在得分率 {{ Math.round((scope.score_rate_min ?? 0) * 100) }}%–{{ Math.round((scope.score_rate_max ?? 1) * 100) }}% 范围内推荐。</p>
     <p v-if="message" class="training-groups__alert" role="alert">{{ message }}</p>
     <p v-if="!result && busy" class="training-groups__empty">正在核对训练目标、证据和可用题目……</p>
-    <p v-if="result?.summary" class="training-groups__note">范围内 {{ result.summary.student_count }} 人 · {{ result.summary.students_with_needs }} 人有可成组的直接失分证据 · 编成 {{ result.summary.group_count }} 组（{{ result.summary.grouped_student_count }} 人）<span v-if="result.unassigned.length"> · {{ result.unassigned.length }} 人暂未推荐</span></p>
     <template v-if="!editing">
       <div v-if="result?.groups.length" class="training-groups__sorting">
-        <label>卡片排序
-          <select v-model="sortMode" aria-label="小组卡片排序" aria-describedby="training-group-sort-explanation">
+        <label>排序
+          <select class="app-input" v-model="sortMode" aria-label="小组卡片排序" aria-describedby="training-group-sort-explanation">
             <option value="size">人数多优先</option>
             <option value="weakness">训练目标更薄弱优先</option>
             <option value="similarity">组内水平更接近优先</option>
           </select>
         </label>
-        <p id="training-group-sort-explanation">{{ sortExplanation }}</p>
+        <details class="training-groups__sort-note"><summary>排序依据</summary><p id="training-group-sort-explanation">{{ sortExplanation }}</p></details>
       </div>
       <div class="training-groups__grid">
-        <article v-for="{ group, stats } in cards" :key="group.group_id" class="training-groups__candidate" :class="`training-groups__candidate--${scoreTone(stats.scoreRate)}`">
+        <article v-for="{ group, stats } in cards" :key="group.group_id" class="training-groups__candidate">
           <header class="training-groups__card-heading">
-            <h3>{{ group.targets.map(target => knowledgeLeafLabel(target.knowledge_point)).join('、') }}</h3>
+            <div><h3>{{ classSummary(group) }}</h3><details class="training-groups__target-list"><summary>{{ group.targets.length }} 个训练目标</summary><ul><li v-for="target in group.targets" :key="target.knowledge_key">{{ knowledgeLeafLabel(target.knowledge_point) }}<span v-if="target.affected_student_count != null"> · {{ target.affected_student_count }} 人</span></li></ul></details></div>
             <strong class="training-groups__size">{{ group.members.length }}<span>人</span></strong>
           </header>
           <dl class="training-groups__stats">
             <div><dt>平均掌握度</dt><dd>{{ percent(stats.mastery) }}</dd></div>
             <div><dt>组内差距</dt><dd>{{ stats.span ?? '—' }}<small v-if="stats.span !== null">个百分点</small></dd></div>
-            <div><dt>考试平均得分率</dt><dd>{{ percent(stats.scoreRate) }}</dd></div>
+            <div><dt>考试得分率</dt><dd><StatusBadge :tone="stats.scoreRate === null ? 'neutral' : stats.scoreRate >= .8 ? 'success' : stats.scoreRate >= .6 ? 'warning' : 'danger'" :label="percent(stats.scoreRate)" /></dd></div>
           </dl>
           <div class="training-groups__range" v-if="stats.minimum !== null && stats.maximum !== null">
             <div class="training-groups__range-track" aria-hidden="true"><i :style="{ left: `${stats.minimum * 100}%`, width: `${Math.max(1, (stats.maximum - stats.minimum) * 100)}%` }" /></div>
             <span>训练目标掌握度 {{ percent(stats.minimum) }}–{{ percent(stats.maximum) }}</span>
           </div>
-          <p class="training-groups__classes">{{ classSummary(group) }}</p>
           <p v-if="stats.scored < group.members.length || stats.historical" class="training-groups__note">{{ stats.scored }} 人有考试成绩<span v-if="stats.historical">，其中 {{ stats.historical }} 人参考历史</span></p>
           <p v-for="issue in group.issues" :key="issue" class="training-groups__alert">{{ issue }}</p>
           <footer class="training-groups__card-footer">
-            <div><strong>{{ group.available_question_count }} 道训练目标题</strong><span>{{ group.targets.some(target => target.sparse_member_count > 0) ? '含单次作答依据' : '已有多次作答依据' }}</span></div>
+            <div><strong>{{ group.available_question_count }} 道可用题</strong><span v-if="group.targets.some(target => target.sparse_member_count > 0)">部分目标仅有一次作答依据</span></div>
             <AppButton :disabled="busy || stale || disabled" @click="inspect(group)">查看小组</AppButton>
           </footer>
         </article>
@@ -318,10 +313,10 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
         <div><dt>考试平均得分率</dt><dd>{{ percent(selectionStats.scoreRate) }}</dd><span>{{ selectionStats.scored }} 人有成绩<span v-if="selectionStats.historical">，{{ selectionStats.historical }} 人参考历史</span></span></div>
       </dl>
       <fieldset><legend>训练目标</legend><label v-for="target in targetOptions" :key="target.key"><input type="checkbox" :checked="targetKeys.includes(target.key)" @change="toggleTarget(target.key)">{{ target.label }}</label></fieldset>
-      <div class="training-groups__targets" v-if="checked">
+      <details class="training-groups__targets" v-if="checked"><summary>查看目标难度与可用题</summary>
         <p v-for="target in checked.targets" :key="target.knowledge_key">{{ knowledgeLeafLabel(target.knowledge_point) }}：掌握度 {{ percent(target.min_mastery) }}–{{ percent(target.max_mastery) }} · 目标难度 {{ target.target_difficulty ?? '证据不足' }} · 涉及 {{ target.affected_student_count ?? checked?.members.length }} 人 · {{ target.available_question_count }} 道适用题</p>
-      </div>
-      <div class="training-groups__members-heading"><h4>小组成员 <span>{{ memberIds.length }} 人</span></h4><p>展开姓名查看作答依据；调整名单或目标后会自动核对。</p></div>
+      </details>
+      <div class="training-groups__members-heading"><h4>小组成员 <span>{{ memberIds.length }} 人</span></h4></div>
       <div class="training-groups__members">
         <details v-for="student in selectedMembers" :key="student.student_id">
           <summary><div class="training-groups__member-name"><label @click.stop><input type="checkbox" checked :aria-label="`移除 ${classLabel(student.class_id)} ${student.student_name} ${student.student_code}`" @change="toggleMember(student.student_id)">{{ student.student_name }}</label><span>{{ classLabel(student.class_id) }} · {{ student.student_code }}</span></div><div class="training-groups__member-scores"><span>掌握度 <b>{{ percent(studentMastery(student.student_id)) }}</b></span><span>考试得分率 <b>{{ percent(studentProfiles.get(student.student_id)?.score_rate ?? null) }}</b><small v-if="studentProfiles.get(student.student_id)?.score_rate_source === 'historical_fallback'">（历史）</small></span></div></summary>
@@ -332,7 +327,7 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
         </details>
       </div>
       <div class="training-groups__editor-tools"><AppButton @click="showAdd = !showAdd">{{ showAdd ? '收起添加成员' : '从当前范围添加成员' }}</AppButton><AppButton @click="restore">恢复原名单与目标</AppButton></div>
-      <div v-if="showAdd" class="training-groups__add"><input v-model="search" type="search" placeholder="搜索姓名、班级或学号" aria-label="搜索可添加成员"><label v-for="student in otherMembers" :key="student.student_id"><input type="checkbox" :aria-label="`添加 ${classLabel(student.class_id)} ${student.student_name} ${student.student_code}`" @change="toggleMember(student.student_id)">{{ student.student_name }} · {{ classLabel(student.class_id) }} · {{ student.student_code }}</label></div>
+      <div v-if="showAdd" class="training-groups__add"><input class="app-input" v-model="search" type="search" placeholder="搜索姓名、班级或学号" aria-label="搜索可添加成员"><label v-for="student in otherMembers" :key="student.student_id"><input type="checkbox" :aria-label="`添加 ${classLabel(student.class_id)} ${student.student_name} ${student.student_code}`" @change="toggleMember(student.student_id)">{{ student.student_name }} · {{ classLabel(student.class_id) }} · {{ student.student_code }}</label></div>
       <p v-if="memberIds.length < 2" class="training-groups__alert">请至少保留两名成员。</p>
       <p v-if="!targetKeys.length" class="training-groups__alert">请至少保留一个训练目标。</p>
       <p v-for="issue in checked?.issues ?? []" :key="issue" class="training-groups__alert">{{ issue }}</p>
@@ -341,7 +336,7 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
       <footer><span>{{ memberIds.length }} 人 · {{ targetKeys.length }} 个训练目标</span><AppButton variant="primary" :disabled="!ready" @click="adopt">采用小组并核对出卷设置</AppButton></footer>
     </section>
     <details v-if="result?.unassigned.length" class="training-groups__unassigned"><summary>暂未推荐 {{ result.unassigned.length }} 人<span v-if="unassignedBreakdown">（{{ unassignedBreakdown }}）</span> · 查看原因</summary><p v-for="student in result.unassigned" :key="student.student_id"><strong>{{ student.student_name }} · {{ classLabel(student.class_id) }}</strong>：{{ student.reason }}</p></details>
-    <details class="training-groups__explanation"><summary>分组与统计说明</summary><p>按实际失分需求和接近的整体考试水平分组；各成员目标可以不同。汇总成员适用题目，按整张卷覆盖选择，不要求每道题适合所有成员。平均掌握度按每名成员在训练目标上的平均值汇总；组内差距是这些平均值的最高与最低之差。考试平均得分率按有成绩成员计算，缺失成绩不按零分处理。</p><p>无证据不推断薄弱；明显不同需求可安排个人训练。采用小组时会自动核对最新依据。</p></details>
+    <details class="training-groups__explanation"><summary>分组与统计说明</summary><p v-if="result?.summary">范围内 {{ result.summary.student_count }} 人 · 有直接失分需要 {{ result.summary.students_with_needs }} 人 · 已编组 {{ result.summary.grouped_student_count }} 人（{{ result.summary.group_count }} 组） · 暂未推荐 {{ result.unassigned.length }} 人</p><p>按共同技能需要与相容的练习难度分组；各成员目标可以不同。汇总成员适用题目，按整张卷覆盖选择，不要求每道题适合所有成员。平均掌握度按每名成员在训练目标上的平均值汇总；组内差距是这些平均值的最高与最低之差。考试平均得分率按有成绩成员计算，缺失成绩不按零分处理。</p><p>无证据不推断薄弱；明显不同需求可安排个人训练。采用小组时会自动核对最新依据。</p></details>
   </section>
 </template>
 
@@ -356,12 +351,12 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
 .training-groups h2{font-size:1.25rem}.training-groups h3{font-size:.98rem;line-height:1.6}.training-groups h4{font-size:.9rem}
 .training-groups__heading>div{display:grid;gap:.3rem}
 .training-groups__heading span,.training-groups__note{color:var(--color-text-secondary);font-size:.8rem;line-height:1.6}
-.training-groups__grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,310px),1fr));gap:1rem;align-items:stretch}
+.training-groups__grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,350px),1fr));gap:1rem;align-items:stretch}
 .training-groups__candidate{display:flex;flex-direction:column;gap:.8rem;min-width:0;padding:1rem;background:var(--color-bg-surface);border:1px solid var(--color-border-default);border-radius:10px}
 .training-groups__candidate--high{background:var(--color-success-subtle)}
 .training-groups__candidate--middle{background:var(--color-warning-subtle)}
 .training-groups__candidate--low{background:var(--color-danger-subtle)}
-.training-groups__card-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:.75rem;min-height:3.15rem}
+.training-groups__card-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:.75rem;min-height:0}
 .training-groups__card-heading h3{font-weight:650;overflow-wrap:anywhere}
 .training-groups__size{display:flex;align-items:baseline;gap:.2rem;flex-shrink:0;font-size:1.5rem;font-variant-numeric:tabular-nums;font-weight:600;color:var(--color-accent)}
 .training-groups__size span{font-size:.75rem;font-weight:400;color:var(--color-text-secondary)}
@@ -390,14 +385,14 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
 .training-groups__members-heading{display:flex;align-items:baseline;justify-content:space-between;gap:.75rem;flex-wrap:wrap}
 .training-groups__members-heading h4 span{font-size:.8rem;font-weight:400;margin-left:.3rem;color:var(--color-text-secondary)}
 .training-groups__members-heading p{font-size:.78rem;color:var(--color-text-secondary)}
-.training-groups__members{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,245px),1fr));gap:.6rem;align-items:start}
+.training-groups__members{display:grid;grid-template-columns:minmax(0,1fr);gap:.6rem;align-items:start}
 .training-groups__members details{padding:.8rem;background:var(--color-bg-subtle);border:1px solid var(--color-border-subtle);border-radius:7px}
 .training-groups__members summary{cursor:pointer;font-size:.85rem;list-style:none}
 .training-groups__member-name{display:flex;justify-content:space-between;align-items:center;gap:.4rem;flex-wrap:wrap}
 .training-groups__member-name label{display:flex;align-items:center;gap:.25rem;font-weight:500}.training-groups__member-name>span{font-size:.72rem;color:var(--color-text-secondary)}
 .training-groups__member-scores{display:flex;flex-wrap:wrap;justify-content:space-between;gap:.3rem;margin-top:.65rem;font-size:.72rem;color:var(--color-text-secondary)}
 .training-groups__member-scores b{font-weight:500;color:var(--color-text-primary)}.training-groups__member-scores small{font-size:.68rem}
-.training-groups__members summary::after{content:'作答依据 ▾';display:block;margin-top:.65rem;font-size:.7rem;color:var(--color-accent)}
+.training-groups__members summary::after{content:'作答依据 ▾';font-size:.75rem;color:var(--color-accent)}
 .training-groups__members details[open]>summary::after{content:'收起依据 ▴'}
 .training-groups__members details>div{margin-top:.7rem;padding-top:.7rem;border-top:1px solid var(--color-border-default);font-size:.78rem;line-height:1.7}
 .training-groups__editor-tools{display:flex;gap:.5rem;flex-wrap:wrap}
@@ -407,4 +402,15 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
 .training-groups__unassigned summary,.training-groups__explanation summary{cursor:pointer;color:var(--color-text-secondary)}
 .training-groups__unassigned p,.training-groups__explanation p{padding:.4rem 0;max-width:80ch;color:var(--color-text-secondary)}
 @media(max-width:760px){.training-groups__heading,.training-groups__editor>footer{align-items:flex-start;flex-wrap:wrap}.training-groups__stats--selection{gap:.5rem}.training-groups__stats--selection dd{font-size:1.2rem}.training-groups__editor>footer button{width:100%}}
+.training-groups__target-list{margin-top:var(--space-2);font-size:var(--font-size-dense);color:var(--color-text-secondary)}
+.training-groups__target-list summary,.training-groups__targets summary,.training-groups__sort-note summary{cursor:pointer;color:var(--color-accent)}
+.training-groups__target-list ul{padding-left:var(--space-5);display:grid;gap:var(--space-1);margin-bottom:0}
+.training-groups__sort-note{font-size:var(--font-size-caption);max-width:420px}
+.training-groups__sort-note p{padding-top:var(--space-2)}
+.training-groups__members summary{display:grid;grid-template-columns:minmax(180px,1fr) minmax(220px,1fr) auto;gap:var(--space-3);align-items:center}
+.training-groups__member-scores{margin-top:0}
+.training-groups__members details{background:var(--color-bg-surface);padding:var(--space-3)}
+.training-groups__candidate{border-radius:var(--radius-panel);box-shadow:var(--shadow-raised)}
+.training-groups__editor>footer{position:sticky;bottom:0;background:var(--color-bg-surface);padding:var(--space-3) 0;z-index:1}
+@media(max-width:760px){.training-groups__members summary{grid-template-columns:1fr auto}.training-groups__member-scores{grid-row:2;grid-column:1/-1}.training-groups__sorting{justify-content:space-between}}
 </style>

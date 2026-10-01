@@ -96,7 +96,7 @@ const pendingAssessment = {
 
 const completedAssessment = {
   ...pendingAssessment,
-  workflow_status: 'complete',
+  workflow_status: 'completed',
   review_revision: 2,
   questions: [{
     ...pendingAssessment.questions[0]!,
@@ -140,7 +140,8 @@ const feedback = {
     stable_key: 'kp_alg_linear_equation',
     display_name: '一元一次方程',
     mastery_before: { value: 0.4 },
-    mastery_after: { value: 0.55, tier: 'weak', interval_low: .3, interval_high: .72, observation_count: 10, full_correct_count: 4 },
+    mastery_after: { value: 0.55, tier: 'weak', interval_low: .3, interval_high: .72,
+      observation_count: 10, full_correct_count: 4 },
     reason: '按每题覆盖比例重算。',
   }],
   next_round: {
@@ -207,7 +208,8 @@ describe('training assessment panel', () => {
     expect(host.textContent).toContain('判定进行中')
     await vi.advanceTimersByTimeAsync(3000)
     await settle()
-    expect(host.textContent).toContain('复核完成')
+    expect(host.textContent).toContain('待确认更新')
+    expect(host.textContent).not.toContain('待复核')
     expect(trainingApiMock.startTrainingAssessment).toHaveBeenCalledTimes(1)
     expect(trainingApiMock.getTrainingAssessment).toHaveBeenCalledTimes(3)
     await vi.advanceTimersByTimeAsync(9000)
@@ -218,9 +220,11 @@ describe('training assessment panel', () => {
     const host = document.createElement('div')
     document.body.append(host)
     const openDraft = vi.fn()
+    const summaryChange = vi.fn()
     const app = createApp(TrainingAssessmentPanel, {
       submission,
       onOpenDraft: openDraft,
+      onSummaryChange: summaryChange,
     })
     mounted.push(app)
     app.mount(host)
@@ -267,13 +271,41 @@ describe('training assessment panel', () => {
     expect(host.textContent).toContain('55%')
     expect(host.textContent).toContain('明显薄弱 · 掌握度 55%（30%–72%）')
     expect(host.textContent).toContain('作答 10 处、全对 4 处')
-    expect(host.textContent).toContain('草稿待确认')
-    expect(host.textContent).toContain('不会自动冻结、打印或发送')
+    expect(host.textContent).toContain('已保存 1/1 题证据')
+    expect(host.textContent).toContain('达成 1 / 2 个判定点')
+    expect(host.querySelector<HTMLDivElement>('.review-workspace')?.style.display).toBe('none')
+    expect(host.querySelector<HTMLButtonElement>('.ledger-tabs button[aria-pressed="true"]')?.textContent).toBe('掌握度反馈')
 
     const open = [...host.querySelectorAll('button')].find(
       (button) => button.textContent?.includes('打开下一轮草稿'),
     )
     open?.click()
     expect(openDraft).toHaveBeenCalledWith('d'.repeat(64))
+
+    // A teacher edit invalidates the previous feedback until the new revision is published.
+    trainingApiMock.reviewTrainingPoint.mockResolvedValue({ ...completedAssessment, review_revision: 3 })
+    ;[...host.querySelectorAll<HTMLButtonElement>('.ledger-tabs button')].find((b) => b.textContent === '批改复核')?.click()
+    await settle()
+    lock?.click()
+    await settle()
+    expect(summaryChange).toHaveBeenLastCalledWith(expect.objectContaining({ published: false, label: '待确认更新' }))
+    expect(host.textContent).not.toContain('掌握度已更新')
+    trainingApiMock.syncTrainingEvidence.mockResolvedValue({ ...feedback, source_review_revision: 3 })
+    publish?.click()
+    await settle()
+    expect(summaryChange).toHaveBeenLastCalledWith(expect.objectContaining({ published: true, label: '已完成' }))
+
+    trainingApiMock.getTrainingAssessment.mockResolvedValue({ ...completedAssessment, review_revision: 3 })
+    trainingApiMock.getTrainingFeedback.mockResolvedValue(feedback)
+    const restored = document.createElement('div')
+    document.body.append(restored)
+    const restoredSummary = vi.fn()
+    const restoredApp = createApp(TrainingAssessmentPanel, { submission, onSummaryChange: restoredSummary })
+    mounted.push(restoredApp)
+    restoredApp.mount(restored)
+    await settle()
+    expect(restored.textContent).toContain('上次保存的反馈')
+    expect(restored.textContent).toContain('上次反馈')
+    expect(restoredSummary).toHaveBeenLastCalledWith(expect.objectContaining({ published: false, label: '待确认更新' }))
   })
 })
