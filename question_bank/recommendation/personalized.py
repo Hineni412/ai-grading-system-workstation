@@ -889,10 +889,12 @@ class PersonalizedRecommendationModule:
         db_path: Path,
         data_root: Path,
         clock: Callable[[], datetime] | None = None,
+        semester_mastery: Callable | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root)
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.semester_mastery = semester_mastery
         try:
             self.current_knowledge = (
                 CurrentKnowledgeResolver.from_active_database(self.db_path)
@@ -2435,10 +2437,12 @@ class PersonalizedRecommendationModule:
             self.current_knowledge,
             clock=self.clock,
             data_root=self.data_root,
+            semester_mastery=self.semester_mastery,
         )
         calculated = calculator.calculate(diagnosis)
         snapshot = {
             identity: {
+                **item.to_dict(),
                 "stable_key": item.stable_key,
                 "display_name": item.display_name,
                 "mode": "current",
@@ -3296,17 +3300,21 @@ def _apply_diagnosis_mastery(
             for key in keys:
                 node = resolver.node(key)
                 existing = snapshot.get((student_id, key), {})
+                has_current = bool(existing) and existing.get("value") is not None
+                frozen_current = item.get("parameter_version") == CURRENT_MASTERY_PARAMETERS.version
                 snapshot[(student_id, key)] = {
+                    **existing,
+                    **({field: item.get(field) for field in ("interval_low", "interval_high", "tier", "observation_count", "full_correct_count", "recent_trend", "parameter_version")} if frozen_current and not has_current else {}),
                     "stable_key": key,
                     "display_name": (
                         node.display_name if node is not None else display or key
                     ),
                     "mode": "current",
                     "status": "available",
-                    "value": value,
-                    "evidence_count": count,
+                    "value": existing["value"] if has_current else value,
+                    "evidence_count": existing.get("evidence_count", count) if has_current else count,
                     "parameter_version": str(
-                        existing.get("parameter_version") or ""
+                        existing.get("parameter_version") or item.get("parameter_version") or ""
                     ),
                     "source_question_refs": deepcopy(item.get("source_question_refs") or []),
                     "explanations": deepcopy(item.get("actionable_reasons") or []),

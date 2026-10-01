@@ -80,11 +80,13 @@ class TrainingAssessmentModule:
         gateway: TrainingAssessmentGateway,
         evidence_sink: TrainingEvidenceSink | None = None,
         clock: Any | None = None,
+        semester_mastery: Any | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root)
         self.gateway = gateway
         self.evidence_sink = evidence_sink
+        self.semester_mastery = semester_mastery
         self.clock = clock or (lambda: datetime.now().isoformat(timespec="seconds"))
         self.artifact_root = (
             self.data_root / "question_bank" / "training_submissions"
@@ -227,6 +229,7 @@ class TrainingAssessmentModule:
             db_path=self.db_path,
             data_root=self.data_root,
             outcome_loader=self.get_outcome,
+            semester_mastery=self.semester_mastery,
             sink=self.evidence_sink,
             clock=lambda: _aware_clock(self.clock()),
         ).sync(clean_id, clean_revision, command)
@@ -244,6 +247,7 @@ class TrainingAssessmentModule:
             db_path=self.db_path,
             data_root=self.data_root,
             outcome_loader=self.get_outcome,
+            semester_mastery=self.semester_mastery,
             sink=self.evidence_sink,
             clock=lambda: _aware_clock(self.clock()),
         ).replay(max_items)
@@ -264,6 +268,7 @@ class TrainingAssessmentModule:
             db_path=self.db_path,
             data_root=self.data_root,
             outcome_loader=self.get_outcome,
+            semester_mastery=self.semester_mastery,
             sink=self.evidence_sink,
             clock=lambda: _aware_clock(self.clock()),
         ).get_feedback(clean_id, clean_revision)

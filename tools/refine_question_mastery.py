@@ -35,7 +35,6 @@ def prepare(args: argparse.Namespace) -> dict[str, object]:
     from question_bank.mastery.current import (
         CURRENT_MASTERY_PARAMETERS, CurrentMastery, CurrentMasteryCalculator,
     )
-    from question_bank.mastery.v2 import compute_mastery_v2
     from backend.config_generation.contract import iter_effective_rubric_item_refs
 
     output = Path(args.output).resolve()
@@ -126,19 +125,7 @@ def prepare(args: argparse.Namespace) -> dict[str, object]:
         as_of = datetime.now(UTC)
         resolver = CurrentKnowledgeResolver.from_connection(qb)
         calculator = CurrentMasteryCalculator(data / "databases/question_bank.db", resolver, clock=lambda: as_of)
-        baseline = {}
-        for (student, key), evidence in calculator._exam_evidence(profile).items():
-            value = compute_mastery_v2(stable_key=key, as_of=as_of, exam_evidence=tuple(evidence), parameters=CURRENT_MASTERY_PARAMETERS)
-            node = resolver.node(key)
-            baseline[student, key] = CurrentMastery(
-                key, node.display_name, value.status.value, value.value, value.direct_evidence_count,
-                value.effective_sample_weight, value.parameter_version,
-                exam_evidence_count=value.direct_evidence_count,
-                evidence_contributions=tuple((v.evidence_id, v.effective_weight, v.weighted_value)
-                                             for v in value.contributions if v.included),
-                direct_evidence_count=value.direct_evidence_count,
-            )
-        baseline = calculator._with_parent_rollups(baseline)
+        baseline = calculator.calculate(profile)
         snapshot = {
             "schema": "mastery-refinement-exam-input-v1", "as_of": as_of.isoformat(),
             "session": session, "question_links": links, "rubric": selected_rubric,
@@ -223,7 +210,6 @@ def compare(data: Path, output: Path, *, report_name: str = "exam_comparison.jso
     from integration.question_tag_projection_service import QuestionTagProjectionService
     from question_bank.current_knowledge import CurrentKnowledgeResolver
     from question_bank.mastery.current import CURRENT_MASTERY_PARAMETERS, CurrentMastery, CurrentMasteryCalculator
-    from question_bank.mastery.v2 import compute_mastery_v2
     snapshot = json.loads((output / "exam_baseline.json").read_text(encoding="utf-8"))
     integrity = verify_exam_snapshot(data, snapshot)
     as_of = datetime.fromisoformat(snapshot["as_of"])
@@ -253,15 +239,7 @@ def compare(data: Path, output: Path, *, report_name: str = "exam_comparison.jso
             for student, values in by_student.items()]}
         resolver = CurrentKnowledgeResolver.from_connection(connection)
         calculator = CurrentMasteryCalculator(path, resolver, clock=lambda: as_of)
-        values = {}
-        for (student, key), evidence in calculator._exam_evidence(profile).items():
-            result = compute_mastery_v2(stable_key=key, as_of=as_of, exam_evidence=tuple(evidence), parameters=CURRENT_MASTERY_PARAMETERS)
-            values[student, key] = CurrentMastery(
-                key, resolver.node(key).display_name, result.status.value, result.value, result.direct_evidence_count,
-                result.effective_sample_weight, result.parameter_version, exam_evidence_count=result.direct_evidence_count,
-                evidence_contributions=tuple((v.evidence_id, v.effective_weight, v.weighted_value) for v in result.contributions if v.included),
-                direct_evidence_count=result.direct_evidence_count)
-        values = calculator._with_parent_rollups(values)
+        values = calculator.calculate(profile)
         old = {(v["student_id"], v["stable_key"]): v for v in snapshot["old_mastery"]}
         differences = []
         for student, key in sorted(set(old) | set(values)):

@@ -147,10 +147,12 @@ class TrainingEvidencePublisher:
         ],
         sink: TrainingEvidenceSink | None = None,
         clock: Callable[[], datetime] | None = None,
+        semester_mastery: Callable | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root)
         self.outcome_loader = outcome_loader
+        self.semester_mastery = semester_mastery
         self.sink = sink or SQLiteTrainingEvidenceSink(self.db_path)
         self.clock = clock or (lambda: datetime.now().astimezone())
         try:
@@ -954,6 +956,7 @@ class TrainingEvidencePublisher:
             self.current_knowledge,
             clock=self.clock,
             data_root=self.data_root,
+            semester_mastery=self.semester_mastery,
         )
         after_all = calculator.calculate(profile)
         before_all = calculator.calculate(
@@ -975,7 +978,7 @@ class TrainingEvidencePublisher:
             for item in context["items"]
             for resolved in self.current_knowledge.resolve(item["matched_key"])
         }
-        keys = sorted(context_keys | set(after) | set(before))
+        keys = sorted(context_keys | {key for key, value in after.items() if value.observation_count > 0} | {key for key, value in before.items() if value.observation_count > 0})
         changes = []
         for stable_key in keys:
             node = self.current_knowledge.node(stable_key)
@@ -1122,6 +1125,7 @@ class TrainingEvidencePublisher:
             draft = PersonalizedRecommendationModule(
                 db_path=self.db_path,
                 data_root=self.data_root,
+                semester_mastery=self.semester_mastery,
                 clock=self.clock,
             ).create(
                 request_token=token,

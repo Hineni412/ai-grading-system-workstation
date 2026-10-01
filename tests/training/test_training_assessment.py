@@ -507,6 +507,11 @@ def test_published_training_changes_current_mastery_and_next_draft_only(
         if item["stable_key"] == "kp_alg_linear_equation"
     )
     assert change["mastery_after"]["value"] > change["mastery_before"]["value"]
+    assert change["mastery_before"]["observation_count"] == 1
+    assert change["mastery_after"]["observation_count"] == 5
+    assert change["mastery_after"]["full_correct_count"] == 4
+    assert change["mastery_after"]["training_evidence_count"] == 2
+    assert change["mastery_after"]["interval_low"] <= change["mastery_after"]["value"] <= change["mastery_after"]["interval_high"]
     graph = CurrentKnowledgeGraphQueryService(
         db_path,
         clock=lambda: datetime(2026, 7, 30, 12, 0, tzinfo=UTC),

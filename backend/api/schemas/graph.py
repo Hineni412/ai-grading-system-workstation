@@ -51,6 +51,13 @@ class CurrentGraphEvidenceRequest(GraphQueryRequest):
 
 
 class CurrentGraphMastery(_GraphModel):
+    interval_low: float | None = None
+    interval_high: float | None = None
+    tier: Literal["stable", "unsteady", "weak", "insufficient"] = "insufficient"
+    observation_count: int = Field(default=0, ge=0)
+    full_correct_count: int = Field(default=0, ge=0)
+    recent_trend: str | None = None
+    tier_counts: dict[str, int] = Field(default_factory=dict)
     status: Literal["available", "missing", "unavailable"]
     value: float | None = Field(default=None, ge=0.0, le=1.0)
     evidence_count: int = Field(ge=0)
