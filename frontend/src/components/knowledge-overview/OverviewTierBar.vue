@@ -8,13 +8,13 @@ const props = defineProps<{
 }>()
 
 const segments = computed(() => {
-  const { weak, review, stable, missing } = props.distribution
-  const total = weak + review + stable + missing
+  const { weak, unsteady, stable, insufficient } = props.distribution
+  const total = weak + unsteady + stable + insufficient
   return ([
-    ['weak', '待补强', weak],
-    ['review', '需巩固', review],
+    ['weak', '明显薄弱', weak],
+    ['unsteady', '还不稳', unsteady],
     ['stable', '较稳定', stable],
-    ['missing', '证据不足', missing],
+    ['insufficient', '证据不足', insufficient],
   ] as const)
     .filter(([, , count]) => count > 0)
     .map(([tier, label, count]) => ({

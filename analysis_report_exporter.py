@@ -1205,8 +1205,14 @@ def _personal_knowledge_view(data: SessionAnalysisData, student: StudentReportDa
             if kind not in {'topic', 'skill'}:
                 kind = 'topic'
             chapter, section, cursor, seen = '', '', item, set()
+            parent_references = []
             while cursor and str(cursor.get('knowledge_key')) not in seen:
                 seen.add(str(cursor.get('knowledge_key')))
+                parent_key = str(cursor.get('knowledge_key'))
+                parent_mastery = student.knowledge_mastery.get(parent_key, {})
+                if parent_key != key and parent_mastery.get('mastery') is not None:
+                    parent_references.append({'label': str(cursor.get('knowledge_point') or parent_key).split('｜')[-1].split('|')[-1],
+                                              **{field: parent_mastery.get(field) for field in ('mastery', 'tier', 'interval_low', 'interval_high')}})
                 if cursor.get('node_kind') == 'chapter':
                     chapter = str(cursor['knowledge_point']).split('｜')[-1].split('|')[-1]
                 elif cursor.get('node_kind') == 'section':
@@ -1221,6 +1227,9 @@ def _personal_knowledge_view(data: SessionAnalysisData, student: StudentReportDa
             node = nodes.setdefault(key, {
                 'key': key, 'label': re.sub(r'^技能[·・：:]\s*', '', label), 'kind': kind,
                 'chapter': chapter, 'section': section, 'mastery': value,
+                **{field: mastery.get(field) for field in ('interval_low', 'interval_high', 'observation_count', 'full_correct_count', 'recent_trend', 'parameter_version')},
+                'tier': mastery.get('tier') or 'insufficient',
+                'parent_references': parent_references,
                 'evidence_count': int(mastery.get('evidence_count') or 0),
                 'questions': [], 'score': 0.0, 'full': 0.0,
                 'step_questions': sorted({str(ref.get('question_id')) for ref in mastery.get('source_question_refs', [])
@@ -1258,18 +1267,23 @@ def _class_knowledge_view(data: SessionAnalysisData) -> dict[str, Any]:
                 bucket['full'] += question['full']
                 bucket['count'] += 1
     for node in nodes.values():
-        values = [student.knowledge_mastery.get(node['key'], {}).get('mastery') for student in data.students]
-        known = [float(value) for value in values
-                 if isinstance(value, (int, float)) and math.isfinite(value) and 0 <= value <= 1]
-        node['mastery'] = statistics.mean(known) if known else None
+        records = [student.knowledge_mastery.get(node['key'], {}) for student in data.students]
+        known = [row for row in records if int(row.get('observation_count', row.get('evidence_count')) or 0) > 0
+                 and isinstance(row.get('mastery'), (int, float)) and math.isfinite(row['mastery']) and 0 <= row['mastery'] <= 1]
+        node['mastery'] = statistics.mean(row['mastery'] for row in known) if known else None
         node['coverage'] = len(known)
         node['student_count'] = len(data.students)
-        node['distribution'] = {
-            'low': sum(value < .6 for value in known),
-            'mid': sum(.6 <= value < .75 for value in known),
-            'good': sum(value >= .75 for value in known),
-            'missing': len(data.students) - len(known),
-        }
+        node['distribution'] = {tier: sum((row.get('tier') or 'insufficient') == tier for row in known)
+                                for tier in ('weak', 'unsteady', 'stable', 'insufficient')}
+        node['tier'] = max(node['distribution'], key=node['distribution'].get) if known else 'insufficient'
+        node['missing_count'] = len(data.students)-len(known)
+        node['parent_references'] = []
+        for field in ('interval_low', 'interval_high'):
+            bounds = [row.get(field) for row in known]
+            node[field] = statistics.mean(bounds) if bounds and all(isinstance(v, (int, float)) for v in bounds) else None
+        node['observation_count'] = sum(int(row.get('observation_count') or 0) for row in known)
+        node['full_correct_count'] = sum(int(row.get('full_correct_count') or 0) for row in known)
+        node['recent_trend'] = None
         node['step_questions'] = sorted(node['step_questions'])
         node.pop('evidence_count', None)
         node['questions'] = [{**question,
@@ -1293,20 +1307,21 @@ def _knowledge_view_html(view: dict[str, Any]) -> str:
         chapters.setdefault(node['chapter'], []).append(node)
     boards = []
     counts = {'good': 0, 'mid': 0, 'low': 0, 'missing': 0}
+    bands = {'weak': 'low', 'unsteady': 'mid', 'stable': 'good', 'insufficient': 'missing'}
 
     def node_html(node):
         value = node['mastery']
-        band = 'missing' if value is None else 'low' if value < .6 else 'mid' if value < .75 else 'good'
+        band = bands.get(node.get('tier'), 'missing')
         counts[band] += 1
         percent = '证据不足' if value is None else f'{fmt_num(math.floor(value * 1000) / 10)}%'
-        status = {'missing': '证据不足', 'low': '待补强', 'mid': '需巩固', 'good': '较稳定'}[band]
+        status = {'missing': '证据不足', 'low': '明显薄弱', 'mid': '还不稳', 'good': '较稳定'}[band]
         detail = f'本卷 {fmt_num(node["score"])} / {fmt_num(node["full"])} 分'
         distribution = ''
         if class_mode:
             detail = f'有证据 {node["coverage"]} / {node["student_count"]} 人'
             distribution = '<span class="kn-distribution">' + ''.join(
-                f'<span class="kn-{key}"><i class="kn-dot"></i>{label} {node["distribution"][key]}</span>'
-                for key, label in [('low', '补强'), ('mid', '巩固'), ('good', '稳定'), ('missing', '无证据')]
+                f'<span class="kn-{bands[key]}"><i class="kn-dot"></i>{label} {node["distribution"][key]}</span>'
+                for key, label in [('weak', '明显薄弱'), ('unsteady', '还不稳'), ('stable', '较稳定'), ('insufficient', '证据不足')]
             ) + '</span>'
         value_label = '有证据学生平均掌握度' if class_mode else f'当前掌握度：{status}'
         return (f'<button type="button" class="kn-node kn-{band}" data-key="{esc(node["key"])}" aria-pressed="false">'
@@ -1326,19 +1341,19 @@ def _knowledge_view_html(view: dict[str, Any]) -> str:
     data_json = json.dumps(view, ensure_ascii=False, separators=(',', ':')).replace('<', r'\u003c').replace('>', r'\u003e').replace('&', r'\u0026')
     title = '班级知识与技能掌握图' if class_mode else '知识与技能掌握图'
     scope_note = (f'统计本班 {view["student_count"]} 名已有成绩的学生；缺考及未形成有效成绩者不计入。'
-                  '节点百分比仅对有证据学生取平均；各档显示人数，无证据单列，不参与平均。') if class_mode else ''
-    footnote = ('节点颜色按有证据学生的平均掌握度划分；备课时同时查看分布，避免平均值掩盖差异。'
+                  '节点百分比仅对有证据学生取平均；各档只统计有观测学生，无观测人数单列，不参与平均或分档。') if class_mode else ''
+    footnote = ('节点颜色表示有证据学生中人数最多的档位；备课时同时查看各档人数，避免平均值掩盖差异。'
                 '“本卷得分率”为相关小问整体得分率，不是技能独立得分。') if class_mode else (
-                '节点百分比为当前掌握度；“本卷”分数为相关小问的整体得分，不能直接归因到其中每一步。')
+                '节点百分比为参考难度步骤做对的可能性，详情附 80% 把握区间；“本卷”分数为相关小问的整体得分，不能直接归因到其中每一步。')
     return (f'<section class="knowledge-map" id="knowledge-map"><div class="kn-heading"><h2>{title}</h2>'
             f'<span class="kn-date">截至 {esc(view["as_of"])}</span></div>'
             f'<p class="kn-intro">{esc(view["note"])}</p>'
             + (f'<p class="kn-scope">{scope_note}</p>' if scope_note else '')
-            + '<p class="kn-thresholds">待补强 &lt;60% · 需巩固 60%–不足75% · 较稳定 ≥75%</p>'
+            + '<p class="kn-thresholds">较稳定 / 还不稳 / 明显薄弱 / 证据不足，档位综合估计值与把握程度</p>'
             + '<div class="kn-legend">'
-            + ('<span>按节点平均值：</span>' if class_mode else '')
+            + ('<span>按人数最多档位：</span>' if class_mode else '')
             + ''.join(f'<span><i class="kn-dot kn-{band}"></i>{label} <b>{counts[band]} 项</b></span>'
-                      for band, label in [('low', '待补强'), ('mid', '需巩固'), ('good', '较稳定'), ('missing', '证据不足')])
+                      for band, label in [('low', '明显薄弱'), ('mid', '还不稳'), ('good', '较稳定'), ('missing', '证据不足')])
             + '</div><p class="kn-help">点选知识点或技能点，查看关联与本卷表现。实线：有同小问依据；虚线：仅同题出现。关联不表示掌握度相同。</p>'
             + ''.join(boards)
             + '<div class="kn-inspector" aria-live="polite"><p>点选上方节点，查看相关题目与证据。</p></div>'

@@ -435,6 +435,14 @@ export interface TrainingEvidenceReference {
 }
 
 export interface TrainingWeakPoint {
+  interval_low?: number | null
+  interval_high?: number | null
+  tier?: 'stable' | 'unsteady' | 'weak' | 'insufficient'
+  observation_count?: number
+  full_correct_count?: number
+  recent_trend?: string | null
+  tier_counts?: Partial<Record<'stable' | 'unsteady' | 'weak' | 'insufficient', number>>
+
   knowledge_key: string
   knowledge_point: string
   mastery?: number | null
@@ -532,9 +540,9 @@ export type OverviewNodeKind = 'chapter' | 'section' | 'topic' | 'skill'
 
 export interface TrainingOverviewDistribution {
   weak: number
-  review: number
+  unsteady: number
   stable: number
-  missing: number
+  insufficient: number
 }
 
 export interface TrainingOverviewNode {
@@ -544,14 +552,16 @@ export interface TrainingOverviewNode {
   chapter_key: string
   section_key: string
   group_mastery: number | null
+  tier?: string
   evidence_student_count: number
   distribution: TrainingOverviewDistribution
-  students: Array<{ student_id: string; mastery: number }>
+  students: Array<{ student_id: string; mastery: number; tier?: string; interval_low?: number | null; interval_high?: number | null; observation_count?: number; full_correct_count?: number; recent_trend?: string | null }>
 }
 
 export interface TrainingOverviewTierCounts {
   weak: number
-  review: number
+  unsteady: number
+  insufficient: number
   stable: number
   evidence: number
 }
@@ -792,9 +802,9 @@ function isOverviewDistribution(
   return (
     isRecord(value)
     && isInteger(value.weak)
-    && isInteger(value.review)
+    && isInteger(value.unsteady)
     && isInteger(value.stable)
-    && isInteger(value.missing)
+    && isInteger(value.insufficient)
   )
 }
 
@@ -828,7 +838,7 @@ function isOverviewTierCounts(
   return (
     isRecord(value)
     && isInteger(value.weak)
-    && isInteger(value.review)
+    && isInteger(value.unsteady)
     && isInteger(value.stable)
     && isInteger(value.evidence)
   )

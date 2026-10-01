@@ -1,7 +1,8 @@
 import type { GraphEdge, GraphNode, GraphRelationType } from '../../api/graph'
+import { tierOf, TIER_LABELS } from '../../components/knowledge-overview/model'
 
-export type MasteryBand = 'stable' | 'slight' | 'review' | 'weak'
-export type GraphNodeState = MasteryBand | 'missing'
+export type MasteryBand = 'stable' | 'unsteady' | 'weak' | 'insufficient'
+export type GraphNodeState = MasteryBand
 
 export interface GraphDisplayNode {
   stableKey: string
@@ -22,10 +23,9 @@ export interface GraphDisplayNode {
 export interface GraphSummary {
   total: number
   relationTotal: number
-  missing: number
+  insufficient: number
   stable: number
-  slight: number
-  review: number
+  unsteady: number
   weak: number
 }
 
@@ -34,30 +34,8 @@ export interface GraphPath {
   edgeIds: string[]
 }
 
-const STATE_ORDER: GraphNodeState[] = ['missing', 'weak', 'review', 'slight', 'stable']
-const BAND_LABELS: Record<MasteryBand, string> = {
-  stable: '稳定',
-  slight: '轻微欠缺',
-  review: '需要讲评',
-  weak: '重点薄弱',
-}
-
-function normalizedMastery(value: number): number {
-  if (!Number.isFinite(value)) return 0
-  return Math.min(1, Math.max(0, value))
-}
-
-export function masteryBand(rate: number): MasteryBand {
-  const value = normalizedMastery(rate)
-  if (value >= 0.9) return 'stable'
-  if (value >= 0.75) return 'slight'
-  if (value >= 0.6) return 'review'
-  return 'weak'
-}
-
-export function masteryBandLabel(band: MasteryBand): string {
-  return BAND_LABELS[band]
-}
+const STATE_ORDER: GraphNodeState[] = ['insufficient', 'weak', 'unsteady', 'stable']
+export function masteryBandLabel(band: MasteryBand): string { return TIER_LABELS[band] }
 
 export function nodeEvidenceSize(itemCount: number): number {
   const count = Number.isFinite(itemCount) ? Math.max(0, itemCount) : 0
@@ -69,15 +47,8 @@ function masteryLabel(value: number): string {
   return `${Number.isInteger(percent) ? percent.toFixed(0) : percent.toFixed(1)}%`
 }
 
-export function graphNodeState(node: GraphNode): GraphNodeState {
-  return node.mastery.status === 'available' && node.mastery.value !== null
-    ? masteryBand(node.mastery.value)
-    : 'missing'
-}
-
-export function graphNodeStateLabel(state: GraphNodeState): string {
-  return state === 'missing' ? '当前无证据' : masteryBandLabel(state)
-}
+export function graphNodeState(node: GraphNode): GraphNodeState { return tierOf(node.mastery.tier) }
+export function graphNodeStateLabel(state: GraphNodeState): string { return TIER_LABELS[state] }
 
 export function buildGraphDisplayNodes(
   nodes: GraphNode[],
@@ -158,10 +129,9 @@ export function summarizeGraph(nodes: GraphNode[], edges: GraphEdge[]): GraphSum
   const summary: GraphSummary = {
     total: nodes.length,
     relationTotal: edges.length,
-    missing: 0,
+    insufficient: 0,
     stable: 0,
-    slight: 0,
-    review: 0,
+    unsteady: 0,
     weak: 0,
   }
   for (const node of nodes) summary[graphNodeState(node)] += 1

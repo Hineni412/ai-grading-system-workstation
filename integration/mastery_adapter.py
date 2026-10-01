@@ -104,16 +104,8 @@ def adapt_mastery_rows(
     return list(profiles.values())
 
 
-def compute_priority(mastery: float) -> int:
-    if mastery < 0.2:
-        return 5
-    if mastery < 0.4:
-        return 4
-    if mastery < 0.6:
-        return 3
-    if mastery < 0.8:
-        return 2
-    return 1
+def compute_priority(tier: str | None) -> int:
+    return {"weak": 5, "unsteady": 3, "stable": 1}.get(tier, 2)
 
 
 def _weak_point_from_row(
@@ -121,7 +113,7 @@ def _weak_point_from_row(
     current_knowledge: CurrentKnowledgeResolver,
 ) -> WeakPoint | None:
     mastery = _mastery_value(row)
-    priority = _priority_value(row.get("priority"), mastery)
+    priority = _priority_value(row.get("priority"), row.get("tier"))
     raw_knowledge_ids = _knowledge_ids(row)
     raw_knowledge_point = _first_text(row, "knowledge_point", "knowledge_label", "knowledge_id")
     source_values = [raw_knowledge_point, *raw_knowledge_ids]
@@ -218,12 +210,12 @@ def _mastery_value(row: Mapping[str, Any]) -> float:
     return _rate(row.get("weighted_score_rate"), default=0.0)
 
 
-def _priority_value(value: object, mastery: float) -> int:
+def _priority_value(value: object, tier: str | None) -> int:
     try:
         priority = int(value)
     except (TypeError, ValueError):
-        return compute_priority(mastery)
-    return priority if 1 <= priority <= 5 else compute_priority(mastery)
+        return compute_priority(tier)
+    return priority if 1 <= priority <= 5 else compute_priority(tier)
 
 
 def _raw_error_types(row: Mapping[str, Any]) -> list[str]:

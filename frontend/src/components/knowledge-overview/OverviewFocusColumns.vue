@@ -6,7 +6,7 @@ import type {
   TrainingOverviewNode,
   TrainingOverviewStudent,
 } from '../../api/training'
-import { compareFocusNodes, formatPercent, shortNodeName, tierOf } from './model'
+import { compareFocusNodes, formatPercent, shortNodeName, tierOf, masteryDetail } from './model'
 import OverviewTierBar from './OverviewTierBar.vue'
 
 const props = defineProps<{
@@ -36,32 +36,34 @@ function toggle(node: TrainingOverviewNode): void {
 }
 
 interface TierGroup {
-  tier: 'weak' | 'review' | 'stable'
+  tier: 'weak' | 'unsteady' | 'stable' | 'insufficient'
   label: string
-  students: Array<{ student_id: string; mastery: number; name: string }>
+  students: Array<{ student_id: string; mastery: number; name: string; detail: string }>
 }
 
 function tierGroups(node: TrainingOverviewNode): TierGroup[] {
   const groups: TierGroup[] = [
-    { tier: 'weak', label: '待补强', students: [] },
-    { tier: 'review', label: '需巩固', students: [] },
+    { tier: 'weak', label: '明显薄弱', students: [] },
+    { tier: 'unsteady', label: '还不稳', students: [] },
     { tier: 'stable', label: '较稳定', students: [] },
+    { tier: 'insufficient', label: '证据不足', students: [] },
   ]
   for (const entry of node.students) {
-    const tier = tierOf(entry.mastery)
+    const tier = tierOf(entry.tier)
     const group = groups.find(item => item.tier === tier)
     group?.students.push({
       student_id: entry.student_id,
       mastery: entry.mastery,
+      detail: masteryDetail(entry),
       name: props.studentsById[entry.student_id]?.student_name ?? entry.student_id,
     })
   }
   return groups.filter(group => group.students.length > 0)
 }
 
-function masteryClass(value: number | null): string {
+function masteryClass(value: string | undefined): string {
   const tier = tierOf(value)
-  return tier ? `is-${tier}` : 'is-missing'
+  return tier ? `is-${tier}` : 'is-insufficient'
 }
 </script>
 
@@ -96,11 +98,11 @@ function masteryClass(value: number | null): string {
                 <span class="overview-focus-item__section">{{ sectionNames[node.section_key] ?? '' }}</span>
               </span>
               <span class="overview-focus-item__facts">
-                <span class="overview-focus-item__mastery" :class="masteryClass(node.group_mastery)">
+                <span class="overview-focus-item__mastery" :class="masteryClass(node.tier)">
                   {{ formatPercent(node.group_mastery) }}
                 </span>
                 <span class="overview-focus-item__counts">
-                  待补强 {{ node.distribution.weak }} 人 · 需巩固 {{ node.distribution.review }} 人
+                  明显薄弱 {{ node.distribution.weak }} 人 · 还不稳 {{ node.distribution.unsteady }} 人
                 </span>
               </span>
               <OverviewTierBar :distribution="node.distribution" />
@@ -126,7 +128,7 @@ function masteryClass(value: number | null): string {
                       query: { knowledge: node.knowledge_key, klabel: node.display_name, from: 'overview' },
                     }"
                   >
-                    {{ student.name }} {{ formatPercent(student.mastery) }}
+                    {{ student.name }} · {{ student.detail }}
                   </RouterLink>
                 </dd>
               </dl>

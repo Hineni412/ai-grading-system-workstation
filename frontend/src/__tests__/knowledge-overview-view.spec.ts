@@ -28,8 +28,8 @@ const roster = [
   { id: 4, student_code: 'S4', name: '学生丁', class_name: '10', created_at: null },
 ]
 
-function distribution(weak: number, review = 0, stable = 0, missing = 0) {
-  return { weak, review, stable, missing }
+function distribution(weak: number, unsteady = 0, stable = 0, insufficient = 0) {
+  return { weak, unsteady, stable, insufficient }
 }
 
 function node(partial: Partial<TrainingOverview['nodes'][number]> & { knowledge_key: string }) {
@@ -73,21 +73,22 @@ function overviewFixture(): TrainingOverview {
         distribution: distribution(1, 0, 0, 2),
       }),
       node({
-        knowledge_key: 't1', group_mastery: 0.5, evidence_student_count: 2,
+        knowledge_key: 't1', group_mastery: 0.5, evidence_student_count: 3, tier: 'weak',
         display_name: '册｜第一章｜1｜用勾股定理求边长',
         distribution: distribution(2, 0, 1, 0),
         students: [
-          { student_id: '1', mastery: 0.4 },
-          { student_id: '2', mastery: 0.55 },
-          { student_id: '3', mastery: 0.8 },
+          { student_id: '1', mastery: 0.4, tier: 'weak' },
+          { student_id: '2', mastery: 0.55, tier: 'weak' },
+          { student_id: '3', mastery: 0.8, tier: 'stable', interval_low: .75, interval_high: .9,
+            observation_count: 10, full_correct_count: 8 },
         ],
       }),
       node({
         knowledge_key: 't2', chapter_key: 'ch1', section_key: 'sec2',
         group_mastery: 0.65, evidence_student_count: 1,
         display_name: '册｜第一章｜2｜拼图验证',
-        distribution: distribution(0, 1, 0, 2),
-        students: [{ student_id: '1', mastery: 0.65 }],
+        distribution: distribution(0, 0, 0, 1),
+        students: [{ student_id: '1', mastery: 0.65, tier: "insufficient" }],
       }),
       node({
         knowledge_key: 'sk1', kind: 'skill', group_mastery: 0.3,
@@ -95,34 +96,34 @@ function overviewFixture(): TrainingOverview {
         display_name: '技能·列勾股等式',
         distribution: distribution(3, 0, 0, 0),
         students: [
-          { student_id: '1', mastery: 0.2 },
-          { student_id: '2', mastery: 0.3 },
-          { student_id: '3', mastery: 0.4 },
+          { student_id: '1', mastery: 0.2, tier: 'weak' },
+          { student_id: '2', mastery: 0.3, tier: 'weak' },
+          { student_id: '3', mastery: 0.4, tier: 'weak' },
         ],
       }),
       node({
         knowledge_key: 't0', evidence_student_count: 0,
-        distribution: distribution(0, 0, 0, 3),
+        distribution: distribution(0, 0, 0, 0),
       }),
     ],
     students: [
       {
         student_id: '1', student_code: 'S1', student_name: '学生甲', class_id: '八年级1班',
         score_rate: 0.5, score_rate_source: 'current_exam',
-        topics: { weak: 1, review: 1, stable: 0, evidence: 2 },
-        skills: { weak: 1, review: 0, stable: 0, evidence: 1 },
+        topics: { weak: 1, unsteady: 1, stable: 0, insufficient: 0, evidence: 2 },
+        skills: { weak: 1, unsteady: 0, stable: 0, insufficient: 0, evidence: 1 },
       },
       {
         student_id: '2', student_code: 'S2', student_name: '学生乙', class_id: '八年级1班',
         score_rate: 0.9, score_rate_source: 'current_exam',
-        topics: { weak: 1, review: 0, stable: 0, evidence: 1 },
-        skills: { weak: 1, review: 0, stable: 0, evidence: 1 },
+        topics: { weak: 1, unsteady: 0, stable: 0, insufficient: 0, evidence: 1 },
+        skills: { weak: 1, unsteady: 0, stable: 0, insufficient: 0, evidence: 1 },
       },
       {
         student_id: '3', student_code: 'S3', student_name: '学生丙', class_id: '八年级2班',
         score_rate: null, score_rate_source: 'none',
-        topics: { weak: 0, review: 0, stable: 0, evidence: 0 },
-        skills: { weak: 0, review: 0, stable: 0, evidence: 0 },
+        topics: { weak: 0, unsteady: 0, stable: 0, insufficient: 0, evidence: 0 },
+        skills: { weak: 0, unsteady: 0, stable: 0, insufficient: 0, evidence: 0 },
       },
     ],
     summary: {
@@ -172,6 +173,20 @@ afterEach(() => {
 })
 
 describe('knowledge overview view', () => {
+
+  it('opens the backend tier list with interval and observation details', async () => {
+    const host = await mountView()
+    await vi.waitFor(() => expect(trainingApi.overview).toHaveBeenCalledTimes(1))
+    await settle()
+    const point = [...host.querySelectorAll<HTMLButtonElement>('.overview-focus-item')]
+      .find(button => button.textContent?.includes('用勾股定理求边长'))!
+    point.click()
+    await settle()
+    expect(host.textContent).toContain('明显薄弱（2 人）')
+    expect(host.textContent).toContain('较稳定（1 人）')
+    expect(host.textContent).toContain('掌握度 80%（75%–90%）')
+    expect(host.textContent).toContain('作答 10 处、全对 8 处')
+  })
 
   it('switches scope to a class and saves the shared evidence scope', async () => {
     const host = await mountView()

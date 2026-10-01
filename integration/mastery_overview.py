@@ -1,11 +1,4 @@
-"""Semester mastery overview for the 学情总览 surface.
-
-Pure transformation of the DiagnosisProfileService.build_profiles payload into
-the per-node / per-student tier distribution the overview homepage renders.
-Tier boundaries match the class report rules: 待补强 <0.60, 需巩固
-0.60–0.75, 较稳定 ≥0.75; students without evidence are counted as
-证据不足, never as zero mastery.
-"""
+"""Semester mastery overview, using backend posterior tiers and observed students."""
 
 from __future__ import annotations
 
@@ -15,25 +8,15 @@ from typing import Any
 from integration.result_cache import ResultCache
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume
 
-_TIER_WEAK_MAX = 0.60
-_TIER_REVIEW_MAX = 0.75
-_TIER_FIELDS = ("weak", "review", "stable", "missing")
+_TIER_FIELDS = ("weak", "unsteady", "stable", "insufficient")
 
 
-def _has_evidence(entry: Mapping[str, Any] | None) -> bool:
-    return (
-        entry is not None
-        and entry.get("mastery") is not None
-        and int(entry.get("evidence_count") or 0) > 0
-    )
+def _has_evidence(entry):
+    return entry is not None and entry.get("mastery") is not None and int(entry.get("evidence_count") or 0) > 0
 
 
-def _tier(mastery: float) -> str:
-    if mastery < _TIER_WEAK_MAX:
-        return "weak"
-    if mastery < _TIER_REVIEW_MAX:
-        return "review"
-    return "stable"
+def _tier(entry):
+    return entry.get("tier") if entry.get("tier") in _TIER_FIELDS else "insufficient"
 
 
 def build_mastery_overview(
@@ -109,7 +92,7 @@ def build_mastery_overview(
                 )
 
     group_mastery_by_key = {
-        str(item["knowledge_key"]): item.get("mastery")
+        str(item["knowledge_key"]): item
         for item in diagnosis.get("group_weak_points") or []
         if isinstance(item, Mapping) and item.get("knowledge_key")
     }
@@ -139,11 +122,13 @@ def build_mastery_overview(
             student_id = str(student.get("student_id") or "")
             entry = weak_points_by_student.get(student_id, {}).get(key)
             if not _has_evidence(entry):
-                distribution["missing"] += 1
                 continue
             mastery = float(entry["mastery"])
-            distribution[_tier(mastery)] += 1
-            evidenced.append({"student_id": student_id, "mastery": mastery})
+            distribution[_tier(entry)] += 1
+            evidenced.append({"student_id": student_id, "mastery": mastery, "tier": _tier(entry),
+                "observation_count": int(entry.get("observation_count") or entry.get("evidence_count") or 0),
+                "full_correct_count": int(entry.get("full_correct_count") or 0),
+                **{field: entry.get(field) for field in ("interval_low", "interval_high", "recent_trend")}})
         evidenced.sort(key=lambda item: (item["mastery"], item["student_id"]))
         nodes.append(
             {
@@ -152,7 +137,8 @@ def build_mastery_overview(
                 "kind": kind,
                 "chapter_key": chapter_key,
                 "section_key": section_key,
-                "group_mastery": group_mastery_by_key.get(key),
+                "group_mastery": (group_mastery_by_key.get(key) or {}).get("mastery"),
+                "tier": (group_mastery_by_key.get(key) or {}).get("tier", "insufficient"),
                 "evidence_student_count": len(evidenced),
                 "distribution": distribution,
                 "students": evidenced,
@@ -160,13 +146,13 @@ def build_mastery_overview(
         )
 
     def _count_tiers(keys: list[str], index: Mapping[str, Mapping[str, Any]]) -> dict[str, int]:
-        counts = {"weak": 0, "review": 0, "stable": 0, "evidence": 0}
+        counts = {"weak": 0, "unsteady": 0, "stable": 0, "insufficient": 0, "evidence": 0}
         for key in keys:
             entry = index.get(key)
             if not _has_evidence(entry):
                 continue
             counts["evidence"] += 1
-            counts[_tier(float(entry["mastery"]))] += 1
+            counts[_tier(entry)] += 1
         return counts
 
     student_rows: list[dict[str, Any]] = []
@@ -216,15 +202,13 @@ def build_mastery_overview(
             1
             for node in nodes
             if node["kind"] == "topic"
-            and node["group_mastery"] is not None
-            and float(node["group_mastery"]) < _TIER_WEAK_MAX
+            and node["distribution"]["weak"] > 0
         ),
         "weak_skill_count": sum(
             1
             for node in nodes
             if node["kind"] == "skill"
-            and node["group_mastery"] is not None
-            and float(node["group_mastery"]) < _TIER_WEAK_MAX
+            and node["distribution"]["weak"] > 0
         ),
     }
 

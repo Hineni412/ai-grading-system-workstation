@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { masteryDetail } from '../knowledge-overview/model'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import {
@@ -390,6 +391,7 @@ function masteryValue(
   ) {
     return '暂无'
   }
+  if ('tier' in snapshot) return masteryDetail(snapshot as Parameters<typeof masteryDetail>[0])
   return `${Math.round(snapshot.value * 100)}%`
 }
 

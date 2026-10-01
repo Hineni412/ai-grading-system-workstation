@@ -57,14 +57,20 @@
       inspector.append(element('p', node.mastery == null
         ? '全班该节点证据不足，暂不显示平均掌握度。'
         : `有证据学生平均掌握度 ${percent(node.mastery)}% · ${node.coverage} / ${node.student_count} 人有证据 · 截至 ${data.as_of}`));
-      const labels = [['low', '待补强'], ['mid', '需巩固'], ['good', '较稳定'], ['missing', '证据不足']];
+      const labels = [['weak', '明显薄弱'], ['unsteady', '还不稳'], ['stable', '较稳定'], ['insufficient', '证据不足']];
       inspector.append(element('p', labels.map(([key, label]) => `${label} ${node.distribution[key]} 人`).join(' · ')));
       inspector.append(element('p', `本次考试相关小问整体得分率 ${percent(node.score / node.full)}%。平均掌握度与本卷得分率分别计算。`));
     } else {
       inspector.append(element('p', node.mastery == null
       ? '当前掌握度：证据不足，暂不判定为 0%。'
-      : `当前掌握度 ${percent(node.mastery)}% · ${node.evidence_count} 条有效证据 · 截至 ${data.as_of}`));
+      : `${({stable:'较稳定',unsteady:'还不稳',weak:'明显薄弱',insufficient:'证据不足'})[node.tier] || '证据不足'} · 当前掌握度 ${percent(node.mastery)}%${node.interval_low != null && node.interval_high != null ? `（${percent(node.interval_low)}%–${percent(node.interval_high)}%）` : ''} · 作答 ${node.observation_count || 0} 处、全对 ${node.full_correct_count || 0} 处${node.recent_trend ? ` · ${node.recent_trend}` : ''} · 截至 ${data.as_of}`));
       inspector.append(element('p', `本次考试相关小问：${number(node.score)} / ${number(node.full)} 分（得分率 ${Math.round(node.score / node.full * 100)}%）。`));
+      if (node.tier === 'insufficient') {
+        for (const reference of node.parent_references || []) {
+          const tier = ({stable:'较稳定',unsteady:'还不稳',weak:'明显薄弱',insufficient:'证据不足'})[reference.tier] || '证据不足';
+          inspector.append(element('p', `上级参考 · ${reference.label}：${tier} · ${percent(reference.mastery)}%${reference.interval_low != null && reference.interval_high != null ? `（${percent(reference.interval_low)}%–${percent(reference.interval_high)}%）` : ''}`));
+        }
+      }
     }
     const questionList = element('div', undefined, 'kn-question-list');
     for (const question of node.questions) {

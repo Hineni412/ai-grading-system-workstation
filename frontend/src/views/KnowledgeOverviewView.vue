@@ -256,11 +256,11 @@ onBeforeUnmount(() => {
           </dd>
         </div>
         <div>
-          <dt>待补强知识点</dt>
+          <dt>明显薄弱知识点</dt>
           <dd>{{ overview.summary.weak_topic_count }}</dd>
         </div>
         <div>
-          <dt>待补强技能</dt>
+          <dt>明显薄弱技能</dt>
           <dd>{{ overview.summary.weak_skill_count }}</dd>
         </div>
       </dl>

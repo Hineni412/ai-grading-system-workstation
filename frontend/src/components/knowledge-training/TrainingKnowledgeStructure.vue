@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
+import { tierClass, masteryDetail, parentMasteryDetails, tierOf } from '../knowledge-overview/model'
 
 import { knowledgeLeafLabel } from '../../api/question-bank'
 import type { TrainingDiagnosis, TrainingWeakPoint } from '../../api/training'
@@ -98,6 +99,9 @@ function sectionSkills(points: KnowledgeNode[]): KnowledgeNode[] {
 }
 const focusedRelations = computed(() => [...(associationsByNode.value.get(focusedKey.value) ?? [])]
   .sort((a, b) => b.same_part_question_count - a.same_part_question_count || b.question_count - a.question_count))
+const focusedMastery = computed(() => allNodes.value.get(focusedKey.value)?.weak)
+const parentReferences = computed(() => tierOf(focusedMastery.value?.tier) === 'insufficient'
+  ? parentMasteryDetails(focusedKey.value, props.diagnosis.group_weak_points ?? [], props.diagnosis.knowledge_catalog ?? []) : [])
 async function drawConnections(): Promise<void> {
   await nextTick()
   const lines: typeof connectionLines.value = []
@@ -216,12 +220,7 @@ function masteryText(node: KnowledgeNode): string {
   return node.weak?.mastery != null ? `${Math.round(node.weak.mastery * 100)}%` : '证据不足'
 }
 
-function masteryClass(node: KnowledgeNode): string {
-  if (node.weak?.mastery == null) return 'is-empty'
-  if (node.weak.mastery < 0.6) return 'is-low'
-  if (node.weak.mastery < 0.75) return 'is-mid'
-  return 'is-good'
-}
+function masteryClass(node: KnowledgeNode): string { return tierClass(node.weak?.tier) }
 
 function toggleSection(key: string): void {
   expandedSectionKeys.value = expandedSectionKeys.value.includes(key)
@@ -279,10 +278,10 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
 
       <div v-if="activeRoot" class="structure-detail">
         <div class="structure-legend" aria-label="掌握度图例">
-          <span><i class="is-low" />待补强 &lt; 60%</span>
-          <span><i class="is-mid" />需巩固 60–74%</span>
-          <span><i class="is-good" />较稳定 ≥ 75%</span>
-          <span><i class="is-empty" />灰底未被覆盖，斜纹为无证据</span>
+          <span><i class="is-low" />明显薄弱</span>
+          <span><i class="is-mid" />还不稳</span>
+          <span><i class="is-good" />较稳定</span>
+          <span><i class="is-empty" />证据不足</span>
           <label class="structure-toggle">
             <input v-model="showEmptyPoints" type="checkbox">
             显示无证据知识点<template v-if="hiddenPointCount">（{{ hiddenPointCount }}）</template>
@@ -293,6 +292,8 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
         <p class="relationship-help">默认显示本小节技能，点击知识主题展开关联技能，再次点击恢复。实线有同小问依据，虚线仅表示同题出现；关联不代表掌握度相同。</p>
         <div v-if="focusedKey" class="relationship-summary" role="status">
           <strong>{{ knowledgeLeafLabel(allNodes.get(focusedKey)?.label ?? focusedKey) }}</strong>
+          <span>{{ masteryDetail(focusedMastery) }}</span>
+          <span v-for="reference in parentReferences" :key="reference">上级参考 · {{ reference }}</span>
           <span v-if="!focusedRelations.length">暂无已确认关联，保留独立显示。</span>
           <span v-for="edge in focusedRelations" :key="`${edge.topic_key}:${edge.skill_key}`">
             {{ knowledgeLeafLabel(allNodes.get(edge.topic_key === focusedKey ? edge.skill_key : edge.topic_key)?.label ?? '') }}：
@@ -318,10 +319,10 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
             <svg class="relationship-lines" aria-hidden="true"><path v-for="(line, i) in connectionLines.filter(line => line.section === entry.section.key)" :key="i" :d="line.path" :class="{ 'is-inferred': !line.confirmed }" /></svg>
             <div class="relationship-topics">
               <h4>知识主题 · 考查什么</h4>
-              <div v-for="point in entry.points.filter(point => !isSkill(point))" :key="point.key" class="structure-point topic-node" :class="{ 'is-related': related(point.key), 'is-focused': focusedKey === point.key }" :data-node-key="point.key">
+              <div v-for="point in entry.points.filter(point => !isSkill(point))" :key="point.key" class="structure-point topic-node" :class="[masteryClass(point), { 'is-related': related(point.key), 'is-focused': focusedKey === point.key }]" :data-node-key="point.key" :title="masteryDetail(point.weak)">
                 <input v-if="selectionKind === 'targets'" type="checkbox" :aria-label="`选择${knowledgeLeafLabel(point.label)}`" :checked="modelValue.includes(point.key)" @change="toggleTarget(point.key)">
                 <button type="button" class="structure-point-name" :aria-pressed="focusedKey === point.key" @click="focusNode(point.key)">{{ knowledgeLeafLabel(point.label) }}</button>
-                <small>用于题目匹配</small>
+                <strong>{{ masteryText(point) }}</strong>
                 <small v-if="point.weak">{{ point.weak.evidence_count }} 条证据</small>
                 <RouterLink v-if="hasGroupEvidence(point)" class="structure-point-evidence" :to="{ name: 'student-evidence', params: { studentId: 'group' }, query: { mode: 'questions', knowledge: point.key, klabel: knowledgeLeafLabel(point.label), from: 'student' } }">证据</RouterLink>
               </div>
@@ -334,7 +335,7 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
               :key="point.key"
               :class="['structure-point', masteryClass(point), { 'is-related': related(point.key), 'is-focused': focusedKey === point.key }]"
               :data-node-key="point.key"
-              :title="point.label"
+              :title="masteryDetail(point.weak)"
             >
               <input
                 v-if="selectionKind === 'targets'"
@@ -437,7 +438,12 @@ function hasGroupEvidence(node: KnowledgeNode): boolean {
 .structure-point.is-low .structure-track > i { background: var(--color-danger); }
 .structure-point.is-mid .structure-track > i { background: var(--color-warning); }
 .structure-point.is-empty .structure-track { background: repeating-linear-gradient(135deg, var(--color-border-subtle) 0 6px, var(--color-bg-subtle) 6px 12px); }
-.structure-track > b { position: absolute; top: -2px; bottom: -2px; left: 70%; width: 2px; background: var(--color-text-muted); }
+.structure-point.is-empty .structure-track > i { background: var(--color-text-muted); }
+.topic-node.is-empty > strong { color: var(--color-text-muted); }
+.topic-node.is-low > strong { color: var(--color-danger); }
+.topic-node.is-mid > strong { color: var(--color-warning); }
+.topic-node.is-good > strong { color: var(--color-success); }
+.structure-track > b { display: none; }
 .structure-point > strong, .structure-point > small { white-space: nowrap; }
 .structure-point > small { color: var(--color-text-secondary); }
 .structure-empty { padding: 1rem; color: var(--color-text-secondary); text-align: center; }

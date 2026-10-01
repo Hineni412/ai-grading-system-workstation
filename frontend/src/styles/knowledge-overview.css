@@ -175,8 +175,8 @@
   color: var(--color-danger);
 }
 
-.overview-node-row__mastery.is-review,
-.overview-focus-item__mastery.is-review {
+.overview-node-row__mastery.is-unsteady,
+.overview-focus-item__mastery.is-unsteady {
   color: var(--color-warning);
 }
 
@@ -185,8 +185,8 @@
   color: var(--color-success);
 }
 
-.overview-node-row__mastery.is-missing,
-.overview-focus-item__mastery.is-missing {
+.overview-node-row__mastery.is-insufficient,
+.overview-focus-item__mastery.is-insufficient {
   color: var(--color-text-secondary);
 }
 
@@ -208,7 +208,7 @@
   background: var(--color-danger);
 }
 
-.overview-tier-bar .is-review {
+.overview-tier-bar .is-unsteady {
   background: var(--color-warning);
 }
 
@@ -216,7 +216,7 @@
   background: var(--color-success);
 }
 
-.overview-tier-bar .is-missing {
+.overview-tier-bar .is-insufficient {
   background: var(--color-border-default);
 }
 
@@ -391,7 +391,7 @@
   color: var(--color-danger);
 }
 
-.overview-tier-counts .is-review {
+.overview-tier-counts .is-unsteady {
   background: var(--color-warning-subtle);
   color: var(--color-warning);
 }
@@ -401,7 +401,7 @@
   color: var(--color-success);
 }
 
-.overview-tier-missing {
+.overview-tier-insufficient {
   color: var(--color-text-secondary);
 }
 

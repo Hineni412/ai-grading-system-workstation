@@ -123,14 +123,14 @@ onBeforeUnmount(() => {
       <div>
         <p>知识结构热力图 · 自身证据</p>
         <h1 id="knowledge-graph-title" tabindex="-1">知识结构</h1>
-        <p>按教材章、节查看知识主题与技能的掌握状况；每项独立计算，无证据显示证据不足。</p>
+        <p>按教材章、节查看掌握估计及把握区间；群体颜色表示人数最多的档位，证据不足以灰色显示。</p>
       </div>
       <div class="knowledge-graph-heading-scope">
         <dl v-if="graphStore.graph" class="knowledge-graph-summary" aria-label="知识图谱汇总">
           <div><dt>知识项</dt><dd>{{ summary.total }}</dd></div>
-          <div><dt>证据不足</dt><dd>{{ summary.missing }}</dd></div>
-          <div><dt>重点薄弱</dt><dd>{{ summary.weak }}</dd></div>
-          <div><dt>需要讲评</dt><dd>{{ summary.review }}</dd></div>
+          <div><dt>证据不足</dt><dd>{{ summary.insufficient }}</dd></div>
+          <div><dt>明显薄弱</dt><dd>{{ summary.weak }}</dd></div>
+          <div><dt>还不稳</dt><dd>{{ summary.unsteady }}</dd></div>
         </dl>
       </div>
     </header>

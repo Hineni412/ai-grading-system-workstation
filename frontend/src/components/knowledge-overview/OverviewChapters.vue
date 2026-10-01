@@ -53,8 +53,8 @@ function clearFilter(): void {
 }
 
 function masteryClass(node: TrainingOverviewNode): string {
-  const tier = tierOf(node.group_mastery)
-  return tier ? `is-${tier}` : 'is-missing'
+  const tier = tierOf(node.tier)
+  return tier ? `is-${tier}` : 'is-insufficient'
 }
 </script>
 
@@ -72,7 +72,7 @@ function masteryClass(node: TrainingOverviewNode): string {
       </button>
     </header>
     <p class="overview-legend">
-      待补强 &lt;60% · 需巩固 60–74% · 较稳定 ≥75% · 证据不足（不按 0 计）
+      较稳定 · 还不稳 · 明显薄弱 · 证据不足（含估计不确定，不按 0 计）
     </p>
     <ul class="overview-chapter-list">
       <li v-for="chapter in chapters" :key="chapter.knowledge_key">
