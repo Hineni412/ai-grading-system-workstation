@@ -1173,7 +1173,7 @@ def _load_score_map(
         return {}
     try:
         rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, ValueError):
         return {}
     try:
         rubric = canonicalize_question_document(rubric)
@@ -1235,7 +1235,7 @@ def _load_scoring_item_map(
         return {}, None, {}, {}
     try:
         rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, ValueError):
         return {}, None, {}, {}
     try:
         rubric = canonicalize_question_document(rubric)

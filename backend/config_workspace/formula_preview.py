@@ -14,6 +14,8 @@ appended asset blocks remain the single source of ``<img>`` output.
 
 from __future__ import annotations
 
+import logging
+
 import io
 import re
 import tempfile
@@ -74,7 +76,10 @@ def load_paragraph_xml_index(source_docx: bytes) -> dict[str, str]:
                 asset_root=temp_path / "assets",
                 asset_root_is_output_dir=True,
             )
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "optional operation unavailable: load_paragraph_xml_index (%s)", type(exc).__name__,
+        )
         return {}
     return _index_paragraphs(getattr(extracted, "rich_paragraphs", None) or [])
 

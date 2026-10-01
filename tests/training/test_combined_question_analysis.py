@@ -26,6 +26,19 @@ from tests.current_knowledge_support import install_current_knowledge
 FIXTURE = Path(__file__).parent / "fixtures" / "p4_00_gold_set.json"
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(0, 1), (-5, 1), (8, 8), (100, 100), (101, 100), (999, 100),
+     ("12", 12), (None, 1), ("invalid", 1), (float("inf"), 1)],
+)
+def test_analysis_channel_parallel_limit(value: object, expected: int) -> None:
+    from types import SimpleNamespace
+    from question_bank.training_criteria.analysis import gateway_parallel_limit
+
+    assert gateway_parallel_limit(SimpleNamespace(max_parallel_requests=value)) == expected
+    assert gateway_parallel_limit(SimpleNamespace()) == 1
+
+
 @pytest.mark.parametrize("projection", ["tag", "all"])
 def test_prompt_shares_only_identical_candidate_catalogs(projection: str) -> None:
     from question_bank.training_criteria.adapters import _combined_prompt, _prompt_candidate_contract

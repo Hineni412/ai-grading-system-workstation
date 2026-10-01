@@ -1524,13 +1524,13 @@ def _run_config_generation_job_impl(
                                 curriculum_volume_id=curriculum_volume_id,
                                 analysis_artifact_id=(
                                     str(inputs.get("analysis_artifact_id") or "")
-                                    if evidence_flow
+                                    if analysis_artifact is not None
                                     else ""
                                 ),
                                 analysis_artifact_hash=evidence_artifact_hash,
-                                analysis_source_id=source_id if evidence_flow else "",
+                                analysis_source_id=source_id if analysis_artifact is not None else "",
                                 analysis_source_revision=(
-                                    source_revision if evidence_flow else ""
+                                    source_revision if analysis_artifact is not None else ""
                                 ),
                                 asset_overrides=sync_asset_overrides,
                                 summary=summary,

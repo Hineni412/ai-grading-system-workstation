@@ -328,7 +328,7 @@ def _extract_score_from_dict(item: dict) -> float | None:
         if val is not None:
             try:
                 return float(val)
-            except:
+            except (TypeError, ValueError, OverflowError):
                 pass
     return None
 

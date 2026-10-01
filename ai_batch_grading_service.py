@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -289,7 +291,10 @@ def run_ai_batch_grading(
     def _pause_now() -> bool:
         try:
             return should_pause is not None and bool(should_pause())
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "optional operation unavailable: _pause_now (%s)", type(exc).__name__,
+            )
             return False
 
     # 安全暂停：在提交每个大题批次前检查；已提交批次照常完成并合并，
@@ -781,7 +786,7 @@ def grade_major_question_batch(
         import base64
         try:
             rubric_image_bytes = base64.b64decode(b64)
-        except Exception:
+        except (ValueError, TypeError):
             pass
 
     if not rubric_image_bytes and rubric_images_dir and rubric_images_dir.exists():
@@ -798,7 +803,7 @@ def grade_major_question_batch(
         import base64
         try:
             question_stem_image_bytes = base64.b64decode(q_b64)
-        except Exception:
+        except (ValueError, TypeError):
             pass
 
     if not question_stem_image_bytes and rubric_images_dir and rubric_images_dir.exists():

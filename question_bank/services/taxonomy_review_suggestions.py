@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import logging
+
+from question_bank.atomic_files import replace_with_retry
+
 import copy
 import hashlib
 import json
@@ -7,7 +11,6 @@ import os
 import re
 import tempfile
 import threading
-import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
@@ -310,7 +313,10 @@ class TaxonomySuggestionService:
             return active_ids
         try:
             loaded = self.question_loader(normalized)
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "optional active question lookup unavailable (%s)", type(exc).__name__,
+            )
             return active_ids
         return {
             int(raw.get("id"))
@@ -882,7 +888,10 @@ class TaxonomySuggestionService:
             return []
         try:
             loaded = self.question_loader(ids)
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "optional operation unavailable: _question_summaries (%s)", type(exc).__name__,
+            )
             return []
         by_id: dict[int, Mapping[str, Any]] = {}
         for raw in loaded:
@@ -1187,7 +1196,10 @@ def _callback_requests_cancel(
         return False
     try:
         return bool(callback())
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "optional operation unavailable: _callback_requests_cancel (%s)", type(exc).__name__,
+        )
         return False
 
 
@@ -1199,21 +1211,12 @@ def _safe_progress_callback(
         return
     try:
         callback(copy.deepcopy(snapshot))
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "optional operation unavailable: _safe_progress_callback (%s)", type(exc).__name__,
+        )
         return
 
-
-def _replace_with_retry(source: Path, destination: Path) -> None:
-    # Windows file scanners can hold a freshly written temporary file open
-    # briefly; retry the atomic rename a few times before giving up.
-    for attempt in range(12):
-        try:
-            os.replace(source, destination)
-            return
-        except PermissionError:
-            if attempt == 11:
-                raise
-            time.sleep(min(0.05 * (attempt + 1), 0.4))
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
@@ -1230,6 +1233,6 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        _replace_with_retry(temporary, path)
+        replace_with_retry(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)

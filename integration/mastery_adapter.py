@@ -277,7 +277,7 @@ def _load_sqlite_rubric_labels(conn: sqlite3.Connection) -> dict[tuple[str, str,
             continue
         try:
             rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, ValueError):
             continue
         for question in rubric.get("questions", []) if isinstance(rubric, Mapping) else []:
             if not isinstance(question, Mapping):
@@ -300,7 +300,7 @@ def _sqlite_data_root(conn: sqlite3.Connection) -> Path | None:
     try:
         db_row = conn.execute("PRAGMA database_list").fetchone()
         db_path = Path(_clean_string(db_row[2])) if db_row else Path()
-    except Exception:
+    except sqlite3.Error:
         return None
     return db_path.parent.parent if db_path.parent.name == "databases" else None
 

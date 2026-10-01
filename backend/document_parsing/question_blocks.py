@@ -353,7 +353,7 @@ def _local_answer_section_text(doc_text: str) -> str:
         _, answer_text = _split_answer_text(text)
         if str(answer_text or "").strip():
             return str(answer_text or "")
-    except Exception:
+    except (ImportError, ValueError, TypeError):
         pass
     lines = text.splitlines()
     for index, line in enumerate(lines):
@@ -378,7 +378,7 @@ def _local_answer_blocks(answer_section: str) -> dict[str, str]:
                 )
         if result:
             return result
-    except Exception:
+    except (ImportError, ValueError, TypeError):
         pass
 
     lines = section.splitlines()

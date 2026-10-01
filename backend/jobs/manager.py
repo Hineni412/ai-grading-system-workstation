@@ -163,16 +163,8 @@ class JobManager:
                     job = self.store.create_claimed_config_job(clean_payload)
                 else:
                     job = self.store.create_job(clean_type, clean_payload)
-            future = self._executor_for(clean_type).submit(
-                self._run_job, job.id, handler
-            )
-            self._futures[job.id] = future
-        future.add_done_callback(
-            lambda completed, job_id=job.id: self._discard_completed_future(
-                job_id,
-                completed,
-            )
-        )
+            future = self._schedule_locked(job, handler)
+        self._watch_completion(job.id, future)
         return job
 
     def start_existing(self, job_id: int) -> JobRecord:
@@ -198,16 +190,26 @@ class JobManager:
                 )
             if clean_job_id in self._futures:
                 return job
-            future = self._executor_for(job.job_type).submit(
-                self._run_job, clean_job_id, handler
-            )
-            self._futures[clean_job_id] = future
-        future.add_done_callback(
-            lambda completed, existing_job_id=clean_job_id: (
-                self._discard_completed_future(existing_job_id, completed)
-            )
-        )
+            future = self._schedule_locked(job, handler)
+        self._watch_completion(job.id, future)
         return job
+
+    def submit_idempotent_export(self, job_type: str, payload: dict[str, Any]) -> tuple[JobRecord, bool]:
+        if job_type not in self._handlers:
+            raise UnsupportedJobTypeError(f"unsupported job type: {job_type}")
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("JobManager has shut down")
+            job, created = self.store.create_idempotent_export_job(job_type, payload)
+        if created:
+            try:
+                self.start_existing(job.id)
+            except Exception:
+                current = self.store.get_job(job.id)
+                if current is not None and current.status == "queued":
+                    self.store.finish(job.id, "failed", "job scheduling failed")
+                raise
+        return job, created
 
     def submit_unique_active(
         self,
@@ -238,16 +240,8 @@ class JobManager:
                     f"active {clean_type} job already exists for session {session_id}"
                 )
             job = self.store.create_job(clean_type, clean_payload)
-            future = self._executor_for(clean_type).submit(
-                self._run_job, job.id, handler
-            )
-            self._futures[job.id] = future
-        future.add_done_callback(
-            lambda completed, job_id=job.id: self._discard_completed_future(
-                job_id,
-                completed,
-            )
-        )
+            future = self._schedule_locked(job, handler)
+        self._watch_completion(job.id, future)
         return job
 
     def submit_idempotent_scan_start(
@@ -266,20 +260,10 @@ class JobManager:
                 raise ActiveJobExistsError(str(exc)) from exc
             if not created:
                 return job, False
-            try:
-                future = self._executor_for("grading_run").submit(
-                    self._run_job, job.id, handler
-                )
-            except Exception as exc:
-                self.store.finish(job.id, "failed", "job scheduling failed")
-                raise RuntimeError("grading job could not be scheduled") from exc
-            self._futures[job.id] = future
-        future.add_done_callback(
-            lambda completed, job_id=job.id: self._discard_completed_future(
-                job_id,
-                completed,
+            future = self._schedule_locked(
+                job, handler, error_message="grading job could not be scheduled"
             )
-        )
+        self._watch_completion(job.id, future)
         return job, True
 
     def submit_idempotent_config(
@@ -297,14 +281,8 @@ class JobManager:
                 job, created = self.store.create_idempotent_config_job(clean_payload)
             if not created:
                 return job, False
-            future = self._executor.submit(self._run_job, job.id, handler)
-            self._futures[job.id] = future
-        future.add_done_callback(
-            lambda completed, job_id=job.id: self._discard_completed_future(
-                job_id,
-                completed,
-            )
-        )
+            future = self._schedule_locked(job, handler)
+        self._watch_completion(job.id, future)
         return job, True
 
     def submit_idempotent_question_bank_sync(
@@ -327,20 +305,11 @@ class JobManager:
                 raise ActiveJobExistsError(str(exc)) from exc
             if not created:
                 return job, False
-            try:
-                future = self._executor.submit(self._run_job, job.id, handler)
-            except Exception as exc:
-                self.store.finish(job.id, "failed", "job scheduling failed")
-                raise RuntimeError(
-                    "question-bank sync job could not be scheduled"
-                ) from exc
-            self._futures[job.id] = future
-        future.add_done_callback(
-            lambda completed, job_id=job.id: self._discard_completed_future(
-                job_id,
-                completed,
+            future = self._schedule_locked(
+                job, handler,
+                error_message="question-bank sync job could not be scheduled",
             )
-        )
+        self._watch_completion(job.id, future)
         return job, True
 
     def submit_idempotent_taxonomy_suggestion(
@@ -362,28 +331,11 @@ class JobManager:
             )
             if not created:
                 return job, False
-            try:
-                future = self._executor.submit(
-                    self._run_job,
-                    job.id,
-                    handler,
-                )
-            except Exception as exc:
-                self.store.finish(
-                    job.id,
-                    "failed",
-                    "job scheduling failed",
-                )
-                raise RuntimeError(
-                    "taxonomy suggestion job could not be scheduled"
-                ) from exc
-            self._futures[job.id] = future
-        future.add_done_callback(
-            lambda completed, job_id=job.id: self._discard_completed_future(
-                job_id,
-                completed,
+            future = self._schedule_locked(
+                job, handler,
+                error_message="taxonomy suggestion job could not be scheduled",
             )
-        )
+        self._watch_completion(job.id, future)
         return job, True
 
     def submit_idempotent_tagging_sync(
@@ -399,20 +351,10 @@ class JobManager:
             job, created = self.store.create_idempotent_tagging_sync_job(payload)
             if not created:
                 return job, False
-            try:
-                future = self._executor.submit(self._run_job, job.id, handler)
-            except Exception as exc:
-                self.store.finish(job.id, "failed", "job scheduling failed")
-                raise RuntimeError(
-                    "tagging sync job could not be scheduled"
-                ) from exc
-            self._futures[job.id] = future
-        future.add_done_callback(
-            lambda completed, job_id=job.id: self._discard_completed_future(
-                job_id,
-                completed,
+            future = self._schedule_locked(
+                job, handler, error_message="tagging sync job could not be scheduled"
             )
-        )
+        self._watch_completion(job.id, future)
         return job, True
 
     def submit_config_retry(self, payload: dict[str, Any]) -> JobRecord:
@@ -425,14 +367,8 @@ class JobManager:
             clean_payload = dict(payload)
             with self._config_submission_guard("config_generation", clean_payload):
                 job = self.store.create_config_retry_job(clean_payload)
-            future = self._executor.submit(self._run_job, job.id, handler)
-            self._futures[job.id] = future
-        future.add_done_callback(
-            lambda completed, job_id=job.id: self._discard_completed_future(
-                job_id,
-                completed,
-            )
-        )
+            future = self._schedule_locked(job, handler)
+        self._watch_completion(job.id, future)
         return job
 
     def submit_idempotent_config_retry(
@@ -450,15 +386,36 @@ class JobManager:
                 job, created = self.store.create_idempotent_config_retry_job(clean_payload)
             if not created:
                 return job, False
-            future = self._executor.submit(self._run_job, job.id, handler)
-            self._futures[job.id] = future
-        future.add_done_callback(
-            lambda completed, job_id=job.id: self._discard_completed_future(
-                job_id,
-                completed,
-            )
-        )
+            future = self._schedule_locked(job, handler)
+        self._watch_completion(job.id, future)
         return job, True
+
+    def _schedule_locked(
+        self,
+        job: JobRecord,
+        handler: JobHandler,
+        *,
+        error_message: str | None = None,
+    ) -> Future[None]:
+        """Start and register a committed job while the submission lock is held."""
+        try:
+            future = self._executor_for(job.job_type).submit(
+                self._run_job, job.id, handler
+            )
+        except Exception as exc:
+            self.store.finish(job.id, "failed", "job scheduling failed")
+            if error_message is not None:
+                raise RuntimeError(error_message) from exc
+            raise
+        self._futures[job.id] = future
+        return future
+
+    def _watch_completion(self, job_id: int, future: Future[None]) -> None:
+        # An already completed Future runs this callback immediately. Register it
+        # outside the submission lock, since cleanup acquires that same lock.
+        future.add_done_callback(
+            lambda completed: self._discard_completed_future(job_id, completed)
+        )
 
     def get(self, job_id: int) -> JobRecord | None:
         return self.store.get_job(int(job_id))

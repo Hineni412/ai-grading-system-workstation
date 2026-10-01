@@ -174,7 +174,7 @@ def _convert_docx_with_word(source_file: Path, pdf_path: Path) -> Path | None:
     try:
         import pythoncom  # type: ignore[import-not-found]
         import win32com.client  # type: ignore[import-not-found]
-    except Exception:
+    except ImportError:
         return None
 
     word = None
