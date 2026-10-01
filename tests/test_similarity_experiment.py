@@ -80,3 +80,93 @@ def test_short_lists_and_unknown_labels_do_not_inflate_comparison():
     comparison = paired_comparisons(result)["skill_rules_vs_current"]
     assert comparison["tied_queries"] == 1
     assert comparison["paired_query_bootstrap_95_percentile_interval_pp"] == [0., 0.]
+
+
+def test_vector_experiment_cosine_is_scale_independent_and_excludes_self():
+    from tools.experiment_vector_similarity import VectorExperiment
+
+    rows = [question(i, f"合成题{i}", "s") for i in (1, 3, 2, 4)]
+    experiment = VectorExperiment(rows, [[10, 0], [8, 6], [80, 60], [-1, 0]])
+    assert experiment.rank(1, "vector") == [2, 3, 4]
+
+
+def test_vector_experiment_rejects_invalid_embeddings_before_ranking():
+    import pytest
+    from tools.experiment_vector_similarity import normalize_vectors
+
+    for vectors in ([[0, 0]], [[float("nan"), 1]], [[float("inf"), 1]], [1, 2]):
+        with pytest.raises(ValueError):
+            normalize_vectors(vectors)
+    with pytest.raises(ValueError):
+        normalize_vectors([[1, 0]], expected_rows=2)
+
+
+def test_hybrid_does_not_promote_a_vector_hit_without_current_rule_support():
+    from tools.experiment_vector_similarity import VectorExperiment
+
+    target = question(1, "求出满足(t-1)(t-4)=0的所有实数t", "solve")
+    wrong = question(2, "证明两条直线互相垂直", "perpendicular", topic="geometry")
+    useful = question(3, "解方程：x²-5x+6=0", "solve")
+    experiment = VectorExperiment([target, wrong, useful], [[1, 0], [1, .01], [.7, .7]])
+    assert experiment.rank(1, "vector")[0] == 2
+    assert experiment.rank(1, "hybrid") == [3]
+
+
+def test_vector_experiment_uses_the_adopted_ranker_as_its_baseline():
+    from tools.experiment_vector_similarity import VectorExperiment
+
+    rows = [question(1, "解方程x²-5x+6=0", "solve"),
+            question(2, "求方程(t-1)(t-4)=0的所有实根", "solve"),
+            question(3, "求k使方程x²-5x+k=0有两个不等实根", "discriminant")]
+    experiment = VectorExperiment(rows, [[1, 0], [.8, .6], [.9, .1]])
+    assert experiment.rank(1, "current") == Experiment(rows).rank(1, "rules_bm25_rrf")
+
+
+def test_small_vector_holdout_covers_each_available_question_type():
+    from tools.experiment_vector_similarity import held_out_sample
+
+    rows = [question(i, chr(0x4E00+i) * 8, f"skill_{i}") for i in range(1, 121)]
+    for ordinal, item in enumerate(rows):
+        item.kind = ("选择题", "填空题", "解答题")[ordinal % 3]
+        item.tags["chapter"] = frozenset([f"chapter_{ordinal}"])
+    sample, stats = held_out_sample(rows, 12)
+    assert {q.kind for q in sample} == {"选择题", "填空题", "解答题"}
+    assert len(sample) == 12
+    assert not {q.qid for q in sample}.intersection(q.qid for q in sample_questions(rows))
+
+
+def test_local_vector_encoder_uses_cls_and_masks_padding_without_real_model():
+    import numpy as np
+    from types import SimpleNamespace
+    from tools.experiment_vector_similarity import LocalBge
+
+    encoder = object.__new__(LocalBge)
+    encoder.cls, encoder.sep, encoder.pad = 101, 102, 0
+    encoder.stats = {"encoded_texts": 0, "truncated_stems": 0,
+                     "truncated_requirements": 0, "truncated_solutions": 0, "tokens": 0}
+    encoder.tokenizer = SimpleNamespace(encode=lambda text, **kw: SimpleNamespace(ids=[20] * len(text)))
+    captured = []
+
+    class FakeSession:
+        def get_inputs(self):
+            return [SimpleNamespace(name=name) for name in ("input_ids", "attention_mask", "token_type_ids")]
+
+        def run(self, _, inputs):
+            captured.append(inputs)
+            batch, width = inputs["input_ids"].shape
+            values = np.full((batch, width, 2), 100., dtype=np.float32)
+            values[:, 0, :] = [3., 4.]
+            return [values]
+
+    encoder.session = FakeSession()
+    long = question(1, "甲" * 600, "s")
+    long.answer = "乙" * 600
+    short = question(2, "求未知数", "s")
+    vectors = encoder.encode([long, short])
+    assert np.allclose(vectors, [[.6, .8], [.6, .8]])
+    inputs = captured[0]
+    assert np.any(inputs["attention_mask"][1] == 0)
+    assert np.all(inputs["input_ids"][inputs["attention_mask"] == 0] == 0)
+    assert encoder.stats["truncated_stems"] == 1
+    assert encoder.stats["truncated_solutions"] == 1
+    assert inputs["input_ids"].shape[1] <= 512
