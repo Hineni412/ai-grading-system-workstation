@@ -349,7 +349,9 @@ class QuestionErrorPattern(_QuestionBankModel):
     has_evidence: bool
     skill_key: str | None = None
     skill_label: str | None = None
-    skill_source: Literal["teacher", "criterion"] | None = None
+    skill_keys: list[str] = Field(default_factory=list)
+    skill_labels: list[str] = Field(default_factory=list)
+    skill_source: Literal["teacher", "criterion", "question"] | None = None
 
 
 class QuestionSkillOption(_QuestionBankModel):

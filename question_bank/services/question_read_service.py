@@ -2130,6 +2130,8 @@ class QuestionBankReadService:
                 "has_evidence": bool(pattern["occurrences"]),
                 "skill_key": pattern_skills.get(int(pattern["id"]), {}).get("skill_key"),
                 "skill_label": pattern_skills.get(int(pattern["id"]), {}).get("skill_label"),
+                "skill_keys": pattern_skills.get(int(pattern["id"]), {}).get("skill_keys") or [],
+                "skill_labels": pattern_skills.get(int(pattern["id"]), {}).get("skill_labels") or [],
                 "skill_source": pattern_skills.get(int(pattern["id"]), {}).get("skill_source"),
             }
             for pattern in pattern_rows if pattern.get("id") is not None

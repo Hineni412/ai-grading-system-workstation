@@ -650,6 +650,40 @@ def merge_bank_triggers_into_patterns(
     return merged
 
 
+def cause_group_bank_triggers(
+    entry: dict[str, Any], group: dict[str, Any], records: Any,
+) -> list[tuple[str, str]]:
+    """整理组的题库触发位。
+
+    v4 按物化记录的证据点写 step 触发；组成员含无点记录（整条证据或
+    无证据点的步骤）时补一条 observation。v3 沿用组上 step_id。
+    """
+    from backend.class_analysis import CAUSE_ANALYSIS_VERSION
+
+    if str((entry or {}).get("version") or "") != CAUSE_ANALYSIS_VERSION:
+        step_id = str(group.get("step_id") or "").strip()
+        return [("step", step_id)] if step_id else [("observation", "")]
+    rows = [
+        row
+        for row in records or []
+        if isinstance(row, dict)
+        and str(row.get("kind") or "") == str(group.get("kind") or "")
+        and str(row.get("pattern") or "").strip() == str(group.get("reason") or "").strip()
+    ]
+    triggers = [
+        ("step", str(point))
+        for point in sorted({
+            str(point)
+            for row in rows
+            for point in row.get("evidence_point_ids") or []
+            if str(point or "").strip()
+        })
+    ]
+    if not rows or any(not row.get("evidence_point_ids") for row in rows):
+        triggers.append(("observation", ""))
+    return triggers
+
+
 def sync_session_patterns_to_bank(
     store: Any,
     session_id: int,
@@ -663,7 +697,7 @@ def sync_session_patterns_to_bank(
     出现快照、不重复建行。只写 bank_context 中已关联的题（写 ctx["bank_id"]，
     判重家族成员经 bank_ids 读取侧覆盖）；表缺失/未关联直接跳过。
     """
-    from backend.class_analysis import CAUSE_ANALYSIS_VERSION
+    from backend.class_analysis import CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION, cause_source_state
     from question_bank.services.error_pattern_service import record_auto_patterns
 
     if question_bank_path is None or not bank_context:
@@ -671,11 +705,15 @@ def sync_session_patterns_to_bank(
     state = store.load(session_id) or {}
     if current_sources is not None:
         # 维护回填及正常整理只回挂当前输入匹配的成果；旧缓存不能制造新证据。
-        from backend.class_analysis import cause_input_matches
         questions = ((state.get("cause_analysis") or {}).get("questions")) or {}
-        valid = {str(source["question_id"]): source for source in current_sources
-                 if cause_input_matches(questions.get(str(source["question_id"])) or {}, source)
-                 and (questions.get(str(source["question_id"])) or {}).get("version") == CAUSE_ANALYSIS_VERSION}
+        valid = {}
+        for source in current_sources:
+            entry = questions.get(str(source["question_id"])) or {}
+            version, match = entry.get("version"), cause_source_state(entry, source)
+            if version == CAUSE_ANALYSIS_VERSION and match == "fresh":
+                valid[str(source["question_id"])] = source
+            elif version == CAUSE_PRE_STEP_VERSION and match in ("fresh", "pre_step"):
+                valid[str(source["question_id"])] = source
         state = {**state, "cause_analysis": {"questions": {qid: questions[qid] for qid in valid}},
                  "option_analysis": {qid: entry for qid, entry in option_analysis_entries(state).items() if qid in valid},
                  "answer_patterns": {}}
@@ -777,17 +815,21 @@ def sync_session_patterns_to_bank(
                 "occurrence": {**occurrence_base, "question_id": str(parent)},
             })
 
-    # v3 整题整理：error/process 组写 step（可定位判定点）或 observation。
+    # 整题整理：v4 按物化记录的证据点写 step 触发（含无点成员时补
+    # observation）；v3 兼容结果沿用组上 step_id 或 observation。
     questions = ((state.get("cause_analysis") or {}).get("questions")) or {}
+    error_records = (state.get("error_records") or {})
     for qid, entry in questions.items():
         ctx = ctx_for(qid)
         if ctx is None or not isinstance(entry, dict):
             continue
-        if entry.get("version") != CAUSE_ANALYSIS_VERSION or entry.get("origin") != "model":
+        if entry.get("version") not in (CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION) \
+                or entry.get("origin") != "model":
             continue
         result = entry.get("result")
         if not isinstance(result, dict):
             continue
+        records = ((error_records.get(str(qid)) or {}).get("records")) or []
         for group in result.get("groups") or []:
             if not isinstance(group, dict):
                 continue
@@ -799,22 +841,22 @@ def sync_session_patterns_to_bank(
             reason = str(group.get("reason") or "").strip()
             if not category or not reason:
                 continue
-            step_id = str(group.get("step_id") or "").strip()
             explanation = "；".join(
                 str(item.get("description") or "")
                 for item in group.get("manifestations") or []
                 if item.get("description")
             )[:200]
-            rows.append({
-                "question_id": int(ctx["bank_id"]),
-                "category": category,
-                "pattern": reason,
-                "explanation": explanation,
-                "trigger_kind": "step" if step_id else "observation",
-                "trigger_value": step_id,
-                "source": "ai_auto",
-                "occurrence": {**occurrence_base, "question_id": str(qid)},
-            })
+            for trigger_kind, trigger_value in cause_group_bank_triggers(entry, group, records):
+                rows.append({
+                    "question_id": int(ctx["bank_id"]),
+                    "category": category,
+                    "pattern": reason,
+                    "explanation": explanation,
+                    "trigger_kind": trigger_kind,
+                    "trigger_value": trigger_value,
+                    "source": "ai_auto",
+                    "occurrence": {**occurrence_base, "question_id": str(qid)},
+                })
     return record_auto_patterns(Path(question_bank_path), rows)
 
 
@@ -827,6 +869,7 @@ __all__ = [
     "answer_pattern_map",
     "bank_confirmed_triggers",
     "bank_question_row",
+    "cause_group_bank_triggers",
     "build_option_analysis_input",
     "extract_canonical_option",
     "find_answer_patterns",

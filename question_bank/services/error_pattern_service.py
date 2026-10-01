@@ -507,16 +507,12 @@ def _skill_label(knowledge: Any, key: str | None) -> str | None:
     return node.display_name if node is not None else None
 
 
-def _criterion_skill_map(
+def _version_point_skills(
     conn: sqlite3.Connection,
     db_path: Path,
     question_id: int,
-    point_ids: Iterable[str],
-) -> dict[str, str]:
-    """{判定点 id: 技能稳定键}：当前可用证据版本中，恰有唯一直达 sk_* 链接时成立。"""
-    wanted = {str(point) for point in point_ids if str(point or "").strip()}
-    if not wanted:
-        return {}
+) -> dict[str, list[str]]:
+    """{判定点 id: 直达技能稳定键列表}：题目当前可用证据版本的全部直达 sk_* 链接。"""
     if conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
         ("question_solution_evidence_versions",),
@@ -553,18 +549,16 @@ def _criterion_skill_map(
     except sqlite3.Error:
         return {}
     points = grouped.get(str(version["evidence_version_id"]), {})
-    out: dict[str, str] = {}
-    for point_id in wanted:
-        keys = {
+    return {
+        point_id: sorted({
             str(link.stable_key)
-            for link in points.get(point_id, ())
+            for link in links
             if link.role == "direct"
             and link.resolution_status == "resolved"
             and str(link.stable_key or "").startswith("sk_")
-        }
-        if len(keys) == 1:
-            out[point_id] = keys.pop()
-    return out
+        })
+        for point_id, links in points.items()
+    }
 
 
 def pattern_skill_index(
@@ -575,11 +569,12 @@ def pattern_skill_index(
     *,
     knowledge: Any = None,
 ) -> dict[int, dict[str, Any]]:
-    """{错法行 id: {skill_key, skill_label, skill_source}}，供题目详情读取。
+    """{错法行 id: {skill_key(s), skill_label(s), skill_source}}，供题目详情读取。
 
     生效顺序：教师设定的 ``skill_key``（teacher）优先；未设定时判定点
-    （``trigger_kind='step'``）触发位取该判定点在当前证据版本中唯一直达
-    的技能链接（criterion）；其余为空。
+    （``trigger_kind='step'``）触发位取该判定点在当前证据版本中的全部直达
+    技能链接（criterion）；其他触发方式在本题只有一个直达技能时归入该技能
+    （question）。技能恰为唯一时给出单个 ``skill_key``，否则为 None。
     """
     entries = [row for row in rows if row.get("id") is not None]
     teacher_keys = {
@@ -587,26 +582,26 @@ def pattern_skill_index(
         for row in entries
         if str(row.get("skill_key") or "").strip()
     }
-    derived = _criterion_skill_map(
-        conn, db_path, int(question_id),
-        (
-            str(row.get("trigger_value") or "")
-            for row in entries
-            if int(row["id"]) not in teacher_keys
-            and row.get("trigger_kind") == "step"
-        ),
-    )
+    version_skills = _version_point_skills(conn, db_path, int(question_id))
+    question_keys = sorted({key for keys in version_skills.values() for key in keys})
     out: dict[int, dict[str, Any]] = {}
     for row in entries:
         rid = int(row["id"])
-        key = teacher_keys.get(rid)
-        source = "teacher" if key else None
-        if key is None and row.get("trigger_kind") == "step":
-            key = derived.get(str(row.get("trigger_value") or "").strip())
-            source = "criterion" if key else None
+        teacher = teacher_keys.get(rid)
+        if teacher:
+            keys, source = [teacher], "teacher"
+        elif row.get("trigger_kind") == "step":
+            keys = version_skills.get(str(row.get("trigger_value") or "").strip()) or []
+            source = "criterion" if keys else None
+        else:
+            keys = list(question_keys) if len(question_keys) == 1 else []
+            source = "question" if keys else None
+        key = keys[0] if len(keys) == 1 else None
         out[rid] = {
             "skill_key": key,
             "skill_label": _skill_label(knowledge, key),
+            "skill_keys": keys,
+            "skill_labels": [_skill_label(knowledge, item) or item for item in keys],
             "skill_source": source,
         }
     return out

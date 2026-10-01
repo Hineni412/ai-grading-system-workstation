@@ -590,6 +590,7 @@ def _build_report_export_handler(
                             store=ClassAnalysisStateStore(reports_dir),
                             llm_client_factory=analysis_llm_client_factory,
                             retry_failed=False,
+                            upgrade_pre_step=False,
                             progress_band=(0.05, 0.45),
                             progress_stage="report_export",
                         )

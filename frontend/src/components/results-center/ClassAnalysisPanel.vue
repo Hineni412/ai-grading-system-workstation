@@ -99,6 +99,7 @@ const causeStatusText = computed(() => {
   const state = causeAnalysis.value
   if (state?.legacy_questions) return `${state.legacy_questions} 题保留既有归并；更新整理后，将结合真实作答分别整理错因、过程缺项和待核对事项。`
   if (state?.outdated_questions) return `${state.outdated_questions} 题为旧版整理，暂无错误大类；重新整理后自动升级并补充大类。`
+  if (state?.pre_step_questions) return `${state.pre_step_questions} 题为按步骤整理前的结果；手动“整理错因”后按扣分步骤逐条整理。`
   if (!state || state.status === 'not_generated') return state?.failed_questions
     ? '错因整理未完成，保留原始理由；可重新整理。'
     : state?.stale ? '作答、批语或题目依据已变化，建议更新整理。' : '当前按原始表述合并，可结合真实作答整理。'

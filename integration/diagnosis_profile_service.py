@@ -882,12 +882,19 @@ class DiagnosisProfileService:
                     seen = index.setdefault(key, [])
                     for row in rows:
                         signature = (row.get("kind"), row.get("category"), row.get("pattern"))
-                        if all(
-                            (item.get("kind"), item.get("category"), item.get("pattern")) != signature
-                            for item in seen
-                        ):
-                            seen.append({name: row.get(name) for name in
-                                         ("kind", "category", "pattern", "pattern_status", "step_id")})
+                        existing = next(
+                            (item for item in seen
+                             if (item.get("kind"), item.get("category"), item.get("pattern")) == signature),
+                            None,
+                        )
+                        if existing is None:
+                            existing = {name: row.get(name) for name in
+                                        ("kind", "category", "pattern", "pattern_status", "step_id")}
+                            existing["step_ids"] = (
+                                [row["step_id"]] if row.get("step_id") else [])
+                            seen.append(existing)
+                        elif row.get("step_id") and row["step_id"] not in existing["step_ids"]:
+                            existing["step_ids"].append(row["step_id"])
         return index
 
     def _tag_projections(

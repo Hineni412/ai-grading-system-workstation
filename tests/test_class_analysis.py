@@ -531,7 +531,7 @@ def test_student_error_records_materialize_and_invalidate_on_input_change(
         if any(r.question_id == "Q2" and r.lost for r in student.records)
     }
     lisi = next(s for s in data.students if s.student_name == "李四")
-    mapped = student_error_map(state, lisi, sources)
+    mapped = student_error_map(state, lisi, sources, data)
     assert [row["pattern"] for row in mapped["Q2"]] == ["垂直关系用错"]
     # 批语变化 → 输入指纹变化 → 物化记录不再匹配，报告不展示旧归类。
     with sqlite3.connect(db.db_path) as conn:
@@ -539,7 +539,7 @@ def test_student_error_records_materialize_and_invalidate_on_input_change(
             "UPDATE session_details SET deduction_reason='复核后改判' WHERE question_id='Q2'"
         )
     changed = assemble_cause_data(db, sid, data_root=tmp_path)
-    assert student_error_map(state, lisi, build_cause_inputs(changed)) == {}
+    assert student_error_map(state, lisi, build_cause_inputs(changed), changed) == {}
 
 
 def test_choice_question_option_path_auto_bank_write_and_edit(
@@ -1104,3 +1104,617 @@ def test_review_confirmed_marker_never_surfaces_as_error_type() -> None:
     )
     assert _record_brief_text(record) == "未作答或无批改记录"
     assert _loss_entry_label({"error_category": "已复核"}) == "原因未记录"
+
+
+# ---------------------------------------------------------------------------
+# 按步骤整理（v4）：独立扣分步骤单元、教师锁步骤、v3 兼容升级
+# ---------------------------------------------------------------------------
+
+
+def _seed_stepped_session(db, tmp_path: Path) -> int:
+    """基础场次 + Q2 评分步骤；张三的批改证据带逐步评估（S3 沿用前步错误）。"""
+    sid = _seed_analysis_session(db, tmp_path)
+    session = db.sessions.get_grading_session(sid)
+    rubric_path = Path(session["rubric_path"])
+    rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    rubric["questions"][1].update({
+        "source_evidence_version_id": "e" * 64,
+        "parts": [{
+            "part_id": "Q2",
+            "part_score": 40,
+            "steps": [
+                {"step_id": "S1", "step_score": 10, "core_goal": "设未知数",
+                 "evidence_point_ids": ["p1"]},
+                {"step_id": "S2", "step_score": 10, "core_goal": "列等量关系",
+                 "evidence_point_ids": ["p2"]},
+                {"step_id": "S3", "step_score": 10, "core_goal": "求解方程",
+                 "evidence_point_ids": ["p3"]},
+                {"step_id": "S4", "step_score": 10, "core_goal": "写出结论",
+                 "evidence_point_ids": ["p4a", "p4b"]},
+            ],
+        }],
+    })
+    rubric_path.write_text(json.dumps(rubric, ensure_ascii=False), encoding="utf-8")
+    with sqlite3.connect(db.db_path) as conn:
+        result_id = conn.execute(
+            "SELECT r.id FROM session_results r JOIN students s ON s.id = r.student_id"
+            " WHERE r.session_id = ? AND s.name = '张三'",
+            (sid,),
+        ).fetchone()[0]
+        raw = {
+            "grading_completeness": {"status": "complete"},
+            "detail_metadata": {"Q2": {
+                "observed_answer": "张三的证明作答",
+                "step_assessments": [
+                    {"step_id": "S1", "part_id": "Q2", "achievement": "full",
+                     "score_awarded": 10},
+                    {"step_id": "S2", "part_id": "Q2", "achievement": "none",
+                     "score_awarded": 0, "reason": "未列出等量关系"},
+                    {"step_id": "S3", "part_id": "Q2", "achievement": "none",
+                     "score_awarded": 0, "carried_error_from": "S2",
+                     "reason": "沿用前步错误方程"},
+                    {"step_id": "S4", "part_id": "Q2", "achievement": "partial",
+                     "score_awarded": 0, "missing_or_error": "未写结论"},
+                ],
+            }},
+        }
+        conn.execute(
+            "UPDATE session_results SET raw_json = ? WHERE id = ?",
+            (json.dumps(raw, ensure_ascii=False), result_id),
+        )
+    return sid
+
+
+def test_cause_inputs_split_independently_failed_steps(tmp_path: Path) -> None:
+    """by_step 输入把独立扣分的步骤拆为单元；沿用前步错误的步骤不单列。"""
+    import backend.jobs
+    from backend.class_analysis import assemble_cause_data, build_cause_inputs
+
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
+    db.initialize()
+    sid = _seed_stepped_session(db, tmp_path)
+    data = assemble_cause_data(db, sid, data_root=tmp_path)
+
+    source = _cause_source(data, "Q2")
+    stepped = next(item for item in source["evidence"] if item.get("failed_steps"))
+    assert [unit["step_id"] for unit in stepped["failed_steps"]] == ["S2", "S4"]
+    assert [unit["id"] for unit in stepped["failed_steps"]] == [
+        f"{stepped['id']}.S1",
+        f"{stepped['id']}.S2",
+    ]
+    first = stepped["failed_steps"][0]
+    assert first["core_goal"] == "列等量关系" and first["step_score"] == 10
+    assert first["part_id"] == "Q2" and first["reason"] == "未列出等量关系"
+
+    # by_step=False 复现旧输入形状；无步骤证据在两种口径下完全一致。
+    old_source = next(
+        item for item in build_cause_inputs(data, by_step=False)
+        if item["question_id"] == "Q2"
+    )
+    assert all("failed_steps" not in item for item in old_source["evidence"])
+    assert len(old_source["evidence"]) == len(source["evidence"])
+    # 无步骤证据在两种口径下的条目内容完全一致（id 是位置序号，不计内容）。
+    plain = next(item for item in source["evidence"] if not item.get("failed_steps"))
+    assert {k: v for k, v in plain.items() if k != "id"} in [
+        {k: v for k, v in item.items() if k != "id"}
+        for item in old_source["evidence"]
+    ]
+    stripped = {
+        key: [{k: v for k, v in item.items() if k != "failed_steps"}
+              for item in source["evidence"]]
+        if key == "evidence" else value
+        for key, value in source.items()
+    }
+    assert sorted(
+        json.dumps({k: v for k, v in item.items() if k != "id"},
+                   ensure_ascii=False, sort_keys=True)
+        for item in old_source["evidence"]
+    ) == sorted(
+        json.dumps({k: v for k, v in item.items() if k != "id"},
+                   ensure_ascii=False, sort_keys=True)
+        for item in stripped["evidence"]
+    )
+    assert {k: v for k, v in old_source.items() if k != "evidence"} == {
+        k: v for k, v in stripped.items() if k != "evidence"
+    }
+
+
+def test_teacher_locked_answer_uses_review_steps_only(tmp_path: Path) -> None:
+    """教师锁定题只用校验通过的教师逐步记录；校验失败按整题处理。"""
+    import backend.jobs
+    from backend.class_analysis import assemble_cause_data, build_cause_inputs
+
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
+    db.initialize()
+    sid = _seed_stepped_session(db, tmp_path)
+    with sqlite3.connect(db.db_path) as conn:
+        student_id, result_id = conn.execute(
+            "SELECT s.id, r.id FROM session_results r JOIN students s ON s.id = r.student_id"
+            " WHERE r.session_id = ? AND s.name = '李四'",
+            (sid,),
+        ).fetchone()
+        conn.execute(
+            "INSERT INTO teacher_score_locks (session_id, scan_batch_id, student_id,"
+            " question_id, score_awarded, max_score, deduction_reason,"
+            " source_target_type, source_target_id, revision)"
+            " VALUES (?, 'batch-1', ?, 'Q2', 20, 40, '教师扣分', 'manual', 1, 1)",
+            (sid, student_id),
+        )
+        review = {
+            "revision": 1,
+            "scan_batch_id": "batch-1",
+            "score_awarded": 20,
+            "steps": [
+                {"step_id": "S1", "part_id": "Q2", "score_awarded": 10,
+                 "max_score": 10, "evidence_point_ids": ["p1"]},
+                {"step_id": "S2", "part_id": "Q2", "score_awarded": 0,
+                 "max_score": 10, "evidence_point_ids": ["p2"], "reason": "关系缺失"},
+                {"step_id": "S3", "part_id": "Q2", "score_awarded": 10,
+                 "max_score": 10, "evidence_point_ids": ["p3"]},
+                {"step_id": "S4", "part_id": "Q2", "score_awarded": 0,
+                 "max_score": 10, "evidence_point_ids": ["p4a", "p4b"]},
+            ],
+        }
+        raw = {
+            "grading_completeness": {"status": "complete"},
+            "detail_metadata": {"Q2": {
+                "observed_answer": "李四的证明作答",
+                "step_assessments": [
+                    {"step_id": "S1", "part_id": "Q2", "achievement": "none",
+                     "score_awarded": 0, "reason": "AI 认为 S1 失败"},
+                ],
+            }},
+            "teacher_reviews": {"Q2": review},
+        }
+        conn.execute(
+            "UPDATE session_results SET raw_json = ? WHERE id = ?",
+            (json.dumps(raw, ensure_ascii=False), result_id),
+        )
+
+    def stepped_units() -> list[dict]:
+        data = assemble_cause_data(db, sid, data_root=tmp_path)
+        source = _cause_source(data, "Q2")
+        lisi = next(
+            item for item in source["evidence"]
+            if item["student_answer"] == "李四的证明作答"
+        )
+        return lisi.get("failed_steps") or []
+
+    # 教师步骤校验通过：AI 评估（S1）被忽略，只保留教师判定的失分步。
+    assert [unit["step_id"] for unit in stepped_units()] == ["S2", "S4"]
+
+    # 修订号对不上当前最终分锁：教师记录不可用，AI 步骤也不得回退使用。
+    with sqlite3.connect(db.db_path) as conn:
+        row = conn.execute(
+            "SELECT raw_json FROM session_results WHERE id = ?", (result_id,)
+        ).fetchone()
+        stale = json.loads(row[0])
+        stale["teacher_reviews"]["Q2"]["revision"] = 999
+        conn.execute(
+            "UPDATE session_results SET raw_json = ? WHERE id = ?",
+            (json.dumps(stale, ensure_ascii=False), result_id),
+        )
+    assert stepped_units() == []
+
+
+def test_normalize_cause_result_assigns_step_units() -> None:
+    """步骤单元按组引用归属；未分配单元自动待核对；模型 step_id 被忽略。"""
+    from backend.class_analysis import normalize_cause_result
+
+    source = {
+        "question_id": "Q2",
+        "evidence": [
+            {"id": "E1", "text": "批语", "student_answer": "作答",
+             "failed_steps": [
+                 {"id": "E1.S1", "step_id": "S2", "part_id": "Q2"},
+                 {"id": "E1.S2", "step_id": "S4", "part_id": "Q2"},
+             ]},
+            {"id": "E2", "text": "另一批语", "student_answer": "另一作答"},
+        ],
+        "known_patterns": [],
+    }
+    result = normalize_cause_result(
+        {
+            "groups": [{
+                "kind": "process", "category": "过程与依据",
+                "reason": "缺少等量关系", "manifestation": "未列关系式",
+                "evidence_ids": ["E1.S1", "E2"],
+                "step_id": "S9",
+            }],
+        },
+        source,
+    )
+    group = result["groups"][0]
+    assert group["evidence_ids"] == ["E1.S1", "E2"]
+    assert group["step_ids"] == ["S2"]
+    assert "step_id" not in group
+    # 未分配的步骤单元自动进待核对；整条 E1 因其单元被引用视为已覆盖。
+    assert result["uncertain_ids"] == ["E1.S2"]
+    assert result["positive_ids"] == []
+
+    bare = normalize_cause_result(
+        {
+            "groups": [{
+                "kind": "error", "category": "概念理解",
+                "reason": "概念用错", "manifestation": "用错性质",
+                "evidence_ids": ["E1"],
+            }],
+            "uncertain_ids": ["E2"],
+        },
+        source,
+    )
+    assert bare["groups"][0]["evidence_ids"] == ["E1"]
+    assert bare["groups"][0]["step_ids"] == []
+    assert bare["uncertain_ids"] == ["E1.S1", "E1.S2", "E2"]
+
+
+def test_step_aware_error_records_and_counts(tmp_path: Path) -> None:
+    """步骤单元各物化一行；大类计数仍按学生去重。"""
+    import backend.jobs
+    from analysis_report_exporter import build_class_page_data
+    from backend.class_analysis import (
+        ClassAnalysisStateStore,
+        apply_cause_results,
+        assemble_cause_data,
+        build_cause_inputs,
+        question_category_counts,
+        save_cause_result,
+        session_error_records,
+    )
+
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
+    db.initialize()
+    sid = _seed_stepped_session(db, tmp_path)
+    reports_dir = tmp_path / "reports"
+    store = ClassAnalysisStateStore(reports_dir)
+    data = assemble_cause_data(db, sid, data_root=tmp_path)
+    source = _cause_source(data, "Q2")
+    stepped = next(item for item in source["evidence"] if item.get("failed_steps"))
+    plain = next(item for item in source["evidence"] if not item.get("failed_steps"))
+    unit_ids = [unit["id"] for unit in stepped["failed_steps"]]
+    save_cause_result(
+        store,
+        sid,
+        source,
+        {
+            "groups": [
+                {
+                    "kind": "process", "category": "过程与依据",
+                    "reason": "缺少等量关系", "manifestation": "未列关系式",
+                    "evidence_ids": [unit_ids[0], plain["id"]],
+                },
+                {
+                    "kind": "process", "category": "书写与规范",
+                    "reason": "结论不规范", "manifestation": "未写结论",
+                    "evidence_ids": [unit_ids[1]],
+                },
+            ],
+        },
+        data=data,
+    )
+    records = session_error_records(db, sid, reports_dir)
+    zhangsan = next(s for s in data.students if s.student_name == "张三")
+    lisi = next(s for s in data.students if s.student_name == "李四")
+    rows = records[zhangsan.student_id]["Q2"]
+    assert {(row["step_id"], row["part_id"]) for row in rows} == {
+        ("S2", "Q2"), ("S4", "Q2"),
+    }
+    by_step = {row["step_id"]: row for row in rows}
+    assert by_step["S2"]["evidence_point_ids"] == ["p2"]
+    assert by_step["S4"]["evidence_point_ids"] == ["p4a", "p4b"]
+    assert all(row["evidence_version_id"] == "e" * 64 for row in rows)
+    assert {row["pattern"] for row in records[lisi.student_id]["Q2"]} == {"缺少等量关系"}
+    # 张三在“过程与依据”下有两条步骤行，按学生只计一次。
+    counts = question_category_counts(records)
+    assert counts["Q2"] == [("过程与依据", 2), ("书写与规范", 1)]
+    state = store.load(sid)
+    page = build_class_page_data(data, compact=True)
+    status = apply_cause_results(page, data, build_cause_inputs(data), state)
+    q2 = next(q for q in page["questions"] if q["question_id"] == "Q2")
+    assert status["pending_questions"] == 1 and status["pre_step_questions"] == 0
+    assert q2["causes_by_step"] is True
+    assert {
+        (cause["reason"], tuple(cause["step_ids"])) for cause in q2["causes"]
+    } == {("缺少等量关系", ("S2",)), ("结论不规范", ("S4",))}
+
+
+def test_pre_step_v3_results_display_then_upgrade(tmp_path: Path) -> None:
+    """v3 旧结果继续显示但不计入就绪；手动整理升级，报告前置不调用模型。"""
+    import backend.jobs
+    from types import SimpleNamespace
+
+    from analysis_report_exporter import build_class_page_data
+    from backend.class_analysis import (
+        CAUSE_PRE_STEP_VERSION,
+        ClassAnalysisStateStore,
+        _cause_input_fingerprint,
+        apply_cause_results,
+        assemble_cause_data,
+        build_cause_inputs,
+        normalize_cause_result,
+        run_cause_analysis,
+        student_error_map,
+        student_error_records,
+    )
+
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
+    db.initialize()
+    sid = _seed_stepped_session(db, tmp_path)
+    store = ClassAnalysisStateStore(tmp_path / "reports")
+    data = assemble_cause_data(db, sid, data_root=tmp_path)
+    sources = build_cause_inputs(data)
+    old_sources = build_cause_inputs(data, by_step=False)
+    questions: dict[str, dict] = {}
+    error_records: dict[str, dict] = {}
+    for old in old_sources:
+        result = normalize_cause_result(
+            {
+                "groups": [{
+                    "kind": "error", "category": "概念理解",
+                    "reason": "旧错法", "manifestation": "旧表现",
+                    "evidence_ids": [item["id"] for item in old["evidence"]],
+                }],
+            },
+            old,
+        )
+        fingerprint = _cause_input_fingerprint(old)
+        questions[old["question_id"]] = {
+            "version": CAUSE_PRE_STEP_VERSION, "input": old,
+            "input_fingerprint": fingerprint, "result": result,
+            "generated_at": "2024-01-01T00:00:00", "origin": "model",
+            "failed": False,
+        }
+        error_records[old["question_id"]] = {
+            "input_fingerprint": fingerprint,
+            "generated_at": "2024-01-01T00:00:00",
+            "records": student_error_records(data, old, result, by_step=False),
+        }
+    store.save(sid, cause_analysis={"questions": questions},
+               error_records=error_records)
+
+    # Q1 无评分步骤：v3 输入与 v4 相同，旧结果直接视为新鲜。
+    # Q2 有失败步骤：v3 结果按兼容输入展示，标记按步骤整理前的结果。
+    page = build_class_page_data(data, compact=True)
+    status = apply_cause_results(page, data, sources, store.load(sid))
+    assert status["status"] == "partial"
+    assert status["pre_step_questions"] == 1
+    by_id = {q["question_id"]: q for q in page["questions"]}
+    # Q1 无评分步骤：v3 结果直接视为新鲜的按步骤口径结果。
+    assert by_id["Q1"]["causes_by_step"] is True
+    assert by_id["Q1"]["causes"]  # v3 结果照常显示
+    assert by_id["Q2"]["causes_by_step"] is False
+    assert by_id["Q2"]["causes"]
+    lisi = next(s for s in data.students if s.student_name == "李四")
+    mapped = student_error_map(store.load(sid), lisi, sources, data)
+    assert mapped["Q2"] and mapped["Q2"][0]["pattern"] == "旧错法"
+    # 按 v3 口径物化的记录保留其版本标记。
+    assert mapped["Q2"][0]["version"] == CAUSE_PRE_STEP_VERSION
+
+    context = SimpleNamespace(
+        payload={"session_id": sid},
+        raise_if_cancelled=lambda: None,
+        report=lambda *args, **kwargs: None,
+    )
+    calls: list[str] = []
+    client = SimpleNamespace(
+        json_from_text=lambda *args, **kwargs: calls.append(args[0]) or {
+            "groups": [], "positive_ids": [], "uncertain_ids": [],
+        }
+    )
+    # 报告前置阶段：兼容的 v3 结果不为升级而调用模型。
+    outcome = run_cause_analysis(
+        context, db=db, data_root=tmp_path, store=store,
+        llm_client_factory=lambda: client,
+        retry_failed=False, upgrade_pre_step=False,
+    )
+    assert outcome["status"] == "ready" and calls == []
+    # 手动整理：v3 兼容结果重发并升级为 v4。
+    outcome = run_cause_analysis(
+        context, db=db, data_root=tmp_path, store=store,
+        llm_client_factory=lambda: client,
+        retry_failed=False,
+    )
+    assert outcome["status"] == "ready" and len(calls) == 1
+    saved = store.load(sid)["cause_analysis"]["questions"]
+    assert saved["Q2"]["version"] == "class_error_causes_v4"
+    assert saved["Q1"]["version"] == CAUSE_PRE_STEP_VERSION  # 无步骤题无需重发
+
+
+def test_pre_step_source_dedupes_evidence_collapsed_by_step_split(
+    tmp_path: Path,
+) -> None:
+    """两名学生作答与批语相同但失败步骤不同：v4 证据分两条、v3 并一条，
+    旧 v3 结果仍按兼容输入识别、展示，并为两人返回错因记录。"""
+    import backend.jobs
+
+    from analysis_report_exporter import build_class_page_data
+    from backend.class_analysis import (
+        CAUSE_PRE_STEP_VERSION,
+        ClassAnalysisStateStore,
+        _cause_input_fingerprint,
+        apply_cause_results,
+        assemble_cause_data,
+        build_cause_inputs,
+        normalize_cause_result,
+        student_error_map,
+        student_error_records,
+    )
+
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
+    db.initialize()
+    sid = _seed_stepped_session(db, tmp_path)
+    with sqlite3.connect(db.db_path) as conn:
+        result_id = conn.execute(
+            "SELECT r.id FROM session_results r JOIN students s ON s.id = r.student_id"
+            " WHERE r.session_id = ? AND s.name = '李四'",
+            (sid,),
+        ).fetchone()[0]
+        # 前一题不留错因痕迹、作答文字与张三相同，只有失败步骤不同。
+        conn.execute(
+            "UPDATE session_details SET score_awarded = 60, deduction_reason = NULL,"
+            " error_category = NULL, error_summary = NULL"
+            " WHERE result_id = ? AND question_id = 'Q1'",
+            (result_id,),
+        )
+        raw = {
+            "grading_completeness": {"status": "complete"},
+            "detail_metadata": {"Q2": {
+                "observed_answer": "张三的证明作答",
+                "step_assessments": [
+                    {"step_id": "S1", "part_id": "Q2", "achievement": "full",
+                     "score_awarded": 10},
+                    {"step_id": "S2", "part_id": "Q2", "achievement": "full",
+                     "score_awarded": 10},
+                    {"step_id": "S3", "part_id": "Q2", "achievement": "full",
+                     "score_awarded": 10},
+                    {"step_id": "S4", "part_id": "Q2", "achievement": "none",
+                     "score_awarded": 0, "reason": "未写结论"},
+                ],
+            }},
+        }
+        conn.execute(
+            "UPDATE session_results SET raw_json = ? WHERE id = ?",
+            (json.dumps(raw, ensure_ascii=False), result_id),
+        )
+
+    data = assemble_cause_data(db, sid, data_root=tmp_path)
+    source = next(item for item in build_cause_inputs(data)
+                  if item["question_id"] == "Q2")
+    assert len(source["evidence"]) == 2
+    old = next(item for item in build_cause_inputs(data, by_step=False)
+               if item["question_id"] == "Q2")
+    assert len(old["evidence"]) == 1
+
+    result = normalize_cause_result(
+        {"groups": [{
+            "kind": "error", "category": "概念理解",
+            "reason": "旧错法", "manifestation": "旧表现",
+            "evidence_ids": [old["evidence"][0]["id"]],
+        }]},
+        old,
+    )
+    fingerprint = _cause_input_fingerprint(old)
+    store = ClassAnalysisStateStore(tmp_path / "reports")
+    store.save(
+        sid,
+        cause_analysis={"questions": {"Q2": {
+            "version": CAUSE_PRE_STEP_VERSION, "input": old,
+            "input_fingerprint": fingerprint, "result": result,
+            "generated_at": "2024-01-01T00:00:00", "origin": "model",
+            "failed": False,
+        }}},
+        error_records={"Q2": {
+            "input_fingerprint": fingerprint,
+            "generated_at": "2024-01-01T00:00:00",
+            "records": student_error_records(data, old, result, by_step=False),
+        }},
+    )
+
+    page = build_class_page_data(data, compact=True)
+    status = apply_cause_results(page, data, [source], store.load(sid))
+    assert status["pre_step_questions"] == 1
+    q2 = next(q for q in page["questions"] if q["question_id"] == "Q2")
+    assert q2["causes_by_step"] is False and q2["causes"]
+
+    state = store.load(sid)
+    for name in ("张三", "李四"):
+        student = next(s for s in data.students if s.student_name == name)
+        mapped = student_error_map(state, student, [source], data)
+        assert mapped["Q2"] and mapped["Q2"][0]["pattern"] == "旧错法"
+        assert mapped["Q2"][0]["version"] == CAUSE_PRE_STEP_VERSION
+
+
+def test_session_error_record_skill_enrichment_is_nonfatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """物化记录补充技能链接；补充失败时记录完整保留。"""
+    import backend.jobs
+    from backend.class_analysis import (
+        ClassAnalysisStateStore,
+        assemble_cause_data,
+        normalize_cause_result,
+        save_cause_result,
+        session_error_records,
+    )
+    from question_bank.database.schema import connect, initialize_database
+
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
+    db.initialize()
+    sid = _seed_stepped_session(db, tmp_path)
+    store = ClassAnalysisStateStore(tmp_path / "reports")
+    data = assemble_cause_data(db, sid, data_root=tmp_path)
+    source = _cause_source(data, "Q2")
+    stepped = next(item for item in source["evidence"] if item.get("failed_steps"))
+    plain = next(item for item in source["evidence"] if not item.get("failed_steps"))
+    unit_ids = [unit["id"] for unit in stepped["failed_steps"]]
+    save_cause_result(
+        store, sid, source,
+        {"groups": [{
+            "kind": "process", "category": "过程与依据",
+            "reason": "缺少等量关系", "manifestation": "未列关系式",
+            "evidence_ids": [*unit_ids, plain["id"]],
+        }]},
+        data=data,
+    )
+
+    bank_path = tmp_path / "databases" / "question_bank.db"
+    initialize_database(bank_path)
+    from tests.current_knowledge_support import install_current_knowledge
+    from question_bank.solution_evidence.knowledge_links import replace_point_links
+
+    release_id = install_current_knowledge(bank_path, taxonomy_revision=9)
+    with connect(bank_path) as conn:
+        conn.execute(
+            "INSERT INTO questions (question_number, question_text, answer_text,"
+            " question_type) VALUES ('2', '题干', '答案', '解答题')"
+        )
+        conn.execute(
+            """
+            INSERT INTO question_solution_evidence_versions(
+                evidence_version_id, question_id, source_content_hash,
+                schema_version, content_hash, evidence_json, status,
+                source_kind, source_reference, created_by, graph_release_id
+            ) VALUES ('eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 1, ?, 'question-solution-evidence-v2', ?, '{}',
+                      'approved', 'backfill', 'synthetic', 'test', ?)
+            """,
+            ("b" * 64, "c" * 64, release_id),
+        )
+        replace_point_links(
+            conn, evidence_version_id="e" * 64, question_id=1,
+            graph_release_id=release_id,
+            points=[{
+                "part_id": "Q2", "evidence_point_id": "p2",
+                "links": [{"term_id": "sk_bnu24_math_g7_lower_1_1_01",
+                           "stable_key": "sk_bnu24_math_g7_lower_1_1_01",
+                           "role": "direct"}],
+            }],
+        )
+
+    records = session_error_records(db, sid, tmp_path / "reports")
+    zhangsan = next(s for s in data.students if s.student_name == "张三")
+    rows = {row["step_id"]: row for row in records[zhangsan.student_id]["Q2"]}
+    assert rows["S2"]["skill_keys"] == ["sk_bnu24_math_g7_lower_1_1_01"]
+    assert rows["S2"]["skill_basis"] == "step"
+    # S4 的判定点无直达技能 → step 行的技能列表为空。
+    assert rows["S4"]["skill_keys"] == [] and rows["S4"]["skill_basis"] == "step"
+    lisi = next(s for s in data.students if s.student_name == "李四")
+    lisi_row = records[lisi.student_id]["Q2"][0]
+    # 本题全部判定点只解析出唯一技能 → 题级记录归入该技能。
+    assert lisi_row["skill_keys"] == ["sk_bnu24_math_g7_lower_1_1_01"]
+    assert lisi_row["skill_basis"] == "question"
+
+    import question_bank.solution_evidence.knowledge_links as links_module
+    monkeypatch.setattr(
+        links_module, "load_point_links",
+        lambda *args, **kwargs: (_ for _ in ()).throw(sqlite3.Error("boom")),
+    )
+    fallback = session_error_records(db, sid, tmp_path / "reports")
+    assert {
+        sid_: {qid: len(rows) for qid, rows in by_q.items()}
+        for sid_, by_q in fallback.items()
+    } == {
+        sid_: {qid: len(rows) for qid, rows in by_q.items()}
+        for sid_, by_q in records.items()
+    }
+    assert all("skill_keys" not in row for rows_ in fallback.values()
+               for rs in rows_.values() for row in rs)

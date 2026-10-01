@@ -41,6 +41,8 @@ export interface ClassCauseEvidence {
   student_answer?: string
   evidence_steps?: string[]
   missing_steps?: string[]
+  /** 按步骤整理时存在的独立扣分步骤单元；页面暂不展示。 */
+  failed_steps?: Record<string, unknown>[]
   previous_answers?: { question_id: string; student_answer: string; text: string; evidence_steps: string[] }[]
 }
 
@@ -60,6 +62,8 @@ export interface ClassCause {
   /** v3 起输出；carry_forward/review 与旧版结果没有大类。 */
   category?: CauseCategory
   step_id?: string | null
+  /** v4 起输出：该错因关联的评分步骤 id（对应 rubric step_id）。 */
+  step_ids?: string[]
   /** existing=复用已有错法名；candidate=本场新命名。 */
   pattern_status?: 'existing' | 'candidate'
   /** true=该错法被老师修改过名称或大类（P5 可选操作）。 */
@@ -76,6 +80,8 @@ export interface ClassCauseAnalysis {
   legacy_questions?: number
   /** v2 旧版整理结果仍在展示的题目数（无错误大类，建议重新整理）。 */
   outdated_questions?: number
+  /** 按步骤拆分前整理的题目数（兼容展示，手动整理后升级为按步骤结果）。 */
+  pre_step_questions?: number
   stale: boolean
   generated_at: string | null
   origin: string | null
@@ -93,6 +99,8 @@ export interface ClassAnalysisQuestion {
   causes_legacy?: boolean
   /** v2 旧版结果仍在展示：无错误大类，重新整理后自动升级。 */
   causes_outdated?: boolean
+  /** false=按步骤拆分前的兼容结果；手动「整理错因」后按扣分步骤逐条整理。 */
+  causes_by_step?: boolean
   /** 已关联题库的题目 id；未关联为 null/缺省。 */
   bank_question_id?: number | null
   /** 该题各错误大类涉及的去重学生数，按人数降序。 */
@@ -249,6 +257,7 @@ function decodeCauseEvidence(value: unknown): ClassCauseEvidence[] {
     && (item.student_answer === undefined || typeof item.student_answer === 'string')
     && (item.evidence_steps === undefined || strings(item.evidence_steps))
     && (item.missing_steps === undefined || strings(item.missing_steps))
+    && (item.failed_steps === undefined || (Array.isArray(item.failed_steps) && item.failed_steps.every(isRecord)))
     && (item.previous_answers === undefined || (Array.isArray(item.previous_answers) && item.previous_answers.every((previous) => (
       isRecord(previous) && typeof previous.question_id === 'string' && typeof previous.student_answer === 'string'
       && typeof previous.text === 'string' && strings(previous.evidence_steps)
@@ -262,6 +271,7 @@ function decodeCause(value: unknown): ClassCause {
     || !(value.kind === undefined || CLASS_CAUSE_KINDS.some((kind) => kind === value.kind))
     || !(value.category === undefined || CAUSE_CATEGORIES.some((category) => category === value.category))
     || !(value.step_id === undefined || isNullableString(value.step_id))
+    || !(value.step_ids === undefined || (Array.isArray(value.step_ids) && value.step_ids.every((item) => typeof item === 'string')))
     || !(value.pattern_status === undefined || value.pattern_status === 'existing' || value.pattern_status === 'candidate')
     || !(value.teacher_edited === undefined || typeof value.teacher_edited === 'boolean')) {
     throw new Error('Invalid class cause')
@@ -280,6 +290,7 @@ function decodeCause(value: unknown): ClassCause {
     ...(value.kind === undefined ? {} : { kind: value.kind as ClassCauseKind }),
     ...(value.category === undefined ? {} : { category: value.category as CauseCategory }),
     ...(value.step_id === undefined ? {} : { step_id: value.step_id }),
+    ...(value.step_ids === undefined ? {} : { step_ids: value.step_ids as string[] }),
     ...(value.pattern_status === undefined ? {} : { pattern_status: value.pattern_status as ClassCause['pattern_status'] }),
     ...(value.teacher_edited === undefined ? {} : { teacher_edited: value.teacher_edited }),
     ...(manifestations === undefined ? {} : { manifestations }),
@@ -293,6 +304,7 @@ function decodeCauseAnalysis(value: unknown): ClassCauseAnalysis | null {
     || !isNonNegativeCount(value.failed_questions) || typeof value.stale !== 'boolean'
     || !(value.legacy_questions === undefined || isNonNegativeCount(value.legacy_questions))
     || !(value.outdated_questions === undefined || isNonNegativeCount(value.outdated_questions))
+    || !(value.pre_step_questions === undefined || isNonNegativeCount(value.pre_step_questions))
     || !isNullableString(value.generated_at) || !isNullableString(value.origin)) {
     throw new Error('Invalid class cause analysis')
   }
@@ -312,6 +324,7 @@ function decodeQuestion(value: unknown): ClassAnalysisQuestion {
     || !(value.causes_grouped === undefined || typeof value.causes_grouped === 'boolean')
     || !(value.causes_legacy === undefined || typeof value.causes_legacy === 'boolean')
     || !(value.causes_outdated === undefined || typeof value.causes_outdated === 'boolean')
+    || !(value.causes_by_step === undefined || typeof value.causes_by_step === 'boolean')
     || !(value.cause_review === undefined || isRecord(value.cause_review))
     || !(value.bank_question_id === undefined || value.bank_question_id === null || isNonNegativeCount(value.bank_question_id))
     || !(value.cause_category_counts === undefined || (Array.isArray(value.cause_category_counts)
@@ -335,6 +348,7 @@ function decodeQuestion(value: unknown): ClassAnalysisQuestion {
     ...(typeof value.causes_grouped === 'boolean' ? { causes_grouped: value.causes_grouped } : {}),
     ...(typeof value.causes_legacy === 'boolean' ? { causes_legacy: value.causes_legacy } : {}),
     ...(typeof value.causes_outdated === 'boolean' ? { causes_outdated: value.causes_outdated } : {}),
+    ...(typeof value.causes_by_step === 'boolean' ? { causes_by_step: value.causes_by_step } : {}),
     ...(value.bank_question_id === undefined ? {} : { bank_question_id: value.bank_question_id }),
     cause_category_counts: Array.isArray(value.cause_category_counts)
       ? (value.cause_category_counts as ClassAnalysisQuestion['cause_category_counts'])

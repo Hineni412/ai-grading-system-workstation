@@ -450,7 +450,9 @@ export interface QuestionErrorPattern {
   has_evidence: boolean
   skill_key?: string | null
   skill_label?: string | null
-  skill_source?: 'teacher' | 'criterion' | null
+  skill_keys?: string[]
+  skill_labels?: string[]
+  skill_source?: 'teacher' | 'criterion' | 'question' | null
 }
 
 export type CoreResolutionStatus = 'resolved' | 'ambiguous' | 'unmapped'
@@ -1552,7 +1554,7 @@ export function decodeQuestionDetailResponse(value: unknown): QuestionBankDetail
         hasExactKeys(item, [
           'id', 'category', 'pattern', 'explanation', 'trigger_kind',
           'trigger_value', 'status', 'source', 'has_evidence',
-          'skill_key', 'skill_label', 'skill_source',
+          'skill_key', 'skill_label', 'skill_keys', 'skill_labels', 'skill_source',
         ]) &&
         isPositiveInteger(item.id) &&
         isNullableString(item.category) &&
@@ -1565,7 +1567,9 @@ export function decodeQuestionDetailResponse(value: unknown): QuestionBankDetail
         typeof item.has_evidence === 'boolean' &&
         isNullableString(item.skill_key) &&
         isNullableString(item.skill_label) &&
-        (item.skill_source === null || ['teacher', 'criterion'].includes(String(item.skill_source)))
+        (item.skill_keys === undefined || isStringArray(item.skill_keys)) &&
+        (item.skill_labels === undefined || isStringArray(item.skill_labels)) &&
+        (item.skill_source === null || ['teacher', 'criterion', 'question'].includes(String(item.skill_source)))
       ))
     )) ||
     (value.wrong_option_letters !== undefined && (

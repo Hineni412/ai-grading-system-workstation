@@ -8,7 +8,8 @@ import pytest
 
 from ai_grader import _normalize_grading_errors
 from backend.class_analysis import (
-    CAUSE_ANALYSIS_VERSION, CausePatternEditError, ClassAnalysisStateStore, edit_cause_pattern,
+    CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION, CausePatternEditError,
+    ClassAnalysisStateStore, edit_cause_pattern,
     plan_cause_question,
 )
 from backend.error_patterns import (
@@ -129,6 +130,78 @@ def test_backfill_skips_stale_state_and_is_idempotent(tmp_path):
     with connect(path) as conn:
         row = list_patterns(conn, [qid])[qid][0]
         assert row["occurrences"] == [{"session_id": 3, "question_id": "Q1"}]
+
+
+def test_step_organized_result_syncs_rows_per_evidence_point(tmp_path):
+    """v4 整理结果按物化记录的证据点写 step 触发行；无点成员补 observation。"""
+    from backend.class_analysis import _cause_input_fingerprint
+    from backend.error_patterns import sync_session_patterns_to_bank
+
+    path, qid = _choice_question(tmp_path)
+    with connect(path) as conn:
+        conn.execute("UPDATE questions SET question_type='解答题' WHERE id=?", (qid,))
+    source = {
+        "question_id": "Q2", "question_text": "解答题题干", "canonical_answer": "AB=BD+DH",
+        "evidence": [
+            {"id": "E1", "student_answer": "作答一", "failed_steps": [
+                {"id": "E1.S1", "step_id": "S2"},
+                {"id": "E1.S2", "step_id": "S4"},
+            ]},
+            {"id": "E2", "student_answer": "作答二"},
+        ],
+    }
+    fingerprint = _cause_input_fingerprint(source)
+    store = ClassAnalysisStateStore(tmp_path / "reports")
+    store.save(3, cause_analysis={"questions": {"Q2": {
+        "version": CAUSE_ANALYSIS_VERSION, "origin": "model",
+        "input": source, "input_fingerprint": fingerprint,
+        "result": {"groups": [
+            {"kind": "process", "category": "过程与依据", "reason": "缺少关系式",
+             "evidence_ids": ["E1.S1"], "step_ids": ["S2"],
+             "manifestations": [{"description": "未列关系", "source_question_id": None,
+                                 "evidence_ids": ["E1.S1"]}]},
+            {"kind": "process", "category": "书写与规范", "reason": "结论不规范",
+             "evidence_ids": ["E1.S2"], "step_ids": ["S4"],
+             "manifestations": [{"description": "未写结论", "source_question_id": None,
+                                 "evidence_ids": ["E1.S2"]}]},
+            {"kind": "error", "category": "概念理解", "reason": "概念用错",
+             "evidence_ids": ["E2"], "step_ids": [],
+             "manifestations": [{"description": "用错性质", "source_question_id": None,
+                                 "evidence_ids": ["E2"]}]},
+        ]},
+    }}}, error_records={"Q2": {
+        "input_fingerprint": fingerprint,
+        "records": [
+            {"student_id": 1, "question_id": "Q2", "kind": "process",
+             "category": "过程与依据", "pattern": "缺少关系式",
+             "step_id": "S2", "part_id": "Q2", "evidence_point_ids": ["p2"],
+             "evidence_version_id": "ev-q2"},
+            {"student_id": 1, "question_id": "Q2", "kind": "process",
+             "category": "书写与规范", "pattern": "结论不规范",
+             "step_id": "S4", "part_id": "Q2", "evidence_point_ids": ["p4a", "p4b"],
+             "evidence_version_id": "ev-q2"},
+            {"student_id": 1, "question_id": "Q2", "kind": "error",
+             "category": "概念理解", "pattern": "概念用错",
+             "step_id": None, "part_id": None, "evidence_point_ids": None,
+             "evidence_version_id": None},
+        ],
+    }})
+    context = {"Q2": {"bank_id": qid}}
+    assert sync_session_patterns_to_bank(
+        store, 3, path, context, current_sources=[source]) == 4
+    with connect(path) as conn:
+        rows = list_patterns(conn, [qid], statuses=("confirmed", "candidate"))[qid]
+    by_trigger = {(row["trigger_kind"], row["trigger_value"]): row for row in rows}
+    assert set(by_trigger) == {
+        ("step", "p2"), ("step", "p4a"), ("step", "p4b"), ("observation", ""),
+    }
+    assert by_trigger[("step", "p2")]["pattern"] == "缺少关系式"
+    assert {by_trigger[("step", "p4a")]["pattern"],
+            by_trigger[("step", "p4b")]["pattern"]} == {"结论不规范"}
+    assert by_trigger[("observation", "")]["pattern"] == "概念用错"
+    # 重复同步不重复建行。
+    assert sync_session_patterns_to_bank(
+        store, 3, path, context, current_sources=[source]) == 0
 
 
 def test_failed_new_draft_does_not_reopen_review_when_teacher_version_still_matches(tmp_path):
@@ -447,7 +520,7 @@ def test_class_edit_follows_subjective_rename_without_touching_peer_pattern(
     )
     store = ClassAnalysisStateStore(tmp_path / "reports")
     store.save(7, cause_analysis={"questions": {"Q1": {
-        "version": CAUSE_ANALYSIS_VERSION, "origin": "model",
+        "version": CAUSE_PRE_STEP_VERSION, "origin": "model",
         "result": {"groups": [
             {
                 "kind": "process", "category": "过程与依据", "reason": old,
@@ -490,7 +563,7 @@ def test_ambiguous_older_subjective_rename_does_not_change_peer(tmp_path):
         )
     store = ClassAnalysisStateStore(tmp_path / "reports")
     store.save(7, cause_analysis={"questions": {"Q1": {
-        "version": CAUSE_ANALYSIS_VERSION, "origin": "model",
+        "version": CAUSE_PRE_STEP_VERSION, "origin": "model",
         "result": {"groups": [{
             "kind": "process", "category": "过程与依据", "reason": "原有错法",
             "step_id": "s1", "evidence_ids": ["e1"],
@@ -688,7 +761,7 @@ def test_step_pattern_derives_unique_skill_from_criterion(tmp_path):
     assert _SKILL_KEY in [item["key"] for item in detail["selectable_skills"]]
 
 
-def test_ambiguous_criterion_links_do_not_derive_skill(tmp_path):
+def test_step_pattern_links_all_direct_skills(tmp_path):
     path, qid, release_id = _skill_question(tmp_path)
     with connect(path) as conn:
         pid = _insert_pattern(conn, qid)
@@ -697,7 +770,34 @@ def test_ambiguous_criterion_links_do_not_derive_skill(tmp_path):
         {"term_id": _SKILL_KEY_2, "stable_key": _SKILL_KEY_2, "role": "direct"},
     ])
     row = _detail_pattern(QuestionBankReadService(path).get_question(qid), pid)
-    assert row["skill_key"] is None and row["skill_source"] is None
+    assert row["skill_key"] is None
+    assert row["skill_keys"] == sorted([_SKILL_KEY, _SKILL_KEY_2])
+    assert len(row["skill_labels"]) == 2
+    assert row["skill_source"] == "criterion"
+
+
+def test_non_step_pattern_uses_unique_question_skill(tmp_path):
+    """非判定点触发：本题只有一个直达技能时归入该技能，多个则不推断。"""
+    path, qid, release_id = _skill_question(tmp_path)
+    with connect(path) as conn:
+        pid = _insert_pattern(conn, qid, trigger_kind="observation", trigger_value="")
+    _link_points(path, qid, release_id, [
+        {"term_id": _SKILL_KEY, "stable_key": _SKILL_KEY, "role": "direct"},
+    ])
+    row = _detail_pattern(QuestionBankReadService(path).get_question(qid), pid)
+    assert (row["skill_key"], row["skill_source"]) == (_SKILL_KEY, "question")
+    assert row["skill_keys"] == [_SKILL_KEY]
+
+    # 另一判定点再链接一个技能 → 题目直达技能不唯一 → 不推断。
+    _link_points(path, qid, release_id, [
+        {"term_id": _SKILL_KEY, "stable_key": _SKILL_KEY, "role": "direct"},
+    ], extra_points=[{
+        "part_id": "part-1", "evidence_point_id": "ep-2",
+        "links": [{"term_id": _SKILL_KEY_2, "stable_key": _SKILL_KEY_2, "role": "direct"}],
+    }])
+    row = _detail_pattern(QuestionBankReadService(path).get_question(qid), pid)
+    assert row["skill_key"] is None and row["skill_keys"] == []
+    assert row["skill_source"] is None
 
 
 def test_teacher_skill_overrides_and_clears_to_criterion(tmp_path):
