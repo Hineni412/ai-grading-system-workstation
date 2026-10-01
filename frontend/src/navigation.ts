@@ -81,7 +81,7 @@ export const sessionRouteDefinition = {
 export const studentsRouteDefinition = {
   id: 'students',
   label: '学生管理',
-  path: '/students',
+  path: '/settings?section=students',
   title: '学生名单',
   description: '导入、核对和维护参与阅卷的学生名单',
   breadcrumb: '学生名单',
@@ -209,7 +209,7 @@ export const settingsRouteDefinition = {
   label: '设置',
   path: '/settings',
   title: '设置',
-  description: '管理模型使用方式、备份与本机维护',
+  description: '学生名单、AI 服务、数据与空间、系统状态',
   breadcrumb: '设置',
   icon: 'settings',
 } as const satisfies WorkspaceRouteDefinition
@@ -253,8 +253,6 @@ export const navigationGroups: readonly WorkspaceNavigationGroup[] = [
 ] as const
 
 export const settingsNavigationItems: readonly WorkspaceRouteDefinition[] = [
-  studentsRouteDefinition,
-  aiTraceRouteDefinition,
   settingsRouteDefinition,
 ] as const
 

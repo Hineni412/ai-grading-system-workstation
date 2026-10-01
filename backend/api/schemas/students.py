@@ -172,7 +172,7 @@ class StudentExamResultItem(BaseModel):
     deduction_reason: str | None = None
     error_category: str | None = None
     error_summary: str | None = None
-    evidence_url: str
+    evidence_url: str | None
 
 
 class StudentExamResultSession(BaseModel):

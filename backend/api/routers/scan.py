@@ -50,6 +50,8 @@ from backend.scan_grading.workspace import (
 from session_cleanup import SessionDerivedTrainingDataExists
 from template_upload_service import TemplateUploadError, TemplateUploadService
 
+from session_originals import ScanSourcesReleased
+
 router = APIRouter(prefix="/api", tags=["scan"])
 
 
@@ -487,6 +489,8 @@ def analyze_session_scans(
         payload["ocr_workers"] = request.ocr_workers
     try:
         job = workspace.submit_scan_analysis(session_id, payload)
+    except ScanSourcesReleased as exc:
+        raise ApiError(409, "scan_sources_released", str(exc)) from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(
             409,

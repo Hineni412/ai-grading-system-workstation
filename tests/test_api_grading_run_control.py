@@ -7,8 +7,41 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from backend.repositories.grading_database import open_grading_repositories
+
+
+@pytest.mark.parametrize("action, item_status, run_state", [("resume", "pending", "paused"), ("retry-failed", "failed", "failed")])
+@pytest.mark.parametrize("clear", [False, True])
+def test_originals_release_allows_resume_retry_and_clear_blocks_them(tmp_path, action, item_status, run_state, clear):
+    from grading_run_store import GradingRunStore
+    from session_originals import release_session_scans, clear_session_originals
+    from tests.test_session_originals import _scans
+    client, db, manager = _system(tmp_path, config_fingerprint_resolver=lambda *_: "a" * 64)
+    sid = db.sessions.create_grading_session("隔离原卷入口测试", "rubric.json", "answer.json")
+    _prepare_ready_scan_batch(client, db, tmp_path, sid)
+    student_id = int(db.students.list_students()[0]["id"])
+    store = GradingRunStore(db.db_path)
+    run = store.begin(sid, "a" * 64, "ai")
+    store.add_item(run.id, source_label="001", student_id=student_id, paper_fingerprint="c" * 64, config_fingerprint="a" * 64, status=item_status)
+    store.finish(run.run_token, run_state)
+    seed = SimpleNamespace(exams_dir=tmp_path / "exams", templates_dir=tmp_path / "templates", session_id=sid)
+    pdf, image, _, _ = _scans(seed)
+    release_session_scans(db, tmp_path, sid)
+    assert not pdf.exists() and image.exists()
+    if clear:
+        clear_session_originals(db, tmp_path, sid, clear_crop_cache=lambda: 0)
+    manager.register("grading_run", lambda _: {"state": "completed"})
+    try:
+        response = client.post(f"/api/sessions/{sid}/grading/runs/{run.id}/{action}")
+        assert response.status_code == (409 if clear else 202), response.text
+        if clear:
+            assert response.json()["error"]["code"] == "original_pages_cleared"
+        else:
+            assert response.json()["payload"]["failed_only"] == (action == "retry-failed")
+    finally:
+        manager.shutdown()
 
 
 def _configure_preflight_binding(db, tmp_path, session_id: int) -> dict:

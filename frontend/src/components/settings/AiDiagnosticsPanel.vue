@@ -50,7 +50,7 @@ const diagnosticKinds = [
 const diagnosticTabs: readonly { value: DiagnosticTab; label: string }[] = [
   { value: 'request', label: '发送内容' },
   { value: 'attachments', label: '附件' },
-  { value: 'response', label: '原始返回' },
+  { value: 'response', label: '返回内容' },
   { value: 'parsed', label: '解析结果' },
   { value: 'error', label: '错误与重试' },
 ]
@@ -64,9 +64,9 @@ function diagnosticDisplayLabel(call: AiDiagnosticSummary): string {
 }
 
 function diagnosticOutcomeLabel(value: AiDiagnosticOutcome): string {
-  if (value === 'success') return '模型已返回'
-  if (value === 'failure') return '调用失败'
-  return '等待返回'
+  if (value === 'success') return '成功'
+  if (value === 'failure') return '失败'
+  return '等待中'
 }
 
 function formatDiagnosticTime(value: string): string {
@@ -255,7 +255,7 @@ onBeforeUnmount(() => {
     <header class="ai-diagnostics__header">
       <div class="ai-diagnostics__filters">
         <label>
-          <span>来源</span>
+          <span>用途</span>
           <select class="app-input" v-model="diagnosticKind" @change="loadDiagnostics">
             <option v-for="kind in diagnosticKinds" :key="kind.value" :value="kind.value">
               {{ kind.label }}
@@ -266,9 +266,9 @@ onBeforeUnmount(() => {
           <span>结果</span>
           <select class="app-input" v-model="diagnosticOutcome" @change="loadDiagnostics">
             <option value="">全部结果</option>
-            <option value="success">模型已返回</option>
-            <option value="failure">调用失败</option>
-            <option value="pending">等待返回</option>
+            <option value="success">成功</option>
+            <option value="failure">失败</option>
+            <option value="pending">等待中</option>
           </select>
         </label>
         <AppButton variant="secondary"
@@ -286,12 +286,13 @@ onBeforeUnmount(() => {
       {{ diagnosticsNotice }}
     </p>
 
+    <details class="ai-diagnostics-disclosure settings-disclosure">
+      <summary>了解记录范围</summary>
     <p class="ai-diagnostics__privacy">
-      <strong>“模型已返回”只表示请求完成。</strong>
+      <strong>“成功”只表示请求完成。</strong>
       发送正文只留在本机调用日志里，不会写入任务摘要。
     </p>
-    <details class="ai-diagnostics-disclosure">
-      <summary>了解日志范围</summary>
+
       <p class="ai-diagnostics__privacy">
         <strong>本机唯一正文日志。</strong>
         文本请求、文本响应与解析／校验原因只写入 <code>logs/llm_diagnostics.jsonl</code>；

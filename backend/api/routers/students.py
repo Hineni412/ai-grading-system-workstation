@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from session_originals import originals_state
 from backend.api.app import ApiError, ErrorResponse
 from backend.error_causes import display_error_category
 from backend.api.dependencies import (
@@ -373,7 +374,7 @@ def get_student_exam_results(
                 evidence_url=(
                     f"/api/sessions/{session_id}/results/{result_id}"
                     f"/details/{detail_id}/crop"
-                ),
+                ) if originals_state(db.db_path.parent.parent, session_id) not in {"clearing", "cleared"} else None,
             )
         )
     ordered = sorted(

@@ -2,6 +2,88 @@ import { apiClient, type ApiBinaryResponse } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
 import { isRecord } from './validation'
 
+export type OriginalsState = 'complete' | 'scans_released' | 'clearing' | 'cleared'
+export interface StorageSession {
+  session_id: number
+  name: string
+  created_at: string | null
+  status_label: string
+  originals_state: OriginalsState
+  scan_bytes: number
+  page_bytes: number
+  release_bytes: number
+  clear_bytes: number
+  can_release_scans: boolean
+  can_clear: boolean
+  blocked_reason: string | null
+}
+export interface StorageOverview {
+  total_bytes: number
+  unreadable_count?: number
+  categories: Array<{ key: string; label: string; bytes: number }>
+  legacy_annotations: { bytes: number; files: number }
+  sessions: StorageSession[]
+}
+export interface SessionOriginals {
+  originals_state: OriginalsState
+  revision: string
+  scan_bytes: number
+  page_bytes: number
+  annotation_bytes: number
+  release_bytes: number
+  clear_bytes: number
+  can_release_scans: boolean
+  can_clear: boolean
+  blocked_reason: string | null
+  confirmation_phrase: string
+  latest_backup_at: string | null
+  backup_covers_originals: boolean
+}
+export interface OriginalsResult { originals_state: OriginalsState; freed_bytes: number; deleted_files: number; kept_unrendered: number }
+function originalsState(value: unknown): value is OriginalsState {
+  return ['complete', 'scans_released', 'clearing', 'cleared'].includes(String(value))
+}
+function originalsNumbers(value: Record<string, unknown>): boolean {
+  return ['scan_bytes', 'page_bytes', 'release_bytes', 'clear_bytes'].every(k => nonNegativeInteger(value[k]))
+    && originalsState(value.originals_state) && typeof value.can_clear === 'boolean'
+    && typeof value.can_release_scans === 'boolean' && (value.blocked_reason === null || typeof value.blocked_reason === 'string')
+}
+function decodeOriginals(value: unknown): SessionOriginals {
+  if (!isRecord(value) || !originalsNumbers(value) || typeof value.revision !== 'string'
+    || value.confirmation_phrase !== '确认清除' || typeof value.backup_covers_originals !== 'boolean'
+    || !(value.latest_backup_at === null || typeof value.latest_backup_at === 'string')) throw new Error('原卷状态暂时无法读取')
+  return value as unknown as SessionOriginals
+}
+function decodeStorage(value: unknown): StorageOverview {
+  if (!isRecord(value) || !nonNegativeInteger(value.total_bytes) || !Array.isArray(value.categories)
+    || (value.unreadable_count !== undefined && !nonNegativeInteger(value.unreadable_count))
+    || !value.categories.every(c => isRecord(c) && typeof c.key === 'string' && typeof c.label === 'string' && nonNegativeInteger(c.bytes))
+    || !isRecord(value.legacy_annotations) || !nonNegativeInteger(value.legacy_annotations.bytes) || !nonNegativeInteger(value.legacy_annotations.files)
+    || !Array.isArray(value.sessions) || !value.sessions.every(s => isRecord(s) && originalsNumbers(s) && nonNegativeInteger(s.session_id)
+      && typeof s.name === 'string' && typeof s.status_label === 'string')) throw new Error('空间占用暂时无法读取')
+  return value as unknown as StorageOverview
+}
+function decodeFreed(value: unknown): { freed_bytes: number; deleted_files: number } {
+  if (!isRecord(value) || !nonNegativeInteger(value.freed_bytes) || !nonNegativeInteger(value.deleted_files)) throw new Error('清理结果未知，请刷新状态')
+  return value as unknown as { freed_bytes: number; deleted_files: number }
+}
+function decodeOriginalsResult(value: unknown): OriginalsResult {
+  decodeFreed(value)
+  if (!isRecord(value) || !originalsState(value.originals_state) || !nonNegativeInteger(value.kept_unrendered)) throw new Error('清理结果未知，请刷新状态')
+  return value as unknown as OriginalsResult
+}
+export const storageApi = {
+  getStorage: (signal?: AbortSignal) => apiClient.request('/api/ops/storage', { decode: decodeStorage, signal, timeoutMs: 60000 }),
+  getOriginals: (sessionId: number) => apiClient.request(`/api/sessions/${sessionId}/originals`, { decode: decodeOriginals }),
+  releaseScans: (sessionId: number, revision: string) => apiClient.request(`/api/sessions/${sessionId}/originals/release-scans`, {
+    method: 'POST', body: { expected_revision: revision }, decode: decodeOriginalsResult, timeoutMs: 60000,
+  }),
+  clearOriginals: (sessionId: number, revision: string, phrase: string) => apiClient.request(`/api/sessions/${sessionId}/originals/clear`, {
+    method: 'POST', body: { expected_revision: revision, confirmation_phrase: phrase }, decode: decodeOriginalsResult, timeoutMs: 60000,
+  }),
+  clearLegacy: () => apiClient.request('/api/ops/storage/legacy-annotations/clear', { method: 'POST', body: {}, decode: decodeFreed, timeoutMs: 60000 }),
+}
+
 export const OPS_OPERATIONS = [
   'backup',
   'restore',

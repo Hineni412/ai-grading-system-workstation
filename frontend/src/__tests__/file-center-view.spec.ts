@@ -17,6 +17,12 @@ const apiMock = vi.hoisted(() => ({
   deleteReportFile: vi.fn(),
   downloadJobFile: vi.fn(),
 }))
+const storageMock = vi.hoisted(() => ({ getOriginals: vi.fn() }))
+
+vi.mock('../api/ops', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../api/ops')>(),
+  storageApi: storageMock,
+}))
 
 vi.mock('../api/exports', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/exports')>(),
@@ -137,6 +143,7 @@ async function mountView(
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
+  storageMock.getOriginals.mockResolvedValue({ originals_state: 'complete' })
   apiMock.getReportContext.mockResolvedValue({
     score_revision: 'a'.repeat(64),
     has_results: true,
@@ -211,6 +218,30 @@ afterEach(() => {
 })
 
 describe('file center view', () => {
+
+  it.each(['page', 'popover'] as const)('disables original regeneration after cleanup in %s mode', async (variant) => {
+    storageMock.getOriginals.mockResolvedValue({ originals_state: 'cleared' })
+    const context = await apiMock.getReportContext()
+    const oldOriginal = context.jobs.find((job: JobResponse) => job.payload.report_type === 'annotated_original_pdf')!
+    apiMock.getReportContext.mockResolvedValue({ ...context, jobs: [...context.jobs, { ...oldOriginal, id: 39 }] })
+    const { host } = await mountView(7, { variant })
+    await vi.waitFor(() => expect(host.textContent).toContain('原卷已清理，不能再导出批注原卷。'))
+    const generate = host.querySelector<HTMLButtonElement>('[data-testid="generate-annotated_original_pdf"]')!
+    expect(generate.disabled).toBe(true)
+    const row = generate.closest(variant === 'popover' ? '.file-center__row' : 'tr')!
+    expect(row.textContent!.split('原卷已清理，不能再导出批注原卷。')).toHaveLength(2)
+    const history = [...row.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent!.trim().startsWith('历史'))!
+    history.click()
+    await settle()
+    const historyScope = variant === 'popover' ? row : row.nextElementSibling!
+    const regenerate = [...row.querySelectorAll<HTMLButtonElement>('button'), ...historyScope.querySelectorAll<HTMLButtonElement>('button')].filter(button => button.textContent!.trim() === '重新生成')
+    expect(regenerate.length).toBeGreaterThanOrEqual(2)
+    for (const button of regenerate) {
+      expect(button.disabled).toBe(true)
+      button.click()
+    }
+    expect(apiMock.submitReport).not.toHaveBeenCalled()
+  })
 
   it('submits and downloads through explicit actions', async () => {
     const { host } = await mountView()

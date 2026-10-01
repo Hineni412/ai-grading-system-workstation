@@ -156,6 +156,33 @@ def _service(db) -> Any:
     return grading_service.GradingService(db_manager=db, llm_client=object())
 
 
+def test_released_scan_pdf_is_not_read_when_grading_existing_pages(patched, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from session_originals import release_session_scans
+    from tests.test_session_originals import _scans
+
+    db, session_id = _seed(tmp_path, [(1, "stu1")])
+    exams = tmp_path / "exams"
+    directory = exams / f"session_{session_id}"
+    directory.mkdir(parents=True)
+    group = _make_group(directory, "stu1", 1, b"paper-one")
+    pdf, page, _, _ = _scans(SimpleNamespace(exams_dir=exams, templates_dir=tmp_path / "templates", session_id=session_id))
+    release_session_scans(db, tmp_path, session_id)
+    assert not pdf.exists() and page.exists()
+    monkeypatch.setattr(grading_service, "_apply_manual_decisions", lambda *_args: [group])
+    monkeypatch.setattr(db.templates, "is_template_ready", lambda _session_id: True)
+    def unexpected_scan(*_args, **_kwargs):
+        pytest.fail("released PDF must not be scanned again")
+    monkeypatch.setattr(grading_service.Scanner, "analyze", unexpected_scan)
+    events = list(_service(db).run_session_grading(
+        session_id=session_id, exams_dir=directory,
+        rubric_path=tmp_path / "rubric.json", answer_key_path=tmp_path / "answer.json",
+        scan_analysis={"groups": [], "issues": []}, grading_mode="ai", enhance_images=False,
+    ))
+    assert any(event.get("event") == "graded" for event in events)
+    assert patched.call_count == 1 and group.front_image.exists()
+
+
 def test_pause_stops_batch_and_marks_run_paused(patched, tmp_path, monkeypatch):
     db, session_id = _seed(tmp_path, [(i, f"stu{i}") for i in range(1, 6)])
     groups = [

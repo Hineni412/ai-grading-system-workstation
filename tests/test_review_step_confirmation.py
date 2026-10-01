@@ -104,6 +104,22 @@ def confirmation(seed, **overrides):
     )
 
 
+def test_original_cleanup_keeps_teacher_score_lock_and_allows_later_confirmation(tmp_path):
+    from session_originals import clear_session_originals
+    seed, session, context, service = seed_step_review(tmp_path)
+    service.confirm(seed.session_id, session, "Q1", [confirmation(seed)], manual_context=context, defer_annotations=True)
+    (before,) = service.list_items(seed.session_id, session, manual_context=context)
+    clear_session_originals(seed.db, seed.data_root, seed.session_id, clear_crop_cache=lambda: 0)
+    (retained,) = service.list_items(seed.session_id, session, manual_context=context)
+    assert retained.teacher_locked and retained.score_awarded == before.score_awarded
+    assert retained.revision == before.revision and retained.metadata["teacher_review"] == before.metadata["teacher_review"]
+    request = replace(confirmation(seed), expected_revision=retained.revision, score_awarded=5, step_scores=None)
+    service.confirm(seed.session_id, session, "Q1", [request], manual_context=context, defer_annotations=True)
+    (after,) = service.list_items(seed.session_id, session, manual_context=context)
+    assert after.teacher_locked and after.score_awarded == 5 and after.revision == retained.revision + 1
+    assert not seed.front_path.exists()
+
+
 def test_step_confirmation_roundtrip_partial_means_not_achieved_and_total_only_clears_steps(
     tmp_path,
 ):

@@ -45,7 +45,7 @@ class StudentAnalysisItem(BaseModel):
     deduction_amount: float | None = None
     deduction_reason: str | None = None
     needs_review: bool
-    evidence_url: str
+    evidence_url: str | None
 
 
 class StudentAnalysisListResponse(BaseModel):

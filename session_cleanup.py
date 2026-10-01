@@ -103,6 +103,9 @@ def _resolve_stored_candidate(path_value: str | None, data_root: Path) -> Path |
 
 def _collect_session_dirs(session_id: int, data_root: Path) -> set[Path]:
     dirs: set[Path] = set()
+    annotation_cache = data_root / "cache" / "annotated_pages" / f"session_{int(session_id)}"
+    if annotation_cache.is_dir() and _is_under(annotation_cache, data_root):
+        dirs.add(annotation_cache.resolve())
     for dirname in SESSION_STORAGE_DIR_NAMES:
         path = data_root / dirname / f"session_{int(session_id)}"
         if path.exists() and path.is_dir() and _is_under(path, data_root):

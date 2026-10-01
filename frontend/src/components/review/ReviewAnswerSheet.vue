@@ -149,10 +149,11 @@ watch(
     </div>
 
     <div class="review-answer-sheet__image-frame">
+      <p v-if="reviewItem.media.originals_available === false" class="review-answer-sheet__image-error">原卷已清理，分数和作答记录仍保留。</p>
       <img
-        v-if="!imageFailed"
+        v-else-if="!imageFailed"
         :key="`${reviewItem.review_item_id}:${imageKey}`"
-        :src="reviewItem.media.crop_url"
+        :src="reviewItem.media.crop_url ?? undefined"
         :alt="`${reviewItem.student_name} 的 ${reviewItem.question_id} 答卷裁剪`"
         :data-testid="`answer-crop-${position}`"
         role="button"

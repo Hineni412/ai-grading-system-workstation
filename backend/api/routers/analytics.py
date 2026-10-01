@@ -16,6 +16,7 @@ from backend.api.schemas.analytics import (
     StudentAnalysisListResponse,
 )
 from backend.repositories.access import GradingRepositoryAccess
+from session_originals import originals_state
 
 router = APIRouter(prefix="/api", tags=["analytics"])
 
@@ -93,7 +94,7 @@ def list_student_analysis(
         public_row["evidence_url"] = (
             f"/api/sessions/{session_id}/results/{row.result_id}"
             f"/details/{row.detail_id}/crop"
-        )
+        ) if originals_state(db.db_path.parent.parent, session_id) not in {"clearing", "cleared"} else None
         items.append(StudentAnalysisItem(**public_row))
     return StudentAnalysisListResponse(
         scope=AnalysisScope(

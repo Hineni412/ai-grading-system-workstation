@@ -149,11 +149,9 @@ class TemplateUploadService:
                 temp_dir = Path(raw_temp_dir)
                 package_dir = temp_dir / "package"
                 package_dir.mkdir()
-                source_temp = package_dir / "template_source_full_class.pdf"
                 front_temp = package_dir / "template_front_from_pdf_page.jpg"
                 back_temp = package_dir / "template_back_from_pdf_page.jpg"
                 manifest_temp = package_dir / "template_upload_manifest.json"
-                source_temp.write_bytes(pdf_bytes)
                 document = self._open_pdf(pdf_bytes)
                 try:
                     if document.page_count < 2:
@@ -193,7 +191,6 @@ class TemplateUploadService:
                 }
                 version_path.parent.mkdir(parents=True, exist_ok=True)
                 package_dir.replace(version_path)
-                source_path = version_path / source_temp.name
                 front_path = version_path / front_temp.name
                 back_path = version_path / back_temp.name
                 mapping_targets = {

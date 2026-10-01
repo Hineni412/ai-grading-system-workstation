@@ -12,6 +12,40 @@ from PIL import Image
 from backend.repositories.grading_database import open_grading_repositories
 
 
+def test_legacy_annotations_regenerate_in_cache_and_remain_until_cleanup(tmp_path, monkeypatch):
+    import manual_review_service
+    from manual_review_service import ManualReviewService
+    seed = _seed_media(tmp_path)
+    legacy = seed.data_root / "annotated" / "session_1" / "front_annotated.jpg"
+    _image(legacy)
+    seed.db.reviews.upsert_annotated_result(seed.session_id, seed.result_id, str(legacy), str(legacy))
+    def render(**kwargs):
+        _image(kwargs["output_front"])
+        _image(kwargs["output_back"])
+        return kwargs["output_front"], kwargs["output_back"]
+    monkeypatch.setattr(manual_review_service, "render_annotated_paper", render)
+    ManualReviewService(seed.db, seed.annotated_dir).ensure_result_annotation(seed.result_id)
+    row = seed.db.reviews.get_annotated_result(seed.result_id)
+    assert Path(row["annotated_front_path"]).is_relative_to(seed.data_root / "cache" / "annotated_pages")
+    assert legacy.exists()
+
+
+def test_annotation_cache_prunes_oldest_but_keeps_recent_and_current(tmp_path):
+    import os
+    import time
+    from manual_review_service import ManualReviewService
+    seed = _seed_media(tmp_path)
+    directory = seed.annotated_dir / "session_1"
+    directory.mkdir(parents=True)
+    paths = [directory / f"test-{i}.jpg" for i in range(4)]
+    for i, path in enumerate(paths):
+        path.write_bytes(b"1234")
+        stamp = time.time() - 1200 + i if i < 3 else time.time()
+        os.utime(path, (stamp, stamp))
+    ManualReviewService(seed.db, seed.annotated_dir)._trim_annotation_cache(8, keep={paths[2]})
+    assert [p.exists() for p in paths] == [False, False, True, True]
+
+
 @dataclass(frozen=True)
 class SeededMedia:
     service: object
@@ -76,7 +110,7 @@ def _seed_media(tmp_path: Path) -> SeededMedia:
     data_root = tmp_path / "data"
     exams_dir = data_root / "exams"
     templates_dir = data_root / "templates"
-    annotated_dir = data_root / "annotated"
+    annotated_dir = data_root / "cache" / "annotated_pages"
     db_path = data_root / "databases" / "grading.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     db = open_grading_repositories(db_path)
@@ -95,6 +129,7 @@ def _seed_media(tmp_path: Path) -> SeededMedia:
         str(template_front),
         str(template_back),
     )
+
     db.templates.add_answer_region(
         session_id,
         template_id,

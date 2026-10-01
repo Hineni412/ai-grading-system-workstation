@@ -7,6 +7,25 @@ import json
 import pytest
 
 
+def test_released_scans_cannot_be_reanalyzed_and_replacement_resets_receipt(tmp_path):
+    from backend.scan_grading.workspace import ScanGradingWorkspace
+    from session_originals import ScanSourcesReleased, receipt_path, originals_state
+    from types import SimpleNamespace
+    workspace = ScanGradingWorkspace(exams_root=tmp_path / "exams", templates_root=tmp_path / "templates", data_root=tmp_path, job_manager=SimpleNamespace(list=lambda **kwargs: ([], 0)), replacement_reset=lambda sid: [])
+    old = _jpeg(b"test old")
+    workspace.add_upload(1, filename="old.jpg", media_type="image/jpeg", content_sha256=hashlib.sha256(old).hexdigest(), source=io.BytesIO(old))
+    workspace.freeze_uploads(1, expected_revision=1)
+    receipt_path(tmp_path, 1).write_text("broken", encoding="utf-8")
+    with pytest.raises(ScanSourcesReleased):
+        workspace.submit_scan_analysis(1, {})
+    replacement = workspace.begin_replacement_upload(1)
+    new = _jpeg(b"test replacement")
+    uploaded = workspace.add_upload(1, replacement=True, filename="new.jpg", media_type="image/jpeg", content_sha256=hashlib.sha256(new).hexdigest(), source=io.BytesIO(new))
+    workspace.commit_replacement_upload(1, expected_revision=1)
+    assert originals_state(tmp_path, 1) == "complete"
+    assert not receipt_path(tmp_path, 1).exists()
+
+
 def _jpeg(payload: bytes) -> bytes:
     return b"\xff\xd8\xff" + payload
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from uuid import UUID
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request
 
@@ -9,6 +10,10 @@ from backend.api.dependencies import (
     get_job_manager,
     get_ops_self_check_service,
     get_ops_write_service,
+    get_data_root,
+    get_grading_db,
+    get_scan_grading_workspace,
+    get_review_application_service,
 )
 from backend.api.routers.jobs import _job_response
 from backend.api.schemas.jobs import JobResponse
@@ -45,6 +50,39 @@ OPS_UNAVAILABLE_RESPONSE = {
     }
 }
 OPS_MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+
+
+@router.get("/storage")
+def get_storage(db=Depends(get_grading_db), data_root: Path=Depends(get_data_root),
+                workspace=Depends(get_scan_grading_workspace), review_service=Depends(get_review_application_service)):
+    from session_originals import storage_overview
+    from backend.api.routers.sessions import _originals_snapshot
+    from session_cleanup import session_lifecycle_guard
+    overview = storage_overview(data_root)
+    rows = []
+    for session in sorted(db.sessions.list_grading_sessions(), key=lambda s: (str(s.get("created_at") or ""), int(s["id"])), reverse=True):
+        if session.get("is_deleted"):
+            continue
+        sid = int(session["id"])
+        with session_lifecycle_guard(sid):
+            snapshot = _originals_snapshot(sid, db, data_root, workspace, review_service)
+        rows.append({"session_id": sid, "name": session["session_name"], "created_at": session.get("created_at"),
+                     "status_label": {"completed": "已完成", "graded": "已完成", "grading": "批改中", "reviewing": "复核中"}.get(session.get("status"), "未开始"),
+                     "originals_state": snapshot["originals_state"], "scan_bytes": snapshot["scan_bytes"],
+                     "page_bytes": snapshot["page_bytes"] + snapshot["annotation_bytes"],
+                     "release_bytes": snapshot["release_bytes"], "clear_bytes": snapshot["clear_bytes"],
+                     "can_release_scans": snapshot["can_release_scans"], "can_clear": snapshot["can_clear"],
+                     "blocked_reason": snapshot["blocked_reason"]})
+    return {**overview, "sessions": rows}
+
+
+@router.post("/storage/legacy-annotations/clear")
+def clear_old_annotations(db=Depends(get_grading_db), data_root: Path=Depends(get_data_root)):
+    from session_originals import clear_legacy_annotations
+    try:
+        return clear_legacy_annotations(db, data_root)
+    except OSError as exc:
+        raise ApiError(409, "legacy_annotations_clear_incomplete", "部分旧批注图正在使用，请关闭图片后刷新状态。") from exc
 
 
 @router.get(

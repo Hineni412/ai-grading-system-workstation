@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet'
+import { onBeforeRouteLeave } from 'vue-router'
 import AppButton from '@/components/design-system/AppButton.vue'
-import FeedbackBanner from '@/components/design-system/FeedbackBanner.vue'
 import StatePanel from '@/components/design-system/StatePanel.vue'
 import StatusBadge from '@/components/design-system/StatusBadge.vue'
 
@@ -26,7 +27,9 @@ import {
 import { useModelProfilesStore } from '../stores/model-profiles'
 import '../styles/model-profiles.css'
 
-const props = withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
+const drawerOpen = ref(false)
+const accountStatuses = ref<Record<string, ModelExecutionStatus>>({})
+const accountController = new AbortController()
 
 interface ModelProfileDraft {
   sourceName: string | null
@@ -61,8 +64,8 @@ const taskBindingsDraft = ref<ModelTaskBindings>({
   grading: { profile_name: null, model: '' },
 })
 const taskRows = [
-  { key: 'content_generation', title: '题库与评分标准生成', detail: '题库打标、评分标准生成、AI 组卷等内容生成' },
-  { key: 'grading', title: '识别姓名与批改试卷', detail: '姓名先在本地识别；无法匹配时，使用这里的模型补充识别。试卷批改也使用此模型与站点。' },
+  { key: 'content_generation', title: '出题与评分标准', detail: '题库标注、评分标准、组卷' },
+  { key: 'grading', title: '批改试卷', detail: '含姓名补充识别' },
 ] as const
 let executionStatusController: AbortController | null = null
 
@@ -110,7 +113,26 @@ baseline.value = draftSnapshot()
 
 const isNew = computed(() => draft.sourceName === null)
 const isDirty = computed(() => draftSnapshot() !== baseline.value)
-defineExpose({ hasUnsavedChanges: isDirty })
+const bindingsDirty = computed(() => JSON.stringify(taskBindingsDraft.value) !== JSON.stringify(profilesStore.taskBindings))
+const hasUnsavedChanges = computed(() => isDirty.value || bindingsDirty.value)
+defineExpose({ hasUnsavedChanges })
+onBeforeRouteLeave(() => !hasUnsavedChanges.value || window.confirm('AI 服务还有未保存修改。离开后会丢失这些修改，是否继续？'))
+function hostname(url: string): string { try { return new URL(url).host } catch { return url } }
+async function loadAccountStatuses() {
+  await Promise.all(profilesStore.profiles.map(async profile => {
+    try {
+      const status = await modelProfilesApi.getExecutionStatus(profile.name, accountController.signal)
+      if (!accountController.signal.aborted) accountStatuses.value[profile.name] = status
+    } catch { /* Runtime information is optional; profile editing remains available. */ }
+  }))
+}
+function closeDrawer(value = false) {
+  if (value || isBusy.value) return
+  if (!confirmDiscard('当前表单有未保存修改。关闭会丢弃这些修改，是否继续？')) return
+  drawerOpen.value = false
+  if (profilesStore.selectedProfile) applyProfile(profilesStore.selectedProfile)
+  else applyBlankProfile()
+}
 const isBusy = computed(() => profilesStore.operationState !== 'idle')
 const isCurrent = computed(() => (
   draft.sourceName !== null
@@ -121,15 +143,6 @@ const canActivate = computed(() => (
   && !isCurrent.value
   && !isBusy.value
 ))
-const currentProfileLabel = computed(() => (
-  profilesStore.activeProfile?.name ?? '尚未选择'
-))
-const editStatus = computed(() => {
-  if (isNew.value) {
-    return isDirty.value ? '新配置尚未保存' : '填写后保存为新配置'
-  }
-  return isDirty.value ? '有未保存修改' : '已与本机保存内容同步'
-})
 const requestSpeedSummary = computed(() => {
   if (draft.requestSpeedMode === 'conservative') {
     return '同时处理 1 个请求，每分钟最多启动 60 个请求。'
@@ -251,8 +264,9 @@ function syncFromSelection(): void {
 
 async function saveTaskBindings(): Promise<void> {
   localError.value = ''
-  await profilesStore.saveTaskBindings(taskBindingsDraft.value)
-  taskBindingsDraft.value = copyModelTaskBindings(profilesStore.taskBindings)
+  if (await profilesStore.saveTaskBindings(taskBindingsDraft.value)) {
+    taskBindingsDraft.value = copyModelTaskBindings(profilesStore.taskBindings)
+  }
 }
 
 function confirmDiscard(message: string): boolean {
@@ -261,9 +275,9 @@ function confirmDiscard(message: string): boolean {
 
 function chooseProfile(profile: ModelProfile): void {
   if (
-    profile.name === draft.sourceName
-    || !confirmDiscard('当前表单有未保存修改。切换配置会丢弃这些修改，是否继续？')
+    !confirmDiscard('当前表单有未保存修改。切换配置会丢弃这些修改，是否继续？')
   ) return
+  drawerOpen.value = true
   profilesStore.selectProfile(profile.name)
   applyProfile(profile)
   void loadExecutionStatus(profile.name)
@@ -273,6 +287,7 @@ async function beginNewProfile(): Promise<void> {
   if (!confirmDiscard('当前表单有未保存修改。新建配置会丢弃这些修改，是否继续？')) {
     return
   }
+  drawerOpen.value = true
   profilesStore.selectProfile(null)
   applyBlankProfile()
   resetExecutionStatus()
@@ -320,7 +335,8 @@ async function saveProfile(): Promise<void> {
   )
   if (saved) {
     applyProfile(saved)
-    void loadExecutionStatus(saved.name)
+    drawerOpen.value = false
+    void loadAccountStatuses()
   }
 }
 
@@ -340,18 +356,20 @@ async function activateProfile(): Promise<void> {
   }
   await profilesStore.activateProfile(draft.sourceName)
   void loadExecutionStatus(draft.sourceName)
+  void loadAccountStatuses()
 }
 
-async function deleteProfile(): Promise<void> {
-  if (draft.sourceName === null || isBusy.value) return
-  const name = draft.sourceName
+async function deleteProfile(profile?: ModelProfile): Promise<void> {
+  const name = profile?.name ?? draft.sourceName
+  if (name === null || isBusy.value) return
   if (!window.confirm(
     `确定永久删除模型配置“${name}”吗？\n\n使用它的工作模型安排会自动改用剩余的当前配置；如果没有其他配置，对应 AI 功能会暂时不可用。`,
   )) return
   const deleted = await profilesStore.deleteProfile(name)
   if (!deleted) return
   syncFromSelection()
-  void loadExecutionStatus()
+  drawerOpen.value = false
+  void loadAccountStatuses()
 }
 
 async function reloadProfiles(): Promise<void> {
@@ -361,12 +379,12 @@ async function reloadProfiles(): Promise<void> {
   const loaded = await profilesStore.load()
   if (loaded) {
     syncFromSelection()
-    void loadExecutionStatus()
+    void loadAccountStatuses()
   }
 }
 
 function handleBeforeUnload(event: BeforeUnloadEvent): void {
-  if (!isDirty.value) return
+  if (!hasUnsavedChanges.value) return
   event.preventDefault()
   event.returnValue = ''
 }
@@ -377,500 +395,81 @@ onMounted(async () => {
   const loaded = await profilesStore.load()
   if (loaded) {
     syncFromSelection()
-    void loadExecutionStatus()
+    void loadAccountStatuses()
   }
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', handleBeforeUnload)
   executionStatusController?.abort()
+  accountController.abort()
 })
 </script>
-
 <template>
   <article class="model-profiles-view">
-    <header v-if="!props.compact" class="model-profiles-view__header">
-      <div>
-        <p class="model-profiles-view__eyebrow">LOCAL MODEL ROUTING</p>
-        <h1 tabindex="-1">API 站点与工作模型</h1>
-        <p>先保存可用的 API 站点，再为四类工作分别指定站点和模型。</p>
-      </div>
-      <div class="model-profiles-view__current" aria-live="polite">
-        <span class="model-profiles-view__beacon" aria-hidden="true" />
-        <span>
-          <small>兼容旧任务的默认站点</small>
-          <strong>{{ currentProfileLabel }}</strong>
-        </span>
-      </div>
-    </header>
-
-    <section v-if="!props.compact" class="model-profiles-notice" aria-label="费用与密钥说明">
-      <p>
-        <strong>保存配置不会调用模型，不会产生费用。</strong>
-        只有之后真正执行识别、批改或标注任务时，才可能产生模型费用。
-      </p>
-      <p>
-        <strong>密钥只保存在本机且页面无法读回。</strong>
-        已保存的密钥只显示“已保存”，不会以明文返回页面。
-      </p>
-    </section>
-
-    <section
-      v-if="profilesStore.loadState === 'ready' || profilesStore.loadState === 'empty'"
-      class="model-task-routing"
-      aria-labelledby="model-task-routing-title"
-    >
-      <header>
-        <div>
-          <p class="model-profiles-view__eyebrow">工作模型</p>
-          <h2 id="model-task-routing-title">四类工作，各自选择站点和模型</h2>
-          <p>一个站点就是一组 API 地址和密钥；不同工作可以使用不同站点。</p>
+    <p v-if="profilesStore.errorMessage || localError" class="settings-feedback is-error" role="alert">{{ localError || profilesStore.errorMessage }}</p>
+    <StatePanel v-if="profilesStore.loadState === 'loading'" kind="loading" title="正在读取本机 AI 服务…" description="" />
+    <StatePanel v-else-if="profilesStore.loadState === 'error'" kind="error" title="服务列表暂时无法读取" description="" retry-label="重新加载" @retry="reloadProfiles" />
+    <template v-else>
+      <section class="settings-panel" aria-labelledby="model-task-routing-title">
+        <header class="settings-panel__heading"><h2 id="model-task-routing-title">用哪个 AI</h2></header>
+        <table class="settings-table model-task-table"><tbody>
+          <tr v-for="row in taskRows" :key="row.key">
+            <td><strong>{{ row.title }}</strong><small>{{ row.detail }}</small></td>
+            <td><select v-model="taskBindingsDraft[row.key].profile_name" class="app-input" :aria-label="`${row.title}使用的服务账号`" :disabled="isBusy || !profilesStore.profiles.length"><option :value="null" disabled>选择服务账号</option><option v-for="profile in profilesStore.profiles" :key="profile.name" :value="profile.name">{{ profile.name }}</option></select></td>
+            <td><input v-model="taskBindingsDraft[row.key].model" class="app-input" :aria-label="`${row.title}使用的模型`" :maxlength="MODEL_PROFILE_LIMITS.model" :disabled="isBusy || !profilesStore.profiles.length" placeholder="填写模型名称"></td>
+          </tr>
+        </tbody></table>
+        <div class="settings-panel__body settings-inline"><AppButton variant="primary" :disabled="isBusy || !bindingsDirty || !profilesStore.profiles.length" @click="saveTaskBindings">保存</AppButton><span class="settings-note settings-saved" :style="{ visibility: profilesStore.noticeMessage ? 'visible' : 'hidden' }" :aria-label="profilesStore.noticeMessage" role="status">已保存</span><span class="settings-note">保存不会调用 AI，也不产生费用。</span></div>
+      </section>
+      <section class="settings-panel" aria-labelledby="model-accounts-title">
+        <header class="settings-panel__heading"><h2 id="model-accounts-title">服务账号</h2><AppButton variant="secondary" :disabled="isBusy" @click="beginNewProfile">添加服务</AppButton></header>
+        <div class="model-accounts">
+          <p v-if="!profilesStore.profiles.length" class="settings-empty">还没有服务账号。<AppButton variant="ghost" @click="beginNewProfile">添加服务</AppButton></p>
+          <div v-for="profile in profilesStore.profiles" :key="profile.name" class="model-account-row">
+            <strong>{{ profile.name }}</strong><span class="model-account-host">{{ hostname(profile.base_url) }}</span>
+            <StatusBadge :tone="profile.has_api_key ? 'success' : 'warning'" :label="profile.has_api_key ? '密钥已保存' : '未保存密钥'" />
+            <StatusBadge v-if="profile.name === profilesStore.activeProfileName" tone="neutral" label="默认" />
+            <span v-if="accountStatuses[profile.name] && (accountStatuses[profile.name]!.active + accountStatuses[profile.name]!.queued > 0)" class="model-account-runtime">运行中：{{ accountStatuses[profile.name]!.active }} 个请求，排队 {{ accountStatuses[profile.name]!.queued }} 个</span>
+            <div class="model-account-actions"><AppButton variant="ghost" :disabled="isBusy" @click="chooseProfile(profile)">编辑</AppButton><AppButton variant="ghost" class="settings-danger-ghost" :disabled="isBusy" @click="deleteProfile(profile)">删除</AppButton></div>
+          </div>
         </div>
-        <AppButton variant="primary"
-          type="button"
-          class="model-profiles-button model-profiles-button--primary"
-          :disabled="isBusy || profilesStore.profiles.length === 0"
-          @click="saveTaskBindings"
-        >保存工作模型</AppButton>
-      </header>
-      <p v-if="profilesStore.profiles.length === 0" class="model-task-routing__empty">
-        请先在下方新增一个 API 站点，再安排工作模型。
-      </p>
-      <div class="model-task-routing__grid">
-        <label v-for="row in taskRows" :key="row.key" class="model-task-row">
-          <span class="model-task-row__title"><strong>{{ row.title }}</strong><small>{{ row.detail }}</small></span>
-          <select class="app-input"
-            v-model="taskBindingsDraft[row.key].profile_name"
-            :aria-label="`${row.title}使用的 API 站点`"
-            :disabled="profilesStore.profiles.length === 0 || isBusy"
-          >
-            <option :value="null" disabled>选择 API 站点</option>
-            <option v-for="profile in profilesStore.profiles" :key="profile.name" :value="profile.name">{{ profile.name }}</option>
-          </select>
-          <input class="app-input"
-            v-model="taskBindingsDraft[row.key].model"
-            type="text"
-            :maxlength="MODEL_PROFILE_LIMITS.model"
-            :aria-label="`${row.title}使用的模型`"
-            :disabled="profilesStore.profiles.length === 0 || isBusy"
-            placeholder="填写模型名称"
-          >
-        </label>
-      </div>
-    </section>
-
-    <FeedbackBanner
-      v-if="profilesStore.errorMessage || localError"
-      class="model-profiles-feedback"
-      tone="error"
-      :title="localError || profilesStore.errorMessage"
-      description=""
-    />
-    <FeedbackBanner
-      v-else-if="profilesStore.noticeMessage"
-      class="model-profiles-feedback"
-      tone="success"
-      :title="profilesStore.noticeMessage"
-      description=""
-    />
-
-    <StatePanel
-      v-if="profilesStore.loadState === 'loading'"
-      class="model-profiles-state"
-      kind="loading"
-      title="正在读取本机模型配置…"
-      description=""
-    />
-    <StatePanel
-      v-else-if="profilesStore.loadState === 'error'"
-      class="model-profiles-state model-profiles-state--error"
-      kind="error"
-      title="配置列表没有加载成功，页面没有改变任何配置。"
-      description=""
-      retry-label="重新加载"
-      @retry="reloadProfiles"
-    />
-
-    <details v-else class="model-profiles-advanced-shell" :open="!props.compact">
-      <summary>高级设置：API 站点、密钥与请求速度</summary>
-      <div class="model-profiles-workspace">
-      <aside class="model-profiles-index" aria-label="API 站点列表">
-        <header>
-          <div>
-            <p>API 站点</p>
-            <span>{{ profilesStore.profiles.length }} 个</span>
-          </div>
-          <AppButton variant="ghost"
-            type="button"
-            class="model-profiles-button model-profiles-button--quiet"
-            :disabled="isBusy"
-            @click="beginNewProfile"
-          >
-            新增站点
-          </AppButton>
-        </header>
-
-        <p
-          v-if="profilesStore.profiles.length === 0"
-          class="model-profiles-index__empty"
-        >
-          还没有 API 站点。先在右侧填写第一个站点。
-        </p>
-        <ul v-else class="model-profiles-index__list">
-          <li v-for="profile in profilesStore.profiles" :key="profile.name">
-            <button
-              type="button"
-              class="model-profile-item"
-              :class="{
-                'model-profile-item--selected': profile.name === draft.sourceName,
-              }"
-              :aria-current="profile.name === draft.sourceName ? 'true' : undefined"
-              :disabled="isBusy"
-              @click="chooseProfile(profile)"
-            >
-              <span class="model-profile-item__heading">
-                <strong>{{ profile.name }}</strong>
-                <StatusBadge
-                  v-if="profile.name === profilesStore.activeProfileName"
-                  tone="success"
-                  label="当前"
-                />
-              </span>
-              <small>{{ profile.ocr_model }} · {{ profile.grading_model }}</small>
-              <span class="model-profile-item__key-state">
-                {{ profile.has_api_key ? '主密钥已保存' : '主密钥未保存' }}
-              </span>
-            </button>
-          </li>
-        </ul>
-      </aside>
-
-      <form
-        ref="formElement"
-        class="model-profile-editor"
-        :aria-busy="isBusy"
-        @submit.prevent="saveProfile"
-      >
-        <header class="model-profile-editor__header">
-          <div>
-            <p>{{ isNew ? 'NEW API SITE' : 'API SITE' }}</p>
-            <h2>{{ isNew ? '新增 API 站点' : draft.sourceName }}</h2>
-            <span>{{ editStatus }}</span>
-          </div>
-          <StatusBadge
-            v-if="isCurrent"
-            tone="success"
-            label="当前正在使用"
-          />
-        </header>
-
-        <div class="model-profile-fields">
-          <label class="model-profile-field model-profile-field--wide">
-            <span>站点名称</span>
-            <input class="app-input"
-              ref="nameInput"
-              v-model="draft.name"
-              name="profile-name"
-              type="text"
-              autocomplete="off"
-              :maxlength="MODEL_PROFILE_LIMITS.name"
-              placeholder="例如：校内模型站点"
-              :disabled="isBusy"
-              :readonly="!isNew"
-              required
-            >
-            <small v-if="!isNew">已保存配置的名称固定；需要新名称时请新建一套配置。</small>
-            <small>用于区分不同服务商或校内代理。</small>
-          </label>
-
-          <label class="model-profile-field model-profile-field--wide">
-            <span>API 地址</span>
-            <input class="app-input"
-              v-model="draft.baseUrl"
-              name="base-url"
-              type="url"
-              inputmode="url"
-              autocomplete="off"
-              :maxlength="MODEL_PROFILE_LIMITS.url"
-              placeholder="https://api.example.com/v1"
-              :disabled="isBusy"
-              required
-            >
-            <small>支持 http:// 或 https://，地址中不要写账号或密码。</small>
-          </label>
-
-          <label class="model-profile-field model-profile-field--wide">
-            <span>API 密钥</span>
-            <input class="app-input"
-              v-model="draft.apiKey"
-              name="api-key"
-              type="password"
-              autocomplete="new-password"
-              :maxlength="MODEL_PROFILE_LIMITS.apiKey"
-              :placeholder="draft.hasApiKey ? '已保存；留空保持不变' : '粘贴 API 密钥'"
-              :disabled="isBusy"
-              :required="isNew"
-            >
-            <small>
-              {{ draft.hasApiKey
-                ? '密钥已保存在本机。页面无法读回；留空不会覆盖。'
-                : '尚未保存主密钥。新配置保存前必须填写。' }}
-            </small>
-          </label>
-
-        </div>
-
-        <fieldset class="model-profile-execution">
-          <legend>AI 请求速度</legend>
-          <p class="model-profile-execution__intro">
-            姓名识别、试卷批改、评分配置和题库标注共用这套限制。
-            学生可以一次全部进入队列，程序只按这里允许的数量同时请求模型。
-          </p>
-          <div class="model-profile-execution__modes">
-            <label
-              class="model-profile-speed-option"
-              :class="{ 'model-profile-speed-option--selected': draft.requestSpeedMode === 'automatic' }"
-            >
-              <input
-                v-model="draft.requestSpeedMode"
-                type="radio"
-                name="request-speed-mode"
-                value="automatic"
-                :disabled="isBusy"
-              >
-              <span>
-                <strong>自动（推荐）</strong>
-                <small>遇到限流自动降低，同时请求稳定后再缓慢恢复。</small>
-              </span>
-            </label>
-            <label
-              class="model-profile-speed-option"
-              :class="{ 'model-profile-speed-option--selected': draft.requestSpeedMode === 'conservative' }"
-            >
-              <input
-                v-model="draft.requestSpeedMode"
-                type="radio"
-                name="request-speed-mode"
-                value="conservative"
-                :disabled="isBusy"
-              >
-              <span>
-                <strong>保守</strong>
-                <small>一次只发送一个请求，适合接口不稳定时临时使用。</small>
-              </span>
-            </label>
-            <label
-              class="model-profile-speed-option"
-              :class="{ 'model-profile-speed-option--selected': draft.requestSpeedMode === 'custom' }"
-            >
-              <input
-                v-model="draft.requestSpeedMode"
-                type="radio"
-                name="request-speed-mode"
-                value="custom"
-                :disabled="isBusy"
-              >
-              <span>
-                <strong>自定义</strong>
-                <small>设置允许的上限；供应商限流时仍会自动减速。</small>
-              </span>
-            </label>
-          </div>
-          <div
-            v-if="draft.requestSpeedMode === 'custom'"
-            class="model-profile-execution__custom"
-          >
-            <label class="model-profile-field">
-              <span>最多同时请求数</span>
-              <input class="app-input"
-                v-model.number="draft.maxConcurrentRequests"
-                name="max-concurrent-requests"
-                type="number"
-                min="1"
-                :max="MODEL_PROFILE_LIMITS.concurrentRequests"
-                step="1"
-                :disabled="isBusy"
-                required
-              >
-              <small>这是 worker 的实际含义；填 100 不代表供应商一定接受 100 个并发。</small>
-            </label>
-            <label class="model-profile-field">
-              <span>每分钟请求数（RPM）</span>
-              <input class="app-input"
-                v-model.number="draft.requestsPerMinute"
-                name="requests-per-minute"
-                type="number"
-                min="1"
-                :max="MODEL_PROFILE_LIMITS.requestsPerMinute"
-                step="1"
-                :disabled="isBusy"
-                required
-              >
-              <small>RPM 只限制启动频率，不会自动增加同时处理数量。</small>
-            </label>
-          </div>
-          <div class="model-profile-execution__custom">
-            <label class="model-profile-field">
-              <span>允许自动重试次数</span>
-              <input class="app-input"
-                v-model.number="draft.maxAutoRetries"
-                name="max-auto-retries"
-                type="number"
-                min="0"
-                :max="MODEL_PROFILE_LIMITS.maxAutoRetries"
-                step="1"
-                :disabled="isBusy"
-                placeholder="默认"
-              >
-              <small>
-                请求失败（限流、超时、断连）或模型输出不符合要求时自动补试的次数上限；
-                留空使用各任务默认，填 0 表示失败就直接停。题库打标会把失败原因带给模型自动重试。
-              </small>
-            </label>
-            <label class="model-profile-field">
-              <span>单次请求超时（秒）</span>
-              <input class="app-input"
-                v-model.number="draft.requestTimeoutSeconds"
-                name="request-timeout-seconds"
-                type="number"
-                min="30"
-                :max="MODEL_PROFILE_LIMITS.requestTimeoutSeconds"
-                step="1"
-                :disabled="isBusy"
-                placeholder="默认"
-              >
-              <small>
-                超过多少秒算一次调用失败；对所有在线 AI 请求统一生效，允许 30–1200 秒。
-                留空按任务内置默认。
-              </small>
-            </label>
-          </div>
-          <details class="model-profiles-disclosure">
-            <summary>了解各任务的内置默认</summary>
-            <ul class="model-profiles-disclosure__list">
-              <li>试卷批改：600 秒</li>
-              <li>图片识别：60 秒</li>
-              <li>评分标准生成：600 秒</li>
-              <li>题库打标：480 秒</li>
-              <li>组卷细目表：300 秒</li>
-              <li>工作台任务：120 秒</li>
-            </ul>
-          </details>
-          <p class="model-profile-execution__summary" aria-live="polite">
-            <strong>当前计划：</strong>{{ requestSpeedSummary }}
-          </p>
-          <section
-            v-if="!isNew"
-            class="model-profile-runtime"
-            aria-label="AI 请求运行状态"
-          >
-            <header>
-              <div>
-                <strong>当前运行状态</strong>
-                <small>本次程序启动以来，四类 AI 请求共用</small>
+      </section>
+      <router-link class="settings-link" to="/settings?section=system#ai-call-log">查看 AI 调用记录 →</router-link>
+    </template>
+    <Sheet :open="drawerOpen" @update:open="closeDrawer">
+      <SheetContent class="settings-drawer" :aria-describedby="undefined" @interact-outside="event => { if (isBusy) event.preventDefault() }" @escape-key-down="event => { if (isBusy) event.preventDefault() }">
+        <SheetHeader class="settings-drawer__header"><SheetTitle>{{ isNew ? '添加服务' : '编辑服务' }}</SheetTitle></SheetHeader>
+        <form ref="formElement" class="settings-drawer__form" @submit.prevent="saveProfile">
+          <div class="settings-drawer__body">
+            <label class="settings-field"><span>名称</span><input ref="nameInput" v-model="draft.name" class="app-input" name="profile-name" :maxlength="MODEL_PROFILE_LIMITS.name" :readonly="!isNew" :disabled="isBusy" required></label>
+            <label class="settings-field"><span>地址</span><input v-model="draft.baseUrl" class="app-input" name="base-url" type="url" placeholder="https://api.example.com/v1" :maxlength="MODEL_PROFILE_LIMITS.url" :disabled="isBusy" required></label>
+            <label class="settings-field"><span>密钥</span><input v-model="draft.apiKey" class="app-input" name="api-key" type="password" autocomplete="new-password" :placeholder="draft.hasApiKey ? '已保存，留空不改' : '粘贴 API 密钥'" :maxlength="MODEL_PROFILE_LIMITS.apiKey" :disabled="isBusy" :required="isNew"></label>
+            <details class="settings-disclosure"><summary>高级</summary><div class="model-advanced">
+              <span class="settings-note">请求速度</span>
+              <label v-for="mode in (['automatic', 'conservative', 'custom'] as const)" :key="mode" class="settings-check"><input v-model="draft.requestSpeedMode" type="radio" name="request-speed-mode" :value="mode" :disabled="isBusy">{{ { automatic: '自动（推荐）', conservative: '保守', custom: '自定义' }[mode] }}</label>
+              <div v-if="draft.requestSpeedMode === 'custom'" class="settings-field-pair">
+                <label class="settings-field"><span>同时请求数</span><input v-model.number="draft.maxConcurrentRequests" class="app-input" name="max-concurrent-requests" type="number" min="1" :max="MODEL_PROFILE_LIMITS.concurrentRequests" step="1" :disabled="isBusy" required></label>
+                <label class="settings-field"><span>每分钟请求数</span><input v-model.number="draft.requestsPerMinute" class="app-input" name="requests-per-minute" type="number" min="1" :max="MODEL_PROFILE_LIMITS.requestsPerMinute" step="1" :disabled="isBusy" required></label>
               </div>
-              <AppButton variant="ghost"
-                type="button"
-                class="model-profiles-button model-profiles-button--quiet"
-                :disabled="executionStatusState === 'loading'"
-                @click="loadExecutionStatus()"
-              >
-                {{ executionStatusState === 'loading' ? '正在刷新…' : '刷新状态' }}
-              </AppButton>
-            </header>
-            <p
-              v-if="executionStatusState === 'loading' && executionStatus === null"
-              class="model-profile-runtime__state"
-              role="status"
-            >
-              正在读取本机运行状态…
-            </p>
-            <p
-              v-else-if="executionStatusState === 'error'"
-              class="model-profile-runtime__state model-profile-runtime__state--error"
-              role="alert"
-            >
-              {{ executionStatusError || '当前运行状态没有读取成功。' }}
-            </p>
-            <template v-else-if="executionStatus !== null">
-              <dl class="model-profile-runtime__metrics">
-                <div>
-                  <dt>正在请求</dt>
-                  <dd>{{ executionStatus.active }}</dd>
-                </div>
-                <div>
-                  <dt>排队等待</dt>
-                  <dd>{{ executionStatus.queued }}</dd>
-                </div>
-                <div>
-                  <dt>当前同时上限</dt>
-                  <dd>
-                    {{ executionStatus.effective_max_in_flight }}
-                    <small>/ 计划 {{ executionStatus.configured_max_in_flight }}</small>
-                  </dd>
-                </div>
-                <div>
-                  <dt>启动后峰值</dt>
-                  <dd>{{ executionStatus.peak_active }}</dd>
-                </div>
-              </dl>
-              <p class="model-profile-runtime__reason">
-                {{ executionLimitingMessage }}
-                本次启动已向模型实际发送
-                {{ executionStatus.physical_request_count }} 个请求。
-              </p>
-            </template>
-          </section>
-          <p class="model-profile-execution__note">
-            保存不会测试接口或产生费用；新设置从下一次任务启动时生效，
-            已经运行的任务继续使用启动时的方案。
-          </p>
-        </fieldset>
-
-        <footer class="model-profile-editor__actions">
-          <div>
-            <strong>{{ editStatus }}</strong>
-            <span>保存和切换都只修改本机设置，不会测试连接。</span>
+              <p class="settings-note">{{ requestSpeedSummary }}</p>
+              <label class="settings-field"><span>失败自动重试次数</span><input v-model.number="draft.maxAutoRetries" class="app-input" name="max-auto-retries" type="number" min="0" :max="MODEL_PROFILE_LIMITS.maxAutoRetries" step="1" placeholder="默认" :disabled="isBusy"></label>
+              <label class="settings-field"><span>等待超时（秒）</span><input v-model.number="draft.requestTimeoutSeconds" class="app-input" name="request-timeout-seconds" type="number" min="30" :max="MODEL_PROFILE_LIMITS.requestTimeoutSeconds" step="1" placeholder="默认" :disabled="isBusy"><small>30–1200</small></label>
+              <details class="settings-disclosure"><summary>各任务内置默认</summary><div class="model-advanced">
+                <p class="settings-note">试卷批改 600 秒 · 图片识别 60 秒 · 评分标准生成 600 秒 · 题库标注 480 秒 · 组卷细目表 300 秒 · 工作台任务 120 秒</p>
+              </div></details>
+              <section v-if="!isNew" aria-label="当前运行状态">
+                <div class="settings-inline"><strong>当前运行状态</strong><AppButton variant="ghost" :disabled="executionStatusState === 'loading'" @click="loadExecutionStatus()">刷新</AppButton></div>
+                <p v-if="executionStatus" class="settings-note">正在请求 {{ executionStatus.active }} · 排队 {{ executionStatus.queued }} · 当前同时上限 {{ executionStatus.effective_max_in_flight }} / {{ executionStatus.configured_max_in_flight }} · 峰值 {{ executionStatus.peak_active }} · 已发送 {{ executionStatus.physical_request_count }} 次</p>
+                <p v-if="executionStatus" class="settings-note">{{ executionLimitingMessage }}</p><p v-else-if="executionStatusError" class="settings-note">{{ executionStatusError }}</p>
+              </section>
+              <AppButton variant="secondary" :disabled="!canActivate" @click="activateProfile">{{ isCurrent ? '已是默认服务' : '设为默认服务（旧任务使用）' }}</AppButton>
+            </div></details>
+            <p v-if="localError || profilesStore.errorMessage" class="settings-feedback is-error" role="alert">{{ localError || profilesStore.errorMessage }}</p>
           </div>
-          <div class="model-profile-editor__buttons">
-            <AppButton variant="danger"
-              v-if="!isNew"
-              type="button"
-              class="model-profiles-button model-profiles-button--danger"
-              :disabled="isBusy"
-              @click="deleteProfile"
-            >
-              {{ profilesStore.operationState === 'deleting'
-                ? '正在删除…'
-                : '删除配置' }}
-            </AppButton>
-            <AppButton variant="secondary"
-              type="button"
-              class="model-profiles-button model-profiles-button--secondary"
-              :disabled="!canActivate"
-              @click="activateProfile"
-            >
-              {{ profilesStore.operationState === 'activating'
-                ? '正在切换…'
-                : isCurrent ? '当前配置' : '设为当前配置' }}
-            </AppButton>
-            <AppButton variant="primary"
-              type="submit"
-              class="model-profiles-button model-profiles-button--primary"
-              :disabled="isBusy || !isDirty"
-            >
-              {{ profilesStore.operationState === 'saving'
-                ? '正在保存…'
-                : '保存配置' }}
-            </AppButton>
-          </div>
-        </footer>
-      </form>
-      </div>
-    </details>
-
-    <p class="model-profiles-trace-link">
-      <router-link to="/settings?section=ai-trace">查看 AI 调用记录</router-link>
-    </p>
+          <footer class="settings-drawer__footer"><AppButton variant="secondary" :disabled="isBusy" @click="closeDrawer()">取消</AppButton><AppButton variant="primary" type="submit" :disabled="isBusy || !isDirty">{{ isBusy ? '正在保存…' : '保存' }}</AppButton></footer>
+        </form>
+      </SheetContent>
+    </Sheet>
   </article>
 </template>

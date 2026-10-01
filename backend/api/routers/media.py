@@ -24,6 +24,7 @@ from backend.scan_grading.workspace import (
     ScanGradingWorkspace,
     ScanGradingWorkspaceError,
 )
+from session_originals import OriginalPagesCleared, require_original_pages
 
 router = APIRouter(prefix="/api", tags=["media"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store"}
@@ -60,6 +61,7 @@ def get_result_page(
             variant,
         )
     except (
+        OriginalPagesCleared,
         ReviewMediaNotFound,
         ControlledFileExpired,
         ControlledFileForbidden,
@@ -103,6 +105,7 @@ def get_review_detail_crop(
             detail_id,
         )
     except (
+        OriginalPagesCleared,
         ReviewMediaNotFound,
         ControlledFileExpired,
         ControlledFileForbidden,
@@ -148,6 +151,7 @@ def get_preflight_review_crop(
         "source_region_id": source_region_id,
     }
     try:
+        require_original_pages(media_service.data_root, session_id)
         front_source = workspace.resolve_preflight_media(
             session_id,
             f"{target_type}:{target_id}:front",
@@ -172,6 +176,7 @@ def get_preflight_review_crop(
             details,
         )
     except (
+        OriginalPagesCleared,
         ReviewMediaNotFound,
         ControlledFileExpired,
         ControlledFileForbidden,
@@ -190,6 +195,8 @@ def _raise_media_api_error(
     exc: Exception,
     details: dict[str, object],
 ) -> NoReturn:
+    if isinstance(exc, OriginalPagesCleared):
+        raise ApiError(410, "original_pages_cleared", "原卷已清理，分数和作答记录仍保留。", details, headers=NO_STORE_HEADERS) from exc
     if isinstance(exc, ReviewMediaNotFound):
         raise ApiError(
             404,

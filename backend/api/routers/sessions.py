@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from contextlib import closing
+from datetime import datetime
 
 from backend.api.app import ApiError
 from backend.api.dependencies import (
@@ -19,6 +22,10 @@ from backend.api.dependencies import (
     get_taxonomy_governance,
     get_taxonomy_suggestion_service,
     get_upload_config_dir,
+    get_scan_grading_workspace,
+    get_review_application_service,
+    get_media_service,
+    get_ops_self_check_service,
 )
 from backend.api.routers.jobs import _job_response
 from backend.api.schemas.jobs import JobResponse
@@ -81,6 +88,105 @@ from session_cleanup import (
 
 router = APIRouter(prefix="/api", tags=["sessions"])
 _SESSION_NAME_CONFLICT_MESSAGE = "已存在同名考试，请换一个名称。"
+
+
+class OriginalsActionRequest(BaseModel):
+    expected_revision: str
+    confirmation_phrase: str = ""
+
+
+def _originals_snapshot(session_id, db, data_root, workspace, review_service, backup_service=None):
+    from session_originals import measure_session_originals, originals_state, _receipt
+    from backend.review.manual_context import current_manual_context
+    try:
+        impact = db.sessions.session_deletion_impact(session_id)
+    except ValueError as exc:
+        raise ApiError(404, "session_not_found", "未找到这场考试。") from exc
+    session = impact["session"]
+    if session.get("is_deleted"):
+        raise ApiError(404, "session_not_found", "未找到这场考试。")
+    state = originals_state(data_root, session_id)
+    measured = measure_session_originals(db, data_root, session_id)
+    with closing(db._connect()) as conn:
+        unmatched = conn.execute("SELECT COUNT(*) FROM exam_papers WHERE session_id = ? AND COALESCE(match_status, '') != 'matched'", (session_id,)).fetchone()[0]
+        latest_paper = conn.execute("SELECT MAX(created_at) FROM exam_papers WHERE session_id = ?", (session_id,)).fetchone()[0]
+    reason = None
+    if impact["active_jobs"] or impact["active_grading_runs"]:
+        reason = "这场考试还有正在运行的任务"
+    # get_workspace creates upload manifests; this read must only inspect existing state.
+    elif workspace._replacement_manifest_path(session_id).exists() or workspace._replacement_commit_path(session_id).exists():
+        reason = "正在替换答卷，完成后再清理"
+    elif not impact["permanent_counts"]["grading_results"]:
+        reason = "还没有批改结果"
+    elif unmatched:
+        reason = "还有答卷没有对应到学生"
+    else:
+        questions = review_service.list_questions(session_id, session, scope=None, manual_context=current_manual_context(session_id, workspace, read_only=True) if workspace._manifest_path(session_id).exists() else None)
+        if any(q.needs_review_count + q.ungraded_count + q.failed_count for q in questions):
+            reason = "复核完成后可清理"
+    latest_backup = None
+    covered = False
+    if backup_service is not None:
+        backups = [item for item in backup_service.list_backups(100)["items"] if item["kind"] == "zip"]
+        if backups:
+            latest_backup = backups[0]["created_at"]
+            try:
+                stamp = datetime.fromisoformat(latest_backup)
+                dates = [latest_paper, _receipt(data_root, session_id).get("scans_released_at")]
+                covered = bool(latest_paper) and all(stamp > datetime.fromisoformat(t) for t in dates if t)
+            except (ValueError, TypeError):
+                covered = False
+    return {**measured, "originals_state": state, "revision": f"{impact['revision']}:{state}",
+            "can_release_scans": reason is None and measured["release_bytes"] > 0 and state not in {"clearing", "cleared"},
+            "can_clear": reason is None and state != "cleared", "blocked_reason": reason,
+            "confirmation_phrase": "确认清除", "latest_backup_at": latest_backup, "backup_covers_originals": covered}
+
+
+@router.get("/sessions/{session_id}/originals")
+def get_session_originals(session_id: int, db=Depends(get_grading_db), data_root: Path=Depends(get_data_root),
+                          workspace=Depends(get_scan_grading_workspace), review_service=Depends(get_review_application_service),
+                          backup_service=Depends(get_ops_self_check_service)):
+    with session_lifecycle_guard(session_id):
+        return _originals_snapshot(session_id, db, data_root, workspace, review_service, backup_service)
+
+
+def _check_originals_action(snapshot, request, *, clear):
+    if clear and request.confirmation_phrase != "确认清除":
+        raise ApiError(422, "originals_confirmation_mismatch", "请输入「确认清除」继续。")
+    if not (clear and snapshot["originals_state"] == "clearing") and snapshot["revision"] != request.expected_revision:
+        raise ApiError(409, "originals_revision_changed", "这场考试的状态已变化，请刷新后重新确认。")
+    if not snapshot["can_clear" if clear else "can_release_scans"]:
+        raise ApiError(409, "originals_not_ready", snapshot["blocked_reason"] or "当前没有可清理的原卷文件。")
+
+
+@router.post("/sessions/{session_id}/originals/release-scans")
+def release_original_scans(session_id: int, request: OriginalsActionRequest, db=Depends(get_grading_db),
+                           data_root: Path=Depends(get_data_root), workspace=Depends(get_scan_grading_workspace),
+                           review_service=Depends(get_review_application_service)):
+    from session_originals import release_session_scans
+    with session_lifecycle_guard(session_id):
+        snapshot = _originals_snapshot(session_id, db, data_root, workspace, review_service)
+        _check_originals_action(snapshot, request, clear=False)
+        try:
+            return release_session_scans(db, data_root, session_id)
+        except OSError as exc:
+            raise ApiError(409, "originals_release_incomplete", "部分扫描文件未能释放，请关闭占用文件后刷新状态。", {"retryable": True}) from exc
+
+
+@router.post("/sessions/{session_id}/originals/clear")
+def clear_original_pages(session_id: int, request: OriginalsActionRequest, db=Depends(get_grading_db),
+                         data_root: Path=Depends(get_data_root), workspace=Depends(get_scan_grading_workspace),
+                         review_service=Depends(get_review_application_service), media_service=Depends(get_media_service)):
+    from session_originals import clear_session_originals
+    with session_lifecycle_guard(session_id):
+        snapshot = _originals_snapshot(session_id, db, data_root, workspace, review_service)
+        if snapshot["originals_state"] == "cleared" and request.confirmation_phrase == "确认清除":
+            return {"originals_state": "cleared", "freed_bytes": 0, "deleted_files": 0, "kept_unrendered": 0}
+        _check_originals_action(snapshot, request, clear=True)
+        try:
+            return clear_session_originals(db, data_root, session_id, clear_crop_cache=media_service.clear_detail_crop_cache)
+        except Exception as exc:
+            raise ApiError(409, "originals_clear_incomplete", "原卷清理未完成，请刷新后点「继续清理」。", {"retryable": True}) from exc
 
 
 def _bool(value: Any) -> bool:

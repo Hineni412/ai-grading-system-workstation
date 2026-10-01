@@ -566,6 +566,7 @@ onBeforeUnmount(() => {
                 <td>{{ reasonText(item) }}</td>
                 <td>
                   <button
+                    v-if="item.evidence_url"
                     type="button"
                     class="student-evidence__thumb"
                     :aria-label="`放大查看 ${item.question_id} 的作答图像`"
@@ -573,6 +574,7 @@ onBeforeUnmount(() => {
                   >
                     <img :src="item.evidence_url" :alt="`${item.question_id} 作答图像`" loading="lazy">
                   </button>
+                  <span v-else>原卷已清理，分数和作答记录仍保留。</span>
                 </td>
                 <td>
                   <button

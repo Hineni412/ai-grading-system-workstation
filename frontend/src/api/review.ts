@@ -28,8 +28,9 @@ export interface ReviewQuestionSummary {
 }
 
 export interface ReviewMediaLinks {
-  crop_url: string
-  original_front_url: string
+  originals_available?: boolean
+  crop_url: string | null
+  original_front_url: string | null
   original_back_url: string | null
   annotated_front_url: string | null
   annotated_back_url: string | null
@@ -188,8 +189,8 @@ function isReviewQuestion(value: unknown): value is ReviewQuestionSummary {
 
 function isReviewMedia(value: unknown): value is ReviewMediaLinks {
   return isRecord(value)
-    && isApiUrl(value.crop_url)
-    && isApiUrl(value.original_front_url)
+    && (value.originals_available === undefined || typeof value.originals_available === 'boolean')
+    && (value.originals_available === false ? value.crop_url === null && value.original_front_url === null : isApiUrl(value.crop_url) && isApiUrl(value.original_front_url))
     && isNullableApiUrl(value.original_back_url)
     && isNullableApiUrl(value.annotated_front_url)
     && isNullableApiUrl(value.annotated_back_url)
