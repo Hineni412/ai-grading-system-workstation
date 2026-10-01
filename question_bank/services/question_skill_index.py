@@ -7,6 +7,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import median
 from typing import Any
+from question_bank.current_knowledge import CurrentKnowledgeResolver, CurrentKnowledgeUnavailable
 
 from question_bank.solution_evidence.knowledge_links import load_point_links
 from question_bank.solution_evidence.part_assessments import load_profiles
@@ -62,20 +63,32 @@ def build_skill_snapshot(conn: sqlite3.Connection, db_path: Path, data_root: Pat
                         by_skill[link.stable_key].add(qid)
         by_question[qid] = skills
     topics: dict[str, set[int]] = defaultdict(set)
+    topic_keys: dict[str, str] = {}
     sections: dict[str, set[int]] = defaultdict(set)
+    try:
+        resolver = CurrentKnowledgeResolver.from_connection(conn)
+    except CurrentKnowledgeUnavailable:
+        resolver = None
     for row in conn.execute("SELECT question_id,tag_type,tag_value FROM question_tags WHERE tag_type IN ('knowledge_point','curriculum_section','exam_scope')"):
         qid = int(row["question_id"])
         if qid not in questions:
             continue
         if row["tag_type"] == "knowledge_point":
-            topics[str(row["tag_value"])].add(qid)
+            value = str(row['tag_value'])
+            term = resolver.canonical_term(value) if resolver else None
+            targets = resolver.resolve(value) if resolver else ()
+            target = next((item for item in targets if item.stable_key.startswith('kp_')), None)
+            if target:
+                value = term[1] if term else value
+                topic_keys[value] = target.stable_key
+                topics[value].add(qid)
         else:
             sections[str(row["tag_value"])].add(qid)
     return {"release": release, "nodes": nodes, "questions": questions, "members": dict(members),
             "volumes": dict(volumes), "by_skill": dict(by_skill), "by_question": by_question,
             "no_usable": set(questions) - set(usable),
             "unlinked": {qid for qid in questions if not by_question.get(qid)},
-            "topics": dict(topics), "sections": dict(sections)}
+            "topics": dict(topics), "topic_keys": topic_keys, "sections": dict(sections)}
 
 
 def skill_index(snapshot: dict[str, Any], volume_id: str, review_ids: set[int]) -> dict[str, Any]:
@@ -135,14 +148,14 @@ def skill_index(snapshot: dict[str, Any], volume_id: str, review_ids: set[int]) 
     topic_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for value, question_ids in snapshot["topics"].items():
         # Preserve the actual stored filter value; public names are only presentation.
-        node = next((node for node in snapshot["nodes"].values() if node["display_name"] == value), None)
+        node = snapshot['nodes'].get(snapshot['topic_keys'].get(value, ''))
         anchors = [anchor_key(anchor) for anchor in json.loads(node["curriculum_anchors_json"])] if node else []
         for chapter in volume["chapters"]:
             for section in chapter["sections"]:
                 if (section["knowledge_id"] in anchors or value == section["display_name"]
                     or value.startswith(section["display_name"] + "｜")
                     or any(section["knowledge_id"] in curriculum_knowledge_ancestors(anchor) for anchor in anchors)):
-                    topic_rows[section["knowledge_id"]].append({"filter_value": value, "display_name": short_node_name(value), **stats(question_ids)})
+                    topic_rows[section["knowledge_id"]].append({"stable_key": snapshot['topic_keys'][value], "filter_value": value, "display_name": short_node_name(value), **stats(question_ids)})
     chapters = []
     for chapter in volume["chapters"]:
         chapter_ids: set[int] = set()

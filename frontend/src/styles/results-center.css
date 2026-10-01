@@ -46,43 +46,6 @@
   background: var(--card);
 }
 
-.results-rail {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.results-rail button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  min-height: 30px;
-  padding: 0 var(--space-2);
-  border: 0;
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-dense);
-  font-weight: var(--font-weight-medium);
-  cursor: pointer;
-}
-
-.results-rail button:hover:not(:disabled) {
-  color: var(--foreground);
-}
-
-.results-rail button:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: var(--focus-offset);
-  border-radius: var(--radius-control);
-}
-
-.results-rail button.is-active {
-  color: var(--primary);
-  font-weight: var(--font-weight-semibold);
-  box-shadow: inset 0 -2px 0 var(--color-accent);
-}
-
 .results-export-toggle {
   white-space: nowrap;
 }

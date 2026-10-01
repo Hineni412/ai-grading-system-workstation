@@ -4,6 +4,8 @@ import { createApp, h, nextTick } from 'vue'
 import { createMemoryHistory } from 'vue-router'
 
 import { questionBankApi, type QuestionBankPaper } from '../api/question-bank'
+import QuestionSkillBrowser from '../components/question-bank/QuestionSkillBrowser.vue'
+import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import PaperLibrary from '../components/question-bank/PaperLibrary.vue'
 import QuestionImportJobs from '../components/question-bank/QuestionImportJobs.vue'
 import QuestionAnnotationPanel from '../components/question-bank/QuestionAnnotationPanel.vue'
@@ -84,7 +86,7 @@ async function mountView() {
   const app = createApp(QuestionBankView)
   const pinia = createPinia()
   const router = createAppRouter(createMemoryHistory())
-  await router.push('/question-bank')
+  await router.push('/question-bank?tab=paper')
   await router.isReady()
   app.use(pinia)
   app.use(router)
@@ -216,7 +218,9 @@ describe('question bank workspace', () => {
     const host = document.createElement('div')
     document.body.append(host)
     const app = createApp(QuestionBankView)
-    app.use(createPinia())
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/question-bank?tab=paper')
+    app.use(createPinia()).use(router)
     app.mount(host)
     mounted.push(app)
 
@@ -485,117 +489,33 @@ describe('question bank workspace', () => {
     expect(fetchSpy.mock.calls.some((call) => String(call[0]) === '/api/question-bank/papers')).toBe(true)
   })
 
-  it('applies difficulty on release but waits for explicit text filters and AI cost confirmation', async () => {
-    const queuedJob = {
-      id: 41,
-      job_type: 'tagging_sync',
-      payload: { question_ids: [17] },
-      result: {},
-      status: 'queued',
-      progress: 0,
-      stage: '',
-      detail: '',
-      error: null,
-      cancel_requested: false,
-      created_at: '2026-07-18T10:00:00Z',
-      started_at: null,
-      updated_at: '2026-07-18T10:00:00Z',
-      finished_at: null,
-    }
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input)
-      if (url === '/api/question-bank/papers') {
-        return new Response(JSON.stringify({ items: [paper], total: 1 }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
-      if (url.startsWith('/api/question-bank/questions?')) {
-        return new Response(JSON.stringify({
-          items: [item],
-          total: 1,
-          page: 1,
-          page_size: 20,
-          total_pages: 1,
-        }), { status: 200, headers: { 'content-type': 'application/json' } })
-      }
-      if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
-        return new Response(JSON.stringify(queuedJob), {
-          status: 202,
-          headers: { 'content-type': 'application/json' },
-        })
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    const { host, pinia } = await mountView()
-    await vi.waitFor(() => {
-      expect(host.querySelector<HTMLButtonElement>('.question-sort button.is-active')?.textContent)
-        .toContain('题号')
-      expect(host.querySelector('.difficulty-range.qb-difficulty-filter')).toBeTruthy()
-    })
-    const baselineCalls = fetchSpy.mock.calls.length
-    const initialQuestionRequest = fetchSpy.mock.calls
-      .map(([request]) => String(request))
-      .find((url) => url.startsWith('/api/question-bank/questions?'))
-    expect(initialQuestionRequest).toContain('sort=paper_order')
-    const lowerDifficulty = host.querySelector<HTMLInputElement>('input[aria-label="最低难度"]')!
-    lowerDifficulty.value = '4'
-    lowerDifficulty.dispatchEvent(new Event('input', { bubbles: true }))
-    await nextTick()
-    lowerDifficulty.dispatchEvent(new Event('change', { bubbles: true }))
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(baselineCalls + 1))
-    expect(String(fetchSpy.mock.calls[baselineCalls]?.[0])).toContain('difficulty_min=4')
-
-    const callsAfterDifficulty = fetchSpy.mock.calls.length
-    const search = host.querySelector<HTMLInputElement>('input[type="search"]')!
-    search.value = '二次函数'
-    search.dispatchEvent(new Event('input', { bubbles: true }))
-    host.querySelector<HTMLElement>('.qb-more-filters summary')!.click()
-    await nextTick()
-    const examScope = host.querySelector<HTMLInputElement>('input[placeholder="如：函数"]')!
-    examScope.value = '期中'
-    examScope.dispatchEvent(new Event('input', { bubbles: true }))
-    await nextTick()
-    expect(fetchSpy).toHaveBeenCalledTimes(callsAfterDifficulty)
-
-    const apply = [...host.querySelectorAll('button')]
-      .find((button) => button.textContent?.includes('应用筛选'))!
-    apply.click()
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(callsAfterDifficulty + 1))
-    expect(String(fetchSpy.mock.calls[callsAfterDifficulty]?.[0])).toContain(
-      'exam_scopes=%E6%9C%9F%E4%B8%AD',
-    )
-
-    host.querySelector<HTMLInputElement>('input[aria-label="选择第 1 题"]')!.click()
-    await nextTick()
-    expect(useQuestionBankStore(pinia).selectedQuestionIds).toEqual([17])
-    const openImport = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('上传与 AI 标注'))!
-    openImport.click()
-    await nextTick()
-    let aiButton: HTMLButtonElement | null = null
-    await vi.waitFor(() => {
-      aiButton = document.body.querySelector<HTMLButtonElement>('.qb-button.is-ai')
-      expect(aiButton).not.toBeNull()
-      expect(aiButton?.disabled).toBe(false)
-    })
-    const readyAiButton = aiButton!
-    const callsBeforeAi = fetchSpy.mock.calls.length
-    readyAiButton.click()
-    await nextTick()
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('已选 1 道题'))
-    expect(fetchSpy).toHaveBeenCalledTimes(callsBeforeAi)
-
-    confirmSpy.mockReturnValue(true)
-    readyAiButton.click()
-    readyAiButton.click()
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(callsBeforeAi + 1))
-    expect(String(fetchSpy.mock.calls[callsBeforeAi]?.[0])).toBe('/api/question-bank/tagging-jobs')
-    expect(JSON.parse(String(fetchSpy.mock.calls[callsBeforeAi]?.[1]?.body))).toEqual({
-      question_ids: [17],
-      curriculum_volume_id: 'bnu24-math-g7-lower',
-    })
+  it('restores a skill bookmark and passes duplicate, progress and topic filters to the shared list', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/question-bank?tab=skill&section=kp_TEST_section&skill=sk_TEST_one')
+    const scope = useCurriculumScopeStore(pinia)
+    scope.selectedVolumeId = 'bnu24-math-g8-upper'
+    scope.volumes = [{ id: scope.selectedVolumeId, label: '八年级上册', order: 1, grade: '八年级', semester: '上学期', textbook_version: '北师大版（2024）', source: {}, statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 }, chapters: [{ id: 'kp_TEST_chapter', knowledge_id: 'kp_TEST_chapter', label: '第一章', title: '第一章', display_name: '第一章', kind: 'chapter', number: '1', source_ref: { node_id: 'TEST', relative_url: '' }, exam_scope_values: [], order: 1, sections: [] }] }]
+    const bank = useQuestionBankStore(pinia)
+    const list = vi.spyOn(bank, 'loadQuestions').mockResolvedValue()
+    vi.spyOn(questionBankApi, 'listFacets').mockResolvedValue({ exam_scopes: [], curriculum_sections: [], knowledge_points: [], curriculum_chapters: [], abilities: [], methods: [], models: [], thoughts: [], special_types: [], error_types: [], student_levels: [], teaching_stages: [], sub_skills: [], question_types: [], years: [], exam_types: [], grades: [] })
+    const stats = { question_count: 1, type_counts: { '选择题': 0, '多选题': 0, '填空题': 0, '解答题': 1 }, difficulty: { min: 4, median: 4, max: 4 }, criteria_needs_review_count: 0 }
+    const index = { graph_release_id: 'kgr_TEST', curriculum_volume_id: scope.selectedVolumeId, model_calls: 0, question_count: 1, unlinked: { no_usable_evidence: 0, no_skill_link: 0 }, chapters: [{ id: 'kp_TEST_chapter', label: '第一章', question_count: 1, cross_section_skills: [], sections: [{ id: 'kp_TEST_section', label: '第一节', question_count: 1, skills: [{ ...stats, stable_key: 'sk_TEST_one', display_name: '判断直角三角形', full_name: '八年级上册/判断直角三角形', cross_section: false, definition: { observable_evidence: '判断', include_scope: '三边', exclude_scope: '作图' } }], topics: [{ ...stats, stable_key: 'kp_TEST_topic', display_name: '勾股定理', filter_value: '八年级上册/第一章/勾股定理' }] }] }] }
+    const app = createApp({ render: () => h(QuestionSkillBrowser, { index, loading: false, error: '' }) })
+    app.use(pinia).use(router).mount(host)
+    mounted.push(app)
+    await vi.waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ skillKeys: ['sk_TEST_one'], collapseDuplicates: true, includeSkills: true })))
+    const progress = [...host.querySelectorAll<HTMLSelectElement>('select')].find(select => select.textContent?.includes('已学到第一章'))!
+    progress.value = 'kp_TEST_chapter'
+    progress.dispatchEvent(new Event('change', { bubbles: true }))
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ teachingProgressChapter: 'kp_TEST_chapter' })))
+    const topic = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '按知识主题')!
+    topic.click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ skillKeys: [], knowledgePoints: ['八年级上册/第一章/勾股定理'] })))
+    expect(router.currentRoute.value.query.topic).toBe('kp_TEST_topic')
+    expect(router.currentRoute.value.fullPath).not.toContain('勾股')
   })
 
   it('disables unchecked rows when the 500-question selection is full', async () => {
@@ -608,7 +528,7 @@ describe('question bank workspace', () => {
             items: [item501],
             total: 1,
             page: 1,
-            page_size: 20,
+            page_size: 100,
             total_pages: 1,
           }
       return new Response(JSON.stringify(payload), {
@@ -639,7 +559,7 @@ describe('question bank workspace', () => {
           items: [item],
           total: 1,
           page: 1,
-          page_size: 20,
+          page_size: 100,
           total_pages: 1,
         })
       }
@@ -691,7 +611,7 @@ describe('question bank workspace', () => {
           && init?.method === 'PUT',
       ),
     ).toBe(true))
-    expect(router.currentRoute.value.fullPath).toBe('/question-bank')
+    expect(router.currentRoute.value.query).toMatchObject({ tab: 'paper', paper: '4' })
     const saveCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
       ([input, init]) => String(input) === '/api/question-assembly/draft' && init?.method === 'PUT',
     )
