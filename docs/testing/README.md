@@ -43,7 +43,7 @@
 - 这些入口复用同一批测试，不需要依次全部运行：`quick` 和 `review` 是按操作选择的子集；`serial` 只规定需要独立运行的环境，也包含少量发布工具测试；`release` 已包含 `full`。
 - 前端其他浏览器专项和演示服务测试通过下表的业务命令运行，不计入 `full` 的页面单元测试；统计全项目数量时应单独计入它们。
 - 兼容入口 `tools/smoke_check.py` 的后端测试委托给 `run_test_suite.py full --skip-frontend`，使用同一分组、隔离环境和默认进程数；它自身仍负责文档、静态编译及数据库副本初始化检查；`--pytest-workers` 和 `--pytest-durations` 会传给统一入口，`--parallel-tests` 仅保留为旧命令兼容参数；需要前端验收时直接使用 `full`。
-- `review` 复用 `tests/api_e2e/harness.py` 的合成考试与模型替身，通过真实页面、API 和临时数据库保存分数，不拦截保存响应；浏览器环境使用独立动态端口与数据目录，直接运行当前前端源码，不重建共享 `frontend/dist`。
+- `review` 复用 `tests/api_e2e/harness.py` 的合成考试与模型替身，通过真实页面、API 和临时数据库保存分数，不拦截保存响应；浏览器按当前步骤给分、确认后继续复核、返回成绩明细及下载成绩表的操作验收，同时检查非法输入、旧窗口冲突和重新进入后的分数。浏览器环境使用独立动态端口与数据目录，直接运行当前前端源码，不重建共享 `frontend/dist`。
 - 需已安装前端依赖和 Playwright Chromium；截图、失败追踪和浏览器日志保存在本次新建的 `output/review_browser_*` 目录。
 - `full` 在前端检查通过后执行同一浏览器步骤；`review` 是只验证相关业务的较小入口，不能跳过前端；`full --skip-frontend` 与默认 `npm run e2e` 不包含这项真实保存验收。
 

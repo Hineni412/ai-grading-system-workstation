@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import json
 import math
 import re
@@ -70,7 +72,10 @@ class ReportGenerator:
                 int(session_id),
                 self._class_analysis_reports_dir(),
             )
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "optional operation unavailable: _session_error_records (%s)", type(exc).__name__,
+            )
             return {}
         return {
             int(student_id): {
@@ -1352,7 +1357,7 @@ class ReportGenerator:
             return {}
         try:
             rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, ValueError):
             return {}
         return rubric if isinstance(rubric, dict) else {}
 
@@ -1370,7 +1375,7 @@ class ReportGenerator:
             return {}
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, ValueError):
             return {}
         answers: dict[str, str] = {}
         questions = data.get("questions") if isinstance(data, dict) else []

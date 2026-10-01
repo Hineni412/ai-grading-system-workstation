@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import base64
 import hashlib
 import io
@@ -206,6 +208,10 @@ def build_personal_payload(
     for record in student.records:
         info = info_by_qid.get(record.question_id)
         class_rate = info.class_rate if info is not None else None
+        direct_knowledge = data.knowledge_backfill.get(
+            record.question_id,
+            data.knowledge_backfill.get(parent_question_id(record.question_id), []),
+        )
         item: dict[str, Any] = {
             "question_id": record.question_id,
             "display_label": _question_display_label(record.question_id),
@@ -214,10 +220,22 @@ def build_personal_payload(
             "score": record.score,
             "class_rate": round(class_rate, 4) if class_rate is not None else None,
             "lost": record.lost,
-            "direct_knowledge": data.knowledge_backfill.get(record.question_id, data.knowledge_backfill.get(parent_question_id(record.question_id), [])),
+            "direct_knowledge": direct_knowledge,
             "part_assessment": data.question_assessments.get(record.question_id),
         }
         if record.lost:
+            focus: dict[str, list[str]] = {"topics": [], "skills": []}
+            for entry in direct_knowledge:
+                label = str(entry.get("label") or entry.get("path") or "")
+                label = label.replace("|", "｜").split("｜")[-1].strip()
+                is_skill = label.startswith("技能·") or str(
+                    entry.get("stable_key") or ""
+                ).startswith("sk_")
+                label = label.removeprefix("技能·")
+                labels = focus["skills" if is_skill else "topics"]
+                if label and has_cjk(label) and label not in labels:
+                    labels.append(label)
+            item["knowledge_focus"] = focus
             item["stem_summary"] = (
                 info.stem_summary if info is not None and info.stem_summary else record.question_id
             )
@@ -691,7 +709,10 @@ def _crop_region_data_uri(
                 format="JPEG",
                 quality=_SHOT_JPEG_QUALITY,
             )
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "optional operation unavailable: _crop_region_data_uri (%s)", type(exc).__name__,
+        )
         return None
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/jpeg;base64,{encoded}"
@@ -870,7 +891,10 @@ def load_session_regions(
             int(session_id),
             data_root=data_root,
         )
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "optional operation unavailable: load_session_regions (%s)", type(exc).__name__,
+        )
         return []
 
 
@@ -878,8 +902,8 @@ def load_session_regions(
 # HTML 渲染（版面结构与视觉按已确认原型，自包含、截图 base64 内嵌）
 # ---------------------------------------------------------------------------
 
-# 家长版个人报告版式（v3 一页式：成绩卡 → 历次成绩 → 答题一览 →
-# 重点跟进 → 考查点 → 失分题详解附录），与已验收原型一致。
+# 学生与家长个人报告：成绩卡 → 历次成绩 → 答题一览 → 重点跟进 →
+# 考查点 → 失分题详解附录。
 _PERSONAL_CSS = """
 :root{--ink:#1f2d3d;--muted:#6b7a8c;--line:#e3e8ef;--bg:#f4f6f9;--card:#fff;
 --good:#2f855a;--good-soft:#e8f5ee;--warn:#b7791f;--warn-soft:#fdf3e1;
@@ -903,9 +927,14 @@ padding:8px 12px;font-size:13px;margin-bottom:12px}
 .score-line .big{font-size:46px;font-weight:800;line-height:1}
 .score-line .of{font-size:16px;color:var(--muted)}
 .stat3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
-.stat3 .cell{border:1px solid var(--line);border-radius:10px;padding:9px 10px;text-align:center}
+.stat3 .cell{border:1px solid var(--line);border-radius:10px;padding:9px 10px;text-align:center;min-width:0}
 .stat3 .v{font-size:16px;font-weight:700;white-space:nowrap}
 .stat3 .l{font-size:11.5px;color:var(--muted);white-space:nowrap}
+.stat3 .change .l{white-space:normal}
+.stat3 .change .v{white-space:normal}
+.change .up{color:var(--good)} .change .down{color:var(--bad)}
+.change .rank-change{font-size:12px;margin-top:2px}
+.change .rank-context{font-size:10px;color:var(--muted);margin-top:2px}
 .bands{margin:6px 0 12px}
 .band{display:grid;grid-template-columns:96px 1fr 44px;align-items:center;gap:8px;
 font-size:12px;color:var(--muted);padding:2px 0}
@@ -991,11 +1020,15 @@ padding:10px 12px;font-size:13px}
 .dcard .dhead{display:flex;align-items:center;gap:9px}
 .dcard .no{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;
 border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:700;flex:none}
-.dcard .ttl{font-size:14.5px;font-weight:700}
+.dcard .ttl{font-size:14.5px;font-weight:700;min-width:0;overflow-wrap:anywhere}
 .dcard .meta2{font-size:12.5px;color:var(--muted);margin-top:5px}
 .dcard .qtag{display:inline-block;background:var(--gray-soft);border-radius:6px;padding:0 7px;
-margin-left:5px;font-size:11.5px;color:var(--ink)}
+margin-left:5px;font-size:11.5px;color:var(--ink);border:0;font-family:inherit;cursor:pointer}
+.dcard .qtag:hover,.dcard .qtag:focus-visible{outline:1px solid var(--accent)}
 .dcard .help{font-size:13.5px;margin-top:7px}
+.dcard .when{font-size:11.5px;font-weight:400;color:var(--accent);margin-left:auto;white-space:nowrap}
+.history-evidence{font-size:12.5px;color:var(--muted);margin-top:7px}
+.history-evidence ul{padding-left:18px}
 .recur{display:inline-block;font-size:11px;color:var(--warn);background:var(--warn-soft);
 border:1px solid #ecd9b0;border-radius:999px;padding:0 8px;margin-left:8px;vertical-align:1px}
 .dcard details{margin-top:9px;border-top:1px dashed var(--line);padding-top:8px}
@@ -1006,6 +1039,7 @@ padding:14px 16px;color:var(--good);font-size:14px}
 .pt-counts{font-size:13.5px;margin-bottom:10px}
 .pt-counts b{margin-right:14px}
 .pt-counts .g{color:var(--good)} .pt-counts .m{color:var(--warn)} .pt-counts .b{color:var(--bad)}
+.pt-counts .u{color:var(--muted)}
 .pt-row{display:flex;align-items:flex-start;gap:8px;padding:7px 0;border-top:1px solid var(--line);
 font-size:13.5px;flex-wrap:wrap}
 .pt-row .nm{min-width:0}
@@ -1017,6 +1051,8 @@ font-size:11px;font-style:normal;line-height:1}
 .dot i.full{background:var(--good-soft);color:var(--good);border:1px solid #bfe3d2}
 .dot i.part{background:var(--warn-soft);color:var(--warn);border:1px solid #f0d9ab}
 .dot i.zero{background:var(--bad-soft);color:var(--bad);border:1px solid #eec6c0}
+.dot i.unknown{background:var(--gray-soft);color:var(--muted);border:1px dashed #c2cbd6}
+.pt-row .unconfirmed{font-size:11.5px;color:var(--muted);display:block}
 .tagcloud{margin-top:8px}
 .tagcloud .sec{font-size:12px;color:var(--muted);margin:6px 0 3px}
 .tagcloud .tg{display:inline-block;background:var(--good-soft);color:var(--good);border-radius:6px;
@@ -1044,12 +1080,17 @@ footer{font-size:12px;color:var(--muted);padding:6px 4px;line-height:1.8}
 @page{size:A4;margin:13mm 14mm}
 @media print{
  body{background:#fff}
- .card{box-shadow:none;border:1px solid var(--line);border-radius:0}
+ .page{max-width:none;padding:0}
+ .card{box-shadow:none;border:1px solid var(--line);border-radius:0;padding:16px 18px;margin-bottom:12px}
  details:not([open])>*:not(summary){display:block}
+ details::details-content{content-visibility:visible}
  #qpanel{display:none!important}
  .qcell{outline:none!important}
  .shot img{max-height:95mm;width:auto;object-fit:contain}
- .qpart,.shot,.dcard{break-inside:avoid}
+ .dcard .shot{display:none} /* 同一作答图在失分题附录完整打印，避免跟进卡重复占页。 */
+ .qpart,.shot,.dcard .help,.dcard .qd-fb,.qgrid,.pt-row,footer{break-inside:avoid}
+ .dcard{break-inside:auto}
+ .card h2,.dcard .dhead,.qcard .head,.qpart h3{break-after:avoid}
  p,dd,li{orphans:3;widows:3}
 }
 """
@@ -1066,19 +1107,32 @@ _PERSONAL_GRID_JS = """
     });
   }
   if (!panel) return;
+  function showQuestion(q, toggle){
+    var btn = Array.from(document.querySelectorAll('.qcell')).find(function(b){return b.dataset.q === q;});
+    if(!btn) return false;
+    if(toggle && openQ === q){
+      panel.hidden = true; panel.innerHTML=''; openQ = null;
+      btn.setAttribute('aria-expanded','false'); return false;
+    }
+    var tpl = Array.from(document.querySelectorAll('template[data-q]')).find(function(t){return t.dataset.q === q;});
+    if(!tpl) return false;
+    panel.innerHTML=''; panel.appendChild(tpl.content.cloneNode(true));
+    panel.hidden=false; openQ=q; renderMath(panel);
+    document.querySelectorAll('.qcell[aria-expanded="true"]').forEach(function(b){b.setAttribute('aria-expanded','false');});
+    btn.setAttribute('aria-expanded','true');
+    return true;
+  }
   document.querySelectorAll('.qcell').forEach(function(btn){
     btn.addEventListener('click', function(){
-      var q = btn.getAttribute('data-q');
-      if(openQ === q){
-        panel.hidden = true; panel.innerHTML=''; openQ = null;
-        btn.setAttribute('aria-expanded','false'); return;
+      showQuestion(btn.dataset.q, true);
+    });
+  });
+  document.querySelectorAll('[data-open-q]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      if(showQuestion(btn.dataset.openQ, false)){
+        panel.focus({preventScroll:true});
+        panel.scrollIntoView({block:'start',behavior:'smooth'});
       }
-      var tpl = document.querySelector('template[data-q="' + q + '"]');
-      if(!tpl) return;
-      panel.innerHTML=''; panel.appendChild(tpl.content.cloneNode(true));
-      panel.hidden=false; openQ=q; renderMath(panel);
-      document.querySelectorAll('.qcell[aria-expanded="true"]').forEach(function(b){b.setAttribute('aria-expanded','false');});
-      btn.setAttribute('aria-expanded','true');
     });
   });
   panel.addEventListener('click', function(e){
@@ -1092,11 +1146,37 @@ _PERSONAL_GRID_JS = """
 })();
 """
 
+_PERSONAL_PRINT_JS = """
+(function(){
+  var states = null;
+  function expand(){
+    if(states !== null) return;
+    states = Array.from(document.querySelectorAll('details')).map(function(el){
+      var state = [el, el.open]; el.open = true; return state;
+    });
+  }
+  function restore(){
+    if(states === null) return;
+    states.forEach(function(state){state[0].open = state[1];});
+    states = null;
+  }
+  window.addEventListener('beforeprint', expand);
+  window.addEventListener('afterprint', restore);
+  window.matchMedia('print').addEventListener('change', function(e){e.matches ? expand() : restore();});
+})();
+"""
+
 _PERSONAL_KATEX_JS = """
 document.querySelectorAll('.qm[data-latex]').forEach(el => {
   try { katex.render(el.dataset.latex, el, {throwOnError:true, output:'htmlAndMathml', displayMode:el.dataset.display === 'true'}); }
   catch (_) { el.classList.add('qm-error'); el.title = '公式格式需核对，已保留原文'; }
 });
+// 收起的附录不会触发浏览器加载所需字体；打印展开时再加载会丢失变量字母。
+if(document.fonts){
+  document.fonts.forEach(function(font){
+    if(font.family.indexOf('KaTeX_') === 0) font.load().catch(function(){});
+  });
+}
 """
 
 
@@ -1776,7 +1856,7 @@ def _point_question_result(
     info_by_qid: dict[str, QuestionInfo],
     session_id: int,
 ) -> str:
-    """考查点单题结果：有本场判定点观测取 achieved 均值，否则用得分率。"""
+    """步骤观测决定考查点结果；整题失分不推断为每个关联点都未做到。"""
     mastery = student.knowledge_mastery.get(key) or {}
     for ref in mastery.get("source_question_refs") or []:
         if int(ref.get("session_id") or 0) != session_id:
@@ -1784,44 +1864,43 @@ def _point_question_result(
         raw = str(ref.get("question_id") or "")
         if (resolve_known_question_id(raw, info_by_qid) or raw) != question["id"]:
             continue
-        obs = [
-            o
-            for o in ((ref.get("assessment") or {}).get("point_observations") or [])
-            if isinstance(o, dict) and o.get("stable_key") == key
-        ]
-        if obs:
-            mean = sum(float(o.get("achieved") or 0) for o in obs) / len(obs)
+        values = _point_observation_values(ref, key)
+        if values:
+            mean = sum(values) / len(values)
             return "full" if mean == 1 else "zero" if mean == 0 else "part"
     if question["full"] > 0 and question["score"] >= question["full"]:
         return "full"
-    if question["score"] == 0:
-        return "zero"
-    return "part"
+    return "unknown"
+
+
+def _point_observation_values(ref: dict[str, Any], key: str) -> list[float]:
+    values = []
+    for observation in ((ref.get("assessment") or {}).get("point_observations") or []):
+        if not isinstance(observation, dict) or observation.get("stable_key") != key:
+            continue
+        value = observation.get("achieved")
+        if isinstance(value, (int, float)) and math.isfinite(value) and 0 <= value <= 1:
+            values.append(float(value))
+    return values
 
 
 def _point_recurrence_sessions(
-    student: StudentReportData, key: str, session_id: int
-) -> list[str]:
-    """「以前也有失分」徽章：返回命中过该点失分的历史场次名（去重）。"""
-    names: list[str] = []
+    student: StudentReportData, key: str, session_id: int,
+    historical_session_ids: set[int] | None = None,
+) -> list[dict[str, str]]:
+    """仅明确的历史步骤失分支持考查点复发，并保留考试和题号。"""
+    rows: list[dict[str, str]] = []
     mastery = student.knowledge_mastery.get(key) or {}
     for ref in mastery.get("source_question_refs") or []:
-        if int(ref.get("session_id") or 0) == session_id:
+        sid = int(ref.get("session_id") or 0)
+        if sid == session_id or (historical_session_ids is not None and sid not in historical_session_ids):
             continue
-        obs = [
-            o
-            for o in ((ref.get("assessment") or {}).get("point_observations") or [])
-            if isinstance(o, dict) and o.get("stable_key") == key
-        ]
-        if obs:
-            hit = any(float(o.get("achieved") or 0) < 1 for o in obs)
-        else:
-            hit = float(ref.get("score_awarded") or 0) < float(ref.get("full_score") or 0)
-        if hit:
+        if any(value < 1 for value in _point_observation_values(ref, key)):
             name = str(ref.get("session_name") or "").strip()
-            if name and name not in names:
-                names.append(name)
-    return names
+            row = {"session_name": name, "question_id": str(ref.get("question_id") or ""), "pattern": "该考查点有步骤失分证据"}
+            if name and row not in rows:
+                rows.append(row)
+    return rows
 
 
 def _personal_exam_points(
@@ -1829,6 +1908,7 @@ def _personal_exam_points(
     student: StudentReportData,
     info_by_qid: dict[str, QuestionInfo],
     session_id: int,
+    historical_session_ids: set[int] | None = None,
 ) -> list[dict[str, Any]]:
     """本次考查点集合：全部 skill 节点 + 有未覆盖小题的 topic 节点。"""
     nodes = view.get("nodes") or []
@@ -1855,6 +1935,8 @@ def _personal_exam_points(
         syms = [r for _q, r in results]
         if all(s == "full" for s in syms):
             status = "good"
+        elif "unknown" in syms:
+            status = "unknown"
         elif all(s == "zero" for s in syms):
             status = "bad"
         else:
@@ -1867,7 +1949,7 @@ def _personal_exam_points(
                 "questions": questions,
                 "results": results,
                 "status": status,
-                "recur": _point_recurrence_sessions(student, node["key"], session_id),
+                "recur": _point_recurrence_sessions(student, node["key"], session_id, historical_session_ids),
             }
         )
     return points
@@ -2236,7 +2318,10 @@ def _load_student_histories(
                 session_data = assemble_session_analysis(
                     repositories, sid, data_root=data_root, page_only=True
                 )
-            except Exception:
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "optional operation unavailable: _load_student_histories (%s)", type(exc).__name__,
+                )
                 continue
             if (
                 sid != data.session_id
@@ -2277,8 +2362,83 @@ def _load_student_histories(
                     )
                 histories[student.student_id].append(entry)
         return histories
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "optional operation unavailable: _load_student_histories (%s)", type(exc).__name__,
+        )
         return {}
+
+
+def _follow_up_action_html(suggestion: dict[str, Any] | None) -> str:
+    suggestion = suggestion or {}
+    action = _narrative_text(suggestion.get("first_action")) or _narrative_text(suggestion.get("detail")) or "先看相关题，问清错在哪里，再订正。"
+    check = _narrative_text(suggestion.get("completion_check")) or "不看解析，能说明订正理由并独立重做；仍有疑问的题请老师核对。"
+    parts = [
+        f'<div class="help"><b>先做：</b>{_report_inline_math(_report_display_text(action))}</div>',
+        f'<div class="help"><b>检查：</b>{_report_inline_math(_report_display_text(check))}</div>',
+    ]
+    parent_help = _narrative_text(suggestion.get("parent_help"))
+    if parent_help:
+        parts.append(f'<div class="note">家长可以这样帮：{_report_inline_math(_report_display_text(parent_help))}</div>')
+    return "".join(parts)
+
+
+def _recurrence_evidence_html(rows: list[Any], label: str) -> str:
+    items = []
+    for row in rows:
+        if isinstance(row, str):  # 兼容仅有场次名的已有调用。
+            text = row
+        elif isinstance(row, dict):
+            text = " · ".join(
+                part for part in (
+                    str(row.get("session_name") or ""),
+                    _question_display_label(str(row["question_id"])) if row.get("question_id") else "",
+                    str(row.get("pattern") or row.get("category") or ""),
+                ) if part
+            )
+        else:
+            continue
+        item = f'<li>{esc(text)}</li>'
+        if text and item not in items:
+            items.append(item)
+    if not items:
+        return ""
+    note = '<p>仅匹配错误大类，不能据此认定是同一错法。</p>' if label == "同类问题曾出现" else ""
+    return f'<div class="history-evidence"><b>{esc(label)}的依据</b>{note}<ul>{"".join(items)}</ul></div>'
+
+
+def _load_personal_error_histories(
+    repositories: GradingRepositoryAccess,
+    histories: dict[int, list[dict[str, Any]]],
+    session_id: int,
+    reports_dir: Path,
+    data_root: Path | None,
+) -> dict[int, dict[str, dict[str, list[dict[str, str]]]]]:
+    """复用有效错因记录，一次读取每场历史，保留报告所需的题号和错法。"""
+    from backend.class_analysis import session_error_records
+
+    session_names = {
+        int(entry["session_id"]): str(entry.get("name") or "")
+        for entries in histories.values() for entry in entries
+        if entry.get("session_id") != session_id
+    }
+    index: dict[int, dict[str, dict[str, list[dict[str, str]]]]] = {}
+    for sid, name in sorted(session_names.items()):
+        for student_id, questions in session_error_records(
+            repositories, sid, reports_dir, data_root=data_root,
+        ).items():
+            bucket = index.setdefault(student_id, {"categories": {}, "patterns": {}})
+            for qid, records in questions.items():
+                for row in records:
+                    evidence = {"session_name": name, "question_id": qid,
+                                "category": str(row.get("category") or ""),
+                                "pattern": str(row.get("pattern") or "")}
+                    for key, value in (("categories", evidence["category"]), ("patterns", evidence["pattern"])):
+                        if value:
+                            entries = bucket[key].setdefault(value, [])
+                            if evidence not in entries:
+                                entries.append(evidence)
+    return index
 
 
 def _render_personal_html(
@@ -2288,7 +2448,7 @@ def _render_personal_html(
     shots: dict[str, dict[str, str]],
     history: list[dict[str, Any]] | None = None,
     error_map: dict[str, list[dict[str, Any]]] | None = None,
-    error_history: dict[str, dict[str, list[str]]] | None = None,
+    error_history: dict[str, dict[str, list[Any]]] | None = None,
 ) -> str:
     info_by_qid = {info.question_id: info for info in data.questions}
     analysis_by_qid = _narrative_analysis_index(narrative, info_by_qid)
@@ -2310,18 +2470,33 @@ def _render_personal_html(
                 parts.append(text)
         return "；".join(parts)
 
-    def error_recurrence(question_ids: list[str]) -> list[str]:
-        """卡片关联题在以往场次出现过同大类/同错法的场次名。"""
-        names: list[str] = []
+    def error_recurrence(question_ids: list[str]) -> tuple[str, list[Any]]:
+        """同错法与同大类分别表达；优先展示更具体的同错法证据。"""
+        matches: dict[str, list[Any]] = {"patterns": [], "categories": []}
         for qid in question_ids:
             for row in question_errors(qid):
                 for key, value in (("categories", row.get("category")), ("patterns", row.get("pattern"))):
-                    for name in (error_history.get(key) or {}).get(str(value or ""), []):
-                        if name and name not in names:
-                            names.append(name)
-        return names
+                    if not value:
+                        continue
+                    for evidence in (error_history.get(key) or {}).get(str(value), []):
+                        if evidence and evidence not in matches[key]:
+                            matches[key].append(evidence)
+        if matches["patterns"]:
+            return "同一错法再次出现", matches["patterns"]
+        if matches["categories"]:
+            return "同类问题曾出现", matches["categories"]
+        return "", []
+
+    def question_tags(question_ids: list[str]) -> str:
+        tags = []
+        for qid in sorted(question_ids, key=lambda q: question_id_coordinates(q) or (10**9, 0)):
+            label = _question_display_label(qid)
+            tags.append(f'<button type="button" class="qtag" data-open-q="{esc(qid)}" aria-label="查看{esc(label)}的作答证据">{esc(label)}</button>')
+        return "".join(tags)
+
     points = _personal_exam_points(
-        _personal_knowledge_view(data, student), student, info_by_qid, data.session_id
+        _personal_knowledge_view(data, student), student, info_by_qid, data.session_id,
+        {int(entry["session_id"]) for entry in history if entry.get("session_id") != data.session_id},
     )
 
     # ---- A 成绩卡 ----
@@ -2329,7 +2504,7 @@ def _render_personal_html(
         f"{esc(data.session_name)} · {esc(data.subject)} · "
         f"{esc(_report_class_label(student.class_name))} · {esc(student.graded_at)}"
     )
-    prev_v, prev_l = "首次记录", "上次"
+    comparison = '<div class="v">暂无对比</div><div class="l">尚无上次成绩</div>'
     prior = [
         e
         for e in history
@@ -2337,9 +2512,23 @@ def _render_personal_html(
     ]
     if prior:
         prev = prior[-1]
-        prev_v = f"{fmt_num(prev['score'])}分"
-        if prev.get("rank") and prev.get("present"):
-            prev_l = f"上次 第{prev['rank']}/{prev['present']}名"
+        if prev.get("full") == data.full_score and data.full_score > 0:
+            delta = student.student_score - float(prev["score"])
+            direction = "up" if delta > 0 else "down" if delta < 0 else ""
+            score_change = ("+" if delta > 0 else "−" if delta < 0 else "") + fmt_num(abs(delta)) + "分"
+            if delta == 0:
+                score_change = "分数持平"
+            comparison = f'<div class="l">较上次</div><div class="v {direction}">{esc(score_change)}</div>'
+        else:
+            comparison = '<div class="l">较上次</div><div class="v">分数不直接比</div><div class="l">满分不同或缺失</div>'
+        if prev.get("rank") and student.rank:
+            delta_rank = int(prev["rank"]) - student.rank
+            rank_change = f"名次上升{delta_rank}名" if delta_rank > 0 else f"名次下降{abs(delta_rank)}名" if delta_rank < 0 else "名次持平"
+            comparison += f'<div class="rank-change">{esc(rank_change)}</div>'
+            if prev.get("present") and prev["present"] != data.present:
+                comparison += f'<div class="rank-context">参考人数{prev["present"]}→{data.present}</div>'
+        else:
+            comparison += '<div class="rank-change">名次暂无对比</div>'
     avg = data.stats.get("avg")
     avg_text = f"{float(avg):.1f}" if avg is not None else "—"
     bands = list(data.stats.get("bands") or [])
@@ -2356,8 +2545,12 @@ def _render_personal_html(
     for disp_i, band in enumerate(reversed(bands)):  # 低分段在上
         width = band["count"] / max_count * 100
         me = disp_i == my_band
+        index = len(bands) - 1 - disp_i
+        lower = BAND_CUTOFFS[index] * scale
+        upper = data.full_score if index == 0 else BAND_CUTOFFS[index - 1] * scale
+        band_label = f"{fmt_num(lower)}≤分数{'≤' if index == 0 else '＜'}{fmt_num(upper)}"
         band_rows.append(
-            f'<div class="band{" me" if me else ""}"><span>{esc(band["label"].replace(" ", ""))}'
+            f'<div class="band{" me" if me else ""}"><span>{esc(band_label)}'
             f'{"<span class=me-tag>孩子在这里</span>" if me else ""}</span>'
             f'<div class="track"><i style="width:{width:.0f}%"></i></div>'
             f'<span class="cnt">{band["count"]}人</span></div>'
@@ -2389,7 +2582,7 @@ def _render_personal_html(
   <div class="stat3">
     <div class="cell"><div class="v">{student.rank}/{data.present}</div><div class="l">班级名次</div></div>
     <div class="cell"><div class="v">{avg_text}</div><div class="l">班级平均</div></div>
-    <div class="cell"><div class="v">{esc(prev_v)}</div><div class="l">{esc(prev_l)}</div></div>
+    <div class="cell change">{comparison}</div>
   </div>
   <div class="bands">{''.join(band_rows)}</div>
   {small_sample_note}
@@ -2405,7 +2598,7 @@ def _render_personal_html(
 <div class="card">
   <h2>历次成绩</h2>
   <div class="hist">{_history_chart_html(history, data.session_id)}</div>
-  <div class="note">实线为孩子的分数，虚线为班级平均。每次试卷难度不同，名次比分数更可比。</div>
+  <div class="note">实线：孩子的分数；虚线：班级平均。试卷难度和参考人数可能不同，进退仅作参考。</div>
 </div>"""
 
     # ---- C 答题一览 ----
@@ -2440,7 +2633,7 @@ def _render_personal_html(
   <div class="qgrid">{''.join(cells)}</div>
   <div class="legend">✓ 满分 {counts['full']}　△ 部分得分 {counts['part']}　✗ 零分 {counts['zero']}　— 未作答 {counts['blank']}　▲ 全班平均得分不到一半</div>
   {''.join(f'<div class="note">{esc(note)}</div>' for note in student.material_notes)}
-  <div id="qpanel" hidden></div>
+   <div id="qpanel" tabindex="-1" hidden></div>
   {''.join(templates)}
 </div>"""
 
@@ -2449,58 +2642,45 @@ def _render_personal_html(
     for p in points:
         for q in p["questions"]:
             points_by_qid.setdefault(q["id"], []).append(p)
-    if narrative is not None:
-        problems = [
-            i for i in _narrative_items(narrative, "problems") if isinstance(i, dict)
-        ][:3]
-        suggestions = [
-            i for i in _narrative_items(narrative, "suggestions") if isinstance(i, dict)
-        ]
+    problem_pairs = [
+        (idx, item) for idx, item in enumerate(_narrative_items(narrative, "problems"))
+        if isinstance(item, dict) and _narrative_text(item.get("title")) and _narrative_text(item.get("detail"))
+    ][:3]
+    if problem_pairs:
+        suggestions = _narrative_items(narrative, "suggestions")
         dcards = []
-        for idx, problem in enumerate(problems):
-            suggestion = suggestions[idx] if idx < len(suggestions) else None
+        linked_questions: set[str] = set()
+        overlapping = False
+        for idx, problem in problem_pairs:
+            suggestion = suggestions[idx] if idx < len(suggestions) and isinstance(suggestions[idx], dict) else None
             qids = _follow_up_question_ids(problem, suggestion, student, info_by_qid)
+            overlapping = overlapping or bool(linked_questions.intersection(qids))
+            linked_questions.update(qids)
             lost_sum = sum(
                 r.lost_points for r in student.records if r.question_id in qids
             )
             if qids and lost_sum > 0:
-                def qtag(question_id: str) -> str:
-                    label = _question_display_label(question_id)
-                    categories = [
-                        str(row["category"]) for row in question_errors(question_id)
-                        if row.get("category")
-                    ]
-                    if categories:
-                        label += f"·{'+'.join(dict.fromkeys(categories))}"
-                    return f'<span class="qtag">{esc(label)}</span>'
-
-                tags = "".join(
-                    qtag(q)
-                    for q in sorted(
-                        qids, key=lambda q: question_id_coordinates(q) or (10**9, 0)
-                    )
-                )
-                meta_line = f'<div class="meta2">丢 {fmt_num(lost_sum)} 分{tags}</div>'
+                meta_line = f'<div class="meta2">关联题目失分 {fmt_num(lost_sum)} 分{question_tags(qids)}</div>'
             else:
                 meta_line = ""
-            recur_names: list[str] = []
-            error_recur = error_recurrence(qids)
+            recurrence_rows: list[Any] = []
+            recurrence_label, error_recur = error_recurrence(qids)
             for q in qids:
                 for p in points_by_qid.get(q, []):
-                    for nm in p["recur"]:
-                        if nm not in recur_names:
-                            recur_names.append(nm)
-            # 有本场错因归类时优先按同类错误/同错法提示复发；否则回退到考查点复发。
-            badge = (
-                f'<span class="recur" title="{esc("、".join(error_recur))}">同类错误以前出现过</span>'
-                if error_recur
-                else (
-                    f'<span class="recur" title="{esc("、".join(recur_names))}">以前也有失分</span>'
-                    if recur_names
-                    else ""
-                )
-            )
+                    for row in p["recur"]:
+                        if row not in recurrence_rows:
+                            recurrence_rows.append(row)
+            if error_recur:
+                recurrence_rows = error_recur
+            elif recurrence_rows:
+                recurrence_label = "该考查点曾失分"
+            badge = f'<span class="recur">{esc(recurrence_label)}</span>' if recurrence_rows else ""
             why = [f'<div class="qd-fb">{_report_paragraphs(_narrative_text(problem.get("detail")))}</div>']
+            full_action = _narrative_text((suggestion or {}).get("detail"))
+            if _narrative_text((suggestion or {}).get("first_action")) and full_action:
+                why.append(f'<div class="help"><b>具体做法：</b>{_report_inline_math(_report_display_text(full_action))}</div>')
+            if recurrence_rows:
+                why.append(_recurrence_evidence_html(recurrence_rows, recurrence_label))
             shown_parents = set()
             for q in qids:
                 item = analysis_by_qid.get(q)
@@ -2527,24 +2707,20 @@ def _render_personal_html(
                             f'<div class="shot"><img src="{first["data_uri"]}" alt="作答截图">'
                             f'<div class="cap">{esc(first.get("caption") or "学生作答（原卷截图）")}</div></div>'
                         )
-            sugg_line = ""
-            if suggestion and _narrative_text(suggestion.get("detail")):
-                sugg_line = (
-                    f'<div class="help">在家这样帮：'
-                    f'{_report_inline_math(_report_display_text(_narrative_text(suggestion.get("detail"))))}</div>'
-                )
+            timeframe = _narrative_text((suggestion or {}).get("timeframe"))
+            when = f'<span class="when">{esc(timeframe)}</span>' if timeframe in {"本周", "长期"} else ""
             dcards.append(
-                f'<div class="dcard"><div class="dhead"><span class="no">{idx + 1}</span>'
-                f'<span class="ttl">{esc(_report_display_text(_narrative_text(problem.get("title"))))}</span>{badge}</div>'
-                f'{meta_line}'
-                f'{sugg_line}'
-                f'<details><summary>为什么这样判断</summary>{"".join(why)}</details></div>'
+                f'<div class="dcard"><div class="dhead"><span class="no">{len(dcards) + 1}</span>'
+                f'<span class="ttl">{esc(_report_display_text(_narrative_text(problem.get("title"))))}</span>{when}</div>'
+                f'<div class="help"><b>发现：</b>{_report_inline_math(_report_display_text(_narrative_text(problem.get("parent_summary")) or _narrative_text(problem.get("detail"))))}</div>'
+                f'{_follow_up_action_html(suggestion)}'
+                f'<details><summary>看具体题目{f" · {len(qids)}个小问" if qids else ""}</summary>{meta_line}{badge}{"".join(why)}</details></div>'
             )
-        if not problems and not [r for r in student.records if r.lost]:
-            dcards.append('<div class="dgreen">这次没有失分，保持现在的做题习惯。</div>')
+        overlap_note = '<div class="note">同一道题可能涉及多个问题，各项关联失分不能相加，也不表示某个问题单独造成全部失分。</div>' if overlapping else ""
         card_d = f"""
 <div class="card">
   <h2>这次重点跟进<span class="aitag">{esc(AI_DISCLAIMER)}</span></h2>
+  {overlap_note}
   {''.join(dcards)}
 </div>"""
     else:
@@ -2573,27 +2749,35 @@ def _render_personal_html(
                 error_labels = [
                     error_label(r.question_id) for r in recs if error_label(r.question_id)
                 ]
-                recur_names = error_recurrence([r.question_id for r in recs])
+                qids = [r.question_id for r in recs]
+                recurrence_label, recurrence_rows = error_recurrence(qids)
                 badge = (
-                    f'<span class="recur" title="{esc("、".join(recur_names))}">同类错误以前出现过</span>'
-                    if recur_names
+                    f'<span class="recur">{esc(recurrence_label)}</span>'
+                    if recurrence_rows
                     else ""
                 )
                 cards.append(
                     f'<div class="dcard"><div class="dhead"><span class="ttl">'
-                    f'{esc(_lost_group_label(parent, student, info_by_qid))}</span>{badge}</div>'
-                    f'<div class="meta2">丢 {fmt_num(lost_sum)} 分</div>'
+                    f'{esc(_lost_group_label(parent, student, info_by_qid))}</span></div>'
+                    f'<div class="help"><b>发现：</b>{len(recs)}个小问有失分，先看原卷确认错在哪里。</div>'
+                    + _follow_up_action_html(None)
+                    + f'<details><summary>看具体题目 · {len(recs)}个小问</summary>'
+                    + f'<div class="meta2">关联题目失分 {fmt_num(lost_sum)} 分{question_tags(qids)}</div>{badge}'
                     + (
                         f'<div class="errline">错误归类（AI 辅助）：{esc("；".join(dict.fromkeys(error_labels)))}</div>'
                         if error_labels
                         else ""
                     )
                     + (
-                        f'<div class="help">老师批语：{esc("；".join(comments[:2]))}</div>'
+                        f'<div class="help">老师批语：{_report_inline_math("；".join(comments[:2]))}</div>'
                         if comments
                         else ""
                     )
-                    + "</div>"
+                    + (
+                        _recurrence_evidence_html(recurrence_rows, recurrence_label)
+                        if recurrence_rows else ""
+                    )
+                    + "</details></div>"
                 )
             inner = "".join(cards)
         card_d = f"""
@@ -2606,23 +2790,25 @@ def _render_personal_html(
     n_good = sum(1 for p in points if p["status"] == "good")
     n_mid = sum(1 for p in points if p["status"] == "mid")
     n_bad = sum(1 for p in points if p["status"] == "bad")
+    n_unknown = sum(1 for p in points if p["status"] == "unknown")
     rows_html = []
     for p in [p for p in points if p["status"] == "bad"] + [
         p for p in points if p["status"] == "mid"
-    ]:
-        sym_map = {"full": "✓", "part": "△", "zero": "✗"}
+    ] + [p for p in points if p["status"] == "unknown"]:
+        sym_map = {"full": "✓", "part": "△", "zero": "✗", "unknown": "?"}
         dots = "".join(
             f'<span class="dot"><i class="{r}">{sym_map[r]}</i>'
             f'<s>{esc(_question_cell_label(q["id"]))}</s></span>'
             for q, r in p["results"]
         )
-        badge = (
-            f'<span class="recur" title="{esc("、".join(p["recur"]))}">以前也有失分</span>'
-            if p["recur"]
-            else ""
+        uncertainty = '<small class="unconfirmed">部分题有失分，这个知识点是否做对还不能判断</small>' if p["status"] == "unknown" else ""
+        recurrence = (
+            '<details class="history-evidence"><summary>该考查点曾失分</summary>'
+            + _recurrence_evidence_html(p["recur"], "该考查点曾失分") + '</details>'
+            if p["recur"] else ""
         )
         rows_html.append(
-            f'<div class="pt-row"><span class="nm">{esc(p["label"])}{badge}</span>'
+            f'<div class="pt-row"><span class="nm">{esc(p["label"])}{uncertainty}{recurrence}</span>'
             f'<span class="dots">{dots}</span></div>'
         )
     good_sections: dict[str, list[str]] = {}
@@ -2640,10 +2826,11 @@ def _render_personal_html(
         card_e = f"""
 <div class="card">
   <h2>本次考查点</h2>
-  <div class="pt-counts"><b class="g">做得好 {n_good}</b><b class="m">部分做到 {n_mid}</b><b class="b">需要补 {n_bad}</b></div>
+  <div class="pt-counts"><b class="g">做得好 {n_good}</b><b class="m">部分做到 {n_mid}</b><b class="b">需要补 {n_bad}</b><b class="u">暂不能判断 {n_unknown}</b></div>
+  <div class="note">灰色“？”表示这道题有失分，但现有记录还不能确定这个知识点是否做对；不代表孩子一定不会，也不需要家长逐项确认。可先看“这次重点跟进”了解具体问题。</div>
   {''.join(rows_html)}
   {f'<div class="tagcloud">{cloud}</div>' if cloud else ''}
-  <div class="note" style="margin-top:8px">只根据这次考试判断；同一道题可能同时考几个点。</div>
+  <div class="note" style="margin-top:8px">这里只反映本次考试表现；同一道题可能同时考几个知识点。</div>
 </div>"""
 
     # ---- F 附录 ----
@@ -2675,7 +2862,7 @@ def _render_personal_html(
 <p>班级对比只用匿名统计。报告生成时间：{generated_at}。</p>
 </footer>
 </div>
-<script>{_PERSONAL_KATEX_JS}{_PERSONAL_GRID_JS}</script>
+<script>{_PERSONAL_KATEX_JS}{_PERSONAL_GRID_JS}{_PERSONAL_PRINT_JS}</script>
 </body>
 </html>
 """
@@ -2825,7 +3012,9 @@ class AnalysisReportGenerator:
         *,
         score_revision: str = "",
         student_ids: set[int] | None = None,
+        html_only: bool = False,
     ) -> Path:
+        """默认返回下载 ZIP；html_only 返回只含各学生 HTML 的目录。"""
         if report_type not in ANALYSIS_REPORT_TYPES:
             raise ValueError(f"不支持的分析报告类型: {report_type}")
         revision = str(score_revision or "").strip() or _compute_score_revision(
@@ -2838,7 +3027,7 @@ class AnalysisReportGenerator:
             int(session_id),
             data_root=self.data_root,
         )
-        return self._export_personal(data, revision, student_ids=student_ids)
+        return self._export_personal(data, revision, student_ids=student_ids, html_only=html_only)
 
     def export_classes(
         self,
@@ -2975,7 +3164,10 @@ class AnalysisReportGenerator:
                 )
             else:
                 narrative = client.json_from_text(prompt, extra_kwargs=options)
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "optional operation unavailable: _narrative (%s)", type(exc).__name__,
+            )
             # 模型超时/解析失败：本地修复仍失败则降级，不暗中重发（已确认偏差）。
             return None
         if not isinstance(narrative, dict):
@@ -2990,6 +3182,7 @@ class AnalysisReportGenerator:
         revision: str,
         *,
         student_ids: set[int] | None = None,
+        html_only: bool = False,
     ) -> Path:
         if not data.students:
             raise ValueError("该场次没有可生成个人报告的学生。")
@@ -3052,35 +3245,21 @@ class AnalysisReportGenerator:
         error_state: dict[str, Any] = {}
         error_sources: list[dict[str, Any]] = []
         history_error_index: dict[int, Any] = {}
-        error_session_names: dict[int, str] = {}
         if self.reports_dir is not None:
             from backend.class_analysis import (
                 ClassAnalysisStateStore,
                 build_cause_inputs,
-                collect_student_error_index,
                 student_error_map,
             )
 
             store = ClassAnalysisStateStore(self.reports_dir)
             error_state = store.load(data.session_id) or {}
             error_sources = build_cause_inputs(data)
-            history_ids = {
-                int(entry["session_id"])
-                for entries in histories.values()
-                for entry in entries
-                if entry.get("session_id") != data.session_id
-            }
-            error_session_names = {
-                int(entry["session_id"]): str(entry.get("name") or "")
-                for entries in histories.values()
-                for entry in entries
-                if entry.get("session_id") != data.session_id
-            }
-            history_error_index = collect_student_error_index(
-                store, sorted(history_ids), db=self.repositories, data_root=self.data_root,
+            history_error_index = _load_personal_error_histories(
+                self.repositories, histories, data.session_id, self.reports_dir, self.data_root,
             )
             error_maps = {
-                student.student_id: student_error_map(error_state, student, error_sources)
+                student.student_id: student_error_map(error_state, student, error_sources, data)
                 for _group, student in scoped_students
             }
         else:
@@ -3141,19 +3320,7 @@ class AnalysisReportGenerator:
                 for future in completed:
                     data, student, shots, report_path = pending.pop(future)
                     history_index = history_error_index.get(student.student_id)
-                    error_history = (
-                        {
-                            key: {
-                                label: sorted(
-                                    {error_session_names.get(sid, "") for sid in sids} - {""}
-                                )
-                                for label, sids in bucket.items()
-                            }
-                            for key, bucket in history_index.items()
-                        }
-                        if history_index
-                        else None
-                    )
+                    error_history = history_index or None
                     narrative = future.result()
                     if self.reports_dir is not None:
                         review_note_items.extend(
@@ -3187,6 +3354,9 @@ class AnalysisReportGenerator:
                     student.student_id for _group, student in scoped_students
                 },
             )
+
+        if html_only:
+            return staging_subdir
 
         checklist_lines = [
             "未生成个人报告的学生清单",

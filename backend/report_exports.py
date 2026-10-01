@@ -16,13 +16,12 @@ _submit_lock = threading.RLock()
 _REPORT_RENDITION_VERSIONS = {
     "score_excel": "score_excel_print_v6_parts",
     "annotated_original_pdf": "annotated_original_pdf_score_boxes_v3",
-    "personal_analysis_html": "personal_analysis_html_v11_error_causes",
+    "personal_analysis_html": "personal_analysis_html_v15_parent_point_note",
 }
 
-# 个人报告旧版 AI 叙述缓存仍兼容读取：命中旧 key 时直接复用，不调用模型、不写回新 key。
-LEGACY_PERSONAL_NARRATIVE_VERSIONS = (
-    "personal_analysis_html_v8_parts",
-)
+# 旧版泛化标题不满足当前知识点概括要求，不作为新生成任务的缓存命中。
+# 已导出的历史 HTML 继续可读，旧缓存保留；之后仅显示变化可在此列兼容版本。
+LEGACY_PERSONAL_NARRATIVE_VERSIONS: tuple[str, ...] = ()
 
 # 考试分析报告（AI 叙述）导出类型：提交时不带 excel_options。
 # 班级分析已改为系统内嵌页面（backend/class_analysis.py），不再是导出类型。
@@ -34,10 +33,9 @@ def report_rendition_version(report_type: str) -> str:
 
 
 def report_narrative_version(report_type: str) -> str:
-    # 个人报告叙述新增 problems.question_ids（AI 问题带丢分题引用），
-    # 版本升到 v9；旧版 v8 叙述经 LEGACY_PERSONAL_NARRATIVE_VERSIONS 兼容读取。
+    # 精确知识点概括属于提示词语义变化；只在用户发起新生成时使用新叙述。
     if report_type == 'personal_analysis_html':
-        return 'personal_analysis_html_v9_problem_refs'
+        return 'personal_analysis_html_v12_knowledge_focus'
     return report_rendition_version(report_type)
 
 

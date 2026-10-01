@@ -1,6 +1,6 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, nextTick, type App } from 'vue';
+import { createApp, nextTick, ref, type App } from 'vue';
 import { createMemoryHistory, type Router } from 'vue-router';
 
 import { fetchResultsCenter, type ResultsCenterResponse } from '../api/results-center';
@@ -122,6 +122,7 @@ interface MountOptions {
 }
 
 const mountedApps: App[] = []
+const routeDisposers: (() => void)[] = []
 
 async function settleUi(): Promise<void> {
   await Promise.resolve()
@@ -304,6 +305,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const app of mountedApps.splice(0)) app.unmount()
+  for (const dispose of routeDisposers.splice(0)) dispose()
   await settleUi()
 })
 
@@ -800,5 +802,73 @@ describe('source-recalibrated review view', () => {
     dispatchKey(document.body, 'ArrowUp')
     await vi.waitFor(() => expect(reviewStore.selectedReviewItemId).toBe('7:Q1:11'))
     expect(host.textContent).toContain('学生甲')
+  })
+})
+
+describe('review queue route state', () => {
+  async function connect(initialUrl: string) {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createAppRouter(createMemoryHistory())
+    await router.push(initialUrl)
+    await router.isReady()
+    const sessions = useSessionStore(pinia)
+    sessions.$patch({
+      sessions: [{ id: 7, name: '合成复核路由考试', status: 'grading', is_deleted: false,
+        deleted_at: null, created_at: null, updated_at: null }],
+      selectedSessionId: 7, loadState: 'ready',
+    })
+    const queue = useReviewQueueStore(pinia)
+    const loadQuestions = queue.loadQuestions
+    vi.spyOn(queue, 'loadQuestions').mockImplementation((sessionId) =>
+      loadQuestions(sessionId, async () => questions),
+    )
+    routeDisposers.push(queue.connectRoute(router, sessions, ref(null)))
+    await vi.waitFor(() => expect(queue.itemLoadState).toBe('ready'))
+    await queue.waitForRouteSync()
+    return { queue, router }
+  }
+
+  it('restores a legacy detail link and writes the validated current identity', async () => {
+    const { queue, router } = await connect('/grading?session=7&question=Q2&detail=22&scope=all')
+    expect(queue.mode).toBe('deep')
+    expect(queue.selectedQuestionId).toBe('Q2')
+    expect(queue.selectedDetailId).toBe(22)
+    expect(router.currentRoute.value.query).toEqual({
+      session: '7', question: 'Q2', item: queue.selectedReviewItemId, scope: 'all',
+    })
+  })
+
+  it('falls back from invalid question, item and scope without keeping stale parameters', async () => {
+    const { queue, router } = await connect('/grading?session=7&question=missing&item=missing&scope=invalid')
+    expect(queue.mode).toBe('batch')
+    expect(queue.selectedQuestionId).toBe('Q1')
+    expect(router.currentRoute.value.query).toEqual({ session: '7', question: 'Q1', scope: 'all' })
+  })
+
+  it('does not let queued selection writes change the destination after leaving review', async () => {
+    const { queue, router } = await connect('/grading?session=7&question=Q1')
+    await router.push('/results?session=7&tab=details')
+    queue.selectItem('7:Q1:12')
+    queue.syncValidatedQuery()
+    await nextTick()
+    await queue.waitForRouteSync()
+    expect(router.currentRoute.value.fullPath).toBe('/results?session=7&tab=details')
+  })
+
+  it('keeps the latest question when an earlier load finishes late', async () => {
+    const { queue, router } = await connect('/grading?session=7&question=Q1')
+    const older = deferred<ReviewItem[]>()
+    vi.mocked(fetchReviewItems).mockImplementation(async (_sessionId, questionId) =>
+      questionId === 'Q2' ? older.promise : itemsByQuestion.Q1!,
+    )
+    const first = queue.selectQuestionFromRoute('Q2')
+    await queue.selectQuestionFromRoute('Q1')
+    older.resolve(itemsByQuestion.Q2!)
+    await first
+    await queue.waitForRouteSync()
+    expect(queue.selectedQuestionId).toBe('Q1')
+    expect(queue.items.every((entry) => entry.question_id === 'Q1')).toBe(true)
+    expect(router.currentRoute.value.query.question).toBe('Q1')
   })
 })

@@ -9,10 +9,17 @@ if (!process.env.AI_GRADING_REVIEW_ARTIFACTS) {
   throw new Error('Run tools/run_test_suite.py review with its isolated backend')
 }
 
+function scoreInput(page: Page) {
+  return page.getByRole('textbox', { name: '第1步 给分，满分17', exact: true })
+}
+
 async function openAnswer(page: Page) {
   await page.goto('/results?tab=details')
   await page.getByRole('button', { name: /Synthetic Student A，Q1，/ }).click()
-  await expect(page.getByTestId('teacher-score')).toHaveValue('12')
+  // The synthetic AI result has a total but no step assessment; current review
+  // asks the teacher to supply the step instead of inventing its evidence.
+  await expect(scoreInput(page)).toHaveValue('')
+  await expect(page.getByText('AI 步骤分与总分不一致，请逐步给分', { exact: true })).toBeVisible()
   const crop = page.getByRole('region', { name: '答卷证据查看器' }).getByRole('img')
   await expect.poll(() => crop.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0)
 }
@@ -39,20 +46,19 @@ test('teacher score survives refresh, a stale window, reopening and Excel export
   const stalePage = await staleContext.newPage()
   await openAnswer(stalePage)
   try {
-    const score = page.getByTestId('teacher-score')
-    const confirm = page.getByRole('button', { name: '确认此份并返回', exact: true })
+    const score = scoreInput(page)
+    const confirm = page.getByTestId('confirm-single')
 
     await test.step('invalid values and keyboard input do not silently save', async () => {
-      for (const [value, message] of [
-        ['18', '教师最终分不能超过 17 分'],
-        ['15.5', '教师最终分必须是整数'],
-      ] as const) {
+      for (const value of ['18', '15.5']) {
         await score.fill(value)
-        await expect(page.getByText(message, { exact: true })).toBeVisible()
+        await expect(score).toHaveAttribute('aria-invalid', 'true')
         await expect(confirm).toBeDisabled()
+        await score.press('Enter')
+        await expect(resultScores(page)).resolves.toEqual({ 'SYN-001': 85, 'SYN-002': 70 })
       }
       await score.fill('16')
-      await score.press('Enter')
+      await expect(score).toHaveAttribute('aria-invalid', 'false')
       await expect(score).toHaveValue('16')
       await expect(resultScores(page)).resolves.toEqual({ 'SYN-001': 85, 'SYN-002': 70 })
     })
@@ -68,6 +74,9 @@ test('teacher score survives refresh, a stale window, reopening and Excel export
         response.url().endsWith('/review/questions/Q1/confirm') && response.request().method() === 'POST')
       await confirm.click()
       expect((await saved).status()).toBe(200)
+      await expect(score).toHaveValue('16')
+      await expect(resultScores(page)).resolves.toEqual({ 'SYN-001': 89, 'SYN-002': 70 })
+      await page.getByRole('button', { name: '返回成绩明细', exact: true }).click()
       await expect(page).toHaveURL(/\/results\?tab=details/)
       const row = page.getByRole('row').filter({ hasText: 'SYN-001' })
       await expect(row.locator('.results-matrix__total strong')).toHaveText('89 / 100')
@@ -76,13 +85,13 @@ test('teacher score survives refresh, a stale window, reopening and Excel export
     })
 
     await test.step('a stale window keeps its draft and cannot overwrite the saved score', async () => {
-      await stalePage.getByTestId('teacher-score').fill('15')
+      await scoreInput(stalePage).fill('15')
       const rejected = stalePage.waitForResponse((response) =>
         response.url().endsWith('/review/questions/Q1/confirm') && response.request().method() === 'POST')
-      await stalePage.getByRole('button', { name: '确认此份并返回', exact: true }).click()
+      await stalePage.getByTestId('confirm-single').click()
       expect((await rejected).status()).toBe(409)
       await expect(stalePage.getByTestId('review-feedback-toast')).toContainText('教师草稿仍保留')
-      await expect(stalePage.getByTestId('teacher-score')).toHaveValue('15')
+      await expect(scoreInput(stalePage)).toHaveValue('15')
       await expect(resultScores(stalePage)).resolves.toEqual({ 'SYN-001': 89, 'SYN-002': 70 })
       await stalePage.screenshot({ path: testInfo.outputPath('stale-window-draft-retained.png') })
     })
@@ -96,7 +105,7 @@ test('teacher score survives refresh, a stale window, reopening and Excel export
         const freshPage = await freshContext.newPage()
         await freshPage.goto('/results?tab=details')
         await freshPage.getByRole('button', { name: /Synthetic Student A，Q1，教师已确认，得分 16/ }).click()
-        await expect(freshPage.getByTestId('teacher-score')).toHaveValue('16')
+        await expect(scoreInput(freshPage)).toHaveValue('16')
         await freshPage.screenshot({ path: testInfo.outputPath('review-reopened.png') })
       } finally {
         await freshContext.close()
@@ -108,8 +117,9 @@ test('teacher score survives refresh, a stale window, reopening and Excel export
       await page.getByRole('button', { name: '导出文件', exact: true }).click()
       await page.getByTestId('generate-score_excel').click()
       await page.getByTestId('submit-score-excel').click()
-      const downloadButton = page.locator('.file-product')
-        .filter({ has: page.getByRole('heading', { name: '成绩表', exact: true }) })
+      const downloadButton = page.getByRole('dialog', { name: '导出文件', exact: true })
+        .getByRole('listitem')
+        .filter({ has: page.getByText('成绩表', { exact: true }) })
         .getByRole('button', { name: '下载', exact: true })
       await expect(downloadButton).toBeVisible()
       const downloading = page.waitForEvent('download')

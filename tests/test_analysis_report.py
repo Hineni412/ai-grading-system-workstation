@@ -495,3 +495,34 @@ def test_visual_reports_include_manual_students_and_keep_final_scores(
 # ---------------------------------------------------------------------------
 # 个人学情报告留存：删除接口与重复提交复用
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("legacy_version", ["personal_analysis_html_v11_parent_brief", "personal_analysis_html_v10_actions", "personal_analysis_html_v9_problem_refs", "personal_analysis_html_v8_parts"])
+def test_knowledge_prompt_upgrade_keeps_old_cache_but_generates_current_narrative(analysis_db, tmp_path, legacy_version):
+    from analysis_report_exporter import AnalysisNarrativeCache
+    from backend.session_analysis import assemble_session_analysis
+
+    db, session_id, root = analysis_db
+    cache = AnalysisNarrativeCache(tmp_path / "cache")
+    data = assemble_session_analysis(db, session_id, data_root=root)
+    for student in data.students:
+        cache.store(cache.cache_key(session_id=session_id, score_revision="existing-v1",
+            rendition_version=legacy_version, report_key=f"personal:{student.student_id}"), PERSONAL_NARRATIVE)
+    files_before = sorted(p.name for p in cache.cache_dir.glob("*.json"))
+    client = FakeLLMClient()
+    generator = _make_generator(db, tmp_path / "out", cache.cache_dir, client)
+    output = generator.export_session(session_id, "personal_analysis_html", score_revision="existing-v1", html_only=True)
+    assert client.calls == len(data.students)
+    assert set(files_before) < {p.name for p in cache.cache_dir.glob("*.json")}
+    assert output.is_dir()
+    assert len(list(output.glob("*.html"))) == len(data.students)
+    assert all(path.suffix == ".html" for path in output.iterdir())
+    assert not list((tmp_path / "out").rglob("*.zip"))
+    assert not list((tmp_path / "out").rglob("*.pdf"))
+    for request in client.requests:
+        assert "knowledge_focus" in request["prompt"]
+    report = (output / "001_张三_个人报告.html").read_text(encoding="utf-8")
+    assert "先做：" in report and "检查：" in report
+    assert '<span class="when">本周</span>' in report
+    generator.export_session(session_id, "personal_analysis_html", score_revision="existing-v1", html_only=True)
+    assert client.calls == len(data.students)
