@@ -391,14 +391,14 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
       <div class="rubric-ledger__bulk-scores" aria-label="统一修改客观题分值">
         <label>
           <span>选择题每题</span>
-          <input v-model.number="choiceScore" aria-label="选择题每题分值" type="number" step="any" :disabled="disabled || choiceQuestionIds.length === 0">
+          <input class="app-input" v-model.number="choiceScore" aria-label="选择题每题分值" type="number" step="any" :disabled="disabled || choiceQuestionIds.length === 0">
           <button type="button" :disabled="disabled || choiceQuestionIds.length === 0 || !Number.isFinite(choiceScore)" @click="applyBulkScore('choice', choiceScore)">
             应用到 {{ choiceQuestionIds.length }} 题
           </button>
         </label>
         <label>
           <span>填空题每题总分</span>
-          <input v-model.number="fillQuestionScore" aria-label="填空题每题总分" type="number" step="any" :disabled="disabled || fillQuestionIds.length === 0">
+          <input class="app-input" v-model.number="fillQuestionScore" aria-label="填空题每题总分" type="number" step="any" :disabled="disabled || fillQuestionIds.length === 0">
           <button type="button" :disabled="disabled || fillQuestionIds.length === 0 || !Number.isFinite(fillQuestionScore)" @click="applyBulkScore('fill_blank', fillQuestionScore)">
             应用到 {{ fillQuestionIds.length }} 题
           </button>
@@ -579,7 +579,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
             </span>
             <label class="rubric-unit-card__score">
               <span>分值</span>
-              <input
+              <input class="app-input"
                 type="number"
                 step="any"
                 data-edit-field="score"
@@ -602,7 +602,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
           <div class="rubric-unit-card__fields">
             <label v-if="firstRowIds.has(row.row_id)">
               <span>标准答案</span>
-              <textarea
+              <textarea class="app-input"
                 rows="3"
                 data-edit-field="standard_answer"
                 :aria-label="`${identity(row)} 标准答案`"
@@ -613,7 +613,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
             </label>
             <label>
               <span>关键步骤 / 得分证据</span>
-              <textarea
+              <textarea class="app-input"
                 rows="3"
                 data-edit-field="required_elements"
                 :aria-label="`${identity(row)} 证据要求/关键步骤`"
@@ -624,7 +624,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
             </label>
             <label>
               <span>扣分规则</span>
-              <textarea
+              <textarea class="app-input"
                 rows="3"
                 data-edit-field="deduction_rules"
                 :aria-label="`${identity(row)} 扣分规则`"
@@ -635,7 +635,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
             </label>
             <label v-if="firstRowIds.has(row.row_id)">
               <span>等价答案（每行一个）</span>
-              <textarea
+              <textarea class="app-input"
                 rows="3"
                 data-edit-field="accepted_answers"
                 :aria-label="`${identity(row)} 等价答案`"
@@ -646,7 +646,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
             </label>
             <label v-if="firstRowIds.has(row.row_id)">
               <span>小问统一扣分规则</span>
-              <textarea
+              <textarea class="app-input"
                 rows="3"
                 data-edit-field="part_deduction_rules"
                 :aria-label="`${row.question_id} ${row.part_id} 小问统一扣分规则`"
@@ -676,7 +676,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
             </label>
             <label v-if="requiresProcess(row)">
               <span>仅答案最高分</span>
-              <input
+              <input class="app-input"
                 type="number"
                 step="any"
                 data-edit-field="answer_only_max_score"
@@ -692,7 +692,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
             </label>
             <label class="rubric-ledger__policy-rule">
               <span>最终答案规则</span>
-              <textarea
+              <textarea class="app-input"
                 rows="2"
                 data-edit-field="final_answer_rule"
                 :aria-label="`${row.question_id} ${row.part_id} 最终答案规则`"

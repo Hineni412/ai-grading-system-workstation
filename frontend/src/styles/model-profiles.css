@@ -114,30 +114,6 @@
 .model-profiles-feedback,
 .model-profiles-state {
   margin: 0 0 var(--space-4);
-  padding: var(--space-3) var(--space-4);
-  border: var(--border-width) solid var(--color-border-default);
-}
-
-.model-profiles-feedback--error,
-.model-profiles-state--error {
-  border-color: color-mix(in srgb, var(--color-danger) 36%, var(--color-border-default));
-  background: var(--color-danger-subtle);
-  color: var(--color-danger);
-}
-
-.model-profiles-feedback--success {
-  border-color: color-mix(in srgb, var(--color-success) 36%, var(--color-border-default));
-  background: var(--color-success-subtle);
-  color: var(--color-success);
-}
-
-.model-profiles-state {
-  background: var(--color-bg-surface);
-  color: var(--color-text-secondary);
-}
-
-.model-profiles-state p {
-  margin: 0 0 var(--space-3);
 }
 
 .model-profiles-workspace {
@@ -444,23 +420,6 @@
   white-space: nowrap;
 }
 
-.model-profile-item__active {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: var(--space-1);
-  color: var(--color-success);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-}
-
-.model-profile-item__active i {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-circle);
-  background: currentColor;
-}
-
 .model-profile-item small {
   overflow: hidden;
   color: var(--color-text-secondary);
@@ -510,16 +469,6 @@
   margin-block-start: var(--space-1);
   color: var(--color-text-secondary);
   font-size: var(--font-size-dense);
-}
-
-.model-profile-editor__active {
-  flex: 0 0 auto;
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-tag);
-  background: var(--color-success-subtle);
-  color: var(--color-success);
-  font-size: var(--font-size-dense);
-  font-weight: var(--font-weight-medium);
 }
 
 .model-profile-fields {

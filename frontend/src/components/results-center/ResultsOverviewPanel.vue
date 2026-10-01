@@ -1160,7 +1160,7 @@ function openReviewNote(note: AnalysisReviewNoteItem): void {
               <h3 id="overview-ranks-title">排名变化</h3>
               <label v-if="comparisonOptions.length" class="overview__compare">
                 <span>对比：</span>
-                <select v-model.number="comparisonId" aria-label="对比考试">
+                <select class="app-input" v-model.number="comparisonId" aria-label="对比考试">
                   <option
                     v-for="option in comparisonOptions"
                     :key="option.id"

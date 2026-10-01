@@ -161,7 +161,7 @@ watch(
             <strong class="scoring-unit-editor__step-title">步骤 {{ stepIndex + 1 }}</strong>
             <label class="scoring-unit-editor__goal">
               <span class="sr-only">评分目标</span>
-              <textarea
+              <textarea class="app-input"
                 v-model="step.core_goal"
                 rows="1"
                 :disabled="disabled"
@@ -171,7 +171,7 @@ watch(
             </label>
             <label class="scoring-unit-editor__score">
               <span class="sr-only">分值</span>
-              <input
+              <input class="app-input"
                 v-model.number="step.score"
                 type="number"
                 step="any"

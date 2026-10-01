@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import AppButton from '@/components/design-system/AppButton.vue'
+
 import { computed, ref } from 'vue'
 
 import type { StudentImportOperation } from '../../api/students'
@@ -111,7 +113,7 @@ async function commit(): Promise<void> {
       <div class="student-import__mapping">
         <label>
           <span>学号列</span>
-          <select v-model="roster.importMapping.student_code">
+          <select class="app-input" v-model="roster.importMapping.student_code">
             <option :value="null">请选择</option>
             <option v-for="column in roster.preview.columns" :key="column" :value="column">
               {{ column }}
@@ -120,7 +122,7 @@ async function commit(): Promise<void> {
         </label>
         <label>
           <span>姓名列</span>
-          <select v-model="roster.importMapping.name">
+          <select class="app-input" v-model="roster.importMapping.name">
             <option :value="null">请选择</option>
             <option v-for="column in roster.preview.columns" :key="column" :value="column">
               {{ column }}
@@ -129,16 +131,16 @@ async function commit(): Promise<void> {
         </label>
         <label>
           <span>班级列（可选）</span>
-          <select v-model="roster.importMapping.class_name">
+          <select class="app-input" v-model="roster.importMapping.class_name">
             <option :value="null">不导入班级</option>
             <option v-for="column in roster.preview.columns" :key="column" :value="column">
               {{ column }}
             </option>
           </select>
         </label>
-        <button type="button" class="student-button student-button--secondary" @click="applyMapping">
+        <AppButton variant="secondary" type="button" class="student-button student-button--secondary" @click="applyMapping">
           应用列对应
-        </button>
+        </AppButton>
       </div>
 
       <div class="student-import__counts" aria-label="导入变化统计">
@@ -199,7 +201,7 @@ async function commit(): Promise<void> {
 
       <div class="student-import__actions">
         <span>已选择 {{ roster.selectedImportRows.length }} 行；确认后才会写入名单。</span>
-        <button
+        <AppButton variant="primary"
           type="button"
           class="student-button student-button--primary"
           data-action="commit-import"
@@ -211,7 +213,7 @@ async function commit(): Promise<void> {
           @click="commit"
         >
           {{ roster.importState === 'committing' ? '正在写入…' : '确认写入名单' }}
-        </button>
+        </AppButton>
       </div>
     </template>
   </section>

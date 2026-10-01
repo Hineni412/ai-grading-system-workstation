@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import AppButton from '@/components/design-system/AppButton.vue'
+
 import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
 
 import type { QuestionBankListItem, QuestionBankPaper } from '../api/question-bank'
@@ -153,9 +155,9 @@ const currentPaper = computed(() => {
           >
             {{ currentPaper.criteria_needs_review_count }} 道题判定点待审核，打开题目后到「判定点」里处理。
           </p>
-          <button type="button" class="paper-button is-primary" @click="showImport = true">
+          <AppButton variant="primary" type="button" class="paper-button is-primary" @click="showImport = true">
             上传与 AI 标注
-          </button>
+          </AppButton>
         </div>
       </header>
 

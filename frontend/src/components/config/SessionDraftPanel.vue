@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import AppButton from '@/components/design-system/AppButton.vue'
+
 import { computed, ref, watch } from 'vue'
 
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
@@ -100,7 +102,7 @@ async function renameDraft(): Promise<void> {
       @submit.prevent="sessionStore.currentSession ? renameDraft() : createDraft()"
     >
       <label class="sr-only" for="session-draft-name">考试名称</label>
-      <input
+      <input class="app-input"
         id="session-draft-name"
         v-model="name"
         :disabled="busy"
@@ -110,7 +112,7 @@ async function renameDraft(): Promise<void> {
         autocomplete="off"
       >
       <label class="sr-only" for="session-draft-curriculum">所属教学学期</label>
-      <select
+      <select class="app-input"
         id="session-draft-curriculum"
         v-model="curriculumVolumeId"
         :disabled="busy || curriculumScope.loadState === 'loading'"
@@ -121,13 +123,13 @@ async function renameDraft(): Promise<void> {
           {{ volume.label }}
         </option>
       </select>
-      <button
+      <AppButton variant="primary"
         v-if="isDirty"
         type="submit"
         :disabled="busy || !name.trim()"
       >
         {{ sessionStore.currentSession ? '保存' : '创建草稿' }}
-      </button>
+      </AppButton>
       <p v-if="message" class="session-draft-panel__message" role="status">{{ message }}</p>
     </form>
   </section>

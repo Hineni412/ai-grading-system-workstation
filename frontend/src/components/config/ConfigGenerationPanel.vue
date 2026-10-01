@@ -694,7 +694,7 @@ watch(
       >
         <label class="config-generation__console-volume">
           <span id="config-generation-volume-title">选择教材册别</span>
-          <select v-model="selectedVolumeId" :disabled="curriculumLoading" @change="requestError = ''; volumeManuallyChanged = true">
+          <select class="app-input" v-model="selectedVolumeId" :disabled="curriculumLoading" @change="requestError = ''; volumeManuallyChanged = true">
             <option value="">请选择</option>
             <option v-for="volume in curriculum?.volumes ?? []" :key="volume.id" :value="volume.id">
               {{ volume.label }} · {{ volume.textbook_version }}

@@ -273,7 +273,7 @@ defineExpose({ openMoreFilters })
       </details>
       <label v-if="scoreFloorEnabled" class="evidence-scope__quick-rate">
         <span>最低考试得分率</span>
-        <div><input v-model="scoreMin" inputmode="decimal" placeholder="不限" aria-label="最低得分率" @change="apply"><span>%</span></div>
+        <div><input class="app-input" v-model="scoreMin" inputmode="decimal" placeholder="不限" aria-label="最低得分率" @change="apply"><span>%</span></div>
       </label>
       <button type="button" class="primary-button" data-testid="apply-evidence-scope" @click="apply">
         {{ applying ? '正在更新' : applyLabel }}
@@ -312,9 +312,9 @@ defineExpose({ openMoreFilters })
       <div class="evidence-scope__more-row">
         <fieldset class="evidence-scope__range">
           <legend>得分率区间</legend>
-          <label><span>最低</span><input v-model="scoreMin" inputmode="decimal" placeholder="0" :aria-label="scoreFloorEnabled ? '最低得分率（更多筛选）' : '最低得分率'"><i>%</i></label>
+          <label><span>最低</span><input class="app-input" v-model="scoreMin" inputmode="decimal" placeholder="0" :aria-label="scoreFloorEnabled ? '最低得分率（更多筛选）' : '最低得分率'"><i>%</i></label>
           <b>—</b>
-          <label><span>最高</span><input v-model="scoreMax" inputmode="decimal" placeholder="100" aria-label="最高得分率"><i>%</i></label>
+          <label><span>最高</span><input class="app-input" v-model="scoreMax" inputmode="decimal" placeholder="100" aria-label="最高得分率"><i>%</i></label>
         </fieldset>
       </div>
     </div>
@@ -323,7 +323,7 @@ defineExpose({ openMoreFilters })
       <header>
         <div><strong>指定学生</strong><p>输入姓名、学号，或设定班级、得分率后勾选加入队列；{{ scoreFloorEnabled ? '得分率条件会进一步筛选已入队学生，勾选记录保留' : '换筛选条件不影响已入队学生' }}。队列为空时按上方条件自动圈定。</p></div>
         <div class="evidence-scope__roster-tools">
-          <input v-model="search" type="search" placeholder="搜索姓名或学号" aria-label="搜索学生">
+          <input class="app-input" v-model="search" type="search" placeholder="搜索姓名或学号" aria-label="搜索学生">
           <button
             type="button"
             class="quiet-button"

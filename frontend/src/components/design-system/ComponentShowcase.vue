@@ -4,6 +4,7 @@ import { ref } from 'vue'
 import { Input } from '@/components/ui/input'
 import AppButton from './AppButton.vue'
 import AppField from './AppField.vue'
+import AppIconButton from './AppIconButton.vue'
 import FeedbackBanner from './FeedbackBanner.vue'
 import StatePanel from './StatePanel.vue'
 import StatusBadge, { type StatusTone } from './StatusBadge.vue'
@@ -11,6 +12,8 @@ import StatusBadge, { type StatusTone } from './StatusBadge.vue'
 const examName = ref('2025—2026 学年度第二学期七年级数学期末质量监测与学情诊断测试')
 const teacherScore = ref('13.75')
 const disabledStudent = ref('阿布都热合曼·麦麦提艾力同学')
+const exampleScope = ref('current')
+const exampleNote = ref('已核对评分依据。')
 const tones: Array<{ tone: StatusTone; label: string }> = [
   { tone: 'neutral', label: '未开始' },
   { tone: 'info', label: '处理中' },
@@ -28,15 +31,14 @@ const tones: Array<{ tone: StatusTone; label: string }> = [
 <template>
   <main class="showcase" data-testid="design-system-showcase">
     <header class="showcase__header">
-      <p class="showcase__eyebrow">AI 阅卷系统 · P2-02</p>
       <h1>设计系统展示</h1>
       <p>
-        面向教师长时间使用的安静工作台基线。这里集中检查控件、状态、长中文和失败恢复，不代表业务页面已经迁移。
+        当前公共外观参考 AIHOT，统一基础颜色、按钮、字段与状态提示。这里可查看控件、长中文和失败恢复的实际效果。
       </p>
     </header>
 
     <section class="showcase-section" aria-labelledby="section-token">
-      <h2 id="section-token">基础 Token</h2>
+      <h2 id="section-token">基础颜色与表面</h2>
       <p class="showcase-section__intro">颜色承担明确职责；普通层级依靠背景与边框，不依赖阴影。</p>
       <div class="token-strip">
         <div class="token-sample" data-token="accent"><span />强调与主要操作</div>
@@ -56,6 +58,7 @@ const tones: Array<{ tone: StatusTone; label: string }> = [
         <AppButton variant="secondary">暂存教师修改</AppButton>
         <AppButton variant="ghost">查看评分规则</AppButton>
         <AppButton variant="danger">删除未提交草稿</AppButton>
+        <AppIconButton icon="search" label="搜索示意" variant="secondary" />
       </div>
       <div class="control-row" aria-label="按钮过程状态">
         <AppButton variant="primary" :loading="true">正在保存草稿</AppButton>
@@ -111,6 +114,19 @@ const tones: Array<{ tone: StatusTone; label: string }> = [
               :aria-invalid="ariaInvalid"
               :aria-required="ariaRequired"
             />
+          </template>
+        </AppField>
+        <AppField id="example-scope" label="查看范围">
+          <template #default="{ inputId }">
+            <select :id="inputId" v-model="exampleScope" class="app-input">
+              <option value="current">当前考试</option>
+              <option value="all">全部考试</option>
+            </select>
+          </template>
+        </AppField>
+        <AppField id="example-note" label="复核备注">
+          <template #default="{ inputId }">
+            <textarea :id="inputId" v-model="exampleNote" class="app-input" rows="3" />
           </template>
         </AppField>
       </div>

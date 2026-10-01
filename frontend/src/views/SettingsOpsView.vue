@@ -365,7 +365,7 @@ onMounted(async () => {
               </label>
             </fieldset>
             <label>备份原因
-              <select v-model="backupReason">
+              <select class="app-input" v-model="backupReason">
                 <option value="manual">手动备份</option>
                 <option value="before_exam">考试前</option>
                 <option value="after_exam">考试后</option>

@@ -971,7 +971,7 @@ onBeforeUnmount(() => {
                 <div class="taxonomy-candidate__merge-body">
                   <label>
                     <span>搜索已有词</span>
-                    <input
+                    <input class="app-input"
                       v-model="draftFor(proposal).mergeSearch"
                       type="search"
                       placeholder="输入名称或别名"
@@ -1003,7 +1003,7 @@ onBeforeUnmount(() => {
                         ；未选择题目，本次只处理词表
                       </template>
                     </span>
-                    <button
+                    <AppButton variant="primary"
                       type="button"
                       class="qb-button is-primary"
                       :disabled="
@@ -1013,7 +1013,7 @@ onBeforeUnmount(() => {
                       @click="merge(proposal)"
                     >
                       确认归并
-                    </button>
+                    </AppButton>
                   </div>
                 </div>
               </details>
@@ -1028,7 +1028,7 @@ onBeforeUnmount(() => {
                 <div class="taxonomy-candidate__decision">
                   <label>
                     <span>规范名称</span>
-                    <input
+                    <input class="app-input"
                       v-model="draftFor(proposal).editedName"
                       type="text"
                       maxlength="160"

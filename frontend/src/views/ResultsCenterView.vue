@@ -15,6 +15,7 @@ import ResultsOverviewPanel from '../components/results-center/ResultsOverviewPa
 import { invalidateClassAnalysis } from '../components/results-center/class-analysis-cache'
 import { classRanksOf } from '../components/results-center/results-overview'
 import AppButton from '../components/design-system/AppButton.vue'
+import StatePanel from '../components/design-system/StatePanel.vue'
 import AppIconButton from '../components/design-system/AppIconButton.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import { Input } from '../components/ui/input'
@@ -749,31 +750,25 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
     />
 
     <template v-else>
-      <div v-if="sessionStore.selectedSessionId === null" class="results-state-panel">
-        <strong>请先在顶部选择考试</strong>
-        <span>选择后，这里会显示该考试的成绩和需要复核的题目。</span>
-      </div>
+      <StatePanel v-if="sessionStore.selectedSessionId === null" class="results-state-panel" kind="empty" title="请先选择考试" description="选择后，这里会显示该考试的成绩和需要复核的题目。" />
 
-      <div
+      <StatePanel
         v-else-if="resultsStore.state === 'loading' && !results"
         class="results-state-panel"
-        role="status"
-      >
-        <strong>正在整理当前考试成绩</strong>
-        <span>学生较多时可能需要片刻。</span>
-      </div>
+        kind="loading"
+        title="正在整理当前考试成绩"
+        description="学生较多时可能需要片刻。"
+      />
 
-      <div
+      <StatePanel
         v-else-if="resultsStore.state === 'error'"
         class="results-state-panel results-state-panel--error"
-        role="alert"
-      >
-        <strong>成绩暂时无法读取</strong>
-        <span>{{ resultsStore.errorMessage }}</span>
-        <AppButton class="results-button results-button--secondary" @click="refresh">
-          重新加载
-        </AppButton>
-      </div>
+        kind="error"
+        title="成绩暂时无法读取"
+        :description="resultsStore.errorMessage"
+        retry-label="重新加载"
+        @retry="refresh"
+      />
 
       <template v-else-if="results">
         <div
@@ -785,10 +780,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
           <AppButton variant="secondary" @click="refresh">重新加载</AppButton>
         </div>
 
-        <div v-if="results.students.length === 0" class="results-state-panel">
-          <strong>当前考试还没有可展示的成绩</strong>
-          <span>开始批改或人工评分后，成绩会出现在这里。</span>
-        </div>
+        <StatePanel v-if="results.students.length === 0" class="results-state-panel" kind="empty" title="当前考试还没有可展示的成绩" description="开始批改或人工评分后，成绩会出现在这里。" />
 
         <ResultsOverviewPanel
           v-else-if="activeTab === 'overview'"
@@ -865,7 +857,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             <div class="results-filter-bar" aria-label="学生成绩筛选">
               <select
                 v-model="selectedClass"
-                class="results-filter-bar__select"
+                class="results-filter-bar__select app-input"
                 aria-label="成绩明细班级"
               >
                 <option :value="null">全部班级</option>

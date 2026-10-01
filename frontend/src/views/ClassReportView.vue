@@ -297,7 +297,7 @@ onBeforeUnmount(() => {
       <div class="class-report__toolbar">
         <label v-if="classNames.length > 1" class="class-analysis__toggle">
           <span>报告班级</span>
-          <select
+          <select class="app-input"
             :value="selectedClass"
             aria-label="报告班级"
             @change="selectClass(($event.target as HTMLSelectElement).value)"

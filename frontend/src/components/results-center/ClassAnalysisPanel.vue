@@ -538,7 +538,7 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
         <div v-if="analysis" class="class-analysis__toolbar">
           <label class="class-analysis__toggle">
             <span>查看范围</span>
-            <select v-model="selectedClass" aria-label="查看班级" @change="load">
+            <select class="app-input" v-model="selectedClass" aria-label="查看班级" @change="load">
               <option value="">全部班级（合并）</option>
               <option v-for="name in analysis.class_names" :key="name" :value="name">{{ name }}</option>
             </select>
@@ -820,11 +820,11 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
           <p class="class-analysis__note">错法已自动整理并回挂题库；这里可以按需修改名称和大类，修改后同题考试会沿用新名称。</p>
           <label class="class-analysis__field">
             <span>错法名称</span>
-            <input v-model="patternEdit.newReason" class="class-analysis__input" data-testid="cause-edit-reason" maxlength="40" />
+            <input v-model="patternEdit.newReason" class="class-analysis__input app-input" data-testid="cause-edit-reason" maxlength="40" />
           </label>
           <label class="class-analysis__field">
             <span>错误大类</span>
-            <select v-model="patternEdit.category" class="class-analysis__input" data-testid="cause-edit-category">
+            <select v-model="patternEdit.category" class="class-analysis__input app-input" data-testid="cause-edit-category">
               <option v-for="category in KIND_CATEGORIES[patternEdit.kind] ?? []" :key="category" :value="category">{{ category }}</option>
             </select>
           </label>

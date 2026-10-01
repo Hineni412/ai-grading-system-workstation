@@ -10,6 +10,7 @@ import RubricEditorTable from '../components/config/RubricEditorTable.vue'
 import ScoringUnitEditor from '../components/config/ScoringUnitEditor.vue'
 import SessionDraftPanel from '../components/config/SessionDraftPanel.vue'
 import AppButton from '../components/design-system/AppButton.vue'
+import StatePanel from '../components/design-system/StatePanel.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import { ApiError, isAmbiguousWriteError, isAuthoritativeNotFoundError } from '../api/errors'
 import {
@@ -632,13 +633,22 @@ watch(
       </template>
     </PageHeader>
 
-    <div v-if="sessionStore.loadState === 'loading'" class="session-config-view__state" role="status">
-      正在读取考试列表…
-    </div>
-    <div v-else-if="sessionStore.loadState === 'error'" class="session-config-view__state" role="alert">
-      <p>考试列表暂时无法读取，尚未改变任何考试。</p>
-      <AppButton type="button" @click="sessionStore.initialize()">重新加载考试列表</AppButton>
-    </div>
+    <StatePanel
+      v-if="sessionStore.loadState === 'loading'"
+      class="session-config-view__state"
+      kind="loading"
+      title="正在读取考试列表…"
+      description=""
+    />
+    <StatePanel
+      v-else-if="sessionStore.loadState === 'error'"
+      class="session-config-view__state"
+      kind="error"
+      title="考试列表暂时无法读取，尚未改变任何考试。"
+      description=""
+      retry-label="重新加载考试列表"
+      @retry="sessionStore.initialize()"
+    />
     <template v-else>
       <div id="config-intake-status-slot" />
       <p v-if="sessionStore.sessions.length === 0" class="session-config-view__empty">
@@ -718,7 +728,7 @@ watch(
             <summary>调整解答题小问与步骤点</summary>
             <label class="config-editor__question-picker">
               <span>选择题号</span>
-              <select v-model="selectedScoringQuestion" aria-label="评分单元题号">
+              <select class="app-input" v-model="selectedScoringQuestion" aria-label="评分单元题号">
                 <option v-for="questionId in scoringQuestions" :key="questionId" :value="questionId">
                   {{ questionId }}
                 </option>
@@ -781,8 +791,7 @@ watch(
 
 <style scoped>
 .session-config-view p { margin: 0; }
-.session-config-view__state,
+.session-config-view__state { margin: var(--space-4) var(--space-6); }
 .session-config-view__empty { padding: var(--space-3) var(--space-6); border-block-end: var(--border-width) solid var(--border); color: var(--color-text-secondary); }
-.session-config-view__state button { min-height: var(--control-height-default); margin-block-start: var(--space-3); }
 .config-workspace__panel { min-width: 0; }
 </style>

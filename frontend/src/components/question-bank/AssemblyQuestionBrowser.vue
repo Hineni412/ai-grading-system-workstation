@@ -856,7 +856,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
       </header>
       <label v-if="catalogState === 'ready' && catalog" class="assembly-volume-select">
         <span>教材册别</span>
-        <select
+        <select class="app-input"
           :value="selectedVolumeId"
           aria-label="选择教材册别"
           @change="chooseVolume(($event.currentTarget as HTMLSelectElement).value)"
@@ -1258,7 +1258,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
 
         <div class="assembly-filter-row is-search">
           <span class="assembly-filter-label">搜索</span>
-          <input v-model="filters.keyword" type="search" placeholder="输入试题关键词" @keyup.enter="loadQuestions(true)">
+          <input class="app-input" v-model="filters.keyword" type="search" placeholder="输入试题关键词" @keyup.enter="loadQuestions(true)">
           <QuestionSortControl v-model="filters.sort" @change="changeSort" />
           <AppButton variant="primary" @click="loadQuestions(true)">搜索</AppButton>
         </div>

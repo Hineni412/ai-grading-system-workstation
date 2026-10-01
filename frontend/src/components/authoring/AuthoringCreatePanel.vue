@@ -73,7 +73,7 @@ const selectedCard = computed(() => (
       <template v-if="kind === 'adapt'">
         <div class="authoring__field">
           <label class="authoring__label" for="authoring-card">任务卡</label>
-          <select id="authoring-card" v-model="cardId">
+          <select class="app-input" id="authoring-card" v-model="cardId">
             <option v-for="card in taskCards" :key="card.id" :value="card.id">
               {{ card.label }}
             </option>
@@ -87,11 +87,11 @@ const selectedCard = computed(() => (
           </label>
           <label class="authoring__inline-field">
             目标难度（1–10，可留空）
-            <input v-model="difficulty" type="number" min="1" max="10">
+            <input class="app-input" v-model="difficulty" type="number" min="1" max="10">
           </label>
           <label class="authoring__inline-field">
             目标 SOLO 层级
-            <select v-model="solo">
+            <select class="app-input" v-model="solo">
               <option value="">不限</option>
               <option v-for="level in AUTHORING_SOLO_LEVELS" :key="level" :value="level">
                 {{ AUTHORING_SOLO_LABELS[level] }}
@@ -100,14 +100,14 @@ const selectedCard = computed(() => (
           </label>
           <label class="authoring__inline-field authoring__inline-field--wide">
             改编说明
-            <input v-model="note" type="text" maxlength="200" placeholder="可留空">
+            <input class="app-input" v-model="note" type="text" maxlength="200" placeholder="可留空">
           </label>
         </div>
       </template>
 
       <div class="authoring__field">
         <label class="authoring__label" for="authoring-title">练习名称</label>
-        <input
+        <input class="app-input"
           id="authoring-title"
           v-model="title"
           type="text"

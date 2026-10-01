@@ -246,7 +246,7 @@ async function deleteRecord(recordId: string): Promise<void> {
         <div class="assembly-settings">
           <label>
             <span>试卷标题</span>
-            <input
+            <input class="app-input"
               :value="assembly.draft.title"
               maxlength="120"
               placeholder="如：九年级函数专项练习"
@@ -255,7 +255,7 @@ async function deleteRecord(recordId: string): Promise<void> {
           </label>
           <label>
             <span>页眉说明</span>
-            <input
+            <input class="app-input"
               :value="assembly.draft.header_text"
               maxlength="200"
               placeholder="如：限时 45 分钟"
@@ -264,7 +264,7 @@ async function deleteRecord(recordId: string): Promise<void> {
           </label>
           <label>
             <span>预览版本</span>
-            <select
+            <select class="app-input"
               :value="assembly.draft.preview_mode"
               @change="assembly.updateSettings({
                 preview_mode: ($event.target as HTMLSelectElement).value as 'student' | 'teacher',
@@ -276,7 +276,7 @@ async function deleteRecord(recordId: string): Promise<void> {
           </label>
           <label>
             <span>试题排版</span>
-            <select
+            <select class="app-input"
               :value="assembly.draft.layout_mode"
               @change="assembly.updateSettings({
                 layout_mode: ($event.target as HTMLSelectElement).value as 'sequential' | 'grouped_by_type' | 'sections',
@@ -309,7 +309,7 @@ async function deleteRecord(recordId: string): Promise<void> {
           </header>
           <div v-if="editableSections.length" class="assembly-section-list">
             <div v-for="section in editableSections" :key="section.id">
-              <input
+              <input class="app-input"
                 :value="section.title"
                 maxlength="80"
                 aria-label="分节名称"

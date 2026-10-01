@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import AppButton from '@/components/design-system/AppButton.vue'
+
 import { computed, markRaw, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 
 import {
@@ -254,7 +256,7 @@ onBeforeUnmount(() => {
       <div class="ai-diagnostics__filters">
         <label>
           <span>来源</span>
-          <select v-model="diagnosticKind" @change="loadDiagnostics">
+          <select class="app-input" v-model="diagnosticKind" @change="loadDiagnostics">
             <option v-for="kind in diagnosticKinds" :key="kind.value" :value="kind.value">
               {{ kind.label }}
             </option>
@@ -262,21 +264,21 @@ onBeforeUnmount(() => {
         </label>
         <label>
           <span>结果</span>
-          <select v-model="diagnosticOutcome" @change="loadDiagnostics">
+          <select class="app-input" v-model="diagnosticOutcome" @change="loadDiagnostics">
             <option value="">全部结果</option>
             <option value="success">模型已返回</option>
             <option value="failure">调用失败</option>
             <option value="pending">等待返回</option>
           </select>
         </label>
-        <button
+        <AppButton variant="secondary"
           type="button"
           class="model-profiles-button model-profiles-button--secondary"
           :disabled="diagnosticsState === 'loading'"
           @click="loadDiagnostics"
         >
           {{ diagnosticsState === 'loading' ? '正在刷新…' : '刷新记录' }}
-        </button>
+        </AppButton>
       </div>
     </header>
 

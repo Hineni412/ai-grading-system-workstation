@@ -1,4 +1,9 @@
 <script setup lang="ts">
+import AppButton from '@/components/design-system/AppButton.vue'
+import FeedbackBanner from '@/components/design-system/FeedbackBanner.vue'
+import StatePanel from '@/components/design-system/StatePanel.vue'
+import StatusBadge from '@/components/design-system/StatusBadge.vue'
+
 import {
   computed,
   nextTick,
@@ -421,12 +426,12 @@ onBeforeUnmount(() => {
           <h2 id="model-task-routing-title">四类工作，各自选择站点和模型</h2>
           <p>一个站点就是一组 API 地址和密钥；不同工作可以使用不同站点。</p>
         </div>
-        <button
+        <AppButton variant="primary"
           type="button"
           class="model-profiles-button model-profiles-button--primary"
           :disabled="isBusy || profilesStore.profiles.length === 0"
           @click="saveTaskBindings"
-        >保存工作模型</button>
+        >保存工作模型</AppButton>
       </header>
       <p v-if="profilesStore.profiles.length === 0" class="model-task-routing__empty">
         请先在下方新增一个 API 站点，再安排工作模型。
@@ -434,7 +439,7 @@ onBeforeUnmount(() => {
       <div class="model-task-routing__grid">
         <label v-for="row in taskRows" :key="row.key" class="model-task-row">
           <span class="model-task-row__title"><strong>{{ row.title }}</strong><small>{{ row.detail }}</small></span>
-          <select
+          <select class="app-input"
             v-model="taskBindingsDraft[row.key].profile_name"
             :aria-label="`${row.title}使用的 API 站点`"
             :disabled="profilesStore.profiles.length === 0 || isBusy"
@@ -442,7 +447,7 @@ onBeforeUnmount(() => {
             <option :value="null" disabled>选择 API 站点</option>
             <option v-for="profile in profilesStore.profiles" :key="profile.name" :value="profile.name">{{ profile.name }}</option>
           </select>
-          <input
+          <input class="app-input"
             v-model="taskBindingsDraft[row.key].model"
             type="text"
             :maxlength="MODEL_PROFILE_LIMITS.model"
@@ -454,41 +459,37 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <p
+    <FeedbackBanner
       v-if="profilesStore.errorMessage || localError"
-      class="model-profiles-feedback model-profiles-feedback--error"
-      role="alert"
-    >
-      {{ localError || profilesStore.errorMessage }}
-    </p>
-    <p
+      class="model-profiles-feedback"
+      tone="error"
+      :title="localError || profilesStore.errorMessage"
+      description=""
+    />
+    <FeedbackBanner
       v-else-if="profilesStore.noticeMessage"
-      class="model-profiles-feedback model-profiles-feedback--success"
-      role="status"
-    >
-      {{ profilesStore.noticeMessage }}
-    </p>
+      class="model-profiles-feedback"
+      tone="success"
+      :title="profilesStore.noticeMessage"
+      description=""
+    />
 
-    <section
+    <StatePanel
       v-if="profilesStore.loadState === 'loading'"
       class="model-profiles-state"
-      role="status"
-    >
-      正在读取本机模型配置…
-    </section>
-    <section
+      kind="loading"
+      title="正在读取本机模型配置…"
+      description=""
+    />
+    <StatePanel
       v-else-if="profilesStore.loadState === 'error'"
       class="model-profiles-state model-profiles-state--error"
-    >
-      <p>配置列表没有加载成功，页面没有改变任何配置。</p>
-      <button
-        type="button"
-        class="model-profiles-button model-profiles-button--secondary"
-        @click="reloadProfiles"
-      >
-        重新加载
-      </button>
-    </section>
+      kind="error"
+      title="配置列表没有加载成功，页面没有改变任何配置。"
+      description=""
+      retry-label="重新加载"
+      @retry="reloadProfiles"
+    />
 
     <details v-else class="model-profiles-advanced-shell" :open="!props.compact">
       <summary>高级设置：API 站点、密钥与请求速度</summary>
@@ -499,14 +500,14 @@ onBeforeUnmount(() => {
             <p>API 站点</p>
             <span>{{ profilesStore.profiles.length }} 个</span>
           </div>
-          <button
+          <AppButton variant="ghost"
             type="button"
             class="model-profiles-button model-profiles-button--quiet"
             :disabled="isBusy"
             @click="beginNewProfile"
           >
             新增站点
-          </button>
+          </AppButton>
         </header>
 
         <p
@@ -529,13 +530,11 @@ onBeforeUnmount(() => {
             >
               <span class="model-profile-item__heading">
                 <strong>{{ profile.name }}</strong>
-                <span
+                <StatusBadge
                   v-if="profile.name === profilesStore.activeProfileName"
-                  class="model-profile-item__active"
-                >
-                  <i aria-hidden="true" />
-                  当前
-                </span>
+                  tone="success"
+                  label="当前"
+                />
               </span>
               <small>{{ profile.ocr_model }} · {{ profile.grading_model }}</small>
               <span class="model-profile-item__key-state">
@@ -558,18 +557,17 @@ onBeforeUnmount(() => {
             <h2>{{ isNew ? '新增 API 站点' : draft.sourceName }}</h2>
             <span>{{ editStatus }}</span>
           </div>
-          <span
+          <StatusBadge
             v-if="isCurrent"
-            class="model-profile-editor__active"
-          >
-            当前正在使用
-          </span>
+            tone="success"
+            label="当前正在使用"
+          />
         </header>
 
         <div class="model-profile-fields">
           <label class="model-profile-field model-profile-field--wide">
             <span>站点名称</span>
-            <input
+            <input class="app-input"
               ref="nameInput"
               v-model="draft.name"
               name="profile-name"
@@ -587,7 +585,7 @@ onBeforeUnmount(() => {
 
           <label class="model-profile-field model-profile-field--wide">
             <span>API 地址</span>
-            <input
+            <input class="app-input"
               v-model="draft.baseUrl"
               name="base-url"
               type="url"
@@ -603,7 +601,7 @@ onBeforeUnmount(() => {
 
           <label class="model-profile-field model-profile-field--wide">
             <span>API 密钥</span>
-            <input
+            <input class="app-input"
               v-model="draft.apiKey"
               name="api-key"
               type="password"
@@ -684,7 +682,7 @@ onBeforeUnmount(() => {
           >
             <label class="model-profile-field">
               <span>最多同时请求数</span>
-              <input
+              <input class="app-input"
                 v-model.number="draft.maxConcurrentRequests"
                 name="max-concurrent-requests"
                 type="number"
@@ -698,7 +696,7 @@ onBeforeUnmount(() => {
             </label>
             <label class="model-profile-field">
               <span>每分钟请求数（RPM）</span>
-              <input
+              <input class="app-input"
                 v-model.number="draft.requestsPerMinute"
                 name="requests-per-minute"
                 type="number"
@@ -714,7 +712,7 @@ onBeforeUnmount(() => {
           <div class="model-profile-execution__custom">
             <label class="model-profile-field">
               <span>允许自动重试次数</span>
-              <input
+              <input class="app-input"
                 v-model.number="draft.maxAutoRetries"
                 name="max-auto-retries"
                 type="number"
@@ -731,7 +729,7 @@ onBeforeUnmount(() => {
             </label>
             <label class="model-profile-field">
               <span>单次请求超时（秒）</span>
-              <input
+              <input class="app-input"
                 v-model.number="draft.requestTimeoutSeconds"
                 name="request-timeout-seconds"
                 type="number"
@@ -771,14 +769,14 @@ onBeforeUnmount(() => {
                 <strong>当前运行状态</strong>
                 <small>本次程序启动以来，四类 AI 请求共用</small>
               </div>
-              <button
+              <AppButton variant="ghost"
                 type="button"
                 class="model-profiles-button model-profiles-button--quiet"
                 :disabled="executionStatusState === 'loading'"
                 @click="loadExecutionStatus()"
               >
                 {{ executionStatusState === 'loading' ? '正在刷新…' : '刷新状态' }}
-              </button>
+              </AppButton>
             </header>
             <p
               v-if="executionStatusState === 'loading' && executionStatus === null"
@@ -835,7 +833,7 @@ onBeforeUnmount(() => {
             <span>保存和切换都只修改本机设置，不会测试连接。</span>
           </div>
           <div class="model-profile-editor__buttons">
-            <button
+            <AppButton variant="danger"
               v-if="!isNew"
               type="button"
               class="model-profiles-button model-profiles-button--danger"
@@ -845,8 +843,8 @@ onBeforeUnmount(() => {
               {{ profilesStore.operationState === 'deleting'
                 ? '正在删除…'
                 : '删除配置' }}
-            </button>
-            <button
+            </AppButton>
+            <AppButton variant="secondary"
               type="button"
               class="model-profiles-button model-profiles-button--secondary"
               :disabled="!canActivate"
@@ -855,8 +853,8 @@ onBeforeUnmount(() => {
               {{ profilesStore.operationState === 'activating'
                 ? '正在切换…'
                 : isCurrent ? '当前配置' : '设为当前配置' }}
-            </button>
-            <button
+            </AppButton>
+            <AppButton variant="primary"
               type="submit"
               class="model-profiles-button model-profiles-button--primary"
               :disabled="isBusy || !isDirty"
@@ -864,7 +862,7 @@ onBeforeUnmount(() => {
               {{ profilesStore.operationState === 'saving'
                 ? '正在保存…'
                 : '保存配置' }}
-            </button>
+            </AppButton>
           </div>
         </footer>
       </form>

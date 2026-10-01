@@ -187,8 +187,8 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
   <section class="chapter-training" aria-label="按章节训练">
     <header class="chapter-training__toolbar">
       <div>
-        <strong>章节训练视图</strong>
-        <span>{{ slots.recommendations ? '先核对共同训练小组，掌握度明细按需查看' : '同一章或小节可查看个人明细，也可查看当前范围的群体加权结果' }}</span>
+        <strong>训练范围</strong>
+
       </div>
       <div class="chapter-training__modes" aria-label="章节训练展示方式">
         <button v-if="slots.recommendations" type="button" :class="{ 'is-active': viewMode === 'recommendations' }" @click="viewMode = 'recommendations'">推荐小组</button>
@@ -199,7 +199,7 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
 
     <div class="chapter-training__body" :class="{ 'is-recommending': viewMode === 'recommendations' }">
       <aside class="chapter-training__scope">
-        <header><strong>章节与小节</strong><span>点章名看整章汇总，点小节只看单节</span></header>
+        <header><strong>章节与小节</strong></header>
         <p v-if="!chapters.length" class="chapter-training__empty">当前学期在此范围内没有章节。</p>
         <template v-for="chapter in chapters" :key="chapter.knowledge_key">
           <button
@@ -368,9 +368,9 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
 .chapter-training__modes{display:flex;padding:var(--space-1);border-radius:var(--radius-control);background:var(--color-bg-subtle)}
 .chapter-training__modes button{padding:.45rem .75rem;border:0;border-radius:calc(var(--radius) - 2px);background:transparent;color:var(--color-text-secondary);cursor:pointer}
 .chapter-training__modes button.is-active{background:var(--color-bg-surface);color:var(--color-accent-active);font-weight:700}
-.chapter-training__body{display:grid;grid-template-columns:220px minmax(560px,1fr) 230px;min-height:560px}
-.chapter-training__body.is-recommending{grid-template-columns:220px minmax(0,1fr)}
-.chapter-training__scope{padding:.8rem;border-right:1px solid var(--color-border-default);background:var(--color-bg-subtle)}
+.chapter-training__body{display:grid;grid-template-columns:210px minmax(0,1fr) 230px;min-height:360px}
+.chapter-training__body.is-recommending{grid-template-columns:210px minmax(0,1fr)}
+.chapter-training__scope{padding:.8rem;border-right:1px solid var(--color-border-default);background:var(--color-bg-subtle);max-height:460px;overflow:auto}
 .chapter-training__scope header{display:grid;gap:.15rem;padding:.35rem .4rem .75rem}
 .chapter-training__scope header span{color:var(--color-text-secondary);font-size:.76rem}
 .chapter-training__empty{padding:.5rem .4rem;color:var(--color-text-secondary);font-size:.82rem}
@@ -428,4 +428,5 @@ const groupRows = computed(() => visiblePoints.value.map((point) => {
 .chapter-training__detail ul{max-height:180px;overflow:auto;padding-left:1.1rem}
 @media(max-width:1180px){.chapter-training__body{grid-template-columns:195px minmax(0,1fr)}.chapter-training__detail{grid-column:1/-1;border-top:1px solid var(--color-border-default);border-left:0}.chapter-training__groups>div>button{grid-template-columns:minmax(110px,150px) minmax(140px,1fr) 48px 76px 72px}}
 @media(max-width:760px){.chapter-training__body,.chapter-training__body.is-recommending{grid-template-columns:minmax(0,1fr)}.chapter-training__toolbar,.chapter-training__toolbar>div:first-child{align-items:flex-start;flex-direction:column}.chapter-training__scope{border-right:0;border-bottom:1px solid var(--color-border-default)}.chapter-training__modes{flex-wrap:wrap}.chapter-training__modes button{white-space:nowrap}}
+@media(max-width:760px){.chapter-training__scope{max-height:240px;overflow:auto}.chapter-training__toolbar{gap:var(--space-2);flex-direction:row;flex-wrap:wrap}.chapter-training__body{min-height:0}}
 </style>

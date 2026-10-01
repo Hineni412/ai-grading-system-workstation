@@ -138,7 +138,7 @@ function onKeydown(event: KeyboardEvent): void {
   <div class="student-match-select">
     <input
       ref="input"
-      class="student-match-select__input"
+      class="student-match-select__input app-input"
       type="text"
       role="combobox"
       autocomplete="off"

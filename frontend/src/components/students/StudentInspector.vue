@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import AppButton from '@/components/design-system/AppButton.vue'
+import StatePanel from '@/components/design-system/StatePanel.vue'
+
 import { computed, reactive, ref, watch } from 'vue'
 
 import { useStudentRosterStore } from '../../stores/students'
@@ -56,30 +59,30 @@ function close(): void {
       <form class="student-inspector__form" @submit.prevent="save">
         <label>
           <span>学号</span>
-          <input v-model.trim="form.student_code" name="student-code" required>
+          <input class="app-input" v-model.trim="form.student_code" name="student-code" required>
         </label>
         <label>
           <span>姓名</span>
-          <input v-model.trim="form.name" name="student-name" required>
+          <input class="app-input" v-model.trim="form.name" name="student-name" required>
         </label>
         <label>
           <span>班级</span>
-          <input v-model.trim="form.class_name" name="student-class">
+          <input class="app-input" v-model.trim="form.class_name" name="student-class">
         </label>
-        <button
+        <AppButton variant="primary"
           type="submit"
           class="student-button student-button--primary"
           data-action="save-student"
           :disabled="!form.student_code || !form.name"
         >
           保存学生信息
-        </button>
+        </AppButton>
       </form>
 
       <section class="student-danger" aria-labelledby="student-danger-title">
         <h3 id="student-danger-title">删除学生</h3>
         <p>删除会同时清理该学生的成绩、明细和考勤关联。系统会先创建备份。</p>
-        <button
+        <AppButton variant="secondary"
           v-if="roster.deletionState === 'idle' || roster.deletionState === 'error'"
           type="button"
           class="student-button student-button--secondary"
@@ -87,7 +90,7 @@ function close(): void {
           @click="roster.loadDeletionImpact()"
         >
           查看删除影响
-        </button>
+        </AppButton>
         <span v-else-if="roster.deletionState === 'loading'" role="status">
           正在核对关联记录…
         </span>
@@ -104,13 +107,13 @@ function close(): void {
           </span>
           <label>
             <span>输入学号 {{ roster.selectedStudent.student_code }} 确认</span>
-            <input
+            <input class="app-input"
               v-model="deleteConfirmation"
               name="delete-confirmation"
               autocomplete="off"
             >
           </label>
-          <button
+          <AppButton variant="danger"
             type="button"
             class="student-button student-button--danger"
             data-action="delete-student"
@@ -118,13 +121,10 @@ function close(): void {
             @click="roster.deleteSelected()"
           >
             创建备份并永久删除
-          </button>
+          </AppButton>
         </div>
       </section>
     </template>
-    <div v-else class="student-inspector__empty">
-      <strong>选择一名学生</strong>
-      <span>可在这里修改学号、姓名和班级，或核对删除影响。</span>
-    </div>
+    <StatePanel v-else kind="empty" title="选择一名学生" description="可在这里修改学号、姓名和班级，或核对删除影响。" />
   </aside>
 </template>

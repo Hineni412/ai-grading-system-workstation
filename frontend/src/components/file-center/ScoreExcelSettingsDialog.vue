@@ -81,7 +81,7 @@ const manualStudentSearch = defineModel<string>('manualStudentSearch', { require
             data-testid="excel-hide-bottom-enabled"
           >
           <span>每班隐藏总分最后</span>
-          <input
+          <input class="app-input"
             v-model.number="hideBottomN"
             type="number"
             min="0"
@@ -109,7 +109,7 @@ const manualStudentSearch = defineModel<string>('manualStudentSearch', { require
         <template v-if="manualHideEnabled">
           <label class="excel-settings-search">
             <span>查找学生</span>
-            <input
+            <input class="app-input"
               v-model="manualStudentSearch"
               type="search"
               placeholder="输入姓名、学号或班级"

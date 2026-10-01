@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import AppButton from '@/components/design-system/AppButton.vue'
+
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { fetchStudents } from '../../api/students'
 import { knowledgeLeafLabel } from '../../api/question-bank'
@@ -94,11 +96,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     </header>
 
     <form class="assistant-filters" @submit.prevent="assistant.search()">
-      <label>练习班级<select :value="assistant.filters.class_id" :disabled="rosterState !== 'ready'" @change="assistant.changeScope({ class_id: ($event.target as HTMLSelectElement).value })"><option value="">请选择班级</option><option v-for="name in classes" :key="name" :value="name">{{ name }}</option></select></label>
-      <label class="assistant-chapter">训练范围<select :value="rangeChoice" :disabled="!curriculum.selectedVolume" @change="changeRange(($event.target as HTMLSelectElement).value)"><option value="">综合训练 · 按已有作答涉及的最晚章节</option><optgroup label="综合训练 · 已学到"><option v-for="chapter in curriculum.selectedVolume?.chapters ?? []" :key="chapter.id" :value="`through:${chapter.id}`">本册开头至{{ chapter.label }}</option></optgroup><optgroup label="专项训练"><option v-for="chapter in curriculum.selectedVolume?.chapters ?? []" :key="chapter.id" :value="`focused:${chapter.id}`">仅{{ chapter.label }}</option></optgroup></select></label>
-      <label>题型<select v-model="assistant.filters.question_type"><option value="">全部题型</option><option>选择题</option><option>多选题</option><option>填空题</option><option>解答题</option></select></label>
+      <label>练习班级<select class="app-input" :value="assistant.filters.class_id" :disabled="rosterState !== 'ready'" @change="assistant.changeScope({ class_id: ($event.target as HTMLSelectElement).value })"><option value="">请选择班级</option><option v-for="name in classes" :key="name" :value="name">{{ name }}</option></select></label>
+      <label class="assistant-chapter">训练范围<select class="app-input" :value="rangeChoice" :disabled="!curriculum.selectedVolume" @change="changeRange(($event.target as HTMLSelectElement).value)"><option value="">综合训练 · 按已有作答涉及的最晚章节</option><optgroup label="综合训练 · 已学到"><option v-for="chapter in curriculum.selectedVolume?.chapters ?? []" :key="chapter.id" :value="`through:${chapter.id}`">本册开头至{{ chapter.label }}</option></optgroup><optgroup label="专项训练"><option v-for="chapter in curriculum.selectedVolume?.chapters ?? []" :key="chapter.id" :value="`focused:${chapter.id}`">仅{{ chapter.label }}</option></optgroup></select></label>
+      <label>题型<select class="app-input" v-model="assistant.filters.question_type"><option value="">全部题型</option><option>选择题</option><option>多选题</option><option>填空题</option><option>解答题</option></select></label>
       <DifficultyRangeFilter v-model:min="assistant.filters.difficulty_min" v-model:max="assistant.filters.difficulty_max" class="assistant-difficulty" :ceiling="8" compact @change="assistant.scheduleSearch()" />
-      <button class="assembly-button is-primary" type="submit" :disabled="!assistant.canSearch || rosterState !== 'ready'">{{ busy ? '正在筛选…' : assistant.result ? '刷新学情与题库' : '查看班级知识与技能' }}</button>
+      <AppButton variant="primary" class="assembly-button is-primary" type="submit" :disabled="!assistant.canSearch || rosterState !== 'ready'">{{ busy ? '正在筛选…' : assistant.result ? '刷新学情与题库' : '查看班级知识与技能' }}</AppButton>
       <div class="assistant-exclusions"><span>训练与考试合并，排除每名学生最近3次已有批改结果的原题；同技能最多1道、解答题最多2道，相似题受限。</span></div>
     </form>
     <p v-if="rosterState === 'error'" class="assistant-notice" role="alert">班级列表暂时无法读取。<button type="button" class="assembly-link" @click="loadClasses">重新读取</button></p>
@@ -124,7 +126,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
       </aside>
 
       <section class="assistant-candidates" aria-label="候选题">
-        <div class="assistant-section-title"><div><h3>{{ assistant.result.candidate_total }} 道候选题 · 已显示 {{ candidates.length }} 道</h3><p>与个人、小组共用匹配规则，显示适合人数和用途；无直接证据的合适题可作新练习，由你选择成卷。</p></div><button type="button" class="assembly-button is-secondary" @click="emit('edit')">试卷篮 · {{ assembly.selectedQuestionCount }} 题 →</button></div>
+        <div class="assistant-section-title"><div><h3>{{ assistant.result.candidate_total }} 道候选题 · 已显示 {{ candidates.length }} 道</h3><p>与个人、小组共用匹配规则，显示适合人数和用途；无直接证据的合适题可作新练习，由你选择成卷。</p></div><AppButton variant="secondary" type="button" class="assembly-button is-secondary" @click="emit('edit')">试卷篮 · {{ assembly.selectedQuestionCount }} 题 →</AppButton></div>
         <p v-if="actionMessage" class="assistant-action" role="status">{{ actionMessage }}</p>
         <div v-if="!candidates.length" class="assistant-empty"><strong>{{ selectedKey ? '当前条件下没有合适的候选题' : '先选择本次要练习的重点' }}</strong><p>{{ selectedKey ? '可调整题型、难度或所选目标，候选题会自动更新。' : '点击左侧薄弱点卡片，候选题会自动显示。' }}</p></div>
         <article v-for="(item, index) in candidates" :key="item.question.id" class="assistant-question" :class="{ 'is-in-basket': inBasket(item.question.id) }">
@@ -132,16 +134,16 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           <div class="assistant-reason"><span>练习依据</span><strong v-if="item.matchLabel">{{ item.matchLabel }}</strong><p v-for="point in item.targets" :key="point.knowledge_key"><b>{{ knowledgeLeafLabel(point.knowledge_point) }}</b> · {{ point.weak_student_count }} 人需关注 / {{ point.evidence_student_count }} 人有证据</p></div>
           <p v-if="item.fitCount !== undefined" class="assistant-help">适合 {{ item.fitCount }} 人 · 针对练习 {{ item.remediationCount ?? 0 }} 人 · 巩固 {{ item.consolidationCount ?? 0 }} 人 · 新练习 {{ item.newCount ?? 0 }} 人<span v-if="item.uncertainCount"> · {{ item.uncertainCount }} 人缺少同技能多次依据</span>。{{ item.difficultyBasis }}</p><QuestionContentRenderer :blocks="item.question.rich_content?.question_blocks" :fallback="item.question.question_text" media-mode="list" paper-media-flow dense typeset-text />
           <div v-if="expanded.has(item.question.id)" class="assistant-answer"><strong>答案与解析</strong><QuestionContentRenderer :blocks="item.question.rich_content?.answer_blocks" :fallback="item.question.answer_text" empty-label="暂未录入答案或解析" compact typeset-text /></div>
-          <footer><button type="button" class="assembly-link" :aria-expanded="expanded.has(item.question.id)" @click="expanded.has(item.question.id) ? expanded.delete(item.question.id) : expanded.add(item.question.id)">{{ expanded.has(item.question.id) ? '收起解析' : '查看解析' }}</button><button type="button" class="assembly-button" :class="{ 'is-primary': !inBasket(item.question.id) }" :disabled="!canAdd" @click="toggleBasket(item.question.id)">{{ inBasket(item.question.id) ? '移出试卷篮' : '加入试卷篮' }}</button></footer>
+          <footer><button type="button" class="assembly-link" :aria-expanded="expanded.has(item.question.id)" @click="expanded.has(item.question.id) ? expanded.delete(item.question.id) : expanded.add(item.question.id)">{{ expanded.has(item.question.id) ? '收起解析' : '查看解析' }}</button><AppButton :variant="!inBasket(item.question.id) ? 'primary' : 'secondary'" type="button" class="assembly-button" :class="{ 'is-primary': !inBasket(item.question.id) }" :disabled="!canAdd" @click="toggleBasket(item.question.id)">{{ inBasket(item.question.id) ? '移出试卷篮' : '加入试卷篮' }}</AppButton></footer>
           <div v-if="similarOpen.has(item.question.id)" class="assistant-similar-list">
             <article v-for="member in similarItems.get(item.question.id) ?? []" :key="member.id" class="assistant-similar-item" :class="{ 'is-in-basket': inBasket(member.id) }">
               <header><span>{{ member.question_type || '未分类' }} · 难度 {{ member.difficulty ?? '待定' }}</span><span class="assistant-question-source">{{ member.paper_title || '题库题目' }}</span><strong v-if="inBasket(member.id)" class="assistant-added">已在试卷篮</strong></header>
               <QuestionContentRenderer :blocks="member.rich_content?.question_blocks" :fallback="member.question_text" media-mode="list" paper-media-flow dense typeset-text />
-              <footer><button type="button" class="assembly-button" :class="{ 'is-primary': !inBasket(member.id) }" :disabled="!canAdd" @click="toggleBasket(member.id)">{{ inBasket(member.id) ? '移出试卷篮' : '加入试卷篮' }}</button></footer>
+              <footer><AppButton :variant="!inBasket(member.id) ? 'primary' : 'secondary'" type="button" class="assembly-button" :class="{ 'is-primary': !inBasket(member.id) }" :disabled="!canAdd" @click="toggleBasket(member.id)">{{ inBasket(member.id) ? '移出试卷篮' : '加入试卷篮' }}</AppButton></footer>
             </article>
           </div>
         </article>
-        <button v-if="assistant.hasMore" type="button" class="assembly-button assistant-load-more" :disabled="busy || assistant.isStale || assistant.loadingMore" @click="assistant.loadMore()">{{ assistant.loadingMore ? '正在读取题目…' : '继续查看候选题' }}</button>
+        <AppButton variant="secondary" v-if="assistant.hasMore" type="button" class="assembly-button assistant-load-more" :disabled="busy || assistant.isStale || assistant.loadingMore" @click="assistant.loadMore()">{{ assistant.loadingMore ? '正在读取题目…' : '继续查看候选题' }}</AppButton>
       </section>
     </div>
     <div v-else class="assistant-intro"><span>01 选班级与范围</span><i>→</i><span>02 确定薄弱点</span><i>→</i><span>03 挑题加入试卷篮</span><p>候选题依据已有学情和题库标签筛选。选题、调整顺序与导出由你完成。</p></div>
