@@ -36,6 +36,7 @@ import {
 const props = withDefaults(defineProps<{
   pendingTaxonomyCount?: number
   pendingTaxonomyState?: 'idle' | 'loading' | 'ready' | 'empty' | 'error'
+  headerTarget?: string
 }>(), {
   pendingTaxonomyCount: 0,
   pendingTaxonomyState: 'ready',
@@ -1118,8 +1119,8 @@ async function confirmPermanentDelete(): Promise<void> {
 
 <template>
   <section ref="libraryElement" class="paper-library" aria-labelledby="paper-library-title">
-    <header class="paper-library__header">
-      <div>
+    <header class="paper-library__header" :class="{ 'is-relocated': headerTarget }">
+      <div v-if="!headerTarget">
         <p class="paper-library__eyebrow">PAPER LIBRARY</p>
         <h1 id="paper-library-title">试卷库</h1>
         <p>上传 Word 或 PDF 试卷后自动分析，只有无法确定的个别题目需要核对。</p>
@@ -1137,6 +1138,7 @@ async function confirmPermanentDelete(): Promise<void> {
           判定点需核对
           <strong>{{ reviewQuestions }}</strong>
         </AppButton>
+        <Teleport :to="headerTarget || 'body'" :disabled="!headerTarget" defer>
         <details ref="maintenanceMenu" class="paper-library__maintenance">
           <summary class="paper-button">维护</summary>
           <div class="paper-library__maintenance-items" @click="closeMaintenance">
@@ -1164,6 +1166,7 @@ async function confirmPermanentDelete(): Promise<void> {
         <AppButton variant="primary" @click="emit('import')">
           上传试卷
         </AppButton>
+        </Teleport>
       </div>
     </header>
 

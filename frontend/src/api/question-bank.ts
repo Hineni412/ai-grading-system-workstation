@@ -1882,6 +1882,7 @@ export interface QuestionSkillEntry {
 }
 
 export interface QuestionTopicEntry extends Pick<QuestionSkillEntry, 'display_name' | 'question_count' | 'type_counts' | 'difficulty' | 'criteria_needs_review_count'> {
+  stable_key: string
   filter_value: string
 }
 
@@ -1919,7 +1920,7 @@ export function decodeQuestionSkillIndex(value: unknown): QuestionSkillIndex {
       && Array.isArray(chapter.sections) && chapter.sections.every((section) => isRecord(section)
         && typeof section.id === 'string' && typeof section.label === 'string' && isNonnegativeInteger(section.question_count)
         && Array.isArray(section.skills) && section.skills.every(skill) && Array.isArray(section.topics)
-        && section.topics.every((topic) => stats(topic) && typeof topic.filter_value === 'string')))) {
+        && section.topics.every((topic) => stats(topic) && typeof topic.stable_key === 'string' && topic.stable_key.startsWith('kp_') && typeof topic.filter_value === 'string')))) {
     throw new Error('技能索引格式不正确')
   }
   return value as unknown as QuestionSkillIndex
