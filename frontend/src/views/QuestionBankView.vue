@@ -16,9 +16,6 @@ const QuestionBankFilters = defineAsyncComponent(
 const QuestionImportJobs = defineAsyncComponent(
   () => import('../components/question-bank/QuestionImportJobs.vue'),
 )
-const QuestionInspector = defineAsyncComponent(
-  () => import('../components/question-bank/QuestionInspector.vue'),
-)
 const QuestionLedger = defineAsyncComponent(
   () => import('../components/question-bank/QuestionLedger.vue'),
 )
@@ -170,7 +167,7 @@ const currentPaper = computed(() => {
       <QuestionLedger paper-mode />
     </template>
 
-    <QuestionInspector v-if="activePaper" />
+
 
     <Teleport to="body">
       <div v-if="showImport" class="qb-modal-layer" role="presentation" @click.self="showImport = false">

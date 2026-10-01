@@ -10,13 +10,17 @@ import {
 } from '../../api/question-bank-criteria'
 import AppButton from '../design-system/AppButton.vue'
 import SolutionEvidenceReview from './SolutionEvidenceReview.vue'
+import type { QuestionSolutionEvidenceResponse } from '../../api/question-bank'
 
 interface EditorPoint extends TrainingCriterionPoint {
   equivalent_text: string
   counterexample_text: string
 }
 
-const props = defineProps<{ questionId: number; skillLabels?: string[] }>()
+const props = defineProps<{ questionId: number; skillLabels?: string[];
+  loader?: (questionId: number, signal?: AbortSignal) => Promise<TrainingCriterionWorkspace>
+  evidenceLoader?: (questionId: number, signal?: AbortSignal) => Promise<QuestionSolutionEvidenceResponse>
+}>()
 
 const workspace = ref<TrainingCriterionWorkspace | null>(null)
 const loadState = ref<'loading' | 'ready' | 'error'>('loading')
@@ -179,7 +183,7 @@ async function load(): Promise<void> {
   loadState.value = 'loading'
   message.value = ''
   try {
-    const result = await questionBankCriteriaApi.getWorkspace(
+    const result = await (props.loader ?? questionBankCriteriaApi.getWorkspace)(
       props.questionId,
       controller.signal,
     )
@@ -211,10 +215,10 @@ function validDraft(): boolean {
   ))
 }
 
-async function saveDraft(): Promise<void> {
+async function saveDraft(): Promise<boolean> {
   if (!workspace.value || !validDraft()) {
     message.value = '每个判定点都需要编号、目标和可观察依据。'
-    return
+    return false
   }
   writeState.value = 'saving'
   message.value = ''
@@ -242,13 +246,13 @@ async function saveDraft(): Promise<void> {
   } catch (error) {
     message.value = userMessage(error)
     writeState.value = 'idle'
-    return
+    return false
   }
   const savedVersion = saved.current_version
   if (!savedVersion) {
     message.value = '已保存为新版本，旧版本没有被覆盖。'
     writeState.value = 'idle'
-    return
+    return true
   }
   try {
     const confirmed = await questionBankCriteriaApi.review(props.questionId, {
@@ -260,10 +264,12 @@ async function saveDraft(): Promise<void> {
     workspace.value = confirmed
     syncEditor(confirmed.current_version)
     message.value = '已保存并确认，该版本可用于以后生成的训练卷。'
+    return true
   } catch (error) {
     message.value = error instanceof ApiError && error.code === 'criterion_quality_failed'
       ? '已保存，但质量检查未通过：请按上方列出的问题修正后再保存一次。'
       : `已保存，但确认没有完成：${userMessage(error)}`
+    return false
   } finally {
     writeState.value = 'idle'
   }
@@ -292,6 +298,8 @@ async function regenerate(): Promise<void> {
 
 watch(() => props.questionId, load, { immediate: true })
 onBeforeUnmount(() => loadController?.abort())
+function cancelDraft() { syncEditor(current.value); message.value = '' }
+defineExpose({ saveDraft, cancelDraft })
 </script>
 
 <template>
@@ -346,6 +354,7 @@ onBeforeUnmount(() => loadController?.abort())
 
       <SolutionEvidenceReview
         :question-id="questionId"
+        :loader="evidenceLoader"
         embedded
       />
 

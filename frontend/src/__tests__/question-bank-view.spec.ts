@@ -6,7 +6,7 @@ import { createMemoryHistory } from 'vue-router'
 import { questionBankApi, type QuestionBankPaper } from '../api/question-bank'
 import PaperLibrary from '../components/question-bank/PaperLibrary.vue'
 import QuestionImportJobs from '../components/question-bank/QuestionImportJobs.vue'
-import QuestionInspector from '../components/question-bank/QuestionInspector.vue'
+import QuestionAnnotationPanel from '../components/question-bank/QuestionAnnotationPanel.vue'
 import { createAppRouter } from '../router'
 import { CURRICULUM_SCOPE_STORAGE_KEY } from '../stores/curriculum-scope'
 import { useJobStore } from '../stores/jobs'
@@ -706,7 +706,7 @@ describe('question bank workspace', () => {
     document.body.append(host)
     const pinia = createPinia()
     const app = createApp({
-      render: () => [h(QuestionInspector), h(QuestionImportJobs)],
+      render: () => [h(QuestionAnnotationPanel), h(QuestionImportJobs)],
     })
     app.use(pinia)
     app.mount(host)
