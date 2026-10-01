@@ -9,6 +9,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
+from backend.llm.errors import classify_transport_error
 from question_bank.models.tag_schema import TagAnalysis
 from question_bank.services.ai_tagging_service import converge_tag_analysis
 from question_bank.solution_evidence.contracts import (
@@ -39,6 +40,7 @@ from question_bank.training_criteria.analysis import (
     plan_analysis_batches,
     gateway_parallel_limit,
     solution_evidence_source_content_hash,
+    stops_batch_scheduling,
     training_criteria_from_solution_evidence,
     training_criterion_source_reference,
 )
@@ -1830,8 +1832,9 @@ class DeferredCombinedQuestionAnalysisModule:
         ] = {}
         next_request_index = 0
         stop_scheduling = False
+        stop_category = "cancelled"
 
-        def record_unscheduled_cancellations() -> None:
+        def record_unscheduled_cancellations(category: str = "cancelled") -> None:
             recorded_refs = {
                 item.source_question_ref for item in result
             } | {
@@ -1851,7 +1854,7 @@ class DeferredCombinedQuestionAnalysisModule:
                             analysis_question_id=question_id,
                             request_id=planned.request_id,
                             batch_hash=planned.batch.batch_hash,
-                            category="cancelled",
+                            category=category,
                         )
                     )
                     recorded_refs.add(source_ref)
@@ -1924,8 +1927,9 @@ class DeferredCombinedQuestionAnalysisModule:
                             )
                         )
                         snapshot()
-                        if category == "cancelled":
+                        if stops_batch_scheduling(category):
                             stop_scheduling = True
+                            stop_category = category
                     else:
                         for question_id in batch.question_ids:
                             source_ref = by_question_id[
@@ -1957,8 +1961,9 @@ class DeferredCombinedQuestionAnalysisModule:
                             )
                         )
                         snapshot()
-                        if category == "cancelled":
+                        if stops_batch_scheduling(category):
                             stop_scheduling = True
+                            stop_category = category
                 else:
                     parsed_count = 0
                     validated_raw_results: list[dict[str, Any]] = []
@@ -2094,7 +2099,7 @@ class DeferredCombinedQuestionAnalysisModule:
                 if not stop_scheduling:
                     fill_available_slots()
             if stop_scheduling:
-                record_unscheduled_cancellations()
+                record_unscheduled_cancellations(stop_category)
         except BaseException as exc:
             if _analysis_error_category(exc) == "cancelled":
                 record_unscheduled_cancellations()
@@ -2845,6 +2850,9 @@ def _normalize_sources(
 
 
 def _analysis_error_category(exc: BaseException) -> str:
+    transport = classify_transport_error(exc)
+    if transport is not None:
+        return transport.value
     text = f"{type(exc).__name__} {exc}".casefold()
     if "cancel" in text:
         return "cancelled"

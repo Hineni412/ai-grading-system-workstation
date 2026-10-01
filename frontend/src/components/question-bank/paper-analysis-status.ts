@@ -22,6 +22,7 @@ const FAILURE_GROUP_ORDER = [
   'save',
   'criteria',
   'parse',
+  'service_config',
   'network',
   'rate_limit',
   'validation',
@@ -37,6 +38,7 @@ const FAILURE_GROUP_LABEL: Record<(typeof FAILURE_GROUP_ORDER)[number], string> 
   save: '标签未能保存',
   criteria: '判定点未写出',
   parse: '分析结果无法识别',
+  service_config: '分析服务设置有误（密钥、权限或参数）',
   network: '暂时连不上分析服务',
   rate_limit: '请求过于频繁',
   validation: '暂时无法完成分析',
@@ -216,6 +218,13 @@ function groupKeyForCategory(category: string): (typeof FAILURE_GROUP_ORDER)[num
   if (category === 'save') return 'save'
   if (category === 'evidence' || category === 'training_criteria') return 'criteria'
   if (category === 'parse') return 'parse'
+  if (category === 'connection' || category === 'server_transient') return 'network'
+  if (
+    category === 'authentication'
+    || category === 'invalid_request'
+    || category === 'parameter_incompatible'
+    || category === 'service_config'
+  ) return 'service_config'
   if (category === 'network') return 'network'
   if (category === 'rate_limit') return 'rate_limit'
   if (category === 'validation') return 'validation'

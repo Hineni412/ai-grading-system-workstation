@@ -2355,6 +2355,34 @@ def _deferred_analysis_draft(
             "model_request",
             "模型请求或返回处理失败，未自动重试。",
         ),
+        "authentication": (
+            "service_config",
+            "分析服务设置有误（密钥、权限或参数），请检查模型配置。",
+        ),
+        "invalid_request": (
+            "service_config",
+            "分析服务设置有误（密钥、权限或参数），请检查模型配置。",
+        ),
+        "parameter_incompatible": (
+            "service_config",
+            "分析服务设置有误（密钥、权限或参数），请检查模型配置。",
+        ),
+        "rate_limit": (
+            "model_transport",
+            "模型请求过于频繁，请稍后再试。",
+        ),
+        "timeout": (
+            "model_transport",
+            "模型服务或网络请求失败，可稍后重试。",
+        ),
+        "connection": (
+            "model_transport",
+            "模型服务或网络请求失败，可稍后重试。",
+        ),
+        "server_transient": (
+            "model_transport",
+            "模型服务或网络请求失败，可稍后重试。",
+        ),
         "cancelled": (
             "cancelled",
             "题目尚未发送或任务已取消，可以安全重试。",

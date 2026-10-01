@@ -18,6 +18,7 @@ from backend.llm import (
     execution_snapshot_from_profile,
     policy_overrides_from_profile,
 )
+from backend.llm.errors import LLMErrorCategory, classify_transport_error
 from llm_client import (
     LLMClient,
     LLMOutputTruncatedError,
@@ -98,7 +99,21 @@ _SENSITIVE_TOKEN_RE = re.compile(
 )
 
 
+_TAGGING_TRANSPORT_CATEGORIES = {
+    LLMErrorCategory.TIMEOUT: "timeout",
+    LLMErrorCategory.CONNECTION: "network",
+    LLMErrorCategory.SERVER_TRANSIENT: "network",
+    LLMErrorCategory.RATE_LIMIT: "rate_limit",
+    LLMErrorCategory.AUTHENTICATION: "service_config",
+    LLMErrorCategory.INVALID_REQUEST: "service_config",
+    LLMErrorCategory.PARAMETER_INCOMPATIBLE: "service_config",
+}
+
+
 def classify_tagging_error(exc: BaseException) -> str:
+    transport = classify_transport_error(exc)
+    if transport is not None:
+        return _TAGGING_TRANSPORT_CATEGORIES.get(transport, "unknown")
     text = f"{type(exc).__name__} {exc}".lower()
     if "rate limit" in text or "429" in text or "too many requests" in text:
         return "rate_limit"

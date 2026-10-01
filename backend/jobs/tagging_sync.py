@@ -57,6 +57,7 @@ _PUBLIC_FAILURE_MESSAGES = {
     "rate_limit": "模型请求过于频繁，请稍后再试。",
     "timeout": "分析超时，可稍后补齐未完成题目。",
     "network": "暂时连不上分析服务，已保存进度。",
+    "service_config": "分析服务设置有误（密钥、权限或参数），请检查模型配置。",
     "parse": "模型返回无法解析，可稍后重试未完成题目。",
     "validation": "这道题暂时无法完成分析。",
     "missing_image": "题目标记有图但没有抽出可用图片。",

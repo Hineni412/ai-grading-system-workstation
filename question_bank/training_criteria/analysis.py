@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from dataclasses import replace as dataclass_replace
 from typing import Any, Literal, Protocol
 
+from backend.llm.errors import classify_transport_error
 from question_bank.models.tag_schema import (
     MAX_ABILITY_TAGS,
     PART_CONTEXT_KINDS,
@@ -1378,7 +1379,7 @@ class CombinedQuestionAnalysisModule:
                         retry=retry,
                         category=category,
                     )
-                    if _stops_batch_scheduling(category):
+                    if stops_batch_scheduling(category):
                         stop_scheduling = True
                         stop_category = category
                     finalize(attempt.question_count)
@@ -1398,7 +1399,7 @@ class CombinedQuestionAnalysisModule:
                         retry=retry,
                         category=category,
                     )
-                    if _stops_batch_scheduling(category):
+                    if stops_batch_scheduling(category):
                         stop_scheduling = True
                         stop_category = category
                     finalize(attempt.question_count)
@@ -1442,7 +1443,7 @@ class CombinedQuestionAnalysisModule:
                         retry=retry,
                         category=category,
                     )
-                    if _stops_batch_scheduling(category):
+                    if stops_batch_scheduling(category):
                         stop_scheduling = True
                         stop_category = category
                     finalize(attempt.question_count)
@@ -1462,7 +1463,7 @@ class CombinedQuestionAnalysisModule:
                         retry=retry,
                         category=category,
                     )
-                    if _stops_batch_scheduling(category):
+                    if stops_batch_scheduling(category):
                         stop_scheduling = True
                         stop_category = category
                     finalize(attempt.question_count)
@@ -3642,16 +3643,9 @@ def _required_text(value: object, field_name: str) -> str:
 
 
 def _error_category(exc: BaseException) -> str:
-    status_code = getattr(exc, "status_code", None)
-    if not isinstance(status_code, int):
-        response = getattr(exc, "response", None)
-        status_code = getattr(response, "status_code", None)
-    if status_code in {401, 403}:
-        return "authentication"
-    if status_code == 429:
-        return "rate_limit"
-    if isinstance(status_code, int) and 400 <= status_code < 500:
-        return "invalid_request"
+    transport = classify_transport_error(exc)
+    if transport is not None:
+        return transport.value
     text = f"{type(exc).__name__} {exc}".casefold()
     if "rate limit" in text or "ratelimit" in text or "requestbursttoofast" in text:
         return "rate_limit"
@@ -3666,7 +3660,7 @@ def _error_category(exc: BaseException) -> str:
     return "model"
 
 
-def _stops_batch_scheduling(category: str) -> bool:
+def stops_batch_scheduling(category: str) -> bool:
     return category in {
         "authentication",
         "cancelled",
