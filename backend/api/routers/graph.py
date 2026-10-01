@@ -320,15 +320,14 @@ def compute_graph_query_payload(
         profile = _build_profile_dicts(
             diagnosis_service, scope=scope, exam_scope=exam_scope
         )
-        return graph_service.query(
-            profile,
-            query,
-            mastery_by_key=getattr(
-                diagnosis_service,
-                "latest_aggregated_mastery",
-                None,
-            ),
-        )
+        mastery_by_key = getattr(diagnosis_service, "latest_aggregated_mastery", None)
+        students = profile.get("students", [])
+        population = getattr(diagnosis_service, "semester_mastery", None)
+        if len(students) == 1 and callable(population):
+            student_id = str(students[0]["student_id"])
+            mastery_by_key = {key: item for (sid, key), item in population(profile).items() if sid == student_id}
+        return graph_service.query(profile, query, mastery_by_key=mastery_by_key)
+
 
     key_fn = getattr(diagnosis_service, "tag_profile_cache_key", None)
     if not callable(key_fn):

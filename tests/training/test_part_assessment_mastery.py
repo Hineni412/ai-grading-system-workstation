@@ -3,8 +3,100 @@ from datetime import UTC, datetime
 
 import pytest
 
-from question_bank.mastery.v2 import compute_mastery_v2
 from question_bank.solution_evidence.knowledge_links import links_from_embedded
+
+
+def _model_observations():
+    from question_bank.mastery.model import week_of
+    date = datetime(2026, 9, 7, tzinfo=UTC)
+    return [dict(student=student, item=(session, q), activity=("exam", session),
+                 source="exam", occurred_at=date, week=week_of(date)+session,
+                 d=3.1, y=y, links={"leaf": 1.})
+            for student, y in (("high", 1.), ("low", 0.), ("middle", .5))
+            for session in range(3) for q in range(6)]
+
+
+def test_hierarchical_model_static_reproducible_and_zero_time_drift():
+    from question_bank.mastery.model import MasteryModel, MasteryParameters, classify
+    parent = {"leaf": "section", "section": "chapter"}
+    observations = _model_observations()
+    model = MasteryModel(parent).fit(observations)
+    repeat = MasteryModel(parent, MasteryParameters(tau_theta=0, tau_kc=0)).fit(list(reversed(observations)))
+    for student in ("high", "low", "middle"):
+        mean, sd = model.mastery(student, "leaf", 20000)
+        assert (mean, sd) == repeat.mastery(student, "leaf", 20000)
+        assert (mean, sd) == model.mastery(student, "leaf", 30000)
+    assert classify(*model.mastery("high", "leaf", 20000)) == "stable"
+    assert classify(*model.mastery("low", "leaf", 20000)) == "weak"
+    assert ("gamma",) not in model.index
+    # Parent results use the same latent model, with no recomputed score ratio.
+    assert model.result("high", "chapter", 20000)["value"] > model.result("low", "chapter", 20000)["value"]
+
+
+def test_hierarchical_time_walk_widens_interval_and_handles_deep_paths():
+    from question_bank.mastery.model import MasteryModel, MasteryParameters
+    observations = _model_observations()
+    parent = {"leaf": "extra", "extra": "section", "section": "chapter"}
+    model = MasteryModel(parent, MasteryParameters(tau_theta=.15, tau_kc=.2, slip=.02)).fit(observations)
+    week = max(o["week"] for o in observations)
+    mean, sd = model.mastery("high", "leaf", week)
+    later_mean, later_sd = model.mastery("high", "leaf", week+10)
+    assert later_mean == mean
+    assert later_sd > sd
+    assert later_sd**2-sd**2 == pytest.approx(10*(.15**2+.2**2))
+    result = model.result("high", "leaf", week)
+    assert 0 <= result["interval_low"] <= result["value"] <= result["interval_high"] <= .98
+
+
+def test_exam_observations_keep_point_weight_and_exclude_ineligible_missing():
+    from types import SimpleNamespace
+    from question_bank.mastery.model import build_exam_observations
+    class Resolver:
+        def resolve(self, key):
+            return [SimpleNamespace(stable_key=key)]
+    row = dict(student_id="synthetic", session_id=1, question_id="Q1", score_awarded=1, full_score=2,
+               assessment={"part_difficulty": 3.1}, point_observations=[
+                   dict(point_id="p1", stable_key="leaf", achieved=.5, weight=.1),
+                   dict(point_id="p1", stable_key="second", achieved=.5, weight=.3)])
+    result = build_exam_observations([row, {**row, "assessment": {"eligible": False}},
+                                      {**row, "session_id": 2}], Resolver(), {"1": "2026-09-07"})
+    assert len(result) == 1
+    assert result[0]["y"] == .5
+    assert result[0]["links"] == pytest.approx({"leaf": .25, "second": .75})
+
+
+def test_current_mastery_filters_after_fitting_and_counts_activity_trends(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from question_bank.mastery.current import CurrentMasteryCalculator, aggregate_current_mastery
+    class Resolver:
+        nodes = [SimpleNamespace(stable_key=k, display_name=k) for k in ("leaf", "spare", "section", "chapter")]
+        relations = [SimpleNamespace(source_key=k, target_key=p, relation_type="parent")
+                     for k, p in (("leaf", "section"), ("spare", "section"), ("section", "chapter"))]
+        def node(self, key):
+            return next((n for n in self.nodes if n.stable_key == key), None)
+    calculator = CurrentMasteryCalculator(tmp_path / "synthetic.db", Resolver(),
+        clock=lambda: datetime(2026, 10, 1, tzinfo=UTC))
+    monkeypatch.setattr(calculator, "training_observations", lambda **kwargs: {})
+    observations = _model_observations()
+    for observation in observations:
+        if observation["student"] == "high":
+            observation["y"] = float(observation["activity"][1] > 0)
+        elif observation["student"] == "low":
+            observation["y"] = float(observation["activity"][1] == 0)
+    profile = {"_mastery_observations": observations}
+    values = calculator.calculate(profile)
+    selected = calculator.calculate(profile, allowed_student_ids=frozenset({"high"}))
+    assert selected == {identity: value for identity, value in values.items() if identity[0] == "high"}
+    assert selected["high", "leaf"].recent_trend == "最近 2 次全对 ↑"
+    assert values["low", "leaf"].recent_trend == "最近一次出错"
+    assert selected["high", "chapter"].observation_count == 18
+    assert selected["high", "chapter"].full_correct_count == 12
+    assert selected["high", "spare"].tier == "insufficient"
+    assert selected["high", "spare"].value is not None
+    group = aggregate_current_mastery(values)
+    assert "spare" not in group
+    assert group["leaf"].value == pytest.approx(sum(values[s, "leaf"].value for s in ("high", "middle", "low"))/3)
+    assert sum(dict(group["leaf"].tier_counts).values()) == 3
 
 
 def _insert_feature_rows(conn, question_id, parts, *, fingerprint=None):

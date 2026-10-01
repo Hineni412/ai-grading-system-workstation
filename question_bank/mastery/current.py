@@ -11,16 +11,27 @@ from pathlib import Path
 from typing import Any
 
 from question_bank.current_knowledge import CurrentKnowledgeResolver
-from question_bank.mastery.v2 import (
-    EvidenceStatus,
-    ExamEvidence,
-    MasteryV2Parameters,
-    TrainingEvidence,
-    compute_mastery_v2,
+from question_bank.mastery.model import (
+    MasteryModel, MasteryParameters, build_exam_observations, lineage, week_of,
 )
 
 _CHINA_TIMEZONE = timezone(timedelta(hours=8))
-CURRENT_MASTERY_PARAMETERS = MasteryV2Parameters(formula_version="mastery-v2-formula-v2")
+CURRENT_MASTERY_PARAMETERS = MasteryParameters()
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingEvidence:
+    evidence_id: str
+    stable_key: str
+    occurred_at: datetime
+    achieved_points: float
+    total_points: float
+    part_difficulty: float | None = None
+    evidence_weight: float = 1.0
+    difficulty_weight: float = 1.0
+    item_key: tuple = ()
+    activity: tuple = ()
+    source_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +50,13 @@ class CurrentMastery:
     evidence_contributions: tuple[tuple[str, float, float], ...] = ()
     direct_evidence_count: int = 0
     precise_training_evidence_count: int = 0
+    interval_low: float | None = None
+    interval_high: float | None = None
+    tier: str = "insufficient"
+    observation_count: int = 0
+    full_correct_count: int = 0
+    recent_trend: str | None = None
+    tier_counts: tuple[tuple[str, int], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -51,6 +69,13 @@ class CurrentMastery:
             "contributing_student_count": self.contributing_student_count,
             "exam_evidence_count": self.exam_evidence_count,
             "training_evidence_count": self.training_evidence_count,
+            "interval_low": self.interval_low,
+            "interval_high": self.interval_high,
+            "tier": self.tier,
+            "observation_count": self.observation_count,
+            "full_correct_count": self.full_correct_count,
+            "recent_trend": self.recent_trend,
+            "tier_counts": dict(self.tier_counts),
         }
 
 
@@ -62,218 +87,143 @@ class CurrentMasteryCalculator:
         db_path: Path,
         resolver: CurrentKnowledgeResolver,
         *,
-        parameters: MasteryV2Parameters | None = CURRENT_MASTERY_PARAMETERS,
+        parameters: MasteryParameters | None = CURRENT_MASTERY_PARAMETERS,
         clock: Callable[[], datetime] | None = None,
         data_root: Path | None = None,
+        semester_mastery: Callable | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root) if data_root is not None else self.db_path.parent.parent
         self.resolver = resolver
         self.parameters = parameters
+        self.semester_mastery = semester_mastery
         self.clock = clock or (lambda: datetime.now(UTC))
 
     def calculate(
-        self,
-        profile: Mapping[str, Any],
-        *,
+        self, profile: Mapping[str, Any], *,
         exclude_training_evidence_ids: frozenset[str] = frozenset(),
         allowed_student_ids: frozenset[str] | None = None,
     ) -> dict[tuple[str, str], CurrentMastery]:
         if self.parameters is None:
             raise ValueError("current mastery parameters are unavailable")
-        exam = self._exam_evidence(profile)
-        exam_scope = profile.get("exam_scope") or {}
-        training = self.training_observations(
-            exclude_evidence_ids=exclude_training_evidence_ids,
-            allowed_student_ids=allowed_student_ids,
-            curriculum_volume_id=(str(exam_scope.get("curriculum_volume_id") or "")
-                                  if exam_scope.get("mode") == "semester" else None),
-        )
-        identities = set(exam) | set(training)
         as_of = self.clock()
         if not isinstance(as_of, datetime) or as_of.tzinfo is None:
             raise ValueError("mastery clock must include a timezone")
-        latest = [
-            item.occurred_at
-            for values in (*exam.values(), *training.values())
-            for item in values
-            if item.occurred_at is not None
-        ]
-        if latest:
-            as_of = max(as_of.astimezone(UTC), *latest)
-        result: dict[tuple[str, str], CurrentMastery] = {}
-        for student_id, stable_key in sorted(identities):
-            node = self.resolver.node(stable_key)
+        if self.semester_mastery is not None:
+            all_values = self.semester_mastery(profile, exclude_training_evidence_ids=exclude_training_evidence_ids,
+                                              as_of=as_of, parameters=self.parameters)
+            selected = allowed_student_ids if allowed_student_ids is not None else frozenset(str(s["student_id"]) for s in profile.get("students", []))
+            return {identity: item for identity, item in all_values.items() if identity[0] in selected}
+        observations = self.model_observations(profile, exclude_training_evidence_ids=exclude_training_evidence_ids)
+        if not observations:
+            return {}
+        # Never fit a page's selected students: the supplied snapshot determines
+        # the population; allowed_student_ids only filters the result.
+        parent = {r.source_key: r.target_key for r in self.resolver.relations if r.relation_type == "parent"}
+        from question_bank.recommendation.target_matching import target_index
+        kinds = target_index(self.resolver)
+        model = MasteryModel(parent, self.parameters, dynamic_nodes={key for key, item in kinds.items() if item.get("kind") in {"topic", "skill"}}).fit(observations)
+        counts = defaultdict(list)
+        direct = defaultdict(list)
+        for observation in observations:
+            nodes = set()
+            for key in observation["links"]:
+                direct[observation["student"], key].append(observation)
+                nodes.update(lineage(key, parent))
+            for key in nodes:
+                counts[observation["student"], key].append(observation)
+        # Include prior estimates for this semester's unobserved nodes, without
+        # expanding each student to every textbook volume in the catalogue.
+        roots = {lineage(key, parent)[-1] for o in observations for key in o["links"]}
+        volume_id = (profile.get("exam_scope") or {}).get("curriculum_volume_id")
+        if volume_id:
+            from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
+            for volume in load_curriculum_catalog()["volumes"]:
+                if volume["id"] == volume_id:
+                    roots = {str(c["knowledge_id"]) for c in volume["chapters"]}
+        active_keys = [node.stable_key for node in self.resolver.nodes if lineage(node.stable_key, parent)[-1] in roots]
+        for student in {o["student"] for o in observations}:
+            for key in active_keys:
+                counts.setdefault((student, key), [])
+        result = {}
+        parameter_version = self.parameters.version
+        for (student, key), records in sorted(counts.items()):
+            if allowed_student_ids is not None and student not in allowed_student_ids:
+                continue
+            node = self.resolver.node(key)
             if node is None:
                 continue
-            calculated = compute_mastery_v2(
-                stable_key=stable_key,
-                as_of=as_of,
-                exam_evidence=tuple(exam.get((student_id, stable_key), ())),
-                training_evidence=tuple(training.get((student_id, stable_key), ())),
-                parameters=self.parameters,
-            )
-            result[(student_id, stable_key)] = CurrentMastery(
-                stable_key=stable_key,
-                display_name=node.display_name,
-                status=calculated.status.value,
-                value=calculated.value,
-                evidence_count=calculated.direct_evidence_count,
-                effective_weight=calculated.effective_sample_weight,
-                parameter_version=calculated.parameter_version,
-                reason=(
-                    None
-                    if calculated.value is not None
-                    else "current_mastery_evidence_missing"
-                ),
-                exam_evidence_count=sum(
-                    1 for item in calculated.contributions
-                    if item.included and item.evidence_id.startswith("exam:")
-                ),
-                training_evidence_count=sum(
-                    1 for item in calculated.contributions
-                    if item.included and not item.evidence_id.startswith("exam:")
-                ),
-                evidence_contributions=tuple(
-                    (
-                        item.evidence_id,
-                        float(item.effective_weight),
-                        float(item.weighted_value),
-                    )
-                    for item in calculated.contributions
-                    if item.included
-                ),
-                direct_evidence_count=calculated.direct_evidence_count,
-                precise_training_evidence_count=len({
-                    item.evidence_id.split(":target:")[0]
-                    for item in calculated.contributions
-                    if item.included and item.evidence_id.startswith("training:")
-                    and ":target:" in item.evidence_id
-                    and item.weighted_value < item.effective_weight
-                }),
-            )
-        return self._with_parent_rollups(result)
-
-    def _with_parent_rollups(
-        self,
-        direct: dict[tuple[str, str], CurrentMastery],
-    ) -> dict[tuple[str, str], CurrentMastery]:
-        """Roll every stable evidence identity into each governed parent once."""
-
-        parent_by_child = {
-            relation.source_key: relation.target_key
-            for relation in self.resolver.relations
-            if relation.relation_type == "parent"
-        }
-        node_by_key = {node.stable_key: node for node in self.resolver.nodes}
-        buckets: dict[
-            tuple[str, str], dict[str, tuple[float, float]]
-        ] = defaultdict(dict)
-        for (student_id, stable_key), item in direct.items():
-            lineage: list[str] = [stable_key]
-            seen = {stable_key}
-            parent = parent_by_child.get(stable_key)
-            while parent and parent not in seen:
-                lineage.append(parent)
-                seen.add(parent)
-                parent = parent_by_child.get(parent)
-            for target_key in lineage:
-                bucket = buckets[(student_id, target_key)]
-                for evidence_id, weight, weighted_value in item.evidence_contributions:
-                    bucket.setdefault(evidence_id, (weight, weighted_value))
-
-        result = dict(direct)
-        for identity, evidence in buckets.items():
-            student_id, stable_key = identity
-            node = node_by_key.get(stable_key)
-            if node is None or not evidence:
-                continue
-            effective_weight = sum(item[0] for item in evidence.values())
-            if effective_weight <= 0:
-                continue
-            numerator = (
-                self.parameters.prior_mean * self.parameters.prior_strength
-                + sum(item[1] for item in evidence.values())
-            )
-            denominator = self.parameters.prior_strength + effective_weight
-            result[(student_id, stable_key)] = CurrentMastery(
-                stable_key=stable_key,
-                display_name=node.display_name,
-                status="available",
-                value=round(min(1.0, max(0.0, numerator / denominator)), 6),
-                evidence_count=len({key.split(":target:")[0] for key in evidence}),
-                effective_weight=round(effective_weight, 6),
-                parameter_version=self.parameters.version,
-                exam_evidence_count=sum(
-                    1 for evidence_id in {key.split(":target:")[0] for key in evidence}
-                    if evidence_id.startswith("exam:")
-                ),
-                training_evidence_count=sum(
-                    1 for evidence_id in {key.split(":target:")[0] for key in evidence}
-                    if not evidence_id.startswith("exam:")
-                ),
-                evidence_contributions=tuple(
-                    (evidence_id, values[0], values[1])
-                    for evidence_id, values in sorted(evidence.items())
-                ),
-                direct_evidence_count=(
-                    direct.get((student_id, stable_key)).evidence_count
-                    if (student_id, stable_key) in direct else 0
-                ),
-                precise_training_evidence_count=(
-                    direct[(student_id, stable_key)].precise_training_evidence_count
-                    if (student_id, stable_key) in direct else 0
-                ),
-            )
+            activities = defaultdict(list)
+            for o in sorted(records, key=lambda o: (o["occurred_at"], str(o["activity"]))):
+                activities[o["activity"]].append(o["y"] == 1)
+            perfect = [all(v) for v in activities.values()]
+            trend = None
+            if perfect and not perfect[-1] and any(perfect[:-1]):
+                trend = "最近一次出错"
+            elif perfect and perfect[-1] and not all(perfect):
+                streak = next((i for i, v in enumerate(reversed(perfect)) if not v), len(perfect))
+                if streak >= 2:
+                    trend = f"最近 {streak} 次全对 ↑"
+            exam_activities = {(o["activity"], o.get("qkey", o["item"])) for o in records if o["source"] == "exam"}
+            training_activities = {(o["activity"], o["item"][:2]) for o in records if o["source"] == "training"}
+            calculated = model.result(student, key, week_of(as_of))
+            if not records:
+                calculated["tier"] = "insufficient"
+            result[student, key] = CurrentMastery(stable_key=key, display_name=node.display_name,
+                status="available", evidence_count=len(records), effective_weight=float(len(records)),
+                parameter_version=parameter_version, exam_evidence_count=len(exam_activities),
+                training_evidence_count=len(training_activities), direct_evidence_count=len(direct.get((student, key), [])),
+                precise_training_evidence_count=sum(o["source"] == "training" for o in direct.get((student, key), [])),
+                observation_count=len(records), full_correct_count=sum(o["y"] == 1 for o in records),
+                recent_trend=trend, **calculated)
         return result
 
-    def _exam_evidence(
-        self,
-        profile: Mapping[str, Any],
-    ) -> dict[tuple[str, str], list[ExamEvidence]]:
-        session_times = _session_times(profile.get("_mastery_session_times"))
-        result: dict[tuple[str, str], list[ExamEvidence]] = defaultdict(list)
-        seen: set[tuple[str, str, str]] = set()
-        students = profile.get("students")
-        if not isinstance(students, list):
-            return result
-        for student in students:
-            if not isinstance(student, Mapping):
-                continue
-            student_id = str(student.get("student_id") or "").strip()
-            weak_points = student.get("weak_points")
-            if not student_id or not isinstance(weak_points, list):
-                continue
-            for weak_point in weak_points:
-                if not isinstance(weak_point, Mapping):
+    def model_observations(self, profile, *, exclude_training_evidence_ids=frozenset()):
+        """Build the same exam/training observations for fitting and validation."""
+        supplied = profile.get("_mastery_observations")
+        observations = list(supplied if supplied is not None else self.exam_observations(profile))
+        exam_scope = profile.get("exam_scope") or {}
+        training = self.training_observations(exclude_evidence_ids=exclude_training_evidence_ids,
+            allowed_student_ids=None,
+            semester_session_ids=frozenset(int(session) for session in (profile.get("_mastery_session_times") or {})),
+            curriculum_volume_id=(str(exam_scope.get("curriculum_volume_id") or "") if exam_scope.get("mode") == "semester" else None))
+        grouped = {}
+        for (student, key), records in training.items():
+            for record in records:
+                item = record.item_key or ("training", record.evidence_id)
+                activity = record.activity or ("training", record.evidence_id)
+                identity = student, item, activity
+                observation = grouped.setdefault(identity, dict(student=student, item=item, activity=activity,
+                    source="training", occurred_at=record.occurred_at, week=week_of(record.occurred_at),
+                    d=record.part_difficulty or 5.5, y=record.achieved_points/record.total_points, links={}))
+                observation["links"][key] = observation["links"].get(key, 0.) + record.evidence_weight
+        for observation in grouped.values():
+            total = sum(observation["links"].values())
+            observation["links"] = {key: value/total for key, value in observation["links"].items()}
+        observations.extend(grouped.values())
+        return observations
+
+    def exam_observations(self, profile):
+        rows = {}
+        for student in profile.get("students", []):
+            for point in student.get("weak_points", []):
+                if point.get("hierarchy_kind") == "parent_summary":
                     continue
-                resolved = self.resolver.resolve(
-                    weak_point.get("knowledge_point")
-                    or weak_point.get("knowledge_key")
-                )
-                references = weak_point.get("source_question_refs")
-                if not isinstance(references, list):
-                    continue
-                for target in resolved:
-                    for reference in references:
-                        if not isinstance(reference, Mapping):
-                            continue
-                        evidence = _exam_evidence(
-                            reference,
-                            student_id=student_id,
-                            stable_key=target.stable_key,
-                            session_times=session_times,
-                        )
-                        identity = (
-                            student_id,
-                            target.stable_key,
-                            evidence.evidence_id,
-                        )
-                        if identity in seen:
-                            continue
-                        seen.add(identity)
-                        result[(student_id, target.stable_key)].append(evidence)
-        return result
+                key = point.get("knowledge_key") or point.get("knowledge_point")
+                for ref in point.get("source_question_refs", []):
+                    if ref.get("source_kind") == "training":
+                        continue
+                    identity = str(student["student_id"]), int(ref.get("session_id") or 0), str(ref.get("question_id") or "")
+                    row = rows.setdefault(identity, {**ref, "student_id": identity[0], "question_tags": {"knowledge_point": []}, "point_observations": []})
+                    if key not in row["question_tags"]["knowledge_point"]:
+                        row["question_tags"]["knowledge_point"].append(key)
+                    assessment = ref.get("assessment") or {}
+                    for observation in assessment.get("point_observations") or []:
+                        if observation not in row["point_observations"]:
+                            row["point_observations"].append(observation)
+                    if assessment.get("granularity") in {"part", "step"} and not assessment.get("point_observations"):
+                        row.setdefault("target_contributions", {})[key] = (ref.get("score_awarded"), ref.get("full_score"))
+        return build_exam_observations(rows.values(), self.resolver, _session_times(profile.get("_mastery_session_times")))
 
     def training_observations(
         self,
@@ -281,6 +231,7 @@ class CurrentMasteryCalculator:
         exclude_evidence_ids: frozenset[str],
         allowed_student_ids: frozenset[str] | None,
         curriculum_volume_id: str | None = None,
+        semester_session_ids: frozenset[int] = frozenset(),
     ) -> dict[tuple[str, str], list[TrainingEvidence]]:
         if not self.db_path.is_file():
             raise sqlite3.OperationalError("question bank database is missing")
@@ -303,6 +254,7 @@ class CurrentMasteryCalculator:
                 # day the teacher finally publishes the marking result.
                 scoped_rows = []
                 volumes_by_draft: dict[str, str] = {}
+                sessions_by_draft: dict[str, set[int]] = {}
                 for row in rows:
                     source = json.loads(row["source_json"])
                     draft_id = str(source.get("draft_id") or "")
@@ -316,9 +268,13 @@ class CurrentMasteryCalculator:
                         volumes_by_draft[draft_id] = str(
                             frozen_scope.get("curriculum_volume_id")
                             or request.get("config", {}).get("curriculum_volume_id") or "")
-                    if curriculum_volume_id and volumes_by_draft[draft_id] == curriculum_volume_id:
+                        sessions_by_draft[draft_id] = {int(session) for session in frozen_scope.get("session_ids", [])}
+                    if curriculum_volume_id and (volumes_by_draft[draft_id] == curriculum_volume_id or
+                            (not volumes_by_draft[draft_id] and sessions_by_draft[draft_id].intersection(semester_session_ids))):
                         scoped_rows.append(row)
                 rows = scoped_rows
+            if not rows:
+                return {}
             from question_bank.solution_evidence.knowledge_links import load_point_links
             from question_bank.solution_evidence.part_assessments import (
                 load_profiles,
@@ -333,6 +289,23 @@ class CurrentMasteryCalculator:
                 None,
                 connection=connection,
             )
+            connection_criteria = {}
+            for row in rows:
+                criterion = connection.execute("SELECT criteria_json,criteria_hash FROM training_criterion_versions WHERE version_id=?", (row["criterion_version_id"],)).fetchone()
+                if criterion and criterion["criteria_hash"] == row["criterion_hash"]:
+                    connection_criteria[str(row["evidence_id"])] = json.loads(criterion["criteria_json"])
+                else:
+                    # Older frozen papers can retain their criterion even when
+                    # the live criterion catalogue no longer has that version.
+                    source = source_by_id.get(str(row["evidence_id"]), {})
+                    item = connection.execute(
+                        "SELECT criterion_version_id,criterion_hash,criterion_snapshot_json FROM personalized_paper_items WHERE paper_instance_id=? AND task_item_code=?",
+                        (source.get("paper_instance_id"), row["task_item_code"]),
+                    ).fetchone()
+                    if item and item["criterion_version_id"] == row["criterion_version_id"] and item["criterion_hash"] == row["criterion_hash"]:
+                        snapshot = json.loads(item["criterion_snapshot_json"])
+                        if snapshot.get("version_id") == row["criterion_version_id"] and snapshot.get("criteria_hash") == row["criterion_hash"]:
+                            connection_criteria[str(row["evidence_id"])] = snapshot.get("criteria", {})
             refined = {}
             for row in rows:
                 profile = profiles.get(int(source_by_id.get(str(row["evidence_id"]), {}).get("bank_question_id") or 0))
@@ -361,136 +334,60 @@ class CurrentMasteryCalculator:
                         seen.add(identity)
                         result[(student_id, target.stable_key)].append(TrainingEvidence(
                             evidence_id=atom_id, stable_key=target.stable_key,
-                            occurred_at=datetime.fromisoformat(str(row["occurred_at"])),
+                            occurred_at=_parse_datetime(row["occurred_at"]),
                             achieved_points=observation["achieved"], total_points=1,
                             part_difficulty=observation["difficulty"], evidence_weight=observation["weight"],
+                            item_key=("training", source_by_id[str(row["evidence_id"])].get("bank_question_id"), str(row["criterion_version_id"]), observation["point_id"]),
+                            activity=("training", str(row["submission_id"]), int(row["submission_revision"])), source_id=str(row["evidence_id"]),
                         ))
                 continue
-            for target in self.resolver.resolve(row["stable_key"]):
-                identity = (student_id, target.stable_key, str(row["evidence_id"]))
-                if identity in seen:
+            frozen = connection_criteria.get(str(row["evidence_id"]), {})
+            states = {str(p["point_id"]): p["state"] for p in json.loads(row["final_points_json"])}
+            points = frozen.get("points", [])
+            for point in points:
+                pid = str(point["point_id"])
+                if states.get(pid) not in {"met", "not_met"}:
                     continue
-                seen.add(identity)
-                result[(student_id, target.stable_key)].append(
-                    TrainingEvidence(
-                        evidence_id=str(row["evidence_id"]),
-                        stable_key=target.stable_key,
-                        occurred_at=datetime.fromisoformat(str(row["occurred_at"])),
-                        achieved_points=int(row["achieved_points"]),
-                        total_points=int(row["total_points"]),
-                        difficulty_weight=float(row["difficulty_weight"]),
-                        evidence_weight=float(row["evidence_weight"]),
-                    )
-                )
+                if states[pid] == "not_met" and any(states.get(dep) != "met" for dep in point.get("depends_on", [])):
+                    continue
+                for target in self.resolver.resolve(row["stable_key"]):
+                    atom = f"{row['evidence_id']}:point:{pid}"
+                    identity = student_id, target.stable_key, atom
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    result[student_id, target.stable_key].append(TrainingEvidence(
+                        evidence_id=atom, stable_key=target.stable_key,
+                        occurred_at=_parse_datetime(row["occurred_at"]),
+                        achieved_points=int(states[pid] == "met"), total_points=1,
+                        item_key=("training", source_by_id[str(row["evidence_id"])].get("bank_question_id"), str(row["criterion_version_id"]), pid),
+                        activity=("training", str(row["submission_id"]), int(row["submission_revision"])), source_id=str(row["evidence_id"])))
         return result
 
 
-def aggregate_current_mastery(
-    values: Mapping[tuple[str, str], CurrentMastery],
-) -> dict[str, CurrentMastery]:
-    grouped: dict[str, list[CurrentMastery]] = defaultdict(list)
-    for (_student_id, stable_key), item in values.items():
-        grouped[stable_key].append(item)
-    result: dict[str, CurrentMastery] = {}
-    for stable_key, items in grouped.items():
-        available = [item for item in items if item.value is not None]
+def aggregate_current_mastery(values):
+    grouped = defaultdict(list)
+    for (_student, key), item in values.items():
+        if item.value is not None and item.observation_count > 0:
+            grouped[key].append(item)
+    result = {}
+    for key, items in grouped.items():
         exemplar = items[0]
-        if not available:
-            result[stable_key] = CurrentMastery(
-                stable_key=stable_key,
-                display_name=exemplar.display_name,
-                status=exemplar.status,
-                value=None,
-                evidence_count=0,
-                effective_weight=0.0,
-                parameter_version=exemplar.parameter_version,
-                contributing_student_count=0,
-                exam_evidence_count=0,
-                training_evidence_count=0,
-                evidence_contributions=(),
-                direct_evidence_count=0,
-            )
-            continue
-        total_weight = sum(max(item.effective_weight, 0.0) for item in available)
-        if total_weight <= 0:
-            total_weight = float(len(available))
-        value = sum(
-            float(item.value) * (
-                max(item.effective_weight, 0.0)
-                if any(candidate.effective_weight > 0 for candidate in available)
-                else 1.0
-            )
-            for item in available
-            if item.value is not None
-        ) / total_weight
-        result[stable_key] = CurrentMastery(
-            stable_key=stable_key,
-            display_name=exemplar.display_name,
-            status="available",
-            value=round(value, 6),
-            evidence_count=sum(item.evidence_count for item in available),
-            effective_weight=round(sum(item.effective_weight for item in available), 6),
-            parameter_version=exemplar.parameter_version,
-            contributing_student_count=len(available),
-            exam_evidence_count=sum(
-                item.exam_evidence_count for item in available
-            ),
-            training_evidence_count=sum(
-                item.training_evidence_count for item in available
-            ),
-            evidence_contributions=(),
-            direct_evidence_count=sum(item.direct_evidence_count for item in available),
-        )
+        tiers = {name: sum(i.tier == name for i in items) for name in ("stable", "unsteady", "weak", "insufficient")}
+        # A group has a distribution of individual tiers, not a confidence
+        # claim inferred from its mean probability.
+        tier = max(("weak", "unsteady", "stable", "insufficient"), key=lambda t: tiers[t])
+        result[key] = CurrentMastery(stable_key=key, display_name=exemplar.display_name, status="available",
+            value=sum(i.value for i in items)/len(items), evidence_count=sum(i.evidence_count for i in items),
+            effective_weight=sum(i.effective_weight for i in items), parameter_version=exemplar.parameter_version,
+            contributing_student_count=len(items), exam_evidence_count=sum(i.exam_evidence_count for i in items),
+            training_evidence_count=sum(i.training_evidence_count for i in items),
+            direct_evidence_count=sum(i.direct_evidence_count for i in items),
+            observation_count=sum(i.observation_count for i in items), full_correct_count=sum(i.full_correct_count for i in items),
+            interval_low=sum(i.interval_low for i in items if i.interval_low is not None)/len(items),
+            interval_high=sum(i.interval_high for i in items if i.interval_high is not None)/len(items),
+            tier=tier, tier_counts=tuple(tiers.items()))
     return result
-
-
-def _exam_evidence(
-    reference: Mapping[str, Any],
-    *,
-    student_id: str,
-    stable_key: str,
-    session_times: Mapping[int, datetime],
-) -> ExamEvidence:
-    session_id = int(reference.get("session_id") or 0)
-    full_score = _optional_number(reference.get("full_score"))
-    score_awarded = _optional_number(reference.get("score_awarded"))
-    occurred_at = session_times.get(session_id)
-    assessment = reference.get("assessment") or {}
-    observations = assessment.get("point_observations")
-    if isinstance(observations, list):
-        weight = sum(float(item["weight"]) for item in observations)
-        score_awarded = sum(float(item["achieved"]) * float(item["weight"]) for item in observations)
-        full_score = weight
-        assessment = {**assessment, "evidence_weight": weight}
-    status = (
-        EvidenceStatus.COMPLETED
-        if occurred_at is not None
-        and full_score is not None
-        and full_score > 0.0
-        and score_awarded is not None
-        and assessment.get("eligible") is not False
-        else EvidenceStatus.MISSING
-    )
-    if status is EvidenceStatus.COMPLETED:
-        score_awarded = min(max(float(score_awarded), 0.0), float(full_score))
-    else:
-        score_awarded = None
-        full_score = None
-    return ExamEvidence(
-        evidence_id=(
-            f"exam:{session_id}:{student_id}:"
-            f"{reference.get('question_id') or ''}:"
-            f"{reference.get('bank_question_id') or 0}"
-            + (f":target:{stable_key}" if assessment.get("granularity") in {"part", "step"} else "")
-        ),
-        stable_key=stable_key,
-        occurred_at=occurred_at,
-        score_awarded=score_awarded,
-        full_score=full_score,
-        status=status,
-        part_difficulty=_optional_number(assessment.get("part_difficulty")),
-        evidence_weight=float(assessment.get("evidence_weight", 1.0)),
-    )
 
 
 def _session_times(value: object) -> dict[int, datetime]:

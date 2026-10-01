@@ -115,6 +115,8 @@ class AssemblyWeakness(_AssemblyModel):
     knowledge_point: str
     mastery: float | None = Field(ge=0, le=1)
     weak_student_count: int = Field(ge=0)
+    weak_tier_student_count: int = Field(default=0, ge=0)
+    tier: Literal["stable", "unsteady", "weak", "insufficient"] = "insufficient"
     evidence_student_count: int = Field(ge=0)
     exam_score_rate: float | None = Field(ge=0, le=1)
     evidence_count: int = Field(ge=0)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
+from question_bank.mastery.model import week_of
 import pickle
 import sqlite3
 import threading
@@ -23,6 +25,7 @@ from question_bank.current_knowledge import (
 )
 from question_bank.mastery.current import (
     CurrentMasteryCalculator,
+    CURRENT_MASTERY_PARAMETERS,
     aggregate_current_mastery,
 )
 
@@ -167,11 +170,98 @@ class DiagnosisProfileService:
         )
         return (
             "\u0000".join(source_identity),
-            "tag-profile-part-v9-graded-activities",
+            "tag-profile-part-v10-mastery-v3",
             str(self.data_root),
+            CURRENT_MASTERY_PARAMETERS.version,
+            str(week_of(datetime.now(UTC))),
             json.dumps(scope, ensure_ascii=False, sort_keys=True, default=str),
             json.dumps(exam_scope, ensure_ascii=False, sort_keys=True, default=str),
         )
+
+    def mastery_exam_scope(self, exam_scope):
+        if exam_scope.get("mode") == "semester":
+            return {"mode": "semester", "curriculum_volume_id": exam_scope.get("curriculum_volume_id")}
+        sessions = [s for s in self.db.sessions.list_grading_sessions() if not s.get("is_deleted")]
+        selected = set(int(v) for v in exam_scope.get("session_ids", []))
+        linked = [s for s in sessions if (not selected or int(s["id"]) in selected) and s.get("curriculum_volume_id")]
+        if linked:
+            latest = max(linked, key=lambda s: (str(s.get("created_at") or ""), int(s["id"])))
+            return {"mode": "semester", "curriculum_volume_id": latest["curriculum_volume_id"]}
+        return dict(exam_scope)
+
+    def semester_observations(self, exam_scope, *, supplied=None):
+        from question_bank.mastery.model import build_exam_observations
+        exam_scope = self.mastery_exam_scope(exam_scope)
+        key = (*self.tag_profile_cache_key(scope={"mode": "all", "use_historical_fallback": False}, exam_scope=exam_scope), "mastery-v3-exam-observations")
+        cached = _claim_or_wait_tag_profile(key)
+        if cached is not None:
+            return pickle.loads(cached[0])
+        error = None
+        try:
+            if supplied is not None:
+                observations = supplied
+            else:
+                resolved = EvidenceScopeResolver(self.db).resolve(scope={"mode": "all", "use_historical_fallback": False}, exam_scope=exam_scope)
+                ids = [int(s["id"]) for s in resolved.sessions]
+                rows = self._projected_tag_evidence(student_ids=[str(s["id"]) for s in resolved.students],
+                    session_ids=ids, projection_by_session=self._tag_projections(ids))
+                resolver = CurrentKnowledgeResolver.from_active_database(self.question_bank_db_path)
+                observations = build_exam_observations(rows, resolver, self.mastery_session_times(exam_scope=exam_scope))
+            entry = (pickle.dumps(observations, pickle.HIGHEST_PROTOCOL), b"")
+            with _TAG_PROFILE_CACHE_LOCK:
+                _TAG_PROFILE_CACHE[key] = entry
+                while len(_TAG_PROFILE_CACHE) > _TAG_PROFILE_CACHE_LIMIT:
+                    _TAG_PROFILE_CACHE.pop(next(iter(_TAG_PROFILE_CACHE)))
+            return observations
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            _release_tag_profile_flight(key, error)
+
+    def semester_mastery(self, profile, *, exclude_training_evidence_ids=frozenset(), as_of=None, parameters=None):
+        from datetime import UTC, datetime
+        from question_bank.mastery.current import CURRENT_MASTERY_PARAMETERS
+        from question_bank.mastery.model import week_of
+        parameters = parameters or CURRENT_MASTERY_PARAMETERS
+        as_of = as_of or datetime.now(UTC)
+        exam_scope = self.mastery_exam_scope(profile.get("exam_scope") or {})
+        key = (*self.tag_profile_cache_key(scope={"mode": "all", "use_historical_fallback": False}, exam_scope=exam_scope),
+            "mastery-v3-population", parameters.version, str(week_of(as_of)), ",".join(sorted(exclude_training_evidence_ids)))
+        cached = _claim_or_wait_tag_profile(key)
+        if cached is not None:
+            if getattr(self, "persist_snapshots", False) and not exclude_training_evidence_ids:
+                self._save_local_profile(key, cached)
+            return pickle.loads(cached[0])
+        error = None
+        try:
+            local_reader = getattr(self, "_read_local_profile", None)
+            local = local_reader(key) if callable(local_reader) else None
+            if local is not None:
+                with _TAG_PROFILE_CACHE_LOCK:
+                    _TAG_PROFILE_CACHE[key] = local
+                return pickle.loads(local[0])
+            supplied = profile.get("_mastery_observations") if profile.get("_mastery_population") and exam_scope == profile.get("exam_scope") else None
+            observations = self.semester_observations(exam_scope, supplied=supplied)
+            resolver = CurrentKnowledgeResolver.from_active_database(self.question_bank_db_path)
+            values = CurrentMasteryCalculator(self.question_bank_db_path, resolver, parameters=parameters,
+                clock=lambda: as_of, data_root=self.data_root).calculate(
+                    {"exam_scope": exam_scope, "_mastery_observations": observations,
+                     "_mastery_session_times": self.mastery_session_times(exam_scope=exam_scope)},
+                    exclude_training_evidence_ids=exclude_training_evidence_ids)
+            entry = (pickle.dumps(values, pickle.HIGHEST_PROTOCOL), pickle.dumps({}, pickle.HIGHEST_PROTOCOL))
+            with _TAG_PROFILE_CACHE_LOCK:
+                _TAG_PROFILE_CACHE[key] = entry
+                while len(_TAG_PROFILE_CACHE) > _TAG_PROFILE_CACHE_LIMIT:
+                    _TAG_PROFILE_CACHE.pop(next(iter(_TAG_PROFILE_CACHE)))
+            if getattr(self, "persist_snapshots", False) and not exclude_training_evidence_ids:
+                self._save_local_profile(key, entry)
+            return values
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            _release_tag_profile_flight(key, error)
 
     def build_tag_profiles(
         self,
@@ -183,7 +273,10 @@ class DiagnosisProfileService:
         cached = _claim_or_wait_tag_profile(cache_key)
         if cached is not None:
             self.latest_aggregated_mastery = pickle.loads(cached[1])
-            return pickle.loads(cached[0])
+            result = pickle.loads(cached[0])
+            if getattr(self, "persist_snapshots", False):
+                self.semester_mastery(result)
+            return result
         error: BaseException | None = None
         try:
             result, aggregated = self._compute_tag_profiles(
@@ -463,14 +556,10 @@ class DiagnosisProfileService:
                     exam_scope=exam_scope
                 ),
             }
-            per_student_mastery = CurrentMasteryCalculator(
-                self.question_bank_db_path,
-                resolver,
-                data_root=self.data_root,
-            ).calculate(
-                mastery_profile,
-                allowed_student_ids=frozenset(student_ids),
-            )
+            from question_bank.mastery.model import build_exam_observations
+            mastery_profile["_mastery_population"] = (set(student_ids) == {str(s["id"]) for s in self.db.students.list_students()})
+            mastery_profile["_mastery_observations"] = build_exam_observations(evidence_rows, resolver, mastery_profile["_mastery_session_times"])
+            per_student_mastery = {identity: item for identity, item in self.semester_mastery(mastery_profile).items() if identity[0] in student_ids}
             self._merge_current_mastery(
                 student_profiles,
                 per_student_mastery,
@@ -641,6 +730,8 @@ class DiagnosisProfileService:
                     }
                     student["weak_points"].append(point)
                     points[stable_key] = point
+                metadata = current.to_dict()
+                point.update({field: metadata[field] for field in ("interval_low", "interval_high", "tier", "observation_count", "full_correct_count", "recent_trend", "parameter_version", "tier_counts")})
                 point.update({
                     "mastery": float(current.value) if current.value is not None else None,
                     "evidence_count": int(current.evidence_count),
@@ -681,12 +772,14 @@ class DiagnosisProfileService:
             if current.value is None:
                 continue
             exemplar = exemplars.get(stable_key, {})
+            metadata = current.to_dict()
             result.append({
                 "knowledge_key": stable_key,
                 "knowledge_point": str(
                     exemplar.get("knowledge_point")
                     or node_by_key[stable_key].display_name
                 ),
+                **{field: metadata[field] for field in ("interval_low", "interval_high", "tier", "observation_count", "full_correct_count", "recent_trend", "parameter_version", "tier_counts")},
                 "mastery": float(current.value),
                 "score_sum": 0.0,
                 "full_score_sum": 0.0,

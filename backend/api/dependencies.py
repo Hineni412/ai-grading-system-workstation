@@ -336,6 +336,7 @@ def get_personalized_recommendation_module(
     return PersonalizedRecommendationModule(
         db_path=paths.qb_db_path,
         data_root=paths.data_root,
+        semester_mastery=get_diagnosis_profile_service().semester_mastery,
     )
 
 
@@ -360,6 +361,7 @@ def get_training_assessment_module() -> TrainingAssessmentModule:
     return TrainingAssessmentModule(
         db_path=paths.qb_db_path,
         data_root=paths.data_root,
+        semester_mastery=get_diagnosis_profile_service().semester_mastery,
         gateway=_LazyTrainingAssessmentGateway(),
     )
 

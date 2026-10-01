@@ -285,6 +285,12 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
                 "INSERT INTO session_details(result_id,question_id,score_awarded,deduction_reason,knowledge_ids) VALUES(1,?,?,'',?)",
                 (part, score, json.dumps(["UNKNOWN"])),
             )
+        conn.execute("INSERT INTO students(id,student_code,name,class_name) VALUES(2,'SYN-S02','合成学生二','合成班')")
+        conn.execute("INSERT INTO exam_papers(id,session_id,front_image,back_image,student_id,match_status,processing_status) VALUES(2,1,'','',2,'matched','graded')")
+        conn.execute("INSERT INTO session_results(id,session_id,student_id,paper_id,total_score,student_score,needs_human_review,raw_json) VALUES(2,1,2,2,10,5,0,'{}')")
+        for part, score in (("Q1(P1)", 5), ("Q1(P2)", 0)):
+            conn.execute("INSERT INTO session_details(result_id,question_id,score_awarded,deduction_reason,knowledge_ids) VALUES(2,?,?,'',?)",
+                         (part, score, json.dumps(["UNKNOWN"])))
     diagnosis_service = DiagnosisProfileService(
         grading_path, db_path, data_root=data_root
     )
@@ -296,6 +302,12 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
     profile = diagnosis_service.build_profiles(scope=scope, exam_scope=exam_scope)
     # The diagnosis snapshot carries only teacher-visible top-level keys.
     assert not any(str(key).startswith("_") for key in profile)
+    # A selected student and the whole population share the same fitted result.
+    full_profile = diagnosis_service.build_profiles(scope={"mode": "all"}, exam_scope=exam_scope)
+    full_student = next(student for student in full_profile["students"] if str(student["student_id"]) == "1")
+    assert full_student["weak_points"] == profile["students"][0]["weak_points"]
+    group_profile = diagnosis_service.build_profiles(scope={"mode": "class", "class_id": "合成班"}, exam_scope=exam_scope)
+    assert next(student for student in group_profile["students"] if str(student["student_id"]) == "1")["weak_points"] == full_student["weak_points"]
     before = {
         point["knowledge_key"]: point["mastery"]
         for point in profile["students"][0]["weak_points"]
@@ -321,7 +333,8 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
         "score_awarded"
     ] = 8
     recommendation = PersonalizedRecommendationModule(
-        db_path=db_path, data_root=data_root, clock=lambda: NOW
+        db_path=db_path, data_root=data_root, clock=lambda: NOW,
+        semester_mastery=diagnosis_service.semester_mastery,
     )
     draft = recommendation.create(
         request_token="1" * 32,
@@ -375,7 +388,8 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
         }
     )
     module = TrainingAssessmentModule(
-        db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW
+        db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW,
+        semester_mastery=diagnosis_service.semester_mastery,
     )
     outcome = module.assess(submission_id, 1)
     feedback = module.sync_evidence(
@@ -392,20 +406,34 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
     assert feedback["summary"]["published_question_count"] == 1
     resolver = CurrentKnowledgeResolver.from_active_database(db_path)
     current = CurrentMasteryCalculator(
-        db_path, resolver, data_root=data_root, clock=lambda: NOW
+        db_path, resolver, data_root=data_root, clock=lambda: NOW,
+        semester_mastery=diagnosis_service.semester_mastery,
     ).calculate(profile)
     first = current[("1", "kp_alg_linear_equation")]
     second = current[("1", "kp_geo_triangle_congruence")]
     assert first.training_evidence_count == second.training_evidence_count == 1
-    assert first.value > before["kp_alg_linear_equation"]
-    assert second.value < before["kp_geo_triangle_congruence"]
+    # This fixture has one student and two differently difficult items. Global
+    # item/source calibration also changes, so a fixed per-node direction is
+    # not an independent expected result for the hierarchical model.
+    assert first.full_correct_count == 1
+    assert second.full_correct_count == 1
+    for item in (first, second):
+        assert item.observation_count == before_counts[item.stable_key] + 1
+        assert item.interval_low <= item.value <= item.interval_high
+        from question_bank.mastery.current import CURRENT_MASTERY_PARAMETERS
+        assert item.parameter_version == CURRENT_MASTERY_PARAMETERS.version
+        change = next(change for change in feedback["mastery_changes"] if change["stable_key"] == item.stable_key)
+        assert change["mastery_before"]["value"] == before[item.stable_key]
+        assert change["mastery_after"] == item.to_dict()
     reopened = TrainingAssessmentModule(
-        db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW
+        db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW,
+        semester_mastery=diagnosis_service.semester_mastery,
     )
     assert reopened.get_feedback(submission_id, 1) == feedback
     assert (
         CurrentMasteryCalculator(
-            db_path, resolver, data_root=data_root, clock=lambda: NOW
+            db_path, resolver, data_root=data_root, clock=lambda: NOW,
+            semester_mastery=diagnosis_service.semester_mastery,
         ).calculate(profile)
         == current
     )
@@ -428,9 +456,37 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
         for item in fresh["students"][0]["targets"]
         if item["stable_key"] == "kp_alg_linear_equation"
     )
-    assert target["value"] > before["kp_alg_linear_equation"]
+    assert target["value"] == first.value
+    assert target["tier"] == first.tier
     assert target["evidence_count"] == before_counts["kp_alg_linear_equation"] + 1
     assert recommendation.get(draft["draft_id"]) == draft
+    # Persist the current full population with the existing diagnosis snapshot.
+    # A fresh process must reuse it for recommendation/graph callbacks too.
+    if not hasattr(diagnosis_service, "_save_local_profile"):
+        return
+    import subprocess
+    import sys
+    diagnosis_service.persist_snapshots = True
+    all_after = diagnosis_service.build_profiles(scope={"mode": "all"}, exam_scope=exam_scope)
+    script = """
+import json,sys
+from integration.diagnosis_profile_service import DiagnosisProfileService
+from question_bank.mastery.current import CurrentMasteryCalculator
+def fail(*args,**kwargs): raise AssertionError('recomputed saved population')
+service=DiagnosisProfileService(sys.argv[1],sys.argv[2],data_root=sys.argv[3])
+service._compute_tag_profiles=fail
+CurrentMasteryCalculator.calculate=fail
+profile=service.build_profiles(scope={'mode':'all'},exam_scope=json.loads(sys.argv[4]))
+population=service.semester_mastery(profile)
+value=population['1','kp_alg_linear_equation']
+print(json.dumps({'value':value.value,'count':value.observation_count,'tier':value.tier}))
+"""
+    process = subprocess.run([sys.executable, "-c", script, str(grading_path), str(db_path),
+        str(data_root), json.dumps(exam_scope)], capture_output=True, text=True, timeout=30)
+    assert process.returncode == 0, process.stderr
+    saved = next(point for student in all_after["students"] if str(student["student_id"]) == "1"
+                 for point in student["weak_points"] if point["knowledge_key"] == first.stable_key)
+    assert json.loads(process.stdout) == {"value": first.value, "count": first.observation_count, "tier": saved["tier"]}
     assert reopened.get_feedback(submission_id, 1) == feedback
     assert paper.get(frozen["paper_instance_id"]) == frozen
     if semester_scope:

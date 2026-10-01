@@ -440,6 +440,14 @@ class TrainingEvidenceReference(_TrainingModel):
 
 
 class TrainingWeakPoint(_TrainingModel):
+    interval_low: float | None = None
+    interval_high: float | None = None
+    tier: Literal["stable", "unsteady", "weak", "insufficient"] = "insufficient"
+    observation_count: int = Field(default=0, ge=0)
+    full_correct_count: int = Field(default=0, ge=0)
+    recent_trend: str | None = None
+    parameter_version: str | None = None
+    tier_counts: dict[str, int] = Field(default_factory=dict)
     knowledge_key: str
     knowledge_point: str
     mastery: float | None
@@ -527,12 +535,20 @@ class TrainingDiagnosisResponse(_TrainingModel):
 
 class TrainingOverviewDistribution(_TrainingModel):
     weak: int = Field(ge=0)
-    review: int = Field(ge=0)
+    unsteady: int = Field(ge=0)
     stable: int = Field(ge=0)
-    missing: int = Field(ge=0)
+    insufficient: int = Field(ge=0)
 
 
 class TrainingOverviewNodeStudent(_TrainingModel):
+    interval_low: float | None = None
+    interval_high: float | None = None
+    tier: Literal["stable", "unsteady", "weak", "insufficient"] = "insufficient"
+    observation_count: int = Field(default=0, ge=0)
+    full_correct_count: int = Field(default=0, ge=0)
+    recent_trend: str | None = None
+    parameter_version: str | None = None
+    tier_counts: dict[str, int] = Field(default_factory=dict)
     student_id: str
     mastery: float
 
@@ -544,6 +560,7 @@ class TrainingOverviewNode(_TrainingModel):
     chapter_key: str
     section_key: str
     group_mastery: float | None = None
+    tier: str = "insufficient"
     evidence_student_count: int = Field(ge=0)
     distribution: TrainingOverviewDistribution
     students: list[TrainingOverviewNodeStudent]
@@ -551,8 +568,9 @@ class TrainingOverviewNode(_TrainingModel):
 
 class TrainingOverviewTierCounts(_TrainingModel):
     weak: int = Field(ge=0)
-    review: int = Field(ge=0)
+    unsteady: int = Field(ge=0)
     stable: int = Field(ge=0)
+    insufficient: int = Field(ge=0)
     evidence: int = Field(ge=0)
 
 
