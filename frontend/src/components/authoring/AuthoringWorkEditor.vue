@@ -178,28 +178,28 @@ const detailCardLabel = computed(() => {
     <div v-if="detail.kind === 'decompose'" class="authoring__editor">
       <label class="authoring__field">
         <span class="authoring__label">命题意图</span>
-        <textarea v-model="draft.intent" rows="2" placeholder="这道题想考什么、为什么是好题" />
+        <textarea class="app-input" v-model="draft.intent" rows="2" placeholder="这道题想考什么、为什么是好题" />
       </label>
       <label class="authoring__field">
         <span class="authoring__label">考点（每行一条）</span>
-        <textarea v-model="draft.knowledgeText" rows="2" placeholder="例如：勾股定理" />
+        <textarea class="app-input" v-model="draft.knowledgeText" rows="2" placeholder="例如：勾股定理" />
       </label>
       <label class="authoring__field">
         <span class="authoring__label">关键步骤（每行一条）</span>
-        <textarea v-model="draft.keyStepsText" rows="3" placeholder="解题必须经过的步骤" />
+        <textarea class="app-input" v-model="draft.keyStepsText" rows="3" placeholder="解题必须经过的步骤" />
       </label>
       <label class="authoring__field">
         <span class="authoring__label">预期错法（每行一条）</span>
-        <textarea v-model="draft.expectedErrorsText" rows="2" placeholder="学生容易在哪一步出错" />
+        <textarea class="app-input" v-model="draft.expectedErrorsText" rows="2" placeholder="学生容易在哪一步出错" />
       </label>
       <div class="authoring__grid">
         <label class="authoring__inline-field">
           预估难度（1–10，可留空）
-          <input v-model="draft.predictedDifficulty" type="number" min="1" max="10">
+          <input class="app-input" v-model="draft.predictedDifficulty" type="number" min="1" max="10">
         </label>
         <label class="authoring__inline-field">
           预估 SOLO 层级
-          <select v-model="draft.predictedSolo">
+          <select class="app-input" v-model="draft.predictedSolo">
             <option value="">不填</option>
             <option v-for="level in AUTHORING_SOLO_LEVELS" :key="level" :value="level">
               {{ AUTHORING_SOLO_LABELS[level] }}
@@ -213,7 +213,7 @@ const detailCardLabel = computed(() => {
     <div v-else class="authoring__editor">
       <label class="authoring__field">
         <span class="authoring__label">题干（必填）</span>
-        <textarea v-model="draft.questionText" rows="4" placeholder="输入或粘贴改编后的题干" />
+        <textarea class="app-input" v-model="draft.questionText" rows="4" placeholder="输入或粘贴改编后的题干" />
         <span class="authoring__help">公式按输入的样子显示，可直接写 x^2、√3 这类写法。</span>
       </label>
       <div v-if="draft.questionText.trim()" class="authoring__preview">
@@ -228,12 +228,12 @@ const detailCardLabel = computed(() => {
       </div>
       <label class="authoring__field">
         <span class="authoring__label">答案与解析</span>
-        <textarea v-model="draft.answerText" rows="3" />
+        <textarea class="app-input" v-model="draft.answerText" rows="3" />
       </label>
       <div class="authoring__grid">
         <label class="authoring__inline-field">
           题型
-          <select v-model="draft.questionType">
+          <select class="app-input" v-model="draft.questionType">
             <option v-for="type in AUTHORING_QUESTION_TYPES" :key="type" :value="type">
               {{ type }}
             </option>
@@ -241,28 +241,28 @@ const detailCardLabel = computed(() => {
         </label>
         <label class="authoring__inline-field">
           预估难度（1–10，可留空）
-          <input v-model="draft.predictedDifficulty" type="number" min="1" max="10">
+          <input class="app-input" v-model="draft.predictedDifficulty" type="number" min="1" max="10">
         </label>
       </div>
       <label class="authoring__field">
         <span class="authoring__label">命题意图</span>
-        <textarea v-model="draft.intent" rows="2" placeholder="这次改编想达到什么效果" />
+        <textarea class="app-input" v-model="draft.intent" rows="2" placeholder="这次改编想达到什么效果" />
       </label>
       <label class="authoring__field">
         <span class="authoring__label">目标考点（每行一条）</span>
-        <textarea v-model="draft.targetKnowledgeText" rows="2" />
+        <textarea class="app-input" v-model="draft.targetKnowledgeText" rows="2" />
       </label>
       <label class="authoring__field">
         <span class="authoring__label">预期错法（每行一条）</span>
-        <textarea v-model="draft.expectedErrorsText" rows="2" />
+        <textarea class="app-input" v-model="draft.expectedErrorsText" rows="2" />
       </label>
       <label class="authoring__field">
         <span class="authoring__label">分类讨论情况（每行一条）</span>
-        <textarea v-model="draft.caseListText" rows="2" />
+        <textarea class="app-input" v-model="draft.caseListText" rows="2" />
       </label>
       <label class="authoring__field">
         <span class="authoring__label">备注</span>
-        <textarea v-model="draft.notes" rows="2" />
+        <textarea class="app-input" v-model="draft.notes" rows="2" />
       </label>
     </div>
 
@@ -275,16 +275,16 @@ const detailCardLabel = computed(() => {
         </thead>
         <tbody>
           <tr v-for="(part, index) in draft.parts" :key="index">
-            <td><input v-model="part.part_label" type="text" aria-label="小问标号"></td>
+            <td><input class="app-input" v-model="part.part_label" type="text" aria-label="小问标号"></td>
             <td>
-              <input
+              <input class="app-input"
                 v-model="part.predicted_difficulty"
                 type="number" min="1" max="10"
                 :aria-label="`小问 ${part.part_label || index + 1} 难度`"
               >
             </td>
             <td>
-              <select
+              <select class="app-input"
                 v-model="part.predicted_solo"
                 :aria-label="`小问 ${part.part_label || index + 1} SOLO 层级`"
               >
@@ -344,7 +344,7 @@ const detailCardLabel = computed(() => {
       <div class="authoring__compare-controls">
         <label class="authoring__inline-field">
           版本一
-          <select v-model.number="compareA" aria-label="对比版本一" @change="emit('compare')">
+          <select class="app-input" v-model.number="compareA" aria-label="对比版本一" @change="emit('compare')">
             <option :value="null">选择版本</option>
             <option v-for="v in detail.versions" :key="v.version_no" :value="v.version_no">
               第 {{ v.version_no }} 版（{{ v.created_at }}）
@@ -353,7 +353,7 @@ const detailCardLabel = computed(() => {
         </label>
         <label class="authoring__inline-field">
           版本二
-          <select v-model.number="compareB" aria-label="对比版本二" @change="emit('compare')">
+          <select class="app-input" v-model.number="compareB" aria-label="对比版本二" @change="emit('compare')">
             <option :value="null">选择版本</option>
             <option v-for="v in detail.versions" :key="v.version_no" :value="v.version_no">
               第 {{ v.version_no }} 版（{{ v.created_at }}）

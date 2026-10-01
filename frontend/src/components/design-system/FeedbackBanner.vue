@@ -6,6 +6,7 @@ export type FeedbackTone = 'info' | 'success' | 'warning' | 'error'
 import { computed } from 'vue'
 
 import { cn } from '@/lib/utils'
+import AppButton from './AppButton.vue'
 
 const props = defineProps<{
   tone: FeedbackTone
@@ -37,13 +38,11 @@ const toneMarker: Record<FeedbackTone, string> = {
 
 const bannerClass = computed(() =>
   cn(
-    'feedback-banner fx-enter grid min-w-0 grid-cols-[var(--space-1)_minmax(0,1fr)_auto] items-start gap-3 rounded-xl border border-(--color-border-subtle) p-4 text-foreground max-sm:grid-cols-[var(--space-1)_minmax(0,1fr)]',
+    'feedback-banner fx-enter grid min-w-0 grid-cols-[var(--space-1)_minmax(0,1fr)_auto] items-start gap-3 rounded-(--radius-panel) border border-border p-4 text-foreground max-sm:grid-cols-[var(--space-1)_minmax(0,1fr)]',
     toneSurface[props.tone],
   ),
 )
 
-const actionClass =
-  'cursor-pointer rounded-md border-0 bg-transparent px-2 py-1 font-medium text-primary hover:bg-(--color-accent-subtle)'
 </script>
 
 <template>
@@ -60,13 +59,13 @@ const actionClass =
     />
     <div class="feedback-banner__copy grid min-w-0 gap-1">
       <strong class="font-semibold">{{ title }}</strong>
-      <p class="m-0 text-(--color-text-secondary)">{{ description }}</p>
+      <p v-if="description" class="m-0 text-(--color-text-secondary)">{{ description }}</p>
     </div>
     <div v-if="actionLabel || dismissible" class="feedback-banner__actions flex flex-wrap gap-2 max-sm:col-start-2">
-      <button v-if="actionLabel" type="button" :class="actionClass" @click="$emit('action')">
+      <AppButton v-if="actionLabel" type="button" variant="ghost" size="sm" @click="$emit('action')">
         {{ actionLabel }}
-      </button>
-      <button v-if="dismissible" type="button" :class="actionClass" @click="$emit('dismiss')">关闭提示</button>
+      </AppButton>
+      <AppButton v-if="dismissible" type="button" variant="ghost" size="sm" @click="$emit('dismiss')">关闭提示</AppButton>
     </div>
   </aside>
 </template>

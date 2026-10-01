@@ -112,19 +112,19 @@ function changeSort(sort: QuestionBankSort): void {
   <form class="qb-filters" aria-label="试题筛选" @submit.prevent="apply">
     <label class="qb-field qb-field--search">
       <span>搜索</span>
-      <input v-model="draft.keyword" type="search" placeholder="输入题干关键词">
+      <input class="app-input" v-model="draft.keyword" type="search" placeholder="输入题干关键词">
     </label>
     <label class="qb-field">
       <span>题型</span>
-      <input v-model="draft.questionType" placeholder="如：解答题">
+      <input class="app-input" v-model="draft.questionType" placeholder="如：解答题">
     </label>
     <label class="qb-field">
       <span>知识点</span>
-      <input v-model="draft.knowledgePoint" placeholder="如：二次函数">
+      <input class="app-input" v-model="draft.knowledgePoint" placeholder="如：二次函数">
     </label>
     <label class="qb-field">
       <span>标签完整度</span>
-      <select v-model="draft.tagStatus">
+      <select class="app-input" v-model="draft.tagStatus">
         <option value="all">全部</option>
         <option value="tagged">核心标签完整</option>
         <option value="untagged">待完善</option>
@@ -145,21 +145,21 @@ function changeSort(sort: QuestionBankSort): void {
     <details class="qb-more-filters">
       <summary>更多筛选</summary>
       <div class="qb-more-filters__grid">
-        <label class="qb-field"><span>题号</span><input v-model="draft.questionNumber" placeholder="如：12"></label>
-        <label class="qb-field"><span>特殊题型/考法</span><input v-model="draft.specialType" placeholder="如：动态几何题"></label>
+        <label class="qb-field"><span>题号</span><input class="app-input" v-model="draft.questionNumber" placeholder="如：12"></label>
+        <label class="qb-field"><span>特殊题型/考法</span><input class="app-input" v-model="draft.specialType" placeholder="如：动态几何题"></label>
         <label v-if="errorTypeOptions" class="qb-field">
           <span>错因</span>
-          <select v-model="draft.errorType">
+          <select class="app-input" v-model="draft.errorType">
             <option value="">全部</option>
             <option v-for="item in errorTypeOptions" :key="item.value" :value="item.value">
               {{ item.value }}（{{ item.count }}）
             </option>
           </select>
         </label>
-        <label class="qb-field"><span>章节/范围</span><input v-model="draft.examScope" placeholder="如：函数"></label>
-        <label class="qb-field"><span>年份</span><input v-model="draft.year" placeholder="2026"></label>
-        <label class="qb-field"><span>试卷类型</span><input v-model="draft.examType" placeholder="如：期末"></label>
-        <label class="qb-field"><span>年级</span><input v-model="draft.grade" placeholder="如：九年级"></label>
+        <label class="qb-field"><span>章节/范围</span><input class="app-input" v-model="draft.examScope" placeholder="如：函数"></label>
+        <label class="qb-field"><span>年份</span><input class="app-input" v-model="draft.year" placeholder="2026"></label>
+        <label class="qb-field"><span>试卷类型</span><input class="app-input" v-model="draft.examType" placeholder="如：期末"></label>
+        <label class="qb-field"><span>年级</span><input class="app-input" v-model="draft.grade" placeholder="如：九年级"></label>
       </div>
     </details>
 

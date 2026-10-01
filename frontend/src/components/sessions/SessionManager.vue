@@ -122,14 +122,14 @@ onMounted(() => {
     <div class="session-manager__toolbar">
       <label class="session-manager__search">
         <Search :size="14" :stroke-width="1.8" aria-hidden="true" />
-        <input
+        <input class="app-input"
           v-model="query"
           type="search"
           placeholder="搜索考试"
           aria-label="搜索考试"
         />
       </label>
-      <select v-model="volumeFilter" aria-label="按学期筛选">
+      <select class="app-input" v-model="volumeFilter" aria-label="按学期筛选">
         <option value="">全部学期</option>
         <option v-for="volume in curriculumScope.volumes" :key="volume.id" :value="volume.id">
           {{ volume.label }}
@@ -205,7 +205,7 @@ onMounted(() => {
               v-if="renamingId === session.id"
               :ref="setRenameInput"
               v-model="renameValue"
-              class="session-manager__rename-input"
+              class="session-manager__rename-input app-input"
               type="text"
               aria-label="重命名考试"
               @keydown.enter.prevent="saveRename(session)"

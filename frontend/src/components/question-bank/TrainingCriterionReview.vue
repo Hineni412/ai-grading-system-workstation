@@ -362,7 +362,7 @@ onBeforeUnmount(() => loadController?.abort())
             <div class="criterion-point__topline">
               <label>
                 <span>判定点编号</span>
-                <input v-model="point.point_id" maxlength="64" :aria-label="`第 ${index + 1} 个判定点编号`">
+                <input class="app-input" v-model="point.point_id" maxlength="64" :aria-label="`第 ${index + 1} 个判定点编号`">
               </label>
               <button
                 type="button"
@@ -375,7 +375,7 @@ onBeforeUnmount(() => loadController?.abort())
             </div>
             <label>
               <span>要达成什么</span>
-              <input
+              <input class="app-input"
                 v-model="point.target"
                 maxlength="500"
                 :aria-label="`第 ${index + 1} 个判定点目标`"
@@ -384,7 +384,7 @@ onBeforeUnmount(() => loadController?.abort())
             </label>
             <label>
               <span>从答卷上看到什么才算达成</span>
-              <textarea
+              <textarea class="app-input"
                 v-model="point.observable_evidence"
                 rows="2"
                 maxlength="1000"
@@ -397,11 +397,11 @@ onBeforeUnmount(() => loadController?.abort())
               <div>
                 <label>
                   <span>可接受的等价写法（每行一条）</span>
-                  <textarea v-model="point.equivalent_text" rows="2" />
+                  <textarea class="app-input" v-model="point.equivalent_text" rows="2" />
                 </label>
                 <label>
                   <span>不能算达成的情况（每行一条）</span>
-                  <textarea v-model="point.counterexample_text" rows="2" />
+                  <textarea class="app-input" v-model="point.counterexample_text" rows="2" />
                 </label>
               </div>
             </details>
@@ -422,11 +422,11 @@ onBeforeUnmount(() => loadController?.abort())
       <div class="criterion-meta">
         <label>
           <span>辅助规则（每行一条，不计入达成点数）</span>
-          <textarea v-model="auxiliaryText" rows="2" />
+          <textarea class="app-input" v-model="auxiliaryText" rows="2" />
         </label>
         <label>
           <span>制定说明</span>
-          <textarea v-model="rationale" rows="2" maxlength="2000" />
+          <textarea class="app-input" v-model="rationale" rows="2" maxlength="2000" />
         </label>
       </div>
 
@@ -438,14 +438,14 @@ onBeforeUnmount(() => loadController?.abort())
         >
           {{ writeState === 'saving' ? '正在保存…' : '保存' }}
         </AppButton>
-        <button
+        <AppButton variant="primary"
           type="button"
           class="qb-button is-ai"
           :disabled="writeState !== 'idle'"
           @click="regenerate"
         >
           {{ writeState === 'generating' ? '正在启动…' : '重新生成' }}
-        </button>
+        </AppButton>
       </div>
 
       <p

@@ -361,7 +361,7 @@ async function removeCurrent(): Promise<void> {
                 <h3 id="qb-tags-title">标签核对</h3>
               </div>
               <div class="qb-tag-add">
-                <select v-model="newTagType" aria-label="要添加的标签类别">
+                <select class="app-input" v-model="newTagType" aria-label="要添加的标签类别">
                   <option v-for="type in editableTagTypes" :key="type" :value="type">
                     {{ tagLabels[type] || type }}
                   </option>
@@ -386,7 +386,7 @@ async function removeCurrent(): Promise<void> {
 
             <label v-if="curriculum" class="qb-section-picker">
               <span>精确标定教材小节</span>
-              <select
+              <select class="app-input"
                 :value="selectedSectionId"
                 @change="chooseCurriculumSection(($event.currentTarget as HTMLSelectElement).value)"
               >
@@ -432,7 +432,7 @@ async function removeCurrent(): Promise<void> {
                       v-if="group.type === 'knowledge_point' && !freshlyAddedTags.has(tag)"
                       :title="tag.tag_value"
                     >{{ knowledgeLeafLabel(tag.tag_value) }}</span>
-                    <input
+                    <input class="app-input"
                       v-else
                       v-model="tag.tag_value"
                       maxlength="160"
@@ -520,9 +520,9 @@ async function removeCurrent(): Promise<void> {
             <p v-if="!wrongOptionRows.length && !otherPatterns.length" class="qb-help">本题暂无典型错法。</p>
             <div v-if="patternEdit" class="qb-patterns__editor">
               <h4>调整典型错法</h4>
-              <label>错法名称<input v-model="patternName" maxlength="80"></label>
-              <label>错误大类<select v-model="patternCategory"><option value="">请选择</option><option v-for="category in availableCategories" :key="category" :value="category">{{ category }}</option></select></label>
-              <label>关联技能<select v-model="patternSkill"><option value="">不关联</option><option v-for="skill in patternSkillOptions" :key="skill.key" :value="skill.key">{{ skill.label }}</option></select></label>
+              <label>错法名称<input class="app-input" v-model="patternName" maxlength="80"></label>
+              <label>错误大类<select class="app-input" v-model="patternCategory"><option value="">请选择</option><option v-for="category in availableCategories" :key="category" :value="category">{{ category }}</option></select></label>
+              <label>关联技能<select class="app-input" v-model="patternSkill"><option value="">不关联</option><option v-for="skill in patternSkillOptions" :key="skill.key" :value="skill.key">{{ skill.label }}</option></select></label>
               <p v-if="patternEdit.skill_source === 'criterion' && (patternEdit.skill_labels?.length || patternEdit.skill_label)" class="qb-help">
                 当前技能由判定点得出；选择其他技能将作为教师设定保存。
               </p>

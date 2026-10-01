@@ -13,6 +13,7 @@ import {
 import { useAssemblyStore } from '../../stores/assembly'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 
 withDefaults(defineProps<{
@@ -155,16 +156,9 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
     <p v-if="store.listState === 'stale-error'" class="qb-feedback is-warning" role="alert">
       新数据暂时无法读取，当前仍显示上一次成功结果。
     </p>
-    <div v-if="store.listState === 'loading' && store.questions.length === 0" class="qb-empty" role="status">
-      正在读取试题…
-    </div>
-    <div v-else-if="store.listState === 'error'" class="qb-empty" role="alert">
-      <span>{{ store.listError }}</span>
-      <button type="button" class="qb-link" @click="store.loadQuestions(store.appliedFilters)">重新读取</button>
-    </div>
-    <div v-else-if="store.listState === 'empty'" class="qb-empty">
-      当前条件下没有试题，可以清除筛选后再查看。
-    </div>
+    <StatePanel v-if="store.listState === 'loading' && store.questions.length === 0" kind="loading" title="正在读取试题…" description="" />
+    <StatePanel v-else-if="store.listState === 'error'" kind="error" :title="store.listError" description="" retry-label="重新读取" @retry="store.loadQuestions(store.appliedFilters)" />
+    <StatePanel v-else-if="store.listState === 'empty'" kind="empty" title="当前条件下没有试题，可以清除筛选后再查看。" description="" />
     <div v-else class="qb-question-list">
       <article
         v-for="question in store.questions"
@@ -240,7 +234,7 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
           <span>
             <button type="button" class="qb-link" @click="store.selectQuestion(question.id)">查看详情与标注</button>
             <button type="button" class="qb-link" @click="openSimilar(question)">相似题</button>
-            <button
+            <AppButton variant="secondary"
               type="button"
               class="qb-button"
               :class="{ 'is-selected': isInBasket(question.id) }"
@@ -248,7 +242,7 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
               @click="toggleBasket(question.id)"
             >
               {{ isInBasket(question.id) ? '移出试卷篮' : '加入试卷篮' }}
-            </button>
+            </AppButton>
           </span>
         </footer>
       </article>
@@ -277,12 +271,9 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
           <button type="button" class="qb-drawer-close" aria-label="关闭相似题" @click="closeSimilar">×</button>
         </header>
 
-        <div v-if="similarState === 'loading'" class="qb-empty" role="status">正在查找相似题…</div>
-        <div v-else-if="similarState === 'error'" class="qb-empty" role="alert">
-          <span>相似题暂时无法读取。</span>
-          <button type="button" class="qb-link" @click="openSimilar(similarSource)">重新查找</button>
-        </div>
-        <div v-else-if="similarItems.length === 0" class="qb-empty">当前题库中没有找到足够相似的题目。</div>
+        <StatePanel v-if="similarState === 'loading'" kind="loading" title="正在查找相似题…" description="" />
+        <StatePanel v-else-if="similarState === 'error'" kind="error" title="相似题暂时无法读取。" description="" retry-label="重新查找" @retry="openSimilar(similarSource)" />
+        <StatePanel v-else-if="similarItems.length === 0" kind="empty" title="当前题库中没有找到足够相似的题目。" description="" />
         <div v-else class="qb-similar-list">
           <article v-for="item in similarItems" :key="item.id" class="qb-similar-card">
             <div class="qb-similar-card__score">
@@ -313,7 +304,7 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
             />
             <footer>
               <span>{{ item.paper_title || '未命名试卷' }}</span>
-              <button
+              <AppButton variant="secondary"
                 type="button"
                 class="qb-button"
                 :class="{ 'is-selected': isInBasket(item.id) }"
@@ -321,7 +312,7 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
                 @click="toggleBasket(item.id)"
               >
                 {{ isInBasket(item.id) ? '移出试卷篮' : '加入试卷篮' }}
-              </button>
+              </AppButton>
             </footer>
           </article>
         </div>

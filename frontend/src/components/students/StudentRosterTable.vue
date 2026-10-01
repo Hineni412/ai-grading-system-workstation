@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import AppButton from '@/components/design-system/AppButton.vue'
+import StatePanel from '@/components/design-system/StatePanel.vue'
+
 import { useStudentRosterStore } from '../../stores/students'
 import StudentImportDesk from './StudentImportDesk.vue'
 
@@ -28,7 +31,7 @@ function goToPage(nextPage: number): void {
       <form class="student-ledger__filters" @submit.prevent="applyFilters">
         <label>
           <span class="sr-only">搜索学生</span>
-          <input
+          <input class="app-input"
             v-model="roster.search"
             type="search"
             aria-label="搜索学生"
@@ -37,28 +40,21 @@ function goToPage(nextPage: number): void {
         </label>
         <label>
           <span class="sr-only">筛选班级</span>
-          <select v-model="roster.className" aria-label="筛选班级">
+          <select class="app-input" v-model="roster.className" aria-label="筛选班级">
             <option value="">全部班级</option>
             <option v-for="classItem in roster.workspace?.class_names" :key="classItem">
               {{ classItem }}
             </option>
           </select>
         </label>
-        <button type="submit" class="student-button student-button--secondary">筛选</button>
+        <AppButton variant="secondary" type="submit" class="student-button student-button--secondary">筛选</AppButton>
       </form>
       <StudentImportDesk />
     </div>
 
-    <div v-if="roster.loadState === 'loading' && !roster.workspace" class="student-empty" role="status">
-      正在读取学生名单…
-    </div>
-    <div v-else-if="roster.loadState === 'error'" class="student-empty" role="alert">
-      <span>{{ roster.errorMessage }}</span>
-      <button type="button" class="student-link" @click="roster.load()">重新读取</button>
-    </div>
-    <div v-else-if="roster.workspace?.total === 0" class="student-empty">
-      当前条件下没有学生。可清除筛选，或导入名单。
-    </div>
+    <StatePanel v-if="roster.loadState === 'loading' && !roster.workspace" kind="loading" title="正在读取学生名单…" description="" />
+    <StatePanel v-else-if="roster.loadState === 'error'" kind="error" title="学生名单暂时无法读取" :description="roster.errorMessage" retry-label="重新读取" @retry="roster.load()" />
+    <StatePanel v-else-if="roster.workspace?.total === 0" kind="empty" title="当前条件下没有学生" description="可清除筛选，或导入名单。" />
     <div
       v-else
       class="student-ledger__grid"

@@ -63,7 +63,7 @@ function openStudent(student: TrainingOverviewStudent): void {
       <h2 id="overview-students-title">本学期学生</h2>
       <label class="overview-student-search">
         <span>搜索姓名或学号</span>
-        <input v-model="search" type="search" placeholder="姓名或学号" />
+        <input class="app-input" v-model="search" type="search" placeholder="姓名或学号" />
       </label>
     </header>
     <div class="overview-table-wrap">

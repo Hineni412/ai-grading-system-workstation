@@ -20,13 +20,13 @@ const props = defineProps<{
 
 /* 颜色走 tokens.css 令牌（经 Tailwind 任意值引用），保持原有语义色体系 */
 const toneClasses: Record<StatusTone, string> = {
-  neutral: 'border-border bg-(--color-bg-selected) text-(--color-text-secondary)',
-  info: 'border-(--color-info) bg-(--color-info-subtle) text-(--color-info)',
-  success: 'border-(--color-success) bg-(--color-success-subtle) text-(--color-success)',
-  warning: 'border-(--color-warning) bg-(--color-warning-subtle) text-foreground',
-  danger: 'border-destructive bg-(--color-danger-subtle) text-destructive',
-  ai: 'border-(--color-ai) bg-(--color-ai-subtle) text-(--color-ai)',
-  teacher: 'border-(--color-teacher) bg-(--color-teacher-subtle) text-(--color-teacher)',
+  neutral: 'border-border bg-secondary text-(--color-text-secondary)',
+  info: 'border-(--color-info)/20 bg-(--color-info-subtle) text-(--color-info)',
+  success: 'border-(--color-success)/20 bg-(--color-success-subtle) text-(--color-success)',
+  warning: 'border-(--color-warning)/20 bg-(--color-warning-subtle) text-(--color-warning)',
+  danger: 'border-destructive/20 bg-(--color-danger-subtle) text-destructive',
+  ai: 'border-(--color-ai)/20 bg-(--color-ai-subtle) text-(--color-ai)',
+  teacher: 'border-(--color-teacher)/20 bg-(--color-teacher-subtle) text-(--color-teacher)',
 }
 </script>
 

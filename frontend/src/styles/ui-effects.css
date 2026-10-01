@@ -32,7 +32,7 @@
 
 /* 保留 !important：按下缩放须压过 fx-lift 等悬停位移与页面 scoped 样式 */
 .app-button:active:not(:disabled) {
-  transform: scale(0.97) !important;
+  transform: scale(0.98) !important;
 }
 
 .app-button[data-variant='primary']:hover:not(:disabled),

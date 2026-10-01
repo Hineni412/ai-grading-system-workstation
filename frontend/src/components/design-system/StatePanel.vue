@@ -7,6 +7,7 @@ import { computed } from 'vue'
 import { Inbox, LoaderCircle, TriangleAlert, type LucideIcon } from '@lucide/vue'
 
 import { cn } from '@/lib/utils'
+import AppButton from './AppButton.vue'
 
 const props = defineProps<{
   kind: StateKind
@@ -46,23 +47,27 @@ const markerClass = computed(() =>
 
 <template>
   <section
-    class="state-panel fx-enter grid min-w-0 grid-cols-[var(--space-1)_minmax(0,1fr)] gap-4 rounded-xl border border-(--color-border-subtle) bg-secondary p-5"
+    class="state-panel fx-enter min-w-0"
+    :class="kind === 'empty'
+      ? 'flex flex-col items-center px-6 py-10 text-center'
+      : 'grid grid-cols-[var(--space-1)_minmax(0,1fr)] gap-4 rounded-(--radius-panel) border border-border bg-card p-5 shadow-[var(--shadow-raised)]'"
     data-testid="state-panel"
     :data-kind="kind"
     :role="kind === 'error' ? 'alert' : 'status'"
     :aria-busy="kind === 'loading' ? 'true' : undefined"
   >
-    <div :class="markerClass" aria-hidden="true" />
+    <div v-if="kind !== 'empty'" :class="markerClass" aria-hidden="true" />
     <div class="state-panel__content grid min-w-0 gap-2">
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2" :class="kind === 'empty' && 'justify-center'">
         <component
+          v-if="kind !== 'empty'"
           :is="kindIcons[kind]"
           :class="cn('state-panel__icon size-5', iconClasses[kind], kind === 'loading' && 'animate-spin')"
           aria-hidden="true"
         />
-        <h3 class="m-0 text-base font-semibold">{{ title }}</h3>
+        <h3 class="m-0 font-semibold" :class="kind === 'empty' ? 'text-[15px]' : 'text-base'">{{ title }}</h3>
       </div>
-      <p class="m-0 text-(--color-text-secondary)">{{ description }}</p>
+      <p v-if="description" class="m-0 text-[13px] leading-relaxed text-(--color-text-secondary)">{{ description }}</p>
       <p v-if="detail" class="state-panel__detail m-0 text-[13px] text-foreground">{{ detail }}</p>
       <div v-if="kind === 'loading'" class="state-panel__skeletons grid gap-2 py-2" aria-hidden="true">
         <span
@@ -71,14 +76,15 @@ const markerClass = computed(() =>
           class="state-panel__skeleton block h-3 rounded-(--radius-tag) bg-(--color-bg-selected) last:w-[62%]"
         />
       </div>
-      <button
+      <AppButton
         v-if="kind === 'error' && retryLabel"
-        class="state-panel__action cursor-pointer justify-self-start rounded-md border border-border bg-card px-3 py-2 text-foreground hover:bg-secondary"
+        class="state-panel__action justify-self-start"
+        variant="secondary"
         type="button"
         @click="$emit('retry')"
       >
         {{ retryLabel }}
-      </button>
+      </AppButton>
     </div>
   </section>
 </template>

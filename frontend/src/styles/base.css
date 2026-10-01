@@ -67,6 +67,130 @@ select {
   opacity: var(--opacity-disabled);
 }
 
+/* 普通操作复用 AppButton / AppIconButton。重复类用于压过存量页面的 scoped
+   外观类；这些类仍可承担布局和定位，不再另定义一套普通控件外观。 */
+.app-button.app-button.app-button,
+.app-icon-button.app-icon-button.app-icon-button {
+  min-height: 0;
+  height: var(--app-control-height, var(--control-height-default));
+  padding: 0 var(--app-control-padding, var(--space-4));
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-control);
+  font-size: var(--app-control-font, var(--font-size-body));
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-body);
+  box-shadow: none;
+}
+
+.app-button.app-button.app-button[data-variant='primary'] {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.app-button.app-button.app-button[data-variant='primary']:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+.app-button.app-button.app-button[data-variant='secondary'],
+.app-icon-button.app-icon-button.app-icon-button[data-variant='secondary'] {
+  border-color: var(--color-border-strong);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+}
+
+.app-button.app-button.app-button[data-variant='secondary']:hover:not(:disabled),
+.app-icon-button.app-icon-button.app-icon-button[data-variant='secondary']:hover:not(:disabled) {
+  border-color: var(--color-text-muted);
+  color: var(--color-text-primary);
+}
+
+.app-button.app-button.app-button[data-variant='ghost'],
+.app-icon-button.app-icon-button.app-icon-button[data-variant='ghost'] {
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+.app-button.app-button.app-button[data-variant='ghost']:hover:not(:disabled),
+.app-icon-button.app-icon-button.app-icon-button[data-variant='ghost']:hover:not(:disabled) {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+}
+
+.app-button.app-button.app-button[data-variant='danger'] {
+  background: var(--color-danger);
+  color: #fff;
+}
+
+.app-button.app-button.app-button[data-variant='danger']:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.app-button.app-button.app-button.is-selected[data-variant='secondary'] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+}
+
+.app-button.app-button.app-button:focus-visible,
+.app-icon-button.app-icon-button.app-icon-button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: var(--focus-offset);
+  box-shadow: var(--focus-ring);
+}
+
+.app-button.app-button.app-button:disabled,
+.app-icon-button.app-icon-button.app-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: var(--opacity-disabled);
+}
+
+/* 原生字段只接入同一外观类，保留 v-model.number、校验与保存事件。 */
+.app-input.app-input.app-input {
+  padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background-color: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-body);
+  box-shadow: none;
+}
+
+.app-input.app-input.app-input:not(textarea):not([multiple]) {
+  height: var(--app-control-height, var(--control-height-default));
+  min-height: 0;
+}
+
+select.app-input.app-input.app-input:not([multiple]) {
+  padding-inline-end: 32px;
+}
+
+textarea.app-input.app-input.app-input,
+select.app-input.app-input.app-input[multiple] {
+  padding-block: var(--space-2);
+}
+
+.app-input.app-input.app-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.app-input.app-input.app-input:focus-visible {
+  border-color: var(--color-accent);
+  outline: 2px solid var(--color-accent);
+  outline-offset: var(--focus-offset);
+  box-shadow: var(--focus-ring);
+}
+
+.app-input.app-input.app-input[aria-invalid='true'] {
+  border-color: var(--color-danger);
+}
+
+.app-input.app-input.app-input:disabled {
+  background-color: var(--color-bg-subtle);
+  opacity: var(--opacity-disabled);
+}
+
 :where(select:not([multiple])) {
   min-height: var(--control-height-default);
   padding: 0 32px 0 10px;

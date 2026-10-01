@@ -302,7 +302,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
         >
           <div v-if="showCurriculumScope" class="exam-switcher-popover__section">
             <label class="exam-switcher-popover__field-label" for="current-curriculum-volume">教学学期</label>
-            <select
+            <select class="app-input"
               id="current-curriculum-volume"
               :value="curriculumScope.selectedVolumeId ?? ''"
               :disabled="curriculumScope.loadState === 'loading' || curriculumScope.loadState === 'error'"
@@ -328,7 +328,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
             <input
               ref="searchInputRef"
               v-model="searchQuery"
-              class="exam-switcher-popover__search-input"
+              class="exam-switcher-popover__search-input app-input"
               type="search"
               placeholder="搜索考试"
               aria-label="搜索考试"

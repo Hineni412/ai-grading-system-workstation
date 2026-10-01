@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import AppButton from '@/components/design-system/AppButton.vue'
+
 import { computed, onMounted, ref } from 'vue'
 
 import {
@@ -305,20 +307,20 @@ function downloadFailures(job: JobResponse): void {
       </div>
       <div class="qb-jobs__heading-actions">
         <span>{{ jobs.length }} 个历史任务</span>
-        <button
+        <AppButton variant="secondary"
           type="button"
           class="qb-button is-review"
           @click="emit('reviewTaxonomy')"
         >
           待审核新词
           <strong>{{ pendingTaxonomyLabel }}</strong>
-        </button>
+        </AppButton>
       </div>
     </header>
 
     <label v-if="volumeOptions.length" class="qb-volume-picker">
       <span>教材册别</span>
-      <select v-model="importVolumeId" :disabled="busy" aria-label="选择导入试卷的教材册别">
+      <select class="app-input" v-model="importVolumeId" :disabled="busy" aria-label="选择导入试卷的教材册别">
         <option value="">不指定（仅按文件名推断）</option>
         <option v-for="volume in volumeOptions" :key="volume.id" :value="volume.id">
           {{ volume.label }}
@@ -335,14 +337,14 @@ function downloadFailures(job: JobResponse): void {
           <small>可一次选择多个文件，单个文件不超过 200 MB</small>
         </span>
       </label>
-      <button
+      <AppButton variant="primary"
         type="button"
         class="qb-button is-ai"
         :disabled="bank.selectedCount === 0 || busy"
         @click="startTagging"
       >
         AI 标注已选 {{ bank.selectedCount }} 题
-      </button>
+      </AppButton>
     </div>
     <p class="qb-help">不会自动调用 AI；只有确认题数和费用提示后才会提交。</p>
     <p v-if="feedback" class="qb-feedback" role="status">{{ feedback }}</p>
