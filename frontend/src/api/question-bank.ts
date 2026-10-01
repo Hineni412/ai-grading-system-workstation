@@ -1960,10 +1960,22 @@ export const questionBankApi = {
     })
   },
 
-  listPapers(signal?: AbortSignal): Promise<QuestionBankPaperListResponse> {
-    return apiClient.request('/api/question-bank/papers', {
+  listPapers(signal?: AbortSignal, deleted = false): Promise<QuestionBankPaperListResponse> {
+    return apiClient.request(`/api/question-bank/papers${deleted ? '?deleted=true' : ''}`, {
       decode: decodeQuestionPaperListResponse,
       signal,
+    })
+  },
+
+  changePaperState(paper: QuestionBankPaper, deleted: boolean): Promise<{ id: number; deleted: boolean; import_status: string; updated_at: string; affected_question_count: number }> {
+    return apiClient.request(`/api/question-bank/papers/${paper.id}/${deleted ? 'trash' : 'restore'}`, {
+      method: 'POST', body: { expected_updated_at: paper.updated_at },
+      decode(value: unknown) {
+        if (!isRecord(value) || !hasExactKeys(value, ['id', 'deleted', 'import_status', 'updated_at', 'affected_question_count'])
+          || !isPositiveInteger(value.id) || typeof value.deleted !== 'boolean' || typeof value.import_status !== 'string'
+          || typeof value.updated_at !== 'string' || !isNonnegativeInteger(value.affected_question_count)) throw new Error('试卷状态响应格式不正确')
+        return value as { id: number; deleted: boolean; import_status: string; updated_at: string; affected_question_count: number }
+      },
     })
   },
 

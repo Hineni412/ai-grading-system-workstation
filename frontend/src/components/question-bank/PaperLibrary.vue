@@ -37,6 +37,7 @@ const props = withDefaults(defineProps<{
   pendingTaxonomyCount?: number
   pendingTaxonomyState?: 'idle' | 'loading' | 'ready' | 'empty' | 'error'
   headerTarget?: string
+  activePaperId?: number
 }>(), {
   pendingTaxonomyCount: 0,
   pendingTaxonomyState: 'ready',
@@ -59,6 +60,48 @@ const store = useQuestionBankStore()
 const jobStore = useJobStore()
 const curriculumScope = useCurriculumScopeStore()
 const keyword = ref('')
+const category = ref('')
+const onlyIssues = ref(false)
+const showTrash = ref(false)
+const trashPapers = ref<QuestionBankPaper[]>([])
+const trashState = ref('idle')
+const stateBusy = ref(false)
+const lastTrashed = ref<QuestionBankPaper | null>(null)
+async function loadTrash() {
+  showTrash.value = true
+  trashState.value = 'loading'
+  try { trashPapers.value = (await questionBankApi.listPapers(undefined, true)).items; trashState.value = 'ready' }
+  catch { trashState.value = 'error' }
+}
+async function changePaperState(paper: QuestionBankPaper, deleted: boolean) {
+  if (stateBusy.value) return
+  if (deleted && !window.confirm(`将「${paper.title || paper.id}」移入回收站，包含 ${paper.question_count} 道题。可从回收站恢复；已有考试成绩与报告保持原样。确认移入吗？`)) return
+  stateBusy.value = true
+  try {
+    const result = await questionBankApi.changePaperState(paper, deleted)
+    lastTrashed.value = deleted ? { ...paper, updated_at: result.updated_at, import_status: result.import_status } : null
+    deleteNotice.value = deleted ? '已移入回收站，可立即恢复。' : '试卷已恢复。'
+    selectedPaperIds.value.delete(paper.id)
+    await store.loadPapers()
+    if (showTrash.value) await loadTrash()
+  } catch (error) {
+    deleteNotice.value = error instanceof ApiError && error.status === 409 ? '试卷已被其他操作更新，请刷新后重试。' : '操作结果尚未确认，请刷新试卷和回收站后核对。'
+  } finally { stateBusy.value = false }
+}
+async function continuePaper(paper: QuestionBankPaper) {
+  const previous = selectedPaperIds.value
+  selectedPaperIds.value = new Set([paper.id])
+  try { await fillSelectedPapers() } finally { selectedPaperIds.value = previous }
+}
+async function answerPaper(paper: QuestionBankPaper) {
+  const previous = selectedPaperIds.value
+  selectedPaperIds.value = new Set([paper.id])
+  try { await requestAnswerDraft() } finally { selectedPaperIds.value = previous }
+}
+function paperCategory(paper: QuestionBankPaper) {
+  const text = `${paper.exam_type || ''} ${paper.title || ''}`
+  return /练习|训练|习题|作业/.test(text) ? '练习' : /校本|自编|自命题/.test(text) ? '校本' : '真卷'
+}
 // 搜索输入防抖：逐键全量筛选 + 分组重算在试卷多时明显卡顿。
 const debouncedKeyword = ref('')
 let keywordDebounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -93,6 +136,7 @@ const standardSummary = ref<QuestionStandardSummary | null>(null)
 const standardState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const showStandard = ref(false)
 const maintenanceMenu = ref<HTMLDetailsElement | null>(null)
+defineExpose({ editPaper, retagPaper, continuePaper, answerPaper, changePaperState })
 function closeMaintenance(): void {
   if (maintenanceMenu.value) maintenanceMenu.value.open = false
 }
@@ -145,6 +189,8 @@ const filteredPapers = computed(() => {
   const search = debouncedKeyword.value.trim().toLocaleLowerCase()
   return [...store.papers]
     .filter((paper) => {
+      if (category.value && paperCategory(paper) !== category.value) return false
+      if (onlyIssues.value && !paper.criteria_needs_review_count && !paper.skill_unlinked_question_count && paper.complete_analysis_count >= paper.question_count) return false
       if (year.value && paper.year !== year.value) return false
       if (examType.value && paper.exam_type !== examType.value) return false
       if (sourceType.value && paper.source_type !== sourceType.value) return false
@@ -272,7 +318,7 @@ const pageFolders = computed(() => {
     return visiblePapers.length ? [{ ...folder, visiblePapers }] : []
   })
 })
-watch([debouncedKeyword, year, examType, sourceType, progressStatus, () => curriculumScope.selectedVolumeId], () => {
+watch([debouncedKeyword, year, examType, sourceType, progressStatus, category, onlyIssues, () => curriculumScope.selectedVolumeId], () => {
   paperPage.value = 1
 })
 watch(paperPageCount, (count) => { paperPage.value = Math.min(paperPage.value, count) })
@@ -1160,6 +1206,7 @@ async function confirmPermanentDelete(): Promise<void> {
           :disabled="retagAllBusy || retagBusyPaperId !== null"
           @click="retagAllPapers"
         >{{ retagAllBusy && taggingMode === 'retag' ? '正在准备…' : '全库重新打标签' }}</AppButton>
+        <AppButton variant="secondary" @click="loadTrash(); closeMaintenance()">试卷回收站</AppButton>
         <AppButton variant="secondary" @click="loadStandardSummary">标准版本与缺口</AppButton>
           </div>
         </details>
@@ -1184,8 +1231,9 @@ async function confirmPermanentDelete(): Promise<void> {
     </section>
 
     <p v-if="retagMessage" class="paper-library__notice" role="status">{{ retagMessage }}</p>
-    <p v-if="deleteNotice" class="paper-library__notice" role="status">{{ deleteNotice }}</p>
+    <p v-if="deleteNotice" class="paper-library__notice" role="status">{{ deleteNotice }} <button v-if="lastTrashed" class="qb-link" :disabled="stateBusy" @click="changePaperState(lastTrashed, false)">立即恢复</button></p>
 
+    <div class="paper-category-chips"><button v-for="value in ['', '真卷', '校本', '练习']" :key="value" class="qb-filter-chip" :class="{ 'is-active': category === value }" :aria-pressed="category === value" @click="category = value">{{ value || '全部' }}</button><label><input v-model="onlyIssues" type="checkbox">只看有问题</label></div>
     <div class="paper-library__filters">
       <label class="paper-search">
         <span class="sr-only">搜索试卷</span>
@@ -1281,7 +1329,7 @@ async function confirmPermanentDelete(): Promise<void> {
       v-else-if="filteredPapers.length === 0"
       kind="empty"
       :title="store.papers.length ? '当前筛选下没有试卷' : '还没有导入试卷'"
-      :description="store.papers.length ? '可以清除筛选后再查看。' : '上传 Word 或 PDF 后，会在这里生成一张试卷卡片。'"
+      :description="store.papers.length ? '可以清除筛选后再查看。' : '上传 Word 或 PDF 后，会在这里显示试卷。'"
     />
 
     <div v-else class="paper-folders">
@@ -1318,7 +1366,7 @@ async function confirmPermanentDelete(): Promise<void> {
             v-for="paper in folder.visiblePapers"
             :key="paper.id"
             class="paper-card"
-            :class="{ 'is-selected': isPaperSelected(paper.id) }"
+            :class="{ 'is-selected': isPaperSelected(paper.id), 'is-current': activePaperId === paper.id }"
           >
         <div class="paper-card__body">
           <div class="paper-card__topline">
@@ -1343,7 +1391,7 @@ async function confirmPermanentDelete(): Promise<void> {
               @click="emit('open', paper)"
             >{{ paper.title || `未命名试卷 #${paper.id}` }}</button>
           </h2>
-          <p class="paper-card__meta">
+          <details class="paper-card__metadata"><summary>来源资料</summary><p class="paper-card__meta">
             {{
               [
                 paper.province,
@@ -1355,12 +1403,12 @@ async function confirmPermanentDelete(): Promise<void> {
               ].filter(Boolean).join(' · ') || '来源信息待补充'
             }}
           </p>
-          <div class="paper-card__progress-heading">
+          </details><div class="paper-card__progress-heading">
             <StatusBadge
               :tone="paper.criteria_needs_review_count > 0 || paper.complete_analysis_count < paper.question_count ? 'warning' : paper.question_count > 0 ? 'success' : 'neutral'"
               :label="paper.criteria_needs_review_count ? `待审核判定点 ${paper.criteria_needs_review_count}` : !paper.question_count ? '暂无试题' : paper.complete_analysis_count < paper.question_count ? `待完善 ${paper.question_count - paper.complete_analysis_count} 道` : '分析完整'"
             />
-            <span>联合分析 <strong>{{ paper.complete_analysis_count }} / {{ paper.question_count }}</strong></span>
+            <span v-if="paper.skill_unlinked_question_count" class="qb-warning">{{ paper.skill_unlinked_question_count }} 未挂</span><span>联合分析 <strong>{{ paper.complete_analysis_count }} / {{ paper.question_count }}</strong></span>
           </div>
           <p
             v-if="paperStatusLines.get(paper.id)?.live"
@@ -1397,7 +1445,7 @@ async function confirmPermanentDelete(): Promise<void> {
           </ul>
           <footer>
             <span>更新于 {{ formatDate(paper.updated_at) }}</span>
-            <span class="paper-card__foot-spacer" />
+
             <button
               type="button"
               class="paper-card__open"
@@ -1421,6 +1469,9 @@ async function confirmPermanentDelete(): Promise<void> {
                   role="menuitem"
                   @click="closePaperMenu(); editPaper(paper)"
                 >编辑资料</button>
+                <button role="menuitem" :disabled="batchActionsDisabled && retagAllBusy" @click="closePaperMenu(); continuePaper(paper)">继续分析</button>
+                <button role="menuitem" :disabled="answerDraftBusy" @click="closePaperMenu(); answerPaper(paper)">生成答案草稿</button>
+                <button role="menuitem" :disabled="stateBusy" @click="closePaperMenu(); changePaperState(paper, true)">移入回收站</button>
                 <button
                   type="button"
                   role="menuitem"
@@ -1447,6 +1498,8 @@ async function confirmPermanentDelete(): Promise<void> {
         </div>
       </section>
     </div>
+
+    <Teleport to="body"><div v-if="showTrash" class="qb-modal-layer" @click.self="showTrash = false"><section class="qb-import-dialog" role="dialog" aria-modal="true" aria-label="试卷回收站"><header><h2>试卷回收站</h2><button class="qb-link" @click="showTrash = false">关闭</button></header><p v-if="trashState === 'loading'">正在读取…</p><p v-else-if="trashState === 'error'" role="alert">读取失败 <button class="qb-link" @click="loadTrash">重试</button></p><p v-else-if="!trashPapers.length">回收站为空。</p><article v-for="paper in trashPapers" :key="paper.id" class="paper-trash-row"><strong>{{ paper.title }}</strong><span>{{ paper.question_count }} 题</span><button class="qb-link" :disabled="stateBusy" @click="changePaperState(paper, false)">恢复</button><button class="qb-link" @click="requestPermanentDelete(paper)">永久删除</button></article></section></div></Teleport>
 
     <nav v-if="paperPageCount > 1" class="paper-library__pagination" aria-label="试卷分页">
       <AppButton variant="secondary" :disabled="paperPage === 1" @click="changePaperPage(-1)">上一页</AppButton>
@@ -2553,7 +2606,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-permanent-impact span {
   background: var(--secondary);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-control);
   color: var(--color-text-secondary);
   display: grid;
   font-size: 10px;
@@ -2781,4 +2834,8 @@ async function confirmPermanentDelete(): Promise<void> {
     transition: none;
   }
 }
+</style>
+
+<style scoped>
+.paper-library__grid{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}.paper-card{padding:10px;border-radius:var(--radius-control)}.paper-card.is-current{border-color:var(--color-accent);background:var(--color-accent-subtle)}.paper-card__body{gap:6px}.paper-card h2{font-size:14px;margin:0}.paper-card__topline{gap:6px;flex-wrap:wrap}.paper-card__progress-heading{flex-wrap:wrap;gap:6px;font-size:11px}.paper-card footer{flex-wrap:wrap;gap:5px;font-size:11px}.paper-card__metadata{font-size:11px;color:var(--color-text-secondary)}.paper-library__filters{display:flex;flex-wrap:wrap;gap:6px}.paper-library__filters label{min-width:0;flex:1 1 100px}.paper-library__filters .paper-search{flex-basis:100%}.paper-category-chips{display:flex;gap:5px;flex-wrap:wrap;align-items:center;font-size:12px}.paper-batch-bar{flex-wrap:wrap;gap:6px}.paper-folder__head{flex-wrap:wrap}.paper-folder__header{min-width:0;flex-wrap:wrap}.paper-trash-row{display:flex;gap:12px;flex-wrap:wrap;padding:12px;border-bottom:1px solid var(--color-border-default)}
 </style>
