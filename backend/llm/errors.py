@@ -73,3 +73,12 @@ def classify_llm_error(error: BaseException) -> LLMErrorCategory:
 
 def is_retryable_error(error: BaseException) -> bool:
     return classify_llm_error(error) in _RETRYABLE_CATEGORIES
+
+
+def classify_transport_error(error: BaseException) -> LLMErrorCategory | None:
+    """Classify model-transport failures; return ``None`` for local errors."""
+    if not isinstance(error, (openai.APIError, TimeoutError, ConnectionError)):
+        if _status_code(error) is None:
+            return None
+    category = classify_llm_error(error)
+    return None if category is LLMErrorCategory.UNKNOWN else category

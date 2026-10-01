@@ -5,7 +5,12 @@ from .diagnostics import (
     JsonlDiagnosticJournal,
     NullDiagnosticSink,
 )
-from .errors import LLMErrorCategory, classify_llm_error, is_retryable_error
+from .errors import (
+    LLMErrorCategory,
+    classify_llm_error,
+    classify_transport_error,
+    is_retryable_error,
+)
 from .execution import (
     LLMExecutionGovernorRegistry,
     LLMExecutionPermit,
@@ -73,6 +78,7 @@ __all__ = [
     "NullUsageSink",
     "TRACE_LOG_FILE",
     "classify_llm_error",
+    "classify_transport_error",
     "create_openai_client",
     "execution_scope_key",
     "execution_snapshot_from_profile",

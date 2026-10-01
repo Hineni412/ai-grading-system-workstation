@@ -3,9 +3,12 @@ from __future__ import annotations
 import importlib
 from types import SimpleNamespace
 
+import httpx
+import openai
 import pytest
 
 from backend.llm import LLMRequestKind, NullCallTraceSink, NullUsageSink
+from backend.llm.errors import LLMErrorCategory, classify_transport_error
 
 
 @pytest.mark.parametrize("error", [RuntimeError("synthetic callback detail"), KeyboardInterrupt()])
@@ -79,3 +82,62 @@ def test_sdk_client_disables_sdk_retries_and_uses_a_bounded_default_timeout() ->
             "max_retries": 0,
         }
     ]
+
+
+_OPENAI_REQUEST = httpx.Request("POST", "https://example.invalid/v1/chat/completions")
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            openai.AuthenticationError(
+                "Error code: 401 - invalid api key",
+                response=httpx.Response(401, request=_OPENAI_REQUEST),
+                body=None,
+            ),
+            LLMErrorCategory.AUTHENTICATION,
+        ),
+        (
+            openai.RateLimitError(
+                "Error code: 429 - too many requests",
+                response=httpx.Response(429, request=_OPENAI_REQUEST),
+                body=None,
+            ),
+            LLMErrorCategory.RATE_LIMIT,
+        ),
+        (
+            openai.BadRequestError(
+                "Error code: 400 - unsupported parameter: response_format",
+                response=httpx.Response(400, request=_OPENAI_REQUEST),
+                body=None,
+            ),
+            LLMErrorCategory.PARAMETER_INCOMPATIBLE,
+        ),
+        (
+            openai.InternalServerError(
+                "Error code: 503 - service unavailable",
+                response=httpx.Response(503, request=_OPENAI_REQUEST),
+                body=None,
+            ),
+            LLMErrorCategory.SERVER_TRANSIENT,
+        ),
+        (openai.APITimeoutError(request=_OPENAI_REQUEST), LLMErrorCategory.TIMEOUT),
+        (openai.APIConnectionError(request=_OPENAI_REQUEST), LLMErrorCategory.CONNECTION),
+    ],
+    ids=["401", "429", "400-param", "503", "timeout", "connection"],
+)
+def test_classify_transport_error_marks_model_transport_failures(
+    error: BaseException,
+    expected: LLMErrorCategory,
+) -> None:
+    assert classify_transport_error(error) is expected
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ValueError("validation failed"), RuntimeError("synthetic local failure")],
+    ids=["value-error", "runtime-error"],
+)
+def test_classify_transport_error_passes_on_local_errors(error: BaseException) -> None:
+    assert classify_transport_error(error) is None

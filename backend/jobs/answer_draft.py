@@ -23,6 +23,7 @@ _PUBLIC_FAILURE_MESSAGES = {
     "rate_limit": "模型请求过于频繁，请稍后再试。",
     "timeout": "生成答案超时，可稍后重试未完成题目。",
     "network": "暂时连不上模型服务，请稍后再试。",
+    "service_config": "生成服务设置有误（密钥、权限或参数），请检查模型配置。",
     "parse": "模型返回无法解析，可稍后重试。",
     "validation": "这道题暂时无法生成答案。",
     "quality": "生成结果未达到保存标准。",

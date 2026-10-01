@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+import httpx
+import openai
 import pytest
 
 from question_bank.database.schema import connect, initialize_database
@@ -631,3 +633,150 @@ def test_shape_failure_budget_exhaustion_fails_without_extra_calls(
         repository.projection_status("repair-exhausted", 1, "training_criteria")
         == "failed"
     )
+
+
+_OPENAI_REQUEST = httpx.Request("POST", "https://example.invalid/v1/chat/completions")
+_TRANSPORT_FAILURE_CASES = [
+    (
+        openai.AuthenticationError(
+            "Error code: 401 - invalid api key",
+            response=httpx.Response(401, request=_OPENAI_REQUEST),
+            body=None,
+        ),
+        "authentication",
+    ),
+    (
+        openai.RateLimitError(
+            "Error code: 429 - too many requests",
+            response=httpx.Response(429, request=_OPENAI_REQUEST),
+            body=None,
+        ),
+        "rate_limit",
+    ),
+    (
+        openai.BadRequestError(
+            "Error code: 400 - unsupported parameter: response_format",
+            response=httpx.Response(400, request=_OPENAI_REQUEST),
+            body=None,
+        ),
+        "parameter_incompatible",
+    ),
+    (
+        openai.InternalServerError(
+            "Error code: 503 - service unavailable",
+            response=httpx.Response(503, request=_OPENAI_REQUEST),
+            body=None,
+        ),
+        "server_transient",
+    ),
+    (openai.APITimeoutError(request=_OPENAI_REQUEST), "timeout"),
+    (openai.APIConnectionError(request=_OPENAI_REQUEST), "connection"),
+]
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    _TRANSPORT_FAILURE_CASES,
+    ids=["401", "429", "400-param", "503", "timeout", "connection"],
+)
+def test_transport_failures_share_one_category(
+    error: BaseException,
+    expected: str,
+) -> None:
+    from backend.llm.errors import classify_transport_error
+    from question_bank.training_criteria.analysis import _error_category
+    from question_bank.training_criteria.combined_analysis import (
+        _analysis_error_category,
+    )
+
+    assert classify_transport_error(error).value == expected
+    assert _error_category(error) == expected
+    assert _analysis_error_category(error) == expected
+
+
+def test_local_errors_keep_existing_categories() -> None:
+    from question_bank.training_criteria.analysis import (
+        GatewayResponseParseError,
+        _error_category,
+    )
+    from question_bank.training_criteria.combined_analysis import (
+        _analysis_error_category,
+    )
+
+    parse_error = GatewayResponseParseError("synthetic unparseable json payload")
+    assert _error_category(parse_error) == "parse"
+    assert _analysis_error_category(parse_error) == "parse"
+    assert _error_category(RuntimeError("cancelled")) == "cancelled"
+    assert _analysis_error_category(RuntimeError("cancelled")) == "cancelled"
+    assert _error_category(ValueError("validation failed")) == "validation"
+    assert (
+        _analysis_error_category(
+            ValueError("combined response failed the batch contract")
+        )
+        == "combined_response_contract"
+    )
+
+
+def test_deferred_authentication_error_stops_scheduling_and_retry_recovers() -> None:
+    from question_bank.training_criteria import (
+        ConfigQuestionAnalysisSource,
+        DeferredCombinedQuestionAnalysisModule,
+    )
+    from tests.test_session_question_bank_sync_job import (
+        _deferred_sync_contract,
+        _DeferredSyncGateway,
+    )
+
+    volume = "synthetic-volume"
+    sources = tuple(
+        ConfigQuestionAnalysisSource(
+            f"Q{index}",
+            QuestionAnalysisInput(
+                question_id=index,
+                tagging_context=TaggingContext(
+                    question_text="合成题干，请完成全部分析步骤。" * 40,
+                    answer_text="42",
+                    question_number=str(index),
+                    question_type="解答题",
+                    curriculum_volume_id=volume,
+                ),
+                taxonomy_contract=_deferred_sync_contract(),
+            ),
+        )
+        for index in range(1, 4)
+    )
+    failing_gateway = RaisingGateway(
+        openai.AuthenticationError(
+            "Error code: 401 - invalid api key",
+            response=httpx.Response(401, request=_OPENAI_REQUEST),
+            body=None,
+        )
+    )
+    module = DeferredCombinedQuestionAnalysisModule(gateway=failing_gateway)
+
+    bundle = module.analyze(
+        operation_id="deferred-auth-stop",
+        curriculum_volume_id=volume,
+        sources=sources,
+    )
+
+    # Long question texts keep every source in its own batch; the first
+    # authentication failure must stop the remaining batches from being sent.
+    assert failing_gateway.calls == 1
+    assert not bundle.items
+    assert {item.source_question_ref for item in bundle.failures} == {
+        source.source_question_ref for source in sources
+    }
+    assert {item.category for item in bundle.failures} == {"authentication"}
+
+    retry_module = DeferredCombinedQuestionAnalysisModule(
+        gateway=_DeferredSyncGateway(empty_links=True),
+    )
+    retried = retry_module.retry_failed(
+        bundle,
+        sources=sources,
+        curriculum_volume_id=volume,
+    )
+
+    assert not retried.failures
+    assert len(retried.items) == len(sources)

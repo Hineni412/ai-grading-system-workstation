@@ -6,6 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
+import httpx
+import openai
 import pytest
 
 import backend.jobs.tagging_sync as tagging_sync_module
@@ -705,3 +707,62 @@ def test_tagging_sync_serializes_reversed_partially_overlapping_question_ids(
     assert all(
         QuestionBankTestStore(db_path).get_question(item)["tags"] for item in ids
     )
+
+
+_OPENAI_REQUEST = httpx.Request("POST", "https://example.invalid/v1/chat/completions")
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            openai.AuthenticationError(
+                "Error code: 401 - invalid api key",
+                response=httpx.Response(401, request=_OPENAI_REQUEST),
+                body=None,
+            ),
+            "service_config",
+        ),
+        (
+            openai.RateLimitError(
+                "Error code: 429 - too many requests",
+                response=httpx.Response(429, request=_OPENAI_REQUEST),
+                body=None,
+            ),
+            "rate_limit",
+        ),
+        (
+            openai.BadRequestError(
+                "Error code: 400 - unsupported parameter: response_format",
+                response=httpx.Response(400, request=_OPENAI_REQUEST),
+                body=None,
+            ),
+            "service_config",
+        ),
+        (
+            openai.InternalServerError(
+                "Error code: 503 - service unavailable",
+                response=httpx.Response(503, request=_OPENAI_REQUEST),
+                body=None,
+            ),
+            "network",
+        ),
+        (openai.APITimeoutError(request=_OPENAI_REQUEST), "timeout"),
+        (openai.APIConnectionError(request=_OPENAI_REQUEST), "network"),
+    ],
+    ids=["401", "429", "400-param", "503", "timeout", "connection"],
+)
+def test_classify_tagging_error_maps_transport_failures(
+    error: BaseException,
+    expected: str,
+) -> None:
+    from question_bank.services.ai_tagging_service import classify_tagging_error
+
+    assert classify_tagging_error(error) == expected
+
+
+def test_classify_tagging_error_keeps_local_error_categories() -> None:
+    from question_bank.services.ai_tagging_service import classify_tagging_error
+
+    assert classify_tagging_error(ValueError("validation failed")) == "validation"
+    assert classify_tagging_error(RuntimeError("cancelled mid-run")) == "unknown"
