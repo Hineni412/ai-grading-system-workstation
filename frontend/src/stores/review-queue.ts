@@ -1,7 +1,10 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch, type Ref } from 'vue'
+import type { Router } from 'vue-router'
 import { defineStore } from 'pinia'
 
 import { ApiError } from '../api/errors'
+import { entryQuery, positiveIntegerQuery, scopeQuery, stringQuery } from '../components/review/review-route'
+import type { useSessionStore } from './session'
 import {
   fetchReviewItems,
   fetchReviewQuestions,
@@ -110,6 +113,18 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
   const scope = ref<ReviewScope>('all')
   const sort = ref<ReviewSort>('risk')
   const page = ref(1)
+  const mode = ref<'batch' | 'deep'>('batch')
+  const deepSwitching = ref(false)
+  const contextGeneration = ref(0)
+  let routeItemGeneration = 0
+  let routeDetached = true
+  let routeRouter: Router | null = null
+  let routeSessions: ReturnType<typeof useSessionStore> | null = null
+  let routeStudentId: () => number | null = () => null
+  let routePath = ''
+  let querySync = Promise.resolve()
+  let routeQuestionsLoader = loadQuestions
+  let routeItemsLoader = loadItems
 
   let questionController: AbortController | null = null
   let itemController: AbortController | null = null
@@ -404,6 +419,296 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
     }
   }
 
+  function syncValidatedQuery(): void {
+    if (!routeRouter || !routeSessions || routeDetached
+      || routeRouter.currentRoute.value.path !== routePath) return
+    const query: Record<string, string> = {
+      scope: scope.value,
+    }
+    const sessionId = routeSessions!.selectedSessionId
+    const questionId = selectedQuestionId.value
+    const reviewItemId = selectedReviewItemId.value
+    const questionIsValid = questionId !== null && questions.value.some(
+      (question) => question.question_id === questionId,
+    )
+
+    if (sessionId !== null) query.session = String(sessionId)
+    const entry = entryQuery(routeRouter!.currentRoute.value.query)
+    if (entry !== null) query.entry = entry
+    const studentId = routeStudentId()
+    if (studentId !== null) query.student = String(studentId)
+    if (questionIsValid && questionId !== null) query.question = questionId
+    if (
+      mode.value === 'deep'
+      && questionIsValid
+      && reviewItemId !== null
+      && items.value.some(
+        (item) => {
+          const resolved = resolveReviewItem(item)
+          return resolved.question_id === questionId
+            && resolved.review_item_id === reviewItemId
+        },
+      )
+    ) {
+      query.item = reviewItemId
+    }
+
+    const syncGeneration = contextGeneration.value
+    const path = routeRouter.currentRoute.value.path
+    querySync = querySync
+      .then(async () => {
+        if (routeDetached || syncGeneration !== contextGeneration.value
+          || routeRouter!.currentRoute.value.path !== path) return
+        await routeRouter!.replace({ query })
+      })
+      .catch(() => undefined)
+  }
+
+  async function loadQuestion(
+    sessionId: number,
+    questionId: string,
+    preferredReviewItemId: string | null,
+    legacyDetailId: number | null,
+    clearPreviousItems: boolean,
+    expectedContextGeneration: number,
+  ): Promise<void> {
+    const generation = ++routeItemGeneration
+    if (clearPreviousItems) replaceItems([])
+    selectQuestion(questionId)
+    await routeItemsLoader(sessionId, questionId)
+    if (
+      routeDetached
+      || generation !== routeItemGeneration
+      || expectedContextGeneration !== contextGeneration.value
+      || routeSessions!.selectedSessionId !== sessionId
+      || selectedQuestionId.value !== questionId
+    ) return
+
+    const requestedItem = preferredReviewItemId === null
+      ? null
+      : items.value
+        .map(resolveReviewItem)
+        .find((entry) => entry.review_item_id === preferredReviewItemId) ?? null
+    const legacyItem = requestedItem === null && legacyDetailId !== null
+      ? items.value
+        .map(resolveReviewItem)
+        .find((entry) => entry.detail_id === legacyDetailId) ?? null
+      : null
+    const resolvedItem = requestedItem ?? legacyItem
+    if (resolvedItem !== null) {
+      selectItem(resolvedItem.review_item_id)
+      mode.value = 'deep'
+    } else if (preferredReviewItemId !== null || legacyDetailId !== null) {
+      mode.value = 'batch'
+    }
+    syncValidatedQuery()
+  }
+
+  async function loadSession(sessionId: number | null): Promise<void> {
+    const preferredQuestionId = stringQuery(routeRouter!.currentRoute.value.query.question)
+    const preferredReviewItemId = stringQuery(routeRouter!.currentRoute.value.query.item)
+    const legacyDetailId = positiveIntegerQuery(routeRouter!.currentRoute.value.query.detail)
+    const initialScope = scopeQuery(routeRouter!.currentRoute.value.query.scope)
+    const generation = ++contextGeneration.value
+    routeItemGeneration += 1
+    reset(initialScope)
+    mode.value =
+      preferredReviewItemId === null && legacyDetailId === null ? 'batch' : 'deep'
+
+    if (sessionId === null || sessionId <= 0) {
+      syncValidatedQuery()
+      return
+    }
+
+    await routeQuestionsLoader(sessionId)
+    if (
+      routeDetached
+      || generation !== contextGeneration.value
+      || routeSessions!.selectedSessionId !== sessionId
+    ) return
+
+    const questionId = questions.value.some(
+      (question) => question.question_id === preferredQuestionId,
+    )
+      ? preferredQuestionId
+      : (questions.value[0]?.question_id ?? null)
+
+    if (questionId === null) {
+      syncValidatedQuery()
+      return
+    }
+
+    await loadQuestion(
+      sessionId,
+      questionId,
+      preferredReviewItemId,
+      legacyDetailId,
+      false,
+      generation,
+    )
+  }
+
+  async function selectQuestionFromRoute(questionId: string): Promise<void> {
+    const sessionId = routeSessions!.selectedSessionId
+    if (
+      sessionId === null
+      || questionId === selectedQuestionId.value
+      || !questions.value.some((question) => question.question_id === questionId)
+    ) return
+    mode.value = 'batch'
+    await loadQuestion(
+      sessionId,
+      questionId,
+      null,
+      null,
+      true,
+      contextGeneration.value,
+    )
+  }
+
+  function updateScope(nextScope: ReviewScope): void {
+    if (nextScope === scope.value) return
+    setScope(nextScope)
+    mode.value = 'batch'
+    syncValidatedQuery()
+  }
+
+  async function refreshServerState(
+    sessionId: number,
+    submittedQuestionId: string,
+    preferredReviewItemId: string | null,
+  ): Promise<void> {
+    const generation = contextGeneration.value
+    // Refresh counts and the visible question together, preserving the selected
+    // student's draft until fresh results arrive.
+    const itemRefresh = loadQuestion(
+      sessionId, submittedQuestionId, preferredReviewItemId, null, false, generation,
+    )
+    await Promise.all([routeQuestionsLoader(sessionId), itemRefresh])
+    if (
+      routeDetached
+      || generation !== contextGeneration.value
+      || routeSessions!.selectedSessionId !== sessionId
+    ) return
+
+    const questionId = questions.value.some(
+      (question) => question.question_id === submittedQuestionId,
+    )
+      ? submittedQuestionId
+      : (questions.value[0]?.question_id ?? null)
+    if (questionId === null) {
+      replaceItems([])
+      selectQuestion(null)
+      syncValidatedQuery()
+      return
+    }
+    if (questionId === submittedQuestionId) return
+    await loadQuestion(
+      sessionId,
+      questionId,
+      questionId === submittedQuestionId ? preferredReviewItemId : null,
+      null,
+      false,
+      generation,
+    )
+  }
+
+  async function openStudentQuestion(
+    questionId: string,
+    reviewItemId: string,
+  ): Promise<void> {
+    const sessionId = routeSessions!.selectedSessionId
+    if (sessionId === null) return
+    if (questionId === selectedQuestionId.value) {
+      selectItem(reviewItemId)
+      mode.value = 'deep'
+      syncValidatedQuery()
+      await querySync
+      return
+    }
+    // 不清空当前列表：深查工作区继续显示旧答卷直到新题数据到达，避免闪回批量页。
+    deepSwitching.value = true
+    try {
+      await loadQuestion(
+        sessionId,
+        questionId,
+        reviewItemId,
+        null,
+        false,
+        contextGeneration.value,
+      )
+    } finally {
+      deepSwitching.value = false
+    }
+  }
+
+  function connectRoute(
+    router: Router,
+    sessions: ReturnType<typeof useSessionStore>,
+    studentId: Ref<number | null>,
+  ): () => void {
+    routeRouter = router
+    routePath = router.currentRoute.value.path
+    routeSessions = sessions
+    routeStudentId = () => studentId.value
+    routeDetached = false
+    querySync = Promise.resolve()
+    // Use the public actions so existing request instrumentation stays active.
+    const queue = useReviewQueueStore()
+    routeQuestionsLoader = queue.loadQuestions
+    routeItemsLoader = queue.loadItems
+    let initialRouteSessionHandled = false
+    const stopSessionWatch = watch(
+      [
+        () => sessions.selectedSessionId,
+        () => sessions.loadState,
+      ],
+      ([sessionId, loadState]) => {
+        if (loadState !== 'ready') return
+        if (!initialRouteSessionHandled) {
+          initialRouteSessionHandled = true
+          const requestedSessionId = positiveIntegerQuery(router.currentRoute.value.query.session)
+          if (
+            requestedSessionId !== null
+            && requestedSessionId !== sessionId
+            && sessions.sessions.some((session) => session.id === requestedSessionId)
+          ) {
+            sessions.selectSession(requestedSessionId)
+            return
+          }
+        }
+        void loadSession(sessionId)
+      },
+      { immediate: true },
+    )
+
+    const stopSelectionWatch = watch(
+      [
+        () => selectedQuestionId.value,
+        () => selectedReviewItemId.value,
+        () => scope.value,
+        () => mode.value,
+      ],
+      syncValidatedQuery,
+    )
+    return () => {
+      routeDetached = true
+      contextGeneration.value += 1
+      routeItemGeneration += 1
+      stopSessionWatch()
+      stopSelectionWatch()
+      reset()
+      mode.value = 'batch'
+      deepSwitching.value = false
+      routeRouter = null
+      routeSessions = null
+    }
+  }
+
+  async function waitForRouteSync(): Promise<void> {
+    await querySync
+  }
+
   function reset(nextScope: ReviewScope = 'all'): void {
     questionController?.abort()
     itemController?.abort()
@@ -427,6 +732,17 @@ export const useReviewQueueStore = defineStore('review-queue', () => {
   }
 
   return {
+    mode,
+    deepSwitching,
+    contextGeneration,
+    connectRoute,
+    waitForRouteSync,
+    syncValidatedQuery,
+    loadSession,
+    selectQuestionFromRoute,
+    updateScope,
+    refreshServerState,
+    openStudentQuestion,
     questions,
     items,
     questionLoadState,

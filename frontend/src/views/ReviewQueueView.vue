@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { storeToRefs } from 'pinia'
 
 import { ApiError } from '../api/errors'
 import {
   confirmReviewItems,
-  resolveReviewItem,
   type ReviewConfirmInput,
   type ReviewItemLike,
 } from '../api/review'
@@ -17,22 +17,15 @@ import ReviewDeepWorkspace from '../components/review/ReviewDeepWorkspace.vue'
 import ReviewFeedbackToast from '../components/review/ReviewFeedbackToast.vue'
 import ReviewShortcutGuide from '../components/review/ReviewShortcutGuide.vue'
 import ReviewStudentStrip from '../components/review/ReviewStudentStrip.vue'
-import {
-  entryQuery,
-  positiveIntegerQuery,
-  scopeQuery,
-  stringQuery,
-} from '../components/review/review-route'
 import { useReviewAnnotationRetry } from '../components/review/useReviewAnnotationRetry'
 import { useReviewKeyboard } from '../components/review/useReviewKeyboard'
-import { useReviewStudentNav, type ReviewMode } from '../components/review/useReviewStudentNav'
+import { useReviewStudentNav } from '../components/review/useReviewStudentNav'
 import '../styles/review-queue.css'
 import '../styles/review-evidence.css'
 import '../styles/review-scoring.css'
 import { useReviewDraftStore } from '../stores/review-drafts'
 import {
   useReviewQueueStore,
-  type ReviewScope,
   type ReviewSort,
 } from '../stores/review-queue'
 import { useSessionStore } from '../stores/session'
@@ -48,18 +41,13 @@ const reviewPage = ref<HTMLElement | null>(null)
 const batchSubmitting = ref(false)
 const feedback = ref('')
 const feedbackTone = ref<'success' | 'warning' | 'error'>('success')
-const mode = ref<ReviewMode>('batch')
-// 跨题深查切换期间继续展示上一份答卷，等目标题数据到达后再替换。
-const deepSwitching = ref(false)
+const { mode, deepSwitching } = storeToRefs(reviewStore)
+const { selectQuestionFromRoute: selectQuestion, updateScope, refreshServerState, openStudentQuestion, syncValidatedQuery } = reviewStore
 const batchScrollTop = ref(0)
 const ANSWER_PANEL_STORAGE_KEY = 'ai-grading:review-answer-panel:v1'
 const answerPanelOpen = ref(false)
 
-let contextGeneration = 0
-let itemGeneration = 0
 let unmounting = false
-let initialRouteSessionHandled = false
-let querySync = Promise.resolve()
 
 const {
   annotationRetryEntries,
@@ -112,7 +100,7 @@ async function returnToResults(): Promise<void> {
   const target = resultsReturnPath.value
   if (!target) return
   // 先结束当前页排队中的路由同步，避免离开后又写回复核页面的查询条件。
-  await querySync
+  await reviewStore.waitForRouteSync()
   if (router.options.history.state.back === target) router.back()
   else await router.replace(target)
 }
@@ -155,194 +143,6 @@ function openGradingRun(): void {
   if (sessionId !== null) void router.push(`/sessions/${sessionId}/grading-run`)
 }
 
-function syncValidatedQuery(): void {
-  const query: Record<string, string> = {
-    scope: reviewStore.scope,
-  }
-  const sessionId = sessionStore.selectedSessionId
-  const questionId = reviewStore.selectedQuestionId
-  const reviewItemId = reviewStore.selectedReviewItemId
-  const questionIsValid = questionId !== null && reviewStore.questions.some(
-    (question) => question.question_id === questionId,
-  )
-
-  if (sessionId !== null) query.session = String(sessionId)
-  const entry = entryQuery(route.query)
-  if (entry !== null) query.entry = entry
-  if (activeStudentId.value !== null) query.student = String(activeStudentId.value)
-  if (questionIsValid && questionId !== null) query.question = questionId
-  if (
-    mode.value === 'deep'
-    && questionIsValid
-    && reviewItemId !== null
-    && reviewStore.items.some(
-      (item) => {
-        const resolved = resolveReviewItem(item)
-        return resolved.question_id === questionId
-          && resolved.review_item_id === reviewItemId
-      },
-    )
-  ) {
-    query.item = reviewItemId
-  }
-
-  querySync = querySync
-    .then(async () => {
-      if (unmounting) return
-      await router.replace({ query })
-    })
-    .catch(() => undefined)
-}
-
-async function loadQuestion(
-  sessionId: number,
-  questionId: string,
-  preferredReviewItemId: string | null,
-  legacyDetailId: number | null,
-  clearPreviousItems: boolean,
-  expectedContextGeneration: number,
-): Promise<void> {
-  const generation = ++itemGeneration
-  if (clearPreviousItems) reviewStore.replaceItems([])
-  reviewStore.selectQuestion(questionId)
-  await reviewStore.loadItems(sessionId, questionId)
-  if (
-    unmounting
-    || generation !== itemGeneration
-    || expectedContextGeneration !== contextGeneration
-    || sessionStore.selectedSessionId !== sessionId
-    || reviewStore.selectedQuestionId !== questionId
-  ) return
-
-  const requestedItem = preferredReviewItemId === null
-    ? null
-    : reviewStore.items
-      .map(resolveReviewItem)
-      .find((entry) => entry.review_item_id === preferredReviewItemId) ?? null
-  const legacyItem = requestedItem === null && legacyDetailId !== null
-    ? reviewStore.items
-      .map(resolveReviewItem)
-      .find((entry) => entry.detail_id === legacyDetailId) ?? null
-    : null
-  const resolvedItem = requestedItem ?? legacyItem
-  if (resolvedItem !== null) {
-    reviewStore.selectItem(resolvedItem.review_item_id)
-    mode.value = 'deep'
-  } else if (preferredReviewItemId !== null || legacyDetailId !== null) {
-    mode.value = 'batch'
-  }
-  syncValidatedQuery()
-}
-
-async function loadSession(sessionId: number | null): Promise<void> {
-  const preferredQuestionId = stringQuery(route.query.question)
-  const preferredReviewItemId = stringQuery(route.query.item)
-  const legacyDetailId = positiveIntegerQuery(route.query.detail)
-  const initialScope = scopeQuery(route.query.scope)
-  const generation = ++contextGeneration
-  itemGeneration += 1
-  reviewStore.reset(initialScope)
-  mode.value =
-    preferredReviewItemId === null && legacyDetailId === null ? 'batch' : 'deep'
-
-  if (sessionId === null || sessionId <= 0) {
-    syncValidatedQuery()
-    return
-  }
-
-  await reviewStore.loadQuestions(sessionId)
-  if (
-    unmounting
-    || generation !== contextGeneration
-    || sessionStore.selectedSessionId !== sessionId
-  ) return
-
-  const questionId = reviewStore.questions.some(
-    (question) => question.question_id === preferredQuestionId,
-  )
-    ? preferredQuestionId
-    : (reviewStore.questions[0]?.question_id ?? null)
-
-  if (questionId === null) {
-    syncValidatedQuery()
-    return
-  }
-
-  await loadQuestion(
-    sessionId,
-    questionId,
-    preferredReviewItemId,
-    legacyDetailId,
-    false,
-    generation,
-  )
-}
-
-async function selectQuestion(questionId: string): Promise<void> {
-  const sessionId = sessionStore.selectedSessionId
-  if (
-    sessionId === null
-    || questionId === reviewStore.selectedQuestionId
-    || !reviewStore.questions.some((question) => question.question_id === questionId)
-  ) return
-  mode.value = 'batch'
-  await loadQuestion(
-    sessionId,
-    questionId,
-    null,
-    null,
-    true,
-    contextGeneration,
-  )
-}
-
-function updateScope(scope: ReviewScope): void {
-  if (scope === reviewStore.scope) return
-  reviewStore.setScope(scope)
-  mode.value = 'batch'
-  syncValidatedQuery()
-}
-
-async function refreshServerState(
-  sessionId: number,
-  submittedQuestionId: string,
-  preferredReviewItemId: string | null,
-): Promise<void> {
-  const generation = contextGeneration
-  // Refresh counts and the visible question together, preserving the selected
-  // student's draft until fresh results arrive.
-  const itemRefresh = loadQuestion(
-    sessionId, submittedQuestionId, preferredReviewItemId, null, false, generation,
-  )
-  await Promise.all([reviewStore.loadQuestions(sessionId), itemRefresh])
-  if (
-    unmounting
-    || generation !== contextGeneration
-    || sessionStore.selectedSessionId !== sessionId
-  ) return
-
-  const questionId = reviewStore.questions.some(
-    (question) => question.question_id === submittedQuestionId,
-  )
-    ? submittedQuestionId
-    : (reviewStore.questions[0]?.question_id ?? null)
-  if (questionId === null) {
-    reviewStore.replaceItems([])
-    reviewStore.selectQuestion(null)
-    syncValidatedQuery()
-    return
-  }
-  if (questionId === submittedQuestionId) return
-  await loadQuestion(
-    sessionId,
-    questionId,
-    questionId === submittedQuestionId ? preferredReviewItemId : null,
-    null,
-    false,
-    generation,
-  )
-}
-
 async function retry(): Promise<void> {
   const sessionId = sessionStore.selectedSessionId
   if (sessionId === null) return
@@ -366,7 +166,7 @@ async function confirmBatch(
   const sessionId = submittedItems[0]?.session_id
   const questionId = submittedItems[0]?.question_id
   if (!sessionId || !questionId) return
-  const submittedContextGeneration = contextGeneration
+  const submittedContextGeneration = reviewStore.contextGeneration
 
   batchSubmitting.value = true
   feedback.value = ''
@@ -382,7 +182,7 @@ async function confirmBatch(
 
     const stillOnSubmittedContext =
       !unmounting
-      && contextGeneration === submittedContextGeneration
+      && reviewStore.contextGeneration === submittedContextGeneration
       && sessionStore.selectedSessionId === sessionId
       && reviewStore.selectedQuestionId === questionId
     if (stillOnSubmittedContext) {
@@ -411,42 +211,13 @@ async function confirmBatch(
   }
 }
 
-async function openStudentQuestion(
-  questionId: string,
-  reviewItemId: string,
-): Promise<void> {
-  const sessionId = sessionStore.selectedSessionId
-  if (sessionId === null) return
-  if (questionId === reviewStore.selectedQuestionId) {
-    reviewStore.selectItem(reviewItemId)
-    mode.value = 'deep'
-    syncValidatedQuery()
-    await querySync
-    return
-  }
-  // 不清空当前列表：深查工作区继续显示旧答卷直到新题数据到达，避免闪回批量页。
-  deepSwitching.value = true
-  try {
-    await loadQuestion(
-      sessionId,
-      questionId,
-      reviewItemId,
-      null,
-      false,
-      contextGeneration,
-    )
-  } finally {
-    deepSwitching.value = false
-  }
-}
-
 async function openItem(reviewItemId: string): Promise<void> {
   const scrollingElement = reviewPage.value?.parentElement
   batchScrollTop.value = scrollingElement?.scrollTop ?? 0
   reviewStore.selectItem(reviewItemId)
   mode.value = 'deep'
   syncValidatedQuery()
-  await querySync
+  await reviewStore.waitForRouteSync()
 }
 
 async function closeDeepReview(): Promise<void> {
@@ -456,7 +227,7 @@ async function closeDeepReview(): Promise<void> {
   }
   mode.value = 'batch'
   syncValidatedQuery()
-  await querySync
+  await reviewStore.waitForRouteSync()
   await nextTick()
   const scrollingElement = reviewPage.value?.parentElement
   if (scrollingElement) scrollingElement.scrollTop = batchScrollTop.value
@@ -498,39 +269,7 @@ async function handleDeepConfirmed(payload: {
   }
 }
 
-const stopSessionWatch = watch(
-  [
-    () => sessionStore.selectedSessionId,
-    () => sessionStore.loadState,
-  ],
-  ([sessionId, loadState]) => {
-    if (loadState !== 'ready') return
-    if (!initialRouteSessionHandled) {
-      initialRouteSessionHandled = true
-      const requestedSessionId = positiveIntegerQuery(route.query.session)
-      if (
-        requestedSessionId !== null
-        && requestedSessionId !== sessionId
-        && sessionStore.sessions.some((session) => session.id === requestedSessionId)
-      ) {
-        sessionStore.selectSession(requestedSessionId)
-        return
-      }
-    }
-    void loadSession(sessionId)
-  },
-  { immediate: true },
-)
-
-const stopSelectionWatch = watch(
-  [
-    () => reviewStore.selectedQuestionId,
-    () => reviewStore.selectedReviewItemId,
-    () => reviewStore.scope,
-    () => mode.value,
-  ],
-  syncValidatedQuery,
-)
+const stopRouteSync = reviewStore.connectRoute(router, sessionStore, activeStudentId)
 
 // 从成绩页进入且带学生参数时，复用成绩快照生成该生各题横条；快照缺失时补一次读取。
 const stopStudentStripWatch = watch(
@@ -562,14 +301,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unmounting = true
-  contextGeneration += 1
-  itemGeneration += 1
-  stopSessionWatch()
-  stopSelectionWatch()
+  stopRouteSync()
   stopStudentStripWatch()
   stopAnswerPanelWatch()
   window.removeEventListener('keydown', onKeydown)
-  reviewStore.reset()
 })
 </script>
 

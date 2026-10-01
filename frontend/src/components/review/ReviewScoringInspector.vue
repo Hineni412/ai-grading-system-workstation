@@ -71,12 +71,14 @@ const issue = computed(() => {
 const submitDisabled = computed(() =>
   !item.value ||
   !currentDraft.value ||
+  quickInvalid.size > 0 ||
   issue.value !== null ||
   (currentDraft.value?.stepScores?.some((step) => scoreIssue(step.scoreText, step.maxScore) !== null) ?? false) ||
   submitting.value,
 )
 const disabledReason = computed(() => {
   if (!item.value) return '请先选择一条复核记录'
+  if (quickInvalid.size > 0) return '请先修正标红的步骤分'
   if (issue.value) return issue.value
   if (submitting.value) return '正在确认当前评分'
   return ''
@@ -288,7 +290,7 @@ function onQuickStep(step: { partId: string; stepId: string; maxScore: number },
   quickNotice.value = ''
   // 直接打新数字覆盖旧值时浏览器会得到类似 "02" 的串，按整数归一化后照常接受。
   const normalized = /^\d+$/.test(raw) ? String(Number(raw)) : raw
-  if (raw === '' || scoreIssue(normalized, step.maxScore) === null) {
+  if (raw === '' || (/^\d+$/.test(raw) && scoreIssue(normalized, step.maxScore) === null)) {
     quickInvalid.delete(key)
     setStepScore(step.partId, step.stepId, normalized)
     input.value = normalized

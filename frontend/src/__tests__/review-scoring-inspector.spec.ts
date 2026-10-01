@@ -242,19 +242,28 @@ describe('review scoring inspector', () => {
       expect(found).toHaveLength(1)
       return found[0]!
     })
-    // 非法值（超过满分）不写入草稿，仅标红
-    quick.value = '9'
+    // 已有合法草稿时，新的非法输入也必须阻止按钮和 Enter 提交旧值。
+    quick.value = '3'
     quick.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    expect(quick.classList.contains('review-quick-score__input--invalid')).toBe(true)
     const draft = Object.values(useReviewDraftStore(pinia).drafts)[0]!
-    expect(draft.stepScores![0]!.scoreText).toBe('')
-
-    // 草稿未完整 → Enter 不提交，且内联显示禁用原因
-    quick.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    for (const invalid of ['9', '3.5', '3.']) {
+      quick.value = invalid
+      quick.dispatchEvent(new Event('input', { bubbles: true }))
+      await nextTick()
+      expect(quick.classList.contains('review-quick-score__input--invalid')).toBe(true)
+      expect(draft.stepScores![0]!.scoreText).toBe('3')
+      expect(host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')!.disabled).toBe(true)
+      quick.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await nextTick()
+      expect(confirmReviewItem).not.toHaveBeenCalled()
+      expect(host.querySelector('.review-quick-score__notice')?.textContent).toContain('请先修正标红的步骤分')
+    }
+    quick.value = '4'
+    quick.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    expect(confirmReviewItem).not.toHaveBeenCalled()
-    expect(host.querySelector('.review-quick-score__notice')?.textContent).toContain('请输入教师最终分')
+    expect(quick.getAttribute('aria-invalid')).toBe('false')
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')!.disabled).toBe(false)
     app.unmount()
   })
 

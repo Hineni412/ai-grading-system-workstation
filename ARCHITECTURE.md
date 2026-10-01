@@ -15,6 +15,7 @@
 | `backend/api/app.py` | 应用生命周期、API 装配、错误处理、静态页面 |
 | `frontend/src/router/index.ts`、`frontend/src/navigation.ts` | 页面路由与核心导航 |
 | `frontend/src/api/`、`frontend/src/stores/` | 请求契约与页面状态 |
+| `frontend/src/stores/review-queue.ts` | 复核队列、地址参数与选中状态同步；页面离开或考试切换后忽略旧加载结果 |
 | `frontend/src/components/` | 业务组件与共享控件 |
 | `path_manager.py` | 数据、配置、日志、输出与备份路径 |
 
