@@ -137,6 +137,8 @@ class StudentQuestionRecord:
     missing_steps: list[str] = field(default_factory=list)
     teacher_confirmed: bool = False
     teacher_comment: str = ""
+    # 独立扣分的评分步骤（沿用前步错误的不在列）；教师锁定时取自教师逐步改分。
+    failed_steps: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def lost(self) -> bool:
@@ -238,6 +240,14 @@ def assemble_session_analysis(
             detail
         )
 
+    locks_by_student_question = {
+        (
+            int(lock["student_id"]),
+            resolve_known_question_id(str(lock["question_id"]), score_map)
+            or str(lock["question_id"]),
+        ): lock
+        for lock in snapshot.locks
+    }
     students: list[StudentReportData] = []
     skipped: list[dict[str, str]] = []
     covered_identities: set[tuple[str, str]] = set()
@@ -291,6 +301,12 @@ def assemble_session_analysis(
                 }
             )
             continue
+        raw_payload = result.get("raw_json")
+        if isinstance(raw_payload, str):
+            try:
+                raw_payload = json.loads(raw_payload)
+            except json.JSONDecodeError:
+                raw_payload = {}
         students.append(
             StudentReportData(
                 result_id=result_id,
@@ -309,17 +325,20 @@ def assemble_session_analysis(
                     student_answers=_student_answer_map(result.get("raw_json")) if not page_only or include_answer_evidence else None,
                     grading_evidence=_grading_detail_map(result.get("raw_json")) if not page_only or include_answer_evidence else None,
                     include_secondary_errors=not page_only,
+                    teacher_reviews=(
+                        raw_payload.get("teacher_reviews")
+                        if isinstance(raw_payload, dict)
+                        else None
+                    ),
+                    teacher_locks={
+                        question_id: lock
+                        for (student_id, question_id), lock in locks_by_student_question.items()
+                        if student_id == int(result.get("student_id") or 0)
+                    },
+                    rubric=rubric if isinstance(rubric, dict) else None,
                 ),
             )
         )
-    locks_by_student_question = {
-        (
-            int(lock["student_id"]),
-            resolve_known_question_id(str(lock["question_id"]), score_map)
-            or str(lock["question_id"]),
-        ): lock
-        for lock in snapshot.locks
-    }
     for student in students:
         for record in student.records:
             lock = locks_by_student_question.get((student.student_id, record.question_id))
@@ -762,6 +781,101 @@ def _student_answer_map(raw_json: Any) -> dict[str, str]:
     return answers
 
 
+_STEP_UNIT_FIELDS = (
+    "step_id",
+    "part_id",
+    "achievement",
+    "score_awarded",
+    "reason",
+    "missing_or_error",
+    "student_evidence",
+)
+
+
+def _independently_failed_steps(assessments: Any) -> list[dict[str, Any]]:
+    """独立扣分的步骤：非满分/等价且未标记沿用前步错误；只保留整理需要的字段。"""
+    if not isinstance(assessments, list):
+        return []
+    failed: list[dict[str, Any]] = []
+    for item in assessments:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("achievement") or "").strip().lower() in {"full", "equivalent"}:
+            continue
+        if item.get("carried_error_from"):
+            continue
+        entry = {
+            key: value
+            for key in _STEP_UNIT_FIELDS
+            if (value := item.get(key)) is not None
+            and value != ""
+            and (not isinstance(value, (list, dict)) or value)
+        }
+        if entry:
+            failed.append(entry)
+    return failed
+
+
+def _teacher_failed_steps(
+    review: Any,
+    lock: Any,
+    score: float,
+    rubric: Any,
+    question_id: str,
+) -> list[dict[str, Any]]:
+    """教师逐步改分记录仅在对应当前最终分锁时可信；任一校验失败即不使用。"""
+    from solution_answer_guard import rubric_scoring_unit_steps
+
+    if not isinstance(review, dict) or not isinstance(lock, dict):
+        return []
+    if (
+        review.get("revision") != lock.get("revision")
+        or review.get("scan_batch_id") != lock.get("scan_batch_id")
+    ):
+        return []
+    records = review.get("steps")
+    expected = rubric_scoring_unit_steps(
+        rubric if isinstance(rubric, dict) else {}, question_id
+    )
+    if not isinstance(records, list) or not expected or len(records) != len(expected):
+        return []
+    try:
+        locked_score = float(review.get("score_awarded"))
+    except (TypeError, ValueError):
+        return []
+    if locked_score != score:
+        return []
+    normalized = []
+    for step in expected:
+        matches = [
+            record
+            for record in records
+            if isinstance(record, dict)
+            and record.get("step_id") == step.get("step_id")
+            and (not step.get("part_id") or record.get("part_id") == step.get("part_id"))
+        ]
+        if len(matches) != 1:
+            return []
+        record = matches[0]
+        try:
+            awarded = float(record.get("score_awarded"))
+            maximum = float(step.get("step_score"))
+        except (TypeError, ValueError):
+            return []
+        if maximum <= 0 or not awarded.is_integer() or awarded < 0 or awarded > maximum:
+            return []
+        if record.get("max_score") != maximum or set(
+            record.get("evidence_point_ids") or []
+        ) != set(step.get("evidence_point_ids") or []):
+            return []
+        normalized.append(
+            {**record, "achievement": "full" if awarded == maximum else "none"}
+        )
+    if sum(float(record["score_awarded"]) for record in normalized) != score:
+        return []
+    return _independently_failed_steps(normalized)
+
+
 def _merge_student_records(
     repositories: GradingRepositoryAccess,
     result_id: int,
@@ -770,6 +884,9 @@ def _merge_student_records(
     student_answers: dict[str, str] | None = None,
     grading_evidence: dict[str, dict[str, Any]] | None = None,
     include_secondary_errors: bool = True,
+    teacher_reviews: dict[str, Any] | None = None,
+    teacher_locks: dict[str, dict[str, Any]] | None = None,
+    rubric: dict[str, Any] | None = None,
 ) -> list[StudentQuestionRecord]:
     """把同一学生同一题的多条明细合并为一条（兼容小问拆行存储）。"""
     secondary_map: dict[str, list[str]] = {}
@@ -830,12 +947,25 @@ def _merge_student_records(
         resolve_known_question_id(qid, score_map) or qid: item
         for qid, item in (grading_evidence or {}).items()
     }
+    reviews_by_qid = {
+        resolve_known_question_id(str(qid), score_map) or str(qid): item
+        for qid, item in (teacher_reviews or {}).items()
+        if isinstance(item, dict)
+    }
     records: list[StudentQuestionRecord] = []
     for qid in order:
         bucket = merged[qid]
         max_score = float(score_map.get(qid) or 0)
         score = min(bucket["score"], max_score) if max_score > 0 else bucket["score"]
         evidence = evidence_by_qid.get(qid, {})
+        lock = (teacher_locks or {}).get(qid)
+        if lock is not None:
+            # 教师锁定题不使用 AI 步骤；校验失败的教师步骤按整题处理。
+            failed_steps = _teacher_failed_steps(
+                reviews_by_qid.get(qid), lock, bucket["score"], rubric, qid
+            )
+        else:
+            failed_steps = _independently_failed_steps(evidence.get("step_assessments"))
         records.append(
             StudentQuestionRecord(
                 question_id=qid,
@@ -850,6 +980,7 @@ def _merge_student_records(
                 ),
                 evidence_steps=_evidence_texts(evidence.get("evidence_steps")),
                 missing_steps=_evidence_texts(evidence.get("missing_steps")),
+                failed_steps=failed_steps,
             )
         )
     order_index = {

@@ -73,8 +73,12 @@ function patternTrigger(item: QuestionErrorPattern): string {
 }
 
 function patternSkillHint(item: QuestionErrorPattern): string {
-  if (!item.skill_label) return ''
-  return item.skill_source === 'teacher' ? `关联技能：${item.skill_label}（教师设定）` : `关联技能：${item.skill_label}（由判定点得出）`
+  const labels = item.skill_labels?.length ? item.skill_labels : (item.skill_label ? [item.skill_label] : [])
+  if (!labels.length) return ''
+  const suffix = item.skill_source === 'teacher' ? '（教师设定）'
+    : item.skill_source === 'question' ? '（由本题唯一技能得出）'
+    : '（由判定点得出）'
+  return `关联技能：${labels.join('、')}${suffix}`
 }
 
 function beginPatternEdit(item: QuestionErrorPattern): void {
@@ -490,7 +494,7 @@ async function removeCurrent(): Promise<void> {
                   <div v-for="item in row.patterns" :key="item.id" class="qb-patterns__item">
                     <strong>{{ item.pattern }}</strong>
                     <p v-if="item.explanation">{{ item.explanation }}</p>
-                    <p v-if="item.skill_label" class="qb-patterns__meta">{{ patternSkillHint(item) }}</p>
+                    <p v-if="patternSkillHint(item)" class="qb-patterns__meta">{{ patternSkillHint(item) }}</p>
                     <p class="qb-patterns__meta">{{ item.category || '未分类' }} · {{ patternSource(item.source) }} · {{ item.has_evidence ? '已有实际作答记录' : '尚无实际作答记录' }}</p>
                     <div class="qb-patterns__actions">
                       <button type="button" class="qb-link" @click="beginPatternEdit(item)">调整</button>
@@ -505,7 +509,7 @@ async function removeCurrent(): Promise<void> {
               <div v-for="item in otherPatterns" :key="item.id" class="qb-patterns__item">
                 <strong>{{ item.pattern }}</strong>
                 <p v-if="item.explanation">{{ item.explanation }}</p>
-                <p v-if="item.skill_label" class="qb-patterns__meta">{{ patternSkillHint(item) }}</p>
+                <p v-if="patternSkillHint(item)" class="qb-patterns__meta">{{ patternSkillHint(item) }}</p>
                 <p class="qb-patterns__meta">{{ item.category || '未分类' }} · {{ patternTrigger(item) }} · {{ patternSource(item.source) }} · {{ item.has_evidence ? '已有实际作答记录' : '尚无实际作答记录' }}</p>
                 <div class="qb-patterns__actions">
                   <button type="button" class="qb-link" @click="beginPatternEdit(item)">调整</button>
@@ -519,7 +523,7 @@ async function removeCurrent(): Promise<void> {
               <label>错法名称<input v-model="patternName" maxlength="80"></label>
               <label>错误大类<select v-model="patternCategory"><option value="">请选择</option><option v-for="category in availableCategories" :key="category" :value="category">{{ category }}</option></select></label>
               <label>关联技能<select v-model="patternSkill"><option value="">不关联</option><option v-for="skill in patternSkillOptions" :key="skill.key" :value="skill.key">{{ skill.label }}</option></select></label>
-              <p v-if="patternEdit.skill_source === 'criterion' && patternEdit.skill_label" class="qb-help">
+              <p v-if="patternEdit.skill_source === 'criterion' && (patternEdit.skill_labels?.length || patternEdit.skill_label)" class="qb-help">
                 当前技能由判定点得出；选择其他技能将作为教师设定保存。
               </p>
               <div class="qb-patterns__actions">

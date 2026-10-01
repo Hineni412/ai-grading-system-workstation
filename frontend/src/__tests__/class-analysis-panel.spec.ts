@@ -333,6 +333,28 @@ describe('class analysis panel', () => {
     expect(second.host.querySelector('[data-testid="cause-category"]')).toBeNull()
   })
 
+  it('shows the pre-step notice for results saved before step-level grouping', async () => {
+    const result = makeAnalysis({ cause_analysis: { status: 'partial', pending_questions: 1,
+      total_questions: 2, failed_questions: 0, pre_step_questions: 1,
+      stale: false, generated_at: '2026-09-09T10:00:00', origin: 'model' } })
+    const question = result.data!.questions[0]!
+    question.causes_grouped = true
+    question.causes_by_step = false
+    question.causes = [
+      { kind: 'error', category: '概念理解', reason: '按步骤整理前的错因', count: 1,
+        evidence: [{ text: '旧证据', student_ids: [31] }] },
+    ]
+    apiMock.getClassAnalysis.mockResolvedValue(result)
+    const { host } = await mountPanel()
+    await vi.waitFor(() => expect(
+      host.querySelector('[data-testid="cause-analysis-status"]'),
+    ).not.toBeNull())
+    expect(host.querySelector('[data-testid="cause-analysis-status"]')!.textContent)
+      .toContain('1 题为按步骤整理前的结果')
+    // 旧结果照常展示，不误报为按步骤整理的产出。
+    expect(host.querySelector('[data-kind="error"]')!.textContent).toContain('按步骤整理前的错因')
+  })
+
   it('opens source evidence and only submits cause grouping after explicit confirmation', async () => {
     const result = makeAnalysis({ cause_analysis: { status: 'partial', pending_questions: 1, total_questions: 2,
       failed_questions: 0, stale: false, generated_at: null, origin: 'assistant' } })

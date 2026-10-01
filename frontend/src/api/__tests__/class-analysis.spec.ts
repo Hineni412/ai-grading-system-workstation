@@ -113,4 +113,26 @@ describe('class analysis API contract', () => {
     }] } })).toThrow()
   })
 
+  it('decodes step-organized causes and pre-step status fields', () => {
+    const evidence = [{ text: '未列等量关系', student_ids: [1], student_answer: '作答',
+      failed_steps: [{ id: 'E1.S1', step_id: 'S2', part_id: 'Q2', core_goal: '列等量关系', step_score: 10 }] }]
+    const cause = { kind: 'process', category: '过程与依据', reason: '缺少等量关系', count: 1,
+      evidence, step_ids: ['S2'],
+      manifestations: [{ description: '未列关系式', source_question_id: null, evidence }] }
+    const payload = { ...analysisPayload,
+      cause_analysis: { status: 'partial', pending_questions: 1, total_questions: 2,
+        failed_questions: 0, pre_step_questions: 1, stale: false,
+        generated_at: '2026-09-09T10:00:00', origin: 'model' },
+      data: { ...analysisPayload.data, questions: [{
+        ...analysisPayload.data.questions[0], causes: [cause], causes_grouped: true,
+        causes_by_step: true, causes_legacy: false,
+      }] } }
+    const parsed = decodeClassAnalysisResponse(payload)
+    expect(parsed.cause_analysis?.pre_step_questions).toBe(1)
+    const question = parsed.data!.questions[0]!
+    expect(question.causes_by_step).toBe(true)
+    expect(question.causes![0]!.step_ids).toEqual(['S2'])
+    expect(question.causes![0]!.evidence![0]!.failed_steps).toHaveLength(1)
+  })
+
 })

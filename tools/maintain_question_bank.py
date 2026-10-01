@@ -50,7 +50,7 @@ def reconcile_errors(bank: Path, grading: Path, data_root: Path, sessions: list[
     from db_manager import DBManager
     from backend.class_analysis import (
         ClassAnalysisStateStore, assemble_cause_data, build_cause_inputs,
-        cause_input_matches, CAUSE_ANALYSIS_VERSION,
+        cause_source_state, CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION,
     )
     from backend.error_patterns import session_bank_context, sync_session_patterns_to_bank
 
@@ -65,8 +65,10 @@ def reconcile_errors(bank: Path, grading: Path, data_root: Path, sessions: list[
             data = assemble_cause_data(db, sid, data_root=data_root)
             sources = build_cause_inputs(data)
             valid = [source for source in sources if
-                     cause_input_matches(saved.get(source["question_id"]) or {}, source)
-                     and (saved.get(source["question_id"]) or {}).get("version") == CAUSE_ANALYSIS_VERSION]
+                     (((saved.get(source["question_id"]) or {}).get("version") == CAUSE_ANALYSIS_VERSION
+                       and cause_source_state(saved.get(source["question_id"]) or {}, source) == "fresh")
+                      or ((saved.get(source["question_id"]) or {}).get("version") == CAUSE_PRE_STEP_VERSION
+                          and cause_source_state(saved.get(source["question_id"]) or {}, source) in ("fresh", "pre_step")))]
             context = session_bank_context(bank, sid)
             written = sync_session_patterns_to_bank(store, sid, bank, context, current_sources=valid)
             totals.append({"session_id": sid, "saved_questions": len(saved),

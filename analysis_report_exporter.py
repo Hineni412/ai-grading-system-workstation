@@ -3277,8 +3277,10 @@ def build_analysis_preflight(
         from backend.class_analysis import (
             CAUSE_ANALYSIS_PROMPT,
             CAUSE_ANALYSIS_VERSION,
+            CAUSE_PRE_STEP_VERSION,
             ClassAnalysisStateStore,
             _cause_input_fingerprint,
+            _pre_step_source,
             assemble_cause_data,
             build_cause_inputs,
             cause_input_matches,
@@ -3313,8 +3315,12 @@ def build_analysis_preflight(
         for source in sources:
             fingerprint = _cause_input_fingerprint(source)
             saved = stored.get(source["question_id"]) or {}
-            if (saved.get("version") == CAUSE_ANALYSIS_VERSION
+            if (saved.get("version") in (CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION)
                     and cause_input_matches(saved, source) and saved.get("result")):
+                continue
+            if (saved.get("version") == CAUSE_PRE_STEP_VERSION
+                    and cause_input_matches(saved, _pre_step_source(source))):
+                # 前置阶段不为升级旧口径结果调用模型。
                 continue
             if saved.get("failed") and saved.get("failed_input_fingerprint") == fingerprint:
                 continue

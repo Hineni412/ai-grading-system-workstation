@@ -45,7 +45,9 @@ CLASS_ANALYSIS_STATE_DIRNAME = ".class_analysis"
 CLASS_ANALYSIS_RENDITION_VERSION = "class_analysis_page_v4_cause_payload"
 CLASS_ANALYSIS_REPORT_KEY = "class:session"
 NARRATIVE_CACHE_DIRNAME = ".analysis_narrative_cache"
-CAUSE_ANALYSIS_VERSION = "class_error_causes_v3"
+CAUSE_ANALYSIS_VERSION = "class_error_causes_v4"
+# 按步骤拆分前的整理结果：输入仍匹配时继续展示（兼容输入），手动整理时升级。
+CAUSE_PRE_STEP_VERSION = "class_error_causes_v3"
 CAUSE_KINDS = frozenset({"error", "process", "response_state", "carry_forward", "review"})
 # 仍可展示的旧版整理结果：v1 只有文本归并，v2 有 kind/manifestation 但没有大类。
 CAUSE_OUTDATED_VERSION = "class_error_causes_v2"
@@ -68,7 +70,7 @@ kind 为 error、process、response_state 时必须给 category，只能从下�
 过程与依据：关键步骤或理由没写、推理断裂、未完成求解。
 书写与规范：答句、单位、格式、书写辨认等规范问题。
 未作答：空白、全部作废、只有无关内容。
-解答题若能定位到 rubric 中具体判定点，填 step_id（只能取 rubric 里出现的 step_id），定位不了就省略。
+evidence 带 failed_steps 时，每个元素是一处独立扣分的评分步骤，附该步要求（core_goal）和阅卷扣分说明，并有自己的 id。error 与 process 组逐步引用这些步骤 id：每个步骤只按它自己的扣分说明和作答判断，不把其他步骤的问题归到这一步；同一步骤可进入多个组。response_state、review 与 carry_forward 可引用整条证据 id。没有 failed_steps 的证据照旧引用整条证据 id。
 known_patterns 列出本题（含同题库的以往考试）或本场其他题已用过的错法名称；同义时必须复用其中的 reason，只有确实不同的错法才允许新命名。
 reason 为可复用的规范名称，例如“选错目标量的组成部分”；manifestation 为本题具体表现，例如“求绳长时多加水平边”。同一规范错因的不同表现用相同 reason 分别列组，系统合并人数并保留表现。
 每个有分歧的方面单独处理；一份可以同时有过程缺项、确定错误与待核对项。不得用不确定猜测填满数学错因。
@@ -77,8 +79,8 @@ reason 为可复用的规范名称，例如“选错目标量的组成部分”�
 绳长中多加一段与替错一段可共用规范名称，但 manifestation 必须区分。沿用前问错误绳长后运算自洽，不再推断不会勾股定理。
 没有作答过程时，不从选项或错误数字推测具体认知错因；保留可观察的选答表现，并归 review 的“过程原因未明”。
 肯定表述不成为错因；全部证据只支持正确、且没有任何待核对方面时放 positive_ids。整条不足以整理的放 uncertain_ids，遗漏项也由系统保留待核对。
-仅返回 JSON：{"groups":[{"kind":"error","category":"计算与化简","reason":"规范错因","manifestation":"本题证据支持的具体表现","evidence_ids":["E1"],"source_question_id":null,"step_id":null}],"positive_ids":[],"uncertain_ids":[]}。
-覆盖全部输入 id，只用输入 id；同一 id 可在多个组，但 positive_ids、uncertain_ids 与组成员互斥。不要输出人数、姓名、分数或评分调整；人数由系统去重。
+仅返回 JSON：{"groups":[{"kind":"error","category":"计算与化简","reason":"规范错因","manifestation":"本题证据支持的具体表现","evidence_ids":["E1"],"source_question_id":null}],"positive_ids":[],"uncertain_ids":[]}。
+覆盖全部输入 id（带 failed_steps 的证据以其步骤 id 计），只用输入 id；同一 id 可在多个组，但 positive_ids、uncertain_ids 与组成员互斥。不要输出人数、姓名、分数或评分调整；人数由系统去重。
 """
 
 
@@ -131,13 +133,26 @@ def _cause_rubric(data: Any, question_id: str) -> dict[str, Any]:
             for key, value in project(q).items()}
 
 
-def _cause_evidence(student: Any, record: Any) -> dict[str, Any]:
+def _rubric_step_lookup(
+    steps: list[dict[str, Any]], step_id: Any, part_id: Any,
+) -> dict[str, Any] | None:
+    """按 step_id 定位评分步骤；双方都带 part_id 时还必须相同。"""
+    for step in steps:
+        if str(step.get("step_id") or "") != str(step_id or ""):
+            continue
+        if part_id and step.get("part_id") and str(step["part_id"]) != str(part_id):
+            continue
+        return step
+    return None
+
+
+def _cause_evidence(student: Any, record: Any, data: Any = None, *, by_step: bool = True) -> dict[str, Any]:
     from backend.session_analysis import natural_question_order, parent_question_id
     siblings = {item.question_id: item for item in student.records
                 if parent_question_id(item.question_id) == parent_question_id(record.question_id)}
     order = natural_question_order(siblings)
     previous = [siblings[qid] for qid in order[:order.index(record.question_id)]]
-    return {
+    evidence = {
         "text": _cause_text(record), "student_answer": record.student_answer,
         "evidence_steps": record.evidence_steps, "missing_steps": record.missing_steps,
         "teacher_confirmed": record.teacher_confirmed,
@@ -145,11 +160,35 @@ def _cause_evidence(student: Any, record: Any) -> dict[str, Any]:
                               "text": _cause_text(item), "evidence_steps": item.evidence_steps}
                              for item in previous],
     }
+    rubric = getattr(data, "rubric", None)
+    if by_step and getattr(record, "failed_steps", None) and isinstance(rubric, dict):
+        from solution_answer_guard import rubric_scoring_unit_steps
+        steps = rubric_scoring_unit_steps(rubric, record.question_id)
+        units = []
+        for failed in record.failed_steps:
+            step = _rubric_step_lookup(steps, failed.get("step_id"), failed.get("part_id"))
+            if step is None:
+                continue
+            unit = dict(failed)
+            if step.get("core_goal") is not None:
+                unit["core_goal"] = step["core_goal"]
+            if step.get("step_score") is not None:
+                unit["step_score"] = step["step_score"]
+            units.append(unit)
+        if units:
+            evidence["failed_steps"] = units
+    return evidence
 
 
 def _evidence_key(evidence: dict[str, Any]) -> str:
-    return json.dumps({key: value for key, value in evidence.items() if key != "id"},
-                      ensure_ascii=False, sort_keys=True)
+    item = {key: value for key, value in evidence.items() if key != "id"}
+    if isinstance(item.get("failed_steps"), list):
+        item["failed_steps"] = [
+            {key: value for key, value in step.items() if key != "id"}
+            if isinstance(step, dict) else step
+            for step in item["failed_steps"]
+        ]
+    return json.dumps(item, ensure_ascii=False, sort_keys=True)
 
 
 def _evidence_hash(evidence_key: str) -> str:
@@ -191,6 +230,42 @@ def cause_input_matches(saved: dict[str, Any], source: dict[str, Any]) -> bool:
     return fingerprint == _cause_input_fingerprint(comparable)
 
 
+def _pre_step_source(source: dict[str, Any]) -> dict[str, Any]:
+    """按步骤拆分前的输入口径：v3 形状的 source。
+
+    去掉 failed_steps 后按 v3 的证据键去重、排序、重新编号——v3 输入先按
+    证据键合并不同学生的相同作答，证据 id 又按排序位置生成，两步都要复现
+    才能与旧输入一致。
+    """
+    items: dict[str, dict[str, Any]] = {}
+    for item in source["evidence"]:
+        stripped_item = {
+            key: value for key, value in item.items()
+            if key not in {"id", "failed_steps"}
+        }
+        items[_evidence_key(stripped_item)] = stripped_item
+    stripped = dict(source)
+    stripped["evidence"] = [
+        {"id": f"E{index}", **item}
+        for index, item in enumerate(sorted(items.values(), key=_evidence_key), start=1)
+    ]
+    return stripped
+
+
+def cause_source_state(saved: dict[str, Any], source: dict[str, Any]) -> str:
+    """已存整理结果对当前输入的匹配状态：fresh / pre_step / stale。
+
+    pre_step 表示 v3 结果与按步骤拆分前的输入一致（兼容输入，可展示可升级）。
+    """
+    if not isinstance(saved, dict):
+        return "stale"
+    if cause_input_matches(saved, source):
+        return "fresh"
+    if cause_input_matches(saved, _pre_step_source(source)):
+        return "pre_step"
+    return "stale"
+
+
 def _merge_known_patterns(*groups: Any) -> list[dict[str, Any]]:
     """合并多个来源的已知错法名，按 reason 去重，控制提示词长度。"""
     merged: dict[str, dict[str, Any]] = {}
@@ -210,8 +285,26 @@ def _merge_known_patterns(*groups: Any) -> list[dict[str, Any]]:
     return list(merged.values())
 
 
-def build_cause_inputs(data: Any, *, known_patterns: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """全场共用逐题输入；只有批语、作答及前问证据都相同才合并，不发送身份。"""
+def _numbered_evidence(item: dict[str, Any], index: int) -> dict[str, Any]:
+    """证据 id 为 E{n}；独立扣分步骤单元为 E{n}.S{k}，供模型逐步引用。"""
+    evidence_id = f"E{index}"
+    entry = {"id": evidence_id, **item}
+    steps = entry.get("failed_steps")
+    if isinstance(steps, list) and steps:
+        entry["failed_steps"] = [
+            {**unit, "id": f"{evidence_id}.S{step_index}"} if isinstance(unit, dict) else unit
+            for step_index, unit in enumerate(steps, start=1)
+        ]
+    return entry
+
+
+def build_cause_inputs(
+    data: Any, *, known_patterns: dict[str, Any] | None = None, by_step: bool = True,
+) -> list[dict[str, Any]]:
+    """全场共用逐题输入；只有批语、作答及前问证据都相同才合并，不发送身份。
+
+    by_step 为兼容判定保留 False 口径（v3 输入形状）：不带 failed_steps。
+    """
     patterns = known_patterns or {}
     shared = patterns.get("shared") or []
     by_question = patterns.get("questions") or {}
@@ -219,7 +312,7 @@ def build_cause_inputs(data: Any, *, known_patterns: dict[str, Any] | None = Non
     for student in data.students:
         for record in student.records:
             if record.lost:
-                item = _cause_evidence(student, record)
+                item = _cause_evidence(student, record, data, by_step=by_step)
                 evidence.setdefault(record.question_id, {})[_evidence_key(item)] = item
 
     from backend.session_analysis import parent_question_id
@@ -228,7 +321,7 @@ def build_cause_inputs(data: Any, *, known_patterns: dict[str, Any] | None = Non
         "stem_summary": info.stem_summary, "canonical_answer": info.canonical_answer,
         "question_text": info.question_text, "reference_analysis": info.reference_analysis,
         "rubric": _cause_rubric(data, info.question_id),
-        "evidence": [{"id": f"E{index}", **item} for index, (_key, item) in
+        "evidence": [_numbered_evidence(item, index) for index, (_key, item) in
                      enumerate(sorted(evidence[info.question_id].items()), start=1)],
         "known_patterns": _merge_known_patterns(
             by_question.get(parent_question_id(info.question_id)), shared,
@@ -339,33 +432,32 @@ def known_cause_patterns(
     }
 
 
-def _rubric_step_ids(rubric: Any) -> set[str]:
-    """rubric 投影里允许引用的判定点 id。"""
-    found: set[str] = set()
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for key, value in node.items():
-                if key == "step_id" and isinstance(value, str) and value.strip():
-                    found.add(value.strip())
-                else:
-                    walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    walk(rubric)
-    return found
+def _step_units(source: dict[str, Any]) -> dict[str, tuple[str, dict[str, Any]]]:
+    """{单元 id: (所属证据 id, 单元)}：按步骤拆分产生的可引用单元。"""
+    units: dict[str, tuple[str, dict[str, Any]]] = {}
+    for item in source.get("evidence") or []:
+        for unit in item.get("failed_steps") or []:
+            if isinstance(unit, dict) and isinstance(unit.get("id"), str) and unit["id"]:
+                units[unit["id"]] = (item["id"], unit)
+    return units
 
 
 def normalize_cause_result(payload: Any, source: dict[str, Any]) -> dict[str, Any]:
-    """保存类型、大类、规范名称、本题表现与证据映射；人数不采纳模型输出。"""
+    """保存类型、大类、规范名称、本题表现与证据映射；人数不采纳模型输出。
+
+    步骤单元 id（E{n}.S{k}）与整条证据 id（E{n}）都是合法引用；模型输出的
+    step_id 一律忽略，步骤归属以单元引用为准。未被任何组/列表引用的单元
+    自动归入待核对。
+    """
     from backend.error_causes import CAUSE_KIND_CATEGORIES, normalize_cause_category
 
     if not isinstance(payload, dict) or not isinstance(payload.get("groups"), list):
         raise ValueError("invalid cause classification")
-    known = {item["id"] for item in source["evidence"]}
-    step_ids = _rubric_step_ids(source.get("rubric"))
+    units = _step_units(source)
+    units_by_evidence: dict[str, list[str]] = {}
+    for unit_id, (evidence_id, _unit) in units.items():
+        units_by_evidence.setdefault(evidence_id, []).append(unit_id)
+    known = {item["id"] for item in source["evidence"]} | set(units)
     known_reasons = {
         str(item.get("reason") or "").strip()
         for item in source.get("known_patterns") or []
@@ -391,16 +483,14 @@ def normalize_cause_result(payload: Any, source: dict[str, Any]) -> dict[str, An
             category = normalize_cause_category(group.get("category"))
             if category is None or category not in CAUSE_KIND_CATEGORIES[kind]:
                 raise ValueError("invalid cause category")
-        step_id = group.get("step_id")
-        if step_id is not None:
-            if not isinstance(step_id, str) or step_id.strip() not in step_ids:
-                raise ValueError("invalid step reference")
-            step_id = step_id.strip()
         members = ids(group.get("evidence_ids"))
         previous_id = group.get("source_question_id")
         if kind == "carry_forward":
             if not isinstance(previous_id, str) or not members or any(
-                previous_id not in {item["question_id"] for item in source_evidence[key].get("previous_answers", [])}
+                previous_id not in {
+                    item["question_id"]
+                    for item in source_evidence[units.get(key, (key,))[0]].get("previous_answers", [])
+                }
                 for key in members
             ):
                 raise ValueError("invalid previous question reference")
@@ -412,7 +502,6 @@ def normalize_cause_result(payload: Any, source: dict[str, Any]) -> dict[str, An
                 (manifestation.strip(), previous_id), set()).update(members)
             meta.setdefault(key, {
                 "category": category,
-                "step_id": step_id,
                 "pattern_status": "existing" if group["reason"].strip() in known_reasons else "candidate",
             })
     positive = ids(payload.get("positive_ids", []))
@@ -420,11 +509,21 @@ def normalize_cause_result(payload: Any, source: dict[str, Any]) -> dict[str, An
     assigned = {key for variants in groups.values() for members in variants.values() for key in members}
     if assigned & (positive | uncertain) or positive & uncertain:
         raise ValueError("conflicting evidence classification")
-    uncertain |= known - assigned - positive - uncertain
+    covered = assigned | positive | uncertain
+    # 带步骤证据的整条 id：自身或任一步骤单元被引用都视为已覆盖；单元则必须被逐一引用。
+    uncertain |= {
+        key for key in known - covered
+        if key in units
+        or not any(unit_id in covered for unit_id in units_by_evidence.get(key, ()))
+    }
     return {
         "groups": [{"kind": kind, "reason": reason,
                     "category": meta[(kind, reason)]["category"],
-                    "step_id": meta[(kind, reason)]["step_id"],
+                    "step_ids": sorted({
+                        str(units[key][1]["step_id"])
+                        for members in variants.values() for key in members
+                        if key in units and units[key][1].get("step_id")
+                    }),
                     "pattern_status": meta[(kind, reason)]["pattern_status"],
                     "evidence_ids": sorted({key for members in variants.values() for key in members}),
                     "manifestations": [{"description": description, "source_question_id": previous_id,
@@ -435,46 +534,100 @@ def normalize_cause_result(payload: Any, source: dict[str, Any]) -> dict[str, An
     }
 
 
-def student_error_records(data: Any, source: dict[str, Any], result: dict[str, Any]) -> list[dict[str, Any]]:
-    """把本题归并结果投影成学生×题错因记录；证据哈希供读取侧校验输入是否变化。"""
-    from backend.error_causes import CAUSE_KIND_CATEGORIES
+def student_error_records(
+    data: Any, source: dict[str, Any], result: dict[str, Any], *, by_step: bool = True,
+) -> list[dict[str, Any]]:
+    """把本题归并结果投影成学生×题错因记录；证据哈希供读取侧校验输入是否变化。
 
+    按步骤整理的证据中，步骤单元成员各自物化一行（带判定点与证据版本）；
+    整条证据成员仍物化为题级记录（step 字段为空）。by_step=False 按 v3
+    口径物化兼容输入的结果。
+    """
+    from backend.error_causes import CAUSE_KIND_CATEGORIES
+    from backend.session_analysis import parent_question_id
+    from solution_answer_guard import rubric_scoring_unit_steps
+
+    hash_items = source["evidence"] if by_step else [
+        {key: value for key, value in item.items() if key != "failed_steps"}
+        for item in source["evidence"]
+    ]
     hash_to_id = {
-        _evidence_hash(_evidence_key(item)): item["id"] for item in source["evidence"]
+        _evidence_hash(_evidence_key(item)): item["id"] for item in hash_items
     }
+    units = _step_units(source)
+    rubric = getattr(data, "rubric", None)
+    rubric_steps = rubric_scoring_unit_steps(
+        rubric if isinstance(rubric, dict) else {}, source["question_id"])
+    version_id = next(
+        (
+            str(question["source_evidence_version_id"])
+            for question in ((rubric or {}).get("questions") or [])
+            if isinstance(question, dict)
+            and parent_question_id(str(question.get("question_id") or ""))
+            == parent_question_id(source["question_id"])
+            and question.get("source_evidence_version_id")
+        ),
+        "",
+    ) if isinstance(rubric, dict) else ""
     rows: list[dict[str, Any]] = []
     for student in data.students:
         for record in student.records:
             if record.question_id != source["question_id"] or not record.lost:
                 continue
-            digest = _evidence_hash(_evidence_key(_cause_evidence(student, record)))
+            digest = _evidence_hash(
+                _evidence_key(_cause_evidence(student, record, data, by_step=by_step)))
             evidence_id = hash_to_id.get(digest)
             if evidence_id is None:
                 continue
             for group in result.get("groups") or []:
                 if group.get("kind") not in CAUSE_KIND_CATEGORIES:
                     continue
-                descriptions = [
-                    variant["description"] for variant in group.get("manifestations") or []
-                    if evidence_id in set(variant.get("evidence_ids") or [])
-                ]
-                if not descriptions:
+                bare_descriptions: list[str] = []
+                unit_rows: list[tuple[dict[str, Any], str]] = []
+                seen_units: set[tuple[str, str]] = set()
+                for variant in group.get("manifestations") or []:
+                    for member in variant.get("evidence_ids") or []:
+                        if member in units:
+                            parent_id, unit = units[member]
+                            if parent_id != evidence_id:
+                                continue
+                            key = (member, str(variant.get("description") or ""))
+                            if key not in seen_units:
+                                seen_units.add(key)
+                                unit_rows.append((unit, str(variant.get("description") or "")))
+                        elif member == evidence_id:
+                            bare_descriptions.append(str(variant.get("description") or ""))
+                if not bare_descriptions and not unit_rows:
                     continue
-                rows.append({
+                base = {
                     "student_id": student.student_id,
                     "question_id": source["question_id"],
                     "evidence_hash": digest,
                     "kind": group["kind"],
                     "category": group.get("category"),
                     "pattern": group["reason"],
-                    "manifestation": "；".join(descriptions),
-                    "step_id": group.get("step_id"),
                     "pattern_status": group.get("pattern_status") or "candidate",
                     "score": record.score,
                     "max_score": record.max_score,
                     "lost_points": record.lost_points,
-                    "version": CAUSE_ANALYSIS_VERSION,
-                })
+                    "version": (
+                        CAUSE_ANALYSIS_VERSION if by_step else CAUSE_PRE_STEP_VERSION
+                    ),
+                }
+                if bare_descriptions:
+                    rows.append({**base,
+                                 "manifestation": "；".join(bare_descriptions),
+                                 "step_id": group.get("step_id"), "part_id": None,
+                                 "evidence_point_ids": None, "evidence_version_id": None})
+                for unit, description in unit_rows:
+                    rubric_step = _rubric_step_lookup(
+                        rubric_steps, unit.get("step_id"), unit.get("part_id")) or {}
+                    rows.append({**base,
+                                 "manifestation": description,
+                                 "step_id": unit.get("step_id"),
+                                 "part_id": unit.get("part_id") or rubric_step.get("part_id"),
+                                 "evidence_point_ids": list(rubric_step.get("evidence_point_ids") or []),
+                                 "evidence_version_id": version_id or None})
     return rows
 
 
@@ -537,13 +690,18 @@ def apply_cause_results(
         bank_context = session_bank_context(question_bank_path, int(session_id))
         bank_map = {parent: int(ctx["bank_id"]) for parent, ctx in bank_context.items()}
     sources = {source["question_id"]: source for source in all_inputs}
-    ready, failed, legacy_count, outdated_count, stale = 0, 0, 0, 0, False
+    ready, failed, legacy_count, outdated_count, pre_step_count, stale = 0, 0, 0, 0, 0, False
     times, origins = [], set()
     question_pages = {item["question_id"]: item for item in (page or {}).get("questions", [])}
     for question_id, source in sources.items():
         saved = stored.get(question_id) or {}
-        fresh = (saved.get("version") == CAUSE_ANALYSIS_VERSION and cause_input_matches(saved, source)
+        # 无步骤题目的 v3 输入与 v4 相同，其 v3 结果按指纹即为 fresh。
+        fresh = (saved.get("version") in (CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION)
+                 and cause_input_matches(saved, source)
                  and isinstance(saved.get("result"), dict))
+        pre_step = (not fresh and saved.get("version") == CAUSE_PRE_STEP_VERSION
+                    and isinstance(saved.get("result"), dict)
+                    and cause_input_matches(saved, _pre_step_source(source)))
         old_version = saved.get("version")
         old_source = saved.get("input") or {}
         compatible = isinstance(saved.get("result"), dict) and all(
@@ -554,7 +712,7 @@ def apply_cause_results(
         legacy = compatible and old_version == CAUSE_LEGACY_VERSION
         outdated = compatible and old_version == CAUSE_OUTDATED_VERSION
         text_match = legacy or outdated
-        if not fresh:
+        if not fresh and not pre_step:
             stale |= bool(saved.get("result"))
             failed += int(bool(saved.get("failed")))
             if not text_match:
@@ -563,8 +721,10 @@ def apply_cause_results(
                 legacy_count += 1
             else:
                 outdated_count += 1
-        else:
+        elif fresh:
             ready += 1
+        else:
+            pre_step_count += 1
         times.append(saved.get("generated_at") or "")
         origins.add(saved.get("origin") or "model")
         question = question_pages.get(question_id)
@@ -574,14 +734,22 @@ def apply_cause_results(
         for student in data.students:
             for record in student.records:
                 if record.question_id == question_id and record.lost:
-                    key = _cause_text(record) if text_match else _evidence_key(_cause_evidence(student, record))
+                    key = _cause_text(record) if text_match else _evidence_key(
+                        _cause_evidence(student, record, data, by_step=not pre_step))
                     by_evidence.setdefault(key, set()).add(student.student_id)
-        evidence = {item["id"]: item for item in (old_source if text_match else source)["evidence"]}
+        display_source = old_source if text_match or pre_step else source
+        evidence = {item["id"]: item for item in display_source["evidence"]}
+        unit_parent = {
+            unit["id"]: item["id"]
+            for item in evidence.values()
+            for unit in item.get("failed_steps") or []
+            if isinstance(unit, dict) and isinstance(unit.get("id"), str)
+        }
 
         def details(member_ids: list[str]) -> list[dict[str, Any]]:
             result = []
             for key in member_ids:
-                item = evidence.get(key)
+                item = evidence.get(key) or evidence.get(unit_parent.get(key, ""))
                 if item is None:
                     continue
                 lookup = item["text"] if text_match else _evidence_key(item)
@@ -607,6 +775,8 @@ def apply_cause_results(
                     cause["category"] = group["category"]
                 if group.get("step_id"):
                     cause["step_id"] = group["step_id"]
+                if group.get("step_ids"):
+                    cause["step_ids"] = group["step_ids"]
                 if group.get("pattern_status"):
                     cause["pattern_status"] = group["pattern_status"]
                 cause["teacher_edited"] = bool(group.get("teacher_edited"))
@@ -636,19 +806,23 @@ def apply_cause_results(
         question["causes_grouped"] = True
         question["causes_legacy"] = bool(legacy)
         question["causes_outdated"] = bool(outdated)
+        question["causes_by_step"] = not pre_step
     total = len(sources)
     return {"status": "ready" if ready == total else "partial" if ready else "not_generated",
             "pending_questions": total - ready, "total_questions": total, "failed_questions": failed,
             "legacy_questions": legacy_count, "outdated_questions": outdated_count,
+            "pre_step_questions": pre_step_count,
             "stale": stale, "generated_at": max(times, default="") or None,
             "origin": "assistant" if origins == {"assistant"} else "model" if origins else None}
 
 
 def _ensure_error_records(store: Any, session_id: int, state: Any,
-                          source: dict[str, Any], saved: dict[str, Any], data: Any) -> None:
+                          source: dict[str, Any], saved: dict[str, Any], data: Any,
+                          *, by_step: bool = True) -> None:
     """已整理且输入未变的题：补齐早期任务未物化的学生错因记录。"""
-    fingerprint = ((saved.get("input_fingerprint") or _cause_input_fingerprint(saved.get("input") or source))
-                   if cause_input_matches(saved, source) else _cause_input_fingerprint(source))
+    match_source = source if by_step else _pre_step_source(source)
+    fingerprint = ((saved.get("input_fingerprint") or _cause_input_fingerprint(saved.get("input") or match_source))
+                   if cause_input_matches(saved, match_source) else _cause_input_fingerprint(match_source))
     records_state = dict(state.get("error_records") or {})
     envelope = records_state.get(source["question_id"]) or {}
     if envelope.get("input_fingerprint") == fingerprint and isinstance(envelope.get("records"), list):
@@ -656,7 +830,8 @@ def _ensure_error_records(store: Any, session_id: int, state: Any,
     records_state[source["question_id"]] = {
         "input_fingerprint": fingerprint,
         "generated_at": _now_iso(),
-        "records": student_error_records(data, source, saved["result"]),
+        # 旧口径结果的组成员引用旧编号，物化时要用重排后的输入。
+        "records": student_error_records(data, match_source, saved["result"], by_step=by_step),
     }
     store.save(session_id, error_records=records_state)
 
@@ -883,13 +1058,16 @@ def run_cause_analysis(
     context: Any, *, db: Any, data_root: Path | None, store: Any,
     llm_client_factory: Callable[[], Any] | None,
     retry_failed: bool = True,
+    upgrade_pre_step: bool = True,
     progress_band: tuple[float, float] = (0.0, 1.0),
     progress_stage: str = "class_analysis",
 ) -> dict[str, object]:
     """逐题整理错因。
 
     retry_failed=False 用于个人报告导出的前置阶段：整理失败的题不自动重发，
-    报告照常生成、该题不显示错误类型；手动「整理错因」保持默认重发行为。
+    报告照常生成、该题不显示错误类型；同一阶段 upgrade_pre_step=False：
+    仍匹配旧口径的 v3 结果继续作为兼容输入展示，不为升级调用模型。
+    手动「整理错因」保持默认：v3 兼容结果重发并升级为按步骤整理。
 
     已关联题库的选择题先复用题库选项预测，缺项才补做选项诊断；填空题先查错误答案库，全覆盖零调用，
     否则走 v3 整理并把新错法按规范化答案回写候选库。
@@ -936,10 +1114,18 @@ def run_cause_analysis(
         old = ((state.get("cause_analysis") or {}).get("questions")) or {}
         saved = old.get(source["question_id"]) or {}
         fingerprint = _cause_input_fingerprint(source)
-        if saved.get("version") == CAUSE_ANALYSIS_VERSION and cause_input_matches(saved, source) and saved.get("result"):
+        if (saved.get("version") in (CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION)
+                and cause_input_matches(saved, source) and saved.get("result")):
             _ensure_error_records(store, session_id, state, source, saved, data)
             continue
-        if (not retry_failed and saved.get("failed")
+        if (saved.get("version") == CAUSE_PRE_STEP_VERSION
+                and cause_input_matches(saved, _pre_step_source(source))):
+            if not upgrade_pre_step:
+                if saved.get("result"):
+                    _ensure_error_records(store, session_id, state, source, saved, data,
+                                          by_step=False)
+                continue
+        elif (not retry_failed and saved.get("failed")
                 and saved.get("failed_input_fingerprint") == fingerprint):
             continue
         context.report(
@@ -1013,19 +1199,29 @@ def run_cause_analysis(
 
 
 def student_error_map(
-    state: Any, student: Any, sources: list[dict[str, Any]],
+    state: Any, student: Any, sources: list[dict[str, Any]], data: Any,
 ) -> dict[str, list[dict[str, Any]]]:
-    """{question_id: [错因记录]}：输入指纹与证据哈希都一致才返回，过期题不展示。"""
+    """{question_id: [错因记录]}：输入指纹与证据哈希都一致才返回，过期题不展示。
+
+    v3 兼容输入（按步骤拆分前）按其当时的口径计算证据哈希。
+    """
     envelopes = (state or {}).get("error_records") or {}
     saved_questions = ((state or {}).get("cause_analysis") or {}).get("questions") or {}
-    fingerprints = {
-        source["question_id"]: (
-            (saved_questions[source["question_id"]].get("input_fingerprint")
-             or _cause_input_fingerprint(saved_questions[source["question_id"]]["input"]))
-            if cause_input_matches(saved_questions.get(source["question_id"]) or {}, source)
+    fingerprints: dict[str, str] = {}
+    by_step: dict[str, bool] = {}
+    for source in sources:
+        saved = saved_questions.get(source["question_id"]) or {}
+        pre_step = (saved.get("version") == CAUSE_PRE_STEP_VERSION
+                    and cause_input_matches(saved, _pre_step_source(source))
+                    and not cause_input_matches(saved, source))
+        source = _pre_step_source(source) if pre_step else source
+        by_step[source["question_id"]] = not pre_step
+        fingerprints[source["question_id"]] = (
+            (saved.get("input_fingerprint")
+             or _cause_input_fingerprint(saved.get("input") or source))
+            if cause_input_matches(saved, source)
             else _cause_input_fingerprint(source)
-        ) for source in sources
-    }
+        )
     out: dict[str, list[dict[str, Any]]] = {}
     for record in student.records:
         if not record.lost:
@@ -1033,7 +1229,8 @@ def student_error_map(
         envelope = envelopes.get(record.question_id) or {}
         if envelope.get("input_fingerprint") != fingerprints.get(record.question_id):
             continue
-        digest = _evidence_hash(_evidence_key(_cause_evidence(student, record)))
+        digest = _evidence_hash(_evidence_key(
+            _cause_evidence(student, record, data, by_step=by_step.get(record.question_id, True))))
         rows = [
             dict(row) for row in envelope.get("records") or []
             if row.get("student_id") == student.student_id and row.get("evidence_hash") == digest
@@ -1084,13 +1281,94 @@ def session_error_records(
         sources = build_cause_inputs(data)
         out: dict[int, dict[str, list[dict[str, Any]]]] = {}
         for student in data.students:
-            mapped = student_error_map(state, student, sources)
+            mapped = student_error_map(state, student, sources, data)
             if mapped:
                 out[int(student.student_id)] = mapped
+        _enrich_error_record_skills(data, out, db)
         return out
     except Exception:
         LOGGER.warning("load session %s error records failed", session_id, exc_info=True)
         return {}
+
+
+def _enrich_error_record_skills(data: Any, out: dict[int, dict[str, list[dict[str, Any]]]], db: Any) -> None:
+    """给物化记录补充技能链接；任何失败只跳过补充，绝不丢记录。"""
+    try:
+        from backend.session_analysis import parent_question_id, question_bank_db_path
+        from question_bank.solution_evidence.knowledge_links import load_point_links
+        from solution_answer_guard import rubric_scoring_unit_steps
+
+        bank_path = question_bank_db_path(Path(db.db_path))
+        rubric = getattr(data, "rubric", None)
+        if bank_path is None or not isinstance(rubric, dict):
+            return
+        rubric_questions = {
+            str(question.get("question_id") or ""): question
+            for question in rubric.get("questions") or []
+            if isinstance(question, dict)
+        }
+        version_by_qid = {
+            source_qid: next(
+                (str(question.get("source_evidence_version_id") or "")
+                 for qid, question in rubric_questions.items()
+                 if parent_question_id(qid) == parent_question_id(source_qid)
+                 and question.get("source_evidence_version_id")),
+                "",
+            )
+            for source_qid in {
+                str(row.get("question_id") or "")
+                for by_question in out.values() for rows in by_question.values() for row in rows
+            }
+        }
+        versions = {version for version in version_by_qid.values() if version} | {
+            str(row.get("evidence_version_id") or "")
+            for by_question in out.values() for rows in by_question.values() for row in rows
+            if row.get("evidence_version_id")
+        }
+        if not versions:
+            return
+        grouped = load_point_links(bank_path, sorted(versions), None)
+        question_point_ids = {
+            qid: list(dict.fromkeys(
+                str(point)
+                for step in rubric_scoring_unit_steps(rubric, qid)
+                for point in step.get("evidence_point_ids") or []
+            ))
+            for qid in version_by_qid
+        }
+
+        def direct_keys(version_id: str, point_ids: Iterable[str]) -> list[str]:
+            return sorted({
+                str(link.stable_key)
+                for point_id in point_ids
+                for link in grouped.get(version_id, {}).get(str(point_id), ())
+                if link.role == "direct" and link.resolution_status == "resolved"
+                and str(link.stable_key or "").startswith("sk_")
+            })
+
+        rows = [
+            row
+            for by_question in out.values() for entries in by_question.values() for row in entries
+        ]
+        enriched: list[tuple[dict[str, Any], list[str], str | None]] = []
+        for row in rows:
+            if row.get("evidence_version_id") and row.get("evidence_point_ids"):
+                enriched.append((
+                    row,
+                    direct_keys(str(row["evidence_version_id"]), row["evidence_point_ids"]),
+                    "step",
+                ))
+                continue
+            keys = direct_keys(
+                version_by_qid.get(str(row.get("question_id") or ""), ""),
+                question_point_ids.get(str(row.get("question_id") or ""), []),
+            )
+            enriched.append((row, keys if len(keys) == 1 else [], "question" if len(keys) == 1 else None))
+        for row, keys, basis in enriched:
+            row["skill_keys"] = keys
+            row["skill_basis"] = basis
+    except Exception:
+        LOGGER.warning("enrich error record skills failed", exc_info=True)
 
 
 def question_category_counts(
@@ -1172,7 +1450,8 @@ def edit_cause_pattern(
     state = store.load(session_id) or {}
     questions = dict(((state.get("cause_analysis") or {}).get("questions")) or {})
     saved = questions.get(question_id) or {}
-    if saved.get("version") != CAUSE_ANALYSIS_VERSION or not isinstance(saved.get("result"), dict):
+    if saved.get("version") not in (CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION) \
+            or not isinstance(saved.get("result"), dict):
         raise CausePatternEditError(
             "cause_pattern_not_ready", "该题尚未完成新版错因整理，不能修改错法")
     group = next(
@@ -1221,18 +1500,23 @@ def edit_cause_pattern(
             if (row["trigger_kind"], row["trigger_value"]) in triggers
         ]
         if not targets and not triggers:
+            from backend.error_patterns import cause_group_bank_triggers
             from question_bank.database.schema import connect
 
-            step_id = str(group.get("step_id") or "").strip()
-            trigger_kind = "step" if step_id else "observation"
+            envelope = ((state.get("error_records") or {}).get(question_id)) or {}
+            candidates = cause_group_bank_triggers(
+                saved, group, envelope.get("records"))
             with connect(question_bank_path) as conn:
                 for bank_id in ctx["bank_ids"]:
-                    target = current_pattern_for_snapshot(
-                        conn, question_id=int(bank_id), old_pattern=reason,
-                        trigger_kind=trigger_kind, trigger_value=step_id,
-                    )
-                    if target is not None:
-                        targets.append(target)
+                    for trigger_kind, trigger_value in candidates:
+                        target = current_pattern_for_snapshot(
+                            conn, question_id=int(bank_id), old_pattern=reason,
+                            trigger_kind=trigger_kind, trigger_value=trigger_value,
+                        )
+                        if target is not None and all(
+                            target["id"] != existing["id"] for existing in targets
+                        ):
+                            targets.append(target)
         if targets:
             from question_bank.database.schema import connect
 
@@ -1249,12 +1533,14 @@ def edit_cause_pattern(
                 old_pattern=reason, new_pattern=new_reason, category=category,
             )
             if not changed:
-                step_id = str(group.get("step_id") or "").strip()
-                trigger_kind = "step" if step_id else "observation"
+                from backend.error_patterns import cause_group_bank_triggers
+
+                envelope = ((state.get("error_records") or {}).get(question_id)) or {}
+                candidates = set(cause_group_bank_triggers(
+                    saved, group, envelope.get("records")))
                 archived = any(
                     row["status"] == "merged" and row["pattern"] == reason
-                    and row["trigger_kind"] == trigger_kind
-                    and row["trigger_value"] == step_id
+                    and (row["trigger_kind"], row["trigger_value"]) in candidates
                     for rows in bank_rows.values() for row in rows
                 )
                 if archived:

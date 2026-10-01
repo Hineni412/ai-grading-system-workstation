@@ -155,3 +155,63 @@ it('shows each wrong option, edits and rejects the shared question pattern, then
   expect(section.textContent).toContain('新题的错法')
   expect(section.querySelector('.qb-patterns__editor')).toBeNull()
 })
+
+it('renders all linked skills with their derivation source', async () => {
+  vi.spyOn(questionBankApi, 'getCurriculum').mockRejectedValue(new Error('not needed'))
+  const pinia = createPinia()
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/authoring', component: { template: '<div />' } }],
+  })
+  const host = document.createElement('div')
+  document.body.append(host)
+  const app = createApp(QuestionInspector)
+  app.use(pinia)
+  app.use(router)
+  app.mount(host)
+  apps.push(app)
+  const bank = useQuestionBankStore(pinia)
+  const items: QuestionErrorPattern[] = [
+    {
+      id: 31, category: '过程与依据', pattern: '判定点多技能错法',
+      explanation: '', trigger_kind: 'step', trigger_value: 'ep-1',
+      status: 'confirmed', source: 'ai_auto', has_evidence: true,
+      skill_key: null, skill_label: null,
+      skill_keys: ['sk_1', 'sk_2'], skill_labels: ['求平方根', '验根'],
+      skill_source: 'criterion',
+    },
+    {
+      id: 32, category: '过程与依据', pattern: '教师指定技能错法',
+      explanation: '', trigger_kind: 'observation', trigger_value: '',
+      status: 'confirmed', source: 'teacher_edit', has_evidence: false,
+      skill_key: 'sk_1', skill_label: '求平方根',
+      skill_keys: ['sk_1'], skill_labels: ['求平方根'],
+      skill_source: 'teacher',
+    },
+    {
+      id: 33, category: '概念理解', pattern: '本题唯一技能错法',
+      explanation: '', trigger_kind: 'option', trigger_value: 'C',
+      status: 'confirmed', source: 'ai_auto', has_evidence: false,
+      skill_key: 'sk_3', skill_label: '识别图形',
+      skill_keys: ['sk_3'], skill_labels: ['识别图形'],
+      skill_source: 'question',
+    },
+  ]
+  bank.selectedQuestionId = 1
+  bank.detail = detail(items)
+  bank.detailState = 'ready'
+  await nextTick()
+
+  const section = document.body.querySelector<HTMLElement>('.qb-patterns')!
+  // 判定点触发的错法列出全部直达技能，标注由判定点得出。
+  expect(section.textContent).toContain('关联技能：求平方根、验根（由判定点得出）')
+  expect(section.textContent).toContain('关联技能：求平方根（教师设定）')
+  expect(section.textContent).toContain('关联技能：识别图形（由本题唯一技能得出）')
+
+  // 编辑面板保留教师改选入口；判定点来源给出提示。
+  const stepRow = [...section.querySelectorAll<HTMLElement>('.qb-patterns__item')]
+    .find((row) => row.textContent?.includes('判定点多技能错法'))!
+  stepRow.querySelector<HTMLButtonElement>('.qb-link')!.click()
+  await nextTick()
+  expect(section.querySelector('.qb-patterns__editor select')).not.toBeNull()
+})
