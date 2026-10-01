@@ -258,7 +258,7 @@ def bank_question_row(
                 " FROM questions WHERE id=?",
                 (int(question_id),),
             ).fetchone()
-    except Exception:
+    except (OSError, sqlite3.Error):
         return None
     return dict(row) if row else None
 
@@ -280,7 +280,7 @@ def bank_confirmed_triggers(
             return list_patterns(
                 conn, ids, statuses=("confirmed", "candidate", "merged", "rejected")
             )
-    except Exception:
+    except (OSError, sqlite3.Error):
         return {}
 
 

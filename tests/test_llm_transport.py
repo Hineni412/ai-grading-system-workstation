@@ -3,7 +3,35 @@ from __future__ import annotations
 import importlib
 from types import SimpleNamespace
 
+import pytest
+
 from backend.llm import LLMRequestKind, NullCallTraceSink, NullUsageSink
+
+
+@pytest.mark.parametrize("error", [RuntimeError("synthetic callback detail"), KeyboardInterrupt()])
+def test_usage_callback_preserves_response_and_control_signals(error, caplog) -> None:
+    from llm_client import LLMClient
+
+    client = LLMClient.__new__(LLMClient)
+    gateway = _RecordingGateway()
+
+    def broken_callback(*_args):
+        raise error
+
+    def request():
+        return client._create_chat_completion(
+            client=object(), model="synthetic-model", messages=[], expect_json=False,
+            gateway=gateway, usage_callback=broken_callback,
+        )
+
+    if isinstance(error, Exception):
+        assert request() == "chat-response"
+        assert "usage callback failed (RuntimeError)" in caplog.text
+        assert "synthetic callback detail" not in caplog.text
+    else:
+        with pytest.raises(KeyboardInterrupt):
+            request()
+    assert len(gateway.calls) == 1
 
 
 def _transport():

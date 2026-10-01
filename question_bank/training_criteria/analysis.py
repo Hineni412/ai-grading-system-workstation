@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import math
 import re
 import threading
@@ -1204,7 +1205,7 @@ class CombinedQuestionAnalysisModule:
 
         worker_count = min(
             len(batches),
-            _gateway_parallel_limit(self.gateway),
+            gateway_parallel_limit(self.gateway),
         )
         base_request_count = int(
             self.repository.operation_summary(operation_id).get(
@@ -1638,9 +1639,12 @@ class CombinedQuestionAnalysisModule:
                     ),
                 }
             )
-        except Exception:
+        except Exception as exc:
             # Progress reporting is observational. A UI/store failure must not
             # turn a saved model result into a failed analysis request.
+            logging.getLogger(__name__).warning(
+                "analysis progress callback failed (%s)", type(exc).__name__,
+            )
             return
 
     def _record_projection_note(
@@ -3517,11 +3521,12 @@ def _selected_projections(
     return (projection,)
 
 
-def _gateway_parallel_limit(gateway: QuestionAnalysisGateway) -> int:
+def gateway_parallel_limit(gateway: QuestionAnalysisGateway) -> int:
+    """Use the channel parallelism, bounded to 1..100 for every analysis entry."""
     value = getattr(gateway, "max_parallel_requests", 1)
     try:
-        return max(1, int(value))
-    except (TypeError, ValueError):
+        return max(1, min(100, int(value)))
+    except (TypeError, ValueError, OverflowError):
         return 1
 
 
@@ -3828,4 +3833,5 @@ __all__ = [
     "training_criteria_from_solution_evidence",
     "training_criterion_source_reference",
     "plan_analysis_batches",
+    "gateway_parallel_limit",
 ]

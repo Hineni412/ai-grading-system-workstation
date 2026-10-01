@@ -211,6 +211,10 @@ def test_whole_question_topics_still_block_future_chapters_after_skill_refinemen
         )
     candidates, _, _ = module._source_snapshot()
     candidate = next(q for q in candidates if q["question_id"] == 2)
+    assert [
+        (part["part_id"], part["skill_keys"], part["topic_keys"])
+        for part in candidate["target_facets"]
+    ] == [("part1", [SKILL], [TOPIC])]
     assert future in candidate["required_keys"]
     assert future not in candidate["stable_keys"]
     assert future not in candidate["target_facets"][0]["topic_keys"]

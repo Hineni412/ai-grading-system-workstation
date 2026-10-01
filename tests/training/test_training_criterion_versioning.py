@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -49,6 +50,40 @@ def _seed(database: Path, count: int = 8) -> None:
                 ),
             ),
         )
+
+
+def test_asset_loading_keeps_order_and_external_sqlite_on_calling_thread(tmp_path, monkeypatch):
+    from question_bank.training_criteria import adapters
+
+    database = tmp_path / "bank.db"
+    _seed(database)
+    caller = threading.get_ident()
+    worker_threads = set()
+    barrier = threading.Barrier(4, timeout=10)
+    original_rich = adapters.load_question_rich_content
+
+    def read_rich(*args, **kwargs):
+        worker_threads.add(threading.get_ident())
+        barrier.wait()
+        return original_rich(*args, **kwargs)
+
+    monkeypatch.setattr(adapters, "load_question_rich_content", read_rich)
+    requested = (8, 2, 7, 3, 6, 4, 5, 1, 8)
+    with connect(database) as connection:
+        inputs = adapters.QuestionAnalysisInputLoader(
+            db_path=database, data_root=tmp_path, external_connection=connection,
+        ).load(requested, curriculum_volume_id="bnu24-math-g8-upper")
+        assert connection.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 8
+    assert [item.question_id for item in inputs] == list(requested[:-1])
+    assert [item.tagging_context.question_text for item in inputs] == [f"合成题目 {qid}" for qid in requested[:-1]]
+    assert all(item.tagging_context.curriculum_volume_id == "bnu24-math-g8-upper" for item in inputs)
+    assert caller not in worker_threads and len(worker_threads) == 4
+    # A later edit must be read on the next request, independently of workers.
+    monkeypatch.setattr(adapters, "load_question_rich_content", original_rich)
+    with connect(database) as connection:
+        connection.execute("UPDATE questions SET question_text='更新后的题目' WHERE id=8")
+    refreshed = adapters.QuestionAnalysisInputLoader(db_path=database, data_root=tmp_path).load((8,))
+    assert refreshed[0].tagging_context.question_text == "更新后的题目"
 
 
 def _question(

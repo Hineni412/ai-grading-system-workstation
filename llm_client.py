@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import base64
 import hashlib
 import io
@@ -493,8 +495,13 @@ class LLMClient:
                 _next_attempt=next_attempt,
             )
             if usage_callback:
-                try: usage_callback(res, kwargs)
-                except: pass
+                try:
+                    usage_callback(res, kwargs)
+                except Exception as exc:
+                    # Usage reporting must not invalidate a completed model response.
+                    logging.getLogger(__name__).warning(
+                        "usage callback failed (%s)", type(exc).__name__,
+                    )
             return res
 
         # Compatibility flags remain in the private signature while older
@@ -567,7 +574,7 @@ def _compress_image_for_api(image_bytes: bytes) -> bytes:
                 quality -= 6
 
             return best_bytes or image_bytes
-    except Exception:
+    except (OSError, ValueError, Image.DecompressionBombError):
         return image_bytes
 
 

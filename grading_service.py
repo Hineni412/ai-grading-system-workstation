@@ -854,10 +854,10 @@ class GradingService:
                 if paper_id in batch_run_item_by_paper:
                     _try_run_record_write(
                         "run_item_failed",
-                        lambda: run_store.set_item_status(
+                        lambda failure_reason=str(exc): run_store.set_item_status(
                             batch_run_item_by_paper[paper_id],
                             "failed",
-                            disposition_reason=str(exc),
+                            disposition_reason=failure_reason,
                         ),
                     )
                 yield {
@@ -1083,10 +1083,10 @@ class GradingService:
                 if paper_id in batch_run_item_by_paper:
                     _try_run_record_write(
                         "run_item_failed",
-                        lambda: run_store.set_item_status(
+                        lambda failure_reason=str(exc): run_store.set_item_status(
                             batch_run_item_by_paper[paper_id],
                             "failed",
-                            disposition_reason=str(exc),
+                            disposition_reason=failure_reason,
                         ),
                     )
                 yield {

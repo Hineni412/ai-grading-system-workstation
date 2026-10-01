@@ -202,7 +202,7 @@ def _read_standard_page_manifest(page_dir: Path) -> dict[str, Any]:
         return {}
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, ValueError):
         return {}
     return payload if isinstance(payload, dict) else {}
 

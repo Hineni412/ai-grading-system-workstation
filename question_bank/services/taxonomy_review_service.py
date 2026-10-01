@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from question_bank.atomic_files import replace_with_retry
+
 import copy
 import hashlib
 import json
@@ -7,7 +9,6 @@ import os
 import re
 import tempfile
 import threading
-import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -990,18 +991,6 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def _replace_with_retry(source: Path, destination: Path) -> None:
-    # Windows file scanners can hold a freshly written temporary file open
-    # briefly; retry the atomic rename a few times before giving up.
-    for attempt in range(12):
-        try:
-            os.replace(source, destination)
-            return
-        except PermissionError:
-            if attempt == 11:
-                raise
-            time.sleep(min(0.05 * (attempt + 1), 0.4))
-
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1017,6 +1006,6 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        _replace_with_retry(temporary, path)
+        replace_with_retry(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)

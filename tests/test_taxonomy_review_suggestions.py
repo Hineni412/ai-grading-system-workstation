@@ -28,6 +28,21 @@ CATALOG_PATH = (
 )
 
 
+def test_progress_callback_failure_keeps_original_snapshot_and_reports_type(caplog) -> None:
+    from question_bank.services.taxonomy_review_suggestions import _safe_progress_callback
+
+    snapshot = {"summary": {"completed": 1}}
+
+    def broken_callback(payload):
+        payload["summary"]["completed"] = 999
+        raise RuntimeError("synthetic callback detail")
+
+    _safe_progress_callback(broken_callback, snapshot)
+    assert snapshot == {"summary": {"completed": 1}}
+    assert "RuntimeError" in caplog.text
+    assert "synthetic callback detail" not in caplog.text
+
+
 def _governance(tmp_path: Path) -> TaxonomyGovernance:
     # 显式传入本测试私有库路径：缺省会指向会话级共享题库库，
     # 全量跑时被其他测试的应用启动装上 revision 4 的签入标准，与本文件词表 revision 冲突。

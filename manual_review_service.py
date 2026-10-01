@@ -441,7 +441,7 @@ class ManualReviewService:
             if qid:
                 try:
                     result[qid] = float(q.get("max_score", 0))
-                except Exception:
+                except (TypeError, ValueError, OverflowError):
                     pass
 
             parts = q.get("parts")
@@ -455,7 +455,7 @@ class ManualReviewService:
                     try:
                         if pid != qid:
                             result[pid] = float(part.get("part_score", 0))
-                    except Exception:
+                    except (TypeError, ValueError, OverflowError):
                         continue
 
         return result

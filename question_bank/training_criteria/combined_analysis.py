@@ -37,6 +37,7 @@ from question_bank.training_criteria.analysis import (
     criteria_from_confirmed_rubric,
     grading_config_skeleton_from_solution_evidence,
     plan_analysis_batches,
+    gateway_parallel_limit,
     solution_evidence_source_content_hash,
     training_criteria_from_solution_evidence,
     training_criterion_source_reference,
@@ -1817,7 +1818,7 @@ class DeferredCombinedQuestionAnalysisModule:
 
         worker_count = min(
             len(planned_requests),
-            _gateway_parallel_limit(self.gateway),
+            gateway_parallel_limit(self.gateway),
         )
         executor = ThreadPoolExecutor(
             max_workers=max(1, worker_count),
@@ -1883,7 +1884,7 @@ class DeferredCombinedQuestionAnalysisModule:
         def fill_available_slots() -> None:
             current_window = min(
                 worker_count,
-                _gateway_parallel_limit(self.gateway),
+                gateway_parallel_limit(self.gateway),
             )
             while (
                 next_request_index < len(planned_requests)
@@ -2868,13 +2869,6 @@ def _analysis_outcome_is_unknown(exc: BaseException) -> bool:
         "connection",
     }
 
-
-def _gateway_parallel_limit(gateway: QuestionAnalysisGateway) -> int:
-    value = getattr(gateway, "max_parallel_requests", 1)
-    try:
-        return max(1, min(100, int(value)))
-    except (TypeError, ValueError):
-        return 1
 
 
 def _hash_payload(value: Mapping[str, Any]) -> str:

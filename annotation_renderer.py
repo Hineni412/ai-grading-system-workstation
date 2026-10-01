@@ -725,6 +725,6 @@ def _load_font(size: int = 18) -> ImageFont.ImageFont:
     for path in candidates:
         try:
             return ImageFont.truetype(path, size)
-        except Exception:
+        except (OSError, ValueError):
             continue
     return ImageFont.load_default()

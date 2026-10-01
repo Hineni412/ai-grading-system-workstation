@@ -35,7 +35,7 @@ SQLite 结构由 `migrations/` 管理；空库初始化和已有库迁移有不�
 
 API 错误包含错误码、用户消息、有限 details 和 request_id。只读请求可按客户端策略有限重试；写请求不由通用客户端自动重放，超时后先查询结果，有冲突时保留草稿。
 
-JobManager 在应用进程内用线程池执行任务，阅卷与扫描流程使用独立线程池。状态持久化，但进程退出后任务不会继续执行；运行中取消需要任务到检查点响应。
+JobManager 在应用进程内用线程池执行任务，阅卷与扫描流程使用独立线程池。各业务保留自己的任务创建与重复提交规则；线程调度、运行状态登记及完成清理由 JobManager 统一处理。任务记录创建后若线程调度失败，会尝试将任务标记为失败并向调用方返回错误。状态持久化，但进程退出后任务不会继续执行；运行中取消需要任务到检查点响应。
 
 知识与训练、组卷助手的只读接口通过只读事务直接读取题库数据库。一个后台刷新线程（环境变量 `AI_GRADING_PREWARM` 控制，默认开启，测试默认关闭；有排队或运行中的任务时跳过）在数据库提交后重新计算最近使用过的范围和启动范围，结果写入进程内缓存。SQLite 完整性检查和外键检查只在每个进程对每个数据库文件的首次结构检查时执行，之后的检查只验证结构与迁移记录；备份与恢复运维路径仍保留完整检查。
 
@@ -61,6 +61,7 @@ JobManager 在应用进程内用线程池执行任务，阅卷与扫描流程使
 | 知识发布加载 | `question_bank/knowledge_graph_release/loader.py` |
 | 掌握度 | `question_bank/mastery/current.py`（唯一入口）、`question_bank/mastery/model.py`（拟合与区间）；集成层 `DiagnosisProfileService.semester_mastery` 提供全年级结果 |
 | 训练卷冻结与导出 | `question_bank/personalized_papers/module.py` |
+| 题库状态与产物原子替换 | `question_bank/atomic_files.py`；临时文件占用最多尝试 12 次，总等待 3 秒，其他文件错误直接交给调用方处理 |
 | 普通备份 | `update_tools/backup_core.py` |
 
 兼容输入在明确的加载边界转换，不作为新建入口，也不因此自动改写真实数据。

@@ -7,6 +7,8 @@ cannot silently replace approved terms or the review queue.
 
 from __future__ import annotations
 
+from question_bank.atomic_files import replace_with_retry
+
 import copy
 import hashlib
 import json
@@ -1014,18 +1016,6 @@ def _file_signature(path: Path) -> tuple[bool, int, int, int, int]:
     )
 
 
-def _replace_with_retry(source: Path, destination: Path) -> None:
-    # Windows file scanners can hold a freshly written temporary file open
-    # briefly; retry the atomic rename a few times before giving up.
-    for attempt in range(12):
-        try:
-            os.replace(source, destination)
-            return
-        except PermissionError:
-            if attempt == 11:
-                raise
-            time.sleep(min(0.05 * (attempt + 1), 0.4))
-
 
 def _write_state_atomic(
     path: Path,
@@ -1053,7 +1043,7 @@ def _write_state_atomic(
                 pass
             else:
                 shutil.copy2(path, _backup_path(path))
-        _replace_with_retry(temporary, path)
+        replace_with_retry(temporary, path)
     finally:
         if temporary.exists():
             temporary.unlink()

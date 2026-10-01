@@ -51,7 +51,7 @@ def _load_yaml_simple(path: Path) -> dict[str, Any]:
             value = value.strip().strip("'\"")
             if value:
                 result[key] = value
-    except Exception:
+    except (OSError, UnicodeError):
         pass
     return result
 
@@ -284,7 +284,7 @@ class PathManager:
         if version_file.exists():
             try:
                 return version_file.read_text(encoding="utf-8").strip()
-            except Exception:
+            except (OSError, UnicodeError):
                 pass
         return str(self._cfg.get("VERSION", "0.0.0"))
 

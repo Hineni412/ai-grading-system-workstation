@@ -1788,7 +1788,10 @@ def _class_narrative(
             prompt,
             extra_kwargs={"temperature": 0.3, "max_tokens": CLASS_MAX_TOKENS},
         )
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "optional operation unavailable: _class_narrative (%s)", type(exc).__name__,
+        )
         return None
     if not isinstance(narrative, dict):
         return None
