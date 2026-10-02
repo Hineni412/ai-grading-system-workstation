@@ -13,12 +13,13 @@ paper generation never breaks on LaTeX issues.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +93,7 @@ def _math_latex(node: ET.Element) -> str:
         return default if element is None else str(element.get(f"{{{_M}}}val", default))
 
     properties = {
+        "limUppPr": {"ctrlPr"}, "limLowPr": {"ctrlPr"},
         "radPr": {"degHide", "ctrlPr"}, "fPr": {"type", "ctrlPr"},
         "sSupPr": {"ctrlPr"}, "sSubPr": {"ctrlPr"}, "sSubSupPr": {"alnScr", "ctrlPr"},
         "sPrePr": {"ctrlPr"}, "dPr": {"begChr", "endChr", "sepChr", "grow", "shp", "ctrlPr"},
@@ -101,6 +103,8 @@ def _math_latex(node: ET.Element) -> str:
         "oMathParaPr": {"jc"}, "argPr": {"argSz"}, "ctrlPr": {"rPr"},
         "rPr": {"sty", "nor", "lit", "brk", "scr", "aln", "rFonts", "b", "bCs", "i", "iCs", "color", "sz", "szCs", "lang"},
     }
+    if node.tag in {f"{{{_W}}}bookmarkStart", f"{{{_W}}}bookmarkEnd"}:
+        return ""
     if name in properties:
         if any(_local_name(child.tag) not in properties[name] for child in node):
             raise LatexRenderError(f"unsupported Word math property in {name}")
@@ -123,6 +127,11 @@ def _math_latex(node: ET.Element) -> str:
             "△": r"\triangle ", "∥": r"\parallel ", "⊥": r"\perp ", "∴": r"\therefore ", "∵": r"\because ",
             "′": "'", "＝": "=", "﹣": "-", "（": "(", "）": ")", "＞": ">", "＜": "<",
             "²": r"{}^{2}", "³": r"{}^{3}", "⋅": r"\cdot ",
+            "⋯": r"\cdots ", "⊙": r"\odot ", "□": r"\square ",
+            "★": r"\text{\fontspec{SimSun}★}",
+            "，": r"\text{，}", "：": r"\text{：}", "．": r"\text{．}",
+            "；": r"\text{；}", "？": r"\text{？}", "ㅤ": r"\quad ", " ": r"\;",
+            **{char: r"\text{\fontspec{SimSun}" + char + "}" for char in "①②③④"},
             " ": r"\,", "{": r"\{", "}": r"\}", "_": r"\_", "^": r"\wedge ",
         }
         chunks = re.split(r"([\u3400-\u9fff]+)", node.text or "")
@@ -160,10 +169,16 @@ def _math_latex(node: ET.Element) -> str:
     if name == "d":
         delimiters = {"(": "(", ")": ")", "[": "[", "]": "]", "{": r"\{", "}": r"\}", "|": "|", "": "."}
         left, right, separator = prop("begChr", "("), prop("endChr", ")"), prop("sepChr", "|")
-        if left not in delimiters or right not in delimiters or separator not in delimiters:
+        separators = {"|": "|", ",": ",", "，": ",", ";": ";", "；": ";", "": ""}
+        if left not in delimiters or right not in delimiters:
             raise LatexRenderError("unsupported Word math delimiter")
         expressions = [_math_latex(child) for child in node if _local_name(child.tag) == "e"]
-        return r"\left" + delimiters[left] + delimiters[separator].join(expressions) + r"\right" + delimiters[right]
+        if len(expressions) > 1 and separator not in separators:
+            raise LatexRenderError("unsupported Word math separator")
+        return r"\left" + delimiters[left] + separators.get(separator, "").join(expressions) + r"\right" + delimiters[right]
+    if name in {"limUpp", "limLow"}:
+        command = r"\overset" if name == "limUpp" else r"\underset"
+        return command + "{" + part("lim") + "}{" + part("e") + "}"
     if name == "bar":
         command = r"\underline" if prop("pos", "top") == "bot" else r"\overline"
         return command + "{" + part("e") + "}"
@@ -191,6 +206,9 @@ def _run_content(
     *,
     data_root: Path,
     inline_max_height_mm: float = _IMAGE_INLINE_MAX_HEIGHT_MM,
+    escape_text: Callable[[str], str] = _escape_latex,
+    render_image: Callable | None = None,
+    line_break: str = "\\\\\n",
 ) -> str:
     parts: list[str] = []
 
@@ -202,13 +220,13 @@ def _run_content(
                 parts.append(r"\(" + math_text + r"\)")
             return
         if name == "t" and node.text:
-            parts.append(_escape_latex(node.text))
+            parts.append(escape_text(node.text))
         elif name == "br":
-            parts.append("\\\\\n")
+            parts.append(line_break)
         elif name == "tab":
             parts.append("\\hspace{2em}")
         elif name == "drawing":
-            parts.append(_inline_image(
+            parts.append((render_image or _inline_image)(
                 node,
                 relationships,
                 data_root=data_root,
@@ -229,6 +247,9 @@ def _run_latex_segments(
     *,
     data_root: Path,
     inline_max_height_mm: float = _IMAGE_INLINE_MAX_HEIGHT_MM,
+    escape_text: Callable[[str], str] = _escape_latex,
+    render_image: Callable | None = None,
+    line_break: str = "\\\\\n",
 ) -> str:
     """Walk one ``w:p`` and emit LaTeX for runs, breaks, OMML and drawings."""
     parts: list[str] = []
@@ -244,6 +265,9 @@ def _run_latex_segments(
                     relationships,
                     data_root=data_root,
                     inline_max_height_mm=inline_max_height_mm,
+                    escape_text=escape_text,
+                    render_image=render_image,
+                    line_break=line_break,
                 )
                 if not content:
                     continue
@@ -771,7 +795,11 @@ class TectonicCompiler:
     def available(self) -> bool:
         return self.executable is not None
 
-    def compile(self, tex_source: str, output_pdf: Path) -> None:
+    def compile(
+        self, tex_source: str, output_pdf: Path, *,
+        auxiliary_directory: Path | None = None, offline: bool = False,
+        validate_layout: bool = False,
+    ) -> None:
         if self.executable is None:
             raise LatexRenderError("no tectonic engine is available")
         destination = Path(output_pdf).resolve()
@@ -783,9 +811,24 @@ class TectonicCompiler:
             work = Path(temporary)
             tex_path = work / "paper.tex"
             tex_path.write_text(tex_source, encoding="utf-8")
+            options = ["--only-cached", "--untrusted"] if offline else []
+            if auxiliary_directory is not None:
+                options.append("--keep-intermediates")
+            environment = os.environ.copy()
+            if offline and os.name == "nt":
+                from xml.sax.saxutils import escape
+                fonts = Path(environment.get("WINDIR", "C:/Windows")) / "Fonts"
+                fontconfig = work / "fonts.conf"
+                fontconfig.write_text(
+                    '<fontconfig><dir>' + escape(fonts.as_posix()) + '</dir><cachedir>'
+                    + escape((work / "font-cache").as_posix()) + '</cachedir></fontconfig>',
+                    encoding="utf-8",
+                )
+                environment["FONTCONFIG_FILE"] = str(fontconfig)
             completed = subprocess.run(
                 [
                     str(self.executable),
+                    *options,
                     "--keep-logs",
                     "--outdir",
                     str(work),
@@ -796,6 +839,7 @@ class TectonicCompiler:
                 text=True,
                 timeout=self.timeout_seconds,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                env=environment,
             )
             produced = work / "paper.pdf"
             if completed.returncode != 0 or not produced.is_file():
@@ -803,7 +847,18 @@ class TectonicCompiler:
                 raise LatexRenderError(
                     f"tectonic failed to compile the paper: {log_tail}"
                 )
+            diagnostics = (completed.stdout or "") + (completed.stderr or "")
+            if validate_layout and any(marker in diagnostics for marker in (
+                "Missing character:", r"Overfull \hbox", r"Overfull \vbox",
+            )):
+                raise LatexRenderError("LaTeX layout contains missing glyphs or overflowing content")
             shutil.copyfile(produced, destination)
+            if auxiliary_directory is not None:
+                auxiliary_directory.mkdir(parents=True, exist_ok=True)
+                for suffix in (".positions", ".measures"):
+                    source = work / ("paper" + suffix)
+                    if source.is_file():
+                        shutil.copyfile(source, auxiliary_directory / source.name)
 
 
 def _default_tectonic() -> Path | None:

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 
-import type { AssemblyQuestion, AssemblySection } from '../../api/assembly'
+import type { AssemblyExportSubmitFormat, AssemblyQuestion, AssemblySection } from '../../api/assembly'
 import { TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import { useAssemblyStore } from '../../stores/assembly'
 import { useJobStore } from '../../stores/jobs'
@@ -11,6 +11,7 @@ import QuestionContentRenderer from './QuestionContentRenderer.vue'
 const assembly = useAssemblyStore()
 const jobs = useJobStore()
 const draggedQuestionId = ref<number | null>(null)
+const exportFormat = ref<AssemblyExportSubmitFormat>('docx')
 
 const currentJob = computed(() => (
   assembly.exportJobId === null ? null : jobs.jobs[assembly.exportJobId] ?? null
@@ -435,12 +436,16 @@ async function deleteRecord(recordId: string): Promise<void> {
         </header>
         <p>确认预览后生成文件。导出不会改写题库内容。</p>
         <div class="assembly-export-actions">
+          <select v-model="exportFormat" class="app-input assembly-export-format" aria-label="导出格式" :disabled="assembly.submitting">
+            <option value="docx">Word（方便修改）</option>
+            <option value="pdf">PDF（适合打印）</option>
+          </select>
           <AppButton
             variant="primary"
             :disabled="!assembly.canExport || assembly.submitting"
-            @click="assembly.submitExport('docx')"
+            @click="assembly.submitExport(exportFormat)"
           >
-            导出 Word
+            导出 {{ exportFormat === 'pdf' ? 'PDF' : 'Word' }}
           </AppButton>
         </div>
 
@@ -495,3 +500,10 @@ async function deleteRecord(recordId: string): Promise<void> {
     </div>
   </div>
 </template>
+
+<style scoped>
+.assembly-export-format {
+  width: 100%;
+  margin-bottom: 8px;
+}
+</style>

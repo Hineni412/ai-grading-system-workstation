@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from docx.enum.section import WD_ORIENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
@@ -75,8 +76,21 @@ def add_page_number_to_paragraph(paragraph) -> None:
 
 
 def apply_exporter_layout(document, config: ExportConfig) -> None:
-    # Margins setup
+    sizes_cm = {
+        "A4": (21.0, 29.7), "A3": (29.7, 42.0),
+        "LETTER": (21.59, 27.94), "LEGAL": (21.59, 35.56),
+    }
+    size = str(config.page_size).strip().upper()
+    orientation = str(config.orientation).strip().casefold()
+    if size not in sizes_cm or orientation not in {"portrait", "landscape"}:
+        raise ValueError("Unsupported Word paper size or orientation")
+    width, height = sizes_cm[size]
+    landscape = orientation == "landscape"
+    if landscape:
+        width, height = height, width
     for section in document.sections:
+        section.orientation = WD_ORIENT.LANDSCAPE if landscape else WD_ORIENT.PORTRAIT
+        section.page_width, section.page_height = Cm(width), Cm(height)
         section.top_margin = Cm(config.margin_top_cm)
         section.bottom_margin = Cm(config.margin_bottom_cm)
         section.left_margin = Cm(config.margin_left_cm)

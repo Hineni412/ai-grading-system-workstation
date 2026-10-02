@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from io import BytesIO
+import xml.etree.ElementTree as ET
 from pathlib import Path
-from zipfile import ZipFile
 
 import pytest
 from docx import Document
@@ -11,8 +10,31 @@ from PIL import Image
 
 from question_bank.personalized_papers.latex_render import (
     LatexRenderError,
+    _math_latex,
     render_training_tex,
 )
+
+
+def test_math_delimiter_separators_and_upper_limits_preserve_structure():
+    namespace = 'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"'
+    pair = ET.fromstring(
+        f'<m:d {namespace}><m:dPr><m:sepChr m:val=","/></m:dPr>'
+        "<m:e><m:r><m:t>x</m:t></m:r></m:e>"
+        "<m:e><m:r><m:t>y</m:t></m:r></m:e></m:d>"
+    )
+    assert _math_latex(pair) == r"\left(x,y\right)"
+    limit = ET.fromstring(
+        f"<m:limUpp {namespace}><m:limUppPr/>"
+        "<m:e><m:r><m:t>AB</m:t></m:r></m:e>"
+        "<m:lim><m:r><m:t>→</m:t></m:r></m:lim></m:limUpp>"
+    )
+    # Use supported observed text rather than accepting unknown symbols.
+    limit.find(
+        ".//{http://schemas.openxmlformats.org/officeDocument/2006/math}lim/"
+        "{http://schemas.openxmlformats.org/officeDocument/2006/math}r/"
+        "{http://schemas.openxmlformats.org/officeDocument/2006/math}t"
+    ).text = "x"
+    assert _math_latex(limit) == r"\overset{x}{AB}"
 
 
 def test_unknown_math_property_does_not_silently_change_the_equation(
@@ -43,14 +65,14 @@ def _picture_paragraph_xml(asset: Path, tmp_path: Path) -> tuple[str, dict[str, 
     source = Document()
     paragraph = source.add_paragraph()
     paragraph.add_run().add_picture(str(asset), width=Inches(1.25))
-    blip = paragraph._p.xpath(".//a:blip")[0]  # noqa: SLF001
+    blip = paragraph._p.xpath(".//a:blip")[0]
     relationship_id = str(
         blip.get(
             "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
         )
     )
     relative = asset.relative_to(tmp_path).as_posix()
-    return paragraph._p.xml, {relationship_id: relative}  # noqa: SLF001
+    return paragraph._p.xml, {relationship_id: relative}
 
 
 def _snapshot(blocks: list[dict[str, object]], **overrides) -> dict[str, object]:

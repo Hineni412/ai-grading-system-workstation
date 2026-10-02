@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from collections.abc import Mapping
@@ -11,6 +12,7 @@ from docx import Document
 from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt
+from PIL import Image
 
 from question_bank.document_pipeline.contracts import FormulaFallback, MathExpression
 from question_bank.document_pipeline.legacy_exports import (
@@ -36,6 +38,7 @@ from question_bank.exporters.base_exporter import (
 )
 from question_bank.exporters.export_config import ExportConfig
 from question_bank.services.assembly_basket_state import SectionSpec
+from question_bank.services.file_cache import cached_processed_image_digest
 from question_bank.services.question_read_service import QuestionBankReadService
 
 LOGGER = logging.getLogger(__name__)
@@ -99,6 +102,7 @@ def _render_question_body(
         inline_prefix=inline_prefix,
         config=config,
         compact_standalone_images_with_text=(minimum_lines == 0),
+        data_root=data_root,
     )
 
     all_image_paths = _dedupe_paths([
@@ -110,7 +114,10 @@ def _render_question_body(
         rp = _resolve_image_path(p, data_root=data_root)
         if rp:
             resolved_all_paths.append(str(rp))
-    missing_images = [p for p in resolved_all_paths if p not in embedded_paths]
+    # Legacy image_paths also contains pictures from the answer. Their rich
+    # ownership is authoritative, even when this export hides answers.
+    excluded_paths = embedded_paths | _rich_image_paths(rich_content, "answer_blocks", data_root)
+    missing_images = _unembedded_image_paths(resolved_all_paths, excluded_paths)
 
     if not appended:
         _add_text_and_images(
@@ -160,6 +167,7 @@ def _render_answer_body(
         strip_leading_number=True,
         inline_prefix=inline_prefix,
         config=config,
+        data_root=data_root,
     )
 
     all_image_paths = _dedupe_paths([*_image_paths_from_text(question.get("answer_text") or "")])
@@ -168,7 +176,7 @@ def _render_answer_body(
         rp = _resolve_image_path(p, data_root=data_root)
         if rp:
             resolved_all_paths.append(str(rp))
-    missing_images = [p for p in resolved_all_paths if p not in embedded_paths]
+    missing_images = _unembedded_image_paths(resolved_all_paths, embedded_paths)
 
     if not appended:
         _add_text_and_images(
@@ -470,10 +478,11 @@ def _add_rich_blocks(
     inline_prefix: str = "",
     config: ExportConfig | None = None,
     compact_standalone_images_with_text: bool = False,
+    data_root: Path | None = None,
 ) -> tuple[bool, set[str]]:
     renderer = SharedWordQuestionRenderer(
         style=WordStyleProfile.from_export_config(config or ExportConfig()),
-        asset_resolver=_resolve_image_path,
+        asset_resolver=lambda value: _resolve_image_path(value, data_root=data_root),
     )
     result = renderer.add_rich_blocks(
         document,
@@ -483,6 +492,51 @@ def _add_rich_blocks(
         compact_standalone_images_with_text=compact_standalone_images_with_text,
     )
     return result.appended, set(result.embedded_assets)
+
+
+def _unembedded_image_paths(paths, embedded_paths) -> list[str]:
+    """Supplemental assets are not a second copy of explicit rich drawings.
+
+    Keep all occurrences inside the rich content. Compare full pixels without
+    resampling; unknown formats use byte equality only.
+    """
+    if not embedded_paths:
+        return [str(path) for path in paths]
+
+    def compute(path: Path) -> str:
+        try:
+            with Image.open(path) as image:
+                if image.format not in {"PNG", "JPEG"}:
+                    return "bytes:" + hashlib.sha256(path.read_bytes()).hexdigest()
+                digest = hashlib.sha256(str(image.size).encode())
+                digest.update(image.convert("RGBA").tobytes())
+                digest.update(image.info.get("icc_profile") or b"")
+                digest.update(str(image.getexif().get(274, 1)).encode())
+                return "pixels:" + digest.hexdigest()
+        except (OSError, ValueError):
+            return "bytes:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def identity(value):
+        path = Path(value)
+        return cached_processed_image_digest(path, variant="export-full-pixels-v1", compute=compute)
+
+    seen = {identity(path) for path in embedded_paths if Path(path).is_file()}
+    remaining = []
+    for value in paths:
+        digest = identity(value)
+        if digest not in seen:
+            remaining.append(str(value))
+    return remaining
+
+
+def _rich_image_paths(rich_content, key, data_root) -> set[str]:
+    paths = set()
+    for block in _rich_blocks(rich_content, key):
+        for value in (block.get("image_relationships") or {}).values():
+            path = _resolve_image_path(value, data_root=data_root)
+            if path is not None:
+                paths.add(str(path))
+    return paths
 
 
 _MD_TABLE_SEP_CELL = re.compile(r":?-{2,}:?")

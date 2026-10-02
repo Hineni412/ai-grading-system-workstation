@@ -43,7 +43,7 @@ class AssemblyDraftWriteRequest(_AssemblyModel):
 
 class AssemblyExportSubmitRequest(_AssemblyModel):
     draft_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
-    format: Literal["docx"] = "docx"
+    format: Literal["docx", "pdf"] = "docx"
     source: Literal["ai"] | None = None
 
 
@@ -77,7 +77,7 @@ class AssemblyRecordResponse(_AssemblyModel):
     question_ids: list[int]
     order_ids: list[int]
     sections: list[AssemblySectionResponse]
-    export_format: Literal["docx", "markdown"]
+    export_format: Literal["docx", "markdown", "pdf"]
     filename: str
     include_answer: bool
     created_at: str

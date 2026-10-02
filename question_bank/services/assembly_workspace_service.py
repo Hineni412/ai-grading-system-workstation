@@ -216,11 +216,11 @@ class AssemblyWorkspaceService:
 
     def create_record(self, create: AssemblyRecordCreate) -> AssemblyRecord:
         export_format = str(create.export_format or "").strip().casefold()
-        if export_format not in {"docx", "markdown"}:
+        if export_format not in {"docx", "markdown", "pdf"}:
             raise ValueError("Assembly export format is not supported")
         output_path = Path(create.output_path)
         filename = output_path.name
-        expected_suffix = ".docx" if export_format == "docx" else ".md"
+        expected_suffix = {"docx": ".docx", "markdown": ".md", "pdf": ".pdf"}[export_format]
         if output_path.suffix.casefold() != expected_suffix:
             raise ValueError("Assembly record file type does not match export format")
         record = AssemblyRecord(
@@ -294,6 +294,7 @@ class AssemblyWorkspaceService:
         media_types = {
             ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             ".md": "text/markdown",
+            ".pdf": "application/pdf",
         }
         media_type = media_types.get(resolved.suffix.casefold())
         if media_type is None:
@@ -346,9 +347,9 @@ class AssemblyWorkspaceService:
             ]
         output_path = str(payload.get("output_path") or "")
         export_format = str(payload.get("export_format") or "").strip().casefold()
-        if export_format not in {"docx", "markdown"}:
-            export_format = (
-                "markdown" if Path(output_path).suffix.casefold() == ".md" else "docx"
+        if export_format not in {"docx", "markdown", "pdf"}:
+            export_format = {".md": "markdown", ".pdf": "pdf"}.get(
+                Path(output_path).suffix.casefold(), "docx"
             )
         filename = _clean_text(payload.get("filename"), limit=255) or Path(output_path).name
         return AssemblyRecord(

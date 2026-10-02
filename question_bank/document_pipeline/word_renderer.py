@@ -5,6 +5,7 @@ import posixpath
 import re
 import zipfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from xml.etree import ElementTree
@@ -706,6 +707,7 @@ def add_answer_space(
 
     题末有独立图片时，图片排右、作答区排左侧整列，高度约为
     普通留白的一半（学生直接在图旁作答，省页且可见）。
+    全宽留白按行接排，每行保留原高度，避免整块留白把题干推到下一页。
     """
 
     if int(minimum_lines) <= 0:
@@ -738,12 +740,14 @@ def add_answer_space(
             minimum_height_mm=minimum_height_mm,
         )
     else:
-        minimum_height_mm = float(minimum_lines) * float(line_height_mm)
         table = _build_borderless_layout_table(
             columns=((blank,),),
             widths=(int(content_width_dxa),),
-            minimum_height_mm=minimum_height_mm,
+            minimum_height_mm=float(line_height_mm),
         )
+        row = table.find(qn("w:tr"))
+        for _ in range(1, int(minimum_lines)):
+            table.append(deepcopy(row))
     _append_to_document_body(document, table)
 
 
@@ -816,6 +820,23 @@ def _compact_image_pairs(
             and picture.tag == qn("w:p")
             and _is_standalone_picture_paragraph(picture)
         ):
+            # 大图与横长图保留整行宽度，避免细小标注被侧栏的 55mm 上限压缩。
+            use_full_width = False
+            for extent in picture.iter(qn("wp:extent")):
+                try:
+                    width = int(extent.get("cx") or 0)
+                    height = int(extent.get("cy") or 0)
+                except ValueError:
+                    continue
+                if width > int(content_width_dxa) * 635 * 0.55 or (
+                    height > 0 and width >= 2.5 * height
+                ):
+                    use_full_width = True
+                    break
+            if use_full_width:
+                _fit_picture_to_width(picture, max_width_dxa=content_width_dxa)
+                index += 1
+                continue
             widths = _split_widths(content_width_dxa, right_fraction=0.32)
             _fit_picture_to_width(
                 picture,
@@ -994,7 +1015,7 @@ def _style_rich_paragraphs(element, *, line_spacing: float) -> None:
 
 _OPTION_LETTER_PREFIX = re.compile(r"^\s*[A-DＡ-Ｄ][.、．]")
 _OPTION_PICTURE_MAX_HEIGHT_MM = 22.0
-# 客观题配图上限：能看清即可，不超过 55mm，避免占掉作答空间。
+# 客观题侧栏配图上限；大图与横长图保留整行原图幅。
 _OBJECTIVE_PICTURE_MAX_WIDTH_DXA = 3119
 
 
