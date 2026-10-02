@@ -13,7 +13,14 @@ import type {
 import ClassAnalysisPanel from '../components/results-center/ClassAnalysisPanel.vue'
 import ResultsOverviewPanel from '../components/results-center/ResultsOverviewPanel.vue'
 import { invalidateClassAnalysis } from '../components/results-center/class-analysis-cache'
-import { classRanksOf } from '../components/results-center/results-overview'
+import { loadComparisonResults } from '../components/results-center/comparison-results-cache'
+import { unexpectedLosses } from '../components/results-center/paper-walkthrough'
+import {
+  classRanksOf,
+  defaultComparison,
+  isCompleteStudent,
+  rankChanges,
+} from '../components/results-center/results-overview'
 import AppButton from '../components/design-system/AppButton.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
 import AppIconButton from '../components/design-system/AppIconButton.vue'
@@ -610,6 +617,61 @@ function openStudentById(studentId: number): void {
   if (student) openStudentDrawer(student)
 }
 
+// 学生抽屉补充行：较默认对比考试的分差/名次 + 本次意外失分题
+const drawerComparisonStudents = ref<ResultsCenterStudent[] | null>(null)
+let drawerComparisonRequest = 0
+
+const drawerComparisonSession = computed(() => defaultComparison(
+  sessionStore.currentSession,
+  sessionStore.sessions,
+))
+
+watch(
+  [selectedStudent, drawerComparisonSession],
+  async ([student, comparison]) => {
+    drawerComparisonRequest += 1
+    const request = drawerComparisonRequest
+    drawerComparisonStudents.value = null
+    if (!student || !comparison) return
+    try {
+      const data = await loadComparisonResults(comparison.id)
+      if (request === drawerComparisonRequest) {
+        drawerComparisonStudents.value = data.students
+      }
+    } catch { /* 对比考试加载失败时省略该行 */ }
+  },
+  { immediate: true },
+)
+
+const drawerCompareLine = computed(() => {
+  const student = selectedStudent.value
+  if (!student) return null
+  if (!drawerComparisonSession.value) return '暂无可对比考试'
+  if (drawerComparisonStudents.value === null) return null
+  const entry = rankChanges(
+    results.value?.students ?? [],
+    drawerComparisonStudents.value,
+  ).find((e) => e.student.student_id === student.student_id)
+  if (!entry) return null
+  const diff = student.current_score - entry.previousScore
+  const sign = diff >= 0 ? '+' : ''
+  return `较上次 ${sign}${formatScore(diff)} 分 · 班内名次 ${entry.previousRank} → ${entry.currentRank}`
+})
+
+const drawerLossLine = computed(() => {
+  const student = selectedStudent.value
+  if (!student) return null
+  const peers = (results.value?.students ?? []).filter(
+    (peer) => (peer.class_name ?? '') === (student.class_name ?? '')
+      && isCompleteStudent(peer),
+  )
+  const losses = unexpectedLosses(student, peers).slice(0, 2)
+  if (!losses.length) return null
+  return `这次意外失分：${losses.map((loss) => (
+    `${loss.questionId}（本班 ${Math.round(loss.fullFraction * 100)}% 满分，本题 ${formatScore(loss.score)}/${formatScore(loss.maxScore)}）`
+  )).join('、')}`
+})
+
 function openQuestionInAnalysis(
   questionId: string,
   className: string | null,
@@ -1046,6 +1108,13 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
           <em>{{ studentIssueText(selectedStudent) }}</em>
         </div>
 
+        <p v-if="drawerCompareLine" class="results-drawer__cmp">
+          {{ drawerCompareLine }}
+        </p>
+        <p v-if="drawerLossLine" class="results-drawer__cmp">
+          {{ drawerLossLine }}
+        </p>
+
         <div class="results-drawer__items">
           <button
             v-for="item in orderedDrawerItems"
@@ -1072,3 +1141,15 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+.results-drawer__cmp {
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+}
+.results-drawer__cmp + .results-drawer__cmp {
+  padding-top: 0;
+}
+</style>

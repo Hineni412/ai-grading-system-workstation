@@ -1,15 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import {
   classAnalysisApi,
   type ClassAnalysisResponse,
 } from '../../api/class-analysis'
-import {
-  fetchResultsCenter,
-  type ResultsCenterResponse,
-} from '../../api/results-center'
+import type { ResultsCenterResponse } from '../../api/results-center'
 import {
   exportsApi,
   type AnalysisReviewNoteItem,
@@ -24,6 +21,8 @@ import {
   cachedClassAnalysis,
   rememberClassAnalysis,
 } from './class-analysis-cache'
+import { loadComparisonResults } from './comparison-results-cache'
+import PaperWalkthrough from './PaperWalkthrough.vue'
 import {
   OVERVIEW_BANDS,
   buildOverviewTiles,
@@ -35,6 +34,7 @@ import {
   formatCount,
   formatRate,
   formatScore,
+  isCompleteStudent,
   questionRatesFor,
   rankChangeGroups,
   rankChanges,
@@ -563,7 +563,6 @@ const comparisonOptions = computed(() => comparisonCandidates(
 const comparisonId = ref<number | null>(null)
 const previousResults = ref<ResultsCenterResponse | null>(null)
 const previousState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
-const previousCache = new Map<number, ResultsCenterResponse>()
 let comparisonController: AbortController | null = null
 
 watch(
@@ -584,20 +583,12 @@ watch(comparisonId, (sessionId) => {
     previousState.value = 'idle'
     return
   }
-  if (previousState.value === 'ready') previousState.value = 'loading'
-  const cached = previousCache.get(sessionId)
-  if (cached) {
-    previousResults.value = cached
-    previousState.value = 'ready'
-    return
-  }
   previousState.value = 'loading'
   const controller = new AbortController()
   comparisonController = controller
-  void fetchResultsCenter(sessionId, controller.signal)
+  void loadComparisonResults(sessionId)
     .then((result) => {
       if (controller.signal.aborted || comparisonId.value !== sessionId) return
-      previousCache.set(sessionId, result)
       previousResults.value = result
       previousState.value = 'ready'
     })
@@ -736,6 +727,65 @@ function openReviewNote(note: AnalysisReviewNoteItem): void {
     },
   })
 }
+
+// ---- 看卷 10 分钟 ----
+const WALKTHROUGH_RESUME_KEY = 'ai-grading:paper-walkthrough:v1'
+const walkthroughOpen = ref(false)
+const walkthroughResumeIndex = ref<number | undefined>(undefined)
+const walkthroughAvailable = computed(() => (
+  studentsInScope.value.some(isCompleteStudent)
+))
+const previousScopeStudents = computed(() => {
+  if (!previousResults.value) return null
+  return scope.value === null
+    ? previousResults.value.students
+    : previousResults.value.students.filter(
+      (student) => (student.class_name ?? '') === scope.value,
+    )
+})
+const walkthroughScopeLabel = computed(() => (
+  scope.value === null ? '全部班级' : classDisplayLabel(scope.value)
+))
+// 班级分析与对比考试数据到位前不允许开看卷，否则错法分组/名次变化会缺类
+const walkthroughReady = computed(() => (
+  (analysisState.value === 'ready' || analysisState.value === 'error')
+  && previousState.value !== 'loading'
+))
+
+function openWalkthrough(): void {
+  walkthroughResumeIndex.value = undefined
+  walkthroughOpen.value = true
+}
+
+onMounted(() => {
+  let saved: { sessionId?: number; scope?: string | null; index?: number } | null = null
+  try {
+    const raw = sessionStorage.getItem(WALKTHROUGH_RESUME_KEY)
+    if (!raw) return
+    saved = JSON.parse(raw) as { sessionId?: number; scope?: string | null; index?: number }
+    sessionStorage.removeItem(WALKTHROUGH_RESUME_KEY)
+  } catch { return }
+  if (!saved || saved.sessionId !== props.sessionId) return
+  const targetScope = saved.scope === undefined ? null : saved.scope
+  if (targetScope !== null && !classKeys.value.includes(targetScope)) return
+  if (targetScope !== scope.value) emit('update:scope', targetScope)
+  // 等该范围的分析与对比数据就绪后再恢复；考试切换则放弃
+  const tryResume = (): boolean => {
+    if (props.sessionId !== saved!.sessionId) return true
+    if (!walkthroughReady.value || scope.value !== targetScope) return false
+    if (!walkthroughAvailable.value) return true
+    walkthroughResumeIndex.value = typeof saved!.index === 'number'
+      ? saved!.index
+      : undefined
+    walkthroughOpen.value = true
+    return true
+  }
+  if (tryResume()) return
+  const stop = watch(
+    [walkthroughReady, scope, () => props.sessionId],
+    () => { if (tryResume()) stop() },
+  )
+})
 </script>
 
 <template>
@@ -846,6 +896,14 @@ function openReviewNote(note: AnalysisReviewNoteItem): void {
                 class="overview__tile-action"
                 @click="emit('open-review', 'teacher_pending')"
               >去复核</AppButton>
+              <AppButton
+                v-if="walkthroughAvailable"
+                variant="ghost"
+                class="overview__tile-action"
+                :disabled="!walkthroughReady"
+                :title="walkthroughReady ? undefined : '正在准备数据…'"
+                @click="openWalkthrough"
+              >看卷 10 分钟</AppButton>
             </template>
             <template v-else>
               <strong class="overview__tile-num">已全部确认</strong>
@@ -853,6 +911,14 @@ function openReviewNote(note: AnalysisReviewNoteItem): void {
                 教师确认 {{ results.summary.teacher_final_item_count }} ·
                 AI 评分 {{ results.summary.ai_ready_item_count }}
               </span>
+              <AppButton
+                v-if="walkthroughAvailable"
+                variant="primary"
+                class="overview__tile-action"
+                :disabled="!walkthroughReady"
+                :title="walkthroughReady ? undefined : '正在准备数据…'"
+                @click="openWalkthrough"
+              >看卷 10 分钟</AppButton>
               <AppButton
                 variant="ghost"
                 class="overview__tile-action"
@@ -1382,6 +1448,20 @@ function openReviewNote(note: AnalysisReviewNoteItem): void {
         </li>
       </ol>
     </section>
+
+    <PaperWalkthrough
+      v-if="walkthroughOpen"
+      :session-id="sessionId"
+      :scope-key="scope"
+      :scope-label="walkthroughScopeLabel"
+      :students="studentsInScope"
+      :question-ids="questionIds"
+      :analysis-questions="scopeAnalysisQuestions"
+      :previous-students="previousScopeStudents"
+      :pending-count="reviewPending"
+      :initial-index="walkthroughResumeIndex"
+      @close="walkthroughOpen = false"
+    />
 
   </div>
 </template>
