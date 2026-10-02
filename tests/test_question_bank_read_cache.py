@@ -117,6 +117,16 @@ def test_skill_index_current_versions_legacy_links_filters_and_cache(tmp_path):
     assert 'skills' not in service.list_questions(QuestionReadFilters()).items[0]
     assert service.list_papers()[0]['skill_unlinked_question_count'] == 3
     with connect(db) as conn:
+        conn.executemany(
+            "INSERT INTO question_error_patterns(question_id,category,pattern,status,source) VALUES(?,?,?,?,?)",
+            [(1, '方法与思路', 'TEST-错因-1', 'confirmed', 'TEST'),
+             (2, '方法与思路', 'TEST-错因-2', 'candidate', 'TEST'),
+             (4, '计算与化简', 'TEST-错因-4', 'confirmed', 'TEST')],
+        )
+    assert [item['id'] for item in service.list_questions(QuestionReadFilters(error_pattern_categories=('方法与思路',))).items] == [1]
+    assert service.list_facets(QuestionReadFilters())['error_pattern_categories'] == [
+        {'value': '方法与思路', 'count': 1}, {'value': '计算与化简', 'count': 1}]
+    with connect(db) as conn:
         conn.execute("UPDATE questions SET is_deleted=1 WHERE id=2")
     assert service.skill_index('bnu24-math-g8-upper')['question_count'] == 4
     assert service.list_questions(QuestionReadFilters(skill_keys=(keys[0],))).total == 1

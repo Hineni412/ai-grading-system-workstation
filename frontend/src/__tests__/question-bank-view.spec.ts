@@ -570,7 +570,7 @@ describe('question bank workspace', () => {
     scope.volumes = [{ id: scope.selectedVolumeId, label: '八年级上册', order: 1, grade: '八年级', semester: '上学期', textbook_version: '北师大版（2024）', source: {}, statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 }, chapters: [{ id: 'kp_TEST_chapter', knowledge_id: 'kp_TEST_chapter', label: '第一章', title: '第一章', display_name: '第一章', kind: 'chapter', number: '1', source_ref: { node_id: 'TEST', relative_url: '' }, exam_scope_values: [], order: 1, sections: [] }] }]
     const bank = useQuestionBankStore(pinia)
     const list = vi.spyOn(bank, 'loadQuestions').mockResolvedValue()
-    vi.spyOn(questionBankApi, 'listFacets').mockResolvedValue({ exam_scopes: [], curriculum_sections: [], knowledge_points: [], curriculum_chapters: [], abilities: [], methods: [], models: [], thoughts: [], special_types: [], error_types: [], student_levels: [], teaching_stages: [], sub_skills: [], question_types: [], years: [], exam_types: [], grades: [] })
+    vi.spyOn(questionBankApi, 'listFacets').mockResolvedValue({ exam_scopes: [], curriculum_sections: [], knowledge_points: [], curriculum_chapters: [], abilities: [], methods: [], models: [], thoughts: [], special_types: [], error_types: [], error_pattern_categories: [], student_levels: [], teaching_stages: [], sub_skills: [], question_types: [], years: [], exam_types: [], grades: [] })
     const stats = { question_count: 1, type_counts: { '选择题': 0, '多选题': 0, '填空题': 0, '解答题': 1 }, difficulty: { min: 4, median: 4, max: 4 }, criteria_needs_review_count: 0 }
     const index = { graph_release_id: 'kgr_TEST', curriculum_volume_id: scope.selectedVolumeId, model_calls: 0, question_count: 1, unlinked: { no_usable_evidence: 0, no_skill_link: 0 }, chapters: [{ id: 'kp_TEST_chapter', label: '第一章', question_count: 1, cross_section_skills: [], sections: [{ id: 'kp_TEST_section', label: '第一节', question_count: 1, skills: [{ ...stats, stable_key: 'sk_TEST_one', display_name: '判断直角三角形', full_name: '八年级上册/判断直角三角形', cross_section: false, definition: { observable_evidence: '判断', include_scope: '三边', exclude_scope: '作图' } }], topics: [{ ...stats, stable_key: 'kp_TEST_topic', display_name: '勾股定理', filter_value: '八年级上册/第一章/勾股定理' }] }] }] }
     const app = createApp({ render: () => h(QuestionSkillBrowser, { index, loading: false, error: '' }) })
@@ -591,6 +591,60 @@ describe('question bank workspace', () => {
     expect(host.querySelector('.qb-skill-layout')?.classList.contains('is-unlinked')).toBe(true)
     expect(host.textContent).toContain('AI 补挂技能')
     expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ skillUnlinked: true, skillKeys: [] }))
+  })
+
+  it('browses questions across skills by tag dimension, scope and value', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/question-bank?tab=skill&section=kp_TEST_section')
+    const scope = useCurriculumScopeStore(pinia)
+    scope.selectedVolumeId = 'bnu24-math-g8-upper'
+    scope.volumes = [{ id: scope.selectedVolumeId, label: '八年级上册', order: 1, grade: '八年级', semester: '上学期', textbook_version: '北师大版（2024）', source: {}, statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 }, chapters: [{ id: 'kp_TEST_chapter', knowledge_id: 'kp_TEST_chapter', label: '第一章', title: '第一章', display_name: '第一章', kind: 'chapter', number: '1', source_ref: { node_id: 'TEST', relative_url: '' }, exam_scope_values: [], order: 1, sections: [] }] }]
+    const bank = useQuestionBankStore(pinia)
+    const list = vi.spyOn(bank, 'loadQuestions').mockResolvedValue()
+    const facetList = vi.spyOn(questionBankApi, 'listFacets').mockResolvedValue({ exam_scopes: [], curriculum_sections: [], knowledge_points: [{ value: '八年级上册｜第一章｜勾股定理', count: 1 }], curriculum_chapters: [], abilities: [], methods: [], models: [], thoughts: [], special_types: [{ value: '新定义题', count: 2 }], error_types: [], error_pattern_categories: [{ value: '方法与思路', count: 3 }], student_levels: [], teaching_stages: [], sub_skills: [], question_types: [], years: [], exam_types: [], grades: [] })
+    const stats = { question_count: 1, type_counts: { '选择题': 0, '多选题': 0, '填空题': 0, '解答题': 1 }, difficulty: { min: 4, median: 4, max: 4 }, criteria_needs_review_count: 0 }
+    const index = { graph_release_id: 'kgr_TEST', curriculum_volume_id: scope.selectedVolumeId, model_calls: 0, question_count: 1, unlinked: { no_usable_evidence: 0, no_skill_link: 0 }, chapters: [{ id: 'kp_TEST_chapter', label: '第一章', question_count: 1, cross_section_skills: [], sections: [{ id: 'kp_TEST_section', label: '第一节', question_count: 1, skills: [{ ...stats, stable_key: 'sk_TEST_one', display_name: '判断直角三角形', full_name: '八年级上册/判断直角三角形', cross_section: false, definition: { observable_evidence: '判断', include_scope: '三边', exclude_scope: '作图' } }], topics: [{ ...stats, stable_key: 'kp_TEST_topic', display_name: '勾股定理', filter_value: '八年级上册/第一章/勾股定理' }] }] }] }
+    const app = createApp({ render: () => h(QuestionSkillBrowser, { index, loading: false, error: '' }) })
+    app.use(pinia).use(router).mount(host)
+    mounted.push(app)
+    const button = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === label)!
+    const tagRow = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('.qb-skill-row')].find(item => item.textContent?.includes(label))!
+    await vi.waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ skillKeys: ['sk_TEST_one'] })))
+    const callsBeforeTagMode = list.mock.calls.length
+    button('按标签').click()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.tagDim).toBe('specialTypes'))
+    await vi.waitFor(() => expect(tagRow('新定义题')).toBeTruthy())
+    expect(list.mock.calls.length).toBe(callsBeforeTagMode)
+    expect(host.textContent).toContain('请选择标签')
+    expect(facetList).toHaveBeenLastCalledWith(expect.objectContaining({ skillKeys: [], curriculumVolumeIds: [scope.selectedVolumeId], curriculumSections: [] }), expect.anything())
+    tagRow('新定义题').click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ specialTypes: ['新定义题'], skillKeys: [], curriculumSections: [], curriculumVolumeIds: [scope.selectedVolumeId] })))
+    expect(list.mock.lastCall?.[0]).not.toHaveProperty('scopeMode')
+    expect(router.currentRoute.value.query.tag).toBe('新定义题')
+    button('本章').click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ curriculumSections: ['kp_TEST_chapter'] })))
+    button('本小节').click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ curriculumSections: ['kp_TEST_section'] })))
+    expect(router.currentRoute.value.query.scope).toBe('section')
+    button('知识点').click()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.tagDim).toBe('knowledgePoints'))
+    expect(router.currentRoute.value.query.tag).toBeUndefined()
+    tagRow('勾股定理').click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ knowledgePoints: ['八年级上册｜第一章｜勾股定理'], specialTypes: [], scopeMode: 'any', curriculumSections: [] })))
+    expect(button('本章').disabled).toBe(true)
+    expect(button('本小节').disabled).toBe(true)
+    expect(button('整个学期').getAttribute('aria-pressed')).toBe('true')
+    button('错因').click()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.tagDim).toBe('errorPatternCategories'))
+    tagRow('方法与思路').click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ errorPatternCategories: ['方法与思路'], specialTypes: [] })))
+    button('按技能').click()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.tagDim).toBeUndefined())
+    expect(router.currentRoute.value.query.tag).toBeUndefined()
+    expect(router.currentRoute.value.query.scope).toBeUndefined()
   })
 
 
