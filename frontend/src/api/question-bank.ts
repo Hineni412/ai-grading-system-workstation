@@ -24,6 +24,35 @@ export const QUESTION_BANK_TAG_TYPES = [
 
 export type QuestionBankTagType = (typeof QUESTION_BANK_TAG_TYPES)[number]
 
+export type QuestionRepairKind = 'skills' | 'analysis' | 'all'
+export type QuestionRepairPart = 'tags' | 'evidence' | 'criteria' | 'skills'
+export interface QuestionRepairPreview {
+  curriculum_volume_id: string
+  kind: QuestionRepairKind
+  fingerprint: string
+  scanned_count: number
+  question_count: number
+  repairable_count: number
+  model_calls: number
+  counts: Record<QuestionRepairPart, number>
+  items: { id: number; question_number: string; paper_title: string; missing: QuestionRepairPart[]; blocked_reason: string; revision: string }[]
+}
+
+function decodeRepairPreview(value: unknown): QuestionRepairPreview {
+  if (!isRecord(value) || typeof value.fingerprint !== 'string' || !/^[0-9a-f]{64}$/.test(value.fingerprint)
+      || !Array.isArray(value.items) || !isRecord(value.counts) || value.model_calls !== 0
+      || !['skills', 'analysis', 'all'].includes(String(value.kind)) || typeof value.curriculum_volume_id !== 'string'
+      || !['scanned_count', 'question_count', 'repairable_count'].every(key => Number.isSafeInteger(value[key]) && Number(value[key]) >= 0)
+      || !['tags', 'evidence', 'criteria', 'skills'].every(key => Number.isSafeInteger((value.counts as Record<string, unknown>)[key]))
+      || !value.items.every(item => isRecord(item) && Number.isSafeInteger(item.id) && Number(item.id) > 0
+        && typeof item.question_number === 'string' && typeof item.paper_title === 'string' && typeof item.blocked_reason === 'string'
+        && Array.isArray(item.missing) && item.missing.every(part => ['tags', 'evidence', 'criteria', 'skills'].includes(String(part))))) {
+    throw new Error('Invalid repair preview')
+  }
+  assertNoPathLikeKeys(value)
+  return value as unknown as QuestionRepairPreview
+}
+
 export interface QuestionBankTag {
   tag_type: QuestionBankTagType
   tag_value: string
@@ -1946,6 +1975,15 @@ function decodeQuestionStandardSummary(value: unknown): QuestionStandardSummary 
 }
 
 export const questionBankApi = {
+  repairPreview(volumeId: string, kind: QuestionRepairKind, signal?: AbortSignal): Promise<QuestionRepairPreview> {
+    return apiClient.request(`/api/question-bank/repair-preview?curriculum_volume_id=${encodeURIComponent(volumeId)}&kind=${kind}`,
+      { decode: decodeRepairPreview, signal, timeoutMs: 60_000 })
+  },
+  submitRepair(preview: QuestionRepairPreview, ids: number[], token: string): Promise<JobResponse> {
+    return apiClient.request('/api/question-bank/repair-jobs', { method: 'POST', decode: decodeJobResponse,
+      body: { curriculum_volume_id: preview.curriculum_volume_id, kind: preview.kind,
+        question_ids: normalizedQuestionIds(ids), fingerprint: preview.fingerprint, client_request_token: token } })
+  },
   skillIndex(curriculumVolumeId: string, signal?: AbortSignal): Promise<QuestionSkillIndex> {
     const parameters = new URLSearchParams({ curriculum_volume_id: curriculumVolumeId })
     return apiClient.request(`/api/question-bank/skill-index?${parameters}`, { decode: decodeQuestionSkillIndex, signal })

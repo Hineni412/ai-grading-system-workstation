@@ -838,6 +838,7 @@ class CombinedQuestionAnalysisModule:
         evidence_writer: SolutionEvidenceWriter | None = None,
         criterion_module: Any | None = None,
         question_type_writer: QuestionTypeSuggestionWriter | None = None,
+        repair_missing_only: bool = False,
     ) -> None:
         self.repository = repository
         self.gateway = gateway
@@ -845,6 +846,7 @@ class CombinedQuestionAnalysisModule:
         self.evidence_writer = evidence_writer
         self.criterion_module = criterion_module
         self.question_type_writer = question_type_writer
+        self.repair_missing_only = repair_missing_only
         self._criterion_audits: dict[tuple[str, int], dict[str, Any]] = {}
         self._criterion_audit_lock = threading.Lock()
         self._projection_notes: dict[tuple[str, int], dict[str, str]] = {}
@@ -1846,7 +1848,9 @@ class CombinedQuestionAnalysisModule:
                     raise ProjectionValidationError(
                         "solution evidence writer is unavailable"
                     )
-                evidence = self.evidence_writer.write(
+                existing = (getattr(self.evidence_writer, 'load_current', lambda *_: None)(question)
+                            if self.repair_missing_only else None)
+                evidence = existing or self.evidence_writer.write(
                     question,
                     evidence_payload,
                     model_name=model_name,
@@ -2050,6 +2054,14 @@ class CombinedQuestionAnalysisModule:
         if self.criterion_module is None:
             return {"status": "not_requested"}
         try:
+            if self.repair_missing_only:
+                existing_workspace = self.criterion_module.read(question)
+                current = existing_workspace.get('current_version')
+                if (isinstance(current, Mapping) and current.get('status') in {'proposed', 'approved'}
+                    and current.get('source_content_hash') == question.criterion_source_content_hash):
+                    return {'status': 'needs_review' if current.get('quality_status') != 'passed' else 'succeeded',
+                            'version_id': str(current.get('version_id') or ''),
+                            'quality_codes': list(current.get('quality_codes') or [])}
             workspace = self.criterion_module.propose(
                 question=question,
                 draft=draft,

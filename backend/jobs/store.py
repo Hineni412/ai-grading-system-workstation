@@ -283,7 +283,10 @@ class JobStore:
     def create_idempotent_tagging_sync_job(
         self,
         payload: dict[str, Any],
+        *, job_type: str = 'tagging_sync',
     ) -> tuple[JobRecord, bool]:
+        if job_type not in {'tagging_sync', 'question_bank_repair'}:
+            raise ValueError('unsupported question-bank job type')
         clean_payload = dict(payload)
         token = _clean_request_token(clean_payload.get("client_request_token"))
         question_ids = sorted(
@@ -320,6 +323,7 @@ class JobStore:
             question_ids,
             force_retag_question_ids,
             normalized_source_job_id,
+            clean_payload.get('fingerprint') if job_type == 'question_bank_repair' else None,
         )
         payload_json = json.dumps(
             clean_payload,
@@ -333,7 +337,7 @@ class JobStore:
                     """
                     SELECT *
                     FROM jobs
-                    WHERE job_type = 'tagging_sync'
+                    WHERE job_type = ?
                       AND (
                         status IN ('queued', 'running', 'paused')
                         OR (
@@ -345,7 +349,7 @@ class JobStore:
                       )
                     ORDER BY id DESC
                     """,
-                    (token,),
+                    (job_type, token),
                 ).fetchall()
                 for row in rows:
                     try:
@@ -376,6 +380,7 @@ class JobStore:
                             if existing_payload.get("source_job_id") is not None
                             else None
                         ),
+                        existing_payload.get('fingerprint') if job_type == 'question_bank_repair' else None,
                     )
                     if existing_payload.get("client_request_token") == token:
                         if existing_signature != signature:
@@ -393,9 +398,9 @@ class JobStore:
                 cursor = conn.execute(
                     """
                     INSERT INTO jobs (job_type, payload_json, status)
-                    VALUES ('tagging_sync', ?, 'queued')
+                    VALUES (?, ?, 'queued')
                     """,
-                    (payload_json,),
+                    (job_type, payload_json),
                 )
                 job_id = int(cursor.lastrowid)
                 conn.commit()

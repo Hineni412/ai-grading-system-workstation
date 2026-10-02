@@ -257,3 +257,112 @@ def test_empty_wal_read_version_noise_keeps_cache_and_real_commits_refresh(tmp_p
         assert service.list_papers()[0]["title"] == "TEST-second"
     finally:
         writer.close()
+
+
+def test_skill_repair_only_fills_requested_current_points_and_keeps_teacher_links(tmp_path):
+    from backend.jobs.knowledge_link_job import run_knowledge_link_job
+    from backend.jobs.manager import JobContext
+    from backend.jobs.store import JobStore
+    from question_bank.database.schema import connect
+    service, db, keys = _seed_skill_bank(tmp_path)
+    release = service.skill_index('bnu24-math-g8-upper')['graph_release_id']
+    with connect(db) as conn:
+        # Existing knowledge-topic links used to make the old missing-only mode skip this question.
+        conn.execute("INSERT INTO evidence_point_knowledge_links(evidence_version_id,question_id,part_id,evidence_point_id,graph_release_id,role,term_id,stable_key,resolution_status,source_kind) VALUES(?,4,'part-1','p1',?,'direct','kp_bnu24_math_g8_upper_1_1','kp_bnu24_math_g8_upper_1_1','resolved','link_job')", (f'{4:064x}', release))
+        before = [tuple(row) for row in conn.execute('SELECT * FROM evidence_point_knowledge_links WHERE question_id=1')]
+    store = JobStore(tmp_path / 'TEST-repair-jobs.db')
+    calls = []
+    def gateway(request):
+        calls.append(request)
+        return {q['question_id']: [{'evidence_point_id': p['evidence_point_id'], 'links': [{'fine_term_id': keys[0], 'role': 'direct'}]}
+            for part in q['parts'] for p in part['points']] for q in request['questions']}
+    def run(ids):
+        record = store.create_job('knowledge_link', {'mode': 'missing_skills', 'question_ids': ids})
+        return run_knowledge_link_job(context=JobContext(record.id, record.job_type, record.payload, store),
+                                     question_bank_db_path=db, data_root=tmp_path, link_gateway=gateway)
+    run([1, 3, 4, 5])
+    assert [[q['question_id'] for q in request['questions']] for request in calls] == [[4]]
+    assert service.skill_index('bnu24-math-g8-upper')['unlinked']['no_skill_link'] == 0
+    with connect(db) as conn:
+        assert [tuple(row) for row in conn.execute('SELECT * FROM evidence_point_knowledge_links WHERE question_id=1')] == before
+        conn.execute("DELETE FROM evidence_point_knowledge_links WHERE question_id=4")
+        conn.execute("INSERT INTO evidence_point_knowledge_links(evidence_version_id,question_id,part_id,evidence_point_id,graph_release_id,role,term_id,stable_key,resolution_status,source_kind) VALUES(?,4,'part-1','p1',?,'direct','kp_bnu24_math_g8_upper_1_1','kp_bnu24_math_g8_upper_1_1','resolved','teacher')", (f'{4:064x}', release))
+    run([4])
+    assert len(calls) == 1
+
+
+def test_skill_repair_does_not_save_a_response_after_the_source_changes(tmp_path):
+    from backend.jobs.knowledge_link_job import run_knowledge_link_job
+    from backend.jobs.manager import JobContext
+    from backend.jobs.store import JobStore
+    from question_bank.database.schema import connect
+    service, db, keys = _seed_skill_bank(tmp_path)
+    store = JobStore(tmp_path / 'TEST-repair-jobs.db')
+    record = store.create_job('knowledge_link', {'mode': 'missing_skills', 'question_ids': [4]})
+    def gateway(request):
+        with connect(db) as conn:
+            conn.execute("UPDATE questions SET question_text='TEST-new source' WHERE id=4")
+        return {4: [{'evidence_point_id': 'p1', 'links': [{'fine_term_id': keys[0], 'role': 'direct'}]}]}
+    run_knowledge_link_job(context=JobContext(record.id, record.job_type, record.payload, store),
+                          question_bank_db_path=db, data_root=tmp_path, link_gateway=gateway)
+    with connect(db) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM evidence_point_knowledge_links WHERE question_id=4').fetchone()[0] == 0
+
+
+def test_repair_preview_lists_each_missing_product_without_model_calls(tmp_path):
+    from backend.jobs.question_bank_repair import repair_preview
+    service, db, _ = _seed_skill_bank(tmp_path)
+    preview = repair_preview(service, 'bnu24-math-g8-upper', 'skills')
+    assert [item['id'] for item in preview['items']] == [3, 4, 5]
+    assert preview['model_calls'] == 0
+    assert preview['counts']['skills'] == 3
+    assert preview['counts']['evidence'] == 2
+    assert 'evidence' not in preview['items'][1]['missing']
+    assert len(preview['fingerprint']) == 64
+    assert repair_preview(service, 'bnu24-math-g8-upper', 'skills')['fingerprint'] == preview['fingerprint']
+    with pytest.raises(ValueError, match='当前教学学期'):
+        repair_preview(service, 'bnu24-math-g8-upper', 'skills', [6])
+
+
+@pytest.mark.parametrize('analysis_fails', [False, True])
+@pytest.mark.parametrize('kind', ['skills', 'analysis', 'all'])
+def test_one_click_repair_routes_only_previewed_gaps_and_stops_failed_dependencies(tmp_path, monkeypatch, analysis_fails, kind):
+    from backend.jobs import question_bank_repair as repair
+    from backend.jobs.manager import JobContext
+    from backend.jobs.store import JobStore
+    _, db, _ = _seed_skill_bank(tmp_path)
+    # Three previewed questions: one lacks points, one only needs a link, one changed since preview.
+    versions = [
+        [{'id': 3, 'missing': ['evidence', 'criteria', 'skills'], 'revision': 'r3', 'blocked_reason': ''},
+         {'id': 4, 'missing': ['skills'], 'revision': 'r4', 'blocked_reason': ''},
+         {'id': 5, 'missing': ['skills'], 'revision': 'changed', 'blocked_reason': ''}],
+        [{'id': 3, 'missing': ['evidence', 'skills'] if analysis_fails else ['skills'], 'blocked_reason': ''},
+         {'id': 4, 'missing': ['skills'], 'blocked_reason': ''}],
+        [{'id': 5, 'question_number': '5', 'missing': ['skills'], 'blocked_reason': ''}] +
+        ([{'id': 3, 'question_number': '3', 'missing': ['evidence', 'skills'], 'blocked_reason': ''}] if analysis_fails else []),
+    ]
+    preview_kinds = []
+    def preview(*args, **kwargs):
+        preview_kinds.append(args[2])
+        return {'items': versions.pop(0)}
+    monkeypatch.setattr(repair, 'repair_preview', preview)
+    store = JobStore(tmp_path / 'TEST-one-click.db')
+    record = store.create_job('question_bank_repair', {'question_ids': [3, 4, 5], 'kind': kind,
+        'curriculum_volume_id': 'bnu24-math-g8-upper', 'revisions': {'3': 'r3', '4': 'r4', '5': 'r5'}})
+    calls = []
+    def tagging(**kw):
+        calls.append(('analysis', kw['context'].payload))
+    def linking(**kw):
+        calls.append(('links', kw['context'].payload))
+    result = repair.run_question_bank_repair_job(context=JobContext(record.id, record.job_type, record.payload, store),
+        question_bank_db_path=db, data_root=tmp_path, tagging_runner=tagging, link_runner=linking,
+        ai_service_factory=lambda: None, link_gateway_factory=lambda: None)
+    assert calls[0][1]['question_ids'] == [3]
+    assert calls[0][1]['repair_missing_only'] is True
+    assert calls[1][1]['question_ids'] == ([4] if analysis_fails else [3, 4])
+    assert calls[1][1]['mode'] == 'missing_skills'
+    assert result['outcome'] == 'partial'
+    assert result['completed_count'] == (1 if analysis_fails else 2)
+    assert result['remaining'][0]['reason'].startswith('题目已变化')
+    # The entry filter must not hide a skill gap after the analysis stage finishes.
+    assert preview_kinds == [kind, 'all', 'all']

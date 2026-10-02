@@ -238,6 +238,7 @@ def _run_distinct_tagging_sync_job_locked(
             curriculum_volume_id=curriculum_volume_id,
             force_question_ids=requested_force_ids,
             include_complete_contexts=verify_tag_sources,
+            require_difficulty=bool(context.payload.get('repair_missing_only')),
         )
         stale_tag_ids: set[int] = set()
         if verify_tag_sources and complete_ids:
@@ -640,7 +641,7 @@ def _run_unified_tagging_analysis(
         OpenAICombinedAnalysisGateway(
             protocol_adapter=protocol_adapter,
             model_name=ai_service.model,
-            max_auto_retries=combined_analysis_retry_budget(ai_service),
+            max_auto_retries=(0 if context.payload.get('repair_missing_only') else combined_analysis_retry_budget(ai_service)),
         ),
         context,
     )
@@ -664,6 +665,7 @@ def _run_unified_tagging_analysis(
         tag_writer=tag_writer,
         evidence_writer=evidence_writer,
         criterion_module=criterion_module,
+        repair_missing_only=bool(context.payload.get('repair_missing_only')),
         question_type_writer=BankQuestionTypeSuggestionWriter(
             write_service=tag_write_service,
         ),
@@ -1061,12 +1063,13 @@ def _load_tagging_candidates(
     curriculum_volume_id: str = "",
     force_question_ids: set[int] | None = None,
     include_complete_contexts: bool = False,
+    require_difficulty: bool = False,
 ) -> tuple[dict[int, TaggingContext], list[int], list[int]]:
     placeholders = ",".join("?" for _ in question_ids)
     with connect(db_path) as conn:
         rows = conn.execute(
             f"""
-            SELECT q.id, q.question_text, q.answer_text, q.question_number,
+            SELECT q.id, q.question_text, q.answer_text, q.question_number, q.difficulty,
                    q.question_type, q.has_images, q.is_deleted,
                    p.grade, p.semester, p.textbook_version,
                    p.exam_type, p.district
@@ -1115,8 +1118,12 @@ def _load_tagging_candidates(
             unavailable.append(question_id)
             continue
         seen = tag_types.get(question_id, set())
+        try:
+            difficulty_ready = 1 <= float(row['difficulty'] or '') <= 10
+        except (TypeError, ValueError):
+            difficulty_ready = False
         # 新口径：能力标签在位 + 归属就绪（判定点关联派生或 derived_pending 标记）。
-        if "ability" in seen and analysis_ownership_satisfied(
+        if (not require_difficulty or difficulty_ready) and "ability" in seen and analysis_ownership_satisfied(
             seen,
             derived_pending=question_id in derived_pending,
         ):

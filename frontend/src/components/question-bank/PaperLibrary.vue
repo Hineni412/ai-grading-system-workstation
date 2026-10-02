@@ -16,7 +16,6 @@ import type {
   QuestionBankPaper,
   QuestionBankPaperMetadataInput,
   QuestionBankPaperPermanentDeleteImpact,
-  QuestionStandardSummary,
 } from '../../api/question-bank'
 import { questionBankApi } from '../../api/question-bank'
 import { useQuestionBankStore } from '../../stores/question-bank'
@@ -34,7 +33,7 @@ import {
   type PaperQuestionRef,
 } from './paper-analysis-status'
 
-const props = withDefaults(defineProps<{
+withDefaults(defineProps<{
   pendingTaxonomyCount?: number
   pendingTaxonomyState?: 'idle' | 'loading' | 'ready' | 'empty' | 'error'
   headerTarget?: string
@@ -42,12 +41,6 @@ const props = withDefaults(defineProps<{
 }>(), {
   pendingTaxonomyCount: 0,
   pendingTaxonomyState: 'ready',
-})
-
-const pendingTaxonomyLabel = computed(() => {
-  if (props.pendingTaxonomyState === 'idle' || props.pendingTaxonomyState === 'loading') return '读取中'
-  if (props.pendingTaxonomyState === 'error') return '读取失败'
-  return String(props.pendingTaxonomyCount)
 })
 
 const emit = defineEmits<{
@@ -63,32 +56,6 @@ const curriculumScope = useCurriculumScopeStore()
 const keyword = ref('')
 const category = ref('')
 const onlyIssues = ref(false)
-const showTrash = ref(false)
-const trashPapers = ref<QuestionBankPaper[]>([])
-const trashState = ref('idle')
-const stateBusy = ref(false)
-const lastTrashed = ref<QuestionBankPaper | null>(null)
-async function loadTrash() {
-  showTrash.value = true
-  trashState.value = 'loading'
-  try { trashPapers.value = (await questionBankApi.listPapers(undefined, true)).items; trashState.value = 'ready' }
-  catch { trashState.value = 'error' }
-}
-async function changePaperState(paper: QuestionBankPaper, deleted: boolean) {
-  if (stateBusy.value) return
-  if (deleted && !window.confirm(`将「${paper.title || paper.id}」移入回收站，包含 ${paper.question_count} 道题。可从回收站恢复；已有考试成绩与报告保持原样。确认移入吗？`)) return
-  stateBusy.value = true
-  try {
-    const result = await questionBankApi.changePaperState(paper, deleted)
-    lastTrashed.value = deleted ? { ...paper, updated_at: result.updated_at, import_status: result.import_status } : null
-    deleteNotice.value = deleted ? '已移入回收站，可立即恢复。' : '试卷已恢复。'
-    selectedPaperIds.value.delete(paper.id)
-    await store.loadPapers()
-    if (showTrash.value) await loadTrash()
-  } catch (error) {
-    deleteNotice.value = error instanceof ApiError && error.status === 409 ? '试卷已被其他操作更新，请刷新后重试。' : '操作结果尚未确认，请刷新试卷和回收站后核对。'
-  } finally { stateBusy.value = false }
-}
 async function continuePaper(paper: QuestionBankPaper) {
   const previous = selectedPaperIds.value
   selectedPaperIds.value = new Set([paper.id])
@@ -125,7 +92,6 @@ const progressStatus = ref('')
 const editingPaperId = ref<number | null>(null)
 let editorReturnTarget: HTMLElement | null = null
 function returnEditorFocus(event: Event) { event.preventDefault(); editorReturnTarget?.focus({ preventScroll: true }) }
-function returnMaintenanceFocus(event: Event) { event.preventDefault(); maintenanceMenu.value?.querySelector<HTMLElement>('summary')?.focus() }
 const pendingDeletePapers = ref<QuestionBankPaper[]>([])
 const selectedPaperIds = ref(new Set<number>())
 const openMenuPaperId = ref<number | null>(null)
@@ -136,24 +102,7 @@ const permanentDeleteRequestToken = ref('')
 const formError = ref('')
 const retagBusyPaperId = ref<number | null>(null)
 const retagAllBusy = ref(false)
-const standardSummary = ref<QuestionStandardSummary | null>(null)
-const standardState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
-const showStandard = ref(false)
-const maintenanceMenu = ref<HTMLDetailsElement | null>(null)
-defineExpose({ editPaper, retagPaper, continuePaper, answerPaper, changePaperState })
-function closeMaintenance(): void {
-  if (maintenanceMenu.value) maintenanceMenu.value.open = false
-}
-async function loadStandardSummary(): Promise<void> {
-  showStandard.value = true
-  standardState.value = 'loading'
-  try {
-    standardSummary.value = await questionBankApi.standardSummary()
-    standardState.value = 'ready'
-  } catch {
-    standardState.value = 'error'
-  }
-}
+defineExpose({ editPaper, retagPaper, continuePaper, answerPaper })
 const taggingMode = ref<'fill' | 'retag' | null>(null)
 const retagMessage = ref('')
 const answerDraftBusy = ref(false)
@@ -696,30 +645,6 @@ async function loadQuestionIds(
   return [...new Set(ids)]
 }
 
-interface CurriculumQuestionScope {
-  volumeId: string
-  ids: number[]
-}
-
-async function loadCurriculumQuestionScopes(
-  papers: QuestionBankPaper[],
-): Promise<CurriculumQuestionScope[]> {
-  const paperIdsByVolume = new Map<string, number[]>()
-  for (const paper of papers) {
-    if (!paper.curriculum_volume_id) continue
-    const paperIds = paperIdsByVolume.get(paper.curriculum_volume_id) ?? []
-    paperIds.push(paper.id)
-    paperIdsByVolume.set(paper.curriculum_volume_id, paperIds)
-  }
-  const scopes = await Promise.all(
-    [...paperIdsByVolume.entries()].map(async ([volumeId, paperIds]) => ({
-      volumeId,
-      ids: await loadQuestionIds(paperIds),
-    })),
-  )
-  return scopes.filter(scope => scope.ids.length > 0)
-}
-
 function newRequestToken(): string {
   const bytes = new Uint8Array(16)
   globalThis.crypto.getRandomValues(bytes)
@@ -953,70 +878,6 @@ async function retagPaper(paper: QuestionBankPaper): Promise<void> {
   }
 }
 
-async function retagAllPapers(): Promise<void> {
-  if (retagBusyPaperId.value !== null || retagAllBusy.value) return
-  retagMessage.value = ''
-  retagAllBusy.value = true
-  taggingMode.value = 'retag'
-  try {
-    const scopes = await loadCurriculumQuestionScopes(store.papers)
-    const total = scopes.reduce((sum, scope) => sum + scope.ids.length, 0)
-    if (total === 0) {
-      retagMessage.value = '题库中没有可重新标注的题目。'
-      return
-    }
-    if (!window.confirm(
-      `将重新分析题库中的 ${total} 道题，可能产生模型费用；人工修改的标签会保留。确认继续吗？`,
-    )) return
-    let count = 0
-    for (const { volumeId, ids } of scopes) {
-      count += await submitTaggingBatches(ids, {
-        forceRetag: true,
-        scope: `curriculum-${volumeId}-retag`,
-        volumeId,
-      })
-    }
-    retagMessage.value = `已提交全库 ${total} 道题，共 ${count} 个重新标注任务。`
-  } catch {
-    retagMessage.value = '全库重新标注没有完整提交；已提交的任务会保留，请先查看任务记录。'
-  } finally {
-    retagAllBusy.value = false
-    taggingMode.value = null
-  }
-}
-
-async function fillAllTags(): Promise<void> {
-  if (retagBusyPaperId.value !== null || retagAllBusy.value) return
-  retagMessage.value = ''
-  retagAllBusy.value = true
-  taggingMode.value = 'fill'
-  try {
-    const scopes = await loadCurriculumQuestionScopes(store.papers)
-    const total = scopes.reduce((sum, scope) => sum + scope.ids.length, 0)
-    if (total === 0) {
-      retagMessage.value = '题库中没有可补齐的题目。'
-      return
-    }
-    if (!window.confirm(
-      `将核对题库中的 ${total} 道题，只补齐缺失、失败或已过期的标签和判定点；真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。确认继续吗？`,
-    )) return
-    let count = 0
-    for (const { volumeId, ids } of scopes) {
-      count += await submitTaggingBatches(ids, {
-        forceRetag: false,
-        scope: `curriculum-${volumeId}-fill`,
-        volumeId,
-      })
-    }
-    retagMessage.value = `已提交全库 ${total} 道题等待后端核对，共 ${count} 个任务；完整内容不会重做。`
-  } catch {
-    retagMessage.value = '全库补齐标签没有完整提交；已提交的任务会保留，请先查看任务记录。'
-  } finally {
-    retagAllBusy.value = false
-    taggingMode.value = null
-  }
-}
-
 function editPaper(paper: QuestionBankPaper): void {
   const active = document.activeElement as HTMLElement | null
   editorReturnTarget = active?.closest('.paper-card')?.querySelector<HTMLElement>('.paper-card__more-toggle') || active?.closest('details')?.querySelector<HTMLElement>('summary') || active
@@ -1191,31 +1052,6 @@ async function confirmPermanentDelete(): Promise<void> {
           <strong>{{ reviewQuestions }}</strong>
         </AppButton>
         <Teleport :to="headerTarget || 'body'" :disabled="!headerTarget" defer>
-        <details ref="maintenanceMenu" class="paper-library__maintenance">
-          <summary class="paper-button">维护</summary>
-          <div class="paper-library__maintenance-items" @click="closeMaintenance">
-        <AppButton
-          variant="secondary"
-          :disabled="retagAllBusy || retagBusyPaperId !== null"
-          @click="fillAllTags"
-        >{{ retagAllBusy && taggingMode === 'fill' ? '正在检查未完成题…' : '继续完成未完成题目' }}</AppButton>
-        <AppButton variant="secondary"
-          type="button"
-          class="paper-button is-review"
-          @click="emit('reviewTaxonomy')"
-        >
-          无法归类的新词
-          <strong>{{ pendingTaxonomyLabel }}</strong>
-        </AppButton>
-        <AppButton
-          variant="secondary"
-          :disabled="retagAllBusy || retagBusyPaperId !== null"
-          @click="retagAllPapers"
-        >{{ retagAllBusy && taggingMode === 'retag' ? '正在准备…' : '全库重新打标签' }}</AppButton>
-        <AppButton variant="secondary" @click="loadTrash(); closeMaintenance()">试卷回收站</AppButton>
-        <AppButton variant="secondary" @click="loadStandardSummary">标准版本与缺口</AppButton>
-          </div>
-        </details>
         <AppButton variant="primary" @click="emit('import')">
           上传试卷
         </AppButton>
@@ -1223,21 +1059,8 @@ async function confirmPermanentDelete(): Promise<void> {
       </div>
     </header>
 
-    <DialogRoot :open="showStandard" @update:open="showStandard = $event"><DialogPortal><div v-if="showStandard" class="qb-modal-layer" @click.self="showStandard = false"><DialogContent as="section" class="paper-library__standard qb-import-dialog" :aria-describedby="undefined" @close-auto-focus="returnMaintenanceFocus">
-      <div class="paper-library__standard-heading"><DialogTitle as="h2">标准版本与缺口</DialogTitle><AppButton variant="secondary" class="paper-button" @click="showStandard = false">收起</AppButton></div>
-      <p v-if="standardState === 'loading'" role="status">正在读取当前标准与关联情况…</p>
-      <p v-else-if="standardState === 'error'" role="alert">暂时无法读取。<AppButton variant="secondary" class="paper-button" @click="loadStandardSummary">重试</AppButton></p>
-      <template v-else-if="standardSummary">
-        <p>当前标准：{{ standardSummary.active_release_id ?? '尚未启用' }} · 词表版本 {{ standardSummary.taxonomy_revision ?? '—' }}</p>
-        <p>{{ standardSummary.question_count }} 道题中，{{ standardSummary.usable_question_count }} 道有当前可用判定点，{{ standardSummary.skill_question_count }} 道已关联技能。</p>
-        <p>{{ standardSummary.section_only_question_count }} 道题仍有只关联到小节的判定点；{{ standardSummary.missing_link_question_count }} 道题仍有未关联的判定点。两项可能重叠。</p>
-        <p>{{ standardSummary.older_link_question_count }} 道题正在沿用旧版本关联。查看不调用 AI、不收费；标准修订先预演影响，沿用未变化的关联，只处理受影响题目。</p>
-        <ul><li v-for="version in standardSummary.versions" :key="version.release_id">{{ version.release_id }} · 词表 {{ version.taxonomy_revision }} · {{ version.status === 'active' ? '使用中' : version.status === 'candidate' ? '候选' : '历史' }} · {{ version.activated_at ?? version.created_at }}</li></ul>
-      </template>
-    </DialogContent></div></DialogPortal></DialogRoot>
-
     <p v-if="retagMessage" class="paper-library__notice" role="status">{{ retagMessage }}</p>
-    <p v-if="deleteNotice" class="paper-library__notice" role="status">{{ deleteNotice }} <button v-if="lastTrashed" class="qb-link" :disabled="stateBusy" @click="changePaperState(lastTrashed, false)">立即恢复</button></p>
+    <p v-if="deleteNotice" class="paper-library__notice" role="status">{{ deleteNotice }}</p>
 
     <div class="paper-library__tools">
       <label class="paper-search"><span class="sr-only">搜索试卷</span><input class="app-input" v-model="keyword" type="search" placeholder="搜索试卷名称、地区或教材"></label>
@@ -1405,7 +1228,6 @@ async function confirmPermanentDelete(): Promise<void> {
 
                 <button role="menuitem" :disabled="batchActionsDisabled && retagAllBusy" @click="closePaperMenu(); continuePaper(paper)">继续分析</button>
                 <button role="menuitem" :disabled="answerDraftBusy" @click="closePaperMenu(); answerPaper(paper)">生成答案草稿</button>
-                <button role="menuitem" :disabled="stateBusy" @click="closePaperMenu(); changePaperState(paper, true)">移入回收站</button>
                 <button
                   type="button"
                   role="menuitem"
@@ -1433,7 +1255,6 @@ async function confirmPermanentDelete(): Promise<void> {
       </section>
     </div>
 
-    <DialogRoot :open="showTrash" @update:open="showTrash = $event"><DialogPortal><div v-if="showTrash" class="qb-modal-layer" @click.self="showTrash = false"><DialogContent as="section" class="qb-import-dialog" :aria-describedby="undefined" @close-auto-focus="returnMaintenanceFocus"><header><DialogTitle as="h2">试卷回收站</DialogTitle><button class="qb-link" @click="showTrash = false">关闭</button></header><p v-if="trashState === 'loading'">正在读取…</p><p v-else-if="trashState === 'error'" role="alert">读取失败 <button class="qb-link" @click="loadTrash">重试</button></p><p v-else-if="!trashPapers.length">回收站为空。</p><article v-for="paper in trashPapers" :key="paper.id" class="paper-trash-row"><strong>{{ paper.title }}</strong><span>{{ paper.question_count }} 题</span><button class="qb-link" :disabled="stateBusy" @click="changePaperState(paper, false)">恢复</button><button class="qb-link" @click="requestPermanentDelete(paper)">永久删除</button></article></DialogContent></div></DialogPortal></DialogRoot>
 
     <nav v-if="paperPageCount > 1" class="paper-library__pagination" aria-label="试卷分页">
       <AppButton variant="secondary" :disabled="paperPage === 1" @click="changePaperPage(-1)">上一页</AppButton>

@@ -24,9 +24,11 @@ from question_bank.solution_evidence.knowledge_links import (
     replace_point_links,
     skill_layer_report,
 )
+from question_bank.solution_evidence.part_assessments import load_profiles
 from question_bank.taxonomy.governance import TaxonomyGovernance
 
 from .manager import JobContext
+from .execution_locks import keyed_execution_locks
 
 _VALID_ROLES = ("direct", "supporting_prerequisite")
 _MAX_DIRECT_LINKS = 3
@@ -102,7 +104,19 @@ def build_knowledge_link_gateway(service: Any) -> Callable[[Mapping[str, Any]], 
     return gateway
 
 
-def run_knowledge_link_job(
+def run_knowledge_link_job(**kwargs: Any) -> dict[str, object]:
+    context = kwargs['context']
+    if context.payload.get('mode') != 'missing_skills':
+        return _run_knowledge_link_job(**kwargs)
+    ids = context.payload.get('question_ids')
+    if not isinstance(ids, list) or not ids:
+        raise ValueError('skill repair requires explicit question_ids')
+    keys = [f"tagging-sync:{Path(kwargs['question_bank_db_path']).resolve(strict=False)}:{int(qid)}" for qid in ids]
+    with keyed_execution_locks(keys, cancel_check=context.raise_if_cancelled):
+        return _run_knowledge_link_job(**kwargs)
+
+
+def _run_knowledge_link_job(
     *,
     context: JobContext,
     question_bank_db_path: Path,
@@ -115,12 +129,14 @@ def run_knowledge_link_job(
     db_path = Path(question_bank_db_path)
     payload = context.payload
     mode = str(payload.get("mode") or "missing_only").strip()
-    if mode not in {"missing_only", "regenerate"}:
-        raise ValueError("knowledge_link mode must be missing_only|regenerate")
+    if mode not in {"missing_only", "regenerate", "missing_skills"}:
+        raise ValueError("knowledge_link mode is invalid")
     raw_ids = payload.get("question_ids")
     if raw_ids is not None and (not isinstance(raw_ids, Sequence) or isinstance(raw_ids, (str, bytes))):
         raise ValueError("knowledge_link question_ids must be a list")
     question_ids = [int(item) for item in raw_ids] if raw_ids is not None else None
+    if mode == 'missing_skills' and not question_ids:
+        raise ValueError('skill repair requires explicit question_ids')
     batch_size = int(payload.get("batch_size") or _DEFAULT_BATCH_SIZE)
     batch_size = min(max(batch_size, 1), 10)
 
@@ -168,13 +184,21 @@ def run_knowledge_link_job(
         }
         for row in rows
     ]
+    if mode == 'missing_skills':
+        with connect(db_path) as connection:
+            profiles = load_profiles(db_path, question_ids, connection=connection, data_root=data_root)
+            protected = {str(row[0]) for row in connection.execute(
+                "SELECT DISTINCT evidence_version_id FROM evidence_point_knowledge_links WHERE source_kind='teacher'")}
+        versions = [{'question_id': qid, 'evidence_version_id': profile['evidence_version_id'],
+                     'evidence': profile['evidence']} for qid, profile in profiles.items()
+                    if profile.get('available') and profile['evidence_version_id'] not in protected]
     if question_ids is not None:
         order = {int(qid): index for index, qid in enumerate(question_ids)}
         versions.sort(key=lambda item: order.get(item["question_id"], len(order)))
 
     # Per (version, release) already-linked points drive missing_only.
     covered: dict[str, set[str]] = {}
-    if mode == "missing_only" and versions:
+    if mode in {"missing_only", "missing_skills"} and versions:
         marks = ",".join("?" for _ in versions)
         with connect(db_path) as connection:
             covered_rows = connection.execute(
@@ -184,9 +208,10 @@ def run_knowledge_link_job(
                 WHERE graph_release_id = ?
                   AND role = 'direct' AND resolution_status = 'resolved'
                   AND stable_key <> '' AND weight > 0
+                  AND (? = 'missing_only' OR stable_key LIKE 'sk_%')
                   AND evidence_version_id IN ({marks})
                 """,
-                [release_id] + [v["evidence_version_id"] for v in versions],
+                [release_id, mode] + [v["evidence_version_id"] for v in versions],
             ).fetchall()
         for row in covered_rows:
             covered.setdefault(str(row["evidence_version_id"]), set()).add(
@@ -460,6 +485,13 @@ def run_knowledge_link_job(
             ],
         }
         context.raise_if_cancelled()
+        if mode == 'missing_skills':
+            current = load_profiles(db_path, [item['question_id'] for item in batch], data_root=data_root)
+            batch = [item for item in batch if current.get(item['question_id'], {}).get('available')
+                     and current[item['question_id']]['evidence_version_id'] == item['evidence_version_id']]
+            if not batch:
+                continue
+            request['questions'] = [q for q in request['questions'] if q['question_id'] in {item['question_id'] for item in batch}]
         try:
             response = link_gateway(request) or {}
         except Exception:
@@ -665,6 +697,24 @@ def run_knowledge_link_job(
                 continue
             try:
                 with connect(db_path) as connection:
+                    if mode == 'missing_skills':
+                        connection.execute('BEGIN IMMEDIATE')
+                        current = load_profiles(db_path, [question_id], connection=connection, data_root=data_root).get(question_id, {})
+                        active_now = load_active_release(db_path)
+                        if (not current.get('available') or current['evidence_version_id'] != item['evidence_version_id']
+                            or active_now is None or active_now.release_id != release_id
+                            or connection.execute("SELECT 1 FROM evidence_point_knowledge_links WHERE evidence_version_id=? AND source_kind='teacher'", (item['evidence_version_id'],)).fetchone()):
+                            continue
+                        covered_now = {str(row[0]) for row in connection.execute(
+                            "SELECT evidence_point_id FROM evidence_point_knowledge_links WHERE evidence_version_id=? AND graph_release_id=? AND role='direct' AND resolution_status='resolved' AND stable_key LIKE 'sk_%' AND weight>0",
+                            (item['evidence_version_id'], release_id))}
+                        points_to_write = [point for point in points_to_write if point['evidence_point_id'] not in covered_now
+                                           and any(link['role'] == 'direct' and link['stable_key'].startswith('sk_') for link in point['links'])]
+                        if not points_to_write:
+                            continue
+                        for point in points_to_write:
+                            connection.execute("DELETE FROM evidence_point_knowledge_links WHERE evidence_version_id=? AND graph_release_id=? AND evidence_point_id=? AND source_kind=?",
+                                (item['evidence_version_id'], release_id, point['evidence_point_id'], LINK_JOB_KIND))
                     inserted = replace_point_links(
                         connection,
                         evidence_version_id=item["evidence_version_id"],

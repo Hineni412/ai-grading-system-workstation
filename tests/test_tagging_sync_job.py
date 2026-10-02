@@ -415,6 +415,20 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
         assert second["outcome"] == "complete"
         assert second["successful_question_ids"] == requested_ids
 
+    if not duplicate:
+        # The new repair path publishes missing criteria without replacing saved evidence or tags.
+        previous_id = stored['evidence_version_id']
+        previous_tags = QuestionBankTestStore(db_path).get_question(question_id)['tags']
+        with connect(db_path) as conn:
+            conn.execute("UPDATE training_criterion_versions SET source_content_hash=?,source_reference='TEST-old-source' WHERE question_id=?", ('0' * 64, question_id))
+        repair_context, _ = _context(tmp_path, {'question_ids': requested_ids, 'repair_missing_only': True})
+        repaired = run_tagging_sync_job(context=repair_context, question_bank_db_path=db_path,
+            data_root=data_root, ai_service_factory=lambda: service, taxonomy_governance=governance)
+        assert gateway_calls[-1] == ('training_criteria', (question_id,))
+        assert repaired['outcome'] == 'complete', repr(repaired.get('failures'))
+        assert SolutionEvidenceRepository(db_path).latest(question_id)['evidence_version_id'] == previous_id
+        assert QuestionBankTestStore(db_path).get_question(question_id)['tags'] == previous_tags
+
 
 def test_fill_reanalyzes_stale_criteria_without_retagging_complete_neighbors(
     tmp_path: Path,
