@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -194,34 +195,22 @@ def main() -> None:
                 raise OSError("anonymous injected backup failure")
             return super().create_backup(reason, once_per_day=once_per_day)
 
-    app = create_app(path_manager=paths)
-    app.dependency_overrides[get_grading_db] = lambda: as_grading_repositories(
-        BrowserDBManager(paths.db_path)
-    )
-    frontend_dist = REPO_ROOT / "frontend" / "dist"
+    frontend_dist = Path(os.environ.get(
+        "STUDENT_BROWSER_FRONTEND_DIST", str(REPO_ROOT / "frontend" / "dist")
+    )).resolve()
     if not (frontend_dist / "index.html").is_file():
         raise RuntimeError("build the frontend before running the P2-13 browser gate")
-
-    from fastapi import HTTPException
-    from fastapi.responses import FileResponse
-    from fastapi.staticfiles import StaticFiles
-
-    app.mount(
-        "/assets",
-        StaticFiles(directory=frontend_dist / "assets"),
-        name="p2-13-assets",
+    from backend.api.frontend import mount_frontend
+    with patch("backend.api.app.mount_frontend", lambda app, _dist: mount_frontend(app, frontend_dist)):
+        app = create_app(path_manager=paths)
+    app.dependency_overrides[get_grading_db] = lambda: as_grading_repositories(
+        BrowserDBManager(paths.db_path)
     )
 
     @app.post("/test-support/fail-next-backup", include_in_schema=False)
     def fail_next_backup():
         backup_failure["next"] = True
         return {"armed": True}
-
-    @app.get("/{frontend_path:path}", include_in_schema=False)
-    def serve_frontend(frontend_path: str):
-        if frontend_path.startswith("api/"):
-            raise HTTPException(status_code=404)
-        return FileResponse(frontend_dist / "index.html")
 
     uvicorn.run(app, host="127.0.0.1", port=args.port)
 

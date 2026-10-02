@@ -155,7 +155,7 @@ async function mountView(section: 'data' | 'system' = 'data') {
   app.use(pinia)
   app.mount(host)
   mounted.push(app)
-  await vi.waitFor(() => expect(opsApiMock.getSelfCheck).toHaveBeenCalled())
+  await vi.waitFor(() => expect(section === 'system' ? opsApiMock.getSelfCheck : opsApiMock.getBackups).toHaveBeenCalled())
   await settle()
   return document.body
 }
@@ -219,6 +219,23 @@ afterEach(() => {
 })
 
 describe('settings data and system panels', () => {
+  it('loads storage and backup state without an unrelated system check', async () => {
+    const host = await mountView()
+    expect(storageApiMock.getStorage).toHaveBeenCalledOnce()
+    expect(opsApiMock.getBackups).toHaveBeenCalledOnce()
+    expect(opsApiMock.getSelfCheck).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('考试原卷')
+  })
+  it('shows WPS conversion support without treating absent alternatives as system faults', async () => {
+    opsApiMock.getSelfCheck.mockResolvedValue({ ...selfCheck, status: 'ok', api_configured: true,
+      databases: selfCheck.databases.map(item => ({ ...item, pending_migrations: 0, status: 'ok' })), warnings: [],
+      tools: [{ key: 'wps', available: true, status: 'ok' }, { key: 'microsoft_word', available: false, status: 'warning' }, { key: 'tectonic', available: true, status: 'ok' }] })
+    const host = await mountView('system')
+    expect(host.querySelector('.settings-system-line')?.textContent).toContain('一切正常')
+    expect(host.textContent).toContain('已检测到 WPS')
+    expect(host.textContent).toContain('无需另外安装')
+    expect(host.textContent).toContain('未安装（可选）')
+  })
   it('backs up in one click without a typed phrase', async () => {
     const host = await mountView()
     ;[...host.querySelectorAll<HTMLButtonElement>('.settings-panel__body button')].find(button => button.textContent === '立即备份')!.click()

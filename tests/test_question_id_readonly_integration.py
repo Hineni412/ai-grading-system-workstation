@@ -11,6 +11,22 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def test_repeated_id_lookup_keeps_alias_ambiguity_and_tracks_changed_known_scope():
+    from question_id_contract import question_id_coordinates, resolve_known_question_id
+    known = ["Q12", "Q13(P1)", "Q13(P2)"]
+    for _ in range(3):
+        assert resolve_known_question_id("Q12（1）", iter(known)) == "Q12"
+        assert resolve_known_question_id("Q13_1", known) == "Q13(P1)"
+        assert resolve_known_question_id("P1", known) is None
+        assert resolve_known_question_id("Q13(P3)", known) is None
+    known.append("Q13（1）")
+    assert resolve_known_question_id("Q13_1", known) is None
+    known.remove("Q13（1）")
+    assert resolve_known_question_id("Q13_1", known) == "Q13(P1)"
+    assert question_id_coordinates(["invalid"], parent_id={"invalid": 1}) is None
+    assert question_id_coordinates("P1", parent_id="Q12") == (12, 1)
+
+
 def test_reading_legacy_ids_is_pure_and_all_flows_agree(tmp_path: Path) -> None:
     rubric_path = tmp_path / "rubric.json"
     payload = {

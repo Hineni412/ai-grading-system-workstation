@@ -7,6 +7,8 @@ import { fetchResultsCenter, type ResultsCenterItem, type ResultsCenterResponse 
 import { useSessionStore } from '../stores/session'
 import { useResultsCenterStore } from '../stores/results-center'
 import ResultsCenterView from '../views/ResultsCenterView.vue'
+import type { ClassAnalysisResponse } from '../api/class-analysis'
+import { invalidateClassAnalysis } from '../components/results-center/class-analysis-cache'
 
 vi.mock('../api/results-center', async (original) => ({
   ...await original<typeof import('../api/results-center')>(),
@@ -84,10 +86,12 @@ function fixture(): ResultsCenterResponse {
 
 let app: App | null = null
 
-async function mountView(tab: string | null = 'details') {
+async function mountView(tab: string | null = 'details', analysis?: ClassAnalysisResponse) {
   localStorage.clear()
   vi.mocked(fetchResultsCenter).mockReset().mockResolvedValue(fixture())
   classAnalysisMock.getClassAnalysis.mockReset().mockRejectedValue(new Error('合成环境不读班级分析'))
+  invalidateClassAnalysis(7)
+  if (analysis) classAnalysisMock.getClassAnalysis.mockResolvedValue(analysis)
   const pinia = createPinia()
   setActivePinia(pinia)
   useSessionStore().$patch({ selectedSessionId: 7, loadState: 'ready', sessions: [{ id: 7, name: '合成成绩验证', status: 'grading', is_deleted: false, deleted_at: null, created_at: null, updated_at: null }] })
@@ -125,6 +129,19 @@ afterEach(() => {
 })
 
 describe('results center class filtering and return position', () => {
+
+  it('loads overview statistics and narrative through one existing full response', async () => {
+    const { host } = await mountView('overview', {
+      status: 'ready', auto_generate: true, small_sample: true, data: null,
+      cause_analysis: null, generated_at: null, stale: false, active_job_id: null,
+      narrative_failed: false, class_names: ['一班', '二班'], selected_class: null,
+      narrative: { key_findings: [{ title: '合成观察', detail: '同一响应的分析文字', severity: 'info' }],
+        common_issues: [], student_notes: [], grouping_advice: '' },
+    })
+    await vi.waitFor(() => expect(host.textContent).toContain('合成观察'))
+    expect(classAnalysisMock.getClassAnalysis).toHaveBeenCalledTimes(1)
+    expect(classAnalysisMock.getClassAnalysis).toHaveBeenCalledWith(7, expect.any(AbortSignal), '', 'full')
+  })
 
   it('uses the visible class, status and search scope without averaging incomplete scores as zero', async () => {
     const { host } = await mountView()

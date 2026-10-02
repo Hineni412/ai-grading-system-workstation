@@ -46,7 +46,7 @@ watch(() => route.query.section, value => {
         </nav>
       </template>
     </PageHeader>
-    <div class="settings-content">
+    <div class="settings-content" :class="{ 'settings-content--students': section === 'students' }">
       <SettingsStudentsPanel v-if="section === 'students'" />
       <ModelProfilesView v-else-if="section === 'ai'" ref="modelView" />
       <SettingsDataPanel v-else-if="section === 'data'" />

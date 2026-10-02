@@ -122,8 +122,13 @@ watch(
       mergedAnalysis.value = cachedClassAnalysis(sessionId, '')
       void loadReviewNotes(sessionId)
     }
-    void loadScope(scopeKey, sessionId)
-    void loadNarrative(scopeKey, sessionId)
+    // The existing full response contains both statistics and narrative;
+    // avoid assembling the same exam twice when neither is cached yet.
+    void loadScope(scopeKey, sessionId, true).then(() => {
+      if (scope.value === scopeKey && props.sessionId === sessionId) {
+        void loadNarrative(scopeKey, sessionId)
+      }
+    })
     if (scopeKey !== null) void ensureMerged(sessionId)
   },
   { immediate: true },
@@ -147,6 +152,7 @@ watch(succeededReportJobs, (value, previous) => {
 async function loadScope(
   scopeKey: string | null,
   sessionId: number,
+  includeNarrative = false,
 ): Promise<void> {
   // '' 的 class_name 在后端表示合并全部班级；范围 null 与未分班都落到同一请求。
   const apiScope = scopeKey ?? ''
@@ -168,10 +174,11 @@ async function loadScope(
       sessionId,
       controller.signal,
       apiScope,
-      'summary',
+      includeNarrative ? 'full' : 'summary',
     )
     if (generation !== loadGeneration || props.sessionId !== sessionId) return
     rememberClassAnalysis(sessionId, apiScope, result)
+    if (includeNarrative) narrativeCache.set(`${sessionId}::${apiScope}`, result)
     analysis.value = result
     analysisState.value = 'ready'
     if (apiScope === '') mergedAnalysis.value = result

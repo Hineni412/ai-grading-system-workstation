@@ -2,7 +2,7 @@ import { useConfigWorkspaceStore } from '../stores/config-workspace'
 import { useSessionStore } from '../stores/session'
 
 /* 顶栏「当前考试」与命令面板共用的受守卫切换：
-   有待核对提交或未保存修改时阻止/确认；成功才切换两侧状态并加载工作区。 */
+   有待核对提交或未保存修改时阻止/确认；成功才切换两侧状态，考试配置页按需加载工作区。 */
 export function useSessionSwitch() {
   const sessionStore = useSessionStore()
   const configStore = useConfigWorkspaceStore()
@@ -20,7 +20,6 @@ export function useSessionSwitch() {
     }
     if (!configStore.selectSession(nextSessionId)) return false
     sessionStore.selectSession(nextSessionId)
-    if (nextSessionId !== null) void configStore.loadSelectedSessionWorkspace(nextSessionId)
     return true
   }
 

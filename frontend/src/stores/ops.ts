@@ -46,9 +46,11 @@ const DATABASE_LABELS: Record<string, string> = {
 }
 
 const TOOL_LABELS: Record<string, string> = {
+  wps: 'WPS 文档转 PDF',
   microsoft_word: 'Microsoft Word',
   libreoffice: 'LibreOffice',
-  pdflatex: 'PDFLaTeX',
+  tectonic: '训练卷 PDF 排版工具',
+  pdflatex: 'PDFLaTeX（旧检查项）',
 }
 
 function defaultUiError(impact: string): OpsUiError {

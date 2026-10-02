@@ -10,6 +10,43 @@ from backend.llm.execution import LLMExecutionGovernorRegistry
 from backend.llm.policy import LLMRequestKind
 
 
+def test_diagnostic_summary_cache_invalidates_on_append_rotation_replacement_and_clear(tmp_path, monkeypatch):
+    from backend.llm.diagnostics import JsonlDiagnosticJournal
+    journal = JsonlDiagnosticJournal(tmp_path / "test-diagnostics.jsonl")
+    scans = 0
+    original = journal._merged_calls
+    def read(**kwargs):
+        nonlocal scans
+        scans += 1
+        return original(**kwargs)
+    monkeypatch.setattr(journal, "_merged_calls", read)
+    def append(call_id, timestamp):
+        journal._append({"event": "request", "call_id": call_id,
+            "timestamp_utc": timestamp, "workspace_module": "grading",
+            "request": {"messages": [{"content": "独有测试正文"}]},
+            "raw_response": "独有测试响应", "attachments": []})
+    append("a" * 24, "2026-10-01T00:00:00Z")
+    first = journal.list_calls()
+    first["items"][0]["model"] = "caller mutation"
+    assert journal.list_calls()["items"][0]["model"] == ""
+    assert scans == 1
+    assert "独有测试正文" not in repr(journal._summary_cache)
+    assert "独有测试响应" not in repr(journal._summary_cache)
+    append("b" * 24, "2026-10-02T00:00:00Z")
+    assert journal.list_calls()["matching"] == 2 and scans == 2
+    journal.path.rename(journal._rotated_path(1))
+    append("c" * 24, "2026-10-03T00:00:00Z")
+    assert journal.list_calls()["matching"] == 3 and scans == 3
+    journal.clear_workspace("grading")
+    assert journal.list_calls()["matching"] == 0 and scans == 4
+    append("d" * 24, "2026-10-04T00:00:00Z")
+    assert journal.list_calls()["matching"] == 1 and scans == 5
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_text(journal.path.read_text(encoding="utf-8").replace("d" * 24, "e" * 24), encoding="utf-8")
+    replacement.replace(journal.path)
+    assert journal.list_calls()["items"][0]["call_id"] == "e" * 24 and scans == 6
+
+
 class StatusError(Exception):
     def __init__(
         self,

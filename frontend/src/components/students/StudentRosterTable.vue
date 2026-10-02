@@ -26,14 +26,13 @@ function clearFilters() { roster.search = ''; roster.className = ''; clearTimeou
     <StatePanel v-if="roster.loadState === 'loading' && !roster.workspace" kind="loading" title="正在读取学生名单…" description="" />
     <StatePanel v-else-if="roster.loadState === 'error'" kind="error" title="学生名单暂时无法读取" :description="roster.errorMessage" retry-label="重新读取" @retry="roster.load()" />
     <div v-else-if="roster.workspace?.total === 0" class="student-empty"><p>没有符合条件的学生</p><AppButton variant="ghost" @click="clearFilters">清除筛选</AppButton></div>
-    <table v-else class="settings-table" data-testid="student-roster-table">
-      <colgroup><col style="width:150px"><col style="width:160px"><col style="width:140px"><col></colgroup>
-      <thead><tr><th>学号</th><th>姓名</th><th>班级</th><th>操作</th></tr></thead>
-      <tbody><tr v-for="student in roster.workspace?.items" :key="student.id">
-        <td>{{ student.student_code }}</td><td>{{ student.name }}</td><td>{{ student.class_name || '—' }}</td>
-        <td><AppButton variant="ghost" :data-student-id="student.id" :aria-label="`编辑 ${student.name}`" @click="roster.selectStudent(student.id)">编辑</AppButton></td>
-      </tr></tbody>
-    </table>
+    <ul v-else class="student-roster-grid" data-testid="student-roster-table" aria-label="学生名单">
+      <li v-for="student in roster.workspace?.items" :key="student.id" class="student-roster-entry">
+        <div class="student-roster-entry__identity"><strong>{{ student.name }}</strong><span>{{ student.student_code }}</span></div>
+        <span class="student-roster-entry__class" :title="student.class_name || '未分班'">{{ student.class_name ? student.class_name.endsWith('班') ? student.class_name : `${student.class_name} 班` : '未分班' }}</span>
+        <AppButton variant="ghost" :data-student-id="student.id" :aria-label="`编辑 ${student.name}`" @click="roster.selectStudent(student.id)">编辑</AppButton>
+      </li>
+    </ul>
     <div v-if="roster.workspace && roster.workspace.total_pages > 1" class="student-pagination">
       <AppButton variant="ghost" :disabled="roster.workspace.page <= 1" @click="roster.load({ page: roster.workspace.page - 1 })">上一页</AppButton>
       <span>第 {{ roster.workspace.page }} / {{ roster.workspace.total_pages }} 页</span>

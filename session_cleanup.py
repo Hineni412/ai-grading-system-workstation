@@ -67,13 +67,14 @@ def _is_under(path: Path, root: Path) -> bool:
         return False
 
 
-def _resolve_stored_candidate(path_value: str | None, data_root: Path) -> Path | None:
+def _resolve_stored_candidate(path_value: str | None, data_root: Path, *, resolved_root: Path | None = None) -> Path | None:
     if not path_value:
         return None
 
     raw = str(path_value).strip()
     if not raw:
         return None
+    root = resolved_root if resolved_root is not None else data_root.resolve()
 
     project_root = data_root.parent
     path = Path(raw)
@@ -96,7 +97,7 @@ def _resolve_stored_candidate(path_value: str | None, data_root: Path) -> Path |
             resolved = candidate.resolve()
         except OSError:
             continue
-        if resolved.exists() and _is_under(resolved, data_root):
+        if resolved.exists() and resolved.is_relative_to(root):
             return resolved
     return None
 
@@ -132,8 +133,9 @@ def _collect_session_file_paths(
     data_root: Path,
 ) -> set[Path]:
     files: set[Path] = set()
+    resolved_root = data_root.resolve()
     for raw_path in db.sessions.collect_session_storage_paths(session_id):
-        resolved = _resolve_stored_candidate(raw_path, data_root)
+        resolved = _resolve_stored_candidate(raw_path, data_root, resolved_root=resolved_root)
         if resolved is not None and resolved.is_file():
             files.add(resolved)
     return files

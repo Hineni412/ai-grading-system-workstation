@@ -749,7 +749,6 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       source.value = sourceResult.value
       sourceId.value = sourceResult.value.source_id
       sourceRevision.value = sourceResult.value.source_revision
-      void loadSourceDuplicates()
     } else if (sourceResult.status === 'rejected' && isNotFound(sourceResult.reason)) {
       source.value = null
       sourceId.value = null
@@ -766,6 +765,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     if (request !== hydrationRequest || sessionId.value !== expectedSessionId) return
     phase.value = derivePhase()
     persistSafeIndex()
+    if (phase.value !== 'editor') void loadSourceDuplicates()
   }
 
   async function restoreLatestGenerationJob(
@@ -807,6 +807,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     activeSessionIds: readonly number[],
     selectedSessionId: number | null,
     overrides: Partial<ConfigWorkspaceHydrationDependencies> = {},
+    loadWorkspace = true,
   ): Promise<void> {
     const raw = localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)
     const candidate = parsePersisted(raw)
@@ -814,7 +815,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       if (raw !== null) localStorage.removeItem(CONFIG_WORKSPACE_STORAGE_KEY)
       if (selectedSessionId !== null && activeSessionIds.includes(selectedSessionId)) {
         if (selectSession(selectedSessionId)) {
-          await loadSelectedSessionWorkspace(selectedSessionId, overrides)
+          if (loadWorkspace) await loadSelectedSessionWorkspace(selectedSessionId, overrides)
         }
       }
       return
@@ -837,6 +838,17 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     pendingJobRequestToken.value = candidate.pendingJobRequestToken ?? null
     pendingJobRequestKind.value = candidate.pendingJobRequestKind ?? null
     pendingUploadRequestToken.value = candidate.pendingUploadRequestToken ?? null
+    if (!loadWorkspace) {
+      // Restore only safe metadata and submission guards outside exam setup.
+      sourceId.value = candidate.sourceId
+      sourceRevision.value = candidate.sourceRevision
+      jobId.value = candidate.jobId
+      decisions.value = candidate.decisions.map(item => ({ ...item }))
+      assetDecisions.value = (candidate.assetDecisions ?? []).map(item => ({ ...item }))
+      generationSummary.value = candidate.generationSummary ?? null
+      phase.value = candidate.phase
+      return
+    }
     const dependencies: ConfigWorkspaceHydrationDependencies = {
       loadActiveSource: overrides.loadActiveSource ?? fetchActiveConfigSource,
       loadSource: overrides.loadSource ?? fetchConfigSource,
@@ -891,7 +903,6 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
         source.value = loaded
         sourceId.value = loaded.source_id
         sourceRevision.value = loaded.source_revision
-        void loadSourceDuplicates()
         decisions.value = sourceWasReplaced || candidate.sourceId === null
           ? []
           : candidate.decisions.map((item) => ({ ...item }))
@@ -954,6 +965,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       candidateChanged = true
     }
     phase.value = derivePhase()
+    if (phase.value !== 'editor') void loadSourceDuplicates()
     if (candidateChanged) {
       sanitized.phase = phase.value
       localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, JSON.stringify(sanitized))

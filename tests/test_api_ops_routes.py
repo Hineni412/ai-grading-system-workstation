@@ -47,6 +47,79 @@ def _snapshot() -> OpsSelfCheckResponse:
     )
 
 
+def test_optional_office_tools_do_not_mark_a_healthy_system_as_faulty(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from backend.ops.service import OpsSelfCheckService
+    paths = SimpleNamespace(version="test", data_root=tmp_path, databases_dir=tmp_path,
+        backups_dir=tmp_path, logs_dir=tmp_path, reports_dir=tmp_path, outputs_dir=tmp_path,
+        db_path=tmp_path / "grading.db", qb_db_path=tmp_path / "bank.db")
+    service = OpsSelfCheckService(paths, tool_checker=lambda key: key in {"wps", "tectonic"})
+    monkeypatch.setattr(service, "_database_check", lambda key, *_: {
+        "key": key, "exists": True, "size_bytes": 1, "integrity": "ok",
+        "migration_version": "current", "pending_migrations": 0, "status": "ok"})
+    monkeypatch.setattr(service, "_api_configured", lambda: (True, None))
+    snapshot = service.build_snapshot()
+    assert snapshot["status"] == "ok"
+    assert snapshot["warnings"] == []
+    assert {tool["key"] for tool in snapshot["tools"] if tool["available"]} == {"wps", "tectonic"}
+
+
+def test_storage_reuses_references_per_read_including_archived_owners(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from backend.api.routers.ops import get_storage
+    import backend.api.routers.sessions as sessions_router
+    import session_cleanup
+    shared = tmp_path / "shared.jpg"
+    own = tmp_path / "own.jpg"
+    shared.write_bytes(b"shared")
+    own.write_bytes(b"own")
+    records = [{"id": sid, "session_name": f"TEST-{sid}", "is_deleted": sid == 3,
+                "status": "graded", "created_at": str(sid)} for sid in (1, 2, 3)]
+    reads = []
+    class Sessions:
+        def list_grading_sessions(self, *, include_deleted=False):
+            assert include_deleted
+            return records
+        def collect_session_storage_paths(self, sid):
+            reads.append(sid)
+            return [str(own if sid == 1 else shared)]
+    observed = {}
+    def snapshot(sid, *_args, shared_refs):
+        observed[sid] = shared_refs
+        return {"originals_state": "complete", "scan_bytes": 0, "page_bytes": 0,
+                "annotation_bytes": 0, "release_bytes": 0, "clear_bytes": 0,
+                "can_release_scans": False, "can_clear": False, "blocked_reason": None}
+    monkeypatch.setattr(sessions_router, "_originals_snapshot", snapshot)
+    result = get_storage(SimpleNamespace(sessions=Sessions()), tmp_path, None, None)
+    assert reads == [1, 2, 3]
+    assert [item["session_id"] for item in result["sessions"]] == [2, 1]
+    assert observed == {1: {shared.resolve()}, 2: {own.resolve(), shared.resolve()}}
+    assert shared.exists() and own.exists()
+
+
+def test_system_database_check_reuses_readonly_gate_and_reports_corruption(tmp_path, monkeypatch):
+    from backend.ops.service import OpsSelfCheckService
+    from backend.schema_migrations import SchemaGateResult, SchemaVersionError
+    import backend.ops.service as module
+    candidate = tmp_path / "test.db"
+    candidate.write_bytes(b"test-only")
+    calls = []
+    def inspect(target, source):
+        calls.append((target, source))
+        return SchemaGateResult(target, "version-test", (), ("pending-test",))
+    monkeypatch.setattr(module, "inspect_schema_version", inspect)
+    before = candidate.read_bytes()
+    result = OpsSelfCheckService._database_check("grading", candidate, "grading")
+    assert calls == [("grading", candidate)]
+    assert result["status"] == "warning" and result["pending_migrations"] == 1
+    assert candidate.read_bytes() == before
+    def corrupt(*_):
+        raise SchemaVersionError("test corruption")
+    monkeypatch.setattr(module, "inspect_schema_version", corrupt)
+    assert OpsSelfCheckService._database_check("grading", candidate, "grading")["integrity"] == "unavailable"
+    assert OpsSelfCheckService._database_check("grading", tmp_path / "missing.db", "grading")["integrity"] == "missing"
+
+
 class _FakeOpsService:
     def __init__(self) -> None:
         self.snapshot_calls = 0

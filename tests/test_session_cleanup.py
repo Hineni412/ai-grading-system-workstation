@@ -27,6 +27,18 @@ def _write(path: Path, content: str = "x") -> Path:
     return path
 
 
+def test_stored_reference_resolution_keeps_root_boundary_and_legacy_inputs(tmp_path):
+    from session_cleanup import _resolve_stored_candidate
+    root = tmp_path / "user_data"
+    inside = _write(root / "exams" / "TEST-original.jpg")
+    outside = _write(tmp_path / "TEST-outside.jpg")
+    for raw in (str(inside), "exams/TEST-original.jpg", "user_data/exams/TEST-original.jpg"):
+        assert _resolve_stored_candidate(raw, root) == inside.resolve()
+        assert _resolve_stored_candidate(raw, root, resolved_root=root.resolve()) == inside.resolve()
+    for raw in (str(outside), "../TEST-outside.jpg", str(root / ".." / outside.name)):
+        assert _resolve_stored_candidate(raw, root, resolved_root=root.resolve()) is None
+
+
 def _make_deleted_session(db: DBManager, data_root: Path) -> tuple[int, list[Path]]:
     rubric = _write(data_root / "config" / "uploaded" / "rubric.json")
     answer_key = _write(data_root / "config" / "uploaded" / "answer.json")

@@ -50,7 +50,7 @@ async function mountShell({
   if (prepareStore) await store.initialize(async () => [])
   const initialize = vi.spyOn(store, 'initialize')
   if (prepareStore) initialize.mockResolvedValue()
-  const router = stubPages ? createRouter({ history: createMemoryHistory(), routes: ['/question-bank', '/results'].map(path => ({ path, component: { render: () => h('section', [h('h1', { tabindex: -1 }, path === '/results' ? '合成结果页' : '合成题库页'), h('button', '合成题卡')]) } })) }) : createAppRouter(createMemoryHistory())
+  const router = stubPages ? createRouter({ history: createMemoryHistory(), routes: ['/question-bank', '/results', '/sessions'].map(path => ({ path, component: { render: () => h('section', [h('h1', { tabindex: -1 }, path === '/results' ? '合成结果页' : '合成题库页'), h('button', '合成题卡')]) } })) }) : createAppRouter(createMemoryHistory())
   await router.push(path)
   await router.isReady()
 
@@ -73,6 +73,28 @@ beforeEach(() => {
 })
 
 describe('AppShell', () => {
+  it('loads exam configuration only when entering setup and preserves an existing editor on return', async () => {
+    const { app, router } = await mountShell({ path: '/question-bank', stubPages: true })
+    const sessions = useSessionStore()
+    sessions.sessions = [{ id: 7, name: '合成考试', status: 'created', is_deleted: false, deleted_at: null, created_at: null, updated_at: null }]
+    const config = useConfigWorkspaceStore()
+    const hydrate = vi.spyOn(config, 'hydrateSafeIndex').mockImplementation(async () => {
+      config.setEditor({ session_id: 7, configured: true, revision: 'a'.repeat(64), rows: [], total_score: 0, issues: [], source: null })
+    })
+    sessions.selectSession(7)
+    await settleUi()
+    expect(hydrate).not.toHaveBeenCalled()
+    await router.push('/sessions')
+    await settleUi()
+    expect(hydrate).toHaveBeenCalledOnce()
+    expect(hydrate).toHaveBeenCalledWith([7], 7)
+    config.updateEditor({ row_id: 'row-1', standard_answer: '未保存的合成答案' })
+    await router.push('/results'); await settleUi()
+    await router.push('/sessions'); await settleUi()
+    expect(hydrate).toHaveBeenCalledOnce()
+    expect(config.editorEdits[0]?.standard_answer).toBe('未保存的合成答案')
+    app.unmount()
+  })
   it('opens task center from the sidebar and cancels through the existing job store', async () => {
     const { app, host } = await mountShell({ path: '/question-bank', stubPages: true })
     const jobs = useJobStore()

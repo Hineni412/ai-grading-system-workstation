@@ -598,6 +598,7 @@ def _line_mentions_call_id(line: str, call_id: str) -> bool:
 class JsonlDiagnosticJournal:
     def __init__(self, path: str | Path = DIAGNOSTIC_LOG_FILE) -> None:
         self.path = Path(path)
+        self._summary_cache: tuple[tuple[object, ...], list[dict[str, object]], int, bool] | None = None
 
     def for_workspace(
         self,
@@ -849,16 +850,27 @@ class JsonlDiagnosticJournal:
         workspace_module: str = "",
         workspace_task_kind: str = "",
     ) -> dict[str, object]:
-        calls, scanned_event_count, read_truncated = self._merged_calls(
-            include_bodies=False,
-        )
+        # Keep only list metadata in memory. Detail bodies still come directly
+        # from the journal; appends, rotation, replacement and clearing invalidate.
+        with _path_lock(self.path):
+            fingerprint: tuple[object, ...] = tuple(
+                (str(path), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                if (info := path.stat() if path.exists() else None) is not None
+                else (str(path), None)
+                for path in self._read_paths()
+            )
+            if self._summary_cache is None or self._summary_cache[0] != fingerprint:
+                calls, scanned_event_count, read_truncated = self._merged_calls(include_bodies=False)
+                summaries = [self._summary(call) for call in calls.values()]
+                self._summary_cache = (fingerprint, summaries, scanned_event_count, read_truncated)
+            _, summaries, scanned_event_count, read_truncated = self._summary_cache
         normalized_kind = str(request_kind or "").strip()
         normalized_outcome = str(outcome or "").strip()
         normalized_module = _safe_workspace_label(workspace_module)
         normalized_task_kind = _safe_workspace_label(workspace_task_kind)
         filtered = [
             call
-            for call in calls.values()
+            for call in summaries
             if (
                 not normalized_kind
                 or call.get("request_kind") == normalized_kind
