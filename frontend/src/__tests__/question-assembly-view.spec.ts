@@ -5,6 +5,7 @@ import { createApp, nextTick } from 'vue';
 import { createMemoryHistory } from 'vue-router'
 import { createAppRouter } from '../router'
 import { useAssemblyStore } from '../stores/assembly';
+import { defaultPaperRules } from '../api/assembly'
 
 import QuestionAssemblyView from '../views/QuestionAssemblyView.vue'
 
@@ -118,7 +119,7 @@ describe('question assembly view', () => {
     expect(host.querySelector('.assembly')?.classList.contains('is-workspace-wide')).toBe(true)
     await vi.waitFor(() => expect(host.textContent).toContain('一次函数图像题'))
     await vi.waitFor(() => expect(useAssemblyStore(pinia).loadState).not.toBe('loading'))
-    expect(host.querySelector('.page-tabs .is-active')?.textContent).toBe('试卷篮与导出')
+    expect(host.querySelector('.page-tabs .is-active')?.textContent).toBe('整理与导出')
     await vi.waitFor(() => expect(host.textContent).toContain(format === 'pdf' ? 'paper.pdf' : 'paper.md'))
     expect(host.textContent).toContain('A')
 
@@ -151,10 +152,29 @@ describe('question assembly view', () => {
     const host = document.createElement('div'); document.body.append(host)
     const app = createApp(QuestionAssemblyView); app.use(createPinia()).use(router).mount(host); mounted.push(app)
     expect(host.querySelectorAll('.page-tabs button')).toHaveLength(2)
-    expect(host.querySelector('.page-tabs .is-active')?.textContent).toBe(query.includes('ai') || query.includes('assistant') ? '学情组卷助手' : '试卷篮与导出')
+    expect(host.querySelector('.page-tabs .is-active')?.textContent).toBe(query.includes('ai') || query.includes('assistant') ? '班级组卷' : '整理与导出')
     const bank = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '去题库选题')!
     bank.click()
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/question-bank?tab=skill'), { timeout: 5000 })
+  })
+
+  it('shows the training entrance and resumes the exact generated draft', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => String(input).endsWith('/draft') ? json(draft()) : json({items:[],total:0}))
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/question-assembly?mode=edit')
+    const host = document.createElement('div'); document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(QuestionAssemblyView); app.use(pinia).use(router).mount(host); mounted.push(app)
+    const store = useAssemblyStore(pinia)
+    await vi.waitFor(()=>expect(store.loadState).not.toBe('loading'))
+    store.draft.practice_rules = {...defaultPaperRules(),purpose:'training'}
+    store.rememberTrainingDraft('TEST-fixed-draft')
+    await nextTick()
+    expect(host.querySelector('.page-tabs .is-active')?.textContent).toBe('审核与回收')
+    expect(host.querySelector('.assembly-editor')).toBeNull()
+    ;([...host.querySelectorAll<HTMLButtonElement>('button')].find(b=>b.textContent==='继续这张训练卷 →')!).click()
+    await vi.waitFor(()=>expect(router.currentRoute.value.fullPath).toBe('/training?mode=paper&draft=TEST-fixed-draft'), { timeout: 5000 })
+    sessionStorage.clear()
   })
 
 })

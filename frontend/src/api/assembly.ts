@@ -19,7 +19,9 @@ export interface AssemblySection {
 }
 
 export interface AssemblyDraft {
-  practice_rules?: boolean
+  practice_rules?: boolean | PaperRules | null
+  assembly_context?: AssemblyContext | null
+  rule_violations?: Array<{ question_id: number; code: string; message: string }>
   basket_ids: number[]
   order_ids: number[]
   sections: AssemblySection[]
@@ -31,8 +33,25 @@ export interface AssemblyDraft {
   revision: string
 }
 
+export interface PaperRules {
+  purpose: 'training' | 'handout'; question_count: number; difficulty_max: number
+  max_questions_per_skill: number; max_written_questions: number; recent_activity_count: number
+}
+export interface AssemblyContext {
+  class_ids: string[]; session_ids: number[]; curriculum_volume_id: string; title_generated?: boolean
+  sources: Record<string, { key: string; label: string; skill_keys: string[]; original?: boolean }>
+}
+export const defaultPaperRules = (): PaperRules => ({ purpose: 'handout', question_count: 10, difficulty_max: 8, max_questions_per_skill: 1, max_written_questions: 2, recent_activity_count: 3 })
+export function createTrainingFromAssembly(body: { request_token: string; class_ids: string[]; draft_revision: string; rules: PaperRules }): Promise<{ draft_id: string }> {
+  return apiClient.request('/api/training/personalized-drafts/from-assembly', { method: 'POST', body, timeoutMs: 120_000,
+    decode: value => { if (!isRecord(value) || !isRevision(value.draft_id)) throw new Error('Invalid training draft'); return { draft_id: value.draft_id } },
+  })
+}
+export function paperRulesSummary(rules: PaperRules): string { return `同技能最多 ${rules.max_questions_per_skill} 道 · 解答题最多 ${rules.max_written_questions} 道 · 难度 ≤ ${rules.difficulty_max} · 排除最近 ${rules.recent_activity_count} 次原题` }
+
 export interface AssemblyQuestion {
   id: number
+  skill_keys?: string[]
   revision: string
   question_number: string
   question_type: string | null
@@ -83,6 +102,8 @@ export interface AssemblyRecordDelete {
 
 export interface AssemblyAssistantRequest {
   class_id: string
+  class_ids?: string[]
+  session_ids?: number[]
   curriculum_volume_id: string
   chapter_id: string
   teaching_progress_chapter_id?: string
@@ -92,6 +113,46 @@ export interface AssemblyAssistantRequest {
   difficulty_max: number
   exclude_exam_originals: boolean
   exclude_recent: boolean
+  recent_activity_count?: number
+  purpose?: 'training' | 'handout'
+}
+
+
+export interface AssemblyExamQuestion {
+  key: string; session_id: number; question_id: string; question_type: string; full_score: number
+  class_rate: number | null; student_count: number; bank_question_id: number | null; difficulty: number | null
+  class_rates: Array<{ class_id: string; student_count: number; class_rate: number | null }>
+  cause_category_counts: Array<{ category: string; count: number }> | null
+  skill_keys: string[]; skills: Array<{ key: string; label: string }>; question_text: string
+}
+export interface AssemblyExam {
+  session_id: number; title: string; date: string; class_ids: string[]; student_count: number
+  average_score: number; questions: AssemblyExamQuestion[]
+}
+export interface AssemblyExamResult { student_count: number; exams: AssemblyExam[] }
+const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && Number(v) >= 0
+const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every(s => typeof s === 'string')
+const isRate = (v: unknown) => v === null || (typeof v === 'number' && v >= 0 && v <= 1)
+function isExamQuestion(v: unknown): v is AssemblyExamQuestion {
+  return isRecord(v) && typeof v.key === 'string' && isPositiveInteger(v.session_id) && typeof v.question_id === 'string'
+    && typeof v.question_type === 'string' && typeof v.question_text === 'string' && typeof v.full_score === 'number' && v.full_score > 0
+    && isRate(v.class_rate) && isCount(v.student_count) && (v.bank_question_id === null || isPositiveInteger(v.bank_question_id))
+    && (v.difficulty === null || (typeof v.difficulty === 'number' && v.difficulty >= 1 && v.difficulty <= 10))
+    && isStrings(v.skill_keys) && Array.isArray(v.skills) && v.skills.every(s => isRecord(s) && typeof s.key === 'string' && typeof s.label === 'string')
+    && Array.isArray(v.class_rates) && v.class_rates.every(c => isRecord(c) && typeof c.class_id === 'string' && isCount(c.student_count) && isRate(c.class_rate))
+    && (v.cause_category_counts === null || (Array.isArray(v.cause_category_counts) && v.cause_category_counts.every(c => isRecord(c) && typeof c.category === 'string' && isCount(c.count))))
+}
+export function fetchAssemblyExams(class_ids: string[], curriculum_volume_id: string, signal?: AbortSignal): Promise<AssemblyExamResult> {
+  return apiClient.request('/api/question-assembly/assistant/exam-questions', {
+    method: 'POST', body: { class_ids, curriculum_volume_id }, signal, timeoutMs: 120_000,
+    decode: value => {
+      if (!isRecord(value) || !isCount(value.student_count) || !Array.isArray(value.exams)
+        || !value.exams.every(e => isRecord(e) && isPositiveInteger(e.session_id) && typeof e.title === 'string' && typeof e.date === 'string'
+          && isStrings(e.class_ids) && isCount(e.student_count) && typeof e.average_score === 'number' && Number.isFinite(e.average_score)
+          && Array.isArray(e.questions) && e.questions.every(isExamQuestion))) throw new Error('Invalid exam evidence')
+      return value as unknown as AssemblyExamResult
+    },
+  })
 }
 
 export interface AssemblyWeakness {
@@ -191,6 +252,21 @@ function isExportFormat(value: unknown): value is AssemblyExportFormat {
   return value === 'docx' || value === 'markdown' || value === 'pdf'
 }
 
+function isPaperRules(v: unknown): v is PaperRules {
+  if (!isRecord(v) || !['handout','training'].includes(String(v.purpose))) return false
+  const count = Number(v.question_count)
+  return isPositiveInteger(v.question_count) && (v.purpose !== 'training' || (count >= 8 && count <= 12))
+    && isPositiveInteger(v.difficulty_max) && Number(v.difficulty_max) <= 10
+    && isPositiveInteger(v.max_questions_per_skill) && Number(v.max_questions_per_skill) <= count
+    && isCount(v.max_written_questions) && Number(v.max_written_questions) <= count && isCount(v.recent_activity_count)
+}
+function isAssemblyContext(v: unknown): v is AssemblyContext {
+  return isRecord(v) && isStrings(v.class_ids) && Array.isArray(v.session_ids) && v.session_ids.every(isPositiveInteger)
+    && typeof v.curriculum_volume_id === 'string' && (v.title_generated === undefined || typeof v.title_generated === 'boolean')
+    && isRecord(v.sources) && Object.values(v.sources).every(s => isRecord(s) && typeof s.key === 'string' && typeof s.label === 'string'
+      && isStrings(s.skill_keys) && (s.original === undefined || typeof s.original === 'boolean'))
+}
+
 export function decodeAssemblyDraft(value: unknown): AssemblyDraft {
   if (
     !isRecord(value) ||
@@ -205,6 +281,8 @@ export function decodeAssemblyDraft(value: unknown): AssemblyDraft {
       'preview_mode',
       'revision',
       ...(value.practice_rules === undefined ? [] : ['practice_rules']),
+      ...(value.assembly_context === undefined ? [] : ['assembly_context']),
+      ...(value.rule_violations === undefined ? [] : ['rule_violations']),
     ]) ||
     !isQuestionIdList(value.basket_ids) ||
     !isQuestionIdList(value.order_ids) ||
@@ -217,7 +295,9 @@ export function decodeAssemblyDraft(value: unknown): AssemblyDraft {
     typeof value.include_answer !== 'boolean' ||
     !isLayoutMode(value.layout_mode) ||
     !isPreviewMode(value.preview_mode) ||
-    (value.practice_rules !== undefined && typeof value.practice_rules !== 'boolean') ||
+    (value.practice_rules !== undefined && value.practice_rules !== null && typeof value.practice_rules !== 'boolean' && !isPaperRules(value.practice_rules)) ||
+    (value.assembly_context !== undefined && value.assembly_context !== null && !isAssemblyContext(value.assembly_context)) ||
+    (value.rule_violations !== undefined && (!Array.isArray(value.rule_violations) || !value.rule_violations.every(v => isRecord(v) && isPositiveInteger(v.question_id) && typeof v.code === 'string' && typeof v.message === 'string'))) ||
     !isRevision(value.revision)
   ) {
     throw new Error('Invalid assembly draft')
@@ -241,8 +321,10 @@ function isAssemblyQuestion(value: unknown): value is AssemblyQuestion {
       'asset_urls',
       'rich_content',
       'score_value',
+      ...(value.skill_keys === undefined ? [] : ['skill_keys']),
     ]) &&
     isPositiveInteger(value.id) &&
+    (value.skill_keys === undefined || isStrings(value.skill_keys)) &&
     isRevision(value.revision) &&
     typeof value.question_number === 'string' &&
     (value.question_type === null || typeof value.question_type === 'string') &&
@@ -341,7 +423,14 @@ export function decodeAssemblyRecordDelete(value: unknown): AssemblyRecordDelete
 function publicDraftPayload(draft: AssemblyDraft) {
   const payload = { ...draft }
   delete (payload as Partial<AssemblyDraft>).revision
+  delete payload.rule_violations
   return payload
+}
+
+export function fetchAssemblyQuickDraft(body: AssemblyAssistantRequest & { question_ids: number[]; rules: PaperRules; threshold: number; sort: string }): Promise<{ question_ids: number[]; additions: Array<{ question_id: number; source: AssemblyExamQuestion }>; skipped: Record<string, number> }> {
+  return apiClient.request('/api/question-assembly/assistant/quick-draft', { method: 'POST', body, timeoutMs: 120_000,
+    decode: value => { if (!isRecord(value) || !Array.isArray(value.additions) || !value.additions.every(a=>isRecord(a)&&isPositiveInteger(a.question_id)&&isExamQuestion(a.source)) || !isQuestionIdList(value.question_ids) || !isRecord(value.skipped) || !Object.values(value.skipped).every(isCount)) throw new Error('Invalid quick draft'); return value as unknown as { question_ids: number[]; additions: Array<{ question_id: number; source: AssemblyExamQuestion }>; skipped: Record<string, number> } },
+  })
 }
 
 function normalizedQuestionIds(values: readonly number[]): number[] {

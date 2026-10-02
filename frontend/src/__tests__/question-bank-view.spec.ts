@@ -618,6 +618,9 @@ describe('question bank workspace', () => {
     const router = createAppRouter(createMemoryHistory()); await router.push('/question-bank')
     const app = createApp(QuestionBasketDrawer, { open: true }); app.use(pinia).use(router).mount(host); mounted.push(app)
     await vi.waitFor(() => expect(document.querySelector('.qb-basket-drawer')?.textContent).toContain('同技能最多 1 道'))
+    basket.draft.practice_rules = {purpose:'handout',question_count:10,difficulty_max:10,max_questions_per_skill:3,max_written_questions:4,recent_activity_count:0}
+    await nextTick()
+    expect(document.querySelector('.qb-basket-drawer')?.textContent).toContain('同技能最多 3 道 · 解答题最多 4 道 · 难度 ≤ 10 · 排除最近 0 次原题')
     const button = [...document.querySelectorAll<HTMLButtonElement>('.qb-basket-drawer button')].find(button => button.textContent === '移出')!
     button.click(); await vi.waitFor(() => expect(remove).toHaveBeenCalledWith(17))
     expect(basket.draft.basket_ids).toEqual([17])

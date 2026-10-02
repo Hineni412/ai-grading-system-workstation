@@ -360,6 +360,11 @@ def test_paper_limits_preserve_raw_decimal_and_allow_two_written_questions(direc
         direct_module.validate_paper_questions([1,2,3])
     with pytest.raises(ValueError, match="1–8"):
         direct_module.validate_paper_questions([4])
+    rules = {'purpose':'handout','question_count':4,'difficulty_max':10,
+             'max_questions_per_skill':2,'max_written_questions':3,'recent_activity_count':0}
+    direct_module.validate_paper_questions([1,2,3,4], rules)
+    assert direct_module.paper_rule_violations([1,2], {**rules,'max_written_questions':1})[0]['question_id'] == 2
+    assert direct_module.paper_rule_violations([4], rules, recent_question_ids=[4])[0]['code'] == 'recent'
     candidates[1]["duplicate_identity"] = candidates[0]["duplicate_identity"] = "same"
     with pytest.raises(ValueError, match="相似"):
         direct_module.validate_paper_questions([1,2])

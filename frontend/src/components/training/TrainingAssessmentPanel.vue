@@ -273,6 +273,7 @@ async function loadFeedback(version = viewVersion): Promise<void> {
 
 async function startAssessment(): Promise<void> {
   if (busy.value || waitingForResult.value) return
+  if (!window.confirm('开始整卷判定将发送本份训练答卷、题目和判定点，调用模型 1 次并产生费用。实际费用以模型服务商计费为准。失败后不会自动重试。确认开始吗？')) return
   const version = viewVersion
   busy.value = 'assess'
   errorMessage.value = ''
@@ -335,6 +336,7 @@ async function assessmentAction(
   action: 'recover' | 'retry',
 ): Promise<void> {
   if (!assessment.value || busy.value) return
+  if (action === 'retry' && !window.confirm('重试整卷判定将再次发送本份训练答卷、题目和判定点，追加 1 次模型请求并产生费用。实际费用以模型服务商计费为准。确认重试一次吗？')) return
   const version = viewVersion
   stopPolling()
   busy.value = action

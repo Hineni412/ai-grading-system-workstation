@@ -227,6 +227,21 @@ afterEach(() => {
 })
 
 describe('personalized recommendation draft', () => {
+  it('opens a fixed class draft by its id and continues printing without automatic reselection', async () => {
+    const fixed = {...draft,config:{...draft.config,paper_mode:'shared',assembly_source:{source:'班级组卷 · 全班',title:'TEST-班级练习'}},
+      students:draft.students.map(s=>({...s,items:s.items.map(i=>({...i,locked:true}))}))}
+    trainingApiMock.getPersonalizedDraft.mockResolvedValue(fixed)
+    const host=document.createElement('div');document.body.append(host)
+    const app=createApp(PersonalizedRecommendationDraftView,{initialDraftId:fixed.draft_id,diagnosis:null,
+      scope:{mode:'class',class_ids:['SYN-C01']},examScope:{mode:'manual',session_ids:[7]}})
+    app.mount(host);mounted.push(app)
+    await vi.waitFor(()=>expect(host.textContent).toContain('班级组卷 · 全班'))
+    expect(host.textContent).toContain('TEST-班级练习')
+    expect(host.querySelector('.personalized-student-list')?.textContent).toContain('合成学生')
+    expect(trainingApiMock.createPersonalizedDraft).not.toHaveBeenCalled()
+    expect(trainingApiMock.getPersonalizedDraft).toHaveBeenCalledWith(fixed.draft_id)
+    expect([...host.querySelectorAll('button')].some(b=>['替换','移出','解锁'].includes(b.textContent?.trim()??''))).toBe(false)
+  })
   it.each(['success', 'uncertain response'])('exports a 100 question handout and restores the saved export after %s without creating a training paper', async (response) => {
     const handout = { ...draft, config: { purpose: 'handout', question_count: 100 } }
     const job = { id: 81, status: 'succeeded', progress: 1, result: { download_url: '/api/jobs/81/download' } }
