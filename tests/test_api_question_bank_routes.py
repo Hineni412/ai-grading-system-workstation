@@ -401,6 +401,18 @@ def test_questions_combined_filters_and_public_projection(
     db_path = tmp_path / "question_bank.db"
     question_bank_database(db_path, taxonomy_revision=3)
     _seed_combination_filter_questions(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO question_error_patterns (
+                question_id, category, pattern, status, source
+            ) VALUES (?, ?, ?, ?, 'TEST')
+            """,
+            [
+                (100, "方法与思路", "TEST-错因", "confirmed"),
+                (101, "方法与思路", "TEST-候选错因", "candidate"),
+            ],
+        )
     client = _question_bank_client(QuestionBankReadService(db_path))
 
     response = client.get(
@@ -453,6 +465,19 @@ def test_questions_combined_filters_and_public_projection(
         "question-secret",
     ):
         assert forbidden not in serialized
+
+    by_category = client.get(
+        "/api/question-bank/questions",
+        params={"error_pattern_categories": "方法与思路"},
+    ).json()
+    assert [item["id"] for item in by_category["items"]] == [100]
+    assert client.get(
+        "/api/question-bank/questions",
+        params={"error_pattern_categories": "审题与条件"},
+    ).json()["total"] == 0
+    assert client.get("/api/question-bank/facets").json()[
+        "error_pattern_categories"
+    ] == [{"value": "方法与思路", "count": 1}]
 
 
 def _json_strings(value: object):

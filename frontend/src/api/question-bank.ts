@@ -405,6 +405,7 @@ export interface QuestionBankFacets {
   models: QuestionBankFacet[]
   special_types: QuestionBankFacet[]
   error_types: QuestionBankFacet[]
+  error_pattern_categories: QuestionBankFacet[]
   student_levels: QuestionBankFacet[]
   teaching_stages: QuestionBankFacet[]
   sub_skills: QuestionBankFacet[]
@@ -594,6 +595,7 @@ export interface QuestionBankFilters {
   models?: string[]
   specialTypes?: string[]
   errorTypes?: string[]
+  errorPatternCategories?: string[]
   studentLevels?: string[]
   teachingStages?: string[]
   subSkills?: string[]
@@ -607,6 +609,7 @@ export interface QuestionBankFilters {
   curriculumVolumeIds?: string[]
   examScopes?: string[]
   curriculumSections?: string[]
+  scopeMode?: 'any' | 'primary' | 'strict'
   tagStatus?: QuestionBankTagStatus
   analysisStatus?: QuestionBankAnalysisStatus
   sort?: QuestionBankSort
@@ -1308,6 +1311,7 @@ export function decodeQuestionBankFacets(value: unknown): QuestionBankFacets {
     'models',
     'special_types',
     'error_types',
+    'error_pattern_categories',
     'student_levels',
     'teaching_stages',
     'sub_skills',
@@ -1768,6 +1772,7 @@ function questionListPath(filters: QuestionBankFilters): string {
   appendTexts(parameters, 'curriculum_volume_ids', filters.curriculumVolumeIds)
   appendTexts(parameters, 'exam_scopes', filters.examScopes)
   appendTexts(parameters, 'curriculum_sections', filters.curriculumSections)
+  if (filters.scopeMode) parameters.set('scope_mode', filters.scopeMode)
   appendTexts(parameters, 'knowledge_points', filters.knowledgePoints)
   appendTexts(parameters, 'skill_keys', filters.skillKeys)
   if (filters.skillUnlinked) parameters.set('skill_unlinked', 'true')
@@ -1778,6 +1783,7 @@ function questionListPath(filters: QuestionBankFilters): string {
   appendTexts(parameters, 'models', filters.models)
   appendTexts(parameters, 'special_types', filters.specialTypes)
   appendTexts(parameters, 'error_types', filters.errorTypes)
+  appendTexts(parameters, 'error_pattern_categories', filters.errorPatternCategories)
   appendTexts(parameters, 'student_levels', filters.studentLevels)
   appendTexts(parameters, 'teaching_stages', filters.teachingStages)
   appendTexts(parameters, 'sub_skills', filters.subSkills)

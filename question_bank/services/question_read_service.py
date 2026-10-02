@@ -553,6 +553,7 @@ class QuestionReadFilters:
     models: tuple[str, ...] = ()
     special_types: tuple[str, ...] = ()
     error_types: tuple[str, ...] = ()
+    error_pattern_categories: tuple[str, ...] = ()
     student_levels: tuple[str, ...] = ()
     teaching_stages: tuple[str, ...] = ()
     sub_skills: tuple[str, ...] = ()
@@ -1876,6 +1877,7 @@ class QuestionBankReadService:
             "models": facet_source(models=()),
             "special_types": facet_source(special_types=()),
             "error_types": facet_source(error_types=()),
+            "error_pattern_categories": facet_source(error_pattern_categories=()),
             "student_levels": facet_source(student_levels=()),
             "teaching_stages": facet_source(teaching_stages=()),
             "sub_skills": facet_source(sub_skills=()),
@@ -1970,6 +1972,28 @@ class QuestionBankReadService:
                         result[name] = _curriculum_chapter_facet(
                             tags.get("exam_scope", []),
                         )
+                    elif name == "error_pattern_categories":
+                        result[name] = [
+                            {
+                                "value": str(row["value"]),
+                                "count": int(row["count"]),
+                            }
+                            for row in conn.execute(
+                                f"""
+                                WITH filtered_questions AS ({sql})
+                                SELECT ep.category AS value,
+                                       COUNT(DISTINCT f.id) AS count
+                                FROM filtered_questions f
+                                JOIN question_error_patterns ep
+                                  ON ep.question_id = f.id
+                                WHERE ep.status = 'confirmed'
+                                  AND COALESCE(TRIM(ep.category), '') <> ''
+                                GROUP BY ep.category
+                                ORDER BY count DESC, value
+                                """,
+                                params,
+                            ).fetchall()
+                        ]
                     else:
                         result[name] = _column_facet(
                             columns, column=column_specs[name],
@@ -2985,6 +3009,22 @@ def _question_filter_parts(
         )
     if filters.criteria_needs_review:
         where.append(_CRITERIA_NEEDS_REVIEW_SQL.format(qid="q.id"))
+    error_pattern_categories = list(
+        dict.fromkeys(
+            item
+            for value in filters.error_pattern_categories
+            if (item := _filter_text(value))
+        )
+    )
+    if error_pattern_categories:
+        placeholders = ", ".join("?" for _ in error_pattern_categories)
+        where.append(
+            "EXISTS (SELECT 1 FROM question_error_patterns ep "
+            "WHERE ep.question_id = q.id "
+            "AND ep.status = 'confirmed' "
+            f"AND ep.category IN ({placeholders}))"
+        )
+        params.extend(error_pattern_categories)
     if filters.teaching_progress_chapter.strip():
         allowed_prefixes = teaching_progress_allowed_prefixes(
             filters.teaching_progress_chapter
