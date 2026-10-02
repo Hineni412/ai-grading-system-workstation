@@ -74,6 +74,7 @@ JobManager 在应用进程内用线程池执行任务，阅卷与扫描流程使
 | 当前知识标准 | `question_bank/taxonomy/curriculum_catalog.py` |
 | 知识发布加载 | `question_bank/knowledge_graph_release/loader.py` |
 | 掌握度 | `question_bank/mastery/current.py`（唯一入口）、`question_bank/mastery/model.py`（拟合与区间）；集成层 `DiagnosisProfileService.semester_mastery` 提供全年级结果 |
+| 普通组卷导出 | `backend/jobs/assembly_export.py` 复用草稿修订、暂存发布和导出记录；`question_bank/exporters/paper_docx_exporter.py` 与 `paper_pdf_exporter.py` 分别生成 Word、LaTeX PDF。PDF 排版测量状态属于单次导出，原题与图片只读；编译器与公式转换复用 `question_bank/personalized_papers/latex_render.py`，不套用训练冻结或页面身份流程 |
 | 训练卷冻结与导出 | `question_bank/personalized_papers/module.py` |
 | 题库状态与产物原子替换 | `question_bank/atomic_files.py`；临时文件占用最多尝试 12 次，总等待 3 秒，其他文件错误直接交给调用方处理 |
 | 训练讲义导出 | `backend/jobs/training_handout.py`；直接从推荐草稿生成 Word，临时产物位于报告目录的 `training_handouts/`，下载后删除 |

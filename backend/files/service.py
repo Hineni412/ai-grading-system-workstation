@@ -51,7 +51,7 @@ JOB_FILE_RULES = {
     ),
     "assembly_export": JobFileRule(
         result_field="file_path",
-        allowed_suffixes=frozenset({".docx", ".md"}),
+        allowed_suffixes=frozenset({".docx", ".md", ".pdf"}),
         root_name="assembly_outputs_dir",
         data_root_depth=2,
     ),

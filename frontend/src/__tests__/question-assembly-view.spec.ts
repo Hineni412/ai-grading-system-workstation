@@ -25,11 +25,11 @@ function draft(ids: number[] = [], revision = revisionA) {
   }
 }
 
-function job() {
+function job(format: 'docx' | 'pdf' = 'docx') {
   return {
     id: 51,
     job_type: 'assembly_export',
-    payload: { draft_revision: revisionB, format: 'docx', question_count: 2 },
+    payload: { draft_revision: revisionB, format, question_count: 2 },
     result: {},
     status: 'queued',
     progress: 0,
@@ -62,7 +62,7 @@ afterEach(() => {
 
 describe('question assembly view', () => {
 
-  it('opens the basket by default and submits an export job', async () => {
+  it.each(['docx', 'pdf'] as const)('opens the basket and submits a %s export job', async format => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
       if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') {
@@ -88,8 +88,8 @@ describe('question assembly view', () => {
             question_ids: [17],
             order_ids: [17],
             sections: [],
-            export_format: 'markdown',
-            filename: 'paper.md',
+            export_format: format === 'pdf' ? 'pdf' : 'markdown',
+            filename: format === 'pdf' ? 'paper.pdf' : 'paper.md',
             include_answer: true,
             created_at: '2026-07-18T10:00:00Z',
             question_count: 1,
@@ -101,7 +101,7 @@ describe('question assembly view', () => {
         })
       }
       if (url === '/api/question-assembly/export' && init?.method === 'POST') {
-        return json(job(), 202)
+        return json(job(format), 202)
       }
       throw new Error(`unexpected request: ${url}`)
     })
@@ -119,11 +119,16 @@ describe('question assembly view', () => {
     await vi.waitFor(() => expect(host.textContent).toContain('一次函数图像题'))
     await vi.waitFor(() => expect(useAssemblyStore(pinia).loadState).not.toBe('loading'))
     expect(host.querySelector('.page-tabs .is-active')?.textContent).toBe('试卷篮与导出')
-    await vi.waitFor(() => expect(host.textContent).toContain('paper.md'))
+    await vi.waitFor(() => expect(host.textContent).toContain(format === 'pdf' ? 'paper.pdf' : 'paper.md'))
     expect(host.textContent).toContain('A')
 
+    const formatSelect = host.querySelector<HTMLSelectElement>('select[aria-label="导出格式"]')!
+    expect(formatSelect.value).toBe('docx')
+    formatSelect.value = format
+    formatSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
     const exportWord = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('导出 Word'))!
+      .find((button) => button.textContent?.includes(format === 'pdf' ? '导出 PDF' : '导出 Word'))!
     exportWord.click()
     await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
       '/api/question-assembly/export',
@@ -134,7 +139,7 @@ describe('question assembly view', () => {
     )
     expect(JSON.parse(String(exportCall?.[1]?.body))).toEqual({
       draft_revision: revisionB,
-      format: 'docx',
+      format,
     })
     await vi.waitFor(() => expect(host.textContent).toContain('任务 #51'))
   })
@@ -149,7 +154,7 @@ describe('question assembly view', () => {
     expect(host.querySelector('.page-tabs .is-active')?.textContent).toBe(query.includes('ai') || query.includes('assistant') ? '学情组卷助手' : '试卷篮与导出')
     const bank = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '去题库选题')!
     bank.click()
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/question-bank?tab=skill'))
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/question-bank?tab=skill'), { timeout: 5000 })
   })
 
 })

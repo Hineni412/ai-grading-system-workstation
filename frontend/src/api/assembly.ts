@@ -9,8 +9,8 @@ import { isRecord } from './validation'
 
 export type AssemblyLayoutMode = 'sequential' | 'grouped_by_type' | 'sections'
 export type AssemblyPreviewMode = 'student' | 'teacher'
-export type AssemblyExportFormat = 'docx' | 'markdown'
-export type AssemblyExportSubmitFormat = 'docx'
+export type AssemblyExportFormat = 'docx' | 'markdown' | 'pdf'
+export type AssemblyExportSubmitFormat = 'docx' | 'pdf'
 
 export interface AssemblySection {
   id: string
@@ -188,7 +188,7 @@ function isPreviewMode(value: unknown): value is AssemblyPreviewMode {
 }
 
 function isExportFormat(value: unknown): value is AssemblyExportFormat {
-  return value === 'docx' || value === 'markdown'
+  return value === 'docx' || value === 'markdown' || value === 'pdf'
 }
 
 export function decodeAssemblyDraft(value: unknown): AssemblyDraft {

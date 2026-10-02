@@ -11,6 +11,7 @@
 - 代理决定测试位置；用户确认业务预期，不必确认内部接口。已授权实现范围内，隔离本地测试可执行、修复并复跑受影响项。
 - 以下套件是可选入口，不是每次修改都要逐级执行的关卡；通过相关检查后，只有新修改、失败或具体未解决问题才扩大范围；日常小改动不默认全量测试或独立复审。
 - 核心流程失败优先修复；不用测试数量代替功能可用。
+- 普通组卷导出：`tests/test_assembly_export_job.py` 覆盖 PDF 与兼容 Markdown 的任务发布、记录、两条下载入口、取消及草稿保留，并用本机 LaTeX 实排合成的大图、跨页合并表格和公式；引擎不可用时跳过实排项，不能据此声称验证了 PDF。公式转换复用 `tests/training/test_latex_render.py`，Word 回归复用 `tests/test_question_document_pipeline.py` 与 `tests/training/test_personalized_paper_formula_rendering.py`。前端扩展 `question-assembly-view`，连同 `assembly-store` 核对格式选择与导出请求。人工核对纸面小字、大图、续页和预留作答区；高中样本及断网新工作机需另行验证。
 
 ## 自动测试入口
 

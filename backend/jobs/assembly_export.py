@@ -8,6 +8,7 @@ from pathlib import Path
 
 from backend.jobs.manager import JobContext
 from question_bank.exporters.paper_docx_exporter import export_question_paper_docx
+from question_bank.exporters.paper_pdf_exporter import export_question_paper_pdf
 from question_bank.exporters.paper_markdown_exporter import (
     export_question_paper_markdown,
 )
@@ -26,6 +27,7 @@ def run_assembly_export_job(
     data_root: Path,
     docx_exporter: Callable = export_question_paper_docx,
     markdown_exporter: Callable = export_question_paper_markdown,
+    pdf_exporter: Callable = export_question_paper_pdf,
 ) -> dict[str, object]:
     workspace = AssemblyWorkspaceService(data_root)
     raw_draft = context.payload.get("draft")
@@ -43,7 +45,7 @@ def run_assembly_export_job(
         )
         PersonalizedRecommendationModule(db_path=question_bank_db_path, data_root=data_root).validate_paper_questions(draft.order_ids)
     export_format = str(context.payload.get("format") or "").strip().casefold()
-    if export_format not in {"docx", "markdown"}:
+    if export_format not in {"docx", "markdown", "pdf"}:
         raise ValueError("assembly export format is not supported")
     raw_source = context.payload.get("source")
     source = (
@@ -70,7 +72,10 @@ def run_assembly_export_job(
         for section in draft.sections
     ]
     title = draft.title or f"{datetime.now().strftime('%Y-%m-%d')}习题"
-    exporter = docx_exporter if export_format == "docx" else markdown_exporter
+    if export_format == "pdf":
+        exporter = pdf_exporter
+    else:
+        exporter = docx_exporter if export_format == "docx" else markdown_exporter
     published: Path | None = None
     record = None
     with tempfile.TemporaryDirectory(
@@ -88,6 +93,7 @@ def run_assembly_export_job(
                 grouped_by_type=draft.layout_mode == "grouped_by_type",
                 header_text=draft.header_text or None,
                 sections=sections if draft.layout_mode == "sections" else None,
+                **({"check_cancelled": context.raise_if_cancelled} if export_format == "pdf" else {}),
             )
         )
         try:
@@ -96,7 +102,7 @@ def run_assembly_export_job(
             raise ValueError(
                 "assembly export must stay inside the job staging directory"
             ) from exc
-        expected_suffix = ".docx" if export_format == "docx" else ".md"
+        expected_suffix = {"docx": ".docx", "markdown": ".md", "pdf": ".pdf"}[export_format]
         if staged.suffix.casefold() != expected_suffix or not staged.is_file():
             raise ValueError("assembly exporter did not create the requested file")
 
