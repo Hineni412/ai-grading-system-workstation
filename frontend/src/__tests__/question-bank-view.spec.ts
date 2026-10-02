@@ -1,6 +1,6 @@
 import { createPinia } from 'pinia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createApp, h, nextTick } from 'vue'
+import { createApp, h, nextTick, ref } from 'vue'
 import { createMemoryHistory } from 'vue-router'
 
 import { ApiError } from '../api/errors'
@@ -182,6 +182,39 @@ describe('question bank workspace', () => {
     await vi.waitFor(() => expect(track).toHaveBeenCalled())
     expect(submit).toHaveBeenLastCalledWith(preview, [17], firstToken)
     expect(submit).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['resolve', 'reject'] as const)('keeps the reopened repair preview when a cancelled request later %s', async outcome => {
+    const host = document.createElement('div'); document.body.append(host)
+    const preview = { curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'skills' as const,
+      fingerprint: 'a'.repeat(64), scanned_count: 1, question_count: 1, repairable_count: 1, model_calls: 0,
+      counts: { tags: 0, evidence: 0, criteria: 0, skills: 1 }, items: [
+        { id: 17, question_number: '1', paper_title: 'TEST-当前清单', missing: ['skills' as const], blocked_reason: '', revision: 'b'.repeat(64) },
+      ] }
+    let settlePrevious!: () => void
+    const previous = new Promise<typeof preview>((resolve, reject) => {
+      settlePrevious = () => outcome === 'resolve'
+        ? resolve({ ...preview, items: [{ ...preview.items[0]!, paper_title: 'TEST-已取消清单' }] })
+        : reject(new Error('TEST-cancelled request'))
+    })
+    const load = vi.spyOn(questionBankApi, 'repairPreview').mockReturnValueOnce(previous).mockResolvedValue(preview)
+    const submit = vi.spyOn(questionBankApi, 'submitRepair')
+    const open = ref(true)
+    const app = createApp({ render: () => h(QuestionRepairDialog, {
+      open: open.value, volumeId: preview.curriculum_volume_id, volumeLabel: '八年级上册', kind: 'skills',
+    }) })
+    app.use(createPinia()).mount(host); mounted.push(app)
+    await nextTick()
+    open.value = false; await nextTick()
+    open.value = true; await nextTick()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('TEST-当前清单'))
+    expect(load.mock.calls[0]![2]?.aborted).toBe(true)
+    settlePrevious(); await previous.catch(() => {}); await nextTick()
+    expect(document.body.textContent).toContain('确认补齐 1 题')
+    expect(document.body.textContent).toContain('TEST-当前清单')
+    expect(document.body.textContent).not.toContain('TEST-已取消清单')
+    expect(document.body.textContent).not.toContain('缺失清单暂时无法读取')
+    expect(submit).not.toHaveBeenCalled()
   })
 
   it('removes daily maintenance, whole-library retagging and trash entries', async () => {
