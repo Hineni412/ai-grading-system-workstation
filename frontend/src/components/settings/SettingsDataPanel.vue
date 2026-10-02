@@ -150,7 +150,7 @@ async function downloadResult() {
   } catch (reason) { error.value = message(reason) }
 }
 watch(() => `${ops.activeJob?.id}:${ops.activeJob?.status}:${ops.activeJob?.updated_at}`, () => { void finalizeTerminalJob().catch(reason => { error.value = message(reason) }) })
-onMounted(async () => { await Promise.all([refreshStorage(), (async () => { await jobs.initialize(); await ops.initialize(opsApi) })()]); await finalizeTerminalJob() })
+onMounted(async () => { await Promise.all([refreshStorage(), (async () => { await jobs.initialize(); await Promise.all([ops.refreshBackups(opsApi), ops.recoverTrackedOperation(opsApi)]) })()]); await finalizeTerminalJob() })
 onBeforeUnmount(() => controller.abort())
 </script>
 

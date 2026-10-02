@@ -135,6 +135,23 @@ afterEach(() => {
 })
 
 describe('question bank workspace', () => {
+  it('loads the paper catalog only when entering its workspace from skill browsing', async () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const pinia = createPinia()
+    const bank = useQuestionBankStore(pinia)
+    const load = vi.spyOn(bank, 'loadPapers').mockResolvedValue()
+    vi.spyOn(useCurriculumScopeStore(pinia), 'initialize').mockResolvedValue()
+    vi.spyOn(useJobStore(pinia), 'initialize').mockResolvedValue()
+    vi.spyOn(useAssemblyStore(pinia), 'load').mockResolvedValue()
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/question-bank?tab=skill'); await router.isReady()
+    const app = createApp(QuestionBankView); app.use(pinia).use(router).mount(host); mounted.push(app)
+    await nextTick()
+    expect(load).not.toHaveBeenCalled()
+    await router.push('/question-bank?tab=paper'); await nextTick()
+    expect(load).toHaveBeenCalledTimes(1)
+  })
+
   it('previews individual missing parts and recovers an ambiguous repair submission with the same token', async () => {
     const host = document.createElement('div'); document.body.append(host)
     const pinia = createPinia()

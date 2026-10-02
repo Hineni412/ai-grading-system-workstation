@@ -20,6 +20,24 @@ const curriculumScope = useCurriculumScopeStore()
 const jobs = useJobStore()
 const SIDEBAR_COLLAPSED_KEY = 'zhiheng.sidebar.collapsed'
 const hydratingWorkspace = ref(false)
+let hydratedConfigSession: number | null = null
+let configHydration: Promise<void> | null = null
+
+async function hydrateConfigWorkspace(): Promise<void> {
+  const id = sessionStore.selectedSessionId
+  if (route.path !== '/sessions' || sessionStore.loadState !== 'ready'
+    || id === null || hydratedConfigSession === id) return
+  if (configStore.sessionId === id && (configStore.editor || configStore.source)) {
+    hydratedConfigSession = id
+    return
+  }
+  if (configHydration) { await configHydration; return hydrateConfigWorkspace() }
+  configHydration = configStore.hydrateSafeIndex(sessionStore.sessions.map(item => item.id), id)
+  try {
+    await configHydration
+    if (sessionStore.selectedSessionId === id) hydratedConfigSession = id
+  } finally { configHydration = null }
+}
 const navigationOpen = ref(false)
 const narrowNavigation = ref(false)
 const wideViewport = ref(false)
@@ -101,6 +119,7 @@ onMounted(() => {
     await configStore.hydrateSafeIndex(
       sessionStore.sessions.map(({ id }) => id),
       sessionStore.selectedSessionId,
+      {}, false,
     )
     if (configStore.sessionId === null && sessionStore.selectedSessionId !== null) {
       configStore.selectSession(sessionStore.selectedSessionId)
@@ -117,6 +136,7 @@ onMounted(() => {
     ) {
       sessionStore.clearSelection()
     }
+    await hydrateConfigWorkspace()
   }).finally(() => {
     hydratingWorkspace.value = false
   })
@@ -127,11 +147,17 @@ watch(
   (sessionId) => {
     if (hydratingWorkspace.value) return
     const previous = configStore.sessionId
-    if (configStore.selectSession(sessionId)) return
+    if (configStore.selectSession(sessionId)) {
+      hydratedConfigSession = null
+      void hydrateConfigWorkspace()
+      return
+    }
     if (previous === null) sessionStore.clearSelection()
     else sessionStore.selectSession(previous)
   },
 )
+
+watch(() => route.path, () => { void hydrateConfigWorkspace() })
 
 onBeforeUnmount(() => {
   navigationMediaQuery?.removeEventListener('change', syncNavigationMode)

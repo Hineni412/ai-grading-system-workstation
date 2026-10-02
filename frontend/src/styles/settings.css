@@ -1,5 +1,6 @@
 .settings-hub { min-height: 100%; color: var(--color-text-primary); }
 .settings-content { max-width: calc(var(--content-max-width) + 40px); padding: 16px 20px 24px; }
+.settings-content--students { max-width: none; }
 .settings-hub .page-header { border-bottom-color: var(--color-border-subtle); padding-inline: 20px; }
 .settings-hub .page-header__title { font-size: 20px; }
 .settings-hub .page-tabs { align-self: stretch; gap: 2px; }
@@ -94,6 +95,10 @@ body:has(.settings-drawer[data-state=open]) [data-slot=sheet-overlay] { backgrou
 .settings-check-grid > div { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
 .settings-check-grid > div > span:last-child { margin-left: auto; font-size: 12px; color: var(--color-text-muted); }
 .settings-check-grid > .is-warning > span:last-child { color: var(--color-warning); }
+.settings-export-capabilities { border-top: 1px solid var(--color-border-subtle); padding: 12px 0 0; }
+.settings-export-capabilities h3 { margin: 0 12px 6px; font-size: 13px; font-weight: 500; }
+.settings-export-capabilities > p { margin: 6px 12px 12px; line-height: 1.7; }
+.settings-tool-options { background: var(--color-bg-subtle); }
 .settings-log-panel { scroll-margin-top: 70px; }
 @media (max-width: 720px) { .settings-content { padding: 12px; } .settings-hub .page-header { flex-wrap: wrap; } .settings-check-grid { grid-template-columns: 1fr; } .settings-dialog__footer { flex-wrap: wrap; } .settings-selection-bar { flex-wrap: wrap; } }
 

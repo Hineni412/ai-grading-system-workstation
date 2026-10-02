@@ -192,6 +192,7 @@ async function selectStage(stage: StageId): Promise<void> {
     document.querySelector<HTMLElement>('#rubric-ledger-title')?.focus()
     return
   }
+  if (configStore.source) void configStore.loadSourceDuplicates()
   transitionName.value = 'fx-stage-back'
   const panelChanging = activePanel.value !== 'source'
   sourceStage.value = stage

@@ -203,6 +203,8 @@ describe('SettingsStudentsPanel', () => {
         class_name: '七年级一班',
       },
     )
+    expect(host.textContent).toContain('学生信息已保存。')
+    expect(host.querySelector('input[name="student-name"]')).toBeNull()
 
     host.querySelector<HTMLButtonElement>('[data-student-id="12"]')!.click()
     await settle()

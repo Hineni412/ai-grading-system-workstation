@@ -1,10 +1,30 @@
 import { createPinia, setActivePinia } from 'pinia';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as configApi from '../api/config-workspace';
 
 import type { ConfigEditorResponse, ConfigSource } from '../api/config-workspace';
 import type { JobResponse } from '../api/jobs';
 
 import { CONFIG_WORKSPACE_STORAGE_KEY, useConfigWorkspaceStore } from '../stores/config-workspace';
+
+afterEach(() => vi.restoreAllMocks());
+
+it('defers duplicate checking for a configured editor until the source is inspected', async () => {
+  const duplicates = vi.spyOn(configApi, 'fetchActiveSourceDuplicates').mockResolvedValue({
+    source_id: 'd'.repeat(32), source_revision: 'b'.repeat(64), items: [],
+  });
+  const store = useConfigWorkspaceStore();
+  store.selectSession(7);
+  await store.loadSelectedSessionWorkspace(7, {
+    loadActiveSource: async () => source('d'.repeat(32)),
+    loadEditor: async () => editor('合成答案'),
+    loadLatestJob: async () => { throw new Error('no generation'); },
+  });
+  expect(store.phase).toBe('editor');
+  expect(duplicates).not.toHaveBeenCalled();
+  await store.loadSourceDuplicates();
+  expect(duplicates).toHaveBeenCalledWith(7);
+});
 
 function editor(answer: string): ConfigEditorResponse {
   return {
@@ -57,6 +77,24 @@ beforeEach(() => {
 })
 
 describe('configuration workspace Store', () => {
+  it('restores safe submission guards without fetching exam data outside setup, then hydrates on demand', async () => {
+    const candidate = { sessionId: 7, phase: 'source', sourceId: 'd'.repeat(32), sourceRevision: 'b'.repeat(64), jobId: null, decisions: [], pendingUploadRequestToken: '2'.repeat(32) }
+    localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, JSON.stringify(candidate))
+    const store = useConfigWorkspaceStore()
+    const loadSource = vi.fn(async () => source('d'.repeat(32)))
+    const loadEditor = vi.fn(async () => editor('测试答案'))
+    await store.hydrateSafeIndex([7], 7, { loadSource, loadEditor }, false)
+    expect(loadSource).not.toHaveBeenCalled()
+    expect(loadEditor).not.toHaveBeenCalled()
+    expect(store.source).toBeNull()
+    expect(store.pendingUploadRequestToken).toBe(candidate.pendingUploadRequestToken)
+    expect(store.selectSession(9)).toBe(false)
+    expect(JSON.parse(localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!)).toEqual(candidate)
+    await store.hydrateSafeIndex([7], 7, { loadSource, loadEditor })
+    expect(loadSource).toHaveBeenCalledOnce()
+    expect(loadEditor).toHaveBeenCalledOnce()
+    expect(store.editor?.rows[0]?.standard_answer).toBe('测试答案')
+  })
 
   it('persists and restores bank-match decisions across a reload', async () => {
     const store = useConfigWorkspaceStore()

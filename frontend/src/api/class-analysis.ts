@@ -568,7 +568,7 @@ export const classAnalysisApi = {
     sessionId: number,
     signal?: AbortSignal,
     className?: string,
-    view?: 'summary' | 'narrative',
+    view?: 'full' | 'summary' | 'narrative',
   ): Promise<ClassAnalysisResponse> {
     const id = requireSessionId(sessionId)
     const query = new URLSearchParams()

@@ -39,6 +39,9 @@ const indexLoading = ref(false)
 const indexError = ref('')
 let indexController: AbortController | null = null
 const tab = computed(() => route.query.tab === 'paper' || route.query.tab === 'todo' ? route.query.tab : 'skill')
+watch(tab, value => {
+  if (value !== 'skill' && bank.papersState === 'idle') void bank.loadPapers()
+}, { immediate: true })
 const library = ref<InstanceType<typeof PaperLibrary> | null>(null)
 const repairOpen = ref(false)
 const repairKind = ref<QuestionRepairKind>('all')
@@ -104,7 +107,6 @@ onMounted(() => {
   // loaded on demand when the teacher opens the review workspace.
   // 任务恢复与试卷列表并行发起，不再固定等待，卡片状态能尽早显示。
   void taxonomyReview.loadSummary()
-  void bank.loadPapers()
   void scope.initialize()
   void jobStore.initialize()
   if (assembly.loadState === 'idle') void assembly.load()
@@ -163,7 +165,8 @@ function openCriteriaReview(): void {
   showCriteriaReview.value = true
 }
 
-function openCriteriaQuestion(question: QuestionBankListItem): void {
+async function openCriteriaQuestion(question: QuestionBankListItem): Promise<void> {
+  if (bank.papersState !== 'ready') await bank.loadPapers()
   const paper = bank.papers.find((item) => item.id === question.paper_id)
   if (!paper || question.paper_id == null) return
   showCriteriaReview.value = false

@@ -141,7 +141,7 @@ export const useStudentRosterStore = defineStore('student-roster', () => {
     deletionImpact.value = null
     deletionState.value = 'idle'
     errorMessage.value = ''
-    noticeMessage.value = ''
+    if (studentId !== null) noticeMessage.value = ''
   }
 
   async function previewFile(

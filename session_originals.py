@@ -78,12 +78,21 @@ def _write_receipt(data_root: Path, session_id: int, value: dict[str, Any]) -> N
 
 
 def _files(directory: Path, data_root: Path, *, on_unreadable: Callable[[], None] | None = None) -> Iterator[Path]:
+    for path, _info, _parts in _file_entries(directory, Path(data_root).resolve(), on_unreadable=on_unreadable):
+        yield path
+
+
+def _file_entries(directory: Path, resolved_root: Path, *, parts: tuple[str, ...] = (),
+                  on_unreadable: Callable[[], None] | None = None) -> Iterator[tuple[Path, os.stat_result, tuple[str, ...]]]:
     """Resolve directory boundaries and reject links and Windows reparse points."""
-    if not _is_under(directory, data_root) or directory.is_symlink() or directory.is_junction():
+    if directory.is_symlink() or directory.is_junction():
         return
     directory = directory.resolve()
+    if not directory.is_relative_to(resolved_root):
+        return
     try:
-        entries = list(os.scandir(directory))
+        with os.scandir(directory) as listing:
+            entries = list(listing)
     except FileNotFoundError:
         return
     except OSError:
@@ -94,7 +103,8 @@ def _files(directory: Path, data_root: Path, *, on_unreadable: Callable[[], None
     for entry in entries:
         path = Path(entry.path)
         try:
-            attributes = getattr(entry.stat(follow_symlinks=False), "st_file_attributes", 0)
+            info = entry.stat(follow_symlinks=False)
+            attributes = getattr(info, "st_file_attributes", 0)
         except FileNotFoundError:
             continue
         except OSError:
@@ -104,27 +114,28 @@ def _files(directory: Path, data_root: Path, *, on_unreadable: Callable[[], None
             continue
         if entry.is_symlink() or attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
             continue
-        if entry.is_dir(follow_symlinks=False):
-            yield from _files(path, data_root, on_unreadable=on_unreadable)
-        elif entry.is_file(follow_symlinks=False):
+        child_parts = (*parts, entry.name)
+        if stat.S_ISDIR(info.st_mode):
+            yield from _file_entries(path, resolved_root, parts=child_parts, on_unreadable=on_unreadable)
+        elif stat.S_ISREG(info.st_mode):
             # The parent was resolved and checked; regular child files cannot
             # escape it. Destructive callers re-resolve each path before unlink.
-            yield path
+            yield path, info, child_parts
 
 
-def _candidates(db: Any, data_root: Path, session_id: int) -> tuple[dict[Path, str], set[Path], int]:
+def _candidates(db: Any, data_root: Path, session_id: int, *, shared_refs: set[Path] | None = None) -> tuple[dict[Path, str], set[Path], int]:
     db = as_grading_repositories(db)
-    shared = _collect_other_session_references(db, session_id, data_root)
+    shared = shared_refs if shared_refs is not None else _collect_other_session_references(db, session_id, data_root)
     exam_dir = data_root / "exams" / f"session_{int(session_id)}"
     candidates: dict[Path, str] = {}
     release: set[Path] = set()
     kept = 0
-    for path in _files(exam_dir, data_root):
+    resolved_root = data_root.resolve()
+    for path, _info, relative_parts in _file_entries(exam_dir, resolved_root):
         if path in shared or path.suffix.lower() not in _MEDIA_SUFFIXES:
             continue
-        relative = path.relative_to(exam_dir.resolve())
-        scan_pdf = (path.suffix.lower() == ".pdf" and len(relative.parts) == 4
-                    and relative.parts[0] == "scan_batches" and relative.parts[2] == "files")
+        scan_pdf = (path.suffix.lower() == ".pdf" and len(relative_parts) == 4
+                    and relative_parts[0] == "scan_batches" and relative_parts[2] == "files")
         candidates[path] = "scans" if scan_pdf else "pages"
         if scan_pdf:
             pages_dir = path.parent / "_pdf_pages" / path.stem
@@ -156,8 +167,8 @@ def _candidates(db: Any, data_root: Path, session_id: int) -> tuple[dict[Path, s
     return candidates, release, kept
 
 
-def measure_session_originals(db: Any, data_root: Path, session_id: int) -> dict[str, int]:
-    candidates, release, kept = _candidates(db, Path(data_root), session_id)
+def measure_session_originals(db: Any, data_root: Path, session_id: int, *, shared_refs: set[Path] | None = None) -> dict[str, int]:
+    candidates, release, kept = _candidates(db, Path(data_root), session_id, shared_refs=shared_refs)
     sizes = {path: path.stat().st_size for path in candidates}
     scans = sum(size for path, size in sizes.items() if candidates[path] == "scans")
     pages = sum(size for path, size in sizes.items() if candidates[path] == "pages")
@@ -245,8 +256,7 @@ def storage_overview(data_root: Path) -> dict[str, Any]:
     def count_unreadable():
         nonlocal unreadable
         unreadable += 1
-    for path in _files(data_root, data_root, on_unreadable=count_unreadable):
-        parts = path.relative_to(data_root.resolve()).parts
+    for path, info, parts in _file_entries(data_root, Path(data_root).resolve(), on_unreadable=count_unreadable):
         head = parts[0]
         if head == "exams" or (head == "templates" and path.name == "template_source_full_class.pdf"):
             key = "originals"
@@ -258,11 +268,7 @@ def storage_overview(data_root: Path) -> dict[str, Any]:
             key = "backups"
         else:
             key = head if head in {"question_bank", "databases"} else "other"
-        try:
-            size = path.stat().st_size
-        except OSError:
-            count_unreadable()
-            continue
+        size = info.st_size
         totals[key] += size
         if head == "annotated" and len(parts) == 3 and parts[1].startswith("session_") and path.name.endswith("_annotated.jpg"):
             legacy_bytes += size

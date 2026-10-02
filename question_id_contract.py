@@ -19,6 +19,7 @@ import re
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 
@@ -43,6 +44,11 @@ def canonical_parent_id(raw: object) -> str | None:
     """Return the canonical parent identity ``Qn`` for a supported spelling."""
 
     text = str(raw or "").strip()
+    return _canonical_parent_text(text)
+
+
+@lru_cache(maxsize=4096)
+def _canonical_parent_text(text: str) -> str | None:
     match = _PARENT_RE.match(text)
     if not match:
         return None
@@ -77,6 +83,11 @@ def question_id_coordinates(
     """
 
     text = str(raw or "").strip()
+    return _question_coordinates_text(text, None if parent_id is None else str(parent_id or "").strip())
+
+
+@lru_cache(maxsize=4096)
+def _question_coordinates_text(text: str, parent_id: str | None) -> tuple[int, int | None] | None:
     if not text:
         return None
     for pattern in (_PARENT_PART_PAREN_RE, _PARENT_PART_SEP_RE):
@@ -100,6 +111,19 @@ def question_id_coordinates(
     return int(parent[1:]), None
 
 
+@lru_cache(maxsize=256)
+def _known_question_coordinates(known_ids: tuple[str, ...]) -> dict[tuple[int, int | None], tuple[str, ...]]:
+    buckets: dict[tuple[int, int | None], list[str]] = {}
+    for known in known_ids:
+        coordinates = question_id_coordinates(known)
+        if not known or coordinates is None:
+            continue
+        bucket = buckets.setdefault(coordinates, [])
+        if known not in bucket:
+            bucket.append(known)
+    return {coordinate: tuple(names) for coordinate, names in buckets.items()}
+
+
 def resolve_known_question_id(
     raw: object,
     known_ids: Iterable[object],
@@ -117,15 +141,7 @@ def resolve_known_question_id(
     if not text or coordinates is None:
         return None
 
-    known_by_coordinates: dict[tuple[int, int | None], list[str]] = {}
-    for value in known_ids:
-        known = str(value or "").strip()
-        known_coordinates = question_id_coordinates(known)
-        if not known or known_coordinates is None:
-            continue
-        bucket = known_by_coordinates.setdefault(known_coordinates, [])
-        if known not in bucket:
-            bucket.append(known)
+    known_by_coordinates = _known_question_coordinates(tuple(str(value or "").strip() for value in known_ids))
 
     exact_coordinate_matches = known_by_coordinates.get(coordinates, [])
     if len(exact_coordinate_matches) == 1:

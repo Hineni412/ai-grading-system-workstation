@@ -10,14 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from path_manager import PathManager
-from question_bank.services.question_read_service import (
-    QuestionBankSnapshotError,
-    captured_sqlite_snapshot_path,
-)
+from backend.schema_migrations import SchemaVersionError, inspect_schema_version
 from update_tools.backup_core import list_backups as _list_zip_backups
-from update_tools.migrate_db import get_migration_status
 
-_TOOL_KEYS = ("microsoft_word", "libreoffice", "pdflatex")
+_TOOL_KEYS = ("wps", "microsoft_word", "libreoffice", "tectonic")
 _SAFE_BACKUP_REASONS = {
     "after_exam",
     "before_exam",
@@ -29,8 +25,21 @@ _SAFE_BACKUP_REASONS = {
 
 
 def _default_tool_checker(key: str) -> bool:
-    if key == "pdflatex":
-        return shutil.which("pdflatex") is not None
+    if key == "wps":
+        if os.name != "nt":
+            return False
+        import winreg
+        for progid in ("kwps.Application", "wps.Application"):
+            try:
+                with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, f"{progid}\\CLSID") as registration:
+                    if winreg.QueryValue(registration, None):
+                        return True
+            except OSError:
+                continue
+        return False
+    if key == "tectonic":
+        bundled = Path(__file__).resolve().parents[2] / "runtime" / "tectonic" / "tectonic.exe"
+        return bundled.is_file() or shutil.which("tectonic") is not None
     if key == "libreoffice":
         candidates = (
             shutil.which("soffice"),
@@ -105,8 +114,6 @@ class OpsSelfCheckService:
                     "status": "ok" if available else "warning",
                 }
             )
-            if not available:
-                warnings.append(f"tool_unavailable:{key}")
 
         api_configured, api_warning = self._api_configured()
         if api_warning:
@@ -119,7 +126,6 @@ class OpsSelfCheckService:
                 warnings.append(f"database_{item['status']}:{item['key']}")
 
         statuses = [item["status"] for item in directories + databases]
-        statuses.extend(item["status"] for item in tools)
         overall = "error" if "error" in statuses else "warning" if warnings else "ok"
         return {
             "version": str(self.paths.version),
@@ -208,25 +214,20 @@ class OpsSelfCheckService:
             }
         size = _safe_file_size(source)
         try:
-            with captured_sqlite_snapshot_path(
-                source,
-                required_tables=frozenset(),
-            ) as candidate:
-                migration = get_migration_status(
-                    target,
-                    db_path_override=candidate,
-                )
-            pending = len(migration.get("pending") or [])
+            # Reuse the read-only startup gate: it invalidates on schema/history
+            # changes and file replacement, without copying the entire database.
+            migration = inspect_schema_version(target, source)
+            pending = len(migration.pending)
             return {
                 "key": key,
                 "exists": True,
                 "size_bytes": size,
                 "integrity": "ok",
-                "migration_version": str(migration.get("schema_version") or "0"),
+                "migration_version": migration.current_version,
                 "pending_migrations": pending,
                 "status": "warning" if pending else "ok",
             }
-        except (OSError, QuestionBankSnapshotError):
+        except (OSError, SchemaVersionError):
             return {
                 "key": key,
                 "exists": True,

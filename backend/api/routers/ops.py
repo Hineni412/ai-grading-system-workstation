@@ -57,15 +57,21 @@ def get_storage(db=Depends(get_grading_db), data_root: Path=Depends(get_data_roo
                 workspace=Depends(get_scan_grading_workspace), review_service=Depends(get_review_application_service)):
     from session_originals import storage_overview
     from backend.api.routers.sessions import _originals_snapshot
-    from session_cleanup import session_lifecycle_guard
+    from session_cleanup import session_lifecycle_guard, _collect_session_file_paths
     overview = storage_overview(data_root)
+    sessions = db.sessions.list_grading_sessions(include_deleted=True)
+    # Reuse file ownership only within this read. Clear/release actions still
+    # collect current references independently under their lifecycle guards.
+    references = {int(session["id"]): _collect_session_file_paths(db, int(session["id"]), data_root)
+                  for session in sessions}
     rows = []
-    for session in sorted(db.sessions.list_grading_sessions(), key=lambda s: (str(s.get("created_at") or ""), int(s["id"])), reverse=True):
+    for session in sorted(sessions, key=lambda s: (str(s.get("created_at") or ""), int(s["id"])), reverse=True):
         if session.get("is_deleted"):
             continue
         sid = int(session["id"])
+        shared = set().union(*(paths for owner, paths in references.items() if owner != sid))
         with session_lifecycle_guard(sid):
-            snapshot = _originals_snapshot(sid, db, data_root, workspace, review_service)
+            snapshot = _originals_snapshot(sid, db, data_root, workspace, review_service, shared_refs=shared)
         rows.append({"session_id": sid, "name": session["session_name"], "created_at": session.get("created_at"),
                      "status_label": {"completed": "已完成", "graded": "已完成", "grading": "批改中", "reviewing": "复核中"}.get(session.get("status"), "未开始"),
                      "originals_state": snapshot["originals_state"], "scan_bytes": snapshot["scan_bytes"],

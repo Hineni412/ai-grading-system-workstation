@@ -95,7 +95,7 @@ class OriginalsActionRequest(BaseModel):
     confirmation_phrase: str = ""
 
 
-def _originals_snapshot(session_id, db, data_root, workspace, review_service, backup_service=None):
+def _originals_snapshot(session_id, db, data_root, workspace, review_service, backup_service=None, *, shared_refs=None):
     from session_originals import measure_session_originals, originals_state, _receipt
     from backend.review.manual_context import current_manual_context
     try:
@@ -106,7 +106,7 @@ def _originals_snapshot(session_id, db, data_root, workspace, review_service, ba
     if session.get("is_deleted"):
         raise ApiError(404, "session_not_found", "未找到这场考试。")
     state = originals_state(data_root, session_id)
-    measured = measure_session_originals(db, data_root, session_id)
+    measured = measure_session_originals(db, data_root, session_id, shared_refs=shared_refs)
     with closing(db._connect()) as conn:
         unmatched = conn.execute("SELECT COUNT(*) FROM exam_papers WHERE session_id = ? AND COALESCE(match_status, '') != 'matched'", (session_id,)).fetchone()[0]
         latest_paper = conn.execute("SELECT MAX(created_at) FROM exam_papers WHERE session_id = ?", (session_id,)).fetchone()[0]
