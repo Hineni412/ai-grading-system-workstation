@@ -178,6 +178,7 @@ beforeEach(() => {
 
 afterEach(() => {
   mounted.splice(0).forEach((app) => app.unmount())
+  vi.restoreAllMocks()
   vi.useRealTimers()
   document.body.innerHTML = ''
 })
@@ -203,6 +204,11 @@ describe('training assessment panel', () => {
     mounted.push(app)
     app.mount(host)
     await settle()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValue(true)
+    ;[...host.querySelectorAll('button')].find((b) => b.textContent?.includes('开始整卷判定'))?.click()
+    await settle()
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('调用模型 1 次并产生费用'))
+    expect(trainingApiMock.startTrainingAssessment).not.toHaveBeenCalled()
     ;[...host.querySelectorAll('button')].find((b) => b.textContent?.includes('开始整卷判定'))?.click()
     await settle()
     expect(host.textContent).toContain('判定进行中')
@@ -214,6 +220,29 @@ describe('training assessment panel', () => {
     expect(trainingApiMock.getTrainingAssessment).toHaveBeenCalledTimes(3)
     await vi.advanceTimersByTimeAsync(9000)
     expect(trainingApiMock.getTrainingAssessment).toHaveBeenCalledTimes(3)
+  })
+
+  it('requires a new fee confirmation for a failed assessment retry', async () => {
+    trainingApiMock.getTrainingAssessment.mockResolvedValue({ ...pendingAssessment, status: 'failed' })
+    trainingApiMock.controlTrainingAssessment.mockResolvedValue(completedAssessment)
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(TrainingAssessmentPanel, { submission })
+    mounted.push(app)
+    app.mount(host)
+    await settle()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValue(true)
+    const retry = [...host.querySelectorAll('button')].find(b => b.textContent?.includes('教师确认后重试一次'))!
+    retry.click()
+    await settle()
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('追加 1 次模型请求并产生费用'))
+    expect(trainingApiMock.controlTrainingAssessment).not.toHaveBeenCalled()
+    retry.click()
+    await settle()
+    expect(trainingApiMock.controlTrainingAssessment).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ status: 'failed' }), expect.objectContaining({ action: 'retry' }),
+    )
+    expect(trainingApiMock.startTrainingAssessment).not.toHaveBeenCalled()
   })
 
   it('locks an uncertain point, publishes evidence, and opens only a draft', async () => {

@@ -87,6 +87,7 @@ def shortlist_candidates(
     cache_scope: object = None, recommendations: PersonalizedRecommendationModule | None = None,
     teaching_progress_chapter_id: str = '',
     graded_activities: Sequence[Mapping[str, Any]] | None = None,
+    recent_activity_count: int = 3, purpose: str = 'training',
 ) -> dict[str, Any]:
     module = recommendations or PersonalizedRecommendationModule(db_path=read_service.db_path,
         data_root=read_service.data_root or read_service.db_path.parent.parent)
@@ -96,7 +97,8 @@ def shortlist_candidates(
         raise ValueError('Chapter is outside teaching term')
     scope = tuple(c['knowledge_id'] for c in volume['chapters'] if c['id'] == chapter_id)
     config = resolve_practice_scope(PersonalizedRecommendationConfig(scope_keys=scope,
-        curriculum_volume_id=volume_id, difficulty_max=min(8., float(difficulty_max)),
+        curriculum_volume_id=volume_id, difficulty_max=float(difficulty_max), purpose=purpose,
+        recent_activity_count=recent_activity_count,
         teaching_progress_chapter_id=teaching_progress_chapter_id), diagnosis, resolver)
     weaknesses = class_weaknesses(diagnosis, volume_id=volume_id, chapter_id=chapter_id,
                                  resolver=resolver, scope_keys=config.scope_keys)
@@ -114,7 +116,8 @@ def shortlist_candidates(
     if not selected or not students:
         return output
     config = replace(config, paper_mode='shared', target_keys=tuple(selected))
-    evaluated = module.evaluate_candidates(diagnosis=diagnosis, config=config, excluded=excluded_question_ids, graded_activities=graded_activities)
+    evaluated = module.evaluate_candidates(diagnosis=diagnosis, config=config, excluded=excluded_question_ids,
+                                           graded_activities=graded_activities)
     groups = defaultdict(list)
     for entries in evaluated["pools"].values():
         for entry in entries:

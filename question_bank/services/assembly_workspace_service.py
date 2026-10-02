@@ -63,7 +63,8 @@ class AssemblyDraft:
     layout_mode: str
     preview_mode: str
     revision: str
-    practice_rules: bool = False
+    practice_rules: dict | None = None
+    assembly_context: dict | None = None
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -76,7 +77,8 @@ class AssemblyDraft:
             "include_answer": self.include_answer,
             "layout_mode": self.layout_mode,
             "preview_mode": self.preview_mode,
-            **({"practice_rules": True} if self.practice_rules else {}),
+            **({"practice_rules": self.practice_rules} if self.practice_rules else {}),
+            **({"assembly_context": self.assembly_context} if self.assembly_context is not None else {}),
         }
 
 
@@ -411,9 +413,22 @@ def _normalize_draft(payload: Mapping[str, object]) -> AssemblyDraft:
         "layout_mode": layout_mode,
         "preview_mode": preview_mode,
     }
-    if payload.get("practice_rules") and basket:
-        normalized_payload["practice_rules"] = True
-    revision = _payload_revision(normalized_payload)
+    if payload.get("practice_rules"):
+        from question_bank.recommendation.personalized import PersonalizedRecommendationConfig
+        rules = payload["practice_rules"]
+        config = PersonalizedRecommendationConfig(**({"purpose": "handout"} if rules is True else rules))
+        normalized_payload["practice_rules"] = {key: config.to_dict()[key] for key in
+            ('purpose', 'question_count', 'difficulty_max', 'max_questions_per_skill', 'max_written_questions', 'recent_activity_count')}
+    if isinstance(payload.get("assembly_context"), Mapping):
+        normalized_payload["assembly_context"] = dict(payload["assembly_context"])
+    revision_payload = dict(normalized_payload)
+    if payload.get('practice_rules') is True:
+        # Keep pending export receipts valid until this legacy draft is saved
+        # with the new object. Completed exports are never rewritten.
+        revision_payload.pop('practice_rules', None)
+        if basket:
+            revision_payload['practice_rules'] = True
+    revision = _payload_revision(revision_payload)
     return AssemblyDraft(
         basket_ids=tuple(basket),
         order_ids=tuple(ordered),
@@ -424,7 +439,8 @@ def _normalize_draft(payload: Mapping[str, object]) -> AssemblyDraft:
         layout_mode=layout_mode,
         preview_mode=preview_mode,
         revision=revision,
-        practice_rules=bool(normalized_payload.get("practice_rules")),
+        practice_rules=normalized_payload.get("practice_rules"),
+        assembly_context=normalized_payload.get("assembly_context"),
     )
 
 

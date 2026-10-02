@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { trainingApi } from '../api/training'
+import { trainingApi, decodePersonalizedRecommendationDraft } from '../api/training'
 
 const submissionId = 'c'.repeat(64)
+it('decodes fixed class assembly provenance and evidence-free members', () => {
+  const fixed = {draft_id:'a'.repeat(64),status:'draft',revision:1,result_version:'b'.repeat(64),
+    engine_version:'synthetic',source_version:'c'.repeat(64),config:{paper_mode:'shared',assembly_source:{source:'班级组卷 · 全班',revision:'d'.repeat(64)}},
+    students:[{student_id:'TEST-NO-EVIDENCE',student_code:'',student_name:'',class_id:'合成班',selection_mode:'teacher_fixed_class',
+      targets:[],items:[],shortages:[],warnings:[],estimated_minutes:0}],warnings:[],history:[]}
+  expect(decodePersonalizedRecommendationDraft(fixed)).toEqual(fixed)
+  expect(()=>decodePersonalizedRecommendationDraft({...fixed,students:[{...fixed.students[0],selection_mode:'unknown'}]})).toThrow()
+})
 const payload = {
   run_id: 'a'.repeat(64),
   submission_id: submissionId,

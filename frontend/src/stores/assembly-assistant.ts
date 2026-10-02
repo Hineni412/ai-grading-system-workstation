@@ -1,6 +1,6 @@
 import { computed, reactive, ref, shallowRef, onScopeDispose } from 'vue'
 import { defineStore } from 'pinia'
-import { assemblyApi, fetchAssemblyCandidates, type AssemblyAssistantRequest, type AssemblyAssistantResult, type AssemblyQuestion } from '../api/assembly'
+import { assemblyApi, fetchAssemblyCandidates, fetchAssemblyExams, type AssemblyExamResult, type AssemblyAssistantRequest, type AssemblyAssistantResult, type AssemblyQuestion } from '../api/assembly'
 import { ApiError } from '../api/errors'
 
 const STORAGE_KEY = 'ai-grading:assembly-assistant-filters:v1'
@@ -11,11 +11,22 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   try { previous = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') ?? {} } catch { /* Empty preferences. */ }
   const filters = reactive<AssemblyAssistantRequest>({
     class_id: typeof previous.class_id === 'string' ? previous.class_id : '',
+    class_ids: Array.isArray(previous.class_ids) ? previous.class_ids : previous.class_id ? [previous.class_id] : [],
+    session_ids: Array.isArray(previous.session_ids) ? previous.session_ids : [],
     curriculum_volume_id: '', chapter_id: '', teaching_progress_chapter_id: '', target_keys: null,
     question_type: '', difficulty_min: 1, difficulty_max: 8,
     exclude_exam_originals: true, exclude_recent: true,
   })
   const result = shallowRef<AssemblyAssistantResult | null>(null)
+  const examResult = shallowRef<AssemblyExamResult | null>(null)
+  const examState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const view = ref<'exam' | 'skill'>('exam')
+  const threshold = ref(70)
+  const sort = ref<'loss' | 'exam'>('loss')
+  const selectedExamKey = ref('')
+  const includeTraining = ref(true)
+  let examController: AbortController | null = null
+  let examSerial = 0
   const questions = shallowRef<AssemblyQuestion[]>([])
   const state = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const message = ref('')
@@ -31,19 +42,27 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   let controller: AbortController | null = null
   const requestKey = computed(() => JSON.stringify(filters))
   const isStale = computed(() => Boolean(result.value) && appliedKey.value !== requestKey.value)
-  const canSearch = computed(() => Boolean(filters.class_id && filters.curriculum_volume_id) && state.value !== 'loading')
+  const canSearch = computed(() => Boolean((filters.class_ids?.length || filters.class_id) && filters.curriculum_volume_id) && state.value !== 'loading')
   const hasMore = computed(() => visibleCount.value < (result.value?.candidates.length ?? 0))
   const selectedKey = computed(() => filters.target_keys?.[0] ?? result.value?.selected_target_keys[0] ?? '')
 
   function cancelScheduled(): void { clearTimeout(scheduled); waiting.value = false }
-  onScopeDispose(() => { cancelScheduled(); controller?.abort() })
+  onScopeDispose(() => { cancelScheduled(); controller?.abort(); examController?.abort() })
 
-  function changeScope(patch: Partial<Pick<AssemblyAssistantRequest, 'class_id' | 'curriculum_volume_id' | 'chapter_id' | 'teaching_progress_chapter_id'>>): void {
-    if (Object.entries(patch).every(([key, value]) => filters[key as keyof AssemblyAssistantRequest] === value)) return
+  function changeScope(patch: Partial<Pick<AssemblyAssistantRequest, 'class_id' | 'class_ids' | 'session_ids' | 'curriculum_volume_id' | 'chapter_id' | 'teaching_progress_chapter_id'>>): void {
+    if (Object.entries(patch).every(([key, value]) => JSON.stringify(filters[key as keyof AssemblyAssistantRequest]) === JSON.stringify(value))) return
+    if (patch.class_ids !== undefined || patch.class_id !== undefined || patch.curriculum_volume_id !== undefined) {
+      examSerial += 1
+      examController?.abort()
+      examResult.value = null
+      examState.value = 'idle'
+    }
     controller?.abort()
     cancelScheduled()
     serial += 1
     Object.assign(filters, patch, { target_keys: null })
+    if (patch.class_ids) filters.class_id = patch.class_ids[0] ?? ''
+    else if (patch.class_id !== undefined) filters.class_ids = patch.class_id ? [patch.class_id] : []
     result.value = null
     questions.value = []
     previewCache.clear()
@@ -56,11 +75,12 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
 
   function cacheSignature(body: AssemblyAssistantRequest): string {
     return JSON.stringify({
-      class_id: body.class_id, curriculum_volume_id: body.curriculum_volume_id,
+      class_id: body.class_id, class_ids: body.class_ids, session_ids: body.session_ids, curriculum_volume_id: body.curriculum_volume_id,
       chapter_id: body.chapter_id, question_type: body.question_type,
       teaching_progress_chapter_id: body.teaching_progress_chapter_id,
       difficulty_min: body.difficulty_min, difficulty_max: body.difficulty_max,
       exclude_exam_originals: body.exclude_exam_originals, exclude_recent: body.exclude_recent,
+      recent_activity_count: body.recent_activity_count, purpose: body.purpose,
     })
   }
 
@@ -73,9 +93,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     for (const point of next.weaknesses) {
       if (point.candidate_count !== null) candidateCounts.set(`${signature}|${point.knowledge_key}`, point.candidate_count)
     }
-    for (const key of next.selected_target_keys) {
-      resultCache.set(`${signature}|${key}`, next)
-    }
+    resultCache.set(`${signature}|${next.selected_target_keys.join(',')}`, next)
     while (resultCache.size > 40) resultCache.delete(resultCache.keys().next().value!)
   }
 
@@ -97,7 +115,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   }
 
   function selectTarget(key: string): void {
-    if (!result.value || selectedKey.value === key) return
+    if (!result.value || (selectedKey.value === key && (filters.target_keys ?? result.value.selected_target_keys).length === 1)) return
     filters.target_keys = [key]
     const cached = resultCache.get(`${filterSignature()}|${key}`)
     if (cached) void applyCached(cached)
@@ -150,7 +168,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   }
 
   async function search(reusePreviews = false): Promise<void> {
-    if (!filters.class_id || !filters.curriculum_volume_id) return
+    if (!(filters.class_ids?.length || filters.class_id) || !filters.curriculum_volume_id) return
     cancelScheduled()
     const token = ++serial
     controller?.abort()
@@ -180,7 +198,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
       appliedKey.value = requestKey.value
       state.value = 'ready'
       if (resolved.length < ids.length) message.value = '部分候选题已不可用，可更新候选题重新筛选。'
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ class_id: filters.class_id })) } catch { /* In-memory results remain usable. */ }
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 2, class_ids: filters.class_ids, session_ids: filters.session_ids })) } catch { /* In-memory results remain usable. */ }
     } catch (error) {
       if (token !== serial) return
       state.value = 'error'
@@ -211,5 +229,34 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
 
   function resetTargets(): void { filters.target_keys = null }
 
-  return { filters, result, questions, state, message, isStale, canSearch, waiting, visibleCount, loadingMore, hasMore, selectedKey, changeScope, selectTarget, moveSelection, candidateCountFor, scheduleSearch, search, loadMore, resetTargets, previewsFor }
+  async function loadExams(): Promise<void> {
+    const token = ++examSerial
+    examController?.abort()
+    controller?.abort()
+    examController = new AbortController()
+    examResult.value = null
+    if (!filters.class_ids?.length || !filters.curriculum_volume_id) { examState.value = 'idle'; return }
+    examState.value = 'loading'
+    try {
+      const next = await fetchAssemblyExams(filters.class_ids, filters.curriculum_volume_id, examController.signal)
+      if (token !== examSerial) return
+      examResult.value = next
+      const visible = new Set(next.exams.map(e => e.session_id))
+      const retained = filters.session_ids?.filter(id => visible.has(id)) ?? []
+      changeScope({ session_ids: retained.length ? retained : next.exams.slice(0, 2).map(e => e.session_id) })
+      selectedExamKey.value = ''
+      examState.value = 'ready'
+    } catch { if (token === examSerial) { examState.value = 'error'; message.value = '考试依据暂时无法读取，请重试。' } }
+  }
+
+  async function selectExam(key: string, skills: string[]): Promise<void> {
+    selectedExamKey.value = key
+    filters.target_keys = [...skills]
+    const cached = resultCache.get(`${filterSignature()}|${skills.join(',')}`)
+    if (cached) await applyCached(cached)
+    else await search(true)
+  }
+
+  return { filters, result, questions, state, message, isStale, canSearch, waiting, visibleCount, loadingMore, hasMore, selectedKey, changeScope, selectTarget, moveSelection, candidateCountFor, scheduleSearch, search, loadMore, resetTargets, previewsFor,
+    examResult, examState, view, threshold, sort, selectedExamKey, includeTraining, loadExams, selectExam }
 })

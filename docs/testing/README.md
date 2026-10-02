@@ -12,6 +12,7 @@
 - 以下套件是可选入口，不是每次修改都要逐级执行的关卡；通过相关检查后，只有新修改、失败或具体未解决问题才扩大范围；日常小改动不默认全量测试或独立复审。
 - 核心流程失败优先修复；不用测试数量代替功能可用。
 - 普通组卷导出：`tests/test_assembly_export_job.py` 覆盖 PDF 与兼容 Markdown 的任务发布、记录、两条下载入口、取消及草稿保留，并用本机 LaTeX 实排合成的大图、跨页合并表格和公式；引擎不可用时跳过实排项，不能据此声称验证了 PDF。公式转换复用 `tests/training/test_latex_render.py`，Word 回归复用 `tests/test_question_document_pipeline.py` 与 `tests/training/test_personalized_paper_formula_rendering.py`。前端扩展 `question-assembly-view`，连同 `assembly-store` 核对格式选择与导出请求。人工核对纸面小字、大图、续页和预留作答区；高中样本及断网新工作机需另行验证。
+- 班级组卷：`tests/test_assembly_assistant.py` 覆盖多班与指定考试、只读逐题证据、快速起草与规则保存；`tests/test_unified_practice_rules.py` 核对参数化上限与近期规则，`tests/training/test_personalized_recommendation.py` 核对全班固定题序、无证据成员和生成幂等。前端扩展现有 `assembly-assistant`、`question-assembly-view` 与 `personalized-recommendation-draft` 用例；`training-assessment-panel` 核对费用确认、取消不发请求和重试另行确认；真实数据人工验收只查看班级、考试、题面及已有篮子，添加、替换、降低限制、导出与训练写入在合成环境验证，不调用真实模型。
 
 ## 自动测试入口
 

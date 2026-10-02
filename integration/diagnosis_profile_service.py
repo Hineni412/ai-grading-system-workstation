@@ -1113,6 +1113,100 @@ class DiagnosisProfileService:
             if target in row.get("question_tags", {}).get("knowledge_point", [])
         ]
 
+    def assembly_recent_question_ids(self, recommendations, context: Mapping[str, Any], rules: Mapping[str, Any]) -> set[int]:
+        """Use the same roster and graded-activity contract as recommendations."""
+        if not context.get('class_ids') or not rules.get('recent_activity_count', 3):
+            return set()
+        students = [{'student_id': str(s['id'])} for s in self.db.students.list_students()
+                    if s.get('class_name') in context['class_ids']]
+        return recommendations.current_exam_question_ids({'students': students},
+            graded_activities=self.graded_activities(s['student_id'] for s in students),
+            recent_activity_count=rules.get('recent_activity_count', 3), purpose=rules.get('purpose', 'handout'))
+
+    def assembly_exam_questions(self, *, class_ids: list[str], volume_id: str) -> dict[str, Any]:
+        """Read scored exam items through the existing evidence boundary; no persistence."""
+        from backend.config_generation.contract import iter_effective_rubric_item_refs
+        from question_bank.current_knowledge import CurrentKnowledgeResolver
+        classes = set(class_ids)
+        students = {str(s["id"]): s for s in self.db.students.list_students()
+                    if s.get("class_name") in classes}
+        sessions = [s for s in self.db.sessions.list_grading_sessions()
+                    if not s.get("is_deleted") and s.get("curriculum_volume_id") == volume_id]
+        if not students or not sessions:
+            return {"student_count": len(students), "exams": []}
+        ids = [int(s["id"]) for s in sessions]
+        projections = self._tag_projections(ids)
+        causes = self._error_cause_index(ids)
+        rows = self.db.results.get_active_assessment_rows(student_ids=[int(s) for s in students], session_ids=ids)
+        score_maps = {sid: self.db.results._load_rubric_maps_for_session(sid)['score'] for sid in ids}
+        by_item: dict[tuple[int, str], dict[str, Any]] = {}
+        for row in rows:
+            if row.get("score_awarded") is not None:
+                row = {**row, 'full_score': row.get('teacher_final_max_score') if row.get('teacher_final_max_score') is not None else score_maps[int(row['session_id'])].get(str(row['question_id']), 0)}
+                if float(row['full_score'] or 0) <= 0:
+                    continue
+                by_item.setdefault((int(row["session_id"]), str(row["question_id"])), {})[str(row["student_id"])] = row
+        resolver = CurrentKnowledgeResolver.from_active_database(self.question_bank_db_path)
+        bank_ids = {p.bank_question_id for projection in projections.values() for p in projection.items if p.bank_question_id}
+        from question_bank.services.question_read_service import QuestionBankReadService
+        from question_bank.services.standard_difficulty import difficulty_level
+        bank_difficulty = {int(q['id']): difficulty_level(q.get('difficulty')) for q in
+            QuestionBankReadService(self.question_bank_db_path).get_questions(sorted(bank_ids))} if bank_ids else {}
+        categories = ("概念理解", "计算与化简", "审题与条件", "方法与思路", "过程与依据", "书写与规范", "未作答")
+        exams = []
+        for session in sorted(sessions, key=lambda s: (str(s.get("created_at") or ""), int(s["id"])), reverse=True):
+            sid = int(session["id"])
+            projection = {p.item_ref: p for p in projections[sid].items}
+            questions = []
+            participants: set[str] = set()
+            totals: dict[str, float] = {}
+            for qid, _parent, question, item in iter_effective_rubric_item_refs(self.db.results._load_session_rubric(sid)):
+                scored = by_item.get((sid, qid), {})
+                if not scored:
+                    continue
+                participants.update(scored)
+                per_class = []
+                rate_sum = 0.0
+                missing_causes = False
+                members = {c: set() for c in categories}
+                for name in sorted(classes):
+                    values = [(student, row) for student, row in scored.items() if students[student].get("class_name") == name]
+                    full = sum(float(r.get("teacher_final_max_score") or r.get("full_score") or 0) for _, r in values)
+                    score = class_rate_sum = 0.0
+                    for student, row in values:
+                        maximum = float(row.get("teacher_final_max_score") or row.get("full_score") or 0)
+                        awarded = min(max(float(row["score_awarded"]), 0), maximum)
+                        score += awarded
+                        class_rate_sum += awarded / maximum if maximum > 0 else 0
+                        totals[student] = totals.get(student, 0) + awarded
+                        records = causes.get((sid, int(student), qid))
+                        if awarded < maximum and not records:
+                            missing_causes = True
+                        for record in records or []:
+                            if record.get("category") in members:
+                                members[record["category"]].add(student)
+                    if values:
+                        per_class.append({"class_id": name, "student_count": len(values), "class_rate": round(class_rate_sum / len(values), 4)})
+                    rate_sum += class_rate_sum
+                projected = projection.get(qid)
+                keys = list(projected.tags.get("knowledge_point", ())) if projected else []
+                keys = [key for key in keys if key.startswith("sk_")]
+                questions.append({"key": f"{sid}:{qid}", "session_id": sid, "question_id": qid,
+                    "question_type": {"choice": "选择题", "fill_blank": "填空题", "multi_choice": "多选题"}.get(question.get("question_type"), "解答题"),
+                    "full_score": max(float(r.get("full_score") or 0) for r in scored.values()),
+                    "class_rate": round(rate_sum / len(scored), 4),
+                    "class_rates": per_class, "student_count": len(scored),
+                    "cause_category_counts": None if missing_causes else [{"category": c, "count": len(members[c])} for c in categories],
+                    "bank_question_id": projected.bank_question_id if projected else None,
+                    "difficulty": bank_difficulty.get(projected.bank_question_id) if projected else None,
+                    "skill_keys": keys, "skills": [{"key": key, "label": resolver.node(key).display_name if resolver.node(key) else key} for key in keys],
+                    "question_text": str(question.get("question_text") or item.get("question_text") or "")})
+            if participants:
+                exams.append({"session_id": sid, "title": session.get("session_name") or session.get("exam_name") or session.get("name") or session.get("title") or f"考试 {sid}",
+                    "date": str(session.get("created_at") or ""), "class_ids": sorted({students[s].get("class_name") for s in participants}),
+                    "student_count": len(participants), "average_score": round(sum(totals.values()) / len(participants), 2), "questions": questions})
+        return {"student_count": len(students), "exams": exams}
+
     def _error_cause_index(
         self,
         session_ids: Iterable[int],

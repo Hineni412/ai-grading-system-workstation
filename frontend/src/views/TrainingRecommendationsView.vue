@@ -593,6 +593,7 @@ onBeforeUnmount(() => studentsController?.abort())
 
             <PersonalizedRecommendationDraft
               ref="paperDraft"
+              :initial-draft-id="typeof route.query.draft === 'string' ? route.query.draft : undefined"
               external-setup
               :diagnosis="paperDiagnosis"
               :scope="personalizedScope"

@@ -918,28 +918,47 @@ class PersonalizedRecommendationModule:
                 "current knowledge standard is unavailable"
             ) from exc
 
-    def validate_paper_questions(self, question_ids: Sequence[int]) -> None:
+    def validate_paper_questions(self, question_ids: Sequence[int], rules: Mapping[str, Any] | None = None, *, recent_question_ids: Sequence[int] = ()) -> None:
+        violations = self.paper_rule_violations(question_ids, rules, recent_question_ids=recent_question_ids)
+        if violations:
+            raise ValueError(violations[0]["message"])
+
+    def paper_rule_violations(self, question_ids: Sequence[int], rules: Mapping[str, Any] | None = None, *, recent_question_ids: Sequence[int] = ()) -> list[dict[str, Any]]:
         """Apply the same whole-paper limits when a teacher assembles a practice."""
         if not question_ids:
-            return
+            return []
+        explicit_count = bool(rules and 'question_count' in rules)
+        rules = rules or {}
+        config = PersonalizedRecommendationConfig(purpose=rules.get("purpose", "handout"), question_count=rules.get("question_count", 10),
+            difficulty_max=rules.get("difficulty_max", 8), max_questions_per_skill=rules.get("max_questions_per_skill", 1),
+            max_written_questions=rules.get("max_written_questions", 2), recent_activity_count=rules.get("recent_activity_count", 3))
         candidates, _, _ = self._source_snapshot(question_ids=question_ids)
         by_id = {item["question_id"]: item for item in candidates}
         selected = []
+        violations = []
         for qid in dict.fromkeys(question_ids):
+            def reject(code, message):
+                violations.append({"question_id": qid, "code": code, "message": message})
             candidate = by_id.get(qid)
+            if qid in recent_question_ids:
+                reject('recent', '这道题属于所选班级近期已做原题，请调整选题或近期排除次数。')
             if candidate is None:
-                raise ValueError(f"第 {qid} 题缺少有效的训练资料，请移出本次学情卷。")
-            if candidate["difficulty"] is None or not 1 <= candidate["difficulty"] <= 8:
-                raise ValueError("学情卷的题目难度须在 1–8 级内，请调整选题。")
-            if _is_written_question(candidate) and sum(_is_written_question(q) for q in selected) >= 2:
-                raise ValueError("学情卷最多选 2 道解答题，请先移除一道再添加。")
-            exceeded = _paper_skill_limit_exceeded(candidate, selected)
+                reject("unavailable", f"第 {qid} 题缺少有效的训练资料，请移出本次学情卷。")
+                continue
+            if candidate["difficulty"] is None or not 1 <= candidate["difficulty"] <= config.difficulty_max:
+                reject("difficulty", f"学情卷的题目难度须在 1–{config.difficulty_max:g} 级内，请调整选题。")
+            if _is_written_question(candidate) and sum(_is_written_question(q) for q in selected) >= config.max_written_questions:
+                reject("written", f"学情卷最多选 {config.max_written_questions} 道解答题，请先移除一道再添加。")
+            exceeded = _paper_skill_limit_exceeded(candidate, selected, config)
             if exceeded:
                 names = [candidate.get("stable_names", {}).get(key) or "该技能" for key in sorted(exceeded)]
-                raise ValueError(f"同一技能最多选 1 道题；{'、'.join(dict.fromkeys(names))}已达上限，请先移除相关题目再添加。")
-            if not _paper_diversity_allowed(candidate, selected):
-                raise ValueError("这道题与已选题目重复或高度相似，请选用其他练习。")
+                reject("skill", f"同一技能最多选 {config.max_questions_per_skill} 道题；{'、'.join(dict.fromkeys(names))}已达上限，请先移除相关题目再添加。")
+            if not paper_similarity_allowed(candidate, selected):
+                reject("similar", "这道题与已选题目重复或高度相似，请选用其他练习。")
+            if explicit_count and len(selected) >= config.question_count:
+                reject("count", f"超出：每卷最多 {config.question_count} 道题。")
             selected.append(candidate)
+        return violations
 
     def chapter_groups(
         self, *, diagnosis: Mapping[str, Any], config: PersonalizedRecommendationConfig,
@@ -1138,9 +1157,23 @@ class PersonalizedRecommendationModule:
         actor_ref: str,
         graded_activities: Sequence[Mapping[str, Any]] | None = None,
         completed_paper_instance_id: str | None = None,
+        assembly_snapshot: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         token = _request_token(request_token)
         actor = _required_text(actor_ref, "actor_ref")
+        if assembly_snapshot is not None:
+            repeated = self._by_request_token(token)
+            if repeated is not None:
+                if repeated.get('config', {}).get('assembly_source') != dict(assembly_snapshot):
+                    raise RecommendationRequestConflict('assembly request token was reused')
+                repeated.pop('_input_fingerprint', None)
+                return repeated
+            with connect(self.db_path) as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                same = connection.execute("SELECT draft_json FROM personalized_recommendation_drafts WHERE json_extract(request_json, '$.assembly_snapshot.revision')=? AND json_extract(request_json, '$.assembly_snapshot.class_ids')=?",
+                    (assembly_snapshot['revision'], _json(assembly_snapshot['class_ids']))).fetchone()
+                if same is not None:
+                    return self._assembly_reuse_receipt(connection, token, actor, assembly_snapshot, same['draft_json'])
         normalized_diagnosis = _normalize_diagnosis(diagnosis)
         if graded_activities is None:
             graded_activities = diagnosis.get("_graded_activities")
@@ -1149,6 +1182,8 @@ class PersonalizedRecommendationModule:
             "diagnosis": normalized_diagnosis,
             "config": config.to_dict(),
         }
+        if assembly_snapshot is not None:
+            request['assembly_snapshot'] = dict(assembly_snapshot)
         if graded_activities is not None:
             request["graded_activities"] = graded_activities
         # Old stored requests embedded the activities inside the diagnosis; the
@@ -1161,6 +1196,7 @@ class PersonalizedRecommendationModule:
                     else normalized_diagnosis
                 ),
                 "config": request["config"],
+                **({'assembly_snapshot': dict(assembly_snapshot)} if assembly_snapshot is not None else {}),
             }
         )
         compatible_fingerprints = {input_fingerprint}
@@ -1196,6 +1232,7 @@ class PersonalizedRecommendationModule:
         snapshot_generation = commit_generation(self.db_path)
         candidate_scope = self._candidate_scope(normalized_diagnosis, config)
         snapshot = self._source_snapshot(
+            question_ids=assembly_snapshot['question_ids'] if assembly_snapshot is not None else (),
             excluded_question_ids=excluded,
             prepare_refinements=True,
             knowledge_keys=candidate_scope,
@@ -1218,15 +1255,16 @@ class PersonalizedRecommendationModule:
             recent=recent,
             excluded_question_ids=excluded,
         )
-        draft = self._build_draft(
-            diagnosis=normalized_diagnosis,
-            config=config,
-            candidates=candidates,
-            relations=relations,
-            mastery=mastery,
-            recent=recent,
-            excluded_question_ids=excluded,
-        )
+        if assembly_snapshot is not None:
+            self.validate_paper_questions(assembly_snapshot['question_ids'], request['config'])
+            if any(q in ids for ids in recent.values() for q in assembly_snapshot['question_ids']):
+                raise ValueError('班级卷含近期原题，请调整题目或近期排除次数。')
+            draft = self._build_fixed_class_draft(normalized_diagnosis, config, candidates, assembly_snapshot)
+        else:
+            draft = self._build_draft(
+                diagnosis=normalized_diagnosis, config=config, candidates=candidates,
+                relations=relations, mastery=mastery, recent=recent, excluded_question_ids=excluded,
+            )
         result_version = _hash_payload(
             {"source_version": source_version, "draft": draft}
         )
@@ -1263,6 +1301,11 @@ class PersonalizedRecommendationModule:
                 "PRAGMA data_version"
             ).fetchone()[0]
             write_connection.execute("BEGIN IMMEDIATE")
+            if assembly_snapshot is not None:
+                same = write_connection.execute("SELECT draft_json FROM personalized_recommendation_drafts WHERE json_extract(request_json, '$.assembly_snapshot.revision')=? AND json_extract(request_json, '$.assembly_snapshot.class_ids')=?",
+                    (assembly_snapshot['revision'], _json(assembly_snapshot['class_ids']))).fetchone()
+                if same is not None:
+                    return self._assembly_reuse_receipt(write_connection, token, actor, assembly_snapshot, same['draft_json'])
             row = write_connection.execute(
                 """
                 SELECT input_fingerprint, draft_json
@@ -1333,6 +1376,7 @@ class PersonalizedRecommendationModule:
         ):
             _SOURCE_SNAPSHOT_CACHE.put(
                 self._source_snapshot_cache_key(
+                    question_ids=assembly_snapshot['question_ids'] if assembly_snapshot is not None else (),
                     prepare_refinements=True,
                     excluded_question_ids=excluded,
                     knowledge_keys=candidate_scope,
@@ -1601,6 +1645,7 @@ class PersonalizedRecommendationModule:
         excluded = set()
         candidate_config = PersonalizedRecommendationConfig(**_config_constructor(config))
         candidates, _relations, base_source_version = self._source_snapshot(
+            question_ids=request.get('assembly_snapshot', {}).get('question_ids', ()),
             excluded_question_ids=excluded,
             knowledge_keys=self._candidate_scope(diagnosis, candidate_config),
             candidate_config=candidate_config,
@@ -1946,6 +1991,29 @@ class PersonalizedRecommendationModule:
                  "group_basis": {"method": "whole_paper_member_coverage"} if shared is not None else None}
         _refresh_supplement_warnings(draft, PersonalizedRecommendationConfig(**_config_constructor(draft["config"])))
         return draft
+
+    def _build_fixed_class_draft(self, diagnosis, config, candidates, snapshot):
+        by_id = {q['question_id']: q for q in candidates}
+        students = []
+        for profile in diagnosis['students']:
+            sid = str(profile['student_id'])
+            items = []
+            for order, qid in enumerate(snapshot['question_ids'], 1):
+                candidate = by_id.get(qid)
+                if candidate is None:
+                    raise ValueError('组卷题目已不可用，请返回班级组卷调整。')
+                key = next((k for k in candidate['stable_keys'] if k.startswith('sk_')), candidate['stable_keys'][0] if candidate['stable_keys'] else '')
+                target = {'stable_key': key, 'display_name': candidate['stable_names'].get(key, key), 'source_question_refs': []}
+                item = _draft_item(candidate, stage='direct', slot=order, student_id=sid, target=target, matched_key=key, maintenance=False,
+                    match_details={'practice_purpose': 'new'})
+                item.update(item_order=order, locked=True, reason='班级组卷 · 全班：教师固定选题，全部学生使用同一套题与题序。')
+                items.append(item)
+            students.append({'student_id': sid, 'student_code': profile.get('student_code', ''),
+                'student_name': profile.get('student_name', ''), 'class_id': profile.get('class_id', ''),
+                'selection_mode': 'teacher_fixed_class', 'targets': [], 'items': items, 'shortages': [], 'warnings': [],
+                'estimated_minutes': sum(i.get('estimated_minutes') or 0 for i in items)})
+        return {'config': {**config.to_dict(), 'assembly_source': dict(snapshot)}, 'students': students,
+                'group_basis': {'method': 'teacher_fixed_class'}, 'warnings': []}
 
     def _eligible_candidates(
         self,
@@ -2746,10 +2814,22 @@ class PersonalizedRecommendationModule:
         return result
 
     def current_exam_question_ids(self, diagnosis: Mapping[str, Any], *,
-                                  graded_activities: Sequence[Mapping[str, Any]] | None = None) -> set[int]:
+                                  graded_activities: Sequence[Mapping[str, Any]] | None = None,
+                                  recent_activity_count: int = 3, purpose: str = "training") -> set[int]:
         """Compatibility name: shared union of the unified graded-activity window."""
-        recent = self._recent_question_ids(tuple(str(p['student_id']) for p in diagnosis.get('students', [])), diagnosis=diagnosis, graded_activities=graded_activities)
+        recent = self._recent_question_ids(tuple(str(p['student_id']) for p in diagnosis.get('students', [])), diagnosis=diagnosis, graded_activities=graded_activities, recent_activity_count=recent_activity_count, purpose=purpose)
         return {q for ids in recent.values() for q in ids}
+
+    def _assembly_reuse_receipt(self, connection, token, actor, snapshot, encoded_draft):
+        result = json.loads(encoded_draft)
+        used = connection.execute("SELECT resulting_draft_json FROM personalized_recommendation_events WHERE request_token=? AND action='created'", (token,)).fetchone()
+        if used is not None and json.loads(used['resulting_draft_json']).get('config', {}).get('assembly_source') != dict(snapshot):
+            raise RecommendationRequestConflict('assembly request token was reused')
+        connection.execute("""INSERT OR IGNORE INTO personalized_recommendation_events
+            (draft_id,request_token,command_hash,action,actor_ref,reason,expected_revision,resulting_revision,before_json,after_json,resulting_draft_json)
+            VALUES (?,?,?,'created',?,'复用同一班级组卷修订的训练草稿',0,?,'{}',?,?)""",
+            (result['draft_id'],token,_hash_payload(snapshot),actor,result['revision'],_json(snapshot),encoded_draft))
+        return result
 
     def _by_request_token(self, token: str) -> dict[str, Any] | None:
         with connect(self.db_path) as connection:
@@ -2758,8 +2838,13 @@ class PersonalizedRecommendationModule:
                 SELECT input_fingerprint, draft_json
                 FROM personalized_recommendation_drafts
                 WHERE request_token = ?
+                UNION ALL
+                SELECT d.input_fingerprint, d.draft_json FROM personalized_recommendation_drafts d
+                JOIN personalized_recommendation_events e ON e.draft_id=d.draft_id
+                WHERE e.request_token=? AND e.action='created'
+                LIMIT 1
                 """,
-                (token,),
+                (token, token),
             ).fetchone()
         if row is None:
             return None

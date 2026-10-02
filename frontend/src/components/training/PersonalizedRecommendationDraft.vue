@@ -30,6 +30,7 @@ import {
 } from '../../features/training/paper-draft-session'
 
 const props = defineProps<{
+  initialDraftId?: string
   diagnosis: TrainingDiagnosis | null
   scope: TrainingStudentScopeRequest
   examScope: TrainingExamScopeRequest
@@ -197,9 +198,17 @@ function rememberDraft(draftId: string): void {
 }
 
 let restoring = false
+watch(() => props.initialDraftId, id => {
+  if (id && draft.value && id !== draft.value.draft_id) {
+    draft.value = null
+    paperInstances.value = []
+    paperBatch.value = null
+    state.value = 'idle'
+  }
+})
 async function restoreDraft(): Promise<void> {
-  if (restoring || draft.value || state.value !== 'idle' || !props.diagnosis) return
-  const stored = loadPaperDraftSession()
+  if (restoring || draft.value || state.value !== 'idle' || (!props.diagnosis && !props.initialDraftId)) return
+  const stored = props.initialDraftId ? { draftId: props.initialDraftId, fingerprint: settingsFingerprint.value, requestToken: '', handoutRequestToken: '' } : loadPaperDraftSession()
   if (!stored) return
   let previousRules = false
   if (stored.fingerprint !== settingsFingerprint.value) {
@@ -283,6 +292,7 @@ watch(
   [settingsFingerprint, () => JSON.stringify(props.diagnosis?.students.map(student => student.student_id).sort() ?? [])],
   () => {
     // 草稿自带生成时的证据快照；重读同一批学生不清空草稿。
+    if (props.initialDraftId && draft.value?.draft_id === props.initialDraftId) return
     // 设置或成员变化才重置，生成与出卷仍由后端核对来源。
     draft.value = null
     pendingRequestToken.value = ''
@@ -303,7 +313,7 @@ watch(
 )
 
 watch(
-  [settingsFingerprint, () => props.diagnosis],
+  [settingsFingerprint, () => props.diagnosis, () => props.initialDraftId],
   () => {
     void restoreDraft()
   },
@@ -889,8 +899,9 @@ async function editItem(
         <div class="personalized-workbench" :class="{ 'is-shared': effectivePaperMode === 'shared' }">
           <nav class="personalized-student-list" :aria-label="effectivePaperMode === 'shared' ? '同卷学生列表' : '一人一卷学生列表'"><header>{{ effectivePaperMode === 'shared' ? '共同练习学生' : '学生草稿' }} <span>{{ draft.students.length }} 人</span></header><button v-for="student in draft.students" :key="student.student_id" type="button" :class="{ 'is-selected': selectedDraftStudent?.student_id === student.student_id }" :aria-pressed="selectedDraftStudent?.student_id === student.student_id" @click="selectedDraftStudentId = student.student_id"><strong>{{ student.student_name || student.student_code || student.student_id }}</strong><small>{{ student.class_id }} · {{ student.student_code || '' }}</small><span>{{ instancesForStudent(student.student_id)[0]?.status === 'frozen' ? '已出卷' : instancesForStudent(student.student_id).length ? '待审核' : `${student.items.length} 题草稿` }}</span></button></nav>
           <template v-for="student in draft.students" :key="student.student_id"><article v-if="selectedDraftStudent?.student_id === student.student_id" class="personalized-student">
-            <header><div><strong>{{ effectivePaperMode === 'shared' ? '共同试题' : student.student_name || student.student_code || student.student_id }}</strong><span>{{ student.items.length }} 题<span v-if="student.items.length"> · {{ difficultySummary(student.items) }}</span></span></div><StatusBadge :tone="student.selection_mode === 'maintenance_fallback' ? 'warning' : 'info'" :label="student.selection_mode === 'maintenance_fallback' ? '保守复习' : '按掌握证据推荐'" /></header>
-            <p v-if="effectivePaperMode === 'shared'" class="personalized-shared-note">全组题目与题序相同；换题需调整设置后重新生成整组草稿。</p>
+            <header><div><strong>{{ effectivePaperMode === 'shared' ? '共同试题' : student.student_name || student.student_code || student.student_id }}</strong><span>{{ student.items.length }} 题<span v-if="student.items.length"> · {{ difficultySummary(student.items) }}</span></span></div><StatusBadge :tone="student.selection_mode === 'maintenance_fallback' ? 'warning' : 'info'" :label="student.selection_mode === 'teacher_fixed_class' ? '教师固定选题' : student.selection_mode === 'maintenance_fallback' ? '保守复习' : '按掌握证据推荐'" /></header>
+            <p v-if="draft.config.assembly_source" class="personalized-shared-note">班级组卷 · 全班：{{ (draft.config.assembly_source as {title?:string}).title }}。全部学生使用同一套题与题序；换题请返回班级组卷调整后重新生成。</p>
+            <p v-else-if="effectivePaperMode === 'shared'" class="personalized-shared-note">全组题目与题序相同；换题需调整设置后重新生成整组草稿。</p>
             <ol class="personalized-match-list">
               <li v-for="item in student.items" :key="item.item_id" class="personalized-match">
                 <div class="personalized-match__head"><strong>第 {{ item.item_order }} 题</strong><span class="personalized-stage-badge" :class="`is-${item.stage}`">{{ itemLabel(item) }}</span><span>{{ knowledgeLeafLabel(item.matched_name) }}</span><span class="personalized-match__difficulty">难度 {{ item.difficulty }} · {{ item.criterion_point_count }} 个判定点</span></div>

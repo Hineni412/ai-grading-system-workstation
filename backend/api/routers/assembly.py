@@ -20,6 +20,8 @@ from backend.api.dependencies import (
 from backend.api.routers.jobs import _job_response
 from backend.api.schemas.assembly import (
     AssemblyAssistantRequest,
+    AssemblyExamQuestionsRequest,
+    AssemblyQuickDraftRequest,
     AssemblyAssistantResponse,
     AssemblyDraftResponse,
     AssemblyDraftWriteRequest,
@@ -31,12 +33,13 @@ from backend.api.schemas.assembly import (
     AssemblyRecordRestoreRequest,
 )
 from backend.api.schemas.jobs import JobResponse
+from backend.api.schemas.training import RecommendationRulesRequest
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from integration.data_generation import commit_generation
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from integration.result_cache import ResultCache
 from integration.training_prewarm import record_request
-from question_bank.recommendation.personalized import PersonalizedRecommendationModule
+from question_bank.recommendation.personalized import PersonalizedRecommendationModule, PersonalizedRecommendationError
 from question_bank.services.assembly_assistant import shortlist_candidates
 from question_bank.services.assembly_workspace_service import (
     AssemblyDraft,
@@ -75,6 +78,8 @@ def get_assistant_candidates(
             recommendations=recommendations,
             workspace=workspace,
             class_id=body.class_id,
+            class_ids=body.class_ids,
+            session_ids=body.session_ids,
             curriculum_volume_id=body.curriculum_volume_id,
             chapter_id=body.chapter_id,
             teaching_progress_chapter_id=body.teaching_progress_chapter_id,
@@ -84,6 +89,7 @@ def get_assistant_candidates(
             difficulty_max=body.difficulty_max,
             exclude_exam_originals=body.exclude_exam_originals,
             exclude_recent=body.exclude_recent,
+            recent_activity_count=body.recent_activity_count, purpose=body.purpose,
         )
     except ValueError as exc:
         raise ApiError(422, "assembly_assistant_scope_invalid", "Class evidence or candidate filters changed") from exc
@@ -98,7 +104,9 @@ def compute_assistant_candidates(
     read_service: QuestionBankReadService,
     recommendations: PersonalizedRecommendationModule,
     workspace: AssemblyWorkspaceService,
-    class_id: str,
+    class_id: str = "",
+    class_ids: list[str] | None = None,
+    session_ids: list[int] | None = None,
     curriculum_volume_id: str,
     chapter_id: str = "",
     teaching_progress_chapter_id: str = "",
@@ -108,13 +116,16 @@ def compute_assistant_candidates(
     difficulty_max: float = 8,
     exclude_exam_originals: bool = True,
     exclude_recent: bool = True,
+    recent_activity_count: int = 3, purpose: str = "training",
 ) -> dict:
     """Single compute path shared by the endpoint and the prewarm worker."""
     if difficulty_min > difficulty_max:
         raise ValueError("Difficulty range is reversed")
-    scope = {"mode": "class", "class_ids": [class_id],
+    class_ids = sorted(set(class_ids or [class_id]))
+    session_ids = sorted(set(session_ids or []))
+    scope = {"mode": "class", "class_ids": class_ids,
              "use_historical_fallback": False}
-    exam_scope = {"mode": "semester", "session_ids": [],
+    exam_scope = {"mode": "manual" if session_ids else "semester", "session_ids": session_ids,
                   "curriculum_volume_id": curriculum_volume_id}
     record_request(
         "assistant",
@@ -122,6 +133,8 @@ def compute_assistant_candidates(
         exam_scope=exam_scope,
         params={
             "class_id": class_id,
+            "class_ids": class_ids,
+            "session_ids": session_ids,
             "curriculum_volume_id": curriculum_volume_id,
             "chapter_id": chapter_id,
             "teaching_progress_chapter_id": teaching_progress_chapter_id,
@@ -131,6 +144,7 @@ def compute_assistant_candidates(
             "difficulty_max": difficulty_max,
             "exclude_exam_originals": exclude_exam_originals,
             "exclude_recent": exclude_recent,
+            "recent_activity_count": recent_activity_count, "purpose": purpose,
         },
     )
     diagnosis = diagnosis_service.build_profiles(
@@ -141,7 +155,7 @@ def compute_assistant_candidates(
     )
     # Compatibility flags no longer select different history definitions.
     excluded = recommendations.current_exam_question_ids(
-        diagnosis, graded_activities=graded_activities
+        diagnosis, graded_activities=graded_activities, recent_activity_count=recent_activity_count, purpose=purpose,
     )
 
     key_fn = getattr(diagnosis_service, "tag_profile_cache_key", None)
@@ -159,6 +173,7 @@ def compute_assistant_candidates(
             excluded_question_ids=excluded,
             cache_scope=diagnosis_key, recommendations=recommendations,
             graded_activities=graded_activities,
+            recent_activity_count=recent_activity_count, purpose=purpose,
         )
 
     if not callable(key_fn):
@@ -169,6 +184,7 @@ def compute_assistant_candidates(
             str(read_service.db_path.resolve(strict=False)),
             commit_generation(read_service.db_path),
             diagnosis_key,
+            tuple(class_ids), tuple(session_ids),
             chapter_id,
             teaching_progress_chapter_id,
             None if target_keys is None else tuple(target_keys),
@@ -176,16 +192,89 @@ def compute_assistant_candidates(
             difficulty_min,
             difficulty_max,
             tuple(sorted(excluded)),
+            recent_activity_count, purpose,
         ),
         _compute,
     )
 
 
+@router.post("/assistant/exam-questions")
+def get_assistant_exam_questions(
+    body: AssemblyExamQuestionsRequest,
+    service: DiagnosisProfileService = Depends(get_request_diagnosis_profile_service),
+) -> dict:
+    try:
+        return service.assembly_exam_questions(class_ids=body.class_ids, volume_id=body.curriculum_volume_id)
+    except ValueError as exc:
+        raise ApiError(422, "assembly_assistant_scope_invalid", "请确认班级与教学学期") from exc
+    except (OSError, sqlite3.Error, QuestionBankSnapshotError) as exc:
+        raise ApiError(503, "assembly_assistant_unavailable", "考试依据暂时无法读取") from exc
+
+
+@router.post("/assistant/quick-draft")
+def quick_draft(
+    body: AssemblyQuickDraftRequest,
+    diagnosis_service: DiagnosisProfileService = Depends(get_request_diagnosis_profile_service),
+    read_service: QuestionBankReadService = Depends(get_question_bank_read_service),
+    recommendations: PersonalizedRecommendationModule = Depends(get_personalized_recommendation_module),
+    workspace: AssemblyWorkspaceService = Depends(get_assembly_workspace_service),
+) -> dict:
+    rules = body.rules.model_dump()
+    evidence = diagnosis_service.assembly_exam_questions(class_ids=body.class_ids, volume_id=body.curriculum_volume_id)
+    questions = [q for e in evidence['exams'] if not body.session_ids or e['session_id'] in body.session_ids
+                 for q in e['questions'] if q['class_rate'] is not None and (body.threshold == 100 or q['class_rate'] < body.threshold / 100)]
+    if body.sort == 'loss':
+        questions.sort(key=lambda q: (q['class_rate'], q['key']))
+    selected = list(dict.fromkeys(body.question_ids))
+    descriptors, _, _ = recommendations._source_snapshot(question_ids=selected) if selected else ([], [], '')
+    covered = {key for q in descriptors for key in q['stable_keys'] if key.startswith('sk_')}
+    additions, skipped = [], {k: 0 for k in ('skill', 'written', 'difficulty', 'similar', 'unavailable')}
+    pools = {}
+    for question in questions:
+        if len(selected) >= body.rules.question_count:
+            break
+        keys = tuple(question['skill_keys'])
+        if set(keys) & covered:
+            skipped['skill'] += 1
+            continue
+        if not keys:
+            skipped['unavailable'] += 1
+            continue
+        if keys not in pools:
+            pools[keys] = compute_assistant_candidates(diagnosis_service=diagnosis_service, read_service=read_service,
+                recommendations=recommendations, workspace=workspace, class_ids=body.class_ids, session_ids=body.session_ids,
+                curriculum_volume_id=body.curriculum_volume_id, target_keys=list(keys), difficulty_max=10,
+                recent_activity_count=body.rules.recent_activity_count, purpose=body.rules.purpose)['candidates']
+        candidates = sorted(pools[keys], key=lambda c: (-c['suitable_student_count'], -c['remediation_student_count'], c['question_id']))
+        rejected = set()
+        for candidate in candidates:
+            qid = candidate['question_id']
+            if qid in selected:
+                continue
+            violations = recommendations.paper_rule_violations([*selected, qid], rules)
+            if violations:
+                rejected.update(v['code'] for v in violations)
+                continue
+            selected.append(qid)
+            added_descriptors, _, _ = recommendations._source_snapshot(question_ids=[qid])
+            covered.update(k for q in added_descriptors for k in q['stable_keys'] if k.startswith('sk_'))
+            additions.append({'question_id': qid, 'source': question})
+            break
+        else:
+            for code in rejected or {'unavailable'}:
+                skipped[code if code in skipped else 'unavailable'] += 1
+    return {'question_ids': [a['question_id'] for a in additions], 'additions': additions, 'skipped': skipped}
+
+
 @router.get("/draft", response_model=AssemblyDraftResponse)
 def get_assembly_draft(
     service: AssemblyWorkspaceService = Depends(get_assembly_workspace_service),
+    db_path: Path = Depends(get_question_bank_db_path),
+    diagnosis_service: DiagnosisProfileService = Depends(get_request_diagnosis_profile_service),
 ) -> AssemblyDraftResponse:
-    return AssemblyDraftResponse(**_draft_payload(service.load_draft()))
+    draft = service.load_draft()
+    violations = _assembly_violations(draft.to_payload(), db_path, service.data_root, diagnosis_service)
+    return AssemblyDraftResponse(**_draft_payload(draft), rule_violations=violations)
 
 
 @router.put(
@@ -199,11 +288,18 @@ def save_assembly_draft(
     body: AssemblyDraftWriteRequest,
     service: AssemblyWorkspaceService = Depends(get_assembly_workspace_service),
     db_path: Path = Depends(get_question_bank_db_path),
+    diagnosis_service: DiagnosisProfileService = Depends(get_request_diagnosis_profile_service),
 ) -> AssemblyDraftResponse:
-    if service.load_draft().practice_rules and body.draft.basket_ids:
-        body.draft.practice_rules = True
-    if body.draft.practice_rules:
-        _validate_practice_paper(body.draft.basket_ids, db_path, service.data_root)
+    previous = service.load_draft()
+    if body.expected_revision != previous.revision:
+        raise ApiError(409, 'assembly_draft_conflict', 'Assembly draft has changed', {'current_revision':previous.revision})
+    if previous.practice_rules and body.draft.basket_ids and not body.draft.practice_rules:
+        body.draft.practice_rules = RecommendationRulesRequest.model_validate(previous.practice_rules)
+    rules = body.draft.practice_rules.model_dump() if hasattr(body.draft.practice_rules, 'model_dump') else body.draft.practice_rules
+    # Changing limits or removing questions must remain possible on an invalid paper.
+    violations = _assembly_violations({**body.draft.model_dump(), 'practice_rules': rules}, db_path, service.data_root, diagnosis_service)
+    if violations and set(body.draft.basket_ids) - set(previous.basket_ids):
+        raise ApiError(422, 'assembly_practice_rule', violations[0]['message'])
     try:
         saved = service.save_draft(
             expected_revision=body.expected_revision,
@@ -222,7 +318,7 @@ def save_assembly_draft(
             "assembly_draft_invalid",
             "Assembly draft is invalid",
         ) from exc
-    return AssemblyDraftResponse(**_draft_payload(saved))
+    return AssemblyDraftResponse(**_draft_payload(saved), rule_violations=violations)
 
 
 @router.post(
@@ -238,6 +334,7 @@ def submit_assembly_export(
     service: AssemblyWorkspaceService = Depends(get_assembly_workspace_service),
     manager: JobManager = Depends(get_job_manager),
     db_path: Path = Depends(get_question_bank_db_path),
+    diagnosis_service: DiagnosisProfileService = Depends(get_request_diagnosis_profile_service),
 ) -> JobResponse:
     draft = service.load_draft()
     if body.draft_revision != draft.revision:
@@ -254,7 +351,9 @@ def submit_assembly_export(
             "Assembly draft has no questions",
         )
     if draft.practice_rules:
-        _validate_practice_paper(draft.order_ids, db_path, service.data_root)
+        violations = _assembly_violations(draft.to_payload(), db_path, service.data_root, diagnosis_service)
+        if violations:
+            raise ApiError(422, 'assembly_practice_rule', violations[0]['message'])
     payload: dict[str, object] = {
         "draft_revision": draft.revision,
         "draft": draft.to_payload(),
@@ -275,9 +374,15 @@ def submit_assembly_export(
     return _job_response(job)
 
 
-def _validate_practice_paper(question_ids, db_path: Path, data_root: Path) -> None:
+def _assembly_violations(draft, db_path: Path, data_root: Path, diagnosis_service) -> list[dict]:
+    rules = draft.get('practice_rules')
+    if not rules or not draft.get('order_ids'):
+        return []
     try:
-        PersonalizedRecommendationModule(db_path=db_path, data_root=data_root).validate_paper_questions(question_ids)
+        module = PersonalizedRecommendationModule(db_path=db_path, data_root=data_root)
+        context = draft.get('assembly_context') or {}
+        recent = diagnosis_service.assembly_recent_question_ids(module, context, rules) if context.get('class_ids') else set()
+        return module.paper_rule_violations(draft['order_ids'], rules, recent_question_ids=recent)
     except ValueError as exc:
         raise ApiError(422, "assembly_practice_rule", str(exc)) from exc
 
@@ -360,9 +465,15 @@ def resolve_assembly_questions(
             "Question bank is temporarily unavailable",
         ) from exc
     found = {int(row["id"]) for row in rows}
+    try:
+        descriptors, _, _ = PersonalizedRecommendationModule(db_path=service.db_path, data_root=service.data_root or service.db_path.parent.parent)._source_snapshot(question_ids=ordered_ids)
+        skills = {q['question_id']: [k for k in q['stable_keys'] if k.startswith('sk_')] for q in descriptors}
+    except (ValueError, PersonalizedRecommendationError):
+        skills = {}
     items = [
         {
             "id": row["id"],
+            "skill_keys": skills.get(row['id'], []),
             "revision": row["revision"],
             "question_number": row["question_number"],
             "question_type": row["question_type"],

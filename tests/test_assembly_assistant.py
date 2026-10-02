@@ -178,6 +178,49 @@ def request(**patch):
     }
 
 
+def test_multiclass_manual_exam_scope_and_legacy_class_input(client_and_source):
+    client, _, calls, _ = client_and_source
+    response = client.post('/api/question-assembly/assistant/candidates', json=request(class_ids=['合成10班', '合成9班'], session_ids=[8], recent_activity_count=0))
+    assert response.status_code == 200
+    assert calls[-1][0]['class_ids'] == ['合成10班', '合成9班']
+    assert calls[-1][1]['mode'] == 'manual'
+    assert calls[-1][1]['session_ids'] == [8]
+    assert client.post('/api/question-assembly/assistant/candidates', json=request()).status_code == 200
+    assert calls[-1][0]['class_ids'] == ['合成9班']
+
+
+def test_exam_question_rates_weight_students_and_preserve_missing_causes(client_and_source, monkeypatch):
+    from types import SimpleNamespace as NS
+    from integration.diagnosis_profile_service import DiagnosisProfileService
+    from backend.config_generation import contract
+    client, _, _, _ = client_and_source
+    module = client.app.dependency_overrides[get_personalized_recommendation_module]()
+    key = 'sk_test_rate'
+    students = [{'id': i, 'class_name': '合成9班' if i < 3 else '合成10班'} for i in (1, 2, 3)]
+    sessions = [{'id': 7, 'session_name': 'TEST-两班考试', 'curriculum_volume_id': VOLUME['id']}, {'id': 8, 'session_name': 'TEST-单班考试', 'curriculum_volume_id': VOLUME['id']}]
+    rows = [{'session_id': 7, 'student_id': i, 'question_id': 'Q1', 'score_awarded': s} for i,s in ((1,2),(2,2),(3,8))]
+    rows += [{'session_id': 8, 'student_id': 3, 'question_id': 'Q1', 'score_awarded': 4, 'teacher_final_max_score': 5}, {'session_id': 7, 'student_id': 1, 'question_id': 'Q2', 'score_awarded': 0}, {'session_id': 7, 'student_id': 2, 'question_id': 'Q2', 'score_awarded': None}]
+    service = DiagnosisProfileService.__new__(DiagnosisProfileService)
+    service.question_bank_db_path = module.db_path
+    service.db = NS(students=NS(list_students=lambda: students), sessions=NS(list_grading_sessions=lambda: sessions), results=NS(get_active_assessment_rows=lambda **_: rows, _load_session_rubric=lambda sid: {}, _load_rubric_maps_for_session=lambda sid: {'score': {'Q1': 10, 'Q2': 10}}))
+    projections = NS(items=[NS(item_ref=q, bank_question_id=2 if q=='Q1' else None, tags={'knowledge_point': [key]}, assessment={}) for q in ('Q1','Q2')])
+    service._tag_projections = lambda ids: {sid: projections for sid in ids}
+    service._error_cause_index = lambda ids: {(7,i,'Q1'): [{'category':'计算与化简'}, {'category':'计算与化简'}] for i in (1,2,3)}
+    monkeypatch.setattr(contract, 'iter_effective_rubric_item_refs', lambda _: [(q,q,{'question_type':'choice'}, {}) for q in ('Q1','Q2')])
+    result = service.assembly_exam_questions(class_ids=['合成9班','合成10班'], volume_id=VOLUME['id'])
+    exam = next(e for e in result['exams'] if e['session_id']==7)
+    q = exam['questions'][0]
+    assert q['class_rate'] == .4
+    assert [r['student_count'] for r in q['class_rates']] == [1,2]
+    assert next(c['count'] for c in q['cause_category_counts'] if c['category']=='计算与化简') == 3
+    assert exam['questions'][1]['bank_question_id'] is None
+    assert exam['questions'][1]['student_count'] == 1
+    assert exam['questions'][1]['cause_category_counts'] is None
+    single = next(e for e in result['exams'] if e['session_id']==8)
+    assert single['class_ids'] == ['合成10班']
+    assert single['questions'][0]['class_rate'] == .8
+
+
 def test_api_returns_full_balanced_pool_without_creating_or_replacing_a_paper(
     client_and_source,
 ):
@@ -283,12 +326,17 @@ def test_filters_empty_evidence_and_changed_scope_never_silently_expand(
 
 def test_teacher_practice_rules_persist_and_rejected_save_keeps_previous_draft(client_and_source):
     client, _, _, workspace = client_and_source
+    from question_bank.services.assembly_workspace_service import _payload_revision
+    legacy_payload = {**workspace.load_draft().to_payload(), 'practice_rules':True}
+    compatible = workspace.normalize_draft(legacy_payload)
+    assert compatible.revision == _payload_revision(legacy_payload)
+    assert compatible.practice_rules['purpose'] == 'handout'
     current = client.get('/api/question-assembly/draft').json()
-    payload = {key: value for key, value in current.items() if key != 'revision'}
+    payload = {key: value for key, value in current.items() if key not in {'revision', 'rule_violations'}}
     payload.update(practice_rules=True, basket_ids=[2,3], order_ids=[2,3])
     saved = client.put('/api/question-assembly/draft', json={'expected_revision': current['revision'], 'draft': payload})
     assert saved.status_code == 200, saved.text
-    assert client.get('/api/question-assembly/draft').json()['practice_rules'] is True
+    assert client.get('/api/question-assembly/draft').json()['practice_rules']['max_questions_per_skill'] == 1
     before = workspace.draft_path.read_bytes()
     # These are duplicate original question records; the failure must preserve the basket.
     payload.update(practice_rules=False, basket_ids=[1,33], order_ids=[1,33])
@@ -319,7 +367,7 @@ def test_teacher_cannot_save_second_question_of_same_skill(client_and_source, mo
     monkeypatch.setattr(PersonalizedRecommendationModule, '_source_snapshot',
                         lambda self, **kwargs: (candidates, (), 'synthetic'))
     current = client.get('/api/question-assembly/draft').json()
-    payload = {key: value for key, value in current.items() if key != 'revision'}
+    payload = {key: value for key, value in current.items() if key not in {'revision', 'rule_violations'}}
     payload.update(practice_rules=True, basket_ids=[2], order_ids=[2])
     saved = client.put('/api/question-assembly/draft', json={'expected_revision': current['revision'], 'draft': payload})
     assert saved.status_code == 200
@@ -331,3 +379,49 @@ def test_teacher_cannot_save_second_question_of_same_skill(client_and_source, mo
     assert '合成技能' in rejected.json()['error']['message']
     assert workspace.draft_path.read_bytes() == before
     assert client.get('/api/question-assembly/draft').json()['order_ids'] == [2]
+
+
+def test_lower_rules_can_save_and_block_export_without_removing_questions(client_and_source, monkeypatch):
+    client, _, _, workspace = client_and_source
+    candidates = [{'question_id': q, 'question_type': '解答题', 'difficulty': 5,
+        'stable_keys': [f'sk_{q}'], 'question_text': f'合成不同题目{q}'} for q in (2, 3)]
+    monkeypatch.setattr(PersonalizedRecommendationModule, '_source_snapshot', lambda self, **_: (candidates, (), 'test'))
+    current = client.get('/api/question-assembly/draft').json()
+    payload = {k:v for k,v in current.items() if k not in {'revision','rule_violations'}}
+    payload.update(basket_ids=[2,3], order_ids=[2,3], practice_rules=True)
+    first = client.put('/api/question-assembly/draft', json={'expected_revision':current['revision'],'draft':payload}).json()
+    payload['practice_rules'] = {**first['practice_rules'], 'max_written_questions':1}
+    saved = client.put('/api/question-assembly/draft', json={'expected_revision':first['revision'],'draft':payload})
+    assert saved.status_code == 200
+    assert saved.json()['order_ids'] == [2,3]
+    assert saved.json()['rule_violations'] == [{'question_id':3,'code':'written','message':'学情卷最多选 1 道解答题，请先移除一道再添加。'}]
+    from backend.api.dependencies import get_job_manager
+    client.app.dependency_overrides[get_job_manager] = lambda: None
+    rejected = client.post('/api/question-assembly/export', json={'draft_revision':saved.json()['revision'],'format':'docx'})
+    assert rejected.status_code == 422
+    assert workspace.load_draft().order_ids == (2,3)
+
+
+def test_quick_draft_fills_remaining_slots_reports_rejections_and_never_saves(client_and_source, monkeypatch):
+    from types import SimpleNamespace as NS
+    from backend.api.routers import assembly as router
+    client, _, _, workspace = client_and_source
+    descriptors = [{'question_id':q, 'question_type':'解答题' if q==2 else '选择题',
+        'difficulty':9 if q==3 else 3, 'stable_keys':[f'sk_{q}'], 'question_text':f'不同合成题{q}',
+        **({'duplicate_identity':'duplicate'} if q in (4,5) else {})} for q in (32,2,3,4,5,6)]
+    monkeypatch.setattr(PersonalizedRecommendationModule, '_source_snapshot', lambda self, **kw: ([q for q in descriptors if q['question_id'] in kw['question_ids']], (), 'test'))
+    needs = [(32,[32]),(2,[2]),(3,[3,4]),(5,[5]),(6,[6])]
+    service = NS(assembly_exam_questions=lambda **_: {'exams':[{'session_id':7,'questions':[
+        {'key':str(q),'class_rate':.2,'skill_keys':[f'sk_{q}']} for q,_ in needs]}]})
+    client.app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: service
+    pools = {f'sk_{key}': ids for key,ids in needs}
+    monkeypatch.setattr(router, 'compute_assistant_candidates', lambda **kw: {'candidates':[
+        {'question_id':q,'suitable_student_count':10-q,'remediation_student_count':2} for q in pools[kw['target_keys'][0]]]})
+    before = workspace.draft_path.read_bytes()
+    rules = {'purpose':'handout','question_count':3,'difficulty_max':8,'max_written_questions':0,'max_questions_per_skill':1,'recent_activity_count':0}
+    response = client.post('/api/question-assembly/assistant/quick-draft', json=request(session_ids=[7],question_ids=[32],rules=rules))
+    assert response.status_code == 200, response.text
+    assert response.json()['question_ids'] == [4,6]
+    assert response.json()['skipped'] == {'skill':1,'written':1,'difficulty':0,'similar':1,'unavailable':0}
+    assert workspace.draft_path.read_bytes() == before
+    assert workspace.list_records() == []

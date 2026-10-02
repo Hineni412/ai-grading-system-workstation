@@ -175,7 +175,7 @@ export interface PersonalizedRecommendationStudent {
   student_code: string
   student_name: string
   class_id: string
-  selection_mode: 'mastery_targeted' | 'maintenance_fallback'
+  selection_mode: 'mastery_targeted' | 'maintenance_fallback' | 'teacher_fixed_class'
   targets: Array<Record<string, unknown>>
   items: PersonalizedRecommendationItem[]
   shortages: Array<Record<string, unknown>>
@@ -981,6 +981,7 @@ function isRecommendationStudent(
     && (
       value.selection_mode === 'mastery_targeted'
       || value.selection_mode === 'maintenance_fallback'
+      || value.selection_mode === 'teacher_fixed_class'
     )
     && Array.isArray(value.targets)
     && value.targets.every(isRecord)

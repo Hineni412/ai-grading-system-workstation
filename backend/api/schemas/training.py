@@ -194,6 +194,13 @@ class PersonalizedRecommendationEditRequest(_TrainingModel):
     replacement_question_id: int | None = Field(default=None, ge=1)
 
 
+class TrainingFromAssemblyRequest(_TrainingModel):
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    class_ids: list[str] = Field(min_length=1, max_length=100)
+    draft_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    rules: RecommendationRulesRequest
+
+
 class PersonalizedRecommendationDraftResponse(_TrainingModel):
     draft_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     status: Literal["draft", "reviewed"]

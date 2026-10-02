@@ -1618,6 +1618,61 @@ def _seed_handout_pool(module, count=120):
     _approve_synthetic_criteria(module.db_path, module.data_root, tuple(row[0] for row in rows))
 
 
+def test_fixed_class_assembly_preserves_all_members_order_and_idempotency(direct_module):
+    """Teacher selection reuses freezing while retaining evidence-free members."""
+    _seed_handout_pool(direct_module, count=8)
+    diagnosis = _direct_diagnosis((("A", .6, 900, BNU_TARGET),))
+    diagnosis['students'].append({'student_id': 'NO-EVIDENCE', 'class_id': '合成班', 'weak_points': []})
+    order = [1007, 1001, 1003, 1002, 1006, 1004, 1005, 1000]
+    snapshot = {'source': '班级组卷 · 全班', 'revision': 'a'*64, 'class_ids': ['合成班'],
+                'session_ids': [7], 'question_ids': order, 'title': 'TEST-固定全班卷'}
+    config = PersonalizedRecommendationConfig(paper_mode='shared', question_count=8,
+        target_keys=(BNU_TARGET,),
+        curriculum_volume_id='bnu24-math-g7-lower', max_questions_per_skill=8,
+        max_written_questions=8, recent_activity_count=0)
+    create = lambda token: direct_module.create(request_token=token*32, diagnosis=diagnosis,
+        config=config, actor_ref='test', assembly_snapshot=snapshot, graded_activities=[])
+    first = create('1')
+    assert create('1') == create('2') == first
+    assert direct_module.get_by_request_token('2'*32) == first
+    from question_bank.recommendation.personalized import RecommendationRequestConflict
+    with pytest.raises(RecommendationRequestConflict):
+        direct_module.create(request_token='2'*32,diagnosis=diagnosis,config=config,actor_ref='test',
+            assembly_snapshot={**snapshot,'revision':'b'*64},graded_activities=[])
+    assert {s['student_id'] for s in first['students']} == {'A', 'NO-EVIDENCE'}
+    assert first['config']['assembly_source'] == snapshot
+    for student in first['students']:
+        assert [i['question_id'] for i in student['items']] == order
+        assert all(i['locked'] for i in student['items'])
+    assert direct_module.ensure_current(first['draft_id']) == first
+    with connect(direct_module.db_path) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM personalized_recommendation_drafts').fetchone()[0] == 1
+    from fastapi.testclient import TestClient
+    from types import SimpleNamespace
+    from backend.api.app import create_app
+    from backend.api.dependencies import get_assembly_workspace_service, get_personalized_recommendation_module, get_request_diagnosis_profile_service
+    from question_bank.services.assembly_workspace_service import AssemblyWorkspaceService
+    workspace = AssemblyWorkspaceService(direct_module.data_root)
+    saved = workspace.save_draft(expected_revision=workspace.load_draft().revision,
+        draft={'basket_ids':order,'order_ids':order,'title':'TEST-入口卷','practice_rules':{
+            key:config.to_dict()[key] for key in ('purpose','question_count','difficulty_max','max_questions_per_skill','max_written_questions','recent_activity_count')},
+            'assembly_context':{'class_ids':['合成班'],'session_ids':[7],'curriculum_volume_id':config.curriculum_volume_id,'sources':{}}})
+    app = create_app()
+    app.dependency_overrides[get_assembly_workspace_service] = lambda: workspace
+    app.dependency_overrides[get_personalized_recommendation_module] = lambda: direct_module
+    app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: SimpleNamespace(build_profiles=lambda **_:diagnosis, graded_activities=lambda _:[])
+    client = TestClient(app)
+    body = {'request_token':'3'*32,'class_ids':['合成班'],'draft_revision':saved.revision,'rules':saved.practice_rules}
+    response = client.post('/api/training/personalized-drafts/from-assembly', json=body)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert {s['student_id'] for s in result['students']} == {'A','NO-EVIDENCE'}
+    assert [i['question_id'] for i in result['students'][0]['items']] == order
+    assert client.post('/api/training/personalized-drafts/from-assembly', json={**body,'request_token':'4'*32}).json() == result
+    assert client.post('/api/training/personalized-drafts/from-assembly', json={**body,'draft_revision':'0'*64}).status_code == 409
+    client.close()
+
+
 def _record_legacy_training(module, question_ids, *, student_id="A", name="SYN-TRAINING",
                             occurred_at="2026-07-30T08:00:00+08:00", scored=True):
     with connect(module.db_path) as conn:

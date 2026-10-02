@@ -43,7 +43,13 @@ def run_assembly_export_job(
         from question_bank.recommendation.personalized import (
             PersonalizedRecommendationModule,
         )
-        PersonalizedRecommendationModule(db_path=question_bank_db_path, data_root=data_root).validate_paper_questions(draft.order_ids)
+        from integration.diagnosis_profile_service import DiagnosisProfileService
+        module = PersonalizedRecommendationModule(db_path=question_bank_db_path, data_root=data_root)
+        recent = set()
+        if draft.assembly_context and draft.practice_rules.get('recent_activity_count', 3):
+            profiles = DiagnosisProfileService(data_root / 'databases' / 'grading_system.db', question_bank_db_path, data_root=data_root)
+            recent = profiles.assembly_recent_question_ids(module, draft.assembly_context, draft.practice_rules)
+        module.validate_paper_questions(draft.order_ids, draft.practice_rules, recent_question_ids=recent)
     export_format = str(context.payload.get("format") or "").strip().casefold()
     if export_format not in {"docx", "markdown", "pdf"}:
         raise ValueError("assembly export format is not supported")

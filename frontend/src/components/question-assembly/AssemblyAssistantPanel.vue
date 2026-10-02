@@ -1,290 +1,142 @@
 <script setup lang="ts">
-import AppButton from '@/components/design-system/AppButton.vue'
-
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { fetchStudents } from '../../api/students'
-import { knowledgeLeafLabel } from '../../api/question-bank'
-import type { AssemblyQuestion } from '../../api/assembly'
-import { useAssemblyStore } from '../../stores/assembly'
-import { useAssemblyAssistantStore } from '../../stores/assembly-assistant'
-import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
-import DifficultyRangeFilter from '../question-bank/DifficultyRangeFilter.vue'
+import {computed,nextTick,onMounted,onUnmounted,ref,watch} from 'vue'
+import {fetchStudents} from '../../api/students'
+import {defaultPaperRules,fetchAssemblyQuickDraft,type AssemblyExamQuestion,type AssemblyQuestion,type AssemblyContext} from '../../api/assembly'
+import {knowledgeLeafLabel} from '../../api/question-bank'
+import {useAssemblyStore} from '../../stores/assembly'
+import {useAssemblyAssistantStore} from '../../stores/assembly-assistant'
+import {useCurriculumScopeStore} from '../../stores/curriculum-scope'
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
-
-const props = defineProps<{ initialSkill?: string }>()
-const initialSkillMessage = ref('')
-let appliedInitialSkill = ''
-const emit = defineEmits<{ edit: [] }>()
-const assistant = useAssemblyAssistantStore()
-const assembly = useAssemblyStore()
-const curriculum = useCurriculumScopeStore()
-watch([() => props.initialSkill, () => assistant.result], () => {
-  const key = props.initialSkill
-  if (!key || !assistant.result || appliedInitialSkill === key) return
-  if (assistant.result.weaknesses.some(target => target.knowledge_key === key)) {
-    appliedInitialSkill = key
-    initialSkillMessage.value = ''
-    assistant.selectTarget(key)
-  } else initialSkillMessage.value = '从题库带来的技能不在当前班级与章节结果中，请选择当前目标；范围保持不变。'
-}, { immediate: true })
-const classes = ref<string[]>([])
-const rosterState = ref<'loading' | 'ready' | 'error'>('loading')
-const expanded = ref(new Set<number>())
-const similarOpen = ref(new Set<number>())
-const similarItems = ref(new Map<number, AssemblyQuestion[]>())
-const actionMessage = ref('')
-const weaknessList = ref<HTMLElement | null>(null)
-const selectedKey = computed(() => assistant.selectedKey)
-const weaknesses = computed(() => new Map(assistant.result?.weaknesses.map(item => [item.knowledge_key, item]) ?? []))
-const selectedWeakness = computed(() => weaknesses.value.get(selectedKey.value))
-const questionMap = computed(() => new Map(assistant.questions.map(item => [item.id, item])))
-const candidates = computed(() => (assistant.result?.candidates ?? []).slice(0, assistant.visibleCount).flatMap(item => {
-  const question = questionMap.value.get(item.question_id)
-  return question ? [{ question, fitCount: item.suitable_student_count, remediationCount: item.remediation_student_count, consolidationCount: item.consolidation_student_count, newCount: item.new_practice_student_count, uncertainCount: item.uncertain_student_count, difficultyBasis: item.difficulty_basis, matchLabel: item.selection_kind === 'task_matched' ? item.match_label : item.match_level ? `${item.match_level}级 · ${item.match_label}` : '', practiceKind: item.practice_kind ?? 'focus', band: item.difficulty_band ?? 'unknown', similarIds: item.similar_question_ids ?? [], targets: item.target_keys.flatMap(key => weaknesses.value.get(key) ?? []) }] : []
-}))
-const busy = computed(() => assistant.state === 'loading' || assistant.waiting)
-const rangeChoice = computed(() => assistant.filters.chapter_id ? `focused:${assistant.filters.chapter_id}`
-  : assistant.filters.teaching_progress_chapter_id ? `through:${assistant.filters.teaching_progress_chapter_id}` : '')
-function changeRange(value: string): void {
-  const [mode, id = ''] = value.split(':')
-  assistant.changeScope({ chapter_id: mode === 'focused' ? id : '', teaching_progress_chapter_id: mode === 'through' ? id : '' })
-}
-const BAND_LABELS: Record<string, string> = { suitable: '难度合适', lower: '难度较低', higher: '难度较高' }
-
-async function moveSelection(delta: number): Promise<void> {
-  assistant.moveSelection(delta)
-  await nextTick()
-  weaknessList.value?.querySelector('.is-selected')?.scrollIntoView?.({ block: 'nearest' })
-}
-
-function onKeydown(event: KeyboardEvent): void {
-  if (event.ctrlKey || event.metaKey || event.altKey) return
-  if (event.key === 'Escape') {
-    const summary = document.querySelector<HTMLDetailsElement>('.assistant-evidence-summary[open]')
-    if (summary) { event.preventDefault(); summary.open = false; summary.querySelector<HTMLElement>('summary')?.focus(); return }
-  }
-  const target = event.target
-  if (target instanceof Element && target.closest('input, select, textarea, [contenteditable="true"]')) return
-  const key = event.key.toLowerCase()
-  if (key === 'w') { event.preventDefault(); void moveSelection(-1) }
-  else if (key === 's') { event.preventDefault(); void moveSelection(1) }
-}
-watch(() => [assistant.filters.question_type, assistant.filters.exclude_exam_originals, assistant.filters.exclude_recent], () => assistant.scheduleSearch())
-const canAdd = computed(() => !busy.value && !assistant.isStale && assistant.state === 'ready'
-  && assembly.loadState !== 'loading' && assembly.loadState !== 'error' && assembly.saveState !== 'saving')
-function percent(value: number | null): string { return value === null ? '暂无数据' : `${Math.round(value * 100)}%` }
-function inBasket(id: number): boolean { return assembly.draft.basket_ids.includes(id) }
-async function toggleBasket(id: number): Promise<void> {
-  const removing = inBasket(id)
-  const ok = removing ? await assembly.removeQuestion(id) : await assembly.addQuestions([id], true)
-  actionMessage.value = ok ? (removing ? '已移出试卷篮' : '已加入试卷篮，可继续选题') : assembly.message
-}
-async function toggleSimilar(id: number, ids: number[]): Promise<void> {
-  if (similarOpen.value.delete(id)) return
-  similarOpen.value.add(id)
-  if (!similarItems.value.has(id)) similarItems.value.set(id, await assistant.previewsFor(ids))
-}
-async function loadClasses(): Promise<void> {
-  rosterState.value = 'loading'
-  try {
-    classes.value = [...new Set((await fetchStudents()).flatMap(item => item.class_name ? [item.class_name] : []))].sort((a, b) => a.localeCompare(b, 'zh-CN', { numeric: true }))
-    if (!classes.value.includes(assistant.filters.class_id)) assistant.changeScope({ class_id: classes.value.length === 1 ? classes.value[0]! : '' })
-    rosterState.value = 'ready'
-  } catch { rosterState.value = 'error' }
-}
-watch(() => curriculum.selectedVolumeId, volume => {
-  if (assistant.filters.curriculum_volume_id !== (volume ?? '')) assistant.changeScope({ curriculum_volume_id: volume ?? '', chapter_id: '', teaching_progress_chapter_id: '' })
-}, { immediate: true })
-onMounted(() => {
-  window.addEventListener('keydown', onKeydown)
-  void loadClasses()
-  void curriculum.initialize()
-  if (assembly.loadState === 'idle' || assembly.loadState === 'error') void assembly.load()
+import ClassAssemblyPaper from './ClassAssemblyPaper.vue'
+import '../../styles/class-assembly.css'
+const props=defineProps<{initialSkill?:string}>(), emit=defineEmits<{edit:[]}>()
+const assembly=useAssemblyStore(), assistant=useAssemblyAssistantStore(), curriculum=useCurriculumScopeStore()
+const classes=ref<string[]>([]), rosterReady=ref(false), scopeMessage=ref(''), actionMessage=ref('')
+const showAllSkills=ref(false), originalExpanded=ref(false), expanded=ref(new Set<number>()), similar=ref(new Map<number,AssemblyQuestion[]>())
+const relative=ref(''), quickBusy=ref(false), blocked=ref<Record<number,string>>({}), replacingId=ref<number|null>(null)
+const original=ref<AssemblyQuestion|null>(null), leftList=ref<HTMLElement|null>(null)
+const relativeQuestions=ref<AssemblyQuestion[]>([]), relativeLimit=ref(12), relativeLoading=ref(false)
+const rules=computed(()=>typeof assembly.draft.practice_rules==='object' && assembly.draft.practice_rules?assembly.draft.practice_rules:defaultPaperRules())
+const selectedClasses=computed(()=>assistant.filters.class_ids??[]), exams=computed(()=>assistant.examResult?.exams??[])
+const selectedExams=computed(()=>exams.value.filter(e=>assistant.filters.session_ids?.includes(e.session_id)))
+const lossQuestions=computed(()=>{
+ const items=selectedExams.value.flatMap(e=>e.questions).filter(q=>q.class_rate!==null&&(assistant.threshold===100||q.class_rate!*100<assistant.threshold))
+ return assistant.sort==='loss'?items.sort((a,b)=>a.class_rate!-b.class_rate!||a.key.localeCompare(b.key,'zh-CN',{numeric:true})):items.sort((a,b)=>a.session_id-b.session_id||a.question_id.localeCompare(b.question_id,'zh-CN',{numeric:true}))
 })
-onUnmounted(() => window.removeEventListener('keydown', onKeydown))
+const selected=computed(()=>lossQuestions.value.find(q=>q.key===assistant.selectedExamKey))
+const skillGroups=computed(()=>{
+ const points=(assistant.result?.weaknesses??[]).filter(p=>p.knowledge_key.startsWith('sk_')&&(showAllSkills.value||p.weak_student_count>0))
+ const groups=new Map<string,typeof points>()
+ for(const p of points){const group=p.knowledge_point.split('｜').slice(0,-1).join(' · ')||'当前学期';groups.set(group,[...(groups.get(group)??[]),p])}
+ return [...groups].map(([label,points])=>({label,points}))
+})
+function classLabel(name:string){return /班$/.test(name)?name:name+'班'}
+function questionLabel(id:string){return id.replace(/^Q/,'').replace(/\(P(\d+)\)/g,'($1)')}
+function examShortTitle(id:number){return examTitle(id).replace(/学情反馈$/,'')}
+const title=computed(()=>assembly.draft.title&&!assembly.draft.assembly_context?.title_generated?assembly.draft.title:(curriculum.selectedVolume?.grade??'')+selectedClasses.value.map(n=>n.replace(/班$/,'')).join('、')+'班 '+(selectedClasses.value.length===1?(selectedExams.value[0]?.title.match(/第[一二三四五六七八九十\d]+周/)?.[0]??''):'')+'补偿练习')
+const questionMap=computed(()=>new Map([...assistant.questions,...relativeQuestions.value].map(q=>[q.id,q])))
+const originalDifficulty=computed(()=>original.value?.difficulty?Number(original.value.difficulty):selected.value?.difficulty)
+function difficultyRelation(d:number|null|undefined){const b=originalDifficulty.value;return !b||d==null?'':d<b-.8?'更基础':d>b+.8?'更难':'相当'}
+const candidatePool=computed(()=>(assistant.result?.candidates??[]).filter(c=>!relative.value||difficultyRelation(c.difficulty)===relative.value))
+const candidates=computed(()=>candidatePool.value.slice(0,relative.value?relativeLimit.value:assistant.visibleCount).flatMap(c=>{const question=questionMap.value.get(c.question_id);return question?[{...c,question}]:[]}))
+let relativeSerial=0
+async function loadRelative(){const n=++relativeSerial;relativeLoading.value=true;try{const items=await assistant.previewsFor(candidatePool.value.slice(0,relativeLimit.value).map(c=>c.question_id));if(n===relativeSerial)relativeQuestions.value=items}catch{if(n===relativeSerial)actionMessage.value='筛选题目暂时无法读取，请重试。'}finally{if(n===relativeSerial)relativeLoading.value=false}}
+watch([relative,()=>assistant.result,originalDifficulty],()=>{relativeQuestions.value=[];relativeLimit.value=12;if(relative.value)void loadRelative();else{relativeSerial++;relativeLoading.value=false}})
+async function moreCandidates(){if(relative.value){relativeLimit.value+=12;await loadRelative()}else await assistant.loadMore()}
+const hasMore=computed(()=>relative.value?relativeLimit.value<candidatePool.value.length:assistant.hasMore)
+const busy=computed(()=>assistant.state==='loading'||assistant.waiting||assistant.isStale||assistant.examState==='loading'||relativeLoading.value)
+const canAct=computed(()=>!busy.value&&assistant.state!=='error'&&assistant.examState!=='error'&&rosterReady.value&&assembly.loadState!=='loading'&&assembly.loadState!=='error'&&assembly.saveState!=='saving'&&!quickBusy.value)
+const sources=computed(()=>assembly.draft.assembly_context?.sources??{})
+function questionSkills(q:AssemblyQuestion){return q.skill_keys??sources.value[q.id]?.skill_keys??[]}
+const coveredSkills=computed(()=>new Set(assembly.orderedQuestions.flatMap(questionSkills)))
+function coverage(q:AssemblyExamQuestion){
+ const n=assembly.draft.order_ids.filter(id=>sources.value[id]?.key===q.key).length
+ if(n)return '已配 '+n+' 题'
+ const shared=q.skill_keys.find(k=>coveredSkills.value.has(k))
+ if(!shared)return ''
+ const other=lossQuestions.value.find(v=>v.key!==q.key&&v.skill_keys.includes(shared)&&assembly.draft.order_ids.some(id=>sources.value[id]?.key===v.key))
+ return other?'与 '+other.question_id+' 同技能，一起覆盖':'同技能已配题，一起覆盖'
+}
+const coveredCount=computed(()=>lossQuestions.value.filter(q=>Boolean(coverage(q))).length)
+function percent(v:number|null){return v===null?'暂无成绩':Math.round(v*100)+'%'}
+function examTitle(id:number){return exams.value.find(e=>e.session_id===id)?.title??'考试'}
+function leaf(s:string){return knowledgeLeafLabel(s).replace(/^技能[·：:]\s*/,'')}
+function causeTop(q:AssemblyExamQuestion){return [...(q.cause_category_counts??[])].filter(c=>c.count).sort((a,b)=>b.count-a.count).slice(0,2)}
+const COLORS=['#6c9b8a','#75aebb','#ba9666','#937eae','#a09173','#83a2a8','#b57874']
+const causeHint=computed(()=>{const c=selected.value&&causeTop(selected.value)[0]?.category;return !c?'':c==='未作答'?'可能偏难或时间不够，建议配更基础的题':c==='计算与化简'?'适合配同类型计算变式':'以「'+c+'」为主，建议配同技能变式'})
+function context():AssemblyContext{return {class_ids:[...selectedClasses.value],session_ids:[...(assistant.filters.session_ids??[])],curriculum_volume_id:assistant.filters.curriculum_volume_id,title_generated:!assembly.draft.title||assembly.draft.assembly_context?.title_generated,sources:{...sources.value}}}
+async function add(id:number,source=selected.value,isOriginal=false){
+ if(!canAct.value||assembly.draft.basket_ids.includes(id))return
+ const next=context()
+ if(source)next.sources[id]={key:source.key,label:examTitle(source.session_id)+'·'+source.question_id,skill_keys:source.skill_keys,original:isOriginal}
+ if(replacingId.value)delete next.sources[replacingId.value]
+ const ids=assembly.draft.order_ids.filter(q=>q!==replacingId.value)
+ const ok=await assembly.save({...assembly.draft,practice_rules:{...rules.value},assembly_context:next,title:title.value,basket_ids:[...ids,id],order_ids:replacingId.value?assembly.draft.order_ids.map(q=>q===replacingId.value?id:q):[...ids,id],sections:assembly.draft.sections.map(s=>({...s,question_ids:s.question_ids.map(q=>q===replacingId.value?id:q)}))})
+ if(ok){blocked.value={};replacingId.value=null;actionMessage.value='已加入试卷篮，可继续配题。'}else blocked.value[id]=assembly.message
+}
+async function replaceSkill(id:number){const c=candidates.value.find(c=>c.question_id===id);const q=assembly.orderedQuestions.find(q=>questionSkills(q).some(k=>c?.target_keys.includes(k)));if(q){replacingId.value=q.id;await add(id)}}
+async function selectQuestion(q:AssemblyExamQuestion){relative.value='';originalExpanded.value=false;replacingId.value=null;await assistant.selectExam(q.key,q.skill_keys)}
+async function changeClasses(ids:string[]){if(!ids.length)return;assistant.changeScope({class_ids:ids});scopeMessage.value='试卷保留；覆盖情况按新依据重算';await assistant.loadExams()}
+function toggleClass(n:string){void changeClasses(selectedClasses.value.includes(n)?selectedClasses.value.filter(v=>v!==n):[...selectedClasses.value,n])}
+async function changeExams(ids:number[]){if(!ids.length)return;assistant.changeScope({session_ids:ids});scopeMessage.value='试卷保留；覆盖情况按新依据重算';await chooseFirst()}
+async function chooseFirst(){if(assistant.view==='exam'&&lossQuestions.value[0])await selectQuestion(lossQuestions.value[0]);else if(assistant.canSearch)await assistant.search()}
+watch(()=>assistant.examState,s=>{if(s==='ready'&&!assistant.result)void chooseFirst()})
+watch(()=>[assistant.threshold,assistant.sort],()=>{if(!selected.value&&lossQuestions.value[0])void selectQuestion(lossQuestions.value[0])})
+watch(()=>assistant.view,()=>{relative.value='';if(assistant.view==='exam')void chooseFirst();else{const points=skillGroups.value.flatMap(g=>g.points);const target=points.find(p=>p.knowledge_key===assistant.selectedKey)??points[0];if(target)assistant.selectTarget(target.knowledge_key);else if(!assistant.result)void assistant.search()}})
+watch(()=>[rules.value.recent_activity_count,rules.value.difficulty_max,rules.value.purpose],()=>{Object.assign(assistant.filters,{recent_activity_count:rules.value.recent_activity_count,difficulty_max:rules.value.difficulty_max,purpose:rules.value.purpose});assistant.scheduleSearch()},{immediate:true})
+watch(()=>assistant.filters.question_type,()=>assistant.scheduleSearch())
+let originalSerial=0
+watch(selected,async q=>{
+ const n=++originalSerial;original.value=null
+ if(q?.bank_question_id)try{const items=await assistant.previewsFor([q.bank_question_id]);if(n===originalSerial)original.value=items[0]??null}
+ catch{if(n===originalSerial)original.value=null}
+},{immediate:true})
+let appliedSkill=''
+watch(()=>assistant.result,r=>{if(props.initialSkill&&r&&appliedSkill!==props.initialSkill){appliedSkill=props.initialSkill;if(r.weaknesses.some(p=>p.knowledge_key===props.initialSkill)){assistant.view='skill';assistant.selectTarget(props.initialSkill)}else actionMessage.value='技能不在当前班级与章节结果中，当前选择已保留。'}})
+watch(()=>curriculum.selectedVolumeId,id=>{if(assistant.filters.curriculum_volume_id!==(id??'')){assistant.changeScope({curriculum_volume_id:id??''});if(rosterReady.value)void assistant.loadExams()}},{immediate:true})
+async function quickDraft(){
+ quickBusy.value=true;actionMessage.value='正在为还没配题的失分题起草…';const revision=assembly.draft.revision, basis=JSON.stringify([assistant.filters,rules.value,assistant.threshold,assistant.sort])
+ try{
+  const r=await fetchAssemblyQuickDraft({...assistant.filters,question_ids:[...assembly.draft.order_ids],rules:{...rules.value},threshold:assistant.threshold,sort:assistant.sort})
+  if(assembly.draft.revision!==revision||basis!==JSON.stringify([assistant.filters,rules.value,assistant.threshold,assistant.sort])){actionMessage.value='试卷或依据已变化，请重新起草；原草稿保留。';return}
+  const next=context()
+  for(const a of r.additions)next.sources[a.question_id]={key:a.source.key,label:examTitle(a.source.session_id)+'·'+a.source.question_id,skill_keys:a.source.skill_keys}
+  const ids=[...assembly.draft.order_ids,...r.question_ids]
+  const ok=!r.question_ids.length||await assembly.save({...assembly.draft,practice_rules:{...rules.value},assembly_context:next,title:title.value,basket_ids:ids,order_ids:ids})
+  const labels:Record<string,string>={skill:'同技能已配',written:'解答题已满',difficulty:'难度超限',similar:'相似',unavailable:'无可配题'}
+  actionMessage.value=ok?'已起草 '+r.question_ids.length+' 题，试卷共 '+ids.length+' / '+rules.value.question_count+' 题。'+Object.entries(r.skipped).filter(([,n])=>n>0).map(([k,n])=>labels[k]+' '+n).join('；'):assembly.message
+ }catch{actionMessage.value='起草暂时失败，原试卷保留，请重试。'}finally{quickBusy.value=false}
+}
+function switchSource(id:number){const q=lossQuestions.value.find(q=>q.key===sources.value[id]?.key);if(q){assistant.view='exam';void selectQuestion(q).then(()=>{replacingId.value=id})}else actionMessage.value='来源不在当前依据中，请先选择对应考试或技能。'}
+async function keys(e:KeyboardEvent){if(e.ctrlKey||e.metaKey||e.altKey||(e.target instanceof Element&&e.target.closest('input,select,textarea,[contenteditable]')))return;const d=e.key.toLowerCase()==='w'?-1:e.key.toLowerCase()==='s'?1:0;if(!d)return;e.preventDefault();if(assistant.view==='exam'){const list=lossQuestions.value;const i=list.findIndex(q=>q.key===assistant.selectedExamKey);const q=list[Math.max(0,Math.min(list.length-1,i+d))];if(q)await selectQuestion(q)}else{const list=skillGroups.value.flatMap(g=>g.points);const i=list.findIndex(p=>p.knowledge_key===assistant.selectedKey);const p=list[Math.max(0,Math.min(list.length-1,i+d))];if(p)assistant.selectTarget(p.knowledge_key)};await nextTick();leftList.value?.querySelector('.is-selected')?.scrollIntoView?.({block:'nearest'})}
+onMounted(async()=>{window.addEventListener('keydown',keys);void curriculum.initialize();if(assembly.loadState==='idle')void assembly.load();try{classes.value=[...new Set((await fetchStudents()).flatMap(s=>s.class_name?[s.class_name]:[]))].sort((a,b)=>a.localeCompare(b,'zh-CN',{numeric:true}));const valid=selectedClasses.value.filter(c=>classes.value.includes(c));assistant.changeScope({class_ids:valid.length?valid:classes.value.slice(0,1)});rosterReady.value=true;if(!assistant.examResult)await assistant.loadExams()}catch{actionMessage.value='班级名册暂时无法读取，请重试。'}})
+onUnmounted(()=>window.removeEventListener('keydown',keys))
 </script>
 
 <template>
-  <section class="assembly-assistant" aria-labelledby="assistant-title">
-    <header class="assistant-heading">
-      <div><h2 id="assistant-title">从班级薄弱处，找到值得练的题</h2><p>依据本学期考试与最新训练掌握情况，先缩小候选范围，再由你选题成卷。</p></div>
-      <span class="assistant-local">本地筛选 · 无模型费用</span>
-    </header>
-
-    <form class="assistant-filters" @submit.prevent="assistant.search()">
-      <label><span class="sr-only">练习班级</span><select class="app-input" aria-label="练习班级" :value="assistant.filters.class_id" :disabled="rosterState !== 'ready'" @change="assistant.changeScope({ class_id: ($event.target as HTMLSelectElement).value })"><option value="">请选择班级</option><option v-for="name in classes" :key="name" :value="name">{{ name }}</option></select></label>
-      <label class="assistant-chapter"><span class="sr-only">训练范围</span><select class="app-input" aria-label="训练范围" :value="rangeChoice" :disabled="!curriculum.selectedVolume" @change="changeRange(($event.target as HTMLSelectElement).value)"><option value="">范围：已作答的最晚章节</option><optgroup label="综合训练 · 已学到"><option v-for="chapter in curriculum.selectedVolume?.chapters ?? []" :key="chapter.id" :value="`through:${chapter.id}`">本册开头至{{ chapter.label }}</option></optgroup><optgroup label="专项训练"><option v-for="chapter in curriculum.selectedVolume?.chapters ?? []" :key="chapter.id" :value="`focused:${chapter.id}`">仅{{ chapter.label }}</option></optgroup></select></label>
-      <label><span class="sr-only">题型</span><select class="app-input" aria-label="题型" v-model="assistant.filters.question_type"><option value="">全部题型</option><option>选择题</option><option>多选题</option><option>填空题</option><option>解答题</option></select></label>
-      <DifficultyRangeFilter v-model:min="assistant.filters.difficulty_min" v-model:max="assistant.filters.difficulty_max" class="assistant-difficulty" :ceiling="8" compact @change="assistant.scheduleSearch()" />
-      <AppButton variant="primary" class="assembly-button is-primary" type="submit" :disabled="!assistant.canSearch || rosterState !== 'ready'">{{ busy ? '正在筛选…' : assistant.result ? '刷新学情与题库' : '查看班级知识与技能' }}</AppButton>
-      <details class="assistant-evidence-summary"><summary>学情与规则</summary><div>
-        <template v-if="assistant.result"><strong>{{ assistant.filters.class_id }} · {{ assistant.result.student_count }} 人</strong><span>本学期 {{ assistant.result.exam_count }} 场考试</span><span>考试平均得分率 <b>{{ percent(assistant.result.exam_score_rate) }}</b>（{{ assistant.result.exam_student_count }} 人有成绩）</span></template>
-        <p>训练与考试合并，排除每名学生最近3次已有批改结果的原题；同技能最多1道、解答题最多2道，相似题受限。本地筛选，无模型费用。</p>
-        <p>与个人、小组共用匹配规则，显示适合人数和用途；无直接证据的合适题可作新练习，由你选择成卷。</p>
-      </div></details>
-    </form>
-    <p v-if="rosterState === 'error'" class="assistant-notice" role="alert">班级列表暂时无法读取。<button type="button" class="assembly-link" @click="loadClasses">重新读取</button></p>
-    <p v-if="assembly.loadState === 'error'" class="assistant-notice" role="alert">{{ assembly.message }} <button type="button" class="assembly-link" @click="assembly.load()">重新读取试卷篮</button></p>
-    <p v-if="assistant.message" class="assistant-notice" role="alert">{{ assistant.message }} <button v-if="assistant.state === 'error'" type="button" class="assembly-link" @click="assistant.resetTargets(); assistant.search()">重新查看班级薄弱点</button></p>
-    <p v-if="assistant.isStale" class="assistant-notice" role="status">{{ busy ? '正在按新的选择更新候选题…' : '筛选条件已调整，更新后即可选题。' }}</p>
-
-    <p v-if="initialSkillMessage" class="assistant-state" role="status">{{ initialSkillMessage }}</p>
-
-    <div v-if="assistant.result" class="assistant-workspace" :aria-busy="busy">
-      <aside ref="weaknessList" class="assistant-weaknesses">
-        <div class="assistant-section-title"><h3>班级知识与技能</h3><small>W / S 键切换</small></div>
-        <p class="assistant-help">{{ assistant.filters.class_id }} · {{ assistant.result.student_count }} 人 · 按需关注人数排序</p>
-        <div v-if="!assistant.result.weaknesses.length" class="assistant-empty">{{ !assistant.result.student_count ? '这个班级暂无可用学生，请检查班级名单。' : !assistant.result.evidence_student_count ? '本学期尚无可用掌握证据，暂不能判断班级薄弱点。可先完成考试批改，或前往题库选题。' : '当前范围没有可用知识点证据，可调整章节或前往题库选题。' }}</div>
-        <button v-for="point in assistant.result.weaknesses" :key="point.knowledge_key" type="button" class="assistant-weakness" :class="{ 'is-selected': selectedKey === point.knowledge_key, 'is-mastered': point.weak_student_count === 0 }" :aria-pressed="selectedKey === point.knowledge_key" @click="assistant.selectTarget(point.knowledge_key)">
-          <span class="assistant-target-title"><strong :title="point.knowledge_point">{{ knowledgeLeafLabel(point.knowledge_point).replace(/^技能[·：:]\s*/, '') }}</strong><small class="assistant-kind">{{ point.knowledge_key.startsWith('sk_') ? '技能' : '知识点' }}</small><small class="assistant-target-percent">{{ percent(point.mastery) }}</small></span><span class="assistant-weakness-count">{{ point.weak_student_count }} 人需关注 · {{ point.evidence_student_count }} 人有证据 <i class="assistant-mastery-bar"><i :style="{ width: `${(point.mastery ?? 0) * 100}%` }" /></i></span><small v-if="point.weak_student_count === 0" class="assistant-foundation-label">可搭配巩固</small>
-        </button>
-      </aside>
-
-      <section class="assistant-candidates" aria-label="候选题">
-        <div class="assistant-section-title"><div><h3>候选题</h3><p><template v-if="selectedWeakness">{{ selectedWeakness.knowledge_key.startsWith('sk_') ? '技能' : '知识点' }}「{{ knowledgeLeafLabel(selectedWeakness.knowledge_point).replace(/^技能[·：:]\s*/, '') }}」 · </template>候选 {{ assistant.result.candidate_total }} 题 · 已显示 {{ candidates.length }} 题</p></div><AppButton variant="secondary" type="button" class="assembly-button is-secondary" @click="emit('edit')">试卷篮 · {{ assembly.selectedQuestionCount }} 题 →</AppButton></div>
-        <p v-if="actionMessage" class="assistant-action" role="status">{{ actionMessage }}</p>
-        <div v-if="!candidates.length" class="assistant-empty"><strong>{{ selectedKey ? '当前条件下没有合适的候选题' : '先选择本次要练习的重点' }}</strong><p>{{ selectedKey ? '可调整题型、难度或所选目标，候选题会自动更新。' : '点击左侧薄弱点卡片，候选题会自动显示。' }}</p></div>
-        <article v-for="(item, index) in candidates" :key="item.question.id" class="assistant-question" :class="{ 'is-in-basket': inBasket(item.question.id) }">
-          <header><span class="assistant-question-number">候选 {{ index + 1 }}</span><span class="assistant-question-source">{{ item.question.paper_title || '题库题目' }} · {{ item.question.question_type || '未分类' }} · 难度 {{ item.question.difficulty ?? '待定' }}</span><AppButton variant="secondary" type="button" :disabled="!canAdd" :aria-label="inBasket(item.question.id) ? '移出试卷篮' : '加入试卷篮'" @click="toggleBasket(item.question.id)">{{ inBasket(item.question.id) ? '已在试卷篮' : '加入试卷篮' }}</AppButton></header>
-          <div class="assistant-candidate-stem"><QuestionContentRenderer :blocks="item.question.rich_content?.question_blocks" :fallback="item.question.question_text" media-mode="list" paper-media-flow dense typeset-text /></div>
-          <p v-if="item.fitCount !== undefined" class="assistant-help">适合 {{ item.fitCount }} 人 · 补弱 {{ item.remediationCount ?? 0 }} · 巩固 {{ item.consolidationCount ?? 0 }} · 新练习 {{ item.newCount ?? 0 }}<span v-if="item.uncertainCount"> · {{ item.uncertainCount }} 人缺少同技能多次依据</span></p><div class="assistant-candidate-tags"><span>{{ item.question.question_type || '未分类' }}</span><span>难度 {{ item.question.difficulty ?? '待定' }}</span><span v-if="BAND_LABELS[item.band]">{{ BAND_LABELS[item.band] }}</span><span>{{ item.practiceKind === 'foundation' ? '基础与巩固' : '补弱练习' }}</span></div>
-          <div v-if="expanded.has(item.question.id)" class="assistant-answer"><strong>答案与解析</strong><QuestionContentRenderer :blocks="item.question.rich_content?.answer_blocks" :fallback="item.question.answer_text" empty-label="暂未录入答案或解析" compact typeset-text /></div>
-          <footer><button type="button" class="assembly-link" :aria-expanded="expanded.has(item.question.id)" @click="expanded.has(item.question.id) ? expanded.delete(item.question.id) : expanded.add(item.question.id)">{{ expanded.has(item.question.id) ? '收起解析' : '查看解析' }}</button><button v-if="item.similarIds.length" type="button" class="assembly-link" :aria-expanded="similarOpen.has(item.question.id)" @click="toggleSimilar(item.question.id, item.similarIds)">相似 ×{{ item.similarIds.length }}</button><details class="assistant-match-details"><summary>练习依据</summary><div class="assistant-reason"><strong v-if="item.matchLabel">{{ item.matchLabel }}</strong><p>{{ item.difficultyBasis }}</p><p v-for="point in item.targets" :key="point.knowledge_key"><b>{{ knowledgeLeafLabel(point.knowledge_point) }}</b> · {{ point.weak_student_count }} 人需关注 / {{ point.evidence_student_count }} 人有证据</p></div></details></footer>
-          <div v-if="similarOpen.has(item.question.id)" class="assistant-similar-list">
-            <article v-for="member in similarItems.get(item.question.id) ?? []" :key="member.id" class="assistant-similar-item" :class="{ 'is-in-basket': inBasket(member.id) }">
-              <header><span>{{ member.question_type || '未分类' }} · 难度 {{ member.difficulty ?? '待定' }}</span><span class="assistant-question-source">{{ member.paper_title || '题库题目' }}</span><strong v-if="inBasket(member.id)" class="assistant-added">已在试卷篮</strong></header>
-              <QuestionContentRenderer :blocks="member.rich_content?.question_blocks" :fallback="member.question_text" media-mode="list" paper-media-flow dense typeset-text />
-              <footer><AppButton :variant="!inBasket(member.id) ? 'primary' : 'secondary'" type="button" class="assembly-button" :class="{ 'is-primary': !inBasket(member.id) }" :disabled="!canAdd" @click="toggleBasket(member.id)">{{ inBasket(member.id) ? '移出试卷篮' : '加入试卷篮' }}</AppButton></footer>
-            </article>
-          </div>
-        </article>
-        <AppButton variant="secondary" v-if="assistant.hasMore" type="button" class="assembly-button assistant-load-more" :disabled="busy || assistant.isStale || assistant.loadingMore" @click="assistant.loadMore()">{{ assistant.loadingMore ? '正在读取题目…' : '继续查看候选题' }}</AppButton>
-      </section>
-    </div>
-    <div v-else class="assistant-intro"><span>01 选班级与范围</span><i>→</i><span>02 确定薄弱点</span><i>→</i><span>03 挑题加入试卷篮</span><p>候选题依据已有学情和题库标签筛选。选题、调整顺序与导出由你完成。</p></div>
-  </section>
+<section class="class-assembly" aria-label="班级组卷">
+ <div class="ca-scope ca-panel">
+  <div class="ca-scope-row"><span class="ca-label">班级</span><button class="ca-chip" :class="{selected:selectedClasses.length===classes.length}" :disabled="!rosterReady" @click="changeClasses([...classes])">全选</button><button v-for="name in classes" :key="name" class="ca-chip" :class="{selected:selectedClasses.includes(name)}" :aria-pressed="selectedClasses.includes(name)" @click="toggleClass(name)">{{classLabel(name)}}</button><span class="ca-muted">合计 {{assistant.examResult?.student_count??assistant.result?.student_count??'—'}} 人</span></div>
+  <div class="ca-scope-row"><span class="ca-label">依据考试</span><button class="ca-chip" :disabled="!exams.length" :class="{selected:selectedExams.length===exams.length&&exams.length>0}" @click="changeExams(exams.map(e=>e.session_id))">全选</button><button v-for="exam in exams" :key="exam.session_id" class="ca-chip ca-exam-chip" :class="{selected:assistant.filters.session_ids?.includes(exam.session_id)}" :aria-pressed="assistant.filters.session_ids?.includes(exam.session_id)" @click="changeExams(assistant.filters.session_ids?.includes(exam.session_id)?selectedExams.filter(e=>e.session_id!==exam.session_id).map(e=>e.session_id):[...(assistant.filters.session_ids??[]),exam.session_id])"><b>{{exam.title}}</b><small>{{exam.date.slice(0,10)}} · {{exam.student_count}} 人<template v-if="exam.class_ids.length<selectedClasses.length"> · 仅{{exam.class_ids.map(classLabel).join('、')}}</template></small></button><span v-if="assistant.examState==='loading'">正在读取考试依据…</span><span v-else-if="assistant.examState==='ready'&&!exams.length" class="ca-muted">本学期暂无有效考试成绩</span><button v-if="assistant.examState==='error'" class="qb-link" @click="assistant.loadExams()">重试</button><label class="ca-training-toggle"><input v-model="assistant.includeTraining" type="checkbox">叠加训练掌握情况</label></div>
+ </div>
+ <p v-if="scopeMessage" class="ca-scope-note" role="status">{{scopeMessage}}</p>
+ <div class="ca-columns">
+  <section class="ca-panel ca-needs"><header class="ca-head"><h2>要补的点</h2><button class="qb-button" :disabled="!canAct||!lossQuestions.length||assembly.selectedQuestionCount>=rules.question_count" @click="quickDraft">{{quickBusy?'起草中…':'快速起草'}}</button></header><div class="ca-body">
+   <div class="ca-segment"><button :class="{selected:assistant.view==='exam'}" @click="assistant.view='exam'">按考试题</button><button :class="{selected:assistant.view==='skill'}" @click="assistant.view='skill'">按技能</button></div>
+   <template v-if="assistant.view==='exam'"><div class="ca-controls"><select v-model.number="assistant.threshold" class="app-input" aria-label="得分率阈值"><option :value="70">低于 70%</option><option :value="80">低于 80%</option><option :value="60">低于 60%</option><option :value="100">全部</option></select><select v-model="assistant.sort" class="app-input" aria-label="失分题排序"><option value="loss">失分最多优先</option><option value="exam">按考试和题号</option></select></div><p class="ca-muted">{{lossQuestions.length}} 道题 · W / S 切换</p><div ref="leftList" class="ca-need-list">
+    <button v-for="q in lossQuestions" :key="q.key" class="ca-need" :class="{'is-selected':q.key===assistant.selectedExamKey}" @click="selectQuestion(q)"><div class="ca-need-top"><strong>{{examShortTitle(q.session_id)}} · {{questionLabel(q.question_id)}}</strong><span>{{percent(q.class_rate)}}</span></div><small>{{q.question_type}}</small><div class="ca-rate"><i :style="{width:(q.class_rate??0)*100+'%'}" /></div><div class="ca-causes"><span v-for="c in causeTop(q)" :key="c.category">{{c.category}} {{c.count}}</span><span v-if="q.cause_category_counts===null">错因未整理</span></div><small>{{q.skills.map(s=>leaf(s.label)).join(' · ')||'暂无关联技能'}}</small><small v-if="selectedClasses.length>1">{{q.class_rates.map(c=>classLabel(c.class_id)+' '+percent(c.class_rate)).join(' · ')}}<template v-if="q.class_rates.length<selectedClasses.length"> · 仅{{q.class_rates.map(c=>classLabel(c.class_id)).join('、')}}参加</template></small><span v-if="coverage(q)" class="ca-badge">{{coverage(q)}}</span><small v-if="!q.bank_question_id">未关联题库 · 仅按技能配题</small></button>
+   </div><p v-if="!lossQuestions.length" class="ca-empty">当前依据下没有符合阈值的考试题，可调整阈值或切换按技能。</p></template>
+   <template v-else><p class="ca-muted">{{assistant.includeTraining?'本学期考试与最新训练掌握情况':'本学期考试掌握情况'}}；需关注 = 还不稳 + 明显薄弱</p><div ref="leftList" class="ca-need-list"><template v-for="group in skillGroups" :key="group.label"><h3 class="ca-skill-group">{{group.label}}</h3><button v-for="point in group.points" :key="point.knowledge_key" class="ca-need" :class="{'is-selected':assistant.selectedKey===point.knowledge_key}" @click="assistant.selectTarget(point.knowledge_key)"><strong>{{leaf(point.knowledge_point)}}</strong><small>{{point.weak_student_count}} 人需关注 / {{point.evidence_student_count}} 人有证据</small><span v-if="!point.weak_student_count" class="ca-badge">可搭配巩固</span></button></template></div><button class="qb-link" @click="showAllSkills=!showAllSkills">{{showAllSkills?'只看需关注':'展开全部技能'}}</button></template>
+   <p class="ca-muted ca-local">本地筛选 · 无模型费用</p>
+  </div></section>
+  <section class="ca-panel ca-matching" aria-label="配题"><header class="ca-head"><h2>配题</h2><span class="ca-muted">{{replacingId?'请选择替换题':'依据学情逐题搭配'}}</span></header><div class="ca-body">
+   <article v-if="assistant.view==='exam'&&selected" class="ca-original"><header><strong>{{examShortTitle(selected.session_id)}} · {{questionLabel(selected.question_id)}}</strong><span>{{selected.question_type}} · {{selected.full_score}} 分 · {{selectedClasses.length>1?'合计':'本班'}} {{percent(selected.class_rate)}}</span></header><p v-if="selectedClasses.length>1" class="ca-muted">{{selected.class_rates.map(c=>classLabel(c.class_id)+' '+percent(c.class_rate)+'（'+c.student_count+'人）').join(' · ')}}</p><div :class="{'ca-clamp':!originalExpanded}"><QuestionContentRenderer :blocks="originalExpanded?original?.rich_content?.question_blocks:undefined" :fallback="(original?.question_text||selected.question_text).replace(/\[\[IMAGE:.*?\]\]/g,'').replace(/<u>\s*<\/u>/gi,'____').replace(/<\/?u>/gi,'')||'题干含图片，展开查看完整原题。'" media-mode="list" dense typeset-text /></div><button class="qb-link" @click="originalExpanded=!originalExpanded">{{originalExpanded?'收起题干':'展开题干'}}</button><template v-if="selected.cause_category_counts"><div class="ca-stack"><i v-for="(c,i) in selected.cause_category_counts" :key="c.category" :style="{background:COLORS[i],flex:c.count||0.001}" /></div><div class="ca-legend"><span v-for="(c,i) in selected.cause_category_counts" :key="c.category"><i :style="{background:COLORS[i]}" />{{c.category}} {{c.count}}</span></div><p v-if="causeHint" class="ca-hint">{{causeHint}}</p></template><p v-else class="ca-muted">错因未整理</p><div class="ca-tags"><span v-for="skill in selected.skills" :key="skill.key">{{leaf(skill.label)}}</span></div><p v-if="rules.recent_activity_count>0&&selected.bank_question_id" class="ca-muted">本班最近 {{rules.recent_activity_count}} 次已做过的原题，按出卷设置不重复出</p><button v-else-if="selected.bank_question_id" class="qb-button" :disabled="!canAct||assembly.draft.basket_ids.includes(selected.bank_question_id)" @click="add(selected.bank_question_id,selected,true)">{{assembly.draft.basket_ids.includes(selected.bank_question_id)?'原题已加入':'加入原题'}}</button></article>
+   <div class="ca-candidate-head"><strong>候选题 <small>{{candidatePool.length}}</small></strong><select v-model="assistant.filters.question_type" class="app-input" aria-label="题型"><option value="">全部题型</option><option>选择题</option><option>多选题</option><option>填空题</option><option>解答题</option></select></div><div v-if="assistant.view==='exam'&&originalDifficulty" class="ca-relative"><span>相对原题</span><button v-for="label in ['','更基础','相当','更难']" :key="label" class="ca-chip" :class="{selected:relative===label}" @click="relative=label">{{label||'全部'}}</button></div>
+   <p v-if="busy" role="status" class="ca-muted">正在按新的选择更新候选题…</p><p v-if="assistant.message" class="ca-feedback" role="status">{{assistant.message}}</p><p v-if="actionMessage" class="ca-feedback" role="status">{{actionMessage}}</p><p v-if="!busy&&!candidates.length" class="ca-empty">当前条件下没有直接考查这个目标的合适题目。可调整题型、出卷设置或所选目标。</p>
+   <article v-for="(c,index) in candidates" :key="c.question_id" class="ca-candidate assistant-question" :class="{'is-in-basket':assembly.draft.basket_ids.includes(c.question_id)}"><header><strong>候选 {{index+1}} · {{c.question.question_type}}</strong><small>难度 {{c.difficulty??c.question.difficulty??'待定'}}<template v-if="assistant.view==='exam'"> · {{difficultyRelation(c.difficulty)}}</template></small><button class="qb-button" :disabled="!canAct||assembly.draft.basket_ids.includes(c.question_id)" @click="add(c.question_id)">{{assembly.draft.basket_ids.includes(c.question_id)?'已加入':'加入'}}</button></header><QuestionContentRenderer :blocks="c.question.rich_content?.question_blocks" :fallback="c.question.question_text" media-mode="list" paper-media-flow dense typeset-text /><div class="ca-candidate-foot"><span class="ca-badge">{{c.match_level?c.match_level+'级 · ':''}}{{c.match_label}}</span><span>适合 {{c.suitable_student_count??0}} 人 · 补弱 {{c.remediation_student_count??0}} · 巩固 {{c.consolidation_student_count??0}} · 新练习 {{c.new_practice_student_count??0}}</span></div><div v-if="c.similar_question_ids?.length" class="ca-similar"><button class="qb-link" @click="similar.has(c.question_id)?similar.delete(c.question_id):assistant.previewsFor(c.similar_question_ids).then(items=>similar.set(c.question_id,items))">高度相似 {{c.similar_question_ids.length}} 题 · {{similar.has(c.question_id)?'收起':'查看'}}</button><article v-for="q in similar.get(c.question_id)??[]" :key="q.id"><QuestionContentRenderer :blocks="q.rich_content?.question_blocks" :fallback="q.question_text" dense typeset-text /><button class="qb-button" :disabled="!canAct||assembly.draft.basket_ids.includes(q.id)" @click="add(q.id)">加入</button></article></div><button class="qb-link" @click="expanded.has(c.question_id)?expanded.delete(c.question_id):expanded.add(c.question_id)">{{expanded.has(c.question_id)?'收起解析':'查看解析'}}</button><QuestionContentRenderer v-if="expanded.has(c.question_id)" :blocks="c.question.rich_content?.answer_blocks" :fallback="c.question.answer_text||'暂无解析'" dense typeset-text /><div v-if="blocked[c.question_id]" class="ca-blocked" role="status">{{blocked[c.question_id]}}<button v-if="blocked[c.question_id]?.includes('同一技能')" class="qb-link" @click="replaceSkill(c.question_id)">替换</button></div></article>
+   <button v-if="hasMore" class="qb-button" :disabled="busy||assistant.loadingMore" @click="moreCandidates()">{{assistant.loadingMore?'读取中…':'显示更多候选题'}}</button>
+  </div></section>
+  <ClassAssemblyPaper :title="title" :context="context()" :covered="coveredCount" :total="lossQuestions.length" :can-act="canAct" @edit="emit('edit')" @replace="switchSource" />
+ </div>
+</section>
 </template>
-
-<style scoped>
-.assembly-assistant { display: grid; gap: var(--space-5); }
-.assistant-heading, .assistant-section-title { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
-.assistant-heading h2 { margin: 0; font-size: 22px; }
-.assistant-heading p, .assistant-section-title p { margin: 8px 0 0; color: var(--color-text-secondary); }
-.assistant-local { color: var(--color-accent); background: var(--color-accent-subtle); padding: 7px 12px; border-radius: var(--radius-control); white-space: nowrap; font-size: 13px; }
-.assistant-filters { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-4); padding: var(--space-5); border: 1px solid var(--color-border-default); border-radius: var(--radius-panel); background: var(--color-bg-surface); }
-.assistant-filters > label { display: grid; gap: 7px; flex: 1; min-width: 110px; font-size: 13px; font-weight: 600; color: var(--color-text-secondary); }
-.assistant-filters > .assistant-chapter { flex: 2; min-width: 240px; }
-.assistant-difficulty { flex: 2; min-width: 270px; }
-.assistant-filters select { width: 100%; min-height: 40px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-text-primary); padding: 8px; font: inherit; }
-.assistant-exclusions { display: flex; flex-wrap: wrap; gap: 16px; flex-basis: 100%; align-items: center; color: var(--color-text-secondary); font-size: 13px; }
-.assistant-exclusions label { display: flex; gap: 6px; align-items: center; }
-.assistant-exclusions > span { margin-left: auto; }
-.assistant-notice { padding: 12px 16px; background: var(--color-warning-subtle); color: var(--color-warning); border-radius: var(--radius-control); margin: 0; }
-.assistant-evidence-summary { display: flex; flex-wrap: wrap; gap: 12px 24px; padding: 0 4px; color: var(--color-text-secondary); font-size: 14px; }
-.assistant-evidence-summary strong, .assistant-evidence-summary b { color: var(--color-text-primary); }
-.assistant-workspace { display: grid; grid-template-columns: minmax(260px, 320px) minmax(0, 1fr); gap: var(--space-5); align-items: start; }
-.assistant-weaknesses { padding: var(--space-4); border: 1px solid var(--color-border-default); border-radius: var(--radius-panel); background: var(--color-bg-surface); }
-.assistant-section-title h3 { margin: 0; font-size: 17px; }
-.assistant-section-title small, .assistant-help { color: var(--color-text-secondary); font-size: 12px; line-height: 1.6; }
-.assistant-help { margin: 12px 0 16px; }
-.assistant-weakness { display: flex; gap: 10px; align-items: start; width: 100%; padding: 14px 10px; border: 0; border-top: 1px solid var(--color-border-subtle); border-radius: var(--radius-control); cursor: pointer; background: none; font: inherit; color: inherit; text-align: left; }
-.assistant-weakness:hover { background: var(--color-bg-subtle); }
-.assistant-weakness.is-selected { background: var(--color-accent-subtle); }
-.assistant-weakness:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
-.assistant-weakness > span { display: grid; gap: 7px; min-width: 0; }
-.assistant-weakness strong { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
-.assistant-weakness-count { font-size: 14px; }
-.assistant-weakness-count b { font-size: 21px; color: var(--color-accent); }
-.assistant-weakness small, .assistant-weakness-detail { font-size: 12px; color: var(--color-text-secondary); line-height: 1.5; }
-.assistant-candidates { display: grid; gap: var(--space-4); min-width: 0; }
-.assistant-candidates > .assistant-section-title { padding: 4px 0 8px; }
-.assistant-section-title p { font-size: 13px; line-height: 1.6; }
-.assistant-section-title button { flex-shrink: 0; }
-.assistant-question { padding: var(--space-5); border: 1px solid var(--color-border-default); border-radius: var(--radius-panel); background: var(--color-bg-surface); overflow: hidden; }
-.assistant-question.is-in-basket { border-color: var(--color-accent); }
-.assistant-question > header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; color: var(--color-text-secondary); font-size: 13px; }
-.assistant-question-number { color: var(--color-accent); font-weight: 700; font-size: 18px; }
-.assistant-question-source { flex: 1; }
-.assistant-added, .assistant-action { color: var(--color-accent); font-size: 13px; }
-.assistant-action { margin: 0; }
-.assistant-reason { background: var(--color-bg-subtle); padding: 10px 14px; margin: 14px 0 20px; border-left: 3px solid var(--color-accent); color: var(--color-text-secondary); font-size: 13px; line-height: 1.6; }
-.assistant-reason > span { color: var(--color-accent); font-size: 12px; }
-.assistant-reason p { margin: 3px 0 0; }
-.assistant-reason b { color: var(--color-text-primary); font-weight: 500; }
-.assistant-purpose { background: var(--color-accent-subtle); color: var(--color-accent); padding: 4px 8px; border-radius: var(--radius-control); }
-.assistant-band { padding: 4px 8px; border-radius: var(--radius-control); background: var(--color-bg-subtle); color: var(--color-text-secondary); }
-.assistant-band.is-suitable { background: var(--color-accent-subtle); color: var(--color-accent); }
-.assistant-foundation-label, .assistant-purpose.is-foundation { color: #34724f; }
-.assistant-load-more { justify-self: center; }
-.assistant-question :deep(.question-html img), .assistant-question :deep(.question-content__media img) { max-width: min(100%, 240px); max-height: 150px; width: auto; height: auto; }
-.assistant-answer { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--color-border-default); }
-.assistant-answer > strong { display: block; font-size: 13px; margin-bottom: 12px; color: var(--color-text-secondary); }
-.assistant-question footer { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 22px; }
-.assistant-similar-toggle { border: 1px solid var(--color-border-strong); background: var(--color-bg-subtle); color: var(--color-text-secondary); border-radius: var(--radius-control); padding: 4px 8px; font: inherit; font-size: 12px; cursor: pointer; }
-.assistant-similar-toggle:hover { color: var(--color-accent); border-color: var(--color-accent); }
-.assistant-similar-list { display: grid; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--color-border-default); }
-.assistant-similar-item { padding: 12px 14px; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-subtle); }
-.assistant-similar-item.is-in-basket { border-color: var(--color-accent); }
-.assistant-similar-item > header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--color-text-secondary); font-size: 12px; margin-bottom: 8px; }
-.assistant-similar-item footer { display: flex; justify-content: flex-end; margin-top: 10px; }
-.assistant-empty, .assistant-intro { padding: 32px; text-align: center; color: var(--color-text-secondary); line-height: 1.8; border-radius: var(--radius-panel); background: var(--color-bg-surface); }
-.assistant-weaknesses .assistant-empty { padding: 20px 4px; font-size: 13px; }
-.assistant-intro { padding: 64px 24px; border: 1px solid var(--color-border-default); }
-.assistant-intro span { font-weight: 600; color: var(--color-text-primary); }
-.assistant-intro i { padding: 0 24px; font-style: normal; }
-.assistant-intro p { margin: 24px 0 0; font-size: 14px; }
-input[type=checkbox] { accent-color: var(--color-accent); }
-@media (max-width: 950px) { .assistant-workspace { grid-template-columns: minmax(230px, 270px) minmax(0, 1fr); } .assistant-candidates > .assistant-section-title { align-items: start; flex-direction: column; } }
-@media (max-width: 700px) { .assistant-heading { align-items: start; flex-direction: column; } .assistant-workspace { grid-template-columns: minmax(0, 1fr); } .assistant-exclusions > span { margin-left: 0; } .assistant-intro { display: grid; gap: 12px; padding: 28px; } .assistant-intro i { display: none; } }
-.assembly-assistant { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 14px; --app-control-height: 30px; --app-control-padding: 10px; }
-.assistant-heading { display: none; }
-.assistant-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0; border: 0; border-radius: 0; background: transparent; flex: none; }
-.assistant-filters > label { display: flex; align-items: center; gap: 5px; flex: none; min-width: 0; font-size: 11.5px; font-weight: 400; }
-.assistant-filters > .assistant-chapter { flex: none; min-width: 0; }
-.assistant-filters select.app-input.app-input.app-input { width: auto; max-width: 245px; min-height: 0; padding-block: 0; font-size: 12px; }
-.assistant-filters > label select.app-input.app-input.app-input { width: 92px; }
-.assistant-filters > .assistant-chapter select.app-input.app-input.app-input { width: 172px; }
-.assistant-filters .app-button.app-button.app-button { --app-control-height: 30px; }
-.assistant-filters :deep(.assistant-difficulty) { flex: none; min-width: 0; }
-.assistant-filters :deep(.difficulty-range-compact select.app-input.app-input.app-input) { width: 52px; }
-.assistant-exclusions { flex-basis: auto; position: relative; font-size: 11.5px; color: var(--color-text-muted); }
-.assistant-exclusions > span { margin: 0; }
-.assistant-evidence-summary { position: relative; display: block; margin: 0; padding: 0; font-size: 11.5px; flex: none; }
-.assistant-evidence-summary summary { cursor: pointer; color: var(--color-text-secondary); height: 30px; display: flex; align-items: center; gap: 5px; }
-.assistant-evidence-summary summary::before { content: '▸'; }
-.assistant-evidence-summary[open] summary::before { content: '▾'; }
-.assistant-evidence-summary > div { position: absolute; top: 36px; right: 0; width: 340px; max-width: calc(100vw - 40px); z-index: 10; display: flex; gap: 8px 12px; flex-wrap: wrap; padding: 12px 14px; background: var(--card); border: 1px solid var(--color-border-default); border-radius: 10px; box-shadow: var(--shadow-panel); }
-.assistant-evidence-summary p { width: 100%; margin: 0; line-height: 1.6; }
-.assistant-workspace { display: grid; grid-template-columns: 320px minmax(0,1fr); gap: 14px; flex: 1; min-height: 0; align-items: stretch; }
-.assistant-weaknesses, .assistant-candidates { min-width: 0; min-height: 0; padding: 0; border: 1px solid var(--color-border-default); border-radius: 12px; background: var(--card); overflow-y: auto; }
-.assistant-candidates { display: block; }
-.assistant-section-title, .assistant-candidates > .assistant-section-title { position: sticky; top: 0; z-index: 1; background: var(--card); padding: 13px 15px 11px; border-bottom: 1px solid var(--color-border-subtle); gap: 8px; }
-.assistant-section-title h3 { font-size: 13px; font-weight: 600; }
-.assistant-section-title small { font-size: 10.5px; }
-.assistant-candidates > .assistant-section-title p { margin-top: 3px; font-size: 11.5px; }
-.assistant-weaknesses > .assistant-help { padding: 0 15px 10px; margin: 3px 0 0; font-size: 12px; border-bottom: 1px solid var(--color-border-subtle); }
-.assistant-weaknesses > .assistant-section-title { border-bottom: 0; padding-bottom: 0; }
-.assistant-weakness { display: grid; gap: 4px; width: calc(100% - 12px); margin: 0 6px; padding: 9px 11px; border: 0; border-left: 3px solid transparent; border-radius: 9px; }
-.assistant-weakness.is-selected { border-left-color: var(--color-accent); }
-.assistant-weakness > .assistant-target-title { display: flex; align-items: baseline; gap: 6px; }
-.assistant-target-title strong { font-size: 12.5px; font-weight: 500; }
-.assistant-kind { color: var(--color-info); background: var(--color-info-subtle); padding: 1px 5px; border-radius: 4px; flex: none; }
-.assistant-target-title .assistant-target-percent { margin-left: auto; flex: none; font-size: 11px; }
-.assistant-weakness > .assistant-weakness-count { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--color-text-muted); }
-.assistant-mastery-bar { flex: none; width: 52px; height: 4px; border-radius: 2px; background: var(--color-border-subtle); overflow: hidden; }
-.assistant-mastery-bar i { display: block; height: 100%; background: var(--color-accent); }
-.assistant-question { margin: 10px 14px; padding: 11px 13px; border-radius: 10px; }
-.assistant-question > header { gap: 7px; font-size: 12px; margin-bottom: 8px; }
-.assistant-question-number { font-size: 12px; font-weight: 600; color: var(--color-text-primary); }
-.assistant-question-source { min-width: 0; color: var(--color-text-muted); }
-.assistant-candidate-stem { font-size: 13px; line-height: 1.6; }
-.assistant-question > .assistant-help { margin: 7px 0; font-size: 11.5px; color: var(--color-text-muted); }
-.assistant-candidate-tags { display: flex; flex-wrap: wrap; gap: 5px; }
-.assistant-candidate-tags > span { border: 1px solid var(--color-border-subtle); padding: 1px 6px; border-radius: 5px; font-size: 11px; color: var(--color-text-secondary); }
-.assistant-question > footer { margin-top: 7px; gap: 14px; justify-content: flex-start; font-size: 11.5px; }
-.assistant-match-details summary { cursor: pointer; color: var(--color-accent); }
-.assistant-reason { margin: 6px 0 0; padding: 8px; font-size: 11.5px; }
-.assistant-answer { margin-top: 10px; padding-top: 8px; }
-.assistant-empty { font-size: 12px; }
-@media(max-width:900px) { .assistant-workspace { grid-template-columns: minmax(0,1fr); flex: none; } .assistant-weaknesses { max-height: 300px; } .assistant-candidates { min-height: 300px; } .assembly-assistant { flex: none; } }
-</style>

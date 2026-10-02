@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import (
     get_diagnosis_profile_service,
+    get_assembly_workspace_service,
     get_job_manager,
     get_personalized_paper_module,
     get_personalized_recommendation_module,
@@ -33,6 +34,7 @@ from backend.api.schemas.training import (
     PersonalizedRecommendationDraftResponse,
     PersonalizedRecommendationEditRequest,
     PersonalizedHandoutExportRequest,
+    TrainingFromAssemblyRequest,
     TrainingAssessmentActionRequest,
     TrainingAssessmentOutcomeResponse,
     TrainingAssessmentReviewRequest,
@@ -408,6 +410,48 @@ def get_personalized_draft_by_request(
         raise ApiError(503, "training_database_unavailable",
                        "Training data is temporarily unavailable") from exc
     return PersonalizedRecommendationDraftResponse.model_validate(_public_training_mapping(draft))
+
+
+@router.post('/personalized-drafts/from-assembly', response_model=PersonalizedRecommendationDraftResponse)
+def create_training_from_assembly(
+    body: TrainingFromAssemblyRequest,
+    workspace=Depends(get_assembly_workspace_service),
+    diagnosis_service: DiagnosisProfileService = Depends(get_request_diagnosis_profile_service),
+    module: PersonalizedRecommendationModule = Depends(get_personalized_recommendation_module),
+):
+    draft = workspace.load_draft()
+    if draft.revision != body.draft_revision:
+        raise ApiError(409, 'assembly_draft_conflict', '试卷草稿已变化，请重新加载。')
+    rules = body.rules.model_dump()
+    if rules['purpose'] != 'training' or draft.practice_rules != rules or not 8 <= len(draft.order_ids) <= 12:
+        raise ApiError(422, 'assembly_practice_rule', '请保存训练卷设置，并选入 8–12 道题。')
+    context = draft.assembly_context or {}
+    classes = sorted(set(body.class_ids))
+    if classes != sorted(context.get('class_ids', [])) or not context.get('curriculum_volume_id'):
+        raise ApiError(422, 'assembly_practice_rule', '班级或考试依据已变化，请返回组卷页核对。')
+    sessions = context.get('session_ids', [])
+    snapshot = {'source': '班级组卷 · 全班', 'revision': draft.revision, 'class_ids': classes,
+                'session_ids': sessions, 'question_ids': list(draft.order_ids), 'title': draft.title}
+    try:
+        diagnosis = diagnosis_service.build_profiles(scope={'mode': 'class', 'class_ids': classes, 'use_historical_fallback': False},
+            exam_scope={'mode': 'manual' if sessions else 'semester', 'session_ids': sessions, 'curriculum_volume_id': context['curriculum_volume_id']})
+        if not diagnosis.get('students'):
+            raise ValueError('所选班级没有学生。')
+        descriptors, _, _ = module._source_snapshot(question_ids=draft.order_ids)
+        targets = tuple(sorted({key for q in descriptors for key in q['stable_keys']}))
+        if not targets:
+            raise ValueError('所选题目没有有效知识或技能资料，请返回组卷页调整。')
+        result = module.create(request_token=body.request_token.lower(), diagnosis=diagnosis,
+            config=PersonalizedRecommendationConfig(paper_mode='shared', target_keys=targets, curriculum_volume_id=context['curriculum_volume_id'], **rules),
+            actor_ref='teacher', assembly_snapshot=snapshot,
+            graded_activities=diagnosis_service.graded_activities([str(s['student_id']) for s in diagnosis['students']]))
+    except (RecommendationRequestConflict, RecommendationSourceChanged) as exc:
+        raise ApiError(409, 'personalized_recommendation_request_conflict', '训练草稿来源或操作令牌已变化，请重新核对。') from exc
+    except (TypeError, ValueError) as exc:
+        raise ApiError(422, 'assembly_practice_rule', str(exc)) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(503, 'training_database_unavailable', '训练数据暂时无法读取。') from exc
+    return PersonalizedRecommendationDraftResponse.model_validate(_public_training_mapping(result))
 
 
 @router.get(

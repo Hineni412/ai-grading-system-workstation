@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 
 import {
   assemblyApi,
+  defaultPaperRules,
   type AssemblyDraft,
   type AssemblyExportSubmitFormat,
   type AssemblyLayoutMode,
@@ -89,6 +90,13 @@ export const useAssemblyStore = defineStore('assembly', () => {
   const saveState = ref<AssemblySaveState>('idle')
   const message = ref('')
   const exportJobId = ref<number | null>(null)
+  const trainingSource = ref<{ revision: string; draftId: string } | null>(null)
+  try { trainingSource.value = JSON.parse(sessionStorage.getItem('assembly:training-source') ?? 'null') } catch { /* Empty session. */ }
+  const trainingDraftId = computed(() => trainingSource.value?.revision === draft.value.revision ? trainingSource.value.draftId : '')
+  function rememberTrainingDraft(draftId: string): void {
+    trainingSource.value = { revision: draft.value.revision, draftId }
+    try { sessionStorage.setItem('assembly:training-source', JSON.stringify(trainingSource.value)) } catch { /* Keep in memory. */ }
+  }
   const submitting = ref(false)
   let dependencies = defaultDependencies
   let questionGeneration = 0
@@ -217,7 +225,7 @@ export const useAssemblyStore = defineStore('assembly', () => {
     const nextOrder = cleanQuestionIds([...draft.value.order_ids, ...questionIds])
     return save({
       ...draft.value,
-      practice_rules: Boolean(draft.value.practice_rules || practiceRules),
+      practice_rules: draft.value.practice_rules === true ? defaultPaperRules() : draft.value.practice_rules || (practiceRules ? defaultPaperRules() : null),
       basket_ids: nextIds,
       order_ids: nextOrder.filter((id) => nextIds.includes(id)),
     })
@@ -418,6 +426,8 @@ export const useAssemblyStore = defineStore('assembly', () => {
     saveState,
     message,
     exportJobId,
+    trainingDraftId,
+    rememberTrainingDraft,
     submitting,
     questionMap,
     orderedQuestions,
