@@ -24,13 +24,14 @@ let token = ''
 const storageKey = computed(() => `question-bank-repair:${props.volumeId}:${props.kind}`)
 async function load() {
   controller?.abort()
-  controller = new AbortController()
+  const requestController = new AbortController()
+  controller = requestController
   state.value = 'loading'; message.value = ''; preview.value = null
   try {
-    const value = await questionBankApi.repairPreview(props.volumeId, props.kind, controller.signal)
-    if (controller.signal.aborted) return
+    const value = await questionBankApi.repairPreview(props.volumeId, props.kind, requestController.signal)
+    if (requestController.signal.aborted) return
     preview.value = value; state.value = 'ready'
-  } catch { if (!controller.signal.aborted) { state.value = 'error'; message.value = '缺失清单暂时无法读取，请重试。' } }
+  } catch { if (!requestController.signal.aborted) { state.value = 'error'; message.value = '缺失清单暂时无法读取，请重试。' } }
 }
 watch(() => props.open, open => {
   if (!open) { controller?.abort(); return }
