@@ -3,10 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApp, h, nextTick } from 'vue'
 import { createMemoryHistory } from 'vue-router'
 
+import { ApiError } from '../api/errors'
 import { questionBankApi, type QuestionBankPaper } from '../api/question-bank'
 import QuestionBasketDrawer from '../components/question-bank/QuestionBasketDrawer.vue'
 import { useAssemblyStore } from '../stores/assembly'
 import QuestionBankTodo from '../components/question-bank/QuestionBankTodo.vue'
+import QuestionRepairDialog from '../components/question-bank/QuestionRepairDialog.vue'
 import QuestionSkillBrowser from '../components/question-bank/QuestionSkillBrowser.vue'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import PaperLibrary from '../components/question-bank/PaperLibrary.vue'
@@ -133,6 +135,48 @@ afterEach(() => {
 })
 
 describe('question bank workspace', () => {
+  it('previews individual missing parts and recovers an ambiguous repair submission with the same token', async () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const pinia = createPinia()
+    const preview = { curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'skills' as const,
+      fingerprint: 'a'.repeat(64), scanned_count: 100, question_count: 2, repairable_count: 1, model_calls: 0,
+      counts: { tags: 0, evidence: 1, criteria: 1, skills: 2 }, items: [
+        { id: 17, question_number: '1', paper_title: 'TEST-试卷', missing: ['skills' as const], blocked_reason: '', revision: 'b'.repeat(64) },
+        { id: 18, question_number: '2', paper_title: 'TEST-试卷', missing: ['evidence' as const, 'criteria' as const, 'skills' as const], blocked_reason: '题目内容或图片无法读取', revision: 'c'.repeat(64) },
+      ] }
+    vi.spyOn(questionBankApi, 'repairPreview').mockResolvedValue(preview)
+    const submit = vi.spyOn(questionBankApi, 'submitRepair').mockRejectedValueOnce(new ApiError({ kind: 'network', status: null,
+      code: 'network', message: '', details: {}, requestId: 'TEST', retryable: false })).mockResolvedValue({
+      id: 901, job_type: 'question_bank_repair', payload: { curriculum_volume_id: preview.curriculum_volume_id, kind: 'skills' },
+      result: {}, status: 'running', stage: '', detail: '', progress: 0, error: null, cancel_requested: false,
+      created_at: '2026-10-02T00:00:00Z', updated_at: '2026-10-02T00:00:00Z', started_at: null, finished_at: null,
+    })
+    const track = vi.spyOn(useJobStore(pinia), 'track').mockImplementation(() => {})
+    const app = createApp(QuestionRepairDialog, { open: true, volumeId: preview.curriculum_volume_id, volumeLabel: '八年级上册', kind: 'skills' })
+    app.use(pinia).mount(host); mounted.push(app)
+    await vi.waitFor(() => expect(document.body.textContent).toContain('确认补齐 1 题'))
+    expect(document.body.textContent).toContain('题目内容或图片无法读取')
+    expect(submit).not.toHaveBeenCalled()
+    const button = [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === '确认补齐 1 题')!
+    button.click()
+    await vi.waitFor(() => expect(button.textContent).toBe('找回本次任务'))
+    const firstToken = submit.mock.calls[0]![2]
+    button.click()
+    await vi.waitFor(() => expect(track).toHaveBeenCalled())
+    expect(submit).toHaveBeenLastCalledWith(preview, [17], firstToken)
+    expect(submit).toHaveBeenCalledTimes(2)
+  })
+
+  it('removes daily maintenance, whole-library retagging and trash entries', async () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const pinia = createPinia(); const bank = useQuestionBankStore(pinia)
+    bank.papers = [paper]; bank.papersState = 'ready'
+    const app = createApp(PaperLibrary); app.use(pinia).mount(host); mounted.push(app)
+    expect(host.textContent).not.toContain('维护')
+    expect(host.textContent).not.toContain('全库重新打标签')
+    expect(host.textContent).not.toContain('回收站')
+  })
+
   it('pages large paper folders and preserves selections while searching across all pages', async () => {
     const host = document.createElement('div')
     document.body.append(host)
@@ -165,34 +209,6 @@ describe('question bank workspace', () => {
     expect(host.querySelector('nav[aria-label="试卷分页"]')).toBeNull()
   })
 
-  it('keeps maintenance collapsed and reads standard gaps on demand', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const app = createApp(PaperLibrary)
-    app.use(pinia)
-    const store = useQuestionBankStore(pinia)
-    store.papers = [paper]
-    store.papersState = 'ready'
-    const load = vi.spyOn(questionBankApi, 'standardSummary').mockResolvedValue({
-      active_release_id: 'kgr_test', taxonomy_revision: 9, versions: [], question_count: 10,
-      usable_question_count: 9, skill_question_count: 8, section_only_question_count: 2,
-      missing_link_question_count: 1, older_link_question_count: 0, model_calls: 0,
-    })
-    app.mount(host)
-    mounted.push(app)
-    expect(load).not.toHaveBeenCalled()
-    expect(host.textContent).not.toContain('判定点需核对')
-    const menu = host.querySelector<HTMLDetailsElement>('.paper-library__maintenance')!
-    expect(menu.open).toBe(false)
-    expect(menu.textContent).toContain('全库重新打标签')
-    menu.querySelector('summary')!.click()
-    const button = [...menu.querySelectorAll('button')].find((item) => item.textContent === '标准版本与缺口')!
-    button.click()
-    await vi.waitFor(() => expect(document.body.textContent).toContain('kgr_test'))
-    expect(document.body.textContent).toContain('2 道题仍有只关联到小节')
-    expect(document.body.textContent).toContain('查看不调用 AI、不收费')
-  })
 
   it('does not download the full taxonomy catalog while opening the paper library', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
@@ -520,28 +536,13 @@ describe('question bank workspace', () => {
     await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ skillKeys: [], knowledgePoints: ['八年级上册/第一章/勾股定理'] })))
     expect(router.currentRoute.value.query.topic).toBe('kp_TEST_topic')
     expect(router.currentRoute.value.fullPath).not.toContain('勾股')
+    await router.replace({ query: { tab: 'skill', skill: 'unlinked' } })
+    await vi.waitFor(() => expect(host.querySelector('.qb-skill-pane')).toBeNull())
+    expect(host.querySelector('.qb-skill-layout')?.classList.contains('is-unlinked')).toBe(true)
+    expect(host.textContent).toContain('AI 补挂技能')
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ skillUnlinked: true, skillKeys: [] }))
   })
 
-  it('moves a paper through the existing revision-protected trash and restore API', async () => {
-    const host = document.createElement('div'); document.body.append(host)
-    const pinia = createPinia(); const bank = useQuestionBankStore(pinia)
-    bank.papers = [paper]; bank.papersState = 'ready'
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    const write = vi.spyOn(questionBankApi, 'changePaperState').mockResolvedValue({ id: paper.id, deleted: true, import_status: 'deleted', updated_at: '2026-10-01T10:00:00Z', affected_question_count: 1 })
-    const list = vi.spyOn(questionBankApi, 'listPapers').mockResolvedValue({ items: [], total: 0 })
-    const app = createApp(PaperLibrary); app.use(pinia).mount(host); mounted.push(app)
-    await openCardMenu(host, paper.title!); cardMenuItem('移入回收站').click(); await nextTick()
-    expect(write).not.toHaveBeenCalled()
-    confirm.mockReturnValue(true)
-    await openCardMenu(host, paper.title!); cardMenuItem('移入回收站').click()
-    await vi.waitFor(() => expect(write).toHaveBeenCalledWith(paper, true))
-    await vi.waitFor(() => expect(host.textContent).toContain('立即恢复'))
-    list.mockResolvedValue({ items: [paper], total: 1 })
-    const restore = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '立即恢复')!
-    restore.click()
-    await vi.waitFor(() => expect(write).toHaveBeenLastCalledWith(expect.objectContaining({ id: paper.id, updated_at: '2026-10-01T10:00:00Z' }), false))
-    await vi.waitFor(() => expect(bank.papers).toHaveLength(1))
-  })
 
   it('shows actionable todo groups from existing read filters', async () => {
     const host = document.createElement('div'); document.body.append(host)
@@ -1071,221 +1072,7 @@ describe('question bank workspace', () => {
     expect(host.textContent).toContain('已提交 1 道题')
   })
 
-  it('submits the whole paper so the server can check current-version gaps', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const app = createApp(PaperLibrary)
-    app.use(pinia)
-    const store = useQuestionBankStore(pinia)
-    store.papers = [paper]
-    store.papersState = 'ready'
-    app.mount(host)
-    mounted.push(app)
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    let questionListUrl = ''
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input)
-      if (url.startsWith('/api/question-bank/question-refs')) {
-        if (url.includes('analysis_status=all')) {
-          questionListUrl = url
-        }
-        return questionRefs([
-          { id: 17, paper_id: 4, question_number: '1' },
-          { id: 18, paper_id: 4, question_number: '2' },
-        ])
-      }
-      if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
-        return response({
-          id: 45,
-          job_type: 'tagging_sync',
-          payload: { question_ids: [17] },
-          result: {},
-          status: 'queued',
-          progress: 0,
-          stage: '',
-          detail: '',
-          error: null,
-          cancel_requested: false,
-          created_at: '2026-08-01T10:00:00Z',
-          started_at: null,
-          updated_at: '2026-08-01T10:00:00Z',
-          finished_at: null,
-        }, 202)
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
 
-    const fill = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === '继续完成未完成题目')!
-    fill.click()
-
-    await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
-      ([request, options]) => String(request) === '/api/question-bank/tagging-jobs'
-        && options?.method === 'POST',
-    )).toBe(true))
-    expect(questionListUrl).toContain('analysis_status=all')
-    const submitCall = fetchSpy.mock.calls.find(
-      ([request, options]) => String(request) === '/api/question-bank/tagging-jobs'
-        && options?.method === 'POST',
-    )
-    expect(JSON.parse(String(submitCall?.[1]?.body))).toEqual({
-      question_ids: [17, 18],
-      curriculum_volume_id: 'bnu24-math-g7-lower',
-      client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
-    })
-    expect(host.textContent).toContain('2 道题等待后端核对')
-  })
-
-  it('loads 24 papers from the same curriculum in one question-refs request', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const app = createApp(PaperLibrary)
-    app.use(pinia)
-    const store = useQuestionBankStore(pinia)
-    const papers = Array.from({ length: 24 }, (_value, index) => ({
-      ...paper,
-      id: index + 1,
-      title: `同教材试卷 ${index + 1}`,
-    }))
-    store.papers = papers
-    store.papersState = 'ready'
-    app.mount(host)
-    mounted.push(app)
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const questionListUrls: string[] = []
-    const taggingBodies: Array<Record<string, unknown>> = []
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input)
-      if (url.startsWith('/api/question-bank/question-refs')) {
-        if (url.includes('analysis_status=all')) {
-          questionListUrls.push(url)
-        }
-        const paperIds = new URL(url, 'http://local.test').searchParams
-          .getAll('paper_ids')
-          .map(Number)
-        return questionRefs(paperIds.map((paperId) => ({
-          id: 1_000 + paperId,
-          paper_id: paperId,
-          question_number: String(paperId),
-        })))
-      }
-      if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
-        taggingBodies.push(JSON.parse(String(init.body)))
-        return response({
-          id: 100,
-          job_type: 'tagging_sync',
-          payload: {},
-          result: {},
-          status: 'queued',
-          progress: 0,
-          stage: '',
-          detail: '',
-          error: null,
-          cancel_requested: false,
-          created_at: '2026-08-01T10:00:00Z',
-          started_at: null,
-          updated_at: '2026-08-01T10:00:00Z',
-          finished_at: null,
-        }, 202)
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const retag = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === '全库重新打标签')!
-    retag.click()
-
-    await vi.waitFor(() => expect(taggingBodies).toHaveLength(1))
-    expect(new URL(questionListUrls[0]!, 'http://local.test').searchParams.getAll('paper_ids'))
-      .toEqual(papers.map(({ id }) => String(id)))
-    expect(taggingBodies[0]).toEqual({
-      question_ids: papers.map(({ id }) => 1_000 + id),
-      curriculum_volume_id: 'bnu24-math-g7-lower',
-      force_retag: true,
-      client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
-    })
-  })
-
-  it('keeps grouped all-library fill requests inside their curriculum', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const app = createApp(PaperLibrary)
-    app.use(pinia)
-    const store = useQuestionBankStore(pinia)
-    const papers = [
-      { ...paper, id: 1, title: '教材一试卷 1' },
-      { ...paper, id: 2, title: '教材一试卷 2' },
-      { ...paper, id: 21, title: '教材二试卷 1', curriculum_volume_id: 'bnu24-math-g8-upper' },
-      { ...paper, id: 22, title: '教材二试卷 2', curriculum_volume_id: 'bnu24-math-g8-upper' },
-    ]
-    store.papers = papers
-    store.papersState = 'ready'
-    app.mount(host)
-    mounted.push(app)
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const questionPaperGroups: number[][] = []
-    const taggingBodies: Array<Record<string, unknown>> = []
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input)
-      if (url.startsWith('/api/question-bank/question-refs')) {
-        const paperIds = new URL(url, 'http://local.test').searchParams
-          .getAll('paper_ids')
-          .map(Number)
-        questionPaperGroups.push(paperIds)
-        return questionRefs(paperIds.map((paperId) => ({
-          id: 2_000 + paperId,
-          paper_id: paperId,
-          question_number: String(paperId),
-        })))
-      }
-      if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
-        taggingBodies.push(JSON.parse(String(init.body)))
-        return response({
-          id: 200 + taggingBodies.length,
-          job_type: 'tagging_sync',
-          payload: {},
-          result: {},
-          status: 'queued',
-          progress: 0,
-          stage: '',
-          detail: '',
-          error: null,
-          cancel_requested: false,
-          created_at: '2026-08-01T10:00:00Z',
-          started_at: null,
-          updated_at: '2026-08-01T10:00:00Z',
-          finished_at: null,
-        }, 202)
-      }
-      throw new Error(`unexpected request: ${url}`)
-    })
-
-    const fill = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === '继续完成未完成题目')!
-    fill.click()
-
-    await vi.waitFor(() => expect(taggingBodies).toHaveLength(2))
-    expect(questionPaperGroups.slice(0, 2)).toEqual([[1, 2], [21, 22]])
-    expect(taggingBodies.map((body) => ({
-      question_ids: body.question_ids,
-      curriculum_volume_id: body.curriculum_volume_id,
-      force_retag: body.force_retag,
-    }))).toEqual([
-      {
-        question_ids: [2_001, 2_002],
-        curriculum_volume_id: 'bnu24-math-g7-lower',
-        force_retag: undefined,
-      },
-      {
-        question_ids: [2_021, 2_022],
-        curriculum_volume_id: 'bnu24-math-g8-upper',
-        force_retag: undefined,
-      },
-    ])
-  })
 
   it('requires one explicit confirmation before permanently deleting an active paper', async () => {
     const host = document.createElement('div')

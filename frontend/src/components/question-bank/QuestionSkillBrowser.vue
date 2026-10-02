@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { questionBankApi, type QuestionBankFacets, type QuestionBankFilters, type QuestionBankSort, type QuestionSkillIndex, type QuestionSkillEntry, type QuestionTopicEntry } from '../../api/question-bank'
 import { trainingApi, type TrainingOverviewNode } from '../../api/training'
@@ -10,14 +10,17 @@ import QuestionSortControl from './QuestionSortControl.vue'
 import QuestionLedger from './QuestionLedger.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import AppIconButton from '../design-system/AppIconButton.vue'
+import AppButton from '../design-system/AppButton.vue'
 
 const props = defineProps<{ index: QuestionSkillIndex | null; loading: boolean; error: string }>()
-const emit = defineEmits<{ retry: []; skill: [key: string] }>()
+const emit = defineEmits<{ retry: []; skill: [key: string]; repair: [] }>()
 const bank = useQuestionBankStore()
 const scope = useCurriculumScopeStore()
 const route = useRoute()
 const router = useRouter()
 const railOpen = ref(false)
+const skillRailOpen = ref(false)
+const layout = ref<HTMLElement | null>(null)
 const sort = ref('curriculum')
 const facetTab = ref<'abilities' | 'methods' | 'models' | 'thoughts' | 'specialTypes'>('abilities')
 const overview = ref<TrainingOverviewNode[]>([])
@@ -70,7 +73,10 @@ function requestFilters(): QuestionBankFilters {
 async function reload() {
   if (!props.index || (!selected.value && !unlinked.value)) { bank.questions = []; bank.total = 0; bank.listState = 'empty'; return }
   const next = requestFilters()
-  void bank.loadQuestions(next)
+  void bank.loadQuestions(next).then(async () => {
+    await nextTick()
+    if (!bank.selectedQuestionId) layout.value?.querySelector('.qb-question-list')?.scrollTo?.({ top: 0 })
+  })
   facetController?.abort()
   const controller = new AbortController()
   facetController = controller
@@ -117,9 +123,9 @@ onBeforeUnmount(() => { clearTimeout(timer); clearTimeout(idleTimer); facetContr
   <StatePanel v-if="!scope.selectedVolumeId" kind="empty" title="请在侧栏选择教学学期" description="" />
   <StatePanel v-else-if="loading && !index" kind="loading" title="正在读取技能与题目…" description="" />
   <StatePanel v-else-if="error && !index" kind="error" :title="error" description="" retry-label="重新读取" @retry="emit('retry')" />
-  <div v-else class="qb-skill-layout" :class="{ 'is-narrow': bank.selectedQuestionId && !railOpen }">
+  <div v-else ref="layout" class="qb-skill-layout" :class="{ 'is-reading': bank.selectedQuestionId, 'is-narrow': bank.selectedQuestionId && !railOpen, 'is-chapter-open': railOpen, 'is-skill-narrow': bank.selectedQuestionId && !skillRailOpen, 'is-unlinked': unlinked }">
     <aside class="qb-chapter-pane qb-browse-pane">
-      <div v-if="bank.selectedQuestionId" class="qb-chapter-rail"><AppIconButton class="qb-rail-toggle" :label="railOpen ? '收窄教材章节' : '展开教材章节'" icon="book-open" variant="secondary" :aria-expanded="railOpen" @click="railOpen = !railOpen" /><span v-if="!railOpen">{{ selectedSection?.label || selectedChapter?.label || '教材章节' }}</span></div>
+      <div class="qb-chapter-rail"><AppIconButton class="qb-rail-toggle" :label="railOpen ? '收窄教材章节' : '展开教材章节'" icon="book-open" variant="secondary" :aria-expanded="railOpen" @click="railOpen = !railOpen" /><span v-if="!railOpen">{{ selectedSection?.label || selectedChapter?.label || '教材章节' }}</span><button v-if="!railOpen" class="qb-rail-unlinked" :aria-label="`未挂技能 · ${(index?.unlinked.no_usable_evidence ?? 0) + (index?.unlinked.no_skill_link ?? 0)} 题`" title="未挂技能" @click="router.replace({ query: { tab: 'skill', skill: 'unlinked' } })">⚠<small>{{ (index?.unlinked.no_usable_evidence ?? 0) + (index?.unlinked.no_skill_link ?? 0) }}</small></button></div>
       <div class="qb-chapter-content">
         <header><h2>教材章节</h2><span class="qb-volume-badge">{{ scope.selectedVolume?.label }}</span></header>
         <div class="qb-chapter-tree"><details v-for="chapter in index?.chapters ?? []" :key="chapter.id" :open="chapter.id === currentChapter?.id">
@@ -130,8 +136,9 @@ onBeforeUnmount(() => { clearTimeout(timer); clearTimeout(idleTimer); facetContr
         <button class="qb-unlinked" @click="router.replace({ query: { tab: 'skill', skill: 'unlinked' } })"><span>⚠ 未挂技能</span><strong>{{ (index?.unlinked.no_usable_evidence ?? 0) + (index?.unlinked.no_skill_link ?? 0) }} 题</strong></button>
       </div>
     </aside>
-    <aside class="qb-skill-pane qb-browse-pane">
-      <header class="qb-skill-list-heading"><h2>{{ unlinked ? '未挂技能' : selectedSection?.label || (selectedChapter ? `${selectedChapter.label} · 跨小节` : '技能与知识主题') }}</h2><p>{{ entries.length }} 项{{ mode === 'skill' ? '技能' : '主题' }} · {{ selectedSection?.question_count ?? selectedChapter?.question_count ?? 0 }} 题</p>
+    <aside v-if="!unlinked" class="qb-skill-pane qb-browse-pane">
+      <div v-if="bank.selectedQuestionId" class="qb-skill-rail qb-chapter-rail"><AppIconButton class="qb-rail-toggle" :label="skillRailOpen ? '收窄技能列表' : '展开技能列表'" icon="book-open" variant="secondary" :aria-expanded="skillRailOpen" @click="skillRailOpen = !skillRailOpen" /><span v-if="!skillRailOpen">{{ mode === 'skill' ? '技能' : '知识主题' }}</span></div>
+      <header class="qb-skill-list-heading"><h2>{{ selectedSection?.label || (selectedChapter ? `${selectedChapter.label} · 跨小节` : '技能与知识主题') }}</h2><p>{{ entries.length }} 项{{ mode === 'skill' ? '技能' : '主题' }} · {{ selectedSection?.question_count ?? selectedChapter?.question_count ?? 0 }} 题</p>
         <div class="qb-skill-list-tools"><div class="qb-segment"><button :aria-pressed="mode === 'skill'" :class="{ 'is-active': mode === 'skill' }" @click="setMode('skill')">按技能</button><button :aria-pressed="mode === 'topic'" :class="{ 'is-active': mode === 'topic' }" @click="setMode('topic')">按知识主题</button></div><select v-model="sort" class="app-input" aria-label="技能排序"><option value="curriculum">教材顺序</option><option value="count">题数多 → 少</option><option v-if="overview.length" value="mastery">掌握度低 → 高</option></select></div>
       </header>
       <div class="qb-skill-rows"><button v-for="entry in entries" :key="entry.stable_key" class="qb-skill-row" :class="{ 'is-active': entry.stable_key === selected?.stable_key }" :aria-pressed="entry.stable_key === selected?.stable_key" @click="selectEntry(entry)">
@@ -142,6 +149,7 @@ onBeforeUnmount(() => { clearTimeout(timer); clearTimeout(idleTimer); facetContr
     </aside>
     <main class="qb-question-pane qb-browse-pane">
       <header class="qb-target-heading"><div class="qb-target-heading__line"><h2>{{ unlinked ? '未挂技能的题目' : selected?.display_name || '请选择技能或知识主题' }}</h2><span v-if="selected" class="qb-row-badges"><span :class="!selected.question_count ? 'is-empty' : selected.question_count < 5 ? 'is-low' : 'is-ok'">{{ !selected.question_count ? '暂无题' : selected.question_count < 5 ? '题量少' : '正常' }}</span></span><span v-if="selected" class="qb-target-count">共 {{ selected.question_count }} 题</span><RouterLink v-if="selected && mode === 'skill'" class="qb-link" :to="{ path: '/question-assembly', query: { mode: 'assistant', skill: selected.stable_key } }">按班级学情挑这个技能的题 →</RouterLink></div>
+        <div v-if="unlinked" class="qb-repair-entry"><span>共 {{ (index?.unlinked.no_usable_evidence ?? 0) + (index?.unlinked.no_skill_link ?? 0) }} 题 · 先查看缺失部分，再只补缺失</span><AppButton variant="primary" @click="emit('repair')">AI 补挂技能</AppButton></div>
         <details v-if="selected && 'definition' in selected" class="qb-skill-definition"><summary><b>技能定义</b><span>{{ selected.definition.observable_evidence || '展开查看技能的纳入与排除范围' }}</span></summary><div><p>可观察操作：{{ selected.definition.observable_evidence || '待补充' }}</p><p>纳入：{{ selected.definition.include_scope || '待补充' }}</p><p>不纳入：{{ selected.definition.exclude_scope || '待补充' }}</p></div></details>
       </header>
       <div v-if="selected || unlinked" class="qb-skill-filters">

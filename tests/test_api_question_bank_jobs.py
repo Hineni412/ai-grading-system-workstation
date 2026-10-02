@@ -146,3 +146,40 @@ def test_duplicate_tagging_retry_requests_keep_same_safe_logical_payload(
             "curriculum_volume_id": VOLUME_ID,
         }
     )
+
+
+def test_repair_api_requires_current_preview_and_recovers_same_task(tmp_path):
+    from backend.api.dependencies import get_question_bank_read_service
+    from backend.jobs.question_bank_repair import repair_preview
+    from tests.test_question_bank_read_cache import _seed_skill_bank
+    service, db, _ = _seed_skill_bank(tmp_path)
+    manager = JobManager(JobStore(tmp_path / 'TEST-repair-jobs.db'), max_workers=1)
+    calls = []
+    def repair(context):
+        calls.append(context.payload)
+        return {'outcome': 'partial', 'requested_count': 1, 'completed_count': 0, 'remaining': [],
+                'question_text': 'TEST-do-not-expose'}
+    manager.register('question_bank_repair', repair)
+    app = create_app()
+    app.dependency_overrides[get_job_manager] = lambda: manager
+    app.dependency_overrides[get_question_bank_read_service] = lambda: service
+    with TestClient(app) as client:
+        preview = client.get('/api/question-bank/repair-preview', params={
+            'curriculum_volume_id': 'bnu24-math-g8-upper', 'kind': 'skills'})
+        assert preview.status_code == 200
+        assert not calls
+        body = {'curriculum_volume_id': 'bnu24-math-g8-upper', 'kind': 'skills', 'question_ids': [4],
+                'fingerprint': preview.json()['fingerprint'], 'client_request_token': 'f' * 32}
+        invalid = client.post('/api/question-bank/repair-jobs', json={**body, 'question_ids': [1]})
+        assert invalid.status_code == 409 and not calls
+        first = client.post('/api/question-bank/repair-jobs', json=body)
+        assert first.status_code == 202, first.text
+        manager.wait(first.json()['id'], timeout=5)
+        second = client.post('/api/question-bank/repair-jobs', json=body)
+        assert second.status_code == 202 and second.json()['id'] == first.json()['id']
+        assert len(calls) == 1 and calls[0]['question_ids'] == [4]
+        assert 'revisions' not in second.json()['payload']
+        assert 'question_text' not in second.json()['result']
+        assert client.post('/api/question-bank/repair-jobs', json={**body, 'kind': 'analysis'}).status_code == 409
+        assert client.post('/api/question-bank/repair-jobs', json={**body, 'fingerprint': '0' * 64, 'client_request_token': 'e' * 32}).status_code == 409
+    manager.shutdown()

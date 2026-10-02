@@ -357,6 +357,20 @@ class JobManager:
         self._watch_completion(job.id, future)
         return job, True
 
+    def submit_idempotent_question_repair(self, payload: dict[str, Any]) -> tuple[JobRecord, bool]:
+        handler = self._handlers.get('question_bank_repair')
+        if handler is None:
+            raise UnsupportedJobTypeError('unsupported job type: question_bank_repair')
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError('JobManager has shut down')
+            job, created = self.store.create_idempotent_tagging_sync_job(payload, job_type='question_bank_repair')
+            if not created:
+                return job, False
+            future = self._schedule_locked(job, handler, error_message='question repair could not be scheduled')
+        self._watch_completion(job.id, future)
+        return job, True
+
     def submit_config_retry(self, payload: dict[str, Any]) -> JobRecord:
         handler = self._handlers.get("config_generation")
         if handler is None:

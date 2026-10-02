@@ -891,6 +891,8 @@ def _model_evidence_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Strip repository-only link resolution fields from a stored payload."""
 
     clean = json.loads(json.dumps(dict(payload), ensure_ascii=False))
+    for key in ('whole_question_classification', 'source_content_hash', 'content_hash', 'version_id'):
+        clean.pop(key, None)
     parts = clean.get("parts")
     if not isinstance(parts, list):
         return clean

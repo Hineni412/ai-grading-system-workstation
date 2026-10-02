@@ -525,6 +525,14 @@ class QuestionTaggingJobRequest(_QuestionBankModel):
     )
 
 
+class QuestionRepairJobRequest(_QuestionBankModel):
+    curriculum_volume_id: str = Field(min_length=1, max_length=80)
+    kind: Literal['skills', 'analysis', 'all'] = 'all'
+    question_ids: list[int] = Field(min_length=1, max_length=500)
+    fingerprint: str = Field(pattern=r'^[0-9a-f]{64}$')
+    client_request_token: str = Field(pattern=r'^[0-9a-f]{32}$')
+
+
 class QuestionJobRetryRequest(_QuestionBankModel):
     question_ids: list[int] | None = Field(default=None, min_length=1, max_length=500)
 

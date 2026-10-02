@@ -33,6 +33,7 @@ from .config_generation import run_config_generation_job
 from .criterion_backfill import run_criterion_backfill_job
 from .grading_run import run_grading_job
 from .knowledge_link_job import build_knowledge_link_gateway, run_knowledge_link_job
+from .question_bank_repair import run_question_bank_repair_job
 from .manager import JobContext, JobManager
 from .question_bank_sync import run_session_question_bank_sync_job
 from .question_import import run_question_import_job
@@ -254,6 +255,11 @@ def register_default_job_handlers(
             ),
         ),
     )
+    manager.register('question_bank_repair', lambda context: run_question_bank_repair_job(
+        context=context, question_bank_db_path=resolved_question_bank_db, data_root=base_data_root,
+        tagging_runner=tagging_sync_runner, link_runner=knowledge_link_runner,
+        ai_service_factory=resolved_tagging_factory, link_gateway_factory=resolved_link_gateway_factory,
+        taxonomy_governance=resolved_taxonomy_governance))
     manager.register(
         "knowledge_link",
         _build_knowledge_link_handler(

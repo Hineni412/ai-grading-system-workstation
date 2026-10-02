@@ -48,6 +48,7 @@ from backend.api.schemas.question_bank import (
     QuestionSolutionEvidenceResponse,
     QuestionStateChangeRequest,
     QuestionTaggingJobRequest,
+    QuestionRepairJobRequest,
     QuestionTagWriteRequest,
     QuestionWriteResponse,
     SimilarQuestionItem,
@@ -81,6 +82,7 @@ from backend.file_access import (
     ControlledFileTypeError,
 )
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
+from backend.jobs.question_bank_repair import repair_preview
 from backend.jobs.store import (
     JobRecord,
     TaggingSyncJobRequestConflictError,
@@ -1109,6 +1111,46 @@ def retry_question_import_job(
         "question_import",
         payload,
     )
+
+
+@router.get('/repair-preview', responses=QUESTION_SNAPSHOT_ERROR_RESPONSES)
+def question_repair_preview(curriculum_volume_id: str, kind: Literal['skills', 'analysis', 'all'] = 'all',
+        service: QuestionBankReadService = Depends(get_question_bank_read_service)) -> dict[str, Any]:
+    try:
+        return repair_preview(service, curriculum_volume_id, kind)
+    except ValueError as exc:
+        raise ApiError(422, 'repair_scope_invalid', str(exc)) from exc
+
+
+@router.post('/repair-jobs', response_model=JobResponse, status_code=202, responses=QUESTION_JOB_RESPONSES)
+def submit_question_repair(body: QuestionRepairJobRequest,
+        service: QuestionBankReadService = Depends(get_question_bank_read_service),
+        manager: JobManager = Depends(get_job_manager)) -> JobResponse:
+    ids = sorted(_unique_positive_ids(body.question_ids))
+    existing = manager.store.find_latest_job_by_payload(job_type='question_bank_repair', payload_equals={'client_request_token': body.client_request_token})
+    if existing:
+        if (sorted(existing.payload.get('question_ids', [])) != ids
+            or existing.payload.get('fingerprint') != body.fingerprint
+            or existing.payload.get('curriculum_volume_id') != body.curriculum_volume_id
+            or existing.payload.get('kind') != body.kind):
+            raise ApiError(409, 'repair_request_conflict', '本次请求编号已用于其他补齐清单')
+        return _job_response(existing)
+    try:
+        preview = repair_preview(service, body.curriculum_volume_id, body.kind)
+    except ValueError as exc:
+        raise ApiError(422, 'repair_scope_invalid', str(exc)) from exc
+    eligible = {item['id']: item for item in preview['items'] if not item['blocked_reason']}
+    if preview['fingerprint'] != body.fingerprint or not set(ids).issubset(eligible):
+        raise ApiError(409, 'repair_preview_changed', '题目或缺失部分已变化，请重新查看补齐清单')
+    payload = {**body.model_dump(), 'question_ids': ids,
+               'revisions': {str(qid): eligible[qid]['revision'] for qid in ids}}
+    try:
+        job, _ = manager.submit_idempotent_question_repair(payload)
+    except TaggingSyncJobRequestConflictError as exc:
+        raise ApiError(409, 'repair_request_conflict', '本次请求编号已用于其他补齐清单') from exc
+    except UnsupportedJobTypeError as exc:
+        raise ApiError(503, 'job_type_not_supported', '补齐任务暂不可用') from exc
+    return _job_response(job)
 
 
 @router.post(

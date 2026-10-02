@@ -122,6 +122,10 @@ def public_job_detail(job: JobRecord) -> str:
 
 
 def public_job_result(job: JobRecord) -> dict[str, Any]:
+    if job.job_type == 'question_bank_repair':
+        return sanitize_public_mapping({key: job.result[key] for key in
+            ('requested_count', 'analysis_count', 'skill_count', 'completed_count', 'remaining', 'outcome')
+            if key in job.result})
     if job.job_type == "personalized_handout_export":
         result = {key: job.result[key] for key in ("format", "question_count", "paper_count") if key in job.result}
         if job.status == "succeeded" and str(job.result.get("file_path") or "").strip():
@@ -365,6 +369,8 @@ def public_job_error(job: JobRecord) -> str | None:
 
 
 def public_job_payload(job: JobRecord) -> dict[str, Any]:
+    if job.job_type == 'question_bank_repair':
+        return {key: job.payload[key] for key in ('question_ids', 'curriculum_volume_id', 'kind') if key in job.payload}
     if job.job_type == "personalized_handout_export":
         return {key: job.payload[key] for key in ("draft_id", "expected_revision", "client_request_token") if key in job.payload}
     if job.job_type.startswith("workspace_ai."):
