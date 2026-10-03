@@ -242,9 +242,15 @@ describe('personalized recommendation draft', () => {
     expect(trainingApiMock.getPersonalizedDraft).toHaveBeenCalledWith(fixed.draft_id)
     expect([...host.querySelectorAll('button')].some(b=>['替换','移出','解锁'].includes(b.textContent?.trim()??''))).toBe(false)
   })
-  it.each(['success', 'uncertain response'])('exports a 100 question handout and restores the saved export after %s without creating a training paper', async (response) => {
-    const handout = { ...draft, config: { purpose: 'handout', question_count: 100 } }
-    const job = { id: 81, status: 'succeeded', progress: 1, result: { download_url: '/api/jobs/81/download' } }
+  it.each([
+    { response: 'success', paperMode: 'individual' as const, skipped: 1 },
+    { response: 'uncertain response', paperMode: 'individual' as const, skipped: 1 },
+    { response: 'success', paperMode: 'shared' as const, skipped: 0 },
+  ])('exports a 100 question $paperMode handout and restores it after $response without creating a training paper', async ({ response, paperMode, skipped }) => {
+    const emptyStudent = { ...draft.students[0]!, student_id: 'SYN-S02', student_name: '合成空卷', items: [] }
+    const handout = { ...draft, config: { purpose: 'handout', question_count: 100, paper_mode: paperMode, remediation_only: paperMode === 'individual' },
+      students: skipped ? [...draft.students, emptyStudent] : draft.students }
+    const job = { id: 81, status: 'succeeded', progress: 1, result: { download_url: '/api/jobs/81/download', skipped_student_count: skipped } }
     trainingApiMock.createPersonalizedDraft.mockResolvedValue(handout)
     trainingApiMock.getPersonalizedDraft.mockResolvedValue(handout)
     trainingApiMock.exportHandout.mockResolvedValue(job)
@@ -256,7 +262,7 @@ describe('personalized recommendation draft', () => {
     const props = { diagnosis, scope: diagnosis.scope, examScope: { mode: 'current' as const, session_ids: [7] },
       questionCount: 100, purpose: 'handout', maxQuestionsPerSkill: 20, maxWrittenQuestions: 20,
       recentActivityCount: 0, difficultyMax: 10, excludeCurrentExamOriginals: true,
-      targetKeys: ['kp_alg_linear_equation'] }
+      targetKeys: ['kp_alg_linear_equation'], paperMode }
     const host = document.createElement('div'); document.body.append(host)
     const app = createApp(PersonalizedRecommendationDraftView, props)
     const view = app.mount(host) as unknown as { generate: () => Promise<void> }
@@ -265,6 +271,8 @@ describe('personalized recommendation draft', () => {
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({
       purpose: 'handout', question_count: 100, max_questions_per_skill: 20,
       max_written_questions: 20, recent_activity_count: 0, difficulty_max: 10,
+      paper_mode: paperMode, remediation_only: paperMode === 'individual',
+      max_unmeasured_questions: paperMode === 'individual' ? 4 : 0,
     }))
     expect(host.textContent).toContain('讲义只打印，不回收、不更新掌握度')
     expect(host.textContent).not.toContain('生成全部 PDF')
@@ -279,6 +287,8 @@ describe('personalized recommendation draft', () => {
     const returning = createApp(PersonalizedRecommendationDraftView, props)
     mounted.push(returning); returning.mount(host)
     await vi.waitFor(() => expect(trainingApiMock.getHandoutExportByRequest).toHaveBeenCalledWith(draft.draft_id, token))
+    if (skipped) await vi.waitFor(() => expect(host.textContent).toContain('1 名学生暂无可配补弱题，已跳过空卷'))
+    else expect(host.textContent).not.toContain('已跳过空卷')
     expect(trainingApiMock.exportHandout).toHaveBeenCalledExactlyOnceWith(draft.draft_id, expect.objectContaining({ expected_revision: 1 }))
   })
 
@@ -316,6 +326,8 @@ describe('personalized recommendation draft', () => {
         target_keys: [],
         target_names: ['一元一次方程'],
         paper_mode: 'individual',
+        remediation_only: true,
+        max_unmeasured_questions: 4,
         question_count: 8,
         difficulty_max: 8,
         teaching_progress_chapter_id: 'bnu24-math-g8-upper-c02',

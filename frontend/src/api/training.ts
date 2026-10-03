@@ -89,6 +89,8 @@ export interface TrainingGrouping {
 export interface PersonalizedRecommendationCreateRequest
   extends TrainingDiagnosisRequest {
   request_token: string
+  remediation_only?: boolean
+  max_unmeasured_questions?: number
   purpose?: 'training' | 'handout'
   max_questions_per_skill?: number
   max_written_questions?: number

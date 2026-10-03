@@ -180,7 +180,7 @@ def compute_assistant_candidates(
         return _compute()
     return _ASSISTANT_CACHE.get_or_compute(
         (
-            "assistant-shortlist-v4-evidence-priority",
+            "assistant-shortlist-v5-direct-targets",
             str(read_service.db_path.resolve(strict=False)),
             commit_generation(read_service.db_path),
             diagnosis_key,

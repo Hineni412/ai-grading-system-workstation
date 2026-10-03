@@ -1094,6 +1094,8 @@ class TrainingEvidencePublisher:
                         "max_questions_per_skill",
                         "max_written_questions",
                         "recent_activity_count",
+                        "remediation_only",
+                        "max_unmeasured_questions",
                         "question_count",
                         "expected_minutes",
                         "difficulty_min",

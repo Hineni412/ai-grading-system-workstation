@@ -89,10 +89,10 @@ def diagnosis():
 
 
 @pytest.fixture
-def client_and_source(tmp_path):
+def client_and_source(tmp_path, request):
     db_path = tmp_path / "bank.db"
     initialize_database(db_path)
-    install_current_knowledge(db_path, taxonomy_revision=4)
+    install_current_knowledge(db_path, taxonomy_revision=getattr(request, 'param', 4))
     with connect(db_path) as conn:
         conn.execute(
             "INSERT INTO papers(id,title,grade,semester,textbook_version,import_status) VALUES(1,'合成候选题库',?,?,?,'success')",
@@ -238,8 +238,11 @@ def test_api_returns_full_balanced_pool_without_creating_or_replacing_a_paper(
     assert result["selected_target_keys"] == [
         first
     ]  # Single-select default focuses the weakest point.
-    assert result["candidate_total"] == 31  # Same-section new exercises are also eligible.
+    expected_ids = set(range(2, 28)) if first == POINTS[0]["id"] else set(range(28, 33))
+    assert result["candidate_total"] == len(expected_ids)
     ids = [candidate["question_id"] for candidate in result["candidates"]]
+    assert set(ids) == expected_ids
+    assert all(candidate["direct_target_keys"] == [first] for candidate in result["candidates"])
     assert not {1, 33}.intersection(ids)
     assert len(set(ids)) == len(ids)
     both = client.post(
@@ -425,3 +428,38 @@ def test_quick_draft_fills_remaining_slots_reports_rejections_and_never_saves(cl
     assert response.json()['skipped'] == {'skill':1,'written':1,'difficulty':0,'similar':1,'unavailable':0}
     assert workspace.draft_path.read_bytes() == before
     assert workspace.list_records() == []
+
+
+@pytest.mark.parametrize('client_and_source', [8], indirect=True)
+def test_surface_unfolding_only_lists_that_skill_and_preserves_training_supplements(client_and_source):
+    from question_bank.recommendation.personalized import PersonalizedRecommendationConfig
+
+    client, source, _, _ = client_and_source
+    module = client.app.dependency_overrides[get_personalized_recommendation_module]()
+    unfolding = next(node for node in module.current_knowledge.nodes if '展开曲面求最短路' in node.display_name)
+    parents = {r.source_key: r.target_key for r in module.current_knowledge.relations if r.relation_type == 'parent'}
+    other = next(node for node in module.current_knowledge.nodes if node.stable_key.startswith('sk_')
+                 and node.stable_key != unfolding.stable_key and parents.get(node.stable_key) == parents[unfolding.stable_key])
+    with connect(module.db_path) as conn:
+        for qid, node, text in ((34, unfolding, '圆柱侧面展开后求两点之间的最短路程。'),
+                                (35, other, '直角三角形中根据两边计算第三边。')):
+            conn.execute("INSERT INTO questions(id,paper_id,question_number,question_type,question_text,answer_text,difficulty) VALUES(?,1,?,'选择题',?,'合成解析','3')", (qid, str(qid), text))
+            conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value) VALUES(?,'knowledge_point',?)", (qid, node.display_name))
+    _approve_synthetic_criteria(module.db_path, module.data_root, (34, 35))
+    chosen = request(target_keys=[unfolding.stable_key])
+    response = client.post('/api/question-assembly/assistant/candidates', json=chosen)
+    assert response.status_code == 200, response.text
+    assert [c['question_id'] for c in response.json()['candidates']] == [34]
+    assert response.json()['candidates'][0]['direct_target_keys'] == [unfolding.stable_key]
+    # Automatic personal/group papers retain their existing supplemental pool.
+    config = PersonalizedRecommendationConfig(scope_keys=(CHAPTER['knowledge_id'],),
+        curriculum_volume_id=VOLUME['id'], target_keys=(unfolding.stable_key,), paper_mode='shared')
+    evaluated = module.evaluate_candidates(diagnosis=source, config=config, excluded={1, 33}, graded_activities=[])
+    assert any(e['candidate']['question_id'] == 35 and e['selection_kind'] == 'supplement'
+               for pool in evaluated['pools'].values() for e in pool)
+    with connect(module.db_path) as conn:
+        conn.execute('UPDATE questions SET is_deleted=1 WHERE id=34')
+    empty = client.post('/api/question-assembly/assistant/candidates', json=chosen)
+    assert empty.status_code == 200
+    assert empty.json()['candidate_total'] == 0
+    assert empty.json()['candidates'] == []

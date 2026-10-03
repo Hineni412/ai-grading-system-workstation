@@ -245,7 +245,7 @@ class DiagnosisProfileService:
             json.dumps(_profile_semantics(), default=str))
         return (
             "\u0000".join(source_identity),
-            "tag-profile-part-v10-mastery-v3",
+            "tag-profile-part-v11-effective-results-frozen-source",
             str(self.data_root),
             CURRENT_MASTERY_PARAMETERS.version,
             str(week_of(datetime.now(UTC))),
@@ -816,6 +816,13 @@ class DiagnosisProfileService:
             "unmapped_terms": [],
             "warnings": _unique(warnings),
             "diagnosis_identity": "question_tag",
+            # Internal read-only contract. The API excludes root underscore
+            # fields; source point text is not added to public references.
+            "_exam_source_metadata": {
+                str(session_id): {item.item_ref: dict(item.source_practice_metadata)
+                    for item in projection.items if item.source_practice_metadata}
+                for session_id, projection in projection_by_session.items()
+            },
         }
         return result, dict(aggregated_mastery)
 
@@ -1290,6 +1297,7 @@ class DiagnosisProfileService:
                 continue
             enriched = dict(row)
             enriched["bank_question_id"] = projected.bank_question_id
+            enriched["source_practice_metadata"] = projected.source_practice_metadata
             from question_bank.solution_evidence.part_assessments import (
                 exam_assessment_state,
             )
@@ -1310,6 +1318,20 @@ class DiagnosisProfileService:
                     enriched["assessment"].update(
                         granularity="step", reason="teacher_step_review", eligible=True,
                     )
+                elif (not observations and not contributions and not projected.is_single_result
+                      and enriched["assessment"].get("granularity") == "part"):
+                    # A total for several independent points cannot locate
+                    # which point failed. Keep its overall mastery input.
+                    enriched["assessment"].update(
+                        granularity="whole_question", reason="part_total_without_step_attribution",
+                        evidence_weight=1.0 / max(len(projected.tags.get("knowledge_point", ())), 1),
+                    )
+            elif projected.is_single_result and enriched["assessment"].get("granularity") == "part":
+                # The teacher's final score already judges the sole result;
+                # superseded AI steps remain unused, even when they disagree.
+                enriched["assessment"].update(
+                    reason="teacher_final_single_result", evidence_weight=1.0,
+                )
             else:
                 # A teacher's final total does not supply new per-step facts.
                 # Do not reintroduce the superseded AI step scores.
