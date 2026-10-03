@@ -237,19 +237,25 @@ def test_wrong_question_books_preview_export_replay_download_and_read_only(tmp_p
     with sqlite3.connect(db.db_path) as conn:
         before_grades = list(conn.execute("SELECT * FROM session_details"))
     try:
-        scope = {"curriculum_volume_id": "bnu24-math-g8-upper", "include_class": True}
-        response = client.post(f"/api/students/{students[0]['id']}/wrong-question-book/preview", json=scope)
+        scope = {"curriculum_volume_id": "bnu24-math-g8-upper", "student_ids": [row['id'] for row in students]}
+        response = client.post('/api/students/wrong-question-books/preview', json=scope)
         assert response.status_code == 200, response.text
         preview = response.json()
         assert len(preview["students"]) == 3
         assert preview["question_count"] == 4
         assert preview["session_ids"] == sessions
+        assert preview['session_wrong_counts'] == {str(sessions[0]): 2, str(sessions[1]): 3}
+        assert preview['empty_students'] == [{'student_id': students[1]['id'], 'student_name': students[1]['name'], 'reason': '没有错题'}]
+        assert preview['out_of_scope_count'] == 0
+        assert client.post(f"/api/students/{students[0]['id']}/wrong-question-book/preview", json=scope).status_code == 404
+        assert client.post('/api/students/wrong-question-books/preview', json=dict(scope, student_ids=[999999])).status_code == 422
         evidence = client.get(f"/api/students/{students[0]['id']}/exam-results", params={"curriculum_volume_id": scope["curriculum_volume_id"]}).json()
         assert next(item for exam in evidence["sessions"] for item in exam["items"] if item["question_id"] == "Q10(P2)")["bank_question_id"] is not None
         assert [(item["session_name"], item["question_id"]) for item in preview["missing_items"]] == [("测试早期考试", "Q6")]
-        selected = client.post(f"/api/students/{students[0]['id']}/wrong-question-book/preview", json=dict(scope, session_ids=[sessions[1]])).json()
+        selected = client.post('/api/students/wrong-question-books/preview', json=dict(scope, session_ids=[sessions[1]])).json()
         assert selected["question_count"] == 3
         assert selected["missing_items"] == []
+        assert selected['session_wrong_counts'] == preview['session_wrong_counts']
         body = {"curriculum_volume_id": scope["curriculum_volume_id"], "student_ids": [row["id"] for row in students], "session_ids": list(reversed(sessions)), "client_request_token": "a" * 32}
         submitted = client.post("/api/students/wrong-question-books", json=body)
         assert submitted.status_code == 202, submitted.text
@@ -268,9 +274,12 @@ def test_wrong_question_books_preview_export_replay_download_and_read_only(tmp_p
             text = "\n".join(p.text for p in doc.paragraphs)
             assert text.index("测试早期考试") < text.index("测试后期考试") < text.index("答案")
             assert text.count("测试原题1") == 1
+            assert '来源：测试早期考试 第1题、测试后期考试 第1题' in text
+            assert '未归入章节' in text
             assert "测试原题3" in text and "测试原题4" not in text and "测试原题5" not in text and "测试原题6" not in text
             assert text.index("测试解析1") > text.index("答案")
             assert "________________" not in text
+            assert doc.tables  # Default answer space reserves handwriting rows.
             assert "测试早期考试" in doc.sections[0].header.paragraphs[0].text
         assert client.post("/api/students/wrong-question-books", json=body).json()["id"] == job_id
         from concurrent.futures import ThreadPoolExecutor
@@ -279,6 +288,9 @@ def test_wrong_question_books_preview_export_replay_download_and_read_only(tmp_p
         assert all(item.id == job_id and not created for item, created in repeated)
         assert client.get(f"/api/students/wrong-question-books/by-request/{'a' * 32}").json()["id"] == job_id
         assert client.post("/api/students/wrong-question-books", json=dict(body, session_ids=[sessions[0]])).status_code == 409
+        assert client.post('/api/students/wrong-question-books', json=dict(body, include_source_label=False)).status_code == 409
+        assert client.post('/api/students/wrong-question-books', json=dict(body, include_answer_space=False)).status_code == 409
+        assert client.post('/api/students/wrong-question-books', json=dict(body, scope_keys=['kp_TEST'])).status_code == 409
         public = client.get(f"/api/jobs/{job_id}").json()["result"]
         assert "file_path" not in public and public["download_url"]
         assert client.get(public["download_url"]).status_code == 200
@@ -303,6 +315,43 @@ def test_wrong_question_books_preview_export_replay_download_and_read_only(tmp_p
         db.close()
 
 
+def test_wrong_question_books_cross_class_scope_order_and_merged_sources(tmp_path):
+    import sqlite3
+    from backend.students.wrong_question_book import build_wrong_question_books
+    from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+    db, qb_path, students, sessions, ids = _seed_wrong_question_books(tmp_path)
+    volume = curriculum_volume(volume_id='bnu24-math-g8-upper')
+    chapter = volume['chapters'][0]
+    first, second = chapter['sections'][:2]
+    with sqlite3.connect(qb_path) as conn:
+        conn.executemany("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(?,'curriculum_section',?,'TEST')",
+                         [(ids[0], second['display_name']), (ids[1], first['display_name']), (ids[2], first['display_name'])])
+        conn.executemany('UPDATE questions SET difficulty=? WHERE id=?', [('5', ids[0]), ('4', ids[1]), ('2', ids[2])])
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE students SET class_name='测试其他班' WHERE id=?", (students[2]['id'],))
+    try:
+        selected_ids = [students[0]['id'], students[2]['id']]
+        plan = build_wrong_question_books(db, qb_path, selected_ids, volume['id'], sessions)
+        book = next(book for book in plan['books'] if book['student']['id'] == students[0]['id'])
+        assert [section['title'] for section in book['sections']] == [
+            f"{chapter['label']} · {first['label']}", f"{chapter['label']} · {second['label']}"]
+        assert book['sections'][0]['question_ids'] == [ids[2], ids[1]]
+        assert [source['session_id'] for source in book['sources'][ids[0]]] == sessions
+        assert book['notes'][ids[0]] == '来源：测试早期考试 第1题、测试后期考试 第1题'
+        filtered = build_wrong_question_books(db, qb_path, selected_ids, volume['id'], sessions, [second['knowledge_id']])
+        assert filtered['question_count'] == 1 and filtered['out_of_scope_count'] == 3
+        assert filtered['empty_students'] == [dict(student_id=students[2]['id'], student_name=students[2]['name'],
+                                                 reason='错题均不在所选章节')]
+        empty = build_wrong_question_books(db, qb_path, [students[0]['id']], volume['id'], [], [])
+        assert empty['question_count'] == 0 and empty['empty_students'][0]['reason'] == '没有错题'
+        from backend.api.schemas.students import WrongQuestionBookPreviewRequest
+        request = WrongQuestionBookPreviewRequest(curriculum_volume_id=volume['id'], student_ids=[selected_ids[1], *selected_ids],
+                                                  scope_keys=[f" {second['knowledge_id'].upper()} ", second['knowledge_id']])
+        assert request.student_ids == sorted(selected_ids) and request.scope_keys == [second['knowledge_id']]
+    finally:
+        db.close()
+
+
 def test_wrong_question_books_exclude_unknown_scores_and_isolate_student_failures(tmp_path, monkeypatch):
     from pathlib import Path
     from backend.students.wrong_question_book import build_wrong_question_books
@@ -319,10 +368,14 @@ def test_wrong_question_books_exclude_unknown_scores_and_isolate_student_failure
     assert plan["question_count"] == 4
     assert question_ids[4] not in [qid for book in plan["books"] for section in book["sections"] for qid in section["question_ids"]]
     store = JobStore(db.db_path)
-    payload = {"student_ids": [row["id"] for row in students], "session_ids": sessions, "curriculum_volume_id": "bnu24-math-g8-upper"}
+    payload = {"student_ids": [row["id"] for row in students], "session_ids": sessions, "curriculum_volume_id": "bnu24-math-g8-upper",
+               'include_source_label': False, 'include_answer_space': False, 'scope_keys': []}
     job = store.create_job("wrong_question_export", payload)
 
     def exporter(_path, _ids, out, **kwargs):
+        assert kwargs['include_answer_space'] is False
+        assert all('来源：' not in note for note in kwargs['question_notes'].values())
+        assert [section.title for section in kwargs['sections']] == ['未归入章节']
         if kwargs["title"].startswith("测试学生甲"):
             raise ValueError("synthetic failure")
         file = Path(out) / "sample.docx"

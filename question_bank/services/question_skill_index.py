@@ -20,6 +20,34 @@ def short_node_name(value: str) -> str:
     return value.replace("/", "｜").replace("|", "｜").split("｜")[-1].strip().removeprefix("技能·")
 
 
+def _anchor_key(value: str, volume: dict[str, Any]) -> str:
+    if curriculum_knowledge_node(value):
+        return value
+    names = {chapter['display_name']: chapter['knowledge_id'] for chapter in volume['chapters']}
+    for chapter in volume['chapters']:
+        for section in chapter['sections']:
+            names[section['display_name']] = section['knowledge_id']
+            names.update({point['display_name']: point['id'] for point in section['knowledge_points']})
+    path = value.replace('/', '｜').replace('|', '｜')
+    matches = [name for name in names if path == name or path.startswith(name + '｜')]
+    return names[max(matches, key=len)] if matches else ''
+
+
+def skill_anchor_ids(node_row, volume: dict[str, Any]) -> list[str]:
+    """Resolve this volume's anchors, promoting knowledge points to sections."""
+    anchors = []
+    for raw in json.loads(node_row['curriculum_anchors_json']):
+        anchor = _anchor_key(raw, volume)
+        target = curriculum_knowledge_node(anchor)
+        if not target or target['volume_id'] != volume['id']:
+            continue
+        if target['level'] == 3:
+            anchor = target['parent_id']
+        if anchor not in anchors:
+            anchors.append(anchor)
+    return anchors
+
+
 def build_skill_snapshot(conn: sqlite3.Connection, db_path: Path, data_root: Path | None) -> dict[str, Any]:
     active = conn.execute("SELECT release_id FROM knowledge_graph_releases WHERE status='active'").fetchone()
     release = str(active[0]) if active else None
@@ -98,20 +126,6 @@ def skill_index(snapshot: dict[str, Any], volume_id: str, review_ids: set[int]) 
     if volume is None:
         raise ValueError("请选择有效的教学学期")
     ids = snapshot["volumes"].get(volume_id, set())
-    anchor_names = {chapter['display_name']: chapter['knowledge_id'] for chapter in volume['chapters']}
-    for chapter in volume['chapters']:
-        for section in chapter['sections']:
-            anchor_names[section['display_name']] = section['knowledge_id']
-            for point in section['knowledge_points']:
-                anchor_names[point['display_name']] = point['id']
-
-    def anchor_key(value: str) -> str:
-        if curriculum_knowledge_node(value):
-            return value
-        path = value.replace('/', '｜').replace('|', '｜')
-        names = [name for name in anchor_names if path == name or path.startswith(name + '｜')]
-        return anchor_names[max(names, key=len)] if names else ''
-
     def stats(question_ids: set[int]) -> dict[str, Any]:
         selected = question_ids & ids
         types = Counter(snapshot["questions"][qid]["question_type"] for qid in selected)
@@ -132,16 +146,7 @@ def skill_index(snapshot: dict[str, Any], volume_id: str, review_ids: set[int]) 
     for key, node in snapshot["nodes"].items():
         if not key.startswith("sk_"):
             continue
-        anchors = []
-        for anchor in json.loads(node["curriculum_anchors_json"]):
-            anchor = anchor_key(anchor)
-            target = curriculum_knowledge_node(anchor)
-            if not target or target["volume_id"] != volume_id:
-                continue
-            if target["level"] == 3:
-                anchor = target["parent_id"]
-            if anchor not in anchors:
-                anchors.append(anchor)
+        anchors = skill_anchor_ids(node, volume)
         for anchor in anchors:
             skill_rows[anchor].append({"stable_key": key, "display_name": short_node_name(node["display_name"]),
                 "full_name": node["display_name"], **stats(snapshot["by_skill"].get(key, set())),
@@ -151,7 +156,7 @@ def skill_index(snapshot: dict[str, Any], volume_id: str, review_ids: set[int]) 
     for value, question_ids in snapshot["topics"].items():
         # Preserve the actual stored filter value; public names are only presentation.
         node = snapshot['nodes'].get(snapshot['topic_keys'].get(value, ''))
-        anchors = [anchor_key(anchor) for anchor in json.loads(node["curriculum_anchors_json"])] if node else []
+        anchors = [_anchor_key(anchor, volume) for anchor in json.loads(node["curriculum_anchors_json"])] if node else []
         for chapter in volume["chapters"]:
             for section in chapter["sections"]:
                 if (section["knowledge_id"] in anchors or value == section["display_name"]

@@ -11,7 +11,7 @@ from typing import Any
 from docx import Document
 from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Inches, Pt
+from docx.shared import Inches, Pt, RGBColor
 from PIL import Image
 
 from question_bank.document_pipeline.contracts import FormulaFallback, MathExpression
@@ -81,11 +81,17 @@ def _render_question_body(
     *,
     trailing_blank: int = 0,
     include_answer_space: bool = True,
+    question_notes: Mapping[int, str] | None = None,
 ) -> None:
     """渲染单个题目的正文（题号 + 富文本/纯文本 + 图片）。
 
     抽出来供 sections 分支复用，消除原三段式里重复的渲染块。
     """
+    note = (question_notes or {}).get(int(question['id']))
+    if note:
+        run = document.add_paragraph().add_run(note)
+        run.font.size = Pt(9)
+        run.font.color.rgb = RGBColor.from_string('666666')
     inline_prefix = _question_prefix(index)
     question_paragraph_start = len(document.paragraphs)
     minimum_lines = answer_space_lines(
@@ -231,6 +237,7 @@ def export_question_paper_docx(
     include_answer_space: bool = True,
     include_student_fields: bool = True,
     page_header_text: str | None = None,
+    question_notes: Mapping[int, str] | None = None,
 ) -> Path:
     service = QuestionBankReadService(Path(db_path))
     questions = service.get_questions_for_export(question_ids)
@@ -309,6 +316,7 @@ def export_question_paper_docx(
                     fallbacks,
                     trailing_blank=0,
                     include_answer_space=include_answer_space,
+                    question_notes=question_notes,
                 )
 
             sections_indexed.append((sec.title.strip(), sec_questions))
@@ -357,6 +365,7 @@ def export_question_paper_docx(
                     document, question, index, active_config,
                     metadata_by_id, data_root, fallbacks, trailing_blank=0,
                     include_answer_space=include_answer_space,
+                    question_notes=question_notes,
                 )
 
         if blanks:
@@ -367,6 +376,7 @@ def export_question_paper_docx(
                     document, question, index, active_config,
                     metadata_by_id, data_root, fallbacks, trailing_blank=0,
                     include_answer_space=include_answer_space,
+                    question_notes=question_notes,
                 )
 
         if solutions:
@@ -382,6 +392,7 @@ def export_question_paper_docx(
                     document, question, index, active_config,
                     metadata_by_id, data_root, fallbacks, trailing_blank=0,
                     include_answer_space=include_answer_space,
+                    question_notes=question_notes,
                 )
     else:
         for index, question in indexed_questions:
@@ -389,6 +400,7 @@ def export_question_paper_docx(
                 document, question, index, active_config,
                 metadata_by_id, data_root, fallbacks, trailing_blank=0,
                     include_answer_space=include_answer_space,
+                    question_notes=question_notes,
             )
 
     if include_answer:

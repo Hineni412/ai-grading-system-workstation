@@ -90,6 +90,35 @@ class ExplodingOcr:
         raise AssertionError(f"OCR must not run for text PDF page {page_number}")
 
 
+@pytest.mark.parametrize('layout', ['flat', 'type', 'sections'])
+def test_ordinary_word_optional_notes_precede_questions_and_preserve_default_xml(tmp_path, layout):
+    from docx import Document
+    from question_bank.models.question import QuestionCreate
+    from question_bank.services.assembly_basket_state import SectionSpec
+    from question_bank.exporters.paper_docx_exporter import export_question_paper_docx
+    from tests.question_bank_support import QuestionBankTestStore
+    db = tmp_path / 'TEST-question-notes.db'
+    bank = QuestionBankTestStore(db)
+    qid = bank.add_question(QuestionCreate(question_number='1', question_type='选择题',
+                                         question_text='TEST-question-body', answer_text='TEST-answer'))
+    options = dict(title='TEST-note-export', include_answer=True, include_answer_space=False,
+                   grouped_by_type=layout == 'type',
+                   sections=[SectionSpec(title='TEST-section', question_ids=[qid])] if layout == 'sections' else None)
+    ordinary = export_question_paper_docx(db, [qid], tmp_path / 'ordinary', **options)
+    empty = export_question_paper_docx(db, [qid], tmp_path / 'empty', question_notes=None, **options)
+    noted = export_question_paper_docx(db, [qid], tmp_path / 'noted', question_notes={qid: '技能：TEST-skill'}, **options)
+    with zipfile.ZipFile(ordinary) as first, zipfile.ZipFile(empty) as second:
+        assert first.read('word/document.xml') == second.read('word/document.xml')
+    document = Document(noted)
+    texts = [paragraph.text for paragraph in document.paragraphs]
+    note_index = texts.index('技能：TEST-skill')
+    assert note_index < next(index for index, text in enumerate(texts) if 'TEST-question-body' in text)
+    assert texts.count('技能：TEST-skill') == 1
+    run = document.paragraphs[note_index].runs[0]
+    assert run.font.size.pt == 9 and str(run.font.color.rgb) == '666666'
+    assert validate_docx(noted) == ()
+
+
 def _line(
     text: str,
     box: tuple[float, float, float, float],

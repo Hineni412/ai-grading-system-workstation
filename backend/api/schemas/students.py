@@ -7,22 +7,37 @@ from pydantic import BaseModel, Field, field_validator
 
 class WrongQuestionBookPreviewRequest(BaseModel):
     curriculum_volume_id: str = Field(min_length=1, max_length=100)
-    include_class: bool = False
+    student_ids: list[int] = Field(min_length=1, max_length=500)
     session_ids: list[int] | None = None
-
-
-class WrongQuestionBookSubmitRequest(BaseModel):
-    curriculum_volume_id: str = Field(min_length=1, max_length=100)
-    student_ids: list[int] = Field(min_length=1)
-    session_ids: list[int] = Field(min_length=1)
-    client_request_token: str = Field(pattern=r"^[0-9a-f]{32}$")
+    scope_keys: list[str] = Field(default_factory=list, max_length=50)
 
     @field_validator("student_ids", "session_ids")
     @classmethod
-    def _positive_ids(cls, values: list[int]) -> list[int]:
+    def _positive_ids(cls, values: list[int] | None) -> list[int] | None:
+        if values is None:
+            return None
         if any(value <= 0 for value in values):
             raise ValueError("IDs must be positive")
         return sorted(set(values))
+
+    @field_validator("scope_keys")
+    @classmethod
+    def _scope_keys(cls, values: list[str]) -> list[str]:
+        result = []
+        for raw in values:
+            key = str(raw or '').strip().casefold()
+            if not key.startswith(('kp_', 'ki_')):
+                raise ValueError('scope keys must use chapter or section identities')
+            if key not in result:
+                result.append(key)
+        return result
+
+
+class WrongQuestionBookSubmitRequest(WrongQuestionBookPreviewRequest):
+    session_ids: list[int] = Field(min_length=1)
+    include_source_label: bool = True
+    include_answer_space: bool = True
+    client_request_token: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
 class StudentUpsertItem(BaseModel):
