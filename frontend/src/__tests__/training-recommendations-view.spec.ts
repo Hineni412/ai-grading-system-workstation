@@ -305,6 +305,36 @@ describe('training recommendations view', () => {
     purposeButton('训练卷').click(); await settle(); expect(count().value).toBe('12')
     purposeButton('刷题讲义').click(); await settle(); expect(count().value).toBe('36')
   })
+  it.each([false, true])('loads complete evidence with the initial group and preserves base recovery (group failure: %s)', async (failGrouping) => {
+    const pinia = createPinia()
+    const chapterKey = 'kp_bnu24_math_g8_upper_1'
+    useCurriculumScopeStore(pinia).volumes = [{ id: 'bnu24-math-g8-upper', order: 3,
+      label: '八上', grade: '八年级', semester: '上学期', textbook_version: '北师大版', source: {},
+      statistics: { raw_nodes: 0, excluded_nodes: 0, retained_nodes: 0 }, chapters: [{
+        id: 'bnu24-math-g8-upper-c01', knowledge_id: chapterKey, order: 1, number: '1',
+        title: '合成章', label: '第一章 合成章', kind: 'chapter', display_name: '八上｜第一章 合成章',
+        source_ref: { node_id: '', relative_url: '' }, exam_scope_values: [], sections: [],
+      }] }]
+    const base = { ...diagnosis, knowledge_catalog: [{ knowledge_key: chapterKey,
+      knowledge_point: '八上｜第一章 合成章' }] }
+    const full = { ...base, grouping: { version: 'TEST', scope_keys: [chapterKey], groups: [],
+      selection: null, unassigned: [], warnings: [] } }
+    trainingApiMock.diagnose.mockImplementation(async (body) => {
+      if (body.grouping && failGrouping) throw new Error('TEST grouping unavailable')
+      return body.grouping ? full : base
+    })
+    const view = await mountView('/training', pinia)
+    await vi.waitFor(() => expect(useTrainingStore(pinia).analysisState).toBe('ready'))
+    await settle()
+    const current = useTrainingStore(pinia).diagnosis!
+    expect(current.students).toEqual(diagnosis.students)
+    expect(trainingApiMock.diagnose.mock.calls[0]?.[0].grouping.scope_keys).toEqual([chapterKey])
+    await vi.waitFor(() => expect(view.host.textContent?.includes('小组建议暂时无法更新')).toBe(failGrouping))
+    expect(trainingApiMock.diagnose.mock.calls.map(([body]) => body.grouping?.scope_keys)).toEqual(
+      failGrouping ? [[chapterKey], undefined, [chapterKey]] : [[chapterKey]])
+    expect(current.grouping).toEqual(failGrouping ? undefined : full.grouping)
+  })
+
   it.each([['comprehensive', 'training'], ['focused', 'training'], ['focused', 'handout']] as const)('sends learned chapters for %s / %s and keeps the chosen rules on return', async (scopeMode, purpose) => {
     const pinia = createPinia()
     const volumeId = 'bnu24-math-g8-upper'

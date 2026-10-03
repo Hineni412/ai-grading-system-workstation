@@ -14,12 +14,13 @@ import {
   scoreIssue,
   useReviewDraftStore,
   type ReviewDraft,
+  canReviewSteps as supportsStepReview,
+  submittedSteps, stepNeedsReview, stepNumber,
 } from '../../stores/review-drafts'
 import { useReviewQueueStore } from '../../stores/review-queue'
 import { displayErrorCategory, translateGradingReason } from '../../utils/grading-reasons'
 import {
   cachedReviewRubric,
-  clearReviewRubrics,
   hasReviewRubric,
   loadReviewRubric,
   reviewRubricCacheKey,
@@ -28,6 +29,8 @@ import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
 import ReviewFeedbackToast from './ReviewFeedbackToast.vue'
+import ReviewStepRecord from './ReviewStepRecord.vue'
+import { reviewStatus } from './review-status'
 
 const reviewStore = useReviewQueueStore()
 const draftStore = useReviewDraftStore()
@@ -47,7 +50,7 @@ const currentDraft = ref<ReviewDraft | null>(null)
 const submitting = ref(false)
 const feedback = ref('')
 const feedbackTone = ref<'success' | 'warning' | 'error'>('success')
-const stepModeNotice = ref('')
+const stepModeNotice = computed(() => currentDraft.value?.stepNotice ?? '')
 let rubricGeneration = 0
 
 const emit = defineEmits<{
@@ -104,30 +107,15 @@ const stepAssessments = computed(() => {
     return [{ stepId, partId, score, achievement, reason, studentEvidence, missingOrError }]
   })
 })
-const canReviewSteps = computed(() => Boolean(item.value?.result_id && item.value?.detail_id
-  && !item.value.review_item_id.startsWith('legacy:') && rubric.value?.points.length
-  && rubric.value.points.every((point) => point.step_id && Number.isInteger(point.score) && point.score > 0)
-  && rubric.value.points.reduce((total, point) => total + point.score, 0) === item.value.max_score))
-
+const canReviewSteps = computed(() => Boolean(item.value && supportsStepReview(item.value, rubric.value)))
 function beginStepReview(): void {
-  if (!currentDraft.value || !rubric.value || !canReviewSteps.value) return
-  const steps = rubric.value.points.map((point) => {
-    const matches = stepAssessments.value.filter((step) => step.stepId === point.step_id
-      && (!step.partId || step.partId === point.part_id))
-    return { partId: point.part_id, stepId: point.step_id, maxScore: point.score,
-      scoreText: matches.length === 1 && matches[0]?.score != null ? String(matches[0].score) : '' }
-  })
-  const matchesCurrentTotal = steps.every((step) => scoreIssue(step.scoreText, step.maxScore) === null)
-    && steps.reduce((total, step) => total + Number(step.scoreText), 0) === Number(currentDraft.value.scoreText)
-  stepModeNotice.value = matchesCurrentTotal ? '' : 'AI 步骤分与总分不一致，请逐步给分'
-  draftStore.initSteps(currentDraft.value.key, matchesCurrentTotal ? steps
-    : steps.map((step) => ({ ...step, scoreText: '' })))
+  if (item.value) draftStore.ensureSteps(item.value, rubric.value)
 }
 
 function setStepScore(partId: string, stepId: string, value: string): void {
   if (!currentDraft.value?.stepScores) return
-  draftStore.updateSteps(currentDraft.value.key, currentDraft.value.stepScores.map((step) =>
-    step.partId === partId && step.stepId === stepId ? { ...step, scoreText: value } : step))
+  const index = currentDraft.value.stepScores.findIndex((step) => step.partId === partId && step.stepId === stepId)
+  draftStore.updateStep(currentDraft.value.key, index, { scoreText: value })
 }
 
 function stepDraft(partId: string, stepId: string) {
@@ -181,28 +169,8 @@ const aiScore = computed(() => {
 })
 const hasAiAssessment = computed(() => aiScore.value != null || stepAssessments.value.length > 0
   || evidenceSteps.value.length > 0 || missingSteps.value.length > 0)
-const statusLabel = computed(() => {
-  const status = item.value?.score_status
-  if (!status) return ''
-  return {
-    ungraded: '待人工评分',
-    ai_ready: 'AI 已完成',
-    ai_review: 'AI 待复核',
-    teacher_final: '教师已确认',
-    failed: '处理失败',
-  }[status]
-})
-const statusTone = computed(() => {
-  const status = item.value?.score_status
-  if (!status) return 'neutral' as const
-  return ({
-    ungraded: 'neutral',
-    ai_ready: 'ai',
-    ai_review: 'warning',
-    teacher_final: 'teacher',
-    failed: 'danger',
-  } as const)[status]
-})
+const statusLabel = computed(() => item.value ? reviewStatus[item.value.score_status].label : '')
+const statusTone = computed(() => item.value ? reviewStatus[item.value.score_status].tone : 'neutral')
 const candidates = computed(() => (item.value?.candidate_scores ?? []).flatMap((candidate) => {
   const score = typeof candidate.score === 'number' && Number.isFinite(candidate.score)
     ? candidate.score
@@ -369,9 +337,7 @@ async function submitCurrent(): Promise<void> {
     detail_id: submittedItem.detail_id,
     score_awarded: score,
     ...(note ? { deduction_reason: note } : {}),
-    ...(draft.stepScores ? { step_scores: draft.stepScores.map((step) => ({
-      part_id: step.partId, step_id: step.stepId, score_awarded: Number(step.scoreText),
-    })) } : {}),
+    ...(draft.stepScores ? { step_scores: submittedSteps(draft) } : {}),
   }
 
   submitting.value = true
@@ -391,10 +357,7 @@ async function submitCurrent(): Promise<void> {
       reviewItemId: submittedItem.review_item_id,
       annotationRetry,
     })
-    feedbackTone.value = annotationRetry ? 'warning' : 'success'
-    feedback.value = annotationRetry
-      ? '分数已确认，标注图需要稍后刷新。'
-      : '教师最终分已确认。'
+
   } catch (error) {
     feedbackTone.value = 'error'
     feedback.value = error instanceof ApiError && error.kind === 'conflict'
@@ -430,7 +393,6 @@ async function loadRubric(sessionId: number, questionId: string): Promise<void> 
 watch(
   item,
   (next) => {
-    stepModeNotice.value = ''
     if (!next) {
       currentDraft.value = null
       return
@@ -465,7 +427,6 @@ watch(
 
 onBeforeUnmount(() => {
   rubricGeneration += 1
-  clearReviewRubrics()
 })
 </script>
 
@@ -484,12 +445,12 @@ onBeforeUnmount(() => {
     <StatePanel
       v-if="!item || !currentDraft"
       kind="empty"
-      title="请选择复核记录"
-      description="从左侧队列选择一名学生后，可在这里核对并确认教师最终分。"
+      title="请选择一份答卷"
+      description="选择答卷后，可在这里核对并确认教师最终分。"
     />
 
     <template v-else>
-      <div class="review-scoring-inspector__scroll" data-testid="scoring-scroll-region">
+      <div :style="{ '--review-status-color': reviewStatus[item.score_status].color }" :data-score-status="item.score_status" class="review-scoring-inspector__scroll" data-testid="scoring-scroll-region">
         <header class="review-scoring-inspector__header">
           <p class="review-scoring-inspector__heading">
             <span class="review-scoring-inspector__heading-title">
@@ -528,10 +489,10 @@ onBeforeUnmount(() => {
               data-testid="review-rubric-points"
             >
               <article
-                v-for="point in rubric.points"
+                v-for="(point, pointIndex) in rubric.points"
                 :key="`${point.part_id}:${point.step_id}`"
                 class="review-rubric-point"
-                :class="{ 'review-rubric-point--active': activeStepKey === `${point.part_id}:${point.step_id}` }"
+                :class="{ 'review-rubric-point--active': activeStepKey === `${point.part_id}:${point.step_id}`, 'review-rubric-point--red': stepNeedsReview(item, stepDraft(point.part_id, point.step_id)).red }"
                 :data-step-key="`${point.part_id}:${point.step_id}`"
                 @click="focusQuickInput(point.part_id, point.step_id, $event)"
               >
@@ -540,7 +501,8 @@ onBeforeUnmount(() => {
                     class="review-rubric-point__goal"
                     :title="point.core_goal || point.part_label"
                   >
-                    <QuestionHtmlBlock :text="point.core_goal || point.part_label" inline typeset-text />
+                    {{ stepNumber(pointIndex) }} <QuestionHtmlBlock :text="point.core_goal || point.part_label" inline typeset-text />
+                    <i v-if="stepNeedsReview(item, stepDraft(point.part_id, point.step_id)).red" class="review-red-tag">{{ stepNeedsReview(item, stepDraft(point.part_id, point.step_id)).label }}</i>
                   </span>
                   <span
                     v-if="currentDraft.stepScores && stepDraft(point.part_id, point.step_id)"
@@ -584,6 +546,7 @@ onBeforeUnmount(() => {
                     </div>
                   </details>
                 </div>
+                <ReviewStepRecord v-if="currentDraft.stepScores && stepDraft(point.part_id, point.step_id)" :item="item" :draft="currentDraft" :index="pointIndex" :disabled="submitting" />
               </article>
             </div>
             <p v-else class="review-scoring-section__muted">评分配置只提供了本题满分，暂无更细步骤。</p>
@@ -660,7 +623,7 @@ onBeforeUnmount(() => {
               >
                 <input
                   class="review-quick-score__input"
-                  :class="{ 'review-quick-score__input--invalid': quickInvalid.has(stepKey(step)) }"
+                  :class="{ 'review-quick-score__input--invalid': quickInvalid.has(stepKey(step)), 'review-score-red': stepNeedsReview(item, step).red }"
                   :value="step.scoreText"
                   type="text"
                   inputmode="numeric"
@@ -678,7 +641,7 @@ onBeforeUnmount(() => {
                   @blur="onQuickStepBlur"
                   @click="selectScore"
                 >
-                <small>{{ step.stepId }} / {{ formatScore(step.maxScore) }}</small>
+                <small>{{ stepNumber(index) }} / {{ formatScore(step.maxScore) }} <i v-if="stepNeedsReview(item, step).red" class="review-red-tag">{{ stepNeedsReview(item, step).label }}</i></small>
               </span>
             </template>
             <template v-else>
@@ -686,6 +649,7 @@ onBeforeUnmount(() => {
                 id="teacher-score"
                 data-testid="teacher-score"
                 class="review-quick-score__input"
+                :class="{ 'review-score-red': stepNeedsReview(item).red }"
                 :value="currentDraft.scoreText"
                 type="text"
                 inputmode="decimal"
@@ -707,7 +671,7 @@ onBeforeUnmount(() => {
             </span>
           </div>
           <div class="review-quick-score__meta">
-            <span class="review-quick-score__hint">数字给分 · Tab 下一步 · Enter 提交 · 方向键切换</span>
+            <span class="review-quick-score__hint">数字给分 · <kbd>Tab</kbd> 下一步 · <kbd>Enter</kbd> 确认 · <kbd>←</kbd> / <kbd>→</kbd> 换题 · <kbd>↑</kbd> / <kbd>↓</kbd> 换人</span>
             <span v-if="quickNotice" class="review-quick-score__notice" role="status">{{ quickNotice }}</span>
             <span v-if="draftStore.dirtyCount > 0" class="review-quick-score__drafts">
               {{ draftStore.dirtyCount }} 条草稿未确认

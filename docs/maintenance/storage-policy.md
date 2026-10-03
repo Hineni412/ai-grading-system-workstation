@@ -9,7 +9,8 @@
 | 核心数据库 | `user_data/databases/` | 考试、批改、题库等正式状态 | 始终保留，不参与自动归档或去重 |
 | 原始业务文件 | `user_data/exams/`、`user_data/templates/`、`user_data/question_bank/` | 试卷、样卷、模板、题库原件及衍生素材 | 原件默认保留；只有明确可再生成的副本才进入维护候选 |
 | 批注缓存与导出 | `user_data/cache/annotated_pages/`、`user_data/annotated/`、`user_data/reports/` | 用时生成的批注图、旧批注图、成绩表和报告 | 批注缓存有大小上限；旧图由教师明确清理；导出保留门槛见下 |
-| 本地学情快照 | `user_data/reports/.training_diagnosis/profiles.cache` | 已有考试与训练记录计算出的逐生诊断及群体汇总，供重启后首次读取 | 应用后台保存，单文件最多 12 个当前来源版本的范围；版本不符或文件不可用时重算，不删除原始记录 |
+| 本地学情快照 | `user_data/reports/.training_diagnosis/profiles.cache` | 已有考试与训练记录计算出的逐生诊断、群体汇总、概览、图谱及含小组的完整诊断公开响应，供重启后首次读取 | 应用后台保存，单文件最多 12 个当前来源版本的条目，优先保留公开投影；完整公开响应压缩保存，前台返回完整 JSON；小组还核对全部设置、日期和题目资源元数据；版本不符或文件不可用时重算，不删除原始记录 |
+| 题库技能读取缓存 | `user_data/cache/question_bank_skills.cache` | 当前题库技能投影，供应用重启后恢复浏览统计 | 应用读取时保存，单文件上限 16 MiB；数据库、计算规则或素材状态不符时重新校验并计算，文件损坏或保存失败不阻断读取；不进入普通业务备份，不删除题库原件 |
 | 临时与工具输出 | `user_data/temp/`、`user_data/outputs/` | 临时文件、基准和比较结果 | 达到保留门槛后只列为候选，不自动删除 |
 | 备份与归档 | `user_data/backups/`、`user_data/archives/` | 数据库快照、完整备份和维护工具生成的压缩包 | 按下述数量和时间门槛保留 |
 | 配置与密钥 | `user_data/config/`、`%LOCALAPPDATA%\AIGradingSystem\config\` | 上传配置、本机设置和模型 profile；`运行.bat` 默认把 API profile 放在前一个目录 | 视为敏感配置，不进入项目仓库或业务导出 |
@@ -25,6 +26,8 @@
 - 查看批注页时生成到 `cache/annotated_pages/session_N/`；缓存总量上限 256 MiB，超过上限按最近查看时间回收旧图，保留最近 10 分钟和本次生成的图片。数据库仅保留可重新生成的路径引用；文件缺失时重新画图。
 - 已有 `annotated/session_N/*_annotated.jpg` 不自动删除；教师在设置页“数据与空间”中普通确认后清理，相关旧路径置空，下次查看按缓存规则生成。
 - 成绩表、批注原卷 PDF、教师额外导出的训练 zip/docx/md、讲义和错题本 Word/ZIP 下载成功后删除本机副本，需要时再生成；讲义临时文件位于报告目录的 `training_handouts/`，错题本位于 `wrong_question_books/`。
+- 在线个人报告直接读取已有叙述和原卷裁切，不新增持久文件。叙述位于 `reports/.analysis_narrative_cache/`；生成任务在其中的 `personal_index/session_N.json` 保存每生最近一次叙述的键、本人输入修订号、版本和生成时间，每场一个小型索引文件，查看不写索引，旧缓存不迁移。
+- 新的个人报告批量导出副本位于 `reports/personal_report_bundles/job-N/`，HTML 或 ZIP 下载成功后删除，需要时只读缓存再次导出；历史留存的个人报告 ZIP 保持原规则，可重复下载，由教师明确删除。只生成叙述的任务结束时回收暂存 HTML，不进入文件历史。
 - 个性化训练每人保留一份冻结 PDF，供打印和回收扫描，不因下载删除。
 - 报告中的 `*_批注原卷页面_*` 目录超过 7 天后可列为归档候选。
 - `user_data/outputs/` 中 `benchmark_*` 目录超过 7 天、名称含 `comparison` 的目录超过 14 天后可列为归档候选。
@@ -62,8 +65,9 @@
 - 普通备份由 `update_tools/backup_core.py` 实现，范围为 grading（阅卷及题库）；排除模型密钥、诊断日志及 SQLite 临时文件；完整安装包包含数据与密钥，不能当作普通备份分发，见 `docs/maintenance/packaging.md`；单条数据删除不会追溯删除已有备份副本。
 - 词表状态虽可位于账户配置目录，普通备份仍明确包含状态主文件、其 `.bak`、审核回执及建议记录，归档成员固定为 `config/taxonomy-governance/` 下的四个文件；离线恢复与恢复前安全备份均把这些成员映射到本机 `taxonomy_state_path` 及配套文件，不复制相邻的模型密钥；兼容输入：旧备份没有这些成员时不改变现有词表状态。
 - `tools/maintain_question_bank.py` 统一题库定期维护：`errors --sessions 3 4 5` 在副本上预演既有考试错因回挂，只接纳与当前证据匹配的成果，重复执行不重复记录；`standard --release <发布文件>` 预演标准变化和受影响题目。
+- `tools/maintain_question_bank.py source-scores` 在真实题库原位置只读预览题干开头分值的显示差异，复用显示与导出规则；只输出题目计数、分值标记差异、格式结构核对、按原文保留作答空间的数量及已有分析记录数量，不保存题干正文、不调用模型、不复制数据库。该操作不支持 `--apply`，不修改历史题目、答案、富内容或分析版本。
 - 标准修订的 `--links <关联文件>` 是数组，每项含 `question_id`、`evidence_version_id` 和完整 `points`；各点含 `part_id`、`evidence_point_id`、`links`，每个链接含 `term_id`、`stable_key`、`role` 和可选 `weight`；必须覆盖全部受影响题及其当前判定点，未变化题不能夹带进来；生成或人工整理这些关联仍沿用既有版本工具。
-- 上述工具默认只读取真实数据库，在临时副本上预演，不调用模型；正式执行需先关闭应用并取得本次批量操作授权，添加 `--apply` 后先在 `user_data/backups/question_maintenance_<时间>/question_bank_before.db` 创建题库快照，再执行、检查数据库完整性和引用；考试库、原答卷、分数及场次分析文件不改写。
+- 上述错因和标准维护默认只读取真实数据库，在临时副本上预演，不调用模型；正式执行需先关闭应用并取得本次批量操作授权，添加 `--apply` 后先在 `user_data/backups/question_maintenance_<时间>/question_bank_before.db` 创建题库快照，再执行、检查数据库完整性和引用；考试库、原答卷、分数及场次分析文件不改写。
 - 标准先准备候选关联再启用；执行中断时保留快照及已完成记录，错因回挂可幂等续跑，标准失败需先核对活动版本和候选记录再重试；恢复覆盖快照按 `AGENTS.md` 另行授权；既有一次性脚本不自动归档或删除。
 
 以下工具会读取真实数据：只读审计和预览自动允许；向 `user_data` 写入结果、应用硬链接或归档等改变真实数据状态的操作仍按 `AGENTS.md` 授权；预览不等于批准应用。

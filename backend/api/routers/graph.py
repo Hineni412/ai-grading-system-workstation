@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import pickle
 import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -269,9 +270,13 @@ def _build_profile_dicts(
     service: DiagnosisProfileService,
     scope: Mapping[str, Any],
     exam_scope: Mapping[str, Any],
+    *, include_source_details: bool = True,
 ) -> dict[str, Any]:
     try:
-        profile = service.build_tag_profiles(
+        build = (service.build_summary_profiles
+                 if not include_source_details and isinstance(service, DiagnosisProfileService)
+                 else service.build_tag_profiles)
+        profile = build(
             scope=dict(scope),
             exam_scope=dict(exam_scope),
         )
@@ -319,7 +324,7 @@ def compute_graph_query_payload(
 
     def _compute() -> dict[str, Any]:
         profile = _build_profile_dicts(
-            diagnosis_service, scope=scope, exam_scope=exam_scope
+            diagnosis_service, scope=scope, exam_scope=exam_scope, include_source_details=False
         )
         mastery_by_key = getattr(diagnosis_service, "latest_aggregated_mastery", None)
         students = profile.get("students", [])
@@ -333,17 +338,31 @@ def compute_graph_query_payload(
     key_fn = getattr(diagnosis_service, "tag_profile_cache_key", None)
     if not callable(key_fn):
         return _compute()
-    return _GRAPH_QUERY_CACHE.get_or_compute(
+    profile_key = key_fn(scope=dict(scope), exam_scope=dict(exam_scope))
+    local_key = (*profile_key, 'graph-query-payload-v1', query.knowledge_keys, query.prerequisite_depth)
+    def compute_or_read():
+        reader = getattr(diagnosis_service, '_read_local_profile', None)
+        entry = reader(local_key) if callable(reader) else None
+        if entry is not None:
+            payload = pickle.loads(entry[0]).get('graph')
+            if isinstance(payload, dict):
+                return payload
+        return _compute()
+    payload = _GRAPH_QUERY_CACHE.get_or_compute(
         (
             "graph-query-v1",
             str(Path(graph_service.db_path).resolve(strict=False)),
             str(getattr(graph_service.resolver, "release_id", "")),
-            key_fn(scope=dict(scope), exam_scope=dict(exam_scope)),
+            profile_key,
             query.knowledge_keys,
             query.prerequisite_depth,
         ),
-        _compute,
+        compute_or_read,
     )
+    if getattr(diagnosis_service, 'persist_snapshots', False):
+        diagnosis_service._save_local_profile(local_key, (pickle.dumps({'graph': payload}, pickle.HIGHEST_PROTOCOL),
+                                                         pickle.dumps({}, pickle.HIGHEST_PROTOCOL)))
+    return payload
 
 
 def _build_profile(

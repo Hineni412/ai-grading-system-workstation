@@ -195,7 +195,7 @@
   min-width: 0;
   min-height: 0;
   grid-row: 3;
-  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
+  grid-template-columns: minmax(0, 1.35fr) minmax(380px, 0.65fr);
 }
 
 .review-deep-workspace__body--answers {
@@ -203,7 +203,7 @@
     minmax(0, 1.1fr)
     6px
     minmax(300px, var(--review-answer-panel-width, 420px))
-    minmax(280px, 0.55fr);
+    minmax(380px, 0.55fr);
 }
 
 .review-deep-workspace__divider {

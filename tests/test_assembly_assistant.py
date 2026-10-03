@@ -463,3 +463,47 @@ def test_surface_unfolding_only_lists_that_skill_and_preserves_training_suppleme
     assert empty.status_code == 200
     assert empty.json()['candidate_total'] == 0
     assert empty.json()['candidates'] == []
+
+
+def test_switching_targets_reuses_source_read_but_reloads_changed_constraints_and_data(client_and_source, monkeypatch):
+    from question_bank.recommendation.personalized import _SOURCE_SNAPSHOT_CACHE
+
+    client, _, _, _ = client_and_source
+    module = client.app.dependency_overrides[get_personalized_recommendation_module]()
+    original = module._source_snapshot_uncached
+    reads = []
+    def counted(**kwargs):
+        reads.append(1)
+        return original(**kwargs)
+    monkeypatch.setattr(module, '_source_snapshot_uncached', counted)
+    _SOURCE_SNAPSHOT_CACHE.clear()
+    first = client.post('/api/question-assembly/assistant/candidates', json=request(target_keys=[POINTS[0]['id']]))
+    second = client.post('/api/question-assembly/assistant/candidates', json=request(target_keys=[POINTS[1]['id']]))
+    assert first.status_code == second.status_code == 200
+    assert len(reads) == 1
+    assert {c['question_id'] for c in first.json()['candidates']} == set(range(2, 28))
+    assert {c['question_id'] for c in second.json()['candidates']} == set(range(28, 33))
+    typed = client.post('/api/question-assembly/assistant/candidates', json=request(target_keys=[POINTS[1]['id']], question_type='选择题'))
+    assert typed.json() == second.json()
+    assert len(reads) == 1
+    narrower = client.post('/api/question-assembly/assistant/candidates', json=request(target_keys=[POINTS[0]['id']], difficulty_max=2))
+    assert narrower.status_code == 200
+    assert narrower.json()['candidates'] == []
+    assert len(reads) == 2
+    with connect(module.db_path) as conn:
+        conn.execute('UPDATE questions SET is_deleted=1 WHERE id=2')
+    changed = client.post('/api/question-assembly/assistant/candidates', json=request(target_keys=[POINTS[0]['id']]))
+    assert changed.status_code == 200
+    assert {c['question_id'] for c in changed.json()['candidates']} == set(range(3, 28))
+    assert len(reads) == 3
+    later_chapter = VOLUME['chapters'][1]
+    expanded = client.post('/api/question-assembly/assistant/candidates', json=request(
+        chapter_id='', teaching_progress_chapter_id=later_chapter['id'], target_keys=[POINTS[0]['id']]))
+    assert expanded.status_code == 200
+    assert len(reads) == 4
+    assert later_chapter['sections'][0]['knowledge_points'][0]['id'] in {
+        point['knowledge_key'] for point in expanded.json()['weaknesses']}
+    _SOURCE_SNAPSHOT_CACHE.clear()
+    rechecked = client.post('/api/question-assembly/assistant/candidates', json=request(
+        chapter_id='', teaching_progress_chapter_id=later_chapter['id'], target_keys=[POINTS[0]['id']]))
+    assert rechecked.json() == expanded.json()

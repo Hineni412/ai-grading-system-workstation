@@ -238,6 +238,33 @@ def test_whole_question_topics_still_block_future_chapters_after_skill_refinemen
     )
 
 
+def test_facets_reuse_read_generation_and_refresh_in_place_tag_changes(current_link_module, monkeypatch):
+    import sqlite3
+    from question_bank.recommendation import target_matching as module
+    bank = current_link_module
+    module._FACETS_CACHE.clear()
+    statements = []
+    original_connect = sqlite3.connect
+    def traced_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+    monkeypatch.setattr(sqlite3, 'connect', traced_connect)
+    first = module.load_question_facets(bank.db_path, bank.current_knowledge)
+    assert module.load_question_facets(bank.db_path, bank.current_knowledge) == first
+    assert not any('COUNT(' in statement.upper() for statement in statements)
+    future = 'kp_bnu24_math_g8_upper_5_1_1'
+    # Counts and timestamps stay unchanged: an in-place edit must still refresh.
+    with original_connect(bank.db_path) as writer:
+        writer.execute("UPDATE question_tags SET tag_value=? WHERE question_id=1 AND tag_type='knowledge_point'",
+                       (future,))
+    changed = module.load_question_facets(bank.db_path, bank.current_knowledge)
+    assert changed[1]['topic_keys'] == [future] and changed != first
+    assert module.load_question_facets(bank.db_path, bank.current_knowledge, question_ids=[1]) == {1: changed[1]}
+    module._FACETS_CACHE.clear()
+    assert module.load_question_facets(bank.db_path, bank.current_knowledge) == changed
+
+
 @pytest.mark.parametrize("paper_mode", ["individual", "shared"])
 def test_new_skill_links_generate_and_persist_personal_and_shared_drafts(
     current_link_module, monkeypatch, paper_mode

@@ -404,6 +404,23 @@ def test_multiple_points_with_only_total_stay_coarse_and_keep_mastery_input(tmp_
         assert [(o["point_id"], o["achieved"]) for o in fine["point_observations"]] == [("p1", 1)]
 
 
+def test_new_teacher_fields_keep_step_mastery_and_removed_carry_is_failed():
+    from integration.diagnosis_profile_service import _teacher_step_records
+    projected = _projected_with_steps()
+    steps = [
+        {"part_id": "part-1", "step_id": "S1", "score_awarded": 4, "max_score": 4,
+         "evidence_point_ids": ["p1"], "deduction_source": "none", "ai_score_awarded": 0},
+        {"part_id": "part-1", "step_id": "S2", "score_awarded": 0, "max_score": 2,
+         "evidence_point_ids": ["p2", "p3"], "deduction_source": "ai", "ai_score_awarded": 0,
+         "reason": "独立错误", "teacher_note": "新字段不影响校验"},
+    ]
+    row = {"teacher_final_revision": 1, "teacher_final_scan_batch_id": "TEST-review", "score_awarded": 4,
+           "assessment_state": {"teacher_review": {"revision": 1, "scan_batch_id": "TEST-review", "score_awarded": 4, "steps": steps}}}
+    records = _teacher_step_records(projected, row)
+    assert records is not None
+    assert [record["achievement"] for record in records] == ["full", "none"]
+    assert _step_target_contributions(projected, records)[_LEAF_KEY] == (0, 2)
+    assert _step_target_contributions(projected, records)[_SKILL_KEY] == (4, 6)
 
 
 def test_mastery_uses_each_point_instead_of_exam_score_allocation():

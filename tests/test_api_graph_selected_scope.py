@@ -166,9 +166,14 @@ def test_semester_graph_and_evidence_exclude_other_terms_and_empty_scope(tmp_pat
     assert payload["scope"]["student_score_profiles"]["3"]["score_rate"] is None
     assert payload["scope"]["use_historical_fallback"] is False
     assert payload["nodes"]
-    from integration.mastery_overview import build_mastery_overview
+    from backend.api.routers.graph import compute_graph_query_payload
+    from integration.mastery_overview import build_mastery_overview, overview_payload
+    from question_bank.relations.query_service import CurrentGraphQuery
     service = DiagnosisProfileService(grading_db, question_bank_db)
+    graph_service = CurrentKnowledgeGraphQueryService(question_bank_db)
     full = service.build_profiles(scope=query['scope'], exam_scope=query['exam_scope'])
+    expected_graph = graph_service.query(full, CurrentGraphQuery(),
+                                         mastery_by_key=service.latest_aggregated_mastery)
     expected_overview = build_mastery_overview(full, volume_id='bnu24-math-g8-upper')
     by_key = {item['knowledge_key']: item for item in full['group_weak_points']}
     assert any(node['definition'] for node in expected_overview['nodes'])
@@ -176,6 +181,44 @@ def test_semester_graph_and_evidence_exclude_other_terms_and_empty_scope(tmp_pat
         assert node['group_interval_low'] == by_key.get(node['knowledge_key'], {}).get('interval_low')
         assert node['group_interval_high'] == by_key.get(node['knowledge_key'], {}).get('interval_high')
         assert sum(node['distribution'].values()) == node['evidence_student_count']
+    from unittest.mock import patch
+    from integration import diagnosis_profile_service as profiles
+    with profiles._TAG_PROFILE_CACHE_LOCK:
+        profiles._TAG_PROFILE_CACHE.clear()
+    with patch.object(service, '_error_cause_index', side_effect=AssertionError('summary read detailed causes')):
+        assert compute_graph_query_payload(service, graph_service, scope=query['scope'],
+            exam_scope=query['exam_scope'], query=CurrentGraphQuery()) == expected_graph
+        assert overview_payload(service, scope=query['scope'], exam_scope=query['exam_scope'],
+            volume_id='bnu24-math-g8-upper') == expected_overview
+    # Selection filters output after the same population fit. Empty requested
+    # session_ids on a semester must reuse supplied observations as well.
+    with profiles._TAG_PROFILE_CACHE_LOCK:
+        profiles._TAG_PROFILE_CACHE.clear()
+    semester = {**query['exam_scope'], 'session_ids': []}
+    original_projection = service._projected_tag_evidence
+    with patch.object(service, '_projected_tag_evidence', wraps=original_projection) as calls:
+        service.build_summary_profiles(scope={'mode': 'all'}, exam_scope=semester)
+        assert calls.call_count == 1
+    service.persist_snapshots = True
+    assert overview_payload(service, scope=query['scope'], exam_scope=query['exam_scope'],
+        volume_id='bnu24-math-g8-upper') == expected_overview
+    assert compute_graph_query_payload(service, graph_service, scope=query['scope'],
+        exam_scope=query['exam_scope'], query=CurrentGraphQuery()) == expected_graph
+    saved = service._local_profile_path().read_bytes()
+    service.persist_snapshots = False
+    from integration.mastery_overview import clear_overview_caches
+    from backend.api.routers.graph import _GRAPH_QUERY_CACHE
+    clear_overview_caches()
+    _GRAPH_QUERY_CACHE.clear()
+    with profiles._TAG_PROFILE_CACHE_LOCK:
+        profiles._TAG_PROFILE_CACHE.clear()
+    restored = DiagnosisProfileService(grading_db, question_bank_db)
+    with patch.object(restored, '_compute_tag_profiles', side_effect=AssertionError('recomputed saved projection')):
+        assert overview_payload(restored, scope=query['scope'], exam_scope=query['exam_scope'],
+            volume_id='bnu24-math-g8-upper') == expected_overview
+        assert compute_graph_query_payload(restored, graph_service, scope=query['scope'],
+            exam_scope=query['exam_scope'], query=CurrentGraphQuery()) == expected_graph
+    assert service._local_profile_path().read_bytes() == saved
     key = "kp_alg_linear_equation"
     for volume, expected in [
         ("bnu24-math-g8-upper", {2}),

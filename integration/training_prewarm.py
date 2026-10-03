@@ -3,8 +3,8 @@
 A single daemon thread polls the commit generations of both databases.  When
 they changed (and once at startup) — and only while no job is queued or
 running — it recomputes the most recently requested keys plus the startup
-batch (latest semester volume: all students + each class, diagnosis and
-overview) through the same request context and helpers the endpoints use, so
+batch (latest semester volume: all students + each class, diagnosis,
+overview, default graph and first-chapter grouping) through the same request context and helpers the endpoints use, so
 the entries it writes are identical to request-produced ones.  One INFO line
 per batch; no student data is logged.
 """
@@ -37,6 +37,7 @@ _ACTIVE_JOB_STATUSES = ("queued", "running")
 
 _RECENT_LOCK = threading.Lock()
 _RECENT: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
+_RECENT_GENERATION = 0
 
 
 def record_request(
@@ -48,6 +49,7 @@ def record_request(
 ) -> None:
     """Remember a (scope, exam_scope) request for background refresh."""
 
+    global _RECENT_GENERATION
     key = (
         json.dumps(dict(scope), sort_keys=True, default=str),
         json.dumps(dict(exam_scope), sort_keys=True, default=str),
@@ -62,6 +64,8 @@ def record_request(
                 "touched": time.monotonic(),
             }
             _RECENT[key] = entry
+        if entry['kinds'].get(str(kind)) != dict(params):
+            _RECENT_GENERATION += 1
         entry["kinds"][str(kind)] = dict(params)
         entry["touched"] = time.monotonic()
         _RECENT.move_to_end(key)
@@ -84,8 +88,15 @@ def recent_requests() -> list[dict[str, Any]]:
 
 
 def clear_recent_requests() -> None:
+    global _RECENT_GENERATION
     with _RECENT_LOCK:
         _RECENT.clear()
+        _RECENT_GENERATION += 1
+
+
+def _recent_generation() -> int:
+    with _RECENT_LOCK:
+        return _RECENT_GENERATION
 
 
 def prewarm_enabled() -> bool:
@@ -115,6 +126,8 @@ class TrainingPrewarmWorker:
         self._seen_generations: tuple[int, int] | None = None
         self._startup_done = False
         self._seen_day: str | None = None
+        self._seen_group_day: str | None = None
+        self._seen_recent_generation: int | None = None
         self.batches: list[tuple[int, float]] = []
 
     def start(self) -> None:
@@ -149,7 +162,11 @@ class TrainingPrewarmWorker:
             commit_generation(Path(self._paths.qb_db_path)),
         )
         day = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
-        if self._startup_done and generations == self._seen_generations and day == self._seen_day:
+        group_day = datetime.now(timezone.utc).date().isoformat()
+        recent_generation = _recent_generation()
+        if (self._startup_done and generations == self._seen_generations and day == self._seen_day
+                and group_day == self._seen_group_day
+                and recent_generation == self._seen_recent_generation):
             return False
         if self._jobs_active():
             return False
@@ -158,6 +175,8 @@ class TrainingPrewarmWorker:
             self._seen_generations = generations
             self._startup_done = True
             self._seen_day = day
+            self._seen_group_day = group_day
+            self._seen_recent_generation = recent_generation
             return False
         started = time.monotonic()
         completed = 0
@@ -182,6 +201,8 @@ class TrainingPrewarmWorker:
             self._seen_generations = generations
             self._startup_done = True
             self._seen_day = day
+            self._seen_group_day = group_day
+            self._seen_recent_generation = recent_generation
         return True
 
     def _jobs_active(self) -> bool:
@@ -253,6 +274,11 @@ class TrainingPrewarmWorker:
                         "assistant", s, e, p
                     )
                 )
+        elif kind == 'grouped_diagnosis':
+            if identity not in seen:
+                seen.add(identity)
+                tasks.append(lambda s=scope, e=exam_scope, p=dict(params):
+                    self._compute('grouped_diagnosis', s, e, p))
         return tasks
 
     def _startup_tasks(
@@ -264,11 +290,22 @@ class TrainingPrewarmWorker:
             return []
         tasks: list[Callable[[], None]] = []
         exam_scope = self._normalized_exam_scope(volume_id)
+        from backend.api.schemas.training import TrainingGroupingRequest
+        from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+        volume = curriculum_volume(volume_id=volume_id)
+        grouping = None
+        if volume and volume['chapters']:
+            grouping = TrainingGroupingRequest(scope_keys=[volume['chapters'][0]['knowledge_id']],
+                curriculum_volume_id=volume_id).model_dump()
         for scope in self._startup_scopes():
-            for kind, params in (
+            defaults = [
                 ("diagnosis", {}),
                 ("overview", {"volume_id": volume_id}),
-            ):
+                ("graph", {"knowledge_keys": [], "prerequisite_depth": 1}),
+            ]
+            if grouping is not None:
+                defaults.append(('grouped_diagnosis', {'grouping': grouping}))
+            for kind, params in defaults:
                 tasks.extend(self._tasks_for(kind, dict(scope), dict(exam_scope), params, seen))
         for class_name in self._class_names():
             # The assistant panel's first search sends this exact default body.
@@ -296,9 +333,7 @@ class TrainingPrewarmWorker:
         return tasks
 
     def _startup_scopes(self) -> list[dict[str, Any]]:
-        scopes = [
-            self._normalized_scope({"mode": "all", "use_historical_fallback": False})
-        ]
+        scopes = []
         for class_name in self._class_names():
             scopes.append(
                 self._normalized_scope(
@@ -310,6 +345,9 @@ class TrainingPrewarmWorker:
                     }
                 )
             )
+        # Keep the default all-student page projections newest in the bounded
+        # local cache when there are more class projections than it can hold.
+        scopes.append(self._normalized_scope({"mode": "all", "use_historical_fallback": False}))
         return scopes
 
     @staticmethod
@@ -400,8 +438,17 @@ class TrainingPrewarmWorker:
                 self._compute_graph(service, scope, exam_scope, params)
             elif kind == "assistant":
                 self._compute_assistant(service, params)
+            elif kind == 'grouped_diagnosis':
+                from backend.api.routers.training import _grouped_diagnosis_response_bytes
+                from backend.api.schemas.training import TrainingGroupingRequest
+                from question_bank.recommendation.personalized import PersonalizedRecommendationModule
+                module = PersonalizedRecommendationModule(db_path=self._paths.qb_db_path,
+                    data_root=self._paths.data_root, semester_mastery=service.semester_mastery)
+                _grouped_diagnosis_response_bytes(service, module, scope=scope, exam_scope=exam_scope,
+                    grouping=TrainingGroupingRequest.model_validate(params['grouping']))
             else:
-                service.build_profiles(scope=scope, exam_scope=exam_scope)
+                from backend.api.routers.training import _diagnosis_response_bytes
+                _diagnosis_response_bytes(service, scope=scope, exam_scope=exam_scope)
 
     def _compute_graph(
         self,

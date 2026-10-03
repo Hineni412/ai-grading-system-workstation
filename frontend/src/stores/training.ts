@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import { defineStore } from 'pinia'
 
 import {
@@ -72,7 +72,8 @@ export const useTrainingStore = defineStore('training', () => {
     mode: 'current',
     sessionIds: [],
   })
-  const diagnosis = ref<TrainingDiagnosis | null>(null)
+  // Diagnosis is a read snapshot, replaced as a whole after each request.
+  const diagnosis = shallowRef<TrainingDiagnosis | null>(null)
   const analysisState = ref<TrainingRequestState>('idle')
   const errorMessage = ref('')
 
@@ -84,9 +85,17 @@ export const useTrainingStore = defineStore('training', () => {
   const groupDiagnosisCache = new Map<string, {
     basis: string; diagnosis: TrainingDiagnosis
   }>()
+  // API diagnoses are complete read snapshots, replaced rather than edited.
+  // The same snapshot is checked by the store and chapter component.
+  const groupDiagnosisBases = new WeakMap<TrainingDiagnosis, string>()
 
   function groupDiagnosisBasis(value: TrainingDiagnosis): string {
-    return JSON.stringify([value.scope, value.exam_scope, value.students, value.knowledge_catalog])
+    let basis = groupDiagnosisBases.get(value)
+    if (basis === undefined) {
+      basis = JSON.stringify([value.scope, value.exam_scope, value.students, value.knowledge_catalog])
+      groupDiagnosisBases.set(value, basis)
+    }
+    return basis
   }
 
   function cachedGroupDiagnosis(key: string, basis: TrainingDiagnosis): TrainingDiagnosis | null {
@@ -204,8 +213,10 @@ export const useTrainingStore = defineStore('training', () => {
 
   async function analyze(
     api: TrainingWorkflowApi = trainingApi,
+    initialGroupBody?: TrainingDiagnosisRequest,
   ): Promise<TrainingDiagnosis | null> {
     const body = requestBody()
+    if (initialGroupBody?.grouping) body.grouping = initialGroupBody.grouping
     diagnosisController?.abort()
     const controller = new AbortController()
     diagnosisController = controller
@@ -221,6 +232,12 @@ export const useTrainingStore = defineStore('training', () => {
         || requestGeneration !== generation
         || requestScopeKey !== scopeKey()
       ) return null
+      // Install the complete preview before publishing the diagnosis: the
+      // chapter component mounts in that update and would otherwise fetch
+      // the same evidence a second time. Adoption still re-reads the source.
+      if (initialGroupBody && next.grouping) {
+        rememberGroupDiagnosis(JSON.stringify(initialGroupBody), next, next)
+      }
       diagnosis.value = next
       diagnosisScopeKey = requestScopeKey
       analysisState.value = next.students.some(

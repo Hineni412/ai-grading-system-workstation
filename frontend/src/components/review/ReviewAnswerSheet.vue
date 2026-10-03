@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
-import { resolveReviewItem, type ReviewItemLike } from '../../api/review'
-import { reviewDraftKey, scoreIssue, useReviewDraftStore } from '../../stores/review-drafts'
+import { resolveReviewItem, type ReviewItemLike, type ReviewRubricSection } from '../../api/review'
+import { reviewDraftKey, reviewDraftIssue, scoreIssue, stepNumber, stepNeedsReview, aiStepFor, useReviewDraftStore } from '../../stores/review-drafts'
 import { displayErrorCategory, translateGradingReason } from '../../utils/grading-reasons'
 import StatusBadge from '../design-system/StatusBadge.vue'
 import ReviewImageDialog from './ReviewImageDialog.vue'
+import ReviewStepRecord from './ReviewStepRecord.vue'
+import { reviewStatus } from './review-status'
 
 const props = defineProps<{
   item: ReviewItemLike
   position: number
   submitting: boolean
+  rubric?: ReviewRubricSection | null
 }>()
 
 const emit = defineEmits<{
@@ -24,7 +27,7 @@ const imageKey = ref(0)
 const imageExpanded = ref(false)
 const reviewItem = computed(() => resolveReviewItem(props.item))
 const draft = computed(() => draftStore.drafts[reviewDraftKey(props.item)]!)
-const issue = computed(() => scoreIssue(draft.value.scoreText, reviewItem.value.max_score))
+const issue = computed(() => reviewDraftIssue(draft.value, reviewItem.value.max_score))
 const riskReason = computed(() => {
   const item = reviewItem.value
   if (item.score_status === 'ungraded') return '等待教师评分'
@@ -56,28 +59,17 @@ const deductionReason = computed(() => {
   )
 })
 
-const statusLabel = computed(() => ({
-  ungraded: '待人工评分',
-  ai_ready: 'AI 已完成',
-  ai_review: '待复核',
-  teacher_final: '教师已确认',
-  failed: '处理失败',
-})[reviewItem.value.score_status])
-
-const statusTone = computed(() => ({
-  ungraded: 'neutral',
-  ai_ready: 'ai',
-  ai_review: 'warning',
-  teacher_final: 'teacher',
-  failed: 'danger',
-} as const)[reviewItem.value.score_status])
+const statusLabel = computed(() => reviewStatus[reviewItem.value.score_status].label)
+const statusTone = computed(() => reviewStatus[reviewItem.value.score_status].tone)
+const aiScore = computed(() => typeof reviewItem.value.metadata.ai_score_awarded === 'number'
+  ? reviewItem.value.metadata.ai_score_awarded : reviewItem.value.score_source === 'ai' ? reviewItem.value.score_awarded : null)
+const aiReason = computed(() => [...new Set([deductionReason.value, riskReason.value].filter(Boolean))].join('；'))
 
 function formatScore(value: number | null): string {
   return value !== null && Number.isFinite(value) ? String(value) : '—'
 }
 
 function formatConfidence(value: number | null): string {
-  if (reviewItem.value.score_source !== 'ai') return '人工评分'
   if (value === null) return 'AI 置信度未提供'
   return `置信度 ${Math.round(value <= 1 ? value * 100 : value)}%`
 }
@@ -129,6 +121,7 @@ watch(
     :data-review-item-id="reviewItem.review_item_id"
     :data-detail-id="reviewItem.detail_id ?? undefined"
     :data-score-status="reviewItem.score_status"
+    :style="{ '--review-status-color': reviewStatus[reviewItem.score_status].color }"
     :aria-labelledby="`review-answer-name-${position}`"
   >
     <header class="review-answer-sheet__identity">
@@ -142,11 +135,6 @@ watch(
         :label="statusLabel"
       />
     </header>
-
-    <div class="review-answer-sheet__risk">
-      <span>{{ riskReason }}</span>
-      <span>{{ formatConfidence(reviewItem.confidence_score) }}</span>
-    </div>
 
     <div class="review-answer-sheet__image-frame">
       <p v-if="reviewItem.media.originals_available === false" class="review-answer-sheet__image-error">原卷已清理，分数和作答记录仍保留。</p>
@@ -172,48 +160,46 @@ watch(
 
     <ReviewImageDialog v-if="imageExpanded" :item="item" @close="imageExpanded = false" />
 
-    <div class="review-answer-sheet__decision">
-      <label :for="`batch-score-${position}`">
-        {{ reviewItem.score_source === 'ai' ? '当前 AI 得分（可修改）' : '教师最终分' }}
-      </label>
-      <div class="review-answer-sheet__score">
-        <input
-          :id="`batch-score-${position}`"
-          :value="draft.scoreText"
-          inputmode="decimal"
-          :disabled="reviewItem.teacher_locked || submitting"
-          :aria-invalid="issue !== null"
-          :aria-describedby="issue ? `batch-score-error-${position}` : undefined"
-          :data-testid="`teacher-score-${position}`"
-          :data-score-position="position"
-          @input="updateScore"
-          @focus="selectScore"
-          @keydown="onScoreKeydown"
-        >
-        <span>/ {{ formatScore(reviewItem.max_score) }}</span>
-      </div>
-      <p v-if="issue && !reviewItem.teacher_locked" :id="`batch-score-error-${position}`" class="review-field-error">
-        {{ issue }}
-      </p>
+    <div class="review-answer-sheet__ai">
+      <span>AI <b>{{ formatScore(aiScore) }}/{{ formatScore(reviewItem.max_score) }}</b> · {{ formatConfidence(reviewItem.confidence_score) }}</span>
+      <p :title="aiReason">{{ aiReason }}</p>
     </div>
-
-    <footer class="review-answer-sheet__footer">
-      <button
-        type="button"
-        class="review-answer-sheet__deep"
-        aria-label="深查答卷"
-        @click="emit('openItem', reviewItem.review_item_id)"
-      >
-        <span>深查</span>
-        <span>答卷</span>
-      </button>
-      <p
-        v-if="deductionReason"
-        class="review-answer-sheet__deduction"
-        :title="deductionReason"
-      >
-        <strong>扣分原因：</strong>{{ deductionReason }}
-      </p>
-    </footer>
+    <p v-if="draft.stepNotice" class="review-field-error">{{ draft.stepNotice }}</p>
+    <div class="review-answer-sheet__decision" :class="{ 'review-answer-sheet__decision--steps': draft.stepScores }">
+      <div v-if="draft.stepScores" class="review-step-cells">
+        <div v-for="(step, index) in draft.stepScores" :key="`${step.partId}:${step.stepId}`" class="review-step-cell">
+          <label :for="`batch-score-${position}-${index}`" :title="rubric?.points[index]?.core_goal">
+            <b>{{ stepNumber(index) }} {{ rubric?.points[index]?.core_goal || step.stepId }}</b> /{{ step.maxScore }}
+            <i v-if="stepNeedsReview(item, step).red" class="review-red-tag">{{ stepNeedsReview(item, step).label }}</i>
+          </label>
+          <span class="review-step-cell__ai" :title="String(aiStepFor(item, step)?.reason ?? '')">
+            <template v-if="typeof aiStepFor(item, step)?.score_awarded === 'number'">AI {{ aiStepFor(item, step)?.score_awarded }}/{{ step.maxScore }} {{ aiStepFor(item, step)?.score_awarded === step.maxScore ? '✓' : '✗' }}</template>
+            <template v-else>AI 未评</template>
+          </span>
+          <input :id="`batch-score-${position}-${index}`" :value="step.scoreText" inputmode="numeric"
+            :disabled="reviewItem.teacher_locked || submitting" :aria-label="`第${stepNumber(index)}步给分，满分${step.maxScore}`"
+            :aria-invalid="scoreIssue(step.scoreText, step.maxScore) !== null" :data-score-position="position"
+            :data-review-red="stepNeedsReview(item, step).red" :class="{ 'review-score-red': stepNeedsReview(item, step).red }"
+            @input="draftStore.updateStep(draft.key, index, { scoreText: ($event.target as HTMLInputElement).value })" @focus="selectScore" @keydown="onScoreKeydown">
+          <ReviewStepRecord :item="item" :draft="draft" :index="index" :disabled="reviewItem.teacher_locked || submitting" />
+        </div>
+      </div>
+      <div v-else class="review-answer-sheet__total-input">
+        <label :for="`batch-score-${position}`">教师给分</label>
+        <div class="review-answer-sheet__score">
+          <input :id="`batch-score-${position}`" :value="draft.scoreText" inputmode="decimal"
+            :disabled="reviewItem.teacher_locked || submitting" :aria-invalid="issue !== null"
+            :data-testid="`teacher-score-${position}`" :data-score-position="position" :data-review-red="stepNeedsReview(item).red"
+            :class="{ 'review-score-red': stepNeedsReview(item).red }"
+            @input="updateScore" @focus="selectScore" @keydown="onScoreKeydown">
+          <span>/ {{ formatScore(reviewItem.max_score) }}</span>
+        </div>
+      </div>
+      <div class="review-answer-sheet__decision-side">
+        <strong v-if="draft.stepScores">合计 {{ draft.scoreText || '—' }} / {{ reviewItem.max_score }}</strong>
+        <button type="button" class="review-answer-sheet__deep" aria-label="深查答卷" @click="emit('openItem', reviewItem.review_item_id)">深查 ›</button>
+      </div>
+    </div>
+    <p v-if="issue && !reviewItem.teacher_locked" :id="`batch-score-error-${position}`" class="review-field-error">{{ issue }}</p>
   </article>
 </template>

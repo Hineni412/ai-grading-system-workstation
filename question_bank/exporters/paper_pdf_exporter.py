@@ -27,6 +27,10 @@ from question_bank.personalized_papers.latex_render import (
 )
 from question_bank.services.assembly_basket_state import SectionSpec
 from question_bank.services.question_read_service import QuestionBankReadService
+from question_bank.services.rich_content_service import (
+    strip_question_source_score,
+    strip_question_source_score_blocks,
+)
 
 from .latex_layout import (
     MACROS,
@@ -71,6 +75,13 @@ def _blocks(question: dict, metadata, key: str, data_root: Path) -> list[dict]:
     blocks = list(_rich_blocks(metadata.rich_content, key))
     answer = key == "answer_blocks"
     text = str(question.get("answer_text" if answer else "question_text") or "")
+    if not answer:
+        blocks = strip_question_source_score_blocks(
+            blocks, question_number=str(question.get("question_number") or ""),
+        )
+        text = strip_question_source_score(
+            text, question_number=str(question.get("question_number") or ""),
+        )
     image_values = _dedupe_paths(
         [
             *(question.get("answer_image_paths" if answer else "image_paths") or []),

@@ -19,7 +19,7 @@ async function openAnswer(page: Page) {
   // The synthetic AI result has a total but no step assessment; current review
   // asks the teacher to supply the step instead of inventing its evidence.
   await expect(scoreInput(page)).toHaveValue('')
-  await expect(page.getByText('AI 步骤分与总分不一致，请逐步给分', { exact: true })).toBeVisible()
+  await expect(page.getByText('保存后记录：等待逐步给分', { exact: true })).toBeVisible()
   const crop = page.getByRole('region', { name: '答卷证据查看器' }).getByRole('img')
   await expect.poll(() => crop.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0)
 }
@@ -64,16 +64,23 @@ test('teacher score survives refresh, a stale window, reopening and Excel export
     })
 
     await test.step('the current confirmation control is visible and saves through the real API', async () => {
-      for (const size of [{ width: 1280, height: 720 }, { width: 1920, height: 1080 }]) {
+      await page.getByRole('button', { name: '题目与答案', exact: true }).click()
+      for (const size of [{ width: 1280, height: 720 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
         await page.setViewportSize(size)
         await expect(confirm).toBeInViewport()
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
+        const hint = await page.locator('.review-quick-score__hint').boundingBox()
+        const inspector = await page.locator('.review-scoring-inspector').boundingBox()
+        expect(hint!.x + hint!.width).toBeLessThanOrEqual(inspector!.x + inspector!.width)
+        expect(hint!.height).toBeLessThanOrEqual(20)
       }
       await page.screenshot({ path: testInfo.outputPath('review-before-save.png') })
+      await page.getByRole('button', { name: '题目与答案', exact: true }).click()
       const saved = page.waitForResponse((response) =>
         response.url().endsWith('/review/questions/Q1/confirm') && response.request().method() === 'POST')
       await confirm.click()
       expect((await saved).status()).toBe(200)
+      await expect(page.getByTestId('review-feedback-toast')).toHaveCount(1)
       await expect(score).toHaveValue('16')
       await expect(resultScores(page)).resolves.toEqual({ 'SYN-001': 89, 'SYN-002': 70 })
       await page.getByRole('button', { name: '返回成绩明细', exact: true }).click()
@@ -139,4 +146,40 @@ test('teacher score survives refresh, a stale window, reopening and Excel export
   } finally {
     await staleContext.close()
   }
+})
+
+test('batch step confirmation saves complete teacher attribution and reopening reads it', async ({ page }, testInfo) => {
+  await page.addInitScript((key) => localStorage.setItem(key, '1'), SESSION_STORAGE_KEY)
+  await page.goto('/grading?session=1&question=Q1')
+  await page.locator('#review-scope').selectOption('all')
+  const card = page.getByTestId('review-answer-sheet').filter({ hasText: 'Synthetic Student B' })
+  const score = card.locator('.review-step-cell > input').first()
+  await expect(score).toBeVisible()
+  await score.fill('15')
+  await expect(card.locator('.review-answer-sheet__decision-side')).toContainText('合计 15 / 17')
+  const notes = card.getByRole('textbox', { name: '本步扣分原因' })
+  await expect(notes).toHaveAttribute('tabindex', '-1')
+  await notes.fill('TEST-review：教师确认计算错误')
+  const response = page.waitForResponse(response => response.url().endsWith('/review/questions/Q1/confirm') && response.request().method() === 'POST')
+  await page.getByTestId('confirm-batch').click()
+  const saved = await response
+  expect(saved.status()).toBe(200)
+  const inputs = saved.request().postDataJSON().items
+  expect(inputs).toHaveLength(1)
+  expect(inputs[0].step_scores).toEqual([{ part_id: 'Q1', step_id: 'S1', score_awarded: 15,
+    teacher_note: 'TEST-review：教师确认计算错误', carried_error_from: null }])
+  await page.reload()
+  await page.locator('#review-scope').selectOption('all')
+  const persisted = await page.request.get('/api/sessions/1/review/questions/Q1/items?scope=all')
+  const item = (await persisted.json()).items.find((entry: { student_name: string }) => entry.student_name === 'Synthetic Student B')
+  expect(item.metadata.teacher_review.steps).toEqual([expect.objectContaining({
+    deduction_source: 'teacher', teacher_note: 'TEST-review：教师确认计算错误', score_awarded: 15,
+  })])
+  await expect(card.getByRole('textbox', { name: '本步扣分原因' })).toHaveValue('TEST-review：教师确认计算错误')
+  for (const size of [{ width: 1280, height: 720 }, { width: 1440, height: 900 }]) {
+    await page.setViewportSize(size)
+    await expect(page.getByTestId('confirm-batch')).toBeInViewport()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
+  }
+  await page.screenshot({ path: testInfo.outputPath('batch-review-reopened.png') })
 })

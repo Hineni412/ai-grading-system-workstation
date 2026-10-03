@@ -13,6 +13,8 @@ import stat as stat_module
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,125 @@ _digest_cache: OrderedDict[tuple[Any, ...], str] = OrderedDict()
 _resolve_cache: OrderedDict[tuple[Any, ...], Path] = OrderedDict()
 _resolved_path_cache: OrderedDict[str, Path] = OrderedDict()
 _RESOLVED_PATH_LIMIT = 128
+
+
+def _file_read_identity(path: Path) -> tuple | None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if stat_module.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        return ("reparse",)
+    return (info.st_mode, info.st_dev, info.st_ino, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
+class _FileReadTrace:
+    def __init__(self) -> None:
+        self.paths: dict[str, tuple | None] = {}
+        self.lock = threading.Lock()
+        self.usable = True
+
+    def record(self, path: Path) -> None:
+        absolute = Path(os.path.abspath(path))
+        with self.lock:
+            key = str(absolute)
+            if key not in self.paths:
+                try:
+                    self.paths[key] = _file_read_identity(absolute)
+                except OSError:
+                    self.usable = False
+
+
+_FILE_READ_TRACE: ContextVar[_FileReadTrace | None] = ContextVar("question_bank_file_read_trace", default=None)
+
+
+@contextmanager
+def capture_file_reads():
+    """Capture positive and negative lookups for a derived local snapshot."""
+    trace = _FileReadTrace()
+    token = _FILE_READ_TRACE.set(trace)
+    try:
+        yield trace
+    finally:
+        _FILE_READ_TRACE.reset(token)
+
+
+class _BatchFileReads:
+    """Fresh directory metadata shared only by one input-loading batch."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.lock = threading.Lock()
+        self.directories: dict[Path, tuple[Path, dict[str, os.stat_result]] | None] = {}
+
+    def lookup(self, path: Path) -> tuple[Path, os.stat_result | None] | None:
+        if not path.is_absolute() or not path.is_relative_to(self.root):
+            return None
+        parent = path.parent
+        with self.lock:
+            if parent not in self.directories:
+                try:
+                    resolved_parent = parent.resolve()
+                    with os.scandir(parent) as entries:
+                        files = {os.path.normcase(entry.name): entry.stat(follow_symlinks=False) for entry in entries}
+                    self.directories[parent] = (resolved_parent, files)
+                except OSError:
+                    self.directories[parent] = None
+            directory = self.directories[parent]
+        if directory is None:
+            return None
+        resolved_parent, files = directory
+        info = files.get(os.path.normcase(path.name))
+        # Reparse points (including symbolic links) still use the original
+        # per-file resolution and stat, followed by the caller's root check.
+        if info is not None and (
+            stat_module.S_ISLNK(info.st_mode)
+            or getattr(info, "st_file_attributes", 0) & 0x400
+        ):
+            return None
+        return resolved_parent / path.name, info
+
+
+_BATCH_FILE_READS: ContextVar[_BatchFileReads | None] = ContextVar(
+    "question_bank_batch_file_reads", default=None,
+)
+
+
+@contextmanager
+def batch_file_reads(root: Path):
+    """Reuse fresh scan metadata within a batch; never retain it across calls."""
+    token = _BATCH_FILE_READS.set(_BatchFileReads(memoized_resolve(root)))
+    try:
+        yield
+    finally:
+        _BATCH_FILE_READS.reset(token)
+
+
+def _batch_lookup(path: Path):
+    trace = _FILE_READ_TRACE.get()
+    if trace is not None:
+        trace.record(path)
+    batch = _BATCH_FILE_READS.get()
+    return batch.lookup(path) if batch is not None else None
+
+
+def file_is_file(path: Path) -> bool:
+    found = _batch_lookup(path)
+    if found is not None:
+        return found[1] is not None and stat_module.S_ISREG(found[1].st_mode)
+    return path.is_file()
+
+
+def resolve_existing_file(path: Path) -> Path | None:
+    found = _batch_lookup(path)
+    if found is not None:
+        resolved, info = found
+        return resolved if info is not None and stat_module.S_ISREG(info.st_mode) else None
+    try:
+        return path.resolve() if path.is_file() else None
+    except OSError:
+        return None
 
 
 def memoized_resolve(path: Path) -> Path:
@@ -53,10 +174,16 @@ def memoized_resolve(path: Path) -> Path:
 
 
 def _file_key(path: Path) -> tuple[str, int, int] | None:
-    try:
-        info = path.stat()
-    except OSError:
-        return None
+    found = _batch_lookup(path)
+    if found is not None:
+        info = found[1]
+        if info is None:
+            return None
+    else:
+        try:
+            info = path.stat()
+        except OSError:
+            return None
     if not stat_module.S_ISREG(info.st_mode):
         return None
     return (str(path), int(info.st_size), int(info.st_mtime_ns))
@@ -202,7 +329,7 @@ def _hit_valid(
     if existing:
         return False
     try:
-        if not path.is_file():
+        if not file_is_file(path):
             return False
     except OSError:
         return False
@@ -235,14 +362,17 @@ def cached_asset_resolution(
         entry = _resolve_cache.get(key)
         if entry is not None:
             _resolve_cache.move_to_end(key)
-            path, mode, candidates, stamp = entry
-            if _hit_valid(
-                path, mode, candidates, stamp, root, subdirs, check_candidates
-            ):
-                return path
+    # Filesystem validation can be slow on Windows. Do it outside the global
+    # cache lock so independent question assets can be checked concurrently.
+    if entry is not None:
+        path, mode, candidates, stamp = entry
+        if _hit_valid(
+            path, mode, candidates, stamp, root, subdirs, check_candidates
+        ):
+            return path
     resolved, mode, candidates = resolve()
     try:
-        if not resolved.is_file():
+        if not file_is_file(resolved):
             return resolved
     except OSError:
         return resolved

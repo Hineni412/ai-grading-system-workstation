@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import type {
@@ -14,6 +14,8 @@ import {
   TERMINAL_JOB_STATUSES,
   type JobResponse,
 } from '../api/jobs'
+import { personalReportsApi, type PersonalReportState } from '../api/personal-reports'
+import PersonalReportExportDialog from '../components/results-center/PersonalReportExportDialog.vue'
 import AnalysisConfirmDialog from '../components/file-center/AnalysisConfirmDialog.vue'
 import FileReportLedger from '../components/file-center/FileReportLedger.vue'
 import ScoreExcelSettingsDialog from '../components/file-center/ScoreExcelSettingsDialog.vue'
@@ -26,6 +28,7 @@ import { useFileCenterStore } from '../stores/file-center'
 import { useJobStore } from '../stores/jobs'
 import { useResultsCenterStore } from '../stores/results-center'
 import { useSessionStore } from '../stores/session'
+import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import AppButton from '../components/design-system/AppButton.vue'
 
 const props = withDefaults(defineProps<{
@@ -41,6 +44,8 @@ const chromeless = computed(() => props.embedded || isPopover.value)
 
 const router = useRouter()
 const sessionStore = useSessionStore()
+const curriculumScope = useCurriculumScopeStore()
+const personalVolumeLabel = computed(() => curriculumScope.volumes.find(v => v.id === sessionStore.currentSession?.curriculum_volume_id)?.label)
 const fileCenter = useFileCenterStore()
 const jobStore = useJobStore()
 const resultsStore = useResultsCenterStore()
@@ -59,6 +64,56 @@ const analysisPreflight = ref<AnalysisPreflight | null>(null)
 const analysisPreflightLoading = ref(false)
 const analysisPreflightType = ref<ReportType | null>(null)
 const analysisForceRegenerate = ref(false)
+const personalExportOpen = ref(false)
+const analysisStudentIds = ref<number[]>([])
+const personalStates = ref<PersonalReportState[]>([])
+const personalStatesReady = ref(false)
+let personalController: AbortController | null = null
+const personalTargetIds = computed(() => personalStates.value.filter(s => ['missing', 'stale'].includes(s.status)).map(s => s.student_id))
+const personalSummary = computed(() => personalStatesReady.value
+  ? `本场：已生成 ${personalStates.value.filter(s => s.status === 'current').length} · 需重新生成 ${personalStates.value.filter(s => s.status === 'stale').length} · 未生成 ${personalStates.value.filter(s => s.status === 'missing').length} · 不可生成 ${personalStates.value.filter(s => s.status === 'unavailable').length}（人）`
+  : '正在读取个人报告状态…')
+const personalExamOptions = computed(() => sessionStore.sessions.filter(s => !s.is_deleted &&
+  (sessionStore.currentSession?.curriculum_volume_id ? s.curriculum_volume_id === sessionStore.currentSession.curriculum_volume_id : s.id === sessionStore.selectedSessionId)))
+async function refreshPersonal() {
+  personalController?.abort()
+  const sid = sessionStore.selectedSessionId
+  if (sid === null) return
+  const next = new AbortController()
+  personalController = next
+  try {
+    const value = await personalReportsApi.states(sid, next.signal)
+    if (!next.signal.aborted) { personalStates.value = value; personalStatesReady.value = true }
+  } catch { if (!next.signal.aborted) actionError.value = '个人报告状态暂时无法读取，请重新加载。' }
+}
+watch(() => sessionStore.selectedSessionId, () => {
+  personalStatesReady.value = false; personalStates.value = []; personalExportOpen.value = false; void refreshPersonal()
+}, {immediate: true})
+watch(() => resultsStore.updatedAt, () => { void refreshPersonal() })
+const personalObservedJobs = new Set<number>()
+watch(() => Object.values(jobStore.jobs).map(j => `${j.id}:${j.status}`).join('|'), () => {
+  for (const job of Object.values(jobStore.jobs)) {
+    if (job.job_type !== 'report_export' || job.payload.report_type !== 'personal_analysis_html') continue
+    if (!TERMINAL_JOB_STATUSES.has(job.status)) personalObservedJobs.add(job.id)
+    else if (personalObservedJobs.delete(job.id)) { void refreshPersonal(); void fileCenter.load(sessionStore.selectedSessionId!) }
+  }
+}, {immediate: true})
+onBeforeUnmount(() => { personalController?.abort() })
+function exportedPersonal() {
+  personalExportOpen.value = false
+  actionMessage.value = '已加入任务中心，完成后在任务中心下载。'
+}
+async function openPersonalExport() {
+  const sid = sessionStore.selectedSessionId
+  if (sid === null) return
+  if (resultsStore.sessionId !== sid || !resultsStore.results) await resultsStore.load(sid)
+  if (sessionStore.selectedSessionId !== sid) return
+  if (!resultsStore.results || resultsStore.sessionId !== sid || resultsStore.state === 'error' || resultsStore.state === 'stale-error') {
+    actionError.value = resultsStore.errorMessage || '学生名单暂时无法读取，请重新加载。'
+    return
+  }
+  personalExportOpen.value = true
+}
 
 const ANALYSIS_REPORT_TYPES = new Set<ReportType>([
   'personal_analysis_html',
@@ -141,7 +196,7 @@ const reportDefinitions: Array<{
     type: 'personal_analysis_html',
     kind: 'AI 分析',
     title: '学生个人分析报告',
-    description: '每名学生一份自包含 HTML 分析报告，打包为 ZIP，含 AI 生成的个性化叙述。',
+    description: '在线查看个人报告；导出复用已生成叙述，不调用模型。',
   },
 ]
 
@@ -155,7 +210,7 @@ function toggleHistory(type: ReportType): void {
 }
 
 const liveJobs = computed(() => Object.values(jobStore.jobs)
-  .filter((job) => job.job_type === 'report_export')
+  .filter((job) => job.job_type === 'report_export' && job.payload.session_id === sessionStore.selectedSessionId)
   .sort((left, right) => right.id - left.id))
 
 function liveJobFor(type: ReportType): JobResponse | null {
@@ -279,13 +334,14 @@ async function openAnalysisConfirm(
   const sessionId = sessionStore.selectedSessionId
   if (sessionId === null) return
   analysisPreflightType.value = type
+  analysisStudentIds.value = [...personalTargetIds.value]
   analysisForceRegenerate.value = forceRegenerate
   analysisPreflight.value = null
   analysisPreflightLoading.value = true
   analysisConfirmOpen.value = true
   actionError.value = ''
   try {
-    const preflight = await exportsApi.getAnalysisPreflight(sessionId, type)
+    const preflight = await exportsApi.getAnalysisPreflight(sessionId, type, undefined, type === 'personal_analysis_html' ? analysisStudentIds.value : undefined)
     if (sessionStore.selectedSessionId !== sessionId) return
     analysisPreflight.value = preflight
   } catch {
@@ -313,17 +369,15 @@ async function confirmAnalysis(): Promise<void> {
   actionError.value = ''
   actionMessage.value = ''
   try {
-    const job = await fileCenter.submitReport(
-      sessionId,
-      type,
-      analysisForceRegenerate.value,
-    )
+    const job = await exportsApi.submitReport(sessionId, type, analysisForceRegenerate.value,
+      undefined, undefined, {student_ids: analysisStudentIds.value, publish: false})
+    await jobStore.track(job)
     if (sessionStore.selectedSessionId !== sessionId) return
     await fileCenter.load(sessionId)
     if (sessionStore.selectedSessionId !== sessionId) return
     closeAnalysisConfirm()
     actionMessage.value = job.status === 'succeeded'
-      ? '已有可下载文件。'
+      ? '报告已生成，可从成绩明细查看。'
       : `${reportTypeLabel(type)}已加入生成队列。`
   } catch {
     if (sessionStore.selectedSessionId !== sessionId) return
@@ -455,7 +509,7 @@ function openReviewNotes(): void {
   })
 }
 
-const dialogOpen = computed(() => excelSettingsOpen.value || analysisConfirmOpen.value)
+const dialogOpen = computed(() => excelSettingsOpen.value || analysisConfirmOpen.value || personalExportOpen.value)
 
 defineExpose({ dialogOpen })
 
@@ -518,12 +572,13 @@ defineExpose({ dialogOpen })
         >
           正在读取文件记录…
         </div>
-        <FileReportLedger :originals-available="originalsAvailable"
+        <FileReportLedger :originals-available="originalsAvailable" :personal-summary="personalSummary" :personal-generation-count="personalTargetIds.length"
           v-else
           :rows="reportRows"
           :history-open="historyOpen"
           :is-popover="isPopover"
           @generate="generateReport"
+          @export-personal="openPersonalExport"
           @cancel-job="cancelJob"
           @download="download"
           @delete-report="deleteReport"
@@ -532,6 +587,9 @@ defineExpose({ dialogOpen })
           @toggle-history="toggleHistory"
         />
 
+        <PersonalReportExportDialog v-if="personalExportOpen && sessionStore.selectedSessionId !== null"
+          :students="resultsStore.results?.students ?? []" :sessions="personalExamOptions" :session-id="sessionStore.selectedSessionId" :volume-label="personalVolumeLabel"
+          @close="personalExportOpen = false" @submitted="exportedPersonal" />
         <ScoreExcelSettingsDialog
           v-if="excelSettingsOpen"
           v-model:hide-bottom-enabled="hideBottomEnabled"

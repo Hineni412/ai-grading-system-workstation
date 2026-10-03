@@ -177,7 +177,7 @@ def _question_evidence_metadata(
             modes.setdefault(key, set()).add(str(part.get("response_mode") or "unknown"))
             relevant_points = [point for point in part.get("evidence_points", []) if any(
                 link["role"] == "direct" and key in link["stable_keys"]
-                for link in link_rows_by_point.get(id(point), _point_link_rows(point, links)))]
+                for link in link_rows_by_point[id(point)])]
             observations.setdefault(key, []).append({
                 "part_id": str(part.get("part_id") or ""),
                 "response_mode": str(part.get("response_mode") or "unknown"),
@@ -241,37 +241,25 @@ _FACETS_CACHE_LOCK = threading.Lock()
 _FACETS_CACHE: dict[tuple[Any, ...], dict[int, dict[str, Any]]] = {}
 
 
-def _facets_signature(conn: sqlite3.Connection) -> tuple[Any, ...]:
-    """Table-level state that changes exactly when facet inputs change.
-
-    File mtime would also flap on unrelated writes (e.g. persisting computed
-    content-index keys), so the cache keys on cheap aggregates of the tables
-    that actually feed the facets below.
-    """
-    return (
-        conn.execute("SELECT COUNT(*), MAX(updated_at) FROM questions WHERE is_deleted=0").fetchone(),
-        conn.execute("SELECT COUNT(*), MAX(updated_at) FROM question_scope_summary").fetchone(),
-        conn.execute("SELECT COUNT(*), MAX(updated_at) FROM question_solution_evidence_versions WHERE status IN ('approved','proposed')").fetchone(),
-        conn.execute("SELECT COUNT(*), MAX(id), MAX(created_at) FROM question_tags WHERE tag_type='knowledge_point'").fetchone(),
-        conn.execute("SELECT COUNT(*), MAX(created_at), SUM(resolution_status='resolved') FROM evidence_point_knowledge_links").fetchone(),
-    )
-
-
 def load_question_facets(db_path: Path, resolver: CurrentKnowledgeResolver,
                          question_ids: Sequence[int] | None = None) -> dict[int, dict[str, Any]]:
     """Read existing tags and current point links; never create analyses or versions."""
     from question_bank.solution_evidence.knowledge_links import load_point_links
+    from question_bank.services.question_read_service import _source_generation_token
     if question_ids is not None and not question_ids:
         return {}
+    generation = _source_generation_token(db_path)
     conn = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
+        conn.execute('PRAGMA query_only = ON')
+        conn.execute('BEGIN DEFERRED')
         cache_key = None
-        if question_ids is None:
-            # The signature covers every table feeding the facets, so a request
-            # snapshot copy of the same database shares one entry instead of
-            # re-reading the whole bank under a different path.
-            cache_key = (resolver.release_id, _facets_signature(conn))
+        if question_ids is None and generation is not None:
+            # Reuse the existing read generation rather than scanning five
+            # source tables just to decide whether to scan them again.
+            # Any bank commit invalidates; no updated_at convention is assumed.
+            cache_key = (resolver.release_id, generation)
             with _FACETS_CACHE_LOCK:
                 cached = _FACETS_CACHE.get(cache_key)
                 if cached is not None:
@@ -301,7 +289,7 @@ def load_question_facets(db_path: Path, resolver: CurrentKnowledgeResolver,
                            "evidence_version_id": str(row["evidence_version_id"]),
                            "practice_observations_by_key": practice["practice_observations_by_key"],
                            "skill_keys": sorted({key for part in facets for key in part["skill_keys"]})}
-        if cache_key is not None:
+        if cache_key is not None and generation == _source_generation_token(db_path):
             with _FACETS_CACHE_LOCK:
                 if len(_FACETS_CACHE) > 4:
                     _FACETS_CACHE.clear()

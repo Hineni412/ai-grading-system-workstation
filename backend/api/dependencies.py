@@ -487,6 +487,22 @@ def get_scan_grading_workspace(
     data_root: Path = Depends(get_data_root),
     question_bank_db_path: Path = Depends(get_question_bank_db_path),
 ) -> ScanGradingWorkspace:
+    pending_incomplete_rows: dict[int, list[dict]] = {}
+
+    def incomplete_result_count(session_id: int) -> int:
+        # 两个计数属于同一次摘要读取。第二个回调取走本次结果；
+        # 不跨摘要或写操作保留，后续读取仍从当前数据库重新取得。
+        pending_incomplete_rows.clear()
+        rows = db.results.list_incomplete_results(session_id)
+        pending_incomplete_rows[int(session_id)] = rows
+        return len(rows)
+
+    def incomplete_item_count(session_id: int) -> int:
+        rows = pending_incomplete_rows.pop(int(session_id), None)
+        if rows is None:
+            rows = db.results.list_incomplete_results(session_id)
+        return sum(len(item.get("missing_question_ids") or []) for item in rows)
+
     def reset_replaced_scan_data(session_id: int) -> list[str]:
         from session_cleanup import (
             clear_question_bank_session_references,
@@ -523,13 +539,8 @@ def get_scan_grading_workspace(
                 grading_mode=grading_mode,
             )
         ),
-        incomplete_result_counter=lambda session_id: len(
-            db.results.list_incomplete_results(session_id)
-        ),
-        incomplete_item_counter=lambda session_id: sum(
-            len(item.get("missing_question_ids") or [])
-            for item in db.results.list_incomplete_results(session_id)
-        ),
+        incomplete_result_counter=incomplete_result_count,
+        incomplete_item_counter=incomplete_item_count,
     )
 
 

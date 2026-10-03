@@ -10,6 +10,10 @@ import type {
   ResultsScoreStatus,
   ResultsStudentStatus,
 } from '../api/results-center'
+import { personalReportsApi, reportStatusText, matchesReportStudent, type PersonalReportState } from '../api/personal-reports'
+import { useJobStore } from '../stores/jobs'
+import { TERMINAL_JOB_STATUSES } from '../api/jobs'
+import PersonalReportReader from '../components/results-center/PersonalReportReader.vue'
 import ClassAnalysisPanel from '../components/results-center/ClassAnalysisPanel.vue'
 import ResultsOverviewPanel from '../components/results-center/ResultsOverviewPanel.vue'
 import { invalidateClassAnalysis } from '../components/results-center/class-analysis-cache'
@@ -32,7 +36,7 @@ import { translateGradingReason } from '../utils/grading-reasons'
 import FileCenterView from './FileCenterView.vue'
 
 type ResultsTab = 'overview' | 'details' | 'analysis'
-type DetailFilter = 'all' | 'attention' | ResultsStudentStatus
+type DetailFilter = 'all' | 'attention' | 'reports' | ResultsStudentStatus
 type MatrixSortKey = 'student' | 'total' | 'question'
 type SortDirection = 'ascending' | 'descending'
 
@@ -69,6 +73,7 @@ const tabs = [
 const DETAIL_FILTER_LABELS: Record<DetailFilter, string> = {
   all: '全部学生',
   attention: '待处理',
+  reports: '报告未生成或需重新生成',
   complete: '成绩完整',
   needs_review: '待复核',
   incomplete: '未评分',
@@ -123,7 +128,8 @@ const overviewScope = computed(() => stringQuery(route.query.class))
 
 const activeFilter = computed<DetailFilter>(() => {
   const candidate = stringQuery(route.query.filter)
-  return candidate === 'attention'
+  return candidate === 'reports'
+    || candidate === 'attention'
     || candidate === 'complete'
     || candidate === 'needs_review'
     || candidate === 'incomplete'
@@ -152,13 +158,7 @@ const visibleStudents = computed(() => {
   return studentsInClass.value.filter((student) => {
     if (!matchesFilter(student, activeFilter.value)) return false
     if (!query) return true
-    return [
-      student.student_name,
-      student.student_code,
-      student.class_name,
-      student.pinyin_initials,
-      student.pinyin_full,
-    ].some((value) => value?.toLocaleLowerCase().includes(query))
+    return matchesReportStudent(student, query)
   })
 })
 
@@ -212,6 +212,82 @@ const matrixQuestions = computed(() => (results.value?.questions ?? []).map((que
     .map((item) => item!.score_awarded!)
   return { ...question, average_score: scores.length ? scores.reduce((total, score) => total + score, 0) / scores.length : null }
 }))
+
+const jobStore = useJobStore()
+const personalStates = ref<PersonalReportState[]>([])
+const personalStateError = ref('')
+const readerStudentId = ref<number | null>(null)
+const readerReportSessionId = ref<number | undefined>()
+const readerDataOnly = ref(false)
+const readerStudents = ref<ResultsCenterStudent[]>([])
+const highlightedStudentId = ref<number | null>(null)
+let personalController: AbortController | null = null
+function reportState(student: ResultsCenterStudent) { return personalStates.value.find(s => s.student_id === student.student_id) }
+function reportLabel(student: ResultsCenterStudent) {
+  const state = reportState(student)
+  return `查看${student.student_name}的个人报告（${state ? reportStatusText[state.status] : '状态读取中'}）`
+}
+const reportsNeedGeneration = computed(() => studentsInClass.value.filter(s => ['missing', 'stale'].includes(reportState(s)?.status ?? '')).length)
+async function refreshPersonalStates() {
+  personalController?.abort()
+  const sid = sessionStore.selectedSessionId
+  if (sid === null) { personalStates.value = []; return }
+  const next = new AbortController()
+  personalController = next
+  personalStateError.value = ''
+  try {
+    const value = await personalReportsApi.states(sid, next.signal)
+    if (!next.signal.aborted && sessionStore.selectedSessionId === sid) personalStates.value = value
+  } catch { if (!next.signal.aborted) personalStateError.value = '报告状态暂时无法读取。' }
+}
+watch(() => sessionStore.selectedSessionId, () => {
+  personalStates.value = []; readerStudentId.value = null; void refreshPersonalStates()
+})
+watch(() => resultsStore.updatedAt, () => { void refreshPersonalStates() })
+const observedReportJobs = new Set<number>()
+watch(() => Object.values(jobStore.jobs).map(j => `${j.id}:${j.status}`).join('|'), () => {
+  for (const job of Object.values(jobStore.jobs)) {
+    if (job.job_type !== 'report_export' || job.payload.report_type !== 'personal_analysis_html') continue
+    if (!TERMINAL_JOB_STATUSES.has(job.status)) observedReportJobs.add(job.id)
+    else if (observedReportJobs.delete(job.id)) void refreshPersonalStates()
+  }
+}, {immediate: true})
+function openPersonalReport(student: ResultsCenterStudent, dataOnly = false, reportSessionId?: number) {
+  readerStudents.value = [...matrixStudents.value]
+  if (!readerStudents.value.some(s => s.student_id === student.student_id)) readerStudents.value.push(student)
+  readerDataOnly.value = dataOnly
+  readerReportSessionId.value = reportSessionId
+  readerStudentId.value = student.student_id
+  selectedStudent.value = null
+}
+function closePersonalReport(studentId: number) {
+  readerStudentId.value = null
+  highlightedStudentId.value = studentId
+  const student = results.value?.students.find(s => s.student_id === studentId)
+  if (student) openStudentDrawer(student)
+}
+function reviewFromPersonalReport(studentId: number, questionId: string, reportSessionId: number) {
+  const student = results.value?.students.find(s => s.student_id === studentId)
+  const sid = sessionStore.selectedSessionId
+  if (!student || sid === null || reportSessionId !== sid) return
+  const parent = questionId.match(/^Q?([0-9]+)/i)?.[1]
+  const item = student.items.find(i => i.question_id === questionId) ??
+    student.items.find(i => parent && i.question_id.match(/^Q?([0-9]+)/i)?.[1] === parent)
+  if (!item) return
+  resultsStore.reportReturn = {sessionId: sid, studentId, reportSessionId}
+  navigateToReview(item, student)
+}
+watch(results, () => {
+  const pending = resultsStore.reportReturn
+  if (!pending || pending.sessionId !== sessionStore.selectedSessionId) return
+  const student = results.value?.students.find(s => s.student_id === pending.studentId)
+  if (!student) return
+  // 能进入复核说明此前已在读正文；未生成时恢复数据版，已有叙述由阅读器切回分析版。
+  openPersonalReport(student, true, pending.reportSessionId)
+  resultsStore.reportReturn = null
+}, {flush: 'post', immediate: true})
+onMounted(() => { void refreshPersonalStates() })
+onBeforeUnmount(() => { personalController?.abort() })
 
 const orderedDrawerItems = computed(() => {
   if (!selectedStudent.value || !results.value) return []
@@ -352,6 +428,7 @@ function matchesFilter(
   filter: DetailFilter,
 ): boolean {
   if (filter === 'all') return true
+  if (filter === 'reports') return ['missing', 'stale'].includes(reportState(student)?.status ?? '')
   if (filter === 'attention') {
     return student.ungraded_count > 0
       || student.failed_count > 0
@@ -949,10 +1026,17 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
               >
                 已筛选：{{ DETAIL_FILTER_LABELS[activeFilter] }} ×
               </button>
+              <button type="button" class="results-filter-chip" :aria-pressed="activeFilter === 'reports'"
+                :class="{'is-active': activeFilter === 'reports'}" @click="selectDetailFilter('reports')">
+                报告未生成或需重新生成（{{ reportsNeedGeneration }}）
+              </button>
               <span>显示 {{ visibleStudents.length }} / {{ studentsInClass.length }} 人</span>
             </div>
           </div>
 
+          <p class="personal-report-help">点姓名看成绩详情 · 点 ✓ 直接打开个人报告 · 点分数进入成绩复核
+            <span v-if="personalStateError"> · {{ personalStateError }} <button @click="refreshPersonalStates">重试</button></span>
+          </p>
           <div
             ref="matrixScroller"
             class="results-matrix-wrap"
@@ -1003,7 +1087,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="student in matrixStudents" :key="student.student_id">
+                <tr v-for="student in matrixStudents" :key="student.student_id" :class="{'personal-report-highlight': highlightedStudentId === student.student_id}">
                   <th scope="row" class="results-matrix__identity">
                     <button type="button" @click="openStudentDrawer(student, $event)">
                       <strong>{{ student.student_name }}</strong>
@@ -1015,6 +1099,12 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
                         </template>
                       </span>
                     </button>
+                    <button v-if="reportState(student) && reportState(student)?.status !== 'unavailable'"
+                      type="button" :class="['personal-report-status', `personal-report-status--${reportState(student)?.status}`]"
+                      :aria-label="reportLabel(student)" :title="reportLabel(student)" @click="openPersonalReport(student)">
+                      {{ reportState(student)?.status === 'current' ? '✓' : reportState(student)?.status === 'stale' ? '↻' : '○' }}
+                    </button>
+                    <span v-else-if="reportState(student)?.status === 'unavailable'" class="personal-report-unavailable" :title="reportState(student)?.reason ?? ''">{{ reportState(student)?.reason === '缺考' ? '缺考' : '不可生成' }}</span>
                   </th>
                   <td
                     class="results-matrix__total"
@@ -1115,6 +1205,13 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
           {{ drawerLossLine }}
         </p>
 
+        <div class="personal-report-drawer">
+          <b>个人报告</b>
+          <template v-if="reportState(selectedStudent)?.status === 'current'"><button @click="openPersonalReport(selectedStudent)">查看个人报告 ›</button></template>
+          <template v-else-if="reportState(selectedStudent)?.status === 'stale'"><p>成绩已变化，显示上次生成的 AI 分析。</p><button @click="openPersonalReport(selectedStudent)">查看个人报告（上次生成） ›</button></template>
+          <template v-else-if="reportState(selectedStudent)?.status === 'missing'"><p>本场报告未生成</p><button @click="openPersonalReport(selectedStudent, true)">先看数据版 ›</button></template>
+          <p v-else>{{ reportState(selectedStudent)?.reason ?? '正在读取报告状态…' }}</p>
+        </div>
         <div class="results-drawer__items">
           <button
             v-for="item in orderedDrawerItems"
@@ -1140,9 +1237,18 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
       </aside>
     </div>
   </Teleport>
+  <PersonalReportReader v-if="readerStudentId !== null && sessionStore.selectedSessionId !== null"
+    :students="readerStudents" :student-id="readerStudentId" :session-id="sessionStore.selectedSessionId"
+    :report-session-id="readerReportSessionId" :volume-id="sessionStore.currentSession?.curriculum_volume_id"
+    :initially-data-only="readerDataOnly" @close="closePersonalReport" @review="reviewFromPersonalReport" @refreshed="refreshPersonalStates" />
 </template>
 
 <style scoped>
+.personal-report-status{display:inline-flex!important;width:28px!important;min-width:28px;height:28px;align-items:center;justify-content:center;vertical-align:top;margin-left:6px;border-radius:5px!important;font-size:17px!important;padding:0!important}
+.results-matrix tbody .results-matrix__identity > button:not(.personal-report-status){display:inline-grid;width:calc(100% - 38px);vertical-align:top}
+.personal-report-status--current{color:#368260!important;background:#edf7ef!important}.personal-report-status--stale{color:#aa7b22!important;background:#fff3d8!important}.personal-report-status--missing{color:#87929c!important;background:#f2f4f6!important}
+.personal-report-unavailable{font-size:11px;color:#84919e;margin-left:4px}.personal-report-help{color:#7b8b98;font-size:12px;margin:5px 20px 12px}.personal-report-highlight{outline:2px solid #6c9bb3;outline-offset:-2px}.personal-report-drawer{padding:16px 0;margin-top:12px;border-top:1px solid #e0e7ed}.personal-report-drawer b{display:block;font-size:14px}.personal-report-drawer p{color:#778490;font-size:12px;margin:8px 0}.personal-report-drawer button{border:0;background:#edf4f7;color:#326d88;padding:7px 10px;border-radius:5px;font-size:13px;margin-top:8px;cursor:pointer}
+
 .results-drawer__cmp {
   margin: 0;
   padding: var(--space-2) var(--space-4);

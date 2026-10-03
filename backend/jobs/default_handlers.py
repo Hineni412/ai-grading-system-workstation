@@ -163,6 +163,10 @@ def register_default_job_handlers(
             data_root=base_data_root,
         ),
     )
+    from backend.jobs.personal_report_bundle import run_personal_report_bundle
+    manager.register("personal_report_bundle", lambda context: run_personal_report_bundle(
+        context=context, db_path=Path(db_path), reports_dir=Path(reports_dir), data_root=base_data_root,
+        exporter_factory=analysis_report_exporter_factory))
     manager.register(
         "class_analysis_generate",
         _build_class_analysis_generate_handler(
@@ -636,11 +640,17 @@ def _build_report_export_handler(
                         session_id,
                         report_type,
                         score_revision=score_revision,
+                        **({"student_ids": set(context.payload["student_ids"])} if context.payload.get("student_ids") is not None else {}),
+                        **({"html_only": True} if not context.payload.get("publish", True) else {}),
                     )
                 )
                 review_note_count = int(
                     getattr(exporter, "last_review_note_count", 0) or 0
                 )
+                if not context.payload.get("publish", True):
+                    context.raise_if_cancelled()
+                    return dict(session_id=session_id, report_type=report_type,
+                        **getattr(exporter, "last_personal_summary", dict(generated=0, failed=0, skipped=0)))
             else:
                 staged_output = Path(
                     original_paper_exporter_factory(

@@ -257,3 +257,79 @@ def test_old_annotation_cleanup_failure_does_not_report_a_failed_save(
     assert result.updated_details == 1
     (item,) = service.list_items(seed.session_id, session, manual_context=context)
     assert item.score_awarded == 6 and item.revision == 1
+
+
+@pytest.mark.parametrize("ai_score,teacher_score,note,source,expected_note", [
+    (0, 4, "ignored", "none", None),
+    (0, 2, "ignored", "ai", None),
+    (4, 2, "  教师指出计算错误  ", "teacher", "教师指出计算错误"),
+    (None, 2, "  ", "teacher", None),
+    (4, 4, "ignored", "none", None),
+])
+def test_teacher_step_deduction_rules_roundtrip(tmp_path, ai_score, teacher_score, note, source, expected_note):
+    seed, session, context, service = seed_step_review(tmp_path)
+    with sqlite3.connect(seed.db.db_path) as conn:
+        ai = {"part_id": "Q1", "step_id": "S1", "score_awarded": ai_score,
+              "reason": "AI 理由", "missing_or_error": "缺失关系", "student_evidence": "原作答"}
+        conn.execute("UPDATE session_results SET raw_json=? WHERE id=?",
+                     (json.dumps({"detail_metadata": {"Q1": {"step_assessments": [ai]}}}), seed.result_id))
+    request = replace(confirmation(seed), score_awarded=teacher_score + 3, step_scores=[
+        {"part_id": "Q1", "step_id": "S1", "score_awarded": teacher_score, "teacher_note": note, "carried_error_from": None},
+        {"part_id": "Q1", "step_id": "S2", "score_awarded": 3},
+    ])
+    service.confirm(seed.session_id, session, "Q1", [request], manual_context=context, defer_annotations=True)
+    (item,) = service.list_items(seed.session_id, session, manual_context=context)
+    step = item.metadata["teacher_review"]["steps"][0]
+    assert step["ai_score_awarded"] == ai_score
+    assert step["deduction_source"] == source
+    assert step.get("teacher_note") == expected_note
+    for field, value in (("reason", "AI 理由"), ("missing_or_error", "缺失关系"), ("student_evidence", "原作答")):
+        assert step.get(field) == (value if source == "ai" else None)
+
+
+@pytest.mark.parametrize("first,second,override,expected", [
+    (0, 0, {}, "S1"), (4, 0, {}, None),
+    (0, 0, {"carried_error_from": None}, None),
+    (0, 0, {"carried_error_from": "OTHER"}, None),
+    (0, 1, {"carried_error_from": "S1"}, None),
+    (0, 0, {"carried_error_from": "S2"}, None),
+    (0, 0, {"carried_error_from": "S1"}, "S1"),
+])
+def test_carried_error_validates_teacher_scores_and_explicit_null(tmp_path, first, second, override, expected):
+    from backend.review.service import _normalize_teacher_steps
+    seed, session, context, service = seed_step_review(tmp_path)
+    (item,) = service.list_items(seed.session_id, session, manual_context=context)
+    item = replace(item, metadata={"step_assessments": [
+        {"part_id": "Q1", "step_id": "S2", "score_awarded": 0, "carried_error_from": "S1"}]})
+    rubric = json.loads((seed.data_root / "rubric.json").read_text(encoding="utf-8"))
+    normalized = _normalize_teacher_steps([
+        {"part_id": "Q1", "step_id": "S1", "score_awarded": first},
+        {"part_id": "Q1", "step_id": "S2", "score_awarded": second, **override},
+    ], rubric, item, first + second)
+    assert normalized[1].get("carried_error_from") == expected
+    assert "carried_error_from" not in _normalize_teacher_steps([
+        {"part_id": "Q1", "step_id": "S1", "score_awarded": 0, "carried_error_from": "S2"},
+        {"part_id": "Q1", "step_id": "S2", "score_awarded": 0},
+    ], rubric, item, 0)[0]
+    rubric["questions"][0]["parts"] = [
+        {"part_id": "P1", "part_score": 4, "steps": [{"step_id": "S1", "step_score": 4}]},
+        {"part_id": "P2", "part_score": 3, "steps": [{"step_id": "S2", "step_score": 3}]},
+    ]
+    normalized = _normalize_teacher_steps([
+        {"part_id": "P1", "step_id": "S1", "score_awarded": 0},
+        {"part_id": "P2", "step_id": "S2", "score_awarded": 0, "carried_error_from": "S1"},
+    ], rubric, item, 0)
+    assert "carried_error_from" not in normalized[1]
+
+
+@pytest.mark.parametrize("scores,total", [([4, 2], 7), ([4, 3.5], 7.5), ([5, 0], 5), ([-1, 3], 2)])
+def test_step_validation_still_rejects_sum_fraction_and_range(tmp_path, scores, total):
+    from backend.review.service import _normalize_teacher_steps
+    seed, session, context, service = seed_step_review(tmp_path)
+    (item,) = service.list_items(seed.session_id, session, manual_context=context)
+    rubric = json.loads((seed.data_root / "rubric.json").read_text(encoding="utf-8"))
+    with pytest.raises(ReviewValidationError):
+        _normalize_teacher_steps([
+            {"part_id": "Q1", "step_id": "S1", "score_awarded": scores[0]},
+            {"part_id": "Q1", "step_id": "S2", "score_awarded": scores[1]},
+        ], rubric, item, total)

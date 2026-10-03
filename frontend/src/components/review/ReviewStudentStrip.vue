@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ResultsCenterItem } from '../../api/results-center'
+import { reviewStatus } from './review-status'
 
 export interface StudentStripEntry {
   questionId: string
@@ -24,13 +25,7 @@ function stripScoreText(score: number | null): string {
 }
 
 function stripStatusLabel(status: string): string {
-  return {
-    ungraded: '未评',
-    failed: '失败',
-    ai_review: '待复核',
-    ai_ready: 'AI',
-    teacher_final: '教师',
-  }[status] ?? status
+  return reviewStatus[status as keyof typeof reviewStatus]?.label ?? status
 }
 
 // 与成绩明细热度图同一套刻度：已出分按得分率着色，未评分/失败用中性灰。
@@ -38,9 +33,10 @@ function stripChipStyle(item: ResultsCenterItem | null): Record<string, string> 
   if (!item) return undefined
   const scored = ['ai_ready', 'teacher_final'].includes(item.score_status)
     && item.score_awarded !== null && item.max_score > 0
-  if (!scored) return { backgroundColor: 'var(--color-bg-subtle)' }
+  const color = reviewStatus[item.score_status].color
+  if (!scored) return { '--review-status-color': color }
   const rate = Math.max(0, Math.min(1, item.score_awarded! / item.max_score))
-  return { backgroundColor: `hsl(${Math.round(7 + rate * 126)} 52% 88%)`, color: '#172333' }
+  return { '--review-status-color': color, backgroundColor: `hsl(${Math.round(7 + rate * 126)} 52% 88%)`, color: '#172333' }
 }
 
 function questionNavEnabled(direction: -1 | 1): boolean {
@@ -84,6 +80,7 @@ function questionNavEnabled(direction: -1 | 1): boolean {
       :disabled="entry.item === null"
       :data-status="entry.item?.score_status"
       :style="stripChipStyle(entry.item)"
+      :title="entry.item ? `${entry.questionId} · ${stripStatusLabel(entry.item.score_status)} · ${stripScoreText(entry.item.score_awarded)}/${stripScoreText(entry.item.max_score)} 分` : '无作答记录'"
       :aria-current="entry.questionId === selectedQuestionId ? 'true' : undefined"
       :aria-label="entry.item === null
         ? `${entry.questionId}，无作答记录`

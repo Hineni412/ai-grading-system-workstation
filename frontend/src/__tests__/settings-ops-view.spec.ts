@@ -3,8 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, type App } from 'vue'
 
 import SettingsDataPanel from '../components/settings/SettingsDataPanel.vue'
-import SettingsSystemPanel from '../components/settings/SettingsSystemPanel.vue'
-import { aiDiagnosticsApi } from '../api/ai-diagnostics'
 
 const opsApiMock = vi.hoisted(() => ({
   getSelfCheck: vi.fn(),
@@ -34,32 +32,6 @@ vi.mock('../api/jobs', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/jobs')>(),
   jobApi: jobApiMock,
 }))
-
-const selfCheck = {
-  version: 'v1.5.0',
-  status: 'warning',
-  api_configured: false,
-  directories: [
-    { key: 'data', exists: true, writable: true, status: 'ok' },
-    { key: 'backups', exists: true, writable: true, status: 'ok' },
-  ],
-  databases: [
-    {
-      key: 'grading',
-      exists: true,
-      size_bytes: 4096,
-      integrity: 'ok',
-      migration_version: '3',
-      pending_migrations: 1,
-      status: 'warning',
-    },
-  ],
-  tools: [
-    { key: 'microsoft_word', available: true, status: 'ok' },
-    { key: 'libreoffice', available: false, status: 'warning' },
-  ],
-  warnings: ['tool_unavailable:libreoffice'],
-}
 
 const backups = {
   items: [{
@@ -146,16 +118,16 @@ async function settle(): Promise<void> {
   await nextTick()
 }
 
-async function mountView(section: 'data' | 'system' = 'data') {
+async function mountView() {
   const pinia = createPinia()
   setActivePinia(pinia)
   const host = document.createElement('div')
   document.body.append(host)
-  const app = createApp(section === 'data' ? SettingsDataPanel : SettingsSystemPanel)
+  const app = createApp(SettingsDataPanel)
   app.use(pinia)
   app.mount(host)
   mounted.push(app)
-  await vi.waitFor(() => expect(section === 'system' ? opsApiMock.getSelfCheck : opsApiMock.getBackups).toHaveBeenCalled())
+  await vi.waitFor(() => expect(opsApiMock.getBackups).toHaveBeenCalled())
   await settle()
   return document.body
 }
@@ -176,7 +148,6 @@ function setInput(host: HTMLElement, selector: string, value: string): void {
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
-  opsApiMock.getSelfCheck.mockResolvedValue(selfCheck)
   storageApiMock.getStorage.mockResolvedValue({ total_bytes: 100, categories: [{ key: 'originals', label: '学生原卷', bytes: 100 }], legacy_annotations: { files: 0, bytes: 0 }, sessions: [{ session_id: 1, name: '隔离测试考试', status_label: '已完成', created_at: null, originals_state: 'complete', scan_bytes: 50, page_bytes: 50, release_bytes: 50, clear_bytes: 100, can_clear: true, can_release_scans: true, blocked_reason: null }] })
   storageApiMock.getOriginals.mockResolvedValue({ originals_state: 'complete', revision: 'test:complete', release_bytes: 50, clear_bytes: 100, can_clear: true, can_release_scans: true, backup_covers_originals: false, latest_backup_at: null })
   storageApiMock.clearOriginals.mockResolvedValue({ freed_bytes: 100, deleted_files: 2, kept_unrendered: 0, originals_state: 'cleared' })
@@ -206,10 +177,7 @@ beforeEach(() => {
     status: 'cancelled',
     finished_at: '2026-07-19T12:02:00Z',
   }))
-  vi.stubGlobal('navigator', {
-    ...navigator,
-    clipboard: { writeText: vi.fn(async () => undefined) },
-  })
+
 })
 
 afterEach(() => {
@@ -218,23 +186,13 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('settings data and system panels', () => {
+describe('settings data panel', () => {
   it('loads storage and backup state without an unrelated system check', async () => {
     const host = await mountView()
     expect(storageApiMock.getStorage).toHaveBeenCalledOnce()
     expect(opsApiMock.getBackups).toHaveBeenCalledOnce()
     expect(opsApiMock.getSelfCheck).not.toHaveBeenCalled()
     expect(host.textContent).toContain('考试原卷')
-  })
-  it('shows WPS conversion support without treating absent alternatives as system faults', async () => {
-    opsApiMock.getSelfCheck.mockResolvedValue({ ...selfCheck, status: 'ok', api_configured: true,
-      databases: selfCheck.databases.map(item => ({ ...item, pending_migrations: 0, status: 'ok' })), warnings: [],
-      tools: [{ key: 'wps', available: true, status: 'ok' }, { key: 'microsoft_word', available: false, status: 'warning' }, { key: 'tectonic', available: true, status: 'ok' }] })
-    const host = await mountView('system')
-    expect(host.querySelector('.settings-system-line')?.textContent).toContain('一切正常')
-    expect(host.textContent).toContain('已检测到 WPS')
-    expect(host.textContent).toContain('无需另外安装')
-    expect(host.textContent).toContain('未安装（可选）')
   })
   it('backs up in one click without a typed phrase', async () => {
     const host = await mountView()
@@ -285,12 +243,5 @@ describe('settings data and system panels', () => {
     expect(blocked.textContent).toContain('复核完成后可清理')
     expect([...blocked.querySelectorAll<HTMLButtonElement>('button')].every(button => button.disabled)).toBe(true)
   })
-  it('copies only sanitized diagnostics from system status', async () => {
-    vi.spyOn(aiDiagnosticsApi, 'list').mockResolvedValue({ items: [], returned: 0, matching: 0, scanned_event_count: 0, truncated: false })
-    const host = await mountView('system')
-    click(host, '[data-testid=copy-diagnostic]')
-    await settle()
-    expect(navigator.clipboard.writeText).toHaveBeenCalled()
-    expect(host.textContent).toContain('已复制（不含密钥和学生信息）')
-  })
+
 })

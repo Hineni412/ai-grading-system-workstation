@@ -159,7 +159,7 @@ function questionSummary(question: AssemblyQuestion): string {
     .replace(/\s+/g, ' ')
     .trim()
   const summary = text.length > 80 ? `${text.slice(0, 80)}…` : text
-  return `${summary}\n${question.question_type || '未分类'} · ${scoreLabel(question)}`
+  return `${summary}\n${question.question_type || '未分类'}`
 }
 
 function startDrag(questionId: number): void {
@@ -199,10 +199,6 @@ function dropOnSlot(): void {
 function endDrag(): void {
   draggedQuestionId.value = null
   dropTarget.value = null
-}
-
-function scoreLabel(question: AssemblyQuestion): string {
-  return question.score_value === null ? '未标分' : `${question.score_value} 分`
 }
 
 // Mirrors word_renderer.answer_space_lines: choice/fill types get no reserved
@@ -379,9 +375,6 @@ async function deleteRecord(recordId: string): Promise<void> {
                 :key="question.id"
               >
                 <div class="assembly-sheet__question">
-                  <span v-if="question.score_value !== null" class="assembly-sheet__score">
-                    （{{ question.score_value }} 分）
-                  </span>
                   <QuestionContentRenderer
                     :blocks="question.rich_content?.question_blocks"
                     :fallback="question.question_text"

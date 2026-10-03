@@ -149,7 +149,7 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
             if verify_source:
                 question = inputs[question_id]
                 current_hash = solution_evidence_source_content_hash(question)
-                alias = source_alias(question, evidence_source_hash)
+                alias = "" if current_hash == evidence_source_hash else source_alias(question, evidence_source_hash)
                 question_row = question_rows.get(question_id)
                 fingerprint = (
                     question_content_fingerprint(question_row)

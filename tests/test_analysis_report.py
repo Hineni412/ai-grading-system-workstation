@@ -513,6 +513,7 @@ def test_knowledge_prompt_upgrade_keeps_old_cache_but_generates_current_narrativ
     generator = _make_generator(db, tmp_path / "out", cache.cache_dir, client)
     output = generator.export_session(session_id, "personal_analysis_html", score_revision="existing-v1", html_only=True)
     assert client.calls == len(data.students)
+
     assert set(files_before) < {p.name for p in cache.cache_dir.glob("*.json")}
     assert output.is_dir()
     assert len(list(output.glob("*.html"))) == len(data.students)
@@ -526,3 +527,129 @@ def test_knowledge_prompt_upgrade_keeps_old_cache_but_generates_current_narrativ
     assert '<span class="when">本周</span>' in report
     generator.export_session(session_id, "personal_analysis_html", score_revision="existing-v1", html_only=True)
     assert client.calls == len(data.students)
+
+def test_personal_report_revision_keeps_peers_current_and_reads_stale_text(analysis_db, tmp_path):
+    from analysis_report_exporter import AnalysisReportGenerator
+    from backend.personal_reports import personal_report_states, render_personal_report
+    db, sid, root = analysis_db
+    with sqlite3.connect(db.db_path) as conn:
+        manual_id = conn.execute("INSERT INTO students(student_code,name,class_name) VALUES ('004','合成纯人工','1 班')").lastrowid
+        conn.execute("INSERT INTO session_attendance(session_id,student_id,attendance_status) VALUES (?,?,'present')", (sid, manual_id))
+        for qid, score, maximum in [('Q1', 50, 60), ('Q2', 30, 40)]:
+            conn.execute("""INSERT INTO teacher_score_locks(session_id,scan_batch_id,student_id,question_id,score_awarded,max_score,deduction_reason,source_target_type,source_target_id)
+                VALUES (?,0,?,?,?,?,?,'manual',1)""", (sid, manual_id, qid, score, maximum, '合成批语'))
+    reports = root / "reports"
+    client = FakeLLMClient()
+    generator = AnalysisReportGenerator(db, root / "test-generated", data_root=root, reports_dir=reports,
+        narrative_cache_dir=reports / ".analysis_narrative_cache", llm_client_factory=lambda: client)
+    generator.export_session(sid, "personal_analysis_html", html_only=True)
+    states = personal_report_states(db, sid, reports)["students"]
+    current = [s["student_id"] for s in states if s["status"] == "current"]
+    assert len(current) == 3
+    assert any(s["status"] == "unavailable" for s in states)
+    files_before = {p.relative_to(reports): p.read_bytes() for p in reports.rglob("*") if p.is_file()}
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE session_details SET score_awarded=score_awarded-1 WHERE result_id IN (SELECT id FROM session_results WHERE student_id=?) AND question_id='Q2'", (current[0],))
+    states = {s["student_id"]: s["status"] for s in personal_report_states(db, sid, reports)["students"]}
+    assert states[current[0]] == "stale"
+    assert all(states[student_id] == "current" for student_id in current[1:])
+    html = render_personal_report(db, sid, current[0], reports, review_links=True)
+    assert "选择题全对，基础扎实" in html
+    assert 'class="review-link"' in html
+    assert files_before == {p.relative_to(reports): p.read_bytes() for p in reports.rglob("*") if p.is_file()}
+    assert client.calls == 3
+
+
+def test_personal_cache_only_and_legacy_lookup_do_not_write_or_create_client(analysis_db, tmp_path):
+    from analysis_report_exporter import AnalysisNarrativeCache, AnalysisReportGenerator
+    from backend.report_exports import score_revision, report_narrative_version
+    from backend.personal_reports import personal_report_states
+    db, sid, root = analysis_db
+    data = __import__('backend.session_analysis', fromlist=['assemble_session_analysis']).assemble_session_analysis(db, sid)
+    cache = AnalysisNarrativeCache(root / "reports" / ".analysis_narrative_cache")
+    legacy_key = cache.cache_key(session_id=sid, score_revision=score_revision(db, sid),
+        rendition_version=report_narrative_version("personal_analysis_html"), report_key=f"personal:{data.students[0].student_id}")
+    cache.store(legacy_key, PERSONAL_NARRATIVE)
+    def forbidden():
+        raise AssertionError("只读导出不能初始化模型")
+    generator = AnalysisReportGenerator(db, root / "test-bundle", data_root=root, reports_dir=root / "reports",
+        narrative_cache_dir=cache.cache_dir, llm_client_factory=forbidden)
+    before = cache._path(legacy_key).read_bytes()
+    generator.export_session(sid, "personal_analysis_html", narrative_mode="cache_only", html_only=True)
+    assert generator.last_personal_summary == dict(generated=1, failed=0, skipped=2)
+    assert {s["reason"] for s in generator.last_personal_missing} >= {"未生成", "缺考"}
+    assert cache._path(legacy_key).read_bytes() == before
+    assert not (cache.cache_dir / "personal_index").exists()
+    assert not (root / "reports" / ".analysis_review_notes").exists()
+    assert personal_report_states(db, sid, root / "reports")["students"][0]["status"] == "current"
+
+
+def test_personal_online_and_offline_images_share_content_and_released_notice(analysis_db, monkeypatch):
+    import re
+    from backend.personal_reports import render_personal_report, RELEASED_SHOT_NOTE
+    db, sid, root = analysis_db
+    papers = _add_personal_report_scans(db, sid, root)
+    student_id = papers[0]["student_id"]
+    from unittest.mock import Mock
+    from backend.session_analysis import enrich_personal_knowledge
+    prepare = Mock(wraps=enrich_personal_knowledge)
+    monkeypatch.setattr('backend.session_analysis.enrich_personal_knowledge', prepare)
+    online = render_personal_report(db, sid, student_id, root / "reports", narrative_mode="none")
+    offline = render_personal_report(db, sid, student_id, root / "reports", narrative_mode="none", online=False)
+    assert f'/personal-reports/{student_id}/shots/Q2' in online
+    assert 'data:image/jpeg' not in online
+    assert 'data:image/jpeg' in offline
+    assert 'class="review-link"' not in online
+    from analysis_report_exporter import _PERSONAL_KEYBOARD_JS
+    assert 'personal-report:key' in online and 'personal-report:key' not in offline
+    normalize = lambda html: re.sub(r'src="(?:/api/[^\"]+|data:image/jpeg[^\"]+)"', 'src="SHOT"', html.replace(_PERSONAL_KEYBOARD_JS, ''))
+    assert normalize(online) == normalize(offline)
+    assert prepare.call_count == 1  # 同场连续读取只准备一次，在线与离线结果一致。
+    from backend.personal_reports import personal_render_context
+    from dataclasses import asdict
+    before = asdict(personal_render_context(db, sid, root / 'reports')['data'])
+    render_personal_report(db, sid, papers[1]['student_id'], root / 'reports', narrative_mode='none')
+    assert asdict(personal_render_context(db, sid, root / 'reports')['data']) == before
+    monkeypatch.setattr("session_originals.originals_state", lambda *_a: "cleared")
+    for mode in (True, False):
+        html = render_personal_report(db, sid, student_id, root / "reports", narrative_mode="none", online=mode)
+        assert RELEASED_SHOT_NOTE in html
+        assert '/shots/' not in html and 'data:image/jpeg' not in html
+
+
+@pytest.mark.parametrize("change", ["teacher", "bank"])
+def test_personal_report_teacher_and_bank_changes_invalidate_input(analysis_db, monkeypatch, change):
+    from backend.personal_reports import student_report_revision
+    db, sid, _root = analysis_db
+    student = db.results.get_session_results(sid)[0]
+    student_id = student["student_id"]
+    before = student_report_revision(db, sid, student_id)
+    if change == "bank":
+        monkeypatch.setattr("backend.personal_reports._question_bank_report_source", lambda *_a: {"links": [{"revision": "changed"}]})
+    else:
+        with sqlite3.connect(db.db_path) as conn:
+            conn.execute("""INSERT INTO teacher_score_locks(session_id,scan_batch_id,student_id,question_id,score_awarded,max_score,deduction_reason,source_target_type,source_target_id)
+                VALUES (?,'test-personal',?,'Q2',29,40,'教师补充批语','exam_paper',?)""", (sid, student_id, db.results.get_result_context(student["result_id"])["paper_id"]))
+    assert student_report_revision(db, sid, student_id) != before
+
+
+def test_personal_index_corruption_and_caller_thread_writes(analysis_db, monkeypatch):
+    import threading
+    import backend.personal_reports as personal
+    from analysis_report_exporter import AnalysisReportGenerator
+    db, sid, root = analysis_db
+    owner = threading.get_ident()
+    original = personal.publish_personal_index
+    writes = []
+    def record(*args):
+        writes.append(threading.get_ident())
+        return original(*args)
+    monkeypatch.setattr(personal, "publish_personal_index", record)
+    generator = AnalysisReportGenerator(db, root / "test-index", data_root=root,
+        narrative_cache_dir=root / "reports" / ".analysis_narrative_cache", llm_client_factory=lambda: FakeLLMClient())
+    generator.export_session(sid, "personal_analysis_html", html_only=True)
+    assert writes == [owner, owner]
+    index = root / "reports" / ".analysis_narrative_cache" / "personal_index" / f"session_{sid}.json"
+    index.write_text("[invalid", encoding="utf-8")
+    assert personal.read_personal_index(index.parent.parent, sid) == {}
+    assert sum(s["status"] == "current" for s in personal.personal_report_states(db, sid, root / "reports")["students"]) == 2

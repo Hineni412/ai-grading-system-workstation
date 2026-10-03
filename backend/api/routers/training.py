@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import json
+import math
+import gzip
+import pickle
 import sqlite3
+import zlib
 from dataclasses import asdict
+from datetime import datetime, UTC
+from pathlib import Path
 from tempfile import SpooledTemporaryFile
-from typing import Any, NoReturn
+from typing import Any, Callable, NoReturn
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, TypeAdapter
 
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import (
@@ -53,7 +60,6 @@ from backend.api.schemas.training import (
     TrainingScanPageResolveRequest,
     TrainingSubmissionCancelRequest,
 )
-from backend.public_data import sanitize_public_mapping
 from backend.api.routers.jobs import _job_response
 from backend.api.schemas.jobs import JobResponse
 from backend.jobs.manager import JobManager
@@ -127,10 +133,171 @@ TRAINING_DATABASE_RESPONSES = {
 PERSONALIZED_PAPER_UPLOAD_LIMIT = 50 * 1024 * 1024
 NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 _GROUPING_RESULT_CACHE = ResultCache(limit=8)
+_DIAGNOSIS_RESPONSE_CACHE = ResultCache(limit=8)
+_GROUPING_RESPONSE_ADAPTER = TypeAdapter(TrainingDiagnosisResponse.model_fields['grouping'].annotation)
 
 
-def _grouping_module(body: TrainingDiagnosisRequest) -> PersonalizedRecommendationModule | None:
-    return get_personalized_recommendation_module() if body.grouping else None
+def _validated_diagnosis_json(public) -> bytes:
+    model = TrainingDiagnosisResponse.model_validate(public)
+    # Preserve JSONResponse's rejection of NaN/Infinity, including a string
+    # converted to float by a typed response field. Untyped values were
+    # already checked during the public-data walk.
+    pending = [model]
+    while pending:
+        for value in pending.pop().__dict__.values():
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError('non-finite diagnosis number')
+            if isinstance(value, BaseModel):
+                pending.append(value)
+            elif isinstance(value, list):
+                pending.extend(item for item in value if isinstance(item, BaseModel))
+    return model.__pydantic_serializer__.to_json(model, exclude_none=True)
+
+
+def _diagnosis_response_bytes(service: DiagnosisProfileService, *, scope, exam_scope,
+                             diagnosis=None, grouping_cache_key=None, diagnosis_factory=None) -> bytes:
+    """Reuse a validated, complete response under the existing source contract."""
+    root = Path(__file__).resolve().parents[3]
+    files = (Path(__file__), root / 'backend/api/schemas/training.py',
+             root / 'backend/public_data.py', root / 'question_bank/services/rich_content_service.py',
+             root / 'question_bank/recommendation/personalized.py',
+             root / 'question_bank/taxonomy/curriculum_catalog.py')
+    semantics = tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in files)
+    key = (*service.tag_profile_cache_key(scope=scope, exam_scope=exam_scope),
+           'api-diagnosis-json-v1', semantics, grouping_cache_key)
+
+    def compute():
+        entry = service._read_local_profile(key)
+        if entry is not None:
+            try:
+                compressed = pickle.loads(entry[0])['json_gzip']
+                if isinstance(compressed, bytes):
+                    gzip.decompress(compressed)
+                    return compressed
+            except (KeyError, TypeError, OSError, EOFError, zlib.error):
+                pass
+        if grouping_cache_key is not None:
+            # Grouping only adds the final field to this same source snapshot.
+            # Reuse the validated base bytes rather than walking all evidence again.
+            base = _diagnosis_response_bytes(service, scope=scope, exam_scope=exam_scope)
+            source = diagnosis if diagnosis is not None else diagnosis_factory()
+            public_group = _public_training_mapping({'grouping': source['grouping']}, reject_nonfinite=True)
+            grouping = _GROUPING_RESPONSE_ADAPTER.validate_python(public_group.get('grouping'))
+            if grouping is None:
+                return gzip.compress(base, compresslevel=1, mtime=0)
+            group_payload = _GROUPING_RESPONSE_ADAPTER.dump_python(grouping, mode='json', exclude_none=True)
+            tail = json.dumps(group_payload, ensure_ascii=False, allow_nan=False,
+                              separators=(',', ':')).encode('utf-8')
+            return gzip.compress(base[:-1] + b',"grouping":' + tail + b'}', compresslevel=1, mtime=0)
+        source = diagnosis if diagnosis is not None else service.build_profiles(scope=scope, exam_scope=exam_scope)
+        public = _public_training_mapping({k: v for k, v in source.items() if not str(k).startswith('_')},
+                                          reject_nonfinite=True)
+        if public.get('diagnosis_identity') != 'question_tag':
+            raise ValueError('unexpected diagnosis identity')
+        # Direct serialization avoids another full dict construction and walk.
+        encoded = _validated_diagnosis_json(public)
+        compressed = gzip.compress(encoded, compresslevel=1, mtime=0)
+        return compressed
+
+    compressed = _DIAGNOSIS_RESPONSE_CACHE.get_or_compute(key, compute)
+    if service.persist_snapshots:
+        service._save_local_profile(key, (pickle.dumps({'json_gzip': compressed}, pickle.HIGHEST_PROTOCOL),
+                                         pickle.dumps({}, pickle.HIGHEST_PROTOCOL)))
+    return gzip.decompress(compressed)
+
+
+def _build_grouped_diagnosis(service, grouping_module, *, scope_dump, exam_scope_dump, grouping,
+                             asset_state=()):
+    diagnosis = service.build_profiles(
+        scope=scope_dump,
+        exam_scope=exam_scope_dump,
+    )
+    if grouping is not None:
+        assert grouping_module is not None
+        grouping_config = PersonalizedRecommendationConfig(
+            paper_mode="shared", scope_keys=tuple(grouping.scope_keys),
+            group_scope_keys=tuple(grouping.scope_keys), question_count=grouping.question_count,
+            purpose=grouping.purpose, max_questions_per_skill=grouping.max_questions_per_skill,
+            max_written_questions=grouping.max_written_questions, recent_activity_count=grouping.recent_activity_count,
+            expected_minutes=grouping.expected_minutes, difficulty_min=grouping.difficulty_min,
+            difficulty_max=grouping.difficulty_max,
+            exclude_current_exam_originals=grouping.exclude_current_exam_originals,
+            curriculum_volume_id=grouping.curriculum_volume_id,
+            training_intent=grouping.training_intent,
+            teaching_progress_chapter_id=grouping.teaching_progress_chapter_id,
+        )
+
+        def _grouping_compute() -> dict[str, Any]:
+            return grouping_module.chapter_groups(
+                diagnosis=diagnosis,
+                config=grouping_config,
+                member_ids=grouping.member_ids,
+                target_keys=grouping.target_keys,
+                graded_activities=service.graded_activities(
+                    tuple(
+                        str(item["student_id"])
+                        for item in diagnosis.get("students", [])
+                    )
+                ),
+            )
+
+        grouping_key_fn = getattr(service, "tag_profile_cache_key", None)
+        grouping_release = str(
+            getattr(
+                getattr(grouping_module, "current_knowledge", None),
+                "release_id",
+                "",
+            )
+        )
+        if callable(grouping_key_fn) and asset_state is not None:
+            grouping_cache_key = (
+                "grouping-v1",
+                grouping_key_fn(scope=scope_dump, exam_scope=exam_scope_dump),
+                json.dumps(asdict(grouping_config), sort_keys=True, default=str),
+                tuple(grouping.member_ids),
+                tuple(grouping.target_keys),
+                commit_generation(grouping_module.db_path),
+                grouping_release,
+                # _recent_question_ids depends on the current day.
+                str(grouping_module.clock().date()),
+                asset_state,
+            )
+            diagnosis["grouping"] = _GROUPING_RESULT_CACHE.get_or_compute(
+                grouping_cache_key,
+                _grouping_compute,
+            )
+        else:
+            diagnosis["grouping"] = _grouping_compute()
+    return diagnosis
+
+
+def _grouped_diagnosis_response_bytes(service, module, *, scope, exam_scope, grouping) -> bytes:
+    # Reuse the existing complete asset manifest. Database signatures alone do
+    # not detect edits to rich content, image fallbacks or preview files.
+    from question_bank.services.question_read_service import _skill_asset_manifest
+    manifest = _skill_asset_manifest(service.data_root)
+    factory = lambda: _build_grouped_diagnosis(service, module() if callable(module) else module, scope_dump=scope,
+        exam_scope_dump=exam_scope, grouping=grouping,
+        asset_state=tuple(sorted(manifest.items())) if manifest is not None else None)
+    if manifest is None:
+        public = _public_training_mapping({k: v for k, v in factory().items() if not str(k).startswith('_')},
+                                          reject_nonfinite=True)
+        return _validated_diagnosis_json(public)
+    # The outer response key already covers both source database generations.
+    # The saved entry is checked against their logical content revisions, so
+    # process-local counters must not appear again in this persistent suffix.
+    day = datetime.now(UTC).date() if callable(module) else module.clock().date()
+    key = ('grouping-public-v2', json.dumps(grouping.model_dump(), sort_keys=True), str(day),
+           tuple(sorted(manifest.items())))
+    record_request('grouped_diagnosis', scope=scope, exam_scope=exam_scope,
+                   params={'grouping': grouping.model_dump()})
+    return _diagnosis_response_bytes(service, scope=scope, exam_scope=exam_scope,
+        grouping_cache_key=key, diagnosis_factory=factory)
+
+
+def _grouping_module(body: TrainingDiagnosisRequest) -> Callable[[], PersonalizedRecommendationModule] | None:
+    # A complete response hit needs source checks, not another resolver/module.
+    return get_personalized_recommendation_module if body.grouping else None
 
 
 @router.post(
@@ -144,77 +311,23 @@ def build_training_diagnosis(
     service: DiagnosisProfileService = Depends(
         get_request_diagnosis_profile_service
     ),
-    grouping_module: PersonalizedRecommendationModule | None = Depends(_grouping_module),
-) -> TrainingDiagnosisResponse:
+    grouping_module: PersonalizedRecommendationModule | Callable[[], PersonalizedRecommendationModule] | None = Depends(_grouping_module),
+) -> TrainingDiagnosisResponse | Response:
     try:
         scope_dump = body.scope.model_dump(exclude_none=True)
         exam_scope_dump = body.exam_scope.model_dump(exclude_none=True)
         record_request("diagnosis", scope=scope_dump, exam_scope=exam_scope_dump, params={})
-        diagnosis = service.build_profiles(
-            scope=scope_dump,
-            exam_scope=exam_scope_dump,
-        )
-        if body.grouping is not None:
-            grouping = body.grouping
+        if body.grouping is None and isinstance(service, DiagnosisProfileService):
+            return Response(content=_diagnosis_response_bytes(service, scope=scope_dump,
+                            exam_scope=exam_scope_dump), media_type='application/json')
+        if body.grouping is not None and isinstance(service, DiagnosisProfileService):
             assert grouping_module is not None
-            grouping_config = PersonalizedRecommendationConfig(
-                paper_mode="shared", scope_keys=tuple(grouping.scope_keys),
-                group_scope_keys=tuple(grouping.scope_keys), question_count=grouping.question_count,
-                purpose=grouping.purpose, max_questions_per_skill=grouping.max_questions_per_skill,
-                max_written_questions=grouping.max_written_questions, recent_activity_count=grouping.recent_activity_count,
-                expected_minutes=grouping.expected_minutes, difficulty_min=grouping.difficulty_min,
-                difficulty_max=grouping.difficulty_max,
-                exclude_current_exam_originals=grouping.exclude_current_exam_originals,
-                curriculum_volume_id=grouping.curriculum_volume_id,
-                training_intent=grouping.training_intent,
-                teaching_progress_chapter_id=grouping.teaching_progress_chapter_id,
-            )
-
-            def _grouping_compute() -> dict[str, Any]:
-                return grouping_module.chapter_groups(
-                    diagnosis=diagnosis,
-                    config=grouping_config,
-                    member_ids=grouping.member_ids,
-                    target_keys=grouping.target_keys,
-                    graded_activities=service.graded_activities(
-                        tuple(
-                            str(item["student_id"])
-                            for item in diagnosis.get("students", [])
-                        )
-                    ),
-                )
-
-            grouping_key_fn = getattr(service, "tag_profile_cache_key", None)
-            grouping_release = str(
-                getattr(
-                    getattr(grouping_module, "current_knowledge", None),
-                    "release_id",
-                    "",
-                )
-            )
-            if callable(grouping_key_fn):
-                diagnosis["grouping"] = _GROUPING_RESULT_CACHE.get_or_compute(
-                    (
-                        "grouping-v1",
-                        grouping_key_fn(
-                            scope=scope_dump, exam_scope=exam_scope_dump
-                        ),
-                        json.dumps(
-                            asdict(grouping_config),
-                            sort_keys=True,
-                            default=str,
-                        ),
-                        tuple(grouping.member_ids),
-                        tuple(grouping.target_keys),
-                        commit_generation(grouping_module.db_path),
-                        grouping_release,
-                        # _recent_question_ids depends on the current day.
-                        str(grouping_module.clock().date()),
-                    ),
-                    _grouping_compute,
-                )
-            else:
-                diagnosis["grouping"] = _grouping_compute()
+            return Response(content=_grouped_diagnosis_response_bytes(service, grouping_module,
+                scope=scope_dump, exam_scope=exam_scope_dump, grouping=body.grouping),
+                media_type='application/json')
+        resolved_module = grouping_module() if callable(grouping_module) else grouping_module
+        diagnosis = _build_grouped_diagnosis(service, resolved_module, scope_dump=scope_dump,
+            exam_scope_dump=exam_scope_dump, grouping=body.grouping)
     except ValueError as exc:
         raise ApiError(
             422,
@@ -1775,27 +1888,62 @@ def _raise_assessment_api_error(exc: Exception) -> NoReturn:
     ) from exc
 
 
-def _public_training_mapping(value: dict[str, object]) -> dict[str, object]:
-    stripped = _strip_training_storage_fields(value)
-    return sanitize_public_mapping(stripped)
+def _public_training_mapping(value: dict[str, object], *, reject_nonfinite=False) -> dict[str, object]:
+    from backend.public_data import (
+        _OMIT, _sanitize_public_value, is_path_public_key, is_sensitive_public_key,
+    )
+    from question_bank.services.rich_content_service import strip_question_source_score
 
+    excluded = {"error_message", "source_file", "paper_source_file", "output_path"}
+    key_checks: dict[str, bool] = {}
+    key_decisions: dict[str, tuple[bool, bool]] = {}
+    text_checks: dict[str, bool] = {}
+    score_texts: dict[tuple[str, str], str] = {}
 
-def _strip_training_storage_fields(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            str(key): _strip_training_storage_fields(item)
-            for key, item in value.items()
-            if str(key).casefold()
-            not in {
-                "error_message",
-                "source_file",
-                "paper_source_file",
-                "output_path",
-            }
-        }
-    if isinstance(value, (list, tuple)):
-        return [_strip_training_storage_fields(item) for item in value]
-    return value
+    def public(item: Any) -> Any:
+        if item is None or type(item) in (int, float, bool):
+            if reject_nonfinite and isinstance(item, float) and not math.isfinite(item):
+                raise ValueError('non-finite diagnosis number')
+            return item
+        if isinstance(item, str) and item in text_checks:
+            return _OMIT if text_checks[item] else item
+        if isinstance(item, dict):
+            result = {}
+            retained = 0
+            for key, child in item.items():
+                name = str(key)
+                decision = key_decisions.get(name)
+                if decision is None:
+                    decision = (name.casefold() in excluded,
+                                is_sensitive_public_key(name) or is_path_public_key(name))
+                    key_decisions[name] = decision
+                if decision[0]:
+                    continue
+                retained += 1
+                if decision[1]:
+                    continue
+                if name == "question_text" and isinstance(child, str):
+                    score_key = (str(item.get("question_number") or ""), child)
+                    if score_key not in score_texts:
+                        score_texts[score_key] = strip_question_source_score(child, question_number=score_key[0])
+                    child = score_texts[score_key]
+                cleaned = public(child)
+                if cleaned is not _OMIT:
+                    result[name] = cleaned
+            # 原先先移除训练字段，再清理公共数据。仅训练字段的容器
+            # 保持为空；仍有公共待清理字段的空容器按原规则省略。
+            return _OMIT if retained and not result else result
+        if isinstance(item, (list, tuple)):
+            result = []
+            for child in item:
+                cleaned = public(child)
+                if cleaned is not _OMIT:
+                    result.append(cleaned)
+            return result
+        return _sanitize_public_value(item, key_checks=key_checks, text_checks=text_checks)
+
+    cleaned = public(value)
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 __all__ = ["router"]

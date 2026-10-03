@@ -296,6 +296,10 @@ h1,h2,h3,p{margin:0}
 .feat{display:grid;grid-template-columns:64px minmax(0,1fr);gap:7px 10px;font-size:12.5px;margin:0}
 .feat dt{color:var(--ink3);font-size:11.5px;padding-top:2px}
 .feat dd{margin:0;min-width:0;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.feat2{grid-template-columns:64px minmax(0,1fr) 64px minmax(0,1.15fr)}
+.feat2 .wide{grid-column:2/-1}
+.feat2 dd.crumbs{display:block}
+.feat2 .vsep{color:#c3ccc8;font-size:11px}
 .tag2{display:inline-flex;align-items:center;height:19px;padding:0 7px;border-radius:5px;font-size:11px;gap:3px}
 .tag2.tm{background:#e9f3ee;color:#255f49}
 .tag2.td{background:#edf3f7;color:#496579}
@@ -304,11 +308,95 @@ h1,h2,h3,p{margin:0}
 .dotp{color:var(--ink)}
 .dotp i{font-style:normal;color:var(--ac);font-size:8px;vertical-align:2px;margin-right:5px}
 .preq{font-size:12px;color:var(--ink3)}
-.xfoot{display:flex;align-items:center;gap:10px;margin-top:12px;padding-top:9px;border-top:1px solid var(--bd2)}
-.xfoot .xnote{font-size:11.5px;color:var(--ink3)}
-.xfoot .ops2{margin-left:auto;display:flex;align-items:center;gap:12px}
+.xnote{font-size:11.5px;color:var(--ink3);margin-right:6px}
 .linkdanger{color:var(--danger);font-size:12.5px;cursor:pointer}
 .linkdanger:hover{text-decoration:underline}
+/* 展开卡头吸顶 + 头部操作 */
+.qcard.open .hd{position:sticky;top:0;z-index:6;margin:-11px -13px 0;padding:11px 13px 9px;background:#fff;border-bottom:1px solid var(--bd2);border-radius:10px 10px 0 0;box-shadow:0 3px 8px rgba(28,39,51,.06)}
+.qcard .hd .hdops{margin-left:auto;display:flex;align-items:center;gap:7px}
+.qmenu{position:relative;display:inline-flex}
+.qmenu .menu{display:block;position:absolute;right:0;top:calc(100% + 5px);z-index:24;min-width:136px;background:#fff;border:1px solid var(--bd);border-radius:9px;box-shadow:var(--sh2);padding:4px}
+.qmenu .menu button{display:block;width:100%;text-align:left;padding:7px 10px;border-radius:6px;font-size:12.5px;color:var(--ink)}
+.qmenu .menu button:hover{background:var(--subtle)}
+.qmenu .menu .sep{display:block;height:1px;background:var(--bd2);margin:4px 6px}
+.qmenu .menu .mred{color:var(--danger)}
+.icobtn{width:28px;height:28px;border:1px solid var(--bd);border-radius:7px;display:grid;place-items:center;color:var(--ink2);background:#fff;font-size:14px;line-height:1;flex:none}
+.icobtn:hover{border-color:#bcc8c3;color:var(--ink)}
+/* 折叠重复题 · 卡内迷你行 */
+.dup{margin-top:8px}
+.dup .duplist{display:none;margin-top:6px;border-top:1px dashed var(--bd2);padding:6px 0 2px}
+.dup.on .duplist{display:grid;gap:4px}
+.dup.on>button::after{content:"";display:inline-block;margin-left:2px}
+.drow{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ink3)}
+.drow .ds{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 标签筛选浮层 + 已选标签 */
+.tfwrap{position:relative;display:inline-flex}
+.tfpop{position:absolute;top:calc(100% + 6px);right:0;z-index:40;width:330px;background:#fff;border:1px solid var(--bd);border-radius:10px;box-shadow:var(--sh2);padding:10px 12px}
+.tfpop .tfseg{display:flex;gap:2px;padding:2px;border-radius:8px;background:var(--subtle);border:1px solid var(--bd2);margin-bottom:9px}
+.tfpop .tfseg button{flex:1;height:22px;padding:0 6px;border-radius:6px;font-size:11.5px;color:var(--ink2)}
+.tfpop .tfseg button.on{background:#fff;color:var(--ink);font-weight:500;box-shadow:0 1px 2px rgba(28,39,51,.08)}
+.tfchips{display:flex;flex-wrap:wrap;gap:6px}
+.tfchip{height:22px;padding:0 9px;border-radius:999px;border:1px solid var(--bd);font-size:11.5px;color:var(--ink2);background:#fff}
+.tfchip i{font-style:normal;color:var(--ink3);margin-left:4px;font-size:10.5px}
+.tfchip.on{background:var(--ac-soft);border-color:rgba(23,107,117,.4);color:var(--ac)}
+.tfchip.on i{color:var(--ac)}
+.seltag{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 4px 0 9px;border-radius:999px;background:var(--ac-soft);border:1px solid rgba(23,107,117,.35);color:var(--ac);font-size:11.5px}
+.seltag i{font-style:normal;width:15px;height:15px;border-radius:50%;display:grid;place-items:center;font-size:10px;cursor:pointer}
+.seltag i:hover{background:rgba(23,107,117,.18)}
+/* 试卷篮抽屉 */
+.bdraw{position:fixed;top:0;right:0;bottom:0;width:360px;max-width:94vw;background:#fff;z-index:62;transform:translateX(103%);transition:transform .22s ease;box-shadow:var(--sh3);display:flex;flex-direction:column}
+.bdraw.on{transform:none}
+.bdh{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--bd2);font-size:15px;font-weight:600;flex:none}
+.bdh .icobtn{margin-left:auto}
+.bdsum{padding:10px 16px 9px;font-size:12.5px;color:var(--ink2);border-bottom:1px solid var(--bd2);flex:none}
+.bdrule{margin:0 16px;padding:7px 0;font-size:11.5px;color:var(--info);flex:none}
+.bdrule[hidden]{display:none}
+.bdlist{flex:1;min-height:0;overflow-y:auto;padding:8px 10px}
+.brow{display:flex;align-items:center;gap:8px;padding:7px 6px;border-radius:8px;font-size:12.5px}
+.brow:hover{background:var(--subtle)}
+.brow .bi{width:18px;color:var(--ink3);font-variant-numeric:tabular-nums;flex:none;text-align:right}
+.brow .bt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brow .bt b{font-weight:500;color:var(--ink)}
+.brow .icobtn{width:24px;height:24px;font-size:12px}
+.bdft{display:flex;gap:9px;padding:12px 16px;border-top:1px solid var(--bd2);flex:none}
+.bdft .sp{flex:1}
+/* ===== 组卷工作台 ===== */
+.topbar[hidden],.page[hidden]{display:none}
+.atabpage{display:none;flex:1;min-height:0;flex-direction:column}
+.atabpage.on{display:flex}
+.abar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:none;margin-bottom:14px}
+.acols{display:grid;grid-template-columns:280px minmax(0,1fr) 300px;gap:14px;flex:1;min-height:0}
+.acols2{display:grid;grid-template-columns:320px minmax(0,1fr);gap:14px;flex:1;min-height:0}
+.aset{padding:13px 14px;display:grid;gap:8px;align-content:start;overflow-y:auto}
+.aset .lab{font-size:11.5px;color:var(--ink3);font-weight:600}
+.aset .inp{width:100%}
+.seclist{display:grid;gap:4px}
+.srow{display:flex;align-items:center;gap:8px;padding:7px 9px;border:1px solid var(--bd2);border-radius:8px;font-size:12.5px;background:#fff}
+.srow .cnt2{margin-left:auto;font-size:11px;color:var(--ink3)}
+.ordlist{flex:1;min-height:0;overflow-y:auto;padding:6px 12px 12px;display:grid;gap:5px;align-content:start}
+.osec{font-size:11.5px;font-weight:600;color:var(--ink3);padding:8px 2px 2px}
+.orow{display:flex;align-items:center;gap:8px;padding:7px 9px;border:1px solid var(--bd2);border-radius:8px;font-size:12.5px;background:#fff}
+.orow .oi{width:20px;color:var(--ink3);text-align:right;font-variant-numeric:tabular-nums;flex:none}
+.orow .os{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink2)}
+.orow .ops{display:flex;gap:3px;flex:none}
+.orow .ops button{width:22px;height:22px;border:1px solid var(--bd);border-radius:6px;font-size:11px;color:var(--ink2);display:grid;place-items:center}
+.orow .ops button:hover:not(:disabled){border-color:#bcc8c3;color:var(--ink)}
+.orow .ops button:disabled{opacity:.4;cursor:default}
+.explist{display:grid}
+.explist .erow{display:flex;align-items:center;gap:7px;padding:8px 0;border-bottom:1px solid var(--bd2);font-size:12px}
+.explist .erow .en{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.explist .erow .et{font-size:11px;color:var(--ink3);flex:none}
+.arow{width:100%;display:flex;flex-direction:column;gap:4px;padding:9px 11px;border-radius:9px;text-align:left;border-left:3px solid transparent}
+.arow:hover{background:var(--subtle)}
+.arow.on{background:var(--ac-soft);border-left-color:var(--ac)}
+.arow .l1{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:500;color:var(--ink)}
+.arow .kind{font-size:10.5px;padding:1px 5px;border-radius:4px;background:var(--info-soft);color:var(--info);font-weight:400;flex:none}
+.arow .pct{margin-left:auto;font-size:11px;color:var(--ink3);font-variant-numeric:tabular-nums}
+.arow .l2{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--ink3)}
+.arow .mbar{flex:none;width:52px;height:4px;border-radius:2px;background:var(--bd2);overflow:hidden}
+.arow .mbar i{display:block;height:100%;background:var(--ac)}
+.acard .hdops{margin-left:auto}
+.acard .hd{cursor:default}
 .dfold{border:1px solid var(--bd2);border-radius:9px;background:#fff}
 .dfold summary{cursor:pointer;list-style:none;padding:9px 12px;font-size:12.5px;font-weight:500;color:var(--ink2)}
 .dfold summary::-webkit-details-marker{display:none}
@@ -361,7 +449,7 @@ h1,h2,h3,p{margin:0}
         <a href="#" >考试配置</a><a href="#">考试批改</a><a href="#">成绩中心</a>
       </div>
       <div class="navgrp"><div class="gl">题库与组卷</div>
-        <a href="#" class="on" aria-current="page">题库管理</a><a href="#">组卷工作台</a><a href="#">命题练习</a>
+        <a href="#" class="on" data-wp="qb" aria-current="page">题库管理</a><a href="#" data-wp="asm">组卷工作台</a><a href="#">命题练习</a>
       </div>
       <div class="navgrp"><div class="gl">教学分析</div>
         <a href="#">知识与训练</a>
@@ -375,7 +463,7 @@ h1,h2,h3,p{margin:0}
 
   <!-- ============ 主区 ============ -->
   <div class="main">
-    <header class="topbar">
+    <header class="topbar" id="tbQb">
       <h1>题库管理</h1>
       <div class="topmeta"><span id="topMeta">八年级上册</span><span class="proto">原型预览 · 合成数据</span></div>
       <div class="sp"></div>
@@ -384,11 +472,22 @@ h1,h2,h3,p{margin:0}
         <button role="tab" data-tab="paper" aria-selected="false">按试卷</button>
         <button role="tab" data-tab="todo" aria-selected="false">待处理</button>
       </div>
+      <button class="btn" id="basketBtn">试卷篮 · <b id="bkN">0</b></button>
       <button class="btn" id="btnMaintain">维护</button>
       <button class="btn primary" id="btnUpload">上传试卷</button>
     </header>
+    <header class="topbar" id="tbAsm" hidden>
+      <h1>组卷工作台</h1>
+      <div class="topmeta"><span>当前试卷篮 <b id="asmN">0</b> 题</span><span class="proto">原型预览 · 合成数据</span></div>
+      <div class="sp"></div>
+      <div class="tabs" role="tablist" aria-label="组卷视图">
+        <button role="tab" class="on" data-atab="basket" aria-selected="true">试卷篮与导出</button>
+        <button role="tab" data-atab="assist" aria-selected="false">学情组卷助手</button>
+      </div>
+      <button class="btn" id="btnGoQb">去题库选题</button>
+    </header>
 
-    <div class="page">
+    <div class="page" id="pgQb">
       <!-- ======== 页签一：按技能 ======== -->
       <section class="tabpage on" id="page-skill">
         <div class="cols" id="cols">
@@ -430,7 +529,8 @@ h1,h2,h3,p{margin:0}
           <!-- 右栏：题目 -->
           <div class="panel">
             <div class="qh" id="qHead" style="display:none">
-              <div class="tt"><h2 id="qSkillName">—</h2><span id="qBadges"></span><span class="cnt" id="qCount"></span></div>
+              <div class="tt"><h2 id="qSkillName">—</h2><span id="qBadges"></span><span class="cnt" id="qCount"></span>
+                <button class="link" id="qAssist" title="按班级学情挑这个技能的题">按班级学情挑这个技能的题 →</button></div>
               <details class="def" id="qDef"><summary><span class="one" id="qDefOne"></span></summary>
                 <div class="body">
                   <div><b>可观察操作</b><span id="qDefObs"></span></div>
@@ -458,6 +558,18 @@ h1,h2,h3,p{margin:0}
               <select class="sel" id="fMore" aria-label="更多筛选">
                 <option>更多</option><option>标签完整</option><option>缺少标签</option><option>有待审判定点</option>
               </select>
+              <button class="fchip on" id="fDup" aria-pressed="true">折叠重复题<span id="dupNote" style="color:var(--ink3)"></span></button>
+              <select class="sel" id="fProg" aria-label="教学进度">
+                <option value="0">教学进度：不限</option><option value="1">已学到第一章</option><option value="2">已学到第二章</option><option value="3">已学到第三章</option><option value="4">已学到第四章</option><option value="5">已学到第五章</option><option value="6">已学到第六章</option><option value="7">已学到第七章</option>
+              </select>
+              <span class="tfwrap">
+                <button class="btn small" id="fTagBtn" aria-haspopup="true" aria-expanded="false">标签筛选</button>
+                <span class="tfpop" id="tagfPop" hidden>
+                  <span class="tfseg" id="tfSeg" role="group" aria-label="标签维度"></span>
+                  <span class="tfchips" id="tfChips"></span>
+                </span>
+              </span>
+              <span id="selTags" style="display:inline-flex;gap:5px;flex-wrap:wrap"></span>
             </div>
             <div class="selbar" id="selBar">
               <span id="selCnt">已选 0 题</span>
@@ -500,8 +612,75 @@ h1,h2,h3,p{margin:0}
         <div class="todohint">以上项直接打开对应题目或面板处理；不会调用模型产生费用。</div>
       </section>
     </div>
+
+    <!-- ======== 组卷工作台（演示页） ======== -->
+    <div class="page" id="pgAsm" hidden>
+      <section class="atabpage on" id="atab-basket">
+        <div class="acols">
+          <div class="panel">
+            <div class="panel-h"><div class="t">试卷设置</div></div>
+            <div class="aset">
+              <span class="lab">试卷标题</span>
+              <input class="inp" value="八上数学 · 期中复习卷" aria-label="试卷标题">
+              <span class="lab">副标题</span>
+              <input class="inp" value="第一至七章综合 · 建议用时 90 分钟" aria-label="副标题">
+              <span class="lab">分节</span>
+              <div class="seclist" id="secList"></div>
+              <button class="link" data-inert style="justify-self:start">+ 添加分节</button>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-h"><div class="t">题目顺序 <span class="cnt" id="ordCnt" style="font-size:12px;color:var(--ink3);font-weight:400"></span></div></div>
+            <div class="ordlist" id="ordList"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-h"><div class="t">导出</div></div>
+            <div class="aset">
+              <button class="btn primary" id="expBtn">导出 Word</button>
+              <span class="lab" style="margin-top:6px">导出记录</span>
+              <div class="explist">
+                <div class="erow"><span class="en">八上期中复习卷 · 学生版.docx</span><span class="et">今天 10:02</span><button class="link" data-inert>下载</button><button class="link" data-inert>恢复</button></div>
+                <div class="erow"><span class="en">第四章周测 · 教师版.docx</span><span class="et">昨天 16:40</span><button class="link" data-inert>下载</button><button class="link" data-inert>恢复</button></div>
+                <div class="erow"><span class="en">一次函数小卷.docx</span><span class="et">09-29 21:15</span><button class="link" data-inert>下载</button><button class="link" data-inert>恢复</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="atabpage" id="atab-assist">
+        <div class="abar">
+          <select class="sel" aria-label="练习班级"><option>八（1）班</option><option>八（2）班</option><option>八（3）班</option></select>
+          <select class="sel" aria-label="训练范围"><option>范围：本次错题重练</option><option>范围：单元巩固</option><option>范围：考前冲刺</option></select>
+          <select class="sel" aria-label="题型"><option>题型不限</option><option>选择</option><option>填空</option><option>解答</option></select>
+          <span class="selflab">难度</span>
+          <select class="sel" aria-label="最低难度"><option>1</option><option>3</option><option selected>4</option></select>
+          <span class="selflab">–</span>
+          <select class="sel" aria-label="最高难度"><option>6</option><option selected>8</option><option>10</option></select>
+          <button class="btn small primary" id="assistGo">查看班级知识与技能</button>
+        </div>
+        <div class="acols2">
+          <div class="panel">
+            <div class="panel-h"><div class="t">班级知识与技能</div><div class="s">八（1）班 · 42 人 · 按需关注人数排序</div></div>
+            <div class="scroll"><div class="rows" id="aList"></div></div>
+          </div>
+          <div class="panel">
+            <div class="panel-h"><div class="t">候选题</div><div class="s" id="aSub">—</div></div>
+            <div class="scroll"><div class="qlist" id="aCands"></div></div>
+          </div>
+        </div>
+      </section>
+    </div>
   </div>
 </div>
+
+<!-- ============ 试卷篮抽屉 ============ -->
+<aside class="bdraw" id="bDrawer" aria-label="试卷篮">
+  <div class="bdh">试卷篮<button class="icobtn" id="bdClose" aria-label="关闭试卷篮">×</button></div>
+  <div class="bdsum" id="bdSum">—</div>
+  <div class="bdrule" id="bdRule" hidden>学情卷规则：同技能最多 1 道、解答题最多 2 道</div>
+  <div class="bdlist" id="bdList"></div>
+  <div class="bdft"><button class="btn small" id="bdClear">清空</button><span class="sp"></span><button class="btn small primary" id="bdGo">编辑与导出 →</button></div>
+</aside>
 
 <!-- ============ 遮罩（上传弹窗用） ============ -->
 <div class="mask" id="mask"></div>
@@ -792,7 +971,7 @@ const secSkills=sid=>SEC_SKILLS[sid]||[];
 const siblingsOf=sk=>secSkills(sk.secId).concat(secById[sk.secId]._ch.secs.flatMap(s=>secSkills(s.id))).filter(x=>x.id!==sk.id);
 
 /* ---------- 题目生成 ---------- */
-const QCACHE={},PCACHE={};
+const QCACHE={},PCACHE={},QREG={};
 function errLine(ch,h){
   const es=ERRS[ch]||ERRS.c04; const e=es[h%es.length];
   return '常见错法：'+e[0]+' · '+(h%2?'计算与化简':'审题与建模')+' · '+(h%3?'已有实际作答记录':'暂无作答记录');
@@ -816,14 +995,15 @@ function genQuestions(sk){
         ok:psk?!(sk.pend>0&&k===pn-1):false,
         err:(k===pn-2||((h>>k)%5===0))?errLine(ch,h+k):null});}
     const tp2=TAGPOOL[ch]||TAGPOOL.c08;
-    out.push({id:sk.id+'_'+i,no:'第'+(2+i*3)+'题',stem,type:tp,sub,
+    const oq={id:sk.id+'_'+i,no:'第'+(2+i*3)+'题',stem,type:tp,sub,
       diff:+Math.min(sk.hi,sk.lo+(h%(Math.max(1,(sk.hi-sk.lo))*10+1))/10).toFixed(1),
       paper:PAPERS[(h0+i)%PAPERS.length],points,
       ch,chap,sec,kp:(sec.kp&&sec.kp.length?sec.kp[(h+i)%sec.kp.length]:null),
       kp2:(sec.kp&&sec.kp.length>2&&h%3===0?sec.kp[(h+2)%sec.kp.length]:null),
       ktags:[tp2.kn[i%tp2.kn.length],tp2.sp[(h+i)%tp2.sp.length]],
       optErrs:tp==='选择'?[{opt:'BCD'[h%3],name:(ERRS[ch]||ERRS.c04)[h%(ERRS[ch]||ERRS.c04).length][0]}]:null,
-      hasImg:h%3===0});
+      hasImg:h%3===0};
+    out.push(oq);QREG[oq.id]=oq;
   }
   return QCACHE[sk.id]=out;
 }
@@ -851,22 +1031,24 @@ function paperQuestions(p){
       points.push({idx:k+1,text:pts[(h+k*2)%pts.length],sk:psk,mine:false,
         ok:!(st==='pend'&&k===0),err:k===0&&h%2?errLine(ch,h):null});}
     const tp2=TAGPOOL[ch]||TAGPOOL.c08;
-    out.push({id:'pq'+i,no:'第'+(i+1)+'题',noN:i+1,stem:stems[h%stems.length],type:tp,st,
+    const oq={id:'pq'+i,no:'第'+(i+1)+'题',noN:i+1,stem:stems[h%stems.length],type:tp,st,
       sub:tp==='解答'?['计算','应用'][h%2]:null,diff:+(2+(h%80)/10).toFixed(1),paper:p,
       points,ch,chap,sec:st==='un'?null:sec,
       kp:(sec.kp&&sec.kp.length?sec.kp[h%sec.kp.length]:null),
       kp2:(sec.kp&&sec.kp.length>2&&h%4===0?sec.kp[(h+1)%sec.kp.length]:null),
       ktags:[tp2.kn[h%tp2.kn.length],tp2.sp[h%tp2.sp.length]],
       optErrs:(tp==='选择'&&st!=='part')?[{opt:'ABCD'[h%4],name:(ERRS[ch]||ERRS.c04)[h%(ERRS[ch]||ERRS.c04).length][0]}]:null,
-      hasImg:h%4===0});
+      hasImg:h%4===0};
+    out.push(oq);QREG[oq.id]=oq;
   }
   return PCACHE[p.n]=out;
 }
 
 /* ================= 状态 ================= */
 const state={tab:'skill',scope:'sec',ch:'c04',sec:'c04-s03',skill:null,mode:'skill',sort:'count',
-  f:{q:'',t:'全部',lo:1,hi:10,src:'全部来源',more:'更多'},page:1,checked:new Set(),paper:PAPERS[0],
-  pf:{q:'',t:'全部',prob:false},exp:null,editing:null,railOvr:false};
+  f:{q:'',t:'全部',lo:1,hi:10,src:'全部来源',more:'更多',dup:true,prog:0},page:1,checked:new Set(),paper:PAPERS[0],
+  pf:{q:'',t:'全部',prob:false},exp:null,editing:null,railOvr:false,
+  wp:'qb',atab:'basket',assistSel:0,tagDim:'ab',tagf:[]};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let toastT; function toast(m){const t=$('toast');t.textContent=m;t.classList.add('on');clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('on'),1800);}
@@ -946,7 +1128,7 @@ function renderMid(){
       <span class="diffbar">难度 ${sk.lo}–${sk.hi}<span class="trk"><i class="fill" style="left:${pctL}%;width:${pctW}%"></i><i class="dot" style="left:${pctM}%"></i></span></span></div>
       <div class="ms">${sk.ev} 人有证据 · 均值 ${sk.mean}%</div></div>
       <div class="end">${badges}</div>`;
-    b.onclick=()=>{state.skill=sk.id;state.page=1;state.checked.clear();renderAll();};
+    b.onclick=()=>{state.skill=sk.id;state.page=1;state.checked.clear();clearTagf();renderAll();};
     box.appendChild(b);
   });
 }
@@ -962,8 +1144,11 @@ function filtered(qs){
     if(f.more==='标签完整'&&q.tagCount<10)return false;
     if(f.more==='缺少标签'&&q.tagCount>=10)return false;
     if(f.more==='有待审判定点'&&q.points.every(p=>p.ok))return false;
+    if(f.prog>0&&H(q.id+'pg')%8>=8-f.prog)return false;
+    if(state.tagf.length&&!state.tagf.every(t=>qTag(q,t.k)===t.v))return false;
     return true;});
 }
+function qTag(q,k){const tp=TAGPOOL[q.ch]||TAGPOOL.c08;const a=tp[k]||[];return a.length?a[H(q.id+k)%a.length]:null;}
 function kpOf(sk,idx){const sec=secById[sk.secId];return sec.kp&&sec.kp.length?sec.kp[idx%sec.kp.length]:null;}
 function qStat(q){
   const sks=[...new Set(q.points.map(p=>p.sk).filter(Boolean))];
@@ -976,8 +1161,14 @@ function cardHTML(q,curSk){
   const inPaper=!curSk;
   const checked=state.checked.has(q.id)?'checked':'';
   const hdSub=inPaper?`${esc(q.type)}题${q.sub?' · '+esc(q.sub):''} · 难度 ${q.diff}`:`${esc(q.paper.n)} · ${q.paper.y} · ${q.paper.kind}`;
-  const hd=`<div class="hd" data-exp="${q.id}"><span class="no">${esc(q.no)}</span><span>${hdSub}</span>
-      <label class="ck"><input type="checkbox" data-ck="${q.id}" ${checked}> 选入</label><span class="chev">▾</span></div>`;
+  const bkBtn=q=>`<button class="btn small" data-basket="${q.id}">${inBasket(q.id)?'✓ 已在试卷篮':'加入试卷篮'}</button>`;
+  const hdTail=open
+    ?`<span class="hdops">${bkBtn(q)}
+      <span class="qmenu"><button class="icobtn" data-qmenu aria-haspopup="menu" aria-label="更多操作">⋯</button>
+        <span class="menu" hidden><button data-sim="1">相似题</button><button data-inert>用这道题练习</button><button data-inert>打开原卷</button><i class="sep"></i><button class="mred" data-delq="${q.id}">移出题库</button></span></span>
+      <button class="btn small" data-exp="${q.id}">收起 ▲</button></span>`
+    :`<label class="ck"><input type="checkbox" data-ck="${q.id}" ${checked}> 选入</label><span class="chev">▾</span>`;
+  const hd=`<div class="hd" data-exp="${q.id}"><span class="no">${esc(q.no)}</span><span>${hdSub}</span>${hdTail}</div>`;
   if(open)return `<article class="qcard open" data-card="${q.id}" id="qc-${q.id}">${hd}${xHTML(q,curSk)}</article>`;
   let hit;
   if(q.st==='part')hit='<span style="color:var(--ink3)">分析未完成 · 标注待生成</span>';
@@ -991,6 +1182,13 @@ function cardHTML(q,curSk){
     if(other.length)hit+=`<span class="arr">｜还关联：</span>${other.map(r=>`<button class="qchip" data-jump="${r.id}">${esc(r.name)}</button>`).join('')}`;
   }
   const summary=q.st==='part'?'分析未完成':`判定点 ${st.np} · 技能 ${st.ns}${st.npend?` · ${st.npend} 处待审`:''}`;
+  const dupN=state.f.dup&&!inPaper&&H(q.id)%3===0?2:0;
+  const dupHtml=dupN?`<div class="dup" id="dup-${q.id}">
+      <button class="link" data-dup="${q.id}" aria-expanded="false">另有 ${dupN} 道相同或高度相似题 ▸</button>
+      <span class="duplist">${[1,2].map(k=>{
+        const pp=PAPERS[(H(q.id)+k*3)%PAPERS.length];
+        return `<span class="drow"><span class="ds">${esc(pp.n)} · 第 ${(H(q.id)+k*7)%(pp.q||20)+1} 题</span><button class="link" data-dupadd="${q.id}" data-dk="${k}">加入试卷篮</button></span>`;}).join('')}</span>
+    </div>`:'';
   return `<article class="qcard" data-card="${q.id}" id="qc-${q.id}">${hd}
     <p class="stem">${esc(q.stem)}</p>
     <div class="hit">${hit}</div>
@@ -999,13 +1197,13 @@ function cardHTML(q,curSk){
     <div class="ft"><span class="meta">${summary}</span>
       <span class="ops"><button class="link" data-exp="${q.id}">展开标注</button>
       <button class="link" data-sim="1">相似题</button>
-      <button class="btn small" data-basket="${q.id}">加入试卷篮</button></span></div>
+      ${bkBtn(q)}</span></div>
+    ${dupHtml}
   </article>`;
 }
 function xHTML(q,curSk){
   const editing=state.editing===q.id;
   const tp=TAGPOOL[q.ch]||TAGPOOL.c08;
-  const nil='<span class="nil2">—</span>';
   const xmark='<i class="tagx" data-tagx>×</i>';
   const x=editing?xmark:'';
   const tag2=(t,c)=>`<span class="tag2 ${c}">${esc(t)}${x}</span>`;
@@ -1040,20 +1238,21 @@ function xHTML(q,curSk){
     crumbs=`<div class="crumb">八年级上册 <span class="sep2">›</span> ${esc(q.chap.name)} <span class="sep2">›</span> <span class="miss">小节待标定</span> <button class="link" data-inert>选择小节</button></div>`;
   }
   if(editing)crumbs+=`<div class="crumb"><button class="addchip" data-inert style="display:inline-flex">+ 添加知识点</button></div>`;
-  /* ③ 题目特征 */
+  /* ② 题目属性（合并教材定位 + 题目特征） */
   const subDiff=(q.type==='解答'&&q.points.length>1)
     ?`<span class="nil2" style="font-size:11px">${q.points.slice(0,3).map(p=>`(${p.idx}) ${Math.max(1,q.diff-2+p.idx*1.1).toFixed(1)}`).join('　')}</span>`:'';
   const dpct=Math.min(100,q.diff/10*100);
   const preq=(H(q.id)%4===0)?null:['平方根计算','一元一次方程','有理数运算','图形的基本认识'][H(q.id)%4];
-  const feat=`<dl class="feat">
+  const sol=[tp.mt.length?tp.mt.map(t=>tag2(t,'tm')).join(''):'',tp.md.length?tp.md.map(t=>tag2(t,'td')).join(''):'',tp.id.length?tp.id.map(t=>tag2(t,'ti')).join(''):'']
+    .filter(Boolean).join('<span class="vsep">｜</span>');
+  const feat=`<dl class="feat feat2">
     <dt>题型</dt><dd>${esc(q.type)}题${q.sub?' · '+esc(q.sub):''}</dd>
     <dt>难度</dt><dd><span class="diffbar"><span class="trk"><i class="fill" style="left:0;width:${dpct}%"></i><i class="dot" style="left:${dpct}%"></i></span></span><b style="font-weight:600">${q.diff.toFixed(1)}</b>${subDiff}</dd>
-    <dt>能力</dt><dd>${tp.ab.length?`<span class="dotp"><i>●</i>${tp.ab.join('、')}</span>`:nil}</dd>
-    <dt>方法</dt><dd>${tp.mt.length?tp.mt.map(t=>tag2(t,'tm')).join(''):nil}${addc}</dd>
-    <dt>模型</dt><dd>${tp.md.length?tp.md.map(t=>tag2(t,'td')).join(''):nil}${addc}</dd>
-    <dt>思想</dt><dd>${tp.id.length?tp.id.map(t=>tag2(t,'ti')).join(''):nil}${addc}</dd>
-    <dt>特殊考法</dt><dd>${tp.sp.length?tp.sp.map(t=>tag2(t,'ts')).join(''):nil}${addc}</dd>
-    <dt>先修</dt><dd>${preq?`<span class="preq">需先会：${esc(preq)}</span>`:nil}</dd>
+    <dt>教材</dt><dd class="wide crumbs">${crumbs}</dd>
+    ${tp.ab.length?`<dt>能力</dt><dd class="wide"><span class="dotp"><i>●</i>${tp.ab.join('、')}</span></dd>`:''}
+    ${sol?`<dt>解法</dt><dd class="wide">${sol}${addc}</dd>`:''}
+    ${tp.sp.length?`<dt>特殊考法</dt><dd class="wide">${tp.sp.map(t=>tag2(t,'ts')).join('')}${addc}</dd>`:''}
+    ${preq?`<dt>先修</dt><dd class="wide"><span class="preq">需先会：${esc(preq)}</span></dd>`:''}
   </dl>`;
   const stemExt=q.type==='解答'?'　（2）若把其中一个已知条件改为未知量重新列式，结论是否仍然成立？说明理由。':'';
   return `<div class="xbody">
@@ -1065,19 +1264,14 @@ function xHTML(q,curSk){
     <div class="xanno${editing?' editing':''}">
       <div class="blk first"><h4>判定点 × 技能 <span class="sub">${psum}</span>
         <span class="annobar">${editing
-        ?`<button class="btn small primary" data-saveanno="${q.id}">保存</button><button class="btn small" data-cancelanno="${q.id}">取消</button>`
+        ?`<span class="xnote">修改不会改写已有考试成绩与报告</span><button class="btn small primary" data-saveanno="${q.id}">保存</button><button class="btn small" data-cancelanno="${q.id}">取消</button>`
         :`<button class="btn small" data-editanno="${q.id}">编辑标注</button>`}</span></h4>
         <div class="ptab">${ptab}</div>${optBlock}
         <div class="pacts"><button class="link" data-inert>核对判定点</button><button class="link" data-inert>重新生成</button></div>
       </div>
-      <div class="blk"><h4>教材定位</h4>${crumbs}</div>
-      <div class="blk"><h4>题目特征</h4>${feat}</div>
+      <div class="blk"><h4>题目属性</h4>${feat}</div>
     </div>
-  </div>
-  <div class="xfoot"><span class="xnote">修改不会改写已有考试成绩与报告</span>
-    <span class="ops2"><button class="link" data-exp="${q.id}">收起</button>
-    <button class="linkdanger" data-delq="${q.id}">移出题库</button>
-    <button class="btn small" data-basket="${q.id}">加入试卷篮</button></span></div>`;
+  </div>`;
 }
 function setExpanded(ctx,id){
   const same=state.exp&&state.exp.ctx===ctx&&state.exp.id===id;
@@ -1085,7 +1279,8 @@ function setExpanded(ctx,id){
   state.editing=null;
   if(ctx==='skill')renderRight();else renderPaperDetail();
   updateRail();
-  if(!same){const el=document.getElementById('qc-'+id);if(el)el.scrollIntoView({block:'start',behavior:'smooth'});}
+  const el=document.getElementById('qc-'+id);
+  if(el)el.scrollIntoView({block:same?'nearest':'start',behavior:'smooth'});
 }
 function updateRail(){
   const cols=$('cols');
@@ -1096,7 +1291,7 @@ function updateRail(){
   const sec=secById[state.sec];
   $('railSec').textContent=sec?sec.name.slice(0,9):'章节';
 }
-function rerenderCtx(){if(state.exp&&state.exp.ctx==='paper')renderPaperDetail();else renderRight();}
+function rerenderCtx(){if(state.tab==='paper')renderPaperDetail();else renderRight();}
 function renderRight(){
   const sk=SKILL_BY_ID[state.skill];
   const head=$('qHead'),fil=$('qFilters'),pg=$('qPager'),list=$('qList');
@@ -1116,6 +1311,7 @@ function renderRight(){
   const qs=filtered(all), ps=4, pages=Math.max(1,Math.ceil(qs.length/ps));
   if(state.page>pages)state.page=pages;
   const cur=qs.slice((state.page-1)*ps,state.page*ps);
+  $('dupNote').textContent=state.f.dup?' · 已折叠 '+qs.filter(q=>H(q.id)%3===0).length:'';
   list.innerHTML=cur.length?cur.map(q=>cardHTML(q,sk)).join(''):'<div class="empty"><b>没有符合条件的题</b>调整筛选条件后再试。</div>';
   pg.style.display='flex';
   $('pgInfo').textContent=`第${state.page}/${pages}页`;
@@ -1203,24 +1399,115 @@ function jumpToSkill(id){
   const sk=SKILL_BY_ID[id]; if(!sk)return;
   const sec=secById[sk.secId];
   state.tab='skill';state.scope='sec';state.ch=sec._ch.id;state.sec=sec.id;state.skill=id;
-  state.mode='skill';state.page=1;state.checked.clear();
+  state.mode='skill';state.page=1;state.checked.clear();clearTagf();
   document.querySelector('.seg [data-mode="skill"]').classList.add('on');
   document.querySelector('.seg [data-mode="theme"]').classList.remove('on');
   setTab('skill');renderAll();
 }
 
+/* ================= 试卷篮 ================= */
+const BASKET=[];
+const inBasket=id=>BASKET.some(b=>b.id===id);
+const basketItem=(q,src)=>({id:q.id,no:q.no,paper:(q.paper&&q.paper.n)||'学情组卷助手',type:q.type,stem:q.stem,diff:q.diff,src:src||'bank'});
+function updateBasketUI(){$('bkN').textContent=BASKET.length;$('asmN').textContent=BASKET.length;renderBDrawer();}
+function renderBDrawer(){
+  const t={选择:0,填空:0,解答:0};BASKET.forEach(b=>{if(t[b.type]!==undefined)t[b.type]++;});
+  $('bdSum').textContent=BASKET.length?`${BASKET.length} 题 · 选择 ${t.选择} · 填空 ${t.填空} · 解答 ${t.解答}`:'试卷篮是空的';
+  $('bdRule').hidden=!BASKET.some(b=>b.src==='assist');
+  $('bdList').innerHTML=BASKET.length?BASKET.map((b,i)=>`<div class="brow"><span class="bi">${i+1}</span>
+    <span class="bt" title="${esc(b.no)} · ${esc(b.paper)}"><b>${esc(b.no)}</b> · ${esc(b.paper)}</span>
+    <span class="bd outline">${b.type}</span>
+    <button class="icobtn" data-brm="${i}" aria-label="移出第 ${i+1} 题">×</button></div>`).join('')
+    :'<div class="empty"><b>试卷篮是空的</b>在题库页勾选题目加入。</div>';
+}
+function toggleBasket(q,src){
+  if(inBasket(q.id)){BASKET.splice(BASKET.findIndex(b=>b.id===q.id),1);toast('已移出试卷篮');}
+  else{BASKET.push(basketItem(q,src));toast('已加入试卷篮');}
+  updateBasketUI();
+}
+function openBDrawer(){renderBDrawer();$('mask').classList.add('on');$('bDrawer').classList.add('on');}
+function closeBDrawer(){$('bDrawer').classList.remove('on');if(!$('upDialog').classList.contains('on'))$('mask').classList.remove('on');}
+
+/* ================= 标签筛选浮层 ================= */
+const TFDIMS=[['能力','ab'],['方法','mt'],['模型','md'],['思想','id'],['特殊考法','sp']];
+function tfVals(dim){const s=new Set();Object.values(TAGPOOL).forEach(t=>(t[dim]||[]).forEach(v=>s.add(v)));return [...s];}
+function renderTagPop(){
+  $('tfSeg').innerHTML=TFDIMS.map(([n,k])=>`<button class="${state.tagDim===k?'on':''}" data-tdim="${k}">${n}</button>`).join('');
+  $('tfChips').innerHTML=tfVals(state.tagDim).map(v=>{
+    const on=state.tagf.some(t=>t.k===state.tagDim&&t.v===v);
+    return `<button class="tfchip${on?' on':''}" data-tv="${esc(v)}">${esc(v)}<i>${8+H(v)%40} 题</i></button>`;}).join('');
+}
+function renderSelTags(){$('selTags').innerHTML=state.tagf.map((t,i)=>`<span class="seltag">${TFDIMS.find(d=>d[1]===t.k)[0]}：${esc(t.v)}<i data-tfrm="${i}" role="button" aria-label="移除筛选">×</i></span>`).join('');}
+function closeTagPop(){$('tagfPop').hidden=true;$('fTagBtn').setAttribute('aria-expanded','false');}
+function clearTagf(){if(state.tagf.length){state.tagf.length=0;renderSelTags();}closeTagPop();}
+
+/* ================= 组卷工作台（演示页） ================= */
+const AITEMS=[];
+function buildAItems(){
+  SKILLS.slice(0,14).forEach(s=>AITEMS.push({k:'技能',name:s.name,need:4+H(s.id)%16,have:30+H(s.id)%40,mast:30+H(s.id)%55,sk:s.id}));
+  [['一次函数图象与性质','c04-s03'],['勾股定理逆定理','c01-s02'],['平均数与加权平均数','c06-s01'],['平行线的判定与性质','c07-s01']]
+    .forEach(([nm,sec])=>AITEMS.push({k:'知识点',name:nm,need:6+H(nm)%14,have:25+H(nm)%45,mast:25+H(nm)%60,sk:(SEC_SKILLS[sec]||SKILLS)[0].id}));
+  AITEMS.sort((a,b)=>b.need-a.need);
+}
+const ASM_SECS=[['一、选择题','选择'],['二、填空题','填空'],['三、解答题','解答']];
+function renderAsm(){
+  $('asmN').textContent=BASKET.length;
+  $('secList').innerHTML=ASM_SECS.map(([n,t])=>`<div class="srow">${n}<span class="cnt2">${BASKET.filter(b=>b.type===t).length} 题</span></div>`).join('');
+  $('ordCnt').textContent=`${BASKET.length} 题`;
+  $('ordList').innerHTML=BASKET.length?ASM_SECS.map(([n,t])=>{
+    const items=BASKET.map((b,i)=>[b,i]).filter(([b])=>b.type===t);
+    if(!items.length)return '';
+    return `<div class="osec">${n}</div>`+items.map(([b,gi],si)=>`<div class="orow"><span class="oi">${si+1}</span>
+      <span class="os" title="${esc(b.stem)}">${esc(b.stem)}</span><span class="bd outline">${b.type}</span><span class="selflab">${b.diff}</span>
+      <span class="ops"><button data-omv="${gi}" data-d="-1" aria-label="上移" ${si===0?'disabled':''}>↑</button>
+      <button data-omv="${gi}" data-d="1" aria-label="下移" ${si===items.length-1?'disabled':''}>↓</button>
+      <button data-orm="${gi}" aria-label="移出">×</button></span></div>`).join('');
+  }).join(''):'<div class="empty"><b>试卷篮是空的</b>去题库选题后再回来组卷。</div>';
+}
+function acardHTML(q,i){
+  const inB=inBasket(q.id), fit=8+H(q.id)%22;
+  return `<article class="qcard acard"><div class="hd"><span class="no">候选 ${i+1}</span><span>${esc(q.paper.n)} · ${esc(q.type)}题 · 难度 ${q.diff}</span>
+    <span class="hdops"><button class="btn small" data-basket="${q.id}" data-bsrc="assist">${inB?'✓ 已在试卷篮':'加入试卷篮'}</button></span></div>
+    <p class="stem">${esc(q.stem)}</p>
+    <div class="hit">适合 ${fit} 人 · 补弱 ${Math.round(fit*.5)} · 巩固 ${Math.round(fit*.33)} · 新练习 ${Math.round(fit*.17)}</div>
+    <div class="tags"><span class="bd outline">${esc(q.type)}题</span><span class="bd outline">难度 ${q.diff}</span>${q.ktags.map(t=>`<span class="bd outline">${esc(t)}</span>`).join('')}</div>
+  </article>`;
+}
+function renderAssist(){
+  $('aList').innerHTML=AITEMS.map((a,i)=>`<button class="arow${i===state.assistSel?' on':''}" data-aitem="${i}">
+    <span class="l1">${esc(a.name)}<span class="kind">${a.k}</span><span class="pct">${a.mast}%</span></span>
+    <span class="l2"><span>${a.need} 人需关注 · ${a.have} 人有证据</span><span class="mbar"><i style="width:${a.mast}%"></i></span></span></button>`).join('');
+  const a=AITEMS[state.assistSel]||AITEMS[0];
+  const sk=SKILL_BY_ID[a.sk], qs=sk?genQuestions(sk).slice(0,4):[];
+  $('aSub').textContent=`${a.k}「${a.name}」· 候选 ${qs.length} 题`;
+  $('aCands').innerHTML=qs.map(acardHTML).join('')||'<div class="empty"><b>暂无候选题</b></div>';
+}
+function setAtab(t){state.atab=t;
+  document.querySelectorAll('#tbAsm .tabs [role=tab]').forEach(b=>{const on=b.dataset.atab===t;b.classList.toggle('on',on);b.setAttribute('aria-selected',on);});
+  document.querySelectorAll('#pgAsm .atabpage').forEach(p=>p.classList.toggle('on',p.id==='atab-'+t));
+  if(t==='assist')renderAssist();else renderAsm();}
+function setWp(w,atab){
+  state.wp=w;
+  $('tbQb').hidden=w!=='qb';$('tbAsm').hidden=w!=='asm';
+  $('pgQb').hidden=w!=='qb';$('pgAsm').hidden=w!=='asm';
+  document.querySelectorAll('[data-wp]').forEach(a=>{const on=a.dataset.wp===w;
+    a.classList.toggle('on',on);on?a.setAttribute('aria-current','page'):a.removeAttribute('aria-current');});
+  if(w==='asm'){setAtab(atab||state.atab||'basket');}
+}
+function closeQMenus(){document.querySelectorAll('.qmenu .menu').forEach(m=>m.hidden=true);}
+
 /* ================= 事件 ================= */
 function setTab(t){
   state.tab=t;
   state.exp=null;state.editing=null;
-  document.querySelectorAll('.tabs [role=tab]').forEach(b=>{const on=b.dataset.tab===t;b.classList.toggle('on',on);b.setAttribute('aria-selected',on);});
-  document.querySelectorAll('.tabpage').forEach(p=>p.classList.remove('on'));
+  document.querySelectorAll('#tbQb .tabs [role=tab]').forEach(b=>{const on=b.dataset.tab===t;b.classList.toggle('on',on);b.setAttribute('aria-selected',on);});
+  document.querySelectorAll('#pgQb .tabpage').forEach(p=>p.classList.remove('on'));
   $('page-'+t).classList.add('on');
   if(t==='skill')renderRight();
   if(t==='paper')renderPaperDetail();
   updateRail();
 }
-document.querySelectorAll('.tabs [role=tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
+document.querySelectorAll('#tbQb .tabs [role=tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
 $('btnMaintain').onclick=()=>setTab('todo');
 $('btnUnlinked').onclick=()=>{setTab('todo');toast('已定位到「未挂技能」分组');};
 document.querySelectorAll('.seg button').forEach(b=>b.onclick=()=>{
@@ -1242,7 +1529,8 @@ $('fMore').onchange=e=>{state.f.more=e.target.value;state.page=1;renderRight();}
 $('pgPrev').onclick=()=>{state.page--;renderRight();};
 $('pgNext').onclick=()=>{state.page++;renderRight();};
 $('selClear').onclick=()=>{state.checked.clear();renderRight();};
-$('selAdd').onclick=()=>{toast(`已把 ${state.checked.size} 题加入试卷篮（演示）`);state.checked.clear();renderRight();};
+$('selAdd').onclick=()=>{let n=0;state.checked.forEach(id=>{const q=QREG[id];if(q&&!inBasket(id)){BASKET.push(basketItem(q));n++;}});
+  toast(`已把 ${n} 题加入试卷篮`);state.checked.clear();updateBasketUI();renderRight();};
 
 /* 列表内代理点击 */
 document.addEventListener('click',e=>{
@@ -1270,19 +1558,60 @@ document.addEventListener('click',e=>{
   const td=e.target.closest('[data-todo]');
   if(td){const r=TODO[+td.dataset.todo].rows[+td.dataset.tr];
     if(r.length>=5)gotoPaperQ(r[3],r[4]);else toast('演示原型：新词在词汇维护中处理');return;}
-  const bs=e.target.closest('[data-basket],[data-basket-all]');
-  if(bs){toast('已加入试卷篮（演示）');return;}
+  /* 试卷篮 */
+  const bsa=e.target.closest('[data-basket-all]');
+  if(bsa){let n=0;paperQuestions(state.paper).forEach(q=>{if(!inBasket(q.id)){BASKET.push(basketItem(q));n++;}});
+    toast(`已加入 ${n} 题`);updateBasketUI();renderPaperDetail();return;}
+  const bs=e.target.closest('[data-basket]');
+  if(bs){const q=QREG[bs.dataset.basket];if(q)toggleBasket(q,bs.dataset.bsrc);
+    rerenderCtx();if(state.wp==='asm'){state.atab==='assist'?renderAssist():renderAsm();}return;}
+  const br=e.target.closest('[data-brm]');
+  if(br){BASKET.splice(+br.dataset.brm,1);updateBasketUI();rerenderCtx();if(state.wp==='asm')renderAsm();return;}
+  /* 折叠重复题 */
+  const dp=e.target.closest('[data-dup]');
+  if(dp){const w=document.getElementById('dup-'+dp.dataset.dup);w.classList.toggle('on');
+    dp.setAttribute('aria-expanded',String(w.classList.contains('on')));return;}
+  const da=e.target.closest('[data-dupadd]');
+  if(da){const q=QREG[da.dataset.dupadd];if(q&&!inBasket(q.id+'_d'+da.dataset.dk)){
+    const pp=PAPERS[(H(q.id)+ +da.dataset.dk*3)%PAPERS.length];
+    BASKET.push({id:q.id+'_d'+da.dataset.dk,no:'第'+((H(q.id)+ +da.dataset.dk*7)%(pp.q||20)+1)+'题',paper:pp.n,type:q.type,stem:q.stem,diff:q.diff,src:'bank'});
+    toast('已加入试卷篮');updateBasketUI();}return;}
+  /* 组卷排序 */
+  const omv=e.target.closest('[data-omv]');
+  if(omv){const gi=+omv.dataset.omv,d=+omv.dataset.d,t=BASKET[gi].type;
+    let j=gi+d;while(j>=0&&j<BASKET.length&&BASKET[j].type!==t)j+=d;
+    if(j>=0&&j<BASKET.length){const tmp=BASKET[gi];BASKET[gi]=BASKET[j];BASKET[j]=tmp;}
+    renderAsm();updateBasketUI();return;}
+  const orm=e.target.closest('[data-orm]');
+  if(orm){BASKET.splice(+orm.dataset.orm,1);renderAsm();updateBasketUI();rerenderCtx();return;}
+  /* 学情助手 */
+  const ai=e.target.closest('[data-aitem]');
+  if(ai){state.assistSel=+ai.dataset.aitem;renderAssist();return;}
+  /* 标签筛选浮层 */
+  const td2=e.target.closest('[data-tdim]');
+  if(td2){state.tagDim=td2.dataset.tdim;renderTagPop();return;}
+  const tv=e.target.closest('[data-tv]');
+  if(tv){const v=tv.dataset.tv,i=state.tagf.findIndex(t=>t.k===state.tagDim&&t.v===v);
+    i>=0?state.tagf.splice(i,1):state.tagf.push({k:state.tagDim,v});
+    renderTagPop();renderSelTags();state.page=1;renderRight();return;}
+  const tfr=e.target.closest('[data-tfrm]');
+  if(tfr){state.tagf.splice(+tfr.dataset.tfrm,1);renderTagPop();renderSelTags();state.page=1;renderRight();return;}
   const dl=e.target.closest('[data-delq]');
-  if(dl){toast('演示原型：未执行移除');return;}
+  if(dl){closeQMenus();toast('演示原型：未执行移除');return;}
   const sm=e.target.closest('[data-sim]');
-  if(sm){toast('演示原型：相似题检索为占位');return;}
+  if(sm){closeQMenus();toast('演示原型：相似题检索为占位');return;}
   const pm=e.target.closest('#pdMore');
   if(pm){const m=$('pdMenu');m.hidden=!m.hidden;pm.setAttribute('aria-expanded',String(!m.hidden));return;}
-  const ex=e.target.closest('[data-exp]');
-  if(ex&&!e.target.closest('.ck')){setExpanded(ex.closest('#page-skill')?'skill':'paper',ex.dataset.exp);return;}
+  const qm=e.target.closest('[data-qmenu]');
+  if(qm){const m=qm.parentElement.querySelector('.menu');const willOpen=m.hidden;
+    closeQMenus();m.hidden=!willOpen;qm.setAttribute('aria-expanded',String(willOpen));return;}
   const ia=e.target.closest('[data-inert]');
-  if(ia){const mm=$('pdMenu');if(mm)mm.hidden=true;toast('演示原型：该操作为占位');return;}
+  if(ia){const mm=$('pdMenu');if(mm)mm.hidden=true;closeQMenus();toast('演示原型：该操作为占位');return;}
+  const ex=e.target.closest('[data-exp]');
+  if(ex&&!e.target.closest('.ck,.qmenu')){setExpanded(ex.closest('#page-skill')?'skill':'paper',ex.dataset.exp);return;}
   const m2=$('pdMenu');if(m2&&!m2.hidden&&!e.target.closest('.pmenu'))m2.hidden=true;
+  if(!e.target.closest('.qmenu'))closeQMenus();
+  if(!e.target.closest('.tfwrap'))closeTagPop();
 });
 /* 试卷列表筛选 */
 $('pQ').oninput=e=>{state.pf.q=e.target.value.trim();renderPaperList();};
@@ -1291,13 +1620,37 @@ document.querySelectorAll('#pTypes .fchip').forEach(c=>c.onclick=()=>{
   state.pf.t=c.textContent.trim();renderPaperList();});
 $('pProb').onclick=()=>{state.pf.prob=!state.pf.prob;$('pProb').classList.toggle('on',state.pf.prob);$('pProb').setAttribute('aria-pressed',String(state.pf.prob));renderPaperList();};
 
+/* 试卷篮抽屉 / 新筛选 */
+$('basketBtn').onclick=openBDrawer;
+$('bdClose').onclick=closeBDrawer;
+$('bdClear').onclick=()=>{BASKET.length=0;updateBasketUI();rerenderCtx();if(state.wp==='asm')renderAsm();toast('已清空试卷篮');};
+$('bdGo').onclick=()=>{closeBDrawer();setWp('asm','basket');};
+$('fDup').onclick=()=>{state.f.dup=!state.f.dup;$('fDup').classList.toggle('on',state.f.dup);
+  $('fDup').setAttribute('aria-pressed',String(state.f.dup));state.page=1;renderRight();};
+$('fProg').onchange=e=>{state.f.prog=+e.target.value;state.page=1;renderRight();};
+$('fTagBtn').onclick=()=>{const p=$('tagfPop');p.hidden=!p.hidden;
+  $('fTagBtn').setAttribute('aria-expanded',String(!p.hidden));if(!p.hidden)renderTagPop();};
+$('qAssist').onclick=()=>{
+  const i=AITEMS.findIndex(a=>a.sk===state.skill);
+  if(i>=0)state.assistSel=i;
+  setWp('asm','assist');};
+/* 侧栏 / 组卷页签 */
+document.querySelectorAll('[data-wp]').forEach(a=>a.onclick=e=>{e.preventDefault();setWp(a.dataset.wp);});
+document.querySelectorAll('#tbAsm .tabs [role=tab]').forEach(b=>b.onclick=()=>setAtab(b.dataset.atab));
+$('btnGoQb').onclick=()=>{setWp('qb');setTab('skill');};
+$('expBtn').onclick=()=>toast('演示原型：导出为占位，不生成文件');
+$('assistGo').onclick=()=>{renderAssist();toast('已刷新班级知识与技能（合成数据）');};
+
 /* 章节细栏 / 弹窗 */
 $('railOpen').onclick=()=>{state.railOvr=true;updateRail();};
 $('collpan').onclick=()=>{state.railOvr=false;updateRail();};
-$('mask').onclick=closeModal;
+$('mask').onclick=()=>{closeModal();closeBDrawer();};
 document.addEventListener('keydown',e=>{
   if(e.key!=='Escape')return;
   if($('upDialog').classList.contains('on')){closeModal();return;}
+  if($('bDrawer').classList.contains('on')){closeBDrawer();return;}
+  if(!$('tagfPop').hidden){closeTagPop();return;}
+  if(document.querySelector('.qmenu .menu:not([hidden])')){closeQMenus();return;}
   if(state.exp)setExpanded(state.exp.ctx,state.exp.id);
 });
 $('btnUpload').onclick=()=>{$('mask').classList.add('on');$('upDialog').classList.add('on');$('upDialog').setAttribute('aria-hidden','false');};
@@ -1307,7 +1660,13 @@ $('upGo').onclick=()=>{closeModal();toast('演示原型：导入任务为占位�
 /* ================= 初始化 ================= */
 function renderAll(){renderTree();renderMid();renderRight();}
 state.skill=(SEC_SKILLS['c04-s03']||[])[4]?SEC_SKILLS['c04-s03'][4].id:null;
-renderAll();renderPaperList();renderPaperDetail();renderTodo();
+buildAItems();
+{const need={选择:2,填空:1,解答:2},seen=new Set(),pick=[];
+ for(const q of PAPERS.flatMap(p=>paperQuestions(p))){
+   if(need[q.type]&&!seen.has(q.stem)){seen.add(q.stem);need[q.type]--;pick.push(q);}
+   if(!need.选择&&!need.填空&&!need.解答)break;}
+ pick.forEach((q,k)=>BASKET.push(basketItem(q,k>=3?'assist':'bank')));}
+renderAll();renderPaperList();renderPaperDetail();renderTodo();renderTagPop();updateBasketUI();
 </script>
 </body>
 </html>

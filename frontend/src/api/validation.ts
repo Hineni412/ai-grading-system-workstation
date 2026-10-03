@@ -7,12 +7,8 @@ export function isNullableString(value: unknown): value is string | null {
 }
 
 export function assertNoPathLikeKeys(value: unknown): void {
-  if (Array.isArray(value)) {
-    value.forEach(assertNoPathLikeKeys)
-    return
-  }
-  if (!isRecord(value)) return
-  for (const [key, child] of Object.entries(value)) {
+  const checkedKeys = new Set<string>()
+  function checkKey(key: string): void {
     const normalized = key
       .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
       .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
@@ -29,6 +25,21 @@ export function assertNoPathLikeKeys(value: unknown): void {
       && key !== 'directory_evidence'
       && sensitive
     ) throw new Error('Path-like response key')
-    assertNoPathLikeKeys(child)
+    checkedKeys.add(key)
+  }
+  const pending: unknown[] = [value]
+  while (pending.length) {
+    const item = pending.pop()
+    if (Array.isArray(item)) {
+      for (const child of item) {
+        if (child !== null && typeof child === 'object') pending.push(child)
+      }
+    } else if (isRecord(item)) {
+      for (const key of Object.keys(item)) {
+        if (!checkedKeys.has(key)) checkKey(key)
+        const child = item[key]
+        if (child !== null && typeof child === 'object') pending.push(child)
+      }
+    }
   }
 }

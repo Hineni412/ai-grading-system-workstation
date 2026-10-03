@@ -6,13 +6,12 @@ import '../styles/settings.css'
 const SettingsStudentsPanel = defineAsyncComponent(() => import('../components/settings/SettingsStudentsPanel.vue'))
 const ModelProfilesView = defineAsyncComponent(() => import('./ModelProfilesView.vue'))
 const SettingsDataPanel = defineAsyncComponent(() => import('../components/settings/SettingsDataPanel.vue'))
-const SettingsSystemPanel = defineAsyncComponent(() => import('../components/settings/SettingsSystemPanel.vue'))
-type Section = 'students' | 'ai' | 'data' | 'system'
+type Section = 'students' | 'ai' | 'data'
 const sections = [
   { key: 'students', label: '学生名单' }, { key: 'ai', label: 'AI 服务' },
-  { key: 'data', label: '数据与空间' }, { key: 'system', label: '系统状态' },
+  { key: 'data', label: '数据与空间' },
 ] as const
-const aliases: Record<string, Section> = { 'ai-trace': 'system', backup: 'data', maintenance: 'system', models: 'ai' }
+const aliases: Record<string, Section> = { 'ai-trace': 'ai', backup: 'data', maintenance: 'students', system: 'students', models: 'ai' }
 const storageKey = 'ai-grading:settings-section:v2'
 const route = useRoute()
 const router = useRouter()
@@ -33,7 +32,8 @@ watch(() => route.query.section, value => {
     try { localStorage.setItem(storageKey, value) } catch { /* unavailable */ }
   } else {
     const alias = typeof value === 'string' ? aliases[value] : undefined
-    void router.replace({ query: { ...route.query, section: alias ?? stored() }, hash: value === 'ai-trace' ? '#ai-call-log' : route.hash })
+    const logLink = value === 'ai-trace' || (['system', 'maintenance'].includes(String(value)) && route.hash === '#ai-call-log')
+    void router.replace({ query: { ...route.query, section: logLink ? 'ai' : alias ?? stored() }, hash: logLink ? '#ai-call-log' : route.hash })
   }
 }, { immediate: true })
 </script>
@@ -48,9 +48,8 @@ watch(() => route.query.section, value => {
     </PageHeader>
     <div class="settings-content" :class="{ 'settings-content--students': section === 'students' }">
       <SettingsStudentsPanel v-if="section === 'students'" />
-      <ModelProfilesView v-else-if="section === 'ai'" ref="modelView" />
+      <ModelProfilesView v-else-if="section === 'ai'" ref="modelView" :scroll-to-log="route.hash === '#ai-call-log'" />
       <SettingsDataPanel v-else-if="section === 'data'" />
-      <SettingsSystemPanel v-else :scroll-to-log="route.hash === '#ai-call-log'" />
     </div>
   </section>
 </template>

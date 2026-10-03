@@ -7,6 +7,7 @@ import sqlite3
 import threading
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -30,7 +31,7 @@ from question_bank.services.ai_tagging_service import (
 from question_bank.services.asset_path_service import (
     resolve_question_bank_asset_path,
 )
-from question_bank.services.file_cache import cached_file_bytes
+from question_bank.services.file_cache import batch_file_reads, cached_file_bytes, file_is_file
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.rich_content_service import (
     load_question_rich_content,
@@ -590,10 +591,12 @@ class QuestionAnalysisInputLoader:
                     (taxonomy_contracts or {}).get(question_id, {})
                 ),
             )
-        if len(ids) < 8:
-            return tuple(load_one(question_id) for question_id in ids)
-        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="question-assets") as pool:
-            return tuple(pool.map(load_one, ids))
+        with batch_file_reads(self.data_root):
+            if len(ids) < 8:
+                return tuple(load_one(question_id) for question_id in ids)
+            context = copy_context()
+            with ThreadPoolExecutor(max_workers=4, thread_name_prefix="question-assets") as pool:
+                return tuple(pool.map(lambda qid: context.copy().run(load_one, qid), ids))
 
     def _images(
         self,
@@ -615,7 +618,7 @@ class QuestionAnalysisInputLoader:
                 )
             except (OSError, ValueError):
                 continue
-            if not resolved.is_file():
+            if not file_is_file(resolved):
                 continue
             mime = (
                 mimetypes.guess_type(resolved.name)[0]

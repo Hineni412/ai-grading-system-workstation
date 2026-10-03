@@ -183,3 +183,69 @@ def test_repair_api_requires_current_preview_and_recovers_same_task(tmp_path):
         assert client.post('/api/question-bank/repair-jobs', json={**body, 'kind': 'analysis'}).status_code == 409
         assert client.post('/api/question-bank/repair-jobs', json={**body, 'fingerprint': '0' * 64, 'client_request_token': 'e' * 32}).status_code == 409
     manager.shutdown()
+
+
+def test_task_context_is_read_only_and_keeps_content_out_of_public_jobs(tmp_path, question_bank_database):
+    import sqlite3
+    from backend.api.dependencies import get_question_bank_read_service
+    from question_bank.services.question_read_service import QuestionBankReadService
+
+    client, manager, writer, request = _client(tmp_path)
+    question_bank_database(writer.db_path)
+    with sqlite3.connect(writer.db_path) as conn:
+        conn.executemany(
+            "INSERT INTO papers (id, title, source_file, import_status) VALUES (?, ?, ?, ?)",
+            [(1, '合成原卷', 'private/original.docx', 'success'), (2, '合成关联卷', 'private/linked.docx', 'success'),
+             (3, '合成已移除卷', 'private/removed.docx', 'deleted')],
+        )
+        conn.execute("INSERT INTO questions (id, paper_id, question_number, question_text) VALUES (11, 1, '1', '不可进入任务中心的题干')")
+        conn.executemany("INSERT INTO paper_question_occurrences (paper_id, question_id, question_number) VALUES (?, 11, '1')", [(2,), (3,)])
+    reader = QuestionBankReadService(writer.db_path, data_root=writer.data_root)
+    client.app.dependency_overrides[get_question_bank_read_service] = lambda: reader
+    before = writer.db_path.read_bytes()
+    job = manager.store.create_job('tagging_sync', {'question_ids': [11, 999]})
+    import_job = manager.store.create_job('question_import', {'request_id': request.request_id})
+    other_job = manager.store.create_job('ops_backup', {'question_ids': [11]})
+    try:
+        response = client.get(f'/api/question-bank/task-context/{job.id}')
+        assert response.status_code == 200
+        assert response.json() == {'papers': [{'id': 1, 'title': '合成原卷'}, {'id': 2, 'title': '合成关联卷'}], 'source_filename': None}
+        assert '不可进入任务中心的题干' not in response.text
+        assert 'private' not in response.text
+        importing = client.get(f'/api/question-bank/task-context/{import_job.id}')
+        assert importing.status_code == 200
+        assert importing.json() == {'papers': [], 'source_filename': '测试试卷.docx'}
+        public_job = client.get(f'/api/jobs/{import_job.id}').json()
+        assert '测试试卷.docx' not in str(public_job['payload'])
+        assert client.get(f'/api/question-bank/task-context/{other_job.id}').status_code == 404
+        assert client.get('/api/question-bank/task-context/99999').status_code == 404
+        assert writer.db_path.read_bytes() == before
+    finally:
+        manager.shutdown()
+
+
+def test_task_context_uses_imported_papers_and_handles_missing_sources(tmp_path, question_bank_database):
+    import sqlite3
+    from backend.api.dependencies import get_question_bank_read_service
+    from question_bank.services.question_read_service import QuestionBankReadService
+
+    client, manager, writer, _request = _client(tmp_path)
+    question_bank_database(writer.db_path)
+    with sqlite3.connect(writer.db_path) as conn:
+        conn.execute("INSERT INTO papers (id, title, source_file) VALUES (7, '合成新导入卷', 'private/new.docx')")
+    reader = QuestionBankReadService(writer.db_path, data_root=writer.data_root)
+    client.app.dependency_overrides[get_question_bank_read_service] = lambda: reader
+    job = manager.store.create_job('question_import', {'request_id': 'a' * 32})
+    manager.store.mark_running(job.id)
+    manager.store.finish(job.id, 'succeeded', result={'imported_paper_ids': [7], 'outcome': 'complete'})
+    missing = manager.store.create_job('tagging_sync', {'question_ids': [999]})
+    try:
+        response = client.get(f'/api/question-bank/task-context/{job.id}')
+        assert response.json() == {'papers': [{'id': 7, 'title': '合成新导入卷'}], 'source_filename': None}
+        assert client.get(f'/api/question-bank/task-context/{missing.id}').json() == {'papers': [], 'source_filename': None}
+        assert reader.import_task_filename('../outside') is None
+        absent_root = tmp_path / 'test-missing-root'
+        assert QuestionBankReadService(writer.db_path, data_root=absent_root).import_task_filename('b' * 32) is None
+        assert not absent_root.exists()
+    finally:
+        manager.shutdown()

@@ -7,6 +7,7 @@ from question_bank.database.paths import project_data_root
 from question_bank.services.file_cache import (
     cached_asset_resolution,
     memoized_resolve,
+    resolve_existing_file,
 )
 
 DEFAULT_SEARCH_SUBDIRS = (
@@ -103,12 +104,7 @@ def _resolve_asset_path(
 
 
 def _resolve_existing_file(value: Path) -> Path | None:
-    try:
-        if not value.is_file():
-            return None
-        return value.resolve()
-    except OSError:
-        return None
+    return resolve_existing_file(value)
 
 
 def _unique_existing_files(values: Iterable[Path], *, root: Path) -> list[Path]:

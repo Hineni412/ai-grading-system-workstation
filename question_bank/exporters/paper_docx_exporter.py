@@ -40,6 +40,10 @@ from question_bank.exporters.export_config import ExportConfig
 from question_bank.services.assembly_basket_state import SectionSpec
 from question_bank.services.file_cache import cached_processed_image_digest
 from question_bank.services.question_read_service import QuestionBankReadService
+from question_bank.services.rich_content_service import (
+    strip_question_source_score,
+    strip_question_source_score_blocks,
+)
 
 LOGGER = logging.getLogger(__name__)
 IMAGE_MARKER_PATTERN = re.compile(
@@ -103,7 +107,10 @@ def _render_question_body(
     rich_content = metadata.rich_content
     appended, embedded_paths = _add_rich_blocks(
         document,
-        _rich_blocks(rich_content, "question_blocks"),
+        strip_question_source_score_blocks(
+            _rich_blocks(rich_content, "question_blocks"),
+            question_number=str(question.get("question_number") or ""),
+        ),
         strip_leading_number=True,
         inline_prefix=inline_prefix,
         config=config,
@@ -128,7 +135,10 @@ def _render_question_body(
     if not appended:
         _add_text_and_images(
             document,
-            question.get("question_text") or "",
+            strip_question_source_score(
+                question.get("question_text") or "",
+                question_number=str(question.get("question_number") or ""),
+            ),
             extra_image_paths=question.get("image_paths") or [],
             strip_leading_number=True,
             config=config,

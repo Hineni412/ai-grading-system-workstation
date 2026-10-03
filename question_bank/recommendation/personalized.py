@@ -57,7 +57,7 @@ ENGINE_VERSION = "personalized-recommendation-v26-handout-knowledge-order"
 GROUPING_VERSION = "chapter-skill-coverage-v7-coverage"
 GROUP_MIN_SIMILARITY = 0.58
 # Read-only _source_snapshot results, keyed on the question-bank commit
-# generation + release + full request inputs; pickle bytes with single-flight.
+# generation + release + effective read constraints; pickle bytes with single-flight.
 _SOURCE_SNAPSHOT_CACHE = ResultCache(limit=8)
 Stage = Literal["direct", "prerequisite", "transfer"]
 Action = Literal["lock", "unlock", "exclude", "replace"]
@@ -2902,7 +2902,7 @@ class PersonalizedRecommendationModule:
         question_ids: Sequence[int] = (),
     ) -> tuple:
         return (
-            "source-snapshot-v1",
+            "source-snapshot-v2-read-constraints",
             str(Path(self.db_path).resolve(strict=False)),
             str(Path(self.data_root).resolve(strict=False)),
             str(self.current_knowledge.release_id),
@@ -2911,8 +2911,13 @@ class PersonalizedRecommendationModule:
             tuple(sorted(int(qid) for qid in (excluded_question_ids or ()))),
             tuple(sorted(str(item) for item in knowledge_keys)),
             tuple(sorted(set(question_ids))),
-            json.dumps(
-                candidate_config.to_dict(), sort_keys=True, default=str
+            # Target choice and paper settings do not affect this read when
+            # the effective progress, scope and difficulty constraints agree.
+            (
+                candidate_config.difficulty_min, candidate_config.difficulty_max,
+                tuple(sorted(candidate_config.scope_keys)),
+                _allowed_keys_for_config(candidate_config, self.current_knowledge),
+                _progress_chapter(candidate_config, self.current_knowledge) is not None,
             )
             if candidate_config is not None
             else "",

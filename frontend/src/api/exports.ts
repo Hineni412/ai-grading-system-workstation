@@ -311,6 +311,7 @@ export const exportsApi = {
     forceRegenerate = false,
     excelOptions?: ScoreExcelOptions,
     signal?: AbortSignal,
+    personalOptions?: {student_ids: number[]; publish: boolean},
   ): Promise<JobResponse> {
     const id = requirePositiveInteger(sessionId, 'session id')
     if (!REPORT_TYPES.some((type) => type === reportType)) {
@@ -347,6 +348,7 @@ export const exportsApi = {
       method: 'POST',
       body: {
         report_type: reportType,
+        ...(personalOptions ?? {}),
         force_regenerate: forceRegenerate,
         ...(normalizedExcelOptions === undefined
           ? {}
@@ -378,13 +380,14 @@ export const exportsApi = {
     sessionId: number,
     reportType: ReportType,
     signal?: AbortSignal,
+    studentIds?: number[],
   ): Promise<AnalysisPreflight> {
     const id = requirePositiveInteger(sessionId, 'session id')
     if (!REPORT_TYPES.some((type) => type === reportType)) {
       throw new Error('Invalid report type')
     }
     return apiClient.request(
-      `/api/sessions/${id}/reports/analysis-preflight?report_type=${encodeURIComponent(reportType)}`,
+      `/api/sessions/${id}/reports/analysis-preflight?report_type=${encodeURIComponent(reportType)}${studentIds ? `&student_ids=${studentIds.join(',')}` : ''}`,
       {
         decode: decodeAnalysisPreflight,
         signal,

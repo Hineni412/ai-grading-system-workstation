@@ -34,6 +34,7 @@ from backend.api.schemas.reports import (
     ReportExportHistoryItem,
     ReportExportRequest,
     ReportFileDeleteResponse,
+    PersonalReportBundleRequest,
 )
 from backend.class_analysis import (
     CLASS_ANALYSIS_JOB_TYPE,
@@ -61,6 +62,107 @@ from backend.scan_grading.workspace import ScanGradingWorkspace
 router = APIRouter(prefix="/api", tags=["reports"])
 
 _ANALYSIS_NARRATIVE_CACHE_DIRNAME = ".analysis_narrative_cache"
+
+
+def _parse_student_ids(value: str | None):
+    if value is None:
+        return None
+    try:
+        ids = {int(v) for v in value.split(",")}
+        if not ids or len(ids) > 500 or min(ids) <= 0:
+            raise ValueError
+        return ids
+    except ValueError as exc:
+        raise ApiError(422, "invalid_student_ids", "学生编号必须是逗号分隔的正整数") from exc
+
+
+@router.get("/sessions/{session_id}/personal-reports")
+def get_personal_report_states(session_id: int, db=Depends(get_grading_db), reports_dir: Path = Depends(get_reports_dir)):
+    from backend.personal_reports import personal_report_states
+    _require_session(db.sessions, session_id)
+    return personal_report_states(db, session_id, reports_dir)
+
+
+@router.get("/sessions/{session_id}/personal-reports/{student_id}/html")
+def get_personal_report_html(session_id: int, student_id: int,
+        narrative: Literal["auto", "none"] = Query(default="auto"), review_links: bool = Query(default=False),
+        db=Depends(get_grading_db), reports_dir: Path = Depends(get_reports_dir)):
+    from backend.personal_reports import render_personal_report, personal_report_states
+    _require_session(db.sessions, session_id)
+    try:
+        html = render_personal_report(db, session_id, student_id, reports_dir,
+                                     narrative_mode=narrative, review_links=review_links)
+    except ValueError as exc:
+        if str(exc) not in {"personal_report_missing", "personal_report_unavailable"}:
+            raise
+        states = personal_report_states(db, session_id, reports_dir)["students"]
+        reason = next((s["reason"] for s in states if s["student_id"] == student_id), "本场没有该生成绩")
+        raise ApiError(409, str(exc), reason or "本场报告尚未生成", {"reason": reason}) from exc
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/sessions/{session_id}/personal-reports/{student_id}/shots/{shot_key}")
+def get_personal_report_shot(session_id: int, student_id: int, shot_key: str,
+        db=Depends(get_grading_db), reports_dir: Path = Depends(get_reports_dir)):
+    import base64
+    from fastapi.responses import Response
+    from analysis_report_exporter import lost_question_shot_specs
+    from backend.personal_reports import personal_render_context, crop_personal_report_shot
+    from backend.session_analysis import infer_data_root
+    from backend.file_access import resolve_controlled_file, ControlledFileExpired
+    from session_originals import originals_state
+    _require_session(db.sessions, session_id)
+    root = infer_data_root(db.db_path)
+    if originals_state(root, session_id) in {"clearing", "cleared"}:
+        raise ApiError(410, "session_originals_unavailable", "原卷已释放，无法显示作答图；分数与批语不受影响")
+    context = personal_render_context(db, session_id, reports_dir)
+    student = next((s for s in context["data"].students if s.student_id == student_id), None)
+    if student is None:
+        raise ApiError(404, "personal_report_shot_not_found", "没有这张作答图")
+    specs = lost_question_shot_specs(db, context["data"], student,
+        regions=context["regions"], data_root=root)
+    spec = next((s for s in specs if s["key"] == shot_key), None)
+    if spec is None:
+        raise ApiError(404, "personal_report_shot_not_found", "没有这张作答图")
+    try:
+        file = resolve_controlled_file(spec["image_path"], root=root, data_root=root,
+            allowed_suffixes={".jpg", ".jpeg", ".png", ".webp", ".bmp"})
+    except ControlledFileForbidden as exc:
+        raise ApiError(403, "personal_report_shot_forbidden", "无法读取这张作答图") from exc
+    except (ControlledFileExpired, ControlledFileTypeError) as exc:
+        raise ApiError(404, "personal_report_shot_not_found", "作答图暂不可用") from exc
+    try:
+        uri = crop_personal_report_shot(file.path, spec["region"])
+    except (OSError, ValueError) as exc:
+        raise ApiError(404, "personal_report_shot_not_found", "作答图暂不可用") from exc
+    if uri is None:
+        raise ApiError(404, "personal_report_shot_not_found", "作答图暂不可用")
+    # 清理可能发生在读取期间，读取完成后再核对一次。
+    if originals_state(root, session_id) in {"clearing", "cleared"}:
+        raise ApiError(410, "session_originals_unavailable", "原卷已释放")
+    return Response(base64.b64decode(uri.split(",", 1)[1]), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@router.get("/students/{student_id}/personal-reports")
+def get_student_personal_reports(student_id: int, curriculum_volume_id: str | None = Query(default=None),
+        db=Depends(get_grading_db), reports_dir: Path = Depends(get_reports_dir)):
+    from backend.personal_reports import student_personal_report_exams
+    return student_personal_report_exams(db, student_id, reports_dir, curriculum_volume_id)
+
+
+@router.post("/personal-reports/bundles", response_model=JobResponse, status_code=202)
+def submit_personal_report_bundle(request: PersonalReportBundleRequest,
+        db=Depends(get_grading_db), manager=Depends(get_job_manager)):
+    from backend.report_exports import _submit_lock
+    for sid in request.session_ids:
+        _require_session(db.sessions, sid)
+    payload = request.model_dump()
+    with _submit_lock:
+        jobs, _ = manager.list(job_types=("personal_report_bundle",), statuses=("queued", "running"), limit=100)
+        job = next((j for j in jobs if j.payload == payload), None)
+        if job is None:
+            job = manager.submit("personal_report_bundle", payload)
+    return _job_response(job)
 
 
 @router.post(
@@ -110,6 +212,8 @@ def export_session_report(
                 report_type=request.report_type,
                 revision=score_revision(db, session_id),
                 force_regenerate=request.force_regenerate,
+                student_ids=request.student_ids,
+                publish=request.publish,
                 score_excel_options=(
                     request.excel_options.model_dump()
                     if request.excel_options is not None
@@ -135,6 +239,7 @@ def get_analysis_report_preflight(
     report_type: Literal["personal_analysis_html"] = Query(...),
     db: GradingRepositoryAccess = Depends(get_grading_db),
     reports_dir: Path = Depends(get_reports_dir),
+    student_ids: str | None = Query(default=None, max_length=4000),
 ) -> AnalysisPreflightResponse:
     """生成前预估：目标服务/模型、实际调用次数与 token 粗估（费用取决于服务商定价）。"""
     from analysis_report_exporter import build_analysis_preflight
@@ -147,6 +252,7 @@ def get_analysis_report_preflight(
         score_revision=score_revision(db, session_id),
         cache_dir=Path(reports_dir) / _ANALYSIS_NARRATIVE_CACHE_DIRNAME,
         reports_dir=Path(reports_dir),
+        student_ids=_parse_student_ids(student_ids),
     )
     return AnalysisPreflightResponse(**payload)
 
@@ -168,12 +274,19 @@ def get_session_report_context(
     has_results = bool(db.results.get_session_results(int(session_id))) or bool(
         db.reviews.list_teacher_score_locks(int(session_id))
     )
-    jobs, total = manager.list(
-        session_id=int(session_id),
-        job_types=("report_export",),
-        limit=page_size,
-        offset=(page - 1) * page_size,
-    )
+    # 生成叙述的任务没有文件。先筛选，再分页，保证数量与历史列表一致。
+    jobs = []
+    offset = 0
+    while True:
+        batch, total = manager.list(
+            session_id=int(session_id), job_types=("report_export",), limit=100, offset=offset,
+        )
+        jobs.extend(job for job in batch if job.payload.get("publish", True))
+        offset += len(batch)
+        if not batch or offset >= total:
+            break
+    total = len(jobs)
+    jobs = jobs[(page - 1) * page_size:page * page_size]
     return ReportExportContextResponse(
         score_revision=revision,
         has_results=has_results,

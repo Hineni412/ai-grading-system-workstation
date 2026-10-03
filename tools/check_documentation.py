@@ -44,7 +44,9 @@ EXCLUDED_DOCUMENT_DIRECTORY_NAMES = {
     "dist",
     "node_modules",
     "output",
+    "playwright-report",
     "runtime",
+    "test-results",
     "user_data",
 }
 

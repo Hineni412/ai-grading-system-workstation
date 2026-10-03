@@ -109,6 +109,77 @@ def test_skill_routes_remain_read_only_and_optional_list_fields(question_bank_fi
     assert client.get('/api/question-bank/papers').json()['items'][0]['skill_unlinked_question_count'] == 1
 
 
+@pytest.mark.parametrize(("original", "expected"), [
+    ("（8分）求未知数的值。", "求未知数的值。"),
+    ("( 8 分 ) 求未知数的值。", "求未知数的值。"),
+    ("（2.5分）求未知数的值。", "求未知数的值。"),
+    ("<b>（</b><i>8</i>分）求未知数的值。", "<b></b><i></i>求未知数的值。"),
+    ("（1）求未知数的值。", "（1）求未知数的值。"),
+    ("小明跑了5分钟。", "小明跑了5分钟。"),
+    ("游戏答对一题得3分。", "游戏答对一题得3分。"),
+    ("函数 $f(x)=(1)/(2)$。", "函数 $f(x)=(1)/(2)$。"),
+    ("求未知数的值。（3分）", "求未知数的值。（3分）"),
+])
+def test_stem_display_score_rule_preserves_body(original, expected):
+    from question_bank.services.rich_content_service import strip_question_source_score
+
+    assert strip_question_source_score(original) == expected
+    assert strip_question_source_score(expected) == expected
+
+
+def test_public_stems_hide_source_scores_without_changing_storage_or_analysis(question_bank_fixture, monkeypatch):
+    from copy import deepcopy
+    from docx import Document
+    from question_bank.services.rich_content_service import load_question_rich_content, save_question_rich_content
+    from tools import maintain_question_bank as maintenance
+
+    _, db_path, _ = question_bank_fixture
+    root = db_path.parent
+    original = "（8 分）小明跑了5分钟，求未知数的值。"
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("UPDATE questions SET question_text=?,answer_text='（8分）答案为2。',question_type='解答题' WHERE id=1", (original,))
+        conn.commit()
+    document = Document()
+    stem = document.add_paragraph()
+    stem.add_run("1. （").bold = True
+    stem.add_run("8").italic = True
+    stem.add_run(" 分）小明跑了5分钟，求未知数的值。").underline = True
+    answer = document.add_paragraph("1. （8分）答案为2。")
+    path = save_question_rich_content(1, question_blocks=[{"text": stem.text, "xml": stem._p.xml}],
+                                      answer_blocks=[{"text": answer.text, "xml": answer._p.xml}],
+                                      root=root / "question_bank/rich_content")
+    service = QuestionBankReadService(db_path, data_root=root)
+    loader = QuestionAnalysisInputLoader(db_path=db_path, data_root=root)
+    (raw_input,) = loader.load([1])
+    cached_original = deepcopy(load_question_rich_content(1, root=root / "question_bank/rich_content"))
+    before = db_path.read_bytes(), path.read_bytes()
+    with _question_bank_client(service, question_bank_db_path=db_path, data_root=root) as client:
+        listed = client.get('/api/question-bank/questions').json()['items'][0]
+        detail = client.get('/api/question-bank/questions/1').json()
+    for item in (listed, detail, service.get_questions([1])[0]):
+        assert item['question_text'] == "小明跑了5分钟，求未知数的值。"
+        block = item['rich_content']['question_blocks'][0]
+        assert "8 分" not in block['text'] and "8 分" not in block['html']
+        assert "5分钟" in block['html'] and "<u>" in block['html']
+        assert "（8分）" in item['rich_content']['answer_blocks'][0]['text']
+        assert item['revision'] == service.get_questions_for_export([1])[0]['revision']
+    assert service.get_questions_for_export([1])[0]['question_text'] == original
+    (after_input,) = loader.load([1])
+    assert after_input == raw_input and after_input.tagging_context.question_text == original
+    assert cached_original == load_question_rich_content(1, root=root / "question_bank/rich_content")
+    report = maintenance.preview_source_scores(db_path, root)
+    assert report['changed_stem_questions'] == report['changed_rich_stem_questions'] == 1
+    assert report['questions_using_original_answer_space'] == 1
+    assert report['unexpected_xml_structure_changes'] == report['blocked_rich_questions'] == 0
+    assert report['source_content_unchanged'] and report['analysis_unchanged']
+    assert report['answers_changed'] == 0 and report['applied'] is False
+    monkeypatch.setattr('sys.argv', ['maintain_question_bank.py', 'source-scores', '--apply', '--data-root', str(root)])
+    with pytest.raises(SystemExit) as error:
+        maintenance.main()
+    assert error.value.code == 2
+    assert (db_path.read_bytes(), path.read_bytes()) == before
+
+
 @pytest.mark.parametrize("changed_content", ["stem", "answer", "media"])
 def test_solution_evidence_route_returns_latest_point_level_union(
     question_bank_fixture,

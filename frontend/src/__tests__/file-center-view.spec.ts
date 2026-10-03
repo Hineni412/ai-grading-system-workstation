@@ -17,6 +17,11 @@ const apiMock = vi.hoisted(() => ({
   deleteReportFile: vi.fn(),
   downloadJobFile: vi.fn(),
 }))
+const personalMock = vi.hoisted(() => ({ states: vi.fn(), exams: vi.fn(), bundle: vi.fn() }))
+vi.mock('../api/personal-reports', async original => ({
+  ...await original<typeof import('../api/personal-reports')>(),
+  personalReportsApi: { ...(await original<typeof import('../api/personal-reports')>()).personalReportsApi, ...personalMock },
+}))
 const storageMock = vi.hoisted(() => ({ getOriginals: vi.fn() }))
 
 vi.mock('../api/ops', async (importOriginal) => ({
@@ -143,6 +148,8 @@ async function mountView(
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
+  personalMock.states.mockResolvedValue(Array.from({length: 10}, (_, index) => ({student_id: index + 1, status: 'missing', generated_at: null, reason: null})))
+  personalMock.bundle.mockResolvedValue(makeJob({job_type: 'personal_report_bundle', status: 'queued', result: {}}))
   storageMock.getOriginals.mockResolvedValue({ originals_state: 'complete' })
   apiMock.getReportContext.mockResolvedValue({
     score_revision: 'a'.repeat(64),
@@ -297,6 +304,8 @@ describe('file center view', () => {
     await vi.waitFor(() => expect(apiMock.getAnalysisPreflight).toHaveBeenCalledWith(
       7,
       'personal_analysis_html',
+      undefined,
+      Array.from({length: 10}, (_, i) => i + 1),
     ))
     await vi.waitFor(() => expect(
       host.querySelector('[data-testid="analysis-confirm-dialog"]'),
@@ -327,6 +336,9 @@ describe('file center view', () => {
       7,
       'personal_analysis_html',
       false,
+      undefined,
+      undefined,
+      {student_ids: Array.from({length: 10}, (_, i) => i + 1), publish: false},
     ))
     await vi.waitFor(() => expect(
       host.querySelector('[data-testid="analysis-confirm-dialog"]'),
@@ -375,4 +387,75 @@ describe('file center view', () => {
     })
   })
 
+})
+
+describe('personal report export selection', () => {
+  it('loads the current student list when exporting from the standalone file center', async () => {
+    const { host } = await mountView()
+    const store = useResultsCenterStore()
+    const snapshot = store.results
+    store.reset()
+    const load = vi.spyOn(store, 'load').mockImplementation(async sid => {
+      store.$patch({ sessionId: sid, results: snapshot, state: 'ready' })
+    })
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="export-personal-reports"]')).not.toBeNull())
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="export-personal-reports"]')!
+    trigger.focus(); trigger.click()
+    await vi.waitFor(() => expect(document.querySelector('.pe-summary')?.textContent).toContain('10 人 × 1 场'))
+    expect(load).toHaveBeenCalledWith(7)
+    document.querySelector<HTMLInputElement>('input[type="radio"][value="pick"]')!.click()
+    await nextTick()
+    document.querySelector<HTMLInputElement>('.pe-list input')!.click()
+    await nextTick()
+    expect(document.querySelector('.pe-filename')?.textContent).toContain('指定1人.zip')
+    document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))
+    await vi.waitFor(() => expect(document.querySelector('.personal-export-dialog')).toBeNull())
+    expect(document.activeElement).toBe(trigger)
+  })
+  it('summarizes three ranges, searches students and submits a selected multi-exam bundle', async () => {
+    const { host } = await mountView(7, {variant: 'popover'})
+    useSessionStore().sessions[0]!.curriculum_volume_id = 'test-volume'
+    useSessionStore().sessions.push({id: 8, name: '第二场合成考试', curriculum_volume_id: 'test-volume', status: 'completed', is_deleted: false, deleted_at: null, created_at: null, updated_at: null})
+    personalMock.states.mockResolvedValue(Array.from({length: 10}, (_, i) => ({student_id: i + 1, status: i < 3 ? 'current' : 'missing', generated_at: null, reason: null})))
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="export-personal-reports"]')).not.toBeNull())
+    host.querySelector<HTMLButtonElement>('[data-testid="export-personal-reports"]')!.click()
+    await vi.waitFor(() => expect(document.querySelector('.pe-summary')?.textContent).toContain('10 人 × 1 场'))
+    expect(document.querySelector('.pe-filename')?.textContent).toContain('全部_10人.zip')
+    const radio = document.querySelector<HTMLInputElement>('input[type="radio"][value="class"]')!
+    radio.click()
+    await nextTick()
+    document.querySelector<HTMLInputElement>('.pe-classes input')!.click()
+    await nextTick()
+    expect(document.querySelector('.pe-filename')?.textContent).toContain('一班_10人.zip')
+    document.querySelector<HTMLInputElement>('input[type="radio"][value="pick"]')!.click()
+    await nextTick()
+    const search = document.querySelector<HTMLInputElement>('input[aria-label="搜索学生"]')!
+    search.value = 'S001'; search.dispatchEvent(new Event('input', {bubbles: true}))
+    await nextTick()
+    expect(document.querySelectorAll('.pe-list label')).toHaveLength(1)
+    document.querySelector<HTMLInputElement>('.pe-list input')!.click()
+    await nextTick()
+    expect(document.querySelector('.pe-filename')?.textContent).toContain('S001_学生01_七年级期末_个人报告.html')
+    document.querySelectorAll<HTMLInputElement>('.pe-exams input')[1]!.click()
+    await nextTick()
+    expect(document.querySelector('.pe-summary')?.textContent).toContain('1 人 × 2 场')
+    expect(document.querySelector('.pe-filename')?.textContent).toContain('本学期_个人报告_2场_1人.zip')
+    expect(document.querySelector('.personal-export-dialog')?.textContent).not.toContain('PDF')
+    document.querySelector<HTMLButtonElement>('.pe-primary')!.click()
+    await vi.waitFor(() => expect(personalMock.bundle).toHaveBeenCalledWith([7, 8], [1], '指定1人'))
+    expect(apiMock.submitReport).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(host.textContent).toContain('完成后在任务中心下载'))
+  })
+
+  it('cancels generation confirmation without submitting any model task', async () => {
+    const {host} = await mountView()
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="generate-personal_analysis_html"]')).not.toBeNull())
+    host.querySelector<HTMLButtonElement>('[data-testid="generate-personal_analysis_html"]')!.click()
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="analysis-confirm-dialog"]')).not.toBeNull())
+    const cancel = [...host.querySelectorAll<HTMLButtonElement>('[data-testid="analysis-confirm-dialog"] button')].find(b => b.textContent?.trim() === '取消')!
+    cancel.click()
+    await nextTick()
+    expect(apiMock.submitReport).not.toHaveBeenCalled()
+    expect(host.querySelector('[data-testid="analysis-confirm-dialog"]')).toBeNull()
+  })
 })

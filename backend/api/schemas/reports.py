@@ -46,9 +46,17 @@ class ReportExportRequest(BaseModel):
     ] = "score_excel"
     force_regenerate: bool = False
     excel_options: ScoreExcelOptions | None = None
+    student_ids: list[int] | None = Field(default=None, min_length=1, max_length=500)
+    publish: bool = True
 
     @model_validator(mode="after")
     def _validate_report_options(self) -> ReportExportRequest:
+        if self.student_ids is not None:
+            if any(s <= 0 for s in self.student_ids):
+                raise ValueError("student ids must be positive")
+            self.student_ids = sorted(set(self.student_ids))
+        if self.report_type != "personal_analysis_html" and (self.student_ids is not None or not self.publish):
+            raise ValueError("student selection and publish are only valid for personal reports")
         if self.report_type != "score_excel":
             if self.excel_options is not None:
                 raise ValueError("excel options are only valid for score_excel")
@@ -56,6 +64,20 @@ class ReportExportRequest(BaseModel):
         if self.excel_options is None:
             self.excel_options = ScoreExcelOptions()
         return self
+
+
+class PersonalReportBundleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    session_ids: list[int] = Field(min_length=1, max_length=20)
+    student_ids: list[int] = Field(min_length=1, max_length=500)
+    scope_label: str = Field(default="指定学生", min_length=1, max_length=80)
+
+    @field_validator("session_ids", "student_ids")
+    @classmethod
+    def _positive_ids(cls, value):
+        if any(v <= 0 for v in value):
+            raise ValueError("ids must be positive")
+        return sorted(set(value))
 
 
 class AnalysisPreflightResponse(BaseModel):

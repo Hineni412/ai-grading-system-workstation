@@ -2,7 +2,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { ReviewItem } from '../api/review';
-import { useReviewDraftStore } from '../stores/review-drafts';
+import { useReviewDraftStore, stepNeedsReview, aiStepFor } from '../stores/review-drafts';
 
 const media = {
   crop_url: '/api/crop',
@@ -60,8 +60,8 @@ describe('review draft store', () => {
     const store = useReviewDraftStore()
     const draft = store.ensureDraft(item({ review_item_id: 'batch:1:Q1', score_awarded: 3 }))
     store.initSteps(draft.key, [
-      { partId: 'Q1', stepId: 'S1', maxScore: 3, scoreText: '3' },
-      { partId: 'Q1', stepId: 'S2', maxScore: 2, scoreText: '0' },
+      { partId: 'Q1', stepId: 'S1', maxScore: 3, scoreText: '3', note: '', carriedFrom: null, carryExplicit: false },
+      { partId: 'Q1', stepId: 'S2', maxScore: 2, scoreText: '0', note: '', carriedFrom: null, carryExplicit: false },
     ])
 
     expect(store.drafts[draft.key]?.scoreText).toBe('3')
@@ -76,6 +76,94 @@ describe('review draft store', () => {
     // 点回原值后恢复为非草稿状态
     store.updateSteps(draft.key, steps.map((step, index) => index === 0 ? { ...step, scoreText: '3' } : step))
     expect(store.drafts[draft.key]?.dirty).toBe(false)
+  })
+
+  it('marks only uncertain steps, with status fallbacks and no per-step confidence', () => {
+    const store = useReviewDraftStore()
+    const source = item({ review_item_id: 'batch:1:Q1', metadata: { step_assessments: [
+      { part_id: 'Q1', step_id: 'S1', score_awarded: 3, achievement: 'full' },
+      { part_id: 'Q1', step_id: 'S2', score_awarded: 0, achievement: 'uncertain' },
+    ] } })
+    const draft = store.ensureDraft(source)
+    store.initSteps(draft.key, [
+      { partId: 'Q1', stepId: 'S1', maxScore: 3, scoreText: '3', note: '', carriedFrom: null, carryExplicit: false },
+      { partId: 'Q1', stepId: 'S2', maxScore: 2, scoreText: '0', note: '', carriedFrom: null, carryExplicit: false },
+    ])
+    const steps = draft.stepScores!
+    expect(steps.map(step => stepNeedsReview(source, step).red)).toEqual([false, true])
+    for (const status of ['ungraded', 'failed', 'ai_review', 'ai_ready', 'teacher_final'] as const) {
+      const current = { ...source, score_status: status, teacher_locked: status === 'teacher_final', metadata: {} }
+      expect(steps.map(step => stepNeedsReview(current, step).red)).toEqual(status === 'ai_ready' || status === 'teacher_final' ? [false, false] : [true, true])
+    }
+    expect(aiStepFor({ ...source, metadata: { step_assessments: [
+      { step_id: 'S1', score_awarded: 3 }, { step_id: 'S1', score_awarded: 0 },
+    ] } }, steps[0]!)).toBeUndefined()
+  })
+
+  it('rechecks subsequent steps, restores automatic carry, and preserves explicit teacher choices', () => {
+    const store = useReviewDraftStore()
+    const source = item({ review_item_id: 'batch:1:Q1', max_score: 7, metadata: { step_assessments: [
+      { part_id: 'Q1', step_id: 'S1', score_awarded: 0 },
+      { part_id: 'Q1', step_id: 'S2', score_awarded: 0, carried_error_from: 'S1' },
+      { part_id: 'Q1', step_id: 'S3', score_awarded: 3 },
+    ] } })
+    const rubric = { question_id: 'Q1', parent_question_id: 'Q1', question_type: 'calculation', max_score: 7, knowledge_labels: [],
+      points: [2, 2, 3].map((score, index) => ({ part_id: 'Q1', part_label: '', step_id: `S${index + 1}`, core_goal: '', score,
+        standard_answer: '', accepted_answers: [], match_rule: '', required_elements: [], deduction_rules: [], answer_only_max_score: null, require_final_answer: null, final_answer_rule: '' })) }
+    store.ensureSteps(source, rubric)
+    const draft = store.ensureDraft(source)
+    expect(draft.stepScores![1]!.carriedFrom).toBe('S1')
+    expect(draft.dirty).toBe(false)
+    store.updateStep(draft.key, 0, { scoreText: '2' })
+    expect(draft.stepScores![1]!.carriedFrom).toBeNull()
+    expect(draft.stepScores![1]!.recheck).toContain('已改为达成')
+    store.updateStep(draft.key, 0, { scoreText: '0' })
+    expect(draft.stepScores![1]!.carriedFrom).toBe('S1')
+    expect(draft.stepScores![1]!.recheck).toBe('')
+    store.updateStep(draft.key, 1, { carriedFrom: null, carryExplicit: true })
+    store.updateStep(draft.key, 0, { scoreText: '2' })
+    store.updateStep(draft.key, 0, { scoreText: '0' })
+    expect(draft.stepScores![1]!.carriedFrom).toBeNull()
+    store.updateStep(draft.key, 2, { scoreText: '0' })
+    // 改分过的后步不自动替教师决定分数或沿用。
+    expect(draft.stepScores![2]!.scoreText).toBe('0')
+    store.updateStep(draft.key, 0, { scoreText: '2' })
+    store.updateStep(draft.key, 0, { scoreText: '0' })
+    expect(draft.stepScores![2]!.recheck).toBe('')
+  })
+
+  it('rechecks full subsequent steps when a previously full step loses points', () => {
+    const store = useReviewDraftStore()
+    const draft = store.ensureDraft(item({ review_item_id: 'batch:1:Q1', score_awarded: 5 }))
+    store.initSteps(draft.key, [
+      { partId: 'Q1', stepId: 'S1', maxScore: 3, scoreText: '3', initialScoreText: '3', note: '', carriedFrom: null, carryExplicit: false },
+      { partId: 'Q1', stepId: 'S2', maxScore: 2, scoreText: '2', initialScoreText: '2', note: '', carriedFrom: null, carryExplicit: false },
+    ])
+    store.updateStep(draft.key, 0, { scoreText: '2' })
+    expect(draft.stepScores![1]!.recheck).toContain('已改为未达成')
+    store.updateStep(draft.key, 0, { scoreText: '3' })
+    expect(draft.stepScores![1]!.recheck).toBe('')
+    store.updateStep(draft.key, 1, { note: '  教师说明  ' })
+    expect(draft.dirty).toBe(true)
+  })
+
+  it('rechecks invalidated manual carry without restoring the teacher choice automatically', () => {
+    const store = useReviewDraftStore()
+    const draft = store.ensureDraft(item({ review_item_id: 'manual-carry:Q1', score_awarded: 0 }))
+    store.initSteps(draft.key, [
+      { partId: 'Q1', stepId: 'S1', maxScore: 3, scoreText: '0', initialScoreText: '0', note: '', carriedFrom: null, carryExplicit: false },
+      { partId: 'Q1', stepId: 'S2', maxScore: 2, scoreText: '0', initialScoreText: '0', note: '', carriedFrom: null, carryExplicit: false },
+    ])
+    store.updateStep(draft.key, 1, { carriedFrom: 'S1', carryExplicit: true })
+    store.updateStep(draft.key, 0, { scoreText: '3' })
+    expect(draft.stepScores![1]!.carriedFrom).toBeNull()
+    expect(draft.stepScores![1]!.recheck).toContain('①已改为达成')
+    store.updateStep(draft.key, 0, { scoreText: '0' })
+    expect(draft.stepScores![1]!.carriedFrom).toBeNull()
+    expect(draft.stepScores![1]!.recheck).toBe('')
+    store.updateStep(draft.key, 0, { scoreText: '3' })
+    store.updateStep(draft.key, 1, { scoreText: '2' })
+    expect(draft.stepScores![1]!.recheck).toBe('')
   })
 
   it('isolates drafts by session, question and detail and clears only confirmed work', () => {

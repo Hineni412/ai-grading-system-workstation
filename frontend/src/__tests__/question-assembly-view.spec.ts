@@ -122,6 +122,9 @@ describe('question assembly view', () => {
     expect(host.querySelector('.page-tabs .is-active')?.textContent).toBe('整理与导出')
     await vi.waitFor(() => expect(host.textContent).toContain(format === 'pdf' ? 'paper.pdf' : 'paper.md'))
     expect(host.textContent).toContain('A')
+    expect(host.querySelector('.assembly-sheet__score')).toBeNull()
+    expect(host.textContent).not.toContain('未标分')
+    expect(host.querySelector('.assembly-tile')?.getAttribute('title') ?? '').not.toMatch(/\d+ 分/)
 
     const formatSelect = host.querySelector<HTMLSelectElement>('select[aria-label="导出格式"]')!
     expect(formatSelect.value).toBe('docx')

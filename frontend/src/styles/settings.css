@@ -89,18 +89,8 @@ body:has(.settings-drawer[data-state=open]) [data-slot=sheet-overlay] { backgrou
 .settings-backup-hint.is-covered { color: var(--color-success); background: var(--color-success-subtle); }
 .settings-confirm-line { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin-top: 12px; }
 .settings-confirm-line input { width: 150px; }
-.settings-system-line { display: flex; align-items: center; gap: 10px; font-size: 12.5px; flex-wrap: wrap; }
-.settings-version { margin-left: auto; font-size: 12px; color: var(--color-text-muted); }
-.settings-check-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 24px; padding: 2px 12px 11px; font-size: 12.5px; }
-.settings-check-grid > div { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
-.settings-check-grid > div > span:last-child { margin-left: auto; font-size: 12px; color: var(--color-text-muted); }
-.settings-check-grid > .is-warning > span:last-child { color: var(--color-warning); }
-.settings-export-capabilities { border-top: 1px solid var(--color-border-subtle); padding: 12px 0 0; }
-.settings-export-capabilities h3 { margin: 0 12px 6px; font-size: 13px; font-weight: 500; }
-.settings-export-capabilities > p { margin: 6px 12px 12px; line-height: 1.7; }
-.settings-tool-options { background: var(--color-bg-subtle); }
 .settings-log-panel { scroll-margin-top: 70px; }
-@media (max-width: 720px) { .settings-content { padding: 12px; } .settings-hub .page-header { flex-wrap: wrap; } .settings-check-grid { grid-template-columns: 1fr; } .settings-dialog__footer { flex-wrap: wrap; } .settings-selection-bar { flex-wrap: wrap; } }
+@media (max-width: 720px) { .settings-content { padding: 12px; } .settings-hub .page-header { flex-wrap: wrap; } .settings-dialog__footer { flex-wrap: wrap; } .settings-selection-bar { flex-wrap: wrap; } }
 
 .settings-saved { color: var(--color-success); }
 .settings-hub .app-button[data-variant=primary], .settings-dialog__footer .app-button, .settings-drawer__footer .app-button { --app-control-height: 34px; --app-control-padding-x: 14px; --app-control-font-size: 13px; }
