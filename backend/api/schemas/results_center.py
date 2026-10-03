@@ -32,6 +32,7 @@ class ResultsCenterItemResponse(BaseModel):
     review_reason: str | None = None
     result_id: int | None = None
     detail_id: int | None = None
+    alternative_solution_detected: bool = Field(default=False, exclude_if=lambda value: not value)
 
 
 class ResultsCenterQuestionResponse(BaseModel):

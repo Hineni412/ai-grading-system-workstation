@@ -45,7 +45,8 @@ onBeforeUnmount(() => {
 <template>
   <div ref="sentinel" class="page-header__sentinel" aria-hidden="true"></div>
   <header v-bind="$attrs" class="page-header" :class="{ 'page-header--scrolled': isScrolled }">
-    <div class="page-header__lead">
+    <div class="page-header__lead" :class="{ 'page-header__lead--with-back': $slots.back }">
+      <slot name="back" />
       <h1 :id="titleId" class="page-header__title" tabindex="-1">{{ title }}</h1>
       <div v-if="$slots.meta" class="page-header__meta"><slot name="meta" /></div>
     </div>
@@ -85,6 +86,10 @@ onBeforeUnmount(() => {
   gap: var(--space-3);
   min-width: 0;
   flex-wrap: wrap;
+}
+
+.page-header__lead--with-back {
+  align-items: center;
 }
 
 .page-header__title {

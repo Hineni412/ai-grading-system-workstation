@@ -8,7 +8,6 @@
 .review-page__header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-4);
   padding: var(--space-4) var(--space-6);
   border-block-end: var(--border-width) solid var(--color-border-default);
@@ -38,6 +37,7 @@
 
 .review-page__run-switch {
   flex: 0 0 auto;
+  margin-inline-start: auto;
   min-height: var(--control-height-small);
   border-color: var(--input);
   background: var(--card);

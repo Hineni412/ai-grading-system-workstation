@@ -23,6 +23,7 @@ import {
 } from './class-analysis-cache'
 import { loadComparisonResults } from './comparison-results-cache'
 import PaperWalkthrough from './PaperWalkthrough.vue'
+import { walkthroughDataFor } from './paper-walkthrough'
 import {
   OVERVIEW_BANDS,
   buildOverviewTiles,
@@ -731,6 +732,7 @@ function openReviewNote(note: AnalysisReviewNoteItem): void {
 // ---- 看卷 10 分钟 ----
 const WALKTHROUGH_RESUME_KEY = 'ai-grading:paper-walkthrough:v1'
 const walkthroughOpen = ref(false)
+const walkthroughData = computed(() => walkthroughDataFor(props.results))
 const walkthroughResumeIndex = ref<number | undefined>(undefined)
 const walkthroughAvailable = computed(() => (
   studentsInScope.value.some(isCompleteStudent)
@@ -1460,6 +1462,7 @@ onMounted(() => {
       :previous-students="previousScopeStudents"
       :pending-count="reviewPending"
       :initial-index="walkthroughResumeIndex"
+      :data-cache="walkthroughData"
       @close="walkthroughOpen = false"
     />
 

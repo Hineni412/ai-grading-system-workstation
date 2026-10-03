@@ -10,6 +10,7 @@ import {
 import type { EvidenceSource } from '../../composables/use-evidence-viewer'
 import type { ScanStudentMatchOption } from '../../api/scan-grading'
 import AppIcon from '../shell/AppIcon.vue'
+import BackButton from '../design-system/BackButton.vue'
 import StudentMatchSelect from '../scan-grading/StudentMatchSelect.vue'
 import ReviewAnswerPanel from './ReviewAnswerPanel.vue'
 import ReviewEvidenceViewer from './ReviewEvidenceViewer.vue'
@@ -155,9 +156,7 @@ const emit = defineEmits<{
     aria-labelledby="review-deep-title"
   >
     <header class="review-deep-workspace__header">
-      <button type="button" data-testid="back-to-batch" @click="emit('back')">
-        {{ backLabel || `返回 ${item.question_id} 批量复核` }}
-      </button>
+      <BackButton data-testid="back-to-batch" :label="backLabel || `${item.question_id} 批量复核`" @click="emit('back')" />
       <div class="review-deep-workspace__identity">
         <h2 id="review-deep-title">{{ item.student_name }}</h2>
         <span>{{ item.student_code || '学号未提供' }} · {{ item.class_name || '班级未提供' }}</span>

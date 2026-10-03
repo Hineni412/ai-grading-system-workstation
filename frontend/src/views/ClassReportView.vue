@@ -13,6 +13,7 @@ import {
   type ModelTaskBinding,
 } from '../api/model-profiles'
 import AppButton from '../components/design-system/AppButton.vue'
+import BackButton from '../components/design-system/BackButton.vue'
 import ClassAnalysisGenerateConfirm from '../components/results-center/ClassAnalysisGenerateConfirm.vue'
 import { useJobStore } from '../stores/jobs'
 import { useSessionStore } from '../stores/session'
@@ -259,6 +260,7 @@ onBeforeUnmount(() => {
 <template>
   <section class="class-report" aria-labelledby="class-report-title">
     <header class="class-report__hero">
+      <BackButton label="成绩中心" @click="backToResults" />
       <div>
         <p class="results-center__eyebrow">成绩中心 · 班级报告</p>
         <h1 id="class-report-title" tabindex="-1">
@@ -266,7 +268,6 @@ onBeforeUnmount(() => {
         </h1>
         <p>AI 分析按班级分别生成；统计使用当前成绩，教师复核分优先。</p>
       </div>
-      <AppButton variant="secondary" @click="backToResults">返回成绩中心</AppButton>
     </header>
 
     <div v-if="sessionStore.selectedSessionId === null" class="results-state-panel">
