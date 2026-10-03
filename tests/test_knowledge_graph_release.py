@@ -36,6 +36,25 @@ def _database(tmp_path: Path) -> Path:
     return db_path
 
 
+def test_symmetry_skill_release_preserves_existing_definitions() -> None:
+    from question_bank.knowledge_graph_release.loader import load_taxonomy_catalog_for_release
+    from question_bank.knowledge_graph_release.validation import validate_release
+
+    previous = load_release_for_taxonomy_revision(9)
+    candidate = load_release_for_taxonomy_revision(10)
+    assert not validate_release(candidate, load_taxonomy_catalog_for_release(candidate)).errors
+    old_nodes = {node['stable_key']: node for node in previous.payload['core_nodes']}
+    new_nodes = {node['stable_key']: node for node in candidate.payload['core_nodes']}
+    assert {key: new_nodes[key] for key in old_nodes} == old_nodes
+    added = set(new_nodes) - set(old_nodes)
+    assert added == {'sk_bnu24_math_g8_lower_3_2_101'}
+    assert new_nodes[next(iter(added))]['node_kind'] == 'skill'
+    old_relations = {(r['source_key'], r['target_key'], r['relation_type']) for r in previous.payload['relations']}
+    new_relations = {(r['source_key'], r['target_key'], r['relation_type']) for r in candidate.payload['relations']}
+    assert new_relations - old_relations == {('sk_bnu24_math_g8_lower_3_2_101', 'kp_bnu24_math_g8_lower_3_2', 'parent')}
+    assert old_relations.issubset(new_relations)
+
+
 def test_release_can_be_staged_activated_and_rolled_back_atomically(
     tmp_path: Path,
 ) -> None:
