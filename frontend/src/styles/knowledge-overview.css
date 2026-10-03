@@ -3,17 +3,7 @@
   flex-direction: column;
   gap: var(--space-4);
   min-width: 0;
-  padding: var(--space-5);
-}
-
-.knowledge-overview-heading p {
-  margin: 0;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-dense);
-}
-
-.knowledge-overview-heading h1 {
-  margin: var(--space-1) 0;
+  padding: var(--knowledge-training-inset);
 }
 
 .knowledge-overview-scope-bar {

@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { TrainingOverviewNode } from '../api/training'
 import AppButton from '../components/design-system/AppButton.vue'
+import PageHeader from '../components/design-system/PageHeader.vue'
 import KnowledgeTrainingTabs from '../components/knowledge-training/KnowledgeTrainingTabs.vue'
 import OverviewScopeBar from '../components/knowledge-overview/OverviewScopeBar.vue'
 import OverviewMapRows from '../components/knowledge-overview/OverviewMapRows.vue'
@@ -134,12 +135,12 @@ onBeforeUnmount(() => {
 })
 </script>
 <template>
-  <section class="knowledge-graph-view knowledge-overview-view" aria-labelledby="knowledge-graph-title" @click="onBlank">
-    <header class="knowledge-overview-heading mastery-map-heading">
-      <div><h1 id="knowledge-graph-title" tabindex="-1">知识结构</h1><p>全册知识地图：查看薄弱位置及知识点与技能的关联。</p></div>
-      <p v-if="metrics" class="mastery-map-summary" aria-label="知识结构汇总">本册 {{ metrics.total }} 项 · 有证据 {{ metrics.evidence }} 项 · 有学生明显薄弱 {{ metrics.weak }} 项<span>与学情总览同一口径</span></p>
-    </header>
-    <KnowledgeTrainingTabs /><OverviewScopeBar />
+  <section class="knowledge-graph-view knowledge-overview-view knowledge-training-page" aria-labelledby="knowledge-graph-title" @click="onBlank">
+    <PageHeader title="知识结构" title-id="knowledge-graph-title" class="knowledge-training-header">
+      <template #navigation><KnowledgeTrainingTabs /></template>
+    </PageHeader>
+    <OverviewScopeBar />
+    <p v-if="metrics" class="mastery-map-summary" aria-label="知识结构汇总">本册 {{ metrics.total }} 项 · 有证据 {{ metrics.evidence }} 项 · 有学生明显薄弱 {{ metrics.weak }} 项<span>与学情总览同一口径</span></p>
     <p v-if="!curriculum.selectedVolumeId" class="knowledge-overview-notice" role="status">请先在顶部选择教学学期</p>
     <div v-else-if="store.loadState === 'loading' && !overview" class="knowledge-overview-skeleton" role="status" aria-busy="true">正在汇总本学期掌握度…</div>
     <div v-else-if="store.loadState === 'error'" class="knowledge-overview-error" role="alert"><p>{{ store.errorMessage }}</p><AppButton @click="store.load(curriculum.selectedVolumeId, true)">重新加载</AppButton></div>
