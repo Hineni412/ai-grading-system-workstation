@@ -249,7 +249,9 @@ describe('personalized recommendation draft', () => {
   ])('exports a 100 question $paperMode handout and restores it after $response without creating a training paper', async ({ response, paperMode, skipped }) => {
     const emptyStudent = { ...draft.students[0]!, student_id: 'SYN-S02', student_name: '合成空卷', items: [] }
     const handout = { ...draft, config: { purpose: 'handout', question_count: 100, paper_mode: paperMode, remediation_only: paperMode === 'individual' },
-      students: skipped ? [...draft.students, emptyStudent] : draft.students }
+      students: (skipped ? [...draft.students, emptyStudent] : draft.students).map(student => ({ ...student,
+        items: student.items.map((item, index) => ({ ...item, practice_purpose: index ? 'consolidation' as const : 'new' as const,
+          knowledge_section: { id: 'kp_section', title: '合成章 · 合成节' }, primary_skill_name: '合成技能' })) })) }
     const job = { id: 81, status: 'succeeded', progress: 1, result: { download_url: '/api/jobs/81/download', skipped_student_count: skipped } }
     trainingApiMock.createPersonalizedDraft.mockResolvedValue(handout)
     trainingApiMock.getPersonalizedDraft.mockResolvedValue(handout)
@@ -268,11 +270,15 @@ describe('personalized recommendation draft', () => {
     const view = app.mount(host) as unknown as { generate: () => Promise<void> }
     mounted.push(app)
     await settle(); await view.generate(); await settle()
+    expect(host.querySelectorAll('.personalized-section-heading')).toHaveLength(1)
+    expect(host.querySelector('.personalized-section-heading')?.textContent).toBe('合成章 · 合成节')
+    expect(host.querySelector('.personalized-skill-note')?.textContent).toContain('技能：合成技能')
+    if (paperMode === 'individual') expect(host.querySelector('.personalized-composition')?.textContent).toContain('补弱 0 题')
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({
       purpose: 'handout', question_count: 100, max_questions_per_skill: 20,
       max_written_questions: 20, recent_activity_count: 0, difficulty_max: 10,
       paper_mode: paperMode, remediation_only: paperMode === 'individual',
-      max_unmeasured_questions: paperMode === 'individual' ? 4 : 0,
+      max_unmeasured_questions: paperMode === 'individual' ? 6 : 0, max_consolidation_questions: paperMode === 'individual' ? 6 : 0,
     }))
     expect(host.textContent).toContain('讲义只打印，不回收、不更新掌握度')
     expect(host.textContent).not.toContain('生成全部 PDF')

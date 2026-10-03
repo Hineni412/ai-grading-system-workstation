@@ -17,6 +17,9 @@ export interface WrongQuestionBookPreview {
   semester_label: string
   question_count: number
   missing_items: WrongQuestionMissingItem[]
+  session_wrong_counts: Record<string, number>
+  out_of_scope_count: number
+  empty_students: Array<{ student_id: number; student_name: string; reason: string }>
 }
 
 function decodeWrongQuestionPreview(value: unknown): WrongQuestionBookPreview {
@@ -25,6 +28,10 @@ function decodeWrongQuestionPreview(value: unknown): WrongQuestionBookPreview {
       && isInteger(item.session_id, 1) && typeof item.session_name === 'string' && isNullableString(item.exam_created_at))
     || !Array.isArray(value.session_ids) || !value.session_ids.every(id => isInteger(id, 1))
     || typeof value.semester_label !== 'string' || !isInteger(value.question_count, 0)
+    || !isRecord(value.session_wrong_counts) || !Object.values(value.session_wrong_counts).every(count => isInteger(count, 0))
+    || !isInteger(value.out_of_scope_count, 0)
+    || !Array.isArray(value.empty_students) || !value.empty_students.every(item => isRecord(item)
+      && isInteger(item.student_id, 1) && typeof item.student_name === 'string' && typeof item.reason === 'string')
     || !Array.isArray(value.missing_items) || !value.missing_items.every(item => isRecord(item)
       && isInteger(item.student_id, 1) && typeof item.student_name === 'string'
       && isInteger(item.session_id, 1) && typeof item.session_name === 'string' && typeof item.question_id === 'string')) {
@@ -33,16 +40,17 @@ function decodeWrongQuestionPreview(value: unknown): WrongQuestionBookPreview {
   return value as unknown as WrongQuestionBookPreview
 }
 
-export function previewWrongQuestionBook(studentId: number, body: {
-  curriculum_volume_id: string; include_class: boolean; session_ids?: number[]
+export function previewWrongQuestionBooks(body: {
+  curriculum_volume_id: string; student_ids: number[]; session_ids?: number[] | null; scope_keys?: string[]
 }, signal?: AbortSignal): Promise<WrongQuestionBookPreview> {
-  return apiClient.request(`/api/students/${studentId}/wrong-question-book/preview`, {
+  return apiClient.request('/api/students/wrong-question-books/preview', {
     method: 'POST', body, decode: decodeWrongQuestionPreview, signal,
   })
 }
 
 export function submitWrongQuestionBooks(body: {
   curriculum_volume_id: string; student_ids: number[]; session_ids: number[]; client_request_token: string
+  scope_keys?: string[]; include_source_label?: boolean; include_answer_space?: boolean
 }): Promise<JobResponse> {
   return apiClient.request('/api/students/wrong-question-books', { method: 'POST', body, decode: decodeJobResponse })
 }

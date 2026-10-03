@@ -38,6 +38,8 @@ const props = defineProps<{
   maxQuestionsPerSkill?: number
   maxWrittenQuestions?: number
   recentActivityCount?: number
+  maxConsolidationQuestions?: number
+  maxUnmeasuredQuestions?: number
   questionCount: number
   excludeCurrentExamOriginals: boolean
   paperMode?: 'individual' | 'shared'
@@ -130,7 +132,7 @@ const selectedTargetLabels = computed(() => {
   return selectedTargets.value.map((key) => labels.get(key) ?? key)
 })
 const selectedTargetsAreGoverned = computed(() => selectedTargets.value.every((key) => (
-  key.startsWith('kp_') || key.startsWith('ki_')
+  key.startsWith('kp_') || key.startsWith('ki_') || key.startsWith('sk_')
 )))
 
 const canGenerate = computed(() => (
@@ -143,6 +145,7 @@ const canGenerate = computed(() => (
   && Number.isInteger(props.maxQuestionsPerSkill ?? 1) && (props.maxQuestionsPerSkill ?? 1) >= 1 && (props.maxQuestionsPerSkill ?? 1) <= props.questionCount
   && Number.isInteger(props.maxWrittenQuestions ?? 2) && (props.maxWrittenQuestions ?? 2) >= 0 && (props.maxWrittenQuestions ?? 2) <= props.questionCount
   && Number.isInteger(props.recentActivityCount ?? 3) && (props.recentActivityCount ?? 3) >= 0
+  && (props.purpose !== 'handout' || props.paperMode === 'shared' || [props.maxConsolidationQuestions ?? 6, props.maxUnmeasuredQuestions ?? 6].every(value => Number.isInteger(value) && value >= 0 && value <= props.questionCount))
   && Number.isInteger(difficultyMax.value)
   && difficultyMax.value >= 1
   && difficultyMax.value <= 10
@@ -171,8 +174,9 @@ const canDiscardDraft = computed(() => (
 // 出卷设置指纹：设置一致时才恢复上次草稿，设置变了必须重新生成。
 // rulesVersion 随选题规则升级递增，避免恢复规则升级前的旧草稿。
 const settingsFingerprint = computed(() => JSON.stringify({
-  rulesVersion: props.paperMode === 'shared' ? 15 : 16,
-  maxUnmeasuredQuestions: props.paperMode === 'shared' ? 0 : 4,
+  rulesVersion: props.paperMode === 'shared' ? 16 : 17,
+  maxUnmeasuredQuestions: props.paperMode === 'shared' ? 0 : props.purpose === 'handout' ? props.maxUnmeasuredQuestions ?? 6 : 4,
+  maxConsolidationQuestions: props.paperMode === 'shared' || props.purpose !== 'handout' ? 0 : props.maxConsolidationQuestions ?? 6,
   purpose: props.purpose ?? 'training',
   maxQuestionsPerSkill: props.maxQuestionsPerSkill ?? 1,
   maxWrittenQuestions: props.maxWrittenQuestions ?? 2,
@@ -351,6 +355,17 @@ function difficultySummary(items: PersonalizedRecommendationItem[]): string {
   const six = levels.filter(level => level === 6).length
   const challenge = levels.filter(level => level >= 7).length
   return `1–5级 ${basic}题 · 6级 ${six}题 · 7级及以上 ${challenge}题 · 最高 ${Math.max(0, ...items.map(item => item.difficulty))}级`
+}
+
+function compositionSummary(items: PersonalizedRecommendationItem[]): string {
+  const counts = { remediation: 0, consolidation: 0, new: 0 }
+  for (const item of items) counts[item.practice_purpose ?? 'remediation'] += 1
+  return `补弱 ${counts.remediation} 题 · 巩固 ${counts.consolidation} 题 · 新练习 ${counts.new} 题 ＝ ${items.length} 题`
+}
+function shortageExplanation(): string {
+  if (!draft.value?.config.remediation_only || effectivePaperMode.value !== 'individual') return '可返回设置调整范围、题量或近期原题排除次数。'
+  const config = draft.value.config
+  return `优先补弱；未测目标新练习最多 ${Number(config.max_unmeasured_questions ?? 0)} 题，巩固题最多 ${Number(config.max_consolidation_questions ?? 0)} 题。新练习不计作薄弱点覆盖。题量不足保留缺口，可展开选题说明核对原因。`
 }
 
 function shortageStage(shortage: Record<string, unknown>): TrainingStage {
@@ -540,7 +555,8 @@ async function generate(): Promise<void> {
       difficulty_max: difficultyMax.value,
       paper_mode: props.paperMode ?? 'individual',
       remediation_only: props.paperMode !== 'shared',
-      max_unmeasured_questions: props.paperMode !== 'shared' ? 4 : 0,
+      max_unmeasured_questions: props.paperMode === 'shared' ? 0 : props.purpose === 'handout' ? props.maxUnmeasuredQuestions ?? 6 : 4,
+      max_consolidation_questions: props.paperMode === 'shared' || props.purpose !== 'handout' ? 0 : props.maxConsolidationQuestions ?? 6,
       target_keys: selectedTargetsAreGoverned.value ? selectedTargets.value : [],
       scope_keys: (props.scopeKeys ?? []).filter((key) => key.startsWith('kp_') || key.startsWith('ki_')),
       target_names: selectedTargetsAreGoverned.value ? [] : selectedTargetLabels.value,
@@ -906,10 +922,14 @@ async function editItem(
           <nav class="personalized-student-list" :aria-label="effectivePaperMode === 'shared' ? '同卷学生列表' : '一人一卷学生列表'"><header>{{ effectivePaperMode === 'shared' ? '共同练习学生' : '学生草稿' }} <span>{{ draft.students.length }} 人</span></header><button v-for="student in draft.students" :key="student.student_id" type="button" :class="{ 'is-selected': selectedDraftStudent?.student_id === student.student_id }" :aria-pressed="selectedDraftStudent?.student_id === student.student_id" @click="selectedDraftStudentId = student.student_id"><strong>{{ student.student_name || student.student_code || student.student_id }}</strong><small>{{ student.class_id }} · {{ student.student_code || '' }}</small><span>{{ instancesForStudent(student.student_id)[0]?.status === 'frozen' ? '已出卷' : instancesForStudent(student.student_id).length ? '待审核' : `${student.items.length} 题草稿` }}</span></button></nav>
           <template v-for="student in draft.students" :key="student.student_id"><article v-if="selectedDraftStudent?.student_id === student.student_id" class="personalized-student">
             <header><div><strong>{{ effectivePaperMode === 'shared' ? '共同试题' : student.student_name || student.student_code || student.student_id }}</strong><span>{{ student.items.length }} 题<span v-if="student.items.length"> · {{ difficultySummary(student.items) }}</span></span></div><StatusBadge :tone="student.selection_mode === 'maintenance_fallback' ? 'warning' : 'info'" :label="student.selection_mode === 'teacher_fixed_class' ? '教师固定选题' : student.selection_mode === 'maintenance_fallback' ? '保守复习' : '按掌握证据推荐'" /></header>
+            <p v-if="effectivePaperMode === 'individual'" class="personalized-composition">{{ compositionSummary(student.items) }}</p>
             <p v-if="draft.config.assembly_source" class="personalized-shared-note">班级组卷 · 全班：{{ (draft.config.assembly_source as {title?:string}).title }}。全部学生使用同一套题与题序；换题请返回班级组卷调整后重新生成。</p>
             <p v-else-if="effectivePaperMode === 'shared'" class="personalized-shared-note">全组题目与题序相同；换题需调整设置后重新生成整组草稿。</p>
             <ol class="personalized-match-list">
-              <li v-for="item in student.items" :key="item.item_id" class="personalized-match">
+              <template v-for="(item, index) in student.items" :key="item.item_id">
+              <li v-if="isHandout && item.knowledge_section && (index === 0 || student.items[index - 1]?.knowledge_section?.title !== item.knowledge_section.title)" class="personalized-section-heading">{{ item.knowledge_section.title }}</li>
+              <li class="personalized-match">
+                <p v-if="isHandout && item.primary_skill_name" class="personalized-skill-note">技能：{{ item.primary_skill_name }}</p>
                 <div class="personalized-match__head"><strong>第 {{ item.item_order }} 题</strong><span class="personalized-stage-badge" :class="`is-${item.stage}`">{{ itemLabel(item) }}</span><span>{{ knowledgeLeafLabel(item.matched_name) }}</span><span class="personalized-match__difficulty">难度 {{ item.difficulty }} · {{ item.criterion_point_count }} 个判定点</span></div>
                 <p class="personalized-match__stem">{{ item.question_text || '旧草稿未包含题干，请预览原题。' }}</p>
                 <div class="personalized-item-actions">
@@ -920,9 +940,9 @@ async function editItem(
                     <template v-if="evidenceDisplayFor(student.student_id, item).refs.length"><div v-for="evidence in evidenceDisplayFor(student.student_id, item).refs" :key="`${evidence.session_id}-${evidence.question_id}-${evidence.bank_question_id}`"><span>{{ evidenceRefLabel(evidence) }}</span><AppButton v-if="evidence.bank_question_id" variant="ghost" @click="openPreview(evidence.bank_question_id, '作答原题')">预览原题</AppButton></div></template><small v-else>{{ item.selection_kind === 'supplement' ? '范围内的新练习，不认定为已证实薄弱。' : '当前范围暂无逐题失分记录。' }}</small>
                   </details>
                 </div>
-              </li>
+              </li></template>
             </ol>
-            <div v-if="student.shortages.length" class="personalized-shortages"><strong>{{ draft.config.remediation_only && effectivePaperMode === 'individual' ? `当前可配训练题 ${student.items.length} 题` : `尚未配齐，还缺 ${student.shortages.reduce((sum, item) => sum + (Number(item.missing_count) || 0), 0)} 题` }}</strong><p>{{ draft.config.remediation_only && effectivePaperMode === 'individual' ? (Number(draft.config.max_unmeasured_questions ?? 0) > 0 ? `优先补弱，再加入最多 ${draft.config.max_unmeasured_questions} 道未测目标新练习；新练习不计作薄弱点覆盖。题量不足保留缺口。` : '只练已有失分需要；题量不足保留缺口，可展开选题说明核对原因。') : '可返回设置调整范围、题量或近期原题排除次数。' }}</p><details><summary>缺题详情</summary><p v-for="shortage in student.shortages" :key="String(shortage.stage)">{{ stageLabel(shortageStage(shortage)) }} · 距题量上限少 {{ Number(shortage.missing_count) || 0 }} 题</p></details></div>
+            <div v-if="student.shortages.length" class="personalized-shortages"><strong>{{ draft.config.remediation_only && effectivePaperMode === 'individual' ? `当前可配训练题 ${student.items.length} 题` : `尚未配齐，还缺 ${student.shortages.reduce((sum, item) => sum + (Number(item.missing_count) || 0), 0)} 题` }}</strong><p>{{ shortageExplanation() }}</p><details><summary>缺题详情</summary><p v-for="shortage in student.shortages" :key="String(shortage.stage)">{{ stageLabel(shortageStage(shortage)) }} · 距题量上限少 {{ Number(shortage.missing_count) || 0 }} 题</p></details></div>
             <details v-if="student.warnings.length" class="draft-data-notes"><summary>选题说明（{{ student.warnings.length }}）</summary><ul><li v-for="warning in student.warnings" :key="warning">{{ warning }}</li></ul></details>
           </article></template>
         </div>
@@ -990,6 +1010,7 @@ async function editItem(
 .personalized-match__evidence[open]{flex-basis:100%;border-top:1px solid var(--color-border-subtle);padding-top:var(--space-3);line-height:var(--line-height-relaxed)}
 .personalized-match__evidence p{margin:var(--space-2) 0}
 .personalized-match__evidence>div{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2)}
+.personalized-composition,.personalized-skill-note{font-size:var(--font-size-caption);color:var(--color-text-muted);margin:var(--space-2) 0}.personalized-section-heading{list-style:none;font-size:var(--font-size-h3);font-weight:600;padding:var(--space-4) 0 var(--space-2);border-bottom:1px solid var(--color-border-default)}
 .personalized-shortages{margin:var(--space-4) 0;padding:var(--space-4);border-radius:var(--radius-control);background:var(--color-warning-subtle);color:var(--color-warning);font-size:var(--font-size-dense)}
 .personalized-shortages p{margin-top:var(--space-2);color:var(--color-text-secondary)}
 .personalized-shortages details{margin-top:var(--space-3)}.personalized-shortages summary{cursor:pointer}

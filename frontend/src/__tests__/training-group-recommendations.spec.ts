@@ -61,6 +61,12 @@ function button(label: string): HTMLButtonElement {
 
 describe('章节小组的采用与失败恢复', () => {
 
+  it.each([[4.2, 5.6, '目标难度 4–6 级'], [4.2, 4.3, '目标难度 4 级'], [null, null, '难度未知']] as const)('shows target difficulty %s / %s', async (first, second, label) => {
+    const current = { ...group, targets: [first, second].map(value => ({ ...group.targets[0]!, target_difficulty: value })) }
+    mount(false, null, createPinia(), { ...diagnosis, grouping: { ...diagnosis.grouping!, groups: [current], selection: current } })
+    await vi.waitFor(() => expect(host.textContent).toContain(label))
+  })
+
   it('requires an explicit overlap decision and adopts only after checking the source again', async () => {
     const adopted = mount(true)
     await vi.waitFor(() => expect(host.textContent).toContain('此前生成草稿'))

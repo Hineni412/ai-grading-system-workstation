@@ -6,22 +6,23 @@ import type { GraphQueryInput } from '../api/graph'
 import { fetchStudents, type StudentSummary } from '../api/students'
 import {
   trainingApi,
-  type TrainingDiagnosis,
+  type TrainingDiagnosis, type TrainingStudentProfile,
   type TrainingGroup,
   type TrainingGroupingRequest,
   type TrainingExamScopeRequest,
   type TrainingStudentScopeRequest,
 } from '../api/training'
-import EvidenceScopeFilters from '../components/evidence/EvidenceScopeFilters.vue'
-import ChapterTrainingMatrix from '../components/knowledge-training/ChapterTrainingMatrix.vue'
+import TrainingScopeBar from '../components/knowledge-training/TrainingScopeBar.vue'
+import StudentPicker from '../components/knowledge-training/StudentPicker.vue'
+import KnowledgeRangeList from '../components/knowledge-training/KnowledgeRangeList.vue'
+import StudentQuickView from '../components/knowledge-training/StudentQuickView.vue'
 import TrainingGroupRecommendations from '../components/knowledge-training/TrainingGroupRecommendations.vue'
 import KnowledgeTrainingTabs from '../components/knowledge-training/KnowledgeTrainingTabs.vue'
 import PaperSettingsPanel from '../components/knowledge-training/PaperSettingsPanel.vue'
-import TrainingKnowledgeStructure from '../components/knowledge-training/TrainingKnowledgeStructure.vue'
 import PersonalizedRecommendationDraft from '../components/training/PersonalizedRecommendationDraft.vue'
 import AppButton from '../components/design-system/AppButton.vue'
 import { loadEvidenceScope, saveEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
-import { loadPaperSelectionSession, savePaperSelectionSession, resolvePaperScope, type AdoptedChapterGroup, type ChapterGroupEditor, type ChapterGroupSort } from '../features/training/paper-selection-session'
+import { loadPaperSelectionSession, savePaperSelectionSession, resolvePaperScope, DEFAULT_TRAINING_RULES, DEFAULT_HANDOUT_RULES, type PracticeRules, type AdoptedChapterGroup, type ChapterGroupEditor, type ChapterGroupSort } from '../features/training/paper-selection-session'
 import { useSessionStore } from '../stores/session'
 import '../styles/training-recommendations.css'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
@@ -34,6 +35,7 @@ const route = useRoute()
 const router = useRouter()
 const sessionStore = useSessionStore()
 const curriculumScope = useCurriculumScopeStore()
+let initialVolumePending = curriculumScope.loadState !== 'ready'
 const training = useTrainingStore()
 
 // 出卷勾选与设置随会话暂存：切页签回来后无需重新勾选，
@@ -43,16 +45,29 @@ const students = ref<StudentSummary[]>([])
 const referenceState = ref<ReferenceState>('loading')
 const selectedTargetKeys = ref<string[]>(savedPaperSelection?.targetKeys ?? [])
 const selectedRangeKeys = ref<string[]>(savedPaperSelection?.rangeKeys ?? [])
-const purpose = ref<'training' | 'handout'>(savedPaperSelection?.purpose ?? 'training')
-const maxQuestionsPerSkill = ref(savedPaperSelection?.maxQuestionsPerSkill ?? 1)
-const maxWrittenQuestions = ref(savedPaperSelection?.maxWrittenQuestions ?? 2)
-const recentActivityCount = ref(savedPaperSelection?.recentActivityCount ?? 3)
-const questionCount = ref(savedPaperSelection?.questionCount ?? 10)
+const purpose = ref<'training' | 'handout' | 'wrong_book'>(savedPaperSelection?.purpose ?? 'training')
+const selectedStudentIds = ref<string[]>(savedPaperSelection?.selectedStudentIds ?? [])
+const trainingRules = ref<PracticeRules>({ ...DEFAULT_TRAINING_RULES, ...savedPaperSelection?.trainingRules })
+const handoutRules = ref<PracticeRules>({ ...DEFAULT_HANDOUT_RULES, ...savedPaperSelection?.handoutRules })
+const initialRules = purpose.value === 'handout' ? handoutRules.value : trainingRules.value
+const maxConsolidationQuestions = ref(initialRules.maxConsolidationQuestions)
+const maxUnmeasuredQuestions = ref(initialRules.maxUnmeasuredQuestions)
+const wrongBookSessionIds = ref<number[] | null>(savedPaperSelection?.wrongBook?.sessionIds ?? null)
+const includeSourceLabel = ref(savedPaperSelection?.wrongBook?.includeSourceLabel !== false)
+const includeAnswerSpace = ref(savedPaperSelection?.wrongBook?.includeAnswerSpace !== false)
+const quickStudent = shallowRef<TrainingStudentProfile | null>(null)
+const quickOpen = ref(false)
+function showStudent(student: TrainingStudentProfile) { quickStudent.value = student; quickOpen.value = true }
+function chooseWrongBook(studentId: string) { selectedStudentIds.value = [studentId]; purpose.value = 'wrong_book'; quickOpen.value = false }
+const maxQuestionsPerSkill = ref(initialRules.maxQuestionsPerSkill)
+const maxWrittenQuestions = ref(initialRules.maxWrittenQuestions)
+const recentActivityCount = ref(initialRules.recentActivityCount)
+const questionCount = ref(initialRules.questionCount)
 const teachingProgressChapterId = ref(savedPaperSelection?.teachingProgressChapterId ?? '')
 const scopeMode = ref<'comprehensive' | 'focused'>(savedPaperSelection?.scopeMode ?? 'comprehensive')
-const individualScope = computed(() => resolvePaperScope(curriculumScope.selectedVolume, training.diagnosis,
+const individualScope = computed(() => resolvePaperScope(curriculumScope.selectedVolume, paperDiagnosis.value,
   selectedRangeKeys.value, teachingProgressChapterId.value, scopeMode.value))
-const difficultyMax = ref(savedPaperSelection?.difficultyMax ?? 8)
+const difficultyMax = ref(initialRules.difficultyMax)
 const progressChapters = computed(() => (curriculumScope.selectedVolume ? [curriculumScope.selectedVolume] : curriculumScope.volumes)
   .flatMap(volume => volume.chapters.map(chapter => ({ id: chapter.id, label: `${volume.label} · ${chapter.label}` }))))
 watch(progressChapters, (chapters) => {
@@ -75,7 +90,6 @@ const draftContext = ref<{ mode: 'individual' | 'shared'; studentCount: number; 
 const workflowStage = ref<'diagnosis' | 'draft' | 'wps' | 'scan'>('diagnosis')
 const draftRequestState = ref<'idle' | 'loading' | 'ready' | 'error' | 'editing'>('idle')
 const draftNeedsCheck = ref(false)
-const scopeFilters = ref<InstanceType<typeof EvidenceScopeFilters> | null>(null)
 const paperDraft = ref<{ generate: () => Promise<void> } | null>(null)
 let studentsController: AbortController | null = null
 
@@ -87,7 +101,7 @@ const trainingMode = computed<TrainingMode>(() => {
 const pageCopy = computed(() => ({
   chapter: {
     title: '按章节训练',
-    description: '选择多个班和章／小节，按同技能作答所支持的适合难度与练习需要分组；核对名单后采用同卷训练。',
+    description: '选择学生范围和章／小节，按同技能作答所支持的适合难度与练习需要分组；核对名单后采用同卷训练。',
   },
   student: {
     title: '按学生训练',
@@ -113,16 +127,26 @@ const scoreProfiles = computed(() => {
 
 const selectedStudentCount = computed(() => training.diagnosis?.students.length ?? 0)
 const groupingAvailable = computed(() => training.diagnosis?.knowledge_catalog?.some(node => !node.parent_knowledge_key && /^(kp_|sk_|ki_)/.test(node.knowledge_key)) ?? false)
-const sharedStudentCount = computed(() => adoptedGroup.value?.memberIds.length ?? selectedStudentCount.value)
-const paperStudentCount = computed(() => paperMode.value === 'shared' ? sharedStudentCount.value : selectedStudentCount.value)
+const sharedStudentCount = computed(() => adoptedGroup.value?.memberIds.length ?? selectedStudentIds.value.length)
+const paperStudentCount = computed(() => paperMode.value === 'shared' ? sharedStudentCount.value : selectedStudentIds.value.length)
 const paperDiagnosis = computed<TrainingDiagnosis | null>(() => {
-  if (paperMode.value !== 'shared' || !adoptedGroup.value) return training.diagnosis
-  const diagnosis = latestGroupDiagnosis.value ?? training.diagnosis
+  const diagnosis = paperMode.value === 'shared' && adoptedGroup.value ? latestGroupDiagnosis.value ?? training.diagnosis : training.diagnosis
   if (!diagnosis) return null
-  const ids = adoptedGroup.value.memberIds
+  const ids = paperMode.value === 'shared' && adoptedGroup.value ? adoptedGroup.value.memberIds : selectedStudentIds.value
+  const selected = new Set(ids)
   return { ...diagnosis, scope: { mode: 'selected', student_ids: [...ids] },
-    students: diagnosis.students.filter(student => ids.includes(student.student_id)) }
+    students: diagnosis.students.filter(student => selected.has(student.student_id)) }
 })
+const panelStudentIds = computed(() => trainingMode.value === 'chapter' ? adoptedGroup.value?.memberIds ?? [] : selectedStudentIds.value)
+const classes = computed(() => [...new Set(students.value.map(student => student.class_name).filter((name): name is string => Boolean(name)))].sort((a,b) => a.localeCompare(b, 'zh-CN', { numeric: true })))
+const selectedClass = computed(() => training.studentScope.mode === 'class' ? training.studentScope.classIds[0] || training.studentScope.classId : '')
+const wrongBookScopeKeys = computed(() => trainingMode.value === 'chapter' ? adoptedGroup.value?.scopeKeys ?? [] : scopeMode.value === 'focused' ? selectedRangeKeys.value : [])
+async function setScopeClass(name: string) {
+  await applyEvidenceScope(semesterEvidenceQuery({ mode: name ? 'class' : 'all', class_ids: name ? [name] : [], score_rate_min: training.studentScope.scoreRateMin }, curriculumScope.selectedVolumeId))
+}
+async function setScoreFloor(value: number | null) {
+  await applyEvidenceScope(semesterEvidenceQuery({ mode: selectedClass.value ? 'class' : 'all', class_ids: selectedClass.value ? [selectedClass.value] : [], score_rate_min: value }, curriculumScope.selectedVolumeId))
+}
 const scoreSourceSummary = computed(() => {
   const profiles = training.diagnosis?.students ?? []
   const current = profiles.filter((student) => student.score_rate_source === 'current_exam').length
@@ -142,6 +166,7 @@ const paperNumericSettingsValid = computed(() => (
   && Number.isInteger(maxQuestionsPerSkill.value) && maxQuestionsPerSkill.value >= 1 && maxQuestionsPerSkill.value <= questionCount.value
   && Number.isInteger(maxWrittenQuestions.value) && maxWrittenQuestions.value >= 0 && maxWrittenQuestions.value <= questionCount.value
   && Number.isInteger(recentActivityCount.value) && recentActivityCount.value >= 0
+  && (purpose.value !== 'handout' || paperMode.value !== 'individual' || [maxConsolidationQuestions.value, maxUnmeasuredQuestions.value].every(value => Number.isInteger(value) && value >= 0 && value <= questionCount.value))
   && Number.isInteger(difficultyMax.value)
   && difficultyMax.value >= 1
   && difficultyMax.value <= 10
@@ -150,12 +175,14 @@ const paperNumericSettingsValid = computed(() => (
 // 出卷页按最后编辑页记录的模式（paperMode）取对应的校验。
 const sharedSettingsValid = computed(() => (
   Boolean(training.diagnosis)
-  && selectedTargetKeys.value.length > 0
+  && (adoptedGroup.value ? adoptedGroup.value.memberIds.length > 0 : selectedStudentIds.value.length > 0)
+  && (adoptedGroup.value ? selectedTargetKeys.value.length > 0 : individualScope.value.keys.length > 0)
   && paperNumericSettingsValid.value
   && (!adoptedGroup.value || adoptedGroup.value.memberIds.length >= 2)
 ))
 const individualSettingsValid = computed(() => (
   Boolean(training.diagnosis)
+  && selectedStudentIds.value.length > 0
   && individualScope.value.keys.length > 0
   && paperNumericSettingsValid.value
 ))
@@ -177,9 +204,14 @@ const sourceStudentScope = computed<TrainingStudentScopeRequest>(() => ({
   exclude_student_ids: [...training.studentScope.excludeStudentIds],
   use_historical_fallback: training.studentScope.useHistoricalFallback,
 }))
-const personalizedScope = computed<TrainingStudentScopeRequest>(() => paperMode.value === 'shared' && adoptedGroup.value
-  ? { mode: 'selected', student_ids: [...adoptedGroup.value.memberIds], use_historical_fallback: training.studentScope.useHistoricalFallback }
-  : sourceStudentScope.value)
+const personalizedScope = computed<TrainingStudentScopeRequest>(() => ({ mode: 'selected',
+  student_ids: [...(paperMode.value === 'shared' && adoptedGroup.value ? adoptedGroup.value.memberIds : selectedStudentIds.value)], use_historical_fallback: false }))
+const panelValid = computed(() => panelStudentIds.value.length > 0 && Boolean(curriculumScope.selectedVolumeId)
+  && (purpose.value === 'wrong_book' ? trainingMode.value === 'chapter' || scopeMode.value === 'comprehensive' || selectedRangeKeys.value.length > 0
+    : trainingMode.value === 'chapter' ? Boolean(adoptedGroup.value) && paperNumericSettingsValid.value : paperSettingsValid.value))
+const blockedReason = computed(() => !panelStudentIds.value.length ? trainingMode.value === 'chapter' ? '先在中间采用一个小组' : '请先勾选学生'
+  : purpose.value === 'wrong_book' && scopeMode.value === 'focused' && !selectedRangeKeys.value.length ? '请勾选章节范围'
+  : !paperNumericSettingsValid.value ? '请检查题数与各项上限' : '请确认已学进度或专项范围')
 const personalizedExamScope = computed<TrainingExamScopeRequest>(() => ({
   mode: 'semester',
   session_ids: [],
@@ -188,7 +220,7 @@ const personalizedExamScope = computed<TrainingExamScopeRequest>(() => ({
 const groupingSettings = computed<TrainingGroupingRequest>(() => ({
   scope_keys: sectionKey.value || chapterKey.value ? [sectionKey.value || chapterKey.value] : [],
   question_count: questionCount.value,
-  purpose: purpose.value, max_questions_per_skill: maxQuestionsPerSkill.value,
+  purpose: purpose.value === 'wrong_book' ? 'training' : purpose.value, max_questions_per_skill: maxQuestionsPerSkill.value,
   max_written_questions: maxWrittenQuestions.value, recent_activity_count: recentActivityCount.value,
   difficulty_max: difficultyMax.value,
   exclude_current_exam_originals: excludeCurrentOriginals.value, curriculum_volume_id: curriculumScope.selectedVolumeId ?? '',
@@ -237,13 +269,6 @@ async function applyEvidenceScope(query: GraphQueryInput, reuseCurrent = false):
   if (!reuseCurrent || !training.hasCurrentDiagnosis) await analyze()
 }
 
-function openScopeFilters(): void {
-  const filters = scopeFilters.value
-  if (!filters) return
-  filters.openMoreFilters()
-  ;(filters.$el as HTMLElement | undefined)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
-}
-
 async function generatePaperDraft(): Promise<void> {
   if (groupChecking.value) return
   groupMessage.value = ''
@@ -276,32 +301,30 @@ function adoptGroup(group: TrainingGroup, diagnosis: TrainingDiagnosis): void {
     targetKeys: [...selectedTargetKeys.value], scopeKeys: [...groupingSettings.value.scope_keys], sourceVersion: group.source_version }
   latestGroupDiagnosis.value = diagnosis
   paperMode.value = 'shared'
+  selectedStudentIds.value = [...adoptedGroup.value.memberIds]
   groupMessage.value = `已选择 ${group.members.length} 人小组，请核对出卷设置。`
   void nextTick(() => document.querySelector('.paper-settings-panel')?.scrollIntoView?.({ behavior: 'smooth', block: 'center' }))
 }
 
-function useManualSelection(): void {
+function clearGroupAdoption(): void {
   adoptedGroup.value = null
   groupEditor.value = null
   latestGroupDiagnosis.value = null
-  groupMessage.value = '已返回手动同卷：出卷使用顶部范围内的学生，请在学生明细中核对目标。'
-}
-
-function selectChapterScope(scope: { chapterKey: string; sectionKey: string }): void {
-  chapterKey.value = scope.chapterKey
-  sectionKey.value = scope.sectionKey
+  groupMessage.value = '小组目标已改变，请重新采用推荐小组。'
 }
 
 // 上游页（按章节/按学生训练）完成设置后跳转到出卷页：
 // 以最后编辑的页为准记录出卷模式。
 function goPaper(mode: 'individual' | 'shared'): void {
+  if (purpose.value === 'wrong_book') return
   paperMode.value = mode
+  if (trainingMode.value === 'student') { adoptedGroup.value = null; if (mode === 'shared') selectedTargetKeys.value = []; latestGroupDiagnosis.value = null }
   groupMessage.value = ''
   void router.push({ name: 'training', query: { mode: 'paper' } })
 }
 
 const paperBackTarget = computed(() => (
-  paperMode.value === 'shared'
+  adoptedGroup.value
     ? { name: 'training', query: { mode: 'chapter' } }
     : { name: 'training', query: { mode: 'student' } }
 ))
@@ -323,10 +346,18 @@ async function loadStudents(): Promise<void> {
     referenceState.value = 'ready'
     if (curriculumScope.loadState === 'ready') {
       const generalQuery = loadEvidenceScope()
-      const savedQuery = trainingMode.value === 'chapter' || (trainingMode.value === 'paper' && paperMode.value === 'shared')
+      const savedQuery = trainingMode.value === 'chapter' || (trainingMode.value === 'paper' && adoptedGroup.value)
         ? chapterScope.value ?? (generalQuery ? { ...generalQuery, scope: { ...generalQuery.scope, score_rate_min: null, score_rate_max: null } } : null)
         : generalQuery
-      await applyEvidenceScope(semesterEvidenceQuery(savedQuery?.scope ?? { mode: 'all' }, curriculumScope.selectedVolumeId), true)
+      let scope = savedQuery?.scope ?? { mode: 'all' as const }
+      if (scope.mode === 'selected' || scope.mode === 'student') {
+        const ids = scope.student_ids ?? []
+        selectedStudentIds.value = [...ids]
+        const names = new Set(students.value.filter(student => ids.includes(String(student.id))).map(student => student.class_name).filter(Boolean))
+        const name = names.size === 1 ? [...names][0] : null
+        scope = name ? { mode: 'class', class_ids: [name] } : { mode: 'all' }
+      }
+      await applyEvidenceScope(semesterEvidenceQuery(scope, curriculumScope.selectedVolumeId), true)
     }
   } catch {
     if (controller.signal.aborted) return
@@ -341,6 +372,9 @@ watch(() => training.diagnosis, (diagnosis) => {
   // 诊断尚未就绪时不做清理：暂存的勾选要等到知识目录到达后再校验，
   // 否则会在目录为空时被误清空，导致草稿指纹对不上。
   if (!diagnosis) return
+  const validStudents = new Set(diagnosis.students.map(student => student.student_id))
+  const nextStudents = selectedStudentIds.value.filter(id => validStudents.has(id))
+  if (nextStudents.length !== selectedStudentIds.value.length) selectedStudentIds.value = nextStudents
   for (const student of diagnosis.students) {
     profileCache.value[student.student_id] = {
       score_rate: student.score_rate ?? null,
@@ -359,9 +393,26 @@ watch(() => training.diagnosis, (diagnosis) => {
   }
 }, { immediate: true })
 
+function currentRules(): PracticeRules { return { questionCount: questionCount.value, difficultyMax: difficultyMax.value,
+  maxQuestionsPerSkill: maxQuestionsPerSkill.value, maxWrittenQuestions: maxWrittenQuestions.value,
+  recentActivityCount: recentActivityCount.value, maxConsolidationQuestions: maxConsolidationQuestions.value, maxUnmeasuredQuestions: maxUnmeasuredQuestions.value } }
+watch(purpose, (next, previous) => {
+  if (previous === 'training') trainingRules.value = currentRules()
+  if (previous === 'handout') handoutRules.value = currentRules()
+  if (next === 'wrong_book') return
+  const rules = next === 'handout' ? handoutRules.value : trainingRules.value
+  questionCount.value = rules.questionCount; difficultyMax.value = rules.difficultyMax
+  maxQuestionsPerSkill.value = rules.maxQuestionsPerSkill; maxWrittenQuestions.value = rules.maxWrittenQuestions
+  recentActivityCount.value = rules.recentActivityCount; maxConsolidationQuestions.value = rules.maxConsolidationQuestions
+  maxUnmeasuredQuestions.value = rules.maxUnmeasuredQuestions
+}, { flush: 'sync' })
+watch([questionCount, difficultyMax, maxQuestionsPerSkill, maxWrittenQuestions, recentActivityCount, maxConsolidationQuestions, maxUnmeasuredQuestions], () => {
+  if (purpose.value === 'training') trainingRules.value = currentRules()
+  if (purpose.value === 'handout') handoutRules.value = currentRules()
+})
 watch(selectedTargetKeys, keys => {
   if (adoptedGroup.value && JSON.stringify([...keys].sort()) !== JSON.stringify([...adoptedGroup.value.targetKeys].sort())) {
-    useManualSelection()
+    clearGroupAdoption()
   }
 })
 
@@ -369,7 +420,8 @@ watch(
   [
     selectedTargetKeys,
     selectedRangeKeys,
-    questionCount, purpose, maxQuestionsPerSkill, maxWrittenQuestions, recentActivityCount,
+    questionCount, purpose, maxQuestionsPerSkill, maxWrittenQuestions, recentActivityCount, selectedStudentIds,
+    maxConsolidationQuestions, maxUnmeasuredQuestions, wrongBookSessionIds, includeSourceLabel, includeAnswerSpace,
     difficultyMax,
     teachingProgressChapterId,
     scopeMode,
@@ -382,7 +434,8 @@ watch(
       targetKeys: [...selectedTargetKeys.value],
       rangeKeys: [...selectedRangeKeys.value],
       questionCount: questionCount.value,
-      purpose: purpose.value, maxQuestionsPerSkill: maxQuestionsPerSkill.value,
+      purpose: purpose.value, selectedStudentIds: [...selectedStudentIds.value], trainingRules: { ...trainingRules.value }, handoutRules: { ...handoutRules.value },
+      wrongBook: { sessionIds: wrongBookSessionIds.value, includeSourceLabel: includeSourceLabel.value, includeAnswerSpace: includeAnswerSpace.value }, maxQuestionsPerSkill: maxQuestionsPerSkill.value,
       maxWrittenQuestions: maxWrittenQuestions.value, recentActivityCount: recentActivityCount.value,
       difficultyMax: difficultyMax.value,
       teachingProgressChapterId: teachingProgressChapterId.value,
@@ -396,6 +449,11 @@ watch(
   },
 )
 
+watch([() => curriculumScope.selectedVolume, trainingMode], ([volume, mode]) => {
+  if (!chapterKey.value && volume?.chapters[0]) chapterKey.value = volume.chapters[0].knowledge_id
+  if (mode === 'chapter') paperMode.value = 'shared'
+}, { immediate: true })
+
 watch(trainingMode, (mode, previous) => {
   if (mode !== 'chapter' || previous !== 'student') return
   const active = activeEvidenceQuery.value
@@ -403,12 +461,13 @@ watch(trainingMode, (mode, previous) => {
   if (query) void applyEvidenceScope(query, true)
 })
 
-watch(() => curriculumScope.selectedVolumeId, () => {
+watch(() => curriculumScope.selectedVolumeId, (_next, previous) => {
+  if (initialVolumePending && previous === null) { initialVolumePending = false; return }
   profileCache.value = {}
   adoptedGroup.value = null
   groupEditor.value = null
   latestGroupDiagnosis.value = null
-  chapterKey.value = ''
+  chapterKey.value = curriculumScope.selectedVolume?.chapters[0]?.knowledge_id ?? ''
   sectionKey.value = ''
   selectedTargetKeys.value = []
   selectedRangeKeys.value = []
@@ -433,22 +492,10 @@ onBeforeUnmount(() => studentsController?.abort())
 
     <KnowledgeTrainingTabs />
 
-    <EvidenceScopeFilters
-      v-if="referenceState !== 'error' && trainingMode !== 'paper'"
-      ref="scopeFilters"
-      class="training-scope-filters"
-      :model-value="activeEvidenceQuery"
-      :students="students"
-      :sessions="availableSessions"
-      :current-session-id="sessionStore.selectedSessionId"
-      :curriculum-volume-id="curriculumScope.selectedVolumeId"
-      :applying="training.analysisState === 'loading'"
-      :score-profiles="scoreProfiles"
-      :evidence-from="trainingMode === 'student' ? 'student' : 'chapter'"
-      :compact-roster="trainingMode === 'chapter' && groupingAvailable"
-      show-score-floor
-      @apply="applyEvidenceScope"
-    />
+    <TrainingScopeBar v-if="referenceState !== 'error' && trainingMode !== 'paper'"
+      :volume-label="curriculumScope.selectedVolume?.label ?? '未选择教学学期'"
+      :session-count="training.diagnosis?.exam_scope.sessions?.length ?? 0" :classes="classes" :selected-class="selectedClass"
+      :score-floor="training.studentScope.scoreRateMin" @select-class="setScopeClass" @update-score-floor="setScoreFloor" />
 
     <p v-if="referenceState === 'error'" class="status-card error">
       学生名单暂时无法读取。请检查服务后重试；当前筛选没有被清空。
@@ -456,115 +503,33 @@ onBeforeUnmount(() => studentsController?.abort())
     <p v-if="training.errorMessage" class="status-card error">{{ training.errorMessage }}</p>
     <p v-if="groupMessage" class="status-card" role="status">{{ groupMessage }}</p>
 
-    <section v-if="trainingMode !== 'paper'" class="training-mode-panel">
-      <header class="training-mode-panel__heading">
-        <div>
-
-          <h2>{{ trainingMode === 'chapter' ? '推荐共同训练小组' : '个人训练范围' }}</h2>
-        </div>
-        <span>{{ scoreSourceSummary }}</span>
-      </header>
-
-      <p v-if="training.analysisState === 'loading' && !training.diagnosis" class="status-card">正在汇总学生与知识点……</p>
-      <div v-else-if="training.analysisState === 'idle'" class="status-card empty-state">
-        <p>选择学生和考试范围后，开始汇总掌握度。</p>
-        <AppButton variant="primary" @click="analyze">开始汇总</AppButton>
+    <section v-if="trainingMode !== 'paper'" class="practice-workspace">
+      <p v-if="!curriculumScope.selectedVolumeId" class="status-card">请先选择教学学期。</p>
+      <p v-else-if="!training.diagnosis && training.analysisState === 'loading'" class="status-card">正在汇总学生与知识点…</p>
+      <div v-else-if="training.diagnosis" class="practice-layout">
+        <StudentPicker v-if="trainingMode === 'student'" v-model="selectedStudentIds" :diagnosis="training.diagnosis" @show-student="showStudent" />
+        <KnowledgeRangeList v-else mode="select-one" :volume="curriculumScope.selectedVolume" :diagnosis="training.diagnosis" :purpose="purpose"
+          v-model:chapter-key="chapterKey" v-model:section-key="sectionKey" />
+        <KnowledgeRangeList v-if="trainingMode === 'student'" mode="range" :volume="curriculumScope.selectedVolume" :diagnosis="training.diagnosis"
+          :student-ids="selectedStudentIds" :purpose="purpose" :progress-id="individualScope.progressId"
+          v-model:range-keys="selectedRangeKeys" v-model:scope-mode="scopeMode" v-model:teaching-progress-chapter-id="teachingProgressChapterId" />
+        <TrainingGroupRecommendations v-else v-model:sort-mode="groupSort" :diagnosis="training.diagnosis"
+          :scope="sourceStudentScope" :exam-scope="personalizedExamScope" :settings="groupingSettings"
+          :editor="groupEditor" :adopted="adoptedGroup" :arrangements="arrangements"
+          :disabled="training.analysisState === 'loading' || !paperNumericSettingsValid"
+          @edit="groupEditor = $event" @adopt="adoptGroup" />
+        <PaperSettingsPanel :context="trainingMode === 'student' ? 'student' : 'group'" :student-ids="panelStudentIds"
+          :volume-id="curriculumScope.selectedVolumeId ?? ''" :scope-keys="wrongBookScopeKeys" :valid="panelValid" :blocked-reason="blockedReason"
+          :generating="draftRequestState === 'loading'" v-model:purpose="purpose" v-model:paper-mode="paperMode"
+          v-model:question-count="questionCount" v-model:difficulty-max="difficultyMax" v-model:max-questions-per-skill="maxQuestionsPerSkill"
+          v-model:max-written-questions="maxWrittenQuestions" v-model:recent-activity-count="recentActivityCount"
+          v-model:max-consolidation-questions="maxConsolidationQuestions" v-model:max-unmeasured-questions="maxUnmeasuredQuestions"
+          v-model:wrong-book-session-ids="wrongBookSessionIds" v-model:include-source-label="includeSourceLabel" v-model:include-answer-space="includeAnswerSpace"
+          @go-paper="goPaper(trainingMode === 'chapter' ? 'shared' : paperMode)" />
       </div>
-      <div v-else-if="training.analysisState === 'empty' && !training.diagnosis" class="status-card empty-state">
-        当前范围没有可用知识证据，请调整学生或考试范围。
-      </div>
-
-      <template v-else-if="training.diagnosis">
-        <p v-if="training.analysisState === 'loading'" class="training-updating">正在更新掌握汇总…</p>
-        <div class="training-selection-layout">
-        <ChapterTrainingMatrix
-          v-if="trainingMode === 'chapter' && training.analysisState !== 'empty'"
-          v-model="selectedTargetKeys"
-          :diagnosis="training.diagnosis"
-          :group-scope-label="groupScopeLabel"
-          :initial-chapter-key="chapterKey"
-          :initial-section-key="sectionKey"
-          @adjust-scope="openScopeFilters"
-          @scope-change="selectChapterScope"
-        >
-          <template v-if="groupingAvailable" #recommendations="{ scopeKey }">
-            <TrainingGroupRecommendations
-              v-model:sort-mode="groupSort"
-              :diagnosis="training.diagnosis"
-              :scope="sourceStudentScope"
-              :exam-scope="personalizedExamScope"
-              :settings="{ ...groupingSettings, scope_keys: scopeKey ? [scopeKey] : [] }"
-              :editor="groupEditor"
-              :adopted="adoptedGroup"
-              :arrangements="arrangements"
-              :disabled="training.analysisState === 'loading' || !paperNumericSettingsValid"
-              @edit="groupEditor = $event"
-              @adopt="adoptGroup"
-            />
-          </template>
-        </ChapterTrainingMatrix>
-
-        <TrainingKnowledgeStructure
-          v-else-if="trainingMode !== 'chapter' && training.analysisState !== 'empty'"
-          v-model="selectedRangeKeys"
-          selection-kind="range"
-          :diagnosis="training.diagnosis"
-          compact-range
-          title="章节与小节"
-          description=""
-          @focus="() => undefined"
-        />
-        <div v-else-if="training.analysisState === 'empty'" class="status-card empty-state">
-          当前范围没有可用知识证据，请调整学生或考试范围。
-        </div>
-
-        <details v-if="training.diagnosis.warnings.length" class="training-data-note">
-          <summary>数据说明（{{ training.diagnosis.warnings.length }}）</summary>
-          <ul><li v-for="warning in training.diagnosis.warnings" :key="warning">{{ warning }}</li></ul>
-        </details>
-
-        <PaperSettingsPanel
-          v-if="trainingMode === 'chapter' && training.analysisState !== 'empty'"
-          mode="shared"
-          :student-count="sharedStudentCount"
-          :selection-text="`${selectedTargetKeys.length} 项细点`"
-          :valid="sharedSettingsValid"
-          :generating="draftRequestState === 'loading'"
-          v-model:purpose="purpose"
-          v-model:max-questions-per-skill="maxQuestionsPerSkill"
-          v-model:max-written-questions="maxWrittenQuestions"
-          v-model:recent-activity-count="recentActivityCount"
-          v-model:question-count="questionCount"
-          v-model:difficulty-max="difficultyMax"
-          v-model:teaching-progress-chapter-id="teachingProgressChapterId"
-          :progress-chapters="progressChapters"
-          @go-paper="goPaper('shared')"
-        />
-        <div v-if="trainingMode === 'chapter' && adoptedGroup" class="training-adopted-group">
-          <span>已采用 {{ sharedStudentCount }} 人、{{ adoptedGroup.targetKeys.length }} 个共同目标；顶部仍保留 {{ selectedStudentCount }} 人的推荐范围。</span>
-          <AppButton @click="useManualSelection">返回手动同卷</AppButton>
-        </div>
-        <PaperSettingsPanel
-          v-if="trainingMode === 'student' && training.analysisState !== 'empty'"
-          mode="individual"
-          :student-count="selectedStudentCount"
-          :selection-text="individualScope.label"
-          :scope-summary="individualScope.label"
-          v-model:scope-mode="scopeMode"
-          :valid="individualSettingsValid"
-          :generating="draftRequestState === 'loading'"
-          v-model:purpose="purpose"
-          v-model:max-questions-per-skill="maxQuestionsPerSkill"
-          v-model:max-written-questions="maxWrittenQuestions"
-          v-model:recent-activity-count="recentActivityCount"
-          v-model:question-count="questionCount"
-          v-model:difficulty-max="difficultyMax"
-          v-model:teaching-progress-chapter-id="teachingProgressChapterId"
-          :progress-chapters="progressChapters"
-          @go-paper="goPaper('individual')"
-        />
-        </div>
-      </template>
+      <div v-else class="status-card empty-state"><p>当前范围尚未汇总掌握度。</p><AppButton @click="analyze">重新加载</AppButton></div>
+      <details v-if="training.diagnosis?.warnings.length" class="training-data-note"><summary>数据说明（{{ training.diagnosis.warnings.length }}）</summary><ul><li v-for="warning in training.diagnosis.warnings" :key="warning">{{ warning }}</li></ul></details>
+      <StudentQuickView v-if="training.diagnosis" v-model:open="quickOpen" :student="quickStudent" :diagnosis="training.diagnosis" @wrong-book="chooseWrongBook" />
     </section>
 
     <section v-else class="paper-workspace">
@@ -587,7 +552,7 @@ onBeforeUnmount(() => studentsController?.abort())
             </div>
             <p v-if="workflowStage === 'diagnosis' && !paperSettingsValid" class="paper-review-hint">
               {{ paperMode === 'shared'
-                ? '多人同一套卷：请回到“按章节训练”勾选至少一个细知识点并完成出卷设置。'
+                ? '多人同卷：请回到训练页选择学生和章节范围，或采用一个小组。'
                 : '一人一卷：请回到“按学生训练”确认已学进度，或选择专项范围并完成出卷设置。' }}
             </p>
 
@@ -598,7 +563,9 @@ onBeforeUnmount(() => studentsController?.abort())
               :diagnosis="paperDiagnosis"
               :scope="personalizedScope"
               :exam-scope="personalizedExamScope"
-              :purpose="purpose"
+              :purpose="purpose === 'wrong_book' ? 'training' : purpose"
+              :max-consolidation-questions="maxConsolidationQuestions"
+              :max-unmeasured-questions="maxUnmeasuredQuestions"
               :max-questions-per-skill="maxQuestionsPerSkill"
               :max-written-questions="maxWrittenQuestions"
               :recent-activity-count="recentActivityCount"
@@ -608,8 +575,8 @@ onBeforeUnmount(() => studentsController?.abort())
 
               :exclude-current-exam-originals="excludeCurrentOriginals"
               :paper-mode="paperMode"
-              :target-keys="paperMode === 'shared' ? selectedTargetKeys : []"
-              :scope-keys="paperMode === 'shared' ? [] : individualScope.keys"
+              :target-keys="paperMode === 'shared' && adoptedGroup || paperMode === 'individual' && scopeMode === 'focused' ? selectedTargetKeys : []"
+              :scope-keys="paperMode === 'shared' && adoptedGroup ? [] : individualScope.keys"
               :group-scope-keys="paperMode === 'shared' ? adoptedGroup?.scopeKeys : undefined"
               :group-source-version="paperMode === 'shared' ? adoptedGroup?.sourceVersion : undefined"
               :curriculum-volume-id="curriculumScope.selectedVolumeId"

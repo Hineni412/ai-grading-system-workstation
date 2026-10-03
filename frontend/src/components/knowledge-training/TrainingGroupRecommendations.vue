@@ -70,6 +70,12 @@ const ready = computed(() => editing.value && checked.value?.ready && !busy.valu
   && !props.disabled && (!overlaps.value.length || overlapConfirmed.value) && targetKeys.value.length > 0 && memberIds.value.length >= 2)
 
 function percent(value: number | null): string { return value === null ? '—' : `${Math.round(value * 100)}%` }
+function targetDifficulty(group: TrainingGroup): string {
+  const values = group.targets.map(target => target.target_difficulty).filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+  if (!values.length) return '难度未知'
+  const minimum = Math.round(Math.min(...values)), maximum = Math.round(Math.max(...values))
+  return `目标难度 ${minimum === maximum ? minimum : `${minimum}–${maximum}`} 级`
+}
 function classLabel(value: string): string {
   const name = value.trim()
   if (!name) return '未分班'
@@ -290,6 +296,7 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
             <div><dt>组内差距</dt><dd>{{ stats.span ?? '—' }}<small v-if="stats.span !== null">个百分点</small></dd></div>
             <div><dt>考试得分率</dt><dd><StatusBadge :tone="stats.scoreRate === null ? 'neutral' : stats.scoreRate >= .8 ? 'success' : stats.scoreRate >= .6 ? 'warning' : 'danger'" :label="percent(stats.scoreRate)" /></dd></div>
           </dl>
+          <p class="training-groups__note">{{ targetDifficulty(group) }}</p>
           <div class="training-groups__range" v-if="stats.minimum !== null && stats.maximum !== null">
             <div class="training-groups__range-track" aria-hidden="true"><i :style="{ left: `${stats.minimum * 100}%`, width: `${Math.max(1, (stats.maximum - stats.minimum) * 100)}%` }" /></div>
             <span>训练目标掌握度 {{ percent(stats.minimum) }}–{{ percent(stats.maximum) }}</span>
@@ -302,7 +309,7 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
           </footer>
         </article>
       </div>
-      <p v-if="result && !result.groups.length && !busy" class="training-groups__empty">暂未形成可靠的公共训练组。可查看下方原因，或切换“学生明细”手动核对。</p>
+      <p v-if="result && !result.groups.length && !busy" class="training-groups__empty">暂未形成可靠的公共训练组。可查看下方原因，或到按学生训练选择多人同卷。</p>
       <AppButton v-if="(result?.groups.length ?? 0) > 6" class="training-groups__more" @click="showAll = !showAll">{{ showAll ? '收起更多小组' : `查看其余 ${result!.groups.length - 6} 个小组` }}</AppButton>
     </template>
     <section v-else class="training-groups__editor" aria-label="调整训练小组">

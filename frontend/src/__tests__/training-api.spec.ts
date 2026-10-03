@@ -1,6 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { trainingApi, decodePersonalizedRecommendationDraft } from '../api/training'
+import { previewWrongQuestionBooks } from '../api/students'
+
+it('uses the batch wrong-book preview contract and rejects incomplete counts', async () => {
+  const data = { students: [], sessions: [], session_ids: [], semester_label: 'TEST', question_count: 0,
+    missing_items: [], session_wrong_counts: {}, out_of_scope_count: 0, empty_students: [] }
+  const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } }))
+  const body = { curriculum_volume_id: 'TEST', student_ids: [12, 22], scope_keys: ['kp_c1'], session_ids: [7] }
+  expect(await previewWrongQuestionBooks(body)).toEqual(data)
+  const [url, options] = fetch.mock.calls[0]!
+  expect(String(url)).toContain('/api/students/wrong-question-books/preview')
+  expect(JSON.parse(String(options?.body))).toEqual(body)
+  fetch.mockResolvedValue(new Response(JSON.stringify({ ...data, out_of_scope_count: -1 }), { status: 200, headers: { 'content-type': 'application/json' } }))
+  await expect(previewWrongQuestionBooks(body)).rejects.toThrow()
+})
 
 const submissionId = 'c'.repeat(64)
 it('decodes fixed class assembly provenance and evidence-free members', () => {

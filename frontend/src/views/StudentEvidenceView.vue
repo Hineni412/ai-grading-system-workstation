@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import { fetchGraphEvidence, type GraphEvidenceItem, type GraphQueryInput } from '../api/graph'
 import {
@@ -17,7 +17,7 @@ import {
 } from '../api/students'
 import AppButton from '../components/design-system/AppButton.vue'
 import BackButton from '../components/design-system/BackButton.vue'
-import WrongQuestionBookDialog from '../components/training/WrongQuestionBookDialog.vue'
+import { presetWrongQuestionBook } from '../features/training/paper-selection-session'
 import QuestionContentRenderer from '../components/question-bank/QuestionContentRenderer.vue'
 import { loadEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
 import { useSessionStore } from '../stores/session'
@@ -57,6 +57,7 @@ interface QuestionSessionGroup {
 }
 
 const route = useRoute()
+const router = useRouter()
 const sessionStore = useSessionStore()
 const curriculumScope = useCurriculumScopeStore()
 
@@ -88,7 +89,11 @@ const totalSessions = ref(0)
 const page = ref(1)
 const totalPages = ref(0)
 const onlyDeducted = ref(true)
-const exportDialogOpen = ref(false)
+function openWrongBook() {
+  if (!student.value) return
+  presetWrongQuestionBook({ studentId: String(student.value.id), classId: student.value.class_name })
+  void router.push({ name: 'training', query: { mode: 'student' } })
+}
 const loadState = ref<'loading' | 'ready' | 'error'>('loading')
 const loadingMore = ref(false)
 const previewUrl = ref('')
@@ -387,7 +392,6 @@ function onPanelKeydown(event: KeyboardEvent): void {
 }
 
 function reloadSemester(): void {
-  exportDialogOpen.value = false
   if (curriculumScope.loadState !== 'ready') return
   sessions.value = []
   knowledgeSessions.value = []
@@ -427,12 +431,10 @@ onBeforeUnmount(() => {
         <button type="button" :class="{ 'is-active': onlyDeducted }" @click="toggleDeducted(true)">只看错题</button>
         <button type="button" :class="{ 'is-active': !onlyDeducted }" @click="toggleDeducted(false)">全部作答</button>
       </div>
-      <AppButton :disabled="!student || !curriculumScope.selectedVolumeId" @click="exportDialogOpen = true">导出错题本</AppButton>
+      <AppButton :disabled="!student || !curriculumScope.selectedVolumeId" @click="openWrongBook">导出错题本</AppButton>
       <span v-if="loadState === 'ready'">共 {{ totalSessions }} 场考试</span>
     </div>
 
-    <WrongQuestionBookDialog v-if="exportDialogOpen && student && curriculumScope.selectedVolumeId"
-      :student="student" :volume-id="curriculumScope.selectedVolumeId" @close="exportDialogOpen = false" />
 
     <p v-if="loadState === 'loading'" class="status-card">正在读取学生的作答证据……</p>
     <div v-else-if="loadState === 'error'" class="status-card error" role="alert">

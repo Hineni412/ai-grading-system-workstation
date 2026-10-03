@@ -8,6 +8,7 @@ import type {
   TrainingDiagnosis,
 } from '../api/training'
 import { savePaperSelectionSession } from '../features/training/paper-selection-session'
+import { saveEvidenceScope } from '../features/evidence-scope/session'
 import { createAppRouter } from '../router'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import { useSessionStore } from '../stores/session'
@@ -47,14 +48,14 @@ const diagnosis = {
     student_code: 'S012',
     student_name: '匿名学生甲',
     class_id: '七年级一班',
-    score_rate: 0.55,
+    score_rate: 0.55, score_rate_source: 'current_exam',
     weak_points: [{
-      knowledge_key: 'knowledge_point:三角形全等',
+      knowledge_key: 'sk_test_congruence',
       knowledge_point: '三角形全等',
-      parent_knowledge_key: 'section:全等三角形',
+      parent_knowledge_key: 'kp_test_triangle_s1',
       parent_knowledge_point: '全等三角形',
       hierarchy_kind: 'child',
-      mastery: 0.55,
+      tier: 'weak', mastery: 0.55,
       score_sum: 11,
       full_score_sum: 20,
       deduction_count: 2,
@@ -75,7 +76,7 @@ const diagnosis = {
     }],
   }],
   group_weak_points: [{
-    knowledge_key: 'chapter:三角形',
+    knowledge_key: 'kp_test_triangle',
     knowledge_point: '第四章 三角形',
     mastery: 0.62,
     score_sum: 0,
@@ -90,7 +91,7 @@ const diagnosis = {
     error_counts: { primary: {}, secondary: {} },
     hierarchy_kind: 'root',
   }, {
-    knowledge_key: 'section:全等三角形',
+    knowledge_key: 'kp_test_triangle_s1',
     knowledge_point: '全等三角形',
     mastery: 0.58,
     score_sum: 0,
@@ -104,10 +105,10 @@ const diagnosis = {
     tag_context: {},
     error_counts: { primary: {}, secondary: {} },
     hierarchy_kind: 'parent_summary',
-    parent_knowledge_key: 'chapter:三角形',
+    parent_knowledge_key: 'kp_test_triangle',
     parent_knowledge_point: '第四章 三角形',
   }, {
-    knowledge_key: 'knowledge_point:三角形全等',
+    knowledge_key: 'sk_test_congruence',
     knowledge_point: '三角形全等',
     mastery: 0.55,
     score_sum: 0,
@@ -121,21 +122,21 @@ const diagnosis = {
     tag_context: {},
     error_counts: { primary: {}, secondary: {} },
     hierarchy_kind: 'child',
-    parent_knowledge_key: 'section:全等三角形',
+    parent_knowledge_key: 'kp_test_triangle_s1',
     parent_knowledge_point: '全等三角形',
   }],
   knowledge_catalog: [{
-    knowledge_key: 'chapter:三角形',
-    knowledge_point: '第四章 三角形',
+    knowledge_key: 'kp_test_triangle',
+    knowledge_point: '第四章 三角形', node_kind: 'chapter',
   }, {
-    knowledge_key: 'section:全等三角形',
-    knowledge_point: '全等三角形',
-    parent_knowledge_key: 'chapter:三角形',
+    knowledge_key: 'kp_test_triangle_s1',
+    knowledge_point: '全等三角形', node_kind: 'section',
+    parent_knowledge_key: 'kp_test_triangle',
     parent_knowledge_point: '第四章 三角形',
   }, {
-    knowledge_key: 'knowledge_point:三角形全等',
-    knowledge_point: '三角形全等',
-    parent_knowledge_key: 'section:全等三角形',
+    knowledge_key: 'sk_test_congruence',
+    knowledge_point: '三角形全等', node_kind: 'skill',
+    parent_knowledge_key: 'kp_test_triangle_s1',
     parent_knowledge_point: '全等三角形',
   }],
   coverage: {
@@ -165,7 +166,7 @@ const paperDraft = {
     class_id: '七年级一班',
     selection_mode: 'mastery_targeted',
     targets: [{
-      stable_key: 'knowledge_point:三角形全等',
+      stable_key: 'sk_test_congruence',
       display_name: '三角形全等',
     }],
     items: [{
@@ -176,8 +177,8 @@ const paperDraft = {
       question_number: '11',
       question_text: '利用边角关系证明两个三角形全等',
       stage: 'direct',
-      target: { stable_key: 'knowledge_point:三角形全等' },
-      matched_key: 'knowledge_point:三角形全等',
+      target: { stable_key: 'sk_test_congruence' },
+      matched_key: 'sk_test_congruence',
       matched_name: '第四章 三角形｜全等三角形｜三角形全等',
       relation: null,
       criterion_version_id: 'c'.repeat(64),
@@ -213,6 +214,16 @@ async function settle(): Promise<void> {
 
 async function mountView(path = '/training', pinia = createPinia()) {
   setActivePinia(pinia)
+  if (!useCurriculumScopeStore(pinia).volumes.length) useCurriculumScopeStore(pinia).volumes = [{
+    id: 'bnu24-math-g8-upper', order: 3, label: '合成册', grade: '八年级', semester: '上学期', textbook_version: '北师大版', source: {},
+    statistics: { raw_nodes: 0, excluded_nodes: 0, retained_nodes: 0 }, chapters: [{
+      id: 'TEST-c1', knowledge_id: 'kp_test_triangle', order: 1, number: '1', title: '三角形', label: '第一章 三角形', kind: 'chapter',
+      display_name: '第一章 三角形', source_ref: { node_id: '', relative_url: '' }, exam_scope_values: [], sections: [{
+        id: 'TEST-s1', knowledge_id: 'kp_test_triangle_s1', order: 1, number: '1', title: '全等三角形', label: '全等三角形', kind: 'lesson',
+        display_name: '全等三角形', source_ref: { node_id: '', relative_url: '' }, knowledge_points: [],
+      }],
+    }],
+  }]
   useCurriculumScopeStore(pinia).$patch({ loadState: 'ready', selectedVolumeId: 'bnu24-math-g8-upper' })
   useSessionStore(pinia).$patch({
     sessions: [{
@@ -266,6 +277,34 @@ afterEach(() => {
 })
 
 describe('training recommendations view', () => {
+  it('keeps the selected-scope entry and focused skill target without creating a draft', async () => {
+    saveEvidenceScope({ scope: { mode: 'selected', student_ids: ['12'] }, exam_scope: { mode: 'semester', curriculum_volume_id: 'bnu24-math-g8-upper' } })
+    savePaperSelectionSession({ targetKeys: ['sk_test_congruence'], rangeKeys: ['kp_test_triangle_s1'], scopeMode: 'focused',
+      questionCount: 10, difficultyMax: 8, excludeCurrentOriginals: true, paperMode: 'individual' })
+    const view = await mountView('/training?mode=student')
+    await vi.waitFor(() => expect(view.host.querySelector<HTMLInputElement>('[aria-label="选择匿名学生甲"]')?.checked).toBe(true))
+    expect(view.host.querySelector('.training-scope-bar [aria-pressed="true"]')?.textContent).toBe('七年级一班')
+    expect(trainingApiMock.createPersonalizedDraft).not.toHaveBeenCalled()
+    view.host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
+    await vi.waitFor(() => expect(view.router.currentRoute.value.query.mode).toBe('paper'))
+    view.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')!.click()
+    await vi.waitFor(() => expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledOnce())
+    expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({ scope: expect.objectContaining({ mode: 'selected', student_ids: ['12'] }), target_keys: ['sk_test_congruence'], scope_keys: ['kp_test_triangle_s1'] }))
+  })
+
+  it('switches purpose-specific defaults and retains separately edited question counts', async () => {
+    const { host } = await mountView('/training?mode=student')
+    await vi.waitFor(() => expect(host.querySelector('[aria-label="每卷题数"]')).not.toBeNull())
+    const purposeButton = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('[aria-label="出卷用途"] button')].find(button => button.textContent === label)!
+    const count = () => host.querySelector<HTMLInputElement>('[aria-label="每卷题数"]')!
+    expect(count().value).toBe('10')
+    count().value = '12'; count().dispatchEvent(new Event('input', { bubbles: true })); await settle()
+    purposeButton('刷题讲义').click(); await settle()
+    expect(count().value).toBe('30'); expect(host.querySelector<HTMLInputElement>('[aria-label="同一技能最多"]')?.value).toBe('3')
+    count().value = '36'; count().dispatchEvent(new Event('input', { bubbles: true })); await settle()
+    purposeButton('训练卷').click(); await settle(); expect(count().value).toBe('12')
+    purposeButton('刷题讲义').click(); await settle(); expect(count().value).toBe('36')
+  })
   it.each([['comprehensive', 'training'], ['focused', 'training'], ['focused', 'handout']] as const)('sends learned chapters for %s / %s and keeps the chosen rules on return', async (scopeMode, purpose) => {
     const pinia = createPinia()
     const volumeId = 'bnu24-math-g8-upper'
@@ -278,19 +317,19 @@ describe('training recommendations view', () => {
       chapters: chapterKeys.map((key, i) => ({ id: `${volumeId}-c0${i + 1}`, knowledge_id: key, order: i + 1,
         number: String(i + 1), title: i ? '实数' : '勾股定理', label: i ? '第二章 实数' : '第一章 勾股定理',
         kind: 'chapter', display_name: key, source_ref: { node_id: '', relative_url: '' }, exam_scope_values: [], sections: [] })) }]
-    savePaperSelectionSession({ scopeMode, purpose, maxQuestionsPerSkill: purpose === 'handout' ? 20 : 1,
+    savePaperSelectionSession({ scopeMode, purpose, selectedStudentIds: ['12'], maxQuestionsPerSkill: purpose === 'handout' ? 20 : 1,
       maxWrittenQuestions: purpose === 'handout' ? 20 : 2, recentActivityCount: purpose === 'handout' ? 20 : 3,
       targetKeys: [], rangeKeys: [chapterKeys[1]!], questionCount: purpose === 'handout' ? 100 : 10,
       difficultyMax: purpose === 'handout' ? 10 : 8, teachingProgressChapterId: `${volumeId}-c02`, excludeCurrentOriginals: true, paperMode: 'individual' })
     const view = await mountView('/training?mode=student', pinia)
     await vi.waitFor(() => expect(view.host.querySelector('[data-testid="go-paper"]')).not.toBeNull())
-    expect((view.host.querySelector('[aria-label="训练范围模式"]') as HTMLSelectElement).value).toBe(scopeMode)
+    expect(view.host.querySelector('[aria-label="训练范围模式"] [aria-pressed="true"]')?.textContent).toBe(scopeMode === 'focused' ? '专项' : '综合')
     const countInput = view.host.querySelector<HTMLInputElement>('[aria-label="每卷题数"]')!
     expect(countInput.max).toBe(purpose === 'handout' ? '' : '12')
     expect(view.host.querySelector<HTMLInputElement>('[aria-label="近期原题排除次数"]')!.max).toBe('')
     expect(view.host.textContent).toContain(purpose === 'handout'
-      ? '排除近期考试原题，可复用历史训练题'
-      : '排除近期考试与训练原题，包含刚完成的训练')
+      ? '只排除考试原题，可复用历史训练题'
+      : '排除近期考试与训练原题')
     view.host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
     await vi.waitFor(() => expect(view.router.currentRoute.value.query.mode).toBe('paper'))
     expect(view.host.textContent).toContain(purpose === 'handout'
@@ -309,24 +348,24 @@ describe('training recommendations view', () => {
     }))
     await view.router.push('/training?mode=student')
     await settle()
-    expect((view.host.querySelector('[aria-label="训练范围模式"]') as HTMLSelectElement).value).toBe(scopeMode)
+    expect(view.host.querySelector('[aria-label="训练范围模式"] [aria-pressed="true"]')?.textContent).toBe(scopeMode === 'focused' ? '专项' : '综合')
     expect(view.host.querySelector<HTMLInputElement>('[aria-label="每卷题数"]')!.value).toBe(purpose === 'handout' ? '100' : '10')
-    expect(view.host.querySelector<HTMLSelectElement>('[aria-label="出卷用途"]')!.value).toBe(purpose)
+    expect(view.host.querySelector('[aria-label="出卷用途"] [aria-pressed="true"]')?.textContent).toBe(purpose === 'handout' ? '刷题讲义' : '训练卷')
   })
 
   it('sends the student score floor in diagnosis and restores it after leaving and returning', async () => {
     const first = await mountView('/training?mode=student')
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledOnce())
-    const floor = first.host.querySelector<HTMLInputElement>('input[aria-label="最低得分率"]')!
+    const floor = first.host.querySelector<HTMLInputElement>('input[aria-label="最低考试得分率"]')!
     expect(floor).toBeTruthy()
     floor.value = '20'; floor.dispatchEvent(new Event('input', { bubbles: true }))
-    first.host.querySelector<HTMLButtonElement>('[data-testid="apply-evidence-scope"]')!.click()
+    floor.dispatchEvent(new Event('blur'))
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2))
     expect(trainingApiMock.diagnose.mock.calls[1]?.[0].scope.score_rate_min).toBe(.2)
     mounted.splice(mounted.indexOf(first.app), 1); first.app.unmount(); first.host.remove()
     const second = await mountView('/training?mode=student')
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(3))
-    expect(second.host.querySelector<HTMLInputElement>('input[aria-label="最低得分率"]')!.value).toBe('20')
+    expect(second.host.querySelector<HTMLInputElement>('input[aria-label="最低考试得分率"]')!.value).toBe('20')
     expect(trainingApiMock.diagnose.mock.calls[2]?.[0].scope.score_rate_min).toBe(.2)
   })
 
@@ -364,13 +403,9 @@ describe('training recommendations view', () => {
       .mockImplementationOnce(() => first)
       .mockResolvedValueOnce(secondDiagnosis)
 
-    const { host } = await mountView()
+    const { host } = await mountView('/training?mode=student')
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(1))
-    ;[...host.querySelectorAll<HTMLLabelElement>('.evidence-scope__classes label')]
-      .find((label) => label.textContent?.includes('七年级二班'))!
-      .querySelector<HTMLInputElement>('input')!.click()
-    await settle()
-    host.querySelector<HTMLButtonElement>('[data-testid="apply-evidence-scope"]')!.click()
+    ;[...host.querySelectorAll<HTMLButtonElement>('.training-scope-bar button')].find(item => item.textContent === '七年级二班')!.click()
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2))
     resolveFirst(diagnosis)
     await vi.waitFor(() => expect(host.textContent).toContain('匿名学生乙'))
@@ -394,7 +429,7 @@ describe('training recommendations view', () => {
           members: [], targets: [], compatibility: 1, available_question_count: 10, recent_excluded_count: 0, reason: '' } },
     }
     trainingApiMock.diagnose.mockImplementation(async () => JSON.parse(JSON.stringify(data)))
-    savePaperSelectionSession({ targetKeys: [key], rangeKeys: [], questionCount: 10, difficultyMax: 7,
+    savePaperSelectionSession({ selectedStudentIds: ids, targetKeys: [key], rangeKeys: [], questionCount: 10, difficultyMax: 7,
       excludeCurrentOriginals: true, paperMode: 'shared', chapterKey: 'kp_chapter',
       adoptedGroup: { groupId: 'group-17', memberIds: ids, targetKeys: [key], scopeKeys: ['kp_chapter'], sourceVersion: 'a'.repeat(64) } })
     const { host, pinia } = await mountView('/training?mode=paper')
@@ -416,11 +451,11 @@ describe('training recommendations view', () => {
 
   it('restores selections and the draft after leaving the page and returning', async () => {
     trainingApiMock.getPersonalizedDraft.mockResolvedValue(paperDraft)
-    const first = await mountView('/training?mode=chapter')
-    await vi.waitFor(() => expect(first.host.textContent).toContain('学生 × 知识点'))
+    const first = await mountView('/training?mode=student')
+    await vi.waitFor(() => expect(first.host.textContent).toContain('学生名单'))
     expect(first.host.querySelector('[aria-label="训练强度"]')).toBeNull()
     expect(first.host.textContent).not.toContain('预计用时')
-    first.host.querySelector<HTMLInputElement>('.chapter-training thead input[type="checkbox"]')!.click()
+    first.host.querySelector<HTMLInputElement>('[aria-label="选择匿名学生甲"]')!.click()
     await nextTick()
     first.host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
     await vi.waitFor(() => expect(first.router.currentRoute.value.query.mode).toBe('paper'))
