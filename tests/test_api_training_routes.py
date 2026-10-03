@@ -29,6 +29,41 @@ from question_bank.services.source_question_link_service import (
 )
 
 
+def test_training_display_hides_scores_without_mutating_frozen_draft(monkeypatch):
+    from copy import deepcopy
+    from backend.api.app import create_app
+    from backend.api.routers.training import _public_training_mapping
+
+    from question_bank.services import rich_content_service
+    original_strip = rich_content_service.strip_question_source_score
+    calls = []
+    def counted_strip(text, **kwargs):
+        calls.append((text, kwargs['question_number']))
+        return original_strip(text, **kwargs)
+    monkeypatch.setattr(rich_content_service, 'strip_question_source_score', counted_strip)
+    draft = {'source_revision': 'a' * 64, 'selected_items': [
+        {'question_number': '1', 'question_text': '（8分）小明跑了5分钟。',
+         'answer_text': '（8分）答案为2。'},
+        {'question_number': '1', 'question_text': '（8分）小明跑了5分钟。'},
+        {'question_number': '2', 'question_text': '（8分）小明跑了5分钟。'},
+    ], 'nested': ({'error_message': 'TEST-error'}, {'secret': 'TEST-secret'},
+                  {'source_file': 'TEST-source', 'keep': 1}, {},
+                  {'value': 'C%3A%5Cprivate%5Ctest.txt'},
+                  {'latex': r'\frac{1}{2}', 'url': '/api/training/diagnosis'})}
+    before = deepcopy(draft)
+    public = _public_training_mapping(draft)
+    assert public['selected_items'][0]['question_text'] == '小明跑了5分钟。'
+    assert public['selected_items'][0]['answer_text'] == '（8分）答案为2。'
+    assert public['source_revision'] == draft['source_revision']
+    assert public['nested'] == [{}, {'keep': 1}, {},
+                                {'latex': r'\frac{1}{2}', 'url': '/api/training/diagnosis'}]
+    assert len(calls) == 2
+    assert draft == before
+    public['selected_items'][0]['answer_text'] = 'TEST-public-edit'
+    public['nested'][1]['keep'] = 2
+    assert draft == before
+
+
 @pytest.mark.parametrize('purpose,mode,expected', [('training', 'individual', 0),
     ('handout', 'shared', 0), ('handout', 'individual', 2)])
 def test_create_draft_consolidation_cap_is_only_for_personal_handout(purpose, mode, expected):
@@ -70,10 +105,14 @@ def _clear_profile_memory():
     with profiles._TAG_PROFILE_CACHE_LOCK:
         profiles._TAG_PROFILE_CACHE.clear()
     profiles._LOCAL_SOURCE_REVISIONS.clear()
+    profiles._MASTERY_INPUT_RESULTS.clear()
+    from backend.api.app import create_app
+    from backend.api.routers.training import _DIAGNOSIS_RESPONSE_CACHE
+    _DIAGNOSIS_RESPONSE_CACHE.clear()
     reset_commit_generations()
 
 
-def test_saved_profiles_survive_new_process_and_wal_checkpoint(training_services):
+def test_saved_profiles_survive_new_process_and_wal_checkpoint(training_services, monkeypatch):
     service = training_services
     scope, exams = {"mode": "all"}, {"mode": "current", "session_ids": [14]}
     with sqlite3.connect(service.grading_db_path) as writer:
@@ -87,12 +126,36 @@ def test_saved_profiles_survive_new_process_and_wal_checkpoint(training_services
         assert len(class_profile['students']) == 2
         assert service._local_profile_path().is_file()
         digest = hashlib.sha256(pickle.dumps((expected, service.latest_aggregated_mastery))).hexdigest()
+        from backend.api.routers.training import _diagnosis_response_bytes
+        public_digest = hashlib.sha256(_diagnosis_response_bytes(service, scope=scope, exam_scope=exams)).hexdigest()
         writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     _clear_profile_memory()
+    restored = DiagnosisProfileService(service.grading_db_path, service.question_bank_db_path)
+    key = restored.tag_profile_cache_key(scope=scope, exam_scope=exams)
+    with monkeypatch.context() as patch:
+        loads = []
+        original_load = pickle.load
+        def counted_load(*args, **kwargs):
+            loads.append(True)
+            return original_load(*args, **kwargs)
+        patch.setattr(pickle, 'load', counted_load)
+        first = restored._read_local_profile(key)
+        assert first is not None and restored._read_local_profile(key) == first
+        assert loads == [True]
+        saved_bytes = restored._local_profile_path().read_bytes()
+        restored._local_profile_path().write_bytes(b'TEST-corrupt-replacement')
+        assert restored._read_local_profile(key) is None
+        replacement = restored._local_profile_path().with_suffix('.TEST-replacement')
+        replacement.write_bytes(saved_bytes)
+        replacement.replace(restored._local_profile_path())
+        assert restored._read_local_profile(key) == first
+        assert len(loads) == 3
     # A new interpreter has neither memory results nor process-local commit
     # counters. Fail if it attempts any full diagnosis/model recalculation.
     script = """
 import hashlib,json,pickle,sys
+from backend.api.app import create_app
+from backend.api.routers.training import _diagnosis_response_bytes
 from integration.diagnosis_profile_service import DiagnosisProfileService
 s=DiagnosisProfileService(sys.argv[1],sys.argv[2])
 def fail(**kwargs): raise AssertionError('recomputed saved diagnosis')
@@ -100,21 +163,28 @@ s._compute_tag_profiles=fail
 d=s.build_profiles(scope={'mode':'all'},exam_scope={'mode':'current','session_ids':[14]})
 c=s.build_profiles(scope={'mode':'class','class_ids':['八年级1班']},exam_scope={'mode':'current','session_ids':[14]})
 assert len(c['students'])==2
-print(json.dumps({'digest':hashlib.sha256(pickle.dumps((d,s.latest_aggregated_mastery))).hexdigest(),'students':len(d['students'])}))
+s.build_profiles=fail
+public=_diagnosis_response_bytes(s,scope={'mode':'all'},exam_scope={'mode':'current','session_ids':[14]})
+print(json.dumps({'digest':hashlib.sha256(pickle.dumps((d,s.latest_aggregated_mastery))).hexdigest(),'students':len(d['students']),'public_digest':hashlib.sha256(public).hexdigest()}))
 """
     result = subprocess.run([sys.executable, "-c", script, str(service.grading_db_path),
                              str(service.question_bank_db_path)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"digest": digest, "students": 2}
+    assert json.loads(result.stdout) == {"digest": digest, "students": 2, "public_digest": public_digest}
 
 
-@pytest.mark.parametrize("change", ["teacher_score", "training_record", "knowledge", "parameters", "cause", "corrupt"])
+@pytest.mark.parametrize("change", ["teacher_score", "training_record", "knowledge", "parameters", "code", "cause", "corrupt"])
 def test_local_profiles_refresh_changed_inputs_and_corrupt_cache(training_services, monkeypatch, change):
     from integration import diagnosis_profile_service as profiles
     service = training_services
     scope, exams = {"mode": "all"}, {"mode": "current", "session_ids": [14]}
     service.persist_snapshots = True
     before = service.build_profiles(scope=scope, exam_scope=exams)
+    from backend.api.routers.training import _diagnosis_response_bytes, _public_training_mapping
+    from backend.api.schemas.training import TrainingDiagnosisResponse
+    expected_public = TrainingDiagnosisResponse.model_validate(_public_training_mapping(
+        {k: v for k, v in before.items() if not k.startswith('_')})).model_dump(mode='json', exclude_none=True)
+    assert json.loads(_diagnosis_response_bytes(service, scope=scope, exam_scope=exams)) == expected_public
     assert service._local_profile_path().is_file()
     _clear_profile_memory()
     if change == "teacher_score":
@@ -132,6 +202,9 @@ def test_local_profiles_refresh_changed_inputs_and_corrupt_cache(training_servic
     elif change == "parameters":
         old = profiles._profile_semantics()
         monkeypatch.setattr(profiles, "_profile_semantics", lambda: (*old, "TEST-new-parameters"))
+    elif change == "code":
+        monkeypatch.setattr(profiles, "_PROFILE_CALCULATION_STATE",
+                            (*profiles._PROFILE_CALCULATION_STATE, ('TEST-rule-change', 1, 1)))
     elif change == "cause":
         cause = service.data_root / "reports/.class_analysis/TEST-cause.json"
         cause.parent.mkdir(parents=True, exist_ok=True)
@@ -147,6 +220,9 @@ def test_local_profiles_refresh_changed_inputs_and_corrupt_cache(training_servic
     monkeypatch.setattr(fresh, "_compute_tag_profiles", tracked)
     after = fresh.build_profiles(scope=scope, exam_scope=exams)
     assert calls == [True]
+    public_after = TrainingDiagnosisResponse.model_validate(_public_training_mapping(
+        {k: v for k, v in after.items() if not k.startswith('_')})).model_dump(mode='json', exclude_none=True)
+    assert json.loads(_diagnosis_response_bytes(fresh, scope=scope, exam_scope=exams)) == public_after
     if change == "teacher_score":
         assert next(s for s in after['students'] if s['student_id'] == '12')['score_rate'] == pytest.approx(.75)
         assert after != before
@@ -155,7 +231,11 @@ def test_local_profiles_refresh_changed_inputs_and_corrupt_cache(training_servic
 
 
 def test_idle_prewarm_saves_local_profiles_without_blocking_grading(training_services, monkeypatch):
-    from integration.training_prewarm import TrainingPrewarmWorker
+    # Production starts this worker after the app has registered its routers.
+    # Preserve that startup order when this test is selected on its own.
+    import backend.api.app
+    from integration.training_prewarm import TrainingPrewarmWorker, clear_recent_requests, record_request
+    clear_recent_requests()
     service = training_services
     paths = SimpleNamespace(db_path=service.grading_db_path, qb_db_path=service.question_bank_db_path,
                             data_root=service.data_root)
@@ -169,6 +249,31 @@ def test_idle_prewarm_saves_local_profiles_without_blocking_grading(training_ser
     jobs.active = False
     assert worker.tick()
     assert worker.batches[-1][0] == 1
+    assert not worker.tick()
+    # A newly visited scope also needs persistence without waiting for a write.
+    record_request('grouped_diagnosis', scope={'mode': 'all'},
+        exam_scope={'mode': 'current', 'session_ids': [14]}, params={'grouping': {'TEST': 1}})
+    jobs.active = True
+    assert not worker.tick()
+    jobs.active = False
+    assert worker.tick() and worker.batches[-1][0] == 1
+    assert not worker.tick()
+    clear_recent_requests()
+    # Startup prepares the same complete default group request as the page.
+    planned = []
+    monkeypatch.setattr(worker, '_class_names', lambda: ['TEST-class-1', 'TEST-class-2'])
+    assert [scope['mode'] for scope in worker._startup_scopes()] == ['class', 'class', 'all']
+    monkeypatch.setattr(worker, '_latest_volume_id', lambda: 'bnu24-math-g8-upper')
+    monkeypatch.setattr(worker, '_startup_scopes', lambda: [{'mode': 'all', 'student_ids': []}])
+    monkeypatch.setattr(worker, '_class_names', lambda: [])
+    monkeypatch.setattr(worker, '_compute', lambda *args: planned.append(args))
+    for task in worker._startup_tasks(set()):
+        task()
+    assert [item[0] for item in planned] == ['diagnosis', 'overview', 'graph', 'grouped_diagnosis']
+    group_request = planned[-1][3]['grouping']
+    assert group_request['scope_keys'] == ['kp_bnu24_math_g8_upper_1']
+    assert (group_request['question_count'], group_request['difficulty_max'],
+            group_request['max_written_questions'], group_request['recent_activity_count']) == (10, 8, 2, 3)
     assert service._local_profile_path().exists()
     _clear_profile_memory()
     monkeypatch.setattr(DiagnosisProfileService, "_compute_tag_profiles",
@@ -176,6 +281,58 @@ def test_idle_prewarm_saves_local_profiles_without_blocking_grading(training_ser
     worker._startup_done = False
     assert worker.tick()
     assert worker.batches[-1][0] == 1
+
+
+def test_semester_mastery_reuses_model_inputs_but_keeps_source_changes(training_services, monkeypatch):
+    from datetime import datetime, UTC
+    from tests.current_knowledge_support import install_current_knowledge
+    from integration import diagnosis_profile_service as profiles
+    from question_bank.mastery.model import week_of
+    install_current_knowledge(training_services.question_bank_db_path)
+    _clear_profile_memory()
+    occurred = datetime(2026, 9, 7, tzinfo=UTC)
+    observation = dict(student='12', item=(14, 'Q1'), qkey=(14, 'Q1'), activity=('exam', 14),
+        session=14, source='exam', occurred_at=occurred, week=week_of(occurred), d=3.1, y=.6,
+        links={'kp_alg_linear_equation': 1.})
+    profile = {'exam_scope': {'mode': 'semester', 'curriculum_volume_id': 'bnu24-math-g8-upper'},
+               '_mastery_population': True, '_mastery_observations': [observation]}
+    calculate = profiles.CurrentMasteryCalculator.calculate
+    calls = []
+    def tracked(self, *args, **kwargs):
+        calls.append(True)
+        return calculate(self, *args, **kwargs)
+    monkeypatch.setattr(profiles.CurrentMasteryCalculator, 'calculate', tracked)
+    # Request grading snapshots use different temporary paths. The original
+    # namespace still permits identical model inputs to share a result.
+    from backend.api.read_connections import request_read_context
+    paths = SimpleNamespace(db_path=training_services.grading_db_path, qb_db_path=training_services.question_bank_db_path)
+    training_services.data_root = training_services.question_bank_db_path.parent.parent
+    with request_read_context(paths) as ctx:
+        before = ctx.diagnosis_service.semester_mastery(profile)
+    before = training_services.semester_mastery(profile)
+    assert before and calls == [True]
+    with sqlite3.connect(training_services.grading_db_path) as writer:
+        writer.execute("UPDATE session_details SET deduction_reason='TEST-description-only' WHERE result_id=14001 AND question_id='Q1'")
+    after = training_services.semester_mastery(profile)
+    assert after == before and calls == [True]
+    after.clear()
+    assert training_services.semester_mastery(profile) == before
+    with sqlite3.connect(training_services.grading_db_path) as writer:
+        writer.execute("UPDATE session_details SET score_awarded=10 WHERE result_id=14001 AND question_id='Q1'")
+    changed = {**profile, '_mastery_observations': [{**observation, 'y': 1.}]}
+    scored = training_services.semester_mastery(changed)
+    assert scored != before and calls == [True, True]
+    with sqlite3.connect(training_services.question_bank_db_path) as writer:
+        writer.execute("INSERT INTO training_tasks(task_code,status) VALUES('TEST-mastery-input-version','completed')")
+    training_services.semester_mastery(changed)
+    assert calls == [True, True, True]
+    from dataclasses import replace
+    training_services.semester_mastery(changed, parameters=replace(profiles.CURRENT_MASTERY_PARAMETERS, sigma_theta=.9))
+    assert calls == [True, True, True, True]
+    training_services.semester_mastery(changed, as_of=datetime(2026, 10, 11, tzinfo=UTC))
+    assert len(calls) == 5
+    training_services.semester_mastery(changed, exclude_training_evidence_ids=frozenset({'TEST-excluded-evidence'}))
+    assert len(calls) == 6
 
 
 def test_local_snapshot_save_failure_preserves_profile_result(training_services, monkeypatch):
@@ -361,6 +518,7 @@ def training_client(training_services) -> TestClient:
 
 def test_training_diagnosis_uses_question_tag_identity(
     training_client: TestClient,
+    training_services, monkeypatch,
 ) -> None:
     response = training_client.post(
         "/api/training/diagnosis",
@@ -393,3 +551,103 @@ def test_training_diagnosis_uses_question_tag_identity(
         "missing_items": {"Q3": "missing_link"},
     }
     assert "C:/private" not in response.text
+    with monkeypatch.context() as patch:
+        patch.setattr(training_services, 'build_profiles', lambda **kwargs: pytest.fail('repeated public conversion'))
+        repeated = training_client.post('/api/training/diagnosis', json={
+            'scope': {'mode': 'student', 'student_ids': ['12']},
+            'exam_scope': {'mode': 'current', 'session_ids': [14]},
+        })
+        assert repeated.content == response.content
+    from backend.api.routers.training import _grouping_module
+    from datetime import datetime, UTC
+    grouped_calls = []
+    def chapter_groups(**kwargs):
+        grouped_calls.append(kwargs['config'].question_count)
+        return {'groups': [], 'selection': None, 'unassigned': [],
+                'warnings': [f"TEST-count-{kwargs['config'].question_count}"]}
+    grouping = SimpleNamespace(db_path=training_services.question_bank_db_path,
+        current_knowledge=SimpleNamespace(release_id='TEST-release'), clock=lambda: datetime(2026, 10, 3, tzinfo=UTC),
+        chapter_groups=chapter_groups)
+    training_client.app.dependency_overrides[_grouping_module] = lambda: grouping
+    grouped_body = {'scope': {'mode': 'student', 'student_ids': ['12']},
+        'exam_scope': {'mode': 'current', 'session_ids': [14]},
+        'grouping': {'scope_keys': ['kp_test_scope'], 'curriculum_volume_id': 'bnu24-math-g8-upper',
+                     'question_count': 10, 'difficulty_max': 8, 'exclude_current_exam_originals': True}}
+    grouped = training_client.post('/api/training/diagnosis', json=grouped_body)
+    assert grouped.status_code == 200, grouped.text
+    assert grouped.json()['grouping']['warnings'] == ['TEST-count-10']
+    from backend.api.routers.training import _public_training_mapping
+    from backend.api.schemas.training import TrainingDiagnosisResponse
+    original = training_services.build_profiles(scope=grouped_body['scope'], exam_scope=grouped_body['exam_scope'])
+    original['grouping'] = grouped.json()['grouping']
+    expected = TrainingDiagnosisResponse.model_validate(_public_training_mapping(
+        {k: v for k, v in original.items() if not k.startswith('_')})).model_dump(mode='json', exclude_none=True)
+    assert grouped.content == json.dumps(expected, ensure_ascii=False, allow_nan=False,
+                                       separators=(',', ':')).encode('utf-8')
+    from copy import deepcopy
+    from backend.api.routers.training import _validated_diagnosis_json
+    # Direct serialization must preserve finite values and reject invalid
+    # numbers, including numeric strings coerced by the response model.
+    for value in [float('nan'), float('inf'), 'NaN', 'Infinity']:
+        invalid = deepcopy(expected)
+        invalid['students'][0]['weak_points'][0]['score_sum'] = value
+        with pytest.raises(ValueError):
+            _validated_diagnosis_json(_public_training_mapping(invalid, reject_nonfinite=True))
+    invalid = deepcopy(expected)
+    invalid['grouping']['TEST-value'] = float('inf')
+    with pytest.raises(ValueError):
+        _public_training_mapping(invalid, reject_nonfinite=True)
+    assert training_client.post('/api/training/diagnosis', json=grouped_body).content == grouped.content
+    assert grouped_calls == [10]
+    from backend.api.routers.training import _grouped_diagnosis_response_bytes
+    from backend.api.schemas.training import TrainingDiagnosisRequest
+    request = TrainingDiagnosisRequest.model_validate(grouped_body)
+    training_services.persist_snapshots = True
+    saved = _grouped_diagnosis_response_bytes(training_services, grouping,
+        scope=request.scope.model_dump(exclude_none=True), exam_scope=request.exam_scope.model_dump(exclude_none=True),
+        grouping=request.grouping)
+    assert saved == grouped.content
+    script = '''
+import hashlib,json,sys
+from types import SimpleNamespace
+from datetime import datetime,UTC
+from backend.api.app import create_app
+from backend.api.routers import training
+from backend.api.schemas.training import TrainingDiagnosisRequest
+from integration.diagnosis_profile_service import DiagnosisProfileService
+s=DiagnosisProfileService(sys.argv[1],sys.argv[2])
+def fail(*args,**kwargs): raise AssertionError('recomputed full grouped response')
+s.build_profiles=fail
+training._build_grouped_diagnosis=fail
+r=TrainingDiagnosisRequest.model_validate_json(sys.argv[3])
+m=SimpleNamespace(current_knowledge=SimpleNamespace(release_id='TEST-release'),
+    clock=lambda:datetime(2026,10,3,tzinfo=UTC))
+result=training._grouped_diagnosis_response_bytes(s,m,scope=r.scope.model_dump(exclude_none=True),
+    exam_scope=r.exam_scope.model_dump(exclude_none=True),grouping=r.grouping)
+print(hashlib.sha256(result).hexdigest())
+'''
+    restored = subprocess.run([sys.executable, '-c', script, str(training_services.grading_db_path),
+        str(training_services.question_bank_db_path), json.dumps(grouped_body)],
+        capture_output=True, text=True, timeout=30)
+    assert restored.returncode == 0, restored.stderr
+    assert restored.stdout.strip() == hashlib.sha256(saved).hexdigest()
+    from backend.api.routers import training as router_module
+    with monkeypatch.context() as patch:
+        patch.setattr(router_module, 'get_personalized_recommendation_module',
+            lambda: pytest.fail('cached grouped response constructed a module'))
+        training_client.app.dependency_overrides.pop(_grouping_module)
+        assert training_client.post('/api/training/diagnosis', json=grouped_body).content == grouped.content
+    training_client.app.dependency_overrides[_grouping_module] = lambda: grouping
+    grouped_body['grouping']['question_count'] = 8
+    changed = training_client.post('/api/training/diagnosis', json=grouped_body)
+    assert changed.status_code == 200
+    assert changed.json()['grouping']['warnings'] == ['TEST-count-8']
+    assert grouped_calls == [10, 8]
+    with monkeypatch.context() as patch:
+        patch.setattr(training_services, 'build_profiles', lambda **kwargs: pytest.fail('repeated grouped profile'))
+        assert training_client.post('/api/training/diagnosis', json=grouped_body).content == changed.content
+    asset = training_services.data_root / 'question_bank/rich_content/TEST-input.json'
+    asset.parent.mkdir(parents=True, exist_ok=True)
+    asset.write_text('{}', encoding='utf-8')
+    assert training_client.post('/api/training/diagnosis', json=grouped_body).content == changed.content
+    assert grouped_calls == [10, 8, 8]

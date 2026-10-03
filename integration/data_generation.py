@@ -15,11 +15,30 @@ repeated reads of unchanged content keep the same generation.
 from __future__ import annotations
 
 import sqlite3
+import hashlib
 import threading
+from contextlib import closing
 from pathlib import Path
 from typing import Union
 
 _PATH_TYPE = Union[str, Path]
+
+
+def database_content_revision(path: Path, connection: sqlite3.Connection | None = None) -> str:
+    """Hash read-only logical SQLite pages, preserving versions across checkpoints.
+
+    This is the existing diagnosis snapshot algorithm. Journal mode and
+    header bookkeeping are excluded; schema/data pages remain included.
+    """
+    if connection is None:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as owned:
+            owned.execute("PRAGMA query_only = ON")
+            return database_content_revision(path, owned)
+    content = memoryview(connection.serialize())
+    digest = hashlib.sha256()
+    for start, end in ((0, 18), (20, 24), (28, 92), (100, len(content))):
+        digest.update(content[start:end])
+    return digest.hexdigest()
 
 _LOCK = threading.Lock()
 _MONITORS: dict[str, _GenerationMonitor] = {}

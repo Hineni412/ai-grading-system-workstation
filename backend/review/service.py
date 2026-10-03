@@ -1052,31 +1052,31 @@ def _normalize_teacher_steps(
             "core_goal": str(step.get("core_goal") or ""),
             "evidence_point_ids": list(step.get("evidence_point_ids") or []),
         }
-        if awarded == 0:
-            carried = _ai_carried_error_from(ai_assessments, key[0], key[1])
-            if carried:
-                record["carried_error_from"] = carried
+        matches = [entry for entry in (ai_assessments or [])
+                   if isinstance(entry, dict) and str(entry.get("step_id") or "") == key[1]
+                   and (not entry.get("part_id") or entry.get("part_id") == key[0])] if isinstance(ai_assessments, list) else []
+        ai = matches[0] if len(matches) == 1 else {}
+        ai_score = integer_business_score(ai.get("score_awarded"))
+        record["ai_score_awarded"] = ai_score
+        source = "none" if awarded == maximum else "ai" if ai_score is not None and ai_score < maximum else "teacher"
+        record["deduction_source"] = source
+        if source == "ai":
+            for field in ("reason", "missing_or_error", "student_evidence"):
+                if ai.get(field) is not None:
+                    record[field] = ai[field]
+        elif source == "teacher":
+            note = str(raw.get("teacher_note") or "").strip()
+            if note:
+                record["teacher_note"] = note
+        carried = raw.get("carried_error_from") if "carried_error_from" in raw else ai.get("carried_error_from")
+        previous = next((entry for entry in normalized
+                         if entry["part_id"] == key[0] and entry["step_id"] == carried), None)
+        if awarded == 0 and previous and previous["score_awarded"] < previous["max_score"]:
+            record["carried_error_from"] = carried
         normalized.append(record)
     if sum(step["max_score"] for step in normalized) != item.max_score or sum(step["score_awarded"] for step in normalized) != total:
         raise ReviewValidationError("Teacher step scores must sum to the submitted question score.")
     return normalized
-
-
-def _ai_carried_error_from(assessments: Any, part_id: str, step_id: str) -> str:
-    if not isinstance(assessments, list):
-        return ""
-    for entry in assessments:
-        if not isinstance(entry, dict):
-            continue
-        if str(entry.get("step_id") or "") != step_id:
-            continue
-        entry_part = str(entry.get("part_id") or "")
-        if entry_part and part_id and entry_part != part_id:
-            continue
-        carried = str(entry.get("carried_error_from") or "").strip()
-        if carried:
-            return carried
-    return ""
 
 
 def _question_sort_key(question_id: str) -> list[Any]:

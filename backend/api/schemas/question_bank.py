@@ -43,6 +43,16 @@ class QuestionPaperListResponse(_QuestionBankModel):
     total: int
 
 
+class QuestionTaskPaper(_QuestionBankModel):
+    id: int
+    title: str | None = None
+
+
+class QuestionTaskContext(_QuestionBankModel):
+    papers: list[QuestionTaskPaper]
+    source_filename: str | None = None
+
+
 class QuestionPaperMetadataInput(_QuestionBankModel):
     title: str = Field(min_length=1, max_length=255)
     year: str | None = Field(default=None, max_length=24)

@@ -48,7 +48,8 @@ def skill_anchor_ids(node_row, volume: dict[str, Any]) -> list[str]:
     return anchors
 
 
-def build_skill_snapshot(conn: sqlite3.Connection, db_path: Path, data_root: Path | None) -> dict[str, Any]:
+def load_skill_inventory(conn: sqlite3.Connection) -> dict[str, Any]:
+    """只读题目归属和节点；不打开题目正文或图片。"""
     active = conn.execute("SELECT release_id FROM knowledge_graph_releases WHERE status='active'").fetchone()
     release = str(active[0]) if active else None
     nodes = {str(row["stable_key"]): dict(row) for row in conn.execute(
@@ -58,6 +59,7 @@ def build_skill_snapshot(conn: sqlite3.Connection, db_path: Path, data_root: Pat
         "JOIN papers p ON p.id=q.paper_id WHERE q.is_deleted=0 AND COALESCE(p.import_status,'')<>'deleted'")}
     members: dict[int, set[int]] = defaultdict(set)
     volumes: dict[str, set[int]] = defaultdict(set)
+    paper_volumes: dict[int, str | None] = {}
     for row in conn.execute(
         "SELECT DISTINCT p.id,p.grade,p.semester,p.textbook_version,q.id AS question_id FROM papers p "
         "JOIN (SELECT id,paper_id FROM questions UNION SELECT question_id,paper_id FROM paper_question_occurrences) m "
@@ -66,10 +68,29 @@ def build_skill_snapshot(conn: sqlite3.Connection, db_path: Path, data_root: Pat
         qid = int(row["question_id"])
         if qid not in questions:
             continue
-        members[int(row["id"])].add(qid)
-        volume = curriculum_volume(grade=row["grade"], semester=row["semester"], textbook_version=row["textbook_version"])
-        if volume:
-            volumes[volume["id"]].add(qid)
+        paper_id = int(row["id"])
+        members[paper_id].add(qid)
+        if paper_id not in paper_volumes:
+            volume = curriculum_volume(grade=row["grade"], semester=row["semester"], textbook_version=row["textbook_version"])
+            paper_volumes[paper_id] = volume["id"] if volume else None
+        volume_id = paper_volumes[paper_id]
+        if volume_id:
+            volumes[volume_id].add(qid)
+    return {"release": release, "nodes": nodes, "questions": questions,
+            "members": dict(members), "volumes": dict(volumes)}
+
+
+def build_skill_snapshot(
+    conn: sqlite3.Connection, db_path: Path, data_root: Path | None,
+    *, inventory: dict[str, Any] | None = None, question_ids: tuple[int, ...] | None = None,
+) -> dict[str, Any]:
+    inventory = inventory if inventory is not None else load_skill_inventory(conn)
+    release, nodes = inventory["release"], inventory["nodes"]
+    questions = inventory["questions"] if question_ids is None else {
+        qid: inventory["questions"][qid] for qid in question_ids if qid in inventory["questions"]}
+    selected = set(questions)
+    members = {key: ids & selected for key, ids in inventory["members"].items()}
+    volumes = {key: ids & selected for key, ids in inventory["volumes"].items()}
     profiles = load_profiles(db_path, list(questions), connection=conn, data_root=data_root)
     usable = {qid: profile for qid, profile in profiles.items() if profile.get("available")}
     links = load_point_links(db_path, [profile["evidence_version_id"] for profile in usable.values()], release, connection=conn)
@@ -99,18 +120,22 @@ def build_skill_snapshot(conn: sqlite3.Connection, db_path: Path, data_root: Pat
         resolver = CurrentKnowledgeResolver.from_connection(conn)
     except CurrentKnowledgeUnavailable:
         resolver = None
+    resolved_topics: dict[str, tuple[str, str] | None] = {}
     for row in conn.execute("SELECT question_id,tag_type,tag_value FROM question_tags WHERE tag_type IN ('knowledge_point','curriculum_section','exam_scope')"):
         qid = int(row["question_id"])
         if qid not in questions:
             continue
         if row["tag_type"] == "knowledge_point":
             value = str(row['tag_value'])
-            term = resolver.canonical_term(value) if resolver else None
-            targets = resolver.resolve(value) if resolver else ()
-            target = next((item for item in targets if item.stable_key.startswith('kp_')), None)
-            if target:
-                value = term[1] if term else value
-                topic_keys[value] = target.stable_key
+            if value not in resolved_topics:
+                term = resolver.canonical_term(value) if resolver else None
+                targets = resolver.resolve(value) if resolver else ()
+                target = next((item for item in targets if item.stable_key.startswith('kp_')), None)
+                resolved_topics[value] = (term[1] if term else value, target.stable_key) if target else None
+            resolved = resolved_topics[value]
+            if resolved:
+                value, topic_key = resolved
+                topic_keys[value] = topic_key
                 topics[value].add(qid)
         else:
             sections[str(row["tag_value"])].add(qid)

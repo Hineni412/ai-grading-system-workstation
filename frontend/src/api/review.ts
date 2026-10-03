@@ -138,7 +138,7 @@ export interface ReviewConfirmInput {
   detail_id: number | null
   score_awarded: number
   deduction_reason?: string
-  step_scores?: { part_id: string; step_id: string; score_awarded: number }[]
+  step_scores?: { part_id: string; step_id: string; score_awarded: number; teacher_note?: string | null; carried_error_from?: string | null }[]
 }
 
 export interface ReviewAnnotationOutcome {

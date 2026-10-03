@@ -58,6 +58,7 @@ export const useResultsCenterStore = defineStore('results-center', () => {
   const errorMessage = ref('')
   const updatedAt = ref<string | null>(null)
   const viewState = ref<ResultsViewState | null>(null)
+  const reportReturn = ref<{sessionId: number; studentId: number; reportSessionId: number} | null>(null)
   const reviewNavigation = ref<ReviewNavigation | null>(null)
 
   let controller: AbortController | null = null
@@ -74,6 +75,7 @@ export const useResultsCenterStore = defineStore('results-center', () => {
     updatedAt.value = null
     viewState.value = null
     reviewNavigation.value = null
+    reportReturn.value = null
   }
 
   function setReviewNavigation(value: ReviewNavigation | null): void {
@@ -142,6 +144,7 @@ export const useResultsCenterStore = defineStore('results-center', () => {
     updatedAt,
     viewState,
     reviewNavigation,
+    reportReturn,
     setReviewNavigation,
     load,
     reset,

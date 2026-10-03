@@ -160,6 +160,11 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
                 result["filename"] = filename
             result["download_url"] = f"/api/jobs/{job.id}/download"
         return sanitize_public_mapping(result)
+    if job.job_type == "personal_report_bundle":
+        result = {k: job.result[k] for k in ("generated", "failed", "skipped", "missing_items", "filename") if k in job.result}
+        if job.status == "succeeded" and job.result.get("file_path"):
+            result["download_url"] = f"/api/jobs/{job.id}/download"
+        return sanitize_public_mapping(result)
     if job.job_type == "wrong_question_export":
         result = {key: job.result[key] for key in (
             "generated_students", "empty_students", "failed_students", "missing_items", "question_count",
@@ -385,6 +390,8 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
             "score_revision",
             "report_options_fingerprint",
             "score_excel_options",
+            "student_ids",
+            "publish",
             "retry_of_job_id",
         )
         return sanitize_public_mapping(

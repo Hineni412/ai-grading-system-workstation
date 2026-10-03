@@ -688,9 +688,11 @@ def _crop_region_data_uri(
     region: dict[str, Any] | None,
     *,
     max_width: int = _SHOT_MAX_WIDTH,
+    decoded_image=None,
 ) -> str | None:
     try:
-        with Image.open(image_path) as image:
+        from contextlib import nullcontext
+        with Image.open(image_path) if decoded_image is None else nullcontext(decoded_image) as image:
             image.load()
             bbox = (
                 scaled_region_bbox(region, image.width, image.height, padding=_SHOT_PADDING)
@@ -742,7 +744,7 @@ def _student_paper_context(
     return candidates[0] if len(candidates) == 1 else None
 
 
-def capture_lost_question_shots(
+def lost_question_shot_specs(
     repositories: GradingRepositoryAccess,
     data: SessionAnalysisData,
     student: StudentReportData,
@@ -750,13 +752,13 @@ def capture_lost_question_shots(
     regions: list[dict[str, Any]] | None,
     data_root: Path | None,
     paper_context: dict[str, Any] | None = None,
-) -> dict[str, dict[str, str]]:
+) -> list[dict[str, Any]]:
     """为丢分大题生成全部截图；同题多图以序号区分，缺图不阻断报告。"""
     if not regions:
-        return {}
+        return []
     lost_records = [record for record in student.records if record.lost]
     if not lost_records:
-        return {}
+        return []
 
     if paper_context is None:
         paper_context = _student_paper_context(repositories, data, student)
@@ -771,8 +773,7 @@ def capture_lost_question_shots(
         key=lambda parent: (-lost_by_parent[parent], parent),
     )
 
-    shots: dict[str, dict[str, str]] = {}
-    used_bytes = 0
+    shots: list[dict[str, Any]] = []
     for parent in ordered_parents:
         matching = _find_question_regions(regions, parent)
         for index, region in enumerate(matching):
@@ -780,21 +781,45 @@ def capture_lost_question_shots(
             raw_path = str((paper_context or {}).get(f"{page}_image") or "")
             if not raw_path:
                 continue
-            image_path = resolve_stored_file_path(raw_path, data_root=data_root)
-            data_uri = _crop_region_data_uri(image_path, region)
-            if data_uri is None:
+            try:
+                image_path = resolve_stored_file_path(raw_path, data_root=data_root)
+            except ValueError:
                 continue
-            encoded_size = len(data_uri) * 3 // 4
-            if used_bytes + encoded_size > _SHOT_BUDGET_BYTES:
+            if data_root is None:
                 continue
-            used_bytes += encoded_size
+            try:
+                image_path.resolve().relative_to(Path(data_root).resolve())
+            except (ValueError, OSError):
+                continue
             region_id = str(region.get("mapped_question_id") or region.get("detected_question_id") or parent)
-            shots[parent if index == 0 else f"{parent}:{index}"] = {
-                "data_uri": data_uri,
+            shots.append({
+                "key": parent if index == 0 else f"{parent}:{index}",
+                "image_path": image_path, "region": region, "page": page,
                 "parent_question_id": parent,
                 "region_question_id": region_id,
                 "caption": f"{_question_display_label(region_id)}作答区截图（原卷截图）",
-            }
+            })
+    return shots
+
+
+
+def capture_lost_question_shots(repositories, data, student, *, regions, data_root, paper_context=None):
+    from session_originals import originals_state
+    if data_root is not None and originals_state(data_root, data.session_id) in {"clearing", "cleared"}:
+        return {}
+    shots = {}
+    used_bytes = 0
+    for spec in lost_question_shot_specs(repositories, data, student, regions=regions,
+                                       data_root=data_root, paper_context=paper_context):
+        data_uri = _crop_region_data_uri(spec["image_path"], spec["region"])
+        if data_uri is None:
+            continue
+        encoded_size = len(data_uri) * 3 // 4
+        if used_bytes + encoded_size > _SHOT_BUDGET_BYTES:
+            continue
+        used_bytes += encoded_size
+        shots[spec["key"]] = {k: spec[k] for k in ("parent_question_id", "region_question_id", "caption")}
+        shots[spec["key"]]["data_uri"] = data_uri
     return shots
 
 
@@ -2053,6 +2078,30 @@ def _follow_up_question_ids(
     return out
 
 
+def _personal_review_link(question_id: str) -> str:
+    return f'<a href="#" class="review-link" data-question-id="{esc(question_id)}">去复核这题 ›</a>'
+
+
+_PERSONAL_KEYBOARD_JS = """
+document.addEventListener('keydown', function(event) {
+  if (!['Escape', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+  if (event.key !== 'Escape' && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+  event.preventDefault();
+  window.parent.postMessage({type: 'personal-report:key', key: event.key}, location.origin);
+});
+"""
+
+
+_PERSONAL_REVIEW_JS = """
+document.addEventListener('click', function(event) {
+  var link = event.target.closest('.review-link');
+  if (!link) return;
+  event.preventDefault();
+  window.parent.postMessage({type: 'personal-report:open-review', questionId: link.dataset.questionId}, location.origin);
+});
+"""
+
+
 def _shots_for_parent(shots: dict[str, dict[str, str]], parent: str) -> list[dict[str, str]]:
     return [
         shot
@@ -2063,7 +2112,7 @@ def _shots_for_parent(shots: dict[str, dict[str, str]], parent: str) -> list[dic
 
 def _shots_html(shots: dict[str, dict[str, str]], parent: str, title: str) -> str:
     return "".join(
-        f'<div class="shot"><img src="{shot["data_uri"]}" alt="{esc(title)}作答截图">'
+        f'<div class="shot"><img src="{esc(shot.get("src") or shot["data_uri"])}" alt="{esc(title)}作答截图">'
         f'<div class="cap">{esc(shot.get("caption") or "学生作答（原卷截图）")}</div></div>'
         for shot in _shots_for_parent(shots, parent)
     )
@@ -2144,6 +2193,7 @@ def _question_detail_template(
     analysis: dict[str, Any] | None,
     shots: dict[str, dict[str, str]],
     errors: list[dict[str, Any]] | None = None,
+    review_links: bool = False,
 ) -> str:
     """答题一览方格对应的隐藏详情片段（<template>，点击方格原位展开）。"""
     parent = parent_question_id(record.question_id)
@@ -2158,6 +2208,8 @@ def _question_detail_template(
         head_parts.append(f"全班平均 {fmt_num(round(avg, 1))}")
     head = " · ".join(head_parts)
     body = [f'<div class="qdetail-box"><div class="qd-head">{esc(head)}</div>']
+    if review_links:
+        body.append(_personal_review_link(record.question_id))
     if record.lost and errors:
         labels = "；".join(dict.fromkeys(
             " · ".join(
@@ -2205,6 +2257,7 @@ def _lost_appendix_html(
     analysis_by_qid: dict[str, dict[str, Any]],
     shots: dict[str, dict[str, str]],
     error_map: dict[str, list[dict[str, Any]]] | None = None,
+    review_links: bool = False,
 ) -> str:
     """失分题详解附录：全部失分小问按大题分组，默认收起、打印展开。"""
     lost = [r for r in student.records if r.lost]
@@ -2233,6 +2286,7 @@ def _lost_appendix_html(
             f'<div class="qcard"><div class="head"><b>{esc(title)}'
             f'{(" · " + esc(type_label)) if type_label else ""}</b>'
             f'<span class="score">得 {fmt_num(gscore)} 分 / 满分 {fmt_num(gmax)} 分</span></div>',
+            _personal_review_link(parent) if review_links else "",
             _stem_block_html(info, fallback, title),
             _shots_html(shots, parent, title),
         ]
@@ -2449,6 +2503,7 @@ def _render_personal_html(
     history: list[dict[str, Any]] | None = None,
     error_map: dict[str, list[dict[str, Any]]] | None = None,
     error_history: dict[str, dict[str, list[Any]]] | None = None,
+    *, online: bool = False, review_links: bool = False, originals_released: bool = False,
 ) -> str:
     info_by_qid = {info.question_id: info for info in data.questions}
     analysis_by_qid = _narrative_analysis_index(narrative, info_by_qid)
@@ -2623,7 +2678,7 @@ def _render_personal_html(
         templates.append(
             f'<template data-q="{esc(record.question_id)}">'
             + _question_detail_template(
-                record, info, labels, analysis, shots, errors=question_errors(record.question_id),
+                record, info, labels, analysis, shots, errors=question_errors(record.question_id), review_links=review_links,
             )
             + "</template>"
         )
@@ -2704,7 +2759,7 @@ def _render_personal_html(
                     first = next(iter(_shots_for_parent(shots, parent)), None)
                     if first:
                         why.append(
-                            f'<div class="shot"><img src="{first["data_uri"]}" alt="作答截图">'
+                            f'<div class="shot"><img src="{esc(first.get("src") or first["data_uri"])}" alt="作答截图">'
                             f'<div class="cap">{esc(first.get("caption") or "学生作答（原卷截图）")}</div></div>'
                         )
             timeframe = _narrative_text((suggestion or {}).get("timeframe"))
@@ -2835,10 +2890,13 @@ def _render_personal_html(
 
     # ---- F 附录 ----
     appendix = _lost_appendix_html(
-        student, info_by_qid, analysis_by_qid, shots, error_map=error_map,
+        student, info_by_qid, analysis_by_qid, shots, error_map=error_map, review_links=review_links,
     )
     card_f = f'<div class="card">{appendix}</div>' if appendix else ""
 
+    released_note = '<div class="card">原卷已释放，无法显示作答图；分数与批语不受影响</div>' if originals_released else ""
+    review_script = _PERSONAL_REVIEW_JS if review_links else ""
+    keyboard_script = _PERSONAL_KEYBOARD_JS if online else ""
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -2854,6 +2912,7 @@ def _render_personal_html(
 {card_a}
 {card_b}
 {card_c}
+{released_note}
 {card_d}
 {card_e}
 {card_f}
@@ -2862,7 +2921,7 @@ def _render_personal_html(
 <p>班级对比只用匿名统计。报告生成时间：{generated_at}。</p>
 </footer>
 </div>
-<script>{_PERSONAL_KATEX_JS}{_PERSONAL_GRID_JS}{_PERSONAL_PRINT_JS}</script>
+<script>{_PERSONAL_KATEX_JS}{_PERSONAL_GRID_JS}{_PERSONAL_PRINT_JS}{review_script}{keyboard_script}</script>
 </body>
 </html>
 """
@@ -3004,6 +3063,9 @@ class AnalysisReportGenerator:
         self._llm_client_resolved = False
         # 最近一次个人报告导出写入集中提示清单后的条目总数（无 reports_dir 时为 0）。
         self.last_review_note_count = 0
+        self.last_personal_summary = dict(generated=0, failed=0, skipped=0)
+        self.last_personal_files = {}
+        self.last_personal_missing = []
 
     def export_session(
         self,
@@ -3013,6 +3075,9 @@ class AnalysisReportGenerator:
         score_revision: str = "",
         student_ids: set[int] | None = None,
         html_only: bool = False,
+        narrative_mode: str = "generate",
+        progress_callback=None,
+        cancel_check=None,
     ) -> Path:
         """默认返回下载 ZIP；html_only 返回只含各学生 HTML 的目录。"""
         if report_type not in ANALYSIS_REPORT_TYPES:
@@ -3027,7 +3092,8 @@ class AnalysisReportGenerator:
             int(session_id),
             data_root=self.data_root,
         )
-        return self._export_personal(data, revision, student_ids=student_ids, html_only=html_only)
+        return self._export_personal(data, revision, student_ids=student_ids, html_only=html_only,
+            narrative_mode=narrative_mode, progress_callback=progress_callback, cancel_check=cancel_check)
 
     def export_classes(
         self,
@@ -3183,8 +3249,11 @@ class AnalysisReportGenerator:
         *,
         student_ids: set[int] | None = None,
         html_only: bool = False,
+        narrative_mode: str = "generate",
+        progress_callback=None,
+        cancel_check=None,
     ) -> Path:
-        if not data.students:
+        if not data.students and narrative_mode != "cache_only":
             raise ValueError("该场次没有可生成个人报告的学生。")
         enrich_personal_questions(self.repositories, data, self.data_root)
         enrich_personal_knowledge(self.repositories, data, self.data_root, student_ids=student_ids)
@@ -3204,22 +3273,35 @@ class AnalysisReportGenerator:
             for student in group.students
             if student_ids is None or student.student_id in student_ids
         ]
-        if not scoped_students:
+        if not scoped_students and narrative_mode != "cache_only":
             raise ValueError("所选学生没有可生成个人报告的成绩。")
         session_data = data
         # Resolve once on the caller thread. Only model/cache work runs in workers;
         # repository access, image preparation and rendering stay on this thread.
-        all_cached = self.cache is not None and all(
-            self._cached_narrative(
-                session_id=data.session_id,
-                revision=revision,
-                report_type=PERSONAL_ANALYSIS_REPORT_TYPE,
-                report_key=f"personal:{student.student_id}",
-            )
-            is not None
-            for data, student in scoped_students
-        )
-        client = None if all_cached else self._client()
+        from backend.personal_reports import (student_report_revisions, lookup_personal_narrative, publish_personal_index)
+        revisions = student_report_revisions(self.repositories, data.session_id,
+            [student.student_id for _group, student in scoped_students])
+        cached_by_student = {student.student_id: lookup_personal_narrative(self.cache, data.session_id,
+            student.student_id, revisions[student.student_id], revision, allow_stale=narrative_mode == "cache_only")
+            if self.cache is not None else dict(narrative=None, status="missing")
+            for _group, student in scoped_students}
+        self.last_personal_files = {}
+        self.last_personal_missing = [dict(item) for item in data.skipped
+            if student_ids is None or int(item["student_id"]) in student_ids]
+        self.last_personal_summary = dict(generated=0, failed=0, skipped=len(self.last_personal_missing))
+        if narrative_mode == "cache_only":
+            available = []
+            for group, student in scoped_students:
+                if cached_by_student[student.student_id]["narrative"] is None:
+                    self.last_personal_missing.append(dict(student_id=student.student_id,
+                        student_name=student.student_name, student_code=student.student_code,
+                        class_name=student.class_name, reason="未生成"))
+                    self.last_personal_summary["skipped"] += 1
+                else:
+                    available.append((group, student))
+            scoped_students = available
+        all_cached = all(cached_by_student[student.student_id]["narrative"] is not None for _g, student in scoped_students)
+        client = None if narrative_mode == "cache_only" or all_cached else self._client()
         # 同教学学期历次成绩每次导出只读取一轮，渲染时按学生取用。
         histories = _load_student_histories(
             self.repositories, session_data, self.data_root
@@ -3273,16 +3355,17 @@ class AnalysisReportGenerator:
                 self.repositories, data, student, regions=regions,
                 data_root=self.data_root, paper_context=paper_context,
             )
-            images, image_map = _personal_image_inputs(
+            cached = cached_by_student[student.student_id]["narrative"]
+            images, image_map = ([], []) if cached is not None or narrative_mode == "cache_only" else _personal_image_inputs(
                 data, student, shots, paper_context, self.data_root,
             )
             payload = build_personal_payload(data, student)
             payload["image_map"] = image_map
             payload["material_notes"] = student.material_notes
-            future = executor.submit(
+            future = executor.submit(lambda value=cached: value) if cached is not None else executor.submit(
                 self._narrative,
                 session_id=data.session_id,
-                revision=revision,
+                revision="student:" + revisions[student.student_id],
                 report_type=PERSONAL_ANALYSIS_REPORT_TYPE,
                 report_key=f"personal:{student.student_id}",
                 prompt=build_report_prompt(PERSONAL_SYSTEM_PROMPT, payload),
@@ -3309,6 +3392,8 @@ class AnalysisReportGenerator:
             while True:
                 # Bound prepared images as well as in-flight model requests.
                 while len(pending) < parallel_limit:
+                    if cancel_check is not None:
+                        cancel_check()
                     entry = next(students, None)
                     if entry is None:
                         break
@@ -3322,7 +3407,9 @@ class AnalysisReportGenerator:
                     history_index = history_error_index.get(student.student_id)
                     error_history = history_index or None
                     narrative = future.result()
-                    if self.reports_dir is not None:
+                    if self.cache is not None and narrative_mode == "generate" and narrative is not None:
+                        publish_personal_index(self.cache.cache_dir, data.session_id, student.student_id, revisions[student.student_id])
+                    if self.reports_dir is not None and narrative_mode == "generate":
                         review_note_items.extend(
                             _collect_review_notes(
                                 narrative,
@@ -3331,20 +3418,34 @@ class AnalysisReportGenerator:
                                 lock_revisions,
                             )
                         )
-                    html_text = _render_personal_html(
-                        data,
-                        student,
-                        narrative,
-                        shots,
-                        history=histories.get(student.student_id, []),
-                        error_map=error_maps.get(student.student_id),
-                        error_history=error_history,
-                    )
-                    report_path.write_text(html_text, encoding="utf-8")
+                    from session_originals import originals_state
+                    try:
+                        html_text = _render_personal_html(
+                            data,
+                            student,
+                            narrative,
+                            shots,
+                            history=histories.get(student.student_id, []),
+                            error_map=error_maps.get(student.student_id),
+                            error_history=error_history,
+                            originals_released=self.data_root is not None and originals_state(self.data_root, data.session_id) in {"clearing", "cleared"},
+                        )
+                        report_path.write_text(html_text, encoding="utf-8")
+                        self.last_personal_files[student.student_id] = report_path
+                        self.last_personal_summary["generated" if narrative is not None else "failed"] += 1
+                    except Exception:
+                        self.last_personal_summary["failed"] += 1
+                        self.last_personal_missing.append(dict(student_id=student.student_id, student_name=student.student_name,
+                            student_code=student.student_code, class_name=student.class_name, reason="渲染失败"))
+                        report_files.remove(report_path)
+                    if progress_callback is not None:
+                        progress_callback(len(self.last_personal_files) + self.last_personal_summary["failed"])
+                    if cancel_check is not None:
+                        cancel_check()
 
         data = session_data
 
-        if self.reports_dir is not None:
+        if self.reports_dir is not None and narrative_mode == "generate":
             self.last_review_note_count = merge_session_notes(
                 self.reports_dir,
                 data.session_id,
@@ -3363,10 +3464,10 @@ class AnalysisReportGenerator:
             f"场次：{data.session_name}",
             "",
         ]
-        if data.skipped:
+        if self.last_personal_missing:
             checklist_lines.extend(
                 f"{item['class_name']} {item['student_code']} {item['student_name']}：{item['reason']}"
-                for item in data.skipped
+                for item in self.last_personal_missing
             )
         else:
             checklist_lines.append("无")
@@ -3402,6 +3503,7 @@ def build_analysis_preflight(
     score_revision: str,
     cache_dir: Path,
     reports_dir: Path | None = None,
+    student_ids: set[int] | None = None,
 ) -> dict[str, Any]:
     """生成前的费用与调用预估：错因整理与报告叙述分开计数；只给 token 粗估。"""
     if report_type not in ANALYSIS_REPORT_TYPES:
@@ -3429,23 +3531,18 @@ def build_analysis_preflight(
         )
         for data in split_session_analysis_by_class(data).values()
         for student in data.students
+        if student_ids is None or student.student_id in student_ids
     ]
 
+    from backend.personal_reports import student_report_revisions, lookup_personal_narrative
+    revisions = student_report_revisions(repositories, int(session_id),
+        [int(key.split(":")[1]) for key, _p, _m in entries])
     cache_hits = 0
     estimated_tokens = 0
     for report_key, prompt, max_tokens in entries:
-        hit = any(
-            cache.load(
-                AnalysisNarrativeCache.cache_key(
-                    session_id=int(session_id),
-                    score_revision=score_revision,
-                    rendition_version=rendition,
-                    report_key=report_key,
-                )
-            )
-            is not None
-            for rendition in renditions
-        )
+        sid = int(report_key.split(":")[1])
+        hit = lookup_personal_narrative(cache, int(session_id), sid, revisions[sid], score_revision,
+                                        allow_stale=False)["narrative"] is not None
         if hit:
             cache_hits += 1
             continue

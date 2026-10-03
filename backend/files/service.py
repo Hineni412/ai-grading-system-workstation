@@ -34,6 +34,10 @@ RETAINED_REPORT_TYPES = frozenset({"personal_analysis_html"})
 
 
 JOB_FILE_RULES = {
+    "personal_report_bundle": JobFileRule(
+        result_field="file_path", allowed_suffixes=frozenset({".html", ".zip"}),
+        root_name="reports_dir", data_root_depth=1, consume_after_download=True,
+    ),
     "wrong_question_export": JobFileRule(
         result_field="file_path", allowed_suffixes=frozenset({".docx", ".zip"}),
         root_name="reports_dir", data_root_depth=1, consume_after_download=True,

@@ -311,7 +311,7 @@ def build_cause_inputs(
     evidence: dict[str, dict[str, dict[str, Any]]] = {}
     for student in data.students:
         for record in student.records:
-            if record.lost:
+            if record.lost and not (getattr(record, "teacher_step_reviewed", False) and not record.failed_steps):
                 item = _cause_evidence(student, record, data, by_step=by_step)
                 evidence.setdefault(record.question_id, {})[_evidence_key(item)] = item
 
@@ -1198,23 +1198,22 @@ def run_cause_analysis(
             "status": "failed" if failed else "ready"}
 
 
-def student_error_map(
-    state: Any, student: Any, sources: list[dict[str, Any]], data: Any,
-) -> dict[str, list[dict[str, Any]]]:
-    """{question_id: [错因记录]}：输入指纹与证据哈希都一致才返回，过期题不展示。
-
-    v3 兼容输入（按步骤拆分前）按其当时的口径计算证据哈希。
-    """
-    envelopes = (state or {}).get("error_records") or {}
+def _prepare_error_sources(
+    state: Any, sources: list[dict[str, Any]],
+) -> tuple[dict[str, str], dict[str, bool]]:
+    """整场来源只校验一次；不缓存学生证据，也不跨请求复用。"""
     saved_questions = ((state or {}).get("cause_analysis") or {}).get("questions") or {}
     fingerprints: dict[str, str] = {}
     by_step: dict[str, bool] = {}
     for source in sources:
         saved = saved_questions.get(source["question_id"]) or {}
-        pre_step = (saved.get("version") == CAUSE_PRE_STEP_VERSION
-                    and cause_input_matches(saved, _pre_step_source(source))
-                    and not cause_input_matches(saved, source))
-        source = _pre_step_source(source) if pre_step else source
+        pre_step = False
+        if saved.get("version") == CAUSE_PRE_STEP_VERSION:
+            previous_source = _pre_step_source(source)
+            pre_step = (cause_input_matches(saved, previous_source)
+                        and not cause_input_matches(saved, source))
+            if pre_step:
+                source = previous_source
         by_step[source["question_id"]] = not pre_step
         fingerprints[source["question_id"]] = (
             (saved.get("input_fingerprint")
@@ -1222,6 +1221,24 @@ def student_error_map(
             if cause_input_matches(saved, source)
             else _cause_input_fingerprint(source)
         )
+    return fingerprints, by_step
+
+
+def student_error_map(
+    state: Any, student: Any, sources: list[dict[str, Any]], data: Any,
+    *, _prepared: tuple[dict[str, str], dict[str, bool], dict] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """{question_id: [错因记录]}：输入指纹与证据哈希都一致才返回，过期题不展示。
+
+    v3 兼容输入（按步骤拆分前）按其当时的口径计算证据哈希。
+    同一整场读取复用来源校验和记录索引；每名学生的证据仍独立校验。
+    """
+    envelopes = (state or {}).get("error_records") or {}
+    if _prepared is None:
+        fingerprints, by_step = _prepare_error_sources(state, sources)
+        record_index: dict = {}
+    else:
+        fingerprints, by_step, record_index = _prepared
     out: dict[str, list[dict[str, Any]]] = {}
     for record in student.records:
         if not record.lost:
@@ -1231,10 +1248,18 @@ def student_error_map(
             continue
         digest = _evidence_hash(_evidence_key(
             _cause_evidence(student, record, data, by_step=by_step.get(record.question_id, True))))
-        rows = [
-            dict(row) for row in envelope.get("records") or []
-            if row.get("student_id") == student.student_id and row.get("evidence_hash") == digest
-        ]
+        if record.question_id not in record_index:
+            indexed: dict = {}
+            for row in envelope.get("records") or []:
+                key = (row.get("student_id"), row.get("evidence_hash"))
+                try:
+                    indexed.setdefault(key, []).append(row)
+                except TypeError:
+                    # JSON 容器不能匹配整数学生标识或字符串证据哈希。
+                    continue
+            record_index[record.question_id] = indexed
+        rows = [dict(row) for row in record_index[record.question_id].get(
+            (student.student_id, digest), ())]
         if rows:
             out[record.question_id] = rows
     return out
@@ -1279,9 +1304,10 @@ def session_error_records(
             return {}
         data = assemble_cause_data(db, int(session_id), data_root=data_root)
         sources = build_cause_inputs(data)
+        prepared = (*_prepare_error_sources(state, sources), {})
         out: dict[int, dict[str, list[dict[str, Any]]]] = {}
         for student in data.students:
-            mapped = student_error_map(state, student, sources, data)
+            mapped = student_error_map(state, student, sources, data, _prepared=prepared)
             if mapped:
                 out[int(student.student_id)] = mapped
         _enrich_error_record_skills(data, out, db)

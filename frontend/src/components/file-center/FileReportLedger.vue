@@ -22,8 +22,11 @@ defineProps<{
   historyOpen: Set<ReportType>
   isPopover: boolean
   originalsAvailable?: boolean
+  personalSummary?: string
+  personalGenerationCount?: number
 }>()
 const emit = defineEmits<{
+  'export-personal': []
   'generate': [type: ReportType, forceRegenerate: boolean]
   'cancel-job': [jobId: number]
   'download': [job: ReportHistoryJob]
@@ -75,6 +78,7 @@ const fileCenter = useFileCenterStore()
           @click="emit('open-review-notes')"
         >在成绩中心查看</button>
       </p>
+      <p v-if="row.type === 'personal_analysis_html'" class="file-center__row-notes">{{ personalSummary }}</p>
       <p v-if="row.type === 'annotated_original_pdf' && originalsAvailable === false" class="file-center__row-notes">原卷已清理，不能再导出批注原卷。</p>
       <div class="file-center__row-actions">
         <AppButton variant="danger"
@@ -91,6 +95,11 @@ const fileCenter = useFileCenterStore()
         >
           下载
         </AppButton>
+        <template v-if="row.type === 'personal_analysis_html'">
+          <AppButton v-if="personalGenerationCount" variant="secondary" data-testid="generate-personal_analysis_html" :disabled="!!row.liveJob" @click="emit('generate', row.type, false)">生成（{{ personalGenerationCount }} 人）</AppButton>
+          <AppButton variant="primary" data-testid="export-personal-reports" @click="emit('export-personal')">导出…</AppButton>
+        </template>
+        <template v-else>
         <AppButton variant="secondary"
           v-if="row.latest && reportDisplayStatus(row.latest) === 'available'"
           :data-testid="`regenerate-${row.type}`"
@@ -115,6 +124,7 @@ const fileCenter = useFileCenterStore()
         >
           {{ row.latest ? '重新生成' : '生成' }}
         </AppButton>
+        </template>
         <AppButton variant="ghost"
           v-if="row.type === 'score_excel'"
           data-testid="configure-score-excel"
@@ -158,9 +168,9 @@ const fileCenter = useFileCenterStore()
           </AppButton>
           <AppButton variant="ghost"
             v-else-if="
-              reportDisplayStatus(job) === 'expired'
+              row.type !== 'personal_analysis_html' && (reportDisplayStatus(job) === 'expired'
               || reportDisplayStatus(job) === 'unavailable'
-              || reportDisplayStatus(job) === 'stale'
+              || reportDisplayStatus(job) === 'stale')
             "
             :disabled="row.type === 'annotated_original_pdf' && originalsAvailable === false"
             @click="emit('generate', job.payload.report_type as ReportType, true)"
@@ -221,6 +231,7 @@ const fileCenter = useFileCenterStore()
           </td>
           <td>{{ row.latest ? formatTime(row.latest.finished_at ?? row.latest.created_at) : '—' }}</td>
           <td class="file-report-table__actions">
+            <p v-if="row.type === 'personal_analysis_html'">{{ personalSummary }}</p>
             <AppButton variant="danger"
               v-if="row.liveJob && !TERMINAL_JOB_STATUSES.has(row.liveJob.status)"
               :data-testid="`cancel-job-${row.liveJob.id}`"
@@ -235,6 +246,11 @@ const fileCenter = useFileCenterStore()
             >
               下载
             </AppButton>
+            <template v-if="row.type === 'personal_analysis_html'">
+              <AppButton v-if="personalGenerationCount" variant="secondary" data-testid="generate-personal_analysis_html" :disabled="!!row.liveJob" @click="emit('generate', row.type, false)">生成（{{ personalGenerationCount }} 人）</AppButton>
+              <AppButton variant="primary" data-testid="export-personal-reports" @click="emit('export-personal')">导出…</AppButton>
+            </template>
+            <template v-else>
             <AppButton variant="secondary"
               v-if="row.latest && reportDisplayStatus(row.latest) === 'available'"
               :data-testid="`regenerate-${row.type}`"
@@ -259,6 +275,7 @@ const fileCenter = useFileCenterStore()
             >
               {{ row.latest ? '重新生成' : '生成' }}
             </AppButton>
+            </template>
             <AppButton variant="ghost"
               v-if="row.type === 'score_excel'"
               data-testid="configure-score-excel"
@@ -305,9 +322,9 @@ const fileCenter = useFileCenterStore()
                 </AppButton>
                 <AppButton variant="ghost"
                   v-else-if="
-                    reportDisplayStatus(job) === 'expired'
+                    row.type !== 'personal_analysis_html' && (reportDisplayStatus(job) === 'expired'
                     || reportDisplayStatus(job) === 'unavailable'
-                    || reportDisplayStatus(job) === 'stale'
+                    || reportDisplayStatus(job) === 'stale')
                   "
                   :disabled="row.type === 'annotated_original_pdf' && originalsAvailable === false"
                   @click="emit('generate', job.payload.report_type as ReportType, true)"

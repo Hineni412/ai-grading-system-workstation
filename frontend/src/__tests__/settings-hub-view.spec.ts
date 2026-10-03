@@ -66,16 +66,43 @@ afterEach(() => {
 })
 
 describe('SettingsHubView', () => {
-  it('defaults to students and places four tabs in the title row', async () => {
+  it('defaults to students and places three tabs in the title row', async () => {
     const { host, router } = await mountAt('/settings')
     await vi.waitFor(() => expect(router.currentRoute.value.query.section).toBe('students'))
-    expect([...host.querySelectorAll('.page-tabs button')].map(button => button.textContent)).toEqual(['学生名单', 'AI 服务', '数据与空间', '系统状态'])
+    expect([...host.querySelectorAll('.page-tabs button')].map(button => button.textContent)).toEqual(['学生名单', 'AI 服务', '数据与空间'])
     expect(host.querySelector('.page-header .page-tabs')).not.toBeNull()
   })
-  it.each([['backup', 'data'], ['maintenance', 'system'], ['models', 'ai'], ['ai-trace', 'system']])('maps old %s to %s', async (old, section) => {
-    const { router } = await mountAt(`/settings?section=${old}`)
+  it.each([['backup', 'data'], ['maintenance', 'students'], ['system', 'students'], ['models', 'ai'], ['ai-trace', 'ai']])('maps old %s to %s', async (old, section) => {
+    const { host, router } = await mountAt(`/settings?section=${old}`)
     await vi.waitFor(() => expect(router.currentRoute.value.query.section).toBe(section))
     expect(router.currentRoute.value.hash).toBe(old === 'ai-trace' ? '#ai-call-log' : '')
+    expect(host.textContent).not.toContain('系统状态')
+    expect(opsApi.getSelfCheck).not.toHaveBeenCalled()
+  })
+  it('falls back to students when the remembered tab was removed', async () => {
+    localStorage.setItem('ai-grading:settings-section:v2', 'system')
+    const { router } = await mountAt('/settings')
+    await vi.waitFor(() => expect(router.currentRoute.value.query.section).toBe('students'))
+    expect(opsApi.getSelfCheck).not.toHaveBeenCalled()
+  })
+  it('loads AI call records only when their disclosure is opened', async () => {
+    const { host } = await mountAt('/settings?section=ai')
+    await vi.waitFor(() => expect(host.querySelector('#ai-call-log')).not.toBeNull(), { timeout: 5000 })
+    const disclosure = host.querySelector<HTMLDetailsElement>('#ai-call-log')!
+    expect(disclosure.open).toBe(false)
+    expect(aiDiagnosticsApi.list).not.toHaveBeenCalled()
+    disclosure.open = true
+    disclosure.dispatchEvent(new Event('toggle'))
+    await vi.waitFor(() => expect(aiDiagnosticsApi.list).toHaveBeenCalledOnce())
+    expect(host.querySelector('.ai-diagnostics')).not.toBeNull()
+    expect(opsApi.getSelfCheck).not.toHaveBeenCalled()
+  })
+  it.each(['ai', 'system', 'maintenance'])('opens AI call records from a %s bookmark', async section => {
+    const { host, router } = await mountAt(`/settings?section=${section}#ai-call-log`)
+    await vi.waitFor(() => expect(host.querySelector<HTMLDetailsElement>('#ai-call-log')?.open).toBe(true))
+    expect(router.currentRoute.value.query.section).toBe('ai')
+    await vi.waitFor(() => expect(aiDiagnosticsApi.list).toHaveBeenCalledOnce())
+    expect(opsApi.getSelfCheck).not.toHaveBeenCalled()
   })
   it('keeps an unsaved service draft when leaving is declined', async () => {
     const { host, router } = await mountAt('/settings?section=ai')

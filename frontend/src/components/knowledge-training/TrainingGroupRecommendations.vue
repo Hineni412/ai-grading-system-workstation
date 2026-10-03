@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { knowledgeLeafLabel } from '../../api/question-bank'
 import { trainingApi, type TrainingDiagnosis, type TrainingGroup, type TrainingGrouping, type TrainingGroupingRequest,
   type TrainingStudentScopeRequest, type TrainingExamScopeRequest } from '../../api/training'
@@ -25,9 +25,10 @@ const emit = defineEmits<{
 }>()
 const training = useTrainingStore()
 const sortMode = defineModel<ChapterGroupSort>('sortMode', { default: 'size' })
-const result = ref<TrainingGrouping | null>(null)
-const checked = ref<TrainingGroup | null>(null)
-const latestDiagnosis = ref<TrainingDiagnosis | null>(null)
+// These are complete read snapshots. Editors keep their own mutable arrays.
+const result = shallowRef<TrainingGrouping | null>(null)
+const checked = shallowRef<TrainingGroup | null>(null)
+const latestDiagnosis = shallowRef<TrainingDiagnosis | null>(null)
 const editing = ref(false)
 const memberIds = ref<string[]>([])
 const targetKeys = ref<string[]>([])

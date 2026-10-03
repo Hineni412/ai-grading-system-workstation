@@ -139,6 +139,8 @@ class StudentQuestionRecord:
     teacher_comment: str = ""
     # 独立扣分的评分步骤（沿用前步错误的不在列）；教师锁定时取自教师逐步改分。
     failed_steps: list[dict[str, Any]] = field(default_factory=list)
+    # 新教师分步记录即使没有可整理错因，也不能回退为整题 AI 错因。
+    teacher_step_reviewed: bool = False
 
     @property
     def lost(self) -> bool:
@@ -181,7 +183,7 @@ class SessionAnalysisData:
     small_sample: bool
     questions: list[QuestionInfo]
     students: list[StudentReportData]
-    skipped: list[dict[str, str]]
+    skipped: list[dict[str, Any]]
     stats: dict[str, Any]
     knowledge_backfill: dict[str, list[dict[str, str]]]
     attendance_by_class: dict[str, dict[str, int]] = field(default_factory=dict)
@@ -249,7 +251,7 @@ def assemble_session_analysis(
         for lock in snapshot.locks
     }
     students: list[StudentReportData] = []
-    skipped: list[dict[str, str]] = []
+    skipped: list[dict[str, Any]] = []
     covered_identities: set[tuple[str, str]] = set()
     for result in snapshot.results:
         identity = (
@@ -258,6 +260,7 @@ def assemble_session_analysis(
         )
         covered_identities.add(identity)
         label = {
+            "student_id": int(result.get("student_id") or 0),
             "class_name": identity[1],
             "student_code": identity[0],
             "student_name": str(result.get("student_name") or ""),
@@ -377,6 +380,7 @@ def assemble_session_analysis(
                     "class_name": identity[1],
                     "student_code": identity[0],
                     "student_name": str(row.get("student_name") or ""),
+                    "student_id": int(row.get("student_id") or 0),
                     "reason": attendance_labels[status],
                 }
             )
@@ -804,6 +808,11 @@ def _independently_failed_steps(assessments: Any) -> list[dict[str, Any]]:
             continue
         if item.get("carried_error_from"):
             continue
+        if item.get("deduction_source") == "teacher":
+            note = str(item.get("teacher_note") or "").strip()
+            if not note:
+                continue
+            item = {**item, "reason": note}
         entry = {
             key: value
             for key in _STEP_UNIT_FIELDS
@@ -823,28 +832,35 @@ def _teacher_failed_steps(
     rubric: Any,
     question_id: str,
 ) -> list[dict[str, Any]]:
+    records = _validated_teacher_steps(review, lock, score, rubric, question_id)
+    return _independently_failed_steps(records)
+
+
+def _validated_teacher_steps(
+    review: Any, lock: Any, score: float, rubric: Any, question_id: str,
+) -> list[dict[str, Any]] | None:
     """教师逐步改分记录仅在对应当前最终分锁时可信；任一校验失败即不使用。"""
     from solution_answer_guard import rubric_scoring_unit_steps
 
     if not isinstance(review, dict) or not isinstance(lock, dict):
-        return []
+        return None
     if (
         review.get("revision") != lock.get("revision")
         or review.get("scan_batch_id") != lock.get("scan_batch_id")
     ):
-        return []
+        return None
     records = review.get("steps")
     expected = rubric_scoring_unit_steps(
         rubric if isinstance(rubric, dict) else {}, question_id
     )
     if not isinstance(records, list) or not expected or len(records) != len(expected):
-        return []
+        return None
     try:
         locked_score = float(review.get("score_awarded"))
     except (TypeError, ValueError):
-        return []
+        return None
     if locked_score != score:
-        return []
+        return None
     normalized = []
     for step in expected:
         matches = [
@@ -855,25 +871,25 @@ def _teacher_failed_steps(
             and (not step.get("part_id") or record.get("part_id") == step.get("part_id"))
         ]
         if len(matches) != 1:
-            return []
+            return None
         record = matches[0]
         try:
             awarded = float(record.get("score_awarded"))
             maximum = float(step.get("step_score"))
         except (TypeError, ValueError):
-            return []
+            return None
         if maximum <= 0 or not awarded.is_integer() or awarded < 0 or awarded > maximum:
-            return []
+            return None
         if record.get("max_score") != maximum or set(
             record.get("evidence_point_ids") or []
         ) != set(step.get("evidence_point_ids") or []):
-            return []
+            return None
         normalized.append(
             {**record, "achievement": "full" if awarded == maximum else "none"}
         )
     if sum(float(record["score_awarded"]) for record in normalized) != score:
-        return []
-    return _independently_failed_steps(normalized)
+        return None
+    return normalized
 
 
 def _merge_student_records(
@@ -959,11 +975,13 @@ def _merge_student_records(
         score = min(bucket["score"], max_score) if max_score > 0 else bucket["score"]
         evidence = evidence_by_qid.get(qid, {})
         lock = (teacher_locks or {}).get(qid)
+        teacher_steps = None
         if lock is not None:
             # 教师锁定题不使用 AI 步骤；校验失败的教师步骤按整题处理。
-            failed_steps = _teacher_failed_steps(
+            teacher_steps = _validated_teacher_steps(
                 reviews_by_qid.get(qid), lock, bucket["score"], rubric, qid
             )
+            failed_steps = _independently_failed_steps(teacher_steps)
         else:
             failed_steps = _independently_failed_steps(evidence.get("step_assessments"))
         records.append(
@@ -981,6 +999,10 @@ def _merge_student_records(
                 evidence_steps=_evidence_texts(evidence.get("evidence_steps")),
                 missing_steps=_evidence_texts(evidence.get("missing_steps")),
                 failed_steps=failed_steps,
+                teacher_step_reviewed=bool(teacher_steps) and all(
+                    step.get("deduction_source") in {"none", "ai", "teacher"}
+                    for step in teacher_steps
+                ),
             )
         )
     order_index = {

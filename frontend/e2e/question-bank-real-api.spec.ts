@@ -122,7 +122,7 @@ test('real API skill, paper, todo and shared basket flows preserve guarded edits
     await page.screenshot({ path: `test-results/question-bank-paper-${width}.png` })
   }
   await page.goto('/question-assembly?mode=browse')
-  await expect(page.locator('.page-tabs .is-active')).toHaveText('试卷篮与导出')
+  await expect(page.locator('.page-tabs .is-active')).toHaveText('整理与导出')
   await expect(page.locator('.page-tabs button')).toHaveCount(2)
   await expect(page.locator('.assembly-editor__workspace')).toBeVisible()
   for (const width of [1440, 1280]) {

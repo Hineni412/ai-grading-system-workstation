@@ -39,6 +39,10 @@ from question_bank.document_pipeline import (
     rich_block_text,
 )
 from question_bank.document_pipeline.contracts import math_expression_from_payload
+from question_bank.services.rich_content_service import (
+    strip_question_source_score,
+    strip_question_source_score_blocks,
+)
 
 LAYOUT_VERSION = "personalized-paper-school-a4-v3"
 PAGE_IDENTITY_VERSION = "P4P2"
@@ -258,7 +262,10 @@ def render_review_docx(
         question_text = str(context.get("question_text") or "")
         rich_result = renderer.add_rich_blocks(
             document,
-            _mappings(question.get("rich_question_blocks")),
+            strip_question_source_score_blocks(
+                _mappings(question.get("rich_question_blocks")),
+                question_number=str(context.get("question_number") or ""),
+            ),
             strip_leading_number=True,
             inline_prefix=inline_prefix,
             compact_standalone_images_with_text=(
@@ -302,7 +309,10 @@ def render_review_docx(
                 asdict(fallback)
                 for fallback in renderer.add_to_paragraph(
                     body,
-                    str(context.get("question_text") or ""),
+                    strip_question_source_score(
+                        str(context.get("question_text") or ""),
+                        question_number=str(context.get("question_number") or ""),
+                    ),
                     question_id=str(
                         question.get("question_id")
                         or item.get("question_id")
@@ -635,15 +645,21 @@ def inspect_docx(
     _assert_ordered_text(normalized, task_item_codes)
     question_texts = []
     for question in question_snapshots:
+        context = _mapping(question.get("tagging_context"))
         rich_text = rich_block_text(
-            _mappings(question.get("rich_question_blocks")),
+            strip_question_source_score_blocks(
+                _mappings(question.get("rich_question_blocks")),
+                question_number=str(context.get("question_number") or ""),
+            ),
             strip_leading_number=True,
         )
-        context = _mapping(question.get("tagging_context"))
         question_texts.append(
             rich_text
             if rich_text is not None
-            else str(context.get("question_text") or "")
+            else strip_question_source_score(
+                str(context.get("question_text") or ""),
+                question_number=str(context.get("question_number") or ""),
+            )
         )
     _assert_ordered_text(normalized, question_texts)
 

@@ -1,4 +1,4 @@
--- 命题练习（authoring practice）阶段 A1：教师的拆解/改编命题作品与版本，
+-- 命题练习（authoring practice）：教师的拆解/改编命题作品与版本，
 -- 独立于题库正文。作品只冻结母题快照，不回写 questions/question_tags 等
 -- 题库表，也不进入题库列表、组卷候选、训练推荐或掌握度。
 -- authoring_reviews / authoring_assets 供后续 AI 评审阶段使用，本阶段仅建表。

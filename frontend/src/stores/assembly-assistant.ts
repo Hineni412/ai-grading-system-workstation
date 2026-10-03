@@ -40,6 +40,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   let scheduled: ReturnType<typeof setTimeout> | undefined
   let serial = 0
   let controller: AbortController | null = null
+  let lastTargetSearch = -Infinity
   const requestKey = computed(() => JSON.stringify(filters))
   const isStale = computed(() => Boolean(result.value) && appliedKey.value !== requestKey.value)
   const canSearch = computed(() => Boolean((filters.class_ids?.length || filters.class_id) && filters.curriculum_volume_id) && state.value !== 'loading')
@@ -119,7 +120,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     filters.target_keys = [key]
     const cached = resultCache.get(`${filterSignature()}|${key}`)
     if (cached) void applyCached(cached)
-    else scheduleSearch()
+    else scheduleSearch(Math.max(0, 150 - (performance.now() - lastTargetSearch)), true)
   }
 
   function moveSelection(delta: number): void {
@@ -134,7 +135,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     return candidateCounts.get(`${filterSignature()}|${key}`) ?? null
   }
 
-  function scheduleSearch(): void {
+  function scheduleSearch(delay = 250, targetChange = false): void {
     if (!result.value) return
     cancelScheduled()
     controller?.abort()
@@ -142,7 +143,10 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     state.value = 'ready'
     loadingMore.value = false
     waiting.value = true
-    scheduled = setTimeout(() => { void search(true) }, 250)
+    scheduled = setTimeout(() => {
+      if (targetChange) lastTargetSearch = performance.now()
+      void search(true)
+    }, delay)
   }
 
   async function resolvePreviews(ids: number[], signal: AbortSignal): Promise<AssemblyQuestion[]> {
@@ -174,7 +178,11 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     controller?.abort()
     controller = new AbortController()
     const signal = controller.signal
-    if (!reusePreviews) previewCache.clear()
+    if (!reusePreviews) {
+      previewCache.clear()
+      resultCache.clear()
+      candidateCounts.clear()
+    }
     loadingMore.value = false
     const body = JSON.parse(requestKey.value) as AssemblyAssistantRequest
     const key = JSON.stringify(body)

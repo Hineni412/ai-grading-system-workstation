@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
+import pickle
 import re
 import sqlite3
 import stat
@@ -12,10 +14,11 @@ import time
 import unicodedata
 from collections import OrderedDict
 from collections.abc import Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, BinaryIO
 
@@ -44,7 +47,11 @@ from question_bank.services.question_revision import (
     question_revision,
     question_revisions,
 )
-from question_bank.services.rich_content_service import clean_question_blocks
+from question_bank.services.rich_content_service import (
+    clean_question_blocks,
+    strip_question_source_score,
+    strip_question_source_score_blocks,
+)
 from question_bank.services.similar_question_ranker import (
     SimilarQuestionIndex,
 )
@@ -449,7 +456,11 @@ _PUBLIC_TAG_TYPES = tuple(
 _RICH_CONTENT_VERSION = 3
 _CURRENT_PREVIEW_ORDER_SQL = "updated_at DESC, id DESC"
 _READ_RESULT_CACHE_LIMIT = 48
+_BROWSE_CACHE_LIMITS = {"skill_snapshot": 2, "skill_inventory": 2, "skill_page": 4,
+                        "skill_index": 4, "skill_questions": 8, "facets": 4, "papers": 2}
 _READ_RESULT_CACHE_LOCK = threading.Lock()
+_SKILL_SNAPSHOT_LOCK = threading.Lock()
+_SKILL_LOCAL_CACHE_MAX_BYTES = 16 * 1024 * 1024
 _READ_RESULT_CACHE: OrderedDict[tuple[object, ...], object] = OrderedDict()
 _CACHE_MISS = object()
 # An index is shared across different target questions; no database-side index
@@ -496,6 +507,7 @@ class _ActiveQuestionReadScope:
     identities: dict[str, dict[int, str]] = field(default_factory=dict)
     duplicate_groups: dict[int, list[int]] = field(default_factory=dict)
     skill_snapshot: dict[str, Any] | None = None
+    skill_inventory: dict[str, Any] | None = None
     generation: tuple[object, ...] | None = None
 
 
@@ -1011,6 +1023,8 @@ def _source_generation_token(db_path: Path) -> tuple[object, ...] | None:
         if not stat.S_ISREG(info.st_mode):
             return None
         identity = (
+            int(info.st_dev),
+            int(info.st_ino),
             int(info.st_size),
             int(info.st_mtime_ns),
             int(info.st_ctime_ns),
@@ -1046,18 +1060,27 @@ def _taxonomy_generation_token() -> tuple[object, ...]:
     return tuple(token)
 
 
-def _read_result_cache_get(key: tuple[object, ...]) -> object:
+def _read_result_cache_get(key: tuple[object, ...], *, shared: bool = False) -> object:
     with _READ_RESULT_CACHE_LOCK:
         value = _READ_RESULT_CACHE.get(key, _CACHE_MISS)
         if value is _CACHE_MISS:
             return _CACHE_MISS
         _READ_RESULT_CACHE.move_to_end(key)
-        return deepcopy(value)
+    return value if shared else deepcopy(value)
+
+
+def _read_cache_group(key: tuple[object, ...]) -> object:
+    if key[0] == "questions" and key[-1].include_skills:
+        return "skill_questions"
+    return key[0]
 
 
 def _read_result_cache_put(key: tuple[object, ...], value: object) -> None:
     with _READ_RESULT_CACHE_LOCK:
-        _READ_RESULT_CACHE[key] = deepcopy(value)
+        # Skill snapshots are internal, read-only projections. Public results
+        # still receive independent copies; copying the whole bank per filter
+        # request would defeat the shared projection.
+        _READ_RESULT_CACHE[key] = value if key[0] in {"skill_snapshot", "skill_inventory", "skill_page"} else deepcopy(value)
         _READ_RESULT_CACHE.move_to_end(key)
         if key[0] == "collapsed_ids":
             # Group keys contain a candidate set, not just a 20-row page.
@@ -1066,8 +1089,16 @@ def _read_result_cache_put(key: tuple[object, ...], value: object) -> None:
             group_keys = [candidate for candidate in _READ_RESULT_CACHE if candidate[0] == "collapsed_ids"]
             for stale in group_keys[:-8]:
                 del _READ_RESULT_CACHE[stale]
+        group = _read_cache_group(key)
+        if group in _BROWSE_CACHE_LIMITS:
+            group_keys = [candidate for candidate in _READ_RESULT_CACHE if _read_cache_group(candidate) == group]
+            for stale in group_keys[:-_BROWSE_CACHE_LIMITS[group]]:
+                del _READ_RESULT_CACHE[stale]
         while len(_READ_RESULT_CACHE) > _READ_RESULT_CACHE_LIMIT:
-            _READ_RESULT_CACHE.popitem(last=False)
+            # Browsing many pages/filters must not evict the expensive bank
+            # projection and force thousands of source checks on refresh.
+            stale = next(candidate for candidate in _READ_RESULT_CACHE if _read_cache_group(candidate) not in _BROWSE_CACHE_LIMITS)
+            del _READ_RESULT_CACHE[stale]
 
 
 def _rich_content_cache_get(
@@ -1092,10 +1123,53 @@ def _rich_content_cache_put(
             _RICH_CONTENT_CACHE.popitem(last=False)
 
 
+@lru_cache(maxsize=1)
+def _skill_cache_calculation_revision() -> str:
+    # On restart, changed source or catalog files invalidate the derived data.
+    root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256(b"question-bank-skill-read-v1")
+    for source in sorted([*root.rglob("*.py"), *(root / "taxonomy" / "catalogs").glob("*.json")]):
+        digest.update(str(source.relative_to(root)).encode("utf-8"))
+        digest.update(source.read_bytes())
+    digest.update((root.parent / "integration" / "data_generation.py").read_bytes())
+    return digest.hexdigest()
+
+
+def _skill_asset_manifest(root: Path) -> dict[str, tuple | None] | None:
+    """Scan metadata, never bodies; reject links and unstable/unreadable trees."""
+    from question_bank.services.file_cache import _file_read_identity
+    assets = root / "question_bank"
+    # Only these trees participate in rich input and fallback image searches.
+    # Other bank directories (imports/exports) are not source dependencies.
+    manifest = {}
+    pending = [assets / name for name in ("rich_content", "extracted_images", "previews")]
+    try:
+        root_identity = _file_read_identity(assets)
+        if root_identity == ("reparse",):
+            return None
+        # A new unrelated export changes directory timestamps, not inputs.
+        # Keep its identity to detect root replacement; scan source trees fully.
+        manifest[str(assets)] = root_identity[:3] if root_identity is not None else None
+        while pending:
+            path = pending.pop()
+            info = _file_read_identity(path)
+            if info == ("reparse",):
+                return None
+            manifest[str(path)] = info
+            if info is not None and stat.S_ISDIR(info[0]):
+                with os.scandir(path) as entries:
+                    pending.extend(Path(entry.path) for entry in entries)
+    except OSError:
+        return None
+    return manifest
+
+
 class QuestionBankReadService:
-    def __init__(self, db_path: Path, *, data_root: Path | None = None) -> None:
+    def __init__(self, db_path: Path, *, data_root: Path | None = None,
+                 persist_skill_snapshots: bool = True) -> None:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root) if data_root is not None else None
+        self.persist_skill_snapshots = persist_skill_snapshots
         self._cache_data_root = (
             str(self.data_root.resolve(strict=False))
             if self.data_root is not None
@@ -1121,27 +1195,148 @@ class QuestionBankReadService:
             return active.current_knowledge
         return None
 
-    def _skill_snapshot(self) -> dict[str, Any]:
-        from question_bank.services.question_skill_index import build_skill_snapshot
+    def _skill_snapshot(self, *, volume_id: str | None = None,
+                        question_ids: tuple[int, ...] | None = None) -> dict[str, Any]:
+        # A page can request papers, counts and questions concurrently. Only
+        # one caller prepares a missing projection; waiters reuse its result.
+        with _SKILL_SNAPSHOT_LOCK:
+            return self._load_skill_snapshot(volume_id=volume_id, question_ids=question_ids)
+
+    def _load_skill_snapshot(self, *, volume_id: str | None = None,
+                             question_ids: tuple[int, ...] | None = None) -> dict[str, Any]:
+        from question_bank.services.question_skill_index import build_skill_snapshot, load_skill_inventory
 
         active = _ACTIVE_READ_SCOPE.get()
         if active is not None and active.skill_snapshot is not None:
             return active.skill_snapshot
         generation = active.generation if active is not None else _source_generation_token(self.db_path)
         key = ("skill_snapshot", generation, self._cache_data_root)
-        cached = _read_result_cache_get(key) if generation is not None and generation == _source_generation_token(self.db_path) else _CACHE_MISS
+        cached = _read_result_cache_get(key, shared=True) if generation is not None and generation == _source_generation_token(self.db_path) else _CACHE_MISS
         if cached is not _CACHE_MISS:
             if active is not None:
                 active.skill_snapshot = cached
             return cached
         with _read_connection(self.db_path) as conn:
-            snapshot = build_skill_snapshot(conn, self.db_path, self.data_root)
             scope = _ACTIVE_READ_SCOPE.get()
-            if scope is not None:
+            inventory = scope.skill_inventory if scope is not None else None
+            inventory_key = ("skill_inventory", generation, self._cache_data_root)
+            if inventory is None:
+                inventory = _read_result_cache_get(inventory_key, shared=True) if generation is not None else _CACHE_MISS
+                if inventory is _CACHE_MISS:
+                    inventory = load_skill_inventory(conn)
+                    if generation is not None and generation == _source_generation_token(self.db_path):
+                        _read_result_cache_put(inventory_key, inventory)
+                if scope is not None:
+                    scope.skill_inventory = inventory
+            selected = (set(inventory["volumes"].get(volume_id, ())) if volume_id is not None
+                        else set(question_ids) if question_ids is not None else set(inventory["questions"]))
+            selected.intersection_update(inventory["questions"])
+            full = selected == set(inventory["questions"])
+            ids = None if full else tuple(sorted(selected))
+            if not full:
+                key = ("skill_snapshot" if volume_id is not None else "skill_page",
+                       generation, self._cache_data_root, ids)
+                cached = _read_result_cache_get(key, shared=True) if generation is not None else _CACHE_MISS
+                if cached is not _CACHE_MISS:
+                    return cached
+            # The full projection is already shared in memory. Persist only
+            # that existing projection, with its exact source dependencies.
+            manifest = (_skill_asset_manifest(Path(self._cache_data_root))
+                        if full and self.persist_skill_snapshots and self._cache_data_root and generation is not None else None)
+            snapshot = self._read_local_skill_snapshot(generation, inventory, manifest, connection=conn) if manifest is not None else None
+            if snapshot is None:
+                from question_bank.services.file_cache import capture_file_reads
+                with capture_file_reads() if manifest is not None else nullcontext(None) as trace:
+                    snapshot = build_skill_snapshot(conn, self.db_path, self.data_root,
+                                                    inventory=inventory, question_ids=ids)
+                if manifest is not None and trace.usable:
+                    self._save_local_skill_snapshot(generation, manifest, trace.paths, snapshot, connection=conn)
+            if scope is not None and full:
                 scope.skill_snapshot = snapshot
         if generation is not None and generation == _source_generation_token(self.db_path):
             _read_result_cache_put(key, snapshot)
         return snapshot
+
+    def _local_skill_path(self) -> Path:
+        return Path(self._cache_data_root) / "cache" / "question_bank_skills.cache"
+
+    def _skill_dependencies_current(self, dependencies: dict) -> bool:
+        from question_bank.services.file_cache import _file_read_identity
+        assets = Path(self._cache_data_root) / "question_bank"
+        source_trees = tuple(assets / name for name in ("rich_content", "extracted_images", "previews"))
+        for name, expected in dependencies.items():
+            path = Path(name)
+            # Existing material outside the bank, or any reparse point, uses
+            # the full reader. Missing remapping candidates remain tracked.
+            if expected == ("reparse",) or (expected is not None and not any(path.is_relative_to(tree) for tree in source_trees)):
+                return False
+            if _file_read_identity(path) != expected:
+                return False
+        return True
+
+    def _read_local_skill_snapshot(self, generation, inventory, manifest, *, connection):
+        try:
+            path = self._local_skill_path()
+            with path.open("rb") as saved:
+                encoded = saved.read(_SKILL_LOCAL_CACHE_MAX_BYTES + 1)
+            if len(encoded) > _SKILL_LOCAL_CACHE_MAX_BYTES:
+                return None
+            entry = pickle.loads(encoded)
+            if (entry["calculation"] != _skill_cache_calculation_revision()
+                    or entry["manifest"] != manifest or not self._skill_dependencies_current(entry["dependencies"])
+                    or hashlib.sha256(entry["payload"]).hexdigest() != entry["digest"]):
+                return None
+            if entry["generation"] != generation:
+                from integration.data_generation import database_content_revision
+                if entry["database_revision"] != database_content_revision(self.db_path, connection):
+                    return None
+            snapshot = pickle.loads(entry["payload"])
+            if (not isinstance(snapshot, dict)
+                    or any(not isinstance(snapshot.get(key), dict) for key in (
+                        "nodes", "questions", "members", "volumes", "by_skill", "by_question",
+                        "point_counts", "topics", "topic_keys", "sections"))
+                    or any(not isinstance(snapshot.get(key), set) for key in ("no_usable", "unlinked"))):
+                return None
+            if any(snapshot[key] != inventory[key] for key in ("release", "nodes", "questions", "members", "volumes")):
+                return None
+            if generation != _source_generation_token(self.db_path) or manifest != _skill_asset_manifest(Path(self._cache_data_root)):
+                return None
+            return snapshot
+        except (OSError, sqlite3.Error, pickle.PickleError, EOFError, KeyError, TypeError, ValueError, AttributeError, ImportError):
+            return None
+
+    def _save_local_skill_snapshot(self, generation, manifest, dependencies, snapshot, *, connection) -> None:
+        temporary = None
+        try:
+            if (generation != _source_generation_token(self.db_path)
+                    or manifest != _skill_asset_manifest(Path(self._cache_data_root))
+                    or not self._skill_dependencies_current(dependencies)):
+                return
+            payload = pickle.dumps(snapshot, protocol=pickle.HIGHEST_PROTOCOL)
+            from integration.data_generation import database_content_revision
+            encoded = pickle.dumps({"generation": generation, "calculation": _skill_cache_calculation_revision(),
+                "database_revision": database_content_revision(self.db_path, connection),
+                "manifest": manifest, "dependencies": dependencies, "payload": payload,
+                "digest": hashlib.sha256(payload).hexdigest()}, protocol=pickle.HIGHEST_PROTOCOL)
+            if len(encoded) > _SKILL_LOCAL_CACHE_MAX_BYTES:
+                return
+            if generation != _source_generation_token(self.db_path):
+                return
+            path = self._local_skill_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=path.parent, prefix="skill-read-", suffix=".tmp", delete=False) as saved:
+                temporary = Path(saved.name)
+                saved.write(encoded)
+            from question_bank.atomic_files import replace_with_retry
+            replace_with_retry(temporary, path)
+        except (OSError, sqlite3.Error, pickle.PickleError, TypeError, ValueError, AttributeError, ImportError):
+            pass  # A derived cache cannot fail question browsing or a save.
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def skill_index(self, curriculum_volume_id: str) -> dict[str, Any]:
         from question_bank.services.question_skill_index import skill_index
@@ -1152,7 +1347,7 @@ class QuestionBankReadService:
         if cached is not _CACHE_MISS:
             return cached
         with _read_connection(self.db_path) as conn:
-            snapshot = self._skill_snapshot()
+            snapshot = self._skill_snapshot(volume_id=curriculum_volume_id)
             review_ids = _load_criteria_needs_review_ids(conn, list(snapshot["questions"]))
         result = skill_index(snapshot, curriculum_volume_id, review_ids)
         if generation is not None and generation == _source_generation_token(self.db_path):
@@ -1664,15 +1859,15 @@ class QuestionBankReadService:
             item["criteria_needs_review"] = int(item["id"]) in review_ids
         if filters.include_skills:
             from question_bank.services.question_skill_index import short_node_name
-            snapshot = self._skill_snapshot()
+            snapshot = self._skill_snapshot(question_ids=tuple(int(item["id"]) for item in items))
             for item in items:
                 skills = snapshot["by_question"].get(int(item["id"]), {})
                 item["evidence_point_count"] = snapshot["point_counts"].get(int(item["id"]), 0)
                 item["duplicate_members"] = [members[qid] for qid in groups.get(int(item["id"]), []) if qid in members]
                 item["skills"] = [{"stable_key": key, "display_name": short_node_name(
                     snapshot["nodes"].get(key, {}).get("display_name", key))} for key in skills]
-                item["skill_hits"] = list({hit["point_id"]: hit for key in filters.skill_keys
-                    for hit in skills.get(key, [])}.values())
+                item["skill_hits"] = deepcopy(list({hit["point_id"]: hit for key in filters.skill_keys
+                    for hit in skills.get(key, [])}.values()))
         return QuestionReadPage(
             items=items,
             total=total,
@@ -2337,6 +2532,57 @@ class QuestionBankReadService:
     def get_questions(self, question_ids: Iterable[int]) -> list[dict[str, Any]]:
         return self._get_questions_by_id(question_ids, include_storage_fields=False)
 
+    def task_papers(
+        self, *, question_ids: Iterable[int] = (), paper_ids: Iterable[int] = (),
+    ) -> list[dict[str, Any]]:
+        """Read only identities and titles, without loading question content."""
+        questions = sorted(set(question_ids))
+        papers = sorted(set(paper_ids))
+        if not questions and not papers:
+            return []
+        found: dict[int, dict[str, Any]] = {}
+        with _read_connection(self.db_path) as conn:
+            for ids, by_question in ((papers, False), (questions, True)):
+                for offset in range(0, len(ids), 400):
+                    batch = ids[offset:offset + 400]
+                    placeholders = ','.join('?' for _ in batch)
+                    condition = f"p.id IN ({placeholders})"
+                    if by_question:
+                        condition = (
+                            f"p.id IN (SELECT paper_id FROM questions WHERE id IN ({placeholders}) AND COALESCE(is_deleted, 0) = 0 "
+                            "UNION SELECT occ.paper_id FROM paper_question_occurrences occ "
+                            "JOIN questions q ON q.id = occ.question_id "
+                            f"WHERE occ.question_id IN ({placeholders}) AND COALESCE(q.is_deleted, 0) = 0)"
+                        )
+                    rows = conn.execute(
+                        f"SELECT p.id, p.title FROM papers p WHERE {condition} "
+                        "AND COALESCE(p.import_status, '') <> 'deleted' ORDER BY p.id",
+                        [*batch, *batch] if by_question else batch,
+                    ).fetchall()
+                    for row in rows:
+                        found[int(row['id'])] = {'id': int(row['id']), 'title': row['title']}
+        return [found[key] for key in sorted(found)]
+
+    def import_task_filename(self, request_id: str) -> str | None:
+        """Read import display metadata without creating directories or hashing input."""
+        if self.data_root is None or re.fullmatch(r'[0-9a-f]{32}', request_id) is None:
+            return None
+        try:
+            data_root = self.data_root.resolve()
+            requests_root = (data_root / 'question_bank' / 'import_staging' / 'requests').resolve()
+            requests_root.relative_to(data_root)
+            request_path = (requests_root / f'{request_id}.json').resolve()
+            request_path.relative_to(requests_root)
+            payload = json.loads(request_path.read_text(encoding='utf-8'))
+            if payload.get('request_id') != request_id:
+                return None
+            filename = payload.get('filename')
+            if not isinstance(filename, str) or not filename.strip():
+                return None
+            return PureWindowsPath(PurePosixPath(filename).name).name
+        except (OSError, ValueError, AttributeError):
+            return None
+
     def get_questions_for_export(
         self,
         question_ids: Iterable[int],
@@ -2483,11 +2729,15 @@ class QuestionBankReadService:
             asset_paths=asset_paths,
             revision=revision,
         )
+        item["question_text"] = strip_question_source_score(
+            item["question_text"], question_number=str(row["question_number"] or ""),
+        )
         item["rich_content"] = _public_rich_content(
             question_id,
             rich_payload is not None,
             rich_blocks,
             asset_paths,
+            question_number=str(row["question_number"] or ""),
         )
         item["duplicate_of_question_id"] = None
         item["duplicate_labels_reused"] = False
@@ -3812,6 +4062,8 @@ def _public_rich_content(
     available: bool,
     rich_blocks: list[tuple[str, list[dict[str, Any]]]],
     asset_paths: list[str],
+    *,
+    question_number: str | None = None,
 ) -> dict[str, Any]:
     asset_indexes = {path: index for index, path in enumerate(asset_paths)}
     public: dict[str, Any] = {
@@ -3822,6 +4074,11 @@ def _public_rich_content(
         "answer_blocks": [],
     }
     for key, blocks in rich_blocks:
+        if key == "question_blocks":
+            blocks = strip_question_source_score_blocks(
+                [{**block, "xml": block.get("_xml") or ""} for block in blocks],
+                question_number=question_number,
+            )
         projected_blocks = []
         for block in blocks:
             indexes = [
@@ -3836,7 +4093,7 @@ def _public_rich_content(
                 if path in asset_indexes
             }
             preview_html = block_preview_html(
-                str(block.get("_xml") or ""),
+                str(block.get("xml") or block.get("_xml") or ""),
                 rel_urls,
                 expected_text=block["text"],
             ) or ""

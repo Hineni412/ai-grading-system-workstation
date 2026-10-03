@@ -16,7 +16,6 @@ import StatePanel from '../components/design-system/StatePanel.vue'
 import ReviewBatchWorkspace from '../components/review/ReviewBatchWorkspace.vue'
 import ReviewDeepWorkspace from '../components/review/ReviewDeepWorkspace.vue'
 import ReviewFeedbackToast from '../components/review/ReviewFeedbackToast.vue'
-import ReviewShortcutGuide from '../components/review/ReviewShortcutGuide.vue'
 import ReviewStudentStrip from '../components/review/ReviewStudentStrip.vue'
 import { useReviewAnnotationRetry } from '../components/review/useReviewAnnotationRetry'
 import { useReviewKeyboard } from '../components/review/useReviewKeyboard'
@@ -313,12 +312,12 @@ onBeforeUnmount(() => {
     :class="{ 'review-page--deep': mode === 'deep' }"
     aria-labelledby="review-page-title"
   >
+    <header class="review-page__header">
       <BackButton
         v-if="resultsReturnPath && !deepItem"
         :label="resultsReturnLabel"
         @click="returnToResults"
       />
-    <header class="review-page__header">
       <div class="review-page__header-copy">
         <h1 id="review-page-title" tabindex="-1">{{ resultsReturnPath ? '学生作答' : '人工干预工作台' }}</h1>
         <p v-if="!resultsReturnPath">需要教师处理的答卷优先显示；高置信 AI 结果保留在队列中，也可以随时修改。</p>
@@ -334,7 +333,6 @@ onBeforeUnmount(() => {
       </AppButton>
     </header>
 
-    <ReviewShortcutGuide v-if="mode === 'batch'" />
 
     <FeedbackBanner
       v-if="hasRetainedContentError"
@@ -430,6 +428,8 @@ onBeforeUnmount(() => {
       :filtered-total="reviewStore.filteredItems.length"
       :loading="reviewStore.itemLoadState === 'loading'"
       :submitting="batchSubmitting"
+      :answer-panel-open="answerPanelOpen"
+      @toggle-answer-panel="answerPanelOpen = !answerPanelOpen"
       @select-question="selectQuestion"
       @update-search="reviewStore.setSearch"
       @update-scope="updateScope"

@@ -50,6 +50,7 @@ from backend.api.schemas.question_bank import (
     QuestionTaggingJobRequest,
     QuestionRepairJobRequest,
     QuestionTagWriteRequest,
+    QuestionTaskContext,
     QuestionWriteResponse,
     SimilarQuestionItem,
     SimilarQuestionListResponse,
@@ -175,6 +176,42 @@ QUESTION_SNAPSHOT_ERROR_RESPONSES = {
         "description": "Question bank snapshot is temporarily unavailable",
     }
 }
+
+
+@router.get('/task-context/{job_id}', response_model=QuestionTaskContext)
+def question_task_context(
+    job_id: int,
+    manager: JobManager = Depends(get_job_manager),
+    service: QuestionBankReadService = Depends(get_question_bank_read_service),
+) -> QuestionTaskContext:
+    job = manager.get(job_id)
+    if job is None or job.job_type not in {
+        'question_import', 'tagging_sync', 'question_bank_repair',
+        'criterion_backfill', 'knowledge_link', 'answer_draft',
+    }:
+        raise ApiError(404, 'question_task_not_found', '题库任务不存在', {})
+
+    def ids(value: object) -> list[int]:
+        return [item for item in value if type(item) is int and item > 0] if isinstance(value, list) else []
+
+    paper_ids = ids(job.payload.get('paper_ids')) or ids(job.result.get('imported_paper_ids'))
+    if type(job.payload.get('paper_id')) is int and job.payload['paper_id'] > 0:
+        paper_ids.append(job.payload['paper_id'])
+    question_ids = [] if paper_ids else (
+        ids(job.payload.get('question_ids'))
+        or ids(job.result.get('successful_question_ids')) + ids(job.result.get('failed_question_ids'))
+    )
+    if type(job.payload.get('question_id')) is int and job.payload['question_id'] > 0 and not paper_ids:
+        question_ids.append(job.payload['question_id'])
+    try:
+        papers = service.task_papers(question_ids=question_ids, paper_ids=paper_ids)
+    except QuestionBankSnapshotError as exc:
+        _raise_question_snapshot_api_error(exc)
+    source_filename = None
+    if job.job_type == 'question_import':
+        source_filename = service.import_task_filename(str(job.payload.get('request_id') or ''))
+    return QuestionTaskContext(papers=papers, source_filename=source_filename)
+
 QUESTION_WRITE_ERROR_RESPONSES = {
     404: {"model": ErrorResponse, "description": "Question not found"},
     409: {"model": ErrorResponse, "description": "Question state conflict"},

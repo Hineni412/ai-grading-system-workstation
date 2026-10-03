@@ -95,7 +95,7 @@ def _seed_skill_bank(tmp_path: Path, count: int = 6):
     return QuestionBankReadService(db, data_root=tmp_path), db, keys
 
 
-def test_skill_index_current_versions_legacy_links_filters_and_cache(tmp_path):
+def test_skill_index_current_versions_legacy_links_filters_and_cache(tmp_path, monkeypatch):
     from question_bank.database.schema import connect
 
     service, db, keys = _seed_skill_bank(tmp_path)
@@ -117,6 +117,9 @@ def test_skill_index_current_versions_legacy_links_filters_and_cache(tmp_path):
     assert page.items[0]['evidence_point_count'] == 2
     assert all('/' not in row['display_name'] for row in skills.values())
     assert page.items[0]['skill_hits'] == [{'point_id': 'p2', 'point_label': '判定点 2：求解'}]
+    page.items[0]['skill_hits'][0]['point_label'] = 'TEST-caller-edit'
+    other_page = service.list_questions(QuestionReadFilters(skill_keys=(keys[1],), include_skills=True, page_size=1))
+    assert other_page.items[0]['skill_hits'] == [{'point_id': 'p2', 'point_label': '判定点 2：求解'}]
     assert service.list_facets(QuestionReadFilters(skill_keys=(keys[1],)))['question_types'] == [{'value': '解答题', 'count': 1}]
     assert {item['id'] for item in service.list_questions(QuestionReadFilters(skill_unlinked=True)).items} == {3, 4, 5}
     assert 'skills' not in service.list_questions(QuestionReadFilters()).items[0]
@@ -135,6 +138,29 @@ def test_skill_index_current_versions_legacy_links_filters_and_cache(tmp_path):
         conn.execute("UPDATE questions SET is_deleted=1 WHERE id=2")
     assert service.skill_index('bnu24-math-g8-upper')['question_count'] == 4
     assert service.list_questions(QuestionReadFilters(skill_keys=(keys[0],))).total == 1
+    from question_bank.services import question_skill_index
+    from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+    other_volume = curriculum_volume(volume_id='bnu24-math-g9-upper')
+    with connect(db) as conn:
+        conn.execute("INSERT INTO papers(id,title,grade,semester,textbook_version,import_status) "
+                     "VALUES(2,'TEST-other-volume',?,?,?,'success')",
+                     (other_volume['grade'], other_volume['semester'], other_volume['textbook_version']))
+        conn.execute("INSERT INTO questions(id,paper_id,question_number,question_text,question_type) "
+                     "VALUES(7,2,'7','TEST-other-volume-question','解答题')")
+    loaded = []
+    original_load = question_skill_index.load_profiles
+    def tracked_profiles(db_path, ids, **kwargs):
+        loaded.append(set(ids))
+        return original_load(db_path, ids, **kwargs)
+    monkeypatch.setattr(question_skill_index, 'load_profiles', tracked_profiles)
+    assert service.skill_index('bnu24-math-g8-upper')['question_count'] == 4
+    assert loaded == [{1, 3, 4, 5}]
+    newest = service.list_questions(QuestionReadFilters(page_size=1, include_skills=True))
+    assert newest.items[0]['id'] == 7
+    assert loaded[-1] == {7}
+    papers = {paper['id']: paper for paper in service.list_papers()}
+    assert papers[1]['question_count'] == 4 and papers[2]['question_count'] == 1
+    assert loaded[-1] == {1, 3, 4, 5, 7}
 
 
 def test_knowledge_sections_order_groups_missing_difficulty_and_similar_neighbors(monkeypatch):
@@ -167,23 +193,162 @@ def test_knowledge_sections_order_groups_missing_difficulty_and_similar_neighbor
     assert tied[0].question_ids == [1, 2, 3]
 
 
-def test_skill_index_1500_question_cold_and_hot_requests(tmp_path):
+def test_skill_index_1500_question_cold_and_hot_requests(tmp_path, monkeypatch):
     from time import perf_counter
+    from question_bank.services import question_skill_index
 
     service, _, keys = _seed_skill_bank(tmp_path, count=1500)
+    (tmp_path / 'question_bank').mkdir(exist_ok=True)
+    builds = []
+    original_build = question_skill_index.build_skill_snapshot
+    def build(*args, **kwargs):
+        builds.append(1)
+        return original_build(*args, **kwargs)
+    monkeypatch.setattr(question_skill_index, 'build_skill_snapshot', build)
+    # The initial paper/count requests share the same expensive source read.
+    started = perf_counter()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_index = pool.submit(service.skill_index, 'bnu24-math-g8-upper')
+        first_papers = pool.submit(service.list_papers)
+        assert first_index.result()['question_count'] == 1500
+        assert first_papers.result()[0]['question_count'] == 1500
+    assert len(builds) == 1
+    cold_counts = (perf_counter() - started) * 1000
     def measure():
         started = perf_counter()
         index = service.skill_index('bnu24-math-g8-upper')
         page = service.list_questions(QuestionReadFilters(skill_keys=(keys[0],), include_skills=True))
         facets = service.list_facets(QuestionReadFilters(skill_keys=(keys[0],)))
         return (perf_counter() - started) * 1000, index, page, facets
-    cold, index, page, facets = measure()
+    first_list, index, page, facets = measure()
     hot, same_index, same_page, same_facets = measure()
     assert index['question_count'] == 1500
     assert same_index == index and same_page == page and same_facets == facets
     assert page.total == 1498
-    print(f'TEST-1500 skill index + list + facets: cold={cold:.1f}ms hot={hot:.1f}ms')
+    print(f'TEST-1500 counts+papers={cold_counts:.1f}ms first-list+facets={first_list:.1f}ms hot={hot:.1f}ms')
     assert hot < 300
+    # More filters than the public-result LRU limit must not trigger another
+    # full-bank source read when the teacher refreshes the initial selection.
+    for page_number in range(1, read_module._READ_RESULT_CACHE_LIMIT + 10):
+        service.list_questions(QuestionReadFilters(keyword=f'TEST-empty-filter-{page_number}'))
+    refreshed, same_index, same_page, same_facets = measure()
+    assert same_index == index and same_page == page and same_facets == facets
+    assert len(builds) == 1
+    print(f'TEST-1500 refresh after browsing: {refreshed:.1f}ms, source builds={len(builds)}')
+    # 模拟进程重启：原缓存文件恢复同一份投影，不再打开全题库输入。
+    from question_bank.services.file_cache import clear_file_caches
+    from question_bank.database.schema import connect
+    cache_path = service._local_skill_path()
+    assert cache_path.is_file()
+    read_module._READ_RESULT_CACHE.clear()
+    clear_file_caches()
+    restarted = QuestionBankReadService(service.db_path, data_root=tmp_path)
+    assert restarted.skill_index('bnu24-math-g8-upper') == index
+    assert len(builds) == 1
+    import hashlib
+    import subprocess
+    import sys
+    expected_digest = hashlib.sha256(json.dumps(index, sort_keys=True).encode()).hexdigest()
+    script = """
+import hashlib,json,sys
+from question_bank.services.question_read_service import QuestionBankReadService
+from question_bank.services import question_skill_index
+def fail(*args,**kwargs): raise AssertionError('TEST restarted skill cache recomputed')
+question_skill_index.build_skill_snapshot=fail
+result=QuestionBankReadService(sys.argv[1],data_root=sys.argv[2]).skill_index('bnu24-math-g8-upper')
+print(hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest())
+"""
+    process = subprocess.run([sys.executable, '-c', script, str(service.db_path), str(tmp_path)],
+                             capture_output=True, text=True, timeout=30)
+    assert process.returncode == 0, process.stderr
+    assert process.stdout.strip() == expected_digest
+    (tmp_path / 'question_bank/TEST-unrelated-export.txt').write_text('TEST', encoding='utf-8')
+    read_module._READ_RESULT_CACHE.clear()
+    clear_file_caches()
+    assert restarted.skill_index('bnu24-math-g8-upper') == index
+    assert len(builds) == 1
+    # 活跃 WAL 归档只改变物理文件；来源内容相同，仍能恢复投影。
+    with sqlite3.connect(service.db_path) as writer:
+        writer.execute('PRAGMA wal_autocheckpoint=0')
+        writer.execute("UPDATE questions SET reason='TEST-checkpoint-cache' WHERE id=2")
+        writer.commit()
+        assert restarted.skill_index('bnu24-math-g8-upper') == index
+        before_checkpoint = len(builds)
+        writer.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        read_module._READ_RESULT_CACHE.clear()
+        clear_file_caches()
+        assert restarted.skill_index('bnu24-math-g8-upper') == index
+        assert len(builds) == before_checkpoint
+    process = subprocess.run([sys.executable, '-c', script, str(service.db_path), str(tmp_path)],
+                             capture_output=True, text=True, timeout=30)
+    assert process.returncode == 0, process.stderr
+    assert process.stdout.strip() == expected_digest
+    # 新增、改写、删除正文，即使没有改数据库，也不能恢复旧投影。
+    sidecar = tmp_path / 'question_bank/rich_content/question_1.json'
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    for body in ('TEST-new-sidecar', 'TEST-edited-sidecar', None):
+        if body is None:
+            sidecar.unlink()
+        else:
+            sidecar.write_text(json.dumps({'version': 3, 'question_blocks': [
+                {'type': 'text', 'text': body}]}), encoding='utf-8')
+        read_module._READ_RESULT_CACHE.clear()
+        clear_file_caches()
+        count_before = len(builds)
+        actual = restarted.skill_index('bnu24-math-g8-upper')
+        assert len(builds) == count_before + 1
+        assert actual['unlinked']['no_usable_evidence'] == (1 if body is None else 2)
+        read_module._READ_RESULT_CACHE.clear()
+        fresh = QuestionBankReadService(service.db_path, data_root=tmp_path, persist_skill_snapshots=False)
+        assert fresh.skill_index('bnu24-math-g8-upper') == actual
+    read_module._READ_RESULT_CACHE.clear()
+    count_before = len(builds)
+    cache_path.write_bytes(b'TEST-corrupt-skill-cache')
+    assert restarted.skill_index('bnu24-math-g8-upper') == index
+    assert len(builds) == count_before + 1
+    # 超出容量上限时完整读取，保留旧文件，不能失败或输出半份投影。
+    read_module._READ_RESULT_CACHE.clear()
+    before_cap = cache_path.read_bytes()
+    count_before = len(builds)
+    with monkeypatch.context() as patch:
+        patch.setattr(read_module, '_SKILL_LOCAL_CACHE_MAX_BYTES', 1)
+        assert restarted.skill_index('bnu24-math-g8-upper') == index
+    assert len(builds) == count_before + 1
+    assert cache_path.read_bytes() == before_cap
+    read_module._READ_RESULT_CACHE.clear()
+    count_before = len(builds)
+    with monkeypatch.context() as patch:
+        patch.setattr(read_module, '_skill_cache_calculation_revision', lambda: 'TEST-changed-calculation')
+        assert restarted.skill_index('bnu24-math-g8-upper') == index
+    assert len(builds) == count_before + 1
+    with connect(service.db_path) as writer:
+        writer.execute('UPDATE questions SET is_deleted=1 WHERE id=1')
+    count_before = len(builds)
+    assert restarted.skill_index('bnu24-math-g8-upper')['question_count'] == 1499
+    assert len(builds) == count_before + 1
+    # 保存失败仍返回当前结果，临时文件自行清理，原缓存保持原样。
+    from question_bank import atomic_files
+    saved_bytes = cache_path.read_bytes()
+    with connect(service.db_path) as writer:
+        writer.execute("UPDATE questions SET difficulty='9' WHERE id=2")
+    def unavailable(*args):
+        raise PermissionError('TEST-skill-cache-disk-unavailable')
+    monkeypatch.setattr(atomic_files, 'replace_with_retry', unavailable)
+    assert restarted.skill_index('bnu24-math-g8-upper')['question_count'] == 1499
+    assert cache_path.read_bytes() == saved_bytes
+    assert not list(cache_path.parent.glob('skill-read-*.tmp'))
+    # 内容版本读取暂不可用时，派生缓存仍不能阻断正常题目读取。
+    from integration import data_generation
+    for error_type in (AttributeError, ImportError):
+        with connect(service.db_path) as writer:
+            writer.execute('UPDATE questions SET reason=? WHERE id=2',
+                           (f'TEST-version-unavailable-{error_type.__name__}',))
+        def unavailable_version(*args, **kwargs):
+            raise error_type('TEST-cache-content-version-unavailable')
+        with monkeypatch.context() as patch:
+            patch.setattr(data_generation, 'database_content_revision', unavailable_version)
+            assert restarted.skill_index('bnu24-math-g8-upper')['question_count'] == 1499
+        assert cache_path.read_bytes() == saved_bytes
 
 
 def test_paged_duplicate_groups_refresh_after_relabelling_and_keep_occurrence_numbers(tmp_path):

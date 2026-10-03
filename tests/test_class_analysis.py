@@ -890,7 +890,7 @@ def test_cause_edit_api_validation_and_unlinked_state_only(
     assert not (tmp_path / "databases" / "question_bank.db").exists()
 
 
-def test_session_error_records_and_category_counts(tmp_path: Path) -> None:
+def test_session_error_records_and_category_counts(tmp_path: Path, monkeypatch) -> None:
     """物化错因记录：按学生×题读取、按大类去重计数、班级过滤；无状态返回空。"""
     import backend.jobs
     from backend.class_analysis import (
@@ -947,6 +947,23 @@ def test_session_error_records_and_category_counts(tmp_path: Path) -> None:
     }
     assert set(records) == student_ids
     assert all("Q2" in by_question for by_question in records.values())
+    # 多出没有已保存错因的学生时，不重新计算每份全班来源指纹，
+    # 也不能把原学生的错因归给新增学生。
+    from dataclasses import replace
+    import backend.class_analysis as analysis
+    expanded = replace(data, students=[*data.students, *[
+        replace(data.students[0], student_id=9000 + index) for index in range(20)
+    ]])
+    fingerprints = []
+    original_fingerprint = analysis._cause_input_fingerprint
+    def counted_fingerprint(*args, **kwargs):
+        fingerprints.append(True)
+        return original_fingerprint(*args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(analysis, "assemble_cause_data", lambda *args, **kwargs: expanded)
+        patch.setattr(analysis, "_cause_input_fingerprint", counted_fingerprint)
+        assert session_error_records(db, sid, reports_dir) == records
+    assert len(fingerprints) <= 8 * len(build_cause_inputs(expanded))
     counts = question_category_counts(records)
     assert counts["Q2"] == [("概念理解", len(student_ids))]
     one = sorted(student_ids)[:1]
@@ -1282,6 +1299,36 @@ def test_teacher_locked_answer_uses_review_steps_only(tmp_path: Path) -> None:
 
     # 教师步骤校验通过：AI 评估（S1）被忽略，只保留教师判定的失分步。
     assert [unit["step_id"] for unit in stepped_units()] == ["S2", "S4"]
+
+    for source, note, expected_ids in [
+        ("teacher", None, ["S2"]), ("teacher", "教师核实的错误", ["S2", "S4"]),
+        ("ai", None, ["S2", "S4"]),
+    ]:
+        updated = json.loads(json.dumps(raw))
+        target = updated["teacher_reviews"]["Q2"]["steps"][3]
+        target.update(deduction_source=source, teacher_note=note, reason="AI 原理由", missing_or_error="AI 缺漏")
+        with sqlite3.connect(db.db_path) as conn:
+            conn.execute("UPDATE session_results SET raw_json=? WHERE id=?", (json.dumps(updated), result_id))
+        units = stepped_units()
+        assert [unit["step_id"] for unit in units] == expected_ids
+        if note:
+            assert units[-1]["reason"] == note
+        if source == "ai":
+            assert units[-1]["missing_or_error"] == "AI 缺漏"
+    updated["teacher_reviews"]["Q2"]["steps"][3]["carried_error_from"] = "S2"
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE session_results SET raw_json=? WHERE id=?", (json.dumps(updated), result_id))
+    assert [unit["step_id"] for unit in stepped_units()] == ["S2"]
+    for step in updated["teacher_reviews"]["Q2"]["steps"]:
+        step["deduction_source"] = "teacher" if step["score_awarded"] == 0 else "none"
+        step.pop("teacher_note", None)
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE session_results SET raw_json=? WHERE id=?", (json.dumps(updated), result_id))
+    data = assemble_cause_data(db, sid, data_root=tmp_path)
+    source = _cause_source(data, "Q2")
+    assert all(entry["student_answer"] != "李四的证明作答" for entry in source["evidence"])
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE session_results SET raw_json=? WHERE id=?", (json.dumps(raw), result_id))
 
     # 修订号对不上当前最终分锁：教师记录不可用，AI 步骤也不得回退使用。
     with sqlite3.connect(db.db_path) as conn:

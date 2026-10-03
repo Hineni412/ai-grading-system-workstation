@@ -120,6 +120,8 @@ def submit_report_export(
     revision: str,
     force_regenerate: bool,
     score_excel_options: dict[str, object] | None = None,
+    student_ids: list[int] | None = None,
+    publish: bool = True,
 ) -> JobRecord:
     normalized_options = (
         _normalize_score_excel_options(score_excel_options)
@@ -130,6 +132,10 @@ def submit_report_export(
         report_type,
         normalized_options,
     )
+    if report_type == "personal_analysis_html":
+        student_ids = sorted(set(student_ids)) if student_ids is not None else None
+        options_fingerprint = hashlib.sha256(json.dumps(
+            [options_fingerprint, student_ids, publish], sort_keys=True).encode()).hexdigest()
     payload = {
         "session_id": int(session_id),
         "report_type": str(report_type),
@@ -138,6 +144,8 @@ def submit_report_export(
     }
     if normalized_options is not None:
         payload["score_excel_options"] = normalized_options
+    if report_type == "personal_analysis_html":
+        payload.update(student_ids=student_ids, publish=publish)
     with _submit_lock:
         if not force_regenerate:
             offset = 0
@@ -158,6 +166,8 @@ def submit_report_export(
                     ):
                         continue
                     if job.status in {"queued", "running"}:
+                        return job
+                    if not publish and job.result.get("failed", 0) == 0:
                         return job
                     try:
                         file_service.resolve(job)

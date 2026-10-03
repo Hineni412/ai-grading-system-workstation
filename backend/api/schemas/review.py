@@ -65,6 +65,8 @@ class ReviewStepScore(BaseModel):
     part_id: str = ""
     step_id: str
     score_awarded: float
+    teacher_note: str | None = None
+    carried_error_from: str | None = None
 
 
 class ReviewConfirmItem(BaseModel):

@@ -339,6 +339,11 @@ export interface QuestionImportRequest {
   status: 'pending'
 }
 
+export interface QuestionTaskContext {
+  papers: Array<{ id: number; title: string | null }>
+  source_filename: string | null
+}
+
 export interface QuestionBankAssetLink {
   index: number
   url: string
@@ -2012,6 +2017,23 @@ export const questionBankApi = {
     return apiClient.request(`/api/question-bank/papers${deleted ? '?deleted=true' : ''}`, {
       decode: decodeQuestionPaperListResponse,
       signal,
+    })
+  },
+
+  taskContext(jobId: number, signal?: AbortSignal): Promise<QuestionTaskContext> {
+    if (!isPositiveInteger(jobId)) throw new Error('任务编号无效')
+    return apiClient.request(`/api/question-bank/task-context/${jobId}`, {
+      signal,
+      decode(value: unknown) {
+        assertNoPathLikeKeys(value)
+        if (!isRecord(value) || !hasExactKeys(value, ['papers', 'source_filename'])
+          || !isNullableString(value.source_filename) || !Array.isArray(value.papers)
+          || !value.papers.every(paper => isRecord(paper) && hasExactKeys(paper, ['id', 'title'])
+            && isPositiveInteger(paper.id) && isNullableString(paper.title))) {
+          throw new Error('所属试卷响应格式不正确')
+        }
+        return value as unknown as QuestionTaskContext
+      },
     })
   },
 

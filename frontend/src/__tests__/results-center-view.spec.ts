@@ -13,6 +13,12 @@ import { invalidateClassAnalysis } from '../components/results-center/class-anal
 import { walkthroughDataFor } from '../components/results-center/paper-walkthrough'
 import PaperWalkthroughCard from '../components/results-center/PaperWalkthroughCard.vue'
 
+const personalMock = vi.hoisted(() => ({ states: vi.fn(), exams: vi.fn(), bundle: vi.fn() }))
+vi.mock('../api/personal-reports', async (original) => ({
+  ...await original<typeof import('../api/personal-reports')>(),
+  personalReportsApi: { ...(await original<typeof import('../api/personal-reports')>()).personalReportsApi, ...personalMock },
+}))
+
 vi.mock('../api/review', async (original) => ({
   ...await original<typeof import('../api/review')>(),
   fetchReviewItems: vi.fn(), fetchReviewQuestions: vi.fn(), fetchReviewRubric: vi.fn(),
@@ -111,6 +117,9 @@ function reviewItems(qid: string): ResolvedReviewItem[] {
 
 async function mountView(tab: string | null = 'details', analysis?: ClassAnalysisResponse) {
   localStorage.clear()
+  personalMock.states.mockResolvedValue([['current', 1], ['stale', 2], ['missing', 3], ['unavailable', 4]].map(([status, id]) => ({student_id: id, status, generated_at: '2026-10-03', reason: status === 'unavailable' ? '缺考' : null})))
+  personalMock.exams.mockImplementation(async (id: number) => [{session_id: 7, session_name: '合成成绩验证', graded_at: '2026-10-03', score: 8, max_score: 10,
+    status: id === 1 ? 'current' : id === 2 ? 'stale' : id === 3 ? 'missing' : 'unavailable', generated_at: '2026-10-03', reason: id === 4 ? '缺考' : null}])
   vi.mocked(fetchResultsCenter).mockReset().mockResolvedValue(fixture())
   classAnalysisMock.getClassAnalysis.mockReset().mockRejectedValue(new Error('合成环境不读班级分析'))
   invalidateClassAnalysis(7)
@@ -424,5 +433,105 @@ describe('results center class filtering and return position', () => {
     await vi.waitFor(() => expect(host.querySelector('.results-state-panel--error')).not.toBeNull())
     expect(host.textContent).toContain('评分细则文件 rubric.json 无法读取，请先恢复该文件。')
     expect(host.textContent).not.toContain('当前考试的成绩暂时无法读取')
+  })
+})
+
+describe('personal report reading and review return', () => {
+  it('accepts report keyboard messages only from the current same-origin frame', async () => {
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.querySelector('.personal-report-status--current')).not.toBeNull())
+    host.querySelector<HTMLButtonElement>('.personal-report-status--current')!.click()
+    await vi.waitFor(() => expect(document.querySelector('iframe')).not.toBeNull())
+    const frame = document.querySelector('iframe')!
+    const send = (key: string, origin = location.origin, source = frame.contentWindow) => window.dispatchEvent(
+      new MessageEvent('message', { origin, source, data: { type: 'personal-report:key', key } }),
+    )
+    send('Escape', 'https://bad.example')
+    send('Escape', location.origin, window)
+    send('Enter')
+    expect(document.querySelector('.personal-reader')).not.toBeNull()
+    send('ArrowRight')
+    await vi.waitFor(() => expect(document.querySelector('.personal-reader__identity')?.textContent).toContain('合成乙'))
+    await vi.waitFor(() => expect(document.querySelector('iframe')).not.toBeNull())
+    window.dispatchEvent(new MessageEvent('message', { origin: location.origin,
+      source: document.querySelector('iframe')!.contentWindow, data: { type: 'personal-report:key', key: 'Escape' } }))
+    await vi.waitFor(() => expect(document.querySelector('.personal-reader')).toBeNull())
+    expect(document.querySelector('#student-result-title')?.textContent).toBe('合成乙')
+  })
+  it.each([[1, '查看个人报告'], [2, '上次生成'], [3, '先看数据版'], [4, '缺考']])('shows the report block in student %i drawer', async (id, text) => {
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.querySelectorAll('.personal-report-status')).toHaveLength(3))
+    host.querySelectorAll<HTMLTableRowElement>('.results-matrix tbody tr')[Number(id) - 1]!.querySelector<HTMLButtonElement>('th > button')!.click()
+    await vi.waitFor(() => expect(document.querySelector('.personal-report-drawer')?.textContent).toContain(text))
+  })
+  it('opens the data-only report from the drawer and restores it after review', async () => {
+    const { host, router } = await mountView()
+    await vi.waitFor(() => expect(host.querySelectorAll('.personal-report-status')).toHaveLength(3))
+    host.querySelectorAll<HTMLTableRowElement>('.results-matrix tbody tr')[2]!.querySelector<HTMLButtonElement>('th > button')!.click()
+    await vi.waitFor(() => expect(document.querySelector('.personal-report-drawer')?.textContent).toContain('先看数据版'))
+    document.querySelector<HTMLButtonElement>('.personal-report-drawer button')!.click()
+    await vi.waitFor(() => expect(document.querySelector('iframe')?.getAttribute('src')).toContain('narrative=none'))
+    window.dispatchEvent(new MessageEvent('message', {origin: location.origin,
+      source: document.querySelector('iframe')!.contentWindow,
+      data: {type: 'personal-report:open-review', questionId: 'Q1'}}))
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/grading'))
+    await router.push('/results?tab=details&session=7')
+    await vi.waitFor(() => expect(document.querySelector('iframe')?.getAttribute('src')).toContain('narrative=none'))
+  })
+  it('keeps name and score actions and restores the last viewed student drawer with Escape', async () => {
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.querySelectorAll('.personal-report-status')).toHaveLength(3))
+    const icon = host.querySelector<HTMLButtonElement>('[aria-label="查看合成甲的个人报告（已生成）"]')!
+    expect(icon.title).toBe(icon.getAttribute('aria-label'))
+    icon.click()
+    await vi.waitFor(() => expect(document.querySelector('iframe[title="个人报告正文"]')).not.toBeNull())
+    expect(document.querySelector('iframe')?.getAttribute('src')).toContain('review_links=1')
+    const next = [...document.querySelectorAll<HTMLButtonElement>('.personal-reader button')].find(b => b.textContent === '下一位 →')!
+    next.click()
+    await vi.waitFor(() => expect(document.querySelector('.personal-reader__identity')?.textContent).toContain('合成乙'))
+    await vi.waitFor(() => expect(document.querySelector('.personal-reader__notice')?.textContent).toContain('上次生成'))
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.personal-reader')).toBeNull())
+    expect(document.querySelector('#student-result-title')?.textContent).toBe('合成乙')
+    expect(document.activeElement?.getAttribute('aria-label')).toContain('关闭')
+    expect(host.querySelector('.personal-report-highlight')?.textContent).toContain('合成乙')
+  })
+
+  it('filters missing and stale reports within the class and follows the matrix order', async () => {
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('报告未生成或需重新生成（2）'))
+    const filter = [...host.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.includes('报告未生成或需重新生成（2）'))!
+    filter.click()
+    await vi.waitFor(() => expect(host.querySelectorAll('.results-matrix tbody tr')).toHaveLength(2))
+    host.querySelector<HTMLButtonElement>('.personal-report-status')!.click()
+    await vi.waitFor(() => expect(document.querySelector('.personal-reader__position')?.textContent).toContain('/ 2 人'))
+    expect(document.querySelector('.personal-reader__identity')?.textContent).toContain('合成乙')
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+    await vi.waitFor(() => expect(document.querySelector('.personal-reader__identity')?.textContent).toContain('合成丙'))
+    await vi.waitFor(() => expect(document.querySelector('.personal-reader__empty')?.textContent).toContain('本场报告尚未生成'))
+    const data = [...document.querySelectorAll<HTMLButtonElement>('.personal-reader button')].find(b => b.textContent === '先看数据版')!
+    data.click()
+    await nextTick()
+    expect(document.querySelector('iframe')?.getAttribute('src')).toContain('narrative=none')
+  })
+
+  it('validates iframe message origin and source and restores the report after review', async () => {
+    const { host, router } = await mountView()
+    await vi.waitFor(() => expect(host.querySelector('.personal-report-status--current')).not.toBeNull())
+    host.querySelector<HTMLButtonElement>('.personal-report-status--current')!.click()
+    await vi.waitFor(() => expect(document.querySelector('iframe')).not.toBeNull())
+    const iframe = document.querySelector('iframe')!
+    const data = { type: 'personal-report:open-review', questionId: 'Q2' }
+    window.dispatchEvent(new MessageEvent('message', { origin: 'https://bad.example', source: iframe.contentWindow, data }))
+    window.dispatchEvent(new MessageEvent('message', { origin: location.origin, source: window, data }))
+    expect(router.currentRoute.value.path).toBe('/results')
+    window.dispatchEvent(new MessageEvent('message', { origin: location.origin, source: iframe.contentWindow, data }))
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/grading'))
+    expect(router.currentRoute.value.query.question).toBe('Q2')
+    expect(useResultsCenterStore().reportReturn?.studentId).toBe(1)
+    await router.push('/results?tab=details&session=7')
+    await vi.waitFor(() => expect(document.querySelector('.personal-reader__identity')?.textContent).toContain('合成甲'))
+    await vi.waitFor(() => expect(document.querySelector('iframe')?.getAttribute('src')).toContain('narrative=auto'))
+    expect(useResultsCenterStore().reportReturn).toBeNull()
   })
 })

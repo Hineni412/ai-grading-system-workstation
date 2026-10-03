@@ -13,6 +13,7 @@
 - 学情总览与知识结构：后端 `tests/test_api_graph_selected_scope.py` 覆盖摘要／完整诊断、快照恢复、往届排除、群体区间与关联失败回退；前端 `knowledge-overview-view`、`knowledge-graph-view` 覆盖共享口径、热度边界、范围、出卷预填、筛选与焦点返回。`npx playwright test e2e/knowledge-graph.spec.ts` 使用默认配置与模拟接口验证两栏、关联实线／虚线、抽屉、窄屏和进入按学生训练时不创建草稿。
 - 核心流程失败优先修复；不用测试数量代替功能可用。
 - 按学生／按章节与批量错题本：`practice-selection` 覆盖名单、四档统计及导出恢复，连同 `training-recommendations-view`、`training-group-recommendations`、`personalized-recommendation-draft`、`student-evidence-view` 和 `training-api` 核对勾选、用途规则、概况及证据入口。后端扩展学生 API、题库读取缓存、个性化推荐、训练 API 与 Word 渲染的现有测试，核对知识排序、来源去重、批量预览、章节过滤、巩固上限、旧请求编号和旧草稿导出。真实数据验收通过应用生成草稿及错题本，不调用模型；仅记录匿名构成、缺口和版式结果。
+- 个人报告在线查看与批量导出：扩展 `tests/test_analysis_report.py`、`tests/test_api_report_jobs.py`、`tests/test_report_export_job.py`，核对本人输入失效、旧缓存只读兼容、损坏索引、状态、裁切路径、缓存导出、清单、取消与下载后回收；版式沿用 `tests/test_personal_report_design.py` 和 `tests/test_report_print_layout.py`。前端扩展 `results-center-view`、`file-center-view`、`app-shell`，核对四态入口、当前筛选翻页、复核返回、生成预估确认、多人多场与任务名称。真实数据只读查看，生成和数据写入用合成数据与模型替身；单列首次与连续翻页耗时，不以数据版验证代替真实叙述生成验收。
 - 普通组卷导出：`tests/test_assembly_export_job.py` 覆盖 PDF 与兼容 Markdown 的任务发布、记录、两条下载入口、取消及草稿保留，并用本机 LaTeX 实排合成的大图、跨页合并表格和公式；引擎不可用时跳过实排项，不能据此声称验证了 PDF。公式转换复用 `tests/training/test_latex_render.py`，Word 回归复用 `tests/test_question_document_pipeline.py` 与 `tests/training/test_personalized_paper_formula_rendering.py`。前端扩展 `question-assembly-view`，连同 `assembly-store` 核对格式选择与导出请求。人工核对纸面小字、大图、续页和预留作答区；高中样本及断网新工作机需另行验证。
 - 班级组卷：`tests/test_assembly_assistant.py` 覆盖多班与指定考试、只读逐题证据、快速起草与规则保存；`tests/test_unified_practice_rules.py` 核对参数化上限与近期规则，`tests/training/test_personalized_recommendation.py` 核对全班固定题序、无证据成员和生成幂等。前端扩展现有 `assembly-assistant`、`question-assembly-view` 与 `personalized-recommendation-draft` 用例；`training-assessment-panel` 核对费用确认、取消不发请求和重试另行确认；真实数据人工验收只查看班级、考试、题面及已有篮子，添加、替换、降低限制、导出与训练写入在合成环境验证，不调用真实模型。
 
@@ -35,6 +36,8 @@
 | `serial` | 单独复现隔离问题 | 只运行依赖 Windows 文件锁、固定端口、子进程或进程级状态的测试文件 |
 | `release` | 发布候选或发布工具发生变化 | 先运行 `full`，再补充打包、历史数据库升级和性能工具检查；历史升级仍检查所有支持的起点 |
 | `review` | 人工复核、评分保存或成绩展示发生变化 | 复用相关后端和页面测试，再通过真实浏览器验证改分、刷新、新窗口重新进入、旧窗口冲突保护及下载成绩表 |
+
+性能回归复用 `tests/test_class_analysis.py`、`tests/test_question_bank_read_cache.py`、`tests/test_api_training_routes.py`、`tests/test_api_graph_selected_scope.py` 和 `tests/test_api_scan_grading_workspace.py`。检查学生人数增加时来源指纹的计算次数、按册和当前页的实际读取范围、概览与图谱精简内部投影后的完整输出相等、全体学生学期观测只读取一次、完整公开字段及输入不变、完整诊断及含小组响应的新进程恢复、小组参数与题目资源更新失效、命中后不再构造完整诊断或小组模块、小组追加字段与直接生成 JSON 后的响应与原完整模型编码字节相等、非有限数值及数值字符串拒绝、启动首章默认小组与新增最近请求触发空闲准备而真实批改任务继续让位、相同模型输入在扣分说明更新及请求临时快照间复用而观测结果／题库来源／参数／计算周／排除证据变化重新计算、本地概览与图谱恢复、题目关联读取不做全表统计且原地标签修改后刷新（`tests/question_bank/test_topic_skill_matching.py`）、正文增删改、计算版本失效、损坏和保存失败回退，以及批改两个未完成计数共用一次查询而下一次摘要重新读取。前端复用 `training-api`、`training-recommendations-view`、`practice-selection` 和 `training-group-recommendations`，核对重复字段及深层路径字段拦截、诊断范围切换、过期请求取消、章节页首次仅一次完整小组请求、小组失败回退基础诊断、整份结果更新、选题与草稿恢复。性能测量分别记录首次进入、连续刷新和合成数据更新后刷新；区分缓存恢复与缓存未命中的重算，并记录数据完成与页面内容可见时间。完整输出相等与耗时比较使用同等输入，真实数据只读。
 
 入口与并发：
 
@@ -104,7 +107,7 @@
 
 ## 隔离规则
 
-设置和原卷清理的回归用例复用学生、媒体、模板上传、扫描续跑及 API 写入测试；`tests/test_session_originals.py` 覆盖文件清理模块的保留范围、共享路径、回执损坏、中断续清和重复请求。系统检查和无关请求隔离复用 `tests/test_api_ops_routes.py`、`settings-ops-view.spec.ts`，诊断摘要失效复用 `tests/test_llm_gateway.py`，题号输入缓存和配置延迟加载复用题号兼容与 `config-workspace-store.spec.ts`。人工验收对照已确认设置原型及学生名册的自适应布局，在 1440、1280、宽屏和窄屏检查标签、抽屉和弹窗；性能对比使用同一考试与数据，分别测量首次打开、刷新和主要接口，排除人为等待，并核对统计、成绩输出一致。核对 PDF 释放后现有页面仍能批改、清除原卷后仍可人工改分。真实数据验收需取得本次授权，仅只读查看；清理、备份恢复和模型验证使用合成环境。
+设置和原卷清理的回归用例复用学生、媒体、模板上传、扫描续跑及 API 写入测试；`tests/test_session_originals.py` 覆盖文件清理模块的保留范围、共享路径、回执损坏、中断续清和重复请求。内部系统检查复用 `tests/test_api_ops_routes.py`；设置页三个标签、旧地址与上次标签恢复、AI 调用记录按需读取和未保存保护复用 `settings-hub-view.spec.ts`，数据与空间操作及无关检查请求隔离复用 `settings-ops-view.spec.ts`。诊断摘要失效复用 `tests/test_llm_gateway.py`，题号输入缓存和配置延迟加载复用题号兼容与 `config-workspace-store.spec.ts`。人工验收在 1440、1280、宽屏和窄屏检查三个设置标签、学生名册、抽屉和弹窗；性能对比使用同一考试与数据，分别测量首次打开、刷新和主要接口，排除人为等待，并核对统计、成绩输出一致。核对 PDF 释放后现有页面仍能批改、清除原卷后仍可人工改分。真实数据验收需取得本次授权，仅只读查看；清理、备份恢复和模型验证使用合成环境。
 
 - 所有自动测试使用合成数据库、合成图片和测试替身；测试不得调用真实模型；子进程会移除模型密钥等敏感环境变量。
 - 测试入口把成绩数据、工作区数据、模型配置、分类状态、运维状态和本机应用数据目录改到本次运行的临时沙箱；不得读取、写入或迁移真实 `user_data/`，也不得依赖用户电脑中已有的业务文件。

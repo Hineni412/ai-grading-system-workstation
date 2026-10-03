@@ -46,6 +46,7 @@ afterEach(() => {
   disposePinia(pinia)
   document.body.innerHTML = ''
   vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 async function mountPanel(initialSkill?: string) {
   const host = document.createElement('div')
@@ -197,5 +198,60 @@ describe('class assembly assistant', () => {
     expect(api.assemblyApi.saveDraft).not.toHaveBeenCalled()
   })
 
+  it('starts a target switch immediately, coalesces rapid clicks and discards late results', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+    const assistant = useAssemblyAssistantStore()
+    assistant.changeScope({ class_id: '9班', curriculum_volume_id: 'volume' })
+    const responseFor = (key: string, id: number): AssemblyAssistantResult => ({
+      ...result(), selected_target_keys: [key], candidate_total: 1,
+      candidates: [{ question_id: id, target_keys: [key], direct_target_keys: [key], difficulty: 3 }],
+    })
+    vi.mocked(api.assemblyApi.resolveQuestions).mockImplementation(async ids => ({
+      items: ids.map(id => ({ ...question, id })), missing_question_ids: [],
+    }))
+    await assistant.search()
+    let resolveLate!: (value: AssemblyAssistantResult) => void
+    vi.mocked(api.fetchAssemblyCandidates).mockReturnValueOnce(new Promise(done => { resolveLate = done }))
+    assistant.selectTarget('sk_two')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(api.fetchAssemblyCandidates).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(50)
+    assistant.selectTarget('sk_three')
+    await vi.advanceTimersByTimeAsync(50)
+    assistant.selectTarget('sk_four')
+    vi.mocked(api.fetchAssemblyCandidates).mockResolvedValueOnce(responseFor('sk_four', 14))
+    await vi.advanceTimersByTimeAsync(50)
+    expect(api.fetchAssemblyCandidates).toHaveBeenCalledTimes(3)
+    expect(vi.mocked(api.fetchAssemblyCandidates).mock.calls[2]![0].target_keys).toEqual(['sk_four'])
+    expect(assistant.questions.map(item => item.id)).toEqual([14])
+    resolveLate(responseFor('sk_two', 12))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(assistant.selectedKey).toBe('sk_four')
+    expect(assistant.questions.map(item => item.id)).toEqual([14])
+    assistant.selectTarget('sk_one')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(assistant.questions.map(item => item.id)).toEqual([11])
+    expect(api.fetchAssemblyCandidates).toHaveBeenCalledTimes(3)
+    expect(api.assemblyApi.saveDraft).not.toHaveBeenCalled()
+  })
+
+  it('manual refresh clears older target results and previews before switching back', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+    const assistant = useAssemblyAssistantStore()
+    assistant.changeScope({ class_id: '9班', curriculum_volume_id: 'volume' })
+    await assistant.search()
+    const second = { ...result(), selected_target_keys: ['sk_two'] }
+    vi.mocked(api.fetchAssemblyCandidates).mockResolvedValueOnce(second)
+    assistant.selectTarget('sk_two')
+    await vi.advanceTimersByTimeAsync(0)
+    vi.mocked(api.fetchAssemblyCandidates).mockResolvedValueOnce(second)
+    await assistant.search()
+    vi.mocked(api.fetchAssemblyCandidates).mockResolvedValueOnce(result())
+    assistant.selectTarget('sk_one')
+    await vi.advanceTimersByTimeAsync(150)
+    expect(api.fetchAssemblyCandidates).toHaveBeenCalledTimes(4)
+    expect(api.assemblyApi.resolveQuestions).toHaveBeenCalledTimes(2)
+    expect(assistant.isStale).toBe(false)
+  })
 
 })

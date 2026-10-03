@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import pickle
 import sqlite3
 from typing import Any
 
@@ -272,13 +273,21 @@ def overview_payload(
     fresh object.
     """
 
+    profile_key = service.tag_profile_cache_key(scope=scope, exam_scope=exam_scope)
     key = (
         "mastery-overview-v2",
-        service.tag_profile_cache_key(scope=scope, exam_scope=exam_scope),
+        profile_key,
         str(volume_id),
     )
+    local_key = (*profile_key, 'overview-payload-v2', str(volume_id))
     def compute():
-        diagnosis = service.build_profiles(scope=scope, exam_scope=exam_scope)
+        reader = getattr(service, '_read_local_profile', None)
+        entry = reader(local_key) if callable(reader) else None
+        if entry is not None:
+            payload = pickle.loads(entry[0]).get('overview')
+            if isinstance(payload, dict):
+                return payload
+        diagnosis = getattr(service, 'build_summary_profiles', service.build_profiles)(scope=scope, exam_scope=exam_scope)
         try:
             resolver = CurrentKnowledgeResolver.from_active_database(service.question_bank_db_path)
             associations = knowledge_skill_associations(load_question_facets(service.question_bank_db_path, resolver))
@@ -286,7 +295,11 @@ def overview_payload(
             associations = []
             diagnosis = {**diagnosis, 'warnings': [*(diagnosis.get('warnings') or []), '知识点与技能关联暂不可用']}
         return build_mastery_overview(diagnosis, volume_id=volume_id, associations=associations)
-    return _OVERVIEW_CACHE.get_or_compute(key, compute)
+    payload = _OVERVIEW_CACHE.get_or_compute(key, compute)
+    if getattr(service, 'persist_snapshots', False):
+        service._save_local_profile(local_key, (pickle.dumps({'overview': payload}, pickle.HIGHEST_PROTOCOL),
+                                               pickle.dumps({}, pickle.HIGHEST_PROTOCOL)))
+    return payload
 
 
 def clear_overview_caches() -> None:

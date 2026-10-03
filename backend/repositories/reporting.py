@@ -76,6 +76,7 @@ class ReportRepository:
         attendance_rows = connection.execute(
             """
             SELECT
+                sa.student_id,
                 s.student_code,
                 s.name AS student_name,
                 s.class_name,

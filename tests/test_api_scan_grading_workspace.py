@@ -69,7 +69,7 @@ def _client(tmp_path):
     return TestClient(app), db, manager
 
 
-def test_scan_upload_routes_publish_safe_queue_and_freeze_it(tmp_path) -> None:
+def test_scan_upload_routes_publish_safe_queue_and_freeze_it(tmp_path, monkeypatch) -> None:
     client, db, manager = _client(tmp_path)
     session_id = db.sessions.create_grading_session("匿名月考", "rubric.json", "answer.json")
     content = _jpeg(b"anonymous-jpeg")
@@ -94,6 +94,22 @@ def test_scan_upload_routes_publish_safe_queue_and_freeze_it(tmp_path) -> None:
         assert created.status_code == 201
         assert duplicate.status_code == 200
         assert duplicate.json()["duplicate"] is True
+        reads = []
+        def incomplete_rows(requested_session):
+            reads.append(requested_session)
+            return [{'missing_question_ids': ['Q1', 'Q2']}] if len(reads) == 1 else []
+        with monkeypatch.context() as patch:
+            patch.setattr(db.results, 'list_incomplete_results', incomplete_rows)
+            from backend.api.dependencies import get_scan_grading_workspace
+            service = get_scan_grading_workspace(db=db, manager=manager,
+                exams_dir=tmp_path / 'exams', templates_dir=tmp_path / 'templates',
+                data_root=tmp_path, question_bank_db_path=tmp_path / 'databases/question_bank.db')
+            assert service._incomplete_result_summary(session_id) == {
+                'incomplete_result_count': 1, 'incomplete_item_count': 2}
+            assert reads == [session_id]
+            assert service._incomplete_result_summary(session_id) == {
+                'incomplete_result_count': 0, 'incomplete_item_count': 0}
+            assert reads == [session_id, session_id]
         workspace = client.get(f"/api/sessions/{session_id}/grading-workspace")
         assert workspace.status_code == 200
         assert workspace.json()["upload_batch"]["file_count"] == 1

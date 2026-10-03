@@ -12,6 +12,17 @@ import { useConfigWorkspaceStore } from '../../../stores/config-workspace';
 import { useReviewDraftStore } from '../../../stores/review-drafts';
 import { useSessionStore } from '../../../stores/session';
 import { useJobStore } from '../../../stores/jobs';
+import type { JobResponse } from '../../../api/jobs'
+import { questionBankApi } from '../../../api/question-bank'
+import { exportsApi } from '../../../api/exports'
+import { taskDetail, taskName, taskOutcome } from '../task-center-format'
+
+function task(overrides: Partial<JobResponse> = {}): JobResponse {
+  return { id: 42, job_type: 'ops_backup', status: 'running', progress: 0.5,
+    stage: 'writing', detail: 'preparing', payload: {}, result: {}, error: null,
+    cancel_requested: false, created_at: '2026-10-02T00:00:00', updated_at: '2026-10-02T00:00:00',
+    started_at: null, finished_at: null, ...overrides }
+}
 
 async function settleUi(): Promise<void> {
   await Promise.resolve()
@@ -112,6 +123,106 @@ describe('AppShell', () => {
     await settleUi()
     expect(cancel).toHaveBeenCalledWith(42)
     app.unmount()
+  })
+  it('downloads personal bundles and keeps tasks visible after a download failure', async () => {
+    const { app, host } = await mountShell({ path: '/question-bank', stubPages: true })
+    const jobs = useJobStore()
+    jobs.jobs[42] = task({ job_type: 'personal_report_bundle', status: 'succeeded',
+      payload: { session_ids: [7], student_ids: [1], scope_label: '指定1人' },
+      result: { generated: 1, failed: 0, skipped: 0, download_url: '/api/jobs/42/file' } })
+    vi.spyOn(jobs, 'initialize').mockResolvedValue()
+    vi.spyOn(jobs, 'refresh').mockResolvedValue()
+    const download = vi.spyOn(exportsApi, 'downloadJobFile').mockRejectedValueOnce(new Error('expired'))
+      .mockResolvedValueOnce({ blob: new Blob(['合成报告']), filename: '合成报告.html' })
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = vi.fn(() => 'blob:synthetic-report')
+      static revokeObjectURL = vi.fn()
+    })
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    host.querySelector<HTMLButtonElement>('[aria-label="任务中心"]')!.click()
+    await settleUi()
+    const popover = document.body.querySelector('.task-center-popover')!
+    const button = [...popover.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === '下载个人报告')!
+    button.click()
+    await vi.waitFor(() => expect(popover.textContent).toContain('下载未完成'))
+    expect(popover.querySelector('[data-job-id="42"]')).not.toBeNull()
+    button.click()
+    await vi.waitFor(() => expect(click).toHaveBeenCalledOnce())
+    expect(download).toHaveBeenNthCalledWith(2, 42)
+    expect(popover.textContent).not.toContain('下载个人报告')
+    app.unmount()
+  })
+  it('shows the actual exam and paper sources even after selecting another exam', async () => {
+    const { app, host } = await mountShell({ path: '/question-bank', stubPages: true })
+    const sessions = useSessionStore()
+    sessions.sessions = [7, 9].map(id => ({ id, name: `合成考试${id}`, status: 'created', is_deleted: false, deleted_at: null, created_at: null, updated_at: null }))
+    sessions.selectSession(9)
+    const jobs = useJobStore()
+    jobs.jobs = {
+      41: task({ id: 41, job_type: 'grading_run', payload: { session_id: 7 }, detail: 'graded=36 failed=2' }),
+      42: task(),
+      43: task({ id: 43, job_type: 'tagging_sync', payload: { question_ids: [11] } }),
+      44: task({ id: 44, job_type: 'question_import', payload: { request_id: 'a'.repeat(32) } }),
+    }
+    vi.spyOn(jobs, 'initialize').mockResolvedValue()
+    vi.spyOn(jobs, 'refresh').mockResolvedValue()
+    const context = vi.spyOn(questionBankApi, 'taskContext').mockImplementation(async id => id === 43
+      ? { papers: [{ id: 3, title: '合成几何卷' }], source_filename: null }
+      : { papers: [], source_filename: '合成待导入卷.docx' })
+    host.querySelector<HTMLButtonElement>('[aria-label="任务中心"]')!.click()
+    await settleUi(); await settleUi()
+    const popover = document.body.querySelector('.task-center-popover')!
+    expect(popover.querySelector('[data-job-id="41"]')!.textContent).toContain('考试：合成考试7')
+    expect(popover.querySelector('[data-job-id="41"]')!.textContent).not.toContain('合成考试9')
+    expect(popover.querySelector('[data-job-id="41"]')!.textContent).toContain('已批改 36 份答卷，失败 2 份')
+    expect(popover.querySelector('[data-job-id="42"]')!.textContent).toContain('正在准备')
+    expect(popover.querySelector('[data-job-id="43"]')!.textContent).toContain('试卷：合成几何卷')
+    expect(popover.querySelector('[data-job-id="44"]')!.textContent).toContain('导入文件：合成待导入卷.docx')
+    jobs.jobs[43] = task({ id: 43, job_type: 'tagging_sync', status: 'succeeded', result: { outcome: 'partial', failed_count: 1 } })
+    await settleUi(); await settleUi()
+    const row = popover.querySelector('[data-job-id="43"]')!
+    expect(row.textContent).toContain('部分完成')
+    expect(row.textContent).toContain('仍有 1 道题未完成')
+    expect(context).toHaveBeenCalledTimes(3)
+    expect(row.querySelector('button')).toBeNull()
+    app.unmount()
+  })
+  it.each([
+    ['grading_run', '答卷批改'], ['config_generation', '试卷分析与本场赋分'],
+    ['class_analysis_generate', '生成班级分析'], ['question_bank_repair', '补齐题库资料'],
+    ['report_export', '生成学生个人分析报告'], ['personalized_handout_export', '导出训练讲义'],
+      ['personal_report_bundle', '导出学生个人报告'],
+    ['unknown_future_job', '后台处理'],
+  ])('uses a Chinese title for %s', (jobType, expected) => {
+    expect(taskName(task({ job_type: jobType, payload: { report_type: 'personal_analysis_html' } }))).toBe(expected)
+  })
+  it.each([
+    ['all successful', 'tagging_sync', { outcome: 'complete' }, '全部完成'],
+    ['analysis failures', 'tagging_sync', { outcome: 'partial', failed_question_ids: [11] }, '部分完成'],
+    ['rubric review', 'config_generation', { outcome: 'complete', needs_teacher_resolution: true }, '等待教师核对'],
+    ['intake incomplete', 'config_generation', { exam_intake_complete: false }, '部分完成'],
+    ['allocation pending', 'config_generation', { score_allocation_pending: true }, '部分完成'],
+    ['business failed', 'question_import', { outcome: 'failed' }, '未完成'],
+    ['analysis not configured', 'class_analysis_generate', { status: 'not_configured' }, '未完成'],
+    ['remaining gaps', 'question_bank_repair', { remaining: [{ id: 11 }] }, '部分完成'],
+    ['report review', 'report_export', { review_note_count: 3 }, '等待教师核对'],
+    ['scan issues', 'scan_analysis', { summary: { issues: 2 } }, '等待教师核对'],
+    ['grading failures', 'grading_run', { summary: { graded: 3, failed: 1 } }, '部分完成'],
+    ['student export failure', 'wrong_question_export', { failed_students: [{}] }, '部分完成'],
+    ['restart pending', 'ops_restore_prepare', { outcome: 'prepared_restart_required' }, '等待重启完成'],
+    ['unknown finished task', 'unknown_future_job', {}, '处理已结束'],
+    ['legacy result missing', 'tagging_sync', {}, '处理已结束'],
+  ])('distinguishes %s from full completion', (_case, jobType, result, expected) => {
+    const value = task({ job_type: jobType, status: 'succeeded', result })
+    expect(taskOutcome(value).label).toBe(expected)
+    expect(value.status).toBe('succeeded')
+  })
+  it('uses Chinese explanations for raw English, mixed machine errors and cancellation', () => {
+    expect(taskDetail(task({ detail: 'Generating grading configuration.' }))).toContain('正在分析试卷')
+    expect(taskDetail(task({ detail: 'published' }))).toBe('结果已保存')
+    expect(taskDetail(task({ detail: '处理失败：TimeoutError', status: 'failed' }))).toContain('本次处理未完成')
+    expect(taskDetail(task({ detail: 'secret-file.zip' }))).not.toContain('secret-file')
+    expect(taskOutcome(task({ cancel_requested: true })).label).toBe('正在取消')
   })
   it('preserves focus for question-bank bookmarks and focuses the heading on page navigation', async () => {
     const { app, host, router } = await mountShell({ path: '/question-bank', stubPages: true })

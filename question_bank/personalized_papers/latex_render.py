@@ -25,6 +25,7 @@ from typing import Any
 
 from question_bank.document_pipeline.word_renderer import answer_space_lines
 from question_bank.personalized_papers.rendering import PaperRenderError
+from question_bank.services.rich_content_service import strip_question_source_score_blocks
 
 EMU_PER_MM = 36000
 _IMAGE_BLOCK_MAX_WIDTH_MM = 90.0
@@ -765,7 +766,9 @@ def render_training_tex(
             raise LatexRenderError("question has no frozen rich blocks")
         lines = answer_space_lines(question_type, question_text)
         content = _question_blocks_latex(
-            blocks,
+            strip_question_source_score_blocks(
+                blocks, question_number=str(context.get("question_number") or ""),
+            ),
             data_root=data_root,
             number=index,
             answer_lines=lines,

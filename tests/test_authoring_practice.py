@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import warnings
 from pathlib import Path
@@ -15,6 +16,11 @@ warnings.filterwarnings(
 
 from fastapi.testclient import TestClient
 
+from backend.schema_migrations import (
+    SchemaMigrationRequired,
+    ensure_schema_current,
+    inspect_schema_version,
+)
 from question_bank.authoring import AuthoringService
 from question_bank.database.schema import initialize_database
 from question_bank.services.question_read_service import QuestionBankReadService
@@ -22,12 +28,8 @@ from tests.current_knowledge_support import install_current_knowledge
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-AUTHORING_SCHEMA = (
-    PROJECT_ROOT
-    / "question_bank"
-    / "authoring"
-    / "schema_043_add_authoring_practice.sql"
-)
+QUESTION_BANK_MIGRATIONS = PROJECT_ROOT / "migrations" / "question_bank"
+AUTHORING_MIGRATION = "046_add_authoring_practice"
 
 
 def _token(seed: int) -> str:
@@ -40,7 +42,6 @@ def authoring_env(tmp_path: Path):
     initialize_database(db_path)
     install_current_knowledge(db_path)
     with sqlite3.connect(db_path) as conn:
-        conn.executescript(AUTHORING_SCHEMA.read_text(encoding="utf-8"))
         conn.execute(
             "INSERT INTO papers (id, title, import_status)"
             " VALUES (1, 'Authoring paper', 'success')"
@@ -166,6 +167,9 @@ def _create_decompose(client: TestClient, token: int = 1) -> dict:
 
 def test_version_save_conflict_and_idempotent_replay(authoring_env) -> None:
     client, _ = authoring_env
+    initial_list = client.get("/api/authoring/works")
+    assert initial_list.status_code == 200, initial_list.text
+    assert initial_list.json() == {"items": [], "total": 0}
     work = _create_decompose(client, token=30)
     work_id = work["work_id"]
 
@@ -251,3 +255,57 @@ def test_version_save_conflict_and_idempotent_replay(authoring_env) -> None:
 
     first_version = client.get(f"/api/authoring/works/{work_id}/versions/1").json()
     assert first_version["content"]["intent"] == "练习拆解压轴题"
+
+    listed = client.get("/api/authoring/works").json()
+    assert listed["total"] == 1
+    assert listed["items"][0]["current_version"] == 2
+
+
+def test_existing_bank_requires_confirmed_authoring_upgrade(tmp_path: Path) -> None:
+    legacy_migrations = tmp_path / "legacy-migrations"
+    legacy_migrations.mkdir()
+    for migration in sorted(QUESTION_BANK_MIGRATIONS.glob("*.sql")):
+        if migration.stem < AUTHORING_MIGRATION:
+            shutil.copy2(migration, legacy_migrations / migration.name)
+    db_path = tmp_path / "question_bank.db"
+    ensure_schema_current(
+        "question_bank", db_path, migrations_dir=legacy_migrations
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO papers (id, title, import_status)"
+            " VALUES (1, 'TEST-authoring-upgrade', 'success')"
+        )
+        conn.execute(
+            "INSERT INTO questions (id, paper_id, question_number, question_type,"
+            " question_text, answer_text)"
+            " VALUES (1, 1, '1', '填空题', 'TEST: 1 + 1 = ?', '2')"
+        )
+        conn.commit()
+        before_question = conn.execute("SELECT * FROM questions").fetchall()
+        before_paper = conn.execute("SELECT * FROM papers").fetchall()
+    before_database = db_path.read_bytes()
+    assert inspect_schema_version("question_bank", db_path).pending == (
+        AUTHORING_MIGRATION,
+    )
+    with pytest.raises(SchemaMigrationRequired):
+        initialize_database(db_path)
+    assert db_path.read_bytes() == before_database
+
+    ensure_schema_current("question_bank", db_path)
+    assert not inspect_schema_version("question_bank", db_path).pending
+    initialize_database(db_path)
+    service = AuthoringService(db_path)
+    assert service.list_works() == []
+    work = service.create_work(
+        kind="decompose", source_question_id=1, operation_token=_token(40)
+    )
+    assert service.get_work(work["work_id"])["source_question_id"] == 1
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert conn.execute("SELECT * FROM questions").fetchall() == before_question
+        assert conn.execute("SELECT * FROM papers").fetchall() == before_paper
+        assert conn.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE migration_name = ?",
+            (AUTHORING_MIGRATION,),
+        ).fetchone() == (1,)

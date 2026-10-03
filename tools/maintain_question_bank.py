@@ -2,16 +2,19 @@
 
 errors --sessions 3 4 5：把仍匹配当前答卷的既有整理成果回挂题库。
 standard --release PATH [--links PATH]：沿用未变化关联；变化部分须提供已整理的关联。
+source-scores：只读预览题干分值的显示差异，不支持 --apply。
 默认只预演；--apply 仅供已获得本次真实数据操作授权后使用。
 """
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 import tempfile
 from contextlib import closing
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -193,9 +196,90 @@ def install_standard(bank: Path, release, plan: dict, replacements: list[dict]) 
             refresh_derived_ownership_tags(conn, qid)
 
 
+def preview_source_scores(bank: Path, data_root: Path) -> dict:
+    """Read original data in place; emit counts and score-only differences."""
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import qn
+    from lxml.etree import XMLSyntaxError
+    from question_bank.document_pipeline.word_renderer import answer_space_lines
+    from question_bank.services.rich_content_service import (
+        strip_question_source_score, strip_question_source_score_blocks,
+    )
+
+    changed_ids = set()
+    variants, types = Counter(), Counter()
+    rich_changes = blocked = missing = preserved_layout = unsafe_xml = 0
+    body_candidates = 0
+    with closing(readonly(bank)) as conn:
+        conn.execute("BEGIN")
+        rows = conn.execute("""SELECT q.id,q.question_number,q.question_type,q.question_text
+            FROM questions q LEFT JOIN papers p ON p.id=q.paper_id
+            WHERE COALESCE(q.is_deleted,0)=0 AND COALESCE(p.import_status,'')<>'deleted'
+            ORDER BY q.id""").fetchall()
+        for row in rows:
+            original = str(row["question_text"] or "")
+            cleaned = strip_question_source_score(original)
+            body_candidates += bool(re.search(r"[（(]\s*\d+(?:\.\d+)?\s*分\s*[）)]", cleaned))
+            if original == cleaned:
+                continue
+            changed_ids.add(row["id"])
+            types[str(row["question_type"] or "未分类")] += 1
+            match = re.search(r"[（(]\s*\d+(?:\.\d+)?\s*分\s*[）)]", original)
+            if match:
+                variants[match.group(0)] += 1
+            path = data_root / "question_bank" / "rich_content" / f"question_{row['id']}.json"
+            if not path.is_file():
+                missing += 1
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("富内容不是对象")
+                blocks = payload.get("question_blocks") or []
+                if not isinstance(blocks, list) or any(not isinstance(block, dict) for block in blocks):
+                    raise ValueError("题干富内容不是段落列表")
+                proposed = strip_question_source_score_blocks(blocks, question_number=str(row["question_number"]))
+            except (OSError, ValueError, TypeError, XMLSyntaxError):
+                blocked += 1
+                continue
+            rich_changes += blocks != proposed
+            # Compare every XML node except its ordinary text; mathematical
+            # text, attributes, relationships and node order must stay equal.
+            for old, new in zip(blocks, proposed):
+                if old.get("xml") == new.get("xml"):
+                    continue
+                def structure(xml):
+                    return [(n.tag, dict(n.attrib), None if len(n) or n.tag == qn("w:t") else n.text)
+                            for n in parse_xml(str(xml)).iter()]
+                unsafe_xml += structure(old["xml"]) != structure(new["xml"])
+            old_lines = answer_space_lines(row["question_type"], original)
+            if old_lines != answer_space_lines(row["question_type"], cleaned):
+                preserved_layout += 1
+        saved_analysis = {}
+        for table in ("training_criterion_heads", "question_solution_evidence_heads"):
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                saved_analysis[table] = len(changed_ids.intersection(
+                    row[0] for row in conn.execute(f"SELECT question_id FROM {table}")))
+    return {
+        "mode": "readonly_display_preview", "active_questions": len(rows),
+        "changed_stem_questions": len(changed_ids), "changed_stems_by_type": dict(types),
+        "changed_rich_stem_questions": rich_changes, "missing_rich_files": missing,
+        "blocked_rich_questions": blocked, "unexpected_xml_structure_changes": unsafe_xml,
+        "questions_using_original_answer_space": preserved_layout,
+        "remaining_nonprefix_bracket_candidates": body_candidates,
+        "saved_analysis_heads_kept": saved_analysis,
+        "score_only_differences": [
+            {"before": prefix + "［其余题干保持原样］", "after": "［其余题干保持原样］", "question_count": count}
+            for prefix, count in variants.most_common()
+        ],
+        "answers_changed": 0, "model_calls": 0, "applied": False,
+        "source_content_unchanged": True, "analysis_unchanged": True,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("errors", "standard"))
+    parser.add_argument("operation", choices=("errors", "standard", "source-scores"))
     parser.add_argument("--data-root", type=Path, default=ROOT / "user_data")
     parser.add_argument("--sessions", type=int, nargs="+", default=[])
     parser.add_argument("--release", type=Path)
@@ -204,6 +288,11 @@ def main() -> int:
     args = parser.parse_args()
     root = args.data_root.resolve()
     bank, grading = root / "databases/question_bank.db", root / "databases/grading_system.db"
+    if args.operation == "source-scores":
+        if args.apply:
+            parser.error("source-scores 只提供只读预览，不支持 --apply")
+        print(json.dumps(preview_source_scores(bank, root), ensure_ascii=False, indent=2))
+        return 0
     if args.operation == "errors" and not args.sessions:
         parser.error("errors 必须指定 --sessions")
     if args.operation == "standard" and not args.release:

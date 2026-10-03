@@ -2,9 +2,12 @@ import { createApp, nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ReviewItem, ReviewQuestionSummary } from '../api/review'
+import { fetchReviewRubric, type ReviewItem, type ReviewQuestionSummary, type ReviewRubricSection } from '../api/review'
 import ReviewBatchWorkspace from '../components/review/ReviewBatchWorkspace.vue'
 import { useReviewDraftStore } from '../stores/review-drafts'
+
+vi.mock('../api/review', async (importOriginal) => ({ ...await importOriginal<typeof import('../api/review')>(), fetchReviewRubric: vi.fn() }))
+import { clearReviewRubrics } from '../components/review/review-rubric-cache'
 
 const media = {
   crop_url: '/api/crop',
@@ -99,9 +102,44 @@ async function mountWorkspace(
 
 beforeEach(() => {
   document.body.innerHTML = ''
+  clearReviewRubrics()
+  vi.mocked(fetchReviewRubric).mockResolvedValue(null)
 })
 
 describe('question batch review workspace', () => {
+
+  it('skips non-red and locked steps across cards and submits complete explicit step attribution', async () => {
+    const rubric: ReviewRubricSection = { question_id: 'Q1', parent_question_id: 'Q1', question_type: 'calculation', max_score: 5, knowledge_labels: [],
+      points: [3, 2].map((score, index) => ({ part_id: 'Q1', part_label: '', step_id: `S${index + 1}`, core_goal: '测试步骤', score,
+        standard_answer: '', accepted_answers: [], match_rule: '', required_elements: [], deduction_rules: [], answer_only_max_score: null, require_final_answer: null, final_answer_rule: '' })) }
+    vi.mocked(fetchReviewRubric).mockResolvedValue(rubric)
+    const assessments = [{ part_id: 'Q1', step_id: 'S1', score_awarded: 3, achievement: 'full' },
+      { part_id: 'Q1', step_id: 'S2', score_awarded: 0, achievement: 'uncertain' }]
+    const items = [item(1, { review_item_id: 'batch:1', score_awarded: 3, metadata: { step_assessments: assessments } }),
+      item(2, { review_item_id: 'batch:2', score_awarded: 3, score_status: 'ai_ready', metadata: { step_assessments: assessments } }),
+      item(3, { review_item_id: 'batch:3', score_awarded: 3, score_status: 'failed', metadata: { step_assessments: assessments } }),
+      item(4, { review_item_id: 'batch:4', score_awarded: 3, score_status: 'teacher_final', teacher_locked: true, metadata: { step_assessments: assessments } })]
+    const { app, host, confirmBatch } = await mountWorkspace(items, { questions: [{ ...questions[0]!, question_type: 'calculation' }] })
+    await vi.waitFor(() => expect(host.querySelectorAll('.review-step-cell > input')).toHaveLength(8))
+    const inputs = [...host.querySelectorAll<HTMLInputElement>('.review-step-cell > input')]
+    const press = async (input: HTMLInputElement, key: string, shiftKey = false) => {
+      input.focus(); input.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey, bubbles: true, cancelable: true })); await nextTick()
+    }
+    await press(inputs[0]!, 'Tab')
+    expect(document.activeElement).toBe(inputs[1])
+    await press(inputs[1]!, 'Tab')
+    expect(document.activeElement).toBe(inputs[4])
+    await press(inputs[4]!, 'Tab', true)
+    expect(document.activeElement).toBe(inputs[1])
+    expect([...host.querySelectorAll<HTMLInputElement>('.review-step-record input')].every(input => input.tabIndex === -1)).toBe(true)
+    await press(inputs[5]!, 'Enter')
+    expect(confirmBatch).toHaveBeenCalledTimes(1)
+    const payload = confirmBatch.mock.calls[0]![0]
+    expect(payload).toHaveLength(2)
+    expect(payload.every((input: { step_scores: unknown[] }) => input.step_scores.length === 2)).toBe(true)
+    expect(payload[0].step_scores[1]).toEqual({ part_id: 'Q1', step_id: 'S2', score_awarded: 0, teacher_note: null, carried_error_from: null })
+    app.unmount()
+  })
 
   it('blocks the whole batch when one score is invalid and retains every draft', async () => {
     const { app, host, pinia, confirmBatch } = await mountWorkspace()

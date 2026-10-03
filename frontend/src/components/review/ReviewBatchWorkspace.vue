@@ -1,21 +1,28 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { useResizeObserver } from '@vueuse/core'
 
 import {
   resolveReviewItem,
   type ReviewConfirmInput,
   type ReviewItemLike,
   type ReviewQuestionSummary,
+  type ReviewRubricSection,
 } from '../../api/review'
 import {
   reviewDraftKey,
   reviewDraftRevision,
-  scoreIssue,
+  reviewDraftIssue,
+  submittedSteps,
   useReviewDraftStore,
 } from '../../stores/review-drafts'
 import type { ReviewScope, ReviewSort } from '../../stores/review-queue'
 import StatePanel from '../design-system/StatePanel.vue'
 import ReviewAnswerSheet from './ReviewAnswerSheet.vue'
+import ReviewAnswerPanel from './ReviewAnswerPanel.vue'
+import AppIcon from '../shell/AppIcon.vue'
+import { loadReviewRubric } from './review-rubric-cache'
+import { pendingCount, questionStatus, reviewStatus } from './review-status'
 
 const props = defineProps<{
   questions: ReviewQuestionSummary[]
@@ -30,6 +37,7 @@ const props = defineProps<{
   filteredTotal: number
   loading: boolean
   submitting: boolean
+  answerPanelOpen?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -41,10 +49,20 @@ const emit = defineEmits<{
   openItem: [reviewItemId: string]
   focusScore: [reviewItemId: string]
   confirmBatch: [inputs: ReviewConfirmInput[], draftKeys: string[], items: ReviewItemLike[]]
+  toggleAnswerPanel: []
 }>()
 
 const draftStore = useReviewDraftStore()
 const root = ref<HTMLElement | null>(null)
+const rubric = ref<ReviewRubricSection | null>(null)
+const rubricState = ref<'loading' | 'ready' | 'error'>('loading')
+let rubricGeneration = 0
+const answerPanelWidth = computed(() => {
+  try { return Math.max(300, Number(localStorage.getItem('ai-grading:review-answer-panel-width:v1')) || 420) }
+  catch { return 420 }
+})
+const currentQuestion = computed(() => props.questions.find((entry) => entry.question_id === props.selectedQuestionId))
+const sessionId = computed(() => props.queueItems[0]?.session_id ?? props.items[0]?.session_id)
 const selectedQuestionLayout = computed<'compact' | 'expanded'>(() => {
   const questionType = props.questions
     .find((question) => question.question_id === props.selectedQuestionId)
@@ -55,18 +73,19 @@ const selectedQuestionLayout = computed<'compact' | 'expanded'>(() => {
     ? 'compact'
     : 'expanded'
 })
-const prioritizedQuestions = computed(() => [...props.questions].sort((left, right) => {
-  const failedDifference = Number((right.failed_count ?? 0) > 0)
-    - Number((left.failed_count ?? 0) > 0)
-  if (failedDifference !== 0) return failedDifference
-  const reviewDifference = Number(right.needs_review_count > 0)
-    - Number(left.needs_review_count > 0)
-  if (reviewDifference !== 0) return reviewDifference
-  return props.questions.indexOf(left) - props.questions.indexOf(right)
-}))
-const editableItems = computed(() =>
-  props.queueItems.filter((item) => !resolveReviewItem(item).teacher_locked),
-)
+const orderedQuestions = computed(() => [...props.questions].sort((left, right) =>
+  left.question_id.localeCompare(right.question_id, 'zh-CN', { numeric: true })))
+function nextPendingQuestion(): void {
+  const entries = orderedQuestions.value
+  const start = entries.findIndex((entry) => entry.question_id === props.selectedQuestionId)
+  for (let offset = 1; offset <= entries.length; offset += 1) {
+    const entry = entries[(start + offset) % entries.length]!
+    if (pendingCount(entry) > 0) { emit('selectQuestion', entry.question_id); return }
+  }
+}
+function questionTitle(question: ReviewQuestionSummary): string {
+  return `${question.question_id}，待人工 ${question.ungraded_count ?? 0}，处理失败 ${question.failed_count ?? 0}，待复核 ${question.needs_review_count}，AI 已评 ${question.ai_ready_count ?? 0}，教师已确认 ${question.teacher_confirmed_count ?? 0}，总计 ${question.total_count}，满分 ${question.max_score}`
+}
 const actionableItems = computed(() =>
   props.queueItems.filter((item) => {
     const resolved = resolveReviewItem(item)
@@ -78,10 +97,11 @@ const actionableItems = computed(() =>
 const invalidItems = computed(() => actionableItems.value.filter((item) => {
   const resolved = resolveReviewItem(item)
   const draft = draftStore.drafts[reviewDraftKey(item)] ?? draftStore.ensureDraft(item)
-  return scoreIssue(draft.scoreText, resolved.max_score) !== null
+  return reviewDraftIssue(draft, resolved.max_score) !== null
 }))
 const submitDisabled = computed(() =>
   props.loading
+  || rubricState.value === 'loading'
   || props.submitting
   || actionableItems.value.length === 0
   || invalidItems.value.length > 0,
@@ -109,8 +129,9 @@ async function focusScore(reviewItemId: string): Promise<void> {
     '[data-review-item-id]',
   ) ?? [])].find((entry) => entry.dataset.reviewItemId === reviewItemId)
   const input = card?.querySelector<HTMLInputElement>(
-    '[data-score-position]:not(:disabled)',
+    '[data-score-position][aria-invalid="true"]:not(:disabled)',
   )
+    ?? card?.querySelector<HTMLInputElement>('[data-score-position]:not(:disabled)')
   if (input) {
     input.focus()
     return
@@ -121,6 +142,7 @@ async function focusScore(reviewItemId: string): Promise<void> {
 function submitBatch(focusInvalid = false): void {
   if (
     props.loading
+    || rubricState.value === 'loading'
     || props.submitting
     || actionableItems.value.length === 0
   ) return
@@ -138,7 +160,7 @@ function submitBatch(focusInvalid = false): void {
   for (const item of actionableItems.value) {
     const resolved = resolveReviewItem(item)
     const draft = draftStore.drafts[reviewDraftKey(item)] ?? draftStore.ensureDraft(item)
-    const issue = scoreIssue(draft.scoreText, resolved.max_score)
+    const issue = reviewDraftIssue(draft, resolved.max_score)
     if (issue !== null) return
     const note = draft.note.trim()
     inputs.push({
@@ -149,9 +171,7 @@ function submitBatch(focusInvalid = false): void {
       detail_id: resolved.detail_id,
       score_awarded: Number(draft.scoreText.trim()),
       ...(note ? { deduction_reason: note } : {}),
-      ...(draft.stepScores ? { step_scores: draft.stepScores.map((step) => ({
-        part_id: step.partId, step_id: step.stepId, score_awarded: Number(step.scoreText),
-      })) } : {}),
+      ...(draft.stepScores ? { step_scores: submittedSteps(draft) } : {}),
     })
     draftKeys.push(draft.key)
     submittedItems.push(item)
@@ -160,20 +180,20 @@ function submitBatch(focusInvalid = false): void {
   emit('confirmBatch', inputs, draftKeys, submittedItems)
 }
 
-function onScoreKeydown(event: KeyboardEvent, reviewItemId: string): void {
+function onScoreKeydown(event: KeyboardEvent): void {
   if (props.loading || props.submitting || event.repeat) {
     event.preventDefault()
     return
   }
   const direction = event.key === 'Tab' && event.shiftKey ? -1 : 1
-  const currentIndex = editableItems.value.findIndex(
-    (item) => resolveReviewItem(item).review_item_id === reviewItemId,
-  )
-  if (currentIndex < 0) return
-  const target = editableItems.value[currentIndex + direction]
+  const inputs = [...(root.value?.querySelectorAll<HTMLInputElement>('[data-score-position]:not(:disabled)') ?? [])]
+  const currentIndex = inputs.indexOf(event.target as HTMLInputElement)
+  const target = direction > 0 ? inputs.slice(currentIndex + 1).find((input) => input.dataset.reviewRed === 'true')
+    : inputs.slice(0, currentIndex).reverse().find((input) => input.dataset.reviewRed === 'true')
+  event.preventDefault()
   if (target) {
-    event.preventDefault()
-    void focusScore(resolveReviewItem(target).review_item_id)
+    target.focus()
+    target.select()
     return
   }
   if (event.key === 'Enter' && direction > 0) {
@@ -183,10 +203,36 @@ function onScoreKeydown(event: KeyboardEvent, reviewItemId: string): void {
 }
 
 watch(
-  () => props.queueItems,
-  (items) => items.forEach((item) => draftStore.ensureDraft(item)),
+  [() => props.queueItems, rubric],
+  () => props.queueItems.forEach((item) => { draftStore.ensureDraft(item); draftStore.ensureSteps(item, rubric.value) }),
   { immediate: true },
 )
+function scrollToSelectedQuestion(): void {
+  const strip = root.value?.querySelector<HTMLElement>('.review-question-strip')
+  const selected = strip?.querySelector<HTMLElement>('[aria-current="true"]')
+  if (!strip || !selected) return
+  const visible = strip.getBoundingClientRect()
+  const chip = selected.getBoundingClientRect()
+  if (chip.right > visible.right) strip.scrollLeft += chip.right - visible.right
+  else if (chip.left < visible.left) strip.scrollLeft += chip.left - visible.left
+}
+useResizeObserver(root, scrollToSelectedQuestion)
+watch([() => props.selectedQuestionId, () => props.questions], async () => {
+  await nextTick()
+  scrollToSelectedQuestion()
+}, { immediate: true })
+watch([sessionId, () => props.selectedQuestionId], async ([session, question]) => {
+  const generation = ++rubricGeneration
+  rubric.value = null
+  if (!session || !question || selectedQuestionLayout.value === 'compact') { rubricState.value = 'ready'; return }
+  rubricState.value = 'loading'
+  try {
+    const loaded = await loadReviewRubric(session, question)
+    if (generation !== rubricGeneration) return
+    rubric.value = loaded
+    rubricState.value = 'ready'
+  } catch { if (generation === rubricGeneration) rubricState.value = 'error' }
+}, { immediate: true })
 </script>
 
 <template>
@@ -196,38 +242,20 @@ watch(
     data-testid="review-batch-workspace"
     :aria-busy="loading ? 'true' : 'false'"
   >
-    <nav class="review-question-strip" data-testid="question-strip" aria-label="按题号选择复核内容">
-      <button
-        v-for="question in prioritizedQuestions"
-        :key="question.question_id"
-        type="button"
-        :data-question-id="question.question_id"
-        :data-has-failed="(question.failed_count ?? 0) > 0 ? 'true' : undefined"
-        :data-needs-review="question.needs_review_count > 0 ? 'true' : undefined"
-        :aria-label="(question.failed_count ?? 0) > 0
-          ? `${question.question_id}，有 ${question.failed_count} 份答卷 AI 评分失败`
-          : question.needs_review_count > 0
-            ? `${question.question_id}，有 ${question.needs_review_count} 份答卷需要人工复核`
-            : question.question_id"
-        :aria-current="question.question_id === selectedQuestionId ? 'true' : undefined"
-        @click="emit('selectQuestion', question.question_id)"
-      >
-        <strong>{{ question.question_id }}</strong>
-        <span v-if="(question.failed_count ?? 0) > 0">
-          失败 {{ question.failed_count }} ·
-          待人工 {{ question.ungraded_count ?? 0 }} ·
-          待复核 {{ question.needs_review_count }} ·
-          AI 已评 {{ question.ai_ready_count ?? 0 }}
-        </span>
-        <span v-else>
-          待人工 {{ (question.ungraded_count ?? 0) + (question.failed_count ?? 0) }} ·
-          待复核 {{ question.needs_review_count }} ·
-          AI 已评 {{ question.ai_ready_count ?? 0 }}
-        </span>
-        <span>教师确认 {{ question.teacher_confirmed_count ?? 0 }} / 总计 {{ question.total_count }}</span>
-        <span>满分 {{ question.max_score }}</span>
-      </button>
-    </nav>
+    <div class="review-question-strip-wrap">
+      <nav class="review-question-strip" data-testid="question-strip" aria-label="按题号选择复核内容">
+        <button v-for="question in orderedQuestions" :key="question.question_id" type="button"
+          class="review-question-chip" :data-question-id="question.question_id" :data-status="questionStatus(question)"
+          :style="{ '--review-status-color': reviewStatus[questionStatus(question)].color }"
+          :title="questionTitle(question)" :aria-label="questionTitle(question)"
+          :aria-current="question.question_id === selectedQuestionId ? 'true' : undefined"
+          @click="emit('selectQuestion', question.question_id)">
+          <strong>{{ question.question_id }}</strong><span>{{ pendingCount(question) ? `剩 ${pendingCount(question)}` : '✓' }}</span>
+          <i class="review-question-chip__progress"><i :style="{ width: `${(question.teacher_confirmed_count ?? 0) / (question.total_count || 1) * 100}%` }" /></i>
+        </button>
+      </nav>
+      <button type="button" class="review-question-next" :disabled="!questions.some(q => pendingCount(q) > 0)" @click="nextPendingQuestion">下一道待处理 ›</button>
+    </div>
 
     <div class="review-batch-toolbar" aria-label="批量复核筛选">
       <label class="review-batch-toolbar__search" for="review-search">
@@ -259,9 +287,17 @@ watch(
           <option value="student_name">按姓名</option>
         </select>
       </label>
-      <span class="review-batch-toolbar__count">当前结果 {{ filteredTotal }} 份</span>
+      <div v-if="currentQuestion" class="review-batch-progress">
+        <span>本题已确认 {{ currentQuestion.teacher_confirmed_count ?? 0 }}/{{ currentQuestion.total_count }} · 待处理 {{ pendingCount(currentQuestion) }}</span>
+        <progress :value="currentQuestion.teacher_confirmed_count ?? 0" :max="currentQuestion.total_count || 1" aria-label="本题确认进度" />
+      </div>
+      <button type="button" class="review-deep-workspace__panel-toggle" :aria-pressed="answerPanelOpen === true" @click="emit('toggleAnswerPanel')"><AppIcon name="book-open" :size="14" />题目与答案</button>
+      <span class="review-batch-legend">红框：AI 拿不准或需要人工评分，Tab 只在红框间跳</span>
     </div>
 
+    <p v-if="rubricState === 'error'" class="review-field-error review-batch-rubric-notice">评分标准暂时无法读取，不影响查看和编辑当前分数。</p>
+    <div class="review-batch-body" :class="{ 'review-batch-body--answers': answerPanelOpen }" :style="{ '--review-answer-panel-width': `${answerPanelWidth}px` }">
+    <div class="review-batch-grid-wrap">
     <StatePanel
       v-if="items.length === 0 && loading"
       kind="loading"
@@ -285,37 +321,42 @@ watch(
         :key="itemKey(item)"
         :item="item"
         :position="index"
-        :submitting="submitting"
+        :submitting="submitting || rubricState === 'loading'"
+        :rubric="rubric"
         @open-item="emit('openItem', $event)"
         @score-keydown="onScoreKeydown"
       />
     </div>
 
-    <nav class="review-batch-pagination" aria-label="答卷批次">
-      <button type="button" :disabled="page <= 1" @click="emit('updatePage', page - 1)">
-        上一批
-      </button>
-      <span>第 {{ page }} / {{ totalPages }} 批</span>
-      <button type="button" :disabled="page >= totalPages" @click="emit('updatePage', page + 1)">
-        下一批
-      </button>
-    </nav>
+    </div>
+    <ReviewAnswerPanel v-if="answerPanelOpen && sessionId" :session-id="sessionId" :question-id="selectedQuestionId" @close="emit('toggleAnswerPanel')" />
+    </div>
 
     <footer class="review-batch-actions">
       <div>
         <strong>本题需要教师处理 {{ actionableItems.length }} 份</strong>
         <span v-if="invalidItems.length > 0">其中 {{ invalidItems.length }} 份分数需要修正</span>
-        <span v-else-if="actionableItems.length > 0">未批答卷需填写分数；待复核 AI 分可直接确认或修改</span>
-        <span v-else>本批只有高置信 AI 结果，无需逐份确认；修改后才会进入保存范围</span>
+        <span v-else>{{ draftStore.dirtyCount }} 条草稿未确认</span>
       </div>
+    <nav class="review-batch-pagination" aria-label="答卷批次">
+      <button type="button" :disabled="page <= 1" @click="emit('updatePage', page - 1)">
+        ‹ 上一批
+      </button>
+      <span>第 {{ page }} / {{ totalPages }} 批</span>
+      <button type="button" :disabled="page >= totalPages" @click="emit('updatePage', page + 1)">
+        下一批 ›
+      </button>
+    </nav>
+
       <button
         type="button"
         data-testid="confirm-batch"
         :disabled="submitDisabled"
         @click="submitBatch()"
       >
-        {{ submitting ? '正在保存本题' : '保存本题处理结果' }}
+        {{ submitting ? '正在确认本题…' : `确认本题处理结果（${actionableItems.length}）` }}
       </button>
+      <p class="review-batch-shortcuts"><kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> 下一个 / 上一个红框 · <kbd>Enter</kbd> 下一个，最后一个确认本题 · <kbd>J</kbd> / <kbd>K</kbd> 切换选中 · <kbd>/</kbd> 搜索</p>
     </footer>
   </section>
 </template>

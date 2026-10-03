@@ -7,11 +7,13 @@ import StatusBadge from '@/components/design-system/StatusBadge.vue'
 
 import {
   computed,
+  defineAsyncComponent,
   nextTick,
   onBeforeUnmount,
   onMounted,
   reactive,
   ref,
+  watch,
 } from 'vue'
 
 import {
@@ -26,6 +28,17 @@ import {
 } from '../api/model-profiles'
 import { useModelProfilesStore } from '../stores/model-profiles'
 import '../styles/model-profiles.css'
+
+const AiDiagnosticsPanel = defineAsyncComponent(() => import('../components/settings/AiDiagnosticsPanel.vue'))
+const props = defineProps<{ scrollToLog?: boolean }>()
+const diagnosticsOpen = ref(false)
+const diagnosticsDisclosure = ref<HTMLDetailsElement | null>(null)
+watch(() => props.scrollToLog, async value => {
+  if (!value) return
+  diagnosticsOpen.value = true
+  await nextTick()
+  diagnosticsDisclosure.value?.scrollIntoView({ block: 'start' })
+}, { immediate: true })
 
 const drawerOpen = ref(false)
 const accountStatuses = ref<Record<string, ModelExecutionStatus>>({})
@@ -435,8 +448,14 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </section>
-      <router-link class="settings-link" to="/settings?section=system#ai-call-log">查看 AI 调用记录 →</router-link>
     </template>
+    <details id="ai-call-log" ref="diagnosticsDisclosure" class="settings-panel settings-disclosure settings-log-panel" :open="diagnosticsOpen" @toggle="diagnosticsOpen = ($event.target as HTMLDetailsElement).open">
+      <summary>AI 调用记录</summary>
+      <div v-if="diagnosticsOpen" class="settings-panel__body">
+        <p class="settings-note">记录只保存在本机。</p>
+        <AiDiagnosticsPanel />
+      </div>
+    </details>
     <Sheet :open="drawerOpen" @update:open="closeDrawer">
       <SheetContent class="settings-drawer" :aria-describedby="undefined" @interact-outside="event => { if (isBusy) event.preventDefault() }" @escape-key-down="event => { if (isBusy) event.preventDefault() }">
         <SheetHeader class="settings-drawer__header"><SheetTitle>{{ isNew ? '添加服务' : '编辑服务' }}</SheetTitle></SheetHeader>

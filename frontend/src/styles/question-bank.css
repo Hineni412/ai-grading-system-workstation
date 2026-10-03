@@ -2761,7 +2761,7 @@
 .qb-inline-card__heading-actions { margin-left: auto; display: flex; align-items: center; gap: 7px; flex: none; }
 .qb-inline-card__heading-actions > button { font-size: 12px; height: 30px; min-height: 30px; padding: 0 10px; }
 .qb-inline-card__collapsed { padding: 0 13px 10px; }
-.qb-inline-card__stem { margin-top: 7px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-height: 41.6px; font-size: 13px; line-height: 1.6; }
+.qb-inline-card__stem { margin-top: 7px; font-size: 13px; line-height: 1.6; }
 .qb-inline-card__stem p { margin: 0; }
 .qb-inline-card__skills, .qb-skill-capsules, .qb-expanded-links { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; margin-top: 7px; font-size: 11.5px; color: var(--color-text-muted); }
 .qb-inline-card__skills .qb-topic-capsule { min-height: 20px; padding: 1px 8px; border-radius: 999px; font-size: 11px; color: var(--color-info); background: var(--color-info-subtle); border: 1px solid color-mix(in srgb, var(--color-info) 15%, transparent); }

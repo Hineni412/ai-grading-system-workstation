@@ -108,8 +108,8 @@ describe('review scoring inspector', () => {
     ] })
     const { app, host } = await mountInspector([{ ...item, review_item_id: 'batch:1:Q1',
       metadata: { step_assessments: [
-        { part_id: 'Q1', step_id: 'S1', score_awarded: 3 },
-        { part_id: 'Q1', step_id: 'S2', score_awarded: 0 },
+        { part_id: 'Q1', step_id: 'S1', score_awarded: 3, teacher_note: null, carried_error_from: null },
+        { part_id: 'Q1', step_id: 'S2', score_awarded: 0, teacher_note: null, carried_error_from: null },
       ] } }])
     // 可分步复核时自动进入步骤模式，AI 步骤分与总分一致则预填到快捷输入。
     const quick = await vi.waitFor(() => {
@@ -134,8 +134,8 @@ describe('review scoring inspector', () => {
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledWith(7, 'Q1', expect.objectContaining({
       score_awarded: 4,
       step_scores: [
-        { part_id: 'Q1', step_id: 'S1', score_awarded: 2 },
-        { part_id: 'Q1', step_id: 'S2', score_awarded: 2 },
+        { part_id: 'Q1', step_id: 'S1', score_awarded: 2, teacher_note: null, carried_error_from: null },
+        { part_id: 'Q1', step_id: 'S2', score_awarded: 2, teacher_note: null, carried_error_from: null },
       ],
     })))
     app.unmount()
@@ -147,8 +147,8 @@ describe('review scoring inspector', () => {
     ] })
     const { app, host, pinia } = await mountInspector([{ ...item, review_item_id: 'batch:1:Q1',
       metadata: { step_assessments: [
-        { part_id: 'Q1', step_id: 'S1', score_awarded: 3 },
-        { part_id: 'Q1', step_id: 'S2', score_awarded: 0 },
+        { part_id: 'Q1', step_id: 'S1', score_awarded: 3, teacher_note: null, carried_error_from: null },
+        { part_id: 'Q1', step_id: 'S2', score_awarded: 0, teacher_note: null, carried_error_from: null },
       ] } }])
     const first = await vi.waitFor(() => {
       const found = host.querySelectorAll<HTMLInputElement>('.review-quick-score input')
@@ -177,8 +177,8 @@ describe('review scoring inspector', () => {
     ] })
     const { app, host } = await mountInspector([{ ...item, review_item_id: 'batch:1:Q1',
       metadata: { step_assessments: [
-        { part_id: 'Q1', step_id: 'S1', score_awarded: 3 },
-        { part_id: 'Q1', step_id: 'S2', score_awarded: 0 },
+        { part_id: 'Q1', step_id: 'S1', score_awarded: 3, teacher_note: null, carried_error_from: null },
+        { part_id: 'Q1', step_id: 'S2', score_awarded: 0, teacher_note: null, carried_error_from: null },
       ] } }])
     document.body.append(host)
     const quick = await vi.waitFor(() => {
@@ -224,8 +224,8 @@ describe('review scoring inspector', () => {
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledWith(7, 'Q1', expect.objectContaining({
       score_awarded: 3,
       step_scores: [
-        { part_id: 'Q1', step_id: 'S1', score_awarded: 3 },
-        { part_id: 'Q1', step_id: 'S2', score_awarded: 0 },
+        { part_id: 'Q1', step_id: 'S1', score_awarded: 3, teacher_note: null, carried_error_from: null },
+        { part_id: 'Q1', step_id: 'S2', score_awarded: 0, teacher_note: null, carried_error_from: null },
       ],
     })))
     app.unmount()
@@ -326,7 +326,7 @@ describe('review scoring inspector', () => {
     vi.mocked(confirmReviewItem).mockImplementation(() => new Promise((resolve) => {
       resolveConfirmation = resolve
     }))
-    const { app, host, pinia, annotationRetry } = await mountInspector([item, second])
+    const { app, host, pinia, annotationRetry, confirmed } = await mountInspector([item, second])
     const queue = useReviewQueueStore(pinia)
     const input = host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
     input.value = '4'
@@ -342,9 +342,8 @@ describe('review scoring inspector', () => {
       annotation_outcomes: [{ result_id: 11, status: 'retry_required' }],
     })
 
-    await vi.waitFor(() => expect(
-      document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
-    ).toContain('分数已确认，标注图需要稍后刷新'))
+    await vi.waitFor(() => expect(confirmed).toHaveBeenCalledTimes(1))
+    expect(document.body.querySelectorAll('[data-testid="review-feedback-toast"]')).toHaveLength(0)
     expect(useReviewDraftStore(pinia).drafts['review-item:7:Q1:21']).toBeUndefined()
     expect(queue.selectedDetailId).toBe(22)
     expect(fetchReviewItems).not.toHaveBeenCalled()
@@ -367,7 +366,7 @@ describe('review scoring inspector', () => {
     vi.mocked(confirmReviewItem).mockImplementation(() => new Promise((resolve) => {
       resolveConfirmation = resolve
     }))
-    const { app, host, pinia } = await mountInspector()
+    const { app, host, pinia, confirmed } = await mountInspector()
     const queue = useReviewQueueStore(pinia)
     const input = host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
     input.value = '4'
@@ -389,9 +388,8 @@ describe('review scoring inspector', () => {
     await nextTick()
     resolveConfirmation!({ updated_details: 1, updated_results: 1, annotation_outcomes: [] })
 
-    await vi.waitFor(() => expect(
-      document.body.querySelector('[data-testid="review-feedback-toast"]')?.textContent,
-    ).toContain('教师最终分已确认'))
+    await vi.waitFor(() => expect(confirmed).toHaveBeenCalledTimes(1))
+    expect(document.body.querySelectorAll('[data-testid="review-feedback-toast"]')).toHaveLength(0)
     expect(useReviewDraftStore(pinia).drafts['review-item:7:Q1:21']).toBeUndefined()
     expect(queue.currentItem).toMatchObject({
       session_id: 8,

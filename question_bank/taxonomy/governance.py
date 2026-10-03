@@ -162,7 +162,12 @@ def _text(value: object) -> str:
 
 
 def _normalized_name(value: object) -> str:
-    normalized = unicodedata.normalize("NFKC", _text(value)).casefold()
+    return _normalized_name_text(_text(value))
+
+
+@lru_cache(maxsize=4096)
+def _normalized_name_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
     return re.sub(r"[\s\W_]+", "", normalized)
 
 

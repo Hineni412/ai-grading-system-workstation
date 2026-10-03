@@ -13,6 +13,99 @@ from question_bank.services.assembly_workspace_service import AssemblyWorkspaceS
 from tests.question_bank_support import QuestionBankTestStore
 
 
+def test_import_keeps_source_and_only_exports_hide_score_with_original_space(tmp_path):
+    import json
+    from copy import deepcopy
+    from zipfile import ZipFile
+    from docx import Document
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+    from PIL import Image
+    from question_bank.database.schema import connect
+    from question_bank.document_pipeline.legacy_exports import published_math_metadata
+    from question_bank.exporters.paper_docx_exporter import export_question_paper_docx
+    from question_bank.exporters.paper_pdf_exporter import _blocks, _render_source
+    from question_bank.importers.batch_importer import import_scanned_papers, ScannedPaper
+    from question_bank.personalized_papers.latex_render import render_training_tex
+    from question_bank.personalized_papers.rendering import inspect_docx, render_review_docx
+    from question_bank.services.rich_content_service import load_question_rich_content
+    from question_bank.training_criteria.adapters import QuestionAnalysisInputLoader
+
+    root = tmp_path / 'TEST-score-display'
+    bank = root / 'databases/question_bank.db'
+    image = tmp_path / 'TEST-figure.png'
+    Image.new('RGB', (40, 20), 'navy').save(image)
+    source = tmp_path / 'TEST-source-score.docx'
+    document = Document()
+    stem = document.add_paragraph()
+    stem.add_run('1. （').bold = True
+    stem.add_run('8').italic = True
+    stem.add_run(' 分）小明跑了5分钟，已知 ')
+    stem._p.append(parse_xml(f'<m:oMath {nsdecls("m")}><m:r><m:t>x+1</m:t></m:r></m:oMath>'))
+    stem.add_run(' 的值为____。')
+    stem.add_run().add_picture(str(image))
+    document.add_paragraph('参考答案')
+    document.add_paragraph('1. （8分）答案为2，游戏答对可得3分。')
+    document.save(source)
+    source_bytes, image_bytes = source.read_bytes(), image.read_bytes()
+    result = import_scanned_papers([ScannedPaper(source_file=str(source), file_type='docx')], bank,
+                                   data_root=root, archive_sources=False)
+    assert result.failed_files == 0 and result.question_count == 1
+    with connect(bank) as conn:
+        row = dict(conn.execute('SELECT * FROM questions').fetchone())
+    assert row['question_text'].startswith('（8 分）') and row['question_type'] == '解答题'
+    assert row['answer_text'].startswith('（8分）')
+    rich_path = root / 'question_bank/rich_content' / f"question_{row['id']}.json"
+    rich = load_question_rich_content(row['id'], root=rich_path.parent)
+    assert '8 分' in rich['question_blocks'][0]['text']
+    assert 'answer_space_lines' not in rich['question_blocks'][0]
+    before = bank.read_bytes(), rich_path.read_bytes(), deepcopy(rich)
+    loader = QuestionAnalysisInputLoader(db_path=bank, data_root=root)
+    (analysis_input,) = loader.load([row['id']])
+
+    word = export_question_paper_docx(bank, [row['id']], root / 'word', title='TEST去分值', include_answer=True)
+    exported = Document(word)
+    word_text = '\n'.join(p.text for p in exported.paragraphs)
+    assert '8 分' not in word_text.split('答案', 1)[0]
+    assert '（8分）答案为2' in word_text and '5分钟' in word_text
+    assert len(exported.tables[0].rows) == 8
+    with ZipFile(word) as archive:
+        xml = archive.read('word/document.xml').decode('utf-8')
+        assert '<m:t>x+1</m:t>' in xml and '<a:blip ' in xml
+        assert '<w:b' in xml and '<w:i' in xml
+
+    row['image_paths'] = json.loads(row['image_paths'])
+    metadata = published_math_metadata(row['id'], data_root=root, question_text=row['question_text'],
+                                       answer_text=row['answer_text'])
+    blocks = _blocks(row, metadata, 'question_blocks', root)
+    tex = _render_source([('', [(1, row)])], {row['id']: (blocks, [])}, data_root=root,
+                         title='TEST分值显示', header_text='', include_answer=False, include_answer_space=True,
+                         include_student_fields=False, choices={}, footer='', probes=False)
+    assert '8 分' not in tex and r'\LayoutAnswerSpace{1}{8}' in tex
+
+    snapshot = {
+        'paper_instance_id': 'a' * 64, 'series_version': 1,
+        'student': {'student_id': 'TEST-1', 'student_name': '测试学生', 'class_id': '测试班'},
+        'items': [{'task_item_code': 'TEST-TASK-1', 'question_id': row['id'], 'question_snapshot': {
+            'question_id': row['id'], 'tagging_context': analysis_input.tagging_context.to_dict(),
+            'rich_question_blocks': rich['question_blocks'], 'images': []}}],
+    }
+    snapshot_before = deepcopy(snapshot)
+    training_word = root / 'TEST-training.docx'
+    render_review_docx(snapshot, data_root=root, output_path=training_word)
+    trained = Document(training_word)
+    assert len(trained.tables[0].rows) == 8
+    assert '8 分' not in '\n'.join(p.text for p in trained.paragraphs)
+    inspect_docx(training_word, paper_instance_id=snapshot['paper_instance_id'], task_item_codes=['TEST-TASK-1'],
+                 question_snapshots=[snapshot['items'][0]['question_snapshot']])
+    training_tex = render_training_tex(snapshot, data_root=root)
+    assert '8 分' not in training_tex and ('36.0mm' in training_tex or '72mm' in training_tex)
+    assert snapshot == snapshot_before
+    assert (bank.read_bytes(), rich_path.read_bytes(), rich) == before
+    assert loader.load([row['id']]) == (analysis_input,)
+    assert (source.read_bytes(), image.read_bytes()) == (source_bytes, image_bytes)
+
+
 @pytest.mark.parametrize("export_format", ["markdown", "pdf"])
 def test_assembly_export_job_publishes_records_and_clears_same_draft(
     tmp_path: Path,
@@ -170,7 +263,7 @@ def test_pdf_export_compiles_rich_tables_large_figures_and_plain_math(tmp_path: 
         QuestionCreate(
             question_number="7",
             question_type="选择题",
-            question_text="测试选择题 求 $x^2+1$。\nA. 1 B. 2 C. 3 D. 4",
+            question_text="（3分）测试选择题 求 $x^2+1$。\nA. 1 B. 2 C. 3 D. 4",
             answer_text="测试选择解析 B",
         )
     )
@@ -178,8 +271,8 @@ def test_pdf_export_compiles_rich_tables_large_figures_and_plain_math(tmp_path: 
         QuestionCreate(
             question_number="28",
             question_type="解答题",
-            question_text="测试大图与跨页表格",
-            answer_text="测试解答解析 $x=2$。",
+            question_text="（8分）测试大图与跨页表格",
+            answer_text="（8分）测试解答解析 $x=2$。",
             image_paths=[str(root / "question_bank" / "assets" / "TEST-copy.png")],
         )
     )
@@ -192,7 +285,7 @@ def test_pdf_export_compiles_rich_tables_large_figures_and_plain_math(tmp_path: 
     image.save(picture)
     image.save(picture.with_name("TEST-copy.png"), compress_level=0)
     document = Document()
-    document.add_paragraph("28. 测试大图与跨页表格，图中要素应保留。")
+    document.add_paragraph("28. （8分）测试大图与跨页表格，图中要素应保留。")
     document.add_paragraph().add_run().add_picture(str(picture), width=Inches(5.5))
     table = document.add_table(rows=42, cols=2)
     table.cell(0, 0).merge(table.cell(2, 0)).text = "测试合并单元格"
@@ -303,6 +396,9 @@ def test_pdf_export_compiles_rich_tables_large_figures_and_plain_math(tmp_path: 
     with fitz.open(output) as pdf:
         text = "".join(page.get_text() for page in pdf)
         assert "测试选择题" in text and "测试末尾小问" in text
+        student_text = "".join(text.split("答案解析", 1)[0].split())
+        assert "3分" not in student_text and "8分" not in student_text
+        assert "8分" in "".join(text.split("答案解析", 1)[1].split())
         assert "测试表格第41行" in "".join(text.split()) and "测试合并单元格" in text
         assert (
             text.index("测试末尾小问")

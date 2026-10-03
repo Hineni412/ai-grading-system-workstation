@@ -311,6 +311,40 @@ afterEach(async () => {
 
 describe('source-recalibrated review view', () => {
 
+  it('orders question numbers naturally and wraps to the next pending question', async () => {
+    const { host, reviewStore } = await mountView({
+      initialUrl: '/grading?session=7&question=Q10',
+      reviewQuestions: [
+        { ...questions[0]!, question_id: 'Q10', needs_review_count: 1 },
+        { ...questions[0]!, question_id: 'Q2', needs_review_count: 0, ai_ready_count: 2 },
+        { ...questions[0]!, question_id: 'Q1', needs_review_count: 1 },
+      ],
+      reviewItems: { Q1: itemsByQuestion.Q1!, Q10: [item(31, { question_id: 'Q10' })] },
+    })
+    expect([...host.querySelectorAll('.review-question-chip')].map(button =>
+      button.getAttribute('data-question-id'))).toEqual(['Q1', 'Q2', 'Q10'])
+    host.querySelector<HTMLButtonElement>('.review-question-next')!.click()
+    await vi.waitFor(() => expect(reviewStore.selectedQuestionId).toBe('Q1'))
+    host.querySelector<HTMLButtonElement>('.review-question-next')!.click()
+    await vi.waitFor(() => expect(reviewStore.selectedQuestionId).toBe('Q10'))
+  })
+
+  it('shares the answer panel switch between batch and deep review', async () => {
+    const { host, reviewStore } = await mountView()
+    host.querySelector<HTMLButtonElement>('.review-deep-workspace__panel-toggle')!.click()
+    await vi.waitFor(() => expect(host.querySelector('.review-answer-panel')).not.toBeNull())
+    expect(localStorage.getItem('ai-grading:review-answer-panel:v1')).toBe('1')
+    host.querySelector<HTMLButtonElement>('.review-answer-sheet__deep')!.click()
+    await vi.waitFor(() => expect(reviewStore.mode).toBe('deep'))
+    expect(host.querySelector('.review-answer-panel')).not.toBeNull()
+    host.querySelector<HTMLButtonElement>('.review-deep-workspace__panel-toggle')!.click()
+    await vi.waitFor(() => expect(host.querySelector('.review-answer-panel')).toBeNull())
+    host.querySelector<HTMLButtonElement>('[data-testid="back-to-batch"]')!.click()
+    await vi.waitFor(() => expect(reviewStore.mode).toBe('batch'))
+    expect(host.querySelector('.review-answer-panel')).toBeNull()
+    expect(host.querySelector('.review-deep-workspace__panel-toggle')?.getAttribute('aria-pressed')).toBe('false')
+  })
+
   it('keeps every batch draft when confirmation fails', async () => {
     vi.mocked(confirmReviewItems).mockRejectedValue(new Error('private server failure'))
     const { host, pinia } = await mountView()
@@ -331,7 +365,7 @@ describe('source-recalibrated review view', () => {
     expect(document.body.textContent).not.toContain('private server failure')
   })
 
-  it('moves across the 24/25 boundary and submits every page once from the final score', async () => {
+  it('keeps Tab within the current page and submits the complete queue from its last red frame', async () => {
     const wholeClass = Array.from({ length: 25 }, (_, offset) => item(offset + 1))
     const { host, reviewStore } = await mountView({
       reviewQuestions: [{
@@ -349,13 +383,12 @@ describe('source-recalibrated review view', () => {
 
     pageOneLast.focus()
     const tab = dispatchKey(pageOneLast, 'Tab')
-    await vi.waitFor(() => expect(reviewStore.page).toBe(2))
-    await vi.waitFor(() => expect(
-      document.activeElement,
-    ).toBe(host.querySelector<HTMLInputElement>('[data-testid="teacher-score-0"]')))
+    await nextTick()
+    expect(reviewStore.page).toBe(1)
+    expect(document.activeElement).toBe(pageOneLast)
     expect(tab.defaultPrevented).toBe(true)
 
-    const finalScore = host.querySelector<HTMLInputElement>('[data-testid="teacher-score-0"]')!
+    const finalScore = pageOneLast
     dispatchKey(finalScore, 'Enter')
 
     await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledTimes(1))
@@ -627,6 +660,9 @@ describe('source-recalibrated review view', () => {
       initialUrl: '/grading?session=7&question=Q1&item=7:Q1:11&entry=results&student=11',
       reviewItems: { Q1: [item(11), item(12)] },
     })
+    const backButton = host.querySelector<HTMLButtonElement>('[data-testid="back-to-batch"]')
+    expect(backButton?.textContent).toContain('返回成绩明细')
+    expect(backButton?.classList.contains('app-back-button')).toBe(true)
     const confirmButton = await vi.waitFor(() => {
       const button = host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')
       expect(button?.disabled).toBe(false)
@@ -660,9 +696,6 @@ describe('source-recalibrated review view', () => {
     })
     expect(divider.getAttribute('role')).toBe('separator')
     expect(divider.getAttribute('aria-orientation')).toBe('vertical')
-    const backButton = host.querySelector<HTMLButtonElement>('[data-testid="back-to-batch"]')
-    expect(backButton?.textContent).toContain('返回成绩明细')
-    expect(backButton?.classList.contains('app-back-button')).toBe(true)
     expect(divider.getAttribute('aria-valuenow')).toBe('420')
     dispatchKey(divider, 'ArrowRight')
     await nextTick()

@@ -11,14 +11,13 @@ import tempfile
 import threading
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
-from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TypedDict
 
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.repositories.grading_database import open_grading_repositories
-from integration.data_generation import commit_generation
+from integration.data_generation import commit_generation, database_content_revision as _database_content_revision
 from integration.evidence_scope import EvidenceScopeResolver
 from integration.result_cache import ResultCache
 from integration.question_tag_projection_service import (
@@ -46,6 +45,7 @@ _TAG_PROFILE_CACHE_LOCK = threading.RLock()
 _TAG_PROFILE_CACHE_LIMIT = 12
 _LOCAL_PROFILE_LOCK = threading.Lock()
 _LOCAL_SOURCE_REVISIONS = ResultCache(2)
+_MASTERY_INPUT_RESULTS = ResultCache(2)
 # Cached payloads are stored as pickle bytes: rebuilding a hit with
 # pickle.loads is far cheaper than deepcopy on large profiles, and bytes are
 # inherently isolated from caller mutation in both directions.
@@ -121,41 +121,35 @@ def _normalized_profile_scope(
     return normalized
 
 
-def _profile_semantics() -> tuple:
-    """Versions of the calculation, separate from database commits."""
-    from question_bank.mastery.current import CURRENT_MASTERY_PARAMETERS
-
+def _profile_calculation_state() -> tuple:
     root = Path(__file__).resolve().parent.parent
-    files = (
-        Path(__file__), root / "integration/evidence_scope.py",
-        root / "integration/question_tag_projection_service.py",
-        root / "question_bank/mastery/current.py", root / "question_bank/mastery/model.py",
-        root / "question_bank/current_knowledge.py",
-    )
+    files = {
+        *root.joinpath('question_bank').rglob('*.py'),
+        *root.joinpath('integration').glob('*.py'),
+        *root.joinpath('backend/repositories').glob('*.py'),
+        *root.joinpath('question_bank/taxonomy/catalogs').glob('*.json'),
+        root / "backend/api/routers/graph.py",
+        root / 'backend/api/routers/training.py', root / 'backend/api/schemas/training.py',
+        root / 'backend/public_data.py', root / 'backend/class_analysis.py',
+        root / 'backend/session_analysis.py', root / 'db_manager.py',
+    }
+    return tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in sorted(files))
+
+
+# Bind code versions when this process imports the calculation. A still-running
+# old server must not label its results with newly edited source file versions;
+# a new process rejects its old cache. No repeated source-tree scan per request.
+_PROFILE_CALCULATION_STATE = _profile_calculation_state()
+
+
+def _profile_semantics() -> tuple:
+    """Running calculation versions, separate from database commits."""
+    from question_bank.mastery.current import CURRENT_MASTERY_PARAMETERS
     return (
         datetime.now(timezone(timedelta(hours=8))).date().isoformat(),
         CURRENT_MASTERY_PARAMETERS.version,
-        tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in files),
+        _PROFILE_CALCULATION_STATE,
     )
-
-
-def _database_content_revision(path: Path, connection: sqlite3.Connection | None = None) -> str:
-    """A read-only content version survives WAL checkpoints and app restarts.
-
-    SQLite serializes the transaction's logical pages, including WAL frames.
-    Ignore journal mode and bookkeeping fields in the first 100 bytes; retain
-    all schema/data pages. See https://www.sqlite.org/fileformat.html#the_database_header.
-    This is only a cache key, not a business-data validation requirement.
-    """
-    if connection is None:
-        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as owned:
-            owned.execute("PRAGMA query_only = ON")
-            return _database_content_revision(path, owned)
-    content = memoryview(connection.serialize())
-    digest = hashlib.sha256()
-    for start, end in ((0, 18), (20, 24), (28, 92), (100, len(content))):
-        digest.update(content[start:end])
-    return digest.hexdigest()
 
 
 def _database_file_state(path: Path) -> tuple:
@@ -226,6 +220,11 @@ class DiagnosisProfileService:
         exam_scope: Mapping[str, Any],
     ) -> DiagnosisSnapshot:
         return self.build_tag_profiles(scope=scope, exam_scope=exam_scope)
+
+    def build_summary_profiles(self, *, scope, exam_scope) -> DiagnosisSnapshot:
+        """Internal overview/graph input; detailed evidence still uses build_profiles."""
+        return self.build_tag_profiles(scope=scope, exam_scope=exam_scope,
+                                       include_source_details=False)
 
     def tag_profile_cache_key(
         self,
@@ -316,14 +315,28 @@ class DiagnosisProfileService:
                 with _TAG_PROFILE_CACHE_LOCK:
                     _TAG_PROFILE_CACHE[key] = local
                 return pickle.loads(local[0])
-            supplied = profile.get("_mastery_observations") if profile.get("_mastery_population") and exam_scope == profile.get("exam_scope") else None
+            source_scope = profile.get("exam_scope") or {}
+            same_scope = exam_scope == source_scope or (
+                source_scope.get("mode") == "semester"
+                and exam_scope == self.mastery_exam_scope(source_scope)
+            )
+            supplied = profile.get("_mastery_observations") if profile.get("_mastery_population") and same_scope else None
             observations = self.semester_observations(exam_scope, supplied=supplied)
             resolver = CurrentKnowledgeResolver.from_active_database(self.question_bank_db_path)
-            values = CurrentMasteryCalculator(self.question_bank_db_path, resolver, parameters=parameters,
-                clock=lambda: as_of, data_root=self.data_root).calculate(
-                    {"exam_scope": exam_scope, "_mastery_observations": observations,
-                     "_mastery_session_times": self.mastery_session_times(exam_scope=exam_scope)},
-                    exclude_training_evidence_ids=exclude_training_evidence_ids)
+            calculation_profile = {"exam_scope": exam_scope, "_mastery_observations": observations,
+                                   "_mastery_session_times": self.mastery_session_times(exam_scope=exam_scope)}
+            # Grading descriptions invalidate the full diagnosis, but do not
+            # require another fit when every model input is byte-identical.
+            grading_origin = self.cache_identity[0] if self.cache_identity else str(self.grading_db_path)
+            input_key = (grading_origin, str(self.data_root), *_path_generation(self.question_bank_db_path),
+                         _database_file_state(self.question_bank_db_path), _profile_semantics(),
+                         resolver.release_id, parameters.version, week_of(as_of),
+                         tuple(sorted(exclude_training_evidence_ids)),
+                         hashlib.sha256(pickle.dumps(calculation_profile, pickle.HIGHEST_PROTOCOL)).digest())
+            values = _MASTERY_INPUT_RESULTS.get_or_compute(input_key, lambda:
+                CurrentMasteryCalculator(self.question_bank_db_path, resolver, parameters=parameters,
+                    clock=lambda: as_of, data_root=self.data_root).calculate(
+                        calculation_profile, exclude_training_evidence_ids=exclude_training_evidence_ids))
             entry = (pickle.dumps(values, pickle.HIGHEST_PROTOCOL), pickle.dumps({}, pickle.HIGHEST_PROTOCOL))
             with _TAG_PROFILE_CACHE_LOCK:
                 _TAG_PROFILE_CACHE[key] = entry
@@ -343,8 +356,11 @@ class DiagnosisProfileService:
         *,
         scope: Mapping[str, Any],
         exam_scope: Mapping[str, Any],
+        include_source_details: bool = True,
     ) -> DiagnosisSnapshot:
         cache_key = self.tag_profile_cache_key(scope=scope, exam_scope=exam_scope)
+        if not include_source_details:
+            cache_key = (*cache_key, 'summary-without-source-details-v1')
         cached = _claim_or_wait_tag_profile(cache_key)
         if cached is not None:
             if self.persist_snapshots:
@@ -352,15 +368,19 @@ class DiagnosisProfileService:
             self.latest_aggregated_mastery = pickle.loads(cached[1])
             result = pickle.loads(cached[0])
             if getattr(self, "persist_snapshots", False):
-                self.semester_mastery(result)
+                try:
+                    self.semester_mastery(result)
+                except (CurrentKnowledgeUnavailable, OSError, sqlite3.Error, TypeError, ValueError):
+                    pass  # Optional prewarm preserves the cached evidence-only fallback.
             return result
         error: BaseException | None = None
         try:
             local = self._read_local_profile(cache_key)
             if local is None:
+                kwargs = {'include_source_details': False} if not include_source_details else {}
                 result, aggregated = self._compute_tag_profiles(
                     scope=_normalized_profile_scope(scope, exam_scope),
-                    exam_scope=exam_scope,
+                    exam_scope=exam_scope, **kwargs,
                 )
             else:
                 result, aggregated = pickle.loads(local[0]), pickle.loads(local[1])
@@ -411,9 +431,27 @@ class DiagnosisProfileService:
 
     def _read_local_profile(self, cache_key: tuple[str, ...]) -> tuple[bytes, bytes] | None:
         try:
-            with self._local_profile_path().open("rb") as saved:
-                snapshot = pickle.load(saved)
+            path = self._local_profile_path()
+            def identity():
+                info = path.stat()
+                return (str(path), info.st_dev, info.st_ino, info.st_size,
+                        info.st_mtime_ns, info.st_ctime_ns)
+            file_state = identity()
+            cached = getattr(self, "_local_profile_file_snapshot", None)
+            if cached is not None and cached[0] == file_state:
+                snapshot = cached[1]
+            else:
+                with path.open("rb") as saved:
+                    snapshot = pickle.load(saved)
+                if identity() != file_state:
+                    return None
+                self._local_profile_file_snapshot = (file_state, snapshot)
             entry = snapshot["entries"].get(cache_key[1:])
+            signature = snapshot['signature']
+            if (not isinstance(signature, tuple) or len(signature) != 4
+                    or signature[2] != _profile_semantics()
+                    or signature[3] != _dir_generation(self.data_root / 'reports' / '.class_analysis')):
+                return None
             if (entry is None or snapshot["signature"] != self._local_profile_signature(cache_key)
                     or len(entry) != 2 or not all(isinstance(part, bytes) for part in entry)):
                 return None
@@ -440,13 +478,18 @@ class DiagnosisProfileService:
                         previous = pickle.load(saved)
                     if previous["signature"] == signature and isinstance(previous["entries"], dict):
                         entries = previous["entries"]
+                        if entries.get(cache_key[1:]) == entry:
+                            return
                 except (OSError, pickle.PickleError, EOFError, KeyError, TypeError,
                         ValueError, AttributeError, ImportError):
                     pass
                 entries.pop(cache_key[1:], None)
                 entries[cache_key[1:]] = entry
                 while len(entries) > _TAG_PROFILE_CACHE_LIMIT:
-                    entries.pop(next(iter(entries)))
+                    projections = ('api-diagnosis-json-v1', 'overview-payload-v2', 'graph-query-payload-v1')
+                    oldest = next((key for key in entries if not any(kind in key for kind in projections)),
+                                  next(iter(entries)))
+                    entries.pop(oldest)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as saved:
                     temporary = Path(saved.name)
@@ -466,6 +509,7 @@ class DiagnosisProfileService:
         *,
         scope: Mapping[str, Any],
         exam_scope: Mapping[str, Any],
+        include_source_details: bool = True,
     ) -> tuple[DiagnosisSnapshot, dict[str, Any]]:
         resolved = EvidenceScopeResolver(self.db).resolve(
             scope=scope,
@@ -494,7 +538,7 @@ class DiagnosisProfileService:
             session_ids=evidence_session_ids,
             projection_by_session=projection_by_session,
         )
-        cause_index = self._error_cause_index(evidence_session_ids)
+        cause_index = self._error_cause_index(evidence_session_ids) if include_source_details else {}
         selected_session_ids = set(session_ids)
         evidence_rows = [
             row for row in evidence_rows
@@ -555,7 +599,7 @@ class DiagnosisProfileService:
                     "bank_question_id": int(row.get("bank_question_id") or 0),
                     "score_awarded": point_score if has_contributions else awarded,
                     "full_score": point_full if has_contributions else full_score,
-                    "assessment": dict(row.get("assessment") or {}),
+                    "assessment": dict(row.get("assessment") or {}) if include_source_details else {},
                     "deduction_reason": str(row.get("deduction_reason") or "").strip(),
                     "error_summary": str(row.get("error_summary") or "").strip(),
                     "secondary_errors": [dict(error) for error in row.get("secondary_errors") or []
@@ -586,7 +630,7 @@ class DiagnosisProfileService:
                         if cause.get("pattern"):
                             item["cause_patterns"].add(str(cause["pattern"]))
                 observations = row.get("point_observations")
-                if isinstance(observations, list):
+                if include_source_details and isinstance(observations, list):
                     reference["assessment"]["point_observations"] = [
                         dict(observation) for observation in observations
                         if observation["stable_key"] == point
@@ -720,7 +764,8 @@ class DiagnosisProfileService:
             from question_bank.mastery.model import build_exam_observations
             mastery_profile["_mastery_population"] = (set(student_ids) == {str(s["id"]) for s in self.db.students.list_students()})
             mastery_profile["_mastery_observations"] = build_exam_observations(evidence_rows, resolver, mastery_profile["_mastery_session_times"])
-            per_student_mastery = {identity: item for identity, item in self.semester_mastery(mastery_profile).items() if identity[0] in student_ids}
+            selected_students = set(student_ids)
+            per_student_mastery = {identity: item for identity, item in self.semester_mastery(mastery_profile).items() if identity[0] in selected_students}
             self._merge_current_mastery(
                 student_profiles,
                 per_student_mastery,
@@ -759,9 +804,10 @@ class DiagnosisProfileService:
             facets_index = target_index(resolver)
             for item in knowledge_catalog:
                 item["node_kind"] = facets_index.get(item["knowledge_key"], {}).get("kind", "topic")
-            knowledge_associations = knowledge_skill_associations(
-                load_question_facets(self.question_bank_db_path, resolver)
-            )
+            if include_source_details:
+                knowledge_associations = knowledge_skill_associations(
+                    load_question_facets(self.question_bank_db_path, resolver)
+                )
         except (
             CurrentKnowledgeUnavailable,
             OSError,
@@ -863,6 +909,9 @@ class DiagnosisProfileService:
         for child, parent in parent_by_child.items():
             children_by_parent[parent].append(child)
         node_by_key = {node.stable_key: node for node in resolver.nodes}
+        mastery_by_student = defaultdict(list)
+        for (student_id, stable_key), current in mastery.items():
+            mastery_by_student[student_id].append((stable_key, current))
         for student in student_profiles:
             student_id = str(student["student_id"])
             points = {
@@ -872,9 +921,7 @@ class DiagnosisProfileService:
             for point in points.values():
                 point.update(mastery=None, evidence_count=0, effective_weight=0.0,
                              direct_evidence_count=0, child_evidence_count=0)
-            for (candidate_student_id, stable_key), current in mastery.items():
-                if candidate_student_id != student_id:
-                    continue
+            for stable_key, current in mastery_by_student.get(student_id, ()):
                 node = node_by_key.get(stable_key)
                 if node is None:
                     continue

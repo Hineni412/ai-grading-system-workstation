@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 
 import type { GraphQueryInput } from '../api/graph'
@@ -23,7 +23,6 @@ import PersonalizedRecommendationDraft from '../components/training/Personalized
 import AppButton from '../components/design-system/AppButton.vue'
 import { loadEvidenceScope, saveEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
 import { loadPaperSelectionSession, savePaperSelectionSession, resolvePaperScope, DEFAULT_TRAINING_RULES, DEFAULT_HANDOUT_RULES, type PracticeRules, type AdoptedChapterGroup, type ChapterGroupEditor, type ChapterGroupSort } from '../features/training/paper-selection-session'
-import { useSessionStore } from '../stores/session'
 import '../styles/training-recommendations.css'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import { useTrainingStore } from '../stores/training'
@@ -33,7 +32,6 @@ type TrainingMode = 'chapter' | 'student' | 'paper'
 
 const route = useRoute()
 const router = useRouter()
-const sessionStore = useSessionStore()
 const curriculumScope = useCurriculumScopeStore()
 let initialVolumePending = curriculumScope.loadState !== 'ready'
 const training = useTrainingStore()
@@ -85,7 +83,7 @@ const adoptedGroup = ref<AdoptedChapterGroup | null>(savedPaperSelection?.adopte
 const arrangements = ref<AdoptedChapterGroup[]>(savedPaperSelection?.arrangements ?? [])
 const groupMessage = ref('')
 const groupChecking = ref(false)
-const latestGroupDiagnosis = ref<TrainingDiagnosis | null>(null)
+const latestGroupDiagnosis = shallowRef<TrainingDiagnosis | null>(null)
 const draftContext = ref<{ mode: 'individual' | 'shared'; studentCount: number; questionCount: number; difficultyMax: number; purpose: 'training' | 'handout' } | null>(null)
 const workflowStage = ref<'diagnosis' | 'draft' | 'wps' | 'scan'>('diagnosis')
 const draftRequestState = ref<'idle' | 'loading' | 'ready' | 'error' | 'editing'>('idle')
@@ -113,20 +111,7 @@ const pageCopy = computed(() => ({
   },
 }[trainingMode.value]))
 
-const availableSessions = computed(() => sessionStore.sessions.filter((item) => !item.is_deleted))
-
-// 选定范围下 diagnosis.students 只含所选学生，卡片得分率会丢成 "—"；
-// 这里把每次诊断回来的得分率并入只增缓存。后端若在 scope 上直接给出全量
-// student_score_profiles 则优先使用。
-const profileCache = ref<Record<string, Record<string, unknown>>>({})
-const scoreProfiles = computed(() => {
-  const scopeProfiles = training.diagnosis?.scope.student_score_profiles
-  if (scopeProfiles && Object.keys(scopeProfiles).length) return scopeProfiles
-  return profileCache.value
-})
-
 const selectedStudentCount = computed(() => training.diagnosis?.students.length ?? 0)
-const groupingAvailable = computed(() => training.diagnosis?.knowledge_catalog?.some(node => !node.parent_knowledge_key && /^(kp_|sk_|ki_)/.test(node.knowledge_key)) ?? false)
 const sharedStudentCount = computed(() => adoptedGroup.value?.memberIds.length ?? selectedStudentIds.value.length)
 const paperStudentCount = computed(() => paperMode.value === 'shared' ? sharedStudentCount.value : selectedStudentIds.value.length)
 const paperDiagnosis = computed<TrainingDiagnosis | null>(() => {
@@ -147,19 +132,6 @@ async function setScopeClass(name: string) {
 async function setScoreFloor(value: number | null) {
   await applyEvidenceScope(semesterEvidenceQuery({ mode: selectedClass.value ? 'class' : 'all', class_ids: selectedClass.value ? [selectedClass.value] : [], score_rate_min: value }, curriculumScope.selectedVolumeId))
 }
-const scoreSourceSummary = computed(() => {
-  const profiles = training.diagnosis?.students ?? []
-  const current = profiles.filter((student) => student.score_rate_source === 'current_exam').length
-  const none = profiles.length - current
-  return `所选 ${profiles.length} 人 · 本学期有成绩 ${current} 人 · 无成绩 ${none} 人`
-})
-const groupScopeLabel = computed(() => {
-  if (training.studentScope.mode === 'selected') return `当前筛选 · ${selectedStudentCount.value} 人`
-  if (training.studentScope.classIds.length === 1) return `${training.studentScope.classIds[0]} · ${selectedStudentCount.value} 人`
-  if (training.studentScope.classIds.length > 1) return `${training.studentScope.classIds.length} 个班级 · ${selectedStudentCount.value} 人`
-  if (training.studentScope.classId) return `${training.studentScope.classId} · ${selectedStudentCount.value} 人`
-  return `全部班级 · ${selectedStudentCount.value} 人`
-})
 const paperNumericSettingsValid = computed(() => (
   Number.isInteger(questionCount.value)
   && (purpose.value === 'training' ? questionCount.value >= 8 && questionCount.value <= 12 : questionCount.value >= 1)
@@ -242,7 +214,30 @@ const activeEvidenceQuery = computed<GraphQueryInput | null>(() => {
 
 async function analyze(): Promise<void> {
   try {
-    await training.analyze()
+    const volume = curriculumScope.selectedVolume
+    const chapter = volume?.chapters.find(item => item.knowledge_id === chapterKey.value)
+      ?? volume?.chapters[0]
+    const section = chapter?.sections.find(item => item.knowledge_id === sectionKey.value)
+    const scopeKey = section?.knowledge_id ?? chapter?.knowledge_id
+    if (trainingMode.value !== 'chapter' || !scopeKey) {
+      await training.analyze()
+      return
+    }
+    const initialGroupBody = {
+      scope: sourceStudentScope.value, exam_scope: personalizedExamScope.value,
+      grouping: { ...groupingSettings.value, scope_keys: [scopeKey] },
+    }
+    // Reuse the existing grouped endpoint for the initial full read. A
+    // grouping failure retains the original base-diagnosis recovery path.
+    await training.analyze({ diagnose: async (body, signal) => {
+      try { return await trainingApi.diagnose(body, signal) }
+      catch (error) {
+        if (signal?.aborted) throw error
+        const base = { ...body }
+        delete base.grouping
+        return trainingApi.diagnose(base, signal)
+      }
+    } }, initialGroupBody)
   } catch {
     // The store publishes a safe user-facing recovery message.
   }
@@ -375,12 +370,6 @@ watch(() => training.diagnosis, (diagnosis) => {
   const validStudents = new Set(diagnosis.students.map(student => student.student_id))
   const nextStudents = selectedStudentIds.value.filter(id => validStudents.has(id))
   if (nextStudents.length !== selectedStudentIds.value.length) selectedStudentIds.value = nextStudents
-  for (const student of diagnosis.students) {
-    profileCache.value[student.student_id] = {
-      score_rate: student.score_rate ?? null,
-      score_rate_source: student.score_rate_source ?? 'none',
-    }
-  }
   const validKeys = new Set((diagnosis.knowledge_catalog ?? []).map((item) => item.knowledge_key))
   // filter 总是返回新数组；内容没变就不赋值，避免触发下游草稿重置。
   const nextTargets = selectedTargetKeys.value.filter((key) => validKeys.has(key))
@@ -463,7 +452,6 @@ watch(trainingMode, (mode, previous) => {
 
 watch(() => curriculumScope.selectedVolumeId, (_next, previous) => {
   if (initialVolumePending && previous === null) { initialVolumePending = false; return }
-  profileCache.value = {}
   adoptedGroup.value = null
   groupEditor.value = null
   latestGroupDiagnosis.value = null
