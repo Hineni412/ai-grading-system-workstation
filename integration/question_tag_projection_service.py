@@ -29,6 +29,8 @@ class ProjectedQuestionTags:
     step_targets: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     evidence_points: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     point_links: Mapping[str, tuple[Mapping[str, Any], ...]] = field(default_factory=dict)
+    is_single_result: bool = False
+    source_practice_metadata: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def is_graph_eligible(self) -> bool:
@@ -125,6 +127,8 @@ class QuestionTagProjectionService:
             item_step_payloads: tuple[dict[str, Any], ...] = ()
             evidence_points: dict[str, Mapping[str, Any]] = {}
             point_links: dict[str, tuple[Mapping[str, Any], ...]] = {}
+            is_single_result = False
+            source_practice_metadata: dict[str, Any] = {}
             if bank_question_id is None:
                 missing_reason = "missing_link"
             elif not questions.get(bank_question_id, False):
@@ -164,6 +168,14 @@ class QuestionTagProjectionService:
                     _item.get("part_id") or _question.get("question_id")
                 )
                 evidence_part_id = resolve_evidence_part_id(_item, snapshot_question, item_part_id)
+                source_part = next((part for part in (snapshot_question.get("evidence") or {}).get("parts", ())
+                                    if str(part.get("part_id") or "") == evidence_part_id), None)
+                is_single_result = bool(source_part and len(item_steps) == 1 and len(covered_ids) == 1
+                    and {str(point.get("evidence_point_id") or "") for point in source_part.get("evidence_points", ())}
+                    == set(covered_ids))
+                source_practice_metadata = _frozen_practice_metadata(
+                    snapshot_question, evidence_part_id, covered_ids, resolver,
+                    is_single_result=is_single_result)
                 item_step_payloads = tuple(
                     {
                         "step_id": str(step.get("step_id") or ""),
@@ -226,6 +238,8 @@ class QuestionTagProjectionService:
                     steps=item_step_payloads,
                     evidence_points=evidence_points,
                     point_links=point_links,
+                    is_single_result=is_single_result,
+                    source_practice_metadata=source_practice_metadata,
                 )
             )
         return QuestionTagProjection(tuple(projected))
@@ -388,6 +402,37 @@ def _covered_point_ids(
             if point_id and point_id not in uncovered and point_id not in covered:
                 covered.append(point_id)
     return covered, steps
+
+
+def _frozen_practice_metadata(snapshot_question: Mapping[str, Any], part_id: str,
+                              covered_ids: list[str], resolver: Any, *,
+                              is_single_result: bool) -> dict[str, Any]:
+    """Reuse matching helpers with this exam's frozen points and links only."""
+    if resolver is None or not snapshot_question.get("source_evidence_version_id"):
+        return {}
+    from question_bank.recommendation.target_matching import (
+        _question_evidence_metadata, part_facets, target_index,
+    )
+    from question_bank.solution_evidence.knowledge_links import KnowledgeLink
+    parts = [{**part, "evidence_points": [point for point in part.get("evidence_points", ())
+              if str(point.get("evidence_point_id") or "") in covered_ids]}
+             for part in (snapshot_question.get("evidence") or {}).get("parts", ())
+             if str(part.get("part_id") or "") == part_id]
+    links = {str(pid): tuple(KnowledgeLink(
+        term_id=str(link.get("term_id") or ""), stable_key=str(link.get("stable_key") or ""),
+        role=str(link.get("role") or ""), weight=float(link.get("weight") or 0),
+        resolution_status=str(link.get("resolution_status") or ""))
+        for link in values if float(link.get("weight") or 0) > 0)
+        for pid, values in (snapshot_question.get("links") or {}).items() if str(pid) in covered_ids}
+    metadata = _question_evidence_metadata({"parts": parts}, resolver, links)
+    return {"bank_question_id": snapshot_question.get("bank_question_id"),
+            "evidence_version_id": snapshot_question["source_evidence_version_id"],
+            "evidence_part_id": part_id, "is_single_result": is_single_result,
+            "direct_keys": metadata["stable_keys"],
+            "practice_observations_by_key": metadata["practice_observations_by_key"],
+            "direct_fine_terms": sorted({term for observations in metadata["practice_observations_by_key"].values()
+                                         for part in observations for term in part["fine_terms"]}),
+            "target_facets": part_facets({"parts": parts}, links, resolver, target_index(resolver))}
 
 
 def _snapshot_part_estimate(

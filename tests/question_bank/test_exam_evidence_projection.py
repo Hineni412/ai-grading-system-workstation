@@ -6,6 +6,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from question_bank.database.schema import connect, initialize_database
 from question_bank.services.source_question_link_service import (
     SourceQuestionLinkService,
@@ -213,6 +215,32 @@ def test_frozen_snapshot_survives_later_link_changes(tmp_path: Path) -> None:
     (item,) = projection.items
     assert item.tags["knowledge_point"] == (_SKILL_KEY,)
 
+    # Diagnosis and recommendation must both keep the frozen association.
+    from question_bank.current_knowledge import CurrentKnowledgeResolver
+    from question_bank.recommendation.personalized import (
+        PersonalizedRecommendationModule, _normalize_diagnosis,
+    )
+    from question_bank.recommendation.target_matching import match_target, target_index
+    module = object.__new__(PersonalizedRecommendationModule)
+    module.db_path, module.data_root = db_path, tmp_path
+    module.current_knowledge = CurrentKnowledgeResolver.from_active_database(db_path)
+    ref = {"session_id": _SESSION, "question_id": item.item_ref,
+           "bank_question_id": 1, "assessment": dict(item.assessment),
+           "full_score": 3, "score_awarded": 0, "source_kind": "current_exam"}
+    diagnosis = _normalize_diagnosis({
+        "students": [{"student_id": "TEST-1", "weak_points": [{
+            "knowledge_key": _SKILL_KEY, "source_question_refs": [ref]}]}],
+        "_exam_source_metadata": {str(_SESSION): {item.item_ref: item.source_practice_metadata}},
+    })
+    metadata = module._source_practice_metadata(diagnosis)
+    enriched = module._enrich_source_ref(ref, metadata)
+    assert enriched["direct_keys"] == [_SKILL_KEY]
+    assert enriched["task_evidence_version_matches"] is True
+    assert ref == diagnosis["students"][0]["weak_points"][0]["source_question_refs"][0]
+    candidate = {**enriched["target_facets"][0], "part_id": "candidate-part"}
+    assert match_target(_SKILL_KEY, enriched["target_facets"], [candidate],
+                        target_index(module.current_knowledge))["match_level"] <= 2
+
 
 def _projected_with_steps() -> object:
     from integration.question_tag_projection_service import (
@@ -277,6 +305,105 @@ def test_teacher_final_total_does_not_restore_superseded_ai_step_scores():
     assert row["score_awarded"] == row["full_score"] == 6
     assert "target_contributions" not in row and "point_observations" not in row
     assert row["assessment"]["granularity"] == "whole_question"
+
+
+@pytest.mark.parametrize("teacher_final", [False, True])
+@pytest.mark.parametrize("score", [0, 3])
+def test_single_result_keeps_final_score_without_inventing_steps(tmp_path, teacher_final, score):
+    from types import SimpleNamespace
+    from integration.diagnosis_profile_service import DiagnosisProfileService
+    from question_bank.recommendation.personalized import _group_needs
+
+    db_path, release_id = _setup(tmp_path)
+    _seed_bank_question(db_path, release_id, points=[_point("p1")],
+                        links=[("p1", "direct", _SKILL_KEY, "resolved")],
+                        part_overrides={"response_mode": "exact_objective"})
+    _confirm_link(db_path)
+    _freeze(tmp_path, db_path)
+    (projected,) = _projection_service(tmp_path, db_path).project_session(
+        grading_session_id=_SESSION, rubric=_rubric([_step("S1", ["p1"])])).items
+    assert projected.is_single_result is True
+    source = {"session_id": _SESSION, "student_id": 1, "question_id": projected.item_ref,
+              "full_score": 3, "score_awarded": score, "assessment_state": {}}
+    if teacher_final:
+        source.update(teacher_final_revision=1, teacher_final_max_score=3,
+                      assessment_state={"step_assessments": [
+                          {"step_id": "S1", "achievement": "full" if score == 0 else "none"}]})
+    service = object.__new__(DiagnosisProfileService)
+    service.db = SimpleNamespace(results=SimpleNamespace(
+        get_active_assessment_evidence=lambda **kwargs: [source]))
+    (row,) = service._projected_tag_evidence(student_ids=["1"], session_ids=[_SESSION],
+        projection_by_session={_SESSION: SimpleNamespace(items=[projected])})
+    assert row["score_awarded"] == score and row["full_score"] == 3
+    assert row["assessment"]["granularity"] == "part"
+    assert row["assessment"]["eligible"] is True
+    assert row["assessment"]["evidence_weight"] == 1
+    assert "point_observations" not in row and "target_contributions" not in row
+    needs = _group_needs({"students": [{"student_id": "1", "score_rate": .5,
+        "weak_points": [{"knowledge_key": _SKILL_KEY, "mastery": .5,
+            "evidence_count": 1, "source_question_refs": [row]}]}]}, [_SKILL_KEY])
+    assert bool(needs["1"]) is (score == 0)
+    # An explicitly invalid response remains excluded; a missing step array
+    # alone never causes the exclusion.
+    source["assessment_state"]["answer_is_blank_or_no_valid_work"] = True
+    (invalid,) = service._projected_tag_evidence(student_ids=["1"], session_ids=[_SESSION],
+        projection_by_session={_SESSION: SimpleNamespace(items=[projected])})
+    assert invalid["assessment"]["eligible"] is (teacher_final and score > 0)
+
+
+@pytest.mark.parametrize("one_scoring_step", [False, True])
+def test_multiple_points_with_only_total_stay_coarse_and_keep_mastery_input(tmp_path, one_scoring_step):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from integration.diagnosis_profile_service import DiagnosisProfileService
+    from question_bank.current_knowledge import CurrentKnowledgeResolver
+    from question_bank.mastery.model import build_exam_observations
+    from question_bank.recommendation.personalized import _group_needs
+
+    db_path, release_id = _setup(tmp_path)
+    _seed_bank_question(db_path, release_id, points=[_point("p1"), _point("p2")],
+        links=[("p1", "direct", _SKILL_KEY, "resolved"),
+               ("p2", "direct", _LEAF_KEY, "resolved")])
+    _confirm_link(db_path)
+    _freeze(tmp_path, db_path)
+    steps = ([_step("S1", ["p1", "p2"], step_score=6)] if one_scoring_step
+             else [_step("S1", ["p1"]), _step("S2", ["p2"])])
+    (projected,) = _projection_service(tmp_path, db_path).project_session(
+        grading_session_id=_SESSION, rubric=_rubric(steps)).items
+    assert projected.is_single_result is False
+    source = {"session_id": _SESSION, "student_id": 1, "question_id": projected.item_ref,
+              "full_score": 6, "score_awarded": 3, "assessment_state": {}}
+    service = object.__new__(DiagnosisProfileService)
+    service.db = SimpleNamespace(results=SimpleNamespace(
+        get_active_assessment_evidence=lambda **kwargs: [source]))
+    (row,) = service._projected_tag_evidence(student_ids=["1"], session_ids=[_SESSION],
+        projection_by_session={_SESSION: SimpleNamespace(items=[projected])})
+    assert row["assessment"]["eligible"] is True
+    assert row["assessment"]["granularity"] == "whole_question"
+    assert row["assessment"]["reason"] == "part_total_without_step_attribution"
+    assert "point_observations" not in row and "target_contributions" not in row
+    resolver = CurrentKnowledgeResolver.from_active_database(db_path)
+    observations = build_exam_observations([row], resolver,
+        {_SESSION: datetime(2026, 9, 17, tzinfo=timezone.utc)})
+    assert len(observations) == 1 and observations[0]["y"] == .5
+    assert set(observations[0]["links"]) == {_SKILL_KEY, _LEAF_KEY}
+    needs = _group_needs({"students": [{"student_id": "1", "weak_points": [{
+        "knowledge_key": _SKILL_KEY, "mastery": .5, "evidence_count": 1,
+        "source_question_refs": [row]}]}]}, [_SKILL_KEY])
+    assert needs["1"] == {}
+
+    # Independently observed steps remain usable; an unobserved step is not
+    # converted into a failed point, even when the total also lost marks.
+    if not one_scoring_step:
+        source["assessment_state"]["step_assessments"] = [
+            {"step_id": "S1", "part_id": "part-1", "achievement": "full", "score_awarded": 3}]
+        (fine,) = service._projected_tag_evidence(student_ids=["1"], session_ids=[_SESSION],
+            projection_by_session={_SESSION: SimpleNamespace(items=[projected])})
+        assert fine["assessment"]["granularity"] == "part"
+        assert fine["target_contributions"] == {_SKILL_KEY: (3, 3)}
+        assert [(o["point_id"], o["achieved"]) for o in fine["point_observations"]] == [("p1", 1)]
+
+
 
 
 def test_mastery_uses_each_point_instead_of_exam_score_allocation():

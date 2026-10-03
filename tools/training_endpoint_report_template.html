@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>训练卷：初版与最新版本对比</title>
+<style>
+:root{color-scheme:light dark;--bg:light-dark(#f7f8fc,#11161e);--surface:light-dark(#fff,#1a2330);--ink:light-dark(#182735,#e6edf4);--muted:light-dark(#536577,#a9b7c7);--line:light-dark(#dce3eb,#364556);--old:light-dark(#62748c,#95a9c0);--new:light-dark(#086b64,#6cd5c0);--new-soft:light-dark(#e1f4ee,#1c403b);--bad:light-dark(#9b442b,#edac94);--focus:light-dark(#164ba8,#8aaff3)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 "Microsoft YaHei","PingFang SC",sans-serif}main{max-width:1180px;margin:auto;padding:30px 28px 60px}h1{font-size:28px;line-height:1.35;margin:8px 0 14px}h2{font-size:21px;margin:28px 0 14px}h3{font-size:17px;margin:12px 0}p{margin:7px 0 12px}.muted,.note{color:var(--muted)}.note{font-size:14px}.eyebrow{letter-spacing:.08em;color:var(--new);font-size:13px}.intro{max-width:850px}.controls{display:flex;gap:16px;align-items:end;flex-wrap:wrap;margin:20px 0}label{display:flex;flex-direction:column;gap:5px;font-size:14px}select,button{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:7px;padding:8px 12px;max-width:100%}button{cursor:pointer}button:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:2px}.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.stat{background:var(--surface);padding:17px;border-radius:10px}.stat strong{display:block;font-size:24px;font-weight:600;margin:5px 0}.stat small{color:var(--muted)}.pair{display:grid;grid-template-columns:1fr 1fr;gap:24px}.version{color:var(--muted);font-size:14px}.bar-row{margin:12px 0}.bar-caption{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;font-size:14px}.bar{height:24px;display:flex;background:var(--line);margin:6px 0;border-radius:3px;overflow:hidden}.bar span{display:block;min-width:0;background:var(--old)}.bar .latest{background:var(--new)}.table-wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:10px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--muted);font-weight:500}td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}hr{border:0;border-top:1px solid var(--line);margin:25px 0}.callout{border-left:3px solid var(--new);padding-left:14px;margin:16px 0}.paper-heading{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center}.question{padding:13px 0;border-bottom:1px solid var(--line)}.question-head{display:flex;gap:12px;justify-content:space-between;flex-wrap:wrap;font-size:14px}.question strong{font-size:16px}.badge{display:inline-block;font-size:12px;color:var(--muted);border:1px solid var(--line);padding:1px 6px;border-radius:4px}.badge.add{color:var(--new);border-color:var(--new)}.badge.remove{color:var(--bad);border-color:var(--bad)}.question p{font-size:14px;margin:5px 0}.bad{color:var(--bad)}.good{color:var(--new)}.gaps li{margin:9px 0;font-size:14px}details{margin-top:14px}summary{cursor:pointer;color:var(--muted);padding:7px 0}.gap-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:15px}.gap-line{display:flex;justify-content:space-between;gap:12px;font-size:14px;padding:8px 0;border-bottom:1px solid var(--line)}.group-block{margin:18px 0}.group-block p{font-size:14px}.code{font-family:ui-monospace,monospace;font-size:12px;overflow-wrap:anywhere}.compact{font-size:14px}.print-note{display:none}#load-error{color:var(--bad)}@media(max-width:680px){main{padding:22px 16px}.stats,.pair,.gap-grid{grid-template-columns:1fr}.stat strong{font-size:22px}h1{font-size:24px}h2{font-size:19px}select{width:100%}.controls label{width:100%}th,td{padding:8px 5px}.pair{gap:24px}}@media print{.controls,button{display:none}.print-note{display:block}body{background:white;color:black}main{max-width:none;padding:0}.stat{background:none;border:1px solid #ccc}.pair{display:block}.question{break-inside:avoid}details[open]{display:block}}
+.question-body{margin:12px 0;padding:16px;background:var(--surface);border:1px solid var(--line);border-radius:9px;font:17px/1.9 "Microsoft YaHei",sans-serif;min-width:0;overflow-wrap:anywhere}.question-kind{font:12px/1.5 "Microsoft YaHei",sans-serif;color:var(--muted);margin-bottom:8px}.stem-block{white-space:pre-wrap;margin:7px 0}.stem-block .qm{white-space:nowrap}.stem-block .qm--display{display:block;text-align:center;margin:6px 0}.stem-block .katex{font-size:1.06em}.question-body img{display:inline-block;max-width:100%;max-height:300px;width:auto;height:auto;object-fit:contain;vertical-align:middle;cursor:zoom-in;margin:8px 6px 8px 0}.question-body table{font-size:16px;white-space:normal;width:auto;max-width:100%}.question-body td{border:1px solid var(--line)}.pair>div{min-width:0}.match-detail{margin:6px 0;font-size:14px}.content-error{color:var(--bad);font-size:14px}.retained{border-top:1px solid var(--line);margin-top:22px;padding-top:8px}.changes-title{border-bottom:2px solid var(--line);padding-bottom:8px}.changes-title.old{border-color:var(--bad)}.changes-title.new{border-color:var(--new)}#question-image-viewer{max-width:94vw;max-height:94vh;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:15px}#question-image-viewer::backdrop{background:#0009}#question-image-viewer img{display:block;max-width:86vw;max-height:78vh;width:auto;height:auto;object-fit:contain;margin:14px auto}#question-image-viewer form{text-align:right;margin:0}@media(max-width:680px){.question-body{padding:12px;font-size:16px}.question-body img{max-height:260px}}
+</style><link rel="stylesheet" href="/vendor/katex/katex.min.css"></head><body><main>
+<div class="eyebrow">同一输入 · 两个版本 · 实际选题对照</div>
+<h1>训练卷：本任务初版与终版</h1>
+<p class="intro">比较本任务首次评估的 v17，与当前 v21。两版用当前同一批考试和题库重新生成。先检查题目难度，再检查失分目标与数学任务。旧卷、新卷统一按最新规则复核。</p>
+<p class="note">只涉及第一、二章已考察内容。匿名编号仅用于两版配对。选题结果来自固定实验，题干、公式和配图从当前题库按需读取；没有将原文或图片复制到报告文件。题库 ID 与原题中的题号不同。</p>
+<div class="controls"><label>考试考察范围<select id="scope"><option value="2">第一、二章合卷</option><option value="0">第一章：勾股定理</option><option value="1">第二章：实数</option></select></label><label>训练卷类型<select id="mode"><option value="personal">个人卷</option><option value="group">同质小组卷</option></select></label><button id="print" type="button">打印当前对比</button></div>
+<div id="summary" aria-live="polite"></div>
+<h2>按同一标准复核：覆盖与水平</h2><div id="coverage"></div><div id="level-table" class="table-wrap"></div>
+<p class="note">“水平范围”指现有难度公式与学生目标难度窗口，不是学生实际做题结果。“无法判断”表示当前证据没有给该题提供可比较的任务窗口，不能直接算作偏难或不合适。</p>
+<div id="personal-section"><h2>不同水平的学生</h2><div id="tiers" class="table-wrap"></div>
+<h2>逐份看：哪些题留下、移除、新增</h2><div class="controls"><label>匿名学生<select id="student"></select></label></div><div id="paper-detail" aria-live="polite"></div>
+<h2>最新个人卷：有薄弱点却没选中，原因是什么</h2><div id="gap-summary" class="gap-grid"></div></div>
+<div id="group-section" hidden><h2>逐组看：具体题目如何变化</h2><p class="note" id="group-rule">小组卷保留原来共用卷的用途规则。个人新版只补弱；共用卷可含巩固与其他练习。小组覆盖较少属于共用卷的取舍，不据此设置覆盖门槛或自动拆组。成员与分组也可能因证据规则变化而改变。</p><div class="controls"><label>对照的小组<select id="group"></select></label></div><div id="group-detail"></div></div>
+<section id="manual-review" hidden><h2>题面抽查：数字判据之外，还要看什么</h2><div id="manual-cases"></div></section>
+<hr><h2>如何读这次比较</h2>
+<div class="callout"><p id="conclusion"></p></div>
+<p class="compact">两版各自的“补弱”标签不能直接证明哪份卷更精准。因此，上方覆盖数统一使用当前证据资格、目标与任务匹配、难度窗口、近期原题规则复核。这个统一判据仍是现有算法规则，没有独立教师金标准。</p>
+<details><summary>查看比较条件、首次历史结果与验证依据</summary><div id="method" class="compact"></div></details>
+<p class="note print-note">本页打印的是当前选择的范围与训练卷类型。</p><p id="load-error" role="alert" hidden></p>
+</main><script id="report-data" type="application/json">__DATA__</script>
+<script src="/vendor/katex/katex.min.js"></script><script src="/vendor/katex/contrib/auto-render.min.js"></script><script src="/question-content.js"></script>
+<script>
+(() => {
+ 'use strict';
+ const data = JSON.parse(document.getElementById('report-data').textContent);
+ const adaptive = data.versions[1].includes('adaptive-new-practice');
+ const versions = data.versions.map(version => version.match(/-v(\d+)/)?.[1] || version);
+ document.querySelector('.intro').textContent = `比较 ${data.selection_settings?.baseline_remediation_only?'本次改进前的':'本任务首次评估的'} v${versions[0]} 与 v${versions[1]}。两版用同一批考试和题库重新生成。先检查题目难度，再检查失分目标与数学任务。未测目标新练习与补弱分别计数。`;
+ if(data.intermediate_version){
+   document.querySelector('h1').textContent='训练卷：补弱优先与任务去重的改进前后';document.title='训练卷：本次改进前后对比';
+   document.querySelector('.eyebrow').textContent='同一输入 · 分别检查两项改动';
+   document.getElementById('group-rule').textContent='个人卷先补弱，再加至多 4 道未测目标新练习。小组卷保留共用卷用途，可含巩固与其他练习；两类卷均使用任务去重。小组覆盖较少属于共用卷的取舍，不据此设置覆盖门槛或自动拆组。';
+ }
+ if(adaptive){
+   document.querySelector('h1').textContent='训练卷：未测目标核对与难度浮动';document.title='训练卷：难度浮动前后对比';
+   document.querySelector('.intro').textContent=`本页初版是改动前的 v${versions[0]}，终版是 v${versions[1]}。两版均先补弱，最多加入 4 道未测目标练习，并对同一批考试和题库重跑。先看新增题的难度与任务依据，再看补弱关联覆盖。`;
+   document.querySelector('.eyebrow').textContent='同一输入 · 未测任务核对 · 得分率难度浮动';
+   document.getElementById('group-rule').textContent='个人卷先补弱，再加至多 4 道未测目标新练习。小组卷保留共用卷用途；两类卷使用同一候选难度评价和任务去重。小组覆盖较少属于共用卷的取舍，不据此设置覆盖门槛或自动拆组。';
+ }
+ const el = id => document.getElementById(id);
+ const escape = value => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ const names = keys => keys.map(key => {const full=data.catalog[key]||key;const short=full.split(/[|｜]/).at(-1).trim();return `<span title="${escape(full)}">${escape(short)}</span>`;}).join('；');
+ const fmt = value => Number(value || 0).toLocaleString('zh-CN');
+ const pct = (n,d) => d ? `${(100*n/d).toFixed(1)}%` : '无明确需要';
+ const reasons = {no_usable_task:'没有当前可用的同目标或任务候选',above_student_window:'候选高于学生难度上界',below_student_window:'候选低于学生难度下界',paper_difficulty_ceiling:'候选超过整卷难度上限',recent_original:'可接受难度的候选属于近期原题',quota:'已有可用候选，受入卷限制'};
+ const constraintNames = {same_skill_quota:'同技能数量上限',same_task_quota:'相近任务限制',written_quota:'解答题数量上限',paper_full:'总题数上限',similar_or_duplicate:'相似或重复题限制',ranking_tradeoff:'排序取舍'};
+ const levelNames = {within:'范围内',above:'高于上界',below:'低于下界',unknown:'无法判断'};
+ const evidenceNames = {observed_step:'已定位失分判定点',observed_task:'已知原题任务，未定位失分步骤',target_only:'仅有目标作答依据'};
+ const purposeNames = {remediation:'补弱',consolidation:'巩固',new:'新练习：目标暂无有效直接作答证据'};
+ let scope = data.scopes[2];
+ function body(id){return `<div class="question-body" data-content-id="${id}"><span class="note">正在读取题干、公式和配图…</span></div>`;}
+ function loadBodies(root){if(window.ReportQuestionContent)window.ReportQuestionContent.load(root);else root.querySelectorAll('[data-content-id]').forEach(node=>{node.textContent='具体题目需要通过本机题面服务读取。请使用本次报告的本机地址打开。';});}
+ function bar(label,summary,latest){
+   return `<div class="bar-row"><div class="bar-caption"><span>${label}</span><span>${fmt(summary.covered)} / ${fmt(summary.need_count)} 项 · ${pct(summary.covered,summary.need_count)}</span></div><div class="bar" role="img" aria-label="${label}覆盖 ${summary.covered} 项，共 ${summary.need_count} 项"><span class="${latest?'latest':''}" style="width:${summary.need_count?100*summary.covered/summary.need_count:0}%"></span></div></div>`;
+ }
+ function table(headers,rows){
+   return `<table><thead><tr>${headers.map((h,i)=>`<th${i?' class="n"':''}>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map((v,i)=>`<td${i?' class="n"':''}>${v}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+ }
+ function render(){
+   scope = data.scopes[Number(el('scope').value)];
+   const personal = el('mode').value === 'personal';
+   const [before,after] = personal ? scope.personal : scope.group_summary;
+   const title = scope.chapters.length === 2 ? '两章合卷' : `第${scope.chapters[0]}章`;
+   const count = personal ? '逐生题位' : '成员题位';
+   el('personal-section').hidden = !personal; el('group-section').hidden = personal;
+   el('summary').innerHTML = `<div class="stats"><div class="stat"><small>当前 ${title} 失分需要</small><strong>${fmt(after.need_count)} 项</strong><small>${personal?'相同学生 × 标准目标':'已分组成员 × 标准目标'}，不是独立能力数</small></div><div class="stat"><small>同一判据下已覆盖：初版 → 最新</small><strong>${fmt(before.covered)} → ${fmt(after.covered)}</strong><small>${after.covered-before.covered>=0?'净增加':'净减少'} ${fmt(Math.abs(after.covered-before.covered))} 项</small></div><div class="stat"><small>有需要却没有可用补弱题</small><strong>${before.unserved} → ${after.unserved} 人</strong><small>按当前资格复核，不表示全部需要已覆盖</small></div></div><p class="note">初版：${fmt(before.question_slots)} 个${count}；最新：${fmt(after.question_slots)} 个${count}。${personal?`${scope.changed_papers} / ${after.papers} 份个人卷的题目集合改变。保留 ${scope.retained_slots} 个题位，移除 ${scope.removed_slots} 个，新增 ${scope.added_slots} 个。`:`初版 ${scope.groups[0].length} 组，最新 ${scope.groups[1].length} 组。组内同一题按成员重复计数；这不是独立题目数。`}</p>`;
+   el('coverage').innerHTML = bar('初版卷 · 按当前规则复核',before,false)+bar('最新卷 · 按当前规则复核',after,true);
+   if(personal && scope.intermediate){
+     const stages=[before,scope.intermediate,after];
+     el('summary').innerHTML+=`<h3>两项改动分别核对</h3><div class="table-wrap">${table(['同一输入下的个人卷','改进前','加入未测目标','再加任务去重'],[
+       ['题位总数',...stages.map(stage=>fmt(stage.question_slots))],
+       ['补弱关联覆盖',...stages.map(stage=>`${fmt(stage.covered)} / ${fmt(stage.need_count)}`)],
+       ['未测目标新练习题位',...stages.map(stage=>fmt(stage.new_practice_slots))],
+       ['已识别的重复任务题位',...stages.map(stage=>fmt(stage.task_repeated_slots))]])}</div><p class="note">未测新练习不计入补弱关联覆盖。重复任务只统计当前能明确识别的情况，不代表已完成全部数学任务的人工审查。</p>`;
+   }
+   if(personal && adaptive){
+     el('summary').innerHTML+=`<h3>新增练习是否真的缺少任务记录</h3><div class="table-wrap">${table(['按终版相同判据复核','改动前','改动后'],[
+       ['新增练习题位',fmt(before.new_practice_slots),fmt(after.new_practice_slots)],
+       ['其中原考试已考过同一操作',fmt(before.new_observed_task_slots),fmt(after.new_observed_task_slots)],
+       ['其中仅发现相关操作',fmt(before.new_related_task_slots),fmt(after.new_related_task_slots)]])}</div><p class="note">同一操作与相关操作分别记录。相关操作不能直接确认为该目标已掌握；任务线索只用于选题，没有写回掌握度或技能标签。未知操作不作推断。</p>`;
+   }
+   el('level-table').innerHTML = table(['逐题水平复核', '初版', '最新'], Object.entries(levelNames).map(([key,name])=>[name,fmt(before.level_checks[key]),fmt(after.level_checks[key])]).concat([['题位总数',fmt(before.question_slots),fmt(after.question_slots)],['其中有当前可用补弱关系',fmt(before.remediation_slots),fmt(after.remediation_slots)]]));
+   if(personal){
+     el('tiers').innerHTML = table(['成绩层 / 人数','初版覆盖','最新覆盖','补弱题位：初版 → 最新'],scope.by_tier.map(t=>[`${t.name} / ${t.after.papers} 人`,`${t.before.covered}/${t.before.need_count}`,`${t.after.covered}/${t.after.need_count}`,`${t.before.remediation_slots} → ${t.after.remediation_slots}`]));
+     const previous = el('student').value;
+     el('student').innerHTML = scope.papers.map(p=>`<option value="${escape(p.label)}">${escape(p.label)} · 覆盖 ${p.before.covered.length} → ${p.after.covered.length} / ${p.current_need_count} 项</option>`).join('');
+     if(scope.papers.some(p=>p.label === previous)) el('student').value = previous;
+     renderPaper();
+     el('gap-summary').innerHTML = Object.entries(after.gaps).map(([key,value])=>`<div class="gap-line"><span>${reasons[key]||escape(key)}</span><strong>${fmt(value)} 项</strong></div>`).join('');
+   } else renderGroups();
+   const delta = after.covered-before.covered;
+   el('conclusion').textContent = personal ? `在 ${title} 中，新版实际题量${after.question_slots<before.question_slots?'减少':'增加'}，按当前相同判据的失分覆盖${delta>=0?'净增加':'净减少'} ${Math.abs(delta)} 项。题量和覆盖应分别判断。未保留的旧题不一定质量较差；新增题也不等于已证明提高了学习成绩。` : `在 ${title} 中，两版分组及共用卷均已重新生成。先看每组成员的水平范围与补弱关系，再看覆盖。分组人数或范围变化时，总覆盖不宜直接解释为算法精度的变化。`;
+   renderMethod();renderManual();
+ }
+ function question(item,paper,latest,index){
+   const change = paper.retained_questions.includes(item.id) ? '保留' : latest ? '新增' : '移除';
+   const badge = change==='保留'?'':latest?'add':'remove';
+   const purpose = item.original_purposes.length && item.original_purposes.every(p=>'new'===p) ? (item.new_task_state==='observed'?' · 原版新练习：已发现同任务':item.new_task_state==='related'?' · 新练习：存在相关任务':' · 未测目标新练习') : item.targets.length ? ' · 补弱关联' : '';
+   const level = item.level==='unknown' ? '当前任务窗口无法判断' : `${levelNames[item.level]} · 窗口 ${item.window[0]}–${item.window[1]}`;
+   let reason = item.targets.length ? `可用补弱目标：${names(item.targets)}` : item.potential_targets.length ? `存在目标/任务关系，受难度或原题规则限制：${names(item.potential_targets)}` : '当前规则没有支持可用补弱关系';
+   if(item.status==='其他可用练习') reason='可作其他练习，未对应本范围当前直接失分需要';
+   if(item.original_purposes.length && item.original_purposes.every(purpose=>purpose==='new')){
+     reason=`标签未测目标：${names(item.new_target_keys||[])}。暂无该目标的有效直接作答记录，不认定为薄弱，不计入失分需要覆盖。`;
+     if(item.new_task_state==='observed')reason+='按终版复核，原考试已考过同一操作，不能仅因标签缺少记录认作全新任务。';
+     else if(item.new_task_state==='related')reason+='已发现相关操作记录；相关操作不直接等于已掌握本目标，降低新增优先级。';
+     else reason+='当前支持的任务识别没有发现相同操作记录，仍需结合题面核对。';
+     if(item.target_aim!==null&&item.target_aim!==undefined)reason+=` 本版本目标难度 ${item.target_aim} 级。${escape(item.difficulty_basis||'')}`;
+   }
+   const complete = item.full_targets.length ? `算法标为覆盖已知原任务要求：${names(item.full_targets)}；尚需教师核对` : item.targets.length ? '只确认目标或环节练习；完整任务覆盖未确认' : '';
+   const note = change==='移除'&&item.targets.length ? '旧题仍有可用补弱关系；换题后未保留，不据此判为误推荐。' : change==='新增' ? '本次最新算法选入；新增原因可能包含资格变化与配额下的排序取舍。' : '';
+   return `<div class="question" data-question-id="${item.id}"><div class="question-head"><strong>${latest?'终版':'初版'}卷内第 ${index+1} 题 · #${item.id}</strong><span><span class="badge ${badge}">${change}</span>${purpose} · 公式难度 ${item.difficulty}</span></div>${body(item.id)}<p class="${item.level==='above'||item.level==='below'?'bad':''}">水平：${level}</p><details class="match-detail"><summary>查看本题的补弱关系与选题依据</summary><p>${reason}</p>${item.recent?'<p class="bad">属于近期原题。</p>':''}${complete?`<p>${complete}</p>`:''}${item.evidence.length?`<p class="note">${item.evidence.map(e=>evidenceNames[e]||escape(e)).join('；')}</p>`:''}${item.task_labels.length?`<p class="note">原题任务要求：${item.task_labels.map(escape).join('；')}</p>`:''}<p class="note">本版本题目关联用途：${item.original_purposes.map(p=>purposeNames[p]||escape(p)).join('；')}${note?`。${note}`:''}</p></details></div>`;
+ }
+ function renderPaper(){
+   const paper = scope.papers.find(p=>p.label === el('student').value) || scope.papers[0];
+   if(!paper){el('paper-detail').textContent='本范围没有学生卷';return;}
+   const latest = paper.after;
+   const gaps = latest.gaps || [];
+   const columns = retained => [paper.before,paper.after].map((audit,i)=>{
+     const items=[...audit.items].sort((a,b)=>a.difficulty-b.difficulty).map((item,n)=>({item,n})).filter(({item})=>paper.retained_questions.includes(item.id)===retained);
+     return `<div><h3 class="changes-title ${i?'new':'old'}">${i?'终版':'初版'}${retained?'保留题':i?'新增题':'移除题'} · ${items.length} 题</h3>${items.map(({item,n})=>question(item,paper,i===1,n)).join('')||'<p class="muted">此列没有题目。</p>'}</div>`;
+   }).join('');
+   el('paper-detail').innerHTML = `<div class="paper-heading"><h3>${escape(paper.label)}</h3><span class="note">当前需要 ${paper.current_need_count} 项 · 保留 ${paper.retained_questions.length} 题，移除 ${paper.removed_questions.length} 题，新增 ${paper.added_questions.length} 题</span></div><p>初版 ${paper.before.items.length} 题 → 终版 ${latest.items.length} 题；同一判据覆盖 ${paper.before.covered.length} → ${latest.covered.length} / ${paper.current_need_count} 项。</p><p class="note">先看变化的题目：左侧是初版移除题，右侧是终版新增题。两列按各自原卷顺序排列，不表示同一行的两题一对一替换。点击配图可以放大。</p><div class="pair changed-questions">${columns(false)}</div><details class="retained"${paper.retained_questions.length?'':' hidden'}><summary>两版均保留 ${paper.retained_questions.length} 题：展开题干与依据</summary><div class="pair">${columns(true)}</div></details><details><summary>证据需要如何变化：初版 ${paper.old_need_count} 项 → 当前 ${paper.current_need_count} 项</summary><p class="note">保留 ${paper.retained_needs.length} 项，退出直接失分需要 ${paper.retired_needs.length} 项，新增 ${paper.new_needs.length} 项。退出不表示已掌握；可能是旧总分没有足够精度支持直接归因。</p>${paper.retired_needs.length?`<p>退出：${names(paper.retired_needs)}</p>`:''}${paper.new_needs.length?`<p>新增：${names(paper.new_needs)}</p>`:''}</details><details${gaps.length?'':' hidden'}><summary>当前尚未覆盖 ${gaps.length} 项：逐项追查</summary><ul class="gaps">${gaps.map(g=>`<li><strong>${names([g.key])}</strong>：${reasons[g.reason]||escape(g.reason)}${g.candidate?`。候选 #${g.candidate}，难度 ${g.difficulty}，学生窗口 ${g.window[0]}–${g.window[1]}<details><summary>查看候选题的具体题目</summary>${body(g.candidate)}</details>`:''}${g.constraints?.length?`。涉及：${g.constraints.map(c=>constraintNames[c]||escape(c)).join('、')}`:''}${g.blocking_questions?.length?`；占用技能名额的题目：${g.blocking_questions.map(id=>'#'+id).join('、')}`:''}。</li>`).join('')}</ul></details>`;
+   loadBodies(el('paper-detail'));
+ }
+ function renderGroups(){
+   const previous=el('group').value;
+   el('group').innerHTML=[1,0].map(version=>`<optgroup label="${version?'终版小组':'初版小组'}">${scope.groups[version].map(group=>`<option value="${version}|${escape(group.label)}">${escape(group.label)} · ${group.members.length} 人 / ${group.question_ids.length} 题</option>`).join('')}</optgroup>`).join('');
+   if([...el('group').options].some(option=>option.value===previous))el('group').value=previous;
+   renderGroupPaper();
+ }
+ function renderGroupPaper(){
+   const [versionText,label]=el('group').value.split('|'), version=Number(versionText);
+   const selected=scope.groups[version]?.find(group=>group.label===label);
+   if(!selected){el('group-detail').textContent='本范围未形成小组。';return;}
+   const overlap=scope.groups[1-version].map(group=>({group,count:group.members.filter(member=>selected.members.includes(member)).length})).sort((a,b)=>b.count-a.count)[0];
+   const other=overlap?.count?overlap.group:null;
+   const before=version===0?selected:other, latest=version===1?selected:other;
+   const retained=before&&latest?before.question_ids.filter(id=>latest.question_ids.includes(id)):[];
+   const groupMeta=group=>group?`<h3>${escape(group.label)} · ${group.members.length} 人 / ${group.question_ids.length} 题</h3><p class="note">${Object.entries(group.tier_counts).map(([name,n])=>`${name} ${n} 人`).join('；')}</p><p>同一判据覆盖 ${group.summary.covered} / ${group.summary.need_count} 项；有需要却无可用补弱题 ${group.summary.unserved} 人。</p><p class="note">${group.coverage_range?`成员覆盖率范围：${(100*group.coverage_range[0]).toFixed(1)}%–${(100*group.coverage_range[1]).toFixed(1)}%`:'成员没有本范围明确需要'}</p><details><summary>查看成员的覆盖与水平复核</summary>${table(['匿名成员','覆盖 / 需要','高于窗口题位','无法判断题位'],group.member_checks.map(member=>[escape(member.label),`${member.covered}/${member.needs}`,member.above,member.unknown]))}</details>`:'<p>本版没有与所选组成员重合的小组。</p>';
+   const columns=kept=>[before,latest].map((group,i)=>{
+     const ids=(group?.question_ids||[]).filter(id=>retained.includes(id)===kept);
+     const change=kept?'保留':i?'新增':'移除';
+     return `<div><h3 class="changes-title ${i?'new':'old'}">${i?'终版':'初版'}${change}题 · ${ids.length} 题</h3>${ids.map(id=>`<div class="question" data-question-id="${id}"><div class="question-head"><strong>${i?'终版':'初版'}卷内第 ${group.question_ids.indexOf(id)+1} 题 · #${id}</strong><span class="badge ${kept?'':i?'add':'remove'}">${change}</span></div>${body(id)}</div>`).join('')||'<p class="muted">此列没有题目。</p>'}</div>`;
+   }).join('');
+   el('group-detail').innerHTML=`<p class="note">${other?`所选 ${escape(selected.label)} 与另一版成员重合最多的 ${escape(other.label)} 对照，重合 ${overlap.count} / ${selected.members.length} 位所选组成员。`:'另一版没有成员重合的小组。'}分组范围可能改变；题目增减只相对于这里展示的两组。两列不表示一对一替换。</p><div class="pair group-metadata"><div>${groupMeta(before)}</div><div>${groupMeta(latest)}</div></div><div class="pair changed-questions">${columns(false)}</div><details class="retained"${retained.length?'':' hidden'}><summary>两组均保留 ${retained.length} 题：展开具体题目</summary><div class="pair">${columns(true)}</div></details>`;
+   loadBodies(el('group-detail'));
+ }
+ function renderMethod(){
+   const first = data.historical_first_run?.find(row=>row.scope === scope.chapters.join('+'));
+   const old = first?.native;
+   el('method').innerHTML = `<p>版本：${escape(data.versions[0])} → ${escape(data.versions[1])}。</p><p>固定条件：请求上限 10 题，公式难度上限 8，同技能最多 1 题，解答题最多 2 题，近期原题排除 3 次。章节范围使用整题规则，不拆小问打印。题库中此前获授权的 #786 和 #1474 难度修正，已同时用于本次两版重跑。</p><p>原始输入相同，证据资格是算法的一部分，因此两版识别的需要可以不同。本范围两版各自识别 ${scope.own_needs[0]} → ${scope.own_needs[1]} 项，并按各自旧口径标为已覆盖 ${scope.own_coverage[0]} → ${scope.own_coverage[1]} 项；这组数的分母和判断规则不同，上方主比较统一使用当前需要集合。</p>${old?`<p>本任务首次历史报告：${old.printed_slots} 个个人题位，初版自报覆盖 ${old.covered_need_count}/${old.need_count} 项，有需要却无补弱题 ${old.students_without_remediation} 人。该记录使用当时题库与证据口径，不是此次同输入配对结果。</p>`:''}<p>两版个人选题都与各自正式内存草稿的组卷函数核对一致。每个范围有效候选 ${scope.candidate_count} 道。全量纸面题目、判定版本准备与实际训练提交没有执行。</p><p>只读检查：原始成绩一致、近期记录一致、数据库读版本与内容指纹未改变。模型请求 ${data.model_requests} 次，数据库写入 ${data.database_writes} 次，原始学生数据导出 ${data.raw_student_exports} 次。</p><p>本次实验耗时 ${data.seconds.toFixed(1)} 秒。范围内的学生 × 知识主题与技能可能描述同一数学任务，覆盖项数不等于独立能力数。未知任务只能确认目标或环节练习，不用“完整覆盖”代替独立教师判断。</p><p class="note">尚未验证：独立教师对题面与学生水平的适合度、学生实际训练达成与学习收益。</p><p class="code">评分库指纹：${escape(data.input.grading)}<br>题库指纹：${escape(data.input.bank)}<br>考试配置：${data.input.exam_config_count} 份 · ${escape(data.input.exam_config_hash)}</p>`;
+ }
+ function renderManual(){
+   const cases=data.manual_review?.cases||[];
+   el('manual-review').hidden=!cases.length;
+   el('manual-cases').innerHTML=`<p class="note">代理在原位置只读抽查题面。以下是初步教学判断，用来检查规则边界；不是全量教师验收，也没有学生实测。</p>${cases.map(row=>`<div class="question"><h3>题目 #${row.id} · ${escape(row.task)}</h3><p>${escape(row.finding)}</p><details><summary>展开抽查题的具体题目</summary>${body(row.id)}</details></div>`).join('')}`;
+ }
+ el('scope').addEventListener('change',render); el('mode').addEventListener('change',render);
+ el('student').addEventListener('change',renderPaper); el('print').addEventListener('click',()=>window.print());
+ el('group').addEventListener('change',renderGroupPaper);
+ render();
+})();
+</script>
+</body></html>

@@ -143,6 +143,33 @@ def test_same_skill_candidates_are_not_automatically_folded_as_similar():
     second = {'question_id': 2, 'stable_keys': ['sk_a'], 'question_text': '合成图形推理'}
     assert paper_similarity_allowed(first, [second])
     assert not _paper_diversity_allowed(first, [second])
+    from question_bank.recommendation.personalized import paper_task_duplicates
+    triplets = {'question_id': 21, 'question_type': '选择题', 'difficulty': 2,
+        'stable_keys': ['sk_TEST_triples'], 'question_text': '下列各组数中，是勾股数的是 A. 3,4,5 B. 2,3,4'}
+    triangle = {'question_id': 22, 'question_type': '选择题', 'difficulty': 2,
+        'stable_keys': ['sk_TEST_triangle'], 'question_text': '下列各组边长中，不能组成直角三角形的是 A. 5,12,13 B. 3,4,6'}
+    assert paper_similarity_allowed(triangle, [triplets])  # keep both as candidates
+    assert paper_task_duplicates(triangle, [triplets]) == [21]
+    assert not _paper_diversity_allowed(triangle, [triplets])
+    assert _paper_diversity_allowed({**triangle, 'question_type': '解答题'}, [triplets])
+    assert _paper_diversity_allowed({**triangle, 'question_text': '下列各组边长中，不能组成直角三角形的是 A. √2,√3,√5'}, [triplets])
+    assert _paper_diversity_allowed({**triangle, 'question_text': '如图，利用正方形面积关系求直角三角形边长'}, [triplets])
+    assert _paper_diversity_allowed({**triangle, 'target_facets': [{'part_id': 'one'}, {'part_id': 'two'}]}, [triplets])
+    root = {'question_id': 23, 'question_type': '填空题', 'stable_keys': ['sk_TEST_root'], 'question_text': '36的算术平方根是____'}
+    variant = {**root, 'question_id': 24, 'stable_keys': ['sk_TEST_other_root'], 'question_text': '49的算术平方根是____'}
+    assert not _paper_diversity_allowed(variant, [root])
+    assert _paper_diversity_allowed({**variant, 'question_text': '49的平方根是____'}, [root])
+    assert _paper_diversity_allowed({**variant, 'question_text': '若一个数的算术平方根是7，则这个数是____'}, [root])
+    assert _paper_diversity_allowed({**variant, 'question_text': '0的算术平方根是____'}, [root])
+    def entry(q):
+        return {'candidate': q, 'student_id': 'TEST-A', 'key': q['stable_keys'][0], 'selection_kind': 'direct',
+            'practice_purpose': 'remediation', 'distance': abs(q['difficulty']-2), 'preference': 0, 'match_level': 1}
+    chosen = _choose_practice_entries([entry(triplets), entry({**triangle, 'difficulty': 3})], 10)
+    assert [e['candidate']['question_id'] for e, _ in chosen] == [21]
+    from question_bank.recommendation.personalized import PersonalizedRecommendationModule
+    module = object.__new__(PersonalizedRecommendationModule)
+    module._source_snapshot = lambda **_: ((triplets, triangle), (), {})
+    assert [violation['code'] for violation in module.paper_rule_violations([21, 22])] == ['task']
 
 
 def test_repeated_successes_survive_one_trap_and_duplicate_tags():
@@ -214,7 +241,9 @@ def test_all_three_flows_share_per_student_matching_and_allow_new_exercises(dire
         difficulty_min=1, difficulty_max=8, excluded_question_ids=set())
     individual_ids = {e["candidate"]["question_id"] for entries in personal["pools"].values() for e in entries}
     teacher_ids = {q for c in teacher["candidates"] for q in [c["question_id"], *c["similar_question_ids"]]}
-    assert teacher_ids == individual_ids
+    direct = direct_module.evaluate_candidates(diagnosis=diagnosis, config=config, core_only=True)
+    direct_ids = {e['candidate']['question_id'] for entries in direct['pools'].values() for e in entries}
+    assert teacher_ids == direct_ids
     assert individual_ids
 
     unknown = deepcopy(diagnosis)

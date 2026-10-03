@@ -171,7 +171,8 @@ const canDiscardDraft = computed(() => (
 // 出卷设置指纹：设置一致时才恢复上次草稿，设置变了必须重新生成。
 // rulesVersion 随选题规则升级递增，避免恢复规则升级前的旧草稿。
 const settingsFingerprint = computed(() => JSON.stringify({
-  rulesVersion: 11,
+  rulesVersion: props.paperMode === 'shared' ? 15 : 16,
+  maxUnmeasuredQuestions: props.paperMode === 'shared' ? 0 : 4,
   purpose: props.purpose ?? 'training',
   maxQuestionsPerSkill: props.maxQuestionsPerSkill ?? 1,
   maxWrittenQuestions: props.maxWrittenQuestions ?? 2,
@@ -247,13 +248,13 @@ async function restoreDraft(): Promise<void> {
     paperBatch.value = batches[0] ?? null
     selectedDraftStudentId.value = restored.students[0]?.student_id ?? ''
     handoutRequestToken.value = stored.handoutRequestToken ?? ''
-    if (handoutRequestToken.value) void recoverHandoutExport()
     state.value = 'ready'
     await Promise.resolve()
     viewStep.value = instances.some(instance => instance.status === 'frozen') ? 'scan' : 'review'
     actionMessage.value = previousRules
       ? '已恢复原草稿，沿用保存时的设置、来源和限制；已生成训练卷仍可查看。'
       : '已恢复上次生成的草稿，可继续审核。'
+    if (handoutRequestToken.value) void recoverHandoutExport()
   } catch {
     clearPaperDraftSession()
     state.value = 'idle'
@@ -538,6 +539,8 @@ async function generate(): Promise<void> {
       recent_activity_count: props.recentActivityCount ?? 3,
       difficulty_max: difficultyMax.value,
       paper_mode: props.paperMode ?? 'individual',
+      remediation_only: props.paperMode !== 'shared',
+      max_unmeasured_questions: props.paperMode !== 'shared' ? 4 : 0,
       target_keys: selectedTargetsAreGoverned.value ? selectedTargets.value : [],
       scope_keys: (props.scopeKeys ?? []).filter((key) => key.startsWith('kp_') || key.startsWith('ki_')),
       target_names: selectedTargetsAreGoverned.value ? [] : selectedTargetLabels.value,
@@ -609,7 +612,10 @@ async function trackHandoutJob(job: JobResponse): Promise<void> {
   }
   if (generation !== handoutPollGeneration) return
   if (handoutJob.value.status === 'succeeded') {
-    actionMessage.value = '讲义已导出，请下载后打印；不会产生训练证据。'
+    const skipped = Number(handoutJob.value?.result.skipped_student_count) || 0
+    actionMessage.value = skipped
+      ? `讲义已导出；${skipped} 名学生暂无可配补弱题，已跳过空卷。请下载后打印。`
+      : '讲义已导出，请下载后打印；不会产生训练证据。'
   } else {
     errorMessage.value = '讲义导出未完成，请重新核对草稿来源后再导出。'
     handoutRequestToken.value = ''
@@ -916,7 +922,7 @@ async function editItem(
                 </div>
               </li>
             </ol>
-            <div v-if="student.shortages.length" class="personalized-shortages"><strong>题源不足，还需配 {{ student.shortages.reduce((sum, item) => sum + (Number(item.missing_count) || 0), 0) }} 题</strong><p>可返回设置调整范围、题量或近期原题排除次数。</p><details><summary>缺题详情</summary><p v-for="shortage in student.shortages" :key="String(shortage.stage)">{{ stageLabel(shortageStage(shortage)) }} · 待配 {{ Number(shortage.missing_count) || 0 }} 题</p></details></div>
+            <div v-if="student.shortages.length" class="personalized-shortages"><strong>{{ draft.config.remediation_only && effectivePaperMode === 'individual' ? `当前可配训练题 ${student.items.length} 题` : `尚未配齐，还缺 ${student.shortages.reduce((sum, item) => sum + (Number(item.missing_count) || 0), 0)} 题` }}</strong><p>{{ draft.config.remediation_only && effectivePaperMode === 'individual' ? (Number(draft.config.max_unmeasured_questions ?? 0) > 0 ? `优先补弱，再加入最多 ${draft.config.max_unmeasured_questions} 道未测目标新练习；新练习不计作薄弱点覆盖。题量不足保留缺口。` : '只练已有失分需要；题量不足保留缺口，可展开选题说明核对原因。') : '可返回设置调整范围、题量或近期原题排除次数。' }}</p><details><summary>缺题详情</summary><p v-for="shortage in student.shortages" :key="String(shortage.stage)">{{ stageLabel(shortageStage(shortage)) }} · 距题量上限少 {{ Number(shortage.missing_count) || 0 }} 题</p></details></div>
             <details v-if="student.warnings.length" class="draft-data-notes"><summary>选题说明（{{ student.warnings.length }}）</summary><ul><li v-for="warning in student.warnings" :key="warning">{{ warning }}</li></ul></details>
           </article></template>
         </div>

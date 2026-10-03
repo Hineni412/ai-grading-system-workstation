@@ -20,7 +20,10 @@ def checked_handout_draft(module: PersonalizedRecommendationModule, draft_id: st
         raise RecommendationRevisionConflict(expected_revision, draft["revision"])
     if draft.get("config", {}).get("purpose", "training") != "handout":
         raise ValueError("请使用讲义草稿导出讲义。")
-    if not draft["students"] or any(not student["items"] for student in draft["students"]):
+    personal_remediation = draft.get("config", {}).get("remediation_only") and draft.get("config", {}).get("paper_mode", "individual") == "individual"
+    if not draft["students"] or not any(student["items"] for student in draft["students"]):
+        raise ValueError("当前没有可导出的题目，请核对补弱依据与候选缺口。")
+    if not personal_remediation and any(not student["items"] for student in draft["students"]):
         raise ValueError("讲义草稿含空卷，请调整规则后重新生成。")
     return draft
 
@@ -32,7 +35,8 @@ def run_training_handout_export(*, context: JobContext, question_bank_db_path: P
     revision = int(context.payload["expected_revision"])
     draft = checked_handout_draft(module, draft_id, revision)
     shared = draft["config"].get("paper_mode") == "shared"
-    students = draft["students"][:1] if shared else draft["students"]
+    students = draft["students"][:1] if shared else [student for student in draft["students"] if student["items"]]
+    skipped = 0 if shared else len(draft["students"]) - len(students)
     output_root = Path(reports_dir) / "training_handouts"
     output_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output_root, prefix=f".job-{context.job_id}-") as staging:
@@ -65,4 +69,5 @@ def run_training_handout_export(*, context: JobContext, question_bank_db_path: P
         os.replace(staged, published)
     return {"file_path": str(published), "filename": filename,
             "format": "docx" if shared else "zip", "paper_count": len(students),
+            "skipped_student_count": skipped,
             "question_count": sum(len(student["items"]) for student in students)}
