@@ -166,6 +166,16 @@ def test_semester_graph_and_evidence_exclude_other_terms_and_empty_scope(tmp_pat
     assert payload["scope"]["student_score_profiles"]["3"]["score_rate"] is None
     assert payload["scope"]["use_historical_fallback"] is False
     assert payload["nodes"]
+    from integration.mastery_overview import build_mastery_overview
+    service = DiagnosisProfileService(grading_db, question_bank_db)
+    full = service.build_profiles(scope=query['scope'], exam_scope=query['exam_scope'])
+    expected_overview = build_mastery_overview(full, volume_id='bnu24-math-g8-upper')
+    by_key = {item['knowledge_key']: item for item in full['group_weak_points']}
+    assert any(node['definition'] for node in expected_overview['nodes'])
+    for node in expected_overview['nodes']:
+        assert node['group_interval_low'] == by_key.get(node['knowledge_key'], {}).get('interval_low')
+        assert node['group_interval_high'] == by_key.get(node['knowledge_key'], {}).get('interval_high')
+        assert sum(node['distribution'].values()) == node['evidence_student_count']
     key = "kp_alg_linear_equation"
     for volume, expected in [
         ("bnu24-math-g8-upper", {2}),
@@ -176,3 +186,84 @@ def test_semester_graph_and_evidence_exclude_other_terms_and_empty_scope(tmp_pat
         evidence = client.post("/api/graph/evidence", json={**query, "stable_key": key})
         assert evidence.status_code == 200, evidence.text
         assert {row["session_id"] for row in evidence.json()["items"]} == expected
+
+
+def _overview_input():
+    from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+    volume = curriculum_volume(volume_id='bnu24-math-g8-upper')
+    chapter = volume['chapters'][0]
+    section = chapter['sections'][0]
+    topic = section['knowledge_points'][0]['id']
+    entries = [(chapter['knowledge_id'], 'chapter', None),
+               (section['knowledge_id'], 'section', chapter['knowledge_id']),
+               (topic, 'topic', section['knowledge_id']),
+               ('skill-current', 'skill', section['knowledge_id']),
+               ('old-chapter', 'chapter', None), ('old-section', 'section', 'old-chapter'),
+               ('old-topic', 'topic', 'old-section'), ('old-skill', 'skill', 'old-topic'),
+               ('old-empty', 'topic', 'old-section')]
+    diagnosis = {'knowledge_catalog': [{'knowledge_key': key, 'knowledge_point': f'册｜章｜节｜{key}',
+        'node_kind': kind, 'parent_knowledge_key': parent, 'definition': f'{key} definition'}
+        for key, kind, parent in entries],
+        'students': [{'student_id': '1', 'weak_points': [
+            {'knowledge_key': key, 'mastery': .2, 'evidence_count': 3, 'tier': 'weak'}
+            for key in (topic, 'skill-current', 'old-topic', 'old-skill')]},
+            {'student_id': '2', 'weak_points': [{'knowledge_key': 'old-topic', 'mastery': .3,
+                'evidence_count': 2, 'tier': 'weak'}]}],
+        'group_weak_points': [{'knowledge_key': topic, 'mastery': .2, 'interval_low': .1, 'interval_high': .4}],
+        'knowledge_associations': [
+            {'topic_key': topic, 'skill_key': 'skill-current', 'question_count': 3,
+             'same_part_question_count': 2, 'basis': 'same_part'},
+            {'topic_key': 'old-topic', 'skill_key': 'skill-current', 'question_count': 1,
+             'same_part_question_count': 0, 'basis': 'question_cooccurrence'},
+            {'topic_key': 'old-empty', 'skill_key': 'old-skill', 'question_count': 1,
+             'same_part_question_count': 0, 'basis': 'question_cooccurrence'}]}
+    return diagnosis, topic
+
+
+def test_overview_keeps_prior_volume_evidence_separate_from_all_current_counts():
+    from integration.mastery_overview import build_mastery_overview
+    from backend.api.schemas.training import TrainingOverviewResponse
+    diagnosis, topic = _overview_input()
+    result = build_mastery_overview(diagnosis, volume_id='bnu24-math-g8-upper')
+    TrainingOverviewResponse.model_validate({**result, 'scope': {'mode': 'all', 'student_ids': ['1', '2']},
+        'exam_scope': {'mode': 'semester', 'session_ids': [], 'sessions': []}})
+    nodes = {n['knowledge_key']: n for n in result['nodes']}
+    assert 'old-empty' not in nodes
+    for key in ('old-topic', 'old-skill'):
+        assert nodes[key]['in_volume'] is False
+        assert nodes[key]['chapter_key'] == 'old-chapter'
+        assert nodes[key]['section_key'] == 'old-section'
+    current_only = {**diagnosis, 'knowledge_catalog': [n for n in diagnosis['knowledge_catalog']
+        if not n['knowledge_key'].startswith('old-')]}
+    baseline = build_mastery_overview(current_only, volume_id='bnu24-math-g8-upper')
+    assert result['summary'] == baseline['summary']
+    assert result['students'] == baseline['students']
+    assert result['summary']['evidence_student_count'] == 1
+    assert result['summary']['weak_topic_count'] == 1
+    assert result['summary']['weak_skill_count'] == 1
+    assert result['students'][1]['topics']['evidence'] == 0
+    assert nodes[topic]['definition'] == f'{topic} definition'
+    assert nodes[topic]['group_interval_low'] == .1
+    assert nodes[topic]['group_interval_high'] == .4
+    assert len(result['associations']) == 2
+    for association in result['associations']:
+        assert association['topic_key'] in nodes and association['skill_key'] in nodes
+        assert (association['basis'] == 'same_part') == (association['same_part_question_count'] > 0)
+
+
+def test_overview_association_failure_preserves_mastery_and_warns(monkeypatch):
+    from integration import mastery_overview as module
+    diagnosis, _topic = _overview_input()
+    from types import SimpleNamespace
+    service = SimpleNamespace(tag_profile_cache_key=lambda **_: ('TEST-overview-association-failure',),
+        build_profiles=lambda **_: diagnosis, build_summary_profiles=lambda **_: diagnosis,
+        question_bank_db_path=Path('TEST-unused.db'), persist_snapshots=False)
+    monkeypatch.setattr(module.CurrentKnowledgeResolver, 'from_active_database', lambda _: object())
+    def fail(*_):
+        raise sqlite3.OperationalError('TEST-association-unavailable')
+    monkeypatch.setattr(module, 'load_question_facets', fail)
+    actual = module.overview_payload(service, scope={}, exam_scope={}, volume_id='bnu24-math-g8-upper')
+    expected = module.build_mastery_overview(diagnosis, volume_id='bnu24-math-g8-upper', associations=[])
+    assert actual.pop('warnings') == ['知识点与技能关联暂不可用']
+    expected.pop('warnings')
+    assert actual == expected

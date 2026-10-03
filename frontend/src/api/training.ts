@@ -557,6 +557,10 @@ export interface TrainingOverviewDistribution {
 }
 
 export interface TrainingOverviewNode {
+  definition?: string
+  in_volume?: boolean
+  group_interval_low?: number | null
+  group_interval_high?: number | null
   knowledge_key: string
   display_name: string
   kind: OverviewNodeKind
@@ -599,7 +603,16 @@ export interface TrainingOverviewSummary {
   weak_skill_count: number
 }
 
+export interface TrainingOverviewAssociation {
+  topic_key: string
+  skill_key: string
+  question_count: number
+  same_part_question_count: number
+  basis: 'same_part' | 'question_cooccurrence'
+}
+
 export interface TrainingOverview {
+  associations?: TrainingOverviewAssociation[]
   scope: TrainingDiagnosis['scope']
   exam_scope: TrainingDiagnosis['exam_scope'] & {
     curriculum_volume_id?: string | null
@@ -826,6 +839,10 @@ function isOverviewNodeKind(value: unknown): value is OverviewNodeKind {
 function isOverviewNode(value: unknown): value is TrainingOverviewNode {
   return (
     isRecord(value)
+    && (value.definition === undefined || typeof value.definition === 'string')
+    && (value.in_volume === undefined || typeof value.in_volume === 'boolean')
+    && isNullablePercentage(value.group_interval_low)
+    && isNullablePercentage(value.group_interval_high)
     && isNonEmptyString(value.knowledge_key)
     && typeof value.display_name === 'string'
     && isOverviewNodeKind(value.kind)
@@ -899,6 +916,12 @@ export function decodeTrainingOverview(value: unknown): TrainingOverview {
     || !Array.isArray(value.students)
     || !value.students.every(isOverviewStudent)
     || !isOverviewSummary(value.summary)
+    || (value.associations !== undefined && (!Array.isArray(value.associations) || !value.associations.every(a =>
+      isRecord(a) && isNonEmptyString(a.topic_key) && isNonEmptyString(a.skill_key)
+      && isInteger(a.question_count) && isInteger(a.same_part_question_count)
+      && a.same_part_question_count <= a.question_count
+      && (a.basis === 'same_part' ? a.same_part_question_count > 0
+        : a.basis === 'question_cooccurrence' && a.same_part_question_count === 0))))
   ) {
     throw new Error('Invalid training overview')
   }

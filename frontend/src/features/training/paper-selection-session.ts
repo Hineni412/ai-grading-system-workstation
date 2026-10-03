@@ -149,3 +149,12 @@ export function savePaperSelectionSession(selection: PaperSelectionSession): voi
     // Storage can be unavailable in private or restricted browser contexts.
   }
 }
+
+export function presetFocusedTraining({ targetKeys, rangeKeys }: { targetKeys: string[]; rangeKeys: string[] }): void {
+  const previous = loadPaperSelectionSession() ?? {
+    questionCount: 10, difficultyMax: 8, excludeCurrentOriginals: true, paperMode: 'individual' as const,
+    targetKeys: [], rangeKeys: [],
+  }
+  savePaperSelectionSession({ ...previous, targetKeys: [...targetKeys], rangeKeys: [...rangeKeys],
+    scopeMode: 'focused', paperMode: 'individual', adoptedGroup: null, groupEditor: null })
+}

@@ -581,6 +581,10 @@ class TrainingOverviewNodeStudent(_TrainingModel):
 
 
 class TrainingOverviewNode(_TrainingModel):
+    definition: str = ""
+    in_volume: bool = True
+    group_interval_low: float | None = None
+    group_interval_high: float | None = None
     knowledge_key: str
     display_name: str
     kind: Literal["chapter", "section", "topic", "skill"]
@@ -623,7 +627,16 @@ class TrainingOverviewSummary(_TrainingModel):
     weak_skill_count: int = Field(ge=0)
 
 
+class TrainingOverviewAssociation(_TrainingModel):
+    topic_key: str
+    skill_key: str
+    question_count: int = Field(ge=0)
+    same_part_question_count: int = Field(ge=0)
+    basis: Literal["same_part", "question_cooccurrence"]
+
+
 class TrainingOverviewResponse(_TrainingModel):
+    associations: list[TrainingOverviewAssociation] = Field(default_factory=list)
     scope: TrainingNormalizedScope
     exam_scope: TrainingNormalizedExamScope
     warnings: list[str]
