@@ -12,6 +12,7 @@
 - 以下套件是可选入口，不是每次修改都要逐级执行的关卡；通过相关检查后，只有新修改、失败或具体未解决问题才扩大范围；日常小改动不默认全量测试或独立复审。
 - 学情总览与知识结构：后端 `tests/test_api_graph_selected_scope.py` 覆盖摘要／完整诊断、快照恢复、往届排除、群体区间与关联失败回退；前端 `knowledge-overview-view`、`knowledge-graph-view` 覆盖共享口径、热度边界、范围、出卷预填、筛选与焦点返回。`npx playwright test e2e/knowledge-graph.spec.ts` 使用默认配置与模拟接口验证两栏、关联实线／虚线、抽屉、窄屏和进入按学生训练时不创建草稿。
 - 核心流程失败优先修复；不用测试数量代替功能可用。
+- 按学生／按章节与批量错题本：`practice-selection` 覆盖名单、四档统计及导出恢复，连同 `training-recommendations-view`、`training-group-recommendations`、`personalized-recommendation-draft`、`student-evidence-view` 和 `training-api` 核对勾选、用途规则、概况及证据入口。后端扩展学生 API、题库读取缓存、个性化推荐、训练 API 与 Word 渲染的现有测试，核对知识排序、来源去重、批量预览、章节过滤、巩固上限、旧请求编号和旧草稿导出。真实数据验收通过应用生成草稿及错题本，不调用模型；仅记录匿名构成、缺口和版式结果。
 - 普通组卷导出：`tests/test_assembly_export_job.py` 覆盖 PDF 与兼容 Markdown 的任务发布、记录、两条下载入口、取消及草稿保留，并用本机 LaTeX 实排合成的大图、跨页合并表格和公式；引擎不可用时跳过实排项，不能据此声称验证了 PDF。公式转换复用 `tests/training/test_latex_render.py`，Word 回归复用 `tests/test_question_document_pipeline.py` 与 `tests/training/test_personalized_paper_formula_rendering.py`。前端扩展 `question-assembly-view`，连同 `assembly-store` 核对格式选择与导出请求。人工核对纸面小字、大图、续页和预留作答区；高中样本及断网新工作机需另行验证。
 - 班级组卷：`tests/test_assembly_assistant.py` 覆盖多班与指定考试、只读逐题证据、快速起草与规则保存；`tests/test_unified_practice_rules.py` 核对参数化上限与近期规则，`tests/training/test_personalized_recommendation.py` 核对全班固定题序、无证据成员和生成幂等。前端扩展现有 `assembly-assistant`、`question-assembly-view` 与 `personalized-recommendation-draft` 用例；`training-assessment-panel` 核对费用确认、取消不发请求和重试另行确认；真实数据人工验收只查看班级、考试、题面及已有篮子，添加、替换、降低限制、导出与训练写入在合成环境验证，不调用真实模型。
 
@@ -59,9 +60,9 @@
 | 扫描与批改 | `npm run e2e:scan-grading` | 普通入口先构建，后端使用隔离测试数据 |
 | 设置页学生名单 | `npm run e2e:students` | 普通入口先构建，后端使用隔离测试数据；覆盖导入预览、编辑与输入确认删除；并行任务可将 `STUDENT_BROWSER_FRONTEND_DIST` 设为独立构建目录后运行 `:prepared`，避免改写共享成品 |
 | 技能找题、原地标注、整卷、待处理与试卷篮 | `npm run e2e:question-bank` | 普通入口先构建，每次新建 TEST-question-bank 合成目录，独立端口；覆盖 1280/1440、Esc 与焦点返回 |
-| 训练推荐 | `npm run e2e:training-recommendations` | 普通入口先构建，后端使用隔离测试数据 |
+| 训练推荐 | `npm run e2e:training-recommendations` | 普通入口先构建；浏览器使用当前源码与模拟接口，覆盖三栏／窄屏、选人、讲义预设、抽屉、批量错题本及下载 |
 
-依赖前端成品的五组入口保留同名 `:prepared` 命令；已有当前且完整的构建产物时可直接运行，不重建共享 `frontend/dist`。题框编辑入口直接使用源码，没有单独的 prepared 命令。专项配置从项目 `runtime/python/python.exe` 启动后端，历史配置文件名保留，入口按业务操作命名。
+依赖前端成品的四组入口保留同名 `:prepared` 命令；训练推荐的 `:prepared` 直接使用当前源码与模拟接口；已有当前且完整的构建产物时可直接运行，不重建共享 `frontend/dist`。题框编辑入口直接使用源码，没有单独的 prepared 命令。专项配置从项目 `runtime/python/python.exe` 启动后端，历史配置文件名保留，入口按业务操作命名。
 
 这些专项沿用固定端口和各自的 `frontend/test-results/` 合成数据目录；运行前确认没有其他任务共用服务、构建产物或该测试目录。
 

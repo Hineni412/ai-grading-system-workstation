@@ -19,8 +19,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: '..\\runtime\\python\\python.exe ../tools/p2_18_browser_server.py --data-root test-results/p2-18-real --port 8018',
-    url: 'http://127.0.0.1:8018/api/healthz',
+    command: 'npm run dev -- --port 8018',
+    url: 'http://127.0.0.1:8018',
     reuseExistingServer: false,
     timeout: 60_000,
   },

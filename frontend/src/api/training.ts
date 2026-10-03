@@ -91,6 +91,7 @@ export interface PersonalizedRecommendationCreateRequest
   request_token: string
   remediation_only?: boolean
   max_unmeasured_questions?: number
+  max_consolidation_questions?: number
   purpose?: 'training' | 'handout'
   max_questions_per_skill?: number
   max_written_questions?: number
@@ -131,6 +132,8 @@ export interface PersonalizedRecommendationRelation {
 }
 
 export interface PersonalizedRecommendationItem {
+  knowledge_section?: { id: string | null; title: string }
+  primary_skill_name?: string
   practice_purpose?: 'remediation' | 'consolidation' | 'new'
   difficulty_basis?: string
   evidence_confidence?: 'repeated' | 'sparse' | 'auxiliary' | 'unknown'

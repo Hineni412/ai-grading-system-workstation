@@ -1,8 +1,19 @@
 import { normalizeGraphQuery, type GraphQueryInput } from '../../api/graph-query'
 import type { CurriculumVolume } from '../../api/question-bank'
 import type { TrainingDiagnosis } from '../../api/training'
+import { loadEvidenceScope, saveEvidenceScope } from '../evidence-scope/session'
 
 const STORAGE_KEY = 'ai-grading:personalized-paper-selection:v1'
+
+export interface PracticeRules {
+  questionCount: number; difficultyMax: number; maxQuestionsPerSkill: number
+  maxWrittenQuestions: number; recentActivityCount: number
+  maxConsolidationQuestions: number; maxUnmeasuredQuestions: number
+}
+export const DEFAULT_TRAINING_RULES: PracticeRules = { questionCount: 10, difficultyMax: 8,
+  maxQuestionsPerSkill: 1, maxWrittenQuestions: 2, recentActivityCount: 3, maxConsolidationQuestions: 0, maxUnmeasuredQuestions: 4 }
+export const DEFAULT_HANDOUT_RULES: PracticeRules = { questionCount: 30, difficultyMax: 8,
+  maxQuestionsPerSkill: 3, maxWrittenQuestions: 8, recentActivityCount: 3, maxConsolidationQuestions: 6, maxUnmeasuredQuestions: 6 }
 
 export type ChapterGroupSort = 'size' | 'weakness' | 'similarity'
 
@@ -26,7 +37,11 @@ export interface PaperSelectionSession {
   rulesVersion?: number
   targetKeys: string[]
   rangeKeys: string[]
-  purpose?: 'training' | 'handout'
+  purpose?: 'training' | 'handout' | 'wrong_book'
+  selectedStudentIds?: string[]
+  trainingRules?: PracticeRules
+  handoutRules?: PracticeRules
+  wrongBook?: { sessionIds: number[] | null; includeSourceLabel: boolean; includeAnswerSpace: boolean }
   maxQuestionsPerSkill?: number
   maxWrittenQuestions?: number
   recentActivityCount?: number
@@ -81,12 +96,17 @@ export function loadPaperSelectionSession(): PaperSelectionSession | null {
       targetKeys,
       rangeKeys,
       questionCount,
-      purpose: parsed.purpose === 'handout' ? 'handout' : 'training',
+      purpose: parsed.purpose === 'wrong_book' ? 'wrong_book' : parsed.purpose === 'handout' ? 'handout' : 'training',
+      selectedStudentIds: strings(parsed.selectedStudentIds) ? [...new Set(parsed.selectedStudentIds)] : [],
+      trainingRules: restoreRules(parsed.trainingRules, parsed.purpose !== 'handout' ? parsed : {}, DEFAULT_TRAINING_RULES),
+      handoutRules: restoreRules(parsed.handoutRules, parsed.purpose === 'handout' ? parsed : {}, DEFAULT_HANDOUT_RULES),
+      wrongBook: { sessionIds: Array.isArray(parsed.wrongBook?.sessionIds) && parsed.wrongBook.sessionIds.every(id => Number.isSafeInteger(id) && id > 0) ? parsed.wrongBook.sessionIds : null,
+        includeSourceLabel: parsed.wrongBook?.includeSourceLabel !== false, includeAnswerSpace: parsed.wrongBook?.includeAnswerSpace !== false },
       maxQuestionsPerSkill: parsed.maxQuestionsPerSkill ?? 1,
       maxWrittenQuestions: parsed.maxWrittenQuestions ?? 2,
       recentActivityCount: parsed.recentActivityCount ?? 3,
       difficultyMax: (parsed.rulesVersion ?? 0) >= 7 ? difficultyMax : parsed.rulesVersion === 6 ? Math.min(8, difficultyMax) : 8,
-      rulesVersion: 7,
+      rulesVersion: 8,
       excludeCurrentOriginals: true,
       paperMode,
       chapterKey: typeof parsed.chapterKey === 'string' ? parsed.chapterKey : '',
@@ -129,6 +149,13 @@ export function resolvePaperScope(volume: CurriculumVolume | null, diagnosis: Tr
 function strings(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(item => typeof item === 'string')
 }
+function restoreRules(value: Partial<PracticeRules> | undefined, legacy: Partial<PaperSelectionSession>, defaults: PracticeRules): PracticeRules {
+  const source = value ?? legacy
+  return Object.fromEntries(Object.entries(defaults).map(([key, fallback]) => {
+    const candidate = source[key as keyof typeof source]
+    return [key, typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : fallback]
+  })) as unknown as PracticeRules
+}
 function validEditor(value: unknown): value is ChapterGroupEditor {
   if (!value || typeof value !== 'object') return false
   const item = value as Partial<ChapterGroupEditor>
@@ -144,7 +171,7 @@ function validGroup(value: unknown): value is AdoptedChapterGroup {
 
 export function savePaperSelectionSession(selection: PaperSelectionSession): void {
   try {
-    globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify({ ...selection, rulesVersion: 7 }))
+    globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify({ ...selection, rulesVersion: 8 }))
   } catch {
     // Storage can be unavailable in private or restricted browser contexts.
   }
@@ -156,5 +183,15 @@ export function presetFocusedTraining({ targetKeys, rangeKeys }: { targetKeys: s
     targetKeys: [], rangeKeys: [],
   }
   savePaperSelectionSession({ ...previous, targetKeys: [...targetKeys], rangeKeys: [...rangeKeys],
-    scopeMode: 'focused', paperMode: 'individual', adoptedGroup: null, groupEditor: null })
+    purpose: 'training', scopeMode: 'focused', paperMode: 'individual', adoptedGroup: null, groupEditor: null })
+}
+
+export function presetWrongQuestionBook({ studentId, classId }: { studentId: string; classId: string | null }): void {
+  const previous = loadPaperSelectionSession() ?? { ...DEFAULT_TRAINING_RULES, targetKeys: [], rangeKeys: [],
+    excludeCurrentOriginals: true, paperMode: 'individual' as const }
+  savePaperSelectionSession({ ...previous, selectedStudentIds: [studentId], purpose: 'wrong_book',
+    scopeMode: 'comprehensive', rangeKeys: [], adoptedGroup: null, groupEditor: null })
+  const evidence = loadEvidenceScope()
+  saveEvidenceScope({ scope: classId ? { mode: 'class', class_ids: [classId] } : { mode: 'all' },
+    exam_scope: evidence?.exam_scope ?? { mode: 'semester', curriculum_volume_id: '' } })
 }
