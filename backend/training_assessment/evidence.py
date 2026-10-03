@@ -1096,6 +1096,7 @@ class TrainingEvidencePublisher:
                         "recent_activity_count",
                         "remediation_only",
                         "max_unmeasured_questions",
+                        "max_consolidation_questions",
                         "question_count",
                         "expected_minutes",
                         "difficulty_min",

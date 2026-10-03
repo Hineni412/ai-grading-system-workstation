@@ -29,6 +29,41 @@ from question_bank.services.source_question_link_service import (
 )
 
 
+@pytest.mark.parametrize('purpose,mode,expected', [('training', 'individual', 0),
+    ('handout', 'shared', 0), ('handout', 'individual', 2)])
+def test_create_draft_consolidation_cap_is_only_for_personal_handout(purpose, mode, expected):
+    from backend.api.app import create_app
+    from backend.api.routers.training import create_personalized_recommendation_draft
+    from backend.api.schemas.training import PersonalizedRecommendationCreateRequest
+    from copy import deepcopy
+    captured = []
+    students = [{'student_id': 'TEST-with-evidence', 'weak_points': [{'knowledge_key': 'kp_test'}]},
+                {'student_id': 'TEST-without-weakness', 'weak_points': []}]
+    class Profiles:
+        def build_profiles(self, **_):
+            return {'students': deepcopy(students)}
+        def graded_activities(self, ids):
+            assert ids == ['TEST-with-evidence', 'TEST-without-weakness']
+            return []
+    class Module:
+        def resolve_target_names(self, names):
+            return ()
+        def create(self, **request):
+            captured.append(request)
+            return {'draft_id': 'd' * 64, 'revision': 1, 'config': request['config'].to_dict(),
+                'status': 'draft', 'result_version': 'a' * 64, 'source_version': 'b' * 64,
+                'engine_version': 'TEST-engine', 'students': [], 'warnings': [], 'history': []}
+    body = PersonalizedRecommendationCreateRequest(request_token='a' * 32, purpose=purpose,
+        paper_mode=mode, question_count=10, max_consolidation_questions=2, max_unmeasured_questions=0,
+        scope_keys=['kp_bnu24_math_g7_lower_4'], target_keys=[],
+        scope={'mode': 'all'}, exam_scope={'mode': 'current', 'session_ids': [1]})
+    create_personalized_recommendation_draft(body, Profiles(), Module())
+    request = captured[0]
+    assert request['config'].max_consolidation_questions == expected
+    assert [student['student_id'] for student in request['diagnosis']['students']] == (
+        ['TEST-with-evidence', 'TEST-without-weakness'] if expected else ['TEST-with-evidence'])
+
+
 def _clear_profile_memory():
     from integration import diagnosis_profile_service as profiles
     from integration.data_generation import reset_commit_generations

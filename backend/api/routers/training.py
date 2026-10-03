@@ -333,7 +333,8 @@ def create_personalized_recommendation_draft(
             student
             for student in diagnosis.get("students", [])
             if student.get("weak_points")
-            or (body.paper_mode == "individual" and body.max_unmeasured_questions > 0)
+            or (body.paper_mode == "individual" and (body.max_unmeasured_questions > 0
+                or body.purpose == "handout" and body.max_consolidation_questions > 0))
             or str(student.get("student_id") or "") in explicitly_included
         ]
         if not diagnosis["students"]:
@@ -347,6 +348,7 @@ def create_personalized_recommendation_draft(
                 paper_mode=body.paper_mode,
                 remediation_only=body.remediation_only and body.paper_mode == "individual",
                 max_unmeasured_questions=body.max_unmeasured_questions if body.paper_mode == "individual" else 0,
+                max_consolidation_questions=body.max_consolidation_questions if body.paper_mode == "individual" and body.purpose == "handout" else 0,
                 question_count=body.question_count,
                 purpose=body.purpose, max_questions_per_skill=body.max_questions_per_skill,
                 max_written_questions=body.max_written_questions, recent_activity_count=body.recent_activity_count,
