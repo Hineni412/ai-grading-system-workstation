@@ -4,11 +4,10 @@
   gap: var(--space-6);
   max-width: none;
   margin: 0 auto;
-  padding: 16px;
+  padding: var(--knowledge-training-inset);
   width: 100%;
 }
 
-.training-heading,
 .training-section-heading,
 .training-action-row,
 .training-confirm-bar,
@@ -19,14 +18,6 @@
   gap: var(--space-4);
 }
 
-.training-heading {
-  display: grid;
-  grid-template-columns: minmax(280px, .42fr) minmax(720px, 1.58fr);
-  align-items: start;
-  padding-bottom: var(--space-5);
-  border-bottom: var(--border-width) solid var(--color-border-default);
-}
-
 .training-heading-scope {
   display: grid;
   min-width: 0;
@@ -35,18 +26,11 @@
 
 
 
-.training-heading h1,
 .training-section-heading h2,
 .training-path h3 {
   margin: 0;
 }
 
-.training-heading h1 {
-  margin-top: var(--space-1);
-  font-size: var(--font-size-display);
-}
-
-.training-heading > div:first-child > p:last-child,
 .training-action-row p,
 .training-side-note,
 .training-field-note {
@@ -61,10 +45,6 @@
   gap: var(--space-1);
   padding-left: var(--space-4);
   border-left: var(--border-selected-width) solid var(--color-accent);
-}
-
-@media (max-width: 1100px) {
-  .training-heading { grid-template-columns: minmax(0, 1fr); }
 }
 
 .training-basis span,
@@ -1068,7 +1048,6 @@
     padding: var(--space-4);
   }
 
-  .training-heading,
   .training-section-heading,
   .training-action-row,
   .training-confirm-bar {
@@ -1114,8 +1093,6 @@
   }
 }
 .practice-layout{display:grid;grid-template-columns:300px minmax(0,1fr) 340px;gap:var(--space-4);align-items:start;min-width:0}
-.training-heading--compact{display:flex;align-items:center;flex-wrap:wrap;padding-bottom:var(--space-3)}
-.training-heading--compact h1{font-size:var(--font-size-h1);margin:0}.training-page-summary{display:flex;gap:var(--space-3);color:var(--color-text-secondary);font-size:var(--font-size-dense)}
 .practice-layout> *{min-width:0}.practice-layout>.paper-settings-panel{position:sticky;top:var(--space-4)}
 .practice-box{border:1px solid var(--color-border-default);border-radius:var(--radius-panel);background:var(--color-bg-surface);overflow:clip;box-shadow:var(--shadow-raised)}
 .practice-box-heading{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--color-border-subtle);font-size:var(--font-size-dense)}

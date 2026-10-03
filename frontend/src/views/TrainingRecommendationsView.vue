@@ -21,6 +21,7 @@ import KnowledgeTrainingTabs from '../components/knowledge-training/KnowledgeTra
 import PaperSettingsPanel from '../components/knowledge-training/PaperSettingsPanel.vue'
 import PersonalizedRecommendationDraft from '../components/training/PersonalizedRecommendationDraft.vue'
 import AppButton from '../components/design-system/AppButton.vue'
+import PageHeader from '../components/design-system/PageHeader.vue'
 import { loadEvidenceScope, saveEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
 import { loadPaperSelectionSession, savePaperSelectionSession, resolvePaperScope, DEFAULT_TRAINING_RULES, DEFAULT_HANDOUT_RULES, type PracticeRules, type AdoptedChapterGroup, type ChapterGroupEditor, type ChapterGroupSort } from '../features/training/paper-selection-session'
 import '../styles/training-recommendations.css'
@@ -472,13 +473,11 @@ onBeforeUnmount(() => studentsController?.abort())
 </script>
 
 <template>
-  <section class="training-workspace" aria-labelledby="training-title">
-    <header class="training-heading training-heading--compact">
-      <h1 id="training-title">{{ pageCopy.title }}</h1>
-      <div class="training-page-summary"><span>{{ curriculumScope.selectedVolume?.label ?? '未选择教学学期' }}</span><span v-if="training.diagnosis">{{ trainingMode === 'paper' ? draftContext?.studentCount ?? paperStudentCount : selectedStudentCount }} 名学生</span></div>
-    </header>
-
-    <KnowledgeTrainingTabs />
+  <section class="training-workspace knowledge-training-page" aria-labelledby="training-title">
+    <PageHeader :title="pageCopy.title" title-id="training-title" class="knowledge-training-header">
+      <template #meta><span>{{ curriculumScope.selectedVolume?.label ?? '未选择教学学期' }}</span><span v-if="training.diagnosis">{{ trainingMode === 'paper' ? draftContext?.studentCount ?? paperStudentCount : selectedStudentCount }} 名学生</span></template>
+      <template #navigation><KnowledgeTrainingTabs /></template>
+    </PageHeader>
 
     <TrainingScopeBar v-if="referenceState !== 'error' && trainingMode !== 'paper'"
       :volume-label="curriculumScope.selectedVolume?.label ?? '未选择教学学期'"

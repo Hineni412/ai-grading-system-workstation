@@ -41,69 +41,117 @@ const tabs = [
 </script>
 
 <template>
-  <nav class="knowledge-training-tabs" aria-label="知识与训练页面">
+  <nav class="page-tabs knowledge-training-tabs" aria-label="知识与训练页面">
     <RouterLink
       v-for="tab in tabs"
       :key="tab.id"
       :to="tab.to"
+      :class="{ 'is-active': current === tab.id }"
       :aria-current="current === tab.id ? 'page' : undefined"
     >
       {{ tab.label }}
     </RouterLink>
-    <span>同一证据范围 · 页面之间自动保留</span>
   </nav>
 </template>
 
 <style scoped>
 .knowledge-training-tabs {
   display: flex;
-  align-items: center;
-  gap: var(--space-1);
+  align-items: stretch;
+  align-self: stretch;
+  gap: 2px;
   min-width: 0;
-  padding: var(--space-1);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
+  overflow-x: auto;
 }
 
 .knowledge-training-tabs a {
+  position: relative;
   display: inline-flex;
-  min-height: var(--control-height-default);
+  flex-shrink: 0;
+  min-height: 56px;
   align-items: center;
   padding-inline: var(--space-3);
-  border-radius: calc(var(--radius) - 2px);
   color: var(--color-text-secondary);
   font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-medium);
   text-decoration: none;
+  white-space: nowrap;
+}
+
+.knowledge-training-tabs a:hover {
+  color: var(--color-text-primary);
 }
 
 .knowledge-training-tabs a[aria-current='page'] {
-  background: var(--color-accent-subtle);
-  color: var(--color-accent-active);
-  font-weight: var(--font-weight-semibold);
+  color: var(--color-accent);
+}
+
+.knowledge-training-tabs a[aria-current='page']::after {
+  content: '';
+  position: absolute;
+  inset-inline: 10px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--color-accent);
 }
 
 .knowledge-training-tabs a:focus-visible {
   outline: var(--border-width) solid var(--color-accent);
-  outline-offset: var(--focus-offset);
+  outline-offset: -3px;
+  border-radius: var(--radius-control);
   box-shadow: var(--focus-ring);
 }
+</style>
 
-.knowledge-training-tabs > span {
-  margin-inline-start: auto;
-  color: var(--color-text-secondary);
+<style>
+.knowledge-training-page {
+  --knowledge-training-inset: var(--space-5);
+}
+
+.knowledge-training-page > .page-header__sentinel {
+  position: absolute;
+}
+
+.knowledge-training-page > .knowledge-training-header {
+  flex: none;
+  min-width: 0;
+  min-height: 56px;
+  gap: var(--space-4);
+  margin: calc(-1 * var(--knowledge-training-inset)) calc(-1 * var(--knowledge-training-inset)) 0;
+  padding-inline: var(--knowledge-training-inset);
+  border-bottom-color: var(--color-border-subtle);
+}
+
+.knowledge-training-header .page-header__title {
+  font-size: var(--font-size-h2);
+  white-space: nowrap;
+}
+
+.knowledge-training-header .page-header__meta {
   font-size: var(--font-size-caption);
 }
 
-@media (max-width: 760px) {
-  .knowledge-training-tabs {
+.knowledge-training-header .page-header__navigation {
+  min-width: 0;
+}
+
+@media (max-width: 1100px) {
+  .knowledge-training-page > .knowledge-training-header {
     flex-wrap: wrap;
+    gap: 0;
+    padding-top: var(--space-3);
   }
 
-  .knowledge-training-tabs > span {
+  .knowledge-training-header .page-header__navigation {
     width: 100%;
     margin-inline-start: 0;
-    padding-inline: var(--space-2);
+  }
+}
+
+@media (max-width: 900px) {
+  .knowledge-training-page {
+    --knowledge-training-inset: var(--space-4);
   }
 }
 </style>

@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
 import type { TrainingOverviewNode } from '../api/training'
 import AppButton from '../components/design-system/AppButton.vue'
+import PageHeader from '../components/design-system/PageHeader.vue'
 import OverviewScopeBar from '../components/knowledge-overview/OverviewScopeBar.vue'
 import OverviewStudentTable from '../components/knowledge-overview/OverviewStudentTable.vue'
 import OverviewTierBar from '../components/knowledge-overview/OverviewTierBar.vue'
@@ -41,9 +42,11 @@ function questions(node: TrainingOverviewNode) {
 }
 </script>
 <template>
-  <section class="knowledge-overview-view" aria-labelledby="knowledge-overview-title">
-    <header class="knowledge-overview-heading"><h1 id="knowledge-overview-title" tabindex="-1">学情总览</h1><p>本学期先做什么、给谁做。</p></header>
-    <KnowledgeTrainingTabs /><OverviewScopeBar />
+  <section class="knowledge-overview-view knowledge-training-page" aria-labelledby="knowledge-overview-title">
+    <PageHeader title="学情总览" title-id="knowledge-overview-title" class="knowledge-training-header">
+      <template #navigation><KnowledgeTrainingTabs /></template>
+    </PageHeader>
+    <OverviewScopeBar />
     <p v-if="!curriculum.selectedVolumeId" class="knowledge-overview-notice" role="status">请先在顶部选择教学学期</p>
     <div v-else-if="store.loadState === 'loading' && !overview" class="knowledge-overview-skeleton" role="status" aria-busy="true">正在汇总本学期掌握度…</div>
     <div v-else-if="store.loadState === 'error'" class="knowledge-overview-error" role="alert"><p>{{ store.errorMessage }}</p><AppButton @click="store.load(curriculum.selectedVolumeId, true)">重新加载</AppButton></div>
