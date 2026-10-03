@@ -1,6 +1,7 @@
 import type { WorkbenchOverview } from '../../api/workbench'
 import type { RegionReadiness } from '../../api/template-regions'
 import type { SessionQuestionBankAnalysisStatus } from '../../api/session-question-bank-sync'
+import type { TrainingPendingSummary } from '../../api/training'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 import type { StepProgressStep } from '../design-system/StepProgress.vue'
 import type { StatusTone } from '../design-system/StatusBadge.vue'
@@ -11,6 +12,7 @@ export interface HomeInputs {
   readiness: RegionReadiness | null
   analysis: SessionQuestionBankAnalysisStatus | null
   jobs: JobResponse[]
+  training?: TrainingPendingSummary | null
 }
 export interface TodoRow {
   id: string; module: string; tone: StatusTone; title: string; fact: string; action: string; path: string
@@ -25,13 +27,25 @@ export function setupPath(sessionId: number, readiness: RegionReadiness | null):
 export function activeJobs(jobs: JobResponse[]): JobResponse[] {
   return jobs.filter(job => !TERMINAL_JOB_STATUSES.has(job.status))
 }
-export function buildTodoRows({ sessionId, overview, readiness, analysis, jobs }: HomeInputs) {
+export function buildTodoRows({ sessionId, overview, readiness, analysis, jobs, training }: HomeInputs) {
   const need: TodoRow[] = [], continued: TodoRow[] = []
-  if (sessionId === null || overview?.current_session?.id !== sessionId) return { need, continued }
-  const p = overview.progress, r = overview.review, a = overview.anomalies
-  const gradingPath = `/sessions/${sessionId}/grading-run`
   const row = (id: string, title: string, fact: string, action: string, path: string,
     module = '考试', tone: StatusTone = 'info'): TodoRow => ({ id, title, fact, action, path, module, tone })
+  const trainingRows: TodoRow[] = []
+  for (const item of training?.items ?? []) {
+    const path = `/training?mode=paper&draft=${encodeURIComponent(item.draft_id)}`
+    if (item.scan_page_count > 0) trainingRows.push(row(`scan-${item.draft_id}`,
+      `核对 ${item.scan_page_count} 页训练卷扫描`, item.draft_name, '去核对', path, '训练', 'success'))
+    if (item.review_submission_count > 0) trainingRows.push(row(`review-${item.draft_id}`,
+      `复核 ${item.draft_name} 判定 ${item.review_submission_count} 份`,
+      '不确定、无法辨认或缺失判定点仍需教师确认', '去复核', path, '训练', 'success'))
+    if (item.publish_submission_count > 0) trainingRows.push(row(`publish-${item.draft_id}`,
+      `发布 ${item.draft_name} 证据 ${item.publish_submission_count} 份`,
+      '判定已完成，当前修订的训练证据尚未全部发布', '去发布', path, '训练', 'success'))
+  }
+  if (sessionId === null || overview?.current_session?.id !== sessionId) return { need: trainingRows, continued }
+  const p = overview.progress, r = overview.review, a = overview.anomalies
+  const gradingPath = `/sessions/${sessionId}/grading-run`
   if (readiness && !(readiness.scoring_configured && readiness.template_ready)) {
     need.push(row('setup', '完成考试配置', setupHint(readiness), '继续配置', setupPath(sessionId, readiness)))
   } else if (readiness && p?.total_papers === 0) {
@@ -55,9 +69,20 @@ export function buildTodoRows({ sessionId, overview, readiness, analysis, jobs }
     need.push(row('bank', `补齐本场 ${analysis.incomplete_question_ids.length} 道题的题库资料`,
       '难度、标签、解题证据或判定点未完成', '去补齐', '/question-bank?tab=todo', '题库', 'ai'))
   }
+  if (analysis && analysis.unlinked_skill_count > 0) {
+    need.push(row('unlinked', `本场 ${analysis.unlinked_skill_count} 道题未挂技能`,
+      '这些题目缺少可用判定版本或直接技能链接，暂不能形成技能掌握度证据',
+      '去挂技能', '/question-bank?tab=todo', '题库', 'ai'))
+  }
+  need.push(...trainingRows)
   if (p && p.graded_papers > 0) {
     continued.push(row('walkthrough', '看卷 10 分钟', `${overview.current_session.name} · 已批改 ${p.graded_papers}/${p.matched_papers} 份`,
       '去看卷', '/results?tab=overview&open=walkthrough'))
+  }
+  const reports = overview.personal_reports
+  if (reports && reports.stale > 0) {
+    continued.push(row('reports', `个人报告：${reports.stale} 人需重新生成`,
+      `${reports.current} 人已是最新`, '去查看', '/results?tab=details'))
   }
   if (p && p.matched_papers > 0 && p.graded_papers + p.failed_papers === p.matched_papers && r?.item_count === 0) {
     continued.push(row('assembly', '按失分题组讲义', '班级组卷默认依据最近两场考试，列出得分率低于 70% 的题',

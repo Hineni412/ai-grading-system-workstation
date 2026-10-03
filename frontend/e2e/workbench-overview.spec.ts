@@ -37,6 +37,8 @@ interface MockOptions {
   overviewFailure?: boolean
   bankFailure?: boolean
   empty?: boolean
+  phaseTwo?: boolean
+  trainingFailure?: boolean
 }
 
 interface RequestLog {
@@ -64,6 +66,7 @@ function overview(sessionId: number) {
   const session = sessions.find((item) => item.id === sessionId) ?? sessions[0]!
   return {
     current_session: session,
+    personal_reports: { current: 8, stale: 0, missing: 4 },
     progress: progress(sessionId),
     review: sessionId === 8 ? { question_count: 0, item_count: 0 } : { question_count: 2, item_count: 3 },
     anomalies: sessionId === 8
@@ -205,7 +208,9 @@ async function installSyntheticApi(
         return
       }
       const sessionId = Number(url.searchParams.get('session_id') ?? 7)
-      await fulfillJson(route, options.empty ? { ...overview(sessionId), current_session: null, progress: null, review: null, anomalies: null, recent_sessions: [] } : overview(sessionId))
+      const data = overview(sessionId)
+      if (options.phaseTwo) data.personal_reports.stale = 3
+      await fulfillJson(route, options.empty ? { ...data, current_session: null, progress: null, review: null, anomalies: null, personal_reports: null, recent_sessions: [] } : data)
       return
     }
     const readiness = pathname.match(/^\/api\/sessions\/(\d+)\/regions\/readiness$/)
@@ -216,7 +221,14 @@ async function installSyntheticApi(
     if (/^\/api\/sessions\/\d+\/question-bank-status$/.test(pathname)) {
       if (options.bankFailure) { await route.fulfill({ status: 503, body: 'TEST-bank-failure' }); return }
       await fulfillJson(route, { question_count: 1, tagged_count: 0, evidence_count: 0, criteria_count: 0, complete_count: 0,
-        pending_taxonomy_count: 0, incomplete_question_ids: [1], incomplete_source_refs: ['Q1'] })
+        pending_taxonomy_count: 0, unlinked_skill_count: options.phaseTwo ? 1 : 0,
+        incomplete_question_ids: [1], incomplete_source_refs: ['Q1'] })
+      return
+    }
+    if (pathname === '/api/training/pending-summary') {
+      if (options.trainingFailure) { await route.fulfill({ status: 503, body: 'TEST-training-failure' }); return }
+      await fulfillJson(route, { items: options.phaseTwo ? [{ draft_id: 'd'.repeat(64), draft_name: '2026-10-03 22:30:00 训练卷（测试）',
+        scan_page_count: 2, review_submission_count: 3, publish_submission_count: 1 }] : [] })
       return
     }
     if (pathname === '/api/training/overview') {
@@ -275,7 +287,7 @@ async function captureVisualEvidence(page: Page, testInfo: TestInfo, width: numb
   if (![1024, 1280, 1440, 1920].includes(width)) return
   await page.screenshot({
     path: testInfo.outputPath(`workbench-${width}.png`),
-    fullPage: true,
+    fullPage: false,
     animations: 'disabled',
   })
 }
@@ -321,6 +333,40 @@ for (const viewport of viewports) {
     expect(errors.consoleErrors).toEqual([])
   })
 }
+
+test('second phase keeps units, report status and training draft entry visible', async ({ page }, testInfo) => {
+  const requests = await installSyntheticApi(page, { phaseTwo: true })
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await openWorkbench(page)
+  await expect(page.locator('.workbench-todo')).toContainText('核对 2 页训练卷扫描')
+  await expect(page.locator('.workbench-todo')).toContainText('判定 3 份')
+  await expect(page.locator('.workbench-todo')).toContainText('证据 1 份')
+  await expect(page.locator('[data-todo="reports"]')).toContainText('3 人需重新生成')
+  await expect(page.locator('[data-todo="reports"]')).toContainText('8 人已是最新')
+  await expect(page.locator('[data-todo="unlinked"]')).toContainText('本场 1 道题未挂技能')
+  await expect(page.locator('.workbench-todo [data-variant="primary"]')).toHaveCount(1)
+  await expectNoHorizontalOverflow(page)
+  await captureVisualEvidence(page, testInfo, 1024)
+  await page.locator('[data-todo="reports"]').scrollIntoViewIfNeeded()
+  await page.screenshot({ path: testInfo.outputPath('workbench-1024-reports.png'), animations: 'disabled' })
+  await page.locator('.workbench-sidebar').scrollIntoViewIfNeeded()
+  await page.screenshot({ path: testInfo.outputPath('workbench-1024-sidebar.png'), animations: 'disabled' })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.locator('.main-workspace').evaluate(el => el.scrollTop = 0)
+  await expectNoHorizontalOverflow(page)
+  await captureVisualEvidence(page, testInfo, 1440)
+  expectReadOnlyRequests(requests)
+  await page.locator(`[data-todo="scan-${'d'.repeat(64)}"]`).getByRole('button').click()
+  await expect(page).toHaveURL(new RegExp(`/training\\?mode=paper&draft=${'d'.repeat(64)}$`))
+})
+
+test('training source failure preserves exam panels', async ({ page }) => {
+  await installSyntheticApi(page, { trainingFailure: true })
+  await openWorkbench(page)
+  await expect(page.locator('.workbench-todo')).toContainText('训练回收待办暂时无法读取')
+  await expect(page.locator('[data-todo="review"]')).toBeVisible()
+  await expect(page.locator('.workbench-current')).toContainText('3 项待复核')
+})
 
 test('recent exam name switches the current exam and preserves the home route', async ({ page }) => {
   const requests = await installSyntheticApi(page)

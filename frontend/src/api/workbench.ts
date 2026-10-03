@@ -43,6 +43,7 @@ export interface WorkbenchOverview {
     scan_issue_students: number
     failed_papers: number
   } | null
+  personal_reports: { current: number; stale: number; missing: number } | null
   recent_jobs: JobSummary[]
   recent_sessions: RecentSessionSummary[]
   updated_at: string
@@ -169,11 +170,12 @@ export function decodeWorkbenchOverview(value: unknown): WorkbenchOverview {
     !isRecord(value) ||
     !hasExactKeys(value, [
       'current_session', 'progress', 'review', 'anomalies', 'recent_jobs',
-      'recent_sessions', 'updated_at',
+      'recent_sessions', 'updated_at', 'personal_reports',
     ]) ||
     !(value.current_session === null || isStrictSessionSummary(value.current_session)) ||
     !(value.progress === null || isSessionProgress(value.progress)) ||
     !isNullableSummary(value.review, ['question_count', 'item_count']) ||
+    !isNullableSummary(value.personal_reports, ['current', 'stale', 'missing']) ||
     !isNullableSummary(value.anomalies, [
       'unmatched_papers',
       'scan_issue_students',

@@ -1439,7 +1439,29 @@ async function fileSha256(file: File): Promise<string> {
     .join('')
 }
 
+export interface TrainingPendingItem {
+  draft_id: string
+  draft_name: string
+  scan_page_count: number
+  review_submission_count: number
+  publish_submission_count: number
+}
+export interface TrainingPendingSummary { items: TrainingPendingItem[] }
+
 export const trainingApi = {
+  async getPendingSummary(signal?: AbortSignal): Promise<TrainingPendingSummary> {
+    return apiClient.request('/api/training/pending-summary', { signal, decode(value) {
+      if (!isRecord(value) || Object.keys(value).length !== 1 || !Array.isArray(value.items)
+        || !value.items.every(item => isRecord(item) && Object.keys(item).length === 5
+          && typeof item.draft_id === 'string' && /^[0-9a-f]{64}$/.test(item.draft_id)
+          && typeof item.draft_name === 'string' && item.draft_name.length > 0
+          && [item.scan_page_count, item.review_submission_count, item.publish_submission_count]
+            .every(count => Number.isSafeInteger(count) && Number(count) >= 0))) {
+        throw new Error('Invalid training pending summary')
+      }
+      return value as unknown as TrainingPendingSummary
+    } })
+  },
   exportHandout(draftId: string, body: { expected_revision: number; request_token: string }): Promise<JobResponse> {
     return apiClient.request(`/api/training/personalized-drafts/${draftId}/handout-exports`, {
       method: 'POST', body, decode: decodeJobResponse,

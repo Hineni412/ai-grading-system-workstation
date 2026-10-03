@@ -125,6 +125,11 @@ class FakeAssessmentModule:
         if self.error is not None:
             raise self.error
 
+    def pending_summary(self):
+        self.calls.append(("pending",))
+        return {"items": [dict(draft_id="d"*64, draft_name="TEST-训练卷", scan_page_count=2,
+                               review_submission_count=1, publish_submission_count=3)]}
+
     def assess(self, submission_id, expected_revision):
         self._raise()
         self.calls.append(("assess", submission_id, expected_revision))
@@ -187,6 +192,16 @@ def feedback_client() -> tuple[TestClient, FakeAssessmentModule]:
     app = create_app()
     app.dependency_overrides[get_training_assessment_module] = lambda: module
     return TestClient(app), module
+
+
+def test_pending_summary_contract_is_read_only(feedback_client):
+    client, module = feedback_client
+    response = client.get("/api/training/pending-summary")
+    assert response.status_code == 200
+    assert response.json()["items"][0]["scan_page_count"] == 2
+    assert response.json()["items"][0]["review_submission_count"] == 1
+    assert response.json()["items"][0]["publish_submission_count"] == 3
+    assert module.calls == [("pending",)]
 
 
 def test_assessment_review_evidence_feedback_and_replay_contract(

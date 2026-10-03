@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import threading
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from concurrent.futures import CancelledError as FutureCancelledError
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -211,6 +213,67 @@ class TrainingAssessmentModule:
             _identifier(submission_id),
             _positive_revision(submission_revision),
         )
+
+    def pending_summary(self) -> dict[str, Any]:
+        """Read pending scans, reviews and publication without initializing or writing data."""
+        groups: dict[str, dict[str, Any]] = {}
+        with closing(sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only = ON")
+            connection.execute("BEGIN DEFERRED")
+            drafts = connection.execute("""
+                SELECT DISTINCT d.draft_id, d.created_at
+                FROM personalized_recommendation_drafts d
+                JOIN personalized_paper_instances p ON p.draft_id = d.draft_id
+                JOIN training_submissions s ON s.paper_instance_id = p.paper_instance_id
+                JOIN training_scan_batches b ON b.batch_id = s.batch_id
+                WHERE b.status <> 'cancelled'
+                ORDER BY d.created_at DESC, d.draft_id
+            """).fetchall()
+            for draft in drafts:
+                draft_id = str(draft["draft_id"])
+                groups[draft_id] = dict(draft_id=draft_id,
+                    draft_name=f"{str(draft['created_at'])[:19].replace('T', ' ')} 训练卷",
+                    scan_page_count=0, review_submission_count=0, publish_submission_count=0)
+            for row in connection.execute("""
+                SELECT p.draft_id, COUNT(*) AS total
+                FROM training_submission_pages page
+                JOIN training_scan_batches b ON b.batch_id = page.batch_id
+                JOIN (SELECT DISTINCT s.batch_id, p.draft_id FROM training_submissions s
+                      JOIN personalized_paper_instances p ON p.paper_instance_id = s.paper_instance_id) p
+                  ON p.batch_id = b.batch_id
+                LEFT JOIN training_submissions s ON s.submission_id = page.submission_id
+                WHERE b.status <> 'cancelled' AND COALESCE(s.status, '') <> 'cancelled'
+                  AND page.issue_code IS NOT NULL AND page.issue_code <> ''
+                  AND page.state NOT IN ('replaced', 'dismissed')
+                GROUP BY p.draft_id
+            """):
+                groups[str(row["draft_id"])]["scan_page_count"] = int(row["total"])
+            runs = connection.execute("""
+                SELECT p.draft_id, r.run_id, f.feedback_json
+                FROM training_submissions s
+                JOIN personalized_paper_instances p ON p.paper_instance_id = s.paper_instance_id
+                JOIN training_scan_batches b ON b.batch_id = s.batch_id
+                JOIN training_assessment_runs r
+                  ON r.submission_id = s.submission_id AND r.submission_revision = s.revision
+                LEFT JOIN training_feedback_snapshots f
+                  ON f.submission_id = s.submission_id AND f.submission_revision = s.revision
+                WHERE s.status = 'ready' AND b.status <> 'cancelled' AND r.status <> 'running'
+            """).fetchall()
+            for row in runs:
+                group = groups.get(str(row["draft_id"]))
+                outcome = self._outcome(str(row["run_id"]), connection=connection)
+                if group is None or outcome is None or not outcome.questions:
+                    continue
+                if any(question["review_status"] != "completed" for question in outcome.questions):
+                    group["review_submission_count"] += 1
+                else:
+                    feedback = json.loads(row["feedback_json"]) if row["feedback_json"] else {}
+                    if not (feedback.get("status") == "complete"
+                            and feedback.get("source_review_revision") == outcome.review_revision):
+                        group["publish_submission_count"] += 1
+        return {"items": [group for group in groups.values() if any(group[key] for key in
+            ("scan_page_count", "review_submission_count", "publish_submission_count"))]}
 
     def sync_evidence(
         self,
@@ -1635,8 +1698,8 @@ class TrainingAssessmentModule:
             raise TrainingAssessmentError("assessment outcome is missing")
         return outcome
 
-    def _outcome(self, run_id: str) -> TrainingPaperOutcome | None:
-        with connect(self.db_path) as connection:
+    def _outcome(self, run_id: str, *, connection: Any | None = None) -> TrainingPaperOutcome | None:
+        with connect(self.db_path, external_connection=connection) as connection:
             run = connection.execute(
                 """
                 SELECT * FROM training_assessment_runs WHERE run_id = ?

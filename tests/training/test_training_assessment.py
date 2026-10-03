@@ -281,11 +281,16 @@ def test_structural_errors_quarantine_only_the_affected_question(
         ]
     }
     gateway = FakeTrainingAssessmentGateway(payload)
-    outcome = TrainingAssessmentModule(
+    module = TrainingAssessmentModule(
         db_path=db_path,
         data_root=data_root,
         gateway=gateway,
-    ).assess(SUBMISSION_ID, REVISION)
+    )
+    outcome = module.assess(SUBMISSION_ID, REVISION)
+    pending = module.pending_summary()["items"][0]
+    assert pending["review_submission_count"] == 1
+    assert pending["publish_submission_count"] == 0
+    assert gateway.calls == 1
 
     first, second = outcome.questions
     assert outcome.status == "manual_review"
@@ -489,6 +494,7 @@ def test_published_training_changes_current_mastery_and_next_draft_only(
         clock=lambda: datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
     )
     module.assess(SUBMISSION_ID, REVISION)
+    assert module.pending_summary()["items"][0]["publish_submission_count"] == 1
     feedback = module.sync_evidence(
         SUBMISSION_ID,
         REVISION,
@@ -506,6 +512,7 @@ def test_published_training_changes_current_mastery_and_next_draft_only(
         for item in feedback["mastery_changes"]
         if item["stable_key"] == "kp_alg_linear_equation"
     )
+    assert module.pending_summary() == {"items": []}
     assert change["mastery_after"]["value"] > change["mastery_before"]["value"]
     assert change["mastery_before"]["observation_count"] == 1
     assert change["mastery_after"]["observation_count"] == 5
@@ -576,6 +583,47 @@ def test_published_training_changes_current_mastery_and_next_draft_only(
     assert (
         original_request["diagnosis"]["students"][0]["weak_points"][0]["mastery"] == 0.2
     )
+
+
+def test_pending_summary_uses_current_revisions_and_excludes_cancelled_scans(assessment_workspace):
+    db_path, data_root = assessment_workspace
+    gateway = FakeTrainingAssessmentGateway({"results": [
+        dict(task_item_code=f"P4-SYN-Q{order:02d}", point_id=f"q{order}-p{point}",
+             state="met", evidence="TEST-pending")
+        for order in (1, 2) for point in (1, 2)
+    ]})
+    module = TrainingAssessmentModule(db_path=db_path, data_root=data_root, gateway=gateway)
+    assert module.pending_summary() == {"items": []}  # Unassessed submissions are not reviews.
+    module.assess(SUBMISSION_ID, REVISION)
+    with connect(db_path) as conn:
+        conn.execute("UPDATE training_submission_pages SET issue_code='identity_conflict'")
+    before = db_path.read_bytes()
+    summary = module.pending_summary()
+    item = summary["items"][0]
+    assert item["draft_id"] == DRAFT_ID
+    assert item["scan_page_count"] == 1
+    assert item["review_submission_count"] == 0
+    assert item["publish_submission_count"] == 1
+    assert db_path.read_bytes() == before
+    assert gateway.calls == 1
+    with connect(db_path) as conn:
+        conn.execute("UPDATE training_submission_pages SET state='dismissed'")
+        conn.execute("UPDATE training_submissions SET revision=revision+1")
+    assert module.pending_summary() == {"items": []}
+    with connect(db_path) as conn:
+        conn.execute("UPDATE training_submissions SET revision=?", (REVISION,))
+        conn.execute("INSERT INTO training_feedback_snapshots "
+                     "(feedback_id,submission_id,submission_revision,source_review_revision,evidence_version,status,feedback_json) "
+                     "VALUES (?,?,?,?,?,?,?)", ("a"*64, SUBMISSION_ID, REVISION, 1, "b"*64, "complete",
+                     json.dumps(dict(status="complete", source_review_revision=1))))
+    assert module.pending_summary() == {"items": []}
+    with connect(db_path) as conn:
+        conn.execute("UPDATE training_assessment_runs SET review_revision=2")
+    assert module.pending_summary()["items"][0]["publish_submission_count"] == 1
+    with connect(db_path) as conn:
+        conn.execute("UPDATE training_submissions SET status='cancelled'")
+        conn.execute("UPDATE training_submission_pages SET state='assigned'")
+    assert module.pending_summary() == {"items": []}
 
 
 def test_next_round_token_matches_legacy_frozen_request(

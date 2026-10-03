@@ -54,6 +54,7 @@ from backend.api.schemas.training import (
     TrainingFeedbackResponse,
     TrainingOverviewRequest,
     TrainingOverviewResponse,
+    TrainingPendingSummary,
     TrainingScanBatchCreateRequest,
     TrainingScanBatchListResponse,
     TrainingScanBatchResponse,
@@ -1137,6 +1138,18 @@ def download_personalized_paper_batch(
         media_type=media_type,
         headers=NO_STORE_HEADERS,
     )
+
+
+@router.get("/pending-summary", response_model=TrainingPendingSummary,
+            responses=TRAINING_DATABASE_RESPONSES)
+def training_pending_summary(
+    module: TrainingAssessmentModule = Depends(get_training_assessment_module),
+) -> TrainingPendingSummary:
+    try:
+        summary = module.pending_summary()
+    except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+        _raise_assessment_api_error(exc)
+    return TrainingPendingSummary.model_validate(summary)
 
 
 @router.get(

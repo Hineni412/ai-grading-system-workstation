@@ -11,6 +11,7 @@ import WorkbenchRecentExams from '../components/workbench/WorkbenchRecentExams.v
 import { activeJobs, buildTodoRows, buildExamSteps, setupPath } from '../components/workbench/workbench-home'
 import { fetchRegionReadiness, type RegionReadiness } from '../api/template-regions'
 import { getSessionQuestionBankAnalysisStatus, type SessionQuestionBankAnalysisStatus } from '../api/session-question-bank-sync'
+import { trainingApi, type TrainingPendingSummary } from '../api/training'
 import { useSessionSwitch } from '../composables/useSessionSwitch'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import { useSessionStore } from '../stores/session'
@@ -28,10 +29,13 @@ const jobStore = useJobStore()
 const { switchSession } = useSessionSwitch()
 const readiness = ref<RegionReadiness | null>(null)
 const analysis = ref<SessionQuestionBankAnalysisStatus | null>(null)
+const training = ref<TrainingPendingSummary | null>(null)
+const trainingState = ref('idle')
 const readinessState = ref('idle')
 const analysisState = ref('idle')
 let readinessController: AbortController | null = null
 let analysisController: AbortController | null = null
+let trainingController: AbortController | null = null
 let disposed = false
 let generation = 0
 
@@ -41,14 +45,34 @@ const greeting = hour < 11 ? '早上好' : hour < 14 ? '中午好' : hour < 18 ?
 const currentTermLabel = computed(() => curriculumScope.selectedVolume?.label ?? '未限定教学学期')
 const jobs = computed(() => activeJobs(Object.values(jobStore.jobs)))
 const inputs = computed(() => ({ sessionId: sessionStore.selectedSessionId, overview: workbenchStore.overview,
-  readiness: readiness.value, analysis: analysis.value, jobs: jobs.value }))
+  readiness: readiness.value, analysis: analysis.value, jobs: jobs.value, training: training.value }))
 const todo = computed(() => buildTodoRows(inputs.value))
 const steps = computed(() => buildExamSteps(inputs.value))
 const currentStep = computed(() => steps.value.find(step => step.status !== 'done')?.id ?? 'results')
 const failures = computed(() => [workbenchStore.overviewState === 'error' && '考试概况',
-  readinessState.value === 'error' && '考试配置状态', analysisState.value === 'error' && '题库资料状态']
+  readinessState.value === 'error' && '考试配置状态', analysisState.value === 'error' && '题库资料状态',
+  trainingState.value === 'error' && '训练回收待办',
+  workbenchStore.overview?.current_session && workbenchStore.overview.personal_reports === null && '个人报告状态']
   .filter((source): source is string => !!source))
-const todoLoading = computed(() => workbenchStore.overviewState === 'loading' && !workbenchStore.overview)
+const todoLoading = computed(() => (workbenchStore.overviewState === 'loading' && !workbenchStore.overview)
+  || trainingState.value === 'loading')
+
+async function loadTraining() {
+  trainingController?.abort()
+  const controller = new AbortController()
+  trainingController = controller
+  trainingState.value = 'loading'
+  training.value = null
+  try {
+    const result = await trainingApi.getPendingSummary(controller.signal)
+    if (controller.signal.aborted) return
+    training.value = result; trainingState.value = 'ready'
+  } catch {
+    if (controller.signal.aborted) return
+    trainingState.value = 'error'
+  }
+}
+void nextTick().then(() => { if (!disposed) void loadTraining() })
 
 async function loadReadiness(id: number) {
   readinessController?.abort()
@@ -101,12 +125,13 @@ watch(() => curriculumScope.selectedVolumeId, async volumeId => {
   await nextTick()
   if (!disposed && curriculumScope.selectedVolumeId === volumeId) void mastery.peek(volumeId)
 }, { immediate: true, flush: 'post' })
-onBeforeUnmount(() => { disposed = true; generation += 1; readinessController?.abort(); analysisController?.abort() })
+onBeforeUnmount(() => { disposed = true; generation += 1; readinessController?.abort(); analysisController?.abort(); trainingController?.abort() })
 
 function openPath(path: string) { void router.push(path) }
 function retry(source: string) {
   const id = sessionStore.selectedSessionId
-  if (source === '题库资料状态' && id !== null) void loadAnalysis(id)
+  if (source === '训练回收待办') void loadTraining()
+  else if (source === '题库资料状态' && id !== null) void loadAnalysis(id)
   else if (source === '考试配置状态' && id !== null) void loadReadiness(id)
   else void loadExam()
 }
