@@ -2588,8 +2588,8 @@ def test_remediation_handout_skips_empty_students_and_preserves_saved_draft(dire
     assert direct_module.get(draft["draft_id"])["config"]["remediation_only"] is True
     monkeypatch.setattr(training_handout, "PersonalizedRecommendationModule", lambda **_: direct_module)
     exported = []
-    def export(_db, ids, destination, **_):
-        exported.append(ids)
+    def export(_db, ids, destination, **options):
+        exported.append((ids, options))
         path = destination / "TEST-placeholder.docx"
         path.write_bytes(b"synthetic export placeholder")
         return path
@@ -2600,6 +2600,8 @@ def test_remediation_handout_skips_empty_students_and_preserves_saved_draft(dire
         question_bank_db_path=direct_module.db_path, data_root=direct_module.data_root, reports_dir=tmp_path / "reports")
     assert result["paper_count"] == 1 and result["skipped_student_count"] == 1
     assert len(exported) == 1 and result["question_count"] == len(draft["students"][0]["items"])
+    assert exported[0][1]['sections'][0].title == '未归入章节'
+    assert exported[0][1]['question_notes'] is None
     assert direct_module.get(draft["draft_id"]) == draft
     rejected = deepcopy(draft)
     rejected["config"]["remediation_only"] = False
@@ -2610,6 +2612,113 @@ def test_remediation_handout_skips_empty_students_and_preserves_saved_draft(dire
     rejected["students"][0]["items"] = []
     with pytest.raises(ValueError, match="没有可导出"):
         training_handout.checked_handout_draft(direct_module, draft["draft_id"], 1)
+    legacy = deepcopy(draft)
+    for student in legacy['students']:
+        for item in student['items']:
+            item.pop('knowledge_section', None)
+            item.pop('primary_skill_name', None)
+    monkeypatch.setattr(direct_module, 'ensure_current', lambda _: legacy)
+    training_handout.run_training_handout_export(context=context,
+        question_bank_db_path=direct_module.db_path, data_root=direct_module.data_root, reports_dir=tmp_path / 'legacy')
+    assert exported[-1][1]['sections'] is None and exported[-1][1]['question_notes'] is None
+
+
+def test_student_shared_scope_without_target_keys_creates_same_paper(direct_module):
+    diagnosis = _direct_diagnosis((("A", .8, 900, BNU_TARGET), ("B", .8, 900, BNU_TARGET)))
+    draft = direct_module.create(request_token='6' * 32, diagnosis=diagnosis,
+        config=PersonalizedRecommendationConfig(paper_mode='shared', scope_keys=(BNU_CHAPTER4,),
+            target_keys=(), question_count=8), actor_ref='synthetic')
+    assert draft['config']['target_keys'] == []
+    first, second = [student['items'] for student in draft['students']]
+    assert first and [item['question_id'] for item in first] == [item['question_id'] for item in second]
+    assert all(item['beneficiary_student_ids'] == ['A', 'B'] for item in first)
+
+
+def test_handout_consolidation_cap_zero_training_and_replacement(direct_module):
+    diagnosis = _direct_diagnosis()
+    diagnosis['students'][0]['weak_points'][0]['source_question_refs'][0]['score_awarded'] = 5
+    settings = dict(remediation_only=True, scope_keys=(BNU_CHAPTER4,), question_count=4,
+                    max_questions_per_skill=4, max_written_questions=4, recent_activity_count=0)
+    control = direct_module.create(request_token='7' * 32, diagnosis=diagnosis,
+        config=PersonalizedRecommendationConfig(purpose='handout', **settings), actor_ref='synthetic')
+    assert not control['students'][0]['items']
+    training = direct_module.create(request_token='8' * 32, diagnosis=diagnosis,
+        config=PersonalizedRecommendationConfig(**{**settings, 'question_count': 8, 'max_questions_per_skill': 1,
+            'max_written_questions': 2}, max_consolidation_questions=2), actor_ref='synthetic')
+    assert not training['students'][0]['items']
+    draft = direct_module.create(request_token='9' * 32, diagnosis=diagnosis,
+        config=PersonalizedRecommendationConfig(purpose='handout', max_consolidation_questions=2, **settings), actor_ref='synthetic')
+    items = draft['students'][0]['items']
+    assert 0 < len(items) <= 2 and all(item['practice_purpose'] == 'consolidation' for item in items)
+    assert draft['students'][0]['shortages'][0]['missing_count'] == 4 - len(items)
+    replaced = direct_module.edit(draft['draft_id'], RecommendationEditCommand(request_token='a1' * 16,
+        expected_revision=1, action='replace', student_id='A', item_id=items[0]['item_id'],
+        actor_ref='synthetic', reason='TEST巩固题替换'))
+    assert len(replaced['students'][0]['items']) == len(items)
+    assert all(item['practice_purpose'] == 'consolidation' for item in replaced['students'][0]['items'])
+
+
+def test_handout_adds_consolidation_after_remediation_and_new_under_paper_limits():
+    from question_bank.recommendation.personalized import _choose_practice_entries
+    entries = []
+    for qid, purpose, key in [(1, 'consolidation', 'sk_test_con'), (2, 'new', 'sk_test_new'),
+                              (3, 'remediation', 'sk_test_loss'), (4, 'consolidation', 'sk_test_extra')]:
+        candidate = _selection_candidate(qid, f'TEST不同练习{qid}', key=key)
+        entries.append({'candidate': candidate, 'key': key, 'matched_key': key, 'student_id': 'TEST',
+            'selection_kind': 'direct', 'practice_purpose': purpose, 'distance': 0., 'preference': 0., 'match_level': 1})
+    settings = dict(purpose='handout', remediation_only=True, question_count=5, max_unmeasured_questions=1)
+    zero = _choose_practice_entries(entries, 5, PersonalizedRecommendationConfig(**settings))
+    assert [entry['practice_purpose'] for entry, _ in zero] == ['remediation', 'new']
+    selected = _choose_practice_entries(entries, 5,
+        PersonalizedRecommendationConfig(**settings, max_consolidation_questions=1))
+    assert [entry['practice_purpose'] for entry, _ in selected] == ['remediation', 'new', 'consolidation']
+    # A consolidation question still consumes the whole-paper direct skill quota.
+    entries[0]['candidate']['stable_keys'] = ['sk_test_loss']
+    entries[-1]['candidate']['question_type'] = '解答题'
+    blocked = _choose_practice_entries(entries, 5,
+        PersonalizedRecommendationConfig(**settings, max_consolidation_questions=2, max_written_questions=0))
+    assert [entry['practice_purpose'] for entry, _ in blocked] == ['remediation', 'new']
+
+
+@pytest.mark.parametrize('omit_new,legacy', [(False, False), (True, False), (False, True), (True, True)])
+def test_zero_consolidation_retries_every_old_request_fingerprint(direct_module, omit_new, legacy):
+    from question_bank.recommendation.personalized import _hash_payload
+    draft = _make_direct(direct_module, token='b')
+    with connect(direct_module.db_path) as conn:
+        request = json.loads(conn.execute('SELECT request_json FROM personalized_recommendation_drafts WHERE draft_id=?',
+            (draft['draft_id'],)).fetchone()[0])
+        config = dict(request['config'])
+        config.pop('max_consolidation_questions')
+        if omit_new:
+            config.pop('max_unmeasured_questions')
+        if legacy:
+            for key in ('purpose', 'max_questions_per_skill', 'max_written_questions'):
+                config.pop(key)
+        conn.execute('UPDATE personalized_recommendation_drafts SET input_fingerprint=? WHERE draft_id=?',
+            (_hash_payload({'diagnosis': request['diagnosis'], 'config': config}), draft['draft_id']))
+    assert _make_direct(direct_module, token='b')['draft_id'] == draft['draft_id']
+
+
+def test_handout_knowledge_order_and_edit_keep_chapter_and_skill_notes(direct_module, monkeypatch):
+    from question_bank.services.knowledge_order import Placement
+    def placements(items, candidates, config):
+        if config.purpose != 'handout':
+            return None
+        return {item['question_id']: Placement('ch', 1, 'TEST第一章', 's', 1, 'TEST第一节',
+            'sk_test', 'TEST技能') for item in items}
+    monkeypatch.setattr(direct_module, '_handout_placements', placements)
+    draft = direct_module.create(request_token='c1' * 16, diagnosis=_direct_diagnosis(),
+        config=PersonalizedRecommendationConfig(purpose='handout', scope_keys=(BNU_CHAPTER4,), question_count=4),
+        actor_ref='synthetic')
+    items = draft['students'][0]['items']
+    assert items and all(item['knowledge_section']['title'] == 'TEST第一章 · TEST第一节' for item in items)
+    assert all(item['primary_skill_name'] == 'TEST技能' for item in items)
+    edited = direct_module.edit(draft['draft_id'], RecommendationEditCommand(request_token='c2' * 16,
+        expected_revision=1, action='exclude', student_id='A', item_id=items[0]['item_id'],
+        actor_ref='synthetic', reason='TEST删除题目'))
+    remaining = edited['students'][0]['items']
+    assert [item['item_order'] for item in remaining] == list(range(1, len(remaining) + 1))
+    assert all(item['knowledge_section']['id'] == 's' for item in remaining)
 
 
 def test_handout_100_exports_in_order_and_consumes_download_without_training(direct_module, tmp_path):

@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import re
+import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
@@ -35,6 +36,7 @@ from question_bank.recommendation.target_matching import (
     topic_keys,
 )
 from question_bank.services import standard_difficulty
+from question_bank.services.knowledge_order import OrderEntry, knowledge_sections, skill_placements, section_placements
 from question_bank.services.duplicate_analysis_copy_service import (
     exact_question_key,
     exam_original_key,
@@ -51,7 +53,7 @@ from question_bank.training_criteria import (
     usable_training_criterion,
 )
 
-ENGINE_VERSION = "personalized-recommendation-v25-task-priority-and-joint-selection"
+ENGINE_VERSION = "personalized-recommendation-v26-handout-knowledge-order"
 GROUPING_VERSION = "chapter-skill-coverage-v7-coverage"
 GROUP_MIN_SIMILARITY = 0.58
 # Read-only _source_snapshot results, keyed on the question-bank commit
@@ -98,6 +100,7 @@ class PersonalizedRecommendationConfig:
     paper_mode: Literal["individual", "shared"] = "individual"
     remediation_only: bool = False
     max_unmeasured_questions: int = 0
+    max_consolidation_questions: int = 0
     question_count: int = 10
     expected_minutes: int = 45
     difficulty_min: int = 1
@@ -120,7 +123,7 @@ class PersonalizedRecommendationConfig:
             raise ValueError("purpose is invalid")
         for field, minimum in (("question_count", 1), ("max_questions_per_skill", 1),
                                ("max_written_questions", 0), ("recent_activity_count", 0),
-                               ("max_unmeasured_questions", 0)):
+                               ("max_unmeasured_questions", 0), ("max_consolidation_questions", 0)):
             value = getattr(self, field)
             if isinstance(value, bool) or int(value) != value or value < minimum:
                 raise ValueError(f"{field} must be an integer >= {minimum}")
@@ -1217,13 +1220,27 @@ def _refresh_supplement_warnings(draft: dict[str, Any], config: PersonalizedReco
     draft["warnings"] = list(dict.fromkeys(w for student in draft["students"] for w in student["warnings"]))
 
 
-def _order_practice_items(items: list[dict[str, Any]]) -> None:
+def _order_practice_items(items: list[dict[str, Any]], placements=None) -> None:
     """Present selected whole questions from easy to hard, keeping tied order.
 
     Item ids and slots remain stable for editing; item_order is the displayed
     order also used when the draft becomes a paper snapshot.
     """
-    items.sort(key=lambda item: _difficulty(item.get("difficulty")) or 11)
+    if placements is None:
+        items.sort(key=lambda item: _difficulty(item.get("difficulty")) or 11)
+    else:
+        sections = knowledge_sections([OrderEntry(int(item['question_id']), item.get('difficulty'),
+            str(item.get('question_type', '')), str(item.get('question_text', ''))) for item in items], placements)
+        by_id = {int(item['question_id']): item for item in items}
+        ordered = []
+        for section in sections:
+            for qid in section.question_ids:
+                item = by_id[qid]
+                item['knowledge_section'] = {'id': section.section_id, 'title': section.title}
+                placement = placements.get(qid)
+                item['primary_skill_name'] = placement.skill_name if placement else ''
+                ordered.append(item)
+        items[:] = ordered
     for order, item in enumerate(items, 1):
         item["item_order"] = order
 
@@ -1235,6 +1252,10 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
     for entry in entries:
         groups.setdefault(entry["candidate"].get("duplicate_identity") or entry["candidate"]["question_id"], []).append(entry)
     personal_remediation = bool(config and config.remediation_only and config.paper_mode == "individual")
+    consolidation_groups = {qid: group for qid, group in groups.items()
+        if personal_remediation and config.max_consolidation_questions and config.purpose == 'handout'
+        and any(_is_core(e) and e.get('practice_purpose') == 'consolidation' for e in group)
+        and not any(_is_core(e) and e.get('practice_purpose') == 'remediation' for e in group)}
     unmeasured_groups = {qid: [entry for entry in group if _unmeasured_entry(entry)]
                          for qid, group in groups.items()
                          if personal_remediation and config.max_unmeasured_questions
@@ -1302,6 +1323,27 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
             selected.append((best, group))
             practiced.update(e["key"] for e in group)
             unmeasured_groups.pop(best["candidate"].get("duplicate_identity") or best["candidate"]["question_id"])
+            added += 1
+        selected_ids = {entry['candidate'].get('duplicate_identity') or entry['candidate']['question_id'] for entry, _ in selected}
+        consolidation_groups = {qid: group for qid, group in consolidation_groups.items() if qid not in selected_ids}
+        added = 0
+        while added < config.max_consolidation_questions and len(selected) < question_count:
+            printed = [entry['candidate'] for entry, _ in selected]
+            choices = [group for group in consolidation_groups.values()
+                       if _paper_diversity_allowed(group[0]['candidate'], printed, config)]
+            if not choices:
+                break
+            def consolidation_rank(group):
+                skills = {key for entry in group for key in entry['candidate'].get('stable_keys', ()) if key.startswith('sk_')}
+                return (repeated_consolidation_only(group), -len(skills - practiced),
+                    _pattern_count(group[0]['candidate'], printed), min(e.get('match_level', 4) for e in group),
+                    median(e['distance'] for e in group), -max(e['preference'] for e in group), group[0]['candidate']['question_id'])
+            group = min(choices, key=consolidation_rank)
+            best = min((e for e in group if _is_core(e) and e.get('practice_purpose') == 'consolidation'),
+                       key=lambda e: (e['distance'], -e['preference'], e['key']))
+            selected.append((best, group))
+            practiced.update(e.get('matched_key', e['key']) for e in group)
+            consolidation_groups.pop(best['candidate'].get('duplicate_identity') or best['candidate']['question_id'])
             added += 1
     return selected
 
@@ -1782,30 +1824,41 @@ class PersonalizedRecommendationModule:
                 **({'assembly_snapshot': dict(assembly_snapshot)} if assembly_snapshot is not None else {}),
             }
         )
-        compatible_fingerprints = {input_fingerprint}
+        fingerprint_payloads = [{
+            "diagnosis": ({**normalized_diagnosis, "_graded_activities": graded_activities}
+                          if graded_activities is not None else normalized_diagnosis),
+            "config": request["config"],
+            **({'assembly_snapshot': dict(assembly_snapshot)} if assembly_snapshot is not None else {}),
+        }]
         if config.max_unmeasured_questions == 0:
-            compatible_fingerprints.add(_hash_payload({
+            fingerprint_payloads.append({
                 "diagnosis": ({**normalized_diagnosis, "_graded_activities": graded_activities}
                               if graded_activities is not None else normalized_diagnosis),
                 "config": {key: value for key, value in request["config"].items() if key != "max_unmeasured_questions"},
                 **({'assembly_snapshot': dict(assembly_snapshot)} if assembly_snapshot is not None else {}),
-            }))
+            })
         if (config.purpose == "training" and config.max_questions_per_skill == 1
                 and config.max_written_questions == 2 and config.recent_activity_count == 3
                 and config.difficulty_max <= 8):
             legacy_config = {key: value for key, value in request["config"].items()
                              if key not in {"purpose", "max_questions_per_skill", "max_written_questions"}}
-            compatible_fingerprints.add(_hash_payload({
+            fingerprint_payloads.append({
                 "diagnosis": ({**normalized_diagnosis, "_graded_activities": graded_activities}
                               if graded_activities is not None else normalized_diagnosis),
                 "config": legacy_config,
-            }))
+            })
             if config.max_unmeasured_questions == 0:
-                compatible_fingerprints.add(_hash_payload({
+                fingerprint_payloads.append({
                     "diagnosis": ({**normalized_diagnosis, "_graded_activities": graded_activities}
                                   if graded_activities is not None else normalized_diagnosis),
                     "config": {key: value for key, value in legacy_config.items() if key != "max_unmeasured_questions"},
-                }))
+                })
+        if config.max_consolidation_questions == 0:
+            fingerprint_payloads += [{**payload, "config": {
+                key: value for key, value in payload["config"].items()
+                if key != "max_consolidation_questions"}}
+                for payload in list(fingerprint_payloads)]
+        compatible_fingerprints = {_hash_payload(payload) for payload in fingerprint_payloads}
         existing = self._by_request_token(token)
         if existing is not None:
             existing_fingerprint = str(existing.pop("_input_fingerprint"))
@@ -2646,6 +2699,21 @@ class PersonalizedRecommendationModule:
                 recent=recent.get(sid, set()), excluded=excluded, direct_only=direct_only, core_only=core_only)
         return {"pools": pools, "targets": targets_by_student, "warnings": warnings, "candidates": candidates}
 
+    def _handout_placements(self, items, candidates, config):
+        if config.purpose != 'handout':
+            return None
+        if not config.curriculum_volume_id or not items:
+            return {}
+        by_id = {candidate['question_id']: candidate for candidate in candidates}
+        primary = {int(item['question_id']): (item['matched_key'] if str(item.get('matched_key', '')).startswith('sk_')
+            else next((key for key in by_id.get(item['question_id'], {}).get('stable_keys', ())
+                       if key.startswith('sk_')), '')) for item in items}
+        with sqlite3.connect(self.db_path.resolve().as_uri() + '?mode=ro', uri=True) as connection:
+            connection.row_factory = sqlite3.Row
+            skills = skill_placements(connection, set(primary.values()) - {''}, config.curriculum_volume_id)
+            fallback = section_placements(connection, [qid for qid, key in primary.items() if not key], config.curriculum_volume_id)
+        return {qid: skills.get(key) if key else fallback.get(qid) for qid, key in primary.items()}
+
     def _build_draft(
         self, *, diagnosis: dict[str, Any], config: PersonalizedRecommendationConfig,
         candidates: tuple[dict[str, Any], ...], relations: tuple[dict[str, Any], ...],
@@ -2680,12 +2748,21 @@ class PersonalizedRecommendationModule:
                     item["reason"] = (f"公共卷：本题主要对应 {names} 的训练需求。" if _is_core(entry)
                                       else f"公共卷：本题难度适合 {names}，用于范围内补充练习。") + item["reason"]
                 items.append(item)
-            _order_practice_items(items)
+            _order_practice_items(items, self._handout_placements(items, candidates, config))
+            if shared is not None and config.purpose == 'handout' and students:
+                first = students[0]['items']
+                own_by_id = {value['question_id']: value for value in items}
+                items[:] = [own_by_id[value['question_id']] for value in first]
+                for order, (value, original) in enumerate(zip(items, first), 1):
+                    value.update(item_order=order, knowledge_section=deepcopy(original['knowledge_section']),
+                                 primary_skill_name=original['primary_skill_name'])
             missing = config.question_count - len(items)
             warnings = warnings_by_student[sid]
             if config.remediation_only and config.paper_mode == "individual":
                 warnings.append(f"本卷优先补弱，再安排最多 {config.max_unmeasured_questions} 道未测目标新练习；新练习不认定为薄弱，不计入失分需要覆盖。"
                                 if config.max_unmeasured_questions else "本卷只安排有有效失分依据的补弱题；题量不足保留缺口。")
+                if config.purpose == 'handout' and config.max_consolidation_questions:
+                    warnings.append(f"新练习之后，再安排最多 {config.max_consolidation_questions} 道巩固题；巩固题不计入失分需要覆盖。")
                 if any(item.get("target", {}).get("diagnostic_check") for item in items):
                     warnings.append("新练习名额中包含用于确认旧综合题失分环节的独立短题；诊断性新练习不计入补弱覆盖。")
                 if not items:
@@ -3612,7 +3689,8 @@ class PersonalizedRecommendationModule:
                     "locked item must be unlocked before exclusion"
                 )
             student["items"].remove(item)
-            _order_practice_items(student["items"])
+            config = PersonalizedRecommendationConfig(**_config_constructor(draft['config']))
+            _order_practice_items(student["items"], self._handout_placements(student['items'], candidates, config))
             _add_edit_shortage(student, str(item["stage"]))
             after = {
                 "item_id": item["item_id"],
@@ -3644,14 +3722,22 @@ class PersonalizedRecommendationModule:
                 excluded=set())
             by_id = {candidate["question_id"]: candidate for candidate in candidates}
             printed = [by_id[value["question_id"]] for value in student["items"] if value is not item]
+            def allowed_purpose(entry):
+                if not config.remediation_only or config.paper_mode == 'shared':
+                    return True
+                if item.get('practice_purpose') == 'consolidation':
+                    return (config.purpose == 'handout' and _is_core(entry)
+                        and entry.get('practice_purpose') == 'consolidation'
+                        and sum(value.get('practice_purpose') == 'consolidation'
+                                for value in student['items'] if value is not item) < config.max_consolidation_questions)
+                return ((_is_core(entry) and entry.get('practice_purpose') == 'remediation')
+                    or (item.get('practice_purpose') == 'new' and _unmeasured_entry(entry)
+                        and sum(value.get('practice_purpose') == 'new'
+                                for value in student['items'] if value is not item) < config.max_unmeasured_questions))
             eligible = [entry for entry in entries
                         if entry["candidate"]["question_id"] != item["question_id"]
                         and (item.get("selection_kind") == "supplement" or _is_core(entry))
-                        and (not config.remediation_only or config.paper_mode == "shared"
-                             or (_is_core(entry) and entry.get("practice_purpose") == "remediation")
-                             or (item.get("practice_purpose") == "new" and _unmeasured_entry(entry)
-                                 and sum(value.get("practice_purpose") == "new" for value in student["items"] if value is not item)
-                                     < config.max_unmeasured_questions))
+                        and allowed_purpose(entry)
                         and _paper_diversity_allowed(entry["candidate"], printed, config)
                         and (command.replacement_question_id is None
                              or entry["candidate"]["question_id"] == command.replacement_question_id)]
@@ -3665,9 +3751,7 @@ class PersonalizedRecommendationModule:
                 recent=self._request_recent(request, (str(student["student_id"]),), draft_id=draft_id))['pools'].get(str(student['student_id']), [])
             if matched_entries:
                 if config.remediation_only and config.paper_mode == "individual":
-                    matched_entries = [entry for entry in matched_entries
-                        if (_is_core(entry) and entry.get("practice_purpose") == "remediation")
-                        or (item.get("practice_purpose") == "new" and config.max_unmeasured_questions and _unmeasured_entry(entry))]
+                    matched_entries = [entry for entry in matched_entries if allowed_purpose(entry)]
             if matched_entries:
                 selected = _member_entries(matched_entries)[str(student['student_id'])]
             replacement = _draft_item(
@@ -3689,7 +3773,7 @@ class PersonalizedRecommendationModule:
                 },
             ]
             student["items"][student["items"].index(item)] = replacement
-            _order_practice_items(student["items"])
+            _order_practice_items(student["items"], self._handout_placements(student['items'], candidates, config))
             item = replacement
             _refresh_supplement_warnings(draft, PersonalizedRecommendationConfig(**_config_constructor(draft["config"])))
         after = deepcopy(item)
@@ -4086,6 +4170,7 @@ def _config_constructor(value: Mapping[str, Any]) -> dict[str, Any]:
         "paper_mode": value.get("paper_mode", "individual"),
         "remediation_only": bool(value.get("remediation_only", False)),
         "max_unmeasured_questions": value.get("max_unmeasured_questions", 0),
+        "max_consolidation_questions": value.get("max_consolidation_questions", 0),
         "question_count": value["question_count"],
         "expected_minutes": value.get("expected_minutes", 45),
         "difficulty_min": value.get("difficulty_min", 1),

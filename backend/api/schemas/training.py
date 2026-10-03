@@ -117,6 +117,7 @@ class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest, Recommen
     request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     remediation_only: bool = True
     max_unmeasured_questions: int = Field(default=4, ge=0)
+    max_consolidation_questions: int = Field(default=0, ge=0)
     expected_minutes: int = 45  # 兼容输入，不参与推荐
     difficulty_min: int = Field(default=1, ge=1, le=10)
     paper_mode: Literal["individual", "shared"] = "individual"

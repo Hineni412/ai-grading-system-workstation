@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 
 from backend.jobs.manager import JobContext
-from question_bank.exporters.paper_docx_exporter import export_question_paper_docx
+from question_bank.exporters.paper_docx_exporter import SectionSpec, export_question_paper_docx
 from question_bank.recommendation.personalized import (
     PersonalizedRecommendationModule,
     RecommendationRevisionConflict,
@@ -48,9 +48,20 @@ def run_training_handout_export(*, context: JobContext, question_bank_db_path: P
             student_root = staging_root / str(index)
             student_root.mkdir()
             label = "小组" if shared else str(student.get("student_name") or student["student_id"])
-            ids = [int(item["question_id"]) for item in sorted(student["items"], key=lambda item: item["item_order"])]
+            items = sorted(student["items"], key=lambda item: item["item_order"])
+            ids = [int(item["question_id"]) for item in items]
+            sections = []
+            if any(item.get("knowledge_section") for item in items):
+                for item in items:
+                    title = str((item.get("knowledge_section") or {}).get("title") or "未归入章节")
+                    if not sections or sections[-1].title != title:
+                        sections.append(SectionSpec(title=title, question_ids=[]))
+                    sections[-1].question_ids.append(int(item["question_id"]))
+            notes = {int(item["question_id"]): f"技能：{item['primary_skill_name']}"
+                     for item in items if item.get("primary_skill_name")}
             path = export_question_paper_docx(question_bank_db_path, ids, student_root,
-                title=f"{label} 讲义", include_answer=True, grouped_by_type=False)
+                title=f"{label} 讲义", include_answer=True, grouped_by_type=False,
+                sections=sections or None, question_notes=notes or None)
             paths.append(path)
             context.report(.9 * index / len(students), "handout_export", "正在生成讲义")
         if shared:
