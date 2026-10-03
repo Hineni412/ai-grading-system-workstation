@@ -13,6 +13,7 @@ import {
 export type ResourceState = 'idle' | 'loading' | 'ready' | 'empty' | 'stale-error' | 'error'
 export type OverviewLoader = (
   sessionId: number | null,
+  curriculumVolumeId: string | null,
   signal: AbortSignal,
 ) => Promise<WorkbenchOverview>
 export type AnomalyLoader = (
@@ -46,6 +47,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   let overviewController: AbortController | null = null
   let anomaliesController: AbortController | null = null
   let overviewGeneration = 0
+  let overviewVolumeId: string | null | undefined
   let anomaliesGeneration = 0
 
   function resetForSession(nextSessionId: number | null): void {
@@ -73,9 +75,15 @@ export const useWorkbenchStore = defineStore('workbench', () => {
 
   async function loadOverview(
     nextSessionId: number | null,
+    curriculumVolumeId: string | null = null,
     loader: OverviewLoader = fetchWorkbenchOverview,
   ): Promise<void> {
     resetForSession(nextSessionId)
+    if (overviewVolumeId !== curriculumVolumeId) {
+      overview.value = null
+      overviewUpdatedAt.value = null
+      overviewVolumeId = curriculumVolumeId
+    }
     overviewController?.abort()
     const controller = new AbortController()
     overviewController = controller
@@ -84,7 +92,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     overviewError.value = ''
 
     try {
-      const loaded = await loader(nextSessionId, controller.signal)
+      const loaded = await loader(nextSessionId, curriculumVolumeId, controller.signal)
       if (generation !== overviewGeneration || sessionId.value !== nextSessionId) return
       if (
         (nextSessionId === null && loaded.current_session !== null) ||

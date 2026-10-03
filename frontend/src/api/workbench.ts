@@ -240,11 +240,13 @@ function requireSessionId(sessionId: number): number {
 
 export function fetchWorkbenchOverview(
   sessionId: number | null,
+  curriculumVolumeId: string | null = null,
   signal?: AbortSignal,
 ): Promise<WorkbenchOverview> {
   const query = new URLSearchParams()
   if (sessionId !== null) query.set('session_id', String(requireSessionId(sessionId)))
   query.set('recent_limit', '5')
+  if (curriculumVolumeId) query.set('curriculum_volume_id', curriculumVolumeId)
   return apiClient.request(`/api/workbench/overview?${query.toString()}`, {
     decode: decodeWorkbenchOverview,
     signal,

@@ -7,7 +7,7 @@ const sessions = [
     id: 7,
     name: '七年级数学期末质量监测（匿名合成数据）',
     status: 'grading',
-    curriculum_volume_id: null,
+    curriculum_volume_id: 'volume-1',
     is_deleted: false,
     deleted_at: null,
     created_at: '2026-07-14T08:00:00Z',
@@ -17,7 +17,7 @@ const sessions = [
     id: 8,
     name: '八年级物理单元检测（匿名合成数据）',
     status: 'completed',
-    curriculum_volume_id: null,
+    curriculum_volume_id: 'volume-1',
     is_deleted: false,
     deleted_at: null,
     created_at: '2026-07-12T08:00:00Z',
@@ -35,6 +35,8 @@ const viewports = [
 
 interface MockOptions {
   overviewFailure?: boolean
+  bankFailure?: boolean
+  empty?: boolean
 }
 
 interface RequestLog {
@@ -69,7 +71,7 @@ function overview(sessionId: number) {
       : { unmatched_papers: 1, scan_issue_students: 1, failed_papers: 1 },
     recent_jobs: [],
     recent_sessions: sessions
-      .filter((item) => item.id !== sessionId)
+      .slice()
       .map((item) => ({ session: item, progress: progress(item.id) })),
     updated_at: sessionId === 8 ? '2026-07-15T10:05:00Z' : '2026-07-15T09:35:00Z',
   }
@@ -180,7 +182,7 @@ async function installSyntheticApi(
     const { pathname } = url
 
     if (pathname === '/api/sessions') {
-      await fulfillJson(route, { items: sessions, total: sessions.length })
+      await fulfillJson(route, { items: options.empty ? [] : sessions, total: options.empty ? 0 : sessions.length })
       return
     }
     const activeSourceMatch = pathname.match(/^\/api\/sessions\/(\d+)\/config\/sources\/active$/)
@@ -203,7 +205,28 @@ async function installSyntheticApi(
         return
       }
       const sessionId = Number(url.searchParams.get('session_id') ?? 7)
-      await fulfillJson(route, overview(sessionId))
+      await fulfillJson(route, options.empty ? { ...overview(sessionId), current_session: null, progress: null, review: null, anomalies: null, recent_sessions: [] } : overview(sessionId))
+      return
+    }
+    const readiness = pathname.match(/^\/api\/sessions\/(\d+)\/regions\/readiness$/)
+    if (readiness) {
+      await fulfillJson(route, { session_id: Number(readiness[1]), scoring_configured: true, template_present: true, template_ready: true })
+      return
+    }
+    if (/^\/api\/sessions\/\d+\/question-bank-status$/.test(pathname)) {
+      if (options.bankFailure) { await route.fulfill({ status: 503, body: 'TEST-bank-failure' }); return }
+      await fulfillJson(route, { question_count: 1, tagged_count: 0, evidence_count: 0, criteria_count: 0, complete_count: 0,
+        pending_taxonomy_count: 0, incomplete_question_ids: [1], incomplete_source_refs: ['Q1'] })
+      return
+    }
+    if (pathname === '/api/training/overview') {
+      await fulfillJson(route, { scope: { mode: 'all', student_ids: [] },
+        exam_scope: { mode: 'semester', curriculum_volume_id: 'volume-1', session_ids: [7], sessions: [{ session_id: 7, session_name: 'TEST-home' }] },
+        warnings: [], nodes: [{ knowledge_key: 'skill-1', display_name: '册｜第一章｜技能·列等式', kind: 'skill',
+          chapter_key: '', section_key: '', group_mastery: .4, evidence_student_count: 10,
+          distribution: { weak: 4, unsteady: 2, stable: 4, insufficient: 0 }, students: [] }], students: [],
+        summary: { student_count: 10, evidence_student_count: 10, exam_student_count: 10, exam_score_rate: .5,
+          topic_count: 0, skill_count: 1, weak_topic_count: 0, weak_skill_count: 1 } })
       return
     }
     if (pathname === '/api/jobs') {
@@ -228,9 +251,9 @@ function trackBrowserErrors(page: Page) {
 
 async function openWorkbench(page: Page, sessionId = 7): Promise<void> {
   await page.addInitScript(([key, value]) => localStorage.setItem(key, value), [STORAGE_KEY, String(sessionId)])
+  await page.addInitScript(() => localStorage.setItem('ai-grading:curriculum-scope:v1', 'volume-1'))
   await page.goto('/workbench')
-  await expect(page.getByRole('heading', { name: /今天先完成这三件事/ })).toBeVisible()
-  await expect(page.locator('.workbench-workflow')).toBeVisible()
+  await expect(page.getByRole('heading', { name: '工作台', exact: true })).toBeVisible()
 }
 
 async function expectNoHorizontalOverflow(page: Page): Promise<void> {
@@ -243,13 +266,13 @@ async function expectNoHorizontalOverflow(page: Page): Promise<void> {
 function expectReadOnlyRequests(requests: RequestLog[]): void {
   expect(requests.length).toBeGreaterThan(0)
   for (const request of requests) {
-    expect(request.method, `${request.method} ${request.pathname}`).toBe('GET')
+    expect(request.method, `${request.method} ${request.pathname}`).toBe(request.pathname === '/api/training/overview' ? 'POST' : 'GET')
     expect(request.pathname).not.toMatch(/(?:submit|confirm|cancel|score|grading\/jobs)/)
   }
 }
 
 async function captureVisualEvidence(page: Page, testInfo: TestInfo, width: number): Promise<void> {
-  if (![1024, 1366, 1920].includes(width)) return
+  if (![1024, 1280, 1440, 1920].includes(width)) return
   await page.screenshot({
     path: testInfo.outputPath(`workbench-${width}.png`),
     fullPage: true,
@@ -257,28 +280,40 @@ async function captureVisualEvidence(page: Page, testInfo: TestInfo, width: numb
   })
 }
 
+
 for (const viewport of viewports) {
-  test(`${viewport.width}x${viewport.height} shows the whole home loop within one screen`, async ({ page }, testInfo) => {
+  test(`${viewport.width}x${viewport.height} matches the home panels without overlap`, async ({ page }, testInfo) => {
     const errors = trackBrowserErrors(page)
     const requests = await installSyntheticApi(page)
     await page.setViewportSize(viewport)
     await openWorkbench(page)
-
-    await expect(page.locator('.workbench-focus-board')).toBeVisible()
-    await expect(page.locator('.workbench-focus-list > li')).toHaveCount(3)
-    await expect(page.locator('.workbench-pulse')).toContainText('七年级数学期末质量监测')
-    await expect(page.locator('.workbench-pulse')).toContainText('33.33')
-    await expect(page.locator('.workbench-workflow')).toContainText('从一次考试，走到下一堂课')
-    await expect(page.locator('.workbench-workflow__steps > li')).toHaveCount(5)
-
-    await expect(page.getByText('当前考试详情', { exact: true })).toHaveCount(0)
-    await expect(page.getByText('班级题目分析', { exact: true })).toHaveCount(0)
-    await expect(page.getByText('最近考试', { exact: true })).toHaveCount(0)
-
-    const workflowBox = await page.locator('.workbench-workflow').boundingBox()
-    expect(workflowBox).not.toBeNull()
-    expect(workflowBox!.y + workflowBox!.height).toBeLessThanOrEqual(viewport.height)
-
+    await expect(page.locator('[data-todo="bank"]')).toBeVisible()
+    await expect(page.locator('.workbench-todo [data-variant="primary"]')).toHaveCount(1)
+    await expect(page.locator('.workbench-current')).toContainText('36 份答卷')
+    await expect(page.locator('.workbench-insight')).toContainText('4/10 人明显薄弱')
+    await expect(page.locator('.workbench-recent tbody tr')).toHaveCount(2)
+    await expect(page.locator('.workbench-recent tr.is-current')).toContainText('当前')
+    await expect(page.locator('.step-progress--vertical')).toContainText('3 项待复核')
+    await expect(page.locator('.workbench-pulse')).toHaveCount(0)
+    const boxes = await page.locator('.workbench-panel').evaluateAll(elements => elements.map(el => {
+      const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom }
+    }))
+    if (viewport.width >= 1200) {
+      expect(boxes[1]!.x).toBeGreaterThanOrEqual(boxes[0]!.right)
+      expect(boxes[3]!.y - boxes[0]!.bottom).toBeLessThanOrEqual(17)
+      await page.locator('.workbench-grid').evaluate(el => (el as HTMLElement).style.minHeight = '1800px')
+      await page.locator('.main-workspace').evaluate(el => el.scrollTop = 180)
+      await expect(page.locator('.workbench-sidebar')).toHaveCSS('position', 'sticky')
+      const sticky = await page.locator('.workbench-sidebar').boundingBox()
+      expect(sticky!.y).toBeGreaterThanOrEqual(15)
+      expect(sticky!.y).toBeLessThanOrEqual(18)
+      await page.locator('.main-workspace').evaluate(el => el.scrollTop = 0)
+      await page.locator('.workbench-grid').evaluate(el => (el as HTMLElement).style.minHeight = '')
+    } else {
+      expect(boxes[1]!.y).toBeGreaterThanOrEqual(boxes[0]!.bottom)
+      expect(boxes[2]!.y).toBeGreaterThanOrEqual(boxes[1]!.bottom)
+      expect(boxes[3]!.y).toBeGreaterThanOrEqual(boxes[2]!.bottom)
+    }
     await expectNoHorizontalOverflow(page)
     await captureVisualEvidence(page, testInfo, viewport.width)
     expectReadOnlyRequests(requests)
@@ -286,3 +321,35 @@ for (const viewport of viewports) {
     expect(errors.consoleErrors).toEqual([])
   })
 }
+
+test('recent exam name switches the current exam and preserves the home route', async ({ page }) => {
+  const requests = await installSyntheticApi(page)
+  await openWorkbench(page)
+  await page.locator('.workbench-exams-name button').filter({ hasText: '八年级物理' }).click()
+  await expect(page.locator('.workbench-current')).toContainText('八年级物理')
+  await expect(page.locator('[data-todo="assembly"]')).toBeVisible()
+  await expect(page).toHaveURL(/\/workbench$/)
+  expectReadOnlyRequests(requests)
+})
+
+test('source errors show retries and preserve unrelated panels', async ({ page }) => {
+  await installSyntheticApi(page, { bankFailure: true })
+  await openWorkbench(page)
+  await expect(page.locator('.workbench-todo')).toContainText('题库资料状态暂时无法读取')
+  await expect(page.locator('[data-todo="bank"]')).toHaveCount(0)
+  await expect(page.locator('[data-todo="review"]')).toBeVisible()
+  await expect(page.locator('.workbench-insight')).toContainText('4/10 人明显薄弱')
+})
+
+test('failed overview and no exam give accurate empty and failure states', async ({ page }) => {
+  await installSyntheticApi(page, { overviewFailure: true })
+  await openWorkbench(page)
+  await expect(page.locator('.workbench-content > .feedback-banner')).toContainText('考试概况暂时无法读取')
+  await expect(page.locator('.workbench-insight')).toContainText('4/10 人明显薄弱')
+  await page.unroute(/^https?:\/\/[^/]+\/api\//)
+  await installSyntheticApi(page, { empty: true })
+  await page.evaluate(() => localStorage.removeItem('ai-grading:selected-session:v1'))
+  await page.reload()
+  await expect(page.locator('.workbench-current')).toContainText('尚未选择考试')
+  await expect(page.locator('.workbench-todo')).toContainText('今天没有待处理的事项')
+})

@@ -84,7 +84,7 @@ const currentStatusTone = computed(() => {
 })
 const currentStatusLabel = computed(() => {
   const status = currentSession.value?.status
-  // 未知状态不渲染（RecentSessions 的回退原文只保留在它自己的列表里）
+  // 侧栏不渲染未知状态；最近考试表仍使用状态标签的兼容显示。
   return status && currentStatusTone.value ? sessionStatusLabel(status) : null
 })
 const volumeLabelById = computed(() => {

@@ -35,14 +35,9 @@
   transform: scale(0.98) !important;
 }
 
-.app-button[data-variant='primary']:hover:not(:disabled),
-.workbench-primary-button:hover:not(:disabled) {
+.app-button[data-variant='primary']:hover:not(:disabled) {
   box-shadow: var(--fx-shadow-primary-hover);
 }
-
-.workbench-primary-button,
-.workbench-secondary-button,
-.workbench-link-button,
 .results-button,
 .results-link-button,
 .quick-archive-button {
@@ -53,10 +48,6 @@
     box-shadow var(--duration-base) ease,
     transform var(--duration-fast) var(--ease-out);
 }
-
-.workbench-primary-button:active:not(:disabled),
-.workbench-secondary-button:active:not(:disabled),
-.workbench-link-button:active:not(:disabled),
 .results-button:active:not(:disabled),
 .results-link-button:active:not(:disabled),
 .quick-archive-button:active:not(:disabled) {
@@ -264,9 +255,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .app-button,
-  .workbench-primary-button,
-  .workbench-secondary-button,
-  .workbench-link-button,
   .results-button,
   .results-link-button,
   .quick-archive-button,

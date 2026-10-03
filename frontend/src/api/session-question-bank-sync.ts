@@ -74,10 +74,12 @@ export async function retrySessionQuestionBankSync(
 
 export async function getSessionQuestionBankAnalysisStatus(
   sessionId: number,
+  signal?: AbortSignal,
 ): Promise<SessionQuestionBankAnalysisStatus> {
   return apiClient.request(
     `/api/sessions/${sessionId}/question-bank-status`,
     {
+      signal,
       decode(value) {
         if (!isStatus(value)) throw new Error('Invalid question-bank status')
         return value

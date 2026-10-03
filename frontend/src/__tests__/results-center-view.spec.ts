@@ -115,7 +115,7 @@ function reviewItems(qid: string): ResolvedReviewItem[] {
     })))
 }
 
-async function mountView(tab: string | null = 'details', analysis?: ClassAnalysisResponse) {
+async function mountView(tab: string | null = 'details', analysis?: ClassAnalysisResponse, open = '') {
   localStorage.clear()
   personalMock.states.mockResolvedValue([['current', 1], ['stale', 2], ['missing', 3], ['unavailable', 4]].map(([status, id]) => ({student_id: id, status, generated_at: '2026-10-03', reason: status === 'unavailable' ? '缺考' : null})))
   personalMock.exams.mockImplementation(async (id: number) => [{session_id: 7, session_name: '合成成绩验证', graded_at: '2026-10-03', score: 8, max_score: 10,
@@ -134,7 +134,7 @@ async function mountView(tab: string | null = 'details', analysis?: ClassAnalysi
     { path: '/results', component: ResultsCenterView },
     { path: '/grading', component: { render: () => h('div', '合成作答页面') } },
   ] })
-  await router.push(tab === null ? '/results?session=7' : `/results?tab=${tab}&session=7`)
+  await router.push((tab === null ? '/results?session=7' : `/results?tab=${tab}&session=7`) + open)
   await router.isReady()
   const host = document.createElement('div')
   document.body.append(host)
@@ -534,4 +534,29 @@ describe('personal report reading and review return', () => {
     await vi.waitFor(() => expect(document.querySelector('iframe')?.getAttribute('src')).toContain('narrative=auto'))
     expect(useResultsCenterStore().reportReturn).toBeNull()
   })
+})
+
+describe('home walkthrough entry', () => {
+  it('opens the home walkthrough once when ready and consumes its parameter', async () => {
+    const { host, router } = await mountView('overview', undefined, '&open=walkthrough')
+    await vi.waitFor(() => expect(document.querySelector('.wt')).not.toBeNull())
+    await vi.waitFor(() => expect(router.currentRoute.value.query.open).toBeUndefined())
+    const close = [...document.querySelectorAll<HTMLButtonElement>('.wt button')].find(el => el.textContent?.includes('返回考情总览'))!
+    expect(close).toBeDefined()
+    close.click()
+    await nextTick()
+    expect(document.querySelector('.wt')).toBeNull()
+    expect(host.querySelector('[data-testid="results-overview"]')).not.toBeNull()
+  })
+
+  it('keeps the overview when the requested walkthrough has no complete papers', async () => {
+    const { host, router } = await mountView('overview')
+    useResultsCenterStore().results = { ...fixture(), students: fixture().students.filter(student => student.status === 'incomplete') }
+    await router.replace({ query: { tab: 'overview', open: 'walkthrough' } })
+    await nextTick()
+    expect(document.querySelector('.wt')).toBeNull()
+    expect(host.querySelector('[data-testid="results-overview"]')).not.toBeNull()
+  })
+
+
 })

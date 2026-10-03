@@ -180,6 +180,32 @@ afterEach(() => {
 
 describe('knowledge overview view', () => {
 
+  it('peeks without changing saved evidence scope or reading the roster, using the same priorities', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useMasteryOverviewStore()
+    const saved = JSON.stringify({ scope: { mode: 'selected', student_ids: ['2'] },
+      exam_scope: { mode: 'selected', session_ids: [7] } })
+    localStorage.setItem('p4-evidence-scope-v1', saved)
+    await store.peek('bnu24-math-g8-upper')
+    expect(store.scopeSelection).toBe('all')
+    expect(localStorage.getItem('p4-evidence-scope-v1')).toBe(saved)
+    expect(fetchStudents).not.toHaveBeenCalled()
+    const { default: Insight } = await import('../components/workbench/WorkbenchSemesterInsight.vue')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(Insight, { overview: store.overview, state: 'ready', volumeId: 'bnu24-math-g8-upper', termLabel: '八年级上册', scope: 'all' })
+    app.mount(host); mounted.push(app)
+    const { compareFocusNodes } = await import('../components/knowledge-overview/model')
+    const expected = store.overview!.nodes.filter(n => n.kind === 'skill' && n.in_volume !== false && n.distribution.weak > 0).sort(compareFocusNodes).slice(0, 3)
+    expect([...host.querySelectorAll('[data-knowledge]')].map(el => el.getAttribute('data-knowledge'))).toEqual(expected.map(n => n.knowledge_key))
+    expect(host.textContent).toContain('1/3 人明显薄弱')
+    store.activate('bnu24-math-g8-upper')
+    await settle()
+    expect(fetchStudents).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(localStorage.getItem('p4-evidence-scope-v1')!).scope.mode).toBe('all')
+  })
+
   it('opens the backend tier list with interval and observation details', async () => {
     const host = await mountView()
     await vi.waitFor(() => expect(trainingApi.overview).toHaveBeenCalledTimes(1))

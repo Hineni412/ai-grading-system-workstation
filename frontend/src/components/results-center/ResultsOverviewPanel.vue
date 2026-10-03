@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import {
   classAnalysisApi,
@@ -64,6 +64,7 @@ const emit = defineEmits<{
 }>()
 
 const router = useRouter()
+const route = useRoute()
 const sessionStore = useSessionStore()
 const jobStore = useJobStore()
 
@@ -758,6 +759,15 @@ function openWalkthrough(): void {
   walkthroughResumeIndex.value = undefined
   walkthroughOpen.value = true
 }
+
+// 首页入口只在本次参数请求就绪后打开一次；关闭后不再次自动打开。
+watch([() => route.query.open, walkthroughAvailable, walkthroughReady], ([open, available, ready]) => {
+  if (open !== 'walkthrough' || !available || !ready) return
+  openWalkthrough()
+  const query = { ...route.query }
+  delete query.open
+  void router.replace({ query })
+}, { immediate: true })
 
 onMounted(() => {
   let saved: { sessionId?: number; scope?: string | null; index?: number } | null = null
