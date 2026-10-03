@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import sqlite3
 from typing import Any
 
 from integration.result_cache import ResultCache
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+from question_bank.current_knowledge import CurrentKnowledgeResolver, CurrentKnowledgeUnavailable
+from question_bank.recommendation.target_matching import knowledge_skill_associations, load_question_facets
 
 _TIER_FIELDS = ("weak", "unsteady", "stable", "insufficient")
 
@@ -20,7 +23,7 @@ def _tier(entry):
 
 
 def build_mastery_overview(
-    diagnosis: Mapping[str, Any], *, volume_id: str
+    diagnosis: Mapping[str, Any], *, volume_id: str, associations=None
 ) -> dict[str, Any]:
     """Build the overview payload for one curriculum volume.
 
@@ -113,6 +116,25 @@ def build_mastery_overview(
     node_keys = [spec[0] for spec in node_specs]
     topic_keys = [key for key, kind, _c, _s in node_specs if kind == "topic"]
     skill_keys = [key for key, kind, _c, _s in node_specs if kind == "skill"]
+    in_volume_keys = set(node_keys)
+    for key, item in catalog.items():
+        kind = item.get("node_kind")
+        if key in in_volume_keys or kind not in ("topic", "skill"):
+            continue
+        if not any(_has_evidence(index.get(key)) for index in weak_points_by_student.values()):
+            continue
+        chapter_key = section_key = ""
+        parent = str(item.get("parent_knowledge_key") or "")
+        seen = {key}
+        while parent in catalog and parent not in seen:
+            seen.add(parent)
+            ancestor = catalog[parent]
+            if ancestor.get("node_kind") == "section":
+                section_key = parent
+            if ancestor.get("node_kind") == "chapter":
+                chapter_key = parent
+            parent = str(ancestor.get("parent_knowledge_key") or "")
+        node_specs.append((key, kind, chapter_key, section_key))
 
     nodes: list[dict[str, Any]] = []
     for key, kind, chapter_key, section_key in node_specs:
@@ -137,7 +159,11 @@ def build_mastery_overview(
                 "kind": kind,
                 "chapter_key": chapter_key,
                 "section_key": section_key,
+                "definition": str(catalog[key].get("definition") or ""),
+                "in_volume": key in in_volume_keys,
                 "group_mastery": (group_mastery_by_key.get(key) or {}).get("mastery"),
+                "group_interval_low": (group_mastery_by_key.get(key) or {}).get("interval_low"),
+                "group_interval_high": (group_mastery_by_key.get(key) or {}).get("interval_high"),
                 "tier": (group_mastery_by_key.get(key) or {}).get("tier", "insufficient"),
                 "evidence_student_count": len(evidenced),
                 "distribution": distribution,
@@ -178,6 +204,7 @@ def build_mastery_overview(
     evidenced_student_ids = {
         student_id
         for node in nodes
+        if node["in_volume"]
         for student_id in (
             entry["student_id"] for entry in node["students"]
         )
@@ -202,16 +229,20 @@ def build_mastery_overview(
             1
             for node in nodes
             if node["kind"] == "topic"
+            and node["in_volume"]
             and node["distribution"]["weak"] > 0
         ),
         "weak_skill_count": sum(
             1
             for node in nodes
             if node["kind"] == "skill"
+            and node["in_volume"]
             and node["distribution"]["weak"] > 0
         ),
     }
 
+    returned_keys = {node["knowledge_key"] for node in nodes}
+    links = associations if associations is not None else diagnosis.get("knowledge_associations") or []
     return {
         "scope": dict(diagnosis.get("scope") or {}),
         "exam_scope": dict(diagnosis.get("exam_scope") or {}),
@@ -219,6 +250,8 @@ def build_mastery_overview(
         "nodes": nodes,
         "students": student_rows,
         "summary": summary,
+        "associations": [dict(link) for link in links
+                         if link.get("topic_key") in returned_keys and link.get("skill_key") in returned_keys],
     }
 
 
@@ -240,17 +273,20 @@ def overview_payload(
     """
 
     key = (
-        "mastery-overview-v1",
+        "mastery-overview-v2",
         service.tag_profile_cache_key(scope=scope, exam_scope=exam_scope),
         str(volume_id),
     )
-    return _OVERVIEW_CACHE.get_or_compute(
-        key,
-        lambda: build_mastery_overview(
-            service.build_profiles(scope=scope, exam_scope=exam_scope),
-            volume_id=volume_id,
-        ),
-    )
+    def compute():
+        diagnosis = service.build_profiles(scope=scope, exam_scope=exam_scope)
+        try:
+            resolver = CurrentKnowledgeResolver.from_active_database(service.question_bank_db_path)
+            associations = knowledge_skill_associations(load_question_facets(service.question_bank_db_path, resolver))
+        except (CurrentKnowledgeUnavailable, OSError, sqlite3.Error, TypeError, ValueError):
+            associations = []
+            diagnosis = {**diagnosis, 'warnings': [*(diagnosis.get('warnings') or []), '知识点与技能关联暂不可用']}
+        return build_mastery_overview(diagnosis, volume_id=volume_id, associations=associations)
+    return _OVERVIEW_CACHE.get_or_compute(key, compute)
 
 
 def clear_overview_caches() -> None:

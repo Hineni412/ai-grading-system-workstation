@@ -5,6 +5,7 @@ import type { TrainingOverviewDistribution } from '../../api/training'
 
 const props = defineProps<{
   distribution: TrainingOverviewDistribution
+  showCounts?: boolean
 }>()
 
 const segments = computed(() => {
@@ -19,6 +20,7 @@ const segments = computed(() => {
     .filter(([, , count]) => count > 0)
     .map(([tier, label, count]) => ({
       tier,
+      count,
       label: `${label} ${count} 人`,
       width: total > 0 ? (count / total) * 100 : 0,
     }))
@@ -33,6 +35,6 @@ const segments = computed(() => {
       :class="`is-${segment.tier}`"
       :title="segment.label"
       :style="{ width: `${segment.width}%` }"
-    />
+    >{{ showCounts ? segment.count : '' }}</i>
   </span>
 </template>

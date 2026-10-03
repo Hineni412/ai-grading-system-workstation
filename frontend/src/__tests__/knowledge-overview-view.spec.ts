@@ -8,6 +8,9 @@ import { trainingApi, type TrainingOverview } from '../api/training'
 import { createAppRouter } from '../router'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import KnowledgeOverviewView from '../views/KnowledgeOverviewView.vue'
+import { overviewMetrics, chapterMetrics } from '../components/knowledge-overview/metrics'
+import { useMasteryOverviewStore } from '../stores/mastery-overview'
+import { presetFocusedTraining, loadPaperSelectionSession, savePaperSelectionSession } from '../features/training/paper-selection-session'
 
 vi.mock('../api/students', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/students')>(),
@@ -56,6 +59,7 @@ function overviewFixture(): TrainingOverview {
       sessions: [{ session_id: 7, session_name: '匿名考试' }],
     },
     warnings: [],
+    associations: [{ topic_key: 't1', skill_key: 'sk1', question_count: 4, same_part_question_count: 3, basis: 'same_part' }],
     nodes: [
       node({
         knowledge_key: 'ch1', kind: 'chapter', section_key: '',
@@ -94,11 +98,11 @@ function overviewFixture(): TrainingOverview {
         knowledge_key: 'sk1', kind: 'skill', group_mastery: 0.3,
         evidence_student_count: 3,
         display_name: '技能·列勾股等式',
-        distribution: distribution(3, 0, 0, 0),
+        distribution: distribution(1, 1, 1, 0),
         students: [
           { student_id: '1', mastery: 0.2, tier: 'weak' },
-          { student_id: '2', mastery: 0.3, tier: 'weak' },
-          { student_id: '3', mastery: 0.4, tier: 'weak' },
+          { student_id: '2', mastery: 0.65, tier: 'unsteady' },
+          { student_id: '3', mastery: 0.8, tier: 'stable', interval_low: .75, interval_high: .9, observation_count: 10, full_correct_count: 8 },
         ],
       }),
       node({
@@ -140,6 +144,7 @@ function overviewFixture(): TrainingOverview {
 }
 
 const mounted: App[] = []
+let activeRouter: ReturnType<typeof createAppRouter>
 async function settle() { await nextTick(); await Promise.resolve(); await nextTick() }
 
 async function mountView(volumeId: string | null = 'bnu24-math-g8-upper') {
@@ -147,6 +152,7 @@ async function mountView(volumeId: string | null = 'bnu24-math-g8-upper') {
   setActivePinia(pinia)
   useCurriculumScopeStore(pinia).$patch({ loadState: 'ready', selectedVolumeId: volumeId })
   const router = createAppRouter(createMemoryHistory())
+  activeRouter = router
   await router.push('/knowledge-overview')
   await router.isReady()
   const host = document.createElement('div')
@@ -178,14 +184,14 @@ describe('knowledge overview view', () => {
     const host = await mountView()
     await vi.waitFor(() => expect(trainingApi.overview).toHaveBeenCalledTimes(1))
     await settle()
-    const point = [...host.querySelectorAll<HTMLButtonElement>('.overview-focus-item')]
-      .find(button => button.textContent?.includes('用勾股定理求边长'))!
-    point.click()
+    const point = host.querySelector<HTMLDetailsElement>('.overview-layer-list')!
+    point.open = true
     await settle()
-    expect(host.textContent).toContain('明显薄弱（2 人）')
+    expect(host.textContent).toContain('明显薄弱（1 人）')
     expect(host.textContent).toContain('较稳定（1 人）')
-    expect(host.textContent).toContain('掌握度 80%（75%–90%）')
-    expect(host.textContent).toContain('作答 10 处、全对 8 处')
+    const stable = [...host.querySelectorAll<HTMLButtonElement>('.student-tier-chip')].find(button => button.title.includes('掌握度 80%'))!
+    expect(stable.title).toContain('掌握度 80%（75%–90%）')
+    expect(stable.title).toContain('作答 10 处、全对 8 处')
   })
 
   it('switches scope to a class and saves the shared evidence scope', async () => {
@@ -222,6 +228,88 @@ describe('knowledge overview view', () => {
     await settle()
     expect(host.textContent).toContain('请先在顶部选择教学学期')
     expect(trainingApi.overview).not.toHaveBeenCalled()
+  })
+
+  it('shows metrics with denominators, related topics, and chapter totals', async () => {
+    const host = await mountView()
+    await vi.waitFor(() => expect(host.querySelector('.overview-priority')).not.toBeNull())
+    expect(host.querySelector('.overview-summary-strip')?.textContent).toContain('有证据学生3 / 3 人')
+    expect(host.querySelector('.overview-summary-strip')?.textContent).toContain('有成绩 2 人')
+    expect(host.querySelector('.overview-summary-strip')?.textContent).toContain('2人 / 有证据 3 人')
+    expect(host.querySelector('.overview-related')?.textContent).toContain('用勾股定理求边长')
+    const data = overviewFixture()
+    expect(chapterMetrics(data.nodes).reduce((sum, chapter) => sum + chapter.weak, 0)).toBe(overviewMetrics(data).weak)
+    expect(overviewMetrics(data).weak).toBe(data.summary.weak_topic_count + data.summary.weak_skill_count)
+  })
+
+  it('presets only weak students, the skill and section, and enters student training without generating', async () => {
+    const host = await mountView()
+    await vi.waitFor(() => expect(host.querySelector('.overview-priority')).not.toBeNull())
+    const button = [...host.querySelectorAll<HTMLButtonElement>('.overview-priority-actions button')].find(b => b.textContent?.includes('出训练卷'))!
+    button.click()
+    await vi.waitFor(() => expect(activeRouter.currentRoute.value.fullPath).toBe('/training?mode=student'), { timeout: 8000 })
+    expect(JSON.parse(localStorage.getItem('p4-evidence-scope-v1')!).scope).toMatchObject({ mode: 'selected', student_ids: ['1'] })
+    expect(loadPaperSelectionSession()).toMatchObject({ targetKeys: ['sk1'], rangeKeys: ['sec1'], scopeMode: 'focused',
+      paperMode: 'individual', questionCount: 10, difficultyMax: 8, adoptedGroup: null, groupEditor: null })
+  })
+
+  it('opens group wrong questions with the exact node and return origin', async () => {
+    const host = await mountView()
+    await vi.waitFor(() => expect(host.querySelector('.overview-priority')).not.toBeNull())
+    const button = [...host.querySelectorAll<HTMLButtonElement>('.overview-priority-actions button')].find(b => b.textContent === '看错题')!
+    button.click()
+    await vi.waitFor(() => expect(activeRouter.currentRoute.value.name).toBe('student-evidence'))
+    expect(activeRouter.currentRoute.value.params.studentId).toBe('group')
+    expect(activeRouter.currentRoute.value.query).toEqual({ mode: 'questions', knowledge: 'sk1', klabel: '技能·列勾股等式', from: 'overview' })
+  })
+
+  it('keeps existing numeric settings and clears group adoption in focused presets', () => {
+    savePaperSelectionSession({ targetKeys: ['old'], rangeKeys: ['old-range'], questionCount: 12,
+      difficultyMax: 6, paperMode: 'shared', excludeCurrentOriginals: true,
+      adoptedGroup: { groupId: 'g', memberIds: ['1'], targetKeys: ['old'], scopeKeys: ['old-range'], sourceVersion: 'v' },
+      groupEditor: { memberIds: ['1'], targetKeys: ['old'], scopeKeys: ['old-range'] } })
+    presetFocusedTraining({ targetKeys: ['sk1'], rangeKeys: [] })
+    expect(loadPaperSelectionSession()).toMatchObject({ targetKeys: ['sk1'], rangeKeys: [], questionCount: 12,
+      difficultyMax: 6, scopeMode: 'focused', paperMode: 'individual', adoptedGroup: null, groupEditor: null })
+  })
+
+  it('shares the ready response, restores only a single class, and resets selected students on return', async () => {
+    const host = await mountView()
+    await vi.waitFor(() => expect(host.querySelector('.overview-priority')).not.toBeNull())
+    const store = useMasteryOverviewStore()
+    await store.load('bnu24-math-g8-upper')
+    expect(trainingApi.overview).toHaveBeenCalledTimes(1)
+    localStorage.setItem('p4-evidence-scope-v1', JSON.stringify({ scope: { mode: 'selected', student_ids: ['1'] }, exam_scope: { mode: 'semester', curriculum_volume_id: 'bnu24-math-g8-upper' } }))
+    store.activate('bnu24-math-g8-upper')
+    expect(store.scopeSelection).toBe('all')
+    const restoredScope = JSON.parse(localStorage.getItem('p4-evidence-scope-v1')!).scope
+    expect(restoredScope.mode).toBe('all')
+    expect(restoredScope.student_ids).toBeUndefined()
+    expect(trainingApi.overview).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows retained results on a failed retry and replaces them when scope changes', async () => {
+    const host = await mountView()
+    await vi.waitFor(() => expect(host.querySelector('.overview-priority')).not.toBeNull())
+    vi.mocked(trainingApi.overview).mockRejectedValue(new Error('TEST-unavailable'))
+    const store = useMasteryOverviewStore()
+    await store.load('bnu24-math-g8-upper', true)
+    await settle()
+    expect(store.loadState).toBe('stale-error')
+    expect(host.textContent).toContain('当前显示上次成功读取的结果')
+    store.selectScope('八年级2班', 'bnu24-math-g8-upper')
+    await vi.waitFor(() => expect(store.loadState).toBe('error'))
+    expect(store.overview).toBeNull()
+  })
+
+  it('sorts the first five skills and keeps prior-volume weaknesses out of priorities', async () => {
+    const data = overviewFixture()
+    data.nodes.push(...Array.from({ length: 6 }, (_, i) => node({ knowledge_key: `sk${i + 2}`, kind: 'skill', distribution: distribution(i + 2, 0, 0, 0) })),
+      node({ knowledge_key: 'old-skill', kind: 'skill', in_volume: false, distribution: distribution(99, 0, 0, 0) }))
+    vi.mocked(trainingApi.overview).mockResolvedValue(data)
+    const host = await mountView()
+    await vi.waitFor(() => expect(host.querySelectorAll('.overview-priority')).toHaveLength(5))
+    expect([...host.querySelectorAll<HTMLElement>('.overview-priority')].map(el => el.dataset.knowledge)).toEqual(['sk7', 'sk6', 'sk5', 'sk4', 'sk3'])
   })
 
 })

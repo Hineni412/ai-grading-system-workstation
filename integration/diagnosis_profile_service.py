@@ -742,6 +742,7 @@ class DiagnosisProfileService:
                 {
                     "knowledge_key": node.stable_key,
                     "knowledge_point": node.display_name,
+                    "definition": node.definition,
                     "parent_knowledge_key": parent_by_child.get(node.stable_key),
                     "parent_knowledge_point": (
                         node_by_key[parent_by_child[node.stable_key]].display_name

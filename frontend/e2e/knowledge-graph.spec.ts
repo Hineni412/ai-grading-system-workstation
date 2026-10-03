@@ -1,403 +1,114 @@
-import { expect, test, type Page, type Request, type Route, type TestInfo } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
-import { arch, cpus, platform, release, totalmem } from 'node:os';
-
-const STORAGE_KEY = 'ai-grading:selected-session:v1'
-const sessions = [
-  { id: 7, name: '匿名七年级数学考试', status: 'completed', is_deleted: false, deleted_at: null, created_at: null, updated_at: null },
-  { id: 8, name: '匿名八年级数学考试', status: 'completed', is_deleted: false, deleted_at: null, created_at: null, updated_at: null },
-]
-const students = [
-  { id: 12, student_code: 'S012', name: '匿名学生甲', class_name: '七年级一班', created_at: null },
-  { id: 15, student_code: 'S015', name: '匿名学生乙（长名称用于布局验证）', class_name: '七年级一班', created_at: null },
-  { id: 21, student_code: 'S021', name: '匿名学生丙', class_name: '七年级二班', created_at: null },
-]
-
-interface RequestLog { method: string; pathname: string }
-interface GraphApiState { query: 'ready' | 'empty' | 'error' }
-
-const PERFORMANCE_LIMITS_MS = {
-  firstRender: 15_000,
-  modeSwitch: 5_000,
-  zoom: 5_000,
-  drag: 5_000,
-  selection: 5_000,
-} as const
-
-function trackBrowserErrors(page: Page) {
-  const pageErrors: Error[] = []
-  const consoleErrors: string[] = []
-  page.on('pageerror', (error) => pageErrors.push(error))
-  page.on('console', (message) => {
-    if (message.type() === 'error') consoleErrors.push(message.text())
-  })
-  return { pageErrors, consoleErrors }
+import { expect, test, type Page } from '@playwright/test'
+const volumeId = 'bnu24-math-g8-upper'
+const catalog = { schema_version: 2, catalog_id: 'TEST-catalog', knowledge_standard_id: 'TEST-standard',
+  publisher: 'TEST出版社', subject: '数学', edition: '2024',
+  statistics: { raw_nodes: 10, excluded_nodes: 0, retained_nodes: 10, chapters: 5, sections: 5, knowledge_points: 0 },
+  volumes: Array.from({ length: 5 }, (_, i) => ({ id: i === 2 ? volumeId : `TEST-volume-${i}`, order: i + 1,
+    label: i === 2 ? '八年级上册' : `TEST第${i + 1}册`, grade: '八年级', semester: '上学期', textbook_version: '北师大版2024',
+    source: { provider: 'TEST' }, statistics: { raw_nodes: 2, excluded_nodes: 0, retained_nodes: 2 },
+    chapters: [{ id: 'ch', knowledge_id: 'ch', order: 1, number: '第一章', title: '测试章', label: '测试章', kind: 'chapter',
+      display_name: '测试册｜测试章', source_ref: { node_id: 'ch', relative_url: '/TEST/ch' }, exam_scope_values: ['TEST'],
+      sections: [{ id: 'sec', knowledge_id: 'sec', order: 1, number: '第一节', title: '测试节', label: '测试节', kind: 'lesson',
+        display_name: '测试册｜测试章｜测试节', source_ref: { node_id: 'sec', relative_url: '/TEST/sec' }, knowledge_points: [] }] }] })) }
+const students = [{ id: 1, student_code: 'S1', name: '测试甲', class_name: '一班', created_at: null }, { id: 2, student_code: 'S2', name: '测试乙', class_name: '二班', created_at: null }]
+const distribution = { weak: 1, unsteady: 0, stable: 1, insufficient: 0 }
+function node(key: string, kind: string, name: string, section = 'sec') {
+  return { knowledge_key: key, kind, display_name: `测试册｜测试章｜测试节｜${name}`, chapter_key: 'ch', section_key: section,
+    definition: '测试定义：验证详情展示。', in_volume: true, group_mastery: .5, group_interval_low: .3, group_interval_high: .7, evidence_student_count: 2, distribution,
+    students: [{ student_id: '1', mastery: .2, tier: 'weak', interval_low: .1, interval_high: .4 }, { student_id: '2', mastery: .8, tier: 'stable', interval_low: .7, interval_high: .9 }] }
 }
-
-function graphContext(body: {
-  scope: { mode: 'class' | 'student' | 'selected'; class_id?: string; student_ids?: string[] }
-  exam_scope: { mode: 'current' | 'manual' | 'cross_exam'; session_ids?: number[] }
-}) {
-  const sessionIds = body.exam_scope.mode === 'cross_exam' ? [7, 8] : body.exam_scope.session_ids ?? [7]
-  const studentIds = body.scope.mode === 'class' ? ['12', '15'] : body.scope.student_ids ?? []
-  return {
-    scope: {
-      mode: body.scope.mode,
-      student_ids: studentIds,
-      class_id: body.scope.mode === 'class' ? body.scope.class_id ?? '七年级一班' : null,
-    },
-    exam_scope: {
-      mode: body.exam_scope.mode,
-      session_ids: sessionIds,
-      sessions: sessionIds.map((id) => ({
-        session_id: id,
-        session_name: sessions.find((session) => session.id === id)?.name ?? `匿名考试${id}`,
-      })),
-    },
-  }
+function overview() {
+  return { scope: { mode: 'all', student_ids: ['1', '2'] }, exam_scope: { mode: 'semester', curriculum_volume_id: volumeId, session_ids: [7], sessions: [{ session_id: 7, session_name: 'TEST考试' }] }, warnings: [],
+    summary: { student_count: 2, evidence_student_count: 2, exam_student_count: 2, exam_score_rate: .6, topic_count: 2, skill_count: 2, weak_topic_count: 1, weak_skill_count: 2 },
+    students: students.map(s => ({ student_id: String(s.id), student_name: s.name, student_code: s.student_code, class_id: s.class_name, score_rate: .6, score_rate_source: 'current_exam', topics: { weak: 1, unsteady: 0, stable: 0, insufficient: 0, evidence: 1 }, skills: { weak: 2, unsteady: 0, stable: 0, insufficient: 0, evidence: 2 } })),
+    nodes: [node('ch', 'chapter', '测试章'), node('sec', 'section', '测试节'), node('topic', 'topic', '勾股关系'),
+      node('topic2', 'topic', '不相关知识点'), node('skill', 'skill', '技能·列等式'), node('skill2', 'skill', '技能·跨节推导', 'sec2'),
+      { ...node('old', 'topic', '旧知识'), in_volume: false, display_name: '往届册｜往届章｜往届节｜旧知识' }],
+    associations: [{ topic_key: 'topic', skill_key: 'skill', question_count: 12, same_part_question_count: 10, basis: 'same_part' },
+      { topic_key: 'topic', skill_key: 'skill2', question_count: 3, same_part_question_count: 0, basis: 'question_cooccurrence' }] }
 }
-
-function graphResponse(request: Request, nodeCount: number) {
-  const body = request.postDataJSON() as Parameters<typeof graphContext>[0]
-  const context = graphContext(body)
-  const nodes = Array.from({ length: nodeCount }, (_, index) => {
-    const mastery = [0.48, 0.66, 0.81, 0.94][index % 4]!
-    return {
-      stable_key: `kp_anonymous_${index}`,
-      display_name: `匿名知识点 ${index}${index % 17 === 0 ? '（较长名称用于验证标签布局）' : ''}`,
-      definition: `匿名知识点 ${index} 的定义`,
-      include_scope: '当前课程范围',
-      exclude_scope: '相邻课程范围',
-      curriculum_anchors: ['匿名课程标准'],
-      observable_evidence: '能够在作答中展示对应步骤',
-      rationale: '匿名课程依据',
-      evidence_source_ids: ['anonymous-standard'],
-      mastery: { status: 'available', value: mastery, evidence_count: index + 1, parameter_version: 'd'.repeat(64), reason: null },
-      evidence: {
-        student_count: 2,
-        item_count: index + 1,
-        deduction_count: index % 9,
-        tag_context: index === 0 ? { prerequisite: ['题目支持标签甲'] } : {},
-        error_counts: { primary: index === 0 ? { 步骤不完整: 2 } : {}, secondary: {} },
-      },
-      missing_reasons: [],
-    }
-  })
-  return {
-    response_schema_version: 'knowledge-graph-current',
-    response_version: 'a'.repeat(64),
-    ...context,
-    current_standard: { release_id: 'current', content_hash: 'c'.repeat(64), taxonomy_revision: 1 },
-    nodes,
-    edges: [],
-    coverage: { covered_items: nodeCount, total_items: nodeCount + 2, missing_items: { QX: '未标注' } },
-    warnings: ['匿名数据中有 2 份作答未关联知识标签'],
-    missing: [],
-    counts: { node_count: nodeCount, edge_count: 0, evidence_row_count: nodeCount, missing_count: 0 },
-  }
+function diagnosis(body: { scope: { student_ids: string[] } }) {
+  const data = overview()
+  return { ...data, students: data.students.filter(s => body.scope.student_ids.includes(s.student_id)).map(s => ({ ...s, weak_points: [] })),
+    group_weak_points: [], knowledge_catalog: data.nodes.map(n => ({ knowledge_key: n.knowledge_key, knowledge_point: n.display_name, parent_knowledge_key: n.kind === 'chapter' ? null : n.kind === 'section' ? 'ch' : n.section_key, node_kind: n.kind })),
+    knowledge_associations: data.associations, coverage: { covered_items: 0, total_items: 0, missing_items: {} }, confirmed_concept_ids: [], suggested_terms: [], unmapped_terms: [], diagnosis_identity: 'question_tag' }
 }
-
-function graphEvidence(request: Request) {
-  const body = request.postDataJSON() as Parameters<typeof graphContext>[0] & {
-    stable_key: string
-    page: number
-  }
-  const context = graphContext(body)
-  const start = body.page === 1 ? 1 : 21
-  const count = body.page === 1 ? 20 : 1
-  const label = body.stable_key.replace('kp_anonymous_', '匿名知识点 ')
-  return {
-    response_schema_version: 'knowledge-graph-evidence-current',
-    response_version: 'b'.repeat(64),
-    ...context,
-    current_standard: { release_id: 'current', content_hash: 'c'.repeat(64), taxonomy_revision: 1 },
-    stable_key: body.stable_key,
-    display_name: label,
-    items: Array.from({ length: count }, (_, index) => {
-      const itemOrdinal = start + index
-      const rawStudentId = context.scope.student_ids[index % context.scope.student_ids.length]!
-      const studentId = Number(rawStudentId)
-      const student = students.find((candidate) => candidate.id === studentId)
-      return {
-        student_id: studentId,
-        student_code: student?.student_code ?? `S${String(studentId).padStart(3, '0')}`,
-        student_name: itemOrdinal === 21 ? '后续页匿名学生' : student?.name ?? `证据学生 ${studentId}`,
-        class_id: context.scope.class_id ?? '七年级一班',
-        knowledge_key: body.stable_key,
-        stable_key: body.stable_key,
-        knowledge_label: label,
-        session_id: context.exam_scope.session_ids[0]!,
-        session_name: context.exam_scope.sessions[0]!.session_name,
-        question_id: `Q${itemOrdinal}`,
-        bank_question_id: 1000 + itemOrdinal,
-        score_awarded: 3,
-        full_score: 5,
-        score_rate: 0.6,
-        tag_context: {},
-        actionable_reasons: itemOrdinal === 1 ? ['步骤不完整'] : [],
-        error_counts: { primary: {}, secondary: {} },
-      }
-    }),
-    total: 21,
-    page: body.page,
-    page_size: 20,
-    total_pages: 2,
-    coverage: { covered_items: 20, total_items: 22, missing_items: { QX: '未标注' } },
-  }
-}
-
-async function fulfillJson(route: Route, body: unknown): Promise<void> {
-  await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-}
-
-function configSource(sessionId: number) {
-  return {
-    session_id: sessionId,
-    source_id: 'a'.repeat(32),
-    source_revision: 'b'.repeat(64),
-    safe_filename: 'synthetic-exam.pdf',
-    suffix: '.pdf',
-    size_bytes: 1,
-    sha256_prefix: 'c'.repeat(12),
-    parse_state: 'ready',
-    questions: [],
-  }
-}
-
-function configEditor(sessionId: number) {
-  return {
-    session_id: sessionId,
-    configured: false,
-    revision: 'd'.repeat(64),
-    rows: [],
-    total_score: 0,
-    issues: [],
-    source: null,
-  }
-}
-
-async function installGraphApi(
-  page: Page,
-  nodeCount: number,
-  state: GraphApiState = { query: 'ready' },
-): Promise<RequestLog[]> {
-  const requests: RequestLog[] = []
-  page.on('request', (request) => {
-    const url = new URL(request.url())
-    if (url.pathname.startsWith('/api/')) requests.push({ method: request.method(), pathname: url.pathname })
-  })
-  await page.route(/^https?:\/\/[^/]+\/api\//, async (route) => {
-    const request = route.request()
-    const pathname = new URL(request.url()).pathname
-    if (pathname === '/api/sessions') return fulfillJson(route, { items: sessions, total: sessions.length })
-    if (pathname === '/api/students') return fulfillJson(route, { items: students, total: students.length })
-    const activeSourceMatch = pathname.match(/^\/api\/sessions\/(\d+)\/config\/sources\/active$/)
-    if (request.method() === 'GET' && activeSourceMatch) {
-      return fulfillJson(route, configSource(Number(activeSourceMatch[1])))
-    }
-    const editorMatch = pathname.match(/^\/api\/sessions\/(\d+)\/config\/editor$/)
-    if (request.method() === 'GET' && editorMatch) {
-      return fulfillJson(route, configEditor(Number(editorMatch[1])))
-    }
-    if (pathname === '/api/graph/query') {
-      if (state.query === 'error') {
-        return fulfillJson(route, { invalid: true })
-      }
-      return fulfillJson(route, graphResponse(request, state.query === 'empty' ? 0 : nodeCount))
-    }
-    if (pathname === '/api/graph/evidence') return fulfillJson(route, graphEvidence(request))
-    await route.fulfill({ status: 418, body: `unexpected anonymous request: ${request.method()} ${pathname}` })
+async function install(page: Page) {
+  page.on('pageerror', error => { throw error })
+  const requests: Array<{ path: string; method: string }> = []
+  await page.addInitScript(id => { localStorage.clear(); localStorage.setItem('ai-grading:curriculum-scope:v1', id) }, volumeId)
+  await page.route(/^https?:\/\/[^/]+\/api\//, async route => {
+    const request = route.request(), path = new URL(request.url()).pathname
+    requests.push({ path, method: request.method() })
+    let value: unknown
+    if (path === '/api/question-bank/curriculum') value = catalog
+    else if (path === '/api/students') value = { items: students, total: students.length }
+    else if (path === '/api/sessions') value = { items: [], total: 0 }
+    else if (path === '/api/training/overview') value = overview()
+    else if (path === '/api/training/diagnosis') value = diagnosis(request.postDataJSON())
+    else if (path === '/api/training/personalized-drafts') value = { items: [], total: 0 }
+    else if (path.startsWith('/api/jobs')) value = { items: [], total: 0 }
+    else { await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'TEST-unexpected', message: 'TEST-unexpected', request_id: 'TEST' } }) }); return }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(value) })
   })
   return requests
 }
-
-async function openGraph(page: Page, nodeCount = 120): Promise<RequestLog[]> {
-  const requests = await installGraphApi(page, nodeCount)
-  await page.addInitScript(([key]) => localStorage.setItem(key, '7'), [STORAGE_KEY])
-  await page.emulateMedia({ reducedMotion: 'reduce' })
-  await page.goto('/knowledge-graph?session=7&class=七年级一班')
-  await expect(page.getByRole('heading', { name: '知识图谱', exact: true })).toBeVisible()
-  await expect(page.getByText(`已覆盖 ${nodeCount} / ${nodeCount + 2} 份作答`)).toBeVisible()
-  await expect(page.locator('.knowledge-graph-canvas canvas').first()).toBeVisible()
-  return requests
-}
-
-async function nonBackgroundPixelCount(page: Page): Promise<number> {
-  return page.locator('.knowledge-graph-canvas canvas').first().evaluate((canvas: HTMLCanvasElement) => {
-    const context = canvas.getContext('2d')
-    if (!context) return 0
-    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
-    let count = 0
-    for (let index = 0; index < pixels.length; index += 16) {
-      if (pixels[index + 3]! > 0 && (pixels[index]! < 248 || pixels[index + 1]! < 248 || pixels[index + 2]! < 248)) count += 1
+test('map groups, same-part and cooccurrence lines, drawer, keyboard focus, and shared requests', async ({ page }) => {
+  const requests = await install(page)
+  await page.goto('/knowledge-overview')
+  await expect(page.getByRole('heading', { name: '本周建议优先处理' })).toBeVisible()
+  await page.getByRole('link', { name: '知识结构', exact: true }).click()
+  await expect(page.locator('.mastery-map-node[data-knowledge="topic"]')).toBeVisible()
+  expect(requests.filter(r => r.path === '/api/training/overview')).toHaveLength(1)
+  const source = page.locator('.mastery-map-node[data-knowledge="topic"]')
+  await source.click()
+  await expect(page.locator('.mastery-map-drawer')).toBeVisible()
+  await expect(page.locator('.mastery-map-drawer')).toContainText('同一小问 10 题')
+  await expect(page.locator('.mastery-map-drawer')).toContainText('仅同题出现 3 题（虚线）')
+  await page.mouse.move(1000, 100)
+  await expect(page.locator('.mastery-map-connections path')).toHaveCount(2)
+  await expect(page.locator('.mastery-map-connections path.is-dashed')).toHaveCount(1)
+  const crossings = await page.locator('.mastery-map-root').evaluate(root => {
+    const svg = root.querySelector('svg')!.getBoundingClientRect()
+    const cells = [...root.querySelectorAll<HTMLElement>('.mastery-map-node')].map(cell => ({ key: cell.dataset.knowledge!, rect: cell.getBoundingClientRect() }))
+    const hits: string[] = []
+    for (const path of root.querySelectorAll<SVGPathElement>('path')) {
+      const length = path.getTotalLength()
+      for (let step = 1; step < 200; step++) {
+        const point = path.getPointAtLength(length * step / 200)
+        const x = point.x + svg.left, y = point.y + svg.top
+        for (const cell of cells) {
+          if (x > cell.rect.left + 1 && x < cell.rect.right - 1 && y > cell.rect.top + 1 && y < cell.rect.bottom - 1) hits.push(cell.key)
+        }
+      }
     }
-    return count
+    return [...new Set(hits)]
   })
-}
-
-async function dragCanvas(page: Page): Promise<void> {
-  const canvas = page.locator('.knowledge-graph-canvas canvas').first()
-  const box = await canvas.boundingBox()
-  if (!box) throw new Error('Knowledge graph canvas is not visible')
-  const startX = box.x + box.width * 0.55
-  const startY = box.y + box.height * 0.55
-  await page.mouse.move(startX, startY)
-  await page.mouse.down()
-  await page.mouse.move(startX + Math.min(120, box.width * 0.18), startY + 40, { steps: 6 })
-  await page.mouse.up()
-}
-
-async function clickCanvasNode(page: Page, requests: RequestLog[]): Promise<void> {
-  const canvas = page.locator('.knowledge-graph-canvas canvas').first()
-  const box = await canvas.boundingBox()
-  if (!box) throw new Error('Knowledge graph canvas is not visible')
-  const before = requests.filter((request) => request.pathname === '/api/graph/evidence').length
-  for (let y = 8; y < box.height - 8; y += 16) {
-    for (let x = 8; x < box.width - 8; x += 16) {
-      await page.mouse.click(box.x + x, box.y + y)
-      const after = requests.filter((request) => request.pathname === '/api/graph/evidence').length
-      if (after > before) return
-    }
-  }
-  throw new Error('No selectable knowledge node was found on the canvas')
-}
-
-function expectReadOnly(requests: RequestLog[]): void {
-  expect(requests.length).toBeGreaterThan(0)
-  for (const request of requests) {
-    const allowedPost = request.method === 'POST' && ['/api/graph/query', '/api/graph/evidence'].includes(request.pathname)
-    expect(request.method === 'GET' || allowedPost).toBe(true)
-  }
-}
-
-test('supports zoom, grouping explanation, keyboard selection and paged evidence', async ({ page }) => {
-  const errors = trackBrowserErrors(page)
-  const requests = await openGraph(page)
-  const canvas = page.locator('.knowledge-graph-canvas canvas').first()
-  await canvas.scrollIntoViewIfNeeded()
-  const beforeZoom = await canvas.screenshot()
-  await canvas.hover()
-  await page.mouse.wheel(0, -500)
-  await expect.poll(async () => (await canvas.screenshot()).equals(beforeZoom)).toBe(false)
-  await page.getByRole('button', { name: '恢复视图' }).click()
-  const beforeDrag = await canvas.screenshot()
-  await dragCanvas(page)
-  await expect.poll(async () => (await canvas.screenshot()).equals(beforeDrag)).toBe(false)
-  await page.getByRole('button', { name: '恢复视图' }).click()
-
-  await clickCanvasNode(page, requests)
-  await expect(page.locator('.knowledge-graph-inspector__facts')).toBeVisible()
-
-  await page.getByRole('button', { name: '学生分组树' }).click()
-  await expect(page.getByText(/虚线仅表示筛选范围、学生与知识标签的分组归属/)).toBeVisible()
-  await expect(page.getByText(/不是知识点父子、先修或相关关系/)).toBeVisible()
-  await page.getByRole('button', { name: '掌握度分区' }).click()
-
-  const search = page.getByRole('searchbox', { name: '搜索知识标签' })
-  await search.fill('匿名知识点')
-  const directoryItems = page.getByTestId('graph-directory-item')
-  await directoryItems.first().focus()
-  await page.keyboard.press('ArrowDown')
-  await page.keyboard.press('Enter')
-  await expect(directoryItems.nth(1)).toHaveAttribute('aria-current', 'true')
-  await page.getByRole('button', { name: '加载更多证据' }).click()
-  await expect(page.getByText('后续页匿名学生')).toBeVisible()
-  expect(requests.filter((request) => request.pathname === '/api/graph/evidence').length)
-    .toBeGreaterThanOrEqual(3)
-  expectReadOnly(requests)
-  expect(errors.pageErrors).toEqual([])
-  expect(errors.consoleErrors).toEqual([])
+  expect(crossings).toEqual([])
+  await expect(page.locator('.mastery-map-node[data-knowledge="topic2"]')).toHaveClass(/is-dimmed/)
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.mastery-map-drawer')).toHaveCount(0)
+  await expect(source).toBeFocused()
+  await page.getByRole('button', { name: '只看技能', exact: true }).click()
+  await expect(page.locator('.mastery-map-node.is-topic')).toHaveCount(0)
+  expect(requests.filter(r => r.path.startsWith('/api/graph'))).toHaveLength(0)
 })
-
-test('keeps no-tag and partial-failure states distinct and recoverable', async ({ page }) => {
-  const errors = trackBrowserErrors(page)
-  const state: GraphApiState = { query: 'empty' }
-  const requests = await installGraphApi(page, 120, state)
-  await page.addInitScript(([key]) => localStorage.setItem(key, '7'), [STORAGE_KEY])
-  await page.goto('/knowledge-graph?session=7&class=七年级一班')
-
-  await expect(page.getByText('当前范围没有可显示的知识标签')).toBeVisible()
-  state.query = 'ready'
-  await page.getByRole('button', { name: '应用范围' }).click()
-  await expect(page.locator('.knowledge-graph-canvas canvas').first()).toBeVisible()
-
-  state.query = 'error'
-  await page.getByRole('button', { name: '应用范围' }).click()
-  await expect(page.getByText(/当前显示上次成功读取的知识图谱/)).toBeVisible()
-  await expect(page.locator('.knowledge-graph-canvas canvas').first()).toBeVisible()
-  expectReadOnly(requests)
-  expect(errors.pageErrors).toEqual([])
-  expect(errors.consoleErrors).toEqual([])
+test('narrow map stacks both columns and uses a full-width bottom drawer without lines', async ({ page }) => {
+  await install(page); await page.setViewportSize({ width: 800, height: 900 }); await page.goto('/knowledge-graph')
+  const source = page.locator('.mastery-map-node[data-knowledge="topic"]')
+  await source.click(); await expect(page.locator('.mastery-map-drawer')).toBeVisible()
+  expect(await page.locator('.mastery-map-columns').first().evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').length)).toBe(1)
+  const box = await page.locator('.mastery-map-drawer').boundingBox()
+  expect(box?.width).toBeCloseTo(800, 1); await expect(page.locator('.mastery-map-connections')).toHaveCount(0)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
-
-test('renders and operates on a reproducible 1000-node anonymous graph', async ({ page }, testInfo: TestInfo) => {
-  const errors = trackBrowserErrors(page)
-  const startedAt = performance.now()
-  const requests = await openGraph(page, 1000)
-  const firstRenderMs = performance.now() - startedAt
-  expect(firstRenderMs).toBeLessThan(PERFORMANCE_LIMITS_MS.firstRender)
-  expect(await nonBackgroundPixelCount(page)).toBeGreaterThan(100)
-
-  const modeStartedAt = performance.now()
-  await page.getByRole('button', { name: '学生分组树' }).click()
-  await expect(page.getByText(/不是知识点父子、先修或相关关系/)).toBeVisible()
-  const modeSwitchMs = performance.now() - modeStartedAt
-  expect(modeSwitchMs).toBeLessThan(PERFORMANCE_LIMITS_MS.modeSwitch)
-  await page.getByRole('button', { name: '掌握度分区' }).click()
-
-  const canvas = page.locator('.knowledge-graph-canvas canvas').first()
-  const beforeZoom = await canvas.screenshot()
-  const zoomStartedAt = performance.now()
-  await canvas.hover()
-  await page.mouse.wheel(0, -500)
-  await expect.poll(async () => (await canvas.screenshot()).equals(beforeZoom)).toBe(false)
-  const zoomMs = performance.now() - zoomStartedAt
-  expect(zoomMs).toBeLessThan(PERFORMANCE_LIMITS_MS.zoom)
-
-  const beforeDrag = await canvas.screenshot()
-  const dragStartedAt = performance.now()
-  await dragCanvas(page)
-  await expect.poll(async () => (await canvas.screenshot()).equals(beforeDrag)).toBe(false)
-  const dragMs = performance.now() - dragStartedAt
-  expect(dragMs).toBeLessThan(PERFORMANCE_LIMITS_MS.drag)
-  await page.getByRole('button', { name: '恢复视图' }).click()
-
-  const selectionStartedAt = performance.now()
-  await page.getByRole('searchbox', { name: '搜索知识标签' }).fill('匿名知识点 999')
-  await expect(page.getByTestId('graph-directory-item')).toHaveCount(1)
-  await page.getByTestId('graph-directory-item').click()
-  await expect(page.getByRole('heading', { name: /匿名知识点 999/ })).toBeVisible()
-  const selectionMs = performance.now() - selectionStartedAt
-  expect(selectionMs).toBeLessThan(PERFORMANCE_LIMITS_MS.selection)
-
-  const actualCandidateSha = execFileSync(
-    'git', ['rev-parse', 'HEAD'], { encoding: 'utf8' },
-  ).trim()
-  expect(process.env.P2_15_CANDIDATE_SHA ?? actualCandidateSha).toBe(actualCandidateSha)
-  await testInfo.attach('knowledge-graph-1000-node-baseline.json', {
-    body: Buffer.from(JSON.stringify({
-      candidateSha: actualCandidateSha,
-      nodeCount: 1000,
-      firstRenderMs,
-      modeSwitchMs,
-      zoomMs,
-      dragMs,
-      selectionMs,
-      thresholdsMs: PERFORMANCE_LIMITS_MS,
-      browser: testInfo.project.name,
-      viewport: page.viewportSize(),
-      testMachine: {
-        platform: platform(),
-        release: release(),
-        architecture: arch(),
-        cpuModel: cpus()[0]?.model ?? 'unknown',
-        cpuCount: cpus().length,
-        totalMemoryMb: Math.round(totalmem() / 1024 / 1024),
-      },
-    }, null, 2)),
-    contentType: 'application/json',
-  })
-  expectReadOnly(requests)
-  expect(errors.pageErrors).toEqual([])
-  expect(errors.consoleErrors).toEqual([])
+test('overview opens existing student training with presets and sends no create request', async ({ page }) => {
+  const requests = await install(page); await page.goto('/knowledge-overview')
+  await page.locator('.overview-priority').first().getByRole('button', { name: /给这 1 人出训练卷/ }).click()
+  await expect(page).toHaveURL(/\/training\?mode=student$/)
+  await expect(page.getByRole('heading', { name: '按学生训练', exact: true })).toBeVisible()
+  const selection = await page.evaluate(() => ({ scope: JSON.parse(localStorage.getItem('p4-evidence-scope-v1')!), paper: JSON.parse(localStorage.getItem('ai-grading:personalized-paper-selection:v1')!) }))
+  expect(selection.scope.scope.student_ids).toEqual(['1'])
+  expect(selection.paper).toMatchObject({ targetKeys: ['skill'], rangeKeys: ['sec'], scopeMode: 'focused', paperMode: 'individual' })
+  expect(requests.filter(r => r.method === 'POST' && !['/api/training/overview', '/api/training/diagnosis'].includes(r.path))).toHaveLength(0)
 })
