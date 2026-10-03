@@ -11,6 +11,7 @@ import { useWorkbenchStore, type ResourceState } from '../stores/workbench'
 import WorkbenchView from '../views/WorkbenchView.vue'
 import { fetchRegionReadiness } from '../api/template-regions'
 import { getSessionQuestionBankAnalysisStatus } from '../api/session-question-bank-sync'
+import { trainingApi } from '../api/training'
 import { buildTodoRows, buildExamSteps, type HomeInputs } from '../components/workbench/workbench-home'
 import { useJobStore } from '../stores/jobs'
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
@@ -19,16 +20,18 @@ vi.mock('../api/template-regions', () => ({ fetchRegionReadiness: vi.fn() }))
 vi.mock('../api/session-question-bank-sync', () => ({ getSessionQuestionBankAnalysisStatus: vi.fn() }))
 const ready = { session_id: 7, scoring_configured: true, template_present: true, template_ready: true }
 const bank = { question_count: 2, tagged_count: 1, evidence_count: 1, criteria_count: 1, complete_count: 1,
-  pending_taxonomy_count: 0, incomplete_question_ids: [1], incomplete_source_refs: ['Q1'] }
+  pending_taxonomy_count: 0, unlinked_skill_count: 0, incomplete_question_ids: [1], incomplete_source_refs: ['Q1'] }
 beforeEach(() => {
   vi.restoreAllMocks()
   vi.clearAllMocks()
   localStorage.clear()
+  vi.spyOn(trainingApi, 'getPendingSummary').mockResolvedValue({ items: [] })
   vi.mocked(fetchRegionReadiness).mockResolvedValue(ready)
   vi.mocked(getSessionQuestionBankAnalysisStatus).mockResolvedValue(bank)
 })
 
 const overview: WorkbenchOverview = {
+  personal_reports: { current: 0, stale: 0, missing: 12 },
   current_session: {
     id: 7,
     name: '七年级数学期末质量监测',
@@ -89,6 +92,9 @@ const overview: WorkbenchOverview = {
   }],
   updated_at: '2026-07-15T09:35:00Z',
 }
+
+const pendingTraining = { items: [{ draft_id: 'd'.repeat(64), draft_name: 'TEST-训练卷',
+  scan_page_count: 2, review_submission_count: 3, publish_submission_count: 1 }] }
 
 interface MountOptions {
   sessionId?: number | null
@@ -173,6 +179,44 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
+
+describe('workbench second phase', () => {
+  it('adds separate training units, unlinked questions and stale reports with one primary action', async () => {
+    vi.mocked(trainingApi.getPendingSummary).mockResolvedValue(pendingTraining)
+    vi.mocked(getSessionQuestionBankAnalysisStatus).mockResolvedValue({ ...bank, unlinked_skill_count: 1 })
+    const { host, router } = await mountView({ overviewValue: { ...overview,
+      personal_reports: { current: 8, stale: 3, missing: 1 } } })
+    await vi.waitFor(() => expect(host.textContent).toContain('核对 2 页训练卷扫描'))
+    expect(host.textContent).toContain('判定 3 份')
+    expect(host.textContent).toContain('证据 1 份')
+    expect(host.textContent).toContain('本场 1 道题未挂技能')
+    expect(host.textContent).toContain('8 人已是最新')
+    expect(host.querySelectorAll('.workbench-todo [data-variant="primary"]')).toHaveLength(1)
+    clickButton(host, '去查看')
+    await expectPath(router, '/results?tab=details')
+  })
+
+  it('keeps training independent of the selected exam and opens its saved draft', async () => {
+    vi.mocked(trainingApi.getPendingSummary).mockResolvedValue(pendingTraining)
+    const { host, router } = await mountView({ sessionId: null, overviewValue: null, overviewState: 'empty' })
+    await vi.waitFor(() => expect(host.querySelectorAll('[data-todo]')).toHaveLength(3))
+    clickButton(host, '去核对')
+    await expectPath(router, `/training?mode=paper&draft=${'d'.repeat(64)}`)
+  })
+
+  it('retries failed training without hiding exam actions or promoting continue actions', async () => {
+    vi.mocked(trainingApi.getPendingSummary).mockRejectedValueOnce(new Error('TEST-training-unavailable'))
+      .mockResolvedValueOnce(pendingTraining)
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('训练回收待办暂时无法读取'))
+    expect(host.querySelector('[data-todo="review"]')).not.toBeNull()
+    const retry = host.querySelector<HTMLButtonElement>('.workbench-source-error button')!
+    retry.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('核对 2 页训练卷扫描'))
+    expect(host.textContent).not.toContain('训练回收待办暂时无法读取')
+    expect(trainingApi.getPendingSummary).toHaveBeenCalledTimes(2)
+  })
+})
 
 describe('workbench view', () => {
   it('shows ordered actions, one primary button, separate anomaly units and vertical hints', async () => {

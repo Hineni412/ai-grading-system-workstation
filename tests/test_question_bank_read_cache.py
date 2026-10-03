@@ -95,6 +95,26 @@ def _seed_skill_bank(tmp_path: Path, count: int = 6):
     return QuestionBankReadService(db, data_root=tmp_path), db, keys
 
 
+def test_session_unlinked_count_reuses_skill_index_for_confirmed_live_questions(tmp_path):
+    from question_bank.database.schema import connect
+    service, db, _keys = _seed_skill_bank(tmp_path)
+    with connect(db) as conn:
+        conn.executemany("INSERT INTO grading_question_links "
+            "(grading_session_id,source_question_id,bank_question_id,link_method,status) "
+            "VALUES ('7',?,?, 'TEST', 'confirmed')", [(str(qid), qid) for qid in range(1, 7)])
+        conn.execute("INSERT INTO grading_question_links "
+            "(grading_session_id,source_question_id,bank_question_id,link_method,status) "
+            "VALUES ('7','duplicate',1,'TEST','confirmed')")
+    status = service.session_analysis_status(7)
+    assert status["question_count"] == 5  # Unique canonical questions; deleted question excluded.
+    index = service.skill_index('bnu24-math-g8-upper')
+    assert status["unlinked_skill_count"] == sum(index["unlinked"].values()) == 3
+    with connect(db) as conn:
+        conn.execute("UPDATE grading_question_links SET status='suggested' WHERE bank_question_id=3")
+    assert service.session_analysis_status(7)["unlinked_skill_count"] == 2
+    assert service.session_analysis_status(999)["unlinked_skill_count"] == 0
+
+
 def test_skill_index_current_versions_legacy_links_filters_and_cache(tmp_path, monkeypatch):
     from question_bank.database.schema import connect
 

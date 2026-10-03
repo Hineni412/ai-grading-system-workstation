@@ -10,6 +10,18 @@ class _TrainingModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class TrainingPendingItem(_TrainingModel):
+    draft_id: str
+    draft_name: str
+    scan_page_count: int = Field(ge=0)
+    review_submission_count: int = Field(ge=0)
+    publish_submission_count: int = Field(ge=0)
+
+
+class TrainingPendingSummary(_TrainingModel):
+    items: list[TrainingPendingItem]
+
+
 class TrainingScopeRequest(_TrainingModel):
     mode: Literal["all", "student", "selected", "class"] = "all"
     student_ids: list[str] = Field(default_factory=list, max_length=500)

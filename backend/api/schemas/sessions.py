@@ -147,6 +147,7 @@ class SessionQuestionBankAnalysisStatus(BaseModel):
     criteria_count: int = Field(ge=0)
     complete_count: int = Field(ge=0)
     pending_taxonomy_count: int = Field(ge=0)
+    unlinked_skill_count: int = Field(ge=0)
     incomplete_question_ids: list[int]
     incomplete_source_refs: list[str]
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.api.schemas.jobs import JobSummaryResponse
 from backend.api.schemas.sessions import SessionProgress, SessionSummary
@@ -24,11 +24,18 @@ class RecentSessionSummary(BaseModel):
     progress: SessionProgress
 
 
+class PersonalReportSummary(BaseModel):
+    current: int = Field(ge=0)
+    stale: int = Field(ge=0)
+    missing: int = Field(ge=0)
+
+
 class WorkbenchOverviewResponse(BaseModel):
     current_session: SessionSummary | None = None
     progress: SessionProgress | None = None
     review: WorkbenchReviewSummary | None = None
     anomalies: WorkbenchAnomalySummary | None = None
+    personal_reports: PersonalReportSummary | None = None
     recent_jobs: list[JobSummaryResponse]
     recent_sessions: list[RecentSessionSummary]
     updated_at: str

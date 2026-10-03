@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
+import sqlite3
 from typing import Any
 
 from backend.jobs.manager import JobManager
@@ -27,6 +29,7 @@ class WorkbenchService:
         *,
         manual_context: dict[str, Any] | None = None,
         curriculum_volume_id: str | None = None,
+        reports_dir: Path | None = None,
     ) -> dict[str, Any]:
         """Aggregate existing read models without internal HTTP calls."""
         recent_sessions = []
@@ -47,6 +50,7 @@ class WorkbenchService:
         progress = None
         review = None
         anomalies = None
+        personal_reports = None
         recent_jobs: list[dict[str, Any]] = []
         if session_id is not None:
             session = self.db.sessions.get_grading_session(int(session_id))
@@ -83,12 +87,20 @@ class WorkbenchService:
                     limit=5,
                 )
                 recent_jobs = [_job_summary(job) for job in jobs]
+                if reports_dir is not None:
+                    from backend.personal_reports import personal_report_summary
+                    try:
+                        personal_reports = personal_report_summary(self.db, int(session_id), reports_dir)
+                    except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
+                        # An unavailable report source must not hide exam progress.
+                        personal_reports = None
 
         return {
             "current_session": current_session,
             "progress": progress,
             "review": review,
             "anomalies": anomalies,
+            "personal_reports": personal_reports,
             "recent_jobs": recent_jobs,
             "recent_sessions": recent_sessions,
             "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),

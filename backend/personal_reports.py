@@ -128,6 +128,16 @@ def personal_report_states(repositories, session_id: int, reports_dir: Path, *, 
     return dict(session_id=session_id, students=students)
 
 
+def personal_report_summary(repositories, session_id: int, reports_dir: Path) -> dict[str, int]:
+    """Use the same read-only status rules as the personal report list."""
+    counts = dict(current=0, stale=0, missing=0)
+    for student in personal_report_states(repositories, session_id, reports_dir)["students"]:
+        status = student["status"]
+        if status in counts:
+            counts[status] += 1
+    return counts
+
+
 def _read_generation(repositories, root: Path, reports_dir: Path):
     from integration.data_generation import commit_generation
     from integration.diagnosis_profile_service import _dir_generation

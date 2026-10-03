@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from typing import Literal
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
 
 from backend.api.dependencies import (
     get_grading_db,
+    get_reports_dir,
     get_scan_grading_workspace,
     get_workbench_service,
 )
@@ -31,6 +33,7 @@ def get_workbench_overview(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     service: WorkbenchService = Depends(get_workbench_service),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+    reports_dir: Path = Depends(get_reports_dir),
 ) -> WorkbenchOverviewResponse:
     manual_context = None
     if session_id is not None:
@@ -38,7 +41,7 @@ def get_workbench_overview(
         manual_context = current_manual_context(session_id, workspace)
     return WorkbenchOverviewResponse(
         **service.overview(session_id, recent_limit, manual_context=manual_context,
-                           curriculum_volume_id=curriculum_volume_id)
+                           curriculum_volume_id=curriculum_volume_id, reports_dir=reports_dir)
     )
 
 

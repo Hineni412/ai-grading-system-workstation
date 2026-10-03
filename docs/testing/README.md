@@ -107,9 +107,9 @@
 
 ## 工作台首页
 
-在 `frontend` 目录运行 `npx vitest run src/__tests__/workbench-view.spec.ts src/__tests__/knowledge-overview-view.spec.ts src/__tests__/results-center-view.spec.ts src/components/results-center/__tests__/results-overview.spec.ts`。覆盖待处理规则、步骤边界、考试切换保护与旧请求取消、学情读取不保存范围，以及首页看卷入口自动打开与不可用状态。成绩中心的入口行为放在已有页面测试中，纯规则测试继续复用原文件。
+在 `frontend` 目录运行 `npx vitest run src/__tests__/workbench-view.spec.ts src/__tests__/knowledge-overview-view.spec.ts src/__tests__/results-center-view.spec.ts src/components/results-center/__tests__/results-overview.spec.ts`。覆盖待处理规则、步骤边界、考试切换保护与旧请求取消、学情读取不保存范围，以及首页看卷入口自动打开与不可用状态。第二期规则覆盖训练页数与提交份数、无当前考试的训练入口、未挂技能、个人报告与训练来源重试。成绩中心的入口行为放在已有页面测试中，纯规则测试继续复用原文件。
 
-`npx playwright test e2e/workbench-overview.spec.ts` 使用当前前端源码与合成接口，覆盖 1024、1280、1366、1440、1920px 布局、右栏吸顶、失败提示和考试切换；首页允许的 POST 仅为只读的学情总览。后端运行 `runtime/python/python.exe -m pytest tests/test_api_workbench_overview.py`，核对学期输出、筛选后取数量、保留当前考试和原统计不变。真实数据验收只通过正式应用读取页面，不执行评分、模型或数据清理操作。
+`npx playwright test e2e/workbench-overview.spec.ts` 使用当前前端源码与合成接口，覆盖 1024、1280、1366、1440、1920px 布局、右栏吸顶、失败提示、考试切换和第二期汇总；首页允许的 POST 仅为只读的学情总览。后端运行 `runtime/python/python.exe -m pytest tests/test_api_workbench_overview.py tests/training/test_training_assessment.py tests/training/test_training_feedback_api.py tests/test_question_bank_read_cache.py tests/test_api_report_jobs.py`，核对学期筛选、原统计不变、训练当前修订与取消状态、个人报告三态与只读边界，以及本场未挂技能与技能索引一致。真实数据验收只通过正式应用读取页面，不执行评分、模型或数据清理操作。
 
 ## 隔离规则
 
