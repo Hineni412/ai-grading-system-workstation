@@ -10,6 +10,7 @@ import {
   type ReviewItemLike,
 } from '../api/review'
 import AppButton from '../components/design-system/AppButton.vue'
+import BackButton from '../components/design-system/BackButton.vue'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
 import ReviewBatchWorkspace from '../components/review/ReviewBatchWorkspace.vue'
@@ -91,10 +92,7 @@ const resultsReturnPath = computed(() => {
     query: { tab: 'details', ...(sessionStore.selectedSessionId === null ? {} : { session: String(sessionStore.selectedSessionId) }) },
   }).fullPath
 })
-const resultsReturnLabel = computed(() => {
-  if (!resultsReturnPath.value) return undefined
-  return '返回成绩明细'
-})
+const resultsReturnLabel = computed(() => (resultsReturnPath.value ? '成绩明细' : ''))
 
 async function returnToResults(): Promise<void> {
   const target = resultsReturnPath.value
@@ -315,6 +313,11 @@ onBeforeUnmount(() => {
     :class="{ 'review-page--deep': mode === 'deep' }"
     aria-labelledby="review-page-title"
   >
+      <BackButton
+        v-if="resultsReturnPath && !deepItem"
+        :label="resultsReturnLabel"
+        @click="returnToResults"
+      />
     <header class="review-page__header">
       <div class="review-page__header-copy">
         <h1 id="review-page-title" tabindex="-1">{{ resultsReturnPath ? '学生作答' : '人工干预工作台' }}</h1>
@@ -329,7 +332,6 @@ onBeforeUnmount(() => {
       >
         批改执行
       </AppButton>
-      <AppButton v-else-if="!deepItem" @click="returnToResults">{{ resultsReturnLabel }}</AppButton>
     </header>
 
     <ReviewShortcutGuide v-if="mode === 'batch'" />

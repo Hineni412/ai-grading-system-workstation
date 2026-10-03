@@ -166,6 +166,31 @@ def _seed_review_db(tmp_path: Path, *, result_count: int = 1):
     return TestClient(app), db, session_id, result_id, q1_detail_id
 
 
+@pytest.mark.parametrize("flag", [True, "true", False])
+def test_results_share_only_solution_flag_for_walkthrough(tmp_path: Path, flag) -> None:
+    client, db, session_id, result_id, _detail_id = _seed_review_db(tmp_path)
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute(
+            "UPDATE session_results SET raw_json=? WHERE id=?",
+            (json.dumps({"detail_metadata": {
+                qid: {"alternative_solution_detected": flag,
+                      "alternative_solution_summary": "private solution explanation",
+                      "evidence_steps": ["private evidence"]}
+                for qid in ("Q1", "Q2")
+            }}), result_id),
+        )
+    response = client.get(f"/api/sessions/{session_id}/results-center")
+    assert response.status_code == 200
+    items = {item["question_id"]: item for item in response.json()["students"][0]["items"]}
+    assert "alternative_solution_detected" not in items["Q1"]  # choice stays excluded
+    assert items["Q2"].get("alternative_solution_detected", False) is (flag is True)
+    if flag is not True:
+        assert "alternative_solution_detected" not in items["Q2"]
+    assert response.json()["students"][0]["current_score"] == 10
+    assert "private solution" not in response.text and "private evidence" not in response.text
+    assert all("metadata" not in item and "media" not in item for item in items.values())
+
+
 def test_review_confirm_maps_invalid_score_to_stable_domain_error(
     tmp_path: Path,
 ) -> None:

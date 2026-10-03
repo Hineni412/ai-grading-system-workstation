@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { useRoute } from 'vue-router'
 
 import { fetchGraphEvidence, type GraphEvidenceItem, type GraphQueryInput } from '../api/graph'
 import {
@@ -16,6 +16,7 @@ import {
   type StudentSummary,
 } from '../api/students'
 import AppButton from '../components/design-system/AppButton.vue'
+import BackButton from '../components/design-system/BackButton.vue'
 import WrongQuestionBookDialog from '../components/training/WrongQuestionBookDialog.vue'
 import QuestionContentRenderer from '../components/question-bank/QuestionContentRenderer.vue'
 import { loadEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
@@ -76,9 +77,9 @@ const backTarget = computed(() => (
       query: { mode: route.query.from === 'student' ? 'student' : 'chapter' },
     }
 ))
-const backLabel = computed(() => {
-  if (route.query.from === 'overview') return '返回学情总览'
-  return route.query.from === 'student' ? '返回按学生训练' : '返回按章节训练'
+const backDestination = computed(() => {
+  if (route.query.from === 'overview') return '学情总览'
+  return route.query.from === 'student' ? '按学生训练' : '按章节训练'
 })
 
 const student = ref<StudentSummary | null>(null)
@@ -409,6 +410,7 @@ onBeforeUnmount(() => {
 <template>
   <section class="student-evidence" aria-labelledby="student-evidence-title">
     <header class="student-evidence__heading">
+      <BackButton :to="backTarget" :label="backDestination" />
       <div>
         <p class="student-evidence__eyebrow">知识与训练 · 学生作答证据</p>
         <h1 id="student-evidence-title">
@@ -418,7 +420,6 @@ onBeforeUnmount(() => {
         <p v-else-if="knowledgeMode">{{ knowledgeLabel || knowledgeKey }} · 只看答错记录</p>
         <p v-else-if="student">{{ student.student_code }} · {{ student.class_name || '未分班' }}</p>
       </div>
-      <RouterLink class="student-evidence__back" :to="backTarget">{{ backLabel }}</RouterLink>
     </header>
 
     <div v-if="!knowledgeMode && !groupMode" class="student-evidence__toolbar">
@@ -704,11 +705,10 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.student-evidence__heading { display: flex; justify-content: space-between; align-items: end; gap: var(--space-4); }
+.student-evidence__heading { display: flex; align-items: center; gap: var(--space-4); }
 .student-evidence__eyebrow { margin: 0 0 var(--space-1); color: var(--color-text-secondary); font-size: var(--font-size-dense); }
 .student-evidence__heading h1 { margin: 0 0 var(--space-1); }
 .student-evidence__heading p { margin: 0; color: var(--color-text-secondary); }
-.student-evidence__back { padding: var(--space-2) var(--space-3); border: 1px solid var(--color-border-default); border-radius: var(--radius-control); color: var(--color-accent-active); text-decoration: none; white-space: nowrap; }
 .student-evidence__toolbar { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); margin: var(--space-4) 0; }
 .student-evidence__toolbar > span { color: var(--color-text-secondary); font-size: var(--font-size-dense); }
 .student-evidence__modes { display: flex; padding: var(--space-1); border-radius: var(--radius-control); background: var(--color-bg-subtle); }

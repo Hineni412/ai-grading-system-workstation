@@ -50,6 +50,7 @@ export interface ResultsCenterItem {
   review_reason: string | null
   result_id: number | null
   detail_id: number | null
+  alternative_solution_detected?: boolean
 }
 
 export interface ResultsCenterStudent {
@@ -224,7 +225,8 @@ function isQuestion(value: unknown): value is ResultsCenterQuestion {
 }
 
 function isItem(value: unknown): value is ResultsCenterItem {
-  if (!isRecord(value) || !hasExactKeys(value, ITEM_KEYS)) return false
+  if (!isRecord(value) || !hasExactKeys(value, value.alternative_solution_detected === undefined
+    ? ITEM_KEYS : [...ITEM_KEYS, 'alternative_solution_detected'])) return false
   return (
     typeof value.review_item_id === 'string'
     && value.review_item_id.trim().length > 0
@@ -239,6 +241,8 @@ function isItem(value: unknown): value is ResultsCenterItem {
     && isNullableString(value.review_reason)
     && isNullablePositiveInteger(value.result_id)
     && isNullablePositiveInteger(value.detail_id)
+    && (value.alternative_solution_detected === undefined
+      || typeof value.alternative_solution_detected === 'boolean')
   )
 }
 

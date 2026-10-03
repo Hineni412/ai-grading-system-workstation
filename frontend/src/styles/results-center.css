@@ -2431,8 +2431,7 @@ button.class-analysis__score-chip:focus-visible {
 
 .class-report__hero {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
+  align-items: center;
   gap: var(--space-4);
 }
 

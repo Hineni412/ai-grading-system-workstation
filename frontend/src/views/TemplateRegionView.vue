@@ -6,6 +6,7 @@ import TemplateRegionEditor from '../components/template-regions/TemplateRegionE
 import TemplateUploadPanel from '../components/template-regions/TemplateUploadPanel.vue'
 import ConfigStageRail from '../components/config/ConfigStageRail.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
+import BackButton from '../components/design-system/BackButton.vue'
 import { useTemplateRegionStore } from '../stores/template-regions'
 import type { PageRole } from '../api/template-regions'
 import '../styles/template-regions.css'
@@ -106,6 +107,7 @@ watch(focusLayout, syncFocusLayout, { flush: 'post' })
 <template>
   <article class="template-regions-view" :class="{ 'is-focus-layout': focusLayout }">
     <PageHeader title="样卷题框" class="template-regions-view__header">
+      <template #back><BackButton label="考试配置" to="/sessions" /></template>
       <template #actions>
         <ConfigStageRail
           phase="editor"
@@ -118,7 +120,6 @@ watch(focusLayout, syncFocusLayout, { flush: 'post' })
           :template-ready="store.workspace?.template_ready === true"
           @select="selectStage"
         />
-        <button type="button" class="secondary" @click="router.push('/sessions')">返回考试配置</button>
       </template>
     </PageHeader>
 

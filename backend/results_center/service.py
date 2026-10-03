@@ -23,6 +23,7 @@ class ResultsCenterItem:
     review_reason: str | None
     result_id: int | None
     detail_id: int | None
+    alternative_solution_detected: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +191,10 @@ def _public_item(item: ReviewItem) -> ResultsCenterItem:
         review_reason=_review_reason(item),
         result_id=item.result_id,
         detail_id=item.detail_id,
+        alternative_solution_detected=(
+            item.question_type not in {"choice", "fill_blank"}
+            and item.metadata.get("alternative_solution_detected") is True
+        ),
     )
 
 

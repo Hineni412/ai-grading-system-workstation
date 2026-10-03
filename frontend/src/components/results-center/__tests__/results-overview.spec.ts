@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ClassAnalysisQuestion } from '../../../api/class-analysis';
+import type { ClassAnalysisQuestion, ClassCause } from '../../../api/class-analysis';
 import type { ResultsCenterItem, ResultsCenterStudent, ResultsScoreStatus } from '../../../api/results-center';
 import {
   bandOfRate,
@@ -18,7 +18,7 @@ import {
   summarizeStudents,
   type RankChange,
 } from '../results-overview';
-import { buildWalkthroughDeck } from '../paper-walkthrough';
+import { buildWalkthroughDeck, type WalkthroughCard } from '../paper-walkthrough';
 
 function item(
   questionId: string,
@@ -400,10 +400,12 @@ describe('buildWalkthroughDeck', () => {
     reason: string,
     ids: number[],
     kind: 'error' | 'process' | 'response_state' = 'error',
-  ) => ({
+    category?: ClassCause['category'],
+  ): ClassCause => ({
     reason,
     count: ids.length,
     kind,
+    ...(category === undefined ? {} : { category }),
     evidence: [{ text: '摘录', student_ids: ids }],
   })
 
@@ -416,9 +418,12 @@ describe('buildWalkthroughDeck', () => {
     questionIds: ['Q1', 'Q2'],
     analysisQuestions: null,
     previousStudents: null,
-    seed: 'exam1|9',
     ...overrides,
   })
+
+  const memberIds = (card: WalkthroughCard | undefined, group = 0) => (
+    card?.groups[group]?.members.map((m) => m.studentId)
+  )
 
   it('groups organized causes by question and orders representative first', () => {
     const students = [
@@ -435,11 +440,12 @@ describe('buildWalkthroughDeck', () => {
     })
     const card = cards.find((entry) => entry.category === 1)
     expect(card?.questionId).toBe('Q1')
+    expect(card?.title).toBe('第 Q1 题 · 本题 1 种典型错法 · 共 4 人失分')
     // 中位得分者（2 号，5 分）在前，其余按学号
-    expect(card?.groups).toEqual([{ label: '漏写负根', studentIds: [2, 1, 3] }])
-    expect(card?.lostCount).toBe(4)
-    expect(card?.otherCount).toBe(1) // 4 号失分但不在任何组
-    expect(card?.studentId).toBe(2)
+    expect(card?.groups.map((g) => g.label)).toEqual(['漏写负根'])
+    expect(memberIds(card)).toEqual([2, 1, 3])
+    expect(card?.otherLabel).toBe('另有 1 人错法各不相同或未整理') // 4 号失分但不在组
+    expect(card?.groups[0]?.members[0]?.reason).toBe(card?.title)
   })
 
   it('drops causes below two students and non-error kinds', () => {
@@ -462,10 +468,10 @@ describe('buildWalkthroughDeck', () => {
     const card = cards.find((entry) => entry.category === 1)
     // 没有 ≥2 人的整理错法 → 兜底分组（0 分 / 部分得分）
     expect(card?.questionId).toBe('Q1')
-    expect(card?.groups?.map((g) => g.label)).toEqual(['0 分', '部分得分'])
-    expect(card?.groups?.[0]?.studentIds).toEqual([3])
-    expect(card?.groups?.[1]?.studentIds).toEqual([1, 2])
-    expect(card?.lostCount).toBe(3)
+    expect(card?.groups.map((g) => g.label)).toEqual(['0 分', '部分得分'])
+    expect(memberIds(card, 0)).toEqual([3])
+    expect(memberIds(card, 1)).toEqual([1, 2])
+    expect(card?.groups[0]?.members[0]?.reason).toContain('错因尚未整理，按得分挑选代表')
   })
 
   it('keeps at most three typical-error cards, weakest questions first', () => {
@@ -488,25 +494,42 @@ describe('buildWalkthroughDeck', () => {
     expect(cat1.map((entry) => entry.questionId)).toEqual(['Q1', 'Q2', 'Q3'])
   })
 
-  it('picks unexpected losses only at ≥75% class full share and above-median totals', () => {
-    // Q1：s1–s3 满分、s4 得 6 → 满分比例 0.75；s4 总分率 0.8 高于本班中位 0.7
+  it('groups unexpected losses by cause category, 错因未整理 always last', () => {
+    // s1–s6 满分 Q1（满分比例 6/8 = 0.75）；s7、s8 失分且总分率高于中位
     const students = [
-      walkStudent(1, '9', [['Q1', 10], ['Q2', 4]]),
-      walkStudent(2, '9', [['Q1', 10], ['Q2', 4]]),
-      walkStudent(3, '9', [['Q1', 10], ['Q2', 4]]),
-      walkStudent(4, '9', [['Q1', 6], ['Q2', 10]]),
+      ...[1, 2, 3, 4, 5, 6].map((id) => walkStudent(id, '9', [['Q1', 10], ['Q2', 4]])),
+      walkStudent(7, '9', [['Q1', 6], ['Q2', 10]]),
+      walkStudent(8, '9', [['Q1', 8], ['Q2', 10]]),
     ]
-    // 给 Q2 一条已整理错因，避免典型错法走兜底分组抢占 (学生,题)
     const cards = deck(students, {
-      analysisQuestions: [question('Q2', { causes: [cause('化简错误', [1, 2])] })],
+      analysisQuestions: [
+        question('Q1', { causes: [cause('方法错', [7], 'error', '方法与思路')] }),
+      ],
     })
-    const losses = cards.filter((entry) => entry.category === 2)
-    expect(losses).toHaveLength(1)
-    expect(losses[0]?.studentId).toBe(4)
-    expect(losses[0]?.questionId).toBe('Q1')
-    expect(losses[0]?.reason).toContain('本班 75% 满分')
-    // Q2 本班满分比例只有 0.25 → s1–s3 丢分不算意外失分
-    expect(losses.some((entry) => entry.questionId === 'Q2')).toBe(false)
+    const card = cards.find((entry) => entry.category === 2)
+    expect(card?.questionId).toBe('Q1')
+    expect(card?.title).toBe('第 Q1 题 · 本班满分率高 · 2 人意外失分')
+    expect(card?.groups.map((g) => g.label)).toEqual(['方法与思路', '错因未整理'])
+    expect(memberIds(card, 0)).toEqual([7])
+    expect(memberIds(card, 1)).toEqual([8])
+    expect(card?.groups[0]?.members[0]?.reason).toContain('本班 75% 满分')
+    // Q2 满分比例只有 0.25 → s1–s6 丢分不算意外失分
+    expect(cards.filter((entry) => entry.category === 2)).toHaveLength(1)
+  })
+
+  it('falls back to 0 分 / 部分得分 groups when no member has a cause category', () => {
+    // s1–s6 满分 Q1（满分比例 6/8）；s7 本题 0 分、s8 得 8，二人总分率仍高于中位
+    const students = [
+      ...[1, 2, 3, 4, 5, 6].map((id) => walkStudent(id, '9', [['Q1', 10], ['Q2', 3], ['Q3', 4]])),
+      walkStudent(7, '9', [['Q1', 0], ['Q2', 10], ['Q3', 10]]),
+      walkStudent(8, '9', [['Q1', 8], ['Q2', 10], ['Q3', 10]]),
+    ]
+    const cards = deck(students, { questionIds: ['Q1', 'Q2', 'Q3'] })
+    const card = cards.find((entry) => entry.category === 2)
+    expect(card?.questionId).toBe('Q1')
+    expect(card?.groups.map((g) => g.label)).toEqual(['0 分', '部分得分'])
+    expect(memberIds(card, 0)).toEqual([7])
+    expect(memberIds(card, 1)).toEqual([8])
   })
 
   it('excludes below-median students from unexpected losses', () => {
@@ -520,43 +543,42 @@ describe('buildWalkthroughDeck', () => {
     expect(cards.filter((entry) => entry.category === 2)).toHaveLength(0)
   })
 
-  it('caps alternative-solution picks at two and prefers below-median students', () => {
+  it('groups 特别解法 / 下半区做对 per question, dedupes, and lets a student appear in several cards', () => {
+    // Q2：s8–s10 下半区且满分（满分比例 3/10 = 0.3）；s10 同时被 AI 标记特别解法
     const students = [
-      walkStudent(1, '9', [['Q1', 10], ['Q2', 10]]), // 中位以上
-      walkStudent(2, '9', [['Q1', 10], ['Q2', 10]]),
-      walkStudent(3, '9', [['Q1', 10], ['Q2', 6]]), // 低于中位
-      walkStudent(4, '9', [['Q1', 10], ['Q2', 6]]), // 低于中位
-      walkStudent(5, '9', [['Q1', 10], ['Q2', 8]]),
+      ...[1, 2, 3, 4, 5, 6, 7].map((id) => walkStudent(id, '9', [['Q1', 10], ['Q2', 7]])),
+      walkStudent(8, '9', [['Q1', 2], ['Q2', 10]]),
+      walkStudent(9, '9', [['Q1', 3], ['Q2', 10]]),
+      walkStudent(10, '9', [['Q1', 4], ['Q2', 10]]),
     ]
-    const alternatives = new Set(['1|Q2', '3|Q2', '4|Q2'])
-    // Q1 上有已整理错因 → 典型错法走正常分组，不占 Q2 的 (学生,题)
-    const cards = deck(students, {
-      alternatives,
-      analysisQuestions: [question('Q1', { causes: [cause('化简错误', [1, 2])] })],
-    })
-    const gains = cards.filter((entry) => entry.category === 3)
-    // 只取 2 张；低于中位的 3、4 优先于中位以上的 1
-    expect(gains.map((entry) => entry.studentId).sort()).toEqual([3, 4])
-    expect(gains.every((entry) => entry.reason.includes('参考答案以外'))).toBe(true)
+    const cards = deck(students, { alternatives: new Set(['10|Q2']) })
+    const card = cards.find((entry) => entry.category === 3)
+    expect(card?.questionId).toBe('Q2')
+    expect(card?.title).toBe('第 Q2 题 · 3 人意外得分或用了特别解法')
+    expect(card?.groups.map((g) => g.label)).toEqual(['特别解法', '下半区做对'])
+    expect(memberIds(card, 0)).toEqual([10])
+    // s10 已标特别解法 → 下半区做对里去重，只剩 s8、s9
+    expect(memberIds(card, 1)).toEqual([8, 9])
+    expect(card?.groups[0]?.members[0]?.reason).toContain('参考答案以外')
+    expect(card?.groups[1]?.members[0]?.reason).toContain('本班只有 30% 满分')
+    // s8 同时是典型错法兜底卡的成员 → 一名学生可出现在多张卡
+    const s8cards = cards.filter((entry) => (
+      entry.groups.some((g) => g.members.some((m) => m.studentId === 8))
+    ))
+    expect(s8cards.length).toBeGreaterThanOrEqual(2)
+    // 只有第 1–4 类，且每张卡至少一组、每组至少一名成员、成员都有题号
+    expect(cards.every((entry) => entry.category >= 1 && entry.category <= 4)).toBe(true)
+    for (const entry of cards) {
+      expect(entry.groups.length).toBeGreaterThan(0)
+      for (const g of entry.groups) {
+        expect(g.members.length).toBeGreaterThan(0)
+        for (const m of g.members) expect(m.questionId).not.toBeNull()
+      }
+    }
   })
 
-  it('picks full scores on hard questions only for lower-half ranks', () => {
-    // Q2 全班只有 s5 满分（0.2 ≤ 0.3）；s5 名次垫底（下半区）
-    const students = [
-      walkStudent(1, '9', [['Q1', 10], ['Q2', 8]]),
-      walkStudent(2, '9', [['Q1', 10], ['Q2', 7]]),
-      walkStudent(3, '9', [['Q1', 9], ['Q2', 6]]),
-      walkStudent(4, '9', [['Q1', 8], ['Q2', 5]]),
-      walkStudent(5, '9', [['Q1', 5], ['Q2', 10]]),
-    ]
-    const cards = deck(students)
-    const gains = cards.filter((entry) => entry.category === 3)
-    expect(gains.map((entry) => entry.studentId)).toEqual([5])
-    expect(gains[0]?.reason).toContain('本班只有 20% 满分')
-  })
-
-  it('picks |rank change| ≥ 10 and lands the card on the biggest point gap', () => {
-    // 12 名学生：s12 从第 12 名跳到第 1 名；其余名次不变
+  it('builds one 名次变化大 card with 进步/退步 groups and per-member questions', () => {
+    // s12 从第 12 名跳到第 1 名（+11）；s11 从第 1 名跌到第 12 名（−11）
     const current = Array.from({ length: 12 }, (_, i) => {
       const id = i + 1
       return walkStudent(id, '9', [
@@ -566,15 +588,24 @@ describe('buildWalkthroughDeck', () => {
     })
     const previous = current.map((s, i) => ({
       ...s,
-      current_score: s.student_id === 12 ? 10 : 100 - i,
+      current_score: s.student_id === 12 ? 10 : s.student_id === 11 ? 200 : 100 - i,
     }))
     const cards = deck(current, { previousStudents: previous })
     const rankCards = cards.filter((entry) => entry.category === 4)
     expect(rankCards).toHaveLength(1)
-    expect(rankCards[0]?.studentId).toBe(12)
+    const card = rankCards[0]!
+    expect(card.questionId).toBeNull()
+    expect(card.title).toBe('名次变化 ≥10 名 · 2 人')
+    expect(card.groups.map((g) => g.label)).toEqual(['进步', '退步'])
+    const up = card.groups[0]!
+    expect(up.members.map((m) => m.studentId)).toEqual([12])
     // Q2 的 该生得分−本班均分 正差大于 Q1（10−4.5 > 10−5.4）
-    expect(rankCards[0]?.questionId).toBe('Q2')
-    expect(rankCards[0]?.reason).toContain('进步 11 名')
+    expect(up.members[0]?.questionId).toBe('Q2')
+    expect(up.members[0]?.reason).toContain('进步 11 名')
+    const down = card.groups[1]!
+    expect(down.members.map((m) => m.studentId)).toEqual([11])
+    expect(down.members[0]?.questionId).not.toBeNull()
+    expect(down.members[0]?.reason).toContain('退步 11 名')
   })
 
   it('skips rank-change cards entirely without a comparison exam', () => {
@@ -584,73 +615,5 @@ describe('buildWalkthroughDeck', () => {
     ]
     expect(deck(students, { previousStudents: null })
       .some((entry) => entry.category === 4)).toBe(false)
-  })
-
-  it('picks three whole-paper cards deterministically from rank thirds', () => {
-    const students = Array.from({ length: 9 }, (_, i) => (
-      walkStudent(i + 1, '9', [['Q1', 10 - i]])
-    ))
-    const first = deck(students)
-    const second = deck(students)
-    const peeks = first.filter((entry) => entry.category === 5)
-    expect(peeks).toHaveLength(3)
-    expect(peeks.every((entry) => entry.questionId === null)).toBe(true)
-    expect(peeks.map((entry) => entry.studentId))
-      .toEqual(second.filter((entry) => entry.category === 5).map((entry) => entry.studentId))
-    // 三段各一人：名次 1–3 / 4–6 / 7–9 各命中一张
-    const ranks = peeks.map((entry) => Number(entry.reason.match(/第 (\d+) 名/)?.[1]))
-    expect(ranks.filter((r) => r <= 3)).toHaveLength(1)
-    expect(ranks.filter((r) => r > 3 && r <= 6)).toHaveLength(1)
-    expect(ranks.filter((r) => r > 6)).toHaveLength(1)
-  })
-
-  it('ranks random-peek picks against the whole scope, not just unused students', () => {
-    // s1、s2 已分别是两题典型错法卡的主要学生；高分段只剩 s3，
-    // 显示的名次应为全体第 3 名，而不是"未用学生里的第 1 名"
-    const students = Array.from({ length: 9 }, (_, i) => {
-      const id = i + 1
-      const q1 = id === 1 ? 0 : id === 4 ? 3 : 8
-      const q2 = id === 2 ? 0 : id === 5 ? 3 : 8
-      const q3 = id <= 2 ? 20 : 10 - i
-      return walkStudent(id, '9', [['Q1', q1], ['Q2', q2], ['Q3', q3, 20]])
-    })
-    const cards = deck(students, {
-      questionIds: ['Q1', 'Q2', 'Q3'],
-      analysisQuestions: [
-        question('Q1', { causes: [cause('a', [1, 4])] }),
-        question('Q2', { causes: [cause('b', [2, 5])] }),
-      ],
-    })
-    const cat1 = cards.filter((entry) => entry.category === 1)
-    expect(cat1.map((entry) => entry.studentId).sort()).toEqual([1, 2])
-    const peek = cards.find(
-      (entry) => entry.category === 5 && entry.reason.includes('高分段'),
-    )
-    expect(peek?.studentId).toBe(3)
-    expect(peek?.reason).toContain('本班第 3 名')
-  })
-
-  it('enforces caps: ≤15 cards, ≤2 primary per student, unique (student, question)', () => {
-    // 同一学生触发多个类别也只能当 2 次主要学生
-    const students = Array.from({ length: 8 }, (_, i) => walkStudent(
-      i + 1, '9',
-      [['Q1', i + 1 === 8 ? 2 : 10], ['Q2', i + 1 === 8 ? 2 : 10]],
-      { current_score: 40 + i * 5 },
-    ))
-    const alternatives = new Set(['8|Q1', '8|Q2'])
-    const cards = deck(students, { alternatives })
-    expect(cards.length).toBeLessThanOrEqual(15)
-    const primaryCounts = new Map<number, number>()
-    for (const card of cards) {
-      primaryCounts.set(card.studentId, (primaryCounts.get(card.studentId) ?? 0) + 1)
-    }
-    const pairs = cards
-      .filter((card) => card.questionId !== null)
-      .map((card) => `${card.studentId}|${card.questionId}`)
-    expect(new Set(pairs).size).toBe(pairs.length)
-    for (const count of primaryCounts.values()) expect(count).toBeLessThanOrEqual(2)
-    // 组内浏览不占名额：8 号作为组成员出现，同时仍可做主要学生
-    const cat1 = cards.find((entry) => entry.category === 1)
-    expect(cat1?.groups?.flatMap((g) => g.studentIds)).toContain(8)
   })
 })

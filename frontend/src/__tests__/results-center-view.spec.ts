@@ -3,12 +3,20 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { fetchResultsCenter, type ResultsCenterItem, type ResultsCenterResponse } from '../api/results-center'
+import { decodeResultsCenterResponse, fetchResultsCenter, type ResultsCenterItem, type ResultsCenterResponse } from '../api/results-center'
+import { fetchReviewItems, fetchReviewQuestions, fetchReviewRubric, type ResolvedReviewItem } from '../api/review'
 import { useSessionStore } from '../stores/session'
 import { useResultsCenterStore } from '../stores/results-center'
 import ResultsCenterView from '../views/ResultsCenterView.vue'
 import type { ClassAnalysisResponse } from '../api/class-analysis'
 import { invalidateClassAnalysis } from '../components/results-center/class-analysis-cache'
+import { walkthroughDataFor } from '../components/results-center/paper-walkthrough'
+import PaperWalkthroughCard from '../components/results-center/PaperWalkthroughCard.vue'
+
+vi.mock('../api/review', async (original) => ({
+  ...await original<typeof import('../api/review')>(),
+  fetchReviewItems: vi.fn(), fetchReviewQuestions: vi.fn(), fetchReviewRubric: vi.fn(),
+}))
 
 vi.mock('../api/results-center', async (original) => ({
   ...await original<typeof import('../api/results-center')>(),
@@ -86,11 +94,29 @@ function fixture(): ResultsCenterResponse {
 
 let app: App | null = null
 
+function reviewItems(qid: string): ResolvedReviewItem[] {
+  return fixture().students.flatMap((s) => s.items.filter((it) => it.question_id === qid)
+    .map((it) => ({
+      ...it, session_id: 7, student_id: s.student_id, revision: 0,
+      student_name: s.student_name, student_code: s.student_code, class_name: s.class_name,
+      teacher_locked: false, candidate_scores: [], metadata: {},
+      deduction_reason: null, error_category: null, error_summary: null,
+      media: {
+        crop_url: `/api/test/${s.student_id}/${qid}/crop`,
+        original_front_url: `/api/test/${s.student_id}/front`, original_back_url: null,
+        annotated_front_url: null, annotated_back_url: null,
+      },
+    })))
+}
+
 async function mountView(tab: string | null = 'details', analysis?: ClassAnalysisResponse) {
   localStorage.clear()
   vi.mocked(fetchResultsCenter).mockReset().mockResolvedValue(fixture())
   classAnalysisMock.getClassAnalysis.mockReset().mockRejectedValue(new Error('合成环境不读班级分析'))
   invalidateClassAnalysis(7)
+  vi.mocked(fetchReviewQuestions).mockReset().mockResolvedValue([])
+  vi.mocked(fetchReviewItems).mockReset().mockImplementation(async (_sid, qid) => reviewItems(qid))
+  vi.mocked(fetchReviewRubric).mockReset().mockResolvedValue(null)
   if (analysis) classAnalysisMock.getClassAnalysis.mockResolvedValue(analysis)
   const pinia = createPinia()
   setActivePinia(pinia)
@@ -129,6 +155,125 @@ afterEach(() => {
 })
 
 describe('results center class filtering and return position', () => {
+
+  it('opens cards before detail requests finish and reuses reads until results refresh', async () => {
+    const { host } = await mountView('overview')
+    const open = async () => {
+      const button = [...host.querySelectorAll<HTMLButtonElement>('button')]
+        .find((el) => el.textContent === '看卷 10 分钟')!
+      await vi.waitFor(() => expect(button.disabled).toBe(false))
+      button.click()
+      await nextTick()
+    }
+    let finish!: (items: ResolvedReviewItem[]) => void
+    vi.mocked(fetchReviewItems).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    await open()
+    const tabs = document.querySelector<HTMLElement>('.wt .page-tabs')
+    expect(tabs).not.toBeNull()
+    // 当前类别高亮 + 元信息含「第 1 类」；返回按钮带「返回考情总览」
+    expect(tabs?.querySelector('[aria-current="page"]')?.textContent).toContain('典型错法')
+    expect(document.querySelector('.wt .page-header')?.textContent).toContain('第 1 类')
+    expect(document.querySelector('.wt .page-header .app-back-button')?.textContent).toContain('返回考情总览')
+    expect(document.querySelector('.wtc__loading')?.textContent).toBe('答卷加载中…')
+    expect(fetchReviewQuestions).not.toHaveBeenCalled()
+    expect(fetchReviewItems).toHaveBeenCalledTimes(1)
+    const qid = vi.mocked(fetchReviewItems).mock.calls[0]![1]
+    finish(reviewItems(qid))
+    await vi.waitFor(() => expect(document.querySelector('.wtc__img')).not.toBeNull())
+    // s：组内下一名同学（卡 1 的「部分得分」组有 2 人）
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }))
+    await vi.waitFor(() => expect(document.querySelector('.wtc__pos')?.textContent).toContain('第 2 / 2 人'))
+    // d：下一张卡
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd' }))
+    await vi.waitFor(() => expect(document.querySelector('.wt .page-header')?.textContent).toContain('第 2 / 2 张'))
+    // 没有计时器文案
+    expect(document.querySelector('.wt')?.textContent ?? '').not.toMatch(/\d\d:\d\d/)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }))
+    // 嵌入的作答面板自身也读评分依据（模块级缓存）：Q1+Q2 面板各 1 次 + 翻分时卡内 1 次
+    await vi.waitFor(() => expect(fetchReviewRubric).toHaveBeenCalledTimes(3))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+    await open()
+    await vi.waitFor(() => expect(document.querySelector('.wtc__img')).not.toBeNull())
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }))
+    await nextTick()
+    expect(fetchReviewItems).toHaveBeenCalledTimes(2) // Q1 + 上面 d 到卡 2 时读的 Q2
+    expect(fetchReviewRubric).toHaveBeenCalledTimes(4) // 本次翻分读 Q1 卡内依据
+    vi.mocked(fetchResultsCenter).mockResolvedValue(fixture())
+    await useResultsCenterStore().load(7)
+    await vi.waitFor(() => expect(fetchReviewItems).toHaveBeenCalledTimes(3))
+    expect(document.querySelector('.wtc__score')).toBeNull()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }))
+    await vi.waitFor(() => expect(fetchReviewRubric).toHaveBeenCalledTimes(5))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+    await open()
+    await vi.waitFor(() => expect(document.querySelector('.wtc__img')).not.toBeNull())
+    expect(fetchReviewItems).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps the selected student when an earlier slow detail read finishes later', async () => {
+    const students = fixture().students
+    const pending = new Map<number, (item: ResolvedReviewItem | null) => void>()
+    const host = document.createElement('div')
+    document.body.append(host)
+    app = createApp({ render: () => h(PaperWalkthroughCard, {
+      card: { id: 'test:race', category: 1, questionId: 'Q1', title: '合成卡题',
+        groups: [{ label: '合成错法', members: [
+          { studentId: 1, questionId: 'Q1', reason: '合成测试' },
+          { studentId: 2, questionId: 'Q1', reason: '合成测试' },
+        ] }] },
+      students, sessionId: 7, revealed: false,
+      loadItem: (sid: number) => new Promise<ResolvedReviewItem | null>((resolve) => { pending.set(sid, resolve) }),
+      loadRubric: async () => null,
+    }) })
+    app.mount(host)
+    host.querySelector<HTMLButtonElement>('[aria-label="下一名同学"]')!.click()
+    await nextTick()
+    pending.get(2)!(reviewItems('Q1')[1]!)
+    await vi.waitFor(() => expect(host.querySelector<HTMLImageElement>('img')?.getAttribute('src'))
+      .toBe('/api/test/2/Q1/crop'))
+    pending.get(1)!(reviewItems('Q1')[0]!)
+    await nextTick()
+    await nextTick()
+    expect(host.querySelector<HTMLImageElement>('img')?.getAttribute('src')).toBe('/api/test/2/Q1/crop')
+  })
+
+  it('retries failed cached reads, bounds the cache, and expires old detail reads', async () => {
+    vi.mocked(fetchReviewItems).mockReset().mockResolvedValue(reviewItems('Q1'))
+    const cache = walkthroughDataFor(fixture())
+    vi.mocked(fetchReviewItems).mockRejectedValueOnce(new Error('temporary unavailable'))
+    const first = cache.items('Q1')
+    expect(cache.items('Q1')).toBe(first)
+    await expect(first).rejects.toThrow('temporary unavailable')
+    await expect(cache.items('Q1')).resolves.toHaveLength(4)
+    await cache.items('Q1')
+    expect(fetchReviewItems).toHaveBeenCalledTimes(2)
+    const now = Date.now()
+    const time = vi.spyOn(Date, 'now').mockReturnValue(now + 61_000)
+    await cache.items('Q1')
+    expect(fetchReviewItems).toHaveBeenCalledTimes(3)
+    time.mockRestore()
+    for (let q = 2; q <= 17; q += 1) await cache.items(`Q${q}`)
+    await cache.items('Q1')
+    expect(fetchReviewItems).toHaveBeenCalledTimes(20)
+    const refreshed = walkthroughDataFor(fixture())
+    await refreshed.items('Q1')
+    expect(fetchReviewItems).toHaveBeenCalledTimes(21)
+  })
+
+  it('accepts the boolean solution flag while rejecting extra content fields', () => {
+    const results = fixture()
+    expect(decodeResultsCenterResponse(results)).toBe(results)
+    results.students[0]!.items[0]!.alternative_solution_detected = true
+    expect(decodeResultsCenterResponse(results)).toBe(results)
+    const invalid = JSON.parse(JSON.stringify(results))
+    invalid.students[0].items[0].alternative_solution_detected = 'true'
+    expect(() => decodeResultsCenterResponse(invalid)).toThrow()
+    invalid.students[0].items[0].alternative_solution_detected = true
+    invalid.students[0].items[0].metadata = { evidence_steps: ['private'] }
+    expect(() => decodeResultsCenterResponse(invalid)).toThrow()
+  })
 
   it('loads overview statistics and narrative through one existing full response', async () => {
     const { host } = await mountView('overview', {
