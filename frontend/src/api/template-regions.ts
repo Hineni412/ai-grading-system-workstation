@@ -174,8 +174,9 @@ export function fetchRegionAutoProposal(id: number, signal?: AbortSignal): Promi
     },
   })
 }
-export function fetchRegionReadiness(id: number): Promise<RegionReadiness> {
+export function fetchRegionReadiness(id: number, signal?: AbortSignal): Promise<RegionReadiness> {
   return apiClient.request(`/api/sessions/${sessionId(id)}/regions/readiness`, {
+    signal,
     decode(value) {
       assertNoPathLikeKeys(value)
       if (!isRecord(value) || !exact(value, ['session_id', 'scoring_configured', 'template_present', 'template_ready'])

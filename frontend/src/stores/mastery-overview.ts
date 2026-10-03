@@ -17,7 +17,7 @@ export const useMasteryOverviewStore = defineStore('mastery-overview', () => {
   let requestKey = ''
   let request: Promise<void> | null = null
 
-  async function load(volumeId: string | null, force = false): Promise<void> {
+  async function load(volumeId: string | null, force = false, persistScope = true): Promise<void> {
     if (!volumeId) {
       controller?.abort(); overview.value = null; loadState.value = 'idle'; resultKey = ''; requestKey = ''
       return
@@ -26,7 +26,7 @@ export const useMasteryOverviewStore = defineStore('mastery-overview', () => {
     const scope = scopeSelection.value === 'all' ? { mode: 'all' as const }
       : { mode: 'class' as const, class_id: scopeSelection.value, class_ids: [scopeSelection.value] }
     const query = semesterEvidenceQuery(scope, volumeId)
-    saveEvidenceScope(query)
+    if (persistScope) saveEvidenceScope(query)
     if (!force && key === resultKey && loadState.value === 'ready') return
     if (!force && key === requestKey && request) return request
     controller?.abort()
@@ -62,10 +62,17 @@ export const useMasteryOverviewStore = defineStore('mastery-overview', () => {
     })()
     return rosterRequest
   }
-  function activate(volumeId: string | null) {
+  function restoreScope() {
     const saved = loadEvidenceScope()?.scope
     const classes = saved?.class_ids?.length ? saved.class_ids : saved?.class_id ? [saved.class_id] : []
     scopeSelection.value = saved?.mode === 'class' && classes.length === 1 ? classes[0]! : 'all'
+  }
+  function peek(volumeId: string | null) {
+    restoreScope()
+    return load(volumeId, false, false)
+  }
+  function activate(volumeId: string | null) {
+    restoreScope()
     void loadStudents()
     void load(volumeId)
   }
@@ -74,5 +81,5 @@ export const useMasteryOverviewStore = defineStore('mastery-overview', () => {
     void load(volumeId)
   }
   return { overview, loadState, errorMessage, scopeSelection, students, studentsError,
-    load, loadStudents, activate, selectScope }
+    load, loadStudents, peek, activate, selectScope }
 })

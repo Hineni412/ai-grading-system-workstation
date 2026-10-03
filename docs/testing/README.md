@@ -105,6 +105,12 @@
 
 未测资格与得分率浮动的配对比较使用 `tools/compare_training_endpoints.py --output output/test_training_score_adaptation_20261003 --baseline-remediation-only --baseline-max-unmeasured-questions 4 --max-unmeasured-questions 4`；两端均最多补 4 题，避免题量配置变化影响结论。报告区分缺标签但已有同任务、仅有相关任务、当前未识别任务证据三种状态；新练习按本版实际选题难度参照复核，不借另一目标的补弱窗口。新练习与补弱的辅助技能难度缓存分别验证，避免前者的浮动规则影响后者。任务去重、掌握度优先级、联合替换与诊断短题的同条件比较使用独立目录 `output/test_training_improvements_20261003/final` 和相同参数，并加 `--personal-only` 只重跑个人卷；报告明确记录小组卷未比较。两端使用相同诊断及标签投影代码，只比较推荐算法；按同一学生范围记录个人选题总耗时、中位数和第 95 百分位，单列诊断性新练习题位。补弱关联覆盖、难度资格和题位分别统计，不能把关联目标数当作独立任务数，也不能把新练习增加解释为补弱精度或学习收益提高。两端正式内存草稿一致、输入指纹与只读保护的核对仍执行；不同日期报告的比较须先核对原始输入及计算日期。
 
+## 工作台首页
+
+在 `frontend` 目录运行 `npx vitest run src/__tests__/workbench-view.spec.ts src/__tests__/knowledge-overview-view.spec.ts src/__tests__/results-center-view.spec.ts src/components/results-center/__tests__/results-overview.spec.ts`。覆盖待处理规则、步骤边界、考试切换保护与旧请求取消、学情读取不保存范围，以及首页看卷入口自动打开与不可用状态。成绩中心的入口行为放在已有页面测试中，纯规则测试继续复用原文件。
+
+`npx playwright test e2e/workbench-overview.spec.ts` 使用当前前端源码与合成接口，覆盖 1024、1280、1366、1440、1920px 布局、右栏吸顶、失败提示和考试切换；首页允许的 POST 仅为只读的学情总览。后端运行 `runtime/python/python.exe -m pytest tests/test_api_workbench_overview.py`，核对学期输出、筛选后取数量、保留当前考试和原统计不变。真实数据验收只通过正式应用读取页面，不执行评分、模型或数据清理操作。
+
 ## 隔离规则
 
 设置和原卷清理的回归用例复用学生、媒体、模板上传、扫描续跑及 API 写入测试；`tests/test_session_originals.py` 覆盖文件清理模块的保留范围、共享路径、回执损坏、中断续清和重复请求。内部系统检查复用 `tests/test_api_ops_routes.py`；设置页三个标签、旧地址与上次标签恢复、AI 调用记录按需读取和未保存保护复用 `settings-hub-view.spec.ts`，数据与空间操作及无关检查请求隔离复用 `settings-ops-view.spec.ts`。诊断摘要失效复用 `tests/test_llm_gateway.py`，题号输入缓存和配置延迟加载复用题号兼容与 `config-workspace-store.spec.ts`。人工验收在 1440、1280、宽屏和窄屏检查三个设置标签、学生名册、抽屉和弹窗；性能对比使用同一考试与数据，分别测量首次打开、刷新和主要接口，排除人为等待，并核对统计、成绩输出一致。核对 PDF 释放后现有页面仍能批改、清除原卷后仍可人工改分。真实数据验收需取得本次授权，仅只读查看；清理、备份恢复和模型验证使用合成环境。

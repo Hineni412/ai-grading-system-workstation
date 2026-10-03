@@ -27,6 +27,7 @@ router = APIRouter(prefix="/api", tags=["workbench"])
 def get_workbench_overview(
     session_id: int | None = Query(None, gt=0),
     recent_limit: int = Query(5, ge=1, le=20),
+    curriculum_volume_id: str | None = Query(None),
     db: GradingRepositoryAccess = Depends(get_grading_db),
     service: WorkbenchService = Depends(get_workbench_service),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
@@ -36,7 +37,8 @@ def get_workbench_overview(
         _require_session(db.sessions, session_id)
         manual_context = current_manual_context(session_id, workspace)
     return WorkbenchOverviewResponse(
-        **service.overview(session_id, recent_limit, manual_context=manual_context)
+        **service.overview(session_id, recent_limit, manual_context=manual_context,
+                           curriculum_volume_id=curriculum_volume_id)
     )
 
 

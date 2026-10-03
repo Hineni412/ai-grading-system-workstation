@@ -11,10 +11,11 @@ export interface StepProgressStep {
 <script setup lang="ts">
 import { Check } from '@lucide/vue'
 
-defineProps<{
+withDefaults(defineProps<{
   steps: StepProgressStep[]
   current: string
-}>()
+  orientation?: 'horizontal' | 'vertical'
+}>(), { orientation: 'horizontal' })
 
 const emit = defineEmits<{
   select: [id: string]
@@ -22,7 +23,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <ol class="step-progress">
+  <ol class="step-progress" :class="{ 'step-progress--vertical': orientation === 'vertical' }">
     <template v-for="(step, index) in steps" :key="step.id">
       <li
         v-if="index > 0"
@@ -52,6 +53,7 @@ const emit = defineEmits<{
             <template v-else>{{ index + 1 }}</template>
           </span>
           <span class="step-progress__label">{{ step.label }}</span>
+          <span v-if="orientation === 'vertical' && step.hint" class="step-progress__hint">{{ step.hint }}</span>
         </button>
       </li>
     </template>
@@ -160,4 +162,20 @@ const emit = defineEmits<{
     transition: none;
   }
 }
+
+.step-progress--vertical { flex-direction: column; align-items: stretch; gap: 0; }
+.step-progress--vertical .step-progress__item { min-width: 0; }
+.step-progress--vertical button {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: var(--space-2); width: 100%; min-height: 32px; text-align: left;
+  border-radius: var(--radius-control); white-space: normal;
+}
+.step-progress--vertical button:hover:not(:disabled) { background: var(--color-bg-subtle); }
+.step-progress--vertical .step-progress__connector {
+  flex: 0 0 8px; width: 2px; height: 8px; align-self: flex-start; margin: -2px 0 -2px 8px;
+}
+.step-progress--vertical .step-progress__hint {
+  max-width: 140px; font-size: var(--font-size-caption); color: var(--color-text-secondary); text-align: right;
+}
+.step-progress--vertical .is-current .step-progress__label { box-shadow: none; }
 </style>

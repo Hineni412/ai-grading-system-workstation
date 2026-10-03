@@ -26,10 +26,16 @@ class WorkbenchService:
         recent_limit: int,
         *,
         manual_context: dict[str, Any] | None = None,
+        curriculum_volume_id: str | None = None,
     ) -> dict[str, Any]:
         """Aggregate existing read models without internal HTTP calls."""
         recent_sessions = []
-        for session in self.db.sessions.list_grading_sessions()[: int(recent_limit)]:
+        sessions = self.db.sessions.list_grading_sessions()
+        if curriculum_volume_id:
+            sessions = [session for session in sessions
+                        if session.get("curriculum_volume_id") == curriculum_volume_id
+                        or session["id"] == session_id]
+        for session in sessions[: int(recent_limit)]:
             recent_sessions.append(
                 {
                     "session": _session_summary(session),
@@ -103,6 +109,7 @@ def _session_summary(row: dict[str, Any]) -> dict[str, Any]:
         "id": int(row["id"]),
         "name": str(row["session_name"]),
         "status": str(row["status"]),
+        "curriculum_volume_id": row.get("curriculum_volume_id"),
         "is_deleted": bool(int(row.get("is_deleted") or 0)),
         "deleted_at": row.get("deleted_at"),
         "created_at": row.get("created_at"),
