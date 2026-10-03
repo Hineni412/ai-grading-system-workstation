@@ -11,6 +11,7 @@ import importlib.util
 import inspect
 import json
 import random
+from statistics import median
 import sys
 import time
 from collections import Counter
@@ -35,9 +36,13 @@ REASONS = {
 }
 
 
-def load_module(path, name):
+def load_module(path, name, *, source_path=None):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
+    if source_path is not None:
+        # Snapshot code still locates the real read-only calculation files in
+        # their original repository. Snapshot hashes below remain authoritative.
+        module.__file__ = str(source_path)
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
@@ -45,7 +50,8 @@ def load_module(path, name):
 
 def load_pipeline(directory, label):
     projection = load_module(directory / "question_tag_projection_service.py", "integration._endpoint_projection_" + label)
-    profile = load_module(directory / "diagnosis_profile_service.py", "integration._endpoint_profile_" + label)
+    profile = load_module(directory / "diagnosis_profile_service.py", "integration._endpoint_profile_" + label,
+                          source_path=ROOT / "integration/diagnosis_profile_service.py")
     profile.QuestionTagProjectionService = projection.QuestionTagProjectionService
     profile.QuestionTagProjection = projection.QuestionTagProjection
     version = tuple(hashlib.sha256((directory / name).read_bytes()).hexdigest()
@@ -93,7 +99,9 @@ def common_audit(paper, pool, needed, recent, resolver):
         new_matches = [e for e in entries if e["key"] in new_keys and e.get("selection_kind") == "direct"]
         if native_new:
             plan = original.get("target", {}).get("difficulty_plan")
-        task_state = ("observed" if any(e["target"].get("observed_same_task") for e in new_matches) else
+        diagnostic = native_new and any(e.get("target", {}).get("diagnostic_check") for e in own_entries)
+        task_state = ("diagnostic" if diagnostic else
+                      "observed" if any(e["target"].get("observed_same_task") for e in new_matches) else
                       "related" if any(e["target"].get("related_task_observed") for e in new_matches) else "unmeasured")
         difficulty = float(candidate["difficulty"])
         low = plan.get("audit_minimum", plan["minimum"]) if plan else None
@@ -111,6 +119,7 @@ def common_audit(paper, pool, needed, recent, resolver):
                       "evidence": sorted({entry.get("task_evidence_level", "target_only") for entry in remediation}),
                       "original_purposes": sorted({entry.get("practice_purpose", "new") for entry in own_entries}),
                       "new_target_keys": sorted(new_keys), "new_task_state": task_state if native_new else None,
+                      "diagnostic_check": diagnostic,
                       "target_aim": round(plan["aim"], 3) if plan and plan.get("aim") is not None else None,
                       "difficulty_basis": plan.get("basis", "") if plan else "",
                       "recent": qid in recent,
@@ -160,6 +169,7 @@ def aggregate(audits):
     return {"papers": len(audits), "question_slots": sum(len(a["items"]) for a in audits),
             "remediation_slots": sum(sum(bool(item["targets"]) for item in a["items"]) for a in audits),
             "new_practice_slots": sum(sum(item["original_purposes"] == ["new"] for item in a["items"]) for a in audits),
+            "diagnostic_slots": sum(sum(bool(item.get("diagnostic_check")) for item in a["items"]) for a in audits),
             "new_observed_task_slots": sum(sum(item.get("new_task_state") == "observed" for item in a["items"]) for a in audits),
             "new_related_task_slots": sum(sum(item.get("new_task_state") == "related" for item in a["items"]) for a in audits),
             "task_repeated_slots": sum(sum(item.get("task_repeated", False) for item in a["items"]) for a in audits),
@@ -183,7 +193,7 @@ def config_fingerprint(data):
 
 
 def run(output, *, baseline_remediation_only=False, max_unmeasured_questions=0,
-        baseline_max_unmeasured_questions=0, include_unmeasured_stage=False):
+        baseline_max_unmeasured_questions=0, include_unmeasured_stage=False, personal_only=False):
     start = time.perf_counter()
     engines, profiles = zip(*(load_pipeline(output / folder, folder) for folder in ("baseline", "latest")))
     intermediate = load_pipeline(output / "unmeasured", "unmeasured")[0] if include_unmeasured_stage else None
@@ -196,6 +206,7 @@ def run(output, *, baseline_remediation_only=False, max_unmeasured_questions=0,
     report = {"versions": [engine.ENGINE_VERSION for engine in engines], "scopes": [], "catalog": {},
               "method": "Current identical raw inputs; both papers rechecked with latest target/task/difficulty rules. This is a rule audit, not independent learning efficacy.",
               "model_requests": 0, "database_writes": 0, "raw_student_exports": 0}
+    report["group_comparison"] = not personal_only
     report["selection_settings"] = {"baseline_remediation_only": baseline_remediation_only,
                                    "baseline_max_unmeasured_questions": baseline_max_unmeasured_questions,
                                    "latest_max_unmeasured_questions": max_unmeasured_questions}
@@ -238,7 +249,8 @@ def run(output, *, baseline_remediation_only=False, max_unmeasured_questions=0,
             # Scope processing is appended below; all selected paper data remain in memory until anonymized.
             scope_results = process_scopes(engines, modules, diagnoses, masteries, metadata, activities, recent, students, aliases, tiers, resolver, relations,
                 baseline_remediation_only=baseline_remediation_only, max_unmeasured_questions=max_unmeasured_questions,
-                baseline_max_unmeasured_questions=baseline_max_unmeasured_questions, intermediate=intermediate)
+                baseline_max_unmeasured_questions=baseline_max_unmeasured_questions, intermediate=intermediate,
+                personal_only=personal_only)
             report["scopes"] = scope_results
             all_keys = {key for scope in scope_results for key in scope["target_keys"]}
             report["catalog"] = {key: label_for(resolver, key) for key in sorted(all_keys)}
@@ -263,7 +275,7 @@ def run(output, *, baseline_remediation_only=False, max_unmeasured_questions=0,
 
 def process_scopes(engines, modules, diagnoses, masteries, metadata, activities, recent,
                    students, aliases, tiers, resolver, relations, *, baseline_remediation_only=False,
-                   max_unmeasured_questions=0, baseline_max_unmeasured_questions=0, intermediate=None):
+                   max_unmeasured_questions=0, baseline_max_unmeasured_questions=0, intermediate=None, personal_only=False):
     results = []
     for chapters in ((1,), (2,), (1, 2)):
         keys = tuple(f"kp_bnu24_math_g8_upper_{chapter}" for chapter in chapters)
@@ -283,8 +295,18 @@ def process_scopes(engines, modules, diagnoses, masteries, metadata, activities,
                   mastery=mastery, source_metadata=source, recent=history, graded_activities=events)["pools"]
                  for module, diagnosis, config, mastery, source, history, events in
                  zip(modules, diagnoses, configs, masteries, metadata, recent, activities)]
-        native = [{sid: engine._choose_practice_entries(pool, 10, config) for sid, pool in evaluated.items()}
-                  for engine, config, evaluated in zip(engines, configs, pools)]
+        native, selection_timings = [], []
+        for engine, config, evaluated in zip(engines, configs, pools):
+            papers, timings = {}, []
+            for sid, pool in evaluated.items():
+                started = time.perf_counter()
+                papers[sid] = engine._choose_practice_entries(pool, 10, config)
+                timings.append(time.perf_counter() - started)
+            ordered = sorted(timings)
+            native.append(papers)
+            selection_timings.append({"students": len(timings), "total_seconds": round(sum(timings), 4),
+                "median_seconds": round(median(timings), 4) if timings else None,
+                "p95_seconds": round(ordered[max(0, (95*len(ordered)+99)//100-1)], 4) if ordered else None})
         intermediate_papers = ({sid: intermediate._choose_practice_entries(pool, 10,
             intermediate.PersonalizedRecommendationConfig(**configs[1].to_dict())) for sid, pool in pools[1].items()} if intermediate else None)
         parity = []
@@ -337,6 +359,7 @@ def process_scopes(engines, modules, diagnoses, masteries, metadata, activities,
             papers.append(record)
             for i in range(2): audits[i].append(checks[i])
         scope = {"chapters": list(chapters), "candidate_count": len(candidates), "native_parity": parity,
+                 "personal_selection_timings": selection_timings,
                  "personal": [aggregate(values) for values in audits], "papers": sorted(papers, key=lambda row: (row["tier"], row["label"])),
                  "changed_papers": changed, "retained_slots": retained_slots, "removed_slots": removed_slots, "added_slots": added_slots,
                  "coverage_gained": gained, "coverage_lost": lost,
@@ -349,6 +372,8 @@ def process_scopes(engines, modules, diagnoses, masteries, metadata, activities,
         if intermediate_audits:
             scope["intermediate"] = aggregate(intermediate_audits)
         for i, (engine, module, diagnosis, config) in enumerate(zip(engines, modules, diagnoses, configs)):
+            if personal_only:
+                break
             grouping = module.chapter_groups(diagnosis=diagnosis,
                        config=replace(config, paper_mode="shared", group_scope_keys=keys, **({"remediation_only": False} if i else {})),
                        graded_activities=activities[i])
@@ -394,8 +419,9 @@ if __name__ == "__main__":
     parser.add_argument("--max-unmeasured-questions", type=int, default=0)
     parser.add_argument("--baseline-max-unmeasured-questions", type=int, default=0)
     parser.add_argument("--include-unmeasured-stage", action="store_true")
+    parser.add_argument("--personal-only", action="store_true", help="Recheck individual papers only; leave group comparison explicitly empty")
     args = parser.parse_args()
     run(args.output.resolve(), baseline_remediation_only=args.baseline_remediation_only,
         max_unmeasured_questions=args.max_unmeasured_questions,
         baseline_max_unmeasured_questions=args.baseline_max_unmeasured_questions,
-        include_unmeasured_stage=args.include_unmeasured_stage)
+        include_unmeasured_stage=args.include_unmeasured_stage, personal_only=args.personal_only)

@@ -1626,6 +1626,17 @@ def test_personal_remediation_keeps_shortage_and_does_not_fill_correct_targets(m
     assert "right_triangle_construction" not in _new_practice_operations("无需作垂线或构造直角三角形")
     assert _new_target_operation("八上｜技能·构造直角三角形") == "right_triangle_construction"
     assert _new_target_operation("八上｜技能·未知任务") == ""
+    for name, text, operation in (
+        ("分类讨论直角位置", "分别以三条边为斜边讨论直角三角形的位置", "right_angle_position_cases"),
+        ("用线段的和差关系列式求长度", "用线段的和差关系列式求长度", "segment_sum_difference_equation"),
+    ):
+        assert _new_target_operation(f"八上｜技能·{name}") == operation
+        seen = deepcopy(frozen)
+        seen["practice_observations_by_key"][source_key][0]["part_observable"] = text
+        assert operation in _observed_new_practice_tasks([seen])[chapter]["observed"]
+        assert operation not in _new_practice_operations("无需" + text)
+        seen["assessment"] = {"granularity": "step", "step_id": "p1"}
+        assert operation not in _observed_new_practice_tasks([seen])[chapter]["observed"]
     roots = deepcopy(frozen)
     roots["practice_observations_by_key"][source_key][0]["part_observable"] = "合并同类二次根式"
     root_history = _observed_new_practice_tasks([roots])[chapter]
@@ -1685,6 +1696,130 @@ def test_personal_exchange_improves_coverage_with_original_paper_limits(blocker)
     assert [e["candidate"]["question_id"] for e, _ in shared] == [1, 2]
 
 
+@pytest.mark.parametrize("written_limit, similar", [(0, False), (2, False), (2, True)])
+def test_two_question_exchange_escapes_single_exchange_skill_conflict(written_limit, similar):
+    from question_bank.recommendation.personalized import _choose_practice_entries, _improve_personal_selection
+    groups = {}
+    for qid, skills, needs in ((1, ["sk_x", "sk_y"], "abcd"), (2, ["sk_z"], "efg"),
+                              (3, ["sk_x"], "abcd"), (4, ["sk_y", "sk_z"], "efgh")):
+        candidate = _selection_candidate(qid, f"合成不同任务{chr(64+qid)}", stable_keys=skills)
+        if qid == 4 and written_limit == 0:
+            candidate["question_type"] = "解答题"
+        if similar and qid in (3, 4):
+            candidate["question_text"] = "合成：选择适当方法求下列长度并写出过程"
+            candidate["stable_keys"].append("kp_TEST_similarity")
+        groups[qid] = [{"candidate": candidate, "student_id": "TEST", "key": key,
+            "selection_kind": "direct", "practice_purpose": "remediation", "practice_role": "full_response",
+            "distance": 0., "preference": 0., "match_level": 1} for key in needs]
+    config = PersonalizedRecommendationConfig(max_written_questions=written_limit, remediation_only=True)
+    start = [(groups[qid][0], groups[qid]) for qid in (1, 2)]
+    original = deepcopy(groups)
+    audit = []
+    chosen = _improve_personal_selection(groups, start, 2, config, audit)
+    expected = {1, 2} if written_limit == 0 or similar else {3, 4}
+    assert {entry["candidate"]["question_id"] for entry, _ in chosen} == expected
+    assert groups == original
+    if audit:
+        assert audit[0]["removed_question_ids"] == [1, 2]
+        assert set(audit[0]["added_question_ids"]) == {3, 4}
+        assert (audit[0]["covered_before"], audit[0]["covered_after"]) == (7, 8)
+    selected = _choose_practice_entries([e for g in groups.values() for e in g], 2, config)
+    assert {e["candidate"]["question_id"] for e, _ in selected} == expected
+
+
+def test_same_frozen_task_links_count_once_and_unknown_context_stays_separate():
+    from question_bank.recommendation.personalized import _task_need_ids, _choose_practice_entries
+    def entry(qid, key, text, mode="exact_objective", chapter="TEST-chapter"):
+        part = {"part_id": "p", "response_mode": mode, "observable": text}
+        ref = {"full_score": 1, "score_awarded": 0, "task_evidence_version_matches": True,
+               "practice_observations_by_key": {key: [part]},
+               "target_facets": [{"part_id": "p", "chapter_keys": [chapter] if chapter else []}]}
+        return {"candidate": _selection_candidate(qid, f"合成独立任务{qid}", stable_keys=["sk_budget"]),
+            "student_id": "TEST", "key": key, "matched_key": key, "selection_kind": "direct",
+            "practice_purpose": "remediation", "target": {"value": .5, "source_question_refs": [ref]},
+            "distance": 0., "preference": 0., "match_level": 1}
+    topic = entry(1, "kp_topic", "计算9的算术平方根为3")
+    skill = entry(1, "sk_skill", "计算9的算术平方根为3")
+    assert _task_need_ids(topic) == _task_need_ids(skill)
+    assert _task_need_ids(topic) != _task_need_ids(entry(1, "sk_skill", "计算9的算术平方根为3", "process_required"))
+    assert _task_need_ids(topic) != _task_need_ids(entry(1, "sk_skill", "计算9的算术平方根为3", chapter="OTHER"))
+    another_source = deepcopy(skill)
+    another_source["target"]["source_question_refs"][0]["question_id"] = "OTHER-QUESTION"
+    assert _task_need_ids(topic) != _task_need_ids(another_source)
+    multiple_sources = deepcopy(skill)
+    multiple_sources["target"]["source_question_refs"] += another_source["target"]["source_question_refs"]
+    assert _task_need_ids(multiple_sources) == frozenset({("TEST", "sk_skill")})
+    unknown = entry(1, "sk_unknown", "作答为B")
+    assert _task_need_ids(unknown) == frozenset({("TEST", "sk_unknown")})
+    assert _task_need_ids(entry(1, "sk_missing_context", "计算9的算术平方根为3", chapter="")) == frozenset({("TEST", "sk_missing_context")})
+    distinct = [entry(2, "sk_cube", "计算8的立方根为2"), entry(2, "sk_area", "利用面积关系相加")]
+    chosen = _choose_practice_entries([topic, skill, *distinct], 1, PersonalizedRecommendationConfig())
+    assert chosen[0][0]["candidate"]["question_id"] == 2
+
+
+def test_latest_mastery_changes_priority_without_erasing_historical_loss(monkeypatch):
+    from question_bank.recommendation.personalized import _choose_practice_entries, _loss_refs
+    def entry(qid, key, mastery):
+        return {"candidate": _selection_candidate(qid, f"合成相同名额任务{qid}", stable_keys=["sk_budget"]),
+            "student_id": "TEST", "key": key, "matched_key": key, "selection_kind": "direct",
+            "practice_purpose": "remediation", "target": {"value": mastery, "source_question_refs": [
+                {"full_score": 1, "score_awarded": 0, "source_kind": "current_exam"}]},
+            "distance": 0., "preference": 0., "match_level": 1}
+    old, other = entry(1, "sk_old", .2), entry(2, "sk_other", .5)
+    config = PersonalizedRecommendationConfig(remediation_only=True)
+    assert _choose_practice_entries([old, other], 1, config)[0][0]["key"] == "sk_old"
+    old["target"]["value"] = .9
+    assert _choose_practice_entries([old, other], 1, config)[0][0]["key"] == "sk_other"
+    assert len(_loss_refs(old["target"])) == 1
+    assert _choose_practice_entries([old], 1, config)[0][0]["key"] == "sk_old"
+    diagnosis = _direct_diagnosis()
+    point = diagnosis["students"][0]["weak_points"][0]
+    point["mastery"] = .2
+    other_point = {**deepcopy(point), "knowledge_key": BNU_PREREQ_NEAR, "mastery": .5}
+    diagnosis["students"][0]["weak_points"].append(other_point)
+    candidates = [_selection_candidate(1, "合成旧失分目标"),
+                  _selection_candidate(2, "合成另一失分目标", BNU_PREREQ_NEAR)]
+    settings = dict(purpose="handout", question_count=1, max_written_questions=0, remediation_only=True)
+    assert _selection_draft(monkeypatch, candidates, diagnosis, **settings)["students"][0]["items"][0]["question_id"] == 1
+    point["mastery"] = .9
+    assert _selection_draft(monkeypatch, candidates, diagnosis, **settings)["students"][0]["items"][0]["question_id"] == 2
+
+
+@pytest.mark.parametrize("reason", ["part_total_without_step_attribution", "teacher_final_without_step_attribution"])
+def test_coarse_loss_gets_bounded_independent_diagnostic_without_weakness_claim(monkeypatch, reason):
+    diagnosis = _direct_diagnosis()
+    point = diagnosis["students"][0]["weak_points"][0]
+    point.update(mastery=.4, evidence_count=3)
+    ref = point["source_question_refs"][0]
+    ref["assessment"] = {"eligible": True, "granularity": "whole_question", "reason": reason}
+    candidate = _selection_candidate(1, "合成独立短题", difficulty=3,
+        target_facets=[{"part_id": "p", "direct_keys": [BNU_TARGET], "topic_keys": [BNU_TARGET],
+                        "chapter_keys": [BNU_CHAPTER4]}],
+        practice_observations_by_key={BNU_TARGET: [{"part_id": "p", "response_mode": "exact_objective", "observable": "求结果"}]})
+    candidates = [candidate, {**deepcopy(candidate), "question_id": 2, "criterion_point_count": 2}]
+    original = deepcopy(diagnosis)
+    settings = dict(remediation_only=True, max_unmeasured_questions=1)
+    student = _selection_draft(monkeypatch, candidates, diagnosis, **settings)["students"][0]
+    assert len(student["items"]) == 1
+    item = student["items"][0]
+    assert item["question_id"] == 1 and item["practice_purpose"] == "new"
+    assert item["target"]["diagnostic_check"] and "未定位具体失分环节" in item["reason"]
+    assert "不认定为已知薄弱点" in item["reason"]
+    assert diagnosis == original
+    assert not _selection_draft(monkeypatch, candidates, diagnosis, remediation_only=True)["students"][0]["items"]
+    historical = {**deepcopy(ref), "source_kind": "historical_exam"}
+    point["source_question_refs"].append(historical)
+    ref["score_awarded"] = ref["full_score"]
+    assert not _selection_draft(monkeypatch, candidates, diagnosis, **settings)["students"][0]["items"]
+    point["source_question_refs"].pop()
+    ref["score_awarded"] = 4
+    ref["assessment"]["eligible"] = False
+    assert not _selection_draft(monkeypatch, candidates, diagnosis, **settings)["students"][0]["items"]
+    ref["assessment"] = {"eligible": True, "granularity": "part"}
+    ref["score_awarded"] = ref["full_score"]
+    assert not _selection_draft(monkeypatch, candidates, diagnosis, **settings)["students"][0]["items"]
+
+
 def test_sparse_pool_never_fills_low_group_with_hard_questions(monkeypatch):
     diagnosis = _direct_diagnosis((("A", 0.25, 900, BNU_TARGET),))
     ref = diagnosis["students"][0]["weak_points"][0]["source_question_refs"][0]
@@ -1734,6 +1869,10 @@ def test_practice_requirements_cannot_be_pooled_across_parts():
     ("对开得尽方的因数开方并约分", "将完全平方数开方得到最简结果", True),
     ("给分母同乘共轭根式，消去根号", "求9的算术平方根", False),
     ("作答为B", "求9的算术平方根", False),
+    ("利用正方形面积关系和勾股等式求边长", "判断勾股数并列式a²+b²=c²", False),
+    ("利用正方形面积关系和勾股等式求边长", "正方形面积关系相加，利用勾股等式求边长", True),
+    ("分类讨论直角顶点的位置", "判断三边能否组成直角三角形", False),
+    ("利用线段之和与差列方程", "根据勾股定理列式a²+b²=c²", False),
 ])
 def test_observed_root_tasks_bridge_only_the_same_operation(source_text, candidate_text, expected):
     from question_bank.recommendation.personalized import _task_matched_part
@@ -1743,6 +1882,10 @@ def test_observed_root_tasks_bridge_only_the_same_operation(source_text, candida
     result = _task_matched_part(candidate, BNU_TARGET, ref, [], {"p"})
     assert bool(result) is expected
     assert _task_matched_part(candidate, BNU_TARGET, ref, [], {"other-part"}) is None
+    if any(word in source_text for word in ("面积关系", "直角顶点", "线段之和")):
+        source = ref["practice_observations_by_key"][BNU_TARGET][0]
+        source.update(fine_terms=["sk_TEST_root"], evidence_points=[{"evidence_point_id": "p1"}])
+        assert bool(_task_matched_part(candidate, BNU_TARGET, ref, [], {"p"})) is expected
 
 
 def test_frozen_point_skill_bridge_preserves_actual_skill_and_class_core_filter(monkeypatch):
@@ -2618,6 +2761,11 @@ def test_endpoint_comparison_rechecks_old_labels_and_difficulty_before_coverage(
     assert new_audit["items"][0]["new_target_keys"] == [BNU_TARGET]
     assert aggregate([new_audit])["new_related_task_slots"] == 1
     assert new_audit["covered"] == []
+    diagnostic = {**new, "target": {**new["target"], "diagnostic_check": True}}
+    diagnostic_audit = common_audit([(diagnostic, [diagnostic])], [checked], {}, set(), None)
+    assert diagnostic_audit["items"][0]["new_task_state"] == "diagnostic"
+    assert diagnostic_audit["covered"] == []
+    assert aggregate([diagnostic_audit])["diagnostic_slots"] == 1
 
 
 def test_endpoint_report_rejects_identity_and_verifies_question_differences(tmp_path):

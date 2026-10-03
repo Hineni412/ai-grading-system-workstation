@@ -52,7 +52,8 @@
  const constraintNames = {same_skill_quota:'同技能数量上限',same_task_quota:'相近任务限制',written_quota:'解答题数量上限',paper_full:'总题数上限',similar_or_duplicate:'相似或重复题限制',ranking_tradeoff:'排序取舍'};
  const levelNames = {within:'范围内',above:'高于上界',below:'低于下界',unknown:'无法判断'};
  const evidenceNames = {observed_step:'已定位失分判定点',observed_task:'已知原题任务，未定位失分步骤',target_only:'仅有目标作答依据'};
- const purposeNames = {remediation:'补弱',consolidation:'巩固',new:'新练习：目标暂无有效直接作答证据'};
+ if(data.group_comparison===false)document.getElementById('group-rule').textContent='本次只比较个人卷；小组卷未在本报告重新比较。新练习包括未测目标与诊断性短题，均不计入补弱关联覆盖。';
+ const purposeNames = {remediation:'补弱',consolidation:'巩固',new:'新练习'};
  let scope = data.scopes[2];
  function body(id){return `<div class="question-body" data-content-id="${id}"><span class="note">正在读取题干、公式和配图…</span></div>`;}
  function loadBodies(root){if(window.ReportQuestionContent)window.ReportQuestionContent.load(root);else root.querySelectorAll('[data-content-id]').forEach(node=>{node.textContent='具体题目需要通过本机题面服务读取。请使用本次报告的本机地址打开。';});}
@@ -101,7 +102,7 @@
  function question(item,paper,latest,index){
    const change = paper.retained_questions.includes(item.id) ? '保留' : latest ? '新增' : '移除';
    const badge = change==='保留'?'':latest?'add':'remove';
-   const purpose = item.original_purposes.length && item.original_purposes.every(p=>'new'===p) ? (item.new_task_state==='observed'?' · 原版新练习：已发现同任务':item.new_task_state==='related'?' · 新练习：存在相关任务':' · 未测目标新练习') : item.targets.length ? ' · 补弱关联' : '';
+   const purpose = item.original_purposes.length && item.original_purposes.every(p=>'new'===p) ? (item.new_task_state==='diagnostic'?' · 诊断性新练习':item.new_task_state==='observed'?' · 原版新练习：已发现同任务':item.new_task_state==='related'?' · 新练习：存在相关任务':' · 未测目标新练习') : item.targets.length ? ' · 补弱关联' : '';
    const level = item.level==='unknown' ? '当前任务窗口无法判断' : `${levelNames[item.level]} · 窗口 ${item.window[0]}–${item.window[1]}`;
    let reason = item.targets.length ? `可用补弱目标：${names(item.targets)}` : item.potential_targets.length ? `存在目标/任务关系，受难度或原题规则限制：${names(item.potential_targets)}` : '当前规则没有支持可用补弱关系';
    if(item.status==='其他可用练习') reason='可作其他练习，未对应本范围当前直接失分需要';
@@ -110,6 +111,7 @@
      if(item.new_task_state==='observed')reason+='按终版复核，原考试已考过同一操作，不能仅因标签缺少记录认作全新任务。';
      else if(item.new_task_state==='related')reason+='已发现相关操作记录；相关操作不直接等于已掌握本目标，降低新增优先级。';
      else reason+='当前支持的任务识别没有发现相同操作记录，仍需结合题面核对。';
+     if(item.new_task_state==='diagnostic')reason=`诊断目标：${names(item.new_target_keys||[])}。旧综合题只有总分，未定位具体失分环节；用独立短题确认，不认定为已知薄弱点，不计入补弱关联覆盖。`;
      if(item.target_aim!==null&&item.target_aim!==undefined)reason+=` 本版本目标难度 ${item.target_aim} 级。${escape(item.difficulty_basis||'')}`;
    }
    const complete = item.full_targets.length ? `算法标为覆盖已知原任务要求：${names(item.full_targets)}；尚需教师核对` : item.targets.length ? '只确认目标或环节练习；完整任务覆盖未确认' : '';
