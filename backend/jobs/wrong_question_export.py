@@ -30,6 +30,7 @@ def run_wrong_question_export(
         plan = build_wrong_question_books(
             db, question_bank_db_path, context.payload["student_ids"],
             context.payload["curriculum_volume_id"], context.payload["session_ids"],
+            context.payload.get("scope_keys", ()),
         )
     finally:
         db.close()
@@ -37,7 +38,8 @@ def run_wrong_question_export(
     exam_range = "、".join(item["session_name"] for item in plan["sessions"] if item["session_id"] in selected)
     output_root = Path(reports_dir) / "wrong_question_books"
     output_root.mkdir(parents=True, exist_ok=True)
-    result = dict(generated_students=[], empty_students=[], failed_students=[], missing_items=plan["missing_items"], question_count=0)
+    result = dict(generated_students=[], empty_students=plan['empty_students'], failed_students=[],
+                  missing_items=plan["missing_items"], out_of_scope_count=plan['out_of_scope_count'], question_count=0)
     with tempfile.TemporaryDirectory(dir=output_root, prefix=f".job-{context.job_id}-") as staging:
         staging_root = Path(staging)
         files = []
@@ -47,7 +49,7 @@ def run_wrong_question_export(
             student_result = {"student_id": student["id"], "student_name": student["name"]}
             question_ids = [qid for section in book["sections"] for qid in section["question_ids"]]
             if not question_ids:
-                result["empty_students"].append(dict(student_result, reason="没有错题" if not book["wrong_count"] else "错题均缺少题库原题"))
+                pass
             else:
                 student_root = staging_root / str(student["id"])
                 student_root.mkdir()
@@ -55,9 +57,12 @@ def run_wrong_question_export(
                     file = Path(docx_exporter(
                         question_bank_db_path, question_ids, student_root,
                         title=f"{student['name']} 错题本", include_answer=True,
-                        sections=[SectionSpec(title=section["session_name"], question_ids=section["question_ids"]) for section in book["sections"]],
+                        sections=[SectionSpec(title=section["title"], question_ids=section["question_ids"]) for section in book["sections"]],
                         config=ExportConfig(answer_key_position="end"),
-                        include_answer_space=False, include_student_fields=False,
+                        include_answer_space=context.payload.get('include_answer_space', True), include_student_fields=False,
+                        question_notes={qid: note if context.payload.get('include_source_label', True)
+                                        else note.split(' · 来源：', 1)[0] if note.startswith('技能：') else ''
+                                        for qid, note in book['notes'].items()},
                         page_header_text=f"{plan['semester_label']} · 考试范围：{exam_range}",
                     ))
                     file.resolve(strict=True).relative_to(student_root.resolve())

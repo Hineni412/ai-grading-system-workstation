@@ -55,22 +55,15 @@ from backend.api.routers.jobs import _job_response
 router = APIRouter(prefix="/api", tags=["students"])
 
 
-@router.post("/students/{student_id}/wrong-question-book/preview")
-def preview_wrong_question_book(
-    student_id: int,
+@router.post("/students/wrong-question-books/preview")
+def preview_wrong_question_books(
     body: WrongQuestionBookPreviewRequest,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     question_bank_db_path: Path = Depends(get_question_bank_db_path),
 ) -> dict:
-    roster = db.students.list_students()
-    student = next((row for row in roster if int(row["id"]) == student_id), None)
-    if student is None:
-        raise ApiError(404, "student_not_found", "Student not found")
-    if body.include_class and not student.get("class_name"):
-        raise ApiError(422, "student_class_required", "当前学生尚未分班，请选择当前学生")
-    student_ids = [int(row["id"]) for row in roster if row.get("class_name") == student.get("class_name")] if body.include_class else [student_id]
     try:
-        plan = build_wrong_question_books(db, question_bank_db_path, student_ids, body.curriculum_volume_id, body.session_ids)
+        plan = build_wrong_question_books(db, question_bank_db_path, body.student_ids,
+                                         body.curriculum_volume_id, body.session_ids, body.scope_keys)
     except ValueError as exc:
         raise ApiError(422, "wrong_question_scope_invalid", str(exc)) from exc
     return {key: value for key, value in plan.items() if key != "books"}
@@ -102,7 +95,8 @@ def submit_wrong_question_books(
             raise ApiError(409, "wrong_question_request_conflict", "该请求令牌已用于另一份导出")
         return _job_response(existing)
     try:
-        build_wrong_question_books(db, question_bank_db_path, body.student_ids, body.curriculum_volume_id, body.session_ids)
+        build_wrong_question_books(db, question_bank_db_path, body.student_ids,
+                                   body.curriculum_volume_id, body.session_ids, body.scope_keys)
     except ValueError as exc:
         raise ApiError(422, "wrong_question_scope_invalid", str(exc)) from exc
     try:

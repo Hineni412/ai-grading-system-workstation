@@ -104,6 +104,11 @@ def test_skill_index_current_versions_legacy_links_filters_and_cache(tmp_path):
               for section in chapter['sections'] for row in section['skills']}
     assert index['question_count'] == 5
     assert index['unlinked'] == {'no_usable_evidence': 2, 'no_skill_link': 1}
+    from question_bank.services.knowledge_order import question_primary_skills, skill_placements
+    with connect(db) as conn:
+        assert question_primary_skills(conn, db, tmp_path, [1])[1] == keys[0]
+        placement = skill_placements(conn, keys, 'bnu24-math-g8-upper')[keys[0]]
+        assert placement.section_id and placement.chapter_id and placement.skill_name
     assert [skills[key]['question_count'] for key in keys] == [2, 1, 0]
     assert skills[keys[0]]['difficulty'] == {'min': 2.0, 'median': 2.5, 'max': 3.0}
     page = service.list_questions(QuestionReadFilters(skill_keys=(keys[1],), include_skills=True))
@@ -130,6 +135,36 @@ def test_skill_index_current_versions_legacy_links_filters_and_cache(tmp_path):
         conn.execute("UPDATE questions SET is_deleted=1 WHERE id=2")
     assert service.skill_index('bnu24-math-g8-upper')['question_count'] == 4
     assert service.list_questions(QuestionReadFilters(skill_keys=(keys[0],))).total == 1
+
+
+def test_knowledge_sections_order_groups_missing_difficulty_and_similar_neighbors(monkeypatch):
+    from question_bank.services import knowledge_order as order
+    from dataclasses import replace
+    first = order.Placement('kp_ch1', 1, '第一章', 'ki_sec1', 1, '1 第一节', 'sk_a', '甲技能')
+    placements = {1: first, 2: first, 3: first, 9: first,
+                  5: replace(first, skill_key='sk_b', skill_name='乙技能'),
+                  6: replace(first, skill_key='', skill_name=''),
+                  7: replace(first, section_id='', section_order=10**9, section_label='本章综合'),
+                  10: replace(first, chapter_id='kp_ch2', chapter_order=2, chapter_label='第二章')}
+    compared = []
+    def similarity(left, right):
+        compared.append((left, right))
+        return .8 if {left, right} == {'q1', 'q3'} else .1
+    monkeypatch.setattr(order, 'text_similarity', similarity)
+    entries = [order.OrderEntry(qid, difficulty, kind, f'q{qid}') for qid, difficulty, kind in
+               [(10, 1, '选择题'), (7, 1, '选择题'), (8, 1, '选择题'), (6, 1, '选择题'),
+                (9, None, '选择题'), (3, 4, '解答题'), (2, 3, '填空题'), (1, 2, '选择题'), (5, 1, '解答题')]]
+    sections = order.knowledge_sections(entries, placements)
+    assert [section.title for section in sections] == ['第一章 · 1 第一节', '第一章 · 本章综合',
+                                                     '第二章 · 1 第一节', '未归入章节']
+    assert sections[0].question_ids == [5, 1, 3, 2, 9, 6]
+    assert all(left not in {'q5', 'q6'} and right not in {'q5', 'q6'} for left, right in compared)
+    assert sections[-1].section_id is None
+    assert order.parsed_difficulty('3.5') == 3.5
+    assert all(order.parsed_difficulty(value) is None for value in ('?', 'nan', 'inf', 0, 11, None))
+    tied = order.knowledge_sections([order.OrderEntry(qid, 2, kind, '') for qid, kind in
+                                    [(3, '解答题'), (2, '填空题'), (1, '选择题')]], placements)
+    assert tied[0].question_ids == [1, 2, 3]
 
 
 def test_skill_index_1500_question_cold_and_hot_requests(tmp_path):

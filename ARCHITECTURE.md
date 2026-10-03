@@ -80,6 +80,7 @@ JobManager 在应用进程内用线程池执行任务，阅卷与扫描流程使
 | 训练卷冻结与导出 | `question_bank/personalized_papers/module.py` |
 | 题库状态与产物原子替换 | `question_bank/atomic_files.py`；临时文件占用最多尝试 12 次，总等待 3 秒，其他文件错误直接交给调用方处理 |
 | 训练讲义导出 | `backend/jobs/training_handout.py`；直接从推荐草稿生成 Word，临时产物位于报告目录的 `training_handouts/`，下载后删除 |
+| 学生错题本导出 | `backend/jobs/wrong_question_export.py`；只读成绩与题库，批量生成按知识顺序分节的 Word／ZIP；临时产物位于报告目录的 `wrong_question_books/`，下载后删除 |
 | 普通备份 | `update_tools/backup_core.py` |
 
 兼容输入在明确的加载边界转换，不作为新建入口，也不因此自动改写真实数据。
