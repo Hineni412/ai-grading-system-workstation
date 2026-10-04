@@ -22,6 +22,8 @@ import PaperSettingsPanel from '../components/knowledge-training/PaperSettingsPa
 import PersonalizedRecommendationDraft from '../components/training/PersonalizedRecommendationDraft.vue'
 import AppButton from '../components/design-system/AppButton.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
+import BackButton from '../components/design-system/BackButton.vue'
+import StepProgress, { type StepProgressStep } from '../components/design-system/StepProgress.vue'
 import { loadEvidenceScope, saveEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
 import { loadPaperSelectionSession, savePaperSelectionSession, resolvePaperScope, DEFAULT_TRAINING_RULES, DEFAULT_HANDOUT_RULES, type PracticeRules, type AdoptedChapterGroup, type ChapterGroupEditor, type ChapterGroupSort } from '../features/training/paper-selection-session'
 import '../styles/training-recommendations.css'
@@ -89,7 +91,12 @@ const draftContext = ref<{ mode: 'individual' | 'shared'; studentCount: number; 
 const workflowStage = ref<'diagnosis' | 'draft' | 'wps' | 'scan'>('diagnosis')
 const draftRequestState = ref<'idle' | 'loading' | 'ready' | 'error' | 'editing'>('idle')
 const draftNeedsCheck = ref(false)
-const paperDraft = ref<{ generate: () => Promise<void> } | null>(null)
+const paperDraft = ref<{ generate: () => Promise<void>; selectWorkspaceStep: (id: string) => void } | null>(null)
+const draftWorkspace = ref<{ steps: StepProgressStep[]; current: string; revision: number } | null>(null)
+const draftOpen = computed(() => trainingMode.value === 'paper' && draftContext.value !== null)
+const draftBack = computed(() => route.query.from === 'workbench'
+  ? { to: '/workbench', label: '工作台' }
+  : { to: paperBackTarget.value, label: paperBackTarget.value.query.mode === 'chapter' ? '按章节训练' : '按学生训练' })
 let studentsController: AbortController | null = null
 
 const trainingMode = computed<TrainingMode>(() => {
@@ -474,9 +481,14 @@ onBeforeUnmount(() => studentsController?.abort())
 
 <template>
   <section class="training-workspace knowledge-training-page" aria-labelledby="training-title">
-    <PageHeader :title="pageCopy.title" title-id="training-title" class="knowledge-training-header">
-      <template #meta><span>{{ curriculumScope.selectedVolume?.label ?? '未选择教学学期' }}</span><span v-if="training.diagnosis">{{ trainingMode === 'paper' ? draftContext?.studentCount ?? paperStudentCount : selectedStudentCount }} 名学生</span></template>
-      <template #navigation><KnowledgeTrainingTabs /></template>
+    <PageHeader :title="draftOpen ? draftContext?.purpose === 'handout' ? '刷题讲义' : '训练卷' : pageCopy.title" title-id="training-title" class="knowledge-training-header" :class="{ 'training-draft-header': draftOpen }">
+      <template v-if="draftOpen" #back><BackButton :label="draftBack.label" :to="draftBack.to" /></template>
+      <template #meta>
+        <span v-if="draftOpen && draftContext">{{ draftContext.mode === 'individual' ? '一人一卷' : '多人同一套卷' }} · {{ draftContext.studentCount }} 名学生 · 每卷 {{ draftContext.questionCount }} 题 · 难度 ≤ {{ draftContext.difficultyMax }} 级 · 自动保存 V{{ draftWorkspace?.revision }}</span>
+        <template v-else><span>{{ curriculumScope.selectedVolume?.label ?? '未选择教学学期' }}</span><span v-if="training.diagnosis">{{ trainingMode === 'paper' ? paperStudentCount : selectedStudentCount }} 名学生</span></template>
+      </template>
+      <template v-if="!draftOpen" #navigation><KnowledgeTrainingTabs /></template>
+      <template v-if="draftOpen && draftWorkspace" #actions><StepProgress :steps="draftWorkspace.steps" :current="draftWorkspace.current" aria-label="草稿步骤" @select="paperDraft?.selectWorkspaceStep($event)" /></template>
     </PageHeader>
 
     <TrainingScopeBar v-if="referenceState !== 'error' && trainingMode !== 'paper'"
@@ -527,7 +539,7 @@ onBeforeUnmount(() => studentsController?.abort())
       <template v-else>
         <div class="paper-console is-reviewing">
           <div class="paper-console__main">
-            <div class="paper-review-bar">
+            <div v-if="!draftOpen" class="paper-review-bar">
               <strong>{{ (draftContext?.mode ?? paperMode) === 'individual' ? '一人一卷' : '多人同一套卷' }}</strong>
               <span v-if="(draftContext?.mode ?? paperMode) === 'shared'">供 <b>{{ draftContext?.studentCount ?? paperStudentCount }}</b> 名学生共同练习</span>
               <span v-else>{{ draftContext?.studentCount ?? paperStudentCount }} 名学生</span>
@@ -569,6 +581,7 @@ onBeforeUnmount(() => studentsController?.abort())
               :curriculum-volume-id="curriculumScope.selectedVolumeId"
               :disabled="!paperSettingsValid"
               @context-change="draftContext = $event"
+              @workspace-change="draftWorkspace = $event"
               @stage-change="onPaperStageChange"
               @state-change="draftRequestState = $event"
               @recovery-change="draftNeedsCheck = $event"
@@ -611,6 +624,11 @@ onBeforeUnmount(() => studentsController?.abort())
 .paper-review-bar>span{color:var(--color-text-secondary)}
 .paper-review-bar__back{margin-left:auto;color:var(--color-accent);font-size:var(--font-size-dense);text-decoration:none}
 .paper-review-hint{margin:0;font-size:var(--font-size-dense);color:var(--color-warning)}
+.training-workspace :deep(.training-draft-header){gap:var(--space-3);padding-block:var(--space-3)}
+.training-workspace :deep(.training-draft-header .page-header__meta){overflow-wrap:anywhere}
+.training-workspace :deep(.training-draft-header .page-header__lead){flex:1}
+@media(max-width:1100px){.training-workspace :deep(.training-draft-header .page-header__actions){width:100%;margin-inline-start:0;justify-content:flex-start;padding-block:var(--space-3)}}
+@media(max-width:760px){.training-workspace :deep(.training-draft-header .step-progress__connector){flex-basis:10px;margin-inline:var(--space-1)}}
 .paper-settings-summary{font-size:var(--font-size-caption);color:var(--color-text-muted)}.paper-settings-summary summary{cursor:pointer}.paper-settings-summary p{margin:var(--space-2) 0 0}
 .training-workspace :deep(.knowledge-training-tabs>span){display:none}
 @media(max-width:1100px){.training-selection-layout{grid-template-columns:minmax(0,1fr)}.training-selection-layout>.paper-settings-panel{position:static;grid-column:1;grid-row:auto}.training-selection-layout>.chapter-training,.training-selection-layout>.knowledge-structure{grid-row:auto}.training-selection-layout>.training-data-note,.training-selection-layout>.training-adopted-group{grid-row:auto}}

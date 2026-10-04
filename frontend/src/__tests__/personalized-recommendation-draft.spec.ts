@@ -299,6 +299,7 @@ describe('personalized recommendation draft', () => {
   })
 
   it('lets the teacher select a target, generate, explain and lock an item', async () => {
+    const workspaceChange = vi.fn()
     const host = document.createElement('div')
     document.body.append(host)
     const app = createApp(PersonalizedRecommendationDraftView, {
@@ -307,6 +308,7 @@ describe('personalized recommendation draft', () => {
       examScope: { mode: 'current', session_ids: [7] },
       questionCount: 8,
       trainingIntent: 'challenge',
+      onWorkspaceChange: workspaceChange,
       teachingProgressChapterId: 'bnu24-math-g8-upper-c02',
       excludeCurrentExamOriginals: true,
     })
@@ -382,7 +384,7 @@ describe('personalized recommendation draft', () => {
     expect(host.textContent).toContain('2 页')
     expect(host.textContent).toContain('可打印')
     expect(host.textContent).toContain('下载 PDF 试卷')
-    expect(host.querySelector('.step-progress [aria-current="step"]')?.textContent).toBe('打印试卷')
+    expect(workspaceChange).toHaveBeenLastCalledWith(expect.objectContaining({ current: 'print', revision: 2 }))
     expect(host.querySelector<HTMLDivElement>('.draft-review')?.style.display).toBe('none')
   })
 

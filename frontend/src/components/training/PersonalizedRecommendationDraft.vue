@@ -19,7 +19,7 @@ import { knowledgeLeafLabel } from '../../api/question-bank'
 import { ApiError, isAmbiguousWriteError } from '../../api/errors'
 import { difficultyLevel } from '../../lib/utils'
 import AppButton from '../design-system/AppButton.vue'
-import StepProgress, { type StepProgressStep } from '../design-system/StepProgress.vue'
+import type { StepProgressStep } from '../design-system/StepProgress.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
 import TrainingScanBatchPanel from './TrainingScanBatchPanel.vue'
 import QuestionPreviewDialog from './QuestionPreviewDialog.vue'
@@ -61,6 +61,7 @@ const emit = defineEmits<{
   stateChange: [state: RequestState]
   recoveryChange: [pending: boolean]
   contextChange: [context: { mode: 'individual' | 'shared'; studentCount: number; questionCount: number; difficultyMax: number; purpose: 'training' | 'handout' } | null]
+  workspaceChange: [value: { steps: StepProgressStep[]; current: string; revision: number } | null]
 }>()
 
 type RequestState = 'idle' | 'loading' | 'ready' | 'error' | 'editing'
@@ -110,6 +111,9 @@ const paperBusy = ref('')
 // 整卷体积上限对教师不可见：固定取最大档，硬上限（题量/判定点/图片/页数）仍会拦截。
 const PAPER_CONTEXT_WINDOW = 128000
 const paperBatch = ref<PersonalizedPaperBatch | null>(null)
+watch([workspaceSteps, viewStep, () => draft.value?.revision], () => {
+  emit('workspaceChange', draft.value ? { steps: workspaceSteps.value, current: viewStep.value, revision: draft.value.revision } : null)
+}, { immediate: true })
 const paperCancelBusy = ref(false)
 let paperBatchPollGeneration = 0
 
@@ -583,7 +587,7 @@ async function generate(): Promise<void> {
   }
 }
 
-defineExpose({ generate })
+defineExpose({ generate, selectWorkspaceStep })
 
 async function openNextDraft(draftId: string): Promise<void> {
   if (state.value === 'loading' || state.value === 'editing') return
@@ -907,7 +911,6 @@ async function editItem(
     <p v-if="errorMessage" class="training-feedback is-warning" role="alert">{{ errorMessage }}</p>
 
     <template v-if="draft">
-      <header class="draft-workflow-heading"><StepProgress :steps="workspaceSteps" :current="viewStep" @select="selectWorkspaceStep" /><span>自动保存 · V{{ draft.revision }}</span></header>
 
       <section v-show="viewStep === 'review'" class="draft-review">
         <div class="personalized-draft-toolbar">
@@ -973,8 +976,6 @@ async function editItem(
 .personalized-draft{min-width:0;background:var(--color-bg-surface);border:1px solid var(--color-border-default);border-radius:var(--radius-panel);padding:var(--space-5)}
 .personalized-draft.is-external-setup{border:0;padding:0;background:transparent}
 .personalized-draft h3,.personalized-draft p{margin:0}
-.draft-workflow-heading{display:flex;justify-content:space-between;align-items:center;gap:var(--space-4);padding:var(--space-3) 0 var(--space-4);border-bottom:1px solid var(--color-border-default);margin-bottom:var(--space-4)}
-.draft-workflow-heading>span{font-size:var(--font-size-caption);color:var(--color-text-muted);white-space:nowrap}
 .personalized-draft-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-3);margin-bottom:var(--space-4);font-size:var(--font-size-dense)}
 .personalized-draft-toolbar>button:first-of-type{margin-left:auto}
 .draft-data-notes,.draft-edit-settings{font-size:var(--font-size-dense);color:var(--color-text-secondary)}
@@ -1030,5 +1031,5 @@ async function editItem(
 .draft-action-message{font-size:var(--font-size-dense);color:var(--color-text-secondary);margin-top:var(--space-3)!important}
 .personalized-settings{padding:var(--space-3);margin-bottom:var(--space-4)}.personalized-settings summary{cursor:pointer}
 .personalized-targets{display:flex;flex-wrap:wrap;gap:var(--space-3);margin-bottom:var(--space-3);border:1px solid var(--color-border-default);font-size:var(--font-size-dense)}
-@media(max-width:760px){.draft-workflow-heading{flex-wrap:wrap}.personalized-workbench{grid-template-columns:minmax(0,1fr)}.personalized-student-list{display:flex;overflow:auto;position:static}.personalized-student-list header{display:none}.personalized-student-list button{flex:0 0 175px;border-right:1px solid var(--color-border-default);border-top:0}.personalized-student-list button.is-selected{box-shadow:inset 0 -3px var(--color-accent)}.personalized-match__head{gap:var(--space-2)}.personalized-match__difficulty{margin-left:0;flex-basis:100%}.personalized-batch-panel{padding:var(--space-4)}.personalized-batch-panel>button{flex:1 1 auto}.personalized-draft-toolbar>button:first-of-type{margin-left:0}.personalized-match__evidence{min-width:150px}.draft-workflow-heading :deep(.step-progress__connector){flex-basis:10px;margin-inline:var(--space-1)}}
+@media(max-width:760px){.personalized-workbench{grid-template-columns:minmax(0,1fr)}.personalized-student-list{display:flex;overflow:auto;position:static}.personalized-student-list header{display:none}.personalized-student-list button{flex:0 0 175px;border-right:1px solid var(--color-border-default);border-top:0}.personalized-student-list button.is-selected{box-shadow:inset 0 -3px var(--color-accent)}.personalized-match__head{gap:var(--space-2)}.personalized-match__difficulty{margin-left:0;flex-basis:100%}.personalized-batch-panel{padding:var(--space-4)}.personalized-batch-panel>button{flex:1 1 auto}.personalized-draft-toolbar>button:first-of-type{margin-left:0}.personalized-match__evidence{min-width:150px}}
 </style>
