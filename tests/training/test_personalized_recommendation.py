@@ -1111,6 +1111,8 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
             )
             for ref in point["source_question_refs"]:
                 ref["session_name"] = "合成学期考试"
+                if student["student_id"] in members:
+                    ref["assessment"]["part_difficulty"] = 8
 
     class Diagnosis:
         def build_profiles(self, *, scope, exam_scope):
@@ -1141,7 +1143,12 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
         "session_ids": [],
         "curriculum_volume_id": "bnu24-math-g8-upper",
     }
-    settings = {"scope_keys": [BNU_CHAPTER4], "question_count": 10, "difficulty_max": 7}
+    settings = {
+        "scope_keys": [BNU_CHAPTER4],
+        "question_count": 10,
+        "difficulty_max": 8,
+        "max_questions_per_skill": 10,
+    }
     metadata_reads = []
     original_metadata = direct_module._source_practice_metadata
 
@@ -1209,7 +1216,8 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
             "exam_scope": exams,
             "paper_mode": "shared",
             "question_count": 10,
-            "difficulty_max": 7,
+            "difficulty_max": 8,
+            "max_questions_per_skill": 10,
             "target_keys": targets,
             "group_scope_keys": [BNU_CHAPTER4],
             "group_source_version": checked.json()["grouping"]["selection"][
@@ -2161,26 +2169,86 @@ def test_adjustable_rules_and_legacy_defaults(direct_module):
     assert [i["question_id"] for i in replace(control, "4")] == [i["question_id"] for i in replace(current, "5")]
 
 
-def test_group_members_require_shared_needs_and_overlapping_windows():
-    from question_bank.recommendation.personalized import _chapter_group_members
+_QUALITY_STEMS = ("方程 全等 作图 函数 面积 平行 圆弧 统计 实数 根式 "
+                  "勾股 相似 对称 旋转 概率 分式 不等式 菱形 梯形 中位数").split()
 
-    def needs(pairs):
-        return {key: {"difficulty_plan": {"minimum": aim - 1., "maximum": aim + 1., "aim": aim}}
-                for key, aim in pairs.items()}
 
-    compatible = {"A": needs({"sk_1": 3.0}), "B": needs({"sk_1": 3.5})}
-    assert _chapter_group_members(compatible) == [("A", "B")]
-    thin_overlap = {"A": needs({"sk_1": 3.0, "sk_2": 3.0, "sk_3": 3.0, "sk_4": 3.0}),
-                    "B": needs({"sk_1": 3.0, "sk_5": 3.0, "sk_6": 3.0, "sk_7": 3.0})}
-    assert _chapter_group_members(thin_overlap) == []
-    aim_gap = {
-        "A": {"sk_1": {"difficulty_plan": {"minimum": 1.0, "maximum": 4.0, "aim": 2.0}}},
-        "B": {"sk_1": {"difficulty_plan": {"minimum": 3.0, "maximum": 6.0, "aim": 4.3}}}}
-    assert _chapter_group_members(aim_gap) == []
-    disjoint_windows = {
-        "A": {"sk_1": {"difficulty_plan": {"minimum": 1.0, "maximum": 2.0, "aim": 1.5}}},
-        "B": {"sk_1": {"difficulty_plan": {"minimum": 3.0, "maximum": 4.0, "aim": 3.0}}}}
-    assert _chapter_group_members(disjoint_windows) == []
+def _group_entry(sid, qid, key, purpose="remediation"):
+    return {"candidate": {"question_id": qid, "difficulty": 3., "stable_keys": (key,),
+                          "question_type": "填空题",
+                          "question_text": f"{_QUALITY_STEMS[qid % len(_QUALITY_STEMS)]}专项练习"},
+            "student_id": sid, "key": key, "matched_key": key,
+            "selection_kind": "direct", "practice_purpose": purpose,
+            "practice_role": "step_practice", "distance": 0., "preference": 0.,
+            "match_level": 1,
+            "target": {"mastery": .5, "difficulty_plan": {"aim": 3.}}}
+
+
+def _group_need(aim, *keys):
+    return {key: {"difficulty_plan": {"minimum": aim - 1., "maximum": aim + 1., "aim": aim}}
+            for key in keys}
+
+
+def test_quality_grouping_uses_shared_paper_coverage():
+    from question_bank.recommendation.personalized import _quality_group_members
+    config = PersonalizedRecommendationConfig(question_count=8, max_questions_per_skill=8,
+                                              max_written_questions=8, recent_activity_count=0)
+    # Same need and a pool both members can share -> one group.
+    needs = {"A": _group_need(3., "sk_1"), "B": _group_need(3., "sk_1")}
+    pools = {"A": [_group_entry("A", qid, "sk_1") for qid in range(1, 9)],
+             "B": [_group_entry("B", qid, "sk_1") for qid in range(1, 9)]}
+    assert _quality_group_members(needs=needs, pools=pools, recent={}, config=config) == [("A", "B")]
+
+    # C's second skill is not shareable: joining would keep only half of its
+    # personal coverage, so it stays unassigned.
+    needs["C"] = _group_need(3., "sk_1", "sk_2")
+    pools["C"] = ([_group_entry("C", qid, "sk_1") for qid in range(3, 11)]
+                  + [_group_entry("C", qid, "sk_2") for qid in range(11, 19)])
+    assert _quality_group_members(needs=needs, pools=pools, recent={}, config=config) == [("A", "B")]
+
+    # Fewer than six shareable questions -> no group.
+    sparse_needs = {"D": _group_need(3., "sk_1"), "E": _group_need(3., "sk_1")}
+    sparse_pools = {"D": [_group_entry("D", qid, "sk_1") for qid in range(1, 6)],
+                    "E": [_group_entry("E", qid, "sk_1") for qid in range(1, 9)]}
+    assert _quality_group_members(needs=sparse_needs, pools=sparse_pools,
+                                  recent={}, config=config) == []
+
+    # A member whose personal paper covers no need is never grouped.
+    weak_needs = {"F": _group_need(3., "sk_1"), "G": _group_need(3., "sk_1")}
+    weak_pools = {"F": [_group_entry("F", qid, "sk_1", purpose="consolidation")
+                        for qid in range(1, 9)],
+                  "G": [_group_entry("G", qid, "sk_1") for qid in range(1, 9)]}
+    assert _quality_group_members(needs=weak_needs, pools=weak_pools,
+                                  recent={}, config=config) == []
+
+    # The compatibility prefilter still blocks aim-gap, disjoint-window and
+    # thin-overlap pairs even when every question is shareable.
+    aim_gap = (_group_need(2., "sk_1"),
+               {"sk_1": {"difficulty_plan": {"minimum": 3., "maximum": 6., "aim": 4.3}}})
+    disjoint = ({"sk_1": {"difficulty_plan": {"minimum": 1., "maximum": 2., "aim": 1.5}}},
+                {"sk_1": {"difficulty_plan": {"minimum": 3., "maximum": 4., "aim": 3.}}})
+    thin = (_group_need(3., "sk_1", "sk_2", "sk_3", "sk_4"),
+            _group_need(3., "sk_1", "sk_5", "sk_6", "sk_7"))
+    for left, right in (aim_gap, disjoint, thin):
+        pair_pools = {"H": [_group_entry("H", qid, key) for qid in range(1, 9) for key in left],
+                      "I": [_group_entry("I", qid, key) for qid in range(1, 9) for key in right]}
+        assert _quality_group_members(needs={"H": left, "I": right}, pools=pair_pools,
+                                      recent={}, config=config) == []
+
+
+def test_no_source_direct_match_is_level_two_same_skill_label(direct_module):
+    candidate = {"question_id": 9999, "difficulty": 3., "stable_keys": ("sk_synthetic_label",),
+                 "question_type": "填空题", "question_text": "合成无来源标签题"}
+    evaluated = direct_module.evaluate_candidates(
+        diagnosis={"exam_scope": {"mode": "current", "session_ids": [1]},
+                   "students": [{"student_id": "A", "student_name": "合成学生A",
+                                 "class_id": "synthetic", "score_rate": .5, "weak_points": []}]},
+        config=PersonalizedRecommendationConfig(target_keys=("sk_synthetic_label",),
+                                                question_count=8, recent_activity_count=0),
+        candidates=(candidate,), recent={"A": set()}, excluded=set())
+    entry = evaluated["pools"]["A"][0]
+    assert entry["match_level"] == 2
+    assert entry["match_label"] == "同技能练习"
 
 
 def test_failed_skill_plan_steps_back_or_caps_at_failed_difficulty():

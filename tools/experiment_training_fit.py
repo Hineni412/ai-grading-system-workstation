@@ -574,7 +574,8 @@ def run_evidence_loss(data_root: Path, volume: str):
                                 point_loss_pairs.add((sid, key))
                 # Reuse the native composition step. Availability/ready flags require
                 # a separate common candidate evaluation, not inferred from membership.
-                groups_as_sets = {frozenset(group) for group in engine._chapter_group_members(group_needs)}
+                groups_as_sets = {frozenset(group) for group in engine._quality_group_members(
+                    needs=group_needs, pools=evaluated['pools'], recent=recent, config=config)}
                 group_mates = {sid: group for group in groups_as_sets for sid in group}
                 direct_pairs = {(sid, key) for (sid, key), value in values.items()
                                 if key in owned and value.direct_evidence_count > 0}

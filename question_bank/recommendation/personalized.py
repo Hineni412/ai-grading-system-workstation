@@ -55,9 +55,11 @@ from question_bank.training_criteria import (
 )
 
 ENGINE_VERSION = "personalized-recommendation-v27-skill-mastery-model"
-GROUPING_VERSION = "chapter-skill-compatibility-v8-aim-window"
+GROUPING_VERSION = "chapter-skill-quality-v9-shared-paper"
 GROUP_MIN_SHARED_RATIO = 0.5
 GROUP_MAX_AIM_GAP = 2.0
+GROUP_MIN_RETENTION = 0.75
+GROUP_MIN_QUESTIONS = 6
 TOO_EASY_SUCCESS = 0.85
 STARTER_SUCCESS = 0.80
 TARGET_SUCCESS = 0.70
@@ -1394,7 +1396,7 @@ class PersonalizedRecommendationModule:
                     profile["weak_points"].append(by_key[key])
                 by_key[key]["source_question_refs"] = point.get("source_question_refs", [])
         needs = _group_needs(normalized, leaves, cap=config.difficulty_max)
-        grouped_members = _chapter_group_members(needs)
+        need_sids = sorted(sid for sid in needs if needs[sid])
         candidates, source_version, recent = (), "", {}
         metadata = self._source_practice_metadata(normalized)
         links = self._links_for_metadata(metadata)
@@ -1403,14 +1405,27 @@ class PersonalizedRecommendationModule:
             _unlinked_loss_count(student, set(leaves),
                                  lambda r: self._enrich_source_ref(r, metadata, links, part_cache))
             for student in normalized["students"])
-        # Read question bodies only after a usable group exists, and only for
-        # the selected chapter. A coarse-only diagnosis needs no question pool.
-        if grouped_members or member_ids:
+        evaluation_memo: dict = {}
+        # Read question bodies whenever any member need could be served; a
+        # coarse-only diagnosis needs no question pool.
+        if need_sids or member_ids:
             candidates, relations, source_version = self._source_snapshot(
                 excluded_question_ids=excluded, knowledge_keys=leaves, candidate_config=config,
             )
             recent = self._recent_question_ids(tuple(str(student["student_id"]) for student in students), diagnosis=normalized, graded_activities=graded_activities, recent_activity_count=config.recent_activity_count, purpose=config.purpose)
-        evaluation_memo: dict = {}
+        pools: dict[str, list[dict[str, Any]]] = {}
+        if need_sids:
+            need_set = set(need_sids)
+            evaluated = self.evaluate_candidates(
+                diagnosis={**normalized, "students": [profile for profile in normalized["students"]
+                                                      if str(profile["student_id"]) in need_set]},
+                config=replace(config, paper_mode="individual",
+                               target_keys=tuple(sorted({key for sid in need_sids for key in needs[sid]}))),
+                candidates=candidates, mastery=mastery, source_metadata=metadata,
+                recent={sid: recent.get(sid, set()) for sid in need_sids},
+                excluded=excluded, evaluation_memo=evaluation_memo)
+            pools = evaluated["pools"]
+        grouped_members = _quality_group_members(needs=needs, pools=pools, recent=recent, config=config)
         groups = [self._chapter_group_summary(
             diagnosis=normalized, members=members, targets=(), needs=needs, config=config,
             candidates=candidates, relations=relations, recent=recent, excluded=excluded, source_version=source_version, metadata=metadata,
@@ -1441,10 +1456,10 @@ class PersonalizedRecommendationModule:
                 "unassigned": [{"student_id": student["student_id"], "student_name": student["student_name"],
                                 "class_id": student["class_id"],
                                 "reason_kind": ("no_group_fit" if needs[student["student_id"]] else "no_direct_evidence"),
-                                "reason": ("当前没有匹配到技能需要和适合难度相近的群体，可调整分组或使用一人一卷。"
+                                "reason": ("与其他同学共用一卷时，本人能练到的薄弱技能少于单独出卷的四分之三，或可共用的题不足 6 道；建议一人一卷。"
                                            if needs[student["student_id"]] else "暂无足够的直接薄弱证据；无证据、整题或多目标综合失分不按不会处理。")}
                                for student in normalized["students"] if student["student_id"] not in covered],
-                "warnings": ["按同技能多次作答形成的适合难度范围分组，整卷覆盖成员需求；无证据不推断薄弱。"]}
+                "warnings": ["按同技能多次作答形成的适合难度范围分组，共用卷须保留每位成员至少四分之三的个人补弱练习；无证据不推断薄弱。"]}
 
     def _chapter_group_summary(
         self, *, diagnosis: Mapping[str, Any], members: Sequence[str], targets: Sequence[str],
@@ -1554,7 +1569,7 @@ class PersonalizedRecommendationModule:
                 "compatibility": round(min(similarities, default=0), 4),
                 "ready": not issues, "issues": list(dict.fromkeys(issues)), "warnings": warnings,
                 "available_question_count": count, "recent_excluded_count": len(removed),
-                "reason": "先覆盖尚未练到的成员失分内容，再增加练习；直接练习不足时从选定范围内补充相近难度题。"}
+                "reason": "组内成员共用一套题：每人能练到的薄弱技能不少于单独出卷的四分之三，整卷至少 6 道；先覆盖尚未练到的成员失分内容，再增加练习。"}
 
     def create(
         self,
@@ -2321,8 +2336,8 @@ class PersonalizedRecommendationModule:
                     direct = key in candidate["stable_keys"] and not any(r.get("assessment", {}).get("evidence_version_id") for r in refs)
                     if not direct and not supplement_scope.intersection(candidate["stable_keys"]):
                         continue
-                    match = {"match_level": 3 if direct else 4,
-                             "match_label": "同知识目标练习" if direct else MATCH_LABELS[4]}
+                    match = {"match_level": 2 if direct else 4,
+                             "match_label": "同技能练习" if direct else MATCH_LABELS[4]}
                 if direct_only and not direct:
                     continue
                 if core_only and not direct:
@@ -3693,30 +3708,83 @@ def _group_similarity(left: Mapping[str, Any], right: Mapping[str, Any]) -> floa
     return min(fits)
 
 
-def _chapter_group_members(needs: Mapping[str, Mapping[str, Any]]) -> list[tuple[str, ...]]:
-    """Build stable groups with compatible skill ranges; verify actual pool later."""
+def _quality_group_members(*, needs: Mapping[str, Mapping[str, Any]],
+                           pools: Mapping[str, Sequence[dict[str, Any]]],
+                           recent: Mapping[str, set[int]] | None,
+                           config: PersonalizedRecommendationConfig) -> list[tuple[str, ...]]:
+    """Greedy groups whose shared paper keeps most of each member's solo coverage."""
+    recent = recent or {}
+    sids = sorted(sid for sid in needs if needs[sid])
+    if not sids:
+        return []
+    min_questions = min(GROUP_MIN_QUESTIONS, config.question_count)
+
     def level(sid):
-        return median((item.get("difficulty_plan") or _difficulty_plan({}, item.get("score_rate"), 8, item))["aim"]
-                      for item in needs[sid].values())
-    remaining = sorted((sid for sid in needs if needs[sid]), key=lambda sid: (level(sid), sid))
+        return median((item.get("difficulty_plan") or _difficulty_plan(
+            {}, item.get("score_rate"), 8, item))["aim"] for item in needs[sid].values())
+
+    core_qids = {sid: {key: {entry["candidate"]["question_id"] for entry in pools.get(sid, ())
+                             if entry["key"] == key and _is_core(entry)
+                             and entry.get("practice_purpose") == "remediation"}
+                       for key in needs[sid]} for sid in sids}
+    pool_cache: dict[tuple[str, ...], tuple[frozenset[str], set[int]]] = {}
+
+    def shared_pool(members: tuple[str, ...]) -> tuple[frozenset[str], set[int]]:
+        if members not in pool_cache:
+            keys = frozenset().union(*(set(needs[sid]) for sid in members))
+            pool = set.intersection(*(
+                {entry["candidate"]["question_id"] for entry in pools.get(sid, ())
+                 if entry["key"] in keys} for sid in members))
+            pool -= set().union(*(recent.get(sid, set()) for sid in members))
+            pool_cache[members] = (keys, pool)
+        return pool_cache[members]
+
+    paper_cache: dict[tuple[str, ...], tuple[int, dict[str, set[str]]]] = {}
+
+    def paper(members: Sequence[str]) -> tuple[int, dict[str, set[str]]]:
+        members = tuple(sorted(members))
+        if members not in paper_cache:
+            keys, pool = shared_pool(members)
+            entries = [entry for sid in members for entry in pools.get(sid, ())
+                       if entry["key"] in keys and entry["candidate"]["question_id"] in pool]
+            chosen = _choose_practice_entries(
+                _common_entries(entries, members), config.question_count,
+                replace(config, paper_mode="shared", target_keys=tuple(sorted(keys))))
+            hits = {sid: {entry["key"] for _, group in chosen for entry in group
+                          if entry["student_id"] == sid and _is_core(entry)
+                          and entry.get("practice_purpose") == "remediation"
+                          and entry["key"] in needs[sid]} for sid in members}
+            paper_cache[members] = (len(chosen), hits)
+        return paper_cache[members]
+
+    solo = {sid: paper((sid,))[1][sid] for sid in sids}
+
+    def viable(members: Sequence[str]) -> bool:
+        _, pool = shared_pool(tuple(sorted(members)))
+        if len(pool) < min_questions:
+            return False
+        return all(sum(bool(core_qids[sid][key] & pool) for key in needs[sid])
+                   >= GROUP_MIN_RETENTION * len(solo[sid]) for sid in members)
+
+    remaining = [sid for sid in sorted(sids, key=lambda sid: (level(sid), sid)) if solo[sid]]
     groups = []
     while remaining:
-        members = [remaining.pop(0)]
-        for sid in list(remaining):
-            if all(_students_compatible(needs[sid], needs[member]) for member in members):
+        seed = remaining.pop(0)
+        members = [seed]
+        for sid in sorted(remaining, key=lambda t: (-len(set(needs[t]) & set(needs[seed])),
+                                                  abs(level(t) - level(seed)), t)):
+            if not all(_students_compatible(needs[sid], needs[member]) for member in members):
+                continue
+            trial = (*members, sid)
+            if not viable(trial):
+                continue
+            count, hits = paper(trial)
+            if count >= min_questions and all(len(hits[m]) >= GROUP_MIN_RETENTION * len(solo[m])
+                                              for m in trial):
                 members.append(sid)
                 remaining.remove(sid)
         if len(members) >= 2:
             groups.append(tuple(sorted(members)))
-    assigned = {sid for group in groups for sid in group}
-    for sid in sorted((sid for sid in needs if needs[sid] and sid not in assigned), key=lambda sid: (level(sid), sid)):
-        candidates = [(-_group_similarity(needs[sid], needs[member]), -len(group), member, index)
-                      for index, group in enumerate(groups) if len(group) >= 3
-                      for member in group if _students_compatible(needs[sid], needs[member])]
-        if candidates:
-            _, _, member, index = min(candidates)
-            groups[index] = tuple(value for value in groups[index] if value != member)
-            groups.append(tuple(sorted((sid, member))))
     return sorted(groups)
 
 
