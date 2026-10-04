@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pickle
 import re
 import sqlite3
 from pathlib import Path
@@ -38,7 +39,7 @@ from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from integration.data_generation import commit_generation
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from integration.result_cache import ResultCache
-from integration.training_prewarm import record_request
+from integration.training_prewarm import record_request, record_target
 from question_bank.recommendation.personalized import PersonalizedRecommendationModule, PersonalizedRecommendationError
 from question_bank.services.assembly_assistant import shortlist_candidates
 from question_bank.services.assembly_workspace_service import (
@@ -64,6 +65,27 @@ _ASSISTANT_CACHE = ResultCache(limit=16)
 # Exam evidence cache: the source-identity element of the diagnosis key covers
 # both database generations and the .class_analysis state the report writes.
 _EXAM_QUESTIONS_CACHE = ResultCache(limit=8)
+# Persisted results are tied to the code that produced them, like
+# _PROFILE_CALCULATION_STATE covers question_bank/** and integration/*.
+_ASSEMBLY_CODE_STATE = tuple(
+    (str(path), path.stat().st_mtime_ns, path.stat().st_size)
+    for path in (
+        Path(__file__).resolve(),
+        Path(__file__).resolve().parent.parent / "schemas" / "assembly.py",
+    )
+)
+
+
+def _uploaded_generation(service) -> tuple:
+    """Generation of the rubric/evidence files under config/uploaded, which
+    the database generations do not cover."""
+    from integration.diagnosis_profile_service import _dir_generation
+
+    data_root = getattr(service, "data_root", None)
+    if data_root is None:
+        bank_path = getattr(service, "question_bank_db_path", None)
+        data_root = Path(bank_path).parent.parent if bank_path is not None else None
+    return _dir_generation(Path(data_root) / "config" / "uploaded") if data_root else ()
 
 
 def _cached_exam_questions(
@@ -72,8 +94,6 @@ def _cached_exam_questions(
     class_ids: list[str],
     volume_id: str,
 ) -> dict:
-    from integration.diagnosis_profile_service import _dir_generation
-
     classes = sorted({str(item) for item in class_ids})
     key_fn = getattr(service, "tag_profile_cache_key", None)
     if not callable(key_fn):
@@ -82,16 +102,31 @@ def _cached_exam_questions(
         scope={"mode": "class", "class_ids": classes, "use_historical_fallback": False},
         exam_scope={"mode": "semester", "curriculum_volume_id": volume_id},
     )[0]
-    # Rubric JSONs, answer keys and frozen evidence snapshots are read from
-    # files under config/uploaded, not covered by the database generations.
-    data_root = getattr(service, "data_root", None)
-    if data_root is None:
-        bank_path = getattr(service, "question_bank_db_path", None)
-        data_root = Path(bank_path).parent.parent if bank_path is not None else None
-    uploaded = _dir_generation(Path(data_root) / "config" / "uploaded") if data_root else ()
+    uploaded = _uploaded_generation(service)
+    pkey = (identity, "assembly-exam-questions-v2", *uploaded, _ASSEMBLY_CODE_STATE,
+            tuple(classes), str(volume_id))
+
+    def _compute() -> dict:
+        reader = getattr(service, "read_persistent_result", None)
+        if callable(reader):
+            saved = reader(pkey)
+            if saved is not None:
+                try:
+                    result = pickle.loads(saved[0])
+                except (pickle.PickleError, EOFError, TypeError, ValueError):
+                    result = None
+                if isinstance(result, dict):
+                    return result
+        result = service.assembly_exam_questions(class_ids=classes, volume_id=volume_id)
+        writer = getattr(service, "save_persistent_result", None)
+        if callable(writer):
+            writer(pkey, (pickle.dumps(result, pickle.HIGHEST_PROTOCOL),
+                          pickle.dumps({}, pickle.HIGHEST_PROTOCOL)))
+        return result
+
     return _EXAM_QUESTIONS_CACHE.get_or_compute(
-        ("assembly-exam-questions-v1", identity, *uploaded, tuple(classes), str(volume_id)),
-        lambda: service.assembly_exam_questions(class_ids=classes, volume_id=volume_id),
+        ("assembly-exam-questions-v2", identity, *uploaded, tuple(classes), str(volume_id)),
+        _compute,
     )
 
 
@@ -149,42 +184,86 @@ def compute_assistant_candidates(
     exclude_exam_originals: bool = True,
     exclude_recent: bool = True,
     recent_activity_count: int = 3, purpose: str = "training",
+    record: bool = True,
 ) -> dict:
     """Single compute path shared by the endpoint and the prewarm worker."""
+    # Canonicalize types before both keys: JSON restores recorded params as
+    # e.g. 8.0 where a live request may carry 8, and the persisted entry file
+    # name hashes the pickled key, which is type-sensitive.
+    difficulty_min = float(difficulty_min)
+    difficulty_max = float(difficulty_max)
+    recent_activity_count = int(recent_activity_count)
+    if target_keys is not None:
+        target_keys = [str(key) for key in target_keys]
     if difficulty_min > difficulty_max:
         raise ValueError("Difficulty range is reversed")
-    class_ids = sorted(set(class_ids or [class_id]))
-    session_ids = sorted(set(session_ids or []))
+    class_ids = sorted({str(item) for item in (class_ids or [class_id])})
+    session_ids = sorted({int(item) for item in (session_ids or [])})
     scope = {"mode": "class", "class_ids": class_ids,
              "use_historical_fallback": False}
     exam_scope = {"mode": "manual" if session_ids else "semester", "session_ids": session_ids,
                   "curriculum_volume_id": curriculum_volume_id}
-    record_request(
-        "assistant",
-        scope=scope,
-        exam_scope=exam_scope,
-        params={
-            "class_id": class_id,
-            "class_ids": class_ids,
-            "session_ids": session_ids,
-            "curriculum_volume_id": curriculum_volume_id,
-            "chapter_id": chapter_id,
-            "teaching_progress_chapter_id": teaching_progress_chapter_id,
-            "target_keys": target_keys,
-            "question_type": question_type,
-            "difficulty_min": difficulty_min,
-            "difficulty_max": difficulty_max,
-            "exclude_exam_originals": exclude_exam_originals,
-            "exclude_recent": exclude_recent,
-            "recent_activity_count": recent_activity_count, "purpose": purpose,
-        },
-    )
+    if record:
+        record_request(
+            "assistant",
+            scope=scope,
+            exam_scope=exam_scope,
+            params={
+                "class_id": class_id,
+                "class_ids": class_ids,
+                "session_ids": session_ids,
+                "curriculum_volume_id": curriculum_volume_id,
+                "chapter_id": chapter_id,
+                "teaching_progress_chapter_id": teaching_progress_chapter_id,
+                "question_type": question_type,
+                "difficulty_min": difficulty_min,
+                "difficulty_max": difficulty_max,
+                "exclude_exam_originals": exclude_exam_originals,
+                "exclude_recent": exclude_recent,
+                "recent_activity_count": recent_activity_count, "purpose": purpose,
+            },
+        )
+        record_target(
+            "assistant",
+            scope=scope,
+            exam_scope=exam_scope,
+            target_keys=target_keys,
+        )
     key_fn = getattr(diagnosis_service, "tag_profile_cache_key", None)
     diagnosis_key = (
         key_fn(scope=scope, exam_scope=exam_scope) if callable(key_fn) else None
     )
+    uploaded = _uploaded_generation(diagnosis_service)
 
     def _compute() -> dict:
+        pkey = None
+        reader = getattr(diagnosis_service, "read_persistent_result", None)
+        writer = getattr(diagnosis_service, "save_persistent_result", None)
+        if diagnosis_key is not None:
+            pkey = (
+                diagnosis_key[0],
+                "assistant-shortlist-persist-v2",
+                *diagnosis_key[1:],
+                *uploaded,
+                _ASSEMBLY_CODE_STATE,
+                tuple(class_ids), tuple(session_ids),
+                chapter_id,
+                teaching_progress_chapter_id,
+                None if target_keys is None else tuple(target_keys),
+                question_type,
+                difficulty_min,
+                difficulty_max,
+                recent_activity_count, purpose,
+            )
+        if pkey is not None and callable(reader):
+            saved = reader(pkey)
+            if saved is not None:
+                try:
+                    result = pickle.loads(saved[0])
+                except (pickle.PickleError, EOFError, TypeError, ValueError):
+                    result = None
+                if isinstance(result, dict):
+                    return result
         diagnosis = diagnosis_service.build_profiles(
             scope=scope, exam_scope=exam_scope,
         )
@@ -195,7 +274,7 @@ def compute_assistant_candidates(
         excluded = recommendations.current_exam_question_ids(
             diagnosis, graded_activities=graded_activities, recent_activity_count=recent_activity_count, purpose=purpose,
         )
-        return shortlist_candidates(
+        result = shortlist_candidates(
             diagnosis=diagnosis, read_service=read_service,
             volume_id=curriculum_volume_id, chapter_id=chapter_id,
             teaching_progress_chapter_id=teaching_progress_chapter_id,
@@ -206,6 +285,10 @@ def compute_assistant_candidates(
             graded_activities=graded_activities,
             recent_activity_count=recent_activity_count, purpose=purpose,
         )
+        if pkey is not None and callable(writer):
+            writer(pkey, (pickle.dumps(result, pickle.HIGHEST_PROTOCOL),
+                          pickle.dumps({}, pickle.HIGHEST_PROTOCOL)))
+        return result
 
     if not callable(key_fn):
         return _compute()
@@ -263,18 +346,25 @@ def quick_draft(
     for question in questions:
         if len(selected) >= body.rules.question_count:
             break
-        keys = tuple(question['skill_keys'])
-        if set(keys) & covered:
-            skipped['skill'] += 1
-            continue
+        meta = question.get('skills')
+        # Only skills anchored in this volume are valid shortlist targets;
+        # entries without per-skill volume info keep the previous behaviour.
+        keys = (tuple(s['key'] for s in meta if s.get('in_volume', True)) if meta is not None
+                else tuple(question.get('skill_keys') or ()))
         if not keys:
             skipped['unavailable'] += 1
             continue
+        if set(keys) & covered:
+            skipped['skill'] += 1
+            continue
         if keys not in pools:
-            pools[keys] = compute_assistant_candidates(diagnosis_service=diagnosis_service, read_service=read_service,
-                recommendations=recommendations, workspace=workspace, class_ids=body.class_ids, session_ids=body.session_ids,
-                curriculum_volume_id=body.curriculum_volume_id, target_keys=list(keys), difficulty_max=10,
-                recent_activity_count=body.rules.recent_activity_count, purpose=body.rules.purpose)['candidates']
+            try:
+                pools[keys] = compute_assistant_candidates(diagnosis_service=diagnosis_service, read_service=read_service,
+                    recommendations=recommendations, workspace=workspace, class_ids=body.class_ids, session_ids=body.session_ids,
+                    curriculum_volume_id=body.curriculum_volume_id, target_keys=list(keys), difficulty_max=10,
+                    recent_activity_count=body.rules.recent_activity_count, purpose=body.rules.purpose, record=False)['candidates']
+            except ValueError:
+                pools[keys] = []
         rejected = set()
         for candidate in pools[keys]:
             qid = candidate['question_id']

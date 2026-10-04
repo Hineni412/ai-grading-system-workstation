@@ -124,7 +124,7 @@ def test_saved_profiles_survive_new_process_and_wal_checkpoint(training_services
         expected = service.build_profiles(scope=scope, exam_scope=exams)
         class_profile = service.build_profiles(scope={"mode":"class", "class_id":"八年级1班"}, exam_scope=exams)
         assert len(class_profile['students']) == 2
-        assert service._local_profile_path().is_file()
+        assert list(service._local_profile_path().glob('*.entry'))
         digest = hashlib.sha256(pickle.dumps((expected, service.latest_aggregated_mastery))).hexdigest()
         from backend.api.routers.training import _diagnosis_response_bytes
         public_digest = hashlib.sha256(_diagnosis_response_bytes(service, scope=scope, exam_scope=exams)).hexdigest()
@@ -139,15 +139,16 @@ def test_saved_profiles_survive_new_process_and_wal_checkpoint(training_services
             loads.append(True)
             return original_load(*args, **kwargs)
         patch.setattr(pickle, 'load', counted_load)
+        entry_path = restored._local_profile_entry_path(key)
         first = restored._read_local_profile(key)
         assert first is not None and restored._read_local_profile(key) == first
         assert loads == [True]
-        saved_bytes = restored._local_profile_path().read_bytes()
-        restored._local_profile_path().write_bytes(b'TEST-corrupt-replacement')
+        saved_bytes = entry_path.read_bytes()
+        entry_path.write_bytes(b'TEST-corrupt-replacement')
         assert restored._read_local_profile(key) is None
-        replacement = restored._local_profile_path().with_suffix('.TEST-replacement')
+        replacement = entry_path.with_suffix('.TEST-replacement')
         replacement.write_bytes(saved_bytes)
-        replacement.replace(restored._local_profile_path())
+        replacement.replace(entry_path)
         assert restored._read_local_profile(key) == first
         assert len(loads) == 3
     # A new interpreter has neither memory results nor process-local commit
@@ -185,7 +186,8 @@ def test_local_profiles_refresh_changed_inputs_and_corrupt_cache(training_servic
     expected_public = TrainingDiagnosisResponse.model_validate(_public_training_mapping(
         {k: v for k, v in before.items() if not k.startswith('_')})).model_dump(mode='json', exclude_none=True)
     assert json.loads(_diagnosis_response_bytes(service, scope=scope, exam_scope=exams)) == expected_public
-    assert service._local_profile_path().is_file()
+    saved_key = service.tag_profile_cache_key(scope=scope, exam_scope=exams)
+    assert service._local_profile_entry_path(saved_key).is_file()
     _clear_profile_memory()
     if change == "teacher_score":
         with sqlite3.connect(service.grading_db_path) as writer:
@@ -210,7 +212,7 @@ def test_local_profiles_refresh_changed_inputs_and_corrupt_cache(training_servic
         cause.parent.mkdir(parents=True, exist_ok=True)
         cause.write_text('{}', encoding='utf-8')
     else:
-        service._local_profile_path().write_bytes(b"TEST-truncated-snapshot")
+        service._local_profile_entry_path(saved_key).write_bytes(b"TEST-truncated-snapshot")
     fresh = DiagnosisProfileService(service.grading_db_path, service.question_bank_db_path)
     compute = fresh._compute_tag_profiles
     calls = []
@@ -241,7 +243,7 @@ def test_idle_prewarm_saves_local_profiles_without_blocking_grading(training_ser
                             data_root=service.data_root)
     jobs = SimpleNamespace(active=True)
     jobs.list = lambda **kwargs: ([{'status': 'running'}] if jobs.active else [], 0)
-    worker = TrainingPrewarmWorker(paths, jobs)
+    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0)
     operation = lambda: worker._compute("diagnosis", {"mode":"all"}, {"mode":"current","session_ids":[14]}, {})
     monkeypatch.setattr(worker, "_refresh_plan", lambda: [operation])
     assert not worker.tick()
@@ -265,15 +267,21 @@ def test_idle_prewarm_saves_local_profiles_without_blocking_grading(training_ser
     assert [scope['mode'] for scope in worker._startup_scopes()] == ['class', 'class', 'all']
     monkeypatch.setattr(worker, '_latest_volume_id', lambda: 'bnu24-math-g8-upper')
     monkeypatch.setattr(worker, '_startup_scopes', lambda: [{'mode': 'all', 'student_ids': []}])
-    monkeypatch.setattr(worker, '_class_names', lambda: [])
     monkeypatch.setattr(worker, '_compute', lambda *args: planned.append(args))
     for task in worker._startup_tasks(set()):
         task()
-    assert [item[0] for item in planned] == ['diagnosis', 'overview', 'graph', 'grouped_diagnosis']
-    group_request = planned[-1][3]['grouping']
+    kinds = [item[0] for item in planned]
+    # Per-class exam evidence replaces the old assistant default body, which
+    # the current panel never sends.
+    assert kinds == ['diagnosis', 'overview', 'graph', 'grouped_diagnosis',
+                     'assembly_exam', 'assembly_exam']
+    group_request = next(item[3]['grouping'] for item in planned if item[0] == 'grouped_diagnosis')
     assert group_request['scope_keys'] == ['kp_bnu24_math_g8_upper_1']
     assert (group_request['question_count'], group_request['difficulty_max'],
             group_request['max_written_questions'], group_request['recent_activity_count']) == (10, 8, 2, 3)
+    exam_params = [item[3] for item in planned if item[0] == 'assembly_exam']
+    assert exam_params == [{'class_ids': ['TEST-class-1'], 'curriculum_volume_id': 'bnu24-math-g8-upper'},
+                           {'class_ids': ['TEST-class-2'], 'curriculum_volume_id': 'bnu24-math-g8-upper'}]
     assert service._local_profile_path().exists()
     _clear_profile_memory()
     monkeypatch.setattr(DiagnosisProfileService, "_compute_tag_profiles",
@@ -281,6 +289,186 @@ def test_idle_prewarm_saves_local_profiles_without_blocking_grading(training_ser
     worker._startup_done = False
     assert worker.tick()
     assert worker.batches[-1][0] == 1
+
+
+def test_prewarm_yields_to_foreground_requests(training_services, monkeypatch):
+    import threading
+    from integration.training_prewarm import (
+        TrainingPrewarmWorker, clear_recent_requests, foreground_request,
+    )
+    clear_recent_requests()
+    service = training_services
+    paths = SimpleNamespace(db_path=service.grading_db_path, qb_db_path=service.question_bank_db_path,
+                            data_root=service.data_root)
+    jobs = SimpleNamespace(list=lambda **kwargs: ([], 0), is_shutdown=False)
+    ran = []
+    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=30)
+    monkeypatch.setattr(worker, '_refresh_plan', lambda: [lambda: ran.append(True)])
+    finished = []
+    with foreground_request():
+        thread = threading.Thread(target=lambda: finished.append(worker.tick()), daemon=True)
+        thread.start()
+        thread.join(timeout=3)
+        assert thread.is_alive() and ran == []
+    worker._stop.set()
+    thread.join(timeout=5)
+    assert ran == [] and finished == [True] and worker.batches[-1][0] == 0
+    # With the quiet window disabled the same plan runs immediately.
+    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0)
+    monkeypatch.setattr(worker, '_refresh_plan', lambda: [lambda: ran.append(True)])
+    assert worker.tick() and ran == [True]
+
+
+def test_recent_requests_round_trip_and_run_first_on_startup(training_services, monkeypatch):
+    from integration import training_prewarm as prewarm
+    from integration.training_prewarm import (
+        TrainingPrewarmWorker, clear_recent_requests, recent_requests,
+        record_request, record_target,
+    )
+    clear_recent_requests()
+    service = training_services
+    paths = SimpleNamespace(db_path=service.grading_db_path, qb_db_path=service.question_bank_db_path,
+                            data_root=service.data_root)
+    jobs = SimpleNamespace(list=lambda **kwargs: ([], 0), is_shutdown=False)
+    scope = {'mode': 'class', 'class_ids': ['八年级1班'], 'use_historical_fallback': False}
+    exams = {'mode': 'manual', 'session_ids': [14], 'curriculum_volume_id': 'bnu24-math-g8-upper'}
+    record_request('assistant', scope=scope, exam_scope=exams, params={
+        'class_ids': ['八年级1班'], 'session_ids': [14],
+        'curriculum_volume_id': 'bnu24-math-g8-upper', 'difficulty_max': 8,
+        'purpose': 'handout'})
+    generation = prewarm._recent_generation()
+    # Prefetch-style target recording must not restart the refresh loop.
+    record_target('assistant', scope=scope, exam_scope=exams, target_keys=['sk_a'])
+    record_target('assistant', scope=scope, exam_scope=exams, target_keys=None)
+    assert prewarm._recent_generation() == generation
+    record_request('diagnosis', scope={'mode': 'all'},
+        exam_scope={'mode': 'current', 'session_ids': [14]}, params={})
+    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0)
+    worker._persist_recents()
+    recents_file = service.data_root / 'reports' / '.training_diagnosis' / 'recent_requests.json'
+    assert recents_file.is_file()
+    clear_recent_requests()
+    assert recent_requests() == []
+    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0)
+    worker._load_recents()
+    entries = recent_requests()
+    assert [entry['targets'].get('assistant') for entry in entries] == [[('sk_a',), None], None]
+    planned = []
+    monkeypatch.setattr(worker, '_compute', lambda *args: planned.append(args[0]))
+    monkeypatch.setattr(worker, '_latest_volume_id', lambda: 'bnu24-math-g8-upper')
+    monkeypatch.setattr(worker, '_class_names', lambda: [])
+    monkeypatch.setattr(worker, '_startup_scopes', lambda: [])
+    for task in worker._refresh_plan():
+        task()
+    # Newest recent first: the all-scope diagnosis entry precedes the class
+    # entry's evidence and per-target assistant tasks.
+    assert planned == ['diagnosis', 'diagnosis', 'assembly_exam', 'assistant', 'assistant']
+
+
+def test_prewarm_reuses_the_foreground_assistant_cache_keys(training_services, monkeypatch):
+    from tests.current_knowledge_support import install_current_knowledge
+    from backend.api.read_connections import request_read_context
+    from backend.api.routers import assembly as router
+    from integration.diagnosis_profile_service import DiagnosisProfileService
+    from integration.training_prewarm import TrainingPrewarmWorker, clear_recent_requests
+    from question_bank.recommendation.personalized import PersonalizedRecommendationModule
+    from question_bank.services.assembly_workspace_service import AssemblyWorkspaceService
+    from question_bank.services.question_read_service import QuestionBankReadService
+
+    clear_recent_requests()
+    service = training_services
+    install_current_knowledge(service.question_bank_db_path)
+    paths = SimpleNamespace(db_path=service.grading_db_path, qb_db_path=service.question_bank_db_path,
+                            data_root=service.data_root)
+    # The cache keys do not depend on the shortlist outcome; the fixture bank
+    # cannot resolve this volume's evidence scope for a real one.
+    monkeypatch.setattr(router, 'shortlist_candidates', lambda **kwargs: {
+        'student_count': 0, 'weaknesses': [], 'candidates': [], 'candidate_total': 0})
+    calls = []
+    real_compute = router.compute_assistant_candidates
+    monkeypatch.setattr(router, 'compute_assistant_candidates',
+        lambda **kwargs: (calls.append(kwargs), real_compute(**kwargs))[1])
+    memory_keys, persistent_keys, entry_paths = [], [], []
+    original_get = router._ASSISTANT_CACHE.get_or_compute
+    monkeypatch.setattr(router._ASSISTANT_CACHE, 'get_or_compute',
+        lambda key, compute: (memory_keys.append(key), original_get(key, compute))[1])
+    original_read = DiagnosisProfileService.read_persistent_result
+    original_save = DiagnosisProfileService.save_persistent_result
+    def track(action):
+        def wrapper(self, key, entry=None):
+            persistent_keys.append((action, key))
+            if 'assistant-shortlist-persist' in str(key):
+                entry_paths.append(self._local_profile_entry_path(key))
+            return (original_read(self, key) if action == 'read'
+                    else original_save(self, key, entry))
+        return wrapper
+    monkeypatch.setattr(DiagnosisProfileService, 'read_persistent_result', track('read'))
+    monkeypatch.setattr(DiagnosisProfileService, 'save_persistent_result', track('save'))
+
+    with request_read_context(paths) as ctx:
+        router.compute_assistant_candidates(
+            diagnosis_service=ctx.diagnosis_service,
+            read_service=QuestionBankReadService(paths.qb_db_path, data_root=paths.data_root),
+            recommendations=PersonalizedRecommendationModule(
+                db_path=paths.qb_db_path, data_root=paths.data_root,
+                semester_mastery=ctx.diagnosis_service.semester_mastery),
+            workspace=AssemblyWorkspaceService(paths.data_root),
+            class_ids=['八年级1班'], session_ids=[14], target_keys=['sk_probe'],
+            curriculum_volume_id='bnu24-math-g8-upper',
+            # Int inputs must hash to the same entry file as the float values
+            # the recorded params become after the JSON round trip.
+            difficulty_min=1, difficulty_max=8,
+            recent_activity_count=0, purpose='handout')
+    assert calls[-1]['recent_activity_count'] == 0
+    router._ASSISTANT_CACHE.clear()
+    jobs = SimpleNamespace(list=lambda **kwargs: ([], 0), is_shutdown=False)
+    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0)
+    worker._persist_recents()
+    clear_recent_requests()
+    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0)
+    worker._load_recents()
+    monkeypatch.setattr(worker, '_startup_tasks', lambda seen: [])
+    for task in worker._refresh_plan():
+        try:
+            task()
+        except Exception:
+            pass  # The worker itself also ignores per-task failures.
+    # The prewarm's per-target task looked up exactly the foreground keys, and
+    # the foreground-written persistent entry answered it; both refer to the
+    # same entry file despite the int/float round trip, and a recorded 0 for
+    # recent_activity_count is replayed as 0 rather than the default.
+    assert memory_keys[0] == memory_keys[-1]
+    saves = [key for action, key in persistent_keys if action == 'save']
+    reads = [key for action, key in persistent_keys if action == 'read']
+    assert saves and reads and reads[-1] == saves[0]
+    assert len(set(entry_paths)) == 1
+    assert calls[-1]['recent_activity_count'] == 0
+    assert calls[-1]['target_keys'] == ['sk_probe']
+
+
+def test_local_profile_entries_evict_oldest_beyond_caps(training_services, monkeypatch):
+    import os
+    import time
+    from integration import diagnosis_profile_service as profiles
+    service = training_services
+    base = service.tag_profile_cache_key(scope={'mode': 'all'},
+                                       exam_scope={'mode': 'current', 'session_ids': [14]})
+    paths = []
+    for index in range(3):
+        key = (base[0], f'TEST-evict-{index}')
+        service._save_local_profile(key, (pickle.dumps({'index': index}), pickle.dumps({})))
+        paths.append(service._local_profile_entry_path(key))
+    # Real timestamps: Windows clamps invalid nanosecond mtimes to one value.
+    for index, path in enumerate(paths):
+        moment = time.time_ns() - (len(paths) - index) * 10**9
+        os.utime(path, ns=(moment, moment))
+    monkeypatch.setattr(profiles, '_LOCAL_PROFILE_MAX_ENTRIES', 2)
+    key = (base[0], 'TEST-evict-newest')
+    service._save_local_profile(key, (pickle.dumps({'index': 3}), pickle.dumps({})))
+    paths.append(service._local_profile_entry_path(key))
+    assert not paths[0].exists() and not paths[1].exists()
+    assert paths[2].exists() and paths[3].exists()
+    assert len(list(service._local_profile_path().glob('*.entry'))) == 2
 
 
 def test_semester_mastery_reuses_model_inputs_but_keeps_source_changes(training_services, monkeypatch):
@@ -342,8 +530,8 @@ def test_local_snapshot_save_failure_preserves_profile_result(training_services,
     monkeypatch.setattr(profiles.os, "replace", lambda *args: (_ for _ in ()).throw(PermissionError("TEST disk unavailable")))
     result = service.build_profiles(scope={"mode":"all"}, exam_scope={"mode":"current","session_ids":[14]})
     assert len(result['students']) == 2
-    assert not service._local_profile_path().exists()
-    assert not list(service._local_profile_path().parent.iterdir())
+    entries_dir = service._local_profile_path()
+    assert not entries_dir.exists() or not list(entries_dir.iterdir())
 
 
 def test_source_changed_during_preparation_does_not_publish_stale_snapshot(training_services, monkeypatch):
@@ -358,7 +546,8 @@ def test_source_changed_during_preparation_does_not_publish_stale_snapshot(train
     monkeypatch.setattr(service, "_compute_tag_profiles", changed_after_read)
     result = service.build_profiles(scope={"mode":"all"}, exam_scope={"mode":"current","session_ids":[14]})
     assert next(s for s in result['students'] if s['student_id']=='12')['student_name'] != 'TEST-after-read'
-    assert not service._local_profile_path().exists()
+    entries_dir = service._local_profile_path()
+    assert not entries_dir.exists() or not list(entries_dir.iterdir())
 
 
 @pytest.fixture

@@ -42,6 +42,7 @@ from backend.training_assessment import (
 )
 from backend.workbench.service import WorkbenchService
 from integration.diagnosis_profile_service import DiagnosisProfileService
+from integration.training_prewarm import foreground_request
 from manual_review_service import ManualReviewService
 from path_manager import PathManager, get_path_manager
 from question_bank.personalized_papers import PersonalizedPaperModule
@@ -290,7 +291,10 @@ def get_request_read_context(
     paths: PathManager = Depends(get_path_manager),
 ) -> Iterator[RequestReadContext]:
     try:
-        with request_read_context(paths) as context:
+        # Counted so the training prewarm yields while a foreground read is
+        # active; the worker calls request_read_context directly and is not
+        # counted itself.
+        with foreground_request(), request_read_context(paths) as context:
             yield context
     except (QuestionBankSnapshotError, RequestReadContextCleanupError) as exc:
         from backend.api.app import ApiError

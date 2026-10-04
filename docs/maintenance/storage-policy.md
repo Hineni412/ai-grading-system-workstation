@@ -9,7 +9,7 @@
 | 核心数据库 | `user_data/databases/` | 考试、批改、题库等正式状态 | 始终保留，不参与自动归档或去重 |
 | 原始业务文件 | `user_data/exams/`、`user_data/templates/`、`user_data/question_bank/` | 试卷、样卷、模板、题库原件及衍生素材 | 原件默认保留；只有明确可再生成的副本才进入维护候选 |
 | 批注缓存与导出 | `user_data/cache/annotated_pages/`、`user_data/annotated/`、`user_data/reports/` | 用时生成的批注图、旧批注图、成绩表和报告 | 批注缓存有大小上限；旧图由教师明确清理；导出保留门槛见下 |
-| 本地学情快照 | `user_data/reports/.training_diagnosis/profiles.cache` | 已有考试与训练记录计算出的逐生诊断、群体汇总、概览、图谱及含小组的完整诊断公开响应，供重启后首次读取 | 应用后台保存，单文件最多 12 个当前来源版本的条目，优先保留公开投影；完整公开响应压缩保存，前台返回完整 JSON；小组还核对全部设置、日期和题目资源元数据；版本不符或文件不可用时重算，不删除原始记录 |
+| 本地学情快照 | `user_data/reports/.training_diagnosis/entries/`、`user_data/reports/.training_diagnosis/recent_requests.json` | 已有考试与训练记录计算出的逐生诊断、群体汇总、概览、图谱、含小组的完整诊断公开响应、班级组卷的考试证据与候选结果，以及后台刷新重放的最近请求记录，供重启后首次读取 | 每个请求一份 `.entry` 文件，目录最多 240 份且总量不超过 512 MiB，超出时删除最旧文件；完整公开响应压缩保存，前台返回完整 JSON；小组还核对全部设置、日期和题目资源元数据；版本不符或文件不可用时重算，不删除原始记录；早期单文件 `profiles.cache` 不再使用，可手动删除 |
 | 题库技能读取缓存 | `user_data/cache/question_bank_skills.cache` | 当前题库技能投影，供应用重启后恢复浏览统计 | 应用读取时保存，单文件上限 16 MiB；数据库、计算规则或素材状态不符时重新校验并计算，文件损坏或保存失败不阻断读取；不进入普通业务备份，不删除题库原件 |
 | 临时与工具输出 | `user_data/temp/`、`user_data/outputs/` | 临时文件、基准和比较结果 | 达到保留门槛后只列为候选，不自动删除 |
 | 备份与归档 | `user_data/backups/`、`user_data/archives/` | 数据库快照、完整备份和维护工具生成的压缩包 | 按下述数量和时间门槛保留 |

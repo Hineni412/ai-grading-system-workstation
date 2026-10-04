@@ -446,14 +446,17 @@ def test_quick_draft_fills_remaining_slots_reports_rejections_and_never_saves(cl
         {'key':str(q),'class_rate':.2,'skill_keys':[f'sk_{q}']} for q,_ in needs]}]})
     client.app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: service
     pools = {f'sk_{key}': ids for key,ids in needs}
-    monkeypatch.setattr(router, 'compute_assistant_candidates', lambda **kw: {'candidates':[
-        {'question_id':q,'suitable_student_count':10-q,'remediation_student_count':2} for q in pools[kw['target_keys'][0]]]})
+    captured = []
+    monkeypatch.setattr(router, 'compute_assistant_candidates', lambda **kw: (captured.append(kw), {'candidates':[
+        {'question_id':q,'suitable_student_count':10-q,'remediation_student_count':2} for q in pools[kw['target_keys'][0]]]})[1])
     before = workspace.draft_path.read_bytes()
     rules = {'purpose':'handout','question_count':3,'difficulty_max':8,'max_written_questions':0,'max_questions_per_skill':1,'recent_activity_count':0}
     response = client.post('/api/question-assembly/assistant/quick-draft', json=request(session_ids=[7],question_ids=[32],rules=rules))
     assert response.status_code == 200, response.text
     assert response.json()['question_ids'] == [4,6]
     assert response.json()['skipped'] == {'skill':1,'written':1,'difficulty':0,'similar':1,'unavailable':0}
+    # Quick draft fills pools without registering prewarm recents.
+    assert captured and all(kw['record'] is False for kw in captured)
     assert workspace.draft_path.read_bytes() == before
     assert workspace.list_records() == []
 
@@ -606,3 +609,191 @@ def test_candidates_cache_skips_diagnosis_until_grading_data_changes(client_and_
     third = client.post('/api/question-assembly/assistant/candidates', json=request())
     assert third.status_code == 200
     assert len(calls) == 2
+
+
+def test_persistent_results_survive_restart_and_recompute_on_changes(client_and_source, tmp_path):
+    import sqlite3 as sqlite_driver
+    from integration import diagnosis_profile_service as profiles
+    from integration.data_generation import reset_commit_generations
+    from integration.diagnosis_profile_service import DiagnosisProfileService
+    from backend.api.routers import assembly as router
+
+    client, source, calls, _ = client_and_source
+    module = client.app.dependency_overrides[get_personalized_recommendation_module]()
+    grading = tmp_path / 'grading-persist-probe.db'
+    with sqlite_driver.connect(grading) as connection:
+        connection.execute('CREATE TABLE probe(value)')
+
+    def storage():
+        # The persistent entry store on real files, without repository setup.
+        real = DiagnosisProfileService.__new__(DiagnosisProfileService)
+        real.grading_db_path = grading
+        real.question_bank_db_path = module.db_path
+        real.question_bank_connection = None
+        real.data_root = tmp_path
+        real.cache_identity = None
+        real.persist_snapshots = False
+        real.latest_aggregated_mastery = {}
+        real.db = None
+        return real
+
+    exam_calls = []
+
+    class Keyed:
+        def __init__(self, store):
+            self._store = store
+            self.data_root = tmp_path
+
+        def tag_profile_cache_key(self, *, scope, exam_scope):
+            return self._store.tag_profile_cache_key(scope=scope, exam_scope=exam_scope)
+
+        def build_profiles(self, *, scope, exam_scope):
+            calls.append((scope, exam_scope))
+            return deepcopy(source)
+
+        def graded_activities(self, student_ids):
+            return []
+
+        def assembly_exam_questions(self, *, class_ids, volume_id):
+            exam_calls.append(class_ids)
+            return {'student_count': 0, 'exams': []}
+
+        def read_persistent_result(self, cache_key):
+            return self._store.read_persistent_result(cache_key)
+
+        def save_persistent_result(self, cache_key, entry):
+            return self._store.save_persistent_result(cache_key, entry)
+
+    def restart(service):
+        # Simulated process restart: every memory cache and process-local
+        # generation counter is gone; only the entry files remain.
+        router._ASSISTANT_CACHE.clear()
+        router._EXAM_QUESTIONS_CACHE.clear()
+        with profiles._TAG_PROFILE_CACHE_LOCK:
+            profiles._TAG_PROFILE_CACHE.clear()
+        reset_commit_generations()
+        client.app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: service
+
+    client.app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: Keyed(storage())
+    evidence_body = {'class_ids': ['合成9班'], 'curriculum_volume_id': VOLUME['id']}
+    assert client.post('/api/question-assembly/assistant/exam-questions', json=evidence_body).status_code == 200
+    first = client.post('/api/question-assembly/assistant/candidates', json=request()).json()
+    assert exam_calls == [['合成9班']] and len(calls) == 1
+
+    restored = Keyed(storage())
+    restored.build_profiles = lambda **kwargs: pytest.fail('recomputed profiles')
+    restored.assembly_exam_questions = lambda **kwargs: pytest.fail('recomputed exam evidence')
+    restart(restored)
+    assert client.post('/api/question-assembly/assistant/exam-questions', json=evidence_body).json() == {
+        'student_count': 0, 'exams': []}
+    assert client.post('/api/question-assembly/assistant/candidates', json=request()).json() == first
+    assert exam_calls == [['合成9班']] and len(calls) == 1
+
+    # A new uploaded config file invalidates exam evidence and candidates:
+    # rubric/evidence snapshots feed the diagnosis projections too.
+    uploaded = tmp_path / 'config' / 'uploaded'
+    uploaded.mkdir(parents=True)
+    (uploaded / 'TEST-new-input.json').write_text('{}', encoding='utf-8')
+    restored = Keyed(storage())
+    restart(restored)
+    assert client.post('/api/question-assembly/assistant/exam-questions', json=evidence_body).status_code == 200
+    assert exam_calls == [['合成9班'], ['合成9班']]
+    assert client.post('/api/question-assembly/assistant/candidates', json=request()).json() == first
+    assert len(calls) == 2
+
+    # A committed grading-side change invalidates the persisted signature.
+    with sqlite_driver.connect(grading) as connection:
+        connection.execute('INSERT INTO probe VALUES (1)')
+    restored = Keyed(storage())
+    restart(restored)
+    assert client.post('/api/question-assembly/assistant/candidates', json=request()).status_code == 200
+    assert len(calls) == 3
+
+    # Corrupt entry bytes fall back to recomputation instead of failing.
+    for entry_file in (tmp_path / 'reports' / '.training_diagnosis' / 'entries').glob('*.entry'):
+        entry_file.write_bytes(b'TEST-corrupt-entry')
+    restored = Keyed(storage())
+    restart(restored)
+    assert client.post('/api/question-assembly/assistant/candidates', json=request()).status_code == 200
+    assert len(calls) == 4
+
+
+def test_exam_evidence_marks_skills_anchored_in_another_volume(tmp_path, monkeypatch):
+    # Exam questions can link skills anchored in another volume; the flag lets
+    # the panel keep them out of the volume-scoped shortlist targets.
+    from types import SimpleNamespace as NS
+    from integration.diagnosis_profile_service import DiagnosisProfileService
+    from backend.config_generation import contract
+    db_path = tmp_path / 'bank.db'
+    initialize_database(db_path)
+    other = next(v for v in load_curriculum_catalog()['volumes'] if v['id'] != VOLUME['id'])
+    other_point = other['chapters'][0]['sections'][0]['knowledge_points'][0]
+    sk_other = 'sk_other_volume_skill'
+    _install_release_with_skills(db_path, revision=4,
+        skill_parents={SKILLS[0]: SKILL_PARENTS[SKILLS[0]], sk_other: other_point['id']})
+    service = DiagnosisProfileService.__new__(DiagnosisProfileService)
+    service.question_bank_db_path = db_path
+    service.db = NS(
+        students=NS(list_students=lambda: [{'id': 1, 'class_name': '合成9班'}]),
+        sessions=NS(list_grading_sessions=lambda: [
+            {'id': 7, 'session_name': 'TEST-考试', 'curriculum_volume_id': VOLUME['id'], 'created_at': '2026-10-02'}]),
+        results=NS(
+            get_active_assessment_rows=lambda **_: [
+                {'session_id': 7, 'student_id': 1, 'question_id': 'Q1', 'score_awarded': 2}],
+            _load_session_rubric=lambda sid: {},
+            _load_rubric_maps_for_session=lambda sid: {'score': {'Q1': 10}}))
+    projections = NS(items=[NS(item_ref='Q1', bank_question_id=None,
+        tags={'knowledge_point': [SKILLS[0], sk_other]}, assessment={})])
+    service._tag_projections = lambda ids: {sid: projections for sid in ids}
+    service._error_cause_index = lambda ids: {}
+    monkeypatch.setattr(contract, 'iter_effective_rubric_item_refs',
+        lambda _: [('Q1', 'Q1', {'question_type': 'choice'}, {})])
+    result = service.assembly_exam_questions(class_ids=['合成9班'], volume_id=VOLUME['id'])
+    question = result['exams'][0]['questions'][0]
+    assert question['skill_keys'] == [SKILLS[0], sk_other]
+    assert {s['key']: s['in_volume'] for s in question['skills']} == {SKILLS[0]: True, sk_other: False}
+
+
+def test_quick_draft_counts_out_of_volume_and_rejected_targets_as_unavailable(client_and_source, monkeypatch):
+    from types import SimpleNamespace as NS
+    from backend.api.routers import assembly as router
+    client, _, _, _ = client_and_source
+    questions = [
+        {'key': 'no', 'class_rate': .1, 'skill_keys': [], 'skills': []},
+        {'key': 'out', 'class_rate': .2, 'skill_keys': ['sk_old'],
+         'skills': [{'key': 'sk_old', 'label': '往届技能', 'in_volume': False}]},
+        {'key': 'boom', 'class_rate': .3, 'skill_keys': ['sk_boom'],
+         'skills': [{'key': 'sk_boom', 'label': '异常技能', 'in_volume': True}]},
+        {'key': 'mixed', 'class_rate': .35, 'skill_keys': ['sk_old2', 'sk_in2'],
+         'skills': [{'key': 'sk_old2', 'label': '往届技能二', 'in_volume': False},
+                    {'key': 'sk_in2', 'label': '本册技能二', 'in_volume': True}]},
+        {'key': 'in', 'class_rate': .4, 'skill_keys': ['sk_in'],
+         'skills': [{'key': 'sk_in', 'label': '本册技能', 'in_volume': True}]},
+    ]
+    service = NS(assembly_exam_questions=lambda **_: {'exams': [{'session_id': 7, 'questions': questions}]})
+    client.app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: service
+    captured = []
+
+    def fake_candidates(**kw):
+        captured.append(kw)
+        if kw['target_keys'] == ['sk_boom']:
+            raise ValueError('target outside the volume')
+        if kw['target_keys'] == ['sk_in2']:
+            return {'candidates': [{'question_id': 2, 'suitable_student_count': 5, 'remediation_student_count': 1}]}
+        return {'candidates': []}
+
+    monkeypatch.setattr(router, 'compute_assistant_candidates', fake_candidates)
+    descriptors = [{'question_id': 2, 'question_type': '选择题', 'difficulty': 3,
+                    'stable_keys': ['sk_in2'], 'question_text': '合成题2'}]
+    monkeypatch.setattr(PersonalizedRecommendationModule, '_source_snapshot',
+        lambda self, **kw: ([q for q in descriptors if q['question_id'] in kw['question_ids']], (), 'test'))
+    rules = {'purpose': 'handout', 'question_count': 3, 'difficulty_max': 8,
+             'max_written_questions': 0, 'max_questions_per_skill': 1, 'recent_activity_count': 0}
+    response = client.post('/api/question-assembly/assistant/quick-draft', json=request(session_ids=[7], rules=rules))
+    assert response.status_code == 200, response.text
+    # The mixed question fills from its in-volume subset; the rest are unavailable.
+    assert response.json()['question_ids'] == [2]
+    assert response.json()['additions'][0]['source']['key'] == 'mixed'
+    assert response.json()['skipped'] == {'skill': 0, 'written': 0, 'difficulty': 0, 'similar': 0, 'unavailable': 4}
+    assert [kw['target_keys'] for kw in captured] == [['sk_boom'], ['sk_in2'], ['sk_in']]
+    assert all(kw['record'] is False for kw in captured)

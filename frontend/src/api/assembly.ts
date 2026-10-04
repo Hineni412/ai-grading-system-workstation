@@ -124,7 +124,7 @@ export interface AssemblyExamQuestion {
   class_rates: Array<{ class_id: string; student_count: number; class_rate: number | null }>
   cause_category_counts: Array<{ category: string; count: number }> | null
   cause_unclassified_count: number
-  skill_keys: string[]; skills: Array<{ key: string; label: string }>; question_text: string
+  skill_keys: string[]; skills: Array<{ key: string; label: string; in_volume: boolean }>; question_text: string
 }
 export interface AssemblyExam {
   session_id: number; title: string; date: string; class_ids: string[]; student_count: number
@@ -139,7 +139,7 @@ function isExamQuestion(v: unknown): v is AssemblyExamQuestion {
     && typeof v.question_type === 'string' && typeof v.question_text === 'string' && typeof v.full_score === 'number' && v.full_score > 0
     && isRate(v.class_rate) && isCount(v.student_count) && (v.bank_question_id === null || isPositiveInteger(v.bank_question_id))
     && (v.difficulty === null || (typeof v.difficulty === 'number' && v.difficulty >= 1 && v.difficulty <= 10))
-    && isStrings(v.skill_keys) && Array.isArray(v.skills) && v.skills.every(s => isRecord(s) && typeof s.key === 'string' && typeof s.label === 'string')
+    && isStrings(v.skill_keys) && Array.isArray(v.skills) && v.skills.every(s => isRecord(s) && typeof s.key === 'string' && typeof s.label === 'string' && typeof s.in_volume === 'boolean')
     && Array.isArray(v.class_rates) && v.class_rates.every(c => isRecord(c) && typeof c.class_id === 'string' && isCount(c.student_count) && isRate(c.class_rate))
     && (v.cause_category_counts === null || (Array.isArray(v.cause_category_counts) && v.cause_category_counts.every(c => isRecord(c) && typeof c.category === 'string' && isCount(c.count))))
     && isCount(v.cause_unclassified_count)

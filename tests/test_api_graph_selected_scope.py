@@ -204,7 +204,7 @@ def test_semester_graph_and_evidence_exclude_other_terms_and_empty_scope(tmp_pat
         volume_id='bnu24-math-g8-upper') == expected_overview
     assert compute_graph_query_payload(service, graph_service, scope=query['scope'],
         exam_scope=query['exam_scope'], query=CurrentGraphQuery()) == expected_graph
-    saved = service._local_profile_path().read_bytes()
+    saved = {item.name: item.read_bytes() for item in service._local_profile_path().glob('*.entry')}
     service.persist_snapshots = False
     from integration.mastery_overview import clear_overview_caches
     from backend.api.routers.graph import _GRAPH_QUERY_CACHE
@@ -218,7 +218,7 @@ def test_semester_graph_and_evidence_exclude_other_terms_and_empty_scope(tmp_pat
             volume_id='bnu24-math-g8-upper') == expected_overview
         assert compute_graph_query_payload(restored, graph_service, scope=query['scope'],
             exam_scope=query['exam_scope'], query=CurrentGraphQuery()) == expected_graph
-    assert service._local_profile_path().read_bytes() == saved
+    assert {item.name: item.read_bytes() for item in service._local_profile_path().glob('*.entry')} == saved
     key = "kp_alg_linear_equation"
     for volume, expected in [
         ("bnu24-math-g8-upper", {2}),

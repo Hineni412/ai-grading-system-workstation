@@ -9,7 +9,7 @@ import pickle
 import sqlite3
 import tempfile
 import threading
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -44,6 +44,12 @@ GENERIC_ERROR_REASONS = {
 _TAG_PROFILE_CACHE_LOCK = threading.RLock()
 _TAG_PROFILE_CACHE_LIMIT = 12
 _LOCAL_PROFILE_LOCK = threading.Lock()
+_LOCAL_PROFILE_MAX_ENTRIES = 240
+_LOCAL_PROFILE_MAX_BYTES = 512 * 1024 * 1024
+# Verified on-disk state per entry file so a repeated save can skip rewriting
+# without loading the file back; bounded and keyed by the entry path.
+_LOCAL_PROFILE_MEMO: OrderedDict[str, tuple] = OrderedDict()
+_LOCAL_PROFILE_MEMO_LIMIT = 2048
 _LOCAL_SOURCE_REVISIONS = ResultCache(2)
 _MASTERY_INPUT_RESULTS = ResultCache(2)
 # Cached payloads are stored as pickle bytes: rebuilding a hit with
@@ -101,6 +107,23 @@ def _release_tag_profile_flight(
         if flight is not None:
             flight.error = error
             flight.event.set()
+
+
+def _remember_local_entry(
+    path: Path,
+    file_state: tuple,
+    signature: tuple,
+    entry: tuple[bytes, bytes],
+) -> None:
+    """Record verified on-disk entry state so a later save can skip rewriting
+    identical bytes without reading the file again."""
+
+    digest = hashlib.sha256(entry[0] + b"\x00" + entry[1]).digest()
+    with _LOCAL_PROFILE_LOCK:
+        _LOCAL_PROFILE_MEMO[str(path)] = (file_state, signature, digest)
+        _LOCAL_PROFILE_MEMO.move_to_end(str(path))
+        while len(_LOCAL_PROFILE_MEMO) > _LOCAL_PROFILE_MEMO_LIMIT:
+            _LOCAL_PROFILE_MEMO.popitem(last=False)
 
 
 def _normalized_profile_scope(
@@ -404,7 +427,13 @@ class DiagnosisProfileService:
             _release_tag_profile_flight(cache_key, error)
 
     def _local_profile_path(self) -> Path:
-        return self.data_root / "reports" / ".training_diagnosis" / "profiles.cache"
+        return self.data_root / "reports" / ".training_diagnosis" / "entries"
+
+    def _local_profile_entry_path(self, cache_key: tuple[str, ...]) -> Path:
+        digest = hashlib.sha256(
+            pickle.dumps(cache_key[1:], pickle.HIGHEST_PROTOCOL)
+        ).hexdigest()[:40]
+        return self._local_profile_path() / f"{digest}.entry"
 
     def _local_profile_signature(self, cache_key: tuple[str, ...]) -> tuple | None:
         try:
@@ -431,34 +460,40 @@ class DiagnosisProfileService:
 
     def _read_local_profile(self, cache_key: tuple[str, ...]) -> tuple[bytes, bytes] | None:
         try:
-            path = self._local_profile_path()
+            path = self._local_profile_entry_path(cache_key)
             def identity():
                 info = path.stat()
                 return (str(path), info.st_dev, info.st_ino, info.st_size,
                         info.st_mtime_ns, info.st_ctime_ns)
             file_state = identity()
-            cached = getattr(self, "_local_profile_file_snapshot", None)
-            if cached is not None and cached[0] == file_state:
-                snapshot = cached[1]
-            else:
+            memo = getattr(self, "_local_profile_entry_snapshots", None)
+            if memo is None:
+                memo = self._local_profile_entry_snapshots = {}
+            snapshot = memo.get(file_state)
+            if snapshot is None:
                 with path.open("rb") as saved:
                     snapshot = pickle.load(saved)
                 if identity() != file_state:
                     return None
-                self._local_profile_file_snapshot = (file_state, snapshot)
-            entry = snapshot["entries"].get(cache_key[1:])
-            signature = snapshot['signature']
+                memo[file_state] = snapshot
+            if (not isinstance(snapshot, dict) or snapshot.get("version") != 1
+                    or snapshot.get("key") != cache_key[1:]):
+                return None
+            signature = snapshot["signature"]
             if (not isinstance(signature, tuple) or len(signature) != 4
                     or signature[2] != _profile_semantics()
                     or signature[3] != _dir_generation(self.data_root / 'reports' / '.class_analysis')):
                 return None
-            if (entry is None or snapshot["signature"] != self._local_profile_signature(cache_key)
-                    or len(entry) != 2 or not all(isinstance(part, bytes) for part in entry)):
+            entry = snapshot["entry"]
+            if (not isinstance(entry, tuple) or len(entry) != 2
+                    or not all(isinstance(part, bytes) for part in entry)
+                    or signature != self._local_profile_signature(cache_key)):
                 return None
             # Bad/incompatible local bytes must fall back before entering the
             # shared memory cache; no official model is required for rebuilding.
             if not all(isinstance(pickle.loads(part), dict) for part in entry):
                 return None
+            _remember_local_entry(path, file_state, signature, entry)
             return entry
         except (OSError, pickle.PickleError, EOFError, KeyError, TypeError, ValueError,
                 AttributeError, ImportError):
@@ -468,34 +503,40 @@ class DiagnosisProfileService:
         signature = self._local_profile_signature(cache_key)
         if signature is None:
             return
-        path = self._local_profile_path()
+        path = self._local_profile_entry_path(cache_key)
+        digest = hashlib.sha256(entry[0] + b"\x00" + entry[1]).digest()
         temporary: Path | None = None
         try:
             with _LOCAL_PROFILE_LOCK:
-                entries = {}
-                try:
-                    with path.open("rb") as saved:
-                        previous = pickle.load(saved)
-                    if previous["signature"] == signature and isinstance(previous["entries"], dict):
-                        entries = previous["entries"]
-                        if entries.get(cache_key[1:]) == entry:
-                            return
-                except (OSError, pickle.PickleError, EOFError, KeyError, TypeError,
-                        ValueError, AttributeError, ImportError):
-                    pass
-                entries.pop(cache_key[1:], None)
-                entries[cache_key[1:]] = entry
-                while len(entries) > _TAG_PROFILE_CACHE_LIMIT:
-                    projections = ('api-diagnosis-json-v1', 'overview-payload-v2', 'graph-query-payload-v1')
-                    oldest = next((key for key in entries if not any(kind in key for kind in projections)),
-                                  next(iter(entries)))
-                    entries.pop(oldest)
+                memo = _LOCAL_PROFILE_MEMO.get(str(path))
+                if memo is not None:
+                    try:
+                        info = path.stat()
+                        current = (str(path), info.st_dev, info.st_ino, info.st_size,
+                                   info.st_mtime_ns, info.st_ctime_ns)
+                    except OSError:
+                        current = None
+                    if current == memo[0] and signature == memo[1] and digest == memo[2]:
+                        _LOCAL_PROFILE_MEMO.move_to_end(str(path))
+                        return
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as saved:
                     temporary = Path(saved.name)
-                    pickle.dump({"signature": signature, "entries": entries}, saved, pickle.HIGHEST_PROTOCOL)
+                    pickle.dump({"version": 1, "key": cache_key[1:], "signature": signature,
+                                 "entry": entry}, saved, pickle.HIGHEST_PROTOCOL)
                 os.replace(temporary, path)
-        except OSError:
+                try:
+                    info = path.stat()
+                    file_state = (str(path), info.st_dev, info.st_ino, info.st_size,
+                                  info.st_mtime_ns, info.st_ctime_ns)
+                    _LOCAL_PROFILE_MEMO[str(path)] = (file_state, signature, digest)
+                    _LOCAL_PROFILE_MEMO.move_to_end(str(path))
+                    while len(_LOCAL_PROFILE_MEMO) > _LOCAL_PROFILE_MEMO_LIMIT:
+                        _LOCAL_PROFILE_MEMO.popitem(last=False)
+                except OSError:
+                    _LOCAL_PROFILE_MEMO.pop(str(path), None)
+                self._evict_local_profile_entries(keep=path)
+        except (OSError, pickle.PickleError):
             pass  # Saving a derived cache must not fail grading or recommendation.
         finally:
             if temporary is not None:
@@ -503,6 +544,45 @@ class DiagnosisProfileService:
                     temporary.unlink(missing_ok=True)
                 except OSError:
                     pass
+
+    def _evict_local_profile_entries(self, *, keep: Path) -> None:
+        """Drop the oldest entry files beyond the count/size caps, never the
+        file that was just written."""
+        try:
+            entries = [
+                item for item in self._local_profile_path().iterdir()
+                if item.is_file() and item.suffix == ".entry"
+            ]
+            size = sum(item.stat().st_size for item in entries)
+            overflow = len(entries) - _LOCAL_PROFILE_MAX_ENTRIES
+            if overflow <= 0 and size <= _LOCAL_PROFILE_MAX_BYTES:
+                return
+            entries.sort(key=lambda item: (item.stat().st_mtime_ns, item.name))
+            keep = keep.resolve(strict=False)
+            for item in entries:
+                if overflow <= 0 and size <= _LOCAL_PROFILE_MAX_BYTES:
+                    break
+                if item.resolve(strict=False) == keep:
+                    continue
+                try:
+                    item_size = item.stat().st_size
+                    item.unlink()
+                    _LOCAL_PROFILE_MEMO.pop(str(item), None)
+                    overflow -= 1
+                    size -= item_size
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+    def read_persistent_result(self, cache_key: tuple) -> tuple[bytes, bytes] | None:
+        """Read a durable derived result; cache_key[0] is the source identity
+        produced by tag_profile_cache_key."""
+        return self._read_local_profile(cache_key)
+
+    def save_persistent_result(self, cache_key: tuple, entry: tuple[bytes, bytes]) -> None:
+        """Persist a derived result regardless of persist_snapshots."""
+        self._save_local_profile(cache_key, entry)
 
     def _compute_tag_profiles(
         self,
@@ -1202,6 +1282,20 @@ class DiagnosisProfileService:
                     continue
                 by_item.setdefault((int(row["session_id"]), str(row["question_id"])), {})[str(row["student_id"])] = row
         resolver = CurrentKnowledgeResolver.from_active_database(self.question_bank_db_path)
+        from question_bank.recommendation.target_matching import target_index
+        from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+        anchors = target_index(resolver)
+        volume = curriculum_volume(volume_id=volume_id)
+        # Questions can be linked to skills anchored in another textbook
+        # volume; shortlist targets only exist inside this one. An unknown
+        # volume keeps the previous everything-eligible behaviour.
+        volume_sections = (
+            None if volume is None else {
+                str(section["knowledge_id"])
+                for chapter in volume["chapters"]
+                for section in chapter["sections"]
+            }
+        )
         bank_ids = {p.bank_question_id for projection in projections.values() for p in projection.items if p.bank_question_id}
         from question_bank.services.question_read_service import QuestionBankReadService
         from question_bank.services.standard_difficulty import difficulty_level
@@ -1258,7 +1352,10 @@ class DiagnosisProfileService:
                     "cause_unclassified_count": len(lost - classified),
                     "bank_question_id": projected.bank_question_id if projected else None,
                     "difficulty": bank_difficulty.get(projected.bank_question_id) if projected else None,
-                    "skill_keys": keys, "skills": [{"key": key, "label": resolver.node(key).display_name if resolver.node(key) else key} for key in keys],
+                    "skill_keys": keys, "skills": [{"key": key,
+                        "label": resolver.node(key).display_name if resolver.node(key) else key,
+                        "in_volume": volume_sections is None or anchors.get(key, {}).get("section") in volume_sections}
+                        for key in keys],
                     "question_text": str(question.get("question_text") or item.get("question_text") or "")})
             if participants:
                 exams.append({"session_id": sid, "title": session.get("session_name") or session.get("exam_name") or session.get("name") or session.get("title") or f"考试 {sid}",

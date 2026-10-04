@@ -16,10 +16,12 @@ import logging
 import os
 import sqlite3
 import sys
+import tempfile
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -38,6 +40,32 @@ _ACTIVE_JOB_STATUSES = ("queued", "running")
 _RECENT_LOCK = threading.Lock()
 _RECENT: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
 _RECENT_GENERATION = 0
+_RECENT_TARGET_LIMIT = 60
+_RECENTS_FILE_NAME = "recent_requests.json"
+_RECENTS_MAX_AGE = timedelta(days=14)
+
+# Foreground read requests counted via get_request_read_context. The worker
+# yields while one is active and briefly afterwards so a refresh batch never
+# competes with the page the teacher is looking at.
+_FOREGROUND_LOCK = threading.Lock()
+_FOREGROUND_ACTIVE = 0
+_FOREGROUND_LAST_FINISH = 0.0
+_FOREGROUND_QUIET_SECONDS = 2.0
+
+
+@contextmanager
+def foreground_request() -> Iterator[None]:
+    """Count one in-flight foreground read for the prewarm yield."""
+
+    global _FOREGROUND_ACTIVE, _FOREGROUND_LAST_FINISH
+    with _FOREGROUND_LOCK:
+        _FOREGROUND_ACTIVE += 1
+    try:
+        yield
+    finally:
+        with _FOREGROUND_LOCK:
+            _FOREGROUND_ACTIVE -= 1
+            _FOREGROUND_LAST_FINISH = time.monotonic()
 
 
 def record_request(
@@ -71,6 +99,61 @@ def record_request(
         _RECENT.move_to_end(key)
         while len(_RECENT) > _RECENT_LIMIT:
             _RECENT.popitem(last=False)
+
+
+def record_target(
+    kind: str,
+    *,
+    scope: Mapping[str, Any],
+    exam_scope: Mapping[str, Any],
+    target_keys: Any,
+) -> None:
+    """Record a target selection on the matching recent entry.
+
+    Targets are replayed by the prewarm as separate tasks. Unlike
+    record_request this does not bump the recent generation: one background
+    plan per filter set still holds however many skills the panel prefetches.
+    """
+
+    key = (
+        json.dumps(dict(scope), sort_keys=True, default=str),
+        json.dumps(dict(exam_scope), sort_keys=True, default=str),
+    )
+    recorded = None if target_keys is None else tuple(target_keys)
+    with _RECENT_LOCK:
+        entry = _RECENT.get(key)
+        if entry is None:
+            entry = {
+                "scope": dict(scope),
+                "exam_scope": dict(exam_scope),
+                "kinds": {},
+                "targets": {},
+                "touched": time.monotonic(),
+            }
+            _RECENT[key] = entry
+        items = entry.setdefault("targets", {}).setdefault(str(kind), [])
+        if recorded not in items:
+            items.append(recorded)
+            while len(items) > _RECENT_TARGET_LIMIT:
+                items.pop(0)
+        entry["touched"] = time.monotonic()
+        _RECENT.move_to_end(key)
+        while len(_RECENT) > _RECENT_LIMIT:
+            _RECENT.popitem(last=False)
+
+
+def _recent_row(entry: Mapping[str, Any], saved_at: str) -> dict[str, Any]:
+    targets = {
+        str(kind): [None if item is None else list(item) for item in items]
+        for kind, items in (entry.get("targets") or {}).items()
+    }
+    return {
+        "scope": dict(entry.get("scope") or {}),
+        "exam_scope": dict(entry.get("exam_scope") or {}),
+        "kinds": dict(entry.get("kinds") or {}),
+        "targets": targets,
+        "saved_at": entry.get("saved_at") or saved_at,
+    }
 
 
 def recent_requests() -> list[dict[str, Any]]:
@@ -117,10 +200,12 @@ class TrainingPrewarmWorker:
         job_manager: Any,
         *,
         poll_seconds: float = _POLL_SECONDS,
+        foreground_quiet_seconds: float = _FOREGROUND_QUIET_SECONDS,
     ) -> None:
         self._paths = paths
         self._job_manager = job_manager
         self._poll_seconds = poll_seconds
+        self._foreground_quiet_seconds = foreground_quiet_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._seen_generations: tuple[int, int] | None = None
@@ -128,6 +213,8 @@ class TrainingPrewarmWorker:
         self._seen_day: str | None = None
         self._seen_group_day: str | None = None
         self._seen_recent_generation: int | None = None
+        self._recents_loaded = False
+        self._persisted_recents: str | None = None
         self.batches: list[tuple[int, float]] = []
 
     def start(self) -> None:
@@ -157,6 +244,10 @@ class TrainingPrewarmWorker:
     def tick(self) -> bool:
         """One refresh pass; returns True when a batch ran."""
 
+        if not self._recents_loaded:
+            self._recents_loaded = True
+            self._load_recents()
+        self._persist_recents()
         generations = (
             commit_generation(Path(self._paths.db_path)),
             commit_generation(Path(self._paths.qb_db_path)),
@@ -182,7 +273,7 @@ class TrainingPrewarmWorker:
         completed = 0
         interrupted = False
         for task in tasks:
-            if self._stop.is_set() or self._jobs_active():
+            if self._stop.is_set() or self._jobs_active() or not self._wait_for_idle():
                 interrupted = True
                 break
             try:
@@ -217,18 +308,135 @@ class TrainingPrewarmWorker:
         except Exception:
             return True
 
+    def _wait_for_idle(self) -> bool:
+        """Wait while a foreground read is active or just finished.
+
+        Returns False only when the worker is stopping, so the caller treats
+        it as an interruption. Waiting itself does not interrupt the batch.
+        """
+
+        while not self._stop.is_set():
+            with _FOREGROUND_LOCK:
+                busy = _FOREGROUND_ACTIVE > 0
+                quiet_for = time.monotonic() - _FOREGROUND_LAST_FINISH
+            if not busy and quiet_for >= self._foreground_quiet_seconds:
+                return True
+            if self._stop.wait(0.2):
+                return False
+        return False
+
+    def _recents_file(self) -> Path:
+        data_root = getattr(self._paths, "data_root", None)
+        if data_root is None:
+            data_root = Path(self._paths.qb_db_path).parent.parent
+        return Path(data_root) / "reports" / ".training_diagnosis" / _RECENTS_FILE_NAME
+
+    def _load_recents(self) -> None:
+        """Restore the persisted recent list, dropping entries older than the
+        retention window."""
+
+        try:
+            payload = json.loads(self._recents_file().read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("version") != 1:
+                return
+            cutoff = datetime.now(timezone.utc) - _RECENTS_MAX_AGE
+            loaded: list[dict[str, Any]] = []
+            for raw in payload.get("entries") or []:
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    saved_at = datetime.fromisoformat(str(raw.get("saved_at") or ""))
+                except (TypeError, ValueError):
+                    continue
+                if saved_at.tzinfo is None:
+                    saved_at = saved_at.replace(tzinfo=timezone.utc)
+                if saved_at < cutoff:
+                    continue
+                targets = {
+                    str(kind): [
+                        None if item is None else tuple(item)
+                        for item in items
+                    ]
+                    for kind, items in (raw.get("targets") or {}).items()
+                    if isinstance(items, list)
+                }
+                loaded.append({
+                    "scope": dict(raw.get("scope") or {}),
+                    "exam_scope": dict(raw.get("exam_scope") or {}),
+                    "kinds": dict(raw.get("kinds") or {}),
+                    "targets": targets,
+                    "saved_at": raw.get("saved_at"),
+                    "touched": time.monotonic(),
+                })
+            with _RECENT_LOCK:
+                for entry in loaded:
+                    key = (
+                        json.dumps(entry["scope"], sort_keys=True, default=str),
+                        json.dumps(entry["exam_scope"], sort_keys=True, default=str),
+                    )
+                    if key not in _RECENT:
+                        _RECENT[key] = entry
+                    while len(_RECENT) > _RECENT_LIMIT:
+                        _RECENT.popitem(last=False)
+        except (OSError, json.JSONDecodeError, TypeError, AttributeError):
+            pass
+
+    def _persist_recents(self) -> None:
+        """Save the recent list once per content change, not per request."""
+
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            with _RECENT_LOCK:
+                snapshot = list(_RECENT.values())
+                text = json.dumps(
+                    {"version": 1,
+                     "entries": [_recent_row(entry, now) for entry in snapshot]},
+                    ensure_ascii=False, sort_keys=True, default=str)
+            if text == self._persisted_recents:
+                return
+            path = self._recents_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    dir=path.parent, mode="w", encoding="utf-8",
+                    delete=False, suffix=".tmp",
+                ) as handle:
+                    temporary = Path(handle.name)
+                    handle.write(text)
+                os.replace(temporary, path)
+            finally:
+                if temporary is not None:
+                    try:
+                        temporary.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            with _RECENT_LOCK:
+                for entry in snapshot:
+                    entry.setdefault("saved_at", now)
+            self._persisted_recents = text
+        except (OSError, TypeError, ValueError):
+            pass
+
     def _refresh_plan(self) -> list[Callable[[], None]]:
         tasks: list[Callable[[], None]] = []
         seen: set[tuple[str, str, str, str]] = set()
+        entries = recent_requests()
         if not self._startup_done:
-            tasks.extend(self._startup_tasks(seen))
-        for entry in recent_requests():
+            # What the teacher most recently opened comes before the generic
+            # startup defaults; afterwards keep the recorded order.
+            entries = list(reversed(entries))
+        for entry in entries:
             scope = dict(entry["scope"])
             exam_scope = dict(entry["exam_scope"])
+            targets = entry.get("targets") or {}
             for kind, params in entry["kinds"].items():
                 tasks.extend(
-                    self._tasks_for(kind, scope, exam_scope, params, seen)
+                    self._tasks_for(kind, scope, exam_scope, params, seen,
+                                    targets=targets.get(str(kind)))
                 )
+        if not self._startup_done:
+            tasks.extend(self._startup_tasks(seen))
         return tasks
 
     def _tasks_for(
@@ -238,6 +446,7 @@ class TrainingPrewarmWorker:
         exam_scope: dict[str, Any],
         params: Mapping[str, Any],
         seen: set[tuple[str, str, str, str]],
+        targets: list | None = None,
     ) -> list[Callable[[], None]]:
         identity = (
             kind,
@@ -246,7 +455,8 @@ class TrainingPrewarmWorker:
             json.dumps(dict(params), sort_keys=True, default=str),
         )
         tasks: list[Callable[[], None]] = []
-        if ("diagnosis", identity[1], identity[2], "") not in seen:
+        # Exam evidence does not consume tag profiles; every other kind does.
+        if kind != "assembly_exam" and ("diagnosis", identity[1], identity[2], "") not in seen:
             seen.add(("diagnosis", identity[1], identity[2], ""))
             tasks.append(lambda s=scope, e=exam_scope: self._compute("diagnosis", s, e, {}))
         if kind == "overview":
@@ -267,13 +477,46 @@ class TrainingPrewarmWorker:
                     )
                 )
         elif kind == "assistant":
-            if identity not in seen:
-                seen.add(identity)
+            # One evidence task for the scope, then one task per recorded
+            # target so the foreground-yield check runs between them.
+            class_ids = [str(item) for item in (params.get("class_ids") or [])]
+            if not class_ids and params.get("class_id"):
+                class_ids = [str(params["class_id"])]
+            evidence_params = {
+                "class_ids": class_ids,
+                "curriculum_volume_id": str(params.get("curriculum_volume_id") or ""),
+            }
+            evidence_identity = (
+                "assembly_exam",
+                identity[1],
+                identity[2],
+                json.dumps(evidence_params, sort_keys=True, default=str),
+            )
+            if evidence_identity not in seen:
+                seen.add(evidence_identity)
+                tasks.append(lambda p=dict(evidence_params): self._compute(
+                    "assembly_exam", {}, {}, p))
+            for target in targets or []:
+                target_params = {**dict(params), "target_keys": target}
+                target_identity = (
+                    kind,
+                    identity[1],
+                    identity[2],
+                    json.dumps(target_params, sort_keys=True, default=str),
+                )
+                if target_identity in seen:
+                    continue
+                seen.add(target_identity)
                 tasks.append(
-                    lambda s=scope, e=exam_scope, p=dict(params): self._compute(
+                    lambda s=scope, e=exam_scope, p=target_params: self._compute(
                         "assistant", s, e, p
                     )
                 )
+        elif kind == 'assembly_exam':
+            if identity not in seen:
+                seen.add(identity)
+                tasks.append(lambda s=scope, e=exam_scope, p=dict(params):
+                    self._compute('assembly_exam', s, e, p))
         elif kind == 'grouped_diagnosis':
             if identity not in seen:
                 seen.add(identity)
@@ -308,24 +551,16 @@ class TrainingPrewarmWorker:
             for kind, params in defaults:
                 tasks.extend(self._tasks_for(kind, dict(scope), dict(exam_scope), params, seen))
         for class_name in self._class_names():
-            # The assistant panel's first search sends this exact default body.
+            # The class-assembly panel reads this evidence before any search.
             tasks.extend(
                 self._tasks_for(
-                    "assistant",
+                    "assembly_exam",
                     {"mode": "class", "class_ids": [class_name],
                      "use_historical_fallback": False},
-                    {"mode": "semester", "session_ids": [],
-                     "curriculum_volume_id": volume_id},
+                    dict(exam_scope),
                     {
-                        "class_id": class_name,
+                        "class_ids": [class_name],
                         "curriculum_volume_id": volume_id,
-                        "chapter_id": "",
-                        "target_keys": None,
-                        "question_type": "",
-                        "difficulty_min": 1,
-                        "difficulty_max": 10,
-                        "exclude_exam_originals": True,
-                        "exclude_recent": True,
                     },
                     seen,
                 )
@@ -438,6 +673,13 @@ class TrainingPrewarmWorker:
                 self._compute_graph(service, scope, exam_scope, params)
             elif kind == "assistant":
                 self._compute_assistant(service, params)
+            elif kind == 'assembly_exam':
+                from backend.api.routers.assembly import _cached_exam_questions
+                _cached_exam_questions(
+                    service,
+                    class_ids=[str(item) for item in params.get("class_ids") or []],
+                    volume_id=str(params.get("curriculum_volume_id") or ""),
+                )
             elif kind == 'grouped_diagnosis':
                 from backend.api.routers.training import _grouped_diagnosis_response_bytes
                 from backend.api.schemas.training import TrainingGroupingRequest
@@ -493,28 +735,37 @@ class TrainingPrewarmWorker:
         )
 
         paths = self._paths
+        data_root = getattr(paths, "data_root", None) or Path(paths.qb_db_path).parent.parent
         target_keys = params.get("target_keys")
+        # Same dependencies and parameters as the endpoint so the prewarm
+        # fills the very cache keys a foreground request will look up.
         compute_assistant_candidates(
             diagnosis_service=service,
             read_service=QuestionBankReadService(
-                paths.qb_db_path, data_root=paths.data_root
+                paths.qb_db_path, data_root=data_root
             ),
             recommendations=PersonalizedRecommendationModule(
-                db_path=paths.qb_db_path, data_root=paths.data_root
+                db_path=paths.qb_db_path, data_root=data_root,
+                semester_mastery=service.semester_mastery,
             ),
-            workspace=AssemblyWorkspaceService(paths.data_root),
+            workspace=AssemblyWorkspaceService(data_root),
             class_id=str(params.get("class_id") or ""),
+            class_ids=[str(item) for item in params.get("class_ids") or []] or None,
+            session_ids=[int(item) for item in params.get("session_ids") or []] or None,
             curriculum_volume_id=str(params.get("curriculum_volume_id") or ""),
             chapter_id=str(params.get("chapter_id") or ""),
             teaching_progress_chapter_id=str(params.get("teaching_progress_chapter_id") or ""),
             target_keys=None if target_keys is None else list(target_keys),
             question_type=str(params.get("question_type") or ""),
-            difficulty_min=int(params.get("difficulty_min") or 1),
-            difficulty_max=int(params.get("difficulty_max") or 10),
+            difficulty_min=float(params.get("difficulty_min") or 1),
+            difficulty_max=float(params.get("difficulty_max") or 10),
             exclude_exam_originals=bool(
                 params.get("exclude_exam_originals", True)
             ),
             exclude_recent=bool(params.get("exclude_recent", True)),
+            recent_activity_count=int(params.get("recent_activity_count", 3)),
+            purpose=str(params.get("purpose") or "training"),
+            record=False,
         )
 
 
@@ -536,8 +787,10 @@ def start_prewarm(paths: Any, job_manager: Any) -> TrainingPrewarmWorker | None:
 __all__ = [
     "TrainingPrewarmWorker",
     "clear_recent_requests",
+    "foreground_request",
     "prewarm_enabled",
     "recent_requests",
     "record_request",
+    "record_target",
     "start_prewarm",
 ]

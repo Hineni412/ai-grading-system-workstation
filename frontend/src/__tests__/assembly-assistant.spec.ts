@@ -65,7 +65,7 @@ describe('class assembly assistant', () => {
     const q: api.AssemblyExamQuestion = {key:'7:Q1',session_id:7,question_id:'Q1',question_type:'选择题',
       full_score:3,class_rate:.4,student_count:25,bank_question_id:11,difficulty:4,
       class_rates:[{class_id:'9班',student_count:25,class_rate:.4}],
-      cause_category_counts:[{category:'计算与化简',count:8}],cause_unclassified_count:2,skill_keys:['sk_one'],skills:[{key:'sk_one',label:'勾股定理应用'}],question_text:'[[IMAGE:test-legacy-source]]'}
+      cause_category_counts:[{category:'计算与化简',count:8}],cause_unclassified_count:2,skill_keys:['sk_one'],skills:[{key:'sk_one',label:'勾股定理应用',in_volume:true}],question_text:'[[IMAGE:test-legacy-source]]'}
     return {student_count:30,exams:[{session_id:7,title:'TEST-两班考试',date:'2026-10-02',class_ids:['9班','10班'],student_count:25,average_score:40,questions:[q]},
       {session_id:6,title:'TEST-单班考试',date:'2026-10-01',class_ids:['10班'],student_count:15,average_score:50,questions:[]}]}
   }
@@ -252,7 +252,7 @@ describe('class assembly assistant', () => {
       full_score: 3, class_rate: .4, student_count: 25, bank_question_id: 11, difficulty: 4,
       class_rates: [{ class_id: '9班', student_count: 25, class_rate: .4 }],
       cause_category_counts: [{ category: '计算与化简', count: 8 }], cause_unclassified_count: 2,
-      skill_keys: ['sk_one'], skills: [{ key: 'sk_one', label: '勾股定理应用' }], question_text: '直角边题' }
+      skill_keys: ['sk_one'], skills: [{ key: 'sk_one', label: '勾股定理应用', in_volume: true }], question_text: '直角边题' }
     const second: api.AssemblyExamQuestion = { ...shared, key: '6:Q5', session_id: 6, question_id: 'Q5', class_rate: .5,
       cause_category_counts: [{ category: '计算与化简', count: 3 }], cause_unclassified_count: 1 }
     const loose: api.AssemblyExamQuestion = { ...shared, key: '7:Q9', question_id: 'Q9', class_rate: .3,
@@ -274,12 +274,38 @@ describe('class assembly assistant', () => {
     await vi.waitFor(() => expect(host.textContent).toContain('该题未挂技能也未关联题库，无法配题'))
   })
 
+  it('groups out-of-volume skills under 往届技能 and never requests candidates for them', async () => {
+    // A question can link a skill anchored in another textbook volume; such
+    // skills are listed separately because /assistant/candidates rejects them.
+    const q = (id: string, key: string, inVolume: boolean, rate: number): api.AssemblyExamQuestion => ({ key: `7:${id}`, session_id: 7, question_id: id,
+      question_type: '选择题', full_score: 3, class_rate: rate, student_count: 25, bank_question_id: 11, difficulty: 4,
+      class_rates: [{ class_id: '9班', student_count: 25, class_rate: rate }],
+      cause_category_counts: [{ category: '计算与化简', count: 3 }], cause_unclassified_count: 0,
+      skill_keys: [key], skills: [{ key, label: key, in_volume: inVolume }], question_text: id })
+    vi.mocked(api.fetchAssemblyExams).mockResolvedValue({ student_count: 30, exams: [
+      { session_id: 7, title: 'TEST-考试', date: '2026-10-02', class_ids: ['9班'], student_count: 25, average_score: 40,
+        questions: [q('Q1', 'sk_old', false, .3), q('Q2', 'sk_one', true, .5), q('Q3', 'sk_two', true, .6)] },
+    ] })
+    const { host } = await mountPanel()
+    // Initial auto-selection skips the lower-rate out-of-volume skill.
+    expect(vi.mocked(api.fetchAssemblyCandidates).mock.calls[0]![0].target_keys).toEqual(['sk_one'])
+    await vi.waitFor(() => expect(host.textContent).toContain('往届技能'))
+    // Prefetch ran (sk_two was fetched) but never includes the out-of-volume key.
+    await vi.waitFor(() => expect(api.fetchAssemblyCandidates).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(api.fetchAssemblyCandidates).mock.calls.every(c => !c[0].target_keys?.includes('sk_old'))).toBe(true)
+    const card = [...host.querySelectorAll<HTMLButtonElement>('.ca-need')].find(b => b.textContent?.includes('往届技能 · 只能加入原题'))!
+    card.click()
+    await nextTick()
+    expect(host.textContent).toContain('该技能不属于本册，只能加入原题')
+    expect(vi.mocked(api.fetchAssemblyCandidates)).toHaveBeenCalledTimes(2)
+  })
+
   it('serves a prefetched skill without another candidates request', async () => {
     const q = (id: string, skills: string[]): api.AssemblyExamQuestion => ({ key: `7:${id}`, session_id: 7, question_id: id,
       question_type: '选择题', full_score: 3, class_rate: .4, student_count: 25, bank_question_id: 11, difficulty: 4,
       class_rates: [{ class_id: '9班', student_count: 25, class_rate: .4 }],
       cause_category_counts: [{ category: '计算与化简', count: 3 }], cause_unclassified_count: 0,
-      skill_keys: skills, skills: skills.map(key => ({ key, label: key })), question_text: id })
+      skill_keys: skills, skills: skills.map(key => ({ key, label: key, in_volume: true })), question_text: id })
     vi.mocked(api.fetchAssemblyExams).mockResolvedValue({ student_count: 30, exams: [
       { session_id: 7, title: 'TEST-考试', date: '2026-10-02', class_ids: ['9班'], student_count: 25, average_score: 40,
         questions: [q('Q1', ['sk_one']), q('Q2', ['sk_two'])] },
