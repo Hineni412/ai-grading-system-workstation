@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="490" viewBox="0 0 1200 490" role="img" aria-labelledby="title description">
+  <title id="title">AI 阅卷系统：从考试阅卷到个性化训练</title>
+  <desc id="description">面向教师 Windows 工作机的本地应用。考试阅卷、题库组卷和知识训练共同支持教学工作。此图是功能示意，不是应用截图。</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#102238"/>
+      <stop offset="1" stop-color="#172f49"/>
+    </linearGradient>
+    <linearGradient id="accent" x2="1" y2="1">
+      <stop stop-color="#67e8d1"/>
+      <stop offset="1" stop-color="#2dd4bf"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#8fb8d5" stroke-opacity=".07"/>
+    </pattern>
+  </defs>
+  <style>
+    text { font-family: 'Segoe UI', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; }
+    .muted { fill: #a9c0d3; }
+    .heading { fill: #f3f8fc; font-size: 25px; font-weight: 650; }
+    .detail { fill: #bfd0de; font-size: 17px; }
+    .number { fill: #67e8d1; font-size: 14px; letter-spacing: 2px; }
+  </style>
+  <rect width="1200" height="490" rx="20" fill="url(#background)"/>
+  <rect width="1200" height="490" rx="20" fill="url(#grid)"/>
+  <circle cx="1080" cy="70" r="180" fill="#2dd4bf" opacity=".04"/>
+  <circle cx="1110" cy="100" r="130" fill="none" stroke="#67e8d1" opacity=".12"/>
+  <rect x="48" y="39" width="5" height="19" rx="2" fill="#67e8d1"/>
+  <text x="65" y="54" class="muted" font-size="13" letter-spacing="3">AI GRADING · LOCAL WORKSPACE</text>
+  <text x="46" y="133" fill="#f3f8fc" font-size="58" font-weight="700">AI 阅卷系统</text>
+  <text x="49" y="179" fill="#67e8d1" font-size="25">让阅卷结果，成为下一次训练的起点。</text>
+  <text x="49" y="219" class="muted" font-size="18">面向教师 Windows 工作机 · 本地保存业务数据 · 教师复核与确认</text>
+  <g transform="translate(938 42) rotate(7 80 80)">
+    <rect width="165" height="182" rx="15" fill="#203d55" stroke="#51718b"/>
+    <rect x="21" y="24" width="65" height="8" rx="4" fill="#96b4ca"/>
+    <path d="M22 61H143M22 90H143M22 119H105" stroke="#45617b" stroke-width="2"/>
+    <path d="m25 53 5 5 10-11m-15 35 5 5 10-11" fill="none" stroke="#67e8d1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M28 156h20l19-20 19 8 21-24 22 3" fill="none" stroke="#67e8d1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="129" cy="123" r="4" fill="#67e8d1"/>
+  </g>
+  <g>
+    <rect x="48" y="270" width="352" height="154" rx="14" fill="#203b53" stroke="#35556e"/>
+    <text x="72" y="303" class="number">01 / GRADING</text>
+    <text x="72" y="341" class="heading">考试阅卷</text>
+    <text x="72" y="376" class="detail">试卷准备 → 扫描归卷 → 批改复核</text>
+    <text x="72" y="402" class="detail">成绩表 · 班级分析 · 个人报告</text>
+    <rect x="424" y="270" width="352" height="154" rx="14" fill="#203b53" stroke="#35556e"/>
+    <text x="448" y="303" class="number">02 / QUESTION BANK</text>
+    <text x="448" y="341" class="heading">题库与组卷</text>
+    <text x="448" y="376" class="detail">题目导入 → 技能标注 → 选题成卷</text>
+    <text x="448" y="402" class="detail">共用试卷篮 · Word / PDF 导出</text>
+    <rect x="800" y="270" width="352" height="154" rx="14" fill="#203b53" stroke="#35556e"/>
+    <text x="824" y="303" class="number">03 / KNOWLEDGE &amp; PRACTICE</text>
+    <text x="824" y="341" class="heading">知识与训练</text>
+    <text x="824" y="376" class="detail">学情诊断 → 推荐训练 → 回收判定</text>
+    <text x="824" y="402" class="detail">个人 / 小组 / 班级卷 · 掌握度</text>
+  </g>
+  <text x="49" y="463" class="muted" font-size="13">WINDOWS</text>
+  <circle cx="126" cy="459" r="2" fill="#67e8d1"/>
+  <text x="143" y="463" class="muted" font-size="13">VUE 3 + FASTAPI</text>
+  <circle cx="277" cy="459" r="2" fill="#67e8d1"/>
+  <text x="294" y="463" class="muted" font-size="13">LOCAL DATA</text>
+  <text x="1150" y="463" text-anchor="end" class="muted" font-size="13">功能流程示意</text>
+</svg>

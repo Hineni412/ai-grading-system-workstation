@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title description">
+  <title id="title">AI Grading System — Teacher-built, classroom-used</title>
+  <desc id="description">A Windows workspace for AI grading, teacher review, question banks and targeted practice. Built by a math teacher and used for weekly grading. The paper graphic is an illustration with no student data.</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#102238"/>
+      <stop offset="1" stop-color="#1b3851"/>
+    </linearGradient>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" fill="none" stroke="#aac6da" stroke-opacity=".055"/>
+    </pattern>
+    <linearGradient id="paper" x2="0" y2="1">
+      <stop stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#eaf1f6"/>
+    </linearGradient>
+  </defs>
+  <style>
+    text { font-family: 'Segoe UI', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; }
+    .muted { fill: #b7cbdc; }
+    .card-title { fill: #f3f8fc; font-size: 24px; font-weight: 650; }
+    .card-detail { fill: #b7cbdc; font-size: 17px; }
+    .icon { fill: none; stroke: #67e8d1; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+  </style>
+  <rect width="1280" height="640" fill="url(#background)"/>
+  <rect width="1280" height="640" fill="url(#grid)"/>
+  <circle cx="1150" cy="112" r="244" fill="#45d6c5" opacity=".045"/>
+  <circle cx="1100" cy="159" r="170" fill="none" stroke="#67e8d1" stroke-opacity=".15"/>
+  <circle cx="1100" cy="159" r="213" fill="none" stroke="#67e8d1" stroke-opacity=".07"/>
+  <rect x="64" y="62" width="7" height="23" rx="3" fill="#67e8d1"/>
+  <text x="88" y="80" class="muted" font-size="15" letter-spacing="3">BUILT BY A MATH TEACHER</text>
+  <text x="62" y="189" fill="#f3f8fc" font-size="67" font-weight="700" letter-spacing="-2">AI Grading System</text>
+  <text x="66" y="251" fill="#67e8d1" font-size="35" font-weight="600">Grade. Review. Understand.</text>
+  <text x="66" y="300" class="muted" font-size="25">From exam papers to targeted practice.</text>
+  <rect x="64" y="340" width="281" height="40" rx="20" fill="#25495c" stroke="#42796f"/>
+  <circle cx="84" cy="360" r="4" fill="#67e8d1"/>
+  <text x="99" y="367" fill="#d1f7ed" font-size="18">Used for weekly grading</text>
+  <g transform="translate(901 103)">
+    <rect x="36" y="25" width="234" height="292" rx="14" transform="rotate(7 153 171)" fill="#31566d" stroke="#557c91"/>
+    <rect x="0" y="0" width="234" height="292" rx="14" fill="url(#paper)"/>
+    <rect x="26" y="28" width="94" height="7" rx="3" fill="#23425a"/>
+    <rect x="26" y="49" width="162" height="4" rx="2" fill="#c1d0dc"/>
+    <text x="28" y="96" fill="#31516b" font-size="21" font-style="italic">x² − 5x + 6 = 0</text>
+    <rect x="17" y="113" width="200" height="75" rx="8" fill="#d9f4eb" stroke="#5ea893" stroke-dasharray="5 4"/>
+    <text x="29" y="144" fill="#31516b" font-size="19" font-style="italic">(x − 2)(x − 3) = 0</text>
+    <text x="29" y="173" fill="#31516b" font-size="19" font-style="italic">x = 2 or x = 3</text>
+    <path d="m177 210 8 8 17-21" fill="none" stroke="#158477" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="27" y="219" width="126" height="4" rx="2" fill="#c1d0dc"/>
+    <rect x="27" y="239" width="98" height="4" rx="2" fill="#c1d0dc"/>
+    <text x="117" y="275" text-anchor="middle" fill="#748b9c" font-size="11" letter-spacing="1.5">ILLUSTRATION</text>
+  </g>
+  <g transform="translate(855 370)">
+    <rect width="316" height="49" rx="12" fill="#21495a" stroke="#4b8d80"/>
+    <path d="M18 25s7-9 16-9 16 9 16 9-7 9-16 9-16-9-16-9Z" fill="none" stroke="#67e8d1" stroke-width="2"/>
+    <circle cx="34" cy="25" r="4" fill="none" stroke="#67e8d1" stroke-width="2"/>
+    <text x="64" y="32" fill="#d1f7ed" font-size="19">Teacher review comes first</text>
+  </g>
+  <g>
+    <rect x="64" y="464" width="368" height="101" rx="13" fill="#203c53" stroke="#3a5b73"/>
+    <g transform="translate(85 484)" class="icon">
+      <rect width="22" height="29" rx="3"/>
+      <path d="M6 7h10M6 13h8m-8 8 3 3 6-7"/>
+    </g>
+    <text x="123" y="504" class="card-title">AI + Teacher Review</text>
+    <text x="86" y="539" class="card-detail">Prepare · Scan · Grade · Review</text>
+    <rect x="456" y="464" width="368" height="101" rx="13" fill="#203c53" stroke="#3a5b73"/>
+    <g transform="translate(477 484)" class="icon">
+      <path d="M0 3c4-2 9-2 13 1 4-3 9-3 13-1v24c-4-2-9-2-13 1-4-3-9-3-13-1ZM13 4v24"/>
+    </g>
+    <text x="515" y="504" class="card-title">Question Bank</text>
+    <text x="478" y="539" class="card-detail">Skills · Paper assembly · Word / PDF</text>
+    <rect x="848" y="464" width="368" height="101" rx="13" fill="#203c53" stroke="#3a5b73"/>
+    <g transform="translate(870 486)" class="icon">
+      <circle cx="13" cy="13" r="13"/>
+      <circle cx="13" cy="13" r="6"/>
+      <path d="m13 13 11-11"/>
+    </g>
+    <text x="909" y="504" class="card-title">Targeted Practice</text>
+    <text x="870" y="539" class="card-detail">Evidence · Recommendations · Feedback</text>
+  </g>
+  <text x="66" y="608" class="muted" font-size="15" letter-spacing="1">WINDOWS · LOCAL DATA · VUE 3 + FASTAPI</text>
+  <text x="1214" y="608" text-anchor="end" class="muted" font-size="15">Hineni412 / ai-grading-system-workstation</text>
+</svg>
