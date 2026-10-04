@@ -15,27 +15,70 @@ const classes=ref<string[]>([]), rosterReady=ref(false), scopeMessage=ref(''), a
 const showAllSkills=ref(false), originalExpanded=ref(false), expanded=ref(new Set<number>()), similar=ref(new Map<number,AssemblyQuestion[]>())
 const relative=ref(''), quickBusy=ref(false), blocked=ref<Record<number,string>>({}), replacingId=ref<number|null>(null)
 const original=ref<AssemblyQuestion|null>(null), leftList=ref<HTMLElement|null>(null)
+const activeOriginalKey=ref(''), selectedNoSkillKey=ref('')
 const relativeQuestions=ref<AssemblyQuestion[]>([]), relativeLimit=ref(12), relativeLoading=ref(false)
 const rules=computed(()=>typeof assembly.draft.practice_rules==='object' && assembly.draft.practice_rules?assembly.draft.practice_rules:defaultPaperRules())
 const selectedClasses=computed(()=>assistant.filters.class_ids??[]), exams=computed(()=>assistant.examResult?.exams??[])
 const selectedExams=computed(()=>exams.value.filter(e=>assistant.filters.session_ids?.includes(e.session_id)))
-const lossQuestions=computed(()=>{
- const items=selectedExams.value.flatMap(e=>e.questions).filter(q=>q.class_rate!==null&&(assistant.threshold===100||q.class_rate!*100<assistant.threshold))
- return assistant.sort==='loss'?items.sort((a,b)=>a.class_rate!-b.class_rate!||a.key.localeCompare(b.key,'zh-CN',{numeric:true})):items.sort((a,b)=>a.session_id-b.session_id||a.question_id.localeCompare(b.question_id,'zh-CN',{numeric:true}))
+const examQs=computed(()=>selectedExams.value.flatMap(e=>e.questions).filter(q=>q.class_rate!==null))
+const failingQs=computed(()=>examQs.value.filter(q=>assistant.threshold===100||q.class_rate!*100<assistant.threshold))
+interface SkillItem{key:string;name:string;section:string;related:AssemblyExamQuestion[];minRate:number|null;weak:number|null;evidence:number|null;causes:{category:string;count:number}[]|null;unclassified:number;covered:number;extra?:boolean}
+type NeedItem={kind:'skill';item:SkillItem}|{kind:'question';q:AssemblyExamQuestion}
+const weaknessMap=computed(()=>new Map((assistant.result?.weaknesses??[]).map(w=>[w.knowledge_key,w])))
+const skillItems=computed<SkillItem[]>(()=>{
+ const bySkill=new Map<string,AssemblyExamQuestion[]>()
+ for(const q of failingQs.value)for(const key of q.skill_keys)bySkill.set(key,[...(bySkill.get(key)??[]),q])
+ return[...bySkill].map(([key,related])=>{
+  related.sort((a,b)=>a.class_rate!-b.class_rate!||a.key.localeCompare(b.key,'zh-CN',{numeric:true}))
+  const w=weaknessMap.value.get(key),merged=new Map<string,number>()
+  let organized=false,unclassified=0
+  for(const q of related){unclassified+=q.cause_unclassified_count;if(q.cause_category_counts===null)continue;organized=true;for(const c of q.cause_category_counts)merged.set(c.category,(merged.get(c.category)??0)+c.count)}
+  return{key,name:w?leaf(w.knowledge_point):leaf(related[0]!.skills.find(s=>s.key===key)?.label??key),section:w?w.knowledge_point.split('｜').slice(0,-1).join(' · ')||'其他':'其他',
+   related,minRate:related[0]!.class_rate!,weak:w?w.weak_student_count:null,evidence:w?w.evidence_student_count:null,
+   causes:organized?[...merged].map(([category,count])=>({category,count})).filter(c=>c.count).sort((a,b)=>b.count-a.count).slice(0,2):null,unclassified,
+   covered:assembly.orderedQuestions.filter(q=>questionSkills(q).includes(key)).length}
+ })
 })
-const selected=computed(()=>lossQuestions.value.find(q=>q.key===assistant.selectedExamKey))
-const skillGroups=computed(()=>{
- const points=(assistant.result?.weaknesses??[]).filter(p=>p.knowledge_key.startsWith('sk_')&&(showAllSkills.value||p.weak_student_count>0))
- const groups=new Map<string,typeof points>()
- for(const p of points){const group=p.knowledge_point.split('｜').slice(0,-1).join(' · ')||'当前学期';groups.set(group,[...(groups.get(group)??[]),p])}
- return [...groups].map(([label,points])=>({label,points}))
+const extraSkillCount=computed(()=>(assistant.result?.weaknesses??[]).filter(w=>w.knowledge_key.startsWith('sk_')&&w.weak_student_count>0&&!skillItems.value.some(i=>i.key===w.knowledge_key)).length)
+const extraSkills=computed<SkillItem[]>(()=>!showAllSkills.value?[]:(assistant.result?.weaknesses??[]).filter(w=>w.knowledge_key.startsWith('sk_')&&w.weak_student_count>0&&!skillItems.value.some(i=>i.key===w.knowledge_key)).map(w=>({key:w.knowledge_key,name:leaf(w.knowledge_point),section:w.knowledge_point.split('｜').slice(0,-1).join(' · ')||'其他',related:[],minRate:null,weak:w.weak_student_count,evidence:w.evidence_student_count,causes:null,unclassified:0,covered:assembly.orderedQuestions.filter(q=>questionSkills(q).includes(w.knowledge_key)).length,extra:true})))
+const noSkillQuestions=computed(()=>failingQs.value.filter(q=>!q.skill_keys.length))
+const needSections=computed(()=>{
+ let sections:{label:string;items:NeedItem[]}[]
+ if(assistant.sort==='chapter'){
+  const groups=new Map<string,SkillItem[]>()
+  for(const item of [...skillItems.value].sort((a,b)=>a.key.localeCompare(b.key,'zh-CN',{numeric:true})))groups.set(item.section,[...(groups.get(item.section)??[]),item])
+  sections=[...groups].sort((a,b)=>a[0].localeCompare(b[0],'zh-CN',{numeric:true})).map(([label,items])=>({label,items:items.map(item=>({kind:'skill' as const,item}))}))
+ }else sections=[{label:'',items:[...skillItems.value].sort((a,b)=>(a.minRate??1)-(b.minRate??1)||a.key.localeCompare(b.key,'zh-CN',{numeric:true})).map(item=>({kind:'skill' as const,item}))}]
+ if(noSkillQuestions.value.length)sections.push({label:'未挂技能的题',items:noSkillQuestions.value.map(q=>({kind:'question' as const,q}))})
+ if(extraSkills.value.length)sections.push({label:'其他需关注技能',items:extraSkills.value.map(item=>({kind:'skill' as const,item}))})
+ return sections.filter(s=>s.items.length)
 })
+const needFlat=computed(()=>needSections.value.flatMap(s=>s.items))
+const visibleSkillKeys=computed(()=>needFlat.value.flatMap(i=>i.kind==='skill'?[i.item.key]:[]))
+const selectedNoSkill=computed(()=>examQs.value.find(q=>q.key===selectedNoSkillKey.value)??null)
+const currentOriginal=computed(()=>activeOriginalKey.value?examQs.value.find(q=>q.key===activeOriginalKey.value)??null:null)
+const activeItem=computed<SkillItem|null>(()=>{
+ if(selectedNoSkill.value)return null
+ const key=assistant.selectedKey
+ if(!key)return null
+ const found=skillItems.value.find(i=>i.key===key)??extraSkills.value.find(i=>i.key===key)
+ if(found)return found
+ const w=weaknessMap.value.get(key),q=examQs.value.find(q=>q.skill_keys.includes(key))
+ if(!w&&!q)return null
+ return{key,name:w?leaf(w.knowledge_point):leaf(q!.skills.find(s=>s.key===key)?.label??key),section:w?w.knowledge_point.split('｜').slice(0,-1).join(' · ')||'其他':'其他',related:q?[q]:[],minRate:q?.class_rate??null,weak:w?w.weak_student_count:null,evidence:w?w.evidence_student_count:null,causes:q?.cause_category_counts?[...q.cause_category_counts].filter(c=>c.count).sort((a,b)=>b.count-a.count).slice(0,2):null,unclassified:q?.cause_unclassified_count??0,covered:assembly.orderedQuestions.filter(b=>questionSkills(b).includes(key)).length}
+})
+const selectedId=computed(()=>selectedNoSkillKey.value||assistant.selectedKey)
+function itemId(item:NeedItem){return item.kind==='skill'?item.item.key:item.q.key}
+async function selectItem(item:NeedItem){relative.value='';originalExpanded.value=false;replacingId.value=null
+ if(item.kind==='question'){selectedNoSkillKey.value=item.q.key;activeOriginalKey.value=item.q.key;return}
+ selectedNoSkillKey.value='';activeOriginalKey.value=item.item.related[0]?.key??'';await assistant.selectSkill(item.item.key)}
+function selectRelated(q:AssemblyExamQuestion){activeOriginalKey.value=q.key;originalExpanded.value=false}
 function classLabel(name:string){return /班$/.test(name)?name:name+'班'}
 function questionLabel(id:string){return id.replace(/^Q/,'').replace(/\(P(\d+)\)/g,'($1)')}
 function examShortTitle(id:number){return examTitle(id).replace(/学情反馈$/,'')}
 const title=computed(()=>assembly.draft.title&&!assembly.draft.assembly_context?.title_generated?assembly.draft.title:(curriculum.selectedVolume?.grade??'')+selectedClasses.value.map(n=>n.replace(/班$/,'')).join('、')+'班 '+(selectedClasses.value.length===1?(selectedExams.value[0]?.title.match(/第[一二三四五六七八九十\d]+周/)?.[0]??''):'')+'补偿练习')
 const questionMap=computed(()=>new Map([...assistant.questions,...relativeQuestions.value].map(q=>[q.id,q])))
-const originalDifficulty=computed(()=>original.value?.difficulty?Number(original.value.difficulty):selected.value?.difficulty)
+const originalDifficulty=computed(()=>original.value?.difficulty?Number(original.value.difficulty):currentOriginal.value?.difficulty??undefined)
 function difficultyRelation(d:number|null|undefined){const b=originalDifficulty.value;return !b||d==null?'':d<b-.8?'更基础':d>b+.8?'更难':'相当'}
 const candidatePool=computed(()=>(assistant.result?.candidates??[]).filter(c=>!relative.value||difficultyRelation(c.difficulty)===relative.value))
 const candidates=computed(()=>candidatePool.value.slice(0,relative.value?relativeLimit.value:assistant.visibleCount).flatMap(c=>{const question=questionMap.value.get(c.question_id);return question?[{...c,question}]:[]}))
@@ -54,45 +97,46 @@ function coverage(q:AssemblyExamQuestion){
  if(n)return '已配 '+n+' 题'
  const shared=q.skill_keys.find(k=>coveredSkills.value.has(k))
  if(!shared)return ''
- const other=lossQuestions.value.find(v=>v.key!==q.key&&v.skill_keys.includes(shared)&&assembly.draft.order_ids.some(id=>sources.value[id]?.key===v.key))
+ const other=failingQs.value.find(v=>v.key!==q.key&&v.skill_keys.includes(shared)&&assembly.draft.order_ids.some(id=>sources.value[id]?.key===v.key))
  return other?'与 '+other.question_id+' 同技能，一起覆盖':'同技能已配题，一起覆盖'
 }
-const coveredCount=computed(()=>lossQuestions.value.filter(q=>Boolean(coverage(q))).length)
+const coveredCount=computed(()=>failingQs.value.filter(q=>Boolean(coverage(q))||q.skill_keys.some(k=>coveredSkills.value.has(k))).length)
 function percent(v:number|null){return v===null?'暂无成绩':Math.round(v*100)+'%'}
 function examTitle(id:number){return exams.value.find(e=>e.session_id===id)?.title??'考试'}
 function leaf(s:string){return knowledgeLeafLabel(s).replace(/^技能[·：:]\s*/,'')}
 function causeTop(q:AssemblyExamQuestion){return [...(q.cause_category_counts??[])].filter(c=>c.count).sort((a,b)=>b.count-a.count).slice(0,2)}
 const COLORS=['#6c9b8a','#75aebb','#ba9666','#937eae','#a09173','#83a2a8','#b57874']
-const causeHint=computed(()=>{const c=selected.value&&causeTop(selected.value)[0]?.category;return !c?'':c==='未作答'?'可能偏难或时间不够，建议配更基础的题':c==='计算与化简'?'适合配同类型计算变式':'以「'+c+'」为主，建议配同技能变式'})
+const causeHint=computed(()=>{const c=currentOriginal.value&&causeTop(currentOriginal.value)[0]?.category;return !c?'':c==='未作答'?'可能偏难或时间不够，建议配更基础的题':c==='计算与化简'?'适合配同类型计算变式':'以「'+c+'」为主，建议配同技能变式'})
 function context():AssemblyContext{return {class_ids:[...selectedClasses.value],session_ids:[...(assistant.filters.session_ids??[])],curriculum_volume_id:assistant.filters.curriculum_volume_id,title_generated:!assembly.draft.title||assembly.draft.assembly_context?.title_generated,sources:{...sources.value}}}
-async function add(id:number,source=selected.value,isOriginal=false){
+function skillSource(){const item=activeItem.value;return item?{key:'skill:'+item.key,label:item.name,skill_keys:[item.key]}:undefined}
+function examSource(q:AssemblyExamQuestion){return{key:q.key,label:examTitle(q.session_id)+'·'+q.question_id,skill_keys:q.skill_keys,original:true}}
+async function add(id:number,source=skillSource()){
  if(!canAct.value||assembly.draft.basket_ids.includes(id))return
  const next=context()
- if(source)next.sources[id]={key:source.key,label:examTitle(source.session_id)+'·'+source.question_id,skill_keys:source.skill_keys,original:isOriginal}
+ if(source)next.sources[id]=source
  if(replacingId.value)delete next.sources[replacingId.value]
  const ids=assembly.draft.order_ids.filter(q=>q!==replacingId.value)
  const ok=await assembly.save({...assembly.draft,practice_rules:{...rules.value},assembly_context:next,title:title.value,basket_ids:[...ids,id],order_ids:replacingId.value?assembly.draft.order_ids.map(q=>q===replacingId.value?id:q):[...ids,id],sections:assembly.draft.sections.map(s=>({...s,question_ids:s.question_ids.map(q=>q===replacingId.value?id:q)}))})
  if(ok){blocked.value={};replacingId.value=null;actionMessage.value='已加入试卷篮，可继续配题。'}else blocked.value[id]=assembly.message
 }
 async function replaceSkill(id:number){const c=candidates.value.find(c=>c.question_id===id);const q=assembly.orderedQuestions.find(q=>questionSkills(q).some(k=>c?.target_keys.includes(k)));if(q){replacingId.value=q.id;await add(id)}}
-async function selectQuestion(q:AssemblyExamQuestion){relative.value='';originalExpanded.value=false;replacingId.value=null;await assistant.selectExam(q.key,q.skill_keys)}
 async function changeClasses(ids:string[]){if(!ids.length)return;assistant.changeScope({class_ids:ids});scopeMessage.value='试卷保留；覆盖情况按新依据重算';await assistant.loadExams()}
 function toggleClass(n:string){void changeClasses(selectedClasses.value.includes(n)?selectedClasses.value.filter(v=>v!==n):[...selectedClasses.value,n])}
 async function changeExams(ids:number[]){if(!ids.length)return;assistant.changeScope({session_ids:ids});scopeMessage.value='试卷保留；覆盖情况按新依据重算';await chooseFirst()}
-async function chooseFirst(){if(assistant.view==='exam'&&lossQuestions.value[0])await selectQuestion(lossQuestions.value[0]);else if(assistant.canSearch)await assistant.search()}
+async function chooseFirst(){const first=needFlat.value[0];if(first)await selectItem(first);else if(assistant.canSearch)await assistant.search()}
 watch(()=>assistant.examState,s=>{if(s==='ready'&&!assistant.result)void chooseFirst()})
-watch(()=>[assistant.threshold,assistant.sort],()=>{if(!selected.value&&lossQuestions.value[0])void selectQuestion(lossQuestions.value[0])})
-watch(()=>assistant.view,()=>{relative.value='';if(assistant.view==='exam')void chooseFirst();else{const points=skillGroups.value.flatMap(g=>g.points);const target=points.find(p=>p.knowledge_key===assistant.selectedKey)??points[0];if(target)assistant.selectTarget(target.knowledge_key);else if(!assistant.result)void assistant.search()}})
+watch([needFlat,()=>assistant.result],()=>{if(!assistant.result||!needFlat.value.length||assistant.state==='loading')return;const ids=needFlat.value.map(itemId);if(!ids.includes(selectedId.value)){void selectItem(needFlat.value[0]!);return}const sel=needFlat.value.find(i=>itemId(i)===selectedId.value);if(sel?.kind==='skill'&&!activeOriginalKey.value)activeOriginalKey.value=sel.item.related[0]?.key??''},{immediate:true})
+watch([visibleSkillKeys,()=>assistant.state,()=>assistant.examState,()=>JSON.stringify(assistant.filters)],()=>{if(assistant.state==='ready'&&assistant.examState==='ready')assistant.prefetch(visibleSkillKeys.value)})
 watch(()=>[rules.value.recent_activity_count,rules.value.difficulty_max,rules.value.purpose],()=>{Object.assign(assistant.filters,{recent_activity_count:rules.value.recent_activity_count,difficulty_max:rules.value.difficulty_max,purpose:rules.value.purpose});assistant.scheduleSearch()},{immediate:true})
 watch(()=>assistant.filters.question_type,()=>assistant.scheduleSearch())
 let originalSerial=0
-watch(selected,async q=>{
+watch(currentOriginal,async q=>{
  const n=++originalSerial;original.value=null
  if(q?.bank_question_id)try{const items=await assistant.previewsFor([q.bank_question_id]);if(n===originalSerial)original.value=items[0]??null}
  catch{if(n===originalSerial)original.value=null}
 },{immediate:true})
 let appliedSkill=''
-watch(()=>assistant.result,r=>{if(props.initialSkill&&r&&appliedSkill!==props.initialSkill){appliedSkill=props.initialSkill;if(r.weaknesses.some(p=>p.knowledge_key===props.initialSkill)){assistant.view='skill';assistant.selectTarget(props.initialSkill)}else actionMessage.value='技能不在当前班级与章节结果中，当前选择已保留。'}})
+watch(()=>assistant.result,r=>{if(props.initialSkill&&r&&appliedSkill!==props.initialSkill){appliedSkill=props.initialSkill;if(r.weaknesses.some(p=>p.knowledge_key===props.initialSkill)||skillItems.value.some(i=>i.key===props.initialSkill))void assistant.selectSkill(props.initialSkill);else actionMessage.value='技能不在当前班级与章节结果中，当前选择已保留。'}})
 watch(()=>curriculum.selectedVolumeId,id=>{if(assistant.filters.curriculum_volume_id!==(id??'')){assistant.changeScope({curriculum_volume_id:id??''});if(rosterReady.value)void assistant.loadExams()}},{immediate:true})
 async function quickDraft(){
  quickBusy.value=true;actionMessage.value='正在为还没配题的失分题起草…';const revision=assembly.draft.revision, basis=JSON.stringify([assistant.filters,rules.value,assistant.threshold,assistant.sort])
@@ -107,8 +151,18 @@ async function quickDraft(){
   actionMessage.value=ok?'已起草 '+r.question_ids.length+' 题，试卷共 '+ids.length+' / '+rules.value.question_count+' 题。'+Object.entries(r.skipped).filter(([,n])=>n>0).map(([k,n])=>labels[k]+' '+n).join('；'):assembly.message
  }catch{actionMessage.value='起草暂时失败，原试卷保留，请重试。'}finally{quickBusy.value=false}
 }
-function switchSource(id:number){const q=lossQuestions.value.find(q=>q.key===sources.value[id]?.key);if(q){assistant.view='exam';void selectQuestion(q).then(()=>{replacingId.value=id})}else actionMessage.value='来源不在当前依据中，请先选择对应考试或技能。'}
-async function keys(e:KeyboardEvent){if(e.ctrlKey||e.metaKey||e.altKey||(e.target instanceof Element&&e.target.closest('input,select,textarea,[contenteditable]')))return;const d=e.key.toLowerCase()==='w'?-1:e.key.toLowerCase()==='s'?1:0;if(!d)return;e.preventDefault();if(assistant.view==='exam'){const list=lossQuestions.value;const i=list.findIndex(q=>q.key===assistant.selectedExamKey);const q=list[Math.max(0,Math.min(list.length-1,i+d))];if(q)await selectQuestion(q)}else{const list=skillGroups.value.flatMap(g=>g.points);const i=list.findIndex(p=>p.knowledge_key===assistant.selectedKey);const p=list[Math.max(0,Math.min(list.length-1,i+d))];if(p)assistant.selectTarget(p.knowledge_key)};await nextTick();leftList.value?.querySelector('.is-selected')?.scrollIntoView?.({block:'nearest'})}
+function switchSource(id:number){const source=sources.value[id]
+ if(!source){actionMessage.value='来源不在当前依据中，请先选择对应考试或技能。';return}
+ if(source.key.startsWith('skill:')){selectedNoSkillKey.value='';activeOriginalKey.value='';replacingId.value=null;void assistant.selectSkill(source.key.slice(6)).then(()=>{replacingId.value=id});return}
+ const q=examQs.value.find(q=>q.key===source.key)
+ if(!q){actionMessage.value='来源不在当前依据中，请先选择对应考试或技能。';return}
+ const key=q.skill_keys[0]
+ if(!key){void selectItem({kind:'question',q}).then(()=>{replacingId.value=id});return}
+ const item=skillItems.value.find(i=>i.key===key)??extraSkills.value.find(i=>i.key===key)
+ if(item)void selectItem({kind:'skill',item}).then(()=>{activeOriginalKey.value=q.key;replacingId.value=id})
+ else{selectedNoSkillKey.value='';activeOriginalKey.value=q.key;replacingId.value=null;void assistant.selectSkill(key).then(()=>{replacingId.value=id})}
+}
+async function keys(e:KeyboardEvent){if(e.ctrlKey||e.metaKey||e.altKey||(e.target instanceof Element&&e.target.closest('input,select,textarea,[contenteditable]')))return;const d=e.key.toLowerCase()==='w'?-1:e.key.toLowerCase()==='s'?1:0;if(!d)return;e.preventDefault();const list=needFlat.value;const i=list.findIndex(item=>itemId(item)===selectedId.value);const item=list[Math.max(0,Math.min(list.length-1,i+d))];if(item)await selectItem(item);await nextTick();leftList.value?.querySelector('.is-selected')?.scrollIntoView?.({block:'nearest'})}
 onMounted(async()=>{window.addEventListener('keydown',keys);void curriculum.initialize();if(assembly.loadState==='idle')void assembly.load();try{classes.value=[...new Set((await fetchStudents()).flatMap(s=>s.class_name?[s.class_name]:[]))].sort((a,b)=>a.localeCompare(b,'zh-CN',{numeric:true}));const valid=selectedClasses.value.filter(c=>classes.value.includes(c));assistant.changeScope({class_ids:valid.length?valid:classes.value.slice(0,1)});rosterReady.value=true;if(!assistant.examResult)await assistant.loadExams()}catch{actionMessage.value='班级名册暂时无法读取，请重试。'}})
 onUnmounted(()=>window.removeEventListener('keydown',keys))
 </script>
@@ -121,22 +175,25 @@ onUnmounted(()=>window.removeEventListener('keydown',keys))
  </div>
  <p v-if="scopeMessage" class="ca-scope-note" role="status">{{scopeMessage}}</p>
  <div class="ca-columns">
-  <section class="ca-panel ca-needs"><header class="ca-head"><h2>要补的点</h2><button class="qb-button" :disabled="!canAct||!lossQuestions.length||assembly.selectedQuestionCount>=rules.question_count" @click="quickDraft">{{quickBusy?'起草中…':'快速起草'}}</button></header><div class="ca-body">
-   <div class="ca-segment"><button :class="{selected:assistant.view==='exam'}" @click="assistant.view='exam'">按考试题</button><button :class="{selected:assistant.view==='skill'}" @click="assistant.view='skill'">按技能</button></div>
-   <template v-if="assistant.view==='exam'"><div class="ca-controls"><select v-model.number="assistant.threshold" class="app-input" aria-label="得分率阈值"><option :value="70">低于 70%</option><option :value="80">低于 80%</option><option :value="60">低于 60%</option><option :value="100">全部</option></select><select v-model="assistant.sort" class="app-input" aria-label="失分题排序"><option value="loss">失分最多优先</option><option value="exam">按考试和题号</option></select></div><p class="ca-muted">{{lossQuestions.length}} 道题 · W / S 切换</p><div ref="leftList" class="ca-need-list">
-    <button v-for="q in lossQuestions" :key="q.key" class="ca-need" :class="{'is-selected':q.key===assistant.selectedExamKey}" @click="selectQuestion(q)"><div class="ca-need-top"><strong>{{examShortTitle(q.session_id)}} · {{questionLabel(q.question_id)}}</strong><span>{{percent(q.class_rate)}}</span></div><small>{{q.question_type}}</small><div class="ca-rate"><i :style="{width:(q.class_rate??0)*100+'%'}" /></div><div class="ca-causes"><span v-for="c in causeTop(q)" :key="c.category">{{c.category}} {{c.count}}</span><span v-if="q.cause_category_counts===null">错因未整理</span></div><small>{{q.skills.map(s=>leaf(s.label)).join(' · ')||'暂无关联技能'}}</small><small v-if="selectedClasses.length>1">{{q.class_rates.map(c=>classLabel(c.class_id)+' '+percent(c.class_rate)).join(' · ')}}<template v-if="q.class_rates.length<selectedClasses.length"> · 仅{{q.class_rates.map(c=>classLabel(c.class_id)).join('、')}}参加</template></small><span v-if="coverage(q)" class="ca-badge">{{coverage(q)}}</span><small v-if="!q.bank_question_id">未关联题库 · 仅按技能配题</small></button>
-   </div><p v-if="!lossQuestions.length" class="ca-empty">当前依据下没有符合阈值的考试题，可调整阈值或切换按技能。</p></template>
-   <template v-else><p class="ca-muted">{{assistant.includeTraining?'本学期考试与最新训练掌握情况':'本学期考试掌握情况'}}；需关注 = 还不稳 + 明显薄弱</p><div ref="leftList" class="ca-need-list"><template v-for="group in skillGroups" :key="group.label"><h3 class="ca-skill-group">{{group.label}}</h3><button v-for="point in group.points" :key="point.knowledge_key" class="ca-need" :class="{'is-selected':assistant.selectedKey===point.knowledge_key}" @click="assistant.selectTarget(point.knowledge_key)"><strong>{{leaf(point.knowledge_point)}}</strong><small>{{point.weak_student_count}} 人需关注 / {{point.evidence_student_count}} 人有证据</small><span v-if="!point.weak_student_count" class="ca-badge">可搭配巩固</span></button></template></div><button class="qb-link" @click="showAllSkills=!showAllSkills">{{showAllSkills?'只看需关注':'展开全部技能'}}</button></template>
+  <section class="ca-panel ca-needs"><header class="ca-head"><h2>要补的点</h2><button class="qb-button" :disabled="!canAct||!failingQs.length||assembly.selectedQuestionCount>=rules.question_count" @click="quickDraft">{{quickBusy?'起草中…':'快速起草'}}</button></header><div class="ca-body">
+   <div class="ca-controls"><select v-model.number="assistant.threshold" class="app-input" aria-label="得分率阈值"><option :value="70">低于 70%</option><option :value="80">低于 80%</option><option :value="60">低于 60%</option><option :value="100">全部</option></select><select v-model="assistant.sort" class="app-input" aria-label="技能排序"><option value="loss">失分最多优先</option><option value="chapter">按教材章节</option></select></div><p class="ca-muted">{{skillItems.length}} 个技能 · W / S 切换</p><p class="ca-muted">{{assistant.includeTraining?'本学期考试与最新训练掌握情况':'本学期考试掌握情况'}}；需关注 = 还不稳 + 明显薄弱</p><div ref="leftList" class="ca-need-list">
+    <template v-for="section in needSections" :key="section.label||'default'"><h3 v-if="section.label" class="ca-skill-group">{{section.label}}</h3><template v-for="item in section.items" :key="itemId(item)">
+     <button v-if="item.kind==='skill'" class="ca-need" :class="{'is-selected':item.item.key===selectedId}" @click="selectItem(item)"><div class="ca-need-top"><strong>{{item.item.name}}</strong><span v-if="item.item.minRate!==null">{{percent(item.item.minRate)}}</span></div><small v-if="assistant.sort==='loss'&&item.item.section">{{item.item.section}}</small><small v-if="item.item.related.length">{{item.item.related.map(q=>examShortTitle(q.session_id)+' '+questionLabel(q.question_id)+' '+percent(q.class_rate)).join(' · ')}}</small><small v-else>所选考试中无相关失分题</small><small>{{item.item.weak===null?'—':item.item.weak}} 人需关注 / {{item.item.evidence===null?'—':item.item.evidence}} 人有证据</small><div class="ca-causes"><span v-for="c in item.item.causes??[]" :key="c.category">{{c.category}} {{c.count}}{{item.item.related.length>1?'人次':'人'}}</span><span v-if="item.item.unclassified">另有 {{item.item.unclassified}} {{item.item.related.length>1?'人次':'人'}}未归类</span><span v-if="item.item.related.length&&item.item.causes===null">错因未整理</span></div><span v-if="item.item.covered" class="ca-badge">已配 {{item.item.covered}} 题</span></button>
+     <button v-else class="ca-need" :class="{'is-selected':item.q.key===selectedId}" @click="selectItem(item)"><div class="ca-need-top"><strong>{{examShortTitle(item.q.session_id)}} · {{questionLabel(item.q.question_id)}}</strong><span>{{percent(item.q.class_rate)}}</span></div><small>{{item.q.question_type}}</small><div class="ca-rate"><i :style="{width:(item.q.class_rate??0)*100+'%'}" /></div><div class="ca-causes"><span v-for="c in causeTop(item.q)" :key="c.category">{{c.category}} {{c.count}}</span><span v-if="item.q.cause_unclassified_count">另有 {{item.q.cause_unclassified_count}} 人未归类</span><span v-if="item.q.cause_category_counts===null">错因未整理</span></div><small v-if="selectedClasses.length>1">{{item.q.class_rates.map(c=>classLabel(c.class_id)+' '+percent(c.class_rate)).join(' · ')}}<template v-if="item.q.class_rates.length<selectedClasses.length"> · 仅{{item.q.class_rates.map(c=>classLabel(c.class_id)).join('、')}}参加</template></small><span v-if="coverage(item.q)" class="ca-badge">{{coverage(item.q)}}</span><small v-if="!item.q.bank_question_id">未关联题库 · 不能加入原题</small></button>
+    </template></template>
+   </div><button v-if="extraSkillCount" class="qb-link" @click="showAllSkills=!showAllSkills">{{showAllSkills?'收起其他需关注技能':'显示其他需关注技能（'+extraSkillCount+'）'}}</button><p v-if="!needFlat.length" class="ca-empty">当前依据下没有符合阈值的失分题，可调整阈值。</p>
    <p class="ca-muted ca-local">本地筛选 · 无模型费用</p>
   </div></section>
   <section class="ca-panel ca-matching" aria-label="配题"><header class="ca-head"><h2>配题</h2><span class="ca-muted">{{replacingId?'请选择替换题':'依据学情逐题搭配'}}</span></header><div class="ca-body">
-   <article v-if="assistant.view==='exam'&&selected" class="ca-original"><header><strong>{{examShortTitle(selected.session_id)}} · {{questionLabel(selected.question_id)}}</strong><span>{{selected.question_type}} · {{selected.full_score}} 分 · {{selectedClasses.length>1?'合计':'本班'}} {{percent(selected.class_rate)}}</span></header><p v-if="selectedClasses.length>1" class="ca-muted">{{selected.class_rates.map(c=>classLabel(c.class_id)+' '+percent(c.class_rate)+'（'+c.student_count+'人）').join(' · ')}}</p><div :class="{'ca-clamp':!originalExpanded}"><QuestionContentRenderer :blocks="originalExpanded?original?.rich_content?.question_blocks:undefined" :fallback="(original?.question_text||selected.question_text).replace(/\[\[IMAGE:.*?\]\]/g,'').replace(/<u>\s*<\/u>/gi,'____').replace(/<\/?u>/gi,'')||'题干含图片，展开查看完整原题。'" media-mode="list" dense typeset-text /></div><button class="qb-link" @click="originalExpanded=!originalExpanded">{{originalExpanded?'收起题干':'展开题干'}}</button><template v-if="selected.cause_category_counts"><div class="ca-stack"><i v-for="(c,i) in selected.cause_category_counts" :key="c.category" :style="{background:COLORS[i],flex:c.count||0.001}" /></div><div class="ca-legend"><span v-for="(c,i) in selected.cause_category_counts" :key="c.category"><i :style="{background:COLORS[i]}" />{{c.category}} {{c.count}}</span></div><p v-if="causeHint" class="ca-hint">{{causeHint}}</p></template><p v-else class="ca-muted">错因未整理</p><div class="ca-tags"><span v-for="skill in selected.skills" :key="skill.key">{{leaf(skill.label)}}</span></div><p v-if="rules.recent_activity_count>0&&selected.bank_question_id" class="ca-muted">本班最近 {{rules.recent_activity_count}} 次已做过的原题，按出卷设置不重复出</p><button v-else-if="selected.bank_question_id" class="qb-button" :disabled="!canAct||assembly.draft.basket_ids.includes(selected.bank_question_id)" @click="add(selected.bank_question_id,selected,true)">{{assembly.draft.basket_ids.includes(selected.bank_question_id)?'原题已加入':'加入原题'}}</button></article>
-   <div class="ca-candidate-head"><strong>候选题 <small>{{candidatePool.length}}</small></strong><select v-model="assistant.filters.question_type" class="app-input" aria-label="题型"><option value="">全部题型</option><option>选择题</option><option>多选题</option><option>填空题</option><option>解答题</option></select></div><div v-if="assistant.view==='exam'&&originalDifficulty" class="ca-relative"><span>相对原题</span><button v-for="label in ['','更基础','相当','更难']" :key="label" class="ca-chip" :class="{selected:relative===label}" @click="relative=label">{{label||'全部'}}</button></div>
+   <template v-if="activeItem"><div class="ca-skill-head"><strong>{{activeItem.name}}</strong><small>{{activeItem.section}}</small><small>{{activeItem.weak===null?'—':activeItem.weak}} 人需关注 / {{activeItem.evidence===null?'—':activeItem.evidence}} 人有证据</small></div><div v-if="activeItem.related.length" class="ca-related"><button v-for="q in activeItem.related" :key="q.key" :class="{'is-selected':q.key===activeOriginalKey}" @click="selectRelated(q)">{{examShortTitle(q.session_id)}} · {{questionLabel(q.question_id)}} {{q.question_type}} · {{q.full_score}} 分 · {{percent(q.class_rate)}}</button></div><p v-else class="ca-muted">所选考试中无相关失分题</p></template>
+   <article v-if="currentOriginal" class="ca-original"><header><strong>{{examShortTitle(currentOriginal.session_id)}} · {{questionLabel(currentOriginal.question_id)}}</strong><span>{{currentOriginal.question_type}} · {{currentOriginal.full_score}} 分 · {{selectedClasses.length>1?'合计':'本班'}} {{percent(currentOriginal.class_rate)}}</span></header><p v-if="selectedClasses.length>1" class="ca-muted">{{currentOriginal.class_rates.map(c=>classLabel(c.class_id)+' '+percent(c.class_rate)+'（'+c.student_count+'人）').join(' · ')}}</p><div :class="{'ca-clamp':!originalExpanded}"><QuestionContentRenderer :blocks="originalExpanded?original?.rich_content?.question_blocks:undefined" :fallback="(original?.question_text||currentOriginal.question_text).replace(/\[\[IMAGE:.*?\]\]/g,'').replace(/<u>\s*<\/u>/gi,'____').replace(/<\/?u>/gi,'')||'题干含图片，展开查看完整原题。'" media-mode="list" dense typeset-text /></div><button class="qb-link" @click="originalExpanded=!originalExpanded">{{originalExpanded?'收起题干':'展开题干'}}</button><template v-if="currentOriginal.cause_category_counts"><div class="ca-stack"><i v-for="(c,i) in currentOriginal.cause_category_counts" :key="c.category" :style="{background:COLORS[i],flex:c.count||0.001}" /></div><div class="ca-legend"><span v-for="(c,i) in currentOriginal.cause_category_counts" :key="c.category"><i :style="{background:COLORS[i]}" />{{c.category}} {{c.count}}</span></div><p v-if="causeHint" class="ca-hint">{{causeHint}}</p></template><p v-else class="ca-muted">错因未整理</p><p v-if="currentOriginal.cause_unclassified_count" class="ca-muted">另有 {{currentOriginal.cause_unclassified_count}} 人未归类</p><div class="ca-tags"><span v-for="skill in currentOriginal.skills" :key="skill.key">{{leaf(skill.label)}}</span></div><p v-if="rules.recent_activity_count>0&&currentOriginal.bank_question_id" class="ca-muted">本班最近 {{rules.recent_activity_count}} 次已做过的原题，按出卷设置不重复出</p><button v-else-if="currentOriginal.bank_question_id" class="qb-button" :disabled="!canAct||assembly.draft.basket_ids.includes(currentOriginal.bank_question_id)" @click="add(currentOriginal.bank_question_id,examSource(currentOriginal))">{{assembly.draft.basket_ids.includes(currentOriginal.bank_question_id)?'原题已加入':'加入原题'}}</button></article>
+   <p v-if="selectedNoSkill" class="ca-muted">{{selectedNoSkill.bank_question_id?'该题未挂技能，只能加入原题':'该题未挂技能也未关联题库，无法配题'}}</p>
+   <template v-if="!selectedNoSkill"><div class="ca-candidate-head"><strong>候选题 <small>{{candidatePool.length}}</small></strong><select v-model="assistant.filters.question_type" class="app-input" aria-label="题型"><option value="">全部题型</option><option>选择题</option><option>多选题</option><option>填空题</option><option>解答题</option></select></div><div v-if="originalDifficulty" class="ca-relative"><span>相对原题</span><button v-for="label in ['','更基础','相当','更难']" :key="label" class="ca-chip" :class="{selected:relative===label}" @click="relative=label">{{label||'全部'}}</button></div>
    <p v-if="busy" role="status" class="ca-muted">正在按新的选择更新候选题…</p><p v-if="assistant.message" class="ca-feedback" role="status">{{assistant.message}}</p><p v-if="actionMessage" class="ca-feedback" role="status">{{actionMessage}}</p><p v-if="!busy&&!candidates.length" class="ca-empty">当前条件下没有直接考查这个目标的合适题目。可调整题型、出卷设置或所选目标。</p>
-   <article v-for="(c,index) in candidates" :key="c.question_id" class="ca-candidate assistant-question" :class="{'is-in-basket':assembly.draft.basket_ids.includes(c.question_id)}"><header><strong>候选 {{index+1}} · {{c.question.question_type}}</strong><small>难度 {{c.difficulty??c.question.difficulty??'待定'}}<template v-if="assistant.view==='exam'"> · {{difficultyRelation(c.difficulty)}}</template></small><button class="qb-button" :disabled="!canAct||assembly.draft.basket_ids.includes(c.question_id)" @click="add(c.question_id)">{{assembly.draft.basket_ids.includes(c.question_id)?'已加入':'加入'}}</button></header><QuestionContentRenderer :blocks="c.question.rich_content?.question_blocks" :fallback="c.question.question_text" media-mode="list" paper-media-flow dense typeset-text /><div class="ca-candidate-foot"><span class="ca-badge">{{c.match_level?c.match_level+'级 · ':''}}{{c.match_label}}</span><span>适合 {{c.suitable_student_count??0}} 人 · 补弱 {{c.remediation_student_count??0}} · 巩固 {{c.consolidation_student_count??0}} · 新练习 {{c.new_practice_student_count??0}}</span></div><div v-if="c.similar_question_ids?.length" class="ca-similar"><button class="qb-link" @click="similar.has(c.question_id)?similar.delete(c.question_id):assistant.previewsFor(c.similar_question_ids).then(items=>similar.set(c.question_id,items))">高度相似 {{c.similar_question_ids.length}} 题 · {{similar.has(c.question_id)?'收起':'查看'}}</button><article v-for="q in similar.get(c.question_id)??[]" :key="q.id"><QuestionContentRenderer :blocks="q.rich_content?.question_blocks" :fallback="q.question_text" dense typeset-text /><button class="qb-button" :disabled="!canAct||assembly.draft.basket_ids.includes(q.id)" @click="add(q.id)">加入</button></article></div><button class="qb-link" @click="expanded.has(c.question_id)?expanded.delete(c.question_id):expanded.add(c.question_id)">{{expanded.has(c.question_id)?'收起解析':'查看解析'}}</button><QuestionContentRenderer v-if="expanded.has(c.question_id)" :blocks="c.question.rich_content?.answer_blocks" :fallback="c.question.answer_text||'暂无解析'" dense typeset-text /><div v-if="blocked[c.question_id]" class="ca-blocked" role="status">{{blocked[c.question_id]}}<button v-if="blocked[c.question_id]?.includes('同一技能')" class="qb-link" @click="replaceSkill(c.question_id)">替换</button></div></article>
-   <button v-if="hasMore" class="qb-button" :disabled="busy||assistant.loadingMore" @click="moreCandidates()">{{assistant.loadingMore?'读取中…':'显示更多候选题'}}</button>
+   <article v-for="(c,index) in candidates" :key="c.question_id" class="ca-candidate assistant-question" :class="{'is-in-basket':assembly.draft.basket_ids.includes(c.question_id)}"><header><strong>候选 {{index+1}} · {{c.question.question_type}}</strong><small>难度 {{c.difficulty??c.question.difficulty??'待定'}}<template v-if="originalDifficulty"> · {{difficultyRelation(c.difficulty)}}</template></small><button class="qb-button" :disabled="!canAct||assembly.draft.basket_ids.includes(c.question_id)" @click="add(c.question_id)">{{assembly.draft.basket_ids.includes(c.question_id)?'已加入':'加入'}}</button></header><QuestionContentRenderer :blocks="c.question.rich_content?.question_blocks" :fallback="c.question.question_text" media-mode="list" paper-media-flow dense typeset-text /><div class="ca-candidate-foot"><span class="ca-badge">{{c.match_level?c.match_level+'级 · ':''}}{{c.match_label}}</span><span>适合 {{c.suitable_student_count??0}} 人 · 补弱 {{c.remediation_student_count??0}} · 巩固 {{c.consolidation_student_count??0}} · 新练习 {{c.new_practice_student_count??0}}</span></div><div v-if="c.similar_question_ids?.length" class="ca-similar"><button class="qb-link" @click="similar.has(c.question_id)?similar.delete(c.question_id):assistant.previewsFor(c.similar_question_ids).then(items=>similar.set(c.question_id,items))">高度相似 {{c.similar_question_ids.length}} 题 · {{similar.has(c.question_id)?'收起':'查看'}}</button><article v-for="q in similar.get(c.question_id)??[]" :key="q.id"><QuestionContentRenderer :blocks="q.rich_content?.question_blocks" :fallback="q.question_text" dense typeset-text /><button class="qb-button" :disabled="!canAct||assembly.draft.basket_ids.includes(q.id)" @click="add(q.id)">加入</button></article></div><button class="qb-link" @click="expanded.has(c.question_id)?expanded.delete(c.question_id):expanded.add(c.question_id)">{{expanded.has(c.question_id)?'收起解析':'查看解析'}}</button><QuestionContentRenderer v-if="expanded.has(c.question_id)" :blocks="c.question.rich_content?.answer_blocks" :fallback="c.question.answer_text||'暂无解析'" dense typeset-text /><div v-if="blocked[c.question_id]" class="ca-blocked" role="status">{{blocked[c.question_id]}}<button v-if="blocked[c.question_id]?.includes('同一技能')" class="qb-link" @click="replaceSkill(c.question_id)">替换</button></div></article>
+   <button v-if="hasMore" class="qb-button" :disabled="busy||assistant.loadingMore" @click="moreCandidates()">{{assistant.loadingMore?'读取中…':'显示更多候选题'}}</button></template>
   </div></section>
-  <ClassAssemblyPaper :title="title" :context="context()" :covered="coveredCount" :total="lossQuestions.length" :can-act="canAct" @edit="emit('edit')" @replace="switchSource" />
+  <ClassAssemblyPaper :title="title" :context="context()" :covered="coveredCount" :total="failingQs.length" :can-act="canAct" @edit="emit('edit')" @replace="switchSource" />
  </div>
 </section>
 </template>

@@ -61,6 +61,38 @@ _LEADING_SCORE = re.compile(r"^[（(]\s*(\d+)\s*分\s*[）)]")
 # Whole-result cache: keyed on the diagnosis key + request body + exclusions +
 # question-bank commit generation, stored as pickle bytes with single-flight.
 _ASSISTANT_CACHE = ResultCache(limit=16)
+# Exam evidence cache: the source-identity element of the diagnosis key covers
+# both database generations and the .class_analysis state the report writes.
+_EXAM_QUESTIONS_CACHE = ResultCache(limit=8)
+
+
+def _cached_exam_questions(
+    service: DiagnosisProfileService,
+    *,
+    class_ids: list[str],
+    volume_id: str,
+) -> dict:
+    from integration.diagnosis_profile_service import _dir_generation
+
+    classes = sorted({str(item) for item in class_ids})
+    key_fn = getattr(service, "tag_profile_cache_key", None)
+    if not callable(key_fn):
+        return service.assembly_exam_questions(class_ids=classes, volume_id=volume_id)
+    identity = key_fn(
+        scope={"mode": "class", "class_ids": classes, "use_historical_fallback": False},
+        exam_scope={"mode": "semester", "curriculum_volume_id": volume_id},
+    )[0]
+    # Rubric JSONs, answer keys and frozen evidence snapshots are read from
+    # files under config/uploaded, not covered by the database generations.
+    data_root = getattr(service, "data_root", None)
+    if data_root is None:
+        bank_path = getattr(service, "question_bank_db_path", None)
+        data_root = Path(bank_path).parent.parent if bank_path is not None else None
+    uploaded = _dir_generation(Path(data_root) / "config" / "uploaded") if data_root else ()
+    return _EXAM_QUESTIONS_CACHE.get_or_compute(
+        ("assembly-exam-questions-v1", identity, *uploaded, tuple(classes), str(volume_id)),
+        lambda: service.assembly_exam_questions(class_ids=classes, volume_id=volume_id),
+    )
 
 
 @router.post("/assistant/candidates", response_model=AssemblyAssistantResponse)
@@ -147,23 +179,22 @@ def compute_assistant_candidates(
             "recent_activity_count": recent_activity_count, "purpose": purpose,
         },
     )
-    diagnosis = diagnosis_service.build_profiles(
-        scope=scope, exam_scope=exam_scope,
-    )
-    graded_activities = diagnosis_service.graded_activities(
-        [str(item["student_id"]) for item in diagnosis.get("students", [])]
-    )
-    # Compatibility flags no longer select different history definitions.
-    excluded = recommendations.current_exam_question_ids(
-        diagnosis, graded_activities=graded_activities, recent_activity_count=recent_activity_count, purpose=purpose,
-    )
-
     key_fn = getattr(diagnosis_service, "tag_profile_cache_key", None)
     diagnosis_key = (
         key_fn(scope=scope, exam_scope=exam_scope) if callable(key_fn) else None
     )
 
     def _compute() -> dict:
+        diagnosis = diagnosis_service.build_profiles(
+            scope=scope, exam_scope=exam_scope,
+        )
+        graded_activities = diagnosis_service.graded_activities(
+            [str(item["student_id"]) for item in diagnosis.get("students", [])]
+        )
+        # Compatibility flags no longer select different history definitions.
+        excluded = recommendations.current_exam_question_ids(
+            diagnosis, graded_activities=graded_activities, recent_activity_count=recent_activity_count, purpose=purpose,
+        )
         return shortlist_candidates(
             diagnosis=diagnosis, read_service=read_service,
             volume_id=curriculum_volume_id, chapter_id=chapter_id,
@@ -180,7 +211,7 @@ def compute_assistant_candidates(
         return _compute()
     return _ASSISTANT_CACHE.get_or_compute(
         (
-            "assistant-shortlist-v5-direct-targets",
+            "assistant-shortlist-v6-direct-targets",
             str(read_service.db_path.resolve(strict=False)),
             commit_generation(read_service.db_path),
             diagnosis_key,
@@ -191,7 +222,6 @@ def compute_assistant_candidates(
             question_type,
             difficulty_min,
             difficulty_max,
-            tuple(sorted(excluded)),
             recent_activity_count, purpose,
         ),
         _compute,
@@ -204,7 +234,7 @@ def get_assistant_exam_questions(
     service: DiagnosisProfileService = Depends(get_request_diagnosis_profile_service),
 ) -> dict:
     try:
-        return service.assembly_exam_questions(class_ids=body.class_ids, volume_id=body.curriculum_volume_id)
+        return _cached_exam_questions(service, class_ids=body.class_ids, volume_id=body.curriculum_volume_id)
     except ValueError as exc:
         raise ApiError(422, "assembly_assistant_scope_invalid", "请确认班级与教学学期") from exc
     except (OSError, sqlite3.Error, QuestionBankSnapshotError) as exc:
@@ -220,7 +250,7 @@ def quick_draft(
     workspace: AssemblyWorkspaceService = Depends(get_assembly_workspace_service),
 ) -> dict:
     rules = body.rules.model_dump()
-    evidence = diagnosis_service.assembly_exam_questions(class_ids=body.class_ids, volume_id=body.curriculum_volume_id)
+    evidence = _cached_exam_questions(diagnosis_service, class_ids=body.class_ids, volume_id=body.curriculum_volume_id)
     questions = [q for e in evidence['exams'] if not body.session_ids or e['session_id'] in body.session_ids
                  for q in e['questions'] if q['class_rate'] is not None and (body.threshold == 100 or q['class_rate'] < body.threshold / 100)]
     if body.sort == 'loss':

@@ -221,23 +221,29 @@ def test_exam_question_rates_weight_students_and_preserve_missing_causes(client_
     students = [{'id': i, 'class_name': '合成9班' if i < 3 else '合成10班'} for i in (1, 2, 3)]
     sessions = [{'id': 7, 'session_name': 'TEST-两班考试', 'curriculum_volume_id': VOLUME['id']}, {'id': 8, 'session_name': 'TEST-单班考试', 'curriculum_volume_id': VOLUME['id']}]
     rows = [{'session_id': 7, 'student_id': i, 'question_id': 'Q1', 'score_awarded': s} for i,s in ((1,2),(2,2),(3,8))]
-    rows += [{'session_id': 8, 'student_id': 3, 'question_id': 'Q1', 'score_awarded': 4, 'teacher_final_max_score': 5}, {'session_id': 7, 'student_id': 1, 'question_id': 'Q2', 'score_awarded': 0}, {'session_id': 7, 'student_id': 2, 'question_id': 'Q2', 'score_awarded': None}]
+    rows += [{'session_id': 8, 'student_id': 3, 'question_id': 'Q1', 'score_awarded': 4, 'teacher_final_max_score': 5}, {'session_id': 7, 'student_id': 1, 'question_id': 'Q2', 'score_awarded': 0}, {'session_id': 7, 'student_id': 2, 'question_id': 'Q2', 'score_awarded': 3}, {'session_id': 7, 'student_id': 3, 'question_id': 'Q3', 'score_awarded': 2}, {'session_id': 7, 'student_id': 1, 'question_id': 'Q3', 'score_awarded': None}]
     service = DiagnosisProfileService.__new__(DiagnosisProfileService)
     service.question_bank_db_path = module.db_path
-    service.db = NS(students=NS(list_students=lambda: students), sessions=NS(list_grading_sessions=lambda: sessions), results=NS(get_active_assessment_rows=lambda **_: rows, _load_session_rubric=lambda sid: {}, _load_rubric_maps_for_session=lambda sid: {'score': {'Q1': 10, 'Q2': 10}}))
-    projections = NS(items=[NS(item_ref=q, bank_question_id=2 if q=='Q1' else None, tags={'knowledge_point': [key]}, assessment={}) for q in ('Q1','Q2')])
+    service.db = NS(students=NS(list_students=lambda: students), sessions=NS(list_grading_sessions=lambda: sessions), results=NS(get_active_assessment_rows=lambda **_: rows, _load_session_rubric=lambda sid: {}, _load_rubric_maps_for_session=lambda sid: {'score': {'Q1': 10, 'Q2': 10, 'Q3': 10}}))
+    projections = NS(items=[NS(item_ref=q, bank_question_id=2 if q=='Q1' else None, tags={'knowledge_point': [key]}, assessment={}) for q in ('Q1','Q2','Q3')])
     service._tag_projections = lambda ids: {sid: projections for sid in ids}
-    service._error_cause_index = lambda ids: {(7,i,'Q1'): [{'category':'计算与化简'}, {'category':'计算与化简'}] for i in (1,2,3)}
-    monkeypatch.setattr(contract, 'iter_effective_rubric_item_refs', lambda _: [(q,q,{'question_type':'choice'}, {}) for q in ('Q1','Q2')])
+    service._error_cause_index = lambda ids: {(7,i,'Q1'): [{'category':'计算与化简'}, {'category':'计算与化简'}] for i in (1,2,3)} | {(7,1,'Q2'): [{'category':'审题与条件'}]}
+    monkeypatch.setattr(contract, 'iter_effective_rubric_item_refs', lambda _: [(q,q,{'question_type':'choice'}, {}) for q in ('Q1','Q2','Q3')])
     result = service.assembly_exam_questions(class_ids=['合成9班','合成10班'], volume_id=VOLUME['id'])
     exam = next(e for e in result['exams'] if e['session_id']==7)
     q = exam['questions'][0]
     assert q['class_rate'] == .4
     assert [r['student_count'] for r in q['class_rates']] == [1,2]
     assert next(c['count'] for c in q['cause_category_counts'] if c['category']=='计算与化简') == 3
+    assert q['cause_unclassified_count'] == 0
     assert exam['questions'][1]['bank_question_id'] is None
-    assert exam['questions'][1]['student_count'] == 1
-    assert exam['questions'][1]['cause_category_counts'] is None
+    assert exam['questions'][1]['student_count'] == 2
+    # One classified and one unclassified lost student still expose the counts.
+    assert next(c['count'] for c in exam['questions'][1]['cause_category_counts'] if c['category']=='审题与条件') == 1
+    assert exam['questions'][1]['cause_unclassified_count'] == 1
+    # With zero classified lost students the question stays unorganized.
+    assert exam['questions'][2]['cause_category_counts'] is None
+    assert exam['questions'][2]['cause_unclassified_count'] == 1
     single = next(e for e in result['exams'] if e['session_id']==8)
     assert single['class_ids'] == ['合成10班']
     assert single['questions'][0]['class_rate'] == .8
@@ -529,3 +535,74 @@ def test_switching_targets_reuses_source_read_but_reloads_changed_constraints_an
     rechecked = client.post('/api/question-assembly/assistant/candidates', json=request(
         chapter_id='', teaching_progress_chapter_id=later_chapter['id'], target_keys=[SKILLS[0]]))
     assert rechecked.json() == expanded.json()
+
+
+def test_exam_questions_endpoint_caches_until_state_changes(client_and_source, tmp_path):
+    from integration.diagnosis_profile_service import _dir_generation
+
+    client, _, _, _ = client_and_source
+    module = client.app.dependency_overrides[get_personalized_recommendation_module]()
+    state_dir = tmp_path / 'reports' / '.class_analysis'
+    calls = []
+
+    class Service:
+        data_root = tmp_path
+        question_bank_db_path = module.db_path
+
+        def tag_profile_cache_key(self, *, scope, exam_scope):
+            return ('\x00'.join(_dir_generation(state_dir)), 'test')
+
+        def assembly_exam_questions(self, *, class_ids, volume_id):
+            calls.append(class_ids)
+            return {'student_count': 0, 'exams': []}
+
+    service = Service()
+    client.app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: service
+    body = {'class_ids': ['合成9班'], 'curriculum_volume_id': VOLUME['id']}
+    assert client.post('/api/question-assembly/assistant/exam-questions', json=body).status_code == 200
+    assert client.post('/api/question-assembly/assistant/exam-questions', json=body).status_code == 200
+    assert calls == [['合成9班']]
+    state_dir.mkdir(parents=True)
+    (state_dir / '7.json').write_text('{}', encoding='utf-8')
+    assert client.post('/api/question-assembly/assistant/exam-questions', json=body).status_code == 200
+    assert calls == [['合成9班'], ['合成9班']]
+
+
+def test_candidates_cache_skips_diagnosis_until_grading_data_changes(client_and_source, tmp_path):
+    import sqlite3 as sqlite_driver
+    from integration.diagnosis_profile_service import _path_generation
+
+    client, source, calls, _ = client_and_source
+    module = client.app.dependency_overrides[get_personalized_recommendation_module]()
+    grading = tmp_path / 'grading-cache-probe.db'
+    connection = sqlite_driver.connect(grading)
+    connection.execute('CREATE TABLE probe(value)')
+    connection.commit()
+    connection.close()
+
+    class KeyedProfiles:
+        def build_profiles(self, *, scope, exam_scope):
+            calls.append((scope, exam_scope))
+            return deepcopy(source)
+
+        def graded_activities(self, student_ids):
+            return []
+
+        def tag_profile_cache_key(self, *, scope, exam_scope):
+            return ('\x00'.join((*_path_generation(grading), *_path_generation(module.db_path))), 'test')
+
+    keyed = KeyedProfiles()
+    client.app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: keyed
+    first = client.post('/api/question-assembly/assistant/candidates', json=request())
+    assert first.status_code == 200, first.text
+    second = client.post('/api/question-assembly/assistant/candidates', json=request())
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    assert len(calls) == 1
+    connection = sqlite_driver.connect(grading)
+    connection.execute('INSERT INTO probe VALUES (1)')
+    connection.commit()
+    connection.close()
+    third = client.post('/api/question-assembly/assistant/candidates', json=request())
+    assert third.status_code == 200
+    assert len(calls) == 2

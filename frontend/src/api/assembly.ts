@@ -123,6 +123,7 @@ export interface AssemblyExamQuestion {
   class_rate: number | null; student_count: number; bank_question_id: number | null; difficulty: number | null
   class_rates: Array<{ class_id: string; student_count: number; class_rate: number | null }>
   cause_category_counts: Array<{ category: string; count: number }> | null
+  cause_unclassified_count: number
   skill_keys: string[]; skills: Array<{ key: string; label: string }>; question_text: string
 }
 export interface AssemblyExam {
@@ -141,6 +142,7 @@ function isExamQuestion(v: unknown): v is AssemblyExamQuestion {
     && isStrings(v.skill_keys) && Array.isArray(v.skills) && v.skills.every(s => isRecord(s) && typeof s.key === 'string' && typeof s.label === 'string')
     && Array.isArray(v.class_rates) && v.class_rates.every(c => isRecord(c) && typeof c.class_id === 'string' && isCount(c.student_count) && isRate(c.class_rate))
     && (v.cause_category_counts === null || (Array.isArray(v.cause_category_counts) && v.cause_category_counts.every(c => isRecord(c) && typeof c.category === 'string' && isCount(c.count))))
+    && isCount(v.cause_unclassified_count)
 }
 export function fetchAssemblyExams(class_ids: string[], curriculum_volume_id: string, signal?: AbortSignal): Promise<AssemblyExamResult> {
   return apiClient.request('/api/question-assembly/assistant/exam-questions', {

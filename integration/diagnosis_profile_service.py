@@ -1222,7 +1222,8 @@ class DiagnosisProfileService:
                 participants.update(scored)
                 per_class = []
                 rate_sum = 0.0
-                missing_causes = False
+                lost: set[str] = set()
+                classified: set[str] = set()
                 members = {c: set() for c in categories}
                 for name in sorted(classes):
                     values = [(student, row) for student, row in scored.items() if students[student].get("class_name") == name]
@@ -1234,12 +1235,14 @@ class DiagnosisProfileService:
                         score += awarded
                         class_rate_sum += awarded / maximum if maximum > 0 else 0
                         totals[student] = totals.get(student, 0) + awarded
+                        if awarded < maximum:
+                            lost.add(student)
                         records = causes.get((sid, int(student), qid))
-                        if awarded < maximum and not records:
-                            missing_causes = True
                         for record in records or []:
                             if record.get("category") in members:
                                 members[record["category"]].add(student)
+                                if awarded < maximum:
+                                    classified.add(student)
                     if values:
                         per_class.append({"class_id": name, "student_count": len(values), "class_rate": round(class_rate_sum / len(values), 4)})
                     rate_sum += class_rate_sum
@@ -1251,7 +1254,8 @@ class DiagnosisProfileService:
                     "full_score": max(float(r.get("full_score") or 0) for r in scored.values()),
                     "class_rate": round(rate_sum / len(scored), 4),
                     "class_rates": per_class, "student_count": len(scored),
-                    "cause_category_counts": None if missing_causes else [{"category": c, "count": len(members[c])} for c in categories],
+                    "cause_category_counts": None if lost and not classified else [{"category": c, "count": len(members[c])} for c in categories],
+                    "cause_unclassified_count": len(lost - classified),
                     "bank_question_id": projected.bank_question_id if projected else None,
                     "difficulty": bank_difficulty.get(projected.bank_question_id) if projected else None,
                     "skill_keys": keys, "skills": [{"key": key, "label": resolver.node(key).display_name if resolver.node(key) else key} for key in keys],

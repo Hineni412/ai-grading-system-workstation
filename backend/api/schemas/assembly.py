@@ -144,7 +144,7 @@ class AssemblyQuickDraftRequest(AssemblyAssistantRequest):
     question_ids: list[int] = Field(default_factory=list, max_length=500)
     rules: RecommendationRulesRequest
     threshold: Literal[60, 70, 80, 100] = 70
-    sort: Literal["loss", "exam"] = "loss"
+    sort: Literal["loss", "exam", "chapter"] = "loss"
 
 
 class AssemblyWeakness(_AssemblyModel):

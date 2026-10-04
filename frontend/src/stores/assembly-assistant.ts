@@ -20,10 +20,8 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   const result = shallowRef<AssemblyAssistantResult | null>(null)
   const examResult = shallowRef<AssemblyExamResult | null>(null)
   const examState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
-  const view = ref<'exam' | 'skill'>('exam')
   const threshold = ref(70)
-  const sort = ref<'loss' | 'exam'>('loss')
-  const selectedExamKey = ref('')
+  const sort = ref<'loss' | 'chapter'>('loss')
   const includeTraining = ref(true)
   let examController: AbortController | null = null
   let examSerial = 0
@@ -36,11 +34,14 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   const waiting = ref(false)
   const previewCache = new Map<number, AssemblyQuestion>()
   const resultCache = new Map<string, AssemblyAssistantResult>()
-  const candidateCounts = new Map<string, number>()
   let scheduled: ReturnType<typeof setTimeout> | undefined
   let serial = 0
   let controller: AbortController | null = null
-  let lastTargetSearch = -Infinity
+  let prefetchGeneration = 0
+  let prefetchController: AbortController | null = null
+  let prefetchInflight: { signature: string; key: string; promise: Promise<void> } | null = null
+  let prefetchKeys: string[] = []
+  let runningGeneration = -1
   const requestKey = computed(() => JSON.stringify(filters))
   const isStale = computed(() => Boolean(result.value) && appliedKey.value !== requestKey.value)
   const canSearch = computed(() => Boolean((filters.class_ids?.length || filters.class_id) && filters.curriculum_volume_id) && state.value !== 'loading')
@@ -48,7 +49,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   const selectedKey = computed(() => filters.target_keys?.[0] ?? result.value?.selected_target_keys[0] ?? '')
 
   function cancelScheduled(): void { clearTimeout(scheduled); waiting.value = false }
-  onScopeDispose(() => { cancelScheduled(); controller?.abort(); examController?.abort() })
+  onScopeDispose(() => { cancelScheduled(); controller?.abort(); examController?.abort(); stopPrefetch() })
 
   function changeScope(patch: Partial<Pick<AssemblyAssistantRequest, 'class_id' | 'class_ids' | 'session_ids' | 'curriculum_volume_id' | 'chapter_id' | 'teaching_progress_chapter_id'>>): void {
     if (Object.entries(patch).every(([key, value]) => JSON.stringify(filters[key as keyof AssemblyAssistantRequest]) === JSON.stringify(value))) return
@@ -61,6 +62,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     controller?.abort()
     cancelScheduled()
     serial += 1
+    stopPrefetch()
     Object.assign(filters, patch, { target_keys: null })
     if (patch.class_ids) filters.class_id = patch.class_ids[0] ?? ''
     else if (patch.class_id !== undefined) filters.class_ids = patch.class_id ? [patch.class_id] : []
@@ -68,7 +70,6 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     questions.value = []
     previewCache.clear()
     resultCache.clear()
-    candidateCounts.clear()
     loadingMore.value = false
     state.value = 'idle'
     message.value = ''
@@ -90,12 +91,8 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   }
 
   function rememberResult(body: AssemblyAssistantRequest, next: AssemblyAssistantResult): void {
-    const signature = cacheSignature(body)
-    for (const point of next.weaknesses) {
-      if (point.candidate_count !== null) candidateCounts.set(`${signature}|${point.knowledge_key}`, point.candidate_count)
-    }
-    resultCache.set(`${signature}|${next.selected_target_keys.join(',')}`, next)
-    while (resultCache.size > 40) resultCache.delete(resultCache.keys().next().value!)
+    resultCache.set(`${cacheSignature(body)}|${next.selected_target_keys.join(',')}`, next)
+    while (resultCache.size > 80) resultCache.delete(resultCache.keys().next().value!)
   }
 
   async function applyCached(next: AssemblyAssistantResult): Promise<void> {
@@ -115,27 +112,89 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     message.value = resolved.length < ids.length ? '部分候选题已不可用，可更新候选题重新筛选。' : ''
   }
 
-  function selectTarget(key: string): void {
-    if (!result.value || (selectedKey.value === key && (filters.target_keys ?? result.value.selected_target_keys).length === 1)) return
+  async function selectSkill(key: string): Promise<void> {
+    if (selectedKey.value === key && (filters.target_keys ?? result.value?.selected_target_keys ?? []).length === 1) return
     filters.target_keys = [key]
-    const cached = resultCache.get(`${filterSignature()}|${key}`)
-    if (cached) void applyCached(cached)
-    else scheduleSearch(Math.max(0, 150 - (performance.now() - lastTargetSearch)), true)
+    const signature = filterSignature()
+    const cached = resultCache.get(`${signature}|${key}`)
+    if (cached) {
+      await applyCached(cached)
+      return
+    }
+    const stillSelected = () => filters.target_keys?.length === 1 && filters.target_keys[0] === key
+    const inflight = prefetchInflight
+    if (inflight && inflight.signature === signature && inflight.key === key) {
+      state.value = 'loading'
+      await inflight.promise
+      const ready = resultCache.get(`${signature}|${key}`)
+      if (ready && signature === filterSignature() && stillSelected()) {
+        await applyCached(ready)
+        return
+      }
+    }
+    if (stillSelected()) await search(true)
   }
 
-  function moveSelection(delta: number): void {
-    const list = result.value?.weaknesses ?? []
-    if (!list.length) return
-    const index = list.findIndex(item => item.knowledge_key === selectedKey.value)
-    const next = Math.max(0, Math.min(list.length - 1, (index < 0 ? 0 : index) + delta))
-    selectTarget(list[next]!.knowledge_key)
+  function stopPrefetch(): void {
+    prefetchGeneration += 1
+    prefetchController?.abort()
+    prefetchController = null
+    prefetchKeys = []
   }
 
-  function candidateCountFor(key: string): number | null {
-    return candidateCounts.get(`${filterSignature()}|${key}`) ?? null
+  function prefetch(keys: string[]): void {
+    prefetchKeys = [...keys]
+    // A loop for the current generation picks the keys up; a stale loop that is
+    // still draining restarts itself from its finally block.
+    if (runningGeneration === -1) startPrefetchLoop()
   }
 
-  function scheduleSearch(delay = 250, targetChange = false): void {
+  function startPrefetchLoop(): void {
+    const generation = prefetchGeneration
+    runningGeneration = generation
+    void (async () => {
+      try {
+        while (true) {
+          const signature = filterSignature()
+          if (generation !== prefetchGeneration) return
+          const key = prefetchKeys.find(k => !resultCache.has(`${signature}|${k}`) && k !== selectedKey.value)
+          if (key === undefined) return
+          prefetchKeys = prefetchKeys.filter(k => k !== key)
+          while (state.value === 'loading' || prefetchInflight) {
+            const pending = prefetchInflight
+            if (pending) {
+              await pending.promise
+              if (generation !== prefetchGeneration) return
+              continue
+            }
+            await new Promise(resolve => setTimeout(resolve, 60))
+            if (generation !== prefetchGeneration || signature !== filterSignature()) return
+          }
+          const own = new AbortController()
+          prefetchController = own
+          const body = { ...JSON.parse(requestKey.value), target_keys: [key] } as AssemblyAssistantRequest
+          const promise = (async () => {
+            try {
+              const next = await fetchAssemblyCandidates(body, own.signal)
+              if (generation !== prefetchGeneration || signature !== filterSignature()) return
+              rememberResult(body, next)
+              resultCache.set(`${signature}|${key}`, next)
+              await resolvePreviews(next.candidates.slice(0, PAGE_SIZE).map(item => item.question_id), own.signal)
+            } catch { /* Prefetch is speculative; the foreground path still works. */ }
+          })()
+          prefetchInflight = { signature, key, promise }
+          await promise
+          prefetchInflight = null
+        }
+      } finally {
+        const stale = generation !== prefetchGeneration
+        if (runningGeneration === generation) runningGeneration = -1
+        if (stale && prefetchKeys.length && runningGeneration !== prefetchGeneration) startPrefetchLoop()
+      }
+    })()
+  }
+
+  function scheduleSearch(delay = 250): void {
     if (!result.value) return
     cancelScheduled()
     controller?.abort()
@@ -143,10 +202,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     state.value = 'ready'
     loadingMore.value = false
     waiting.value = true
-    scheduled = setTimeout(() => {
-      if (targetChange) lastTargetSearch = performance.now()
-      void search(true)
-    }, delay)
+    scheduled = setTimeout(() => void search(true), delay)
   }
 
   async function resolvePreviews(ids: number[], signal: AbortSignal): Promise<AssemblyQuestion[]> {
@@ -156,7 +212,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
       if (signal.aborted) return []
       resolved.items.forEach(item => previewCache.set(item.id, item))
       // Bound in-memory rich content while navigating a large candidate pool.
-      while (previewCache.size > 240) previewCache.delete(previewCache.keys().next().value!)
+      while (previewCache.size > 480) previewCache.delete(previewCache.keys().next().value!)
     }
     return ids.flatMap(id => previewCache.get(id) ?? [])
   }
@@ -166,7 +222,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     if (missing.length) {
       const resolved = await assemblyApi.resolveQuestions(missing)
       resolved.items.forEach(item => previewCache.set(item.id, item))
-      while (previewCache.size > 240) previewCache.delete(previewCache.keys().next().value!)
+      while (previewCache.size > 480) previewCache.delete(previewCache.keys().next().value!)
     }
     return ids.flatMap(id => previewCache.get(id) ?? [])
   }
@@ -181,7 +237,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     if (!reusePreviews) {
       previewCache.clear()
       resultCache.clear()
-      candidateCounts.clear()
+      stopPrefetch()
     }
     loadingMore.value = false
     const body = JSON.parse(requestKey.value) as AssemblyAssistantRequest
@@ -235,8 +291,6 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     finally { if (token === serial) loadingMore.value = false }
   }
 
-  function resetTargets(): void { filters.target_keys = null }
-
   async function loadExams(): Promise<void> {
     const token = ++examSerial
     examController?.abort()
@@ -252,19 +306,10 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
       const visible = new Set(next.exams.map(e => e.session_id))
       const retained = filters.session_ids?.filter(id => visible.has(id)) ?? []
       changeScope({ session_ids: retained.length ? retained : next.exams.slice(0, 2).map(e => e.session_id) })
-      selectedExamKey.value = ''
       examState.value = 'ready'
     } catch { if (token === examSerial) { examState.value = 'error'; message.value = '考试依据暂时无法读取，请重试。' } }
   }
 
-  async function selectExam(key: string, skills: string[]): Promise<void> {
-    selectedExamKey.value = key
-    filters.target_keys = [...skills]
-    const cached = resultCache.get(`${filterSignature()}|${skills.join(',')}`)
-    if (cached) await applyCached(cached)
-    else await search(true)
-  }
-
-  return { filters, result, questions, state, message, isStale, canSearch, waiting, visibleCount, loadingMore, hasMore, selectedKey, changeScope, selectTarget, moveSelection, candidateCountFor, scheduleSearch, search, loadMore, resetTargets, previewsFor,
-    examResult, examState, view, threshold, sort, selectedExamKey, includeTraining, loadExams, selectExam }
+  return { filters, result, questions, state, message, isStale, canSearch, waiting, visibleCount, loadingMore, hasMore, selectedKey, changeScope, selectSkill, prefetch, scheduleSearch, search, loadMore, previewsFor,
+    examResult, examState, threshold, sort, includeTraining, loadExams }
 })
