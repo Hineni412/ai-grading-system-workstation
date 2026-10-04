@@ -1201,7 +1201,12 @@ def run_cause_analysis(
 def _prepare_error_sources(
     state: Any, sources: list[dict[str, Any]],
 ) -> tuple[dict[str, str], dict[str, bool]]:
-    """整场来源只校验一次；不缓存学生证据，也不跨请求复用。"""
+    """整场来源只校验一次；不缓存学生证据，也不在本函数内跨请求复用。
+
+    诊断侧按场次复用本次返回的证据，其持久指纹覆盖此处读取的全部输入
+    （评分修订、场次行、出勤、rubric/答案文件、状态文件、题库版本、
+    上传来源与计算代码），任一输入变化即重新校验。
+    """
     saved_questions = ((state or {}).get("cause_analysis") or {}).get("questions") or {}
     fingerprints: dict[str, str] = {}
     by_step: dict[str, bool] = {}

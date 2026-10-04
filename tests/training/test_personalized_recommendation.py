@@ -2031,6 +2031,83 @@ def test_printed_duplicates_are_excluded_from_generation_and_replacement(
     assert direct_module.get(draft["draft_id"]) == draft
 
 
+def test_source_snapshot_pool_survives_restart_and_invalidates(
+    direct_module, monkeypatch,
+):
+    import pickle
+
+    import integration.persistent_entries as persistent_entries
+    from integration import data_generation
+    from integration.diagnosis_profile_service import _PROFILE_CALCULATION_STATE
+    from question_bank.recommendation import personalized
+
+    def restart():
+        personalized._SOURCE_SNAPSHOT_CACHE.clear()
+        data_generation.reset_commit_generations()
+        with persistent_entries._STORES_LOCK:
+            persistent_entries._STORES.clear()
+
+    first = direct_module._source_snapshot()
+    pool_dir = direct_module.data_root / "cache" / "recommendation_pools"
+    entries = list(pool_dir.glob("*.entry"))
+    assert len(entries) == 1
+    saved = pickle.loads(entries[0].read_bytes())
+    assert pickle.loads(pickle.dumps(saved["payload"])) == saved["payload"]
+    assert saved["payload"] == first
+
+    # Restart: the snapshot reloads from disk without recomputing.
+    restart()
+    monkeypatch.setattr(
+        direct_module, "_source_snapshot_uncached",
+        lambda **kwargs: pytest.fail("pool snapshot recomputed after restart"),
+    )
+    assert direct_module._source_snapshot() == first
+    monkeypatch.undo()
+
+    calls = []
+    original = direct_module._source_snapshot_uncached
+
+    def tracked(**kwargs):
+        calls.append(True)
+        return original(**kwargs)
+
+    monkeypatch.setattr(direct_module, "_source_snapshot_uncached", tracked)
+
+    # A question-bank commit changes the content revision → recompute.
+    restart()
+    with connect(direct_module.db_path) as conn:
+        conn.execute(
+            "INSERT INTO training_tasks(task_code,status)"
+            " VALUES('TEST-pool-invalidation','completed')")
+    direct_module._source_snapshot()
+    assert calls == [True]
+
+    # A new rich-content asset changes the manifest → recompute.
+    restart()
+    asset = direct_module.data_root / "question_bank" / "rich_content"
+    asset.mkdir(parents=True, exist_ok=True)
+    (asset / "TEST-manifest-marker.json").write_text("{}", encoding="utf-8")
+    direct_module._source_snapshot()
+    assert calls == [True, True]
+
+    # A code-state change also recomputes.
+    restart()
+    monkeypatch.setattr(
+        "integration.diagnosis_profile_service._PROFILE_CALCULATION_STATE",
+        (*_PROFILE_CALCULATION_STATE, ("TEST-code-change", 1, 1)),
+    )
+    direct_module._source_snapshot()
+    assert calls == [True, True, True]
+    monkeypatch.undo()
+    monkeypatch.setattr(direct_module, "_source_snapshot_uncached", tracked)
+
+    # question_ids lookups never persist.
+    restart()
+    before = set(pool_dir.glob("*.entry"))
+    direct_module._source_snapshot(question_ids=[100])
+    assert set(pool_dir.glob("*.entry")) == before
+
+
 def test_adjustable_rules_and_legacy_defaults(direct_module):
     from question_bank.recommendation.personalized import (
         _config_constructor, _difficulty_plan, _paper_diversity_allowed, _hash_payload,

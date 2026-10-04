@@ -53,6 +53,58 @@ _EVIDENCE_MODEL_KEYS = (
 )
 _USABLE_STATUSES = {"proposed", "approved"}
 
+# Stored instead of a (text, formulas) tuple when block XML fails to parse.
+_FORMULA_PARSE_FAILED = ("\x00formula-parse-error",)
+_IDENTITY_VERSION: tuple | None = None
+_IDENTITY_VERSION_LOCK = threading.Lock()
+
+
+def _question_identity_version() -> tuple:
+    """Stamps of every module whose code determines these identity values.
+
+    Library versions matter too: the image pipeline (PIL/numpy/cv2) and the
+    formula parsers (lxml/ElementTree via docx_importer) decide the stored
+    digests, so an upgrade invalidates old entries.
+    """
+    global _IDENTITY_VERSION
+    with _IDENTITY_VERSION_LOCK:
+        if _IDENTITY_VERSION is not None:
+            return _IDENTITY_VERSION
+        root = Path(__file__).resolve()
+        files = [
+            root,
+            root.parent / "file_cache.py",
+            root.parent / "asset_path_service.py",
+            root.parent / "rich_content_service.py",
+            root.parent.parent / "document_pipeline" / "math_omml.py",
+            root.parent.parent / "models" / "question.py",
+            root.parent.parent / "importers" / "docx_importer.py",
+        ]
+        stamps = tuple(
+            (str(path), path.stat().st_mtime_ns, path.stat().st_size)
+            for path in files
+        )
+        libraries = []
+        for module_name in ("PIL", "lxml.etree", "numpy", "cv2"):
+            try:
+                module = __import__(module_name)
+                for part in module_name.split(".")[1:]:
+                    module = getattr(module, part)
+                libraries.append((module_name, getattr(module, "__version__", None)))
+            except Exception:
+                libraries.append((module_name, None))
+        _IDENTITY_VERSION = (stamps, tuple(libraries))
+        return _IDENTITY_VERSION
+
+
+def _identity_digest_map(data_root: Path):
+    """Persistent identity digests for this data_root; None on any failure."""
+    try:
+        from question_bank.services.file_cache import question_identity_map
+        return question_identity_map(data_root, _question_identity_version())
+    except Exception:
+        return None
+
 
 def exact_question_key(question: Mapping[str, Any], *, data_root: Path,
                        rich_content: Mapping[str, Any] | None = None,
@@ -179,38 +231,68 @@ def _question_content_key(question: Mapping[str, Any], *, data_root: Path,
             paths = json.loads(paths)
         paths = list(dict.fromkeys([*stem_paths, *(str(path) for path in paths if path not in answer_paths)]))
         formulas = []
-        math_nodes = []
+        xml_texts = []
         for block in rich.get("question_blocks", []):
             for path in (block.get("image_relationships") or {}).values():
                 if str(path) not in paths:
                     paths.append(str(path))
             if block.get("xml"):
-                import xml.etree.ElementTree as ET
-                try:
-                    root = ET.fromstring(str(block["xml"]))
+                xml_texts.append(str(block["xml"]))
+        digest_map = _identity_digest_map(data_root)
+        formula_key = ("formula", exam_printing, hashlib.sha256(json.dumps(
+            [str(value.get("question_text") or ""), xml_texts],
+            ensure_ascii=False).encode()).hexdigest())
+        normalized = digest_map.get(formula_key) if digest_map is not None else None
+        if normalized == _FORMULA_PARSE_FAILED:
+            return ""
+        if normalized is None:
+            import xml.etree.ElementTree as ET
+            math_nodes = []
+            try:
+                for xml in xml_texts:
+                    root = ET.fromstring(xml)
                     math_nodes.extend(root.iter("{http://schemas.openxmlformats.org/officeDocument/2006/math}oMath"))
-                except ET.ParseError:
-                    return ""
+            except ET.ParseError:
+                if digest_map is not None:
+                    digest_map.put(formula_key, _FORMULA_PARSE_FAILED)
+                return ""
+            normalized = _normalize_formula_content(
+                str(value.get("question_text") or ""), math_nodes,
+            )
+            if digest_map is not None:
+                digest_map.put(formula_key, normalized)
+        value["question_text"], formulas = normalized
         def pixels(stored: str, polygon=None) -> str:
             token = str(stored) + json.dumps(polygon) + (":exam-printing" if exam_printing else "")
             if token not in cache:
                 path = resolve_question_bank_asset_path(stored, data_root=data_root,
                     search_subdirs=("question_bank/extracted_images", "question_bank/document_pages"))
+                persistent_key = None
+                if digest_map is not None:
+                    try:
+                        info = Path(path).stat()
+                        persistent_key = ("image", str(path), info.st_size,
+                                          info.st_mtime_ns, token)
+                        cache[token] = digest_map.get(persistent_key) or None
+                    except OSError:
+                        persistent_key = None
+                if cache.get(token) is None:
+                    def compute(resolved: Path) -> str:
+                        with Image.open(resolved) as image:
+                            picture = image.convert("RGBA")
+                            if polygon:
+                                xs, ys = zip(*polygon)
+                                picture = picture.crop((round(min(xs) * image.width), round(min(ys) * image.height),
+                                                        round(max(xs) * image.width), round(max(ys) * image.height)))
+                            if exam_printing:
+                                picture = _exam_printed_figure(picture)
+                            else:
+                                picture = _exact_resized_figure(picture)
+                            return f"{picture.width}x{picture.height}:" + hashlib.sha256(picture.tobytes()).hexdigest()
 
-                def compute(resolved: Path) -> str:
-                    with Image.open(resolved) as image:
-                        picture = image.convert("RGBA")
-                        if polygon:
-                            xs, ys = zip(*polygon)
-                            picture = picture.crop((round(min(xs) * image.width), round(min(ys) * image.height),
-                                                    round(max(xs) * image.width), round(max(ys) * image.height)))
-                        if exam_printing:
-                            picture = _exam_printed_figure(picture)
-                        else:
-                            picture = _exact_resized_figure(picture)
-                        return f"{picture.width}x{picture.height}:" + hashlib.sha256(picture.tobytes()).hexdigest()
-
-                cache[token] = cached_processed_image_digest(path, variant=token, compute=compute)
+                    cache[token] = cached_processed_image_digest(path, variant=token, compute=compute)
+                    if persistent_key is not None:
+                        digest_map.put(persistent_key, cache[token])
             return cache[token]
         images = [pixels(path) for path in paths]
         regions = rich.get("identity_regions", rich.get("source_regions", []))
@@ -235,9 +317,6 @@ def _question_content_key(question: Mapping[str, Any], *, data_root: Path,
                     )
             if images:
                 value["has_images"] = True
-        value["question_text"], formulas = _normalize_formula_content(
-            str(value.get("question_text") or ""), math_nodes,
-        )
         value.update(image_paths=paths, image_content_keys=images, source_regions=regions,
                      image_marker_keys={path: pixels(path) for path in stem_paths},
                      formula_content=[*formulas, *(str(item.get("restricted_latex") or item.get("semantic_mathml") or item.get("omml") or "")

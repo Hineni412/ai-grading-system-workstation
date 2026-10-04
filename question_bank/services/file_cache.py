@@ -415,6 +415,141 @@ def cached_asset_resolution(
     return resolved
 
 
+_DIGEST_MAP_LIMIT = 200_000
+_DIGEST_MAP_FLUSH_ENTRIES = 64
+_DIGEST_MAP_FLUSH_SECONDS = 3.0
+_DIGEST_MAP_MISSING = object()
+_DIGEST_MAPS: OrderedDict[str, "PersistentDigestMap"] = OrderedDict()
+_DIGEST_MAPS_LIMIT = 16
+
+
+class PersistentDigestMap:
+    """One pickle dict file of derived digests shared across restarts.
+
+    Entries survive process restarts; ``version`` must capture every input
+    besides the keyed file/text itself, so stale code ignores old entries.
+    Writes flush atomically (temp file + ``os.replace``) when enough entries
+    accumulated or enough time passed; ``flush()`` forces a write.
+    """
+
+    def __init__(self, path: Path, *, version: Any) -> None:
+        self._path = Path(path)
+        self._version = version
+        self._lock = threading.Lock()
+        self._entries: OrderedDict | None = None
+        self._identity: tuple | None = None
+        self._dirty = 0
+        self._last_flush = 0.0
+
+    def _state(self) -> tuple | None:
+        try:
+            info = self._path.stat()
+        except OSError:
+            return None
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+    def _entries_now(self) -> OrderedDict:
+        state = self._state()
+        if self._entries is not None and state == self._identity:
+            return self._entries
+        entries: OrderedDict = OrderedDict()
+        try:
+            with self._path.open("rb") as saved:
+                import pickle
+                data = pickle.load(saved)
+            if (isinstance(data, dict) and data.get("version") == self._version
+                    and isinstance(data.get("entries"), dict)):
+                entries = OrderedDict(data["entries"])
+        except Exception:
+            entries = OrderedDict()
+        self._entries = entries
+        self._identity = state
+        self._dirty = 0
+        return entries
+
+    def get(self, key: Any) -> Any:
+        with self._lock:
+            entries = self._entries_now()
+            value = entries.get(key, _DIGEST_MAP_MISSING)
+            if value is not _DIGEST_MAP_MISSING:
+                entries.move_to_end(key)
+                return value
+        return None
+
+    def put(self, key: Any, value: Any) -> None:
+        import time
+        with self._lock:
+            entries = self._entries_now()
+            if entries.get(key, _DIGEST_MAP_MISSING) == value:
+                entries.move_to_end(key)
+                return
+            entries[key] = value
+            entries.move_to_end(key)
+            while len(entries) > _DIGEST_MAP_LIMIT:
+                entries.popitem(last=False)
+            self._dirty += 1
+            if (self._dirty >= _DIGEST_MAP_FLUSH_ENTRIES
+                    or time.monotonic() - self._last_flush >= _DIGEST_MAP_FLUSH_SECONDS):
+                self._flush_locked()
+
+    def flush(self) -> None:
+        with self._lock:
+            if self._entries is not None and self._dirty:
+                self._flush_locked()
+
+    def _flush_locked(self) -> None:
+        import os as _os
+        import pickle
+        import tempfile
+        import time
+        temporary = None
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            data = pickle.dumps(
+                {"version": self._version, "entries": dict(self._entries)},
+                pickle.HIGHEST_PROTOCOL,
+            )
+            with tempfile.NamedTemporaryFile(
+                    dir=self._path.parent, delete=False) as saved:
+                temporary = Path(saved.name)
+                saved.write(data)
+            _os.replace(temporary, self._path)
+            temporary = None
+            self._identity = self._state()
+            self._dirty = 0
+            self._last_flush = time.monotonic()
+        except (OSError, pickle.PickleError):
+            pass
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+
+def question_identity_map(data_root: Path, version: Any) -> PersistentDigestMap:
+    """Share the on-disk identity map for one data_root across callers."""
+    path = Path(data_root) / "cache" / "question_identity.cache"
+    key = str(path.resolve(strict=False))
+    with _lock:
+        cached = _DIGEST_MAPS.get(key)
+        if cached is None:
+            cached = PersistentDigestMap(path, version=version)
+            _DIGEST_MAPS[key] = cached
+            _DIGEST_MAPS.move_to_end(key)
+            _trim(_DIGEST_MAPS, _DIGEST_MAPS_LIMIT)
+    return cached
+
+
+def flush_identity_caches() -> None:
+    """Flush every live digest map; called at the end of a pool computation."""
+    with _lock:
+        maps = list(_DIGEST_MAPS.values())
+    for mapping in maps:
+        mapping.flush()
+
+
 def clear_file_caches() -> None:
     """Drop every cached entry (test isolation and explicit resets)."""
     global _bytes_used
@@ -429,11 +564,14 @@ def clear_file_caches() -> None:
 
 
 __all__ = [
+    "PersistentDigestMap",
     "cached_asset_resolution",
     "cached_file_bytes",
     "cached_parsed_file",
     "cached_processed_image_digest",
     "clear_file_caches",
+    "flush_identity_caches",
     "is_within",
     "memoized_resolve",
+    "question_identity_map",
 ]

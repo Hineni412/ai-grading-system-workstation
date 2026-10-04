@@ -7,18 +7,22 @@ from question_bank.mastery.model import week_of
 import os
 import pickle
 import sqlite3
-import tempfile
 import threading
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Iterable, Mapping
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TypedDict
 
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.repositories.grading_database import open_grading_repositories
-from integration.data_generation import commit_generation, database_content_revision as _database_content_revision
+from integration.data_generation import (
+    _database_file_state,
+    cached_content_revision,
+    commit_generation,
+    database_content_revision as _database_content_revision,
+)
 from integration.evidence_scope import EvidenceScopeResolver
+from integration.persistent_entries import persistent_entry_store
 from integration.result_cache import ResultCache
 from integration.question_tag_projection_service import (
     QuestionTagProjection,
@@ -43,13 +47,10 @@ GENERIC_ERROR_REASONS = {
 
 _TAG_PROFILE_CACHE_LOCK = threading.RLock()
 _TAG_PROFILE_CACHE_LIMIT = 12
-_LOCAL_PROFILE_LOCK = threading.Lock()
 _LOCAL_PROFILE_MAX_ENTRIES = 240
 _LOCAL_PROFILE_MAX_BYTES = 512 * 1024 * 1024
-# Verified on-disk state per entry file so a repeated save can skip rewriting
-# without loading the file back; bounded and keyed by the entry path.
-_LOCAL_PROFILE_MEMO: OrderedDict[str, tuple] = OrderedDict()
-_LOCAL_PROFILE_MEMO_LIMIT = 2048
+_SESSION_ERROR_MAX_ENTRIES = 64
+_SESSION_ERROR_MAX_BYTES = 256 * 1024 * 1024
 _LOCAL_SOURCE_REVISIONS = ResultCache(2)
 _MASTERY_INPUT_RESULTS = ResultCache(2)
 # Cached payloads are stored as pickle bytes: rebuilding a hit with
@@ -109,23 +110,6 @@ def _release_tag_profile_flight(
             flight.event.set()
 
 
-def _remember_local_entry(
-    path: Path,
-    file_state: tuple,
-    signature: tuple,
-    entry: tuple[bytes, bytes],
-) -> None:
-    """Record verified on-disk entry state so a later save can skip rewriting
-    identical bytes without reading the file again."""
-
-    digest = hashlib.sha256(entry[0] + b"\x00" + entry[1]).digest()
-    with _LOCAL_PROFILE_LOCK:
-        _LOCAL_PROFILE_MEMO[str(path)] = (file_state, signature, digest)
-        _LOCAL_PROFILE_MEMO.move_to_end(str(path))
-        while len(_LOCAL_PROFILE_MEMO) > _LOCAL_PROFILE_MEMO_LIMIT:
-            _LOCAL_PROFILE_MEMO.popitem(last=False)
-
-
 def _normalized_profile_scope(
     scope: Mapping[str, Any],
     exam_scope: Mapping[str, Any],
@@ -166,32 +150,17 @@ _PROFILE_CALCULATION_STATE = _profile_calculation_state()
 
 
 def _profile_semantics() -> tuple:
-    """Running calculation versions, separate from database commits."""
+    """Running calculation versions, separate from database commits.
+
+    The persisted profile inputs only use the date through the Beijing week
+    (`week_of` for observations and mastery `as_of`); a calendar date would
+    invalidate every saved entry daily for no real input change."""
     from question_bank.mastery.current import CURRENT_MASTERY_PARAMETERS
     return (
-        datetime.now(timezone(timedelta(hours=8))).date().isoformat(),
+        str(week_of(datetime.now(UTC))),
         CURRENT_MASTERY_PARAMETERS.version,
         _PROFILE_CALCULATION_STATE,
     )
-
-
-def _database_file_state(path: Path) -> tuple:
-    """Cheap memo key; a changed state rechecks logical content, not profiles."""
-    stat = path.stat()
-    wal = Path(f"{path}-wal")
-    try:
-        wal_stat = wal.stat()
-        wal_state = (wal_stat.st_size, wal_stat.st_mtime_ns) if wal_stat.st_size else None
-    except FileNotFoundError:
-        wal_state = None
-    try:
-        with Path(f"{path}-shm").open("rb") as index:
-            header = index.read(96)
-        index_state = (header[8:12], header[32:40], header[:48] == header[48:96])
-    except FileNotFoundError:
-        index_state = None
-    return (str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns,
-            wal_state, index_state)
 
 
 class DiagnosisSnapshot(TypedDict, total=False):
@@ -429,11 +398,16 @@ class DiagnosisProfileService:
     def _local_profile_path(self) -> Path:
         return self.data_root / "reports" / ".training_diagnosis" / "entries"
 
+    def _local_profile_store(self):
+        # Caps are read on each call so tests can narrow them.
+        return persistent_entry_store(
+            self._local_profile_path(),
+            max_entries=_LOCAL_PROFILE_MAX_ENTRIES,
+            max_bytes=_LOCAL_PROFILE_MAX_BYTES,
+        )
+
     def _local_profile_entry_path(self, cache_key: tuple[str, ...]) -> Path:
-        digest = hashlib.sha256(
-            pickle.dumps(cache_key[1:], pickle.HIGHEST_PROTOCOL)
-        ).hexdigest()[:40]
-        return self._local_profile_path() / f"{digest}.entry"
+        return self._local_profile_store().entry_path(cache_key[1:])
 
     def _local_profile_signature(self, cache_key: tuple[str, ...]) -> tuple | None:
         try:
@@ -459,41 +433,23 @@ class DiagnosisProfileService:
             return None
 
     def _read_local_profile(self, cache_key: tuple[str, ...]) -> tuple[bytes, bytes] | None:
+        def signature_for(stored: object) -> tuple | None:
+            # Cheap rejects run before the full signature, which serializes
+            # both databases; the stored shape itself must still be checked.
+            if (not isinstance(stored, tuple) or len(stored) != 4
+                    or stored[2] != _profile_semantics()
+                    or stored[3] != _dir_generation(self.data_root / 'reports' / '.class_analysis')):
+                return None
+            return self._local_profile_signature(cache_key)
         try:
-            path = self._local_profile_entry_path(cache_key)
-            def identity():
-                info = path.stat()
-                return (str(path), info.st_dev, info.st_ino, info.st_size,
-                        info.st_mtime_ns, info.st_ctime_ns)
-            file_state = identity()
-            memo = getattr(self, "_local_profile_entry_snapshots", None)
-            if memo is None:
-                memo = self._local_profile_entry_snapshots = {}
-            snapshot = memo.get(file_state)
-            if snapshot is None:
-                with path.open("rb") as saved:
-                    snapshot = pickle.load(saved)
-                if identity() != file_state:
-                    return None
-                memo[file_state] = snapshot
-            if (not isinstance(snapshot, dict) or snapshot.get("version") != 1
-                    or snapshot.get("key") != cache_key[1:]):
-                return None
-            signature = snapshot["signature"]
-            if (not isinstance(signature, tuple) or len(signature) != 4
-                    or signature[2] != _profile_semantics()
-                    or signature[3] != _dir_generation(self.data_root / 'reports' / '.class_analysis')):
-                return None
-            entry = snapshot["entry"]
+            entry = self._local_profile_store().get(cache_key[1:], signature_for)
             if (not isinstance(entry, tuple) or len(entry) != 2
-                    or not all(isinstance(part, bytes) for part in entry)
-                    or signature != self._local_profile_signature(cache_key)):
+                    or not all(isinstance(part, bytes) for part in entry)):
                 return None
             # Bad/incompatible local bytes must fall back before entering the
             # shared memory cache; no official model is required for rebuilding.
             if not all(isinstance(pickle.loads(part), dict) for part in entry):
                 return None
-            _remember_local_entry(path, file_state, signature, entry)
             return entry
         except (OSError, pickle.PickleError, EOFError, KeyError, TypeError, ValueError,
                 AttributeError, ImportError):
@@ -503,77 +459,7 @@ class DiagnosisProfileService:
         signature = self._local_profile_signature(cache_key)
         if signature is None:
             return
-        path = self._local_profile_entry_path(cache_key)
-        digest = hashlib.sha256(entry[0] + b"\x00" + entry[1]).digest()
-        temporary: Path | None = None
-        try:
-            with _LOCAL_PROFILE_LOCK:
-                memo = _LOCAL_PROFILE_MEMO.get(str(path))
-                if memo is not None:
-                    try:
-                        info = path.stat()
-                        current = (str(path), info.st_dev, info.st_ino, info.st_size,
-                                   info.st_mtime_ns, info.st_ctime_ns)
-                    except OSError:
-                        current = None
-                    if current == memo[0] and signature == memo[1] and digest == memo[2]:
-                        _LOCAL_PROFILE_MEMO.move_to_end(str(path))
-                        return
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as saved:
-                    temporary = Path(saved.name)
-                    pickle.dump({"version": 1, "key": cache_key[1:], "signature": signature,
-                                 "entry": entry}, saved, pickle.HIGHEST_PROTOCOL)
-                os.replace(temporary, path)
-                try:
-                    info = path.stat()
-                    file_state = (str(path), info.st_dev, info.st_ino, info.st_size,
-                                  info.st_mtime_ns, info.st_ctime_ns)
-                    _LOCAL_PROFILE_MEMO[str(path)] = (file_state, signature, digest)
-                    _LOCAL_PROFILE_MEMO.move_to_end(str(path))
-                    while len(_LOCAL_PROFILE_MEMO) > _LOCAL_PROFILE_MEMO_LIMIT:
-                        _LOCAL_PROFILE_MEMO.popitem(last=False)
-                except OSError:
-                    _LOCAL_PROFILE_MEMO.pop(str(path), None)
-                self._evict_local_profile_entries(keep=path)
-        except (OSError, pickle.PickleError):
-            pass  # Saving a derived cache must not fail grading or recommendation.
-        finally:
-            if temporary is not None:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
-
-    def _evict_local_profile_entries(self, *, keep: Path) -> None:
-        """Drop the oldest entry files beyond the count/size caps, never the
-        file that was just written."""
-        try:
-            entries = [
-                item for item in self._local_profile_path().iterdir()
-                if item.is_file() and item.suffix == ".entry"
-            ]
-            size = sum(item.stat().st_size for item in entries)
-            overflow = len(entries) - _LOCAL_PROFILE_MAX_ENTRIES
-            if overflow <= 0 and size <= _LOCAL_PROFILE_MAX_BYTES:
-                return
-            entries.sort(key=lambda item: (item.stat().st_mtime_ns, item.name))
-            keep = keep.resolve(strict=False)
-            for item in entries:
-                if overflow <= 0 and size <= _LOCAL_PROFILE_MAX_BYTES:
-                    break
-                if item.resolve(strict=False) == keep:
-                    continue
-                try:
-                    item_size = item.stat().st_size
-                    item.unlink()
-                    _LOCAL_PROFILE_MEMO.pop(str(item), None)
-                    overflow -= 1
-                    size -= item_size
-                except OSError:
-                    pass
-        except OSError:
-            pass
+        self._local_profile_store().put(cache_key[1:], signature, entry)
 
     def read_persistent_result(self, cache_key: tuple) -> tuple[bytes, bytes] | None:
         """Read a durable derived result; cache_key[0] is the source identity
@@ -1374,11 +1260,10 @@ class DiagnosisProfileService:
         reports_dir = self.data_root / "reports"
         if not reports_dir.is_dir():
             return {}
-        from backend.class_analysis import session_error_records
         index: dict[tuple[int, int, str], list[dict[str, Any]]] = {}
         for session_id in session_ids:
-            students = session_error_records(
-                self.db, int(session_id), reports_dir, data_root=self.data_root,
+            students = self._session_error_records(
+                int(session_id), reports_dir,
             )
             for student_id, questions in students.items():
                 for question_id, rows in questions.items():
@@ -1400,6 +1285,133 @@ class DiagnosisProfileService:
                         elif row.get("step_id") and row["step_id"] not in existing["step_ids"]:
                             existing["step_ids"].append(row["step_id"])
         return index
+
+    def _session_error_records(
+        self,
+        session_id: int,
+        reports_dir: Path,
+    ) -> dict:
+        """session_error_records 的按场次复用；指纹覆盖不了任一输入时直接计算。
+
+        _prepare_error_sources 声明“不缓存学生证据，也不跨请求复用”；此处
+        允许复用，因为下面的指纹覆盖该次读取的全部输入（评分、场次行、
+        出勤、rubric/答案文件、状态文件、题库版本、上传来源与计算代码）。
+        """
+        from backend.class_analysis import session_error_records
+        fingerprint = self._session_error_fingerprint(session_id)
+        if fingerprint is None:
+            return session_error_records(
+                self.db, session_id, reports_dir, data_root=self.data_root,
+            )
+        memo_key = (str(self.grading_db_path), str(self.data_root), session_id)
+        with _SESSION_ERROR_LOCK:
+            cached = _SESSION_ERROR_MEMO.get(memo_key)
+            if cached is not None and cached[0] == fingerprint:
+                _SESSION_ERROR_MEMO.move_to_end(memo_key)
+                return cached[1]
+        store = persistent_entry_store(
+            self.data_root / "reports" / ".training_diagnosis" / "sessions",
+            max_entries=_SESSION_ERROR_MAX_ENTRIES,
+            max_bytes=_SESSION_ERROR_MAX_BYTES,
+        )
+        pkey = ("session-error-records-v1", session_id, fingerprint)
+        records = store.get(pkey, fingerprint)
+        if not isinstance(records, dict):
+            records = session_error_records(
+                self.db, session_id, reports_dir, data_root=self.data_root,
+            )
+            store.put(pkey, fingerprint, records)
+        with _SESSION_ERROR_LOCK:
+            _SESSION_ERROR_MEMO[memo_key] = (fingerprint, records)
+            _SESSION_ERROR_MEMO.move_to_end(memo_key)
+            while len(_SESSION_ERROR_MEMO) > _SESSION_ERROR_MAX_ENTRIES:
+                _SESSION_ERROR_MEMO.popitem(last=False)
+        return records
+
+    def _session_error_fingerprint(self, session_id: int) -> tuple | None:
+        """Cover every input session_error_records reads for this session.
+
+        Returns None when any input cannot be fingerprinted; the caller then
+        computes without caching, preserving the previous behaviour.
+        """
+        try:
+            from path_manager import resolve_stored_file_path
+            # 行内容哈希必须与读取它的数据库代次配对，否则一次提交会把旧
+            # 快照的哈希登记到新代次名下。
+            rows_hash = self._session_rows_hash(session_id)
+            session = self.db.sessions.get_grading_session(int(session_id)) or {}
+            files = []
+            for field in ("rubric_path", "answer_key_path"):
+                try:
+                    resolved = resolve_stored_file_path(
+                        session.get(field), data_root=self.data_root,
+                    )
+                except (OSError, RuntimeError):
+                    resolved = None
+                files.append(_session_error_file_state(resolved))
+            state_path = (
+                self.data_root / "reports" / ".class_analysis"
+                / f"{int(session_id)}.json"
+            )
+            bank_revision = cached_content_revision(self.question_bank_db_path)
+            source_state = _session_source_state(
+                self.data_root / "config" / "uploaded" / "config_sources"
+                / f"session-{int(session_id)}"
+            )
+            return (
+                rows_hash,
+                tuple(files),
+                _session_error_file_state(state_path),
+                bank_revision,
+                source_state,
+                _PROFILE_CALCULATION_STATE,
+                _SESSION_ERROR_CODE_STATE,
+            )
+        except (OSError, sqlite3.Error, TypeError, ValueError,
+                AttributeError, KeyError):
+            return None
+
+    def _session_rows_hash(self, session_id: int) -> str:
+        """sha256 of this session's grading rows keyed by the state read.
+
+        A snapshot captured by request_read_context is frozen, so the rows
+        hash is safe to cache under the grading identity captured with it.
+        A live connection can observe a commit between the row reads, so
+        the hash is cached only while the generation holds still; on a move
+        the computed hash is returned without caching.
+        """
+        from backend.report_exports import score_revision
+        if self.cache_identity:
+            generation = tuple(self.cache_identity[:3])
+            stable = True
+        else:
+            # Monitor the real database path, not a request-scoped snapshot:
+            # the monitor keeps a long-lived connection that would pin a
+            # captured snapshot file open past request cleanup.
+            source_path = Path(getattr(self.db, "db_path", self.grading_db_path))
+            generation = _path_generation(source_path)
+            stable = False
+        key = (*generation, int(session_id))
+        with _SESSION_ERROR_LOCK:
+            hit = _SESSION_ERROR_ROW_HASHES.get(key)
+            if hit is not None:
+                _SESSION_ERROR_ROW_HASHES.move_to_end(key)
+                return hit
+        value = hashlib.sha256(json.dumps(
+            (
+                score_revision(self.db, int(session_id)),
+                self.db.sessions.get_grading_session(int(session_id)) or {},
+                self.db.sessions.get_session_attendance(int(session_id)),
+            ),
+            ensure_ascii=False, sort_keys=True, default=str,
+        ).encode()).hexdigest()
+        if stable or generation == _path_generation(source_path):
+            with _SESSION_ERROR_LOCK:
+                _SESSION_ERROR_ROW_HASHES[key] = value
+                _SESSION_ERROR_ROW_HASHES.move_to_end(key)
+                while len(_SESSION_ERROR_ROW_HASHES) > _SESSION_ERROR_ROW_LIMIT:
+                    _SESSION_ERROR_ROW_HASHES.popitem(last=False)
+        return value
 
     def _tag_projections(
         self,
@@ -1628,6 +1640,67 @@ def _dir_generation(path: Path) -> tuple[str, ...]:
     names = ",".join(name for name, _ in entries)
     newest = max(mtime for _, mtime in entries)
     return (str(source), f"{len(entries)}:{names}:{newest}")
+
+
+def _session_error_file_state(path: Path | None) -> tuple:
+    """(path, dev, ino, size, mtime_ns) identity for one evidence file."""
+    if path is None:
+        return ("none",)
+    try:
+        info = Path(path).stat()
+        return (str(path), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    except OSError:
+        return (str(path), "missing")
+
+
+def _session_source_state(directory: Path) -> tuple:
+    """Recursive file stamp for one session's uploaded config-source tree."""
+    try:
+        if not directory.is_dir():
+            return (str(directory), "missing")
+        return (str(directory), tuple(sorted(
+            (str(item.relative_to(directory)), info.st_size, info.st_mtime_ns)
+            for item in directory.rglob("*")
+            if item.is_file() and (info := item.stat())
+        )))
+    except OSError:
+        return (str(directory), "unreadable")
+
+
+def _session_error_code_state() -> tuple:
+    """File stamps for the modules session_error_records depends on that
+    _PROFILE_CALCULATION_STATE does not already cover."""
+    root = Path(__file__).resolve().parent.parent
+    files = [
+        root / "backend" / "report_exports.py",
+        root / "backend" / "error_causes.py",
+        root / "backend" / "error_patterns.py",
+        root / "backend" / "review" / "service.py",
+        root / "backend" / "analytics" / "service.py",
+        root / "backend" / "config_workspace" / "sources.py",
+        root / "backend" / "document_parsing" / "question_blocks.py",
+        root / "backend" / "repositories" / "results.py",
+        root / "solution_answer_guard.py",
+        root / "question_id_contract.py",
+        root / "grading_completeness.py",
+        root / "path_manager.py",
+    ]
+    return tuple(
+        (str(path), path.stat().st_mtime_ns, path.stat().st_size)
+        for path in files
+    )
+
+
+_SESSION_ERROR_CODE_STATE = _session_error_code_state()
+# 指纹通过才允许跨请求/重启复用；内存层与同进程共享条目库互为两级缓存。
+_SESSION_ERROR_MEMO: OrderedDict[tuple, tuple] = OrderedDict()
+_SESSION_ERROR_LOCK = threading.Lock()
+# 评分修订、场次行与出勤只读阅卷库；同一提交代次内结果不变，按代次复用，
+# 否则每次指纹都要重读全部行。代次变化（提交、文件替换、归档）即重读。
+# 键为 (路径, 文件标识, 提交代次, 场次)；直接连接（无请求快照）只在两次
+# 代次读取一致时才写入，避免把快照前的内容记到新代次名下。
+_SESSION_ERROR_ROW_HASHES: OrderedDict[tuple, str] = OrderedDict()
+_SESSION_ERROR_ROW_LIMIT = 128
 
 
 def _safe_int(value: object) -> int:

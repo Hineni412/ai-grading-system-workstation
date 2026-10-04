@@ -2700,16 +2700,20 @@ class PersonalizedRecommendationModule:
             candidate_config=candidate_config,
             question_ids=question_ids,
         )
-        return _SOURCE_SNAPSHOT_CACHE.get_or_compute(
-            key,
-            lambda: self._source_snapshot_uncached(
+
+        def compute() -> tuple:
+            return self._source_snapshot_uncached(
                 excluded_question_ids=excluded_question_ids,
                 prepare_refinements=prepare_refinements,
                 knowledge_keys=knowledge_keys,
                 candidate_config=candidate_config,
                 question_ids=question_ids,
-            ),
+            )
+
+        produce = compute if question_ids else (
+            lambda: _persistent_source_snapshot(self, key, compute)
         )
+        return _SOURCE_SNAPSHOT_CACHE.get_or_compute(key, produce)
 
     def _source_snapshot_uncached(
         self,
@@ -4210,6 +4214,46 @@ def _apply_diagnosis_mastery(
                     "tag_context": deepcopy(item.get("tag_context") or {}),
                     "training_tasks": _training_tasks(item),
                 }
+
+
+def _persistent_source_snapshot(module, key: tuple, compute) -> tuple:
+    """Compute a source snapshot, reusing the durable per-pool store.
+
+    Only pool-wide snapshots (empty ``question_ids``) reach this helper;
+    request-shaped ``question_ids`` lookups stay memory-only. The stored key
+    drops the process-local elements of the in-memory key (resolved db path
+    and the commit counter); durability is carried by the signature instead.
+    """
+    from integration.data_generation import cached_content_revision
+    from integration.diagnosis_profile_service import _PROFILE_CALCULATION_STATE
+    from integration.persistent_entries import persistent_entry_store
+    from question_bank.services.file_cache import flush_identity_caches
+    from question_bank.services.question_read_service import _skill_asset_manifest
+
+    manifest = _skill_asset_manifest(Path(module.data_root))
+    if manifest is None:
+        return compute()
+    pkey = tuple(
+        part for index, part in enumerate(key)
+        if index not in (1, 4)  # resolved db path, commit generation
+    )
+    signature = (
+        cached_content_revision(module.db_path),
+        tuple(sorted(manifest.items())),
+        _PROFILE_CALCULATION_STATE,
+    )
+    store = persistent_entry_store(
+        Path(module.data_root) / "cache" / "recommendation_pools",
+        max_entries=16,
+        max_bytes=512 * 1024 * 1024,
+    )
+    payload = store.get(pkey, signature)
+    if isinstance(payload, tuple) and len(payload) == 3:
+        return payload
+    result = compute()
+    store.put(pkey, signature, result)
+    flush_identity_caches()
+    return result
 
 
 def _day_clock(value: datetime) -> datetime:

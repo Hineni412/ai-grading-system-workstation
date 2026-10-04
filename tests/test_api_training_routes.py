@@ -232,6 +232,174 @@ def test_local_profiles_refresh_changed_inputs_and_corrupt_cache(training_servic
         assert after != before
 
 
+def test_local_profiles_reuse_within_a_week_and_refresh_next_week(training_services, monkeypatch):
+    from datetime import UTC, datetime as real_datetime
+    from integration import diagnosis_profile_service as profiles
+    service = training_services
+    scope, exams = {"mode": "all"}, {"mode": "current", "session_ids": [14]}
+    service.persist_snapshots = True
+
+    class FrozenClock:
+        # 2025-01-06 12:00 UTC is Monday 20:00 Beijing; 01-08 is Wednesday.
+        current = real_datetime(2025, 1, 6, 12, tzinfo=UTC)
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current if tz is None else cls.current.astimezone(tz)
+        fromisoformat = real_datetime.fromisoformat
+        combine = real_datetime.combine
+        strptime = real_datetime.strptime
+
+    monkeypatch.setattr(profiles, "datetime", FrozenClock)
+    before = service.build_profiles(scope=scope, exam_scope=exams)
+    _clear_profile_memory()
+    FrozenClock.current = real_datetime(2025, 1, 8, 4, tzinfo=UTC)
+    fresh = DiagnosisProfileService(service.grading_db_path, service.question_bank_db_path)
+    monkeypatch.setattr(
+        fresh, "_compute_tag_profiles",
+        lambda *args, **kwargs: pytest.fail("same-week profile recomputed"),
+    )
+    wednesday = fresh.build_profiles(scope=scope, exam_scope=exams)
+    assert wednesday == before
+    # 周三重新计算的结果与周一一致：周内日期不是输入。
+    checker = DiagnosisProfileService(service.grading_db_path, service.question_bank_db_path)
+    uncached = checker._compute_tag_profiles(
+        scope=profiles._normalized_profile_scope(scope, exams),
+        exam_scope=exams,
+    )[0]
+    assert uncached == before
+    FrozenClock.current = real_datetime(2025, 1, 13, 4, tzinfo=UTC)  # next Monday
+    calls = []
+    real = DiagnosisProfileService._compute_tag_profiles
+    def tracked(self, **kwargs):
+        calls.append(True)
+        return real(self, **kwargs)
+    monkeypatch.setattr(
+        DiagnosisProfileService, "_compute_tag_profiles", tracked,
+    )
+    monday = DiagnosisProfileService(service.grading_db_path, service.question_bank_db_path)
+    monday.build_profiles(scope=scope, exam_scope=exams)
+    assert calls == [True]
+
+
+def test_session_error_cause_index_reuses_unchanged_sessions(training_services, monkeypatch):
+    import integration.persistent_entries as persistent_entries
+    from backend import class_analysis
+    from integration import diagnosis_profile_service as profiles
+    service = training_services
+    (service.data_root / "reports").mkdir(exist_ok=True)
+    with sqlite3.connect(service.grading_db_path) as writer:
+        writer.execute(
+            "INSERT INTO grading_sessions (id, session_name, rubric_path,"
+            " answer_key_path, status, is_deleted)"
+            " VALUES (15, '另一场考试', '', '', 'completed', 0)")
+        writer.execute(
+            "INSERT INTO exam_papers (id, session_id, front_image, back_image,"
+            " student_id, match_status, processing_status)"
+            " VALUES (1501, 15, '', '', 15, 'matched', 'graded')")
+        writer.execute(
+            "INSERT INTO session_results (id, session_id, student_id, paper_id,"
+            " total_score, student_score, needs_human_review, raw_json)"
+            " VALUES (15001, 15, 15, 1501, 20, 12, 0, '{}')")
+        writer.execute(
+            "INSERT INTO session_details (result_id, question_id, score_awarded,"
+            " knowledge_ids, secondary_errors_json)"
+            " VALUES (15001, 'Q1', 7, '[\"UNKNOWN\"]', '[]')")
+        writer.commit()
+
+    def counted():
+        calls = []
+        original = class_analysis.session_error_records
+        def spy(db, session_id, reports_dir, **kwargs):
+            calls.append(int(session_id))
+            return original(db, session_id, reports_dir, **kwargs)
+        monkeypatch.setattr(class_analysis, "session_error_records", spy)
+        return calls
+
+    calls = counted()
+    first = service._error_cause_index([14, 15])
+    assert sorted(calls) == [14, 15]
+    calls.clear()
+    assert service._error_cause_index([14, 15]) == first
+    assert calls == []
+
+    # 只有改了分的场次重新校验；未动的场次继续复用。
+    with sqlite3.connect(service.grading_db_path) as writer:
+        writer.execute(
+            "UPDATE session_details SET score_awarded=4"
+            " WHERE result_id=14001 AND question_id='Q2'")
+        writer.commit()
+    rescored = service._error_cause_index([14, 15])
+    assert calls == [14]
+    assert {key: rows for key, rows in rescored.items() if key[0] == 15} == {
+        key: rows for key, rows in first.items() if key[0] == 15}
+
+    # 班级归因状态文件也是输入；它变化时同样只重算对应场次。
+    calls.clear()
+    state_file = service.data_root / "reports" / ".class_analysis" / "14.json"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text('{"TEST-state": 1}', encoding='utf-8')
+    service._error_cause_index([14, 15])
+    assert calls == [14]
+
+    # 缓存结果与不经缓存的计算一致。
+    calls.clear()
+    monkeypatch.setattr(profiles.DiagnosisProfileService,
+                        "_session_error_fingerprint", lambda self, sid: None)
+    uncached = service._error_cause_index([14, 15])
+    monkeypatch.undo()
+    calls = counted()
+    assert uncached == service._error_cause_index([14, 15])
+    assert calls == []
+
+    # 模拟重启：清掉进程内记忆与共享条目库，两个场次都从磁盘复用。
+    with profiles._SESSION_ERROR_LOCK:
+        profiles._SESSION_ERROR_MEMO.clear()
+    with persistent_entries._STORES_LOCK:
+        persistent_entries._STORES.clear()
+    restarted = DiagnosisProfileService(
+        service.grading_db_path, service.question_bank_db_path)
+    restarted._error_cause_index([14, 15])
+    assert calls == []
+
+
+def test_session_error_rows_hash_tracks_the_captured_snapshot(training_services, monkeypatch):
+    # A commit landing between snapshot capture and the fingerprint call must
+    # not register the old snapshot's row hash under the new generation.
+    from backend import class_analysis
+    from backend.api.read_connections import request_read_context
+    service = training_services
+    (service.data_root / "reports").mkdir(exist_ok=True)
+    paths = SimpleNamespace(db_path=service.grading_db_path,
+                            qb_db_path=service.question_bank_db_path,
+                            data_root=service.data_root)
+    calls = []
+    original = class_analysis.session_error_records
+    def spy(db, session_id, reports_dir, **kwargs):
+        calls.append(int(session_id))
+        return original(db, session_id, reports_dir, **kwargs)
+    monkeypatch.setattr(class_analysis, "session_error_records", spy)
+
+    with request_read_context(paths) as ctx:
+        with sqlite3.connect(service.grading_db_path) as writer:
+            writer.execute(
+                "UPDATE session_details SET score_awarded=4"
+                " WHERE result_id=14001 AND question_id='Q2'")
+            writer.commit()
+        stale_fingerprint = ctx.diagnosis_service._session_error_fingerprint(14)
+        ctx.diagnosis_service._error_cause_index([14])
+    assert calls == [14]
+
+    # A fresh read context sees the new generation: the fingerprint differs,
+    # the session is recomputed, and the output matches a live computation.
+    calls.clear()
+    with request_read_context(paths) as ctx:
+        fresh_fingerprint = ctx.diagnosis_service._session_error_fingerprint(14)
+        assert fresh_fingerprint != stale_fingerprint
+        recomputed = ctx.diagnosis_service._error_cause_index([14])
+    assert calls == [14]
+    assert recomputed == service._error_cause_index([14])
+
+
 def test_idle_prewarm_saves_local_profiles_without_blocking_grading(training_services, monkeypatch):
     # Production starts this worker after the app has registered its routers.
     # Preserve that startup order when this test is selected on its own.
@@ -517,7 +685,9 @@ def test_semester_mastery_reuses_model_inputs_but_keeps_source_changes(training_
     from dataclasses import replace
     training_services.semester_mastery(changed, parameters=replace(profiles.CURRENT_MASTERY_PARAMETERS, sigma_theta=.9))
     assert calls == [True, True, True, True]
-    training_services.semester_mastery(changed, as_of=datetime(2026, 10, 11, tzinfo=UTC))
+    from datetime import timedelta
+    # The mastery input is keyed by Beijing week; +7 days always differs.
+    training_services.semester_mastery(changed, as_of=datetime.now(UTC) + timedelta(days=7))
     assert len(calls) == 5
     training_services.semester_mastery(changed, exclude_training_evidence_ids=frozenset({'TEST-excluded-evidence'}))
     assert len(calls) == 6

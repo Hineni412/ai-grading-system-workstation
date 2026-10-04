@@ -17,9 +17,12 @@ from __future__ import annotations
 import sqlite3
 import hashlib
 import threading
+from collections import OrderedDict
 from contextlib import closing
 from pathlib import Path
 from typing import Union
+
+from integration.result_cache import ResultCache
 
 _PATH_TYPE = Union[str, Path]
 
@@ -39,6 +42,59 @@ def database_content_revision(path: Path, connection: sqlite3.Connection | None 
     for start, end in ((0, 18), (20, 24), (28, 92), (100, len(content))):
         digest.update(content[start:end])
     return digest.hexdigest()
+
+def _database_file_state(path: Path) -> tuple:
+    """Cheap memo key; a changed state rechecks logical content, not results."""
+    stat = path.stat()
+    wal = Path(f"{path}-wal")
+    try:
+        wal_stat = wal.stat()
+        wal_state = (wal_stat.st_size, wal_stat.st_mtime_ns) if wal_stat.st_size else None
+    except FileNotFoundError:
+        wal_state = None
+    try:
+        with Path(f"{path}-shm").open("rb") as index:
+            header = index.read(96)
+        index_state = (header[8:12], header[32:40], header[:48] == header[48:96])
+    except FileNotFoundError:
+        index_state = None
+    return (str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns,
+            wal_state, index_state)
+
+
+# The full serialize-and-hash pass is expensive; the memo reuses it while the
+# cheap file state is unchanged, bounded to a handful of database paths.
+_CONTENT_REVISION_LOCK = threading.Lock()
+_CONTENT_REVISIONS: OrderedDict[str, tuple] = OrderedDict()
+_CONTENT_REVISION_PATH_LIMIT = 4
+_CONTENT_REVISION_FLIGHTS = ResultCache(8)
+
+
+def cached_content_revision(path: _PATH_TYPE) -> str:
+    """``database_content_revision`` memoized by the cheap database file state.
+
+    Repeated calls while the file, its WAL and its WAL-index header are
+    unchanged reuse the revision; concurrent misses for the same state share
+    one computation.
+    """
+    resolved = str(Path(path).resolve(strict=False))
+    state = _database_file_state(Path(resolved))
+    with _CONTENT_REVISION_LOCK:
+        hit = _CONTENT_REVISIONS.get(resolved)
+        if hit is not None and hit[0] == state:
+            _CONTENT_REVISIONS.move_to_end(resolved)
+            return hit[1]
+    revision = _CONTENT_REVISION_FLIGHTS.get_or_compute(
+        (resolved, state),
+        lambda: database_content_revision(Path(resolved)),
+    )
+    with _CONTENT_REVISION_LOCK:
+        _CONTENT_REVISIONS[resolved] = (state, revision)
+        _CONTENT_REVISIONS.move_to_end(resolved)
+        while len(_CONTENT_REVISIONS) > _CONTENT_REVISION_PATH_LIMIT:
+            _CONTENT_REVISIONS.popitem(last=False)
+    return revision
+
 
 _LOCK = threading.Lock()
 _MONITORS: dict[str, _GenerationMonitor] = {}

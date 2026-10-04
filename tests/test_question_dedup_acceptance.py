@@ -78,6 +78,81 @@ def test_identity_ignores_printing_changes_but_keeps_mathematical_changes(tmp_pa
     )
 
 
+def test_identity_digests_persist_across_restart_and_refresh(tmp_path, monkeypatch):
+    import question_bank.services.duplicate_analysis_copy_service as identity
+    import question_bank.services.file_cache as file_cache
+
+    picture = Image.new("RGB", (64, 64), "white")
+    ImageDraw.Draw(picture).line(
+        [(10, 10), (50, 50)], fill="black", width=2
+    )
+    image = tmp_path / "question_bank" / "extracted_images" / "fig.png"
+    image.parent.mkdir(parents=True)
+    picture.save(image)
+    base = {
+        "question_text": "求图中三角形的面积",
+        "question_number": "1",
+        "image_paths": [str(image)],
+    }
+    rich = formula("1")
+
+    def key(question=base):
+        return identity.exact_question_key(
+            question, data_root=tmp_path, rich_content=rich
+        )
+
+    before = key()
+    file_cache.flush_identity_caches()
+    map_file = tmp_path / "cache" / "question_identity.cache"
+    assert map_file.is_file()
+
+    digests = []
+    original_digest = identity.cached_processed_image_digest
+    def counted_digest(*args, **kwargs):
+        digests.append(True)
+        return original_digest(*args, **kwargs)
+    monkeypatch.setattr(identity, "cached_processed_image_digest", counted_digest)
+    normalizations = []
+    original_norm = identity._normalize_formula_content
+    def counted_norm(*args, **kwargs):
+        normalizations.append(True)
+        return original_norm(*args, **kwargs)
+    monkeypatch.setattr(identity, "_normalize_formula_content", counted_norm)
+
+    def restart():
+        file_cache.clear_file_caches()
+        with file_cache._lock:
+            file_cache._DIGEST_MAPS.clear()
+
+    # 模拟重启：进程内缓存清空后，同一文件给出同样的身份键且不再计算。
+    restart()
+    assert key() == before
+    assert digests == [] and normalizations == []
+
+    # 图片字节变化改变摘要；同一新文件在重启后复用新摘要。
+    ImageDraw.Draw(picture).ellipse((20, 20, 44, 44), fill="red")
+    picture.save(image)
+    after_image = key()
+    assert after_image != before
+    assert digests == [True]
+    restart()
+    assert key() == after_image
+    assert digests == [True]
+
+    # 题干变化只重算公式项。
+    assert key(dict(base, question_text="求图中三角形的周长")) != after_image
+    assert normalizations == [True]
+    assert digests == [True]
+
+    # 计算代码版本不匹配时忽略旧文件，重新计算但身份结论不变。
+    restart()
+    monkeypatch.setattr(
+        identity, "_question_identity_version", lambda: ("TEST-other-version",)
+    )
+    assert key() == after_image
+    assert len(digests) == 2 and len(normalizations) == 2
+
+
 def test_duplicate_missing_analysis_never_enters_model_and_stays_pending_on_retry(
     tmp_path,
 ):

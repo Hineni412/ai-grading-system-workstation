@@ -11,6 +11,9 @@
 | 批注缓存与导出 | `user_data/cache/annotated_pages/`、`user_data/annotated/`、`user_data/reports/` | 用时生成的批注图、旧批注图、成绩表和报告 | 批注缓存有大小上限；旧图由教师明确清理；导出保留门槛见下 |
 | 本地学情快照 | `user_data/reports/.training_diagnosis/entries/`、`user_data/reports/.training_diagnosis/recent_requests.json` | 已有考试与训练记录计算出的逐生诊断、群体汇总、概览、图谱、含小组的完整诊断公开响应、班级组卷的考试证据与候选结果，以及后台刷新重放的最近请求记录，供重启后首次读取 | 每个请求一份 `.entry` 文件，目录最多 240 份且总量不超过 512 MiB，超出时删除最旧文件；完整公开响应压缩保存，前台返回完整 JSON；小组还核对全部设置、日期和题目资源元数据；版本不符或文件不可用时重算，不删除原始记录；早期单文件 `profiles.cache` 不再使用，可手动删除 |
 | 题库技能读取缓存 | `user_data/cache/question_bank_skills.cache` | 当前题库技能投影，供应用重启后恢复浏览统计 | 应用读取时保存，单文件上限 16 MiB；数据库、计算规则或素材状态不符时重新校验并计算，文件损坏或保存失败不阻断读取；不进入普通业务备份，不删除题库原件 |
+| 场次错因缓存 | `user_data/reports/.training_diagnosis/sessions/` | 每场考试已校验的学生错因记录，供诊断与组卷跨重启复用 | 每场一份 `.entry` 文件，最多 64 份且总量不超过 256 MiB，超出时删除最旧文件；任一输入变化即重算；可安全删除，删除后按原流程重新计算 |
+| 推荐候选池缓存 | `user_data/cache/recommendation_pools/` | 全库候选池快照，供重启后首个推荐复用 | 每份池一份 `.entry` 文件，最多 16 份且总量不超过 512 MiB；题库内容、技能素材或计算状态不符时重算；可安全删除 |
+| 题目身份摘要缓存 | `user_data/cache/question_identity.cache` | 题干图片像素摘要与公式规范化结果，供查重与推荐身份计算跨重启复用 | 单文件最多 20 万项，超出时删除最旧项；来源文件、计算代码或图像、公式库版本变化即失效；可安全删除 |
 | 临时与工具输出 | `user_data/temp/`、`user_data/outputs/` | 临时文件、基准和比较结果 | 达到保留门槛后只列为候选，不自动删除 |
 | 备份与归档 | `user_data/backups/`、`user_data/archives/` | 数据库快照、完整备份和维护工具生成的压缩包 | 按下述数量和时间门槛保留 |
 | 配置与密钥 | `user_data/config/`、`%LOCALAPPDATA%\AIGradingSystem\config\` | 上传配置、本机设置和模型 profile；`运行.bat` 默认把 API profile 放在前一个目录 | 视为敏感配置，不进入项目仓库或业务导出 |
