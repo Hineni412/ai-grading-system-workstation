@@ -101,8 +101,8 @@ def common_audit(paper, pool, needed, recent, resolver):
             plan = original.get("target", {}).get("difficulty_plan")
         diagnostic = native_new and any(e.get("target", {}).get("diagnostic_check") for e in own_entries)
         task_state = ("diagnostic" if diagnostic else
-                      "observed" if any(e["target"].get("observed_same_task") for e in new_matches) else
-                      "related" if any(e["target"].get("related_task_observed") for e in new_matches) else "unmeasured")
+                      "observed" if any(e.get("task_evidence_level") in {"observed_step", "observed_task"}
+                                        for e in new_matches) else "unmeasured")
         difficulty = float(candidate["difficulty"])
         low = plan.get("audit_minimum", plan["minimum"]) if plan else None
         high = plan.get("audit_maximum", plan["maximum"]) if plan else None

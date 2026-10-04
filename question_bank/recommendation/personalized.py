@@ -26,6 +26,7 @@ from question_bank.mastery.current import (
     CURRENT_MASTERY_PARAMETERS,
     CurrentMasteryCalculator,
 )
+from question_bank.mastery.model import sigmoid
 from question_bank.recommendation.recommendation_engine import text_similarity
 from question_bank.recommendation.target_matching import (
     MATCH_LABELS,
@@ -53,9 +54,14 @@ from question_bank.training_criteria import (
     usable_training_criterion,
 )
 
-ENGINE_VERSION = "personalized-recommendation-v26-handout-knowledge-order"
-GROUPING_VERSION = "chapter-skill-coverage-v7-coverage"
-GROUP_MIN_SIMILARITY = 0.58
+ENGINE_VERSION = "personalized-recommendation-v27-skill-mastery-model"
+GROUPING_VERSION = "chapter-skill-compatibility-v8-aim-window"
+GROUP_MIN_SHARED_RATIO = 0.5
+GROUP_MAX_AIM_GAP = 2.0
+TOO_EASY_SUCCESS = 0.85
+STARTER_SUCCESS = 0.80
+TARGET_SUCCESS = 0.70
+TOO_HARD_SUCCESS = 0.60
 # Read-only _source_snapshot results, keyed on the question-bank commit
 # generation + release + effective read constraints; pickle bytes with single-flight.
 _SOURCE_SNAPSHOT_CACHE = ResultCache(limit=8)
@@ -338,8 +344,7 @@ def _loss_practice_parts(ref: Mapping[str, Any], key: str) -> list[dict[str, Any
 def _task_evidence_level(parts: Sequence[Mapping[str, Any]]) -> str:
     if any(part.get("loss_point_ids") for part in parts):
         return "observed_step"
-    if any(_observable_operations(str(p.get("observable") or ""))
-           or p.get("response_mode") == "process_required" for p in parts):
+    if any(p.get("response_mode") in _RESPONSE_MODE_RANK for p in parts):
         return "observed_task"
     return "target_only"
 
@@ -425,22 +430,13 @@ def _practice_part_fits(part: Mapping[str, Any], tasks: Sequence[Mapping[str, An
     if not requirements:
         return True
     mode = part.get("response_mode")
-    text = str(part.get("part_observable") or part.get("observable") or "")
     objective_task = all(task.get("response_modes") == ["exact_objective"]
                          and task["code"] not in {"process_practice", "written_reasoning"}
                          for task in requirements)
     if mode not in {"short_answer_points", "process_required"} and not (mode == "exact_objective" and objective_task):
         return False
-    for task in requirements:
-        code = task["code"]
-        if code in {"process_practice", "written_reasoning"} and mode != "process_required":
-            return False
-        words = {"written_reasoning": ("依据", "理由", "证明", "推理", "说明", "定理", "垂直的定义"),
-                 "quantity_discrimination": ("量", "关系", "单位", "边", "长", "面积", "对应", "区别", "辨", "概念"),
-                 "calculation_check": ("计算", "运算", "代入", "平方", "根", "式", "等式", "求值", "验算", "²", "=")}.get(code)
-        if words and not any(word in text for word in words):
-            return False
-    return True
+    return all(task["code"] not in {"process_practice", "written_reasoning"} or mode == "process_required"
+               for task in requirements)
 
 
 def _practice_matches(candidate: Mapping[str, Any], key: str, tasks: Sequence[Mapping[str, Any]],
@@ -459,139 +455,24 @@ def _candidate_part_observable(candidate: Mapping[str, Any], part: Mapping[str, 
     return text
 
 
-@lru_cache(maxsize=8192)
-def _observable_operations(text: str) -> frozenset[str]:
-    """Conservative, local recognition of explicit operations in existing criteria.
-
-    Unknown operations have no cross-skill fallback. This does not add tags or
-    claim that a student's error has been classified.
-    """
-    result = set()
-    square = "²" in text or bool(re.search(r"\^\s*\{?\s*2\s*\}?|<sup>\s*2\s*</sup>", text, re.I))
-    area_relation = "正方形" in text and "面积" in text and bool(re.search(r"面积.{0,45}[＝=].{0,45}[+＋﹣-]", text))
-    if "勾股" in text and "逆定理" not in text and (square or "平方" in text or "列式" in text or "等式" in text or area_relation):
-        result.add("pythagorean_equation")
-    if "逆定理" in text and ("直角" in text or "垂直" in text):
-        result.add("pythagorean_converse")
-    for clause in re.split(r"[，,；;。\n]", text):
-        if re.search(r"(?:无需|不用|不必|不需要|不要求|没有).{0,20}(?:面积|分类|列式|直角|斜边|线段|边长)", clause):
-            continue
-        if "面积" in clause and re.search(r"关系|等式|守恒|相加|剪拼|拼接|表示|和差", clause):
-            result.add("area_relation")
-        if ("直角" in clause and re.search(r"位置|顶点|哪个角", clause)
-                and re.search(r"分类|分情况|分别|讨论|可能", clause)):
-            result.add("right_angle_position_cases")
-        if (re.search(r"线段|边长", clause) and re.search(r"和差|和与差|之和|之差|相加|相减", clause)
-                and re.search(r"列式|列方程|等式|表示|[=＝]", clause)):
-            result.add("segment_sum_difference_equation")
-    # Distinguish actual root operations; a chapter name or definition alone
-    # never identifies a calculation. Inverse and two-root tasks stay separate.
-    root_text = re.sub(r"<sup>\s*3\s*</sup>\s*√|\\sqrt\[3\]", "∛", text)
-    root_text = root_text.replace("\\sqrt", "√")
-    numeric_root = bool(re.search(r"[√∛]\s*[({]?\s*[−﹣-]?[0-9]", root_text))
-    if "算术平方根" in text and any(w in text for w in ("逆向", "反求", "被开方数的值")):
-        result.add("inverse_arithmetic_root")
-    elif ("算术平方根" in text and re.search(r"[0-9]+(?:\.[0-9]+)?的算术平方根", text)) or (
-            numeric_root and "∛" not in root_text and "平方根为±" not in text):
-        result.add("arithmetic_root_value")
-    if "平方根" in text and "算术平方根" not in text and (
-            "±" in text or "正负" in text or "所有平方等于" in text):
-        result.add("both_square_roots")
-        result.discard("arithmetic_root_value")
-    if ("立方根" in text and re.search(r"[0-9]+(?:\.[0-9]+)?的?立方根", text)) or re.search(r"∛\s*[({]?\s*[−﹣-]?[0-9]", root_text):
-        result.add("cube_root_value")
-    if any(w in text for w in ("完全平方数开方", "开得尽方的因数", "开尽方的因数")):
-        result.add("radical_simplification")
-    if "分母" in text and any(w in text for w in ("共轭", "分母有理化", "消去根号")):
-        result.add("denominator_rationalization")
-    if "代入" in text and "二次根式" in text and any(w in text for w in ("求值", "数值结果", "最终结果")):
-        result.add("radical_substitution")
-    return frozenset(result)
-
-
-@lru_cache(maxsize=8192)
-def _full_task_operations(text: str) -> frozenset[str]:
-    requirements = set(_observable_operations(text))
-    for clause in re.split(r"[，,；;。\n]", text):
-        if re.search(r"(?:无需|不用|不必|不需要|不要求|未|没有).*(?:展开|辅助线)", clause):
-            continue
-        if "展开" in clause and any(w in clause for w in ("侧面", "曲面", "圆柱", "矩形")):
-            requirements.add("surface_unfolding")
-        if re.search(r"(?:作|构造|添加|补作).{0,12}辅助线", clause):
-            requirements.add("auxiliary_construction")
-    return frozenset(requirements)
-
-
-def _operations_conflict(source: set[str], candidate: frozenset[str]) -> bool:
-    # These basic root tasks explicitly ask for different results. Other
-    # operations can be components of one another; disjoint names alone do
-    # not disprove a frozen same-point skill relation.
-    roots = {"both_square_roots", "arithmetic_root_value", "inverse_arithmetic_root", "cube_root_value"}
-    original, proposed = source & roots, candidate & roots
-    specific = {"area_relation", "right_angle_position_cases", "segment_sum_difference_equation"}
-    return bool((original and proposed and original.isdisjoint(proposed))
-                or (source & specific) - candidate)
+_RESPONSE_MODE_RANK = {"exact_objective": 0, "short_answer_points": 1, "process_required": 2}
 
 
 def _full_response_supported(part: Mapping[str, Any], tasks: Sequence[Mapping[str, Any]],
                              source_parts: Sequence[Mapping[str, Any]], *, solution: str = "") -> bool:
-    """A shared tag or unknown task never proves full original-response coverage."""
+    """Full coverage needs a candidate mode at least as demanding as every
+    known source mode; an unknown source mode never proves full coverage."""
     observed = str(part.get("part_observable") or part.get("observable") or "") + "；" + solution
     if not source_parts or not _practice_part_fits({**part, "part_observable": observed}, tasks):
         return False
-    known = [source for source in source_parts
-             if _full_task_operations(str(source.get("observable") or ""))]
-    if not known:
+    candidate_rank = _RESPONSE_MODE_RANK.get(str(part.get("response_mode") or ""))
+    if candidate_rank is None:
         return False
-    available = _full_task_operations(observed)
-    for source in known:
-        required = _full_task_operations(str(source.get("part_observable") or source.get("observable") or ""))
-        if not required <= available:
-            return False
-        original_mode = source.get("response_mode")
-        if original_mode == "process_required" and part.get("response_mode") != "process_required":
-            return False
-        if original_mode not in {"exact_objective", "short_answer_points", "process_required"}:
-            return False
-        if original_mode == "short_answer_points" and part.get("response_mode") not in {"short_answer_points", "process_required"}:
-            return False
-    return True
-
-
-def _task_matched_part(candidate: Mapping[str, Any], key: str, ref: Mapping[str, Any],
-                       tasks: Sequence[Mapping[str, Any]], allowed_parts: set[str], *,
-                       source_parts: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any] | None:
-    source = _loss_practice_parts(ref, key) if source_parts is None else source_parts
-    operations = set().union(*(_observable_operations(str(p.get("observable") or "")) for p in source)) if source else set()
-    # A frozen point can link a topic and an actual skill together. This is a
-    # local source relation, never a global topic-to-skill alias.
-    source_skills = {term for part in source for term in part.get("fine_terms", [])
-                     if len(part.get("evidence_points", [])) == 1
-                     and key.startswith("kp_") and str(term).startswith("sk_")}
-    if not operations and not source_skills:
-        return None
-    for candidate_key, observations in sorted(candidate.get("practice_observations_by_key", {}).items()):
-        for part in observations:
-            if str(part.get("part_id") or "") not in allowed_parts:
-                continue
-            observed = str(part.get("observable") or "")
-            # Objective rubrics often contain only "answer B". The existing
-            # worked solution can establish a component operation for a single
-            # part; never borrow the whole solution for a multipart question.
-            if len(candidate.get("target_facets", [])) == 1:
-                observed += "；" + str(candidate.get("solution_observable") or "")
-            same_point_skill = candidate_key in source_skills
-            candidate_operations = _observable_operations(observed)
-            if same_point_skill and _operations_conflict(operations, candidate_operations):
-                continue
-            if same_point_skill or (operations and operations <= candidate_operations):
-                return {"task_matched_key": candidate_key, "candidate_part_id": part["part_id"],
-                        "practice_role": "full_response" if _full_response_supported(part, tasks, source,
-                            solution=str(candidate.get("solution_observable") or "") if len(candidate.get("target_facets", [])) == 1 else "") else "step_practice",
-                        "task_operations": sorted(operations), "task_match_evidence": observed,
-                        "task_match_basis": "same_point_skill" if same_point_skill else "explicit_operations",
-                        "task_evidence_level": _task_evidence_level(source)}
-    return None
+    return all(
+        (source_rank := _RESPONSE_MODE_RANK.get(str(source.get("response_mode") or ""))) is not None
+        and candidate_rank >= source_rank
+        for source in source_parts
+    )
 
 
 def _is_core(entry: Mapping[str, Any]) -> bool:
@@ -632,7 +513,6 @@ def _unmeasured_entry(entry: Mapping[str, Any]) -> bool:
         and entry.get("practice_purpose") == "new"
         and entry.get("key") == entry.get("matched_key")
         and entry.get("key") in entry["candidate"].get("stable_keys", ())
-        and not target.get("observed_same_task")
         and not _effective_target_refs(target)
         and (target.get("diagnostic_check") and _coarse_loss(target)
              or not (target.get("evidence_count", 0) and target.get("value", target.get("mastery")) is not None)))
@@ -656,80 +536,9 @@ def _coarse_loss(target: Mapping[str, Any]) -> bool:
     return False
 
 
-@lru_cache(maxsize=8192)
-def _new_practice_operations(text: str) -> frozenset[str]:
-    operations = set(_observable_operations(text))
-    for clause in re.split(r"[；;。\n]", text):
-        if re.search(r"(?:无需|不用|不必|不需要|不要求|没有).{0,15}(?:构造|辅助线|垂线|绝对值|数轴)", clause):
-            continue
-        if re.search(r"(?:构造|作出|补作).{0,12}直角三角形|(?:作|过.{0,10}作).{0,6}垂线", clause):
-            operations.add("right_triangle_construction")
-        if "同类" in clause and "根式" in clause:
-            if re.search(r"识别|辨认|判断|判别|被开方数.{0,10}(?:相同|相等)", clause):
-                operations.add("like_radical_recognition")
-            if "合并" in clause:
-                operations.add("like_radical_combination")
-        if re.search(r"(?:去掉|去|化简|计算|处理).{0,8}绝对值|绝对值.{0,12}(?:等于|为|化为)", clause):
-            operations.add("absolute_value")
-        if "数轴" in clause and re.search(r"表示|对应|定位|点的坐标|点表示的数", clause):
-            operations.add("number_line_real")
-    return frozenset(operations)
-
-
-def _new_target_operation(name: str) -> str:
-    short = re.split(r"[|｜]", name)[-1]
-    for words, operation in (
-        (("构造直角三角形",), "right_triangle_construction"),
-        (("识别同类二次根式",), "like_radical_recognition"),
-        (("合并同类二次根式",), "like_radical_combination"),
-        (("按符号去绝对值",), "absolute_value"),
-        (("数轴上的点与实数对应",), "number_line_real"),
-        (("化简二次根式",), "radical_simplification"),
-        (("直角位置分类", "分类讨论直角位置"), "right_angle_position_cases"),
-        (("用线段的和差关系列式求长度", "线段和差列式", "线段和差", "边长和差列式"), "segment_sum_difference_equation"),
-    ):
-        if any(word in short for word in words):
-            return operation
-    return ""
-
-
-def _observed_new_practice_tasks(refs: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, set[str]]]:
-    """Read frozen, assessed demands without manufacturing missing skill scores."""
-    result: dict[str, dict[str, set[str]]] = {}
-    for ref in _effective_target_refs({"source_question_refs": refs}):
-        if not ref.get("task_evidence_version_matches"):
-            continue
-        assessment = ref.get("assessment") or {}
-        granularity = assessment.get("granularity")
-        if granularity not in {"part", "step"}:
-            continue
-        step_ids = {str(assessment.get("step_id") or ref.get("step_id") or "")}
-        step_ids.discard("")
-        if granularity == "step" and not step_ids:
-            step_ids = {str(p.get("point_id") or "") for p in assessment.get("point_observations", [])}
-            step_ids.discard("")
-        for key, parts in ref.get("practice_observations_by_key", {}).items():
-            chapter = "_".join(str(key).replace("sk_", "kp_", 1).split("_")[:6])
-            if not chapter.startswith("kp_bnu"):
-                continue
-            context = result.setdefault(chapter, {"observed": set(), "related": set()})
-            for part in parts:
-                if granularity == "part":
-                    text = str(part.get("part_observable") or part.get("observable") or "")
-                else:
-                    text = "；".join(str(point.get(field) or "") for point in part.get("evidence_points", [])
-                        if str(point.get("evidence_point_id") or "") in step_ids
-                        for field in ("target", "observable_evidence", "justification"))
-                operations = _new_practice_operations(text)
-                context["observed"].update(operations)
-                if "like_radical_combination" in operations:
-                    context["related"].add("like_radical_recognition")
-    return result
-
-
 def _difficulty_plan(ref: Mapping[str, Any], score_rate: object, cap: int,
                      target: Mapping[str, Any] | None = None,
-                     profile: Mapping[str, Any] | None = None, *, new_practice: bool = False) -> dict[str, Any]:
+                     profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """One skill history, including successes; an explainable range, not probability.
 
     Each distinct part response contributes once. Median demonstrated levels
@@ -762,6 +571,13 @@ def _difficulty_plan(ref: Mapping[str, Any], score_rate: object, cap: int,
     rows = observations((target or {}).get("source_question_refs", []) or ([ref] if ref else []))
     own_count = len(rows)
     correct_count = sum(rate >= 1.0 for _, rate in rows)
+    failed = [difficulty for difficulty, rate in rows if rate < 1.]
+    logit_mean = (target or {}).get("logit_mean")
+    slope = (target or {}).get("difficulty_slope")
+    has_student_evidence = any((point.get("evidence_count") or 0) > 0
+                               for point in (profile or {}).get("weak_points", []))
+    model_based = (isinstance(logit_mean, (int, float)) and math.isfinite(logit_mean)
+                   and isinstance(slope, (int, float)) and slope > 0 and has_student_evidence)
     basis = "同技能多次作答（含正确与失分）" if own_count > 1 else "同技能一次作答，证据较少"
     if not rows:
         key = str((target or {}).get("stable_key") or (target or {}).get("knowledge_key") or "")
@@ -771,6 +587,55 @@ def _difficulty_plan(ref: Mapping[str, Any], score_rate: object, cap: int,
                    for r in point.get("source_question_refs", [])]
         rows = observations(related)
         basis = "目标暂无直接证据，相关章节作答辅助" if rows else "目标暂无直接证据，整体表现辅助"
+    confidence = ("repeated" if own_count > 1 else "sparse" if own_count
+                  else "auxiliary" if rows or _rate(score_rate) is not None else "unknown")
+    if model_based:
+        scale = 1. - float(CURRENT_MASTERY_PARAMETERS.slip)
+        reference = float(CURRENT_MASTERY_PARAMETERS.reference_difficulty)
+        basis = ("按掌握度模型估计（本技能 %d 次有效作答）" % own_count if own_count > 1
+                 else "按掌握度模型估计（本技能仅 1 次有效作答，证据较少）" if own_count == 1
+                 else "本技能暂无直接作答，按所在节、章与整体表现估计")
+
+        def planned(probability: float) -> float:
+            odds = probability / scale
+            if odds <= 0:
+                return float("inf")
+            if odds >= 1:
+                return float("-inf")
+            return reference + (float(logit_mean) - math.log(odds / (1 - odds))) / float(slope)
+
+        minimum, starter = planned(TOO_EASY_SUCCESS), planned(STARTER_SUCCESS)
+        aim = consolidation = planned(TARGET_SUCCESS)
+        maximum = planned(TOO_HARD_SUCCESS)
+        if maximum < 2.0 and not failed:
+            minimum = starter = aim = consolidation = 1.
+            maximum = min(float(cap), 2.)
+            basis += "，预计最基础的题做对把握也不高，先安排最基础题"
+        elif failed:
+            failed_top = max(failed)
+            upper = min(float(cap), failed_top + 1)
+            low_top = min(upper, max(min(float(cap), 2.0), failed_top - 1))
+            maximum = min(upper, max(low_top, maximum))
+            aim = consolidation = min(maximum, max(1.0, aim, maximum - 1.5))
+            starter = max(1.0, aim - 1.0)
+            minimum = max(1.0, maximum - 3.0)
+            basis += "，补弱难度围绕本人该技能失分题难度上下 1 级"
+        else:
+            minimum = min(float(cap), max(1., minimum))
+            starter = min(float(cap), max(1., starter))
+            aim = consolidation = min(float(cap), max(1., aim))
+            maximum = min(float(cap), max(1., maximum))
+            if minimum > cap - 1:
+                minimum = max(1., cap - 1.)
+                starter = aim = consolidation = maximum = float(cap)
+                basis += "，已到出卷难度上限"
+        return {"level": "foundation" if aim < 3 else "developing" if aim < 6 else "secure",
+                "readiness": target.get("value", target.get("mastery")), "basis": basis,
+                "evidence_count": own_count, "correct_count": correct_count, "confidence": confidence,
+                "baseline_aim": aim, "model_based": True,
+                "logit_mean": float(logit_mean), "difficulty_slope": float(slope),
+                "minimum": minimum, "starter": starter,
+                "consolidation": consolidation, "maximum": maximum, "aim": aim}
     if rows:
         levels = [d if rate >= .75 else max(1., d-1) if rate >= .4 else max(1., d*.5) for d, rate in rows]
         aim = median(levels)
@@ -781,29 +646,12 @@ def _difficulty_plan(ref: Mapping[str, Any], score_rate: object, cap: int,
         readiness = rate
         if rate is None:
             basis = "暂无难度作答依据，仅提供范围内基础新练习"
-    baseline_aim = aim
-    if new_practice and own_count == 0 and rows:
-        rate = _rate(score_rate)
-        if rate is not None:
-            successful = sorted(d for d, result in rows if result >= 1.)
-            adjustment = min(.5, max(-.5, (rate - .75) * 2.))
-            reference = aim
-            if rate >= .8 and len(successful) >= 3 and len(successful) / len(rows) >= .8:
-                fraction = .5 + .4 * min(1., max(0., (rate - .65) / .25))
-                position = (len(successful) - 1) * fraction
-                left = int(position)
-                upper = successful[left] + (successful[min(left + 1, len(successful) - 1)] - successful[left]) * (position - left)
-                reference = max(aim, min(aim + 2., upper))
-                basis += "，结合多次完整达成的较难题与整体得分率浮动"
-            else:
-                basis += "，结合整体得分率小幅浮动"
-            aim = reference + adjustment
     aim = min(float(cap), max(1., aim))
     maximum = min(float(cap), aim + 1)
     return {"level": "foundation" if aim < 3 else "developing" if aim < 6 else "secure",
             "readiness": readiness, "basis": basis, "evidence_count": own_count, "correct_count": correct_count,
-            "confidence": "repeated" if own_count > 1 else "sparse" if own_count else "auxiliary" if rows or _rate(score_rate) is not None else "unknown",
-            "baseline_aim": min(float(cap), max(1., baseline_aim)),
+            "confidence": confidence,
+            "baseline_aim": aim,
             "minimum": max(1., aim-2), "starter": max(1., aim-1),
             "consolidation": aim, "maximum": maximum, "aim": aim}
 
@@ -883,19 +731,6 @@ def _practice_template(text: str) -> str:
     return re.sub(r"\s+", "", value)
 
 
-def _basic_judgement_family(candidate: Mapping[str, Any]) -> str:
-    if (standard_difficulty.difficulty_level(candidate.get("difficulty")) or 10) > 4:
-        return ""
-    text = str(candidate.get("question_text") or "")
-    if "勾股数" in text or ("直角三角形" in text and any(word in text for word in (
-            "判断", "判定", "构成", "组成", "摆成", "是直角", "为直角"))):
-        return "pythagorean_number_judgement"
-    tags = (candidate.get("similarity_profile") or {}).get("tags", [])
-    judgements = sorted(tag["tag_value"] for tag in tags if tag.get("tag_type") in {"method", "model"}
-                        and any(word in tag["tag_value"] for word in ("判定", "判断", "辨认")))
-    return _json([sorted(candidate.get("stable_keys", [])), judgements]) if judgements else ""
-
-
 @lru_cache(maxsize=8192)
 def _practice_literal(text: str) -> str:
     """Keep all numbers/options when comparing reprinted question and answer."""
@@ -932,32 +767,6 @@ def _task_response_form(candidate: Mapping[str, Any]) -> str:
     return ""
 
 
-@lru_cache(maxsize=8192)
-def _explicit_task_family(text: str) -> tuple[str, ...]:
-    # Identify an actual demand, not a skill name or a common theorem. Keep
-    # number domains distinct: noninteger side lengths are not Pythagorean triples.
-    text = re.sub(r"\[\[IMAGE:.*?\]\]|!\[[^\]]*\]\([^)]*\)|<img\b[^>]*>", "", text, flags=re.I)
-    if re.search(r"[（(][12][）)]", text):
-        return ()  # Never delete a multipart question for one shared operation.
-    if (any(word in text for word in ("勾股数", "直角三角形"))
-            and any(word in text for word in ("各组", "数组", "下列", "三边", "边长"))
-            and any(word in text for word in ("勾股数", "判断", "判定", "构成", "组成", "不能", "可以"))
-            and len(re.findall(r"\d+", text)) >= 3
-            and not re.search(r"\b[a-z]\b", text)
-            and not any(word in text for word in ("面积", "正方形", "四边形", "坐标", "证明", "辅助线", "展开", "最短", "路径"))):
-        domain = "noninteger" if re.search(r"√|\\sqrt|\\frac|\d+\.\d+|\d+/\d+", text) else "integer"
-        return ("pythagorean_number_judgement", domain)
-    stem = re.split(r"(?:^|\s)[A-D][.．、:：]", text, maxsplit=1)[0]
-    match = re.search(r"([−﹣+-]?\d+(?:\.\d+)?)\s*的(算术平方根|平方根|立方根)(?:是|为|等于|[=＝（(_＿。.?？\s]|$)", stem)
-    if (match and not any(word in stem for word in ("若", "已知", "比较", "大小", "满足", "平方根的", "立方根的"))
-            and not re.search(r"\b[a-z]\b", stem)
-            and not re.search(r"[+＋×÷]|[√∛]|\\sqrt|\\frac", stem)):
-        number = float(match[1].replace("−", "-").replace("﹣", "-"))
-        domain = "zero" if number == 0 else "positive" if number > 0 else "negative"
-        return ("direct_numeric_root", match[2], domain)
-    return ()
-
-
 def _single_practice_task(candidate: Mapping[str, Any]) -> bool:
     facets = candidate.get("target_facets", ())
     parts = {str(part.get("part_id")) for values in candidate.get("practice_observations_by_key", {}).values() for part in values}
@@ -965,26 +774,30 @@ def _single_practice_task(candidate: Mapping[str, Any]) -> bool:
 
 
 def paper_task_duplicates(candidate: Mapping[str, Any], selected: Sequence[Mapping[str, Any]]) -> list[int]:
-    """A paper quota, never candidate folding; use only clear task evidence."""
+    """A paper quota, never candidate folding; generic single-task evidence only."""
     form = _task_response_form(candidate)
     if not form or not _single_practice_task(candidate):
         return []
-    text = str(candidate.get("question_text") or "")
-    family = _explicit_task_family(text)
-    template = _practice_template(text)
+    template = _practice_template(str(candidate.get("question_text") or ""))
     solution = str(candidate.get("solution_template") or "")
-    operations = _full_task_operations(str(candidate.get("solution_observable") or ""))
+    skills = {str(key) for key in candidate.get("stable_keys", ()) if str(key).startswith("sk_")}
+    if not skills:
+        return []
     duplicates = []
     for other in selected:
         if form != _task_response_form(other) or not _single_practice_task(other):
             continue
-        same_family = family and family == _explicit_task_family(str(other.get("question_text") or ""))
-        same_worked_task = (operations and operations == _full_task_operations(str(other.get("solution_observable") or ""))
-            and candidate.get("image_identity", ()) == other.get("image_identity", ())
-            and len(solution) >= 40 and len(other.get("solution_template", "")) >= 40
-            and len(template) >= 12 and text_similarity(template, _practice_template(str(other.get("question_text") or ""))) >= .9
-            and text_similarity(solution, other["solution_template"]) >= .85)
-        if same_family or same_worked_task:
+        if candidate.get("image_identity", ()) != other.get("image_identity", ()):
+            continue
+        if skills != {str(key) for key in other.get("stable_keys", ()) if str(key).startswith("sk_")}:
+            continue
+        other_template = _practice_template(str(other.get("question_text") or ""))
+        other_solution = str(other.get("solution_template") or "")
+        if len(template) >= 8 and template == other_template:
+            duplicates.append(int(other["question_id"]))
+        elif (len(solution) >= 40 and len(other_solution) >= 40
+                and text_similarity(template, other_template) >= .9
+                and text_similarity(solution, other_solution) >= .85):
             duplicates.append(int(other["question_id"]))
     return duplicates
 
@@ -1081,20 +894,11 @@ def _practice_reason_summary(entries: Sequence[Mapping[str, Any]]) -> str:
         name = str(entry["candidate"].get("stable_names", {}).get(key)
                    or entry.get("target", {}).get("display_name") or key).split("｜")[-1].removeprefix("技能·")
         plan = entry.get("target", {}).get("difficulty_plan", {})
-        if entry.get("selection_kind") == "task_matched":
-            # The candidate's difficulty plan can belong to a different skill;
-            # counts in this explanation must describe the source need instead.
-            plan = _difficulty_plan({}, None, 8, entry.get("target", {}))
         count, correct = plan.get("evidence_count", 0), plan.get("correct_count", 0)
         purpose = entry.get("practice_purpose")
         if purpose == "new":
             detail = "暂无直接作答证据，按适合难度安排，不认定为薄弱"
             label = "新练习"
-            if entry.get("target", {}).get("observed_same_task"):
-                detail = "技能标签暂无直接记录，但原作答已考过同一操作；不作为未测目标补充"
-                label = "已有任务练习"
-            elif entry.get("target", {}).get("related_task_observed"):
-                detail += "；已有相关操作记录，降低新增优先级"
             if entry.get("target", {}).get("diagnostic_check"):
                 label = "诊断性新练习"
                 detail = "旧综合题只有总分，未定位具体失分环节；用可独立判定的短题确认，不认定为已知薄弱点"
@@ -1108,8 +912,14 @@ def _practice_reason_summary(entries: Sequence[Mapping[str, Any]]) -> str:
             mastery = _rate(entry.get("target", {}).get("value", entry.get("target", {}).get("mastery")))
             if purpose == "remediation" and mastery is not None:
                 detail += f"；当前掌握度{mastery:.0%}，掌握度提高后降低补弱优先级"
-        if entry.get("selection_kind") == "task_matched":
-            detail += "；本题练习对应任务环节，不表示同技能命中"
+        if plan.get("logit_mean") is not None and plan.get("difficulty_slope"):
+            candidate_difficulty = standard_difficulty.difficulty_level(entry["candidate"]["difficulty"])
+            if candidate_difficulty is not None:
+                scale = 1. - float(CURRENT_MASTERY_PARAMETERS.slip)
+                reference = float(CURRENT_MASTERY_PARAMETERS.reference_difficulty)
+                chance = scale * sigmoid(float(plan["logit_mean"]) - float(plan["difficulty_slope"])
+                                         * (float(candidate_difficulty) - reference))
+                detail += f"；按掌握度估计本题做对可能性约{round(100 * chance)}%"
         if purpose == "remediation":
             detail += {"observed_step": "；已定位失分判定点",
                        "observed_task": "；已知原题任务要求，未定位具体失分步骤",
@@ -1149,46 +959,8 @@ def _loss_need_id(entry: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _task_need_ids(entry: Mapping[str, Any], memo: dict | None = None) -> frozenset[tuple[str, ...]]:
-    """Deduplicate known demands across topic/skill links, retaining unknown targets."""
-    target = entry.get("target", {})
-    key = str(entry["key"])
-    # Candidate entries share one target's source list for this selection.
-    # Reuse its demands; mastery weights are still computed separately.
-    cache_key = (str(entry["student_id"]), key, id(target.get("source_question_refs", ())))
-    if memo is not None and cache_key in memo:
-        return memo[cache_key]
-    needs, unknown = set(), False
-    for ref in _loss_refs(target):
-        if not ref.get("task_evidence_version_matches"):
-            unknown = True
-            continue
-        parts = _loss_practice_parts(ref, key)
-        if not parts:
-            unknown = True
-        for part in parts:
-            text = str(part.get("observable") or "")
-            operations = _full_task_operations(text) | _new_practice_operations(text)
-            mode = str(part.get("response_mode") or "unknown")
-            if not operations or mode not in {"exact_objective", "short_answer_points", "process_required"}:
-                unknown = True
-                continue
-            facets = [p for p in ref.get("target_facets", ()) if p.get("part_id") == part.get("part_id")]
-            chapters = sorted({chapter for p in facets for chapter in p.get("chapter_keys", ())})
-            if not chapters:
-                unknown = True
-                continue  # Unknown context cannot merge different target meanings.
-            source = tuple(str(ref.get(field) or "") for field in ("activity_id", "session_id", "question_id", "bank_question_id"))
-            topics = sorted({topic for p in facets for topic in p.get("topic_keys", ())})
-            needs.add((str(entry["student_id"]), "task", *source,
-                       str((ref.get("assessment") or {}).get("evidence_version_id") or ""), str(part.get("part_id") or ""),
-                       ",".join(chapters), ",".join(topics), mode,
-                       ",".join(sorted(operations)), ",".join(_explicit_task_family(text))))
-    # A target match may practise only one of several historical demands.
-    # Retain one target need instead of crediting every old task to this question.
-    result = frozenset(needs if len(needs) == 1 and not unknown else {_loss_need_id(entry)})
-    if memo is not None:
-        memo[cache_key] = result
-    return result
+    """Needs are (student, skill); the signature keeps priorities/coverage unchanged."""
+    return frozenset({_loss_need_id(entry)})
 
 
 def _task_priorities(groups: Mapping[Any, Sequence[Mapping[str, Any]]], memo: dict | None = None) -> dict[tuple[str, ...], float]:
@@ -1245,6 +1017,21 @@ def _order_practice_items(items: list[dict[str, Any]], placements=None) -> None:
         item["item_order"] = order
 
 
+def _group_rank(group: Sequence[Mapping[str, Any]], needs: set,
+                priorities: Mapping[tuple[str, ...], float], *,
+                members: set = frozenset(), covered: set = frozenset(),
+                practiced: set = frozenset(), printed: Sequence[Mapping[str, Any]] = ()) -> tuple:
+    core = [e for e in group if _is_core(e) and e.get("practice_purpose", "remediation") == "remediation"]
+    beneficiaries = {e["student_id"] for e in core}
+    practice_needs = {(e['student_id'], e.get('matched_key', e['key'])) for e in group}
+    return (-len(beneficiaries - members), -sum(priorities.get(n, .5) for n in needs - covered),
+            -len(needs - covered), not bool(core),
+            repeated_consolidation_only(group), -len(practice_needs - practiced), _pattern_count(group[0]["candidate"], printed),
+            min(e.get("match_level", 4) for e in group),
+            median(e["distance"] for e in group), -max(e["preference"] for e in group),
+            group[0]["candidate"]["question_id"])
+
+
 def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: int,
                              config: PersonalizedRecommendationConfig | None = None, *,
                              selection_audit: list[dict[str, Any]] | None = None) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
@@ -1275,18 +1062,9 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
         usable = [group for group in groups.values() if _paper_diversity_allowed(group[0]["candidate"], printed, config)]
         if not usable:
             break
-        def rank(group):
-            core = [e for e in group if _is_core(e) and e.get("practice_purpose", "remediation") == "remediation"]
-            needs = group_needs[group[0]["candidate"].get("duplicate_identity") or group[0]["candidate"]["question_id"]]
-            beneficiaries = {e["student_id"] for e in core}
-            practice_needs = {(e['student_id'], e.get('matched_key', e['key'])) for e in group}
-            return (-len(beneficiaries - members), -sum(priorities.get(n, .5) for n in needs - covered),
-                    -len(needs - covered), not bool(core),
-                    repeated_consolidation_only(group), -len(practice_needs - practiced), _pattern_count(group[0]["candidate"], printed),
-                    min(e.get("match_level", 4) for e in group),
-                    median(e["distance"] for e in group), -max(e["preference"] for e in group),
-                    group[0]["candidate"]["question_id"])
-        group = min(usable, key=rank)
+        group = min(usable, key=lambda group: _group_rank(
+            group, group_needs[group[0]["candidate"].get("duplicate_identity") or group[0]["candidate"]["question_id"]],
+            priorities, members=members, covered=covered, practiced=practiced, printed=printed))
         best = min(group, key=lambda e: (not _is_core(e), e["distance"], -e["preference"], e["student_id"], e["key"]))
         selected.append((best, group))
         covered.update(group_needs[best["candidate"].get("duplicate_identity") or best["candidate"]["question_id"]])
@@ -1314,7 +1092,6 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
                     e.get("target", {}).get("difficulty_plan", {}).get("starter" if primer else "aim",
                         float(candidate["difficulty"]) - e["distance"]))) for e in group)
                 return (not any(e.get("target", {}).get("diagnostic_check") for e in group),
-                    all(e.get("target", {}).get("related_task_observed") for e in group),
                     -novel_fraction, -len(new_keys), _pattern_count(candidate, printed),
                     min(e.get("match_level", 4) for e in group), distance,
                     -max(e["preference"] for e in group), candidate["question_id"])
@@ -1456,10 +1233,8 @@ def _pattern_count(candidate: Mapping[str, Any], printed: Sequence[Mapping[str, 
         return {(t['tag_type'], t['tag_value']) for t in q.get('similarity_profile', {}).get('tags', ())
                 if t['tag_type'] in {'model', 'method'}}
     own = tags(candidate)
-    family = _basic_judgement_family(candidate)
     solution = candidate.get('solution_template', '')
-    return sum(bool((family and family == _basic_judgement_family(q))
-        or (own and own == tags(q))
+    return sum(bool((own and own == tags(q))
         or (len(solution) >= 40 and len(q.get('solution_template', '')) >= 40
             and text_similarity(solution, q['solution_template']) >= .85)) for q in printed)
 
@@ -1595,7 +1370,7 @@ class PersonalizedRecommendationModule:
         if not students:
             return {"version": GROUPING_VERSION, "groups": [], "unassigned": [], "selection": None,
                     "scope_keys": list(config.group_scope_keys), "warnings": ["当前范围没有学生。"],
-                    "summary": {"student_count": 0, "students_with_needs": 0,
+                    "summary": {"student_count": 0, "students_with_needs": 0, "unlinked_loss_count": 0,
                                 "grouped_student_count": 0, "group_count": 0}}
         normalized = _normalize_diagnosis(diagnosis)
         if graded_activities is None:
@@ -1621,7 +1396,13 @@ class PersonalizedRecommendationModule:
         needs = _group_needs(normalized, leaves, cap=config.difficulty_max)
         grouped_members = _chapter_group_members(needs)
         candidates, source_version, recent = (), "", {}
-        metadata = {}
+        metadata = self._source_practice_metadata(normalized)
+        links = self._links_for_metadata(metadata)
+        part_cache: dict = {}
+        unlinked_losses = sum(
+            _unlinked_loss_count(student, set(leaves),
+                                 lambda r: self._enrich_source_ref(r, metadata, links, part_cache))
+            for student in normalized["students"])
         # Read question bodies only after a usable group exists, and only for
         # the selected chapter. A coarse-only diagnosis needs no question pool.
         if grouped_members or member_ids:
@@ -1629,7 +1410,6 @@ class PersonalizedRecommendationModule:
                 excluded_question_ids=excluded, knowledge_keys=leaves, candidate_config=config,
             )
             recent = self._recent_question_ids(tuple(str(student["student_id"]) for student in students), diagnosis=normalized, graded_activities=graded_activities, recent_activity_count=config.recent_activity_count, purpose=config.purpose)
-            metadata = self._source_practice_metadata(normalized)
         evaluation_memo: dict = {}
         groups = [self._chapter_group_summary(
             diagnosis=normalized, members=members, targets=(), needs=needs, config=config,
@@ -1653,7 +1433,9 @@ class PersonalizedRecommendationModule:
                 "mastery_parameter_version": CURRENT_MASTERY_PARAMETERS.version,
                 "groups": groups, "selection": selection,
                 "summary": {"student_count": len(normalized["students"]),
-                            "students_with_needs": len(needs),
+                            "students_with_needs": sum(1 for student in normalized["students"]
+                                                       if needs.get(student["student_id"])),
+                            "unlinked_loss_count": unlinked_losses,
                             "grouped_student_count": len(covered),
                             "group_count": len(groups)},
                 "unassigned": [{"student_id": student["student_id"], "student_name": student["student_name"],
@@ -1676,7 +1458,8 @@ class PersonalizedRecommendationModule:
     ) -> dict[str, Any]:
         profiles = {student["student_id"]: student for student in diagnosis["students"]}
         union = set().union(*(set(needs[sid]) for sid in members)) if members else set()
-        keys = tuple(sorted(set(targets) if targets else union))
+        keys = tuple(sorted(key for key in (set(targets) if targets else union)
+                            if str(key).startswith("sk_")))
         issues = []
         warnings = []
         if len(members) < 2:
@@ -2476,21 +2259,10 @@ class PersonalizedRecommendationModule:
                 eligibility_cache[eligibility_key] = eligible
         entries, warnings = [], []
         scope = set(supplement_keys)
+        supplement_scope = {key for key in scope if str(key).startswith("sk_")}
         index = target_index(self.current_knowledge)
         links = source_links if source_links is not None else self._links_for_metadata(metadata)
         auxiliary_plans = {}
-        history_refs, history_seen = [], set()
-        if any(not _effective_target_refs(target) for target in targets):
-            for point in profile.get("weak_points", []):
-                for ref in _effective_target_refs(point):
-                    assessment = ref.get("assessment") or {}
-                    identity = (ref.get("session_id"), ref.get("question_id"), assessment.get("part_id"),
-                                assessment.get("granularity"), assessment.get("step_id"), ref.get("observation_id"))
-                    if identity in history_seen:
-                        continue
-                    history_seen.add(identity)
-                    history_refs.append(self._enrich_source_ref(ref, metadata, links, source_part_cache))
-        task_history = _observed_new_practice_tasks(history_refs)
         matched_ids, suitable_ids = set(), set()
         for target in targets:
             key = str(target.get("stable_key") or target.get("knowledge_key"))
@@ -2506,25 +2278,11 @@ class PersonalizedRecommendationModule:
             purpose = "remediation" if losses else "consolidation" if valid_refs else "new"
             diagnostic = not valid_refs and _coarse_loss(enriched)
             enriched["diagnostic_check"] = diagnostic
-            plan = _difficulty_plan({}, profile.get("score_rate"), config.difficulty_max, enriched, profile,
-                                    new_practice=purpose == "new")
-            node = self.current_knowledge.node(key)
-            operation = _new_target_operation(node.display_name if node else str(target.get("display_name") or ""))
-            chapter = "_".join(key.replace("sk_", "kp_", 1).split("_")[:6])
-            context = task_history.get(chapter, {})
-            enriched["observed_same_task"] = bool(operation and operation in context.get("observed", ()))
-            enriched["related_task_observed"] = bool(operation and operation in context.get("related", ()))
+            plan = _difficulty_plan({}, profile.get("score_rate"), config.difficulty_max, enriched, profile)
             tasks = _training_tasks(enriched)
             loss_parts = [(r, _loss_practice_parts(r, key)) for r in losses]
             source_practice_parts = [part for _, parts in loss_parts for part in parts]
             task_level = _task_evidence_level(source_practice_parts)
-            failed_operations = set().union(*(_observable_operations(str(part.get("observable") or ""))
-                for part in source_practice_parts if part.get("loss_point_ids")))
-            # A known special demand also bounds a direct tag match when the
-            # loss was attributed to the part rather than an individual point.
-            specific_operations = {"area_relation", "right_angle_position_cases", "segment_sum_difference_equation"}
-            failed_operations.update(set().union(*(_observable_operations(str(part.get("observable") or ""))
-                for part in source_practice_parts)) & specific_operations)
             preference_refs = [(r, _training_tasks({"stable_key": key, "source_question_refs": [r]}))
                                for r in losses or refs]
             sources = [part for r in (losses or refs) for part in r.get("target_facets", [])]
@@ -2555,43 +2313,23 @@ class PersonalizedRecommendationModule:
                             target_match_cache[match_key] = [dict(match) for match in matches]
                     if not matches:
                         continue
-                    direct_matches = [m for m in matches if (m["match_level"] <= 2 or not key.startswith("sk_"))
+                    direct_matches = [m for m in matches if m["match_level"] <= 2
                                       and key in candidate["stable_keys"]]
                     direct = bool(direct_matches)
                     match = min(direct_matches or matches, key=lambda m: (m["match_level"], m["candidate_part_id"]))
                 else:
                     direct = key in candidate["stable_keys"] and not any(r.get("assessment", {}).get("evidence_version_id") for r in refs)
-                    if not direct and not scope.intersection(candidate["stable_keys"]):
+                    if not direct and not supplement_scope.intersection(candidate["stable_keys"]):
                         continue
                     match = {"match_level": 3 if direct else 4,
                              "match_label": "同知识目标练习" if direct else MATCH_LABELS[4]}
-                task_match = None
                 if direct_only and not direct:
                     continue
-                if not direct and losses and sources:
-                    allowed_parts = {str(part["part_id"]) for part in candidate.get("target_facets", [])
-                                     if any(set(source.get("chapter_keys", [])) & set(part.get("chapter_keys", []))
-                                            and (not source.get("topic_keys") or set(source["topic_keys"]) <= set(part.get("topic_keys", [])))
-                                            for source in sources if key in source.get("direct_keys", []))}
-                    task_match = next((found for loss_ref, parts in loss_parts
-                        if (found := _task_matched_part(candidate, key, loss_ref, tasks, allowed_parts, source_parts=parts))), None)
-                    if task_match:
-                        match = {**match, **task_match, "match_label": "原判定点技能任务匹配"
-                                 if task_match.get("task_match_basis") == "same_point_skill"
-                                 else "原小问任务匹配（已有解题步骤）"}
-                if core_only and not direct and not task_match:
+                if core_only and not direct:
                     continue
                 if direct:
                     parts = [part for part in candidate.get("practice_observations_by_key", {}).get(key, [])
                              if not match.get("candidate_part_id") or part.get("part_id") == match["candidate_part_id"]]
-                    # A shared direct tag cannot override a contradictory root task.
-                    # Opaque criteria keep target practice, with no full-task claim.
-                    if purpose == "remediation" and failed_operations and parts:
-                        parts = [part for part in parts
-                            if not _operations_conflict(failed_operations,
-                                _observable_operations(_candidate_part_observable(candidate, part)))]
-                        if not parts:
-                            continue
                     if purpose == "remediation":
                         full_response = any(_full_response_supported(part, tasks, source_practice_parts,
                             solution=str(candidate.get("solution_observable") or "") if len(candidate.get("target_facets", [])) == 1 else "")
@@ -2608,28 +2346,30 @@ class PersonalizedRecommendationModule:
                             or candidate.get("criterion_point_count") != 1 or _is_written_question(candidate)
                             or not any(p.get("response_mode") in {"exact_objective", "short_answer_points"} for p in parts)):
                         continue
-                matched_key = key if direct else task_match["task_matched_key"] if task_match else _matched_key(candidate["stable_keys"], tuple(sorted(scope)))
+                matched_key = key if direct else _matched_key(candidate["stable_keys"], tuple(sorted(supplement_scope)))
                 matched_ids.add(candidate["question_id"])
                 candidate_plan = plan
-                if not direct and matched_key != key:
-                    auxiliary_key = (matched_key, purpose == "new")
-                    if auxiliary_key not in auxiliary_plans:
+                if not direct:
+                    if matched_key not in auxiliary_plans:
                         point = next((p for p in profile.get("weak_points", []) if p.get("knowledge_key") == matched_key), {})
-                        auxiliary_plans[auxiliary_key] = _difficulty_plan({}, profile.get("score_rate"), config.difficulty_max,
+                        auxiliary_plans[matched_key] = _difficulty_plan({}, profile.get("score_rate"), config.difficulty_max,
                             {**point, "stable_key": matched_key, "source_question_refs": [self._enrich_source_ref(r, metadata, links, source_part_cache)
-                             for r in point.get("source_question_refs", [])]}, profile, new_practice=purpose == "new")
-                    candidate_plan = auxiliary_plans[auxiliary_key]
+                             for r in point.get("source_question_refs", [])]}, profile)
+                    candidate_plan = auxiliary_plans[matched_key]
                 if not candidate_plan["minimum"] <= candidate["difficulty"] <= candidate_plan["maximum"]:
                     continue
                 suitable_ids.add(candidate["question_id"])
                 entries.append({"candidate": candidate, "key": key, **match,
                     "target": {**selected_target, "target_difficulty": candidate_plan["aim"], "difficulty_plan": candidate_plan},
-                    "matched_key": matched_key, "selection_kind": "direct" if direct else "task_matched" if task_match else "supplement",
-                    "practice_purpose": purpose if direct or task_match else "new",
+                    "matched_key": matched_key, "selection_kind": "direct" if direct else "supplement",
+                    "practice_purpose": purpose if direct else "new",
                     "difficulty_basis": candidate_plan["basis"], "evidence_confidence": candidate_plan["confidence"],
                     "student_id": str(profile["student_id"]), "distance": abs(candidate["difficulty"] - candidate_plan["aim"]),
                     "preference": max((_direct_preference(candidate, key, r, tasks=t) for r, t in preference_refs), default=0.),
                     "loss": max((1-float(r.get("score_awarded") or 0)/float(r["full_score"]) for r in losses), default=0.)})
+        unlinked = _unlinked_loss_count(profile, scope, lambda r: self._enrich_source_ref(r, metadata, links, source_part_cache))
+        if unlinked:
+            warnings.append(f"有 {unlinked} 处失分所在的判定点尚未关联技能，未计入补弱；可在题库“未挂技能”中补齐后重新生成。")
         if targets and not entries:
             warnings.append("当前目标没有同时符合范围、适合难度、近期原题和有效资料要求的题目。")
         if targets and len(suitable_ids) < config.question_count:
@@ -2669,10 +2409,11 @@ class PersonalizedRecommendationModule:
         excluded = set(excluded or ())
         if config.paper_mode == "shared":
             excluded.update(q for ids in recent.values() for q in ids)
-        explicit = set(config.target_keys or scope)
+        explicit = {key for key in (config.target_keys or scope) if str(key).startswith("sk_")}
         limited_personal = config.remediation_only and config.paper_mode == "individual" and bool(config.scope_keys or config.target_keys)
         if config.remediation_only and config.paper_mode == "individual" and config.scope_keys:
             explicit &= _scope_descendants(frozenset(config.scope_keys), self.current_knowledge)
+            explicit = {key for key in explicit if str(key).startswith("sk_")}
         metadata = source_metadata if source_metadata is not None else self._source_practice_metadata(diagnosis)
         # These computations depend on frozen source parts, not student scores.
         # Keep reuse within this evaluation so later source edits always reload.
@@ -2685,6 +2426,7 @@ class PersonalizedRecommendationModule:
         for profile in diagnosis["students"]:
             sid = str(profile["student_id"])
             known = {key: deepcopy(value) for (owner, key), value in mastery.items() if owner == sid
+                     and str(key).startswith("sk_")
                      and (key in explicit if limited_personal else not explicit or key in explicit)}
             for key in sorted(explicit):
                 node = self.current_knowledge.node(key)
@@ -3867,7 +3609,7 @@ def _group_needs(diagnosis: Mapping[str, Any], leaves: Sequence[str], *, cap: fl
         for point in student.get("weak_points", []):
             key = str(point.get("knowledge_key") or "")
             value = _rate(point.get("mastery"))
-            if key not in allowed or value is None or not point.get("evidence_count"):
+            if key not in allowed or not key.startswith("sk_") or value is None or not point.get("evidence_count"):
                 continue
             direct: dict[tuple[Any, ...], Mapping[str, Any]] = {}
             for ref in _loss_refs(point):
@@ -3900,6 +3642,41 @@ def _group_needs(diagnosis: Mapping[str, Any], leaves: Sequence[str], *, cap: fl
     return result
 
 
+def _unlinked_loss_count(profile: Mapping[str, Any], scope_keys: set | frozenset | None = None,
+                         enrich: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None) -> int:
+    """Distinct loss parts whose kp direct link has no direct skill link."""
+    result = set()
+    for point in profile.get("weak_points", []):
+        key = str(point.get("knowledge_key") or point.get("stable_key") or "")
+        if not key.startswith("kp_") or (scope_keys is not None and key not in scope_keys):
+            continue
+        for raw_ref in _loss_refs(point):
+            ref = enrich(raw_ref) if enrich is not None else raw_ref
+            part_id = str((ref.get("assessment") or {}).get("part_id") or "")
+            facets = [facet for facet in ref.get("target_facets", ())
+                      if str(facet.get("part_id") or "") == part_id
+                      and key in (facet.get("direct_keys") or ())]
+            if facets and all(not (facet.get("skill_keys") or ()) for facet in facets):
+                result.add((str(ref.get("session_id") or ""),
+                            str(ref.get("question_id") or ref.get("bank_question_id") or ""), part_id))
+    return len(result)
+
+
+def _students_compatible(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    """Shared skill needs with overlapping difficulty windows and bounded aim gap."""
+    common = set(left) & set(right)
+    if not common or len(common) / min(len(left), len(right)) < GROUP_MIN_SHARED_RATIO:
+        return False
+    for key in common:
+        plans = [item[key].get("difficulty_plan") or _difficulty_plan(
+            {}, item[key].get("score_rate"), 8, item[key]) for item in (left, right)]
+        if max(p["minimum"] for p in plans) > min(p["maximum"] for p in plans):
+            return False
+        if abs(plans[0]["aim"] - plans[1]["aim"]) > GROUP_MAX_AIM_GAP:
+            return False
+    return True
+
+
 def _group_similarity(left: Mapping[str, Any], right: Mapping[str, Any]) -> float:
     """Same-skill supported ranges determine homogeneity, not total exam marks."""
     common = set(left) & set(right)
@@ -3926,7 +3703,7 @@ def _chapter_group_members(needs: Mapping[str, Mapping[str, Any]]) -> list[tuple
     while remaining:
         members = [remaining.pop(0)]
         for sid in list(remaining):
-            if all(_group_similarity(needs[sid], needs[member]) >= GROUP_MIN_SIMILARITY for member in members):
+            if all(_students_compatible(needs[sid], needs[member]) for member in members):
                 members.append(sid)
                 remaining.remove(sid)
         if len(members) >= 2:
@@ -3935,7 +3712,7 @@ def _chapter_group_members(needs: Mapping[str, Mapping[str, Any]]) -> list[tuple
     for sid in sorted((sid for sid in needs if needs[sid] and sid not in assigned), key=lambda sid: (level(sid), sid)):
         candidates = [(-_group_similarity(needs[sid], needs[member]), -len(group), member, index)
                       for index, group in enumerate(groups) if len(group) >= 3
-                      for member in group if _group_similarity(needs[sid], needs[member]) >= GROUP_MIN_SIMILARITY]
+                      for member in group if _students_compatible(needs[sid], needs[member])]
         if candidates:
             _, _, member, index = min(candidates)
             groups[index] = tuple(value for value in groups[index] if value != member)
@@ -3990,7 +3767,7 @@ def _draft_item(
     fallback: bool = False,
     enrichment: bool = False,
     practice_tasks: Sequence[Mapping[str, Any]] | None = None,
-    selection_kind: Literal["direct", "task_matched", "supplement"] = "direct",
+    selection_kind: Literal["direct", "supplement"] = "direct",
     match_details: Mapping[str, Any] | None = None,
     practice_entries: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
@@ -4013,9 +3790,7 @@ def _draft_item(
         basis = "原题整体"
     aim = target.get("target_difficulty")
     reason = (f"补充练习：选定范围内的 {matched_name}，按本次能力范围安排，不作为此知识点薄弱的证据。"
-              if selection_kind == "supplement" else
-              f"对应错题 {question_number} 的原小问任务；本题已有解题步骤包含所需操作，技能标签为 {matched_name}，不声称同技能命中。"
-              if selection_kind == "task_matched" else f"对应错题 {question_number} 的知识点，练习 {matched_name}。")
+              if selection_kind == "supplement" else f"对应错题 {question_number} 的知识点，练习 {matched_name}。")
     purpose = (match_details or {}).get("practice_purpose", "remediation")
     if purpose == "new":
         reason = f"新练习：练习 {matched_name}，该目标暂无直接作答证据，不认定为薄弱。"
@@ -4024,15 +3799,14 @@ def _draft_item(
     if practice_entries:
         reason = _practice_reason_summary(practice_entries)
     if match_details and match_details.get("match_level"):
-        reason = (f"{match_details['match_label']}。" if selection_kind == "task_matched" else
-                  f"第{match_details['match_level']}级·{match_details['match_label']}。") + reason
+        reason = f"第{match_details['match_level']}级·{match_details['match_label']}。" + reason
     if original is not None and aim is not None:
         score_basis = (target.get("difficulty_plan") or {}).get("basis") or ("结合整体成绩与该题失分" if target.get("overall_score_rate") is not None else "整体成绩缺失，仅依据该题作答")
         reason += f" {basis}难度 {float(original):g} 级，{score_basis}，目标 {float(aim):.1f} 级；本题 {candidate['difficulty']} 级（受难度上限约束）。"
     elif aim is not None:
         reason += f" {(target.get('difficulty_plan') or {}).get('basis', '')}，目标难度 {float(aim):g} 级，本题 {candidate['difficulty']} 级。"
     tasks = [task for task in (practice_tasks if practice_tasks is not None else target.get("training_tasks") or [])
-             if selection_kind in {"direct", "task_matched"} and _practice_matches(
+             if selection_kind == "direct" and _practice_matches(
                  candidate, matched_key, [task], part_id=(match_details or {}).get("candidate_part_id"))]
     if tasks:
         reason += " 本题训练任务：" + "；".join(str(task["label"]) for task in tasks) + "。"
@@ -4051,7 +3825,7 @@ def _draft_item(
         "selection_kind": selection_kind,
         **({key: deepcopy(match_details[key]) for key in (
             "match_level", "match_label", "matched_topic_keys", "matched_skill_keys", "source_part_id", "candidate_part_id",
-            "task_matched_key", "task_operations", "task_match_evidence", "task_match_basis", "task_evidence_level", "practice_purpose", "difficulty_basis", "evidence_confidence"
+            "task_evidence_level", "practice_purpose", "difficulty_basis", "evidence_confidence"
         ) if key in match_details} if match_details else {}),
         "target": {
             key: deepcopy(value)
@@ -4349,7 +4123,7 @@ def _apply_diagnosis_mastery(
                 frozen_current = item.get("parameter_version") == CURRENT_MASTERY_PARAMETERS.version
                 snapshot[(student_id, key)] = {
                     **existing,
-                    **({field: item.get(field) for field in ("interval_low", "interval_high", "tier", "observation_count", "full_correct_count", "recent_trend", "parameter_version")} if frozen_current and not has_current else {}),
+                    **({field: item.get(field) for field in ("interval_low", "interval_high", "tier", "observation_count", "full_correct_count", "recent_trend", "parameter_version", "logit_mean", "logit_sd", "difficulty_slope")} if frozen_current and not has_current else {}),
                     "stable_key": key,
                     "display_name": (
                         node.display_name if node is not None else display or key

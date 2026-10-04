@@ -2,7 +2,10 @@
 
 from copy import deepcopy
 from question_bank.recommendation.personalized import PersonalizedRecommendationModule
-from tests.training.test_personalized_recommendation import _approve_synthetic_criteria
+from tests.training.test_personalized_recommendation import (
+    _approve_synthetic_criteria,
+    _install_release_with_skills,
+)
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,11 +22,18 @@ from question_bank.database.schema import connect, initialize_database
 from question_bank.services.assembly_workspace_service import AssemblyWorkspaceService
 from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
-from tests.current_knowledge_support import install_current_knowledge
 
 VOLUME = load_curriculum_catalog()["volumes"][2]
 CHAPTER = VOLUME["chapters"][0]
 POINTS = CHAPTER["sections"][0]["knowledge_points"][:3]
+CHAPTER_TWO_POINT = VOLUME["chapters"][1]["sections"][0]["knowledge_points"][0]
+SKILLS = tuple(f"sk_assistant_{index}" for index in range(3))
+SK_CHAPTER_TWO = "sk_assistant_chapter_two"
+SKILL_PARENTS = {
+    **{skill: point["id"] for skill, point in zip(SKILLS, POINTS)},
+    SK_CHAPTER_TWO: CHAPTER_TWO_POINT["id"],
+}
+SKILL_NAMES = {skill: f"合成技能 {skill}" for skill in SKILL_PARENTS}
 
 
 def test_class_weaknesses_use_backend_tiers_for_attention_and_order():
@@ -33,10 +43,10 @@ def test_class_weaknesses_use_backend_tiers_for_attention_and_order():
         student["weak_points"][0]["tier"] = "unsteady" if index < 3 else "stable"
         student["weak_points"][1]["tier"] = "weak" if index == 0 else "insufficient"
     points = class_weaknesses(profile, volume_id=VOLUME["id"], chapter_id=CHAPTER["id"])
-    assert points[0]["knowledge_key"] == POINTS[1]["id"]
+    assert points[0]["knowledge_key"] == SKILLS[1]
     assert points[0]["weak_tier_student_count"] == 1
     assert points[0]["weak_student_count"] == 1
-    first = next(point for point in points if point["knowledge_key"] == POINTS[0]["id"])
+    first = next(point for point in points if point["knowledge_key"] == SKILLS[0])
     assert first["weak_student_count"] == 3
     assert first["evidence_student_count"] == 4
 
@@ -46,8 +56,8 @@ def diagnosis():
     for index in range(4):
         points = [
             {
-                "knowledge_key": point["id"],
-                "knowledge_point": point["display_name"],
+                "knowledge_key": skill,
+                "knowledge_point": SKILL_NAMES[skill],
                 "mastery": (0.7 if target == 0 else 0.2)
                 if index < (3 if target == 0 else 1)
                 else 0.9,
@@ -55,7 +65,7 @@ def diagnosis():
                 "score_sum": 3,
                 "full_score_sum": 5,
             }
-            for target, point in enumerate(POINTS[:2])
+            for target, skill in enumerate(SKILLS[:2])
         ]
         students.append(
             {
@@ -76,14 +86,22 @@ def diagnosis():
     return {
         "students": students,
         "exam_scope": {"session_ids": [7, 8]},
+        "knowledge_associations": [
+            {
+                "skill_key": skill,
+                "topic_key": point["id"],
+                "same_part_question_count": 1,
+            }
+            for skill, point in zip(SKILLS, POINTS)
+        ],
         "group_weak_points": [
             {
-                "knowledge_key": p["id"],
-                "knowledge_point": p["display_name"],
+                "knowledge_key": skill,
+                "knowledge_point": SKILL_NAMES[skill],
                 "mastery": m,
                 "evidence_count": 8,
             }
-            for p, m in zip(POINTS[:2], (0.75, 0.725))
+            for skill, m in zip(SKILLS[:2], (0.75, 0.725))
         ],
     }
 
@@ -92,7 +110,11 @@ def diagnosis():
 def client_and_source(tmp_path, request):
     db_path = tmp_path / "bank.db"
     initialize_database(db_path)
-    install_current_knowledge(db_path, taxonomy_revision=getattr(request, 'param', 4))
+    _install_release_with_skills(
+        db_path,
+        revision=getattr(request, 'param', 4),
+        skill_parents=SKILL_PARENTS,
+    )
     with connect(db_path) as conn:
         conn.execute(
             "INSERT INTO papers(id,title,grade,semester,textbook_version,import_status) VALUES(1,'合成候选题库',?,?,?,'success')",
@@ -115,7 +137,7 @@ def client_and_source(tmp_path, request):
             "围绕购物折扣问题",
         ]
         for qid in range(1, 34):
-            point = POINTS[0 if qid <= 27 else 1]
+            skill = SKILLS[0 if qid <= 27 else 1]
             # qid%7 and qid%5 give every question a unique stem+context pair.
             text = f"{stems[qid % len(stems)]}，{contexts[qid % len(contexts)]}，写出完整解答过程。"
             if qid == 33:
@@ -126,7 +148,7 @@ def client_and_source(tmp_path, request):
             )
             conn.execute(
                 "INSERT INTO question_tags(question_id,tag_type,tag_value) VALUES(?,'knowledge_point',?)",
-                (qid, point["display_name"]),
+                (qid, skill),
             )
     _approve_synthetic_criteria(db_path, tmp_path, tuple(range(1, 34)))
     module = PersonalizedRecommendationModule(db_path=db_path, data_root=tmp_path)
@@ -238,7 +260,7 @@ def test_api_returns_full_balanced_pool_without_creating_or_replacing_a_paper(
     assert result["selected_target_keys"] == [
         first
     ]  # Single-select default focuses the weakest point.
-    expected_ids = set(range(2, 28)) if first == POINTS[0]["id"] else set(range(28, 33))
+    expected_ids = set(range(2, 28)) if first == SKILLS[0] else set(range(28, 33))
     assert result["candidate_total"] == len(expected_ids)
     ids = [candidate["question_id"] for candidate in result["candidates"]]
     assert set(ids) == expected_ids
@@ -247,14 +269,14 @@ def test_api_returns_full_balanced_pool_without_creating_or_replacing_a_paper(
     assert len(set(ids)) == len(ids)
     both = client.post(
         "/api/question-assembly/assistant/candidates",
-        json=request(target_keys=[point["id"] for point in POINTS[:2]]),
+        json=request(target_keys=list(SKILLS[:2])),
     ).json()
     both_ids = [candidate["question_id"] for candidate in both["candidates"]]
     assert len(both_ids) == 31
     tagged_second = [
         candidate
         for candidate in both["candidates"]
-        if POINTS[1]["id"] in candidate["direct_target_keys"]
+        if SKILLS[1] in candidate["direct_target_keys"]
     ]
     assert (
         tagged_second and all(c["new_practice_student_count"] >= 1 for c in tagged_second)
@@ -336,7 +358,7 @@ def test_teacher_practice_rules_persist_and_rejected_save_keeps_previous_draft(c
     assert compatible.practice_rules['purpose'] == 'handout'
     current = client.get('/api/question-assembly/draft').json()
     payload = {key: value for key, value in current.items() if key not in {'revision', 'rule_violations'}}
-    payload.update(practice_rules=True, basket_ids=[2,3], order_ids=[2,3])
+    payload.update(practice_rules=True, basket_ids=[2,28], order_ids=[2,28])
     saved = client.put('/api/question-assembly/draft', json={'expected_revision': current['revision'], 'draft': payload})
     assert saved.status_code == 200, saved.text
     assert client.get('/api/question-assembly/draft').json()['practice_rules']['max_questions_per_skill'] == 1
@@ -356,10 +378,10 @@ def test_class_comprehensive_scope_keeps_previous_chapters_and_focused_scope_sta
         json=request(chapter_id='', teaching_progress_chapter_id=second['id']))
     assert comprehensive.status_code == 200
     keys = {point['knowledge_key'] for point in comprehensive.json()['weaknesses']}
-    assert POINTS[0]['id'] in keys
-    assert second['sections'][0]['knowledge_points'][0]['id'] in keys
+    assert SKILLS[0] in keys
+    assert SK_CHAPTER_TWO in keys
     focused = client.post('/api/question-assembly/assistant/candidates', json=request()).json()
-    assert second['sections'][0]['knowledge_points'][0]['id'] not in {p['knowledge_key'] for p in focused['weaknesses']}
+    assert SK_CHAPTER_TWO not in {p['knowledge_key'] for p in focused['weaknesses']}
 
 
 def test_teacher_cannot_save_second_question_of_same_skill(client_and_source, monkeypatch):
@@ -477,33 +499,33 @@ def test_switching_targets_reuses_source_read_but_reloads_changed_constraints_an
         return original(**kwargs)
     monkeypatch.setattr(module, '_source_snapshot_uncached', counted)
     _SOURCE_SNAPSHOT_CACHE.clear()
-    first = client.post('/api/question-assembly/assistant/candidates', json=request(target_keys=[POINTS[0]['id']]))
-    second = client.post('/api/question-assembly/assistant/candidates', json=request(target_keys=[POINTS[1]['id']]))
+    first = client.post('/api/question-assembly/assistant/candidates', json=request(target_keys=[SKILLS[0]]))
+    second = client.post('/api/question-assembly/assistant/candidates', json=request(target_keys=[SKILLS[1]]))
     assert first.status_code == second.status_code == 200
     assert len(reads) == 1
     assert {c['question_id'] for c in first.json()['candidates']} == set(range(2, 28))
     assert {c['question_id'] for c in second.json()['candidates']} == set(range(28, 33))
-    typed = client.post('/api/question-assembly/assistant/candidates', json=request(target_keys=[POINTS[1]['id']], question_type='选择题'))
+    typed = client.post('/api/question-assembly/assistant/candidates', json=request(target_keys=[SKILLS[1]], question_type='选择题'))
     assert typed.json() == second.json()
     assert len(reads) == 1
-    narrower = client.post('/api/question-assembly/assistant/candidates', json=request(target_keys=[POINTS[0]['id']], difficulty_max=2))
+    narrower = client.post('/api/question-assembly/assistant/candidates', json=request(target_keys=[SKILLS[0]], difficulty_max=2))
     assert narrower.status_code == 200
     assert narrower.json()['candidates'] == []
     assert len(reads) == 2
     with connect(module.db_path) as conn:
         conn.execute('UPDATE questions SET is_deleted=1 WHERE id=2')
-    changed = client.post('/api/question-assembly/assistant/candidates', json=request(target_keys=[POINTS[0]['id']]))
+    changed = client.post('/api/question-assembly/assistant/candidates', json=request(target_keys=[SKILLS[0]]))
     assert changed.status_code == 200
     assert {c['question_id'] for c in changed.json()['candidates']} == set(range(3, 28))
     assert len(reads) == 3
     later_chapter = VOLUME['chapters'][1]
     expanded = client.post('/api/question-assembly/assistant/candidates', json=request(
-        chapter_id='', teaching_progress_chapter_id=later_chapter['id'], target_keys=[POINTS[0]['id']]))
+        chapter_id='', teaching_progress_chapter_id=later_chapter['id'], target_keys=[SKILLS[0]]))
     assert expanded.status_code == 200
     assert len(reads) == 4
-    assert later_chapter['sections'][0]['knowledge_points'][0]['id'] in {
+    assert SK_CHAPTER_TWO in {
         point['knowledge_key'] for point in expanded.json()['weaknesses']}
     _SOURCE_SNAPSHOT_CACHE.clear()
     rechecked = client.post('/api/question-assembly/assistant/candidates', json=request(
-        chapter_id='', teaching_progress_chapter_id=later_chapter['id'], target_keys=[POINTS[0]['id']]))
+        chapter_id='', teaching_progress_chapter_id=later_chapter['id'], target_keys=[SKILLS[0]]))
     assert rechecked.json() == expanded.json()

@@ -301,7 +301,7 @@ class DiagnosisProfileService:
         as_of = as_of or datetime.now(UTC)
         exam_scope = self.mastery_exam_scope(profile.get("exam_scope") or {})
         key = (*self.tag_profile_cache_key(scope={"mode": "all", "use_historical_fallback": False}, exam_scope=exam_scope),
-            "mastery-v3-population", parameters.version, str(week_of(as_of)), ",".join(sorted(exclude_training_evidence_ids)))
+            "mastery-v3-population-slope", parameters.version, str(week_of(as_of)), ",".join(sorted(exclude_training_evidence_ids)))
         cached = _claim_or_wait_tag_profile(key)
         if cached is not None:
             if getattr(self, "persist_snapshots", False) and not exclude_training_evidence_ids:
@@ -947,7 +947,7 @@ class DiagnosisProfileService:
                     student["weak_points"].append(point)
                     points[stable_key] = point
                 metadata = current.to_dict()
-                point.update({field: metadata[field] for field in ("interval_low", "interval_high", "tier", "observation_count", "full_correct_count", "recent_trend", "parameter_version", "tier_counts")})
+                point.update({field: metadata[field] for field in ("interval_low", "interval_high", "tier", "observation_count", "full_correct_count", "recent_trend", "parameter_version", "tier_counts", "logit_mean", "logit_sd", "difficulty_slope")})
                 point.update({
                     "mastery": float(current.value) if current.value is not None else None,
                     "evidence_count": int(current.evidence_count),

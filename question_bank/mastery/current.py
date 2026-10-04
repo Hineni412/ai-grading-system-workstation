@@ -57,6 +57,9 @@ class CurrentMastery:
     full_correct_count: int = 0
     recent_trend: str | None = None
     tier_counts: tuple[tuple[str, int], ...] = ()
+    logit_mean: float | None = None
+    logit_sd: float | None = None
+    difficulty_slope: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -76,6 +79,9 @@ class CurrentMastery:
             "full_correct_count": self.full_correct_count,
             "recent_trend": self.recent_trend,
             "tier_counts": dict(self.tier_counts),
+            "logit_mean": self.logit_mean,
+            "logit_sd": self.logit_sd,
+            "difficulty_slope": self.difficulty_slope,
         }
 
 
@@ -166,12 +172,15 @@ class CurrentMasteryCalculator:
                     trend = f"最近 {streak} 次全对 ↑"
             exam_activities = {(o["activity"], o.get("qkey", o["item"])) for o in records if o["source"] == "exam"}
             training_activities = {(o["activity"], o["item"][:2]) for o in records if o["source"] == "training"}
-            calculated = model.result(student, key, week_of(as_of))
+            week = week_of(as_of)
+            logit_mean, logit_sd = model.mastery(student, key, week)
+            calculated = model.result(student, key, week)
             if not records:
                 calculated["tier"] = "insufficient"
             result[student, key] = CurrentMastery(stable_key=key, display_name=node.display_name,
                 status="available", evidence_count=len(records), effective_weight=float(len(records)),
                 parameter_version=parameter_version, exam_evidence_count=len(exam_activities),
+                logit_mean=logit_mean, logit_sd=logit_sd, difficulty_slope=model.difficulty_slope,
                 training_evidence_count=len(training_activities), direct_evidence_count=len(direct.get((student, key), [])),
                 precise_training_evidence_count=sum(o["source"] == "training" for o in direct.get((student, key), [])),
                 observation_count=len(records), full_correct_count=sum(o["y"] == 1 for o in records),

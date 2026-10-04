@@ -70,6 +70,9 @@ class CurrentGraphMastery(_GraphModel):
     effective_weight: float = Field(default=0.0, ge=0.0)
     exam_evidence_count: int = Field(default=0, ge=0)
     training_evidence_count: int = Field(default=0, ge=0)
+    logit_mean: float | None = None
+    logit_sd: float | None = None
+    difficulty_slope: float | None = None
 
 
 class CurrentGraphNode(_GraphModel):

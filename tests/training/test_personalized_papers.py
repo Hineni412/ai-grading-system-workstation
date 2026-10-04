@@ -33,10 +33,11 @@ from question_bank.recommendation.personalized import (
 from question_bank.training_submissions.module import _read_page_identity
 from tests.training.test_personalized_recommendation import (
     NOW,
+    SK_PARENTS,
     _diagnosis as _base_diagnosis,
+    _install_release_with_skills,
     _seed_recommendation_sources,
 )
-from tests.current_knowledge_support import install_current_knowledge
 
 
 def _diagnosis(**kwargs):
@@ -104,7 +105,7 @@ def paper_workspace(
     db_path = tmp_path / "question_bank.db"
     data_root = tmp_path / "data"
     initialize_database(db_path)
-    install_current_knowledge(db_path)
+    _install_release_with_skills(db_path, revision=3, skill_parents=SK_PARENTS)
     _seed_recommendation_sources(db_path, data_root)
     recommendation = PersonalizedRecommendationModule(
         db_path=db_path,

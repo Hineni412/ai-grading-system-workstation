@@ -71,15 +71,6 @@ def test_reason_includes_each_matched_need_without_duplicate_evidence():
     assert '已多次答对，降低巩固优先级' in text
     assert '暂无直接作答证据' in text
     assert _member_entries(entries)['A']['key'] == 'sk_b'
-    # A task match may use another skill's difficulty plan. Its explanation
-    # must still count the original skill's observations, not that plan.
-    task = deepcopy(entries[0])
-    task['selection_kind'] = 'task_matched'
-    task['target']['source_question_refs'] = [observation(1, 5, 0)]
-    task['practice_purpose'] = 'remediation'
-    text = _practice_reason_summary([task])
-    assert '1次有效作答中0次满分、1次失分' in text
-    assert '不表示同技能命中' in text
 
 
 def test_saved_draft_and_export_source_check_use_the_preview_scope(direct_module, monkeypatch):
@@ -149,27 +140,34 @@ def test_same_skill_candidates_are_not_automatically_folded_as_similar():
     triangle = {'question_id': 22, 'question_type': '选择题', 'difficulty': 2,
         'stable_keys': ['sk_TEST_triangle'], 'question_text': '下列各组边长中，不能组成直角三角形的是 A. 5,12,13 B. 3,4,6'}
     assert paper_similarity_allowed(triangle, [triplets])  # keep both as candidates
-    assert paper_task_duplicates(triangle, [triplets]) == [21]
-    assert not _paper_diversity_allowed(triangle, [triplets])
+    # Different skill sets never form a task duplicate, even on similar tasks.
+    assert paper_task_duplicates(triangle, [triplets]) == []
+    assert _paper_diversity_allowed(triangle, [triplets])
     assert _paper_diversity_allowed({**triangle, 'question_type': '解答题'}, [triplets])
     assert _paper_diversity_allowed({**triangle, 'question_text': '下列各组边长中，不能组成直角三角形的是 A. √2,√3,√5'}, [triplets])
     assert _paper_diversity_allowed({**triangle, 'question_text': '如图，利用正方形面积关系求直角三角形边长'}, [triplets])
     assert _paper_diversity_allowed({**triangle, 'target_facets': [{'part_id': 'one'}, {'part_id': 'two'}]}, [triplets])
-    root = {'question_id': 23, 'question_type': '填空题', 'stable_keys': ['sk_TEST_root'], 'question_text': '36的算术平方根是____'}
-    variant = {**root, 'question_id': 24, 'stable_keys': ['sk_TEST_other_root'], 'question_text': '49的算术平方根是____'}
+    root = {'question_id': 23, 'question_type': '填空题', 'stable_keys': ['sk_TEST_root'], 'question_text': '16的算术平方根是____'}
+    variant = {**root, 'question_id': 24, 'question_text': '25的算术平方根是____'}
+    # Same skill, single part and the same response form fold a numeric variant.
+    assert paper_task_duplicates(variant, [root]) == [23]
     assert not _paper_diversity_allowed(variant, [root])
-    assert _paper_diversity_allowed({**variant, 'question_text': '49的平方根是____'}, [root])
-    assert _paper_diversity_allowed({**variant, 'question_text': '若一个数的算术平方根是7，则这个数是____'}, [root])
-    assert _paper_diversity_allowed({**variant, 'question_text': '0的算术平方根是____'}, [root])
+    assert paper_task_duplicates({**variant, 'question_text': '√2的算术平方根是____'}, [root]) == []
+    other_skill = {**variant, 'stable_keys': ['sk_TEST_other_root']}
+    assert paper_task_duplicates(other_skill, [root]) == []
+    assert _paper_diversity_allowed(other_skill, [root])
+    assert _paper_diversity_allowed({**other_skill, 'question_text': '25的平方根是____'}, [root])
+    assert _paper_diversity_allowed({**other_skill, 'question_text': '若一个数的算术平方根是5，则这个数是____'}, [root])
+    assert _paper_diversity_allowed({**other_skill, 'question_text': '0的算术平方根是____'}, [root])
     def entry(q):
         return {'candidate': q, 'student_id': 'TEST-A', 'key': q['stable_keys'][0], 'selection_kind': 'direct',
             'practice_purpose': 'remediation', 'distance': abs(q['difficulty']-2), 'preference': 0, 'match_level': 1}
     chosen = _choose_practice_entries([entry(triplets), entry({**triangle, 'difficulty': 3})], 10)
-    assert [e['candidate']['question_id'] for e, _ in chosen] == [21]
+    assert [e['candidate']['question_id'] for e, _ in chosen] == [21, 22]
     from question_bank.recommendation.personalized import PersonalizedRecommendationModule
     module = object.__new__(PersonalizedRecommendationModule)
     module._source_snapshot = lambda **_: ((triplets, triangle), (), {})
-    assert [violation['code'] for violation in module.paper_rule_violations([21, 22])] == ['task']
+    assert module.paper_rule_violations([21, 22]) == []
 
 
 def test_repeated_successes_survive_one_trap_and_duplicate_tags():
