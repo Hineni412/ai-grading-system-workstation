@@ -4,7 +4,6 @@ export type WorkspaceRouteId =
   | 'students'
   | 'question-bank'
   | 'question-assembly'
-  | 'authoring'
   | 'training'
   | 'knowledge-overview'
   | 'knowledge-graph'
@@ -105,16 +104,6 @@ export const questionAssemblyRouteDefinition = {
   title: '组卷工作台',
   description: '从题库选择试题，整理顺序和分节，并导出练习试卷',
   breadcrumb: '组卷工作台',
-  icon: 'assembly',
-} as const satisfies WorkspaceRouteDefinition
-
-export const authoringRouteDefinition = {
-  id: 'authoring',
-  label: '命题练习',
-  path: '/authoring',
-  title: '命题练习',
-  description: '拆解好题、按任务卡改编，保存每一版命题',
-  breadcrumb: '命题练习',
   icon: 'assembly',
 } as const satisfies WorkspaceRouteDefinition
 
@@ -240,7 +229,6 @@ export const navigationGroups: readonly WorkspaceNavigationGroup[] = [
     items: [
       questionBankRouteDefinition,
       questionAssemblyRouteDefinition,
-      authoringRouteDefinition,
     ],
   },
   {

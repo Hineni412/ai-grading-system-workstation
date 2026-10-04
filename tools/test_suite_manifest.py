@@ -144,7 +144,6 @@ DATABASE_BASELINE_TEST_PATHS = frozenset(
         "tests/test_assembly_assistant.py",
         "tests/test_assembly_export_job.py",
         "tests/test_atomic_major_retry.py",
-        "tests/test_authoring_practice.py",
         "tests/test_backend_intake_followups.py",
         "tests/test_class_analysis.py",
         "tests/test_config_duplicate_decisions.py",

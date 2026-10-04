@@ -3,10 +3,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from question_bank.authoring import AuthoringService
+from typing import Any
 
 from fastapi import Depends, Request
 
@@ -242,13 +239,6 @@ def get_question_bank_write_service() -> QuestionBankWriteService:
 
 def get_training_criterion_module() -> TrainingCriterionModule:
     return TrainingCriterionModule(get_path_manager().qb_db_path)
-
-
-def get_authoring_service() -> AuthoringService:
-    from question_bank.authoring import AuthoringService
-
-    paths = get_path_manager()
-    return AuthoringService(paths.qb_db_path, data_root=paths.data_root)
 
 
 def get_taxonomy_review_service() -> TaxonomyReviewService:

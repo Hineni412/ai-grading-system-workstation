@@ -50,7 +50,6 @@ watch(expanded, async (value, wasExpanded) => {
         <AppButton variant="secondary" :disabled="assembly.saveState === 'saving'" @click="basket">{{ inBasket ? '已在试卷篮' : '加入试卷篮' }}</AppButton>
         <details class="qb-card-menu"><summary aria-label="题目更多操作">⋯</summary><div>
           <button type="button" @click="emit('similar', question)">相似题</button>
-          <RouterLink :to="{ path: '/authoring', query: { source: question.id } }">用这道题练习</RouterLink>
           <a v-if="preview?.url" :href="preview.url" target="_blank" rel="noopener">打开原卷</a>
           <button type="button" @click="remove">移出题库</button>
         </div></details>

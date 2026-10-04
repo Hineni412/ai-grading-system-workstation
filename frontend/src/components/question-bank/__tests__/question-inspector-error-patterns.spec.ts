@@ -1,7 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { createApp, nextTick } from 'vue'
 import { createPinia } from 'pinia'
-import { createMemoryHistory, createRouter } from 'vue-router'
 
 import QuestionAnnotationPanel from '../QuestionAnnotationPanel.vue'
 import { questionBankApi, type QuestionBankDetail, type QuestionErrorPattern } from '../../../api/question-bank'
@@ -67,15 +66,10 @@ function detail(patterns: QuestionBankDetail['error_patterns'], options: string[
 it('shows each wrong option, edits and rejects the shared question pattern, then handles other and empty questions', async () => {
   vi.spyOn(questionBankApi, 'getCurriculum').mockRejectedValue(new Error('not needed'))
   const pinia = createPinia()
-  const router = createRouter({
-    history: createMemoryHistory(),
-    routes: [{ path: '/authoring', component: { template: '<div />' } }],
-  })
   const host = document.createElement('div')
   document.body.append(host)
   const app = createApp(QuestionAnnotationPanel)
   app.use(pinia)
-  app.use(router)
   app.mount(host)
   apps.push(app)
   const bank = useQuestionBankStore(pinia)
@@ -159,15 +153,10 @@ it('shows each wrong option, edits and rejects the shared question pattern, then
 it('renders all linked skills with their derivation source', async () => {
   vi.spyOn(questionBankApi, 'getCurriculum').mockRejectedValue(new Error('not needed'))
   const pinia = createPinia()
-  const router = createRouter({
-    history: createMemoryHistory(),
-    routes: [{ path: '/authoring', component: { template: '<div />' } }],
-  })
   const host = document.createElement('div')
   document.body.append(host)
   const app = createApp(QuestionAnnotationPanel)
   app.use(pinia)
-  app.use(router)
   app.mount(host)
   apps.push(app)
   const bank = useQuestionBankStore(pinia)

@@ -360,7 +360,6 @@ async function save(): Promise<void> {
           <details class="qb-answer-section"><summary>答案与解析</summary><QuestionContentRenderer :blocks="store.detail.rich_content.answer_blocks" :fallback="store.detail.answer_text" empty-label="暂未录入答案或解析" image-alt="答案配图" media-mode="detail" /></details>
           <div class="qb-expanded-links">
             <template v-for="preview in store.detail.previews" :key="preview.preview_type"><a v-if="preview.url" class="qb-link" :href="preview.url" target="_blank" rel="noopener">{{ preview.preview_type === 'question' ? '打开原卷' : '打开答案原卷' }}<span v-if="preview.page_number"> · 第 {{ preview.page_number }} 页</span></a></template>
-            <RouterLink class="qb-link" :to="{ path: '/authoring', query: { source: store.detail.id } }">用这道题练习</RouterLink>
             <slot name="similar" />
           </div>
         </div>
