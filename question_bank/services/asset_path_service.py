@@ -6,6 +6,7 @@ from pathlib import Path
 from question_bank.database.paths import project_data_root
 from question_bank.services.file_cache import (
     cached_asset_resolution,
+    is_within,
     memoized_resolve,
     resolve_existing_file,
 )
@@ -57,7 +58,7 @@ def _resolve_asset_path(
         )
     resolved_stored = _resolve_existing_file(stored) if text and stored.is_absolute() else None
     if resolved_stored is not None:
-        if resolved_stored == root or resolved_stored.is_relative_to(root):
+        if is_within(resolved_stored, root):
             return resolved_stored, "direct", (stored,)
         raise UncontrolledQuestionBankAssetPathError(
             "question-bank asset path is outside the data root"
@@ -85,7 +86,7 @@ def _resolve_asset_path(
     if filename:
         for subdir in subdirs:
             search_root = (root / subdir).resolve(strict=False)
-            if search_root != root and not search_root.is_relative_to(root):
+            if not is_within(search_root, root):
                 raise UncontrolledQuestionBankAssetPathError(
                     "question-bank search root is outside the data root"
                 )
@@ -111,9 +112,7 @@ def _unique_existing_files(values: Iterable[Path], *, root: Path) -> list[Path]:
     unique: set[Path] = set()
     for value in values:
         resolved = _resolve_existing_file(value)
-        if resolved is not None and (
-            resolved == root or resolved.is_relative_to(root)
-        ):
+        if resolved is not None and is_within(resolved, root):
             unique.add(resolved)
     return sorted(unique, key=lambda item: str(item).lower())
 

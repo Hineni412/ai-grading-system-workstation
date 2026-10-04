@@ -29,7 +29,38 @@ _parsed_cache: OrderedDict[tuple[str, int, int], Any] = OrderedDict()
 _digest_cache: OrderedDict[tuple[Any, ...], str] = OrderedDict()
 _resolve_cache: OrderedDict[tuple[Any, ...], Path] = OrderedDict()
 _resolved_path_cache: OrderedDict[str, Path] = OrderedDict()
+_ROOT_MARKER_CACHE: OrderedDict[str, tuple[str, str]] = OrderedDict()
 _RESOLVED_PATH_LIMIT = 128
+
+
+def _root_marker(root: Path) -> tuple[str, str]:
+    """Normcased root text plus a child-matching prefix, memoized per root."""
+    raw = os.fspath(root)
+    with _lock:
+        marker = _ROOT_MARKER_CACHE.get(raw)
+        if marker is not None:
+            _ROOT_MARKER_CACHE.move_to_end(raw)
+            return marker
+    base = os.path.normcase(raw)
+    marker = (base, base if base.endswith(os.sep) else base + os.sep)
+    with _lock:
+        _ROOT_MARKER_CACHE[raw] = marker
+        _ROOT_MARKER_CACHE.move_to_end(raw)
+        _trim(_ROOT_MARKER_CACHE, _RESOLVED_PATH_LIMIT)
+    return marker
+
+
+def is_within(path: Path, root: Path) -> bool:
+    """Fast ``path == root or path.is_relative_to(root)`` for absolute paths.
+
+    ``is_relative_to`` re-splits and normcases both operands on every call;
+    comparing the normcased strings once per root keeps identical results —
+    the root must match the path either fully or as a separator-terminated
+    prefix, which is exactly what part-wise containment means.
+    """
+    base, prefix = _root_marker(root)
+    text = os.path.normcase(os.fspath(path))
+    return text == base or text.startswith(prefix)
 
 
 def _file_read_identity(path: Path) -> tuple | None:
@@ -83,7 +114,7 @@ class _BatchFileReads:
         self.directories: dict[Path, tuple[Path, dict[str, os.stat_result]] | None] = {}
 
     def lookup(self, path: Path) -> tuple[Path, os.stat_result | None] | None:
-        if not path.is_absolute() or not path.is_relative_to(self.root):
+        if not path.is_absolute() or not is_within(path, self.root):
             return None
         parent = path.parent
         with self.lock:
@@ -393,6 +424,7 @@ def clear_file_caches() -> None:
         _digest_cache.clear()
         _resolve_cache.clear()
         _resolved_path_cache.clear()
+        _ROOT_MARKER_CACHE.clear()
         _bytes_used = 0
 
 
@@ -402,5 +434,6 @@ __all__ = [
     "cached_parsed_file",
     "cached_processed_image_digest",
     "clear_file_caches",
+    "is_within",
     "memoized_resolve",
 ]

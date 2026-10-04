@@ -9,6 +9,7 @@ function mountFilter(min = 1, max = 8, ceiling = 10, compact = false) {
   const host = document.createElement('div')
   document.body.append(host)
   const updates: Array<[string, number]> = []
+  let changes = 0
   const app = createApp({
     setup() {
       return () => h(DifficultyRangeFilter, {
@@ -18,12 +19,13 @@ function mountFilter(min = 1, max = 8, ceiling = 10, compact = false) {
         compact,
         'onUpdate:min': (value: number) => updates.push(['min', value]),
         'onUpdate:max': (value: number) => updates.push(['max', value]),
+        onChange: () => { changes += 1 },
       })
     },
   })
   app.mount(host)
   apps.push(app)
-  return { host, updates }
+  return { host, updates, changes: () => changes }
 }
 
 afterEach(() => {
@@ -32,15 +34,37 @@ afterEach(() => {
 })
 
 describe('difficulty range filter', () => {
-  it('shows the supplied compact bounds and caps selectable practice difficulty', async () => {
-    const { host, updates } = mountFilter(1, 8, 8, true)
-    const lower = host.querySelector<HTMLSelectElement>('[aria-label="最低难度"]')!
-    const upper = host.querySelector<HTMLSelectElement>('[aria-label="最高难度"]')!
-    expect(lower.value).toBe('1')
-    expect(upper.value).toBe('8')
-    expect([...upper.options].some(option => Number(option.value) > 8)).toBe(false)
-    upper.value = '6.5'; upper.dispatchEvent(new Event('change', { bubbles: true })); await nextTick()
-    expect(updates).toContainEqual(['max', 6.5])
+  it('summarizes the compact range and quick-picks a band', async () => {
+    const { host, updates, changes } = mountFilter(1, 10, 10, true)
+    const popover = host.querySelector<HTMLDetailsElement>('.qb-difficulty-filter')!
+    expect(popover.querySelector('summary')!.textContent).toContain('难度 1–10')
+    popover.open = true
+    await nextTick()
+    const band = [...popover.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.includes('中档提升'))!
+    expect(band.getAttribute('aria-pressed')).toBe('false')
+    band.click()
+    expect(updates).toEqual([['min', 4.5], ['max', 6.4]])
+    expect(changes()).toBe(1)
+  })
+
+  it('names an exact band in the compact summary and toggles it back to the full range', async () => {
+    const { host, updates, changes } = mountFilter(4.5, 6.4, 10, true)
+    const popover = host.querySelector<HTMLDetailsElement>('.qb-difficulty-filter')!
+    expect(popover.querySelector('summary')!.textContent).toContain('难度 · 中档提升')
+    popover.open = true
+    await nextTick()
+    const band = [...popover.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.includes('中档提升'))!
+    expect(band.getAttribute('aria-pressed')).toBe('true')
+    band.click()
+    expect(updates).toEqual([['min', 1], ['max', 10]])
+    expect(changes()).toBe(1)
+  })
+
+  it('shows the raw bounds in the compact summary when no band matches', () => {
+    const { host } = mountFilter(2.5, 6.5, 10, true)
+    expect(host.querySelector('.qb-difficulty-filter summary')!.textContent).toContain('难度 2.5–6.5')
   })
 
   it('caps practice at eight while retaining the bank ten-level scale', async () => {

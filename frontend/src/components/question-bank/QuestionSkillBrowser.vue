@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { knowledgeLeafLabel, questionBankApi, type QuestionBankFacets, type QuestionBankFilters, type QuestionBankSort, type QuestionSkillIndex, type QuestionSkillEntry, type QuestionTopicEntry } from '../../api/question-bank'
 import { trainingApi, type TrainingOverviewNode } from '../../api/training'
@@ -18,9 +18,12 @@ const bank = useQuestionBankStore()
 const scope = useCurriculumScopeStore()
 const route = useRoute()
 const router = useRouter()
-const railOpen = ref(false)
 const skillRailOpen = ref(false)
 const layout = ref<HTMLElement | null>(null)
+const sectionSwitcher = ref<HTMLDetailsElement | null>(null)
+const sourcePopover = ref<HTMLDetailsElement | null>(null)
+const sourceSearchInput = ref<HTMLInputElement | null>(null)
+const sourceSearch = ref('')
 const sort = ref('curriculum')
 const facetTab = ref<'abilities' | 'methods' | 'models' | 'thoughts' | 'specialTypes'>('abilities')
 const overview = ref<TrainingOverviewNode[]>([])
@@ -78,10 +81,21 @@ const tagRows = computed(() => {
 })
 const tagScopeLabel = computed(() => tagScope.value === 'section' ? (selectedSection.value?.label ?? '整个学期') : tagScope.value === 'chapter' ? (currentChapter.value?.label ?? '整个学期') : '整个学期')
 const tagHeading = computed(() => tagValue.value ? `${tagDimension.value.label}：${tagRowLabel(tagValue.value)}` : '请选择标签')
-const middleHeading = computed(() => mode.value === 'tag' ? tagScopeLabel.value : selectedSection.value?.label || (selectedChapter.value ? `${selectedChapter.value.label} · 跨小节` : '技能与知识主题'))
-const middleSubline = computed(() => mode.value === 'tag' ? `${tagItems.value.length} 个标签` : `${entries.value.length} 项${mode.value === 'skill' ? '技能' : '主题'} · ${selectedSection.value?.question_count ?? selectedChapter.value?.question_count ?? 0} 题`)
+const middleSubline = computed(() => mode.value === 'tag' ? `${tagScopeLabel.value} · ${tagItems.value.length} 个标签` : `${entries.value.length} 项${mode.value === 'skill' ? '技能' : '主题'} · ${selectedSection.value?.question_count ?? selectedChapter.value?.question_count ?? 0} 题`)
 const tagContext = computed(() => mode.value === 'tag' ? `${tagDimension.value.key}|${tagValue.value}|${tagScope.value}|${sectionId.value}` : '')
 const duplicateCount = computed(() => bank.questions.reduce((count, question) => count + (question.duplicate_members?.length ?? 0), 0))
+const unlinkedCount = computed(() => (props.index?.unlinked.no_usable_evidence ?? 0) + (props.index?.unlinked.no_skill_link ?? 0))
+const switcherChapterLabel = computed(() => currentChapter.value?.label ?? scope.selectedVolume?.label ?? '教材章节')
+const switcherLabel = computed(() => selectedSection.value?.label || (selectedChapter.value ? `${selectedChapter.value.label} · 跨小节` : '教材章节'))
+const sourcePapers = computed(() => bank.papers.filter(paper => paper.curriculum_volume_id === scope.selectedVolumeId))
+const filteredSourcePapers = computed(() => {
+  const needle = sourceSearch.value.trim().toLowerCase()
+  return needle ? sourcePapers.value.filter(paper => (paper.title ?? '').toLowerCase().includes(needle)) : sourcePapers.value
+})
+const sourceSummary = computed(() => {
+  if (!filters.paper) return '来源：全部'
+  return sourcePapers.value.find(paper => String(paper.id) === filters.paper)?.title ?? '来源：全部'
+})
 let facetController: AbortController | null = null
 let timer: ReturnType<typeof setTimeout> | undefined
 function requestFilters(): QuestionBankFilters {
@@ -126,6 +140,43 @@ function selectSection(id: string) {
   void bank.selectQuestion(null)
   void router.replace({ query: mode.value === 'tag' ? tagQuery({ section: id }) : { tab: 'skill', section: id } })
 }
+function chooseSection(id: string) {
+  selectSection(id)
+  const popover = sectionSwitcher.value
+  if (popover) {
+    popover.open = false
+    popover.querySelector<HTMLElement>('summary')?.focus()
+  }
+}
+function onSourceToggle() {
+  if (!sourcePopover.value?.open) return
+  if (bank.papersState === 'idle') void bank.loadPapers()
+  void nextTick(() => sourceSearchInput.value?.focus())
+}
+function chooseSource(id: string) {
+  filters.paper = id
+  sourceSearch.value = ''
+  const popover = sourcePopover.value
+  if (popover) {
+    popover.open = false
+    popover.querySelector<HTMLElement>('summary')?.focus()
+  }
+}
+function closePopoverOnPointerDown(event: PointerEvent) {
+  const target = event.target
+  if (!(target instanceof Node)) return
+  for (const popover of layout.value?.querySelectorAll<HTMLDetailsElement>('details.qb-label-popover[open]') ?? []) {
+    if (!popover.contains(target)) popover.open = false
+  }
+}
+function closePopoverOnEscape(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || event.defaultPrevented) return
+  const popover = layout.value?.querySelector<HTMLDetailsElement>('details.qb-label-popover[open]')
+  if (!popover) return
+  popover.open = false
+  popover.querySelector<HTMLElement>('summary')?.focus()
+  event.preventDefault()
+}
 function selectEntry(entry: Entry) {
   void bank.selectQuestion(null)
   void router.replace({ query: { tab: 'skill', section: sectionId.value, ...('filter_value' in entry ? { topic: entry.stable_key } : { skill: entry.stable_key }) } })
@@ -164,30 +215,34 @@ async function loadMastery() {
   } catch { if (!controller.signal.aborted) { overview.value = []; sort.value = 'curriculum' } }
 }
 watch(() => scope.selectedVolumeId, () => { overviewController?.abort(); overview.value = []; sort.value = 'curriculum'; clearTimeout(idleTimer); idleTimer = setTimeout(() => void loadMastery(), 1500) }, { immediate: true })
-onBeforeUnmount(() => { clearTimeout(timer); clearTimeout(idleTimer); facetController?.abort(); overviewController?.abort() })
+onMounted(() => {
+  document.addEventListener('pointerdown', closePopoverOnPointerDown)
+  document.addEventListener('keydown', closePopoverOnEscape)
+})
+onBeforeUnmount(() => {
+  clearTimeout(timer); clearTimeout(idleTimer); facetController?.abort(); overviewController?.abort()
+  document.removeEventListener('pointerdown', closePopoverOnPointerDown)
+  document.removeEventListener('keydown', closePopoverOnEscape)
+})
 </script>
 
 <template>
   <StatePanel v-if="!scope.selectedVolumeId" kind="empty" title="请在侧栏选择教学学期" description="" />
   <StatePanel v-else-if="loading && !index" kind="loading" title="正在读取技能与题目…" description="" />
   <StatePanel v-else-if="error && !index" kind="error" :title="error" description="" retry-label="重新读取" @retry="emit('retry')" />
-  <div v-else ref="layout" class="qb-skill-layout" :class="{ 'is-reading': bank.selectedQuestionId, 'is-narrow': bank.selectedQuestionId && !railOpen, 'is-chapter-open': railOpen, 'is-skill-narrow': bank.selectedQuestionId && !skillRailOpen, 'is-unlinked': unlinked }">
-    <aside class="qb-chapter-pane qb-browse-pane">
-      <div class="qb-chapter-rail"><AppIconButton class="qb-rail-toggle" :label="railOpen ? '收窄教材章节' : '展开教材章节'" icon="book-open" variant="secondary" :aria-expanded="railOpen" @click="railOpen = !railOpen" /><span v-if="!railOpen">{{ selectedSection?.label || selectedChapter?.label || '教材章节' }}</span><button v-if="!railOpen" class="qb-rail-unlinked" :aria-label="`未挂技能 · ${(index?.unlinked.no_usable_evidence ?? 0) + (index?.unlinked.no_skill_link ?? 0)} 题`" title="未挂技能" @click="router.replace({ query: { tab: 'skill', skill: 'unlinked' } })">⚠<small>{{ (index?.unlinked.no_usable_evidence ?? 0) + (index?.unlinked.no_skill_link ?? 0) }}</small></button></div>
-      <div class="qb-chapter-content">
-        <header><h2>教材章节</h2><span class="qb-volume-badge">{{ scope.selectedVolume?.label }}</span></header>
-        <div class="qb-chapter-tree"><details v-for="chapter in index?.chapters ?? []" :key="chapter.id" :open="chapter.id === currentChapter?.id">
-          <summary><span>{{ chapter.label }}</span><small>{{ chapter.question_count }}</small></summary>
-          <button v-for="section in chapter.sections" :key="section.id" class="qb-tree-row" :class="{ 'is-active': section.id === sectionId }" :aria-pressed="section.id === sectionId" @click="selectSection(section.id)">{{ section.label }} <small>{{ section.question_count }}</small></button>
-          <button v-if="chapter.cross_section_skills.length" class="qb-tree-row" :class="{ 'is-active': chapter.id === sectionId }" @click="selectSection(chapter.id)">跨小节 <small>{{ chapter.cross_section_skills.length }} 项技能</small></button>
-        </details></div>
-        <button class="qb-unlinked" @click="router.replace({ query: { tab: 'skill', skill: 'unlinked' } })"><span>⚠ 未挂技能</span><strong>{{ (index?.unlinked.no_usable_evidence ?? 0) + (index?.unlinked.no_skill_link ?? 0) }} 题</strong></button>
-      </div>
-    </aside>
-    <aside v-if="!unlinked" class="qb-skill-pane qb-browse-pane">
-      <div v-if="bank.selectedQuestionId" class="qb-skill-rail qb-chapter-rail"><AppIconButton class="qb-rail-toggle" :label="skillRailOpen ? '收窄技能列表' : '展开技能列表'" icon="book-open" variant="secondary" :aria-expanded="skillRailOpen" @click="skillRailOpen = !skillRailOpen" /><span v-if="!skillRailOpen">{{ mode === 'tag' ? '标签' : mode === 'skill' ? '技能' : '知识主题' }}</span></div>
-      <header class="qb-skill-list-heading"><h2>{{ middleHeading }}</h2><p>{{ middleSubline }}</p>
-        <div class="qb-skill-list-tools"><div class="qb-segment"><button :aria-pressed="mode === 'skill'" :class="{ 'is-active': mode === 'skill' }" @click="setMode('skill')">按技能</button><button :aria-pressed="mode === 'topic'" :class="{ 'is-active': mode === 'topic' }" @click="setMode('topic')">按知识主题</button><button :aria-pressed="mode === 'tag'" :class="{ 'is-active': mode === 'tag' }" @click="setMode('tag')">按标签</button></div><select v-if="mode !== 'tag'" v-model="sort" class="app-input" aria-label="技能排序"><option value="curriculum">教材顺序</option><option value="count">题数多 → 少</option><option v-if="overview.length" value="mastery">掌握度低 → 高</option></select></div>
+  <div v-else ref="layout" class="qb-skill-layout" :class="{ 'is-reading': bank.selectedQuestionId, 'is-skill-narrow': bank.selectedQuestionId && !skillRailOpen, 'is-unlinked': unlinked }">
+    <aside class="qb-skill-pane qb-browse-pane">
+      <div v-if="bank.selectedQuestionId" class="qb-skill-rail"><AppIconButton class="qb-rail-toggle" :label="skillRailOpen ? '收窄技能列表' : '展开技能列表'" icon="book-open" variant="secondary" :aria-expanded="skillRailOpen" @click="skillRailOpen = !skillRailOpen" /><span v-if="!skillRailOpen">{{ mode === 'tag' ? '标签' : switcherLabel }}</span><button v-if="!skillRailOpen" class="qb-rail-unlinked" :aria-label="`未挂技能 · ${unlinkedCount} 题`" title="未挂技能" @click="router.replace({ query: { tab: 'skill', skill: 'unlinked' } })">⚠<small>{{ unlinkedCount }}</small></button></div>
+      <header class="qb-skill-list-heading">
+        <details ref="sectionSwitcher" class="qb-label-popover qb-section-switcher"><summary><span class="qb-switcher-current"><small>{{ switcherChapterLabel }}</small><b>{{ switcherLabel }}</b></span><span class="qb-switcher-caret">▾</span></summary><div>
+          <div class="qb-chapter-tree"><details v-for="chapter in index?.chapters ?? []" :key="chapter.id" :open="chapter.id === currentChapter?.id">
+            <summary><span>{{ chapter.label }}</span><small>{{ chapter.question_count }}</small></summary>
+            <button v-for="section in chapter.sections" :key="section.id" class="qb-tree-row" :class="{ 'is-active': section.id === sectionId }" :aria-pressed="section.id === sectionId" @click="chooseSection(section.id)">{{ section.label }} <small>{{ section.question_count }}</small></button>
+            <button v-if="chapter.cross_section_skills.length" class="qb-tree-row" :class="{ 'is-active': chapter.id === sectionId }" @click="chooseSection(chapter.id)">跨小节 <small>{{ chapter.cross_section_skills.length }} 项技能</small></button>
+          </details></div>
+        </div></details>
+        <div class="qb-skill-subline"><p>{{ middleSubline }}</p><select v-if="mode !== 'tag'" v-model="sort" class="app-input" aria-label="技能排序"><option value="curriculum">教材顺序</option><option value="count">题数多 → 少</option><option v-if="overview.length" value="mastery">掌握度低 → 高</option></select></div>
+        <div class="qb-skill-list-tools"><div class="qb-segment"><button :aria-pressed="mode === 'skill'" :class="{ 'is-active': mode === 'skill' }" @click="setMode('skill')">按技能</button><button :aria-pressed="mode === 'topic'" :class="{ 'is-active': mode === 'topic' }" @click="setMode('topic')">按知识主题</button><button :aria-pressed="mode === 'tag'" :class="{ 'is-active': mode === 'tag' }" @click="setMode('tag')">按标签</button></div></div>
         <div v-if="mode === 'tag'" class="qb-tag-tools"><div class="qb-segment"><button v-for="dimension in tagDimensions" :key="dimension.key" :aria-pressed="tagDimension.key === dimension.key" :class="{ 'is-active': tagDimension.key === dimension.key }" @click="setTagDimension(dimension.key)">{{ dimension.label }}</button></div><p v-if="tagDimension.key === 'errorPatternCategories'">按已确认的典型错误归类统计</p><div class="qb-segment"><button :aria-pressed="tagScope === 'volume'" :class="{ 'is-active': tagScope === 'volume' }" @click="setTagScope('volume')">整个学期</button><button :disabled="tagDimension.key === 'knowledgePoints' || !currentChapter" :title="tagDimension.key === 'knowledgePoints' ? '知识点按整个学期统计' : undefined" :aria-pressed="tagScope === 'chapter'" :class="{ 'is-active': tagScope === 'chapter' }" @click="setTagScope('chapter')">本章</button><button :disabled="tagDimension.key === 'knowledgePoints' || !selectedSection" :title="tagDimension.key === 'knowledgePoints' ? '知识点按整个学期统计' : undefined" :aria-pressed="tagScope === 'section'" :class="{ 'is-active': tagScope === 'section' }" @click="setTagScope('section')">本小节</button></div><input v-model="tagSearch" type="search" class="app-input" placeholder="筛选标签" aria-label="筛选标签"></div>
       </header>
       <div v-if="mode !== 'tag'" class="qb-skill-rows"><button v-for="entry in entries" :key="entry.stable_key" class="qb-skill-row" :class="{ 'is-active': entry.stable_key === selected?.stable_key }" :aria-pressed="entry.stable_key === selected?.stable_key" @click="selectEntry(entry)">
@@ -196,6 +251,7 @@ onBeforeUnmount(() => { clearTimeout(timer); clearTimeout(idleTimer); facetContr
         <span v-if="mastery.get(entry.stable_key)?.evidence_student_count" class="qb-mastery-copy">{{ mastery.get(entry.stable_key)?.evidence_student_count }} 人有证据 · 均值 {{ Math.round((mastery.get(entry.stable_key)?.group_mastery ?? 0) * 100) }}%</span>
       </button><p v-if="!entries.length" class="qb-help">这个范围暂无{{ mode === 'skill' ? '技能' : '知识主题' }}。</p></div>
       <div v-else class="qb-skill-rows"><p v-if="facetsError" role="alert">{{ facetsError }}</p><button v-for="row in tagRows" :key="row.value" class="qb-skill-row" :class="{ 'is-active': row.value === tagValue }" :aria-pressed="row.value === tagValue" :title="row.value" @click="selectTag(row.value)"><div class="qb-skill-row__title"><strong>{{ tagRowLabel(row.value) }}</strong></div><div class="qb-skill-row__meta"><span><b>{{ row.count }}</b> 题</span></div></button><p v-if="!facetsError && !tagRows.length" class="qb-help">这个范围暂无可用标签。</p></div>
+      <button class="qb-unlinked" :class="{ 'is-active': unlinked }" :aria-pressed="unlinked" @click="router.replace({ query: { tab: 'skill', skill: 'unlinked' } })"><span>⚠ 未挂技能</span><strong>{{ unlinkedCount }} 题</strong></button>
     </aside>
     <main class="qb-question-pane qb-browse-pane">
       <header class="qb-target-heading"><div class="qb-target-heading__line"><h2>{{ unlinked ? '未挂技能的题目' : mode === 'tag' ? tagHeading : selected?.display_name || '请选择技能或知识主题' }}</h2><span v-if="selected" class="qb-row-badges"><span :class="!selected.question_count ? 'is-empty' : selected.question_count < 5 ? 'is-low' : 'is-ok'">{{ !selected.question_count ? '暂无题' : selected.question_count < 5 ? '题量少' : '正常' }}</span></span><span v-if="selected" class="qb-target-count">共 {{ selected.question_count }} 题</span><span v-if="mode === 'tag' && tagValue" class="qb-target-count">共 {{ bank.total }} 题</span><RouterLink v-if="selected && mode === 'skill'" class="qb-link" :to="{ path: '/question-assembly', query: { mode: 'assistant', skill: selected.stable_key } }">按班级学情挑这个技能的题 →</RouterLink></div>
@@ -204,7 +260,7 @@ onBeforeUnmount(() => { clearTimeout(timer); clearTimeout(idleTimer); facetContr
         <p v-if="mode === 'tag' && !tagValue" class="qb-help">选中中间列的标签后，列出范围内所有带该标签的题目（跨技能）</p>
       </header>
       <div v-if="selected || unlinked || mode === 'tag'" class="qb-skill-filters">
-        <div class="qb-filter-line"><input v-model="filters.keyword" type="search" class="app-input qb-stem-search" aria-label="搜题干" placeholder="搜题干"><div class="qb-type-chips"><button class="qb-filter-chip" :class="{ 'is-active': !filters.questionTypes.length }" :aria-pressed="!filters.questionTypes.length" @click="filters.questionTypes = []">全部</button><button class="qb-filter-chip" :class="{ 'is-active': filters.questionTypes.some(type => /选择/.test(type)) }" :aria-pressed="filters.questionTypes.some(type => /选择/.test(type))" @click="toggleChoice">选择</button><button v-for="type in ['填空题', '解答题']" :key="type" class="qb-filter-chip" :class="{ 'is-active': filters.questionTypes.includes(type) }" :aria-pressed="filters.questionTypes.includes(type)" @click="toggleType(type)">{{ type.slice(0, 2) }}</button></div><DifficultyRangeFilter v-model:min="filters.difficultyMin" v-model:max="filters.difficultyMax" compact /><select v-model="filters.paper" class="app-input qb-source-filter" aria-label="来源"><option value="">全部来源</option><option v-for="paper in bank.papers.filter(paper => paper.curriculum_volume_id === scope.selectedVolumeId)" :key="paper.id" :value="String(paper.id)">{{ paper.title }}</option></select>
+        <div class="qb-filter-line"><input v-model="filters.keyword" type="search" class="app-input qb-stem-search" aria-label="搜题干" placeholder="搜题干"><div class="qb-type-chips"><button class="qb-filter-chip" :class="{ 'is-active': !filters.questionTypes.length }" :aria-pressed="!filters.questionTypes.length" @click="filters.questionTypes = []">全部</button><button class="qb-filter-chip" :class="{ 'is-active': filters.questionTypes.some(type => /选择/.test(type)) }" :aria-pressed="filters.questionTypes.some(type => /选择/.test(type))" @click="toggleChoice">选择</button><button v-for="type in ['填空题', '解答题']" :key="type" class="qb-filter-chip" :class="{ 'is-active': filters.questionTypes.includes(type) }" :aria-pressed="filters.questionTypes.includes(type)" @click="toggleType(type)">{{ type.slice(0, 2) }}</button></div><DifficultyRangeFilter v-model:min="filters.difficultyMin" v-model:max="filters.difficultyMax" compact /><details ref="sourcePopover" class="qb-label-popover qb-source-filter" @toggle="onSourceToggle"><summary :title="sourceSummary"><span class="qb-source-summary">{{ sourceSummary }}</span><span>⌄</span></summary><div><input ref="sourceSearchInput" v-model="sourceSearch" type="search" class="app-input" aria-label="筛选来源" placeholder="筛选来源"><button class="qb-source-row" :class="{ 'is-active': !filters.paper }" :aria-pressed="!filters.paper" @click="chooseSource('')">全部来源</button><div class="qb-source-list"><button v-for="paper in filteredSourcePapers" :key="paper.id" class="qb-source-row" :class="{ 'is-active': filters.paper === String(paper.id) }" :aria-pressed="filters.paper === String(paper.id)" :title="paper.title ?? undefined" @click="chooseSource(String(paper.id))"><span>{{ paper.title }}</span><small>{{ paper.question_count }} 题</small></button><p v-if="!filteredSourcePapers.length" class="qb-help">没有匹配的来源。</p></div></div></details>
         <details class="qb-label-popover qb-more-filter"><summary>更多 <span>⌄</span></summary><div><label>标签完整度<select v-model="filters.tagStatus" class="app-input"><option value="all">全部</option><option value="tagged">完整</option><option value="untagged">待完善</option></select></label><label><input v-model="filters.criteriaReview" type="checkbox">判定点待审核</label><label><input v-model="filters.questionTypes" type="checkbox" value="多选题">多选题</label><QuestionSortControl v-model="filters.questionSort" /><label><input type="checkbox" :checked="bank.questions.length > 0 && bank.questions.every(question => bank.selectedQuestionIds.includes(question.id))" @change="bank.selectCurrentPage(($event.target as HTMLInputElement).checked)">选择本页</label></div></details>
         <label class="qb-duplicate-toggle" :class="{ 'is-active': filters.collapse }"><input v-model="filters.collapse" type="checkbox">折叠重复题<template v-if="filters.collapse && duplicateCount"> · 已折叠 {{ duplicateCount }}</template></label><label class="qb-progress-filter">教学进度：<select v-model="filters.progress" class="app-input" aria-label="教学进度"><option value="">不限</option><option v-for="chapter in scope.selectedVolume?.chapters ?? []" :key="chapter.id" :value="chapter.id">已学到{{ chapter.label }}</option></select></label>
         <details class="qb-label-popover qb-tag-filter"><summary>标签筛选</summary><div><p v-if="facetsError" role="alert">{{ facetsError }}</p><div class="qb-segment"><button v-for="dimension in facetDimensions" :key="dimension.key" :class="{ 'is-active': facetTab === dimension.key }" :aria-pressed="facetTab === dimension.key" @click="facetTab = dimension.key">{{ dimension.label }}</button></div><div class="qb-facet-chips"><button v-for="item in facetItems(facetTab)" :key="item.value" class="qb-filter-chip" :class="{ 'is-active': filters[facetTab].includes(item.value) }" :aria-pressed="filters[facetTab].includes(item.value)" @click="toggleFacet(facetTab, item.value)">{{ item.value }} <small>{{ item.count }}</small></button><p v-if="!facetItems(facetTab).length" class="qb-help">当前范围没有可用标签。</p></div></div></details></div>

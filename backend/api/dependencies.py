@@ -221,12 +221,15 @@ def get_outputs_dir() -> Path:
     return get_path_manager().outputs_dir
 
 
-def get_question_bank_read_service() -> QuestionBankReadService:
-    paths = get_path_manager()
-    return QuestionBankReadService(
-        paths.qb_db_path,
-        data_root=paths.data_root,
-    )
+def get_question_bank_read_service() -> Iterator[QuestionBankReadService]:
+    # Counted so the training prewarm yields while the teacher browses the
+    # question bank; the worker's own warm-up calls are not counted.
+    with foreground_request():
+        paths = get_path_manager()
+        yield QuestionBankReadService(
+            paths.qb_db_path,
+            data_root=paths.data_root,
+        )
 
 
 def get_question_bank_write_service() -> QuestionBankWriteService:

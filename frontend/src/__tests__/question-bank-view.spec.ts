@@ -587,10 +587,76 @@ describe('question bank workspace', () => {
     expect(router.currentRoute.value.query.topic).toBe('kp_TEST_topic')
     expect(router.currentRoute.value.fullPath).not.toContain('勾股')
     await router.replace({ query: { tab: 'skill', skill: 'unlinked' } })
-    await vi.waitFor(() => expect(host.querySelector('.qb-skill-pane')).toBeNull())
-    expect(host.querySelector('.qb-skill-layout')?.classList.contains('is-unlinked')).toBe(true)
+    await vi.waitFor(() => expect(host.querySelector('.qb-skill-layout')?.classList.contains('is-unlinked')).toBe(true))
+    expect(host.querySelector('.qb-skill-pane')).not.toBeNull()
+    expect(host.querySelector('.qb-unlinked')).not.toBeNull()
     expect(host.textContent).toContain('AI 补挂技能')
     expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ skillUnlinked: true, skillKeys: [] }))
+  })
+
+  it('switches sections from the column header and passes band and source picks to the shared list', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/question-bank?tab=skill')
+    const scope = useCurriculumScopeStore(pinia)
+    scope.selectedVolumeId = 'bnu24-math-g8-upper'
+    scope.volumes = [{ id: scope.selectedVolumeId, label: '八年级上册', order: 1, grade: '八年级', semester: '上学期', textbook_version: '北师大版（2024）', source: {}, statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 }, chapters: [{ id: 'kp_TEST_chapter', knowledge_id: 'kp_TEST_chapter', label: '第一章', title: '第一章', display_name: '第一章', kind: 'chapter', number: '1', source_ref: { node_id: 'TEST', relative_url: '' }, exam_scope_values: [], order: 1, sections: [] }] }]
+    const bank = useQuestionBankStore(pinia)
+    const list = vi.spyOn(bank, 'loadQuestions').mockResolvedValue()
+    vi.spyOn(questionBankApi, 'listFacets').mockResolvedValue({ exam_scopes: [], curriculum_sections: [], knowledge_points: [], curriculum_chapters: [], abilities: [], methods: [], models: [], thoughts: [], special_types: [], error_types: [], error_pattern_categories: [], student_levels: [], teaching_stages: [], sub_skills: [], question_types: [], years: [], exam_types: [], grades: [] })
+    bank.papers = [
+      { ...paper, id: 4, curriculum_volume_id: 'bnu24-math-g8-upper', title: 'TEST-函数单元卷' },
+      { ...paper, id: 9, curriculum_volume_id: 'bnu24-math-g8-upper', title: 'TEST-几何期末卷' },
+    ]
+    bank.papersState = 'ready'
+    const stats = { question_count: 1, type_counts: { '选择题': 0, '多选题': 0, '填空题': 0, '解答题': 1 }, difficulty: { min: 4, median: 4, max: 4 }, criteria_needs_review_count: 0 }
+    const skill = (key: string, name: string) => ({ ...stats, stable_key: key, display_name: name, full_name: `八年级上册/${name}`, cross_section: false, definition: { observable_evidence: '判断', include_scope: '三边', exclude_scope: '作图' } })
+    const section = (id: string, label: string, skills: ReturnType<typeof skill>[]) => ({ id, label, question_count: 1, skills, topics: [] })
+    const index = { graph_release_id: 'kgr_TEST', curriculum_volume_id: scope.selectedVolumeId, model_calls: 0, question_count: 2, unlinked: { no_usable_evidence: 1, no_skill_link: 2 }, chapters: [{ id: 'kp_TEST_chapter', label: '第一章', question_count: 2, cross_section_skills: [], sections: [section('kp_TEST_s1', '第一节', [skill('sk_TEST_one', '判断直角三角形')]), section('kp_TEST_s2', '第二节', [skill('sk_TEST_two', '应用勾股定理')])] }] }
+    const app = createApp({ render: () => h(QuestionSkillBrowser, { index, loading: false, error: '' }) })
+    app.use(pinia).use(router).mount(host)
+    mounted.push(app)
+    await vi.waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ skillKeys: ['sk_TEST_one'] })))
+
+    const switcher = host.querySelector<HTMLDetailsElement>('.qb-section-switcher')!
+    switcher.open = true
+    await nextTick()
+    const row = [...switcher.querySelectorAll<HTMLButtonElement>('.qb-tree-row')].find(button => button.textContent?.includes('第二节'))!
+    row.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.section).toBe('kp_TEST_s2'))
+    expect(switcher.open).toBe(false)
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ skillKeys: ['sk_TEST_two'] })))
+
+    const difficulty = host.querySelector<HTMLDetailsElement>('.qb-difficulty-filter')!
+    difficulty.open = true
+    await nextTick()
+    const band = [...difficulty.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('中档提升'))!
+    band.click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ difficultyMin: 4.5, difficultyMax: 6.4 })))
+
+    const source = host.querySelector<HTMLDetailsElement>('.qb-source-filter')!
+    source.open = true
+    source.dispatchEvent(new Event('toggle'))
+    await nextTick()
+    const search = source.querySelector<HTMLInputElement>('input[aria-label="筛选来源"]')!
+    search.value = '几何'
+    search.dispatchEvent(new Event('input'))
+    await nextTick()
+    const rows = [...source.querySelectorAll<HTMLButtonElement>('.qb-source-list .qb-source-row')]
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.textContent).toContain('TEST-几何期末卷')
+    rows[0]!.click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ paperIds: [9] })))
+    expect(source.open).toBe(false)
+
+    const unlinkedButton = host.querySelector<HTMLButtonElement>('.qb-unlinked')!
+    expect(unlinkedButton.textContent).toContain('未挂技能')
+    unlinkedButton.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.skill).toBe('unlinked'))
+    expect(host.querySelector('.qb-skill-pane')).not.toBeNull()
+    expect(host.querySelector('.qb-section-switcher')).not.toBeNull()
   })
 
   it('browses questions across skills by tag dimension, scope and value', async () => {

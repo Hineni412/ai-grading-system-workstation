@@ -596,3 +596,132 @@ def test_one_click_repair_routes_only_previewed_gaps_and_stops_failed_dependenci
     assert result['remaining'][0]['reason'].startswith('题目已变化')
     # The entry filter must not hide a skill gap after the analysis stage finishes.
     assert preview_kinds == [kind, 'all', 'all']
+
+
+def test_is_within_matches_pathlib_root_containment(tmp_path):
+    from question_bank.services.file_cache import is_within
+
+    root = (tmp_path / "TEST-root").resolve()
+    cases = {
+        root: True,
+        root / "child": True,
+        root / "child" / "leaf.png": True,
+        root.parent / f"{root.name}2": False,
+        root.parent / f"{root.name}2" / "leaf.png": False,
+        root.parent / "other": False,
+        tmp_path.parent.resolve() / f"{tmp_path.name}-outside": False,
+    }
+    for path, expected in cases.items():
+        assert is_within(path, root) is expected
+        assert is_within(path, root) == (path == root or path.is_relative_to(root))
+    # Case differences follow the platform rule: normcase treats them like
+    # WindowsPath's own comparison does.
+    swapped = root / "child".swapcase()
+    assert is_within(swapped, root) == (swapped == root or swapped.is_relative_to(root))
+    # A drive root ends in a separator already; children still match without
+    # a doubled separator in the prefix.
+    volume_root = Path(os.path.abspath(os.sep))
+    volume_child = volume_root / "TEST-volume-child"
+    assert is_within(volume_root, volume_root)
+    assert is_within(volume_child, volume_root) is True
+    assert volume_child.is_relative_to(volume_root)
+
+
+def _prewarm_worker(db: Path, tmp_path: Path):
+    from integration.training_prewarm import TrainingPrewarmWorker, clear_recent_requests
+    clear_recent_requests()
+    grading_db = tmp_path / "TEST-grading.db"
+    _seed_paper(grading_db)
+    paths = SimpleNamespace(db_path=grading_db, qb_db_path=db, data_root=tmp_path)
+    jobs = SimpleNamespace(list=lambda **kwargs: ([], 0), is_shutdown=False)
+    return TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0)
+
+
+def test_question_bank_browse_prewarm_plans_first_and_replans_on_write(tmp_path, monkeypatch):
+    from integration.data_generation import commit_generation
+
+    _service, db, _keys = _seed_skill_bank(tmp_path)
+    worker = _prewarm_worker(db, tmp_path)
+    monkeypatch.setattr(worker, '_latest_volume_id', lambda: 'bnu24-math-g8-upper')
+    monkeypatch.setattr(worker, '_startup_tasks', lambda seen: [])
+    warmed = []
+    monkeypatch.setattr(worker, '_warm_question_bank', warmed.append)
+    plan = worker._refresh_plan()
+    assert plan
+    plan[0]()
+    assert warmed == [commit_generation(db)]
+    for task in plan[1:]:
+        task()
+    # An unchanged generation does not plan the browse task again.
+    worker._seen_qb_browse_generation = warmed[0]
+    warmed.clear()
+    for task in worker._refresh_plan():
+        task()
+    assert warmed == []
+    # A question-bank write re-plans the browse task first.
+    with sqlite3.connect(db) as writer:
+        writer.execute("UPDATE papers SET title='TEST-replan' WHERE id=1")
+        writer.commit()
+    plan = worker._refresh_plan()
+    plan[0]()
+    assert warmed == [commit_generation(db)]
+    # A failed run leaves the generation unseen, so the next plan built for
+    # any trigger re-plans the browse task.
+    worker._seen_qb_browse_generation = None
+    warmed.clear()
+    def fail(_generation):
+        raise RuntimeError('TEST-prewarm-failed')
+    monkeypatch.setattr(worker, '_warm_question_bank', fail)
+    plan = worker._refresh_plan()
+    with pytest.raises(RuntimeError, match='TEST-prewarm-failed'):
+        plan[0]()
+    assert worker._seen_qb_browse_generation is None
+    monkeypatch.setattr(worker, '_warm_question_bank', warmed.append)
+    plan = worker._refresh_plan()
+    plan[0]()
+    assert warmed == [commit_generation(db)]
+
+
+def test_question_bank_browse_warm_uses_the_first_skill_page_filters(tmp_path, monkeypatch):
+    _service, db, _keys = _seed_skill_bank(tmp_path)
+    worker = _prewarm_worker(db, tmp_path)
+    volume = 'bnu24-math-g8-upper'
+    monkeypatch.setattr(worker, '_latest_volume_id', lambda: volume)
+    calls = []
+    index = {'chapters': [{'id': 'c1', 'sections': [
+        {'id': 's0', 'skills': []},
+        {'id': 's1', 'skills': [{'stable_key': 'sk_TEST_first'}]},
+    ]}]}
+    def recording_index(self, volume_id):
+        calls.append(('skill_index', volume_id))
+        return index
+    def recording_list(self, filters):
+        calls.append(('list_questions', filters))
+    def recording_facets(self, filters):
+        calls.append(('list_facets', filters))
+    monkeypatch.setattr(QuestionBankReadService, 'skill_index', recording_index)
+    monkeypatch.setattr(QuestionBankReadService, 'list_questions', recording_list)
+    monkeypatch.setattr(QuestionBankReadService, 'list_facets', recording_facets)
+    worker._warm_question_bank(7)
+    assert worker._seen_qb_browse_generation == 7
+    assert [call[0] for call in calls] == ['skill_index', 'list_questions', 'list_facets']
+    assert calls[0][1] == volume
+    # Same filters the /questions route builds for the page's first request.
+    assert calls[1][1] == QuestionReadFilters(
+        skill_keys=('sk_TEST_first',), include_skills=True, page=1, page_size=20,
+        difficulty_min=1, difficulty_max=10, curriculum_volume_ids=(volume,),
+        collapse_duplicates=True, scope_mode='primary', sort='newest',
+    )
+    # Same filters the /facets route builds for it.
+    assert calls[2][1] == QuestionReadFilters(
+        skill_keys=('sk_TEST_first',), difficulty_min=1, difficulty_max=10,
+        curriculum_volume_ids=(volume,), collapse_duplicates=True,
+        scope_mode='primary',
+    )
+    # Without a resolvable volume there is nothing to warm; the generation is
+    # still marked so an empty bank is not re-scanned every tick.
+    calls.clear()
+    monkeypatch.setattr(worker, '_latest_volume_id', lambda: None)
+    worker._warm_question_bank(9)
+    assert worker._seen_qb_browse_generation == 9
+    assert calls == []

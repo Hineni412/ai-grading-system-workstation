@@ -213,6 +213,7 @@ class TrainingPrewarmWorker:
         self._seen_day: str | None = None
         self._seen_group_day: str | None = None
         self._seen_recent_generation: int | None = None
+        self._seen_qb_browse_generation: int | None = None
         self._recents_loaded = False
         self._persisted_recents: str | None = None
         self.batches: list[tuple[int, float]] = []
@@ -420,6 +421,13 @@ class TrainingPrewarmWorker:
 
     def _refresh_plan(self) -> list[Callable[[], None]]:
         tasks: list[Callable[[], None]] = []
+        # The 按技能 browse page is the heaviest cold read in the app; warm
+        # it first, at startup and after every question-bank write.
+        qb_generation = commit_generation(Path(self._paths.qb_db_path))
+        if qb_generation != self._seen_qb_browse_generation:
+            tasks.append(
+                lambda generation=qb_generation: self._warm_question_bank(generation)
+            )
         seen: set[tuple[str, str, str, str]] = set()
         entries = recent_requests()
         if not self._startup_done:
@@ -623,6 +631,64 @@ class TrainingPrewarmWorker:
         except (OSError, sqlite3.Error):
             return None
         return str(row[0]).strip() if row else None
+
+    def _warm_question_bank(self, generation: int) -> None:
+        """Warm the read caches for the page the 按技能 tab opens with.
+
+        Replays the frontend's first requests (skill index, first skill's
+        first question page and facet counts) so the result-cache keys match
+        the ones the foreground routes fill. A successful pass — including a
+        bank with nothing to warm — marks the generation; a failure leaves
+        it unseen so the next tick retries.
+        """
+
+        from question_bank.services.question_read_service import (
+            QuestionBankReadService,
+            QuestionReadFilters,
+        )
+
+        volume_id = self._latest_volume_id()
+        if volume_id:
+            paths = self._paths
+            data_root = getattr(paths, "data_root", None) or Path(
+                paths.qb_db_path
+            ).parent.parent
+            service = QuestionBankReadService(paths.qb_db_path, data_root=data_root)
+            index = service.skill_index(volume_id)
+            skill_key = ""
+            for chapter in index.get("chapters") or []:
+                for section in chapter.get("sections") or []:
+                    skills = section.get("skills") or []
+                    if skills:
+                        skill_key = str(skills[0].get("stable_key") or "")
+                        break
+                if skill_key:
+                    break
+            if skill_key:
+                service.list_questions(
+                    QuestionReadFilters(
+                        skill_keys=(skill_key,),
+                        include_skills=True,
+                        page=1,
+                        page_size=20,
+                        difficulty_min=1,
+                        difficulty_max=10,
+                        curriculum_volume_ids=(volume_id,),
+                        collapse_duplicates=True,
+                        scope_mode="primary",
+                    )
+                )
+                service.list_facets(
+                    QuestionReadFilters(
+                        skill_keys=(skill_key,),
+                        difficulty_min=1,
+                        difficulty_max=10,
+                        curriculum_volume_ids=(volume_id,),
+                        collapse_duplicates=True,
+                        scope_mode="primary",
+                    )
+                )
+        self._seen_qb_browse_generation = generation
 
     def _class_names(self) -> list[str]:
         try:
