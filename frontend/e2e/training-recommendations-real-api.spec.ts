@@ -338,6 +338,7 @@ test('return workspace matches the draft header and responsive prototype, cancel
   await expect(page.locator('.page-header [aria-label="草稿步骤"]')).toBeVisible()
   await expect(page.locator('.return-queue__rows>button[aria-pressed=true]')).toContainText('测试学生1')
   await expect(page.locator('[data-pending=true]').first()).toBeFocused()
+  await expect(page).not.toHaveURL(/focus=/)
   await page.getByRole('button', { name: '判定 1 份（1 次模型请求）', exact: true }).click()
   await expect(page.getByRole('dialog')).toContainText('共 1 次模型请求，产生费用')
   await page.getByRole('button', { name: '取消', exact: true }).click()
@@ -366,6 +367,8 @@ test('return workspace matches the draft header and responsive prototype, cancel
     expect(overlap).toBe(false)
     await page.screenshot({ path: `../output/TEST-training-return-20261004/synthetic-${width}.png`, animations: 'disabled', fullPage: true })
   }
+  await page.locator('.return-ledger').scrollIntoViewIfNeeded()
+  await page.screenshot({ path: '../output/TEST-training-return-20261004/synthetic-900-ledger.png', animations: 'disabled' })
   await page.emulateMedia({ reducedMotion: 'reduce' })
   expect(await page.locator('.training-scan-panel').evaluate(el => [...el.getAnimations({ subtree: true })].filter(a => a.playState === 'running').length)).toBe(0)
   expect(mock.errors).toEqual([])

@@ -35,13 +35,13 @@ export function buildTodoRows({ sessionId, overview, readiness, analysis, jobs, 
   for (const item of training?.items ?? []) {
     const path = `/training?mode=paper&draft=${encodeURIComponent(item.draft_id)}`
     if (item.scan_page_count > 0) trainingRows.push(row(`scan-${item.draft_id}`,
-      `核对 ${item.scan_page_count} 页训练卷扫描`, item.draft_name, '去核对', path, '训练', 'success'))
+      `核对 ${item.scan_page_count} 页训练卷扫描`, item.draft_name, '去核对', `${path}&from=workbench&focus=scan`, '训练', 'success'))
     if (item.review_submission_count > 0) trainingRows.push(row(`review-${item.draft_id}`,
       `复核 ${item.draft_name} 判定 ${item.review_submission_count} 份`,
-      '不确定、无法辨认或缺失判定点仍需教师确认', '去复核', path, '训练', 'success'))
+      '不确定、无法辨认、缺失判定点或判定失败，仍需教师处理', '去复核', `${path}&from=workbench&focus=review`, '训练', 'success'))
     if (item.publish_submission_count > 0) trainingRows.push(row(`publish-${item.draft_id}`,
       `发布 ${item.draft_name} 证据 ${item.publish_submission_count} 份`,
-      '判定已完成，当前修订的训练证据尚未全部发布', '去发布', path, '训练', 'success'))
+      '判定已完成，当前修订的训练证据尚未全部发布', '去发布', `${path}&from=workbench&focus=publish`, '训练', 'success'))
   }
   if (sessionId === null || overview?.current_session?.id !== sessionId) return { need: trainingRows, continued }
   const p = overview.progress, r = overview.review, a = overview.anomalies

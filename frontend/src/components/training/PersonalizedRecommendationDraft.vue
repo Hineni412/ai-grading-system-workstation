@@ -23,6 +23,7 @@ import type { StepProgressStep } from '../design-system/StepProgress.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
 import TrainingScanBatchPanel from './TrainingScanBatchPanel.vue'
 import QuestionPreviewDialog from './QuestionPreviewDialog.vue'
+import type { InitialFocus } from '../../features/training/training-return'
 import {
   clearPaperDraftSession,
   loadPaperDraftSession,
@@ -31,6 +32,7 @@ import {
 
 const props = defineProps<{
   initialDraftId?: string
+  initialFocus?: InitialFocus
   diagnosis: TrainingDiagnosis | null
   scope: TrainingStudentScopeRequest
   examScope: TrainingExamScopeRequest
@@ -62,6 +64,7 @@ const emit = defineEmits<{
   recoveryChange: [pending: boolean]
   contextChange: [context: { mode: 'individual' | 'shared'; studentCount: number; questionCount: number; difficultyMax: number; purpose: 'training' | 'handout' } | null]
   workspaceChange: [value: { steps: StepProgressStep[]; current: string; revision: number } | null]
+  focusConsumed: []
 }>()
 
 type RequestState = 'idle' | 'loading' | 'ready' | 'error' | 'editing'
@@ -77,6 +80,8 @@ const confirmDiscard = ref(false)
 const errorMessage = ref('')
 const actionMessage = ref('')
 const paperInstances = ref<PersonalizedPaperInstance[]>([])
+const returnPanel = ref<InstanceType<typeof TrainingScanBatchPanel> | null>(null)
+function focusReturnPoint() { void returnPanel.value?.focusPending() }
 const handoutJob = ref<JobResponse | null>(null)
 const handoutRequestToken = ref('')
 const viewStep = ref<'review' | 'print' | 'scan'>('review')
@@ -587,7 +592,7 @@ async function generate(): Promise<void> {
   }
 }
 
-defineExpose({ generate, selectWorkspaceStep })
+defineExpose({ generate, selectWorkspaceStep, focusReturnPoint })
 
 async function openNextDraft(draftId: string): Promise<void> {
   if (state.value === 'loading' || state.value === 'editing') return
@@ -965,7 +970,7 @@ async function editItem(
         <div v-if="!isHandout && paperInstances.length" class="paper-download-list"><header><strong>学生试卷</strong><span>保留各版本，可分别下载</span></header><template v-for="student in draft.students" :key="student.student_id"><article v-for="instance in instancesForStudent(student.student_id)" :key="instance.paper_instance_id"><div><strong>{{ student.student_name || student.student_code || student.student_id }}</strong><span>V{{ instance.series_version }} · {{ instance.question_count }} 题 · {{ instance.pages.length }} 页</span></div><StatusBadge :tone="instance.status === 'frozen' ? 'success' : 'warning'" :label="instance.status === 'frozen' ? '可打印' : '待生成 PDF'" /><AppButton v-if="instance.downloads.frozen_pdf" variant="ghost" :disabled="Boolean(paperBusy)" @click="downloadPaper(instance, 'frozen_pdf')">下载 PDF 试卷</AppButton><AppButton v-if="instance.downloads.review_docx" variant="ghost" :disabled="Boolean(paperBusy)" @click="downloadPaper(instance, 'review_docx')">下载 DOCX</AppButton><p v-if="instance.formula_fallbacks?.length" class="formula-note">{{ instance.formula_fallbacks.length }} 处公式已保留原式或题图，打印前请预览核对。</p></article></template></div>
         <p v-if="actionMessage" class="draft-action-message" role="status">{{ actionMessage }}</p>
       </section>
-      <section v-if="!isHandout && hasPrintablePapers" v-show="viewStep === 'scan'" class="personalized-scan"><TrainingScanBatchPanel :instances="paperInstances" @progress-change="scanProgress = $event" @open-draft="openNextDraft" /></section>
+      <section v-if="!isHandout && hasPrintablePapers" v-show="viewStep === 'scan'" class="personalized-scan"><TrainingScanBatchPanel ref="returnPanel" :instances="paperInstances" :initial-focus="initialFocus" @focus-consumed="emit('focusConsumed')" @progress-change="scanProgress = $event" @open-draft="openNextDraft" /></section>
     </template>
     <p v-else-if="actionMessage" class="draft-action-message" role="status">{{ actionMessage }}</p>
     <QuestionPreviewDialog :question-id="previewQuestionId" :title="previewTitle" @close="closePreview" />

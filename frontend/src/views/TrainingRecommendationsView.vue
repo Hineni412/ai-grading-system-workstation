@@ -91,9 +91,17 @@ const draftContext = ref<{ mode: 'individual' | 'shared'; studentCount: number; 
 const workflowStage = ref<'diagnosis' | 'draft' | 'wps' | 'scan'>('diagnosis')
 const draftRequestState = ref<'idle' | 'loading' | 'ready' | 'error' | 'editing'>('idle')
 const draftNeedsCheck = ref(false)
-const paperDraft = ref<{ generate: () => Promise<void>; selectWorkspaceStep: (id: string) => void } | null>(null)
+const paperDraft = ref<{ generate: () => Promise<void>; selectWorkspaceStep: (id: string) => void; focusReturnPoint: () => void } | null>(null)
 const draftWorkspace = ref<{ steps: StepProgressStep[]; current: string; revision: number } | null>(null)
 const draftOpen = computed(() => trainingMode.value === 'paper' && draftContext.value !== null)
+const returnFocus = computed(() => route.query.focus === 'scan' || route.query.focus === 'review' || route.query.focus === 'publish' ? route.query.focus : undefined)
+async function consumeReturnFocus() {
+  const query = { ...route.query }
+  delete query.focus
+  await router.replace({ query })
+  await nextTick()
+  paperDraft.value?.focusReturnPoint()
+}
 const draftBack = computed(() => route.query.from === 'workbench'
   ? { to: '/workbench', label: '工作台' }
   : { to: paperBackTarget.value, label: paperBackTarget.value.query.mode === 'chapter' ? '按章节训练' : '按学生训练' })
@@ -558,6 +566,7 @@ onBeforeUnmount(() => studentsController?.abort())
             <PersonalizedRecommendationDraft
               ref="paperDraft"
               :initial-draft-id="typeof route.query.draft === 'string' ? route.query.draft : undefined"
+              :initial-focus="returnFocus"
               external-setup
               :diagnosis="paperDiagnosis"
               :scope="personalizedScope"
@@ -582,6 +591,7 @@ onBeforeUnmount(() => studentsController?.abort())
               :disabled="!paperSettingsValid"
               @context-change="draftContext = $event"
               @workspace-change="draftWorkspace = $event"
+              @focus-consumed="consumeReturnFocus"
               @stage-change="onPaperStageChange"
               @state-change="draftRequestState = $event"
               @recovery-change="draftNeedsCheck = $event"

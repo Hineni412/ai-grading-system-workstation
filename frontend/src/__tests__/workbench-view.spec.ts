@@ -201,7 +201,12 @@ describe('workbench second phase', () => {
     const { host, router } = await mountView({ sessionId: null, overviewValue: null, overviewState: 'empty' })
     await vi.waitFor(() => expect(host.querySelectorAll('[data-todo]')).toHaveLength(3))
     clickButton(host, '去核对')
-    await expectPath(router, `/training?mode=paper&draft=${'d'.repeat(64)}`)
+    await expectPath(router, `/training?mode=paper&draft=${'d'.repeat(64)}&from=workbench&focus=scan`)
+    clickButton(host, '去复核')
+    await expectPath(router, `/training?mode=paper&draft=${'d'.repeat(64)}&from=workbench&focus=review`)
+    clickButton(host, '去发布')
+    await expectPath(router, `/training?mode=paper&draft=${'d'.repeat(64)}&from=workbench&focus=publish`)
+    expect(host.textContent).toContain('判定失败，仍需教师处理')
   })
 
   it('retries failed training without hiding exam actions or promoting continue actions', async () => {
