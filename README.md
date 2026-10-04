@@ -168,7 +168,7 @@ cd ..
 | 词表修订发布文件重建 | `tools/build_release_v7.py` | 默认读取已有输入并验证，`--write` 生成对应发布包和词表；不会自动切换数据库中的活动标准 |
 | 难度校准与推荐有效性回看 | `tools/difficulty_calibration_report.py`、`tools/recommendation_validity_report.py` | 按显式数据库路径读取统计结果，不改写评分、难度或推荐规则 |
 | 掌握度前向检验与参数选择 | `tools/mastery_validation.py` | `--volume` 指定教学学期；`--initial` 复现原型参数，`--grid` 选择参数；只读数据库，只向终端输出汇总数字，不调用模型、不落盘学生结果 |
-| 第一、二章训练卷适配实验 | `tools/experiment_training_fit.py` | 只读原位置数据，核对只补弱个人对照与内存试配、小组共用卷；`--evidence-loss` 检查历史证据粒度敏感性，`--match-audit` 追查匹配、目标关联库存与入卷限制，保存匿名汇总；不是教师盲评或学习效果证明，见 [实验方案](docs/requests/personalized-training-fit-experiment-20261002.md) |
+| 第一、二章训练卷适配实验 | `tools/experiment_training_fit.py` | 只读原位置数据，核对只补弱个人对照与内存试配、小组共用卷；`--evidence-loss` 检查历史证据粒度敏感性，`--match-audit` 追查匹配、目标关联库存与入卷限制，保存匿名汇总；不是教师盲评或学习效果证明，当前实现、效果与性能交接见 [说明](docs/requests/training-recommendation-backend-handoff-20261004.md) |
 | 相似题向量检索实验 | `tools/experiment_vector_similarity.py` | `--baseline-only` 只读核对现有排序；本地真实模型实验须单独授权，方案与限制见 [实验说明](docs/requests/vector-similarity-experiment-20261001.md) |
 | 历史数据导出 | `tools/export_legacy_cli_data.py`、`tools/export_legacy_skill_data.py` | 保留退役数据的读取与导出能力，源数据库不改写 |
 | 本机空间盘点、维护预览 | `tools/storage_audit.py`、`tools/storage_maintenance.py` | 产物位置、保留范围及执行授权见存储与备份文档 |
