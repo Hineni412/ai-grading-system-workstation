@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="546" viewBox="0 0 1200 546" role="img" aria-labelledby="title description">
+  <title id="title">考试阅卷与知识训练的两条工作流程</title>
+  <desc id="description">考试依次经过准备、扫描归卷、批改复核、成绩与报告。训练依次经过诊断选题、出卷打印、回收判定、教师复核发布，再以训练证据更新掌握度。考试结果只读参与诊断，训练不回写考试成绩。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="m1 1 8 4-8 4" fill="none" stroke="#71879b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="loop-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="m1 1 8 4-8 4" fill="none" stroke="#158477" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: 'Segoe UI', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; }
+    .lane { font-size: 20px; font-weight: 650; }
+    .title { fill: #17334b; font-size: 24px; font-weight: 650; }
+    .detail { fill: #536d81; font-size: 16px; }
+    .step { fill: #536d81; font-size: 13px; letter-spacing: 1px; }
+    .connector { fill: none; stroke: #71879b; stroke-width: 2; marker-end: url(#arrow); }
+  </style>
+  <rect x="1" y="1" width="1198" height="544" rx="18" fill="#f8fafc" stroke="#d8e2ea"/>
+  <text x="42" y="44" fill="#17334b" font-size="24" font-weight="700">两条流程，一份持续积累的学情依据</text>
+  <text x="42" y="88" class="lane" fill="#37628c">考试阅卷</text>
+  <text x="1158" y="88" text-anchor="end" class="detail">按考试保存评分、复核与报告</text>
+  <g>
+    <rect x="42" y="110" width="246" height="118" rx="12" fill="#edf3fb" stroke="#ceddee"/>
+    <text x="62" y="138" class="step">01</text>
+    <text x="62" y="173" class="title">准备考试</text>
+    <text x="62" y="206" class="detail">拆题 · 入库 · 赋分 · 题框</text>
+    <path d="M295 169h28" class="connector"/>
+    <rect x="332" y="110" width="246" height="118" rx="12" fill="#edf3fb" stroke="#ceddee"/>
+    <text x="352" y="138" class="step">02</text>
+    <text x="352" y="173" class="title">扫描归卷</text>
+    <text x="352" y="206" class="detail">学生匹配 · 异常核对</text>
+    <path d="M585 169h28" class="connector"/>
+    <rect x="622" y="110" width="246" height="118" rx="12" fill="#edf3fb" stroke="#ceddee"/>
+    <text x="642" y="138" class="step">03</text>
+    <text x="642" y="173" class="title">批改与复核</text>
+    <text x="642" y="206" class="detail">AI / 人工 · 教师确认</text>
+    <path d="M875 169h28" class="connector"/>
+    <rect x="912" y="110" width="246" height="118" rx="12" fill="#edf3fb" stroke="#ceddee"/>
+    <text x="932" y="138" class="step">04</text>
+    <text x="932" y="173" class="title">成绩与报告</text>
+    <text x="932" y="206" class="detail">成绩表 · 班级 / 个人报告</text>
+  </g>
+  <path d="M42 268h1116" stroke="#d8e2ea"/>
+  <text x="42" y="310" class="lane" fill="#158477">知识训练</text>
+  <text x="1158" y="310" text-anchor="end" class="detail">考试结果只读参与诊断 · 题库提供候选题</text>
+  <g>
+    <rect x="42" y="332" width="246" height="118" rx="12" fill="#eaf7f3" stroke="#c7e6dd"/>
+    <text x="62" y="360" class="step">01</text>
+    <text x="62" y="395" class="title">诊断与选题</text>
+    <text x="62" y="428" class="detail">选定范围 · 核对候选题</text>
+    <path d="M295 391h28" class="connector"/>
+    <rect x="332" y="332" width="246" height="118" rx="12" fill="#eaf7f3" stroke="#c7e6dd"/>
+    <text x="352" y="360" class="step">02</text>
+    <text x="352" y="395" class="title">出卷与打印</text>
+    <text x="352" y="428" class="detail">个人 / 小组 / 班级训练卷</text>
+    <path d="M585 391h28" class="connector"/>
+    <rect x="622" y="332" width="246" height="118" rx="12" fill="#eaf7f3" stroke="#c7e6dd"/>
+    <text x="642" y="360" class="step">03</text>
+    <text x="642" y="395" class="title">回收与判定</text>
+    <text x="642" y="428" class="detail">扫描归卷 · 逐点四态判定</text>
+    <path d="M875 391h28" class="connector"/>
+    <rect x="912" y="332" width="246" height="118" rx="12" fill="#eaf7f3" stroke="#c7e6dd"/>
+    <text x="932" y="360" class="step">04</text>
+    <text x="932" y="395" class="title">教师复核发布</text>
+    <text x="932" y="428" class="detail">发布训练证据 · 更新掌握度</text>
+  </g>
+  <path d="M1035 457v31H165v-31" fill="none" stroke="#158477" stroke-width="2" marker-end="url(#loop-arrow)"/>
+  <rect x="462" y="476" width="276" height="26" rx="13" fill="#f8fafc"/>
+  <text x="600" y="495" text-anchor="middle" fill="#158477" font-size="16">训练证据参与下一轮诊断</text>
+  <text x="600" y="526" text-anchor="middle" class="detail">训练结果按达成点数表达，不回写考试成绩；讲义与错题本不产生训练证据。</text>
+</svg>
