@@ -10,13 +10,58 @@ import hashlib
 import json
 import re
 import sqlite3
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, MutableMapping, Sequence
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 LEGACY_ESSAY_TYPES = ("解答题（画图）", "解答题（计算）", "解答题（证明）")
+
+
+@dataclass(frozen=True)
+class SourceHash:
+    """Per-question content check reusable across snapshot rebuilds."""
+    input_key: str                      # source_input_key(question row)
+    current: str                        # solution_evidence_source_content_hash(input)
+    legacy: tuple[tuple[str, str], ...]  # (legacy essay type, hash); only for 解答题, else ()
+
+
+def source_input_key(row: Mapping[str, Any]) -> str:
+    """Fingerprint the question-row fields that feed the content hash."""
+    payload = [
+        row.get("question_text"), row.get("answer_text"), row.get("question_type"),
+        bool(row.get("has_images")), row.get("image_paths"),
+    ]
+    return hashlib.sha256(json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _input_source_hashes(question: Any, input_key: str = "") -> SourceHash:
+    from question_bank.training_criteria.analysis import (
+        solution_evidence_source_content_hash,
+    )
+    context = question.tagging_context
+    legacy = ()
+    if context.question_type == "解答题":
+        legacy = tuple(
+            (kind, solution_evidence_source_content_hash(
+                replace(question, tagging_context=replace(context, question_type=kind))))
+            for kind in LEGACY_ESSAY_TYPES
+        )
+    return SourceHash(
+        input_key=input_key,
+        current=solution_evidence_source_content_hash(question),
+        legacy=legacy,
+    )
+
+
+def alias_from_hashes(entry: SourceHash, expected: str) -> str | None:
+    """The ``source_alias`` result computed from a stored ``SourceHash``."""
+    if entry.current == expected:
+        return ""
+    matches = [kind for kind, hashed in entry.legacy if hashed == expected]
+    return matches[0] if len(matches) == 1 else None
 
 
 @contextmanager
@@ -35,17 +80,7 @@ def reading(db_path: Path, connection: sqlite3.Connection | None = None) -> Iter
 
 
 def source_alias(question: Any, expected: str) -> str | None:
-    from question_bank.training_criteria.analysis import (
-        solution_evidence_source_content_hash,
-    )
-    if solution_evidence_source_content_hash(question) == expected:
-        return ""
-    if question.tagging_context.question_type != "解答题":
-        return None
-    matches = [kind for kind in LEGACY_ESSAY_TYPES if solution_evidence_source_content_hash(
-        replace(question, tagging_context=replace(question.tagging_context, question_type=kind))
-    ) == expected]
-    return matches[0] if len(matches) == 1 else None
+    return alias_from_hashes(_input_source_hashes(question), expected)
 
 
 def current_inputs(db_path: Path, ids: Sequence[int], connection: sqlite3.Connection, *,
@@ -59,7 +94,8 @@ def current_inputs(db_path: Path, ids: Sequence[int], connection: sqlite3.Connec
 
 def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Connection | None = None,
                   verify_source: bool = True, data_root: Path | None = None,
-                  question_inputs: Mapping[int, Any] | None = None) -> dict[int, dict[str, Any]]:
+                  question_inputs: Mapping[int, Any] | None = None,
+                  source_hashes: MutableMapping[int, SourceHash] | None = None) -> dict[int, dict[str, Any]]:
     """Latest usable evidence plus active formula difficulty per part.
 
     A record exists for every question whose newest proposed/approved evidence
@@ -117,16 +153,35 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
         inputs = {}
         question_rows: dict[int, Any] = {}
         if rows and verify_source:
-            # A caller that already loaded this batch can reuse its exact
-            # question inputs. Source comparison still runs for every profile.
-            inputs = question_inputs if question_inputs is not None else current_inputs(
-                db_path, [int(r["question_id"]) for r in rows], conn, data_root=data_root)
             question_rows = {
                 int(row["id"]): dict(row)
                 for row in conn.execute(
                     f"SELECT * FROM questions WHERE id IN ({marks}) AND is_deleted = 0", list(ids),
                 ).fetchall()
             }
+            if question_inputs is not None:
+                # A caller that already loaded this batch can reuse its exact
+                # question inputs. Source comparison still runs for every profile.
+                inputs = question_inputs
+            elif source_hashes is not None:
+                # Reuse stored content checks: only rows whose hashed fields
+                # changed (or which have no entry) read their files again.
+                stale = [
+                    question_id
+                    for profile_row in rows
+                    if (question_id := int(profile_row["question_id"])) not in question_rows
+                    or (source_hashes.get(question_id) is None
+                        or source_hashes[question_id].input_key != source_input_key(question_rows[question_id]))
+                ]
+                if stale:
+                    for question_id, question in current_inputs(
+                            db_path, stale, conn, data_root=data_root).items():
+                        row = question_rows.get(question_id)
+                        source_hashes[question_id] = _input_source_hashes(
+                            question, source_input_key(row) if row is not None else "")
+            else:
+                inputs = current_inputs(
+                    db_path, [int(r["question_id"]) for r in rows], conn, data_root=data_root)
         from question_bank.services.standard_difficulty import (
             question_content_fingerprint,
         )
@@ -147,9 +202,14 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
             fingerprint = ""
             alias = ""
             if verify_source:
-                question = inputs[question_id]
-                current_hash = solution_evidence_source_content_hash(question)
-                alias = "" if current_hash == evidence_source_hash else source_alias(question, evidence_source_hash)
+                if source_hashes is not None and question_inputs is None:
+                    entry = source_hashes[question_id]
+                    current_hash = entry.current
+                    alias = alias_from_hashes(entry, evidence_source_hash)
+                else:
+                    question = inputs[question_id]
+                    current_hash = solution_evidence_source_content_hash(question)
+                    alias = "" if current_hash == evidence_source_hash else source_alias(question, evidence_source_hash)
                 question_row = question_rows.get(question_id)
                 fingerprint = (
                     question_content_fingerprint(question_row)

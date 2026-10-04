@@ -5,6 +5,7 @@ import { createMemoryHistory } from 'vue-router'
 
 import { ApiError } from '../api/errors'
 import { questionBankApi, type QuestionBankPaper } from '../api/question-bank'
+import { trainingApi } from '../api/training'
 import QuestionBasketDrawer from '../components/question-bank/QuestionBasketDrawer.vue'
 import { useAssemblyStore } from '../stores/assembly'
 import QuestionBankTodo from '../components/question-bank/QuestionBankTodo.vue'
@@ -606,6 +607,7 @@ describe('question bank workspace', () => {
     const bank = useQuestionBankStore(pinia)
     const list = vi.spyOn(bank, 'loadQuestions').mockResolvedValue()
     vi.spyOn(questionBankApi, 'listFacets').mockResolvedValue({ exam_scopes: [], curriculum_sections: [], knowledge_points: [], curriculum_chapters: [], abilities: [], methods: [], models: [], thoughts: [], special_types: [], error_types: [], error_pattern_categories: [], student_levels: [], teaching_stages: [], sub_skills: [], question_types: [], years: [], exam_types: [], grades: [] })
+    const overview = vi.spyOn(trainingApi, 'overview').mockResolvedValue({ nodes: [] } as unknown as Awaited<ReturnType<typeof trainingApi.overview>>)
     bank.papers = [
       { ...paper, id: 4, curriculum_volume_id: 'bnu24-math-g8-upper', title: 'TEST-函数单元卷' },
       { ...paper, id: 9, curriculum_volume_id: 'bnu24-math-g8-upper', title: 'TEST-几何期末卷' },
@@ -657,6 +659,9 @@ describe('question bank workspace', () => {
     await vi.waitFor(() => expect(router.currentRoute.value.query.skill).toBe('unlinked'))
     expect(host.querySelector('.qb-skill-pane')).not.toBeNull()
     expect(host.querySelector('.qb-section-switcher')).not.toBeNull()
+
+    // The mastery read needs only group-level nodes, not per-student detail.
+    await vi.waitFor(() => expect(overview).toHaveBeenCalledWith(expect.objectContaining({ include_student_detail: false }), expect.anything()), { timeout: 4000 })
   })
 
   it('browses questions across skills by tag dimension, scope and value', async () => {

@@ -210,7 +210,7 @@ async function loadMastery() {
   const controller = new AbortController()
   overviewController = controller
   try {
-    const result = await trainingApi.overview({ scope: { mode: 'all', student_ids: [] }, exam_scope: { mode: 'semester', session_ids: [], curriculum_volume_id: scope.selectedVolumeId } }, controller.signal)
+    const result = await trainingApi.overview({ scope: { mode: 'all', student_ids: [] }, exam_scope: { mode: 'semester', session_ids: [], curriculum_volume_id: scope.selectedVolumeId }, include_student_detail: false }, controller.signal)
     if (!controller.signal.aborted) overview.value = result.nodes
   } catch { if (!controller.signal.aborted) { overview.value = []; sort.value = 'curriculum' } }
 }

@@ -310,3 +310,38 @@ def test_overview_association_failure_preserves_mastery_and_warns(monkeypatch):
     assert actual.pop('warnings') == ['知识点与技能关联暂不可用']
     expected.pop('warnings')
     assert actual == expected
+
+
+def test_overview_include_student_detail_strips_lists_without_touching_cache(tmp_path):
+    """include_student_detail=False 只裁剪返回体，不改动共享缓存的完整结果。"""
+    grading_db = _seed_grading_db(tmp_path)
+    question_bank_db = _seed_question_bank_db(tmp_path)
+    client = _client(grading_db, question_bank_db)
+    query = {
+        "scope": {"mode": "all", "use_historical_fallback": True},
+        "exam_scope": {
+            "mode": "semester",
+            "curriculum_volume_id": "bnu24-math-g8-upper",
+            "session_ids": [1],
+        },
+    }
+    full = client.post("/api/training/overview", json=query)
+    assert full.status_code == 200, full.text
+    full_payload = full.json()
+    assert full_payload["students"]
+
+    slim = client.post(
+        "/api/training/overview", json={**query, "include_student_detail": False})
+    assert slim.status_code == 200, slim.text
+    slim_payload = slim.json()
+    assert slim_payload == {
+        **full_payload,
+        "associations": [],
+        "students": [],
+        "nodes": [{**node, "students": []} for node in full_payload["nodes"]],
+    }
+
+    # 缓存的完整载荷未被裁剪：随后的完整请求仍返回逐学生数据。
+    again = client.post("/api/training/overview", json=query)
+    assert again.status_code == 200, again.text
+    assert again.json() == full_payload

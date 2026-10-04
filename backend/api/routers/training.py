@@ -405,6 +405,15 @@ def build_training_overview(
             "training_database_unavailable",
             "Training data is temporarily unavailable",
         ) from exc
+    if not body.include_student_detail:
+        # The overview payload can be a shared cached object; build a new
+        # dict instead of mutating it.
+        overview = {
+            **overview,
+            "associations": [],
+            "students": [],
+            "nodes": [{**node, "students": []} for node in overview.get("nodes", [])],
+        }
     return TrainingOverviewResponse.model_validate(overview)
 
 

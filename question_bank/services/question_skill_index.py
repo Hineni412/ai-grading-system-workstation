@@ -4,13 +4,14 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter, defaultdict
+from collections.abc import MutableMapping
 from pathlib import Path
 from statistics import median
 from typing import Any
 from question_bank.current_knowledge import CurrentKnowledgeResolver, CurrentKnowledgeUnavailable
 
 from question_bank.solution_evidence.knowledge_links import load_point_links
-from question_bank.solution_evidence.part_assessments import load_profiles
+from question_bank.solution_evidence.part_assessments import SourceHash, load_profiles
 from question_bank.taxonomy.curriculum_catalog import (
     curriculum_knowledge_ancestors, curriculum_knowledge_node, curriculum_volume,
 )
@@ -83,6 +84,7 @@ def load_skill_inventory(conn: sqlite3.Connection) -> dict[str, Any]:
 def build_skill_snapshot(
     conn: sqlite3.Connection, db_path: Path, data_root: Path | None,
     *, inventory: dict[str, Any] | None = None, question_ids: tuple[int, ...] | None = None,
+    source_hashes: MutableMapping[int, SourceHash] | None = None,
 ) -> dict[str, Any]:
     inventory = inventory if inventory is not None else load_skill_inventory(conn)
     release, nodes = inventory["release"], inventory["nodes"]
@@ -91,7 +93,8 @@ def build_skill_snapshot(
     selected = set(questions)
     members = {key: ids & selected for key, ids in inventory["members"].items()}
     volumes = {key: ids & selected for key, ids in inventory["volumes"].items()}
-    profiles = load_profiles(db_path, list(questions), connection=conn, data_root=data_root)
+    profiles = load_profiles(db_path, list(questions), connection=conn, data_root=data_root,
+                             source_hashes=source_hashes)
     usable = {qid: profile for qid, profile in profiles.items() if profile.get("available")}
     links = load_point_links(db_path, [profile["evidence_version_id"] for profile in usable.values()], release, connection=conn)
     point_counts: dict[int, int] = {}

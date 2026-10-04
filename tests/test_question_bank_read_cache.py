@@ -20,8 +20,10 @@ from question_bank.services.question_read_service import (
 @pytest.fixture(autouse=True)
 def _clear_read_result_cache():
     read_module._READ_RESULT_CACHE.clear()
+    read_module._SKILL_SOURCE_MEMO.clear()
     yield
     read_module._READ_RESULT_CACHE.clear()
+    read_module._SKILL_SOURCE_MEMO.clear()
 
 
 def _seed_paper(db_path: Path, paper_id: int = 1, title: str = "Paper") -> None:
@@ -725,3 +727,144 @@ def test_question_bank_browse_warm_uses_the_first_skill_page_filters(tmp_path, m
     worker._warm_question_bank(9)
     assert worker._seen_qb_browse_generation == 9
     assert calls == []
+
+
+def _spy_current_inputs(monkeypatch):
+    """Record the question ids whose content files are actually read."""
+    from question_bank.solution_evidence import part_assessments
+    loaded: list[int] = []
+    original = part_assessments.current_inputs
+
+    def spy(db_path, ids, connection, *, data_root=None):
+        loaded.extend(int(value) for value in ids)
+        return original(db_path, ids, connection, data_root=data_root)
+
+    monkeypatch.setattr(part_assessments, 'current_inputs', spy)
+    return loaded
+
+
+def _fresh_skill_snapshot(db: Path, root: Path):
+    """A full build without any memo — the reference result for each case."""
+    from question_bank.database.schema import connect
+    from question_bank.services.question_skill_index import build_skill_snapshot
+    with connect(db) as conn:
+        return build_skill_snapshot(conn, db, root)
+
+
+def test_skill_snapshot_rebuild_reloads_only_changed_question_inputs(tmp_path, monkeypatch):
+    """数据库写入触发完整重建，但只有内容字段变化的题目重新读取文件。"""
+    from question_bank.database.schema import connect
+    from question_bank.services.file_cache import clear_file_caches
+    from question_bank.training_criteria import (
+        QuestionAnalysisInputLoader, solution_evidence_source_content_hash,
+    )
+
+    service, db, _keys = _seed_skill_bank(tmp_path)
+    loaded = _spy_current_inputs(monkeypatch)
+    # 3 号题暂无可用证据，6 号题已删除；其余四题都有内容校验存项。
+    usable = {1, 2, 4, 5}
+    release = None
+    with connect(db) as conn:
+        release = conn.execute(
+            "SELECT release_id FROM knowledge_graph_releases WHERE status='active'").fetchone()[0]
+
+    def insert_evidence(question_id: int, input_obj) -> None:
+        payload = {"parts": [{"part_id": "part-1", "evidence_points": [
+            {"evidence_point_id": "p1", "target": "列式"}]}]}
+        version = f'TEST-v{question_id}'.ljust(64, '0')
+        with connect(db) as conn:
+            conn.execute("INSERT INTO question_solution_evidence_versions(evidence_version_id,question_id,source_content_hash,schema_version,content_hash,evidence_json,status,source_kind,source_reference,created_by,graph_release_id) "
+                         "VALUES(?,?,?,'question-solution-evidence-v2',?,?,'approved','combined_model','TEST','TEST',?)",
+                         (version, question_id, solution_evidence_source_content_hash(input_obj),
+                          version, json.dumps(payload), release))
+
+    def rebuild():
+        loaded.clear()
+        return service._skill_snapshot(), list(loaded)
+
+    # 首次构建没有任何存项，全部读取并写入备忘录。
+    expected = _fresh_skill_snapshot(db, tmp_path)
+    snapshot, ids = rebuild()
+    assert snapshot == expected
+    assert set(ids) == usable
+
+    # 改写题面：只有该题重新读取。
+    with connect(db) as conn:
+        conn.execute("UPDATE questions SET question_text='TEST-改写题面' WHERE id=1")
+    expected = _fresh_skill_snapshot(db, tmp_path)
+    snapshot, ids = rebuild()
+    assert snapshot == expected and set(ids) == {1}
+
+    # 新增可用证据版本：该题没有已存校验项，只读取它。
+    q3 = QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path).load([3])[0]
+    insert_evidence(3, q3)
+    usable.add(3)
+    expected = _fresh_skill_snapshot(db, tmp_path)
+    snapshot, ids = rebuild()
+    assert snapshot == expected and set(ids) == {3}
+
+    # 链接行变化不属于题面输入：不读任何文件，结果仍与全新构建一致。
+    with connect(db) as conn:
+        conn.execute("UPDATE evidence_point_knowledge_links SET role='supporting_prerequisite' "
+                     "WHERE question_id=1 AND role='direct'")
+    expected = _fresh_skill_snapshot(db, tmp_path)
+    snapshot, ids = rebuild()
+    assert snapshot == expected and ids == []
+
+    # 删除的题不再读取，其存项也被裁掉。
+    with connect(db) as conn:
+        conn.execute("UPDATE questions SET is_deleted=1 WHERE id=2")
+    usable.discard(2)
+    expected = _fresh_skill_snapshot(db, tmp_path)
+    snapshot, ids = rebuild()
+    assert snapshot == expected and ids == []
+    memo = read_module._SKILL_SOURCE_MEMO[service._cache_data_root]
+    assert 2 not in memo["entries"]
+    assert set(memo["entries"]) <= usable
+
+    # 新题没有存项，只读取它。
+    with connect(db) as conn:
+        conn.execute("INSERT INTO questions(id,paper_id,question_number,question_text,question_type) "
+                     "VALUES(7,1,'7','TEST-新增题','解答题')")
+    insert_evidence(7, QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path).load([7])[0])
+    usable.add(7)
+    expected = _fresh_skill_snapshot(db, tmp_path)
+    snapshot, ids = rebuild()
+    assert snapshot == expected and set(ids) == {7}
+
+    # 素材清单变化使整份校验作废：全部重新读取。文件侧改动不改变数据库
+    # 世代号，与重启后的首次读取一样先清掉进程内缓存再比对。
+    sidecar = tmp_path / 'question_bank/rich_content/question_1.json'
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_text(json.dumps({'version': 3, 'question_blocks': [
+        {'type': 'text', 'text': 'TEST-改写富文本'}]}), encoding='utf-8')
+    read_module._READ_RESULT_CACHE.clear()
+    clear_file_caches()
+    expected = _fresh_skill_snapshot(db, tmp_path)
+    snapshot, ids = rebuild()
+    assert snapshot == expected and set(ids) == usable
+
+    # 历史题型别名只依赖已存散列：匹配旧类型的证据仍能复用，无需重读。
+    from dataclasses import replace
+    q4 = QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path).load([4])[0]
+    legacy_hash = solution_evidence_source_content_hash(
+        replace(q4, tagging_context=replace(q4.tagging_context, question_type='解答题（计算）')))
+    with connect(db) as conn:
+        conn.execute("UPDATE question_solution_evidence_versions SET source_content_hash=? "
+                     "WHERE question_id=4", (legacy_hash,))
+    expected = _fresh_skill_snapshot(db, tmp_path)
+    snapshot, ids = rebuild()
+    assert snapshot == expected and ids == []
+    assert 4 in snapshot['by_question'] and 4 not in snapshot['no_usable']
+
+    # 重启（内存备忘录与读缓存清空）后，持久化校验项让改动题之外的输入不重读。
+    read_module._SKILL_SOURCE_MEMO.clear()
+    read_module._READ_RESULT_CACHE.clear()
+    clear_file_caches()
+    restarted = QuestionBankReadService(db, data_root=tmp_path)
+    with connect(db) as conn:
+        conn.execute("UPDATE questions SET question_text='TEST-重启后改写' WHERE id=5")
+    expected = _fresh_skill_snapshot(db, tmp_path)
+    loaded.clear()
+    snapshot = restarted._skill_snapshot()
+    assert snapshot == expected and set(loaded) == {5}

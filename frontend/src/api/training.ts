@@ -550,6 +550,7 @@ export interface TrainingDiagnosis {
 export interface TrainingOverviewRequest {
   scope: TrainingStudentScopeRequest
   exam_scope: TrainingExamScopeRequest
+  include_student_detail?: boolean
 }
 
 export type OverviewNodeKind = 'chapter' | 'section' | 'topic' | 'skill'

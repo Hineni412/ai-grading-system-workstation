@@ -123,6 +123,7 @@ class TrainingDiagnosisRequest(_TrainingModel):
 class TrainingOverviewRequest(_TrainingModel):
     scope: TrainingScopeRequest
     exam_scope: TrainingExamScopeRequest
+    include_student_detail: bool = True
 
 
 class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest, RecommendationRulesRequest):
