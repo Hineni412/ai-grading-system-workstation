@@ -1,0 +1,21 @@
+<script setup lang="ts">
+import type { ReturnRow } from '../../features/training/training-return'
+import { issueLabel, resultTotals } from '../../features/training/training-return'
+import StatusBadge from '../design-system/StatusBadge.vue'
+import AppButton from '../design-system/AppButton.vue'
+defineProps<{ rows: ReturnRow[]; selectedId: string; count: number; filter: string; hasNext: boolean }>()
+const emit = defineEmits<{ select: [id: string]; filter: [value: string]; next: [] }>()
+</script>
+<template>
+  <nav class="return-queue" aria-label="回收答卷学生列表">
+    <header><strong>学生 <span>{{ count }} 人</span></strong><select class="app-input" aria-label="学生队列筛选" :value="filter" @change="emit('filter', ($event.target as HTMLSelectElement).value)"><option value="all">全部</option><option value="pending">需要处理</option><option value="done">已完成</option></select></header>
+    <div class="return-queue__rows"><template v-for="(row, i) in rows" :key="row.id"><p v-if="row.page && i === 0" class="return-queue__group">异常页</p><button type="button" :aria-pressed="selectedId === row.id" :data-row-id="row.id" @click="emit('select', row.id)"><span class="queue-row-heading"><strong>{{ row.page ? `上传文件第 ${row.page.upload_page_number} 页` : row.submission?.student_name || row.submission?.student_code || row.submission?.student_id }}</strong><StatusBadge :tone="row.tone" :label="row.label" /></span><small v-if="row.page">{{ issueLabel(row.page.issue_code) }}</small><small v-else>{{ row.submission?.class_id }} · {{ row.submission?.student_code }}<template v-if="row.record?.assessment"> · 达成 {{ resultTotals(row.record.assessment).met }}/{{ resultTotals(row.record.assessment).total }} 点</template></small><span v-if="row.stage === 'running'" class="queue-running" aria-hidden="true"><i /></span></button></template><p v-if="!rows.length" class="queue-empty">当前筛选没有答卷。</p></div>
+    <AppButton v-if="hasNext" variant="ghost" class="return-queue__next" @click="emit('next')">下一份待处理 ›</AppButton>
+  </nav>
+</template>
+<style scoped>
+.return-queue{min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--color-bg-surface);border:1px solid var(--color-border-default);border-radius:var(--radius-panel);padding:var(--space-3)}header{display:flex;align-items:center;gap:var(--space-2);font-size:var(--font-size-dense);margin-bottom:var(--space-2)}header span{color:var(--color-text-muted);font-weight:400}header select{margin-left:auto;max-width:95px;padding:var(--space-1);font-size:var(--font-size-caption);height:28px}.return-queue__rows{flex:1;overflow-y:auto;min-height:0}.return-queue__group{font-size:var(--font-size-caption);color:var(--color-text-muted);margin:var(--space-2)}
+.return-queue__rows>button{width:100%;border:0;border-radius:var(--radius-control);padding:var(--space-3) var(--space-2);text-align:left;background:transparent;font:inherit;cursor:pointer}.return-queue__rows>button:hover{background:var(--color-bg-subtle)}.return-queue__rows>button[aria-pressed=true]{background:var(--color-accent-subtle);box-shadow:inset 3px 0 var(--color-accent)}.queue-row-heading{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}.queue-row-heading strong{font-size:var(--font-size-dense);overflow-wrap:anywhere}.return-queue small{display:block;font-size:var(--font-size-caption);color:var(--color-text-muted);margin-top:var(--space-1)}.queue-running{display:block;height:3px;background:var(--color-bg-subtle);overflow:hidden;margin-top:var(--space-2)}.queue-running i{display:block;width:60%;height:100%;background:var(--color-info);animation:queue-progress 1s ease-in-out infinite alternate}.return-queue__next{flex:none;margin-top:var(--space-2)}.queue-empty{font-size:var(--font-size-caption);color:var(--color-text-muted)}
+@keyframes queue-progress{to{transform:translateX(65%)}}@media(prefers-reduced-motion:reduce){.queue-running i{animation:none}}
+@media(max-width:1023px){.return-queue__rows{display:flex;overflow-x:auto;overflow-y:hidden}.return-queue__rows>button{flex:0 0 185px}.return-queue__group,.return-queue small,.queue-running{display:none}.return-queue__next{align-self:flex-end}.queue-row-heading{flex-wrap:wrap}.return-queue{max-width:100%}}
+</style>

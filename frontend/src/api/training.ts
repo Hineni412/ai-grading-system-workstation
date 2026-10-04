@@ -351,6 +351,7 @@ export type TrainingPointState =
   | 'unreadable'
 
 export interface TrainingAssessmentPoint {
+  candidate_state?: TrainingPointState | null
   point_id: string
   content: string
   state?: TrainingPointState | null
