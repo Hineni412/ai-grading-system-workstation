@@ -10,8 +10,11 @@ from typing import Any
 from question_bank.recommendation.personalized import (
     PersonalizedRecommendationConfig,
     PersonalizedRecommendationModule,
+    _group_rank,
+    _is_core,
+    _task_need_ids,
+    _task_priorities,
     paper_similarity_allowed,
-    repeated_consolidation_only,
     resolve_practice_scope,
 )
 from question_bank.services.question_read_service import QuestionBankReadService
@@ -28,9 +31,10 @@ def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id
         chapters = [chapter for chapter in chapters if chapter['knowledge_id'] in scope_keys]
     if not chapters:
         raise ValueError("Chapter is outside teaching term")
-    allowed = {point["id"] for chapter in chapters for section in chapter["sections"] for point in section["knowledge_points"]}
-    allowed.update(str(edge["skill_key"]) for edge in diagnosis.get("knowledge_associations", ())
-                   if edge.get("topic_key") in allowed and edge.get("same_part_question_count", 0) > 0)
+    # Knowledge topics only decide chapter/section scope; listed weaknesses are skills.
+    topics = {point["id"] for chapter in chapters for section in chapter["sections"] for point in section["knowledge_points"]}
+    allowed = {str(edge["skill_key"]) for edge in diagnosis.get("knowledge_associations", ())
+               if edge.get("topic_key") in topics and edge.get("same_part_question_count", 0) > 0}
     sections = {section["knowledge_id"] for chapter in chapters for section in chapter["sections"]}
     if resolver is not None:
         from question_bank.recommendation.target_matching import target_index
@@ -41,6 +45,7 @@ def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id
         allowed.update(str(node["knowledge_key"]) for node in diagnosis.get("knowledge_catalog", ())
                        if str(node.get("knowledge_key", "")).startswith("sk_")
                        and node.get("parent_knowledge_key") in sections)
+    allowed = {key for key in allowed if str(key).startswith("sk_")}
     members: dict[str, dict[str, Mapping[str, Any]]] = defaultdict(dict)
     for student in diagnosis.get("students", []):
         for point in student.get("weak_points", []):
@@ -52,6 +57,8 @@ def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id
     # reinterpret missing student evidence as zero or recompute mastery here.
     for point in diagnosis.get("group_weak_points", []):
         key = point["knowledge_key"]
+        if not str(key).startswith("sk_"):
+            continue
         evidence = list(members.get(key, {}).values())
         weak = sum(item.get("tier") in {"weak", "unsteady"} for item in evidence)
         clearly_weak = sum(item.get("tier") == "weak" for item in evidence)
@@ -103,7 +110,9 @@ def shortlist_candidates(
     weaknesses = class_weaknesses(diagnosis, volume_id=volume_id, chapter_id=chapter_id,
                                  resolver=resolver, scope_keys=config.scope_keys)
     by_key = {item["knowledge_key"]: item for item in weaknesses}
-    selected = list(dict.fromkeys(target_keys)) if target_keys is not None else [item["knowledge_key"] for item in weaknesses[:1]]
+    selected = [key for key in dict.fromkeys(target_keys) if str(key).startswith("sk_")] if target_keys is not None else [item["knowledge_key"] for item in weaknesses[:1]]
+    if any(not str(key).startswith("sk_") and resolver.node(str(key)) is None for key in target_keys or ()):
+        raise ValueError("Selected target is no longer in the current class scope")
     if any(key not in by_key for key in selected):
         raise ValueError("Selected target is no longer in the current class scope")
     students = diagnosis.get("students", [])
@@ -144,8 +153,12 @@ def shortlist_candidates(
             "uncertain_student_count": sum(e["evidence_confidence"] != "repeated" for e in members.values()),
             "difficulty_basis": best["difficulty_basis"], "similar_question_ids": [],
             "direct_target_keys": sorted({e["key"] for e in group if e["selection_kind"] == "direct"})})
-    candidates.sort(key=lambda item: (-item["remediation_student_count"], repeated_consolidation_only(groups[item["question_id"]]),
-                                     -item["suitable_student_count"], item["match_level"], item["question_id"]))
+    memo: dict = {}
+    priorities = _task_priorities(groups, memo)
+    needs = {qid: set().union(*(_task_need_ids(e, memo) for e in group
+                              if _is_core(e) and e.get("practice_purpose", "remediation") == "remediation"))
+             for qid, group in groups.items()}
+    candidates.sort(key=lambda item: _group_rank(groups[item["question_id"]], needs[item["question_id"]], priorities))
     # Fold only genuine similarity using the same comparator. Written count is
     # a selected-paper rule, so comparing two candidates never imposes a quota.
     descriptors = {q["question_id"]: q for q in evaluated["candidates"]}

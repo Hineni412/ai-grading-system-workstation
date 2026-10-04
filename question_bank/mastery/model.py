@@ -321,6 +321,11 @@ class MasteryModel:
         self._mastery_states[identity] = result
         return result
 
+    @property
+    def difficulty_slope(self):
+        """Logit change per difficulty level; requires a completed fit."""
+        return float(self.x[self.index[("beta1",)]]) / 4.5
+
     def result(self, student, node, week):
         mean, sd = self.mastery(student, node, week)
         scale = 1-self.parameters.slip

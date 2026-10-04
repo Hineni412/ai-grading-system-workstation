@@ -143,13 +143,22 @@ def refined_training_source(tmp_path):
         solution_evidence_source_content_hash,
         training_criteria_from_solution_evidence,
     )
-    from tests.current_knowledge_support import install_current_knowledge
+    from tests.training.test_personalized_recommendation import _install_release_with_skills
     from tests.training.test_solution_evidence_semantics import _evidence_payload
 
     root = tmp_path / "data"
     path = root / "databases" / "question_bank.db"
     initialize_database(path)
-    install_current_knowledge(path)
+    _install_release_with_skills(
+        path,
+        revision=3,
+        skill_parents={
+            "sk_alg_linear_equation": "kp_bnu24_math_g7_upper_5_2_1",
+            "sk_geo_triangle_congruence": "kp_bnu24_math_g7_lower_4_3_9",
+            "sk_geo_construction": "kp_bnu24_math_g7_lower_4_3_4",
+            "sk_fun_linear": "kp_bnu24_math_g8_upper_4_2_2",
+        },
+    )
     with connect(path) as conn:
         conn.execute(
             "INSERT INTO papers(id,title,import_status) VALUES(1,'合成试卷','ready')"
@@ -181,7 +190,7 @@ def refined_training_source(tmp_path):
     raw = _evidence_payload(1)
     raw["parts"][0]["evidence_points"][0]["fine_term_links"] = [
         {
-            "fine_term_id": "kp_alg_linear_equation",
+            "fine_term_id": "sk_alg_linear_equation",
             "fine_term_name": "一元一次方程",
             "role": "direct",
         }
@@ -194,7 +203,7 @@ def refined_training_source(tmp_path):
         observable_evidence="列出全等条件",
         fine_term_links=[
             {
-                "fine_term_id": "kp_geo_triangle_congruence",
+                "fine_term_id": "sk_geo_triangle_congruence",
                 "fine_term_name": "三角形全等",
                 "role": "direct",
             }
@@ -266,8 +275,8 @@ def test_refined_recommendation_freezes_current_criteria_and_returns_part_eviden
     candidate = candidates[0]
     assert candidate["difficulty"] == 8  # Previously the whole question was tagged 2.
     assert set(candidate["stable_keys"]) == {
-        "kp_alg_linear_equation",
-        "kp_geo_triangle_congruence",
+        "sk_alg_linear_equation",
+        "sk_geo_triangle_congruence",
     }
     assert candidate["criterion_version_id"] != old_version
     assert (
@@ -279,7 +288,7 @@ def test_refined_recommendation_freezes_current_criteria_and_returns_part_eviden
     eligible = module._eligible_candidates(
         candidates,
         stage="direct",
-        target_keys=("kp_alg_linear_equation",),
+        target_keys=("sk_alg_linear_equation",),
         maintenance=False,
         used=set(),
         recent=set(),
@@ -293,7 +302,7 @@ def test_refined_recommendation_freezes_current_criteria_and_returns_part_eviden
         slot=1,
         student_id="1",
         target={},
-        matched_key="kp_alg_linear_equation",
+        matched_key="sk_alg_linear_equation",
         maintenance=True,
     )
     frozen = PersonalizedPaperModule(db_path=path, data_root=root)._prepare_items(
@@ -314,8 +323,8 @@ def test_refined_recommendation_freezes_current_criteria_and_returns_part_eviden
         links_from_embedded(profile["evidence"]),
     )
     assert [(o["stable_key"], o["achieved"], o["difficulty"]) for o in observed] == [
-        ("kp_alg_linear_equation", 1, 2),
-        ("kp_geo_triangle_congruence", 0, 8),
+        ("sk_alg_linear_equation", 1, 2),
+        ("sk_geo_triangle_congruence", 0, 8),
     ]
     from tests.training.test_personalized_recommendation import _diagnosis
 
@@ -342,7 +351,9 @@ def test_refined_recommendation_freezes_current_criteria_and_returns_part_eviden
             difficulty_min=8,
             difficulty_max=8,
             training_intent="challenge",
-            target_keys=("kp_alg_linear_equation",),
+            target_keys=("sk_alg_linear_equation",),
+            curriculum_volume_id="bnu24-math-g7-lower",
+            teaching_progress_chapter_id="bnu24-math-g7-lower-c04",
             exclude_current_exam_originals=False,
         ),
     )

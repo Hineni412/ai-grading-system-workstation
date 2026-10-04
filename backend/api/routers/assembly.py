@@ -245,9 +245,8 @@ def quick_draft(
                 recommendations=recommendations, workspace=workspace, class_ids=body.class_ids, session_ids=body.session_ids,
                 curriculum_volume_id=body.curriculum_volume_id, target_keys=list(keys), difficulty_max=10,
                 recent_activity_count=body.rules.recent_activity_count, purpose=body.rules.purpose)['candidates']
-        candidates = sorted(pools[keys], key=lambda c: (-c['suitable_student_count'], -c['remediation_student_count'], c['question_id']))
         rejected = set()
-        for candidate in candidates:
+        for candidate in pools[keys]:
             qid = candidate['question_id']
             if qid in selected:
                 continue

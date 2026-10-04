@@ -79,6 +79,7 @@ export interface TrainingGrouping {
   summary?: {
     student_count: number
     students_with_needs: number
+    unlinked_loss_count?: number
     grouped_student_count: number
     group_count: number
   }

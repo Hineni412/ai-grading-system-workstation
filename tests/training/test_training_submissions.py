@@ -139,7 +139,7 @@ def test_shuffled_pages_group_by_signed_identity_and_survive_restart(
     # The submission stores the draft's diagnosis (paper_workspace applies the
     # 0.8-rate fixture); reproduce it so the mastery comparison is identical.
     profile = _paper_diagnosis(student_ids=("SYN-S01",))
-    identity = ("SYN-S01", "kp_alg_linear_equation")
+    identity = ("SYN-S01", "sk_alg_linear_equation")
     before = CurrentMasteryCalculator(
         db_path, resolver, clock=lambda: NOW, data_root=data_root
     ).calculate(profile)[identity]
@@ -237,6 +237,7 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
     from question_bank.training_criteria.analysis import (
         grading_config_skeleton_from_solution_evidence,
     )
+    import backend.api.app
     from backend.api.routers.training import create_personalized_recommendation_draft
     from backend.api.schemas.training import PersonalizedRecommendationCreateRequest
     import json
@@ -300,8 +301,8 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
         exam_scope = {"mode": "semester", "curriculum_volume_id": "bnu24-math-g8-upper"}
     # Warm the real diagnosis cache before publishing training evidence.
     profile = diagnosis_service.build_profiles(scope=scope, exam_scope=exam_scope)
-    # The diagnosis snapshot carries only teacher-visible top-level keys.
-    assert not any(str(key).startswith("_") for key in profile)
+    # Teacher-visible keys plus the documented internal exam-source contract.
+    assert {key for key in profile if str(key).startswith("_")} == {"_exam_source_metadata"}
     # A selected student and the whole population share the same fitted result.
     full_profile = diagnosis_service.build_profiles(scope={"mode": "all"}, exam_scope=exam_scope)
     full_student = next(student for student in full_profile["students"] if str(student["student_id"]) == "1")
@@ -409,8 +410,8 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
         db_path, resolver, data_root=data_root, clock=lambda: NOW,
         semester_mastery=diagnosis_service.semester_mastery,
     ).calculate(profile)
-    first = current[("1", "kp_alg_linear_equation")]
-    second = current[("1", "kp_geo_triangle_congruence")]
+    first = current[("1", "sk_alg_linear_equation")]
+    second = current[("1", "sk_geo_triangle_congruence")]
     assert first.training_evidence_count == second.training_evidence_count == 1
     # This fixture has one student and two differently difficult items. Global
     # item/source calibration also changes, so a fixed per-node direction is
@@ -454,11 +455,11 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
     target = next(
         item
         for item in fresh["students"][0]["targets"]
-        if item["stable_key"] == "kp_alg_linear_equation"
+        if item["stable_key"] == "sk_alg_linear_equation"
     )
     assert target["value"] == first.value
     assert target["tier"] == first.tier
-    assert target["evidence_count"] == before_counts["kp_alg_linear_equation"] + 1
+    assert target["evidence_count"] == before_counts["sk_alg_linear_equation"] + 1
     assert recommendation.get(draft["draft_id"]) == draft
     # Persist the current full population with the existing diagnosis snapshot.
     # A fresh process must reuse it for recommendation/graph callbacks too.
@@ -478,7 +479,7 @@ service._compute_tag_profiles=fail
 CurrentMasteryCalculator.calculate=fail
 profile=service.build_profiles(scope={'mode':'all'},exam_scope=json.loads(sys.argv[4]))
 population=service.semester_mastery(profile)
-value=population['1','kp_alg_linear_equation']
+value=population['1','sk_alg_linear_equation']
 print(json.dumps({'value':value.value,'count':value.observation_count,'tier':value.tier}))
 """
     process = subprocess.run([sys.executable, "-c", script, str(grading_path), str(db_path),
@@ -514,7 +515,7 @@ print(json.dumps({'value':value.value,'count':value.observation_count,'tier':val
         point = next(
             point
             for point in training_only["students"][0]["weak_points"]
-            if point["knowledge_key"] == "kp_alg_linear_equation"
+            if point["knowledge_key"] == "sk_alg_linear_equation"
         )
         assert point["evidence_count"] == 1
         assert point["mastery"] is not None

@@ -30,7 +30,7 @@ from question_bank.relations.query_service import (
     CurrentGraphQuery,
     CurrentKnowledgeGraphQueryService,
 )
-from tests.current_knowledge_support import install_current_knowledge
+from tests.training.test_personalized_recommendation import _install_release_with_skills
 
 
 DRAFT_ID = "1" * 64
@@ -53,7 +53,16 @@ def assessment_workspace(tmp_path: Path) -> tuple[Path, Path]:
     db_path = tmp_path / "question_bank.db"
     data_root = tmp_path / "data"
     initialize_database(db_path)
-    install_current_knowledge(db_path)
+    _install_release_with_skills(
+        db_path,
+        revision=3,
+        skill_parents={
+            "sk_alg_linear_equation": "kp_bnu24_math_g7_upper_5_2_1",
+            "sk_geo_triangle_congruence": "kp_bnu24_math_g7_lower_4_3_9",
+            "sk_geo_construction": "kp_bnu24_math_g7_lower_4_3_4",
+            "sk_fun_linear": "kp_bnu24_math_g8_upper_4_2_2",
+        },
+    )
     page_sha = hashlib.sha256(_PNG).hexdigest()
     relative_page = Path(SCAN_BATCH_ID[:20]) / "pages" / f"{SCAN_PAGE_ID[:32]}.png"
     page_path = data_root / "question_bank" / "training_submissions" / relative_page
@@ -151,7 +160,7 @@ def assessment_workspace(tmp_path: Path) -> tuple[Path, Path]:
                 ],
             }
             recommendation = {
-                "matched_key": "kp_alg_linear_equation",
+                "matched_key": "sk_alg_linear_equation",
                 "matched_name": "一元一次方程",
                 "difficulty": 4 + order,
                 "estimated_minutes": 5 + order,
@@ -407,6 +416,7 @@ def test_published_training_changes_current_mastery_and_next_draft_only(
                 "class_id": "SYN-CLASS",
                 "weak_points": [
                     {
+                        "knowledge_key": "sk_alg_linear_equation",
                         "knowledge_point": "一元一次方程",
                         "mastery": 0.2,
                         "evidence_count": 1,
@@ -463,7 +473,7 @@ def test_published_training_changes_current_mastery_and_next_draft_only(
                     question_id,
                     json.dumps(
                         {
-                            "matched_key": "kp_alg_linear_equation",
+                            "matched_key": "sk_alg_linear_equation",
                             "matched_name": "一元一次方程",
                             "difficulty": 5,
                             "estimated_minutes": 6,
@@ -510,7 +520,7 @@ def test_published_training_changes_current_mastery_and_next_draft_only(
     change = next(
         item
         for item in feedback["mastery_changes"]
-        if item["stable_key"] == "kp_alg_linear_equation"
+        if item["stable_key"] == "sk_alg_linear_equation"
     )
     assert module.pending_summary() == {"items": []}
     assert change["mastery_after"]["value"] > change["mastery_before"]["value"]
@@ -525,14 +535,14 @@ def test_published_training_changes_current_mastery_and_next_draft_only(
     ).query(
         diagnosis,
         CurrentGraphQuery(
-            knowledge_keys=("kp_alg_linear_equation",),
+            knowledge_keys=("sk_alg_linear_equation",),
             prerequisite_depth=0,
         ),
     )
     graph_node = next(
         node
         for node in graph["nodes"]
-        if node["stable_key"] == "kp_alg_linear_equation"
+        if node["stable_key"] == "sk_alg_linear_equation"
     )
     assert graph_node["mastery"]["value"] == change["mastery_after"]["value"]
     assert (
@@ -545,7 +555,7 @@ def test_published_training_changes_current_mastery_and_next_draft_only(
     next_target = next(
         item
         for item in feedback["next_round"]["student"]["targets"]
-        if item["stable_key"] == "kp_alg_linear_equation"
+        if item["stable_key"] == "sk_alg_linear_equation"
     )
     assert next_target["value"] == change["mastery_after"]["value"]
     assert next_target["evidence_count"] == change["mastery_after"]["evidence_count"]
@@ -651,6 +661,7 @@ def test_next_round_token_matches_legacy_frozen_request(
         "class_id": "SYN-CLASS",
         "weak_points": [
             {
+                "knowledge_key": "sk_alg_linear_equation",
                 "knowledge_point": "一元一次方程",
                 "mastery": 0.2,
                 "evidence_count": 1,

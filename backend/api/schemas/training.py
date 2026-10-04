@@ -510,6 +510,9 @@ class TrainingWeakPoint(_TrainingModel):
     precise_training_evidence_count: int = Field(default=0, ge=0)
     error_categories: list[str] = Field(default_factory=list)
     error_patterns: list[str] = Field(default_factory=list)
+    logit_mean: float | None = None
+    logit_sd: float | None = None
+    difficulty_slope: float | None = None
 
 
 class TrainingStudentProfile(_TrainingModel):

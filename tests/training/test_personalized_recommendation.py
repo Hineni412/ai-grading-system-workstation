@@ -33,15 +33,104 @@ NOW = datetime(2026, 7, 30, 8, 0, tzinfo=UTC)
 LOCAL_ONE = "ki_00000000000000000000000000000001"
 LOCAL_TWO = "ki_00000000000000000000000000000002"
 BNU_CHAPTER4 = "kp_bnu24_math_g7_lower_4"
-BNU_TARGET = f"{BNU_CHAPTER4}_2_2"
-BNU_PREREQ_NEAR = f"{BNU_CHAPTER4}_2_1"
-BNU_PREREQ_EARLIER = f"{BNU_CHAPTER4}_1_17"
-BNU_TRANSFER_SIBLING = f"{BNU_CHAPTER4}_2_3"
-BNU_TRANSFER_OTHER = f"{BNU_CHAPTER4}_1_1"
-BNU_OTHER_CHAPTER = "kp_bnu24_math_g7_lower_5_1_1"
+BNU_TARGET = "sk_bnu24_math_g7_lower_4_2_101"
+BNU_TARGET_TOPIC = f"{BNU_CHAPTER4}_2_2"
+BNU_PREREQ_NEAR = "sk_bnu24_math_g7_lower_4_1_101"
+BNU_PREREQ_EARLIER = "sk_bnu24_math_g7_lower_4_1_102"
+BNU_TRANSFER_SIBLING = "sk_bnu24_math_g7_lower_4_3_101"
+BNU_TRANSFER_OTHER = "sk_bnu24_math_g7_lower_4_1_01"
+BNU_OTHER_CHAPTER = "sk_bnu24_math_g7_lower_5_1_101"
 BNU_FIRST_LEAF = "kp_bnu24_math_g7_upper_1_1_1"
 BNU_G8_LEAF = "kp_bnu24_math_g8_upper_1_1_1"
 BNU_G8_QUESTION = 17
+SK_LINEAR = "sk_alg_linear_equation"
+SK_CONGRUENCE = "sk_geo_triangle_congruence"
+SK_CONSTRUCTION = "sk_geo_construction"
+SK_FUN_LINEAR = "sk_fun_linear"
+SK_PARENTS = {
+    SK_LINEAR: "kp_bnu24_math_g7_upper_5_2_1",
+    SK_CONGRUENCE: "kp_bnu24_math_g7_lower_4_3_9",
+    SK_CONSTRUCTION: "kp_bnu24_math_g7_lower_4_3_4",
+    SK_FUN_LINEAR: "kp_bnu24_math_g8_upper_4_2_2",
+}
+
+
+def _install_release_with_skills(
+    db_path: Path, *, revision: int, skill_parents: dict[str, str]
+) -> None:
+    """Bootstrap a test release that adds synthetic skill nodes under parents."""
+    release = load_release_for_taxonomy_revision(revision)
+    payload = release.to_dict()
+    payload.pop("content_hash", None)
+    source_id = str(payload["sources"][0]["source_id"])
+    payload["release_id"] = f"{payload['release_id']}-skill-test"
+    for node in payload["core_nodes"]:
+        node.setdefault("exclude_scope", "无排除范围")
+    existing_keys = {str(node["stable_key"]) for node in payload["core_nodes"]}
+    payload["core_nodes"] = [
+        *payload["core_nodes"],
+        *(
+            {
+                "stable_key": key,
+                "display_name": f"合成技能 {key}",
+                "aliases": [],
+                "node_kind": "skill",
+                "status": "active",
+                "definition": "合成测试技能",
+                "include_scope": "合成测试技能范围",
+                "exclude_scope": "无排除范围",
+                "curriculum_anchors": [f"合成锚点/{key}"],
+                "observable_evidence": "合成技能证据",
+                "rationale": "合成技能节点",
+                "evidence_source_ids": [source_id],
+            }
+            for key in skill_parents
+        ),
+        *(
+            {
+                "stable_key": parent,
+                "display_name": f"合成主题 {parent}",
+                "aliases": [],
+                "node_kind": "core",
+                "status": "active",
+                "definition": "合成测试主题",
+                "include_scope": "合成测试主题范围",
+                "exclude_scope": "无排除范围",
+                "curriculum_anchors": [f"合成锚点/{parent}"],
+                "observable_evidence": "合成主题证据",
+                "rationale": "合成主题节点",
+                "evidence_source_ids": [source_id],
+            }
+            for parent in set(skill_parents.values())
+            if parent not in existing_keys
+        ),
+    ]
+    payload["relations"] = [
+        *payload["relations"],
+        *(
+            {
+                "relation_key": hashlib.sha256(
+                    f"rel-skill-{key}".encode()
+                ).hexdigest(),
+                "source_key": key,
+                "target_key": parent,
+                "relation_type": "parent",
+                "rationale": "合成技能归属",
+                "basis_kind": "curriculum_structure",
+                "strength": "required",
+                "evidence_source_ids": [source_id],
+                "source_locator": "合成来源定位",
+            }
+            for key, parent in skill_parents.items()
+        ),
+    ]
+    bootstrap_release(
+        Path(db_path),
+        KnowledgeGraphRelease.from_mapping(payload),
+        actor_ref="test-suite",
+        source_reference="synthetic-skill-test-release",
+        reason="install skill test release",
+    )
 
 
 def test_training_fit_experiment_keeps_shared_member_fit_and_weak_purpose():
@@ -290,7 +379,8 @@ def recommendation_module(
 ) -> PersonalizedRecommendationModule:
     db_path = tmp_path / "question_bank.db"
     data_root = tmp_path / "data"
-    question_bank_database(db_path, taxonomy_revision=3)
+    question_bank_database(db_path)
+    _install_release_with_skills(db_path, revision=3, skill_parents=SK_PARENTS)
     _seed_recommendation_sources(db_path, data_root)
     return PersonalizedRecommendationModule(
         db_path=db_path,
@@ -306,7 +396,7 @@ def bnu24_recommendation_module(
 ) -> PersonalizedRecommendationModule:
     db_path = tmp_path / "question_bank.db"
     data_root = tmp_path / "data"
-    question_bank_database(db_path, taxonomy_revision=4)
+    question_bank_database(db_path, taxonomy_revision=7)
     _seed_bnu24_recommendation_sources(db_path, data_root)
     return PersonalizedRecommendationModule(
         db_path=db_path,
@@ -322,7 +412,7 @@ def bnu24_difficulty_module(
 ) -> PersonalizedRecommendationModule:
     db_path = tmp_path / "question_bank.db"
     data_root = tmp_path / "data"
-    question_bank_database(db_path, taxonomy_revision=4)
+    question_bank_database(db_path, taxonomy_revision=7)
     _seed_bnu24_difficulty_sources(db_path, data_root)
     return PersonalizedRecommendationModule(
         db_path=db_path,
@@ -366,14 +456,14 @@ def _seed_recommendation_sources(db_path: Path, data_root: Path) -> None:
     stable_keys = {
         1: LOCAL_ONE,
         2: LOCAL_TWO,
-        3: "kp_alg_linear_equation",
-        4: "kp_geo_triangle_congruence",
-        5: "kp_geo_construction",
-        6: "kp_alg_linear_equation",
-        7: "kp_alg_linear_equation",
-        8: "kp_alg_linear_equation",
-        9: "kp_alg_linear_equation",
-        10: "kp_geo_triangle_congruence",
+        3: SK_LINEAR,
+        4: SK_CONGRUENCE,
+        5: SK_CONSTRUCTION,
+        6: SK_LINEAR,
+        7: SK_LINEAR,
+        8: SK_LINEAR,
+        9: SK_LINEAR,
+        10: SK_CONGRUENCE,
     }
     with connect(db_path) as connection:
         connection.execute(
@@ -431,36 +521,36 @@ def _seed_recommendation_sources(db_path: Path, data_root: Path) -> None:
         _insert_relation(
             connection,
             "rel-linear-prerequisite",
-            "kp_alg_linear_equation",
+            SK_LINEAR,
             LOCAL_TWO,
             "prerequisite",
         )
         _insert_relation(
             connection,
             "rel-congruence-prerequisite",
-            "kp_geo_triangle_congruence",
+            SK_CONGRUENCE,
             LOCAL_ONE,
             "prerequisite",
         )
         _insert_relation(
             connection,
             "rel-construction-related",
-            "kp_geo_construction",
-            "kp_geo_triangle_congruence",
+            SK_CONSTRUCTION,
+            SK_CONGRUENCE,
             "related",
         )
         _insert_relation(
             connection,
             "rel-function-prerequisite",
-            "kp_fun_linear",
-            "kp_alg_linear_equation",
+            SK_FUN_LINEAR,
+            SK_LINEAR,
             "prerequisite",
         )
         _insert_relation(
             connection,
             "rel-function-related",
-            "kp_fun_linear",
-            "kp_geo_construction",
+            SK_FUN_LINEAR,
+            SK_CONSTRUCTION,
             "related",
         )
 
@@ -549,8 +639,8 @@ def _seed_bnu24_difficulty_sources(db_path: Path, data_root: Path) -> None:
 
 
 def _install_bnu24_release_with_mainline_relations(db_path: Path) -> None:
-    """Install a rev4 release plus two synthetic ancestor-level relations."""
-    release = load_release_for_taxonomy_revision(4)
+    """Install a rev7 release plus two synthetic ancestor-level relations."""
+    release = load_release_for_taxonomy_revision(7)
     payload = release.to_dict()
     payload.pop("content_hash", None)
     source_id = str(payload["sources"][0]["source_id"])
@@ -782,6 +872,12 @@ def _diagnosis(
                     if weak is None
                     else [
                         {
+                            "knowledge_key": {
+                                "一元一次方程": SK_LINEAR,
+                                "三角形全等": SK_CONGRUENCE,
+                                "尺规作图": SK_CONSTRUCTION,
+                                "一次函数": SK_FUN_LINEAR,
+                            }[weak],
                             "knowledge_point": weak,
                             "mastery": 0.35 + index / 100,
                             "evidence_count": 2,
@@ -797,10 +893,10 @@ def _diagnosis(
                                     else 5,
                                     "direct_fine_terms": [
                                         {
-                                            "一元一次方程": "kp_alg_linear_equation",
-                                            "三角形全等": "kp_geo_triangle_congruence",
-                                            "尺规作图": "kp_geo_construction",
-                                            "一次函数": "kp_fun_linear",
+                                            "一元一次方程": SK_LINEAR,
+                                            "三角形全等": SK_CONGRUENCE,
+                                            "尺规作图": SK_CONSTRUCTION,
+                                            "一次函数": SK_FUN_LINEAR,
                                         }[weak]
                                     ],
                                 }
@@ -953,7 +1049,8 @@ def _make_direct(module, *, diagnosis=None, token="a", **settings):
         request_token=token * 32,
         diagnosis=diagnosis or _direct_diagnosis(),
         config=PersonalizedRecommendationConfig(
-            question_count=8, scope_keys=(BNU_CHAPTER4,), **settings
+            **{"question_count": 8, "scope_keys": (BNU_CHAPTER4,),
+               "max_questions_per_skill": 8, **settings}
         ),
         actor_ref="synthetic",
     )
@@ -1517,7 +1614,7 @@ def _selection_draft(
         load_taxonomy_catalog_for_release,
     )
 
-    release = load_release_for_taxonomy_revision(4)
+    release = load_release_for_taxonomy_revision(7)
     module.current_knowledge = CurrentKnowledgeResolver(
         release, load_taxonomy_catalog_for_release(release)
     )
@@ -1599,62 +1696,7 @@ def test_personal_remediation_keeps_shortage_and_does_not_fill_correct_targets(m
             assert not _unmeasured_entry({**observed, "target": {"source_question_refs": [
                 {"full_score": 5, "score_awarded": score, "assessment": {"granularity": granularity}}]}})
     assert not _loss_refs({"source_question_refs": [{"full_score": 5, "score_awarded": None}]})
-    assert not _unmeasured_entry({**observed, "target": {"observed_same_task": True}})
-
-    from question_bank.recommendation.personalized import (
-        _observed_new_practice_tasks, _new_target_operation, _new_practice_operations,
-        _choose_practice_entries,
-    )
-    chapter = "kp_bnu24_math_g8_upper_1"
-    source_key = "sk_bnu24_math_g8_upper_1_3_102"
-    frozen = {"full_score": 5, "score_awarded": 5, "task_evidence_version_matches": True,
-        "assessment": {"granularity": "part", "eligible": True},
-        "practice_observations_by_key": {source_key: [{"part_observable": "作垂线构造直角三角形，再求边长",
-            "evidence_points": [{"evidence_point_id": "p1", "observable_evidence": "求边长"},
-                {"evidence_point_id": "p2", "observable_evidence": "构造直角三角形"}]}]}}
-    original = deepcopy(frozen)
-    assert "right_triangle_construction" in _observed_new_practice_tasks([frozen])[chapter]["observed"]
-    assert frozen == original
-    for invalid in ({"task_evidence_version_matches": False},
-        {"assessment": {"granularity": "whole_question", "eligible": True}},
-        {"assessment": {"granularity": "part", "eligible": False}}):
-        assert not _observed_new_practice_tasks([{**frozen, **invalid}])
-    step = {**frozen, "assessment": {"granularity": "step", "step_id": "p1"}}
-    assert "right_triangle_construction" not in _observed_new_practice_tasks([step])[chapter]["observed"]
-    step["assessment"]["step_id"] = "p2"
-    assert "right_triangle_construction" in _observed_new_practice_tasks([step])[chapter]["observed"]
-    assert "right_triangle_construction" not in _new_practice_operations("无需作垂线或构造直角三角形")
-    assert _new_target_operation("八上｜技能·构造直角三角形") == "right_triangle_construction"
-    assert _new_target_operation("八上｜技能·未知任务") == ""
-    for name, text, operation in (
-        ("分类讨论直角位置", "分别以三条边为斜边讨论直角三角形的位置", "right_angle_position_cases"),
-        ("用线段的和差关系列式求长度", "用线段的和差关系列式求长度", "segment_sum_difference_equation"),
-    ):
-        assert _new_target_operation(f"八上｜技能·{name}") == operation
-        seen = deepcopy(frozen)
-        seen["practice_observations_by_key"][source_key][0]["part_observable"] = text
-        assert operation in _observed_new_practice_tasks([seen])[chapter]["observed"]
-        assert operation not in _new_practice_operations("无需" + text)
-        seen["assessment"] = {"granularity": "step", "step_id": "p1"}
-        assert operation not in _observed_new_practice_tasks([seen])[chapter]["observed"]
-    roots = deepcopy(frozen)
-    roots["practice_observations_by_key"][source_key][0]["part_observable"] = "合并同类二次根式"
-    root_history = _observed_new_practice_tasks([roots])[chapter]
-    assert "like_radical_recognition" in root_history["related"]
-    assert "like_radical_recognition" not in root_history["observed"]
-
-    def new_entry(qid, difficulty, keys, related=False):
-        q = _selection_candidate(qid, f"合成新任务{qid}", key=keys[0], difficulty=difficulty, stable_keys=keys)
-        return {"candidate": q, "student_id": "TEST", "key": keys[0], "matched_key": keys[0],
-            "selection_kind": "direct", "practice_purpose": "new", "match_level": 1,
-            "distance": abs(difficulty-4.5), "preference": 0,
-            "target": {"related_task_observed": related, "difficulty_plan": {"aim": 4.5, "starter": 3.5}}}
-    entries = [new_entry(101, 3.5, ["sk_new_a"]), new_entry(102, 4.5, ["sk_new_a"]),
-        new_entry(103, 4.5, ["sk_new_b"]), new_entry(104, 4.5, ["sk_new_c", "sk_known_1", "sk_known_2"]),
-        new_entry(105, 4.5, ["sk_new_d"], related=True)]
-    chosen = _choose_practice_entries(entries, 10, PersonalizedRecommendationConfig(
-        remediation_only=True, max_unmeasured_questions=2))
-    assert [e["candidate"]["question_id"] for e, _ in chosen] == [101, 103]
+    assert _unmeasured_entry(observed)
 
 
 @pytest.mark.parametrize("blocker", [None, "written", "similar"])
@@ -1727,33 +1769,23 @@ def test_two_question_exchange_escapes_single_exchange_skill_conflict(written_li
     assert {e["candidate"]["question_id"] for e, _ in selected} == expected
 
 
-def test_same_frozen_task_links_count_once_and_unknown_context_stays_separate():
+def test_task_need_ids_pair_each_loss_with_its_skill_once():
     from question_bank.recommendation.personalized import _task_need_ids, _choose_practice_entries
-    def entry(qid, key, text, mode="exact_objective", chapter="TEST-chapter"):
-        part = {"part_id": "p", "response_mode": mode, "observable": text}
-        ref = {"full_score": 1, "score_awarded": 0, "task_evidence_version_matches": True,
-               "practice_observations_by_key": {key: [part]},
-               "target_facets": [{"part_id": "p", "chapter_keys": [chapter] if chapter else []}]}
+    def entry(qid, key):
+        ref = {"full_score": 1, "score_awarded": 0}
         return {"candidate": _selection_candidate(qid, f"合成独立任务{qid}", stable_keys=["sk_budget"]),
             "student_id": "TEST", "key": key, "matched_key": key, "selection_kind": "direct",
             "practice_purpose": "remediation", "target": {"value": .5, "source_question_refs": [ref]},
             "distance": 0., "preference": 0., "match_level": 1}
-    topic = entry(1, "kp_topic", "计算9的算术平方根为3")
-    skill = entry(1, "sk_skill", "计算9的算术平方根为3")
-    assert _task_need_ids(topic) == _task_need_ids(skill)
-    assert _task_need_ids(topic) != _task_need_ids(entry(1, "sk_skill", "计算9的算术平方根为3", "process_required"))
-    assert _task_need_ids(topic) != _task_need_ids(entry(1, "sk_skill", "计算9的算术平方根为3", chapter="OTHER"))
-    another_source = deepcopy(skill)
-    another_source["target"]["source_question_refs"][0]["question_id"] = "OTHER-QUESTION"
-    assert _task_need_ids(topic) != _task_need_ids(another_source)
-    multiple_sources = deepcopy(skill)
-    multiple_sources["target"]["source_question_refs"] += another_source["target"]["source_question_refs"]
-    assert _task_need_ids(multiple_sources) == frozenset({("TEST", "sk_skill")})
-    unknown = entry(1, "sk_unknown", "作答为B")
-    assert _task_need_ids(unknown) == frozenset({("TEST", "sk_unknown")})
-    assert _task_need_ids(entry(1, "sk_missing_context", "计算9的算术平方根为3", chapter="")) == frozenset({("TEST", "sk_missing_context")})
-    distinct = [entry(2, "sk_cube", "计算8的立方根为2"), entry(2, "sk_area", "利用面积关系相加")]
-    chosen = _choose_practice_entries([topic, skill, *distinct], 1, PersonalizedRecommendationConfig())
+    first, other = entry(1, "sk_skill"), entry(1, "sk_other")
+    assert _task_need_ids(first) == frozenset({("TEST", "sk_skill")})
+    assert _task_need_ids(first) != _task_need_ids(other)
+    same_skill = {**deepcopy(first)}
+    same_skill["target"] = {**first["target"], "source_question_refs": [
+        {"full_score": 1, "score_awarded": 0, "question_id": "OTHER-QUESTION"}]}
+    assert _task_need_ids(same_skill) == frozenset({("TEST", "sk_skill")})
+    distinct = [entry(2, "sk_cube"), entry(2, "sk_area")]
+    chosen = _choose_practice_entries([first, *distinct], 1, PersonalizedRecommendationConfig())
     assert chosen[0][0]["candidate"]["question_id"] == 2
 
 
@@ -1793,7 +1825,8 @@ def test_coarse_loss_gets_bounded_independent_diagnostic_without_weakness_claim(
     ref = point["source_question_refs"][0]
     ref["assessment"] = {"eligible": True, "granularity": "whole_question", "reason": reason}
     candidate = _selection_candidate(1, "合成独立短题", difficulty=3,
-        target_facets=[{"part_id": "p", "direct_keys": [BNU_TARGET], "topic_keys": [BNU_TARGET],
+        target_facets=[{"part_id": "p", "direct_keys": [BNU_TARGET], "skill_keys": [BNU_TARGET],
+                        "topic_keys": [BNU_TARGET_TOPIC], "section_keys": [f"{BNU_CHAPTER4}_2"],
                         "chapter_keys": [BNU_CHAPTER4]}],
         practice_observations_by_key={BNU_TARGET: [{"part_id": "p", "response_mode": "exact_objective", "observable": "求结果"}]})
     candidates = [candidate, {**deepcopy(candidate), "question_id": 2, "criterion_point_count": 2}]
@@ -1833,177 +1866,13 @@ def test_sparse_pool_never_fills_low_group_with_hard_questions(monkeypatch):
     assert student["shortages"][0]["missing_count"] == 9
 
 
-def test_practice_requirements_cannot_be_pooled_across_parts():
-    from question_bank.recommendation.personalized import _practice_matches
-
-    candidate = {
-        "practice_observations_by_key": {
-            BNU_TARGET: [
-                {
-                    "part_id": "p1",
-                    "response_mode": "process_required",
-                    "observable": "写出推理依据",
-                },
-                {
-                    "part_id": "p2",
-                    "response_mode": "process_required",
-                    "observable": "代入计算",
-                },
-            ]
-        }
-    }
-    tasks = [{"code": "written_reasoning"}, {"code": "calculation_check"}]
-    assert not _practice_matches(candidate, BNU_TARGET, tasks)
-    candidate["practice_observations_by_key"][BNU_TARGET][0]["observable"] += (
-        "，代入计算"
-    )
-    assert _practice_matches(candidate, BNU_TARGET, tasks)
-
-
-@pytest.mark.parametrize("source_text,candidate_text,expected", [
-    ("得到64的平方根为±8", "求81的平方根为±9", True),
-    ("得到64的平方根为±8", "求81的算术平方根为9", False),
-    ("两次逆向运用算术平方根定义，反求被开方数的值", "求9的算术平方根", False),
-    ("求9的算术平方根", "算术平方根的定义与性质", False),
-    ("求8的立方根", "计算∛(-27)=-3", True),
-    ("对开得尽方的因数开方并约分", "将完全平方数开方得到最简结果", True),
-    ("给分母同乘共轭根式，消去根号", "求9的算术平方根", False),
-    ("作答为B", "求9的算术平方根", False),
-    ("利用正方形面积关系和勾股等式求边长", "判断勾股数并列式a²+b²=c²", False),
-    ("利用正方形面积关系和勾股等式求边长", "正方形面积关系相加，利用勾股等式求边长", True),
-    ("分类讨论直角顶点的位置", "判断三边能否组成直角三角形", False),
-    ("利用线段之和与差列方程", "根据勾股定理列式a²+b²=c²", False),
-])
-def test_observed_root_tasks_bridge_only_the_same_operation(source_text, candidate_text, expected):
-    from question_bank.recommendation.personalized import _task_matched_part
-    ref = {"practice_observations_by_key": {BNU_TARGET: [{"observable": source_text}]}}
-    candidate = {"target_facets": [{"part_id": "p"}], "practice_observations_by_key": {
-        "sk_TEST_root": [{"part_id": "p", "response_mode": "exact_objective", "observable": candidate_text}]}}
-    result = _task_matched_part(candidate, BNU_TARGET, ref, [], {"p"})
-    assert bool(result) is expected
-    assert _task_matched_part(candidate, BNU_TARGET, ref, [], {"other-part"}) is None
-    if any(word in source_text for word in ("面积关系", "直角顶点", "线段之和")):
-        source = ref["practice_observations_by_key"][BNU_TARGET][0]
-        source.update(fine_terms=["sk_TEST_root"], evidence_points=[{"evidence_point_id": "p1"}])
-        assert bool(_task_matched_part(candidate, BNU_TARGET, ref, [], {"p"})) is expected
-
-
-def test_frozen_point_skill_bridge_preserves_actual_skill_and_class_core_filter(monkeypatch):
-    # Stand in for two published skills; the one-part topic/scope check remains.
-    monkeypatch.setattr("question_bank.recommendation.personalized._allowed_keys_for_config",
-        lambda *args: frozenset({BNU_TARGET, "sk_TEST_roots", "sk_TEST_other"}))
-    diagnosis = _direct_diagnosis()
-    for profile in diagnosis["students"]:
-        ref = profile["weak_points"][0]["source_question_refs"][0]
-        ref["practice_observations_by_key"] = {BNU_TARGET: [{"part_id": "source", "observable": "求64的平方根为±8",
-            "response_mode": "exact_objective", "fine_terms": [BNU_TARGET, "sk_TEST_roots"],
-            "evidence_points": [{"evidence_point_id": "point", "target": "求64的平方根为±8"}]}]}
-        ref["target_facets"] = [{"part_id": "source", "direct_keys": [BNU_TARGET], "topic_keys": [BNU_TARGET],
-            "chapter_keys": [BNU_CHAPTER4], "section_keys": [BNU_CHAPTER4 + "_2"]}]
-    candidates = []
-    for qid, skill in ((1, "sk_TEST_roots"), (2, "sk_TEST_other")):
-        candidate = _selection_candidate(qid, f"合成任务{qid}", skill, difficulty=3,
-            target_facets=[{"part_id": "p", "direct_keys": [skill], "skill_keys": [skill], "topic_keys": [BNU_TARGET],
-                "chapter_keys": [BNU_CHAPTER4], "section_keys": [BNU_CHAPTER4 + "_2"]}],
-            practice_observations_by_key={skill: [{"part_id": "p", "response_mode": "exact_objective", "observable": "作答为A"}]})
-        candidates.append(candidate)
-    draft = _selection_draft(monkeypatch, candidates, diagnosis, remediation_only=True)
-    item = draft["students"][0]["items"][0]
-    assert [q["question_id"] for q in draft["students"][0]["items"]] == [1]
-    assert item["selection_kind"] == "task_matched"
-    assert item["matched_key"] == "sk_TEST_roots"
-    different_operation = deepcopy(candidates)
-    different_operation[0]["practice_observations_by_key"]["sk_TEST_roots"][0]["observable"] = "计算81的算术平方根为9"
-    assert _selection_draft(monkeypatch, different_operation, diagnosis, remediation_only=True)["students"][0]["items"] == []
-    ambiguous = deepcopy(diagnosis)
-    ambiguous["students"][0]["weak_points"][0]["source_question_refs"][0]["practice_observations_by_key"][BNU_TARGET][0]["evidence_points"].append({"evidence_point_id": "other"})
-    assert _selection_draft(monkeypatch, candidates, ambiguous, remediation_only=True)["students"][0]["items"] == []
-
-    # An earlier new-target evaluation must not raise a later remediation bridge.
-    import question_bank.recommendation.personalized as recommendation
-    original_entries = PersonalizedRecommendationModule._candidate_entries
-    original_plan = recommendation._difficulty_plan
-    evaluated = []
-    with monkeypatch.context() as cache_guard:
-        def split_plan(ref, rate, cap, target=None, profile=None, **kwargs):
-            plan = original_plan(ref, rate, cap, target, profile, **kwargs)
-            if (target or {}).get("stable_key") == "sk_TEST_roots":
-                aim = 6. if kwargs.get("new_practice") else 3.
-                plan = {**plan, "aim": aim, "minimum": 1., "maximum": 8.}
-            return plan
-        def include_new_target(self, **kwargs):
-            kwargs["targets"] = [{"stable_key": BNU_TRANSFER_SIBLING, "source_question_refs": []}, *kwargs["targets"]]
-            result = original_entries(self, **kwargs)
-            evaluated.extend(result[0])
-            return result
-        cache_guard.setattr(recommendation, "_difficulty_plan", split_plan)
-        cache_guard.setattr(PersonalizedRecommendationModule, "_candidate_entries", include_new_target)
-        _selection_draft(cache_guard, candidates, diagnosis, remediation_only=True)
-    same_skill = [e for e in evaluated if e["matched_key"] == "sk_TEST_roots"]
-    assert any(e["practice_purpose"] == "new" and e["target"]["difficulty_plan"]["aim"] == 6. for e in same_skill)
-    assert any(e["practice_purpose"] == "remediation" and e["target"]["difficulty_plan"]["aim"] == 3. for e in same_skill)
-
-    # The teacher list uses core_only, so mere same-topic supplements stay out.
-    original = PersonalizedRecommendationModule._candidate_entries
-    calls = []
-    def capture(self, **kwargs):
-        kwargs["core_only"] = True
-        result = original(self, **kwargs)
-        calls.extend(result[0])
-        return result
-    monkeypatch.setattr(PersonalizedRecommendationModule, "_candidate_entries", capture)
-    _selection_draft(monkeypatch, candidates, diagnosis, remediation_only=False)
-    assert calls and {entry["candidate"]["question_id"] for entry in calls} == {1}
-
-
-def test_task_bridge_does_not_train_an_already_correct_point_or_reassign_aggregate_skills():
-    from question_bank.recommendation.personalized import _loss_practice_parts, _task_evidence_level, _task_matched_part
-    equation = "根据勾股定理列式a²+b²=c²"
-    root = "计算9的算术平方根为3"
-    ref = {"task_evidence_version_matches": True,
-        "assessment": {"point_observations": [{"point_id": "correct", "achieved": 1}, {"point_id": "failed", "achieved": 0}]},
-        "practice_observations_by_key": {BNU_TARGET: [{"part_id": "s", "response_mode": "process_required",
-            "observable": equation + "；" + root, "part_observable": equation + "；" + root,
-            "fine_terms": [BNU_TARGET, "sk_TEST_equation", "sk_TEST_root"],
-            "evidence_points": [{"evidence_point_id": "correct", "target": equation}, {"evidence_point_id": "failed", "target": root}]}]}}
-    original = deepcopy(ref)
-    parts = _loss_practice_parts(ref, BNU_TARGET)
-    assert _task_evidence_level(parts) == "observed_step"
-    # A multi-point aggregate does not identify which actual skill belongs to the failed point.
-    assert parts[0]["fine_terms"] == []
-    def candidate(text):
-        return {"target_facets": [{"part_id": "p"}], "practice_observations_by_key": {"sk_TEST_x": [
-            {"part_id": "p", "response_mode": "process_required", "observable": text}]}}
-    assert _task_matched_part(candidate(equation), BNU_TARGET, ref, [], {"p"}) is None
-    matched = _task_matched_part(candidate(root), BNU_TARGET, ref, [], {"p"})
-    assert matched["practice_role"] == "step_practice"  # Only the failed root step, not the original full task.
-    assert matched["task_operations"] == ["arithmetic_root_value"]
-    assert ref == original
-    ref["task_evidence_version_matches"] = False
-    assert _task_evidence_level(_loss_practice_parts(ref, BNU_TARGET)) == "observed_task"
-    ref["task_evidence_version_matches"] = True
-    ref["assessment"]["point_observations"][1]["achieved"] = 1
-    assert _loss_practice_parts(ref, BNU_TARGET) == []
-
-
-def test_same_point_skill_can_support_component_root_practice_without_full_claim():
-    from question_bank.recommendation.personalized import _task_matched_part
-    ref = {"practice_observations_by_key": {BNU_TARGET: [{"response_mode": "exact_objective",
-        "observable": "对开得尽方的因数开方并约分", "fine_terms": ["sk_TEST_root"],
-        "evidence_points": [{"evidence_point_id": "point"}]}]}}
-    candidate = {"target_facets": [{"part_id": "p"}], "practice_observations_by_key": {"sk_TEST_root": [
-        {"part_id": "p", "response_mode": "exact_objective", "observable": "计算√16=4"}]}}
-    result = _task_matched_part(candidate, BNU_TARGET, ref, [], {"p"})
-    assert result["practice_role"] == "step_practice"
-    assert result["task_match_basis"] == "same_point_skill"
-
-
 @pytest.mark.parametrize("source_mode,candidate_mode,full", [
     ("exact_objective", "exact_objective", True),
     ("exact_objective", "process_required", True),
     ("process_required", "exact_objective", False),
     ("process_required", "process_required", True),
     ("short_answer_points", "exact_objective", False),
+    (None, "process_required", False),
 ])
 def test_valid_objective_calculation_keeps_its_original_response_requirement(source_mode, candidate_mode, full):
     from question_bank.recommendation.personalized import _full_response_supported, _loss_practice_parts, _training_tasks
@@ -2018,67 +1887,6 @@ def test_valid_objective_calculation_keeps_its_original_response_requirement(sou
     assert calculation["label"] == ("计算并核对结果" if source_mode == "exact_objective" else "列出计算步骤并核对结果")
     assert _full_response_supported({"response_mode": candidate_mode, "observable": "计算16的算术平方根为4"},
         tasks, _loss_practice_parts(ref, BNU_TARGET)) is full
-
-
-@pytest.mark.parametrize("source_text,candidate_text,full", [
-    ("圆柱侧面展开成矩形，再根据勾股定理列式a²+b²=c²", "根据勾股定理列式a²+b²=c²", False),
-    ("圆柱侧面展开成矩形，再根据勾股定理列式a²+b²=c²", "展开圆柱侧面为矩形，根据勾股定理列式a²+b²=c²", True),
-    ("作辅助线构造直角三角形，根据勾股定理列式a²+b²=c²", "根据勾股定理列式a²+b²=c²", False),
-    ("作辅助线构造直角三角形，根据勾股定理列式a²+b²=c²", "作辅助线后根据勾股定理列式a²+b²=c²", True),
-    ("作辅助线构造直角三角形，根据勾股定理列式a²+b²=c²", "无需作辅助线，直接根据勾股定理列式a²+b²=c²", False),
-    ("圆柱侧面展开成矩形，再根据勾股定理列式a²+b²=c²", "不用展开圆柱侧面，直接根据勾股定理列式a²+b²=c²", False),
-    ("作答为B", "根据勾股定理列式a²+b²=c²", False),
-])
-def test_full_task_claim_requires_known_operations_and_original_construction(source_text, candidate_text, full):
-    from question_bank.recommendation.personalized import _full_response_supported
-    assert _full_response_supported({"response_mode": "process_required", "observable": candidate_text}, [],
-        [{"response_mode": "process_required", "observable": source_text}]) is full
-
-
-def test_objective_task_can_use_single_part_solution_without_borrowing_multipart_solution():
-    from question_bank.recommendation.personalized import _task_matched_part, _training_tasks
-    ref = {"source_kind": "current_exam", "full_score": 3, "score_awarded": 0,
-        "assessment": {"granularity": "part", "eligible": True},
-        "deduction_reason": "计算错误", "practice_observations_by_key": {BNU_TARGET: [
-            {"response_mode": "exact_objective", "observable": "计算9的算术平方根为3"}]}}
-    tasks = _training_tasks({"stable_key": BNU_TARGET, "source_question_refs": [ref]})
-    candidate = {"target_facets": [{"part_id": "p"}], "solution_observable": "计算16的算术平方根为4",
-        "practice_observations_by_key": {"sk_TEST_root": [{"part_id": "p", "response_mode": "exact_objective", "observable": "答案B"}]}}
-    assert _task_matched_part(candidate, BNU_TARGET, ref, tasks, {"p"})["practice_role"] == "full_response"
-    candidate["target_facets"].append({"part_id": "other"})
-    assert _task_matched_part(candidate, BNU_TARGET, ref, tasks, {"p"}) is None
-
-
-def test_direct_tag_cannot_override_a_different_observed_failed_operation(monkeypatch):
-    diagnosis = _direct_diagnosis()
-    text = "逆向运用算术平方根定义，反求被开方数的值"
-    for profile in diagnosis["students"]:
-        ref = profile["weak_points"][0]["source_question_refs"][0]
-        ref.update(task_evidence_version_matches=True, assessment={"granularity": "part", "eligible": True,
-            "point_observations": [{"point_id": "failed", "achieved": 0}]})
-        ref["practice_observations_by_key"] = {BNU_TARGET: [{"response_mode": "exact_objective", "observable": text,
-            "evidence_points": [{"evidence_point_id": "failed", "target": text}]}]}
-    candidates = [_selection_candidate(qid, "合成根任务", difficulty=3,
-        practice_observations_by_key={BNU_TARGET: [{"response_mode": "exact_objective", "observable": observed}]})
-        for qid, observed in ((1, "计算9的算术平方根为3"), (2, text))]
-    items = _selection_draft(monkeypatch, candidates, diagnosis, remediation_only=True)["students"][0]["items"]
-    assert [item["question_id"] for item in items] == [2]
-    assert items[0]["task_evidence_level"] == "observed_step"
-
-
-def test_opaque_objective_result_remains_practice_without_claiming_full_task(monkeypatch):
-    diagnosis = _direct_diagnosis()
-    for profile in diagnosis["students"]:
-        ref = profile["weak_points"][0]["source_question_refs"][0]
-        ref["practice_observations_by_key"] = {BNU_TARGET: [{"response_mode": "exact_objective", "observable": "作答为B"}]}
-    candidate = _selection_candidate(1, "合成有效客观题", difficulty=3,
-        practice_observations_by_key={BNU_TARGET: [{"response_mode": "exact_objective", "observable": "作答为A"}]})
-    item = _selection_draft(monkeypatch, [candidate], diagnosis, remediation_only=True)["students"][0]["items"][0]
-    assert item["practice_purpose"] == "remediation"
-    assert item["practice_role"] == "step_practice"
-    assert item["task_evidence_level"] == "target_only"
-    assert "不能确认完整任务覆盖" in item["reason"]
-    assert "原任务信息不足" in item["reason"]
 
 
 def _printed_original_variants(data_root):
@@ -2174,8 +1982,9 @@ def test_printed_duplicates_are_excluded_from_generation_and_replacement(
     by_id = {q["question_id"]: q for q in candidates}
     assert by_id[910]["duplicate_identity"] != by_id[911]["duplicate_identity"]
     assert by_id[910]["practice_identity"] == by_id[911]["practice_identity"]
-    assert not _paper_diversity_allowed(by_id[911], [by_id[910]])
-    assert _paper_diversity_allowed(by_id[912], [by_id[910]])
+    relaxed_skill_cap = PersonalizedRecommendationConfig(max_questions_per_skill=5)
+    assert not _paper_diversity_allowed(by_id[911], [by_id[910]], relaxed_skill_cap)
+    assert _paper_diversity_allowed(by_id[912], [by_id[910]], relaxed_skill_cap)
     diagnosis = _direct_diagnosis(
         (("A", 0.9, 900, BNU_TARGET), ("B", 0.9, 900, BNU_TARGET))
     )
@@ -2217,6 +2026,7 @@ def test_printed_duplicates_are_excluded_from_generation_and_replacement(
 def test_adjustable_rules_and_legacy_defaults(direct_module):
     from question_bank.recommendation.personalized import (
         _config_constructor, _difficulty_plan, _paper_diversity_allowed, _hash_payload,
+        _practice_reason_summary,
     )
     from backend.api.schemas.training import TrainingGroupingRequest, PersonalizedRecommendationCreateRequest
     from pydantic import ValidationError
@@ -2252,24 +2062,39 @@ def test_adjustable_rules_and_legacy_defaults(direct_module):
         for i, d in enumerate([2.7] * 7 + [4.1, 4.5, 5.3])]
     profile = {"weak_points": [{"knowledge_key": "sk_bnu24_math_g8_upper_2_3_106", "source_question_refs": refs}]}
     control = _difficulty_plan({}, .923, 8, unknown, profile)
-    advanced = _difficulty_plan({}, .923, 8, unknown, profile, new_practice=True)
     assert control["aim"] == 2.7
-    assert advanced["aim"] > 4.5
-    assert advanced["baseline_aim"] == control["aim"]
-    assert "整体得分率浮动" in advanced["basis"]
-    assert _difficulty_plan({}, .5, 8, unknown, profile, new_practice=True)["aim"] < control["aim"]
-    assert _difficulty_plan({}, None, 8, unknown, profile, new_practice=True)["aim"] == control["aim"]
-    sparse = {"weak_points": [{"knowledge_key": profile["weak_points"][0]["knowledge_key"], "source_question_refs": refs[-1:]}]}
-    assert "较难题" not in _difficulty_plan({}, .923, 8, unknown, sparse, new_practice=True)["basis"]
-    own_loss = {**unknown, "source_question_refs": [{**refs[0], "score_awarded": 1}]}
-    assert _difficulty_plan({}, .923, 8, own_loss, profile, new_practice=True) == _difficulty_plan({}, .923, 8, own_loss, profile)
-    coarse = {"weak_points": [{**profile["weak_points"][0], "source_question_refs": [
-        {**r, "assessment": {"granularity": "whole_question"}} for r in refs]}]}
-    assert "较难题" not in _difficulty_plan({}, .923, 8, unknown, coarse, new_practice=True)["basis"]
-    assert _difficulty_plan({}, None, 8, unknown, {}, new_practice=True)["maximum"] == 3
-    assert _difficulty_plan({}, .99, 4, unknown, profile, new_practice=True)["maximum"] == 4
+    assert "model_based" not in control
+    evidence_profile = {"weak_points": [{"knowledge_key": "sk_evidence", "evidence_count": 3}]}
+    modeled = {**unknown, "logit_mean": 0.85, "difficulty_slope": 0.32}
+    plan = _difficulty_plan({}, .923, 8, modeled, evidence_profile)
+    assert plan["model_based"] is True
+    assert (plan["logit_mean"], plan["difficulty_slope"]) == (0.85, 0.32)
+    assert plan["minimum"] == 1.0 and plan["starter"] == pytest.approx(1.42, abs=0.01)
+    assert plan["aim"] == plan["baseline_aim"] == pytest.approx(3.11, abs=0.01)
+    assert plan["maximum"] == pytest.approx(4.49, abs=0.01)
+    assert "本技能暂无直接作答，按所在节、章与整体表现估计" in plan["basis"]
+    own_refs = {**modeled, "source_question_refs": [
+        {**refs[0], "score_awarded": 1}, {**refs[1], "score_awarded": 0}]}
+    assert "本技能 2 次有效作答" in _difficulty_plan({}, .923, 8, own_refs, evidence_profile)["basis"]
+    low = _difficulty_plan({}, .923, 8, {**modeled, "logit_mean": -0.5}, evidence_profile)
+    assert (low["minimum"], low["starter"], low["aim"], low["maximum"]) == (1.0, 1.0, 1.0, 2.0)
+    assert "先安排最基础题" in low["basis"]
+    high = _difficulty_plan({}, .923, 8, {**modeled, "logit_mean": 4.0}, evidence_profile)
+    assert high["minimum"] == 7.0
+    assert high["starter"] == high["aim"] == high["maximum"] == 8.0
+    assert "已到出卷难度上限" in high["basis"]
+    no_evidence = {"weak_points": [{"knowledge_key": "sk_evidence", "source_question_refs": refs[:1]}]}
+    assert "model_based" not in _difficulty_plan({}, .923, 8, modeled, no_evidence)
+    assert "model_based" not in _difficulty_plan({}, .923, 8, {**modeled, "difficulty_slope": 0}, evidence_profile)
+    assert _difficulty_plan({}, None, 8, unknown, {})["maximum"] == 3
+    reason = _practice_reason_summary([{
+        "key": unknown["stable_key"], "matched_key": unknown["stable_key"],
+        "selection_kind": "direct", "practice_purpose": "remediation",
+        "candidate": {"difficulty": "3", "stable_names": {unknown["stable_key"]: "技能·示例"}},
+        "target": {"difficulty_plan": plan}}])
+    assert "按掌握度估计本题做对可能性约71%" in reason
     absent_score = {**unknown, "source_question_refs": [{**refs[0], "score_awarded": None}]}
-    assert _difficulty_plan({}, .923, 8, absent_score, profile, new_practice=True)["evidence_count"] == 0
+    assert _difficulty_plan({}, .923, 8, absent_score, profile)["evidence_count"] == 0
     handout = PersonalizedRecommendationConfig(purpose="handout", question_count=100,
         max_questions_per_skill=20, max_written_questions=20, recent_activity_count=20, difficulty_max=10)
     assert PersonalizedRecommendationConfig(**_config_constructor(handout.to_dict())) == handout
@@ -2299,7 +2124,9 @@ def test_adjustable_rules_and_legacy_defaults(direct_module):
     assert direct_module._recent_question_ids(("A",), diagnosis=observed, recent_activity_count=20) == {"A": set(range(1000, 1020))}
 
     # Same student, same source: saved configurable rules are the only difference.
-    control = _make_direct(direct_module, token="1")
+    # The old-format fingerprint only exists while the draft still matches the
+    # original rule defaults, so this control keeps the default skill quota.
+    control = _make_direct(direct_module, token="1", max_questions_per_skill=1)
     relaxed_draft = _make_direct(direct_module, token="2", max_questions_per_skill=3,
         max_written_questions=5, recent_activity_count=0, difficulty_max=10)
     assert relaxed_draft["config"]["difficulty_max"] == 10
@@ -2323,15 +2150,76 @@ def test_adjustable_rules_and_legacy_defaults(direct_module):
             value.pop("recent_question_ids", None)
             conn.execute(f"UPDATE personalized_recommendation_drafts SET {column}=? WHERE draft_id=?",
                 (json.dumps(value), control["draft_id"]))
-    assert _make_direct(direct_module, token="1")["draft_id"] == control["draft_id"]
+    assert _make_direct(direct_module, token="1", max_questions_per_skill=1)["draft_id"] == control["draft_id"]
     # Restored old input and current defaults select the same replacement.
-    current = _make_direct(direct_module, token="3")
+    current = _make_direct(direct_module, token="3", max_questions_per_skill=1)
     item = next(i for i in control["students"][0]["items"] if i["question_id"] in range(100, 114))
     def replace(draft, token):
         return direct_module.edit(draft["draft_id"], RecommendationEditCommand(request_token=token * 32,
             expected_revision=1, action="replace", student_id="A", item_id=item["item_id"],
             actor_ref="synthetic", reason="旧草稿规则对照"))["students"][0]["items"]
     assert [i["question_id"] for i in replace(control, "4")] == [i["question_id"] for i in replace(current, "5")]
+
+
+def test_group_members_require_shared_needs_and_overlapping_windows():
+    from question_bank.recommendation.personalized import _chapter_group_members
+
+    def needs(pairs):
+        return {key: {"difficulty_plan": {"minimum": aim - 1., "maximum": aim + 1., "aim": aim}}
+                for key, aim in pairs.items()}
+
+    compatible = {"A": needs({"sk_1": 3.0}), "B": needs({"sk_1": 3.5})}
+    assert _chapter_group_members(compatible) == [("A", "B")]
+    thin_overlap = {"A": needs({"sk_1": 3.0, "sk_2": 3.0, "sk_3": 3.0, "sk_4": 3.0}),
+                    "B": needs({"sk_1": 3.0, "sk_5": 3.0, "sk_6": 3.0, "sk_7": 3.0})}
+    assert _chapter_group_members(thin_overlap) == []
+    aim_gap = {
+        "A": {"sk_1": {"difficulty_plan": {"minimum": 1.0, "maximum": 4.0, "aim": 2.0}}},
+        "B": {"sk_1": {"difficulty_plan": {"minimum": 3.0, "maximum": 6.0, "aim": 4.3}}}}
+    assert _chapter_group_members(aim_gap) == []
+    disjoint_windows = {
+        "A": {"sk_1": {"difficulty_plan": {"minimum": 1.0, "maximum": 2.0, "aim": 1.5}}},
+        "B": {"sk_1": {"difficulty_plan": {"minimum": 3.0, "maximum": 4.0, "aim": 3.0}}}}
+    assert _chapter_group_members(disjoint_windows) == []
+
+
+def test_failed_skill_plan_steps_back_or_caps_at_failed_difficulty():
+    from question_bank.recommendation.personalized import _difficulty_plan, _practice_reason_summary
+
+    def ref(difficulty, awarded=0):
+        return {"session_id": 1, "question_id": f"Q{difficulty}", "full_score": 5,
+                "score_awarded": awarded, "question_difficulty": difficulty,
+                "assessment": {"granularity": "part"}}
+
+    profile = {"weak_points": [{"knowledge_key": "sk_other", "evidence_count": 3}]}
+    target = {"stable_key": "sk_weak", "logit_mean": -2.0, "difficulty_slope": 0.32,
+              "source_question_refs": [ref(3.0)]}
+    plan = _difficulty_plan({}, .5, 8, target, profile)
+    assert plan["model_based"] is True
+    assert "补弱难度围绕本人该技能失分题难度上下 1 级" in plan["basis"]
+    assert plan["maximum"] == 2.0 and plan["minimum"] == 1.0
+    reason = _practice_reason_summary([{
+        "key": "sk_weak", "matched_key": "sk_weak", "selection_kind": "direct",
+        "practice_purpose": "remediation",
+        "candidate": {"difficulty": "2", "stable_names": {"sk_weak": "技能·示例"}},
+        "target": {"difficulty_plan": plan}}])
+    assert "按掌握度估计本题做对可能性约" in reason
+
+    strong = {**target, "logit_mean": 1.65, "source_question_refs": [ref(4.0)]}
+    plan = _difficulty_plan({}, .5, 8, strong, profile)
+    assert plan["model_based"] is True
+    assert plan["maximum"] == 5.0 and plan["aim"] >= 3.5 and plan["minimum"] == 2.0
+
+    mid = {**target, "logit_mean": 0.76, "source_question_refs": [ref(4.0)]}
+    plan = _difficulty_plan({}, .5, 8, mid, profile)
+    assert plan["maximum"] == pytest.approx(4.2, abs=0.01)
+
+    correct_only = {**target, "source_question_refs": [ref(3.0, 5), ref(3.4, 5)]}
+    plan = _difficulty_plan({}, .5, 8, correct_only, profile)
+    assert plan["model_based"] is True
+    assert "先安排最基础题" in plan["basis"]
+    plan = _difficulty_plan({}, .5, 8, {**correct_only, "logit_mean": 0.85}, profile)
+    assert plan["maximum"] == pytest.approx(4.49, abs=0.01)
 
 
 def _seed_handout_pool(module, count=120):
@@ -2683,7 +2571,9 @@ def test_handout_adds_consolidation_after_remediation_and_new_under_paper_limits
 @pytest.mark.parametrize('omit_new,legacy', [(False, False), (True, False), (False, True), (True, True)])
 def test_zero_consolidation_retries_every_old_request_fingerprint(direct_module, omit_new, legacy):
     from question_bank.recommendation.personalized import _hash_payload
-    draft = _make_direct(direct_module, token='b')
+    # The legacy fingerprint shape only exists while the config still matches
+    # the original defaults, so this scenario keeps the default skill quota.
+    draft = _make_direct(direct_module, token='b', max_questions_per_skill=1)
     with connect(direct_module.db_path) as conn:
         request = json.loads(conn.execute('SELECT request_json FROM personalized_recommendation_drafts WHERE draft_id=?',
             (draft['draft_id'],)).fetchone()[0])
@@ -2696,7 +2586,7 @@ def test_zero_consolidation_retries_every_old_request_fingerprint(direct_module,
                 config.pop(key)
         conn.execute('UPDATE personalized_recommendation_drafts SET input_fingerprint=? WHERE draft_id=?',
             (_hash_payload({'diagnosis': request['diagnosis'], 'config': config}), draft['draft_id']))
-    assert _make_direct(direct_module, token='b')['draft_id'] == draft['draft_id']
+    assert _make_direct(direct_module, token='b', max_questions_per_skill=1)['draft_id'] == draft['draft_id']
 
 
 def test_handout_knowledge_order_and_edit_keep_chapter_and_skill_notes(direct_module, monkeypatch):
@@ -2860,15 +2750,16 @@ def test_endpoint_comparison_rechecks_old_labels_and_difficulty_before_coverage(
     assert unsupported["covered"] == []
     new = {**entry(3, 4.5, 6), "practice_purpose": "new", "target": {"difficulty_plan": {
         "minimum": 2.5, "maximum": 6, "aim": 4.5, "basis": "合成浮动依据"}}}
-    checked = {**entry(3, 4.5, 3), "practice_purpose": "new", "target": {
-        "related_task_observed": True, "difficulty_plan": {"minimum": 1, "maximum": 10,
+    checked = {**entry(3, 4.5, 3), "practice_purpose": "new",
+               "task_evidence_level": "observed_task",
+               "target": {"difficulty_plan": {"minimum": 1, "maximum": 10,
             "audit_minimum": 1, "audit_maximum": 3}}}
     new_audit = common_audit([(new, [new])], [checked], {}, set(), None)
     assert new_audit["items"][0]["window"] == [2.5, 6]
     assert new_audit["items"][0]["level"] == "within"
-    assert new_audit["items"][0]["new_task_state"] == "related"
+    assert new_audit["items"][0]["new_task_state"] == "observed"
     assert new_audit["items"][0]["new_target_keys"] == [BNU_TARGET]
-    assert aggregate([new_audit])["new_related_task_slots"] == 1
+    assert aggregate([new_audit])["new_observed_task_slots"] == 1
     assert new_audit["covered"] == []
     diagnostic = {**new, "target": {**new["target"], "diagnostic_check": True}}
     diagnostic_audit = common_audit([(diagnostic, [diagnostic])], [checked], {}, set(), None)
