@@ -35,6 +35,8 @@ jobs:
         run: python tools/check_tracked_user_data.py
       - name: Check documentation
         run: python tools/check_documentation.py
+      - name: Check documentation runner regressions
+        run: python -m pytest tests/test_smoke_check.py -q
       - name: Run existing backend quick suite
         run: python tools/run_test_suite.py quick --skip-frontend --workers 2 --durations 0
 

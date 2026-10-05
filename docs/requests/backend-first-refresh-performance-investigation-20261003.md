@@ -216,13 +216,13 @@
 
 本次临时测量脚本和匿名结果保留在 `output/test_backend_perf_20261003/`。这些文件没有纳入正式工具入口。合成数据库、独立构建和截图均带测试目录或测试名称；真实数据库没有被复制到该目录。
 
-主要材料：
+主要材料仅保存在上述本机目录，不随 GitHub 源码提供：
 
-- [匿名汇总](../../output/test_backend_perf_20261003/summary.json)：真实组件、合成接口与页面分别统计，失败页面标记为不可用完整基线。
-- [错因复用实验](../../output/test_backend_perf_20261003/cause-experiment.json)：临时实验、恢复对照、完整输出相等与调用计数。
-- [图片重复计数](../../output/test_backend_perf_20261003/real-asset-counts.json)：图片构造次数、不同摘要数与处理字节数，不含图片摘要值、图片或来源路径。
-- [批改只读组件](../../output/test_backend_perf_20261003/real-grading-read-components.json)：匿名考试序号、清单和运行读取、重复未完成结果读取。
-- [现有测试结果](../../output/test_backend_perf_20261003/verification.log)：12 项通过，耗时 22.47 秒。
+- 匿名汇总 `summary.json`：真实组件、合成接口与页面分别统计，失败页面标记为不可用完整基线。
+- 错因复用实验 `cause-experiment.json`：临时实验、恢复对照、完整输出相等与调用计数。
+- 图片重复计数 `real-asset-counts.json`：图片构造次数、不同摘要数与处理字节数，不含图片摘要值、图片或来源路径。
+- 批改只读组件 `real-grading-read-components.json`：匿名考试序号、清单和运行读取、重复未完成结果读取。
+- 现有测试结果 `verification.log`：12 项通过，耗时 22.47 秒。
 
 在项目根目录使用 PowerShell 7，按顺序运行。真实探针只读原位置；合成更新只改本次生成的数据。不要同时运行多组耗时测量。
 

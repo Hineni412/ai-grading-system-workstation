@@ -80,6 +80,8 @@ CHECKED_REFERENCE_PREFIXES = (
 GENERATED_OR_PRIVATE_REFERENCE_PREFIXES = (
     ".test-runs/",
     "frontend/dist/",
+    "frontend/test-results/",
+    "frontend/playwright-report/",
     "logs/",
     "output/",
     "runtime/",

@@ -37,3 +37,17 @@ def test_pytest_preserves_shared_runner_failure_and_slow_test_details(
     assert not result.ok
     assert result.return_code == 7
     assert result.messages == [*output.splitlines(), "synthetic stderr"]
+
+
+def test_documentation_checks_source_links_without_local_browser_artifacts(tmp_path: Path) -> None:
+    from tools.check_documentation import check_markdown_links
+
+    (tmp_path / "README.md").write_text(
+        "`frontend/test-results/`\n"
+        "`frontend/playwright-report/`\n"
+        "`frontend/src/missing.vue`\n"
+        "[missing source](frontend/src/missing.vue)\n",
+        encoding="utf-8",
+    )
+    issues = check_markdown_links(tmp_path)
+    assert [(issue.code, issue.line) for issue in issues] == [("DOC001", 4), ("DOC002", 3)]
