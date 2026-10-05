@@ -304,8 +304,7 @@ function downloadFailures(job: JobResponse): void {
     <header class="qb-jobs__heading">
       <div>
         <h2 id="qb-import-title">上传试卷与任务</h2>
-        <p>Word/PDF 会先安全上传，再由后台生成试卷和题目。</p>
-      </div>
+              </div>
       <div class="qb-jobs__heading-actions">
         <span>{{ jobs.length }} 个历史任务</span>
         <AppButton variant="secondary"
@@ -327,7 +326,7 @@ function downloadFailures(job: JobResponse): void {
           {{ volume.label }}
         </option>
       </select>
-      <small>用于补齐试卷的年级、学期与教材版本</small>
+      
     </label>
 
     <div class="qb-jobs__actions">
@@ -335,7 +334,7 @@ function downloadFailures(job: JobResponse): void {
         <input type="file" accept=".docx,.pdf" multiple :disabled="busy" @change="chooseFiles">
         <span>
           <strong>{{ busy ? '正在处理…' : '选择 Word / PDF' }}</strong>
-          <small>可一次选择多个文件，单个文件不超过 200 MB</small>
+          <small>单个文件不超过 200 MB</small>
         </span>
       </label>
       <AppButton variant="primary"
@@ -347,8 +346,7 @@ function downloadFailures(job: JobResponse): void {
         AI 标注已选 {{ bank.selectedCount }} 题
       </AppButton>
     </div>
-    <p class="qb-help">不会自动调用 AI；只有确认题数和费用提示后才会提交。</p>
-    <FeedbackBanner v-if="feedback" role="status" tone="info" :description="feedback" />
+        <FeedbackBanner v-if="feedback" role="status" tone="info" :description="feedback" />
 
     <ul v-if="queuedFiles.length" class="qb-upload-queue" aria-label="本次文件队列">
       <li v-for="file in queuedFiles" :key="file.name">

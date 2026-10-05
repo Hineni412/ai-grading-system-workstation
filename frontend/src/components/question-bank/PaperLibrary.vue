@@ -1037,7 +1037,7 @@ async function confirmPermanentDelete(): Promise<void> {
     <header class="paper-library__header" :class="{ 'is-relocated': headerTarget }">
       <div v-if="!headerTarget">
         <h2 id="paper-library-title">试卷库</h2>
-        <p>上传 Word 或 PDF 试卷后自动分析，只有无法确定的个别题目需要核对。</p>
+        
       </div>
       <div class="paper-library__stats" aria-label="试卷库概况">
         <span><strong>{{ store.papers.length }}</strong> 份试卷</span>
@@ -1144,12 +1144,12 @@ async function confirmPermanentDelete(): Promise<void> {
       >取消选择</AppButton></template>
     </div>
 
-    <StatePanel v-if="store.papersState === 'loading'" kind="loading" title="正在读取试卷库…" description="" />
+    <StatePanel v-if="store.papersState === 'loading'" kind="loading" title="正在读取试卷库…" />
     <StatePanel
       v-else-if="store.papersState === 'error'"
       kind="error"
       title="试卷库暂时无法读取。"
-      description=""
+     
       retry-label="重新读取"
       @retry="store.loadPapers()"
     />
@@ -1157,7 +1157,7 @@ async function confirmPermanentDelete(): Promise<void> {
       v-else-if="filteredPapers.length === 0"
       kind="empty"
       :title="store.papers.length ? '当前筛选下没有试卷' : '还没有导入试卷'"
-      :description="store.papers.length ? '可以清除筛选后再查看。' : '上传 Word 或 PDF 后，会在这里显示试卷。'"
+      :description="store.papers.length ? '可以清除筛选后再查看。' : undefined"
     />
 
     <div v-else class="paper-folders">
@@ -1299,7 +1299,7 @@ async function confirmPermanentDelete(): Promise<void> {
                 autocomplete="off"
                 :aria-invalid="Boolean(formError)"
               >
-              <small>同步批改任务时默认使用原始 Word 或 PDF 文件名。</small>
+              
             </label>
 
             <label>
@@ -2297,7 +2297,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-trash-confirm h2 {
   color: var(--color-text-primary);
-  font-size: var(--font-size-h2);
+  font-size: var(--font-size-h3);
   margin: 0 0 14px;
 }
 
@@ -2381,7 +2381,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-editor__header h2 {
   color: var(--color-text-primary);
-  font-size: var(--font-size-h2);
+  font-size: var(--font-size-h3);
   letter-spacing: -.02em;
   margin: 0;
 }

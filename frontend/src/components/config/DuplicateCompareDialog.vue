@@ -345,7 +345,7 @@ function decideBankAnswer(): void {
 .dup-compare__title {
   margin: 0;
   overflow: hidden;
-  font-size: var(--font-size-body);
+  font-size: var(--font-size-h3);
   font-weight: var(--font-weight-semibold);
   text-overflow: ellipsis;
   white-space: nowrap;

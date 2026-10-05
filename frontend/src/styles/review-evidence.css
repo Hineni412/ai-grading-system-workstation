@@ -450,19 +450,10 @@
   cursor: pointer;
 }
 
-.review-evidence-help {
-  margin: 0;
-  padding: var(--space-2) var(--space-4);
-  border-block-start: var(--border-width) solid var(--color-border-default);
-  background: var(--color-bg-surface);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-caption);
-}
 
 @media (min-width: 1024px) and (max-width: 1279px) {
   .review-selection-summary--compact,
-  .review-evidence-toolbar,
-  .review-evidence-help {
+  .review-evidence-toolbar {
     padding-inline: var(--space-2);
   }
 

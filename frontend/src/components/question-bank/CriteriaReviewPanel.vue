@@ -99,8 +99,7 @@ onBeforeUnmount(() => {
         <header class="taxonomy-review__header">
           <div>
             <DialogTitle as="h2" id="criteria-review-title">判定点待审核</DialogTitle>
-            <p>正常通过质检的判定点已自动可用。这里只列出仍无法确定的个别题目；点开后可修正或重新生成。</p>
-          </div><AppIconButton label="关闭判定点待审核"
+                      </div><AppIconButton label="关闭判定点待审核"
             ref="closeButton"
            
            

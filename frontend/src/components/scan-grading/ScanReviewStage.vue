@@ -210,7 +210,7 @@ function selectStage(id: ScanStageId): void {
         <section class="review-rates" aria-label="各题得分率">
           <div class="review-rates__head">
             <h3>各题得分率</h3>
-            <small>点击题目进入复核</small>
+            
           </div>
           <div v-for="group in reviewRateGroups" :key="group.label" class="review-rate-group">
             <h4>{{ group.label }}</h4>
@@ -286,7 +286,7 @@ function selectStage(id: ScanStageId): void {
         </aside>
       </div>
     </template>
-    <StatePanel v-else-if="state === 'ready'" kind="empty" title="还没有评分结果" description="批改后这里显示各题得分与待处理项。">
+    <StatePanel v-else-if="state === 'ready'" kind="empty" title="还没有评分结果">
       <template #actions><AppButton variant="secondary" @click="selectStage('grade')">去批改</AppButton></template>
     </StatePanel>
     <StatePanel v-else kind="empty" title="完成扫描预检后，这里会建立本场考试的人工干预队列。" />

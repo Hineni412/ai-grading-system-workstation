@@ -161,9 +161,9 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
     </div>
 
     <FeedbackBanner v-if="store.listState === 'stale-error'" role="alert" tone="warning" description="新数据暂时无法读取，当前仍显示上一次成功结果。" />
-    <StatePanel v-if="store.listState === 'loading' && store.questions.length === 0" kind="loading" title="正在读取试题…" description="" />
-    <StatePanel v-else-if="store.listState === 'error'" kind="error" :title="store.listError" description="" retry-label="重新读取" @retry="store.loadQuestions(store.appliedFilters)" />
-    <StatePanel v-else-if="store.listState === 'empty'" kind="empty" title="当前条件下没有试题，可以清除筛选后再查看。" description="" />
+    <StatePanel v-if="store.listState === 'loading' && store.questions.length === 0" kind="loading" title="正在读取试题…" />
+    <StatePanel v-else-if="store.listState === 'error'" kind="error" :title="store.listError" retry-label="重新读取" @retry="store.loadQuestions(store.appliedFilters)" />
+    <StatePanel v-else-if="store.listState === 'empty'" kind="empty" title="当前条件下没有试题，可以清除筛选后再查看。" />
     <div v-else class="qb-question-list">
       <QuestionCard v-for="question in store.questions" :key="question.id" :question="question" :paper-mode="paperMode" :current-skill="currentSkill" @similar="openSimilar" @skill="emit('skill', $event)" />
     </div>
@@ -185,13 +185,13 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
         <header>
           <div>
             <DialogTitle as="h2">相似题推荐</DialogTitle>
-            <p>基于本机题库文本和标签匹配，不会调用大模型或产生费用。</p>
+            
           </div><AppIconButton label="关闭相似题" @click="closeSimilar" icon="close" />
         </header>
 
-        <StatePanel v-if="similarState === 'loading'" kind="loading" title="正在查找相似题…" description="" />
-        <StatePanel v-else-if="similarState === 'error'" kind="error" title="相似题暂时无法读取。" description="" retry-label="重新查找" @retry="openSimilar(similarSource)" />
-        <StatePanel v-else-if="similarItems.length === 0" kind="empty" title="当前题库中没有找到足够相似的题目。" description="" />
+        <StatePanel v-if="similarState === 'loading'" kind="loading" title="正在查找相似题…" />
+        <StatePanel v-else-if="similarState === 'error'" kind="error" title="相似题暂时无法读取。" retry-label="重新查找" @retry="openSimilar(similarSource)" />
+        <StatePanel v-else-if="similarItems.length === 0" kind="empty" title="当前题库中没有找到足够相似的题目。" />
         <div v-else class="qb-similar-list">
           <article v-for="item in similarItems" :key="item.id" class="qb-similar-card">
             <div class="qb-similar-card__score">

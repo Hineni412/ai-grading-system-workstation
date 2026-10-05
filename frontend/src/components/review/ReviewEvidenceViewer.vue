@@ -268,7 +268,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <p v-if="reviewItem.media.originals_available !== false" class="review-evidence-help">可拖动图片或用方向键移动；使用上方工具缩放和旋转<span v-if="expandable !== false">，点击图片可弹窗放大</span>。</p>
+    
   </section>
 </template>
 

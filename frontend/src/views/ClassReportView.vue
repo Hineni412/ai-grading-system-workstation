@@ -276,7 +276,6 @@ onBeforeUnmount(() => {
       v-else-if="loadState === 'loading' && !analysis"
       kind="loading"
       title="正在读取班级报告状态"
-      description="正在核对当前成绩的生成情况。"
     />
 
     <StatePanel
@@ -324,14 +323,13 @@ onBeforeUnmount(() => {
         v-if="analysis.status === 'no_data'"
         kind="empty"
         title="当前考试还没有可分析的成绩"
-        description="完成批改后，这里可以生成班级分析报告。"
       />
 
       <StatePanel
         v-else-if="generating && !narrative"
         kind="loading"
         title="班级报告生成中…"
-        description="完成后页面会自动更新，无需手动刷新。"
+        description="完成后自动更新。"
       />
 
       <StatePanel

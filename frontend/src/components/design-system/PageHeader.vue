@@ -58,7 +58,8 @@ onBeforeUnmount(() => {
 <style scoped>
 .page-header__sentinel {
   position: absolute;
-  inset-inline: 0;
+  inset-inline-start: 0;
+  width: 1px;
   height: 1px;
   pointer-events: none;
 }

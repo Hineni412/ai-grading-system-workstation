@@ -298,7 +298,7 @@ watch(
       </div>
     </div>
     <StatePanel v-else-if="gradingStarting" data-grading-starting kind="loading" title="启动请求已接收" description="正在建立本次批改进度。可以留在本页等待，刷新后也会自动恢复。" />
-    <StatePanel v-else-if="gradingCompletedWithoutRun" data-grading-completed-without-run kind="empty" title="批改处理已结束" description="本次运行进度记录没有生成。任务结束不代表每份答卷都成功，请先核对完成与失败数量；这里不会开放重复提交。">
+    <StatePanel v-else-if="gradingCompletedWithoutRun" data-grading-completed-without-run kind="empty" title="批改已结束，但进度记录未生成" description="请先核对完成与失败数量。">
       <template #actions><AppButton variant="primary" data-open-grading-results @click="openResults">查看成绩</AppButton></template>
     </StatePanel>
     <div v-else class="scan-grade-start" :class="{ 'scan-grade-start--split': Boolean(store.selectedMode) }">

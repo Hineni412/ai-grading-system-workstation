@@ -1576,7 +1576,7 @@
 }
 
 .taxonomy-review__header h2 {
-  font-size: var(--font-size-h2);
+  font-size: var(--font-size-h3);
   letter-spacing: -.025em;
   margin: 0;
 }
@@ -2512,7 +2512,7 @@
 .qb-repair-entry { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; font-size: var(--font-size-caption); color: var(--color-text-secondary); }
 .qb-repair-dialog { width: min(820px, calc(100vw - 40px)); max-height: calc(100vh - 48px); display: flex; flex-direction: column; gap: 12px; padding: 22px; overflow: auto; }
 .qb-repair-dialog > header, .qb-repair-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.qb-repair-dialog h2 { margin: 0; font-size: var(--font-size-h2); }
+.qb-repair-dialog h2 { margin: 0; font-size: var(--font-size-h3); }
 .qb-repair-dialog p { margin: 0; font-size: var(--font-size-dense); line-height: 1.7; }
 .qb-repair-summary strong { font-size: var(--font-size-h2); color: var(--color-accent); }
 .qb-repair-steps { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -2551,7 +2551,7 @@
 .qb-skill-list-heading p { margin: 3px 0 0; color: var(--color-text-muted); font-size: var(--font-size-caption); }
 .qb-skill-subline { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .qb-skill-subline p { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.qb-skill-subline select.app-input { flex: none; height: var(--control-height-small); min-height: var(--control-height-small); width: 112px; padding: 0 6px; font-size: var(--font-size-caption); }
+.qb-skill-subline select.app-input { flex: none; height: var(--control-height-small); min-height: var(--control-height-small); width: 140px; padding: 0 6px; font-size: var(--font-size-caption); }
 .qb-skill-list-tools { display: flex; align-items: center; gap: 10px; justify-content: space-between; margin-top: 10px; }
 .qb-skill-list-tools .app-segmented { flex: 1; }
 .qb-skill-list-tools .app-segmented > * { flex: 1; }
@@ -2601,6 +2601,7 @@
 .qb-label-popover summary { display: inline-flex; align-items: center; justify-content: space-between; gap: 12px; height: var(--control-height-small); padding: 0 10px; border: 1px solid var(--color-border-default); border-radius: 7px; cursor: pointer; color: var(--color-text-secondary); background: var(--card); font-size: var(--font-size-caption); list-style: none; }
 .qb-label-popover summary::-webkit-details-marker { display: none; }
 .qb-more-filter summary { min-width: 108px; }
+.qb-more-filter select.app-input { width: 100%; }
 .qb-label-popover > div { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; width: 330px; max-width: calc(100vw - 40px); max-height: 400px; overflow-y: auto; padding: 10px 12px; background: var(--card); border: 1px solid var(--color-border-default); border-radius: 10px; box-shadow: var(--shadow-overlay); }
 .qb-more-filter > div { left: 0; right: auto; width: 250px; }
 .qb-label-popover label { display: block; margin: 6px 0; font-size: var(--font-size-caption); }
@@ -2751,6 +2752,7 @@
 .qb-basket-mask { position: fixed; inset: 0; background: var(--color-overlay-mask); z-index: 1100; }
 .qb-basket-drawer { border-radius: var(--radius-overlay) 0 0 var(--radius-overlay); position: fixed; right: 0; top: 0; bottom: 0; width: min(360px,94vw); background: var(--card); z-index: 1101; display: flex; flex-direction: column; box-shadow: var(--shadow-overlay); }
 .qb-basket-drawer header { display: flex; align-items: center; gap: 8px; padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--color-border-subtle); font-size: var(--font-size-body); font-weight: var(--font-weight-semibold); flex: none; }
+.qb-basket-drawer header h2 { margin: 0; font-size: var(--font-size-h3); }
 .qb-basket-drawer header > button { margin-left: auto; }
 .qb-basket-summary { padding: 10px 16px 9px; margin: 0; font-size: var(--font-size-caption); color: var(--color-text-secondary); border-bottom: 1px solid var(--color-border-subtle); }
 .qb-basket-drawer > .feedback-banner { margin: 0 var(--space-4); }

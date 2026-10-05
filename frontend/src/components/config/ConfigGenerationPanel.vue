@@ -773,7 +773,7 @@ watch(
           <AppButton v-for="id in intakeQuestionIds" :key="id" type="button" variant="ghost" size="small" @click="locateQuestion(id)">定位 {{ id }}</AppButton>
         </p>
         <template v-if="canResumeIntake">
-          <p>继续时复用已保存的分析，先补齐入库，再在本地赋分；不会重新发送已完成题目给 AI。</p>
+          <p>继续时复用已保存的分析，不会重新发送已完成的题目。</p>
           <AppButton name="继续入库并赋分" variant="primary" :disabled="submitting || workspacePending" @click="retrySelected(true)">继续入库并赋分</AppButton>
         </template>
       </div>
@@ -879,7 +879,7 @@ watch(
       </div>
 
       <div v-if="['failed', 'cancelled'].includes(job.status) && outcome === 'complete'" class="config-generation__partial">
-        <p>全部批次已经保存在本机，只差统一配分；继续时在本地完成配分，不调用模型，也不会重新生成题目批次。</p>
+        <p>全部批次已保存，继续时只在本地配分，不调用模型。</p>
         <AppButton name="继续统一配分" variant="primary" :disabled="submitting || workspacePending" @click="retrySelected(true)">
           继续统一配分
         </AppButton>

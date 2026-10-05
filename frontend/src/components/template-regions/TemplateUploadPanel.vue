@@ -75,7 +75,7 @@ function assignCurrent(): void {
             </div>
             <div>
               <strong>当前样卷信息</strong>
-              <p>交换页序会保留题框坐标，并把已确认题框恢复为待确认；只有文件本身不对时才需要更换 PDF。</p>
+              <p>交换页序会把已确认题框恢复为待确认。</p>
             </div>
           </div>
           <form class="template-upload__form" @submit.prevent="submit">
@@ -106,7 +106,7 @@ function assignCurrent(): void {
     <div v-else class="template-upload__intro">
       <div>
         <h2 id="template-upload-title">上传双页样卷</h2>
-        <p>只读取前两页。请说明第一页是正面还是反面，系统会据此建立画框坐标。</p>
+        <p>请选择第一页是正面还是反面。</p>
       </div>
     </div>
     <details v-if="!template" class="template-upload__replacement" open>

@@ -139,7 +139,7 @@ function close(): void {
 .question-preview { width: min(620px, 94vw); max-width: 100%; height: 100%; overflow-y: auto; padding: var(--space-5); border-left: 1px solid var(--color-border-default); background: var(--color-bg-surface); box-shadow: var(--shadow-overlay); }
 .question-preview__retry,
 .question-preview__heading { display: flex; justify-content: space-between; align-items: start; gap: var(--space-3); }
-.question-preview__heading h2 { margin: 0 0 var(--space-1); }
+.question-preview__heading h2 { margin: 0 0 var(--space-1); font-size: var(--font-size-h3); font-weight: var(--font-weight-semibold); }
 .question-preview__heading p { margin: 0; color: var(--color-text-secondary); font-size: var(--font-size-dense); }
 .question-preview__section { margin-top: var(--space-4); }
 .question-preview__section h3 { margin: 0 0 var(--space-2); }

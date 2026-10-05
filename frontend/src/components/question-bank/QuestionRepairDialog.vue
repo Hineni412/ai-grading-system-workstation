@@ -83,7 +83,7 @@ onBeforeUnmount(() => controller?.abort())
       <DialogContent class="qb-repair-dialog qb-import-dialog" @close-auto-focus="restoreFocus">
         <header><DialogTitle as="h2">只补缺失部分</DialogTitle><AppIconButton label="关闭补齐面板" @click="emit('close')" icon="close" /></header>
         <DialogDescription>{{ volumeLabel }} · {{ kind === 'skills' ? '未挂技能题目' : kind === 'analysis' ? '分析未完成题目' : '有缺失的题目' }}</DialogDescription>
-        <p v-if="state === 'loading'" role="status">正在统计题目和缺失部分，此步骤不调用模型…</p>
+        <p v-if="state === 'loading'" role="status">正在统计题目和缺失部分…</p>
         <p v-if="message" role="alert">{{ message }}</p>
         <template v-if="state === 'running' && job">
           <p role="status">{{ job.status === 'queued' ? '等待开始' : job.status === 'running' ? '正在补齐缺失部分' : job.status === 'succeeded' ? `已补齐 ${job.result.completed_count ?? 0} / ${job.result.requested_count ?? 0} 题` : job.status === 'cancelled' ? '任务已取消，已完成的部分已保留' : '本次补齐未完成，已完成的部分已保留' }}</p>

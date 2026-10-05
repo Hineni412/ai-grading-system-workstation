@@ -63,7 +63,7 @@ function questions(node: TrainingOverviewNode) {
         v-if="store.loadState === 'stale-error'"
         tone="warning"
         title="当前显示上次成功读取的结果，最新内容暂时无法确认。"
-        description=""
+       
         action-label="重新加载"
         @action="store.load(curriculum.selectedVolumeId, true)"
       />

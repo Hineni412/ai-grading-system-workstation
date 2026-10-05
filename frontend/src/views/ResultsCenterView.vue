@@ -915,12 +915,12 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
           v-if="resultsStore.state === 'stale-error'"
           tone="warning"
           title="当前显示上次成功读取的成绩，最新数据暂时无法取得。"
-          description=""
+         
           action-label="重新加载"
           @action="refresh"
         />
 
-        <StatePanel v-if="results.students.length === 0" kind="empty" title="当前考试还没有可展示的成绩" description="开始批改或人工评分后，成绩会出现在这里。" />
+        <StatePanel v-if="results.students.length === 0" kind="empty" title="当前考试还没有可展示的成绩" />
 
         <ResultsOverviewPanel
           v-else-if="activeTab === 'overview'"
@@ -1035,9 +1035,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             </div>
           </div>
 
-          <p class="personal-report-help">点姓名看成绩详情 · 点 ✓ 直接打开个人报告 · 点分数进入成绩复核
-            <span v-if="personalStateError"> · {{ personalStateError }} <AppButton variant="ghost" size="small" @click="refreshPersonalStates">重试</AppButton></span>
-          </p>
+          <p v-if="personalStateError" class="personal-report-help">{{ personalStateError }} <AppButton variant="ghost" size="small" @click="refreshPersonalStates">重试</AppButton></p>
           <div
             ref="matrixScroller"
             class="results-matrix-wrap"

@@ -446,7 +446,6 @@ onBeforeUnmount(() => {
       v-if="!item || !currentDraft"
       kind="empty"
       title="请选择一份答卷"
-      description="选择答卷后，可在这里核对并确认教师最终分。"
     />
 
     <template v-else>

@@ -604,7 +604,7 @@ onBeforeUnmount(() => {
         <header class="taxonomy-review__header">
           <div>
             <DialogTitle as="h2" id="taxonomy-review-title">标签治理</DialogTitle>
-            <p>当前候选只在确认后写入；历史 AI 批次单独查看。</p>
+            
           </div><AppIconButton label="关闭新词审核"
             ref="closeButton"
            
@@ -694,7 +694,7 @@ onBeforeUnmount(() => {
           <header>
             <div>
               <h3 id="taxonomy-ai-history-title">上次 AI 批次</h3>
-              <p>历史记录，不影响当前候选，也不能在这里保存。</p>
+              <p>历史记录，只读。</p>
             </div>
             <span>{{ formatDate(store.historicalSuggestionRun.updated_at) }}</span>
           </header>
@@ -823,12 +823,12 @@ onBeforeUnmount(() => {
         </div>
         <div v-else-if="!store.batchPreview && !showHistoricalRun && store.loadState === 'error' && !store.proposals.length" class="taxonomy-review__state is-error">
           <strong>候选清单暂时无法读取</strong>
-          <p>可以保留当前窗口，稍后重新读取。</p>
+          
           <AppButton variant="secondary" @click="store.load()">重新读取</AppButton>
         </div>
         <div v-else-if="!store.batchPreview && !showHistoricalRun && (store.loadState === 'empty' || pendingProposals.length === 0)" class="taxonomy-review__state">
           <strong>当前没有待审核新词</strong>
-          <p>AI 继续使用现有规范词；以后出现新候选时会在这里集中显示。</p>
+          
         </div>
         <div v-else-if="!store.batchPreview && !showHistoricalRun && visibleGroups.length === 0" class="taxonomy-review__state">
           <strong>这个维度暂时没有候选</strong>
@@ -1084,7 +1084,7 @@ onBeforeUnmount(() => {
             <DialogTitle as="h2" id="taxonomy-question-preview-title">
               题目 #{{ previewQuestionId }}
             </DialogTitle>
-            <p>只读预览，用于判断新词应归并到哪些现有标签。</p>
+            <p>只读预览</p>
           </div><AppIconButton label="关闭题目预览"
             ref="previewCloseButton"
            

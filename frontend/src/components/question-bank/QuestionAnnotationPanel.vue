@@ -480,7 +480,7 @@ async function save(): Promise<void> {
                 {{ status.label }}
               </button>
             </div>
-            <p class="qb-help">知识点、能力、教材章节/范围和有效难度四项齐全后，才计入试卷的完整进度。</p>
+            
 
             <label v-if="curriculum" class="qb-section-picker">
               <span>精确标定教材小节</span>
@@ -503,7 +503,7 @@ async function save(): Promise<void> {
                   </option>
                 </optgroup>
               </select>
-              <small>选择后会同时校准所属章节；旧题未选择时继续显示“待标定”。</small>
+              
               <small v-if="hasLegacySection" class="qb-help">
                 当前教材小节来自旧版目录，目录中已找不到，请重新选择。
               </small>
@@ -549,7 +549,7 @@ async function save(): Promise<void> {
             <p v-else-if="store.tagDraft.length" class="qb-help">
               当前仅有历史学生层级标签；它会继续保留，但不再参与新筛选和完整度判断。
             </p>
-            <p v-else class="qb-help">当前没有标签。可手动添加，或在导入任务区选择题目后启动 AI 标注。</p>
+            <p v-else class="qb-help">当前没有标签。</p>
             <FeedbackBanner v-if="store.writeMessage" :class="{ 'is-error': store.writeState !== 'idle' }" role="status" tone="info" :description="store.writeMessage" />
             <AppButton
               variant="primary"

@@ -588,7 +588,6 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
           v-else-if="analysis?.status === 'no_data'"
           kind="empty"
           title="当前范围尚无已批改成绩"
-          description="完成批改后，这里会显示统计结果。"
           data-testid="class-analysis-empty"
         />
         <StatePanel
@@ -831,7 +830,7 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
           <DialogTitle>{{ patternEdit?.questionId }} · 修改错法</DialogTitle><DialogClose as-child><AppIconButton label="关闭修改对话框" icon="close" /></DialogClose>
         </div>
         <template v-if="patternEdit">
-          <p class="class-analysis__note">错法已自动整理并回挂题库；这里可以按需修改名称和大类，修改后同题考试会沿用新名称。</p>
+          <p class="class-analysis__note">修改名称后，同题考试会沿用新名称。</p>
           <label class="class-analysis__field">
             <span>错法名称</span>
             <input v-model="patternEdit.newReason" class="class-analysis__input app-input" data-testid="cause-edit-reason" maxlength="40" />

@@ -154,7 +154,7 @@ function selectExam(id: number, results: boolean) {
     </PageHeader>
     <div class="workbench-content">
       <FeedbackBanner v-if="workbenchStore.overviewState === 'stale-error'" tone="warning" title="考试数据可能不是最新" :description="`上次更新 ${workbenchStore.overviewUpdatedAt?.replace('T', ' ').replace('Z', '') ?? '时间暂不可用'}`" action-label="重新加载" @action="loadExam" />
-      <FeedbackBanner v-else-if="workbenchStore.overviewState === 'error'" tone="warning" title="考试概况暂时无法读取，其他入口仍可使用。" description="" action-label="重新加载" @action="loadExam" />
+      <FeedbackBanner v-else-if="workbenchStore.overviewState === 'error'" tone="warning" title="考试概况暂时无法读取，其他入口仍可使用。" action-label="重新加载" @action="loadExam" />
       <div class="workbench-grid fx-stagger">
         <WorkbenchTodoList :need="todo.need" :continued="todo.continued" :jobs="jobs" :loading="todoLoading" :failures="failures" @open="openPath" @retry="retry" />
         <aside class="workbench-sidebar fx-stagger">

@@ -51,7 +51,7 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
     >
       <slot />
 
-      <DialogClose as-child><AppIconButton label="关闭" icon="close" class="absolute top-4 right-4" /></DialogClose>
+      <DialogClose as-child><AppIconButton label="关闭" icon="close" class="absolute top-1.5 right-4" /></DialogClose>
     </DialogContent>
   </DialogPortal>
 </template>

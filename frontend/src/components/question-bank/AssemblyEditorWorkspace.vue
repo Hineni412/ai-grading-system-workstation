@@ -416,7 +416,7 @@ async function deleteRecord(recordId: string): Promise<void> {
               加载更多题目（还有 {{ section.questions.length - previewVisibleCount(section.id) }} 题）
             </button>
           </section>
-          <StatePanel v-if="!assembly.orderedQuestions.length" kind="empty" title="去题库选题" description="把题目加入试卷篮后会在这里生成预览。" />
+          <StatePanel v-if="!assembly.orderedQuestions.length" kind="empty" title="去题库选题" />
         </article></details>
       </main>
 
@@ -428,7 +428,7 @@ async function deleteRecord(recordId: string): Promise<void> {
           </div>
           <AppButton type="button" variant="ghost" size="small" @click="assembly.loadRecords">刷新</AppButton>
         </header>
-        <p>确认预览后生成文件。导出不会改写题库内容。</p>
+        
         <div class="assembly-export-actions">
           <select v-model="exportFormat" class="app-input assembly-export-format" aria-label="导出格式" :disabled="assembly.submitting">
             <option value="docx">Word（方便修改）</option>

@@ -51,7 +51,7 @@
 .mastery-map-legacy > p { color:var(--color-text-muted); font-size:var(--font-size-caption); }
 .mastery-map-drawer { position:sticky; top:16px; max-height:calc(100vh - 32px); overflow:auto; padding:20px; background:var(--color-bg-surface); border:1px solid var(--color-border-default); border-radius:var(--radius-panel); box-shadow:var(--shadow-raised); outline:none; z-index:5; }
 .mastery-map-drawer > header { display:flex; justify-content:space-between; align-items:start; gap:8px; }
-.mastery-map-drawer h2 { font-size:var(--font-size-h2); margin:6px 0 12px; }
+.mastery-map-drawer h2 { font-size:var(--font-size-h3); margin:6px 0 12px; }
 .mastery-map-type { display:inline-block; padding:2px 8px; background:var(--color-accent-subtle); color:var(--color-accent); border-radius:12px; font-size:var(--font-size-caption); }
 .mastery-map-definition { font-size:var(--font-size-dense); line-height:1.8; padding-bottom:12px; border-bottom:1px solid var(--color-border-subtle); }
 .mastery-map-mastery { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin:16px 0; }

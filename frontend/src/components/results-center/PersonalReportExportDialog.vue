@@ -85,8 +85,7 @@ onBeforeUnmount(() => {
     <div class="personal-export-backdrop" @click.self="emit('close')">
       <form ref="dialog" class="personal-export-dialog" role="dialog" aria-modal="true" aria-labelledby="personal-export-title" @submit.prevent="submit">
         <header><h2 id="personal-export-title">批量导出个人报告</h2><AppIconButton label="关闭" @click="emit('close')" icon="close" /></header>
-        <p class="pe-note">只使用已经生成的分析文字，不调用模型。图片嵌入文件，离线可打开。</p>
-        <fieldset><legend>学生范围</legend>
+                <fieldset><legend>学生范围</legend>
           <label><input v-model="mode" type="radio" value="all"> 全部学生（{{ students.length }} 人）</label>
           <label><input v-model="mode" type="radio" value="class"> 按班级</label>
           <label><input v-model="mode" type="radio" value="pick"> 指定学生</label>
@@ -102,7 +101,7 @@ onBeforeUnmount(() => {
         <fieldset><legend>考试（可多选）</legend><div class="pe-exams">
           <label v-for="session in sessions" :key="session.id"><input v-model="exams" type="checkbox" :value="session.id"> {{ session.name }}{{ session.id === sessionId ? '（本场）' : '' }}<span>{{ states[session.id] ? `可导出 ${available(session.id)} 人` : '读取中…' }}</span></label>
         </div></fieldset>
-        <fieldset><legend>格式</legend><p>每人一份自包含 HTML，打包 ZIP；单人单场直接导出 HTML。</p></fieldset>
+        <fieldset><legend>格式</legend><p>每人一份 HTML，多人打包为 ZIP。</p></fieldset>
         <div class="pe-summary" aria-live="polite">将导出 <b>{{ selected.length }} 人 × {{ exams.length }} 场</b>，其中 {{ loading ? '…' : missingCount }} 份未生成或不可生成，不导出，会列入清单。</div>
         <p class="pe-filename">文件名：{{ filename }}</p>
         <p v-if="error" role="alert" class="pe-error">{{ error }}</p>
@@ -115,6 +114,6 @@ onBeforeUnmount(() => {
 <style scoped>
 .personal-export-backdrop{position:fixed;inset:0;z-index:150;background:var(--color-overlay-mask);display:grid;place-items:center;padding:20px}
 .personal-export-dialog{width:min(720px,100%);max-height:90vh;overflow:auto;background:var(--color-bg-surface);border-radius:var(--radius-overlay);padding:var(--space-5);color:var(--color-text-primary);box-shadow:var(--shadow-overlay);font-size:var(--font-size-body)}
-header,footer{display:flex;align-items:center;justify-content:space-between;gap:10px}h2{font-size:var(--font-size-h3);font-weight:var(--font-weight-semibold);margin:0}.pe-note{font-size:var(--font-size-dense);color:#758390;margin:14px 0 22px}
+header,footer{display:flex;align-items:center;justify-content:space-between;gap:10px}h2{font-size:var(--font-size-h3);font-weight:var(--font-weight-semibold);margin:0}
 fieldset{border:0;border-top:1px solid #e2e8ed;padding:16px 0;margin:0}legend{float:left;width:100%;font-weight:var(--font-weight-semibold);margin-bottom:12px}label{display:inline-flex;gap:5px;align-items:center;margin:0 20px 10px 0}input{accent-color:#316982}.pe-classes{clear:both;padding-top:8px}.pe-pick{clear:both}.pe-pick>.app-input{width:100%;margin-bottom:8px}.pe-list{max-height:200px;overflow:auto;border:1px solid #e0e7ed;border-radius:6px}.pe-list label{margin:6px 10px;width:calc(50% - 20px);font-size:var(--font-size-dense)}.pe-list label span{color:#84919c}.pe-group{display:flex;justify-content:space-between;padding:6px 10px;background:#f5f8fa;font-size:var(--font-size-caption)}.pe-chips{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}.pe-exams{clear:both;display:flex;flex-direction:column}.pe-exams label{display:flex;margin-right:0}.pe-exams span{margin-left:auto;font-size:var(--font-size-caption);color:#768b99}.pe-summary{background:#edf5f8;border-radius:6px;padding:12px;font-size:var(--font-size-dense)}.pe-filename{font-size:var(--font-size-caption);color:#71828e;overflow-wrap:anywhere}.pe-error{color:#a6462a}footer{justify-content:flex-end;padding-top:12px}
 </style>

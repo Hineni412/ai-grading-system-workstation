@@ -1,8 +1,10 @@
 .model-profiles-view { min-width: 0; }
-.model-task-table td:first-child { width: 200px; }
-.model-task-table td:nth-child(2) { width: 34%; }
-.model-task-table select { width: auto; min-width: 120px; max-width: 100%; }
-.model-task-table input { width: 170px; max-width: 100%; }
+.model-task-table tbody { display: grid; gap: var(--space-2); padding: var(--space-3) var(--space-4); }
+.model-task-table tr { display: grid; grid-template-columns: 200px 180px minmax(320px, 420px); gap: var(--space-3); align-items: center; justify-content: start; }
+.model-task-table td { display: block; min-width: 0; border-bottom: 0; padding: 0; }
+.model-task-table select { width: 100%; min-width: 0; }
+.model-task-table input { width: 100%; max-width: none; }
+.model-task-actions { padding-left: calc(var(--space-4) + 200px + var(--space-3)); }
 .model-accounts { padding: 4px 5px; }
 .model-account-row { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-bottom: 1px solid var(--color-border-subtle); font-size: var(--font-size-caption); flex-wrap: wrap; }
 .model-account-row:last-child { border-bottom: 0; }
@@ -47,7 +49,8 @@
 .ai-diagnostic-panel { padding: 12px 14px; min-width: 0; }
 .ai-diagnostic-panel pre, .ai-diagnostic-detail pre { margin: 0; font: var(--font-size-caption)/1.6 var(--font-family-mono); color: var(--color-text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; max-height: 360px; }
 .ai-diagnostic-panel dl, .ai-diagnostic-error dl { font-size: var(--font-size-caption); display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; }
-.ai-diagnostic-panel dd { margin: 0; overflow-wrap: anywhere; }
+.ai-diagnostic-panel dd { margin: 0; overflow-wrap: anywhere; }
+
 .ai-diagnostics-ledger__more { width: 100%; border: 0; padding: 8px; background: transparent; font-size: var(--font-size-caption); color: var(--color-accent); }
 .ai-diagnostic-attachments { display: grid; gap: 8px; font-size: var(--font-size-caption); }
 @media (max-width: 720px) { .ai-diagnostics__workspace { grid-template-columns: 1fr; } .ai-diagnostics-ledger { border-right: 0; border-bottom: 1px solid var(--color-border-subtle); } }

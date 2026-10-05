@@ -382,7 +382,6 @@ onBeforeUnmount(() => {
           v-else-if="selectedDiagnostic === null"
           kind="empty"
           title="选择一条调用记录"
-          description="可以查看发送内容、附件、模型返回和解析结果。"
         />
         <template v-else>
           <header class="ai-diagnostic-detail__header">

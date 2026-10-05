@@ -510,10 +510,10 @@ onBeforeUnmount(() => studentsController?.abort())
       v-if="referenceState === 'error'"
       tone="error"
       title="学生名单暂时无法读取。请检查服务后重试；当前筛选没有被清空。"
-      description=""
+     
     />
-    <FeedbackBanner v-if="training.errorMessage" tone="error" :title="training.errorMessage" description="" />
-    <FeedbackBanner v-if="groupMessage" tone="info" :title="groupMessage" description="" />
+    <FeedbackBanner v-if="training.errorMessage" tone="error" :title="training.errorMessage" />
+    <FeedbackBanner v-if="groupMessage" tone="info" :title="groupMessage" />
 
     <section v-if="trainingMode !== 'paper'" class="practice-workspace">
       <StatePanel v-if="!curriculumScope.selectedVolumeId" kind="empty" title="请先选择教学学期" description="在左侧栏“当前考试”中选择教学学期。" />

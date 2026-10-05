@@ -23,7 +23,7 @@ function clearFilters() { roster.search = ''; roster.className = ''; clearTimeou
       <span class="settings-note">共 {{ roster.workspace?.total ?? 0 }} 名</span>
       <StudentImportDesk />
     </div>
-    <StatePanel v-if="roster.loadState === 'loading' && !roster.workspace" kind="loading" title="正在读取学生名单…" description="" />
+    <StatePanel v-if="roster.loadState === 'loading' && !roster.workspace" kind="loading" title="正在读取学生名单…" />
     <StatePanel v-else-if="roster.loadState === 'error'" kind="error" title="学生名单暂时无法读取" :description="roster.errorMessage" retry-label="重新读取" @retry="roster.load()" />
     <StatePanel v-else-if="roster.workspace?.total === 0" kind="empty" compact title="没有符合条件的学生">
       <template #actions><AppButton variant="ghost" @click="clearFilters">清除筛选</AppButton></template>

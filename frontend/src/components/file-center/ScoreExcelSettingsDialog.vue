@@ -91,8 +91,7 @@ const manualStudentSearch = defineModel<string>('manualStudentSearch', { require
           >
           <span>名</span>
         </label>
-        <small>班级人数不超过填写人数时不会自动隐藏全班；同分时按学号和姓名稳定选取准确人数。</small>
-      </fieldset>
+              </fieldset>
 
       <fieldset class="excel-settings-group">
         <legend>手动补充</legend>

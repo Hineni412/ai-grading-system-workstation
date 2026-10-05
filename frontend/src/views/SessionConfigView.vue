@@ -639,14 +639,14 @@ watch(
       class="session-config-view__state"
       kind="loading"
       title="正在读取考试列表…"
-      description=""
+     
     />
     <StatePanel
       v-else-if="sessionStore.loadState === 'error'"
       class="session-config-view__state"
       kind="error"
       title="考试列表暂时无法读取，尚未改变任何考试。"
-      description=""
+     
       retry-label="重新加载考试列表"
       @retry="sessionStore.initialize()"
     />

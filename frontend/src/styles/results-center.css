@@ -587,7 +587,7 @@
 
 .results-drawer__header h2 {
   margin-top: var(--space-1);
-  font-size: var(--font-size-h1);
+  font-size: var(--font-size-h3);
 }
 
 .results-drawer__header p {
@@ -1849,6 +1849,7 @@
 
 .class-analysis__outcome {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   align-content: start;
   gap: var(--space-4);
@@ -2027,6 +2028,7 @@ button.class-analysis__score-chip:focus-visible {
 
 
 .class-analysis__toggle select {
+  min-width: 180px;
   max-width: 260px;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
@@ -2037,6 +2039,7 @@ button.class-analysis__score-chip:focus-visible {
 
 .class-analysis__score-bands {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2);
 }
 
@@ -2132,6 +2135,7 @@ button.class-analysis__score-chip:focus-visible {
 
 .class-analysis__causes {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2);
   margin: 0;
   padding: 0;
@@ -2190,6 +2194,12 @@ button.class-analysis__score-chip:focus-visible {
   justify-content: space-between;
   cursor: pointer;
   list-style: none;
+}
+
+.class-analysis__cause-detail summary > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .class-analysis__cause-detail summary > span:last-of-type::before {
@@ -2276,7 +2286,7 @@ button.class-analysis__score-chip:focus-visible {
 }
 
 /* 错因区行内排版文本允许换行，覆盖 .question-html--inline 的 nowrap */
-.class-analysis__outcome .question-html--inline {
+.class-analysis__outcome span.question-html--inline {
   white-space: normal;
 }
 
@@ -2352,6 +2362,10 @@ button.class-analysis__score-chip:focus-visible {
 .class-analysis__sheet h2,
 .class-analysis__preview h2 {
   margin: 0;
+}
+
+.class-analysis__preview h2 {
+  font-size: var(--font-size-h3);
 }
 
 .class-analysis__confirm {

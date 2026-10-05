@@ -99,7 +99,7 @@ onBeforeUnmount(() => controller?.abort())
 
     <StatePanel v-if="state === 'loading' && !embedded" kind="loading" title="正在读取知识细项与图谱映射…" />
     <StatePanel v-else-if="state === 'error'" kind="error" :title="error || '暂时无法读取'" retry-label="重新读取" @retry="load" />
-    <StatePanel v-else-if="!evidence && !embedded" kind="empty" title="这道题还没有知识细项映射。" description="完成题目分析后，这里会按“小问 → 判定点 → 精细词条 → 核心图谱”展示。" />
+    <StatePanel v-else-if="!evidence && !embedded" kind="empty" title="这道题还没有知识细项映射。" />
     <component
       v-else-if="evidence"
       :is="embedded ? 'details' : 'div'"

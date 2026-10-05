@@ -422,8 +422,8 @@ onBeforeUnmount(() => {
 <template>
   <article class="model-profiles-view">
     <FeedbackBanner v-if="profilesStore.errorMessage || localError" role="alert" tone="error" :description="localError || profilesStore.errorMessage" />
-    <StatePanel v-if="profilesStore.loadState === 'loading'" kind="loading" title="正在读取本机 AI 服务…" description="" />
-    <StatePanel v-else-if="profilesStore.loadState === 'error'" kind="error" title="服务列表暂时无法读取" description="" retry-label="重新加载" @retry="reloadProfiles" />
+    <StatePanel v-if="profilesStore.loadState === 'loading'" kind="loading" title="正在读取本机 AI 服务…" />
+    <StatePanel v-else-if="profilesStore.loadState === 'error'" kind="error" title="服务列表暂时无法读取" retry-label="重新加载" @retry="reloadProfiles" />
     <template v-else>
       <section class="settings-panel" aria-labelledby="model-task-routing-title">
         <header class="settings-panel__heading"><h2 id="model-task-routing-title">用哪个 AI</h2></header>
@@ -434,7 +434,7 @@ onBeforeUnmount(() => {
             <td><input v-model="taskBindingsDraft[row.key].model" class="app-input" :aria-label="`${row.title}使用的模型`" :maxlength="MODEL_PROFILE_LIMITS.model" :disabled="isBusy || !profilesStore.profiles.length" placeholder="填写模型名称"></td>
           </tr>
         </tbody></table>
-        <div class="settings-panel__body settings-inline"><AppButton variant="primary" :disabled="isBusy || !bindingsDirty || !profilesStore.profiles.length" @click="saveTaskBindings">保存</AppButton><span class="settings-note settings-saved" :style="{ visibility: profilesStore.noticeMessage ? 'visible' : 'hidden' }" :aria-label="profilesStore.noticeMessage" role="status">已保存</span><span class="settings-note">保存不会调用 AI，也不产生费用。</span></div>
+        <div class="settings-panel__body settings-inline model-task-actions"><AppButton variant="primary" :disabled="isBusy || !bindingsDirty || !profilesStore.profiles.length" @click="saveTaskBindings">保存</AppButton><span class="settings-note settings-saved" :style="{ visibility: profilesStore.noticeMessage ? 'visible' : 'hidden' }" :aria-label="profilesStore.noticeMessage" role="status">已保存</span></div>
       </section>
       <section class="settings-panel" aria-labelledby="model-accounts-title">
         <header class="settings-panel__heading"><h2 id="model-accounts-title">服务账号</h2><AppButton variant="secondary" :disabled="isBusy" @click="beginNewProfile">添加服务</AppButton></header>
@@ -477,9 +477,7 @@ onBeforeUnmount(() => {
               <p class="settings-note">{{ requestSpeedSummary }}</p>
               <label class="settings-field"><span>失败自动重试次数</span><input v-model.number="draft.maxAutoRetries" class="app-input" name="max-auto-retries" type="number" min="0" :max="MODEL_PROFILE_LIMITS.maxAutoRetries" step="1" placeholder="默认" :disabled="isBusy"></label>
               <label class="settings-field"><span>等待超时（秒）</span><input v-model.number="draft.requestTimeoutSeconds" class="app-input" name="request-timeout-seconds" type="number" min="30" :max="MODEL_PROFILE_LIMITS.requestTimeoutSeconds" step="1" placeholder="默认" :disabled="isBusy"><small>30–1200</small></label>
-              <details class="settings-disclosure"><summary>各任务内置默认</summary><div class="model-advanced">
-                <p class="settings-note">试卷批改 600 秒 · 图片识别 60 秒 · 评分标准生成 600 秒 · 题库标注 480 秒 · 组卷细目表 300 秒 · 工作台任务 120 秒</p>
-              </div></details>
+              
               <section v-if="!isNew" aria-label="当前运行状态">
                 <div class="settings-inline"><strong>当前运行状态</strong><AppButton variant="ghost" :disabled="executionStatusState === 'loading'" @click="loadExecutionStatus()">刷新</AppButton></div>
                 <p v-if="executionStatus" class="settings-note">正在请求 {{ executionStatus.active }} · 排队 {{ executionStatus.queued }} · 当前同时上限 {{ executionStatus.effective_max_in_flight }} / {{ executionStatus.configured_max_in_flight }} · 峰值 {{ executionStatus.peak_active }} · 已发送 {{ executionStatus.physical_request_count }} 次</p>

@@ -380,7 +380,6 @@ onBeforeUnmount(() => {
       v-else-if="noQuestions"
       kind="empty"
       title="当前考试还没有可干预的评分题目"
-      description="完成答卷预检后，可以直接人工评分；AI 批改后也会在这里显示复核结果。"
     />
 
     <ReviewDeepWorkspace

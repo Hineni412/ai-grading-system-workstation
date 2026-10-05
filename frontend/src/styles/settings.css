@@ -47,7 +47,7 @@
 .settings-drawer[data-slot=sheet-content] { z-index: 62; width: 380px; max-width: 94vw; gap: 0; padding: 0; background: var(--color-bg-surface); box-shadow: var(--shadow-overlay); animation-duration: var(--duration-drawer); }
 body:has(.settings-drawer[data-state=open]) [data-slot=sheet-overlay] { background: var(--color-overlay-mask); z-index: 60; }
 .settings-drawer__header { padding: 14px 16px; border-bottom: 1px solid var(--color-border-subtle); }
-.settings-drawer__header h2 { font-size: var(--font-size-body); font-weight: var(--font-weight-semibold); margin: 0; }
+.settings-drawer__header h2 { font-size: var(--font-size-h3); font-weight: var(--font-weight-semibold); margin: 0; }
 .settings-drawer__form { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .settings-drawer__body { display: grid; gap: 11px; align-content: start; padding: 14px 16px; overflow-y: auto; flex: 1; min-height: 0; }
 .settings-drawer__footer { display: flex; justify-content: flex-end; gap: 9px; padding: 12px 16px; border-top: 1px solid var(--color-border-subtle); }
@@ -61,7 +61,7 @@ body:has(.settings-drawer[data-state=open]) [data-slot=sheet-overlay] { backgrou
 .settings-data { --settings-space-originals: #4d949d; --settings-space-annotations: #9db4b8; --settings-space-bank: #c9a86a; --settings-space-reports: #8c9bb5; --settings-space-backups: #a98bb0; --settings-space-databases: #b2b8ad; }
 .settings-space-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--color-border-subtle); margin-bottom: 10px; }
 .settings-space-bar i { height: 100%; }
-.settings-space-legend { width: 100%; border-collapse: collapse; font-size: var(--font-size-caption); }
+.settings-space-legend { width: 100%; max-width: 480px; border-collapse: collapse; font-size: var(--font-size-caption); }
 .settings-space-legend td { padding: 4px 10px 4px 0; color: var(--color-text-secondary); }
 .settings-space-legend td:last-child { text-align: right; color: var(--color-text-primary); font-variant-numeric: tabular-nums; }
 .settings-space-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 7px; }
