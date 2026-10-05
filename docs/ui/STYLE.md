@@ -16,6 +16,7 @@
 - 小标题与分组标签使用中文。
 - 状态同时用文字或图标表达，不能只靠颜色。
 - 学情总览与知识结构在 `frontend/src/styles/knowledge-overview.css` 的页面作用域内使用 `--heat-0` 至 `--heat-5`，从现有危险色与内容面色混合派生六级热度；阈值集中在 `frontend/src/components/knowledge-overview/metrics.ts`。知识点小圆角加左侧色边、技能大圆角；无证据用灰色斜纹，细条与图例保留四档人数文字，热度不改变掌握档位。
+- 章节考情页在 `frontend/src/styles/chapter-exam-profile.css` 内用同样的六级热度刻度，但改用强调色（accent）与表面色混合派生：频次表示出题覆盖而非不足，单元格内始终印出计数值。
 
 ## 信息密度与文字
 

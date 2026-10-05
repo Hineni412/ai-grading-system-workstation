@@ -329,6 +329,19 @@ def get_skill_index(
         _raise_question_snapshot_api_error(exc)
 
 
+@router.get("/chapter-exam-profile", responses=QUESTION_SNAPSHOT_ERROR_RESPONSES)
+def get_chapter_exam_profile(
+    curriculum_volume_id: Annotated[str, Query(min_length=1)],
+    service: QuestionBankReadService = Depends(get_question_bank_read_service),
+) -> dict[str, Any]:
+    try:
+        return service.chapter_exam_profile(curriculum_volume_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except QuestionBankSnapshotError as exc:
+        _raise_question_snapshot_api_error(exc)
+
+
 @router.get(
     "/taxonomy/proposals",
     response_model=TaxonomyProposalListResponse,
@@ -2149,6 +2162,7 @@ def list_questions(
     difficulty_min: Annotated[float | None, Query(ge=1, le=10)] = None,
     difficulty_max: Annotated[float | None, Query(ge=1, le=10)] = None,
     question_types: Annotated[list[str] | None, Query()] = None,
+    question_ids: Annotated[list[int] | None, Query()] = None,
     paper_ids: Annotated[list[int] | None, Query()] = None,
     years: Annotated[list[str] | None, Query()] = None,
     exam_types: Annotated[list[str] | None, Query()] = None,
@@ -2181,6 +2195,12 @@ def list_questions(
     service: QuestionBankReadService = Depends(get_question_bank_read_service),
 ) -> QuestionListResponse:
     _validate_difficulty_range(difficulty_min, difficulty_max)
+    if question_ids is not None and len(question_ids) > 500:
+        raise ApiError(
+            422,
+            "invalid_question_ids",
+            "question_ids supports at most 500 values",
+        )
 
     try:
         result = service.list_questions(
@@ -2190,6 +2210,7 @@ def list_questions(
                 include_skills=include_skills,
                 page=page,
                 page_size=page_size,
+                question_ids=tuple(question_ids or ()),
                 question_number=question_number,
                 keyword=keyword,
                 knowledge_point=knowledge_point,

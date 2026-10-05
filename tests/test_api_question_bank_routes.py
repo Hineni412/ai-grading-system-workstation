@@ -109,6 +109,25 @@ def test_skill_routes_remain_read_only_and_optional_list_fields(question_bank_fi
     assert client.get('/api/question-bank/papers').json()['items'][0]['skill_unlinked_question_count'] == 1
 
 
+def test_chapter_exam_profile_route_and_question_ids_filter(question_bank_fixture):
+    service, db_path, _ = question_bank_fixture
+    client = _question_bank_client(service, question_bank_db_path=db_path)
+    assert client.get('/api/question-bank/chapter-exam-profile?curriculum_volume_id=invalid').status_code == 422
+    response = client.get('/api/question-bank/chapter-exam-profile?curriculum_volume_id=bnu24-math-g8-upper')
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['curriculum_volume_id'] == 'bnu24-math-g8-upper'
+    assert payload['model_calls'] == 0
+    assert {row['stage'] for row in payload['stages']} == {'midterm', 'final'}
+    assert isinstance(payload['chapters'], list)
+    selected = client.get('/api/question-bank/questions?question_ids=1&tag_status=all').json()
+    assert [item['id'] for item in selected['items']] == [1]
+    assert client.get('/api/question-bank/questions?question_ids=999&tag_status=all').json()['total'] == 0
+    assert client.get('/api/question-bank/questions?' + '&'.join(
+        f'question_ids={number}' for number in range(1, 502)
+    )).status_code == 422
+
+
 @pytest.mark.parametrize(("original", "expected"), [
     ("（8分）求未知数的值。", "求未知数的值。"),
     ("( 8 分 ) 求未知数的值。", "求未知数的值。"),

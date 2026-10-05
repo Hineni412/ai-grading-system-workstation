@@ -168,6 +168,7 @@ def build_question_filter_query(
     difficulty: str | None = None,
     difficulty_range: tuple[float, float] | None = None,
     question_types: list[str] | None = None,
+    question_ids: list[int] | None = None,
     paper_ids: list[int] | None = None,
     years: list[str] | None = None,
     exam_types: list[str] | None = None,
@@ -180,6 +181,7 @@ def build_question_filter_query(
     """Build the shared read query without depending on the retired service."""
 
     cleaned_paper_ids = [int(value) for value in paper_ids or [] if int(value) > 0]
+    cleaned_question_ids = [int(value) for value in question_ids or [] if int(value) > 0]
     # Reused questions have no questions row in this paper; their
     # paper-local membership lives in paper_question_occurrences.  The
     # join literalizes already-sanitized integer ids so join params do
@@ -285,6 +287,10 @@ def build_question_filter_query(
             f"(q.paper_id IN ({placeholders}) OR occ.question_id IS NOT NULL)"
         )
         params.extend(cleaned_paper_ids)
+    if cleaned_question_ids:
+        placeholders = ", ".join("?" for _ in cleaned_question_ids)
+        where.append(f"q.id IN ({placeholders})")
+        params.extend(cleaned_question_ids)
     for tag_type, tag_values in (tag_filters or {}).items():
         cleaned = [item for value in tag_values if (item := _filter_text(value))]
         if not cleaned:
@@ -576,6 +582,7 @@ class QuestionReadFilters:
     difficulty_min: float | None = None
     difficulty_max: float | None = None
     question_types: tuple[str, ...] = ()
+    question_ids: tuple[int, ...] = ()
     paper_ids: tuple[int, ...] = ()
     years: tuple[str, ...] = ()
     exam_types: tuple[str, ...] = ()
@@ -1418,6 +1425,28 @@ class QuestionBankReadService:
             snapshot = self._skill_snapshot(volume_id=curriculum_volume_id)
             review_ids = _load_criteria_needs_review_ids(conn, list(snapshot["questions"]))
         result = skill_index(snapshot, curriculum_volume_id, review_ids)
+        if generation is not None and generation == _source_generation_token(self.db_path):
+            _read_result_cache_put(key, result)
+        return result
+
+    def chapter_exam_profile(self, curriculum_volume_id: str) -> dict[str, Any]:
+        """章节考情：本册期中/期末卷的出卷统计，只读、无模型调用。"""
+        from question_bank.services.chapter_exam_profile import (
+            build_chapter_exam_profile,
+        )
+        from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+
+        volume = curriculum_volume(volume_id=curriculum_volume_id)
+        if volume is None:
+            raise ValueError("请选择有效的教学学期")
+        generation = None if _ACTIVE_READ_SCOPE.get() is not None else _source_generation_token(self.db_path)
+        key = ("chapter_exam_profile", generation, self._cache_data_root, curriculum_volume_id)
+        cached = _read_result_cache_get(key) if generation is not None else _CACHE_MISS
+        if cached is not _CACHE_MISS:
+            return cached
+        with _read_connection(self.db_path) as conn:
+            snapshot = self._skill_snapshot(volume_id=curriculum_volume_id)
+            result = build_chapter_exam_profile(conn, snapshot, volume)
         if generation is not None and generation == _source_generation_token(self.db_path):
             _read_result_cache_put(key, result)
         return result
@@ -3241,6 +3270,7 @@ def _question_filter_parts(
         knowledge_point=None,
         difficulty_range=difficulty_range,
         question_types=list(filters.question_types),
+        question_ids=list(filters.question_ids),
         paper_ids=list(filters.paper_ids),
         years=list(filters.years),
         exam_types=list(filters.exam_types),

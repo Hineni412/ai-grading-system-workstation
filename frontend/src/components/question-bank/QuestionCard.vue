@@ -9,7 +9,7 @@ import AppButton from '../design-system/AppButton.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 import QuestionAnnotationPanel from './QuestionAnnotationPanel.vue'
 
-const props = defineProps<{ question: QuestionBankListItem; paperMode?: boolean; currentSkill?: string }>()
+const props = defineProps<{ question: QuestionBankListItem; paperMode?: boolean; currentSkill?: string; badgeLabel?: string }>()
 const emit = defineEmits<{ similar: [question: QuestionBankListItem]; skill: [key: string] }>()
 const bank = useQuestionBankStore()
 const assembly = useAssemblyStore()
@@ -51,6 +51,7 @@ watch(expanded, async (value, wasExpanded) => {
     <header class="qb-inline-card__heading" @click="clickHeading">
       <button ref="heading" class="qb-inline-card__title" type="button" :aria-expanded="expanded" :aria-controls="`qb-annotation-${question.id}`" @click="toggle">第 {{ question.question_number || question.id }} 题</button>
       <span v-if="!paperMode" class="qb-inline-card__source">{{ question.paper_title || '未命名试卷' }}</span>
+      <span v-if="badgeLabel" class="qb-badge-label">{{ badgeLabel }}</span>
       <label v-if="!expanded" class="qb-inline-card__select"><input type="checkbox" :aria-label="`选择第 ${question.question_number || question.id} 题`" :checked="bank.selectedQuestionIds.includes(question.id)" :disabled="bank.selectionIsFull && !bank.selectedQuestionIds.includes(question.id)" @change="bank.toggleQuestionSelection(question.id, ($event.target as HTMLInputElement).checked)">选入</label>
       <button v-if="!expanded" type="button" class="qb-inline-card__chevron" aria-label="展开题目详情" @click="toggle">▾</button>
       <div v-if="expanded" class="qb-inline-card__heading-actions">

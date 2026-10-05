@@ -607,6 +607,7 @@ export interface QuestionBankFilters {
   difficultyMin?: number
   difficultyMax?: number
   questionTypes?: string[]
+  questionIds?: number[]
   paperIds?: number[]
   years?: string[]
   examTypes?: string[]
@@ -1770,6 +1771,7 @@ function questionListPath(filters: QuestionBankFilters): string {
     parameters.set('difficulty_max', String(filters.difficultyMax))
   }
   appendTexts(parameters, 'question_types', filters.questionTypes)
+  appendIds(parameters, 'question_ids', filters.questionIds)
   appendIds(parameters, 'paper_ids', filters.paperIds)
   appendTexts(parameters, 'years', filters.years)
   appendTexts(parameters, 'exam_types', filters.examTypes)
@@ -1969,6 +1971,136 @@ export function decodeQuestionSkillIndex(value: unknown): QuestionSkillIndex {
   }
   return value as unknown as QuestionSkillIndex
 }
+export type ChapterExamStage = 'midterm' | 'final'
+export type ChapterExamCellColumn = 'choice_basic' | 'choice_advanced' | 'fill' | 'written'
+
+export interface ChapterExamStageStats {
+  stage: ChapterExamStage
+  label: string
+  paper_count: number
+  group_count: number
+  unit: '组' | '份'
+}
+
+export interface ChapterExamStageCells {
+  choice_basic: number[]
+  choice_advanced: number[]
+  fill: number[]
+  written: number[]
+}
+
+export interface ChapterExamSkillRow {
+  key: string | null
+  name: string
+  unlinked: boolean
+  home_section_label: string
+  definition: string
+  total: number
+  cells: Record<ChapterExamStage, ChapterExamStageCells>
+  positions: Record<ChapterExamStage, Record<string, number[]>>
+  typical: {
+    tier: 'basic' | 'mid' | 'hard'
+    question_id: number
+    same_tier_count: number
+    group_count: number
+  }[]
+}
+
+export interface ChapterExamSection {
+  id: string
+  label: string
+  synthesis: boolean
+  main_count: number
+  coverage: Record<ChapterExamStage, { groups: number; of: number; percent: number | null; questions: number }>
+  overview: Record<ChapterExamStage, ChapterExamStageCells>
+  skills: ChapterExamSkillRow[]
+}
+
+export interface ChapterExamChapter {
+  id: string
+  label: string
+  totals: Record<ChapterExamStage, { main: number; cross: number }>
+  difficulty: Record<ChapterExamStage, {
+    total: number; basic: number; mid: number; hard: number
+    choice: number; fill: number; written: number
+  }>
+  cross_question_ids: Record<ChapterExamStage, number[]>
+  sections: ChapterExamSection[]
+}
+
+export interface ChapterExamProfile {
+  curriculum_volume_id: string
+  graph_release_id: string | null
+  model_calls: number
+  counted_question_count: number
+  stages: ChapterExamStageStats[]
+  merged_groups: { stage: ChapterExamStage; papers: { id: number; title: string }[] }[]
+  chapters: ChapterExamChapter[]
+}
+
+const CHAPTER_EXAM_STAGES: ChapterExamStage[] = ['midterm', 'final']
+const CHAPTER_EXAM_COLS: ChapterExamCellColumn[] = ['choice_basic', 'choice_advanced', 'fill', 'written']
+
+export function decodeChapterExamProfile(value: unknown): ChapterExamProfile {
+  function idList(row: unknown): boolean {
+    return Array.isArray(row) && row.every(isPositiveInteger)
+  }
+  function stageCells(row: unknown): boolean {
+    return isRecord(row) && CHAPTER_EXAM_COLS.every((col) => idList(row[col]))
+  }
+  function stageMap(row: unknown, check: (cell: unknown) => boolean): boolean {
+    return isRecord(row) && CHAPTER_EXAM_STAGES.every((stage) => check(row[stage]))
+  }
+  function skill(row: unknown): boolean {
+    return isRecord(row) && (row.key === null || typeof row.key === 'string')
+      && typeof row.name === 'string' && typeof row.unlinked === 'boolean'
+      && typeof row.home_section_label === 'string' && typeof row.definition === 'string'
+      && isNonnegativeInteger(row.total)
+      && stageMap(row.cells, stageCells)
+      && stageMap(row.positions, (buckets) => isRecord(buckets) && Object.values(buckets).every(idList))
+      && Array.isArray(row.typical) && row.typical.every((pick) => isRecord(pick)
+        && (pick.tier === 'basic' || pick.tier === 'mid' || pick.tier === 'hard')
+        && isPositiveInteger(pick.question_id)
+        && isNonnegativeInteger(pick.same_tier_count) && isNonnegativeInteger(pick.group_count))
+  }
+  function section(row: unknown): boolean {
+    return isRecord(row) && typeof row.id === 'string' && typeof row.label === 'string'
+      && typeof row.synthesis === 'boolean' && isNonnegativeInteger(row.main_count)
+      && stageMap(row.coverage, (cell) => isRecord(cell)
+        && isNonnegativeInteger(cell.groups) && isNonnegativeInteger(cell.of)
+        && (cell.percent === null || isNonnegativeInteger(cell.percent))
+        && isNonnegativeInteger(cell.questions))
+      && stageMap(row.overview, stageCells)
+      && Array.isArray(row.skills) && row.skills.every(skill)
+  }
+  function chapter(row: unknown): boolean {
+    return isRecord(row) && typeof row.id === 'string' && typeof row.label === 'string'
+      && stageMap(row.totals, (cell) => isRecord(cell) && isNonnegativeInteger(cell.main) && isNonnegativeInteger(cell.cross))
+      && stageMap(row.difficulty, (cell) => isRecord(cell)
+        && ['total', 'basic', 'mid', 'hard', 'choice', 'fill', 'written']
+          .every((key) => isNonnegativeInteger(cell[key])))
+      && stageMap(row.cross_question_ids, idList)
+      && Array.isArray(row.sections) && row.sections.every(section)
+  }
+  if (!isRecord(value) || typeof value.curriculum_volume_id !== 'string'
+    || !isNullableString(value.graph_release_id) || value.model_calls !== 0
+    || !isNonnegativeInteger(value.counted_question_count)
+    || !Array.isArray(value.stages)
+    || !value.stages.every((row) => isRecord(row)
+      && (row.stage === 'midterm' || row.stage === 'final') && typeof row.label === 'string'
+      && isNonnegativeInteger(row.paper_count) && isNonnegativeInteger(row.group_count)
+      && (row.unit === '组' || row.unit === '份'))
+    || !Array.isArray(value.merged_groups)
+    || !value.merged_groups.every((row) => isRecord(row)
+      && (row.stage === 'midterm' || row.stage === 'final')
+      && Array.isArray(row.papers) && row.papers.every((paper) => isRecord(paper)
+        && isPositiveInteger(paper.id) && typeof paper.title === 'string'))
+    || !Array.isArray(value.chapters) || !value.chapters.every(chapter)) {
+    throw new Error('章节考情数据格式不正确')
+  }
+  return value as unknown as ChapterExamProfile
+}
+
 
 function decodeQuestionStandardSummary(value: unknown): QuestionStandardSummary {
   if (!isRecord(value) || !isNullableString(value.active_release_id)
@@ -1998,6 +2130,10 @@ export const questionBankApi = {
   skillIndex(curriculumVolumeId: string, signal?: AbortSignal): Promise<QuestionSkillIndex> {
     const parameters = new URLSearchParams({ curriculum_volume_id: curriculumVolumeId })
     return apiClient.request(`/api/question-bank/skill-index?${parameters}`, { decode: decodeQuestionSkillIndex, signal })
+  },
+  chapterExamProfile(curriculumVolumeId: string, signal?: AbortSignal): Promise<ChapterExamProfile> {
+    const parameters = new URLSearchParams({ curriculum_volume_id: curriculumVolumeId })
+    return apiClient.request(`/api/question-bank/chapter-exam-profile?${parameters}`, { decode: decodeChapterExamProfile, signal, timeoutMs: 60_000 })
   },
   standardSummary(signal?: AbortSignal): Promise<QuestionStandardSummary> {
     return apiClient.request('/api/question-bank/standard-summary', { decode: decodeQuestionStandardSummary, signal })

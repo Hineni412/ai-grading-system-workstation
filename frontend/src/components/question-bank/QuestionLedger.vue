@@ -21,8 +21,11 @@ import QuestionContentRenderer from './QuestionContentRenderer.vue'
 withDefaults(defineProps<{
   paperMode?: boolean
   currentSkill?: string
+  questionLabels?: Record<number, string>
 }>(), {
   paperMode: false,
+  currentSkill: undefined,
+  questionLabels: undefined,
 })
 
 const emit = defineEmits<{ skill: [key: string] }>()
@@ -164,7 +167,7 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
     <StatePanel v-else-if="store.listState === 'error'" kind="error" :title="store.listError" retry-label="重新读取" @retry="store.loadQuestions(store.appliedFilters)" />
     <StatePanel v-else-if="store.listState === 'empty'" kind="empty" title="当前条件下没有试题，可以清除筛选后再查看。" />
     <div v-else class="qb-question-list">
-      <QuestionCard v-for="question in store.questions" :key="question.id" :question="question" :paper-mode="paperMode" :current-skill="currentSkill" @similar="openSimilar" @skill="emit('skill', $event)" />
+      <QuestionCard v-for="question in store.questions" :key="question.id" :question="question" :paper-mode="paperMode" :current-skill="currentSkill" :badge-label="questionLabels?.[question.id]" @similar="openSimilar" @skill="emit('skill', $event)" />
     </div>
 
     <footer v-if="store.totalPages > 1" class="qb-pagination">

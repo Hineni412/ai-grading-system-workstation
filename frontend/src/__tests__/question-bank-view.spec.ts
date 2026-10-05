@@ -4,13 +4,15 @@ import { createApp, h, nextTick, ref } from 'vue'
 import { createMemoryHistory } from 'vue-router'
 
 import { ApiError } from '../api/errors'
-import { questionBankApi, type QuestionBankPaper } from '../api/question-bank'
+import { questionBankApi, type ChapterExamProfile as ChapterExamProfileData, type QuestionBankPaper } from '../api/question-bank'
 import { trainingApi } from '../api/training'
 import QuestionBasketDrawer from '../components/question-bank/QuestionBasketDrawer.vue'
 import { useAssemblyStore } from '../stores/assembly'
 import QuestionBankTodo from '../components/question-bank/QuestionBankTodo.vue'
 import QuestionRepairDialog from '../components/question-bank/QuestionRepairDialog.vue'
 import QuestionSkillBrowser from '../components/question-bank/QuestionSkillBrowser.vue'
+import ChapterExamProfile from '../components/question-bank/ChapterExamProfile.vue'
+import * as studentsApi from '../api/students'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import PaperLibrary from '../components/question-bank/PaperLibrary.vue'
 import QuestionImportJobs from '../components/question-bank/QuestionImportJobs.vue'
@@ -685,6 +687,98 @@ describe('question bank workspace', () => {
 
     // The mastery read needs only group-level nodes, not per-student detail.
     await vi.waitFor(() => expect(overview).toHaveBeenCalledWith(expect.objectContaining({ include_student_detail: false }), expect.anything()), { timeout: 4000 })
+  })
+
+  it('renders the chapter exam profile and loads count cells into the shared ledger', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/question-bank?tab=exam&section=sec_TEST_21')
+    const scope = useCurriculumScopeStore(pinia)
+    scope.selectedVolumeId = 'bnu24-math-g8-upper'
+    scope.loadState = 'ready'
+    scope.volumes = [{ id: scope.selectedVolumeId, label: '八年级上册', order: 1, grade: '八年级', semester: '上学期', textbook_version: '北师大版（2024）', source: {}, statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 }, chapters: [] }]
+    const bank = useQuestionBankStore(pinia)
+    const list = vi.spyOn(bank, 'loadQuestions').mockResolvedValue()
+    vi.spyOn(studentsApi, 'fetchStudents').mockResolvedValue([])
+    vi.spyOn(trainingApi, 'overview').mockResolvedValue({
+      nodes: [{ kind: 'skill', knowledge_key: 'sk_TEST_a', display_name: '区分有理数无理数', chapter_key: 'ch', section_key: 'sec', group_mastery: 0.5, evidence_student_count: 4, distribution: { weak: 2, unsteady: 1, stable: 1, insufficient: 0 }, students: [] }],
+      exam_scope: { sessions: [] },
+    } as unknown as Awaited<ReturnType<typeof trainingApi.overview>>)
+    const profile: ChapterExamProfileData = {
+      curriculum_volume_id: scope.selectedVolumeId,
+      graph_release_id: 'kgr_TEST',
+      model_calls: 0,
+      counted_question_count: 4,
+      stages: [
+        { stage: 'midterm', label: '期中', paper_count: 2, group_count: 1, unit: '组' },
+        { stage: 'final', label: '期末', paper_count: 1, group_count: 1, unit: '份' },
+      ],
+      merged_groups: [{ stage: 'midterm', papers: [{ id: 1, title: '期中A' }, { id: 2, title: '期中B' }] }],
+      chapters: [{
+        id: 'ch_TEST_2', label: '第二章 实数',
+        totals: { midterm: { main: 3, cross: 0 }, final: { main: 1, cross: 0 } },
+        difficulty: {
+          midterm: { total: 3, basic: 2, mid: 1, hard: 0, choice: 3, fill: 0, written: 0 },
+          final: { total: 1, basic: 0, mid: 1, hard: 0, choice: 0, fill: 0, written: 1 },
+        },
+        cross_question_ids: { midterm: [], final: [] },
+        sections: [{
+          id: 'sec_TEST_21', label: '2.1 认识实数', synthesis: false, main_count: 4,
+          coverage: {
+            midterm: { groups: 1, of: 1, percent: 100, questions: 3 },
+            final: { groups: 1, of: 1, percent: 100, questions: 1 },
+          },
+          overview: {
+            midterm: { choice_basic: [1, 2], choice_advanced: [3], fill: [], written: [] },
+            final: { choice_basic: [], choice_advanced: [], fill: [], written: [4] },
+          },
+          skills: [{
+            key: 'sk_TEST_a', name: '区分有理数无理数', unlinked: false,
+            home_section_label: '', definition: '无限不循环小数是无理数', total: 4,
+            cells: {
+              midterm: { choice_basic: [1, 2], choice_advanced: [3], fill: [], written: [] },
+              final: { choice_basic: [], choice_advanced: [], fill: [], written: [4] },
+            },
+            positions: { midterm: { '1': [1], '2': [2] }, final: { '13': [4] } },
+            typical: [{ tier: 'basic', question_id: 1, same_tier_count: 2, group_count: 1 }],
+          }],
+        }],
+      }],
+    }
+    vi.spyOn(questionBankApi, 'chapterExamProfile').mockResolvedValue(profile)
+    const app = createApp({ render: () => h(ChapterExamProfile) })
+    app.use(pinia).use(router).mount(host)
+    mounted.push(app)
+    // 小节页默认在右栏列出该节典型题（保持技能顺序、档位顺序）。
+    await vi.waitFor(() => expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ questionIds: [1], includeSkills: true, tagStatus: 'all', collapseDuplicates: false }),
+      expect.anything(),
+    ))
+    await vi.waitFor(() => expect(host.textContent).toContain('考法热力'))
+    expect(host.textContent).toContain('区分有理数无理数')
+    expect(host.textContent).toContain('同源卷合并')
+    // 本班明显薄弱列：弱占比 2/4 = 50%，且主考 4 题 ≥3 → 常考且薄弱。
+    await vi.waitFor(() => expect(host.textContent).toContain('50%（2/4 人）'))
+    expect(host.textContent).toContain('常考且薄弱')
+    // 合计档点击单元格 → 题单只含该格题目（期中 2 题 + 期末 0 题）。
+    const basicCell = [...host.querySelectorAll<HTMLButtonElement>('.cep-cell')].find(button => button.textContent?.trim() === '2')!
+    basicCell.click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(
+      expect.objectContaining({ questionIds: [1, 2], sort: 'difficulty_asc' }),
+      expect.anything(),
+    ))
+    expect(host.textContent).toContain('2.1 认识实数 · 区分有理数无理数 · 选择·基础 · 合计 2 题')
+    // 阶段切换驱动热力表计数：期末档基础格为空、解答格剩 1 题。
+    const finalStage = [...host.querySelectorAll<HTMLButtonElement>('.app-segmented button')].find(button => button.textContent === '期末')!
+    finalStage.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.stage).toBe('final'))
+    await vi.waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ questionIds: [1] }), expect.anything()))
+    expect(host.textContent).toContain('考法热力 · 期末')
+    const finalCells = [...host.querySelectorAll<HTMLButtonElement>('.cep-cell')].map(button => button.textContent?.trim())
+    expect(finalCells).toContain('1')
+    expect(finalCells).not.toContain('2')
   })
 
   it('browses questions across skills by tag dimension, scope and value', async () => {

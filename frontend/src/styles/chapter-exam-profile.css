@@ -1,0 +1,402 @@
+/* 章节考情：出现频次热力沿用学情总览的色阶做法，但由主题色与内容面色混合派生，
+   因为频次不代表好坏；掌握度薄弱仍沿用危险色斜纹含义。 */
+
+.chapter-exam {
+  --cep-heat-1: color-mix(in srgb, var(--color-accent) 10%, var(--color-bg-surface));
+  --cep-heat-2: color-mix(in srgb, var(--color-accent) 20%, var(--color-bg-surface));
+  --cep-heat-3: color-mix(in srgb, var(--color-accent) 32%, var(--color-bg-surface));
+  --cep-heat-4: color-mix(in srgb, var(--color-accent) 45%, var(--color-bg-surface));
+  --cep-heat-5: color-mix(in srgb, var(--color-accent) 60%, var(--color-bg-surface));
+}
+
+/* 章节考情以分析栏为主栏：覆盖父布局 280px 的技能列宽。 */
+.chapter-exam.qb-skill-layout {
+  grid-template-columns: minmax(560px, 1.15fr) minmax(440px, 1fr);
+}
+
+.chapter-exam.qb-skill-layout.is-full {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.chapter-exam.qb-skill-layout.is-skill-narrow {
+  grid-template-columns: 44px minmax(0, 1fr);
+}
+
+.chapter-exam.is-skill-narrow .cep-tools {
+  display: none;
+}
+
+@media (max-width: 1279.98px) {
+  .chapter-exam.qb-skill-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    overflow-y: auto;
+    height: 100%;
+  }
+
+  .chapter-exam.qb-skill-layout > .qb-skill-pane {
+    flex: none;
+    max-height: none;
+  }
+
+  .chapter-exam.qb-skill-layout > .qb-skill-pane .cep-scroll {
+    overflow: visible;
+  }
+
+  .chapter-exam.qb-skill-layout > .qb-question-pane {
+    flex: none;
+    min-height: 420px;
+  }
+
+  .chapter-exam.qb-skill-layout.is-skill-narrow > .qb-skill-pane {
+    width: 44px;
+  }
+}
+
+.chapter-exam .cep-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.chapter-exam.is-skill-narrow .cep-scroll {
+  display: none;
+}
+
+.chapter-exam .cep-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.chapter-exam .cep-scroll p {
+  margin: 0;
+}
+
+.chapter-exam .cep-note {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.chapter-exam .cep-coverage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-dense);
+}
+
+.chapter-exam .cep-coverage b {
+  color: var(--color-text-primary);
+}
+
+.chapter-exam h3.cep-block-title {
+  margin: 0 0 2px;
+  font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.chapter-exam table.cep-table {
+  border-collapse: collapse;
+  width: max-content;
+  font-size: var(--font-size-caption);
+  color: var(--color-text-primary);
+}
+
+.chapter-exam .cep-table th,
+.chapter-exam .cep-table td {
+  border: 1px solid var(--color-border-default);
+  padding: 4px 6px;
+  text-align: center;
+  vertical-align: middle;
+  font-weight: var(--font-weight-regular);
+  white-space: nowrap;
+}
+
+/* 宽表在自身容器内横向滚动，行标签列吸附在左侧。 */
+.chapter-exam .cep-table-scroll .cep-row-label,
+.chapter-exam .cep-table-scroll thead th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--card);
+}
+
+.chapter-exam .cep-table-scroll thead th:first-child {
+  background: var(--color-bg-subtle);
+  z-index: 2;
+}
+
+.chapter-exam .cep-pos-table td.cep-row-label {
+  width: 110px;
+  max-width: 110px;
+}
+
+.chapter-exam .cep-pos-table td.cep-stage-tag,
+.chapter-exam .cep-pos-table thead th:nth-child(2) {
+  position: sticky;
+  left: 110px;
+  z-index: 1;
+  width: 36px;
+  min-width: 36px;
+  background: var(--card);
+}
+
+.chapter-exam .cep-pos-table thead th:nth-child(2) {
+  background: var(--color-bg-subtle);
+  z-index: 2;
+}
+
+.chapter-exam .cep-pos-table th,
+.chapter-exam .cep-pos-table td {
+  padding: 3px 1px;
+  min-width: 20px;
+}
+
+.chapter-exam .cep-pos-table th:last-child,
+.chapter-exam .cep-pos-table td:last-child {
+  min-width: 26px;
+}
+
+.chapter-exam .cep-pos-table td button.cep-cell {
+  min-width: 16px;
+}
+
+.chapter-exam .cep-table thead th {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+}
+
+.chapter-exam .cep-table .cep-row-label {
+  text-align: left;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chapter-exam .cep-table button.cep-row-link {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  text-align: left;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.chapter-exam .cep-table button.cep-row-link:hover {
+  color: var(--color-accent);
+}
+
+.chapter-exam .cep-table .cep-row-static {
+  text-align: left;
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.chapter-exam .cep-table button.cep-cell {
+  display: block;
+  width: 100%;
+  min-width: 30px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.chapter-exam .cep-table button.cep-cell:hover {
+  text-decoration: underline;
+}
+
+.chapter-exam button.cep-inline-link {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+.chapter-exam button.cep-inline-link:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.chapter-exam button.cep-inline-link:disabled {
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+.chapter-exam .cep-table td.cep-heat-1 { background: var(--cep-heat-1); }
+.chapter-exam .cep-table td.cep-heat-2 { background: var(--cep-heat-2); }
+.chapter-exam .cep-table td.cep-heat-3 { background: var(--cep-heat-3); }
+.chapter-exam .cep-table td.cep-heat-4 { background: var(--cep-heat-4); }
+.chapter-exam .cep-table td.cep-heat-5 { background: var(--cep-heat-5); color: var(--color-text-primary); }
+
+.chapter-exam .cep-table tr.is-empty .cep-row-label,
+.chapter-exam .cep-table tr.is-empty td {
+  color: var(--color-text-muted);
+}
+
+.chapter-exam .cep-panels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.chapter-exam .cep-panels > div {
+  min-width: 0;
+}
+
+.chapter-exam .cep-panel-title {
+  margin: 0 0 6px;
+  font-size: var(--font-size-caption);
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-medium);
+}
+
+.chapter-exam .cep-skill-name {
+  display: inline;
+}
+
+.chapter-exam .cep-skill-name small {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  margin-left: 4px;
+}
+
+.chapter-exam .cep-skill-definition {
+  display: inline;
+  margin-left: 4px;
+}
+
+.chapter-exam .cep-skill-definition summary {
+  display: inline;
+  cursor: pointer;
+  list-style: none;
+  color: var(--color-accent);
+  font-size: var(--font-size-caption);
+}
+
+.chapter-exam .cep-skill-definition summary::before {
+  content: '定义 ▸';
+}
+
+.chapter-exam .cep-skill-definition[open] summary::before {
+  content: '定义 ▾';
+}
+
+.chapter-exam .cep-skill-definition p {
+  margin: 3px 0 0;
+  color: var(--color-text-secondary);
+  max-width: 40em;
+  white-space: normal;
+}
+
+.chapter-exam .cep-mastery {
+  min-width: 106px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.chapter-exam .cep-mastery-bar {
+  display: inline-block;
+  width: 34px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 3px;
+  background: var(--color-bg-subtle);
+  vertical-align: middle;
+  overflow: hidden;
+}
+
+.chapter-exam .cep-mastery-bar i {
+  display: block;
+  height: 100%;
+  background: var(--color-danger);
+}
+
+.chapter-exam .cep-badge-warn {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: var(--radius-tag);
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+
+.chapter-exam .cep-stage-tag {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.chapter-exam .cep-pos-skill {
+  writing-mode: initial;
+}
+
+.chapter-exam .knowledge-overview-scope-bar {
+  padding: 0;
+  font-size: var(--font-size-caption);
+}
+
+.chapter-exam .cep-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.chapter-exam .cep-tools .app-segmented {
+  align-self: flex-start;
+}
+
+.chapter-exam .cep-merged-details {
+  display: inline;
+  margin-left: 6px;
+}
+
+.chapter-exam .cep-merged-details summary {
+  display: inline;
+  cursor: pointer;
+  list-style: none;
+  color: var(--color-accent);
+}
+
+.chapter-exam .cep-merged-details > span {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-text-secondary);
+  white-space: normal;
+}
+
+/* 题卡头部由 QuestionLedger 透传的档位与同类题说明。 */
+.qb-badge-label {
+  align-self: center;
+  padding: 1px 6px;
+  border-radius: var(--radius-tag);
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
