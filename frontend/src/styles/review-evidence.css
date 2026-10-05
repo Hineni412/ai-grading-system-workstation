@@ -14,11 +14,6 @@
   overflow: hidden;
 }
 
-.review-page--deep > .review-page__header,
-.review-page--deep > .feedback-banner {
-  flex: none;
-}
-
 .review-page--deep > .review-deep-workspace {
   flex: 1 1 auto;
 }

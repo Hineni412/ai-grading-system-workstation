@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import { useWrongQuestionBookExport } from '../../features/training/wrong-question-book-export'
 const props = defineProps<{ studentIds: string[]; volumeId: string; scopeKeys: string[]; valid: boolean; blockedReason?: string }>()
 const sessionIds = defineModel<number[] | null>('sessionIds', { default: null })
@@ -24,7 +25,7 @@ const { preview, loading, submitting, downloading, downloaded, message, job, job
     <details v-if="missing.length"><summary>缺少题库原题（{{ missing.length }} 道）</summary><ul><li v-for="(item, index) in missing" :key="index">{{ item.student_name }} · {{ item.session_name }} · {{ item.question_id }}</li></ul></details>
     <details v-if="emptyStudents.length"><summary>未生成学生（{{ emptyStudents.length }} 人）</summary><ul><li v-for="(item, index) in emptyStudents" :key="index">{{ item.student_name }} · {{ item.reason }}</li></ul></details>
     <p v-for="(item, index) in failedStudents" :key="index" role="alert">失败：{{ item.student_name }}（{{ item.reason }}）</p>
-    <p v-if="message" role="alert">{{ message }}</p><p v-if="downloaded" role="status">下载已完成，本机临时导出文件已清除。</p><p v-if="!valid" class="practice-empty">{{ blockedReason }}</p>
+    <p v-if="message" role="alert">{{ message }}</p><p v-if="downloaded" role="status">下载已完成，本机临时导出文件已清除。</p><StatePanel v-if="!valid" kind="empty" compact :title="blockedReason || '当前不可导出'" />
     <footer><AppButton v-if="canSelect && !preview && !loading && valid" @click="loadPreview">重新加载</AppButton>
       <AppButton v-if="canSelect" variant="primary" :disabled="!valid || loading || !sessionIds?.length || !preview?.question_count" :loading="submitting" @click="submit">{{ studentIds.length === 1 ? '导出错题本（Word）' : `导出错题本（${Math.max(0, (preview?.students.length ?? 0) - (preview?.empty_students.length ?? 0))} 份 Word · ZIP）` }}</AppButton>
       <AppButton v-else-if="!job" :loading="submitting" @click="recover">查询此次提交</AppButton>

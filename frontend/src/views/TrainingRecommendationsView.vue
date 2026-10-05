@@ -21,7 +21,9 @@ import KnowledgeTrainingTabs from '../components/knowledge-training/KnowledgeTra
 import PaperSettingsPanel from '../components/knowledge-training/PaperSettingsPanel.vue'
 import PersonalizedRecommendationDraft from '../components/training/PersonalizedRecommendationDraft.vue'
 import AppButton from '../components/design-system/AppButton.vue'
+import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
+import StatePanel from '../components/design-system/StatePanel.vue'
 import BackButton from '../components/design-system/BackButton.vue'
 import StepProgress, { type StepProgressStep } from '../components/design-system/StepProgress.vue'
 import { loadEvidenceScope, saveEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
@@ -504,15 +506,18 @@ onBeforeUnmount(() => studentsController?.abort())
       :session-count="training.diagnosis?.exam_scope.sessions?.length ?? 0" :classes="classes" :selected-class="selectedClass"
       :score-floor="training.studentScope.scoreRateMin" @select-class="setScopeClass" @update-score-floor="setScoreFloor" />
 
-    <p v-if="referenceState === 'error'" class="status-card error">
-      学生名单暂时无法读取。请检查服务后重试；当前筛选没有被清空。
-    </p>
-    <p v-if="training.errorMessage" class="status-card error">{{ training.errorMessage }}</p>
-    <p v-if="groupMessage" class="status-card" role="status">{{ groupMessage }}</p>
+    <FeedbackBanner
+      v-if="referenceState === 'error'"
+      tone="error"
+      title="学生名单暂时无法读取。请检查服务后重试；当前筛选没有被清空。"
+      description=""
+    />
+    <FeedbackBanner v-if="training.errorMessage" tone="error" :title="training.errorMessage" description="" />
+    <FeedbackBanner v-if="groupMessage" tone="info" :title="groupMessage" description="" />
 
     <section v-if="trainingMode !== 'paper'" class="practice-workspace">
-      <p v-if="!curriculumScope.selectedVolumeId" class="status-card">请先选择教学学期。</p>
-      <p v-else-if="!training.diagnosis && training.analysisState === 'loading'" class="status-card">正在汇总学生与知识点…</p>
+      <StatePanel v-if="!curriculumScope.selectedVolumeId" kind="empty" title="请先选择教学学期" description="在左侧栏“当前考试”中选择教学学期。" />
+      <StatePanel v-else-if="!training.diagnosis && training.analysisState === 'loading'" kind="loading" title="正在汇总学生与知识点…" />
       <div v-else-if="training.diagnosis" class="practice-layout">
         <StudentPicker v-if="trainingMode === 'student'" v-model="selectedStudentIds" :diagnosis="training.diagnosis" @show-student="showStudent" />
         <KnowledgeRangeList v-else mode="select-one" :volume="curriculumScope.selectedVolume" :diagnosis="training.diagnosis" :purpose="purpose"
@@ -534,16 +539,20 @@ onBeforeUnmount(() => studentsController?.abort())
           v-model:wrong-book-session-ids="wrongBookSessionIds" v-model:include-source-label="includeSourceLabel" v-model:include-answer-space="includeAnswerSpace"
           @go-paper="goPaper(trainingMode === 'chapter' ? 'shared' : paperMode)" />
       </div>
-      <div v-else class="status-card empty-state"><p>当前范围尚未汇总掌握度。</p><AppButton @click="analyze">重新加载</AppButton></div>
+      <StatePanel v-else kind="empty" title="当前范围尚未汇总掌握度。">
+        <template #actions><AppButton @click="analyze">重新加载</AppButton></template>
+      </StatePanel>
       <details v-if="training.diagnosis?.warnings.length" class="training-data-note"><summary>数据说明（{{ training.diagnosis.warnings.length }}）</summary><ul><li v-for="warning in training.diagnosis.warnings" :key="warning">{{ warning }}</li></ul></details>
       <StudentQuickView v-if="training.diagnosis" v-model:open="quickOpen" :student="quickStudent" :diagnosis="training.diagnosis" @wrong-book="chooseWrongBook" />
     </section>
 
     <section v-else class="paper-workspace">
 
-      <div v-if="!training.diagnosis" class="status-card empty-state">
-        请先回到“按章节训练”勾选细知识点，或回到“按学生训练”勾选章/节范围。
-      </div>
+      <StatePanel
+        v-if="!training.diagnosis"
+        kind="empty"
+        title="请先回到“按章节训练”勾选细知识点，或回到“按学生训练”勾选章/节范围。"
+      />
       <template v-else>
         <div class="paper-console is-reviewing">
           <div class="paper-console__main">
@@ -604,7 +613,7 @@ onBeforeUnmount(() => studentsController?.abort())
 </template>
 
 <style scoped>
-.training-workspace{grid-template-columns:minmax(0,1fr);min-width:0;gap:var(--space-4);padding:var(--space-5) var(--space-6)}
+.training-workspace{grid-template-columns:minmax(0,1fr);min-width:0;gap:var(--space-4)}
 .training-heading--compact{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);padding:0;border:0;min-height:0}
 .training-heading h1{font-size:var(--font-size-h1);margin:0}
 .training-page-summary{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:var(--space-3);color:var(--color-text-muted);font-size:var(--font-size-dense)}
@@ -642,5 +651,5 @@ onBeforeUnmount(() => studentsController?.abort())
 .paper-settings-summary{font-size:var(--font-size-caption);color:var(--color-text-muted)}.paper-settings-summary summary{cursor:pointer}.paper-settings-summary p{margin:var(--space-2) 0 0}
 .training-workspace :deep(.knowledge-training-tabs>span){display:none}
 @media(max-width:1100px){.training-selection-layout{grid-template-columns:minmax(0,1fr)}.training-selection-layout>.paper-settings-panel{position:static;grid-column:1;grid-row:auto}.training-selection-layout>.chapter-training,.training-selection-layout>.knowledge-structure{grid-row:auto}.training-selection-layout>.training-data-note,.training-selection-layout>.training-adopted-group{grid-row:auto}}
-@media(max-width:760px){.training-workspace{padding:var(--space-4);gap:var(--space-3)}.training-heading--compact{flex-wrap:wrap}.training-mode-panel__heading{padding:var(--space-3);flex-wrap:wrap}.training-selection-layout{padding:var(--space-3)}.paper-console{padding:var(--space-3)}.training-adopted-group{flex-wrap:wrap}.paper-review-bar__back{margin-left:0}}
+@media(max-width:760px){.training-workspace{gap:var(--space-3)}.training-heading--compact{flex-wrap:wrap}.training-mode-panel__heading{padding:var(--space-3);flex-wrap:wrap}.training-selection-layout{padding:var(--space-3)}.paper-console{padding:var(--space-3)}.training-adopted-group{flex-wrap:wrap}.paper-review-bar__back{margin-left:0}}
 </style>

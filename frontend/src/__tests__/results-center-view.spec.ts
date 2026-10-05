@@ -430,7 +430,7 @@ describe('results center class filtering and return position', () => {
     await router.isReady()
     app = createApp({ render: () => h('main', { id: 'main-workspace' }, [h(RouterView)]) })
     app.use(pinia).use(router).mount(host)
-    await vi.waitFor(() => expect(host.querySelector('.results-state-panel--error')).not.toBeNull())
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="state-panel"][data-kind="error"]')).not.toBeNull())
     expect(host.textContent).toContain('评分细则文件 rubric.json 无法读取，请先恢复该文件。')
     expect(host.textContent).not.toContain('当前考试的成绩暂时无法读取')
   })
@@ -508,7 +508,7 @@ describe('personal report reading and review return', () => {
     expect(document.querySelector('.personal-reader__identity')?.textContent).toContain('合成乙')
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
     await vi.waitFor(() => expect(document.querySelector('.personal-reader__identity')?.textContent).toContain('合成丙'))
-    await vi.waitFor(() => expect(document.querySelector('.personal-reader__empty')?.textContent).toContain('本场报告尚未生成'))
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="state-panel"]')?.textContent).toContain('本场报告尚未生成'))
     const data = [...document.querySelectorAll<HTMLButtonElement>('.personal-reader button')].find(b => b.textContent === '先看数据版')!
     data.click()
     await nextTick()

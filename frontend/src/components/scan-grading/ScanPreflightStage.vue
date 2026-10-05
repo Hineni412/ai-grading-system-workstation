@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import StudentMatchSelect from './StudentMatchSelect.vue'
 import type { ScanStageId } from './scan-stage'
 import {
@@ -153,10 +154,9 @@ function selectStage(id: ScanStageId): void {
       </progress>
       <p v-if="store.preflight">正在生成新结果，下方暂时显示上一次完整预检结果。</p>
     </div>
-    <div v-if="!store.preflight" class="scan-empty">
-      <p>{{ store.preflightJobId ? '预检正在后台运行，完成后这里会自动更新。' : '上传答卷后运行识别，再在这里核对学生归属和异常页。' }}</p>
-      <AppButton v-if="store.uploadBatch?.state === 'frozen' && !store.preflightJobId" data-action="retry-preflight" variant="secondary" @click="store.analyze">运行或重新运行预检</AppButton>
-    </div>
+    <StatePanel v-if="!store.preflight" kind="empty" :title="store.preflightJobId ? '预检正在后台运行，完成后这里会自动更新。' : '上传答卷后运行识别，再在这里核对学生归属和异常页。'">
+      <template #actions><AppButton v-if="store.uploadBatch?.state === 'frozen' && !store.preflightJobId" data-action="retry-preflight" variant="secondary" @click="store.analyze">运行或重新运行预检</AppButton></template>
+    </StatePanel>
     <template v-else>
       <p v-if="store.preflight.identity" class="scan-identity">
         本机识别，未调用 AI · 自动匹配 {{ store.preflight.identity.auto }} 份 · 需确认 {{ store.preflight.identity.needs_confirmation }} 份
@@ -172,10 +172,9 @@ function selectStage(id: ScanStageId): void {
         <span v-else-if="pendingCount" class="scan-stats__warn">仍有 {{ pendingCount }} 份异常答卷待处理</span>
         <span class="scan-stats__note">PDF 第 1 页为{{ preflightPageAssignment.first_page_role === 'front' ? '正面' : '反面' }}（正面在{{ preflightPageAssignment.front_page_parity === 'odd' ? '奇数页' : '偶数页' }}）</span>
       </div>
-      <div v-if="!reviewRows.length" class="scan-review-empty">
-        <p>所有答卷已自动匹配。</p>
-        <AppButton :variant="pendingCount ? 'secondary' : 'primary'" @click="selectStage('grade')">下一步：批改</AppButton>
-      </div>
+      <StatePanel v-if="!reviewRows.length" kind="empty" title="所有答卷已自动匹配。">
+        <template #actions><AppButton :variant="pendingCount ? 'secondary' : 'primary'" @click="selectStage('grade')">下一步：批改</AppButton></template>
+      </StatePanel>
       <div v-else class="scan-review">
         <nav class="scan-review-nav" aria-label="答卷核对列表" @keydown="onReviewListKeydown">
           <div class="scan-review-filters" role="group" aria-label="核对筛选">

@@ -4,7 +4,15 @@
   min-width: 0;
   max-width: none;
   margin-inline: auto;
-  padding: 16px;
+  padding: 0 0 var(--page-inset-bottom);
+}
+
+.config-workspace > .page-header {
+  margin-block-end: var(--page-inset-top);
+}
+
+.config-workspace > :not(.page-header):not(.page-header__sentinel) {
+  margin-inline: var(--page-inset-x);
 }
 
 .config-source,

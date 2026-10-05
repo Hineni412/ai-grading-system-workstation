@@ -6,6 +6,7 @@ import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle } f
 
 import type { StudentImportOperation } from '../../api/students'
 import { useStudentRosterStore } from '../../stores/students'
+import StatePanel from '../design-system/StatePanel.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
 
 const roster = useStudentRosterStore()
@@ -88,7 +89,7 @@ async function commit(): Promise<void> {
               <td>{{ row.source_row }}</td><td>{{ row.student_code || '—' }}</td><td>{{ row.name || '—' }}</td><td>{{ row.class_name || '—' }}</td>
               <td><StatusBadge :tone="operationTones[row.operation]" :label="operationLabels[row.operation]" /></td><td>{{ row.issues.join('；') || '—' }}</td>
             </tr></tbody>
-          </table><p v-if="!visibleRows.length" class="student-empty">没有有变化的行</p></div>
+          </table><StatePanel v-if="!visibleRows.length" kind="empty" compact title="没有有变化的行" /></div>
           <p v-if="roster.errorMessage" class="settings-feedback is-error" role="alert">{{ roster.errorMessage }}</p>
           <footer class="settings-dialog__footer">
             <span class="settings-note">已选 {{ roster.selectedImportRows.length }} 行，确认后才会写入。</span>

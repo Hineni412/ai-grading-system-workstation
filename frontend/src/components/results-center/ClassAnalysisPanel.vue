@@ -21,6 +21,7 @@ import {
 import { useJobStore } from '../../stores/jobs'
 import { useResultsCenterStore } from '../../stores/results-center'
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import ClassAnalysisGenerateConfirm from './ClassAnalysisGenerateConfirm.vue'
 import ReviewAnswerPanel from '../review/ReviewAnswerPanel.vue'
 import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
@@ -530,10 +531,12 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
 
 <template>
   <section class="class-analysis" aria-label="试题诊断">
-      <div v-if="props.sessionId === null" class="results-state-panel">
-        <strong>请先在顶部选择考试</strong>
-        <span>选择后，这里会显示该考试的班级整体分析。</span>
-      </div>
+      <StatePanel
+        v-if="props.sessionId === null"
+        kind="empty"
+        title="请先选择考试"
+        description="在左侧栏“当前考试”中选择。"
+      />
       <template v-else>
         <div v-if="analysis" class="class-analysis__toolbar">
           <label class="class-analysis__toggle">
@@ -566,23 +569,34 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
         <p v-if="analysis?.small_sample" class="class-analysis__note" data-testid="small-sample-note">
           当前范围参考人数较少，比率指标解读需谨慎。
         </p>
-        <div v-if="loadState === 'loading'" class="results-state-panel" role="status">
-          <strong>正在读取班级分析</strong>
-          <span>正在统计当前范围的成绩与试题。</span>
-        </div>
-        <div v-else-if="loadState === 'error'" class="results-state-panel results-state-panel--error" role="alert">
-          <strong>班级分析暂时无法读取</strong>
-          <span>{{ errorMessage }}</span>
-          <AppButton variant="secondary" @click="load">重新加载</AppButton>
-        </div>
-        <div v-else-if="analysis?.status === 'no_data'" class="results-state-panel" data-testid="class-analysis-empty">
-          <strong>当前范围尚无已批改成绩</strong>
-          <span>完成批改后，这里会显示统计结果。</span>
-        </div>
-        <div v-else-if="generating && !data" class="results-state-panel" role="status" data-testid="class-analysis-generating">
-          <strong>班级分析生成中…</strong>
-          <span>完成后页面会自动更新，无需手动刷新。</span>
-        </div>
+        <StatePanel
+          v-if="loadState === 'loading'"
+          kind="loading"
+          title="正在读取班级分析"
+          description="正在统计当前范围的成绩与试题。"
+        />
+        <StatePanel
+          v-else-if="loadState === 'error'"
+          kind="error"
+          title="班级分析暂时无法读取"
+          :description="errorMessage"
+          retry-label="重新加载"
+          @retry="load"
+        />
+        <StatePanel
+          v-else-if="analysis?.status === 'no_data'"
+          kind="empty"
+          title="当前范围尚无已批改成绩"
+          description="完成批改后，这里会显示统计结果。"
+          data-testid="class-analysis-empty"
+        />
+        <StatePanel
+          v-else-if="generating && !data"
+          kind="loading"
+          title="班级分析生成中…"
+          description="完成后页面会自动更新，无需手动刷新。"
+          data-testid="class-analysis-generating"
+        />
         <template v-else-if="analysis && data">
           <div class="class-analysis__body">
             <aside

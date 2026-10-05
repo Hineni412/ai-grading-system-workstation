@@ -26,7 +26,6 @@ const emit = defineEmits<{
   >
     <div class="class-analysis__dialog-heading">
       <div>
-        <p class="results-center__eyebrow">AI 内容生成确认</p>
         <h3 id="regenerate-confirm-title">{{ props.kind === 'causes' ? '整理本场各题错因' : '生成班级分析' }}</h3>
       </div>
       <button type="button" class="class-analysis__link" @click="emit('close')">关闭</button>

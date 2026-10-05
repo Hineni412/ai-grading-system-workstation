@@ -12,9 +12,10 @@ import AppButton from './AppButton.vue'
 const props = defineProps<{
   kind: StateKind
   title: string
-  description: string
+  description?: string
   detail?: string
   retryLabel?: string
+  compact?: boolean
 }>()
 
 defineEmits<{
@@ -49,7 +50,7 @@ const markerClass = computed(() =>
   <section
     class="state-panel fx-enter min-w-0"
     :class="kind === 'empty'
-      ? 'flex flex-col items-center px-6 py-10 text-center'
+      ? cn('flex flex-col items-center text-center', compact ? 'p-4' : 'px-6 py-10')
       : 'grid grid-cols-[var(--space-1)_minmax(0,1fr)] gap-4 rounded-(--radius-panel) border border-border bg-card p-5 shadow-[var(--shadow-raised)]'"
     data-testid="state-panel"
     :data-kind="kind"
@@ -65,10 +66,13 @@ const markerClass = computed(() =>
           :class="cn('state-panel__icon size-5', iconClasses[kind], kind === 'loading' && 'animate-spin')"
           aria-hidden="true"
         />
-        <h3 class="m-0 font-semibold" :class="kind === 'empty' ? 'text-[15px]' : 'text-base'">{{ title }}</h3>
+        <h3
+          class="m-0 text-base"
+          :class="compact && kind === 'empty' ? 'font-medium text-(--color-text-secondary)' : 'font-semibold'"
+        >{{ title }}</h3>
       </div>
-      <p v-if="description" class="m-0 text-[13px] leading-relaxed text-(--color-text-secondary)">{{ description }}</p>
-      <p v-if="detail" class="state-panel__detail m-0 text-[13px] text-foreground">{{ detail }}</p>
+      <p v-if="description" class="m-0 text-xs leading-relaxed text-(--color-text-secondary)">{{ description }}</p>
+      <p v-if="detail" class="state-panel__detail m-0 text-xs text-foreground">{{ detail }}</p>
       <div v-if="kind === 'loading'" class="state-panel__skeletons grid gap-2 py-2" aria-hidden="true">
         <span
           v-for="line in 3"
@@ -85,6 +89,9 @@ const markerClass = computed(() =>
       >
         {{ retryLabel }}
       </AppButton>
+      <div v-if="$slots.actions" class="state-panel__actions flex gap-2" :class="{ 'justify-center': kind === 'empty' }">
+        <slot name="actions" />
+      </div>
     </div>
   </section>
 </template>

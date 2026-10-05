@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import StatePanel from '../design-system/StatePanel.vue'
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle } from 'reka-ui'
@@ -23,7 +24,7 @@ const points = computed(() => {
       <p>本学期考试得分率 <strong>{{ student?.score_rate_source === 'current_exam' && typeof student.score_rate === 'number' ? `${Math.round(student.score_rate * 100)}%` : '无成绩' }}</strong></p>
       <h3>明显薄弱与还不稳</h3>
       <ul><li v-for="point in points" :key="point.knowledge_key"><span>{{ knowledgeLeafLabel(point.knowledge_point) }}</span><small>{{ point.mastery === null || point.mastery === undefined ? '—' : `${Math.round(point.mastery * 100)}%` }} · {{ point.tier === 'weak' ? '明显薄弱' : '还不稳' }}</small></li></ul>
-      <p v-if="!points.length" class="practice-empty">暂无明显薄弱或还不稳的条目。</p>
+      <StatePanel v-if="!points.length" kind="empty" compact title="暂无明显薄弱或还不稳的条目。" />
       <footer><AppButton variant="primary" @click="student && emit('wrong-book', student.student_id)">只给此人出错题本</AppButton><RouterLink v-if="student" :to="{ name: 'student-evidence', params: { studentId: student.student_id }, query: { from: 'student' } }">查看作答证据 →</RouterLink></footer>
     </DialogContent>
   </DialogPortal></DialogRoot>

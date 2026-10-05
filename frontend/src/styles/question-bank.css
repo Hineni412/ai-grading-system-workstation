@@ -83,15 +83,6 @@
   height: 100%;
 }
 
-.qb-eyebrow {
-  color: var(--color-accent);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: .14em;
-  margin: 0 0 4px;
-  text-transform: uppercase;
-}
-
 .qb-link:hover {
   color: var(--color-accent);
 }
@@ -603,21 +594,6 @@
   justify-content: space-between;
 }
 
-.qb-empty {
-  align-items: center;
-  background: var(--card);
-  border: 1px dashed var(--color-border-strong);
-  border-radius: var(--radius-panel);
-  color: var(--color-text-secondary);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  justify-content: center;
-  min-height: 130px;
-  padding: 22px;
-  text-align: center;
-}
-
 .qb-drawer-layer,
 .qb-modal-layer {
   background: color-mix(in srgb, var(--color-text-primary) 32%, transparent);
@@ -793,21 +769,6 @@
   font-size: var(--font-size-caption);
   justify-content: space-between;
   padding-top: 10px;
-}
-
-.qb-inspector__empty {
-  align-items: center;
-  background: var(--card);
-  border: 1px dashed var(--color-border-strong);
-  border-radius: var(--radius-panel);
-  color: var(--color-text-secondary);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  justify-content: center;
-  min-height: 260px;
-  padding: 28px;
-  text-align: center;
 }
 
 .qb-facts {
@@ -2617,8 +2578,7 @@
 /* Question bank and assembly follow the shared prototype workspace geometry. */
 .app-shell--question-workspace .main-workspace { overflow: hidden; scrollbar-gutter: auto; }
 .question-bank, .assembly.is-workspace-wide:has(> .qb-workspace) { display: flex; flex-direction: column; gap: 0; height: 100%; min-height: 0; max-width: none; margin: 0; padding: 0; }
-.question-bank > .page-header__sentinel, .assembly > .page-header__sentinel { position: absolute; }
-.question-bank > .page-header, .assembly > .page-header { position: relative; flex: none; height: 56px; min-height: 56px; padding: 0 20px; gap: 14px; border-bottom: 1px solid var(--color-border-subtle); background: var(--color-bg-app); }
+.question-bank > .page-header, .assembly > .page-header { position: relative; flex: none; height: 56px; min-height: 56px; gap: 14px; border-bottom: 1px solid var(--color-border-subtle); background: var(--color-bg-app); }
 .question-bank .page-header__title, .assembly .page-header__title { font-size: var(--font-size-h2); font-weight: var(--font-weight-semibold); white-space: nowrap; }
 .question-bank .page-header__lead, .assembly .page-header__lead { gap: 10px; flex-wrap: nowrap; }
 .question-bank .page-header__meta, .assembly .page-header__meta { font-size: var(--font-size-caption); white-space: nowrap; }
@@ -2627,7 +2587,7 @@
 .question-bank .page-tabs button, .assembly .page-tabs button { padding: 0 12px; font-size: var(--font-size-dense); position: relative; white-space: nowrap; }
 .question-bank .page-tabs .is-active, .assembly .page-tabs .is-active { box-shadow: none; font-weight: var(--font-weight-medium); }
 .question-bank .page-tabs .is-active::after, .assembly .page-tabs .is-active::after { content: ''; position: absolute; bottom: 0; left: 10px; right: 10px; height: 2px; background: var(--color-accent); }
-.qb-workspace { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; padding: 16px 20px 20px; overflow: hidden; }
+.qb-workspace { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; padding: var(--page-inset-top) var(--page-inset-x) var(--space-5); overflow: hidden; }
 #qb-library-actions { display: flex; align-items: center; gap: 14px; }
 .question-bank .paper-library__header.is-relocated { display: none; }
 .qb-skill-layout { --skill-width: 280px; display: grid; grid-template-columns: var(--skill-width) minmax(0,1fr); gap: 14px; flex: 1; min-width: 0; min-height: 0; height: 100%; }
@@ -2805,7 +2765,6 @@
 .qb-topic-capsule { background: var(--card); color: var(--color-accent); }
 .qb-point-error { padding-left: 9px; margin-top: 5px; border-left: 2px solid var(--color-border-subtle); font-size: var(--font-size-caption); color: var(--color-text-muted); }
 .qb-annotation .qb-patterns { padding: 8px 0 0; border: 0; border-top: 1px solid var(--color-border-subtle); box-shadow: none; }
-.qb-annotation .qb-patterns .qb-eyebrow { display: none; }
 .qb-properties { border-top: 1px solid var(--color-border-subtle); padding-top: 12px; }
 .qb-properties dl { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px 10px; font-size: var(--font-size-caption); margin: 8px 0 0; }
 .qb-properties dl > div { display: grid; grid-template-columns: 64px minmax(0,1fr); gap: 7px; }

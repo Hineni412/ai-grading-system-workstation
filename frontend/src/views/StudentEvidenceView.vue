@@ -17,6 +17,8 @@ import {
 } from '../api/students'
 import AppButton from '../components/design-system/AppButton.vue'
 import BackButton from '../components/design-system/BackButton.vue'
+import PageHeader from '../components/design-system/PageHeader.vue'
+import StatePanel from '../components/design-system/StatePanel.vue'
 import { presetWrongQuestionBook } from '../features/training/paper-selection-session'
 import QuestionContentRenderer from '../components/question-bank/QuestionContentRenderer.vue'
 import { loadEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
@@ -413,18 +415,17 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="student-evidence" aria-labelledby="student-evidence-title">
-    <header class="student-evidence__heading">
-      <BackButton :to="backTarget" :label="backDestination" />
-      <div>
-        <p class="student-evidence__eyebrow">知识与训练 · 学生作答证据</p>
-        <h1 id="student-evidence-title">
-          {{ groupMode ? (knowledgeLabel || '群体错题') : knowledgeMode ? (knowledgeStudentName || '学生作答证据') : (student ? student.name : '学生作答证据') }}
-        </h1>
-        <p v-if="groupMode">群体 {{ groupStudentCount }} 人答错 · 按考试与题目归类</p>
-        <p v-else-if="knowledgeMode">{{ knowledgeLabel || knowledgeKey }} · 只看答错记录</p>
-        <p v-else-if="student">{{ student.student_code }} · {{ student.class_name || '未分班' }}</p>
-      </div>
-    </header>
+    <PageHeader
+      :title="groupMode ? (knowledgeLabel || '群体错题') : knowledgeMode ? (knowledgeStudentName || '学生作答证据') : (student ? student.name : '学生作答证据')"
+      title-id="student-evidence-title"
+    >
+      <template #back><BackButton :to="backTarget" :label="backDestination" /></template>
+      <template #meta>
+        <p v-if="groupMode" class="student-evidence__meta-line">群体 {{ groupStudentCount }} 人答错 · 按考试与题目归类</p>
+        <p v-else-if="knowledgeMode" class="student-evidence__meta-line">{{ knowledgeLabel || knowledgeKey }} · 只看答错记录</p>
+        <p v-else-if="student" class="student-evidence__meta-line">{{ student.student_code }} · {{ student.class_name || '未分班' }}</p>
+      </template>
+    </PageHeader>
 
     <div v-if="!knowledgeMode && !groupMode" class="student-evidence__toolbar">
       <div class="student-evidence__modes" role="group" aria-label="作答范围">
@@ -436,14 +437,17 @@ onBeforeUnmount(() => {
     </div>
 
 
-    <p v-if="loadState === 'loading'" class="status-card">正在读取学生的作答证据……</p>
-    <div v-else-if="loadState === 'error'" class="status-card error" role="alert">
-      <p>作答证据暂时无法读取。请检查服务后重试。</p>
-      <AppButton type="button" @click="retry">重新加载</AppButton>
-    </div>
+    <StatePanel v-if="loadState === 'loading'" kind="loading" title="正在读取学生的作答证据……" />
+    <StatePanel
+      v-else-if="loadState === 'error'"
+      kind="error"
+      title="作答证据暂时无法读取。请检查服务后重试。"
+      retry-label="重新加载"
+      @retry="retry"
+    />
 
     <template v-else-if="groupMode">
-      <p v-if="!questionSessions.length" class="status-card empty-state">当前群体在该知识点下没有答错记录。</p>
+      <StatePanel v-if="!questionSessions.length" kind="empty" title="当前群体在该知识点下没有答错记录。" />
       <article v-for="session in questionSessions" :key="session.sessionId" class="student-evidence__session">
         <header>
           <div><strong>{{ session.sessionName }}</strong></div>
@@ -490,7 +494,7 @@ onBeforeUnmount(() => {
     </template>
 
     <template v-else-if="knowledgeMode">
-      <p v-if="!knowledgeSessions.length" class="status-card empty-state">该学生在该知识点下没有答错记录。</p>
+      <StatePanel v-if="!knowledgeSessions.length" kind="empty" title="该学生在该知识点下没有答错记录。" />
       <article v-for="session in knowledgeSessions" :key="session.sessionId" class="student-evidence__session">
         <header>
           <div><strong>{{ session.sessionName }}</strong></div>
@@ -540,7 +544,7 @@ onBeforeUnmount(() => {
     </template>
 
     <template v-else>
-      <p v-if="!sessions.length" class="status-card empty-state">该学生暂无考试作答记录。</p>
+      <StatePanel v-if="!sessions.length" kind="empty" title="该学生暂无考试作答记录。" />
       <template v-else>
         <article v-for="session in sessions" :key="session.session_id" class="student-evidence__session">
           <header>
@@ -618,13 +622,19 @@ onBeforeUnmount(() => {
         @click.self="closeQuestionPanel"
       >
         <aside class="question-panel" role="dialog" aria-modal="true" aria-labelledby="question-panel-title">
-          <div v-if="questionPanelState === 'loading'" class="question-panel__empty" role="status">
-            正在打开题库原题…
-          </div>
-          <div v-else-if="questionPanelState === 'error'" class="question-panel__empty" role="alert">
-            <span>题库原题暂时无法读取，作答证据不受影响。</span>
-            <button type="button" class="question-panel__retry" @click="retryQuestionPanel">重试</button>
-          </div>
+          <StatePanel
+            v-if="questionPanelState === 'loading'"
+            kind="loading"
+            title="正在打开题库原题…"
+          />
+          <StatePanel
+            v-else-if="questionPanelState === 'error'"
+            kind="error"
+            title="题库原题暂时无法读取"
+            description="作答证据不受影响。"
+            retry-label="重试"
+            @retry="retryQuestionPanel"
+          />
           <template v-else-if="questionPanelDetail">
             <header class="question-panel__heading">
               <div>
@@ -707,10 +717,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.student-evidence__heading { display: flex; align-items: center; gap: var(--space-4); }
-.student-evidence__eyebrow { margin: 0 0 var(--space-1); color: var(--color-text-secondary); font-size: var(--font-size-dense); }
-.student-evidence__heading h1 { margin: 0 0 var(--space-1); }
-.student-evidence__heading p { margin: 0; color: var(--color-text-secondary); }
+.student-evidence { padding-block-end: var(--page-inset-bottom); }
+.student-evidence > :not(.page-header):not(.page-header__sentinel) { margin-inline: var(--page-inset-x); }
+.student-evidence__meta-line { margin: 0; }
 .student-evidence__toolbar { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); margin: var(--space-4) 0; }
 .student-evidence__toolbar > span { color: var(--color-text-secondary); font-size: var(--font-size-dense); }
 .student-evidence__modes { display: flex; padding: var(--space-1); border-radius: var(--radius-control); background: var(--color-bg-subtle); }
@@ -745,8 +754,8 @@ onBeforeUnmount(() => {
 .student-evidence__original:hover { border-color: var(--color-accent); background: var(--color-bg-selected); }
 .question-panel-layer { position: fixed; inset: 0; z-index: 1100; display: flex; justify-content: flex-end; width: 100vw; height: 100dvh; background: color-mix(in srgb, var(--color-text-primary) 32%, transparent); }
 .question-panel { width: min(560px, 92vw); max-width: 100%; height: 100%; overflow-y: auto; padding: 20px; border-left: 1px solid var(--color-border-default); background: var(--color-bg-surface); box-shadow: -18px 0 44px color-mix(in srgb, var(--color-text-primary) 14%, transparent); }
-.question-panel__empty { display: grid; gap: var(--space-3); justify-items: start; padding: var(--space-6) 0; color: var(--color-text-secondary); }
-.question-panel__retry { padding: 6px 14px; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-accent-active); cursor: pointer; }
+
+
 .question-panel__heading { display: flex; justify-content: space-between; align-items: start; gap: var(--space-3); }
 .question-panel__heading h2 { margin: 0 0 var(--space-1); }
 .question-panel__heading p { margin: 0; color: var(--color-text-secondary); font-size: var(--font-size-dense); }

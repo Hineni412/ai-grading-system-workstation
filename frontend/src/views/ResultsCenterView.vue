@@ -26,6 +26,7 @@ import {
   rankChanges,
 } from '../components/results-center/results-overview'
 import AppButton from '../components/design-system/AppButton.vue'
+import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
 import AppIconButton from '../components/design-system/AppIconButton.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
@@ -889,11 +890,11 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
     />
 
     <template v-else>
-      <StatePanel v-if="sessionStore.selectedSessionId === null" class="results-state-panel" kind="empty" title="请先选择考试" description="选择后，这里会显示该考试的成绩和需要复核的题目。" />
+      <StatePanel v-if="sessionStore.selectedSessionId === null" kind="empty" title="请先选择考试" description="在左侧栏“当前考试”中选择。" />
 
       <StatePanel
         v-else-if="resultsStore.state === 'loading' && !results"
-        class="results-state-panel"
+       
         kind="loading"
         title="正在整理当前考试成绩"
         description="学生较多时可能需要片刻。"
@@ -901,7 +902,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
 
       <StatePanel
         v-else-if="resultsStore.state === 'error'"
-        class="results-state-panel results-state-panel--error"
+       
         kind="error"
         title="成绩暂时无法读取"
         :description="resultsStore.errorMessage"
@@ -910,16 +911,16 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
       />
 
       <template v-else-if="results">
-        <div
+        <FeedbackBanner
           v-if="resultsStore.state === 'stale-error'"
-          class="results-inline-warning"
-          role="alert"
-        >
-          <span>当前显示上次成功读取的成绩，最新数据暂时无法取得。</span>
-          <AppButton variant="secondary" @click="refresh">重新加载</AppButton>
-        </div>
+          tone="warning"
+          title="当前显示上次成功读取的成绩，最新数据暂时无法取得。"
+          description=""
+          action-label="重新加载"
+          @action="refresh"
+        />
 
-        <StatePanel v-if="results.students.length === 0" class="results-state-panel" kind="empty" title="当前考试还没有可展示的成绩" description="开始批改或人工评分后，成绩会出现在这里。" />
+        <StatePanel v-if="results.students.length === 0" kind="empty" title="当前考试还没有可展示的成绩" description="开始批改或人工评分后，成绩会出现在这里。" />
 
         <ResultsOverviewPanel
           v-else-if="activeTab === 'overview'"
@@ -1138,9 +1139,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
               </tbody>
             </table>
           </div>
-          <p v-if="visibleStudents.length === 0" class="results-table-empty">
-            没有符合当前筛选条件的学生。
-          </p>
+          <StatePanel v-if="visibleStudents.length === 0" kind="empty" compact title="没有符合当前筛选条件的学生。" />
         </section>
         <AppIconButton
           v-if="matrixCollapsed"
@@ -1171,7 +1170,6 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
       >
         <header class="results-drawer__header">
           <div>
-            <p class="results-center__eyebrow">学生成绩详情</p>
             <h2 id="student-result-title">{{ selectedStudent.student_name }}</h2>
             <p>
               {{ selectedStudent.student_code || '未填写学号' }}

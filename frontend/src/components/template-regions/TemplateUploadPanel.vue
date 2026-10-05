@@ -105,7 +105,6 @@ function assignCurrent(): void {
     </div>
     <div v-else class="template-upload__intro">
       <div>
-        <span class="template-regions__eyebrow">样卷来源</span>
         <h2 id="template-upload-title">上传双页样卷</h2>
         <p>只读取前两页。请说明第一页是正面还是反面，系统会据此建立画框坐标。</p>
       </div>

@@ -5,6 +5,7 @@ import { personalReportsApi, reportStatusText, type PersonalReportExam } from '.
 import { TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import { useJobStore } from '../../stores/jobs'
 import AnalysisConfirmDialog from '../file-center/AnalysisConfirmDialog.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import { usePersonalReportGeneration } from './personal-report-generation'
 
 const props = defineProps<{
@@ -156,17 +157,22 @@ onBeforeUnmount(() => {
       <p v-if="exam?.status === 'stale'" class="personal-reader__notice">成绩已变化，显示的是上次生成的 AI 分析；分数和班级数据为当前值</p>
       <p v-if="message" class="personal-reader__message" role="status">{{ message }}</p>
       <p v-if="error || generation.error.value" class="personal-reader__notice" role="alert">{{ error || generation.error.value }}</p>
-      <div v-if="loading" class="personal-reader__empty" role="status">正在读取个人报告…</div>
+      <StatePanel v-if="loading" kind="loading" title="正在读取个人报告…" />
       <iframe v-else-if="canRead" ref="iframe" :key="src" :src="src" class="personal-reader__body" title="个人报告正文" @load="ready = true" />
-      <div v-else class="personal-reader__empty">
-        <h2>{{ error ? '报告暂不可用' : exam?.status === 'unavailable' ? exam.reason : '本场报告尚未生成' }}</h2>
-        <p>{{ exam ? '成绩与教师批语保留在成绩明细中。' : '该生在所选考试没有可查看的报告。' }}</p>
-        <div v-if="exam?.status === 'missing'">
-          <button class="pr-button pr-button--primary" @click="prepare">生成该生报告（预估后确认）</button>
-          <button class="pr-button" @click="dataOnly = true">先看数据版</button>
-        </div>
-        <button v-if="error" class="pr-button" @click="load">重新读取</button>
-      </div>
+      <StatePanel
+        v-else
+        :kind="error ? 'error' : 'empty'"
+        :title="error ? '报告暂不可用' : exam?.status === 'unavailable' ? (exam.reason ?? '本场报告暂不可用') : '本场报告尚未生成'"
+        :description="exam ? '成绩与教师批语保留在成绩明细中。' : '该生在所选考试没有可查看的报告。'"
+      >
+        <template #actions>
+          <template v-if="exam?.status === 'missing'">
+            <button class="pr-button pr-button--primary" @click="prepare">生成该生报告（预估后确认）</button>
+            <button class="pr-button" @click="dataOnly = true">先看数据版</button>
+          </template>
+          <button v-if="error" class="pr-button" @click="load">重新读取</button>
+        </template>
+      </StatePanel>
       <AnalysisConfirmDialog v-if="generation.open.value" :preflight="generation.preflight.value" :loading="generation.loading.value"
         report-type="personal_analysis_html" :submitting="generation.submitting.value" @close="generation.close" @confirm="confirm" />
     </section>
@@ -181,5 +187,5 @@ onBeforeUnmount(() => {
 .pr-button{border:1px solid #d5dee6;border-radius:6px;background:white;color:inherit;padding:7px 12px;cursor:pointer;font:inherit;font-size:var(--font-size-dense)}.pr-button:hover{background:#f2f7fb}.pr-button:disabled{opacity:.45;cursor:default}.pr-button--primary{background:#244c65;color:white}
 .personal-reader__exams{display:flex;gap:8px;overflow-x:auto;padding:12px 24px;background:#fff}.personal-reader__exam{flex-shrink:0;border:1px solid #dce3e8;border-radius:7px;background:white;padding:8px 14px;text-align:left;font-size:var(--font-size-dense);cursor:pointer}.personal-reader__exam span{display:block;font-size:var(--font-size-caption);color:#73808c;margin-top:4px}.personal-reader__exam.active{border-color:#3d788f;background:#eaf3f5;color:#23596c}
 .personal-reader__notice,.personal-reader__message{margin:0;padding:9px 24px;background:#fff4d8;color:#866221;font-size:var(--font-size-dense)}.personal-reader__message{background:#eaf5ef;color:#32664a}
-.personal-reader__body{flex:1;min-height:0;border:0;width:100%}.personal-reader__empty{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:12px}.personal-reader__empty h2{font-size:var(--font-size-h2);margin:0}.personal-reader__empty p{color:#71808c;font-size:var(--font-size-body)}.personal-reader__empty .pr-button{margin:0 6px}
+.personal-reader__body{flex:1;min-height:0;border:0;width:100%}.personal-reader .state-panel{flex:1;justify-content:center;margin:24px}.personal-reader .state-panel .pr-button{margin:0 6px}
 </style>

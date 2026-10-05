@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import StatePanel from '../design-system/StatePanel.vue'
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import type { TrainingOverviewNode, TrainingOverviewStudent } from '../../api/training'
@@ -26,6 +27,6 @@ function open(studentId: string) {
         <span v-if="limit && group.entries.length > limit" class="student-tier-more">+{{ group.entries.length - limit }}</span>
       </div>
     </div>
-    <p v-if="!groups.length" class="overview-empty">当前范围没有有证据学生。</p>
+    <StatePanel v-if="!groups.length" kind="empty" compact title="当前范围没有有证据学生。" />
   </div>
 </template>

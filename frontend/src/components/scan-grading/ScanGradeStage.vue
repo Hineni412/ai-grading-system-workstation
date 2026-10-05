@@ -7,6 +7,7 @@ import type {
   SelectableGradingMode,
 } from '../../api/scan-grading'
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import { BorderBeam } from '@/components/ui/border-beam'
 import { useScanGradingStore } from '../../stores/scan-grading'
 import type { InterventionSummary, ScanStageId } from './scan-stage'
@@ -296,15 +297,10 @@ watch(
         <AppButton v-if="store.gradingRun.allowed_actions.includes('cancel')" data-action="cancel" variant="danger" @click="cancelRun">取消本次运行（不可继续）</AppButton>
       </div>
     </div>
-    <p v-else-if="gradingStarting" data-grading-starting class="scan-empty" role="status">
-      启动请求已接收，正在建立本次批改进度。可以留在本页等待，刷新后也会自动恢复。
-    </p>
-    <div v-else-if="gradingCompletedWithoutRun" data-grading-completed-without-run class="scan-empty" role="status">
-      <p>批改处理已结束，但本次运行进度记录没有生成。任务结束不代表每份答卷都成功，请先核对完成与失败数量；这里不会开放重复提交。</p>
-      <div class="scan-stage__actions">
-        <AppButton variant="primary" data-open-grading-results @click="openResults">查看成绩</AppButton>
-      </div>
-    </div>
+    <StatePanel v-else-if="gradingStarting" data-grading-starting kind="loading" title="启动请求已接收" description="正在建立本次批改进度。可以留在本页等待，刷新后也会自动恢复。" />
+    <StatePanel v-else-if="gradingCompletedWithoutRun" data-grading-completed-without-run kind="empty" title="批改处理已结束" description="本次运行进度记录没有生成。任务结束不代表每份答卷都成功，请先核对完成与失败数量；这里不会开放重复提交。">
+      <template #actions><AppButton variant="primary" data-open-grading-results @click="openResults">查看成绩</AppButton></template>
+    </StatePanel>
     <div v-else class="scan-grade-start" :class="{ 'scan-grade-start--split': Boolean(store.selectedMode) }">
     <div class="scan-grade-start__intro">
     <label v-if="pendingCount" class="scan-confirm">

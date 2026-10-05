@@ -3,8 +3,12 @@
   width: 100%;
   max-width: none;
   margin-inline: auto;
-  padding: 16px;
+  padding: 0 0 var(--page-inset-bottom);
   gap: var(--space-5);
+}
+
+.results-center > :not(.page-header):not(.page-header__sentinel) {
+  margin-inline: var(--page-inset-x);
 }
 
 .results-conclusion__line,
@@ -24,15 +28,6 @@
   margin: 0;
   color: var(--foreground);
   line-height: var(--line-height-tight);
-}
-
-.results-center__eyebrow {
-  margin: 0;
-  color: var(--primary);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
 }
 
 .results-button {
@@ -76,25 +71,6 @@
   max-width: none;
   margin: 0;
   padding: 0;
-}
-
-.results-inline-warning {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius);
-  background: var(--color-warning-subtle);
-  color: var(--color-warning);
-}
-
-.results-inline-warning button {
-  min-height: var(--control-height-small);
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font-weight: var(--font-weight-semibold);
 }
 
 .results-panel {
@@ -576,13 +552,6 @@
   color: var(--muted-foreground);
 }
 
-.results-table-empty {
-  margin: 0;
-  padding: var(--space-5);
-  color: var(--muted-foreground);
-  text-align: center;
-}
-
 .results-drawer-backdrop {
   position: fixed;
   z-index: 80;
@@ -616,7 +585,7 @@
   font-size: var(--font-size-h1);
 }
 
-.results-drawer__header p:not(.results-center__eyebrow) {
+.results-drawer__header p {
   margin: var(--space-1) 0 0;
   color: var(--muted-foreground);
 }
@@ -1432,12 +1401,6 @@
   margin-inline-start: var(--space-2);
 }
 
-.overview__empty {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-dense);
-}
-
 .overview__questions {
   display: grid;
   margin: 0;
@@ -1557,7 +1520,7 @@
 
 @media (max-width: 760px) {
   .results-center {
-    padding: var(--space-4);
+    padding: 0 0 var(--page-inset-bottom);
   }
 
   .results-panel__head {
@@ -2427,23 +2390,14 @@ button.class-analysis__score-chip:focus-visible {
 .class-report {
   display: grid;
   gap: var(--space-4);
+  padding-block-end: var(--page-inset-bottom);
 }
 
-.class-report__hero {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
+.class-report > :not(.page-header):not(.page-header__sentinel) {
+  margin-inline: var(--page-inset-x);
 }
 
-.class-report__hero h1,
-.class-report__hero p {
-  margin: 0;
-}
 
-.class-report__hero > div {
-  display: grid;
-  gap: var(--space-1);
-}
 
 .class-report__toolbar {
   display: flex;

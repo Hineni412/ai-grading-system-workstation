@@ -106,11 +106,7 @@ const tabs = [
 
 <style>
 .knowledge-training-page {
-  --knowledge-training-inset: var(--space-5);
-}
-
-.knowledge-training-page > .page-header__sentinel {
-  position: absolute;
+  --knowledge-training-inset: var(--page-inset-x);
 }
 
 .knowledge-training-page > .knowledge-training-header {
@@ -118,8 +114,6 @@ const tabs = [
   min-width: 0;
   min-height: 56px;
   gap: var(--space-4);
-  margin: calc(-1 * var(--knowledge-training-inset)) calc(-1 * var(--knowledge-training-inset)) 0;
-  padding-inline: var(--knowledge-training-inset);
   border-bottom-color: var(--color-border-subtle);
 }
 
@@ -140,18 +134,11 @@ const tabs = [
   .knowledge-training-page > .knowledge-training-header {
     flex-wrap: wrap;
     gap: 0;
-    padding-top: var(--space-3);
   }
 
   .knowledge-training-header .page-header__navigation {
     width: 100%;
     margin-inline-start: 0;
-  }
-}
-
-@media (max-width: 900px) {
-  .knowledge-training-page {
-    --knowledge-training-inset: var(--space-4);
   }
 }
 </style>

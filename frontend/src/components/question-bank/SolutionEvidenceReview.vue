@@ -6,6 +6,7 @@ import {
   type QuestionSolutionEvidenceResponse,
   type SolutionEvidenceFineTermLink,
 } from '../../api/question-bank'
+import StatePanel from '../design-system/StatePanel.vue'
 import StatusBadge, { type StatusTone } from '../design-system/StatusBadge.vue'
 
 const props = withDefaults(defineProps<{
@@ -96,16 +97,9 @@ onBeforeUnmount(() => controller?.abort())
       />
     </header>
 
-    <p v-if="state === 'loading' && !embedded" class="solution-evidence__empty" role="status">
-      正在读取知识细项与图谱映射…
-    </p>
-    <div v-else-if="state === 'error'" class="solution-evidence__empty" role="alert">
-      <span>{{ error }}</span>
-      <button type="button" class="qb-link" @click="load">重新读取</button>
-    </div>
-    <p v-else-if="!evidence && !embedded" class="solution-evidence__empty">
-      这道题还没有知识细项映射。完成题目分析后，这里会按“小问 → 判定点 → 精细词条 → 核心图谱”展示。
-    </p>
+    <StatePanel v-if="state === 'loading' && !embedded" kind="loading" title="正在读取知识细项与图谱映射…" />
+    <StatePanel v-else-if="state === 'error'" kind="error" :title="error || '暂时无法读取'" retry-label="重新读取" @retry="load" />
+    <StatePanel v-else-if="!evidence && !embedded" kind="empty" title="这道题还没有知识细项映射。" description="完成题目分析后，这里会按“小问 → 判定点 → 精细词条 → 核心图谱”展示。" />
     <component
       v-else-if="evidence"
       :is="embedded ? 'details' : 'div'"
@@ -213,9 +207,7 @@ onBeforeUnmount(() => controller?.abort())
 .solution-evidence__heading p,
 .solution-evidence__point p { margin: 0; }
 .solution-evidence__status { flex-shrink: 0; }
-.solution-evidence__empty,
-.solution-evidence__help { margin: 0; color: var(--color-text-secondary); }
-.solution-evidence__empty { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-3); border-radius: var(--radius-control); background: var(--secondary); }
+
 .solution-evidence__parts { display: grid; gap: var(--space-3); }
 .solution-evidence__part > .solution-evidence__help { padding: var(--space-3); line-height: var(--line-height-relaxed); }
 .solution-evidence__part { border: var(--border-width) solid var(--border); border-radius: var(--radius-control); background: var(--card); overflow: hidden; }

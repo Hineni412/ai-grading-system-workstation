@@ -438,7 +438,9 @@ onBeforeUnmount(() => {
       <section class="settings-panel" aria-labelledby="model-accounts-title">
         <header class="settings-panel__heading"><h2 id="model-accounts-title">服务账号</h2><AppButton variant="secondary" :disabled="isBusy" @click="beginNewProfile">添加服务</AppButton></header>
         <div class="model-accounts">
-          <p v-if="!profilesStore.profiles.length" class="settings-empty">还没有服务账号。<AppButton variant="ghost" @click="beginNewProfile">添加服务</AppButton></p>
+          <StatePanel v-if="!profilesStore.profiles.length" kind="empty" compact title="还没有服务账号">
+            <template #actions><AppButton variant="ghost" @click="beginNewProfile">添加服务</AppButton></template>
+          </StatePanel>
           <div v-for="profile in profilesStore.profiles" :key="profile.name" class="model-account-row">
             <strong>{{ profile.name }}</strong><span class="model-account-host">{{ hostname(profile.base_url) }}</span>
             <StatusBadge :tone="profile.has_api_key ? 'success' : 'warning'" :label="profile.has_api_key ? '密钥已保存' : '未保存密钥'" />

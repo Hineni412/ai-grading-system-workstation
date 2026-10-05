@@ -1,5 +1,5 @@
-.scan-grading { box-sizing: border-box; width: 100%; max-width: none; margin: 0 auto; padding: 16px; color: var(--color-text-primary); }
-.scan-grading__body { display: grid; }
+.scan-grading { box-sizing: border-box; width: 100%; max-width: none; margin: 0 auto; padding: 0; color: var(--color-text-primary); }
+.scan-grading__body { display: grid; padding: var(--page-inset-top) var(--page-inset-x) var(--page-inset-bottom); }
 .scan-grading__main { display: grid; gap: var(--space-3); min-width: 0; align-content: start; }
 
 .scan-stage { min-width: 0; padding: var(--space-2) 0 0; }
@@ -89,8 +89,7 @@
 .scan-review-detail__sides button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .scan-review-detail__image > img { display: block; width: 100%; max-height: none; object-fit: contain; border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-app); }
 .scan-review-detail__missing { margin: 0; padding: var(--space-4); border: var(--border-width) dashed var(--color-border-default); border-radius: var(--radius-control); color: var(--color-text-muted); font-size: var(--font-size-caption); text-align: center; }
-.scan-review-detail__empty, .scan-review-empty { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); padding: var(--space-4) 0; color: var(--color-text-secondary); }
-.scan-review-detail__empty p, .scan-review-empty p { margin: 0; }
+
 
 .scan-match-conflict { color: var(--color-danger); }
 .scan-decision-state { color: var(--color-success); font-weight: var(--font-weight-semibold); }
@@ -262,7 +261,6 @@
 .scan-viewer__decision .student-match-select { width: 100%; min-width: 0; max-width: 100%; }
 .scan-viewer__decision button { width: 100%; }
 .scan-viewer__decision .scan-decision-state { margin: 0; padding-top: var(--space-3); border-block-start: var(--border-width) solid var(--color-border-default); }
-.scan-empty { color: var(--color-text-secondary); }
 .text-button { background: transparent; color: var(--color-accent); border-color: transparent; }
 @media (max-width: 900px) { .scan-review { grid-template-columns: 1fr; height: auto; } .scan-review-list { max-height: 40vh; } .scan-review-detail { overflow: visible; } .scan-review-detail__header { flex-direction: column; } }
 @media (max-width: 960px) { .scan-viewer__body { grid-template-columns: 1fr; } .scan-viewer__decision { max-height: 38vh; overflow: auto; border-inline-start: 0; border-block-start: var(--border-width) solid var(--color-border-default); } }

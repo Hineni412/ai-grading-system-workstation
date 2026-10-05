@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle } from 'reka-ui'
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
 import { opsApi, storageApi, type StorageOverview, type StorageSession, type SessionOriginals, type OriginalsState } from '../../api/ops'
 import { ApiError } from '../../api/errors'
@@ -185,7 +186,7 @@ onBeforeUnmount(() => controller.abort())
           <td><div class="settings-row-actions"><AppButton v-if="row.scan_bytes > 0 && row.originals_state !== 'cleared' && row.originals_state !== 'clearing'" variant="secondary" :disabled="!row.can_release_scans || busy" @click="beginCleanup('release', [row])">释放扫描文件</AppButton><AppButton v-if="row.originals_state !== 'cleared'" variant="danger" class="settings-danger-outline" :disabled="!row.can_clear || busy" @click="beginCleanup('clear', [row])">{{ row.originals_state === 'clearing' ? '继续清理' : '清除原卷' }}</AppButton></div><small v-if="row.blocked_reason">{{ row.blocked_reason }}</small></td>
         </tr></tbody>
       </table></div>
-      <p v-if="storage && !storage.sessions.length" class="settings-empty">还没有考试原卷</p>
+      <StatePanel v-if="storage && !storage.sessions.length" kind="empty" compact title="还没有考试原卷" />
     </section>
     <section ref="backupBlock" class="settings-panel">
       <header class="settings-panel__heading"><h2>备份</h2></header>
@@ -204,7 +205,7 @@ onBeforeUnmount(() => controller.abort())
       <table class="settings-table"><thead><tr><th></th><th>时间</th><th>原因</th><th>大小</th></tr></thead><tbody>
         <tr v-for="item in zipBackups" :key="item.filename"><td><input v-model="selectedBackup" type="radio" name="restore-backup" :value="item.filename" :aria-label="`选择 ${time(item.created_at)} 的备份`"></td><td>{{ time(item.created_at) }}</td><td>{{ reasons[item.reason] ?? '未记录' }}</td><td>{{ bytes(item.size_bytes) }}</td></tr>
       </tbody></table>
-      <p v-if="ops.backupsError" class="settings-feedback is-error" role="alert">{{ ops.backupsError.message }} <AppButton variant="ghost" @click="ops.refreshBackups(opsApi)">刷新</AppButton></p><p v-else-if="!zipBackups.length" class="settings-empty">当前没有可恢复的备份</p>
+      <p v-if="ops.backupsError" class="settings-feedback is-error" role="alert">{{ ops.backupsError.message }} <AppButton variant="ghost" @click="ops.refreshBackups(opsApi)">刷新</AppButton></p><StatePanel v-else-if="!zipBackups.length" kind="empty" compact title="当前没有可恢复的备份" />
     </section>
     <DialogRoot :open="dialog !== null" @update:open="closeDialog">
       <DialogPortal><DialogOverlay class="settings-overlay fx-overlay" /><DialogContent class="settings-dialog fx-dialog" :aria-describedby="undefined" @escape-key-down="event => { if (busy || ops.submitting) event.preventDefault() }" @interact-outside="event => { if (busy || ops.submitting) event.preventDefault() }">

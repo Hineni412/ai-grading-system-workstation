@@ -5,6 +5,9 @@
   overflow: hidden;
   overscroll-behavior: none;
 }
+.template-regions-view > :not(.page-header):not(.page-header__sentinel) {
+  margin-inline: var(--page-inset-x);
+}
 .template-regions-view.is-focus-layout {
   display: grid;
   height: 100%;
@@ -15,11 +18,6 @@
 .template-regions-view h1, .template-regions-view h2, .template-regions-view p { margin: 0; }
 .template-upload p { margin-block-start: var(--space-1); color: var(--color-text-secondary); }
 .template-regions-view__workspace { min-width: 0; }
-.template-regions-view.is-focus-layout .template-regions-view__header {
-  min-height: 40px;
-  padding-block: 0;
-  padding-inline: var(--space-3);
-}
 .template-regions-view.is-focus-layout .template-regions-view__header .config-stage-rail button {
   min-height: var(--control-height-small);
   padding-inline: var(--space-2);

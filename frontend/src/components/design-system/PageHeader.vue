@@ -57,6 +57,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .page-header__sentinel {
+  position: absolute;
+  inset-inline: 0;
   height: 1px;
   pointer-events: none;
 }
@@ -69,7 +71,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--space-4);
   min-height: 56px;
-  padding: 0 var(--space-6);
+  padding: 0 var(--page-inset-x);
   background: color-mix(in srgb, var(--color-bg-app) 88%, transparent);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid transparent;

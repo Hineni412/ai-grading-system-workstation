@@ -12,6 +12,7 @@ import {
 import AppButton from '../components/design-system/AppButton.vue'
 import BackButton from '../components/design-system/BackButton.vue'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
+import PageHeader from '../components/design-system/PageHeader.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
 import ReviewBatchWorkspace from '../components/review/ReviewBatchWorkspace.vue'
 import ReviewDeepWorkspace from '../components/review/ReviewDeepWorkspace.vue'
@@ -312,26 +313,29 @@ onBeforeUnmount(() => {
     :class="{ 'review-page--deep': mode === 'deep' }"
     aria-labelledby="review-page-title"
   >
-    <header class="review-page__header">
-      <BackButton
-        v-if="resultsReturnPath && !deepItem"
-        :label="resultsReturnLabel"
-        @click="returnToResults"
-      />
-      <div class="review-page__header-copy">
-        <h1 id="review-page-title" tabindex="-1">{{ resultsReturnPath ? '学生作答' : '人工干预工作台' }}</h1>
-        <p v-if="!resultsReturnPath">需要教师处理的答卷优先显示；高置信 AI 结果保留在队列中，也可以随时修改。</p>
-      </div>
-      <AppButton
-        v-if="!resultsReturnPath"
-        class="review-page__run-switch"
-        :disabled="sessionStore.selectedSessionId === null"
-        :title="sessionStore.selectedSessionId === null ? '请先选择考试' : '进入当前考试的批改执行'"
-        @click="openGradingRun"
-      >
-        批改执行
-      </AppButton>
-    </header>
+    <PageHeader
+      :title="resultsReturnPath ? '学生作答' : '人工干预工作台'"
+      title-id="review-page-title"
+    >
+      <template #back>
+        <BackButton
+          v-if="resultsReturnPath && !deepItem"
+          :label="resultsReturnLabel"
+          @click="returnToResults"
+        />
+      </template>
+      <template #actions>
+        <AppButton
+          v-if="!resultsReturnPath"
+          class="review-page__run-switch"
+          :disabled="sessionStore.selectedSessionId === null"
+          :title="sessionStore.selectedSessionId === null ? '请先选择考试' : '进入当前考试的批改执行'"
+          @click="openGradingRun"
+        >
+          批改执行
+        </AppButton>
+      </template>
+    </PageHeader>
 
 
     <FeedbackBanner
@@ -356,7 +360,7 @@ onBeforeUnmount(() => {
       v-if="sessionStore.selectedSessionId === null"
       kind="empty"
       title="请先选择考试"
-      description="从顶部考试选择器选择一个考试后，可以按题集中评分。"
+      description="在左侧栏“当前考试”中选择。"
     />
     <StatePanel
       v-else-if="initialLoading"

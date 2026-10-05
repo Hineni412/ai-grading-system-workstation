@@ -7,6 +7,7 @@ import {
   type QuestionBankListItem,
 } from '../../api/question-bank'
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 
 const props = defineProps<{
   open: boolean
@@ -124,16 +125,9 @@ onBeforeUnmount(() => {
           </AppButton>
         </div>
 
-        <p v-if="loadState === 'loading'" class="criteria-review__empty" role="status">
-          正在读取需要核对的判定点…
-        </p>
-        <div v-else-if="loadState === 'error'" class="qb-feedback is-error" role="alert">
-          <span>{{ message }}</span>
-          <button type="button" class="qb-link" @click="load">重新读取</button>
-        </div>
-        <p v-else-if="loadState === 'empty'" class="criteria-review__empty">
-          当前没有需要核对的判定点。
-        </p>
+        <StatePanel v-if="loadState === 'loading'" kind="loading" title="正在读取需要核对的判定点…" />
+        <StatePanel v-else-if="loadState === 'error'" kind="error" :title="message || '判定点暂时无法读取'" retry-label="重新读取" @retry="load" />
+        <StatePanel v-else-if="loadState === 'empty'" kind="empty" title="当前没有需要核对的判定点。" />
         <ul v-else class="criteria-review__list">
           <li v-for="question in items" :key="question.id">
             <article class="criteria-review__item">

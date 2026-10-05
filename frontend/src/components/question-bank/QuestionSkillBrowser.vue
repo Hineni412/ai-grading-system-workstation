@@ -227,7 +227,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <StatePanel v-if="!scope.selectedVolumeId" kind="empty" title="请在侧栏选择教学学期" description="" />
+  <StatePanel v-if="!scope.selectedVolumeId" kind="empty" title="请先选择教学学期" description="在左侧栏“当前考试”中选择教学学期。" />
   <StatePanel v-else-if="loading && !index" kind="loading" title="正在读取技能与题目…" description="" />
   <StatePanel v-else-if="error && !index" kind="error" :title="error" description="" retry-label="重新读取" @retry="emit('retry')" />
   <div v-else ref="layout" class="qb-skill-layout" :class="{ 'is-reading': bank.selectedQuestionId, 'is-skill-narrow': bank.selectedQuestionId && !skillRailOpen, 'is-unlinked': unlinked }">

@@ -203,14 +203,6 @@ const tones: Array<{ tone: StatusTone; label: string }> = [
   padding-bottom: var(--space-7);
 }
 
-.showcase__eyebrow {
-  margin: 0 0 var(--space-2);
-  color: var(--color-accent);
-  font-size: var(--font-size-dense);
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: 0.04em;
-}
-
 .showcase__header h1 {
   margin: 0;
   font-size: var(--font-size-h1);

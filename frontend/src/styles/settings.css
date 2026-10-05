@@ -1,8 +1,7 @@
 .settings-hub { min-height: 100%; color: var(--color-text-primary); }
-.settings-content { max-width: calc(var(--content-max-width) + 40px); padding: 16px 20px 24px; }
+.settings-content { max-width: calc(var(--content-max-width) + 40px); padding: var(--page-inset-top) var(--page-inset-x) var(--page-inset-bottom); }
 .settings-content--students { max-width: none; }
-.settings-hub .page-header { border-bottom-color: var(--color-border-subtle); padding-inline: 20px; }
-.settings-hub .page-header__title { font-size: var(--font-size-h2); }
+.settings-hub .page-header { border-bottom-color: var(--color-border-subtle); }
 .settings-hub .page-tabs { align-self: stretch; gap: 2px; }
 .settings-hub .page-tabs button { position: relative; min-height: 56px; padding: 0 12px; }
 .settings-hub .page-tabs button.is-active { box-shadow: none; color: var(--color-accent); font-weight: var(--font-weight-medium); }
@@ -18,7 +17,6 @@
 .settings-feedback.is-error { color: var(--color-danger); }
 .settings-feedback.is-success { color: var(--color-success); }
 .settings-inline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.settings-empty { padding: 20px 15px; text-align: center; font-size: var(--font-size-caption); color: var(--color-text-muted); }
 .settings-table { width: 100%; border-collapse: collapse; font-size: var(--font-size-caption); text-align: left; }
 .settings-table th { padding: 6px 10px; border-bottom: 1px solid var(--color-border-default); font-size: var(--font-size-caption); color: var(--color-text-muted); font-weight: var(--font-weight-semibold); white-space: nowrap; }
 .settings-table td { padding: 8px 10px; border-bottom: 1px solid var(--color-border-subtle); vertical-align: middle; overflow-wrap: anywhere; }

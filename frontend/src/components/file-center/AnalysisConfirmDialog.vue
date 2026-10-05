@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AnalysisPreflight, ReportType } from '../../api/exports'
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import { formatTokenCount, reportTypeLabel } from './report-format'
 
 defineProps<{
@@ -31,7 +32,6 @@ const emit = defineEmits<{
     >
       <div class="excel-settings-dialog__heading">
         <div>
-          <p class="file-center__eyebrow">AI 内容生成确认</p>
           <h3 id="analysis-confirm-title">
             {{ reportType ? reportTypeLabel(reportType) : '分析报告' }}
           </h3>
@@ -43,13 +43,11 @@ const emit = defineEmits<{
         </AppButton>
       </div>
 
-      <p
+      <StatePanel
         v-if="loading"
-        class="excel-settings-dialog__explanation"
-        role="status"
-      >
-        正在读取生成条件…
-      </p>
+        kind="loading"
+        title="正在读取生成条件…"
+      />
 
       <template v-else-if="preflight">
         <p

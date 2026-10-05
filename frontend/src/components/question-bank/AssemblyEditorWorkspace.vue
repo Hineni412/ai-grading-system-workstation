@@ -6,6 +6,7 @@ import { TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import { useAssemblyStore } from '../../stores/assembly'
 import { useJobStore } from '../../stores/jobs'
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 
 const assembly = useAssemblyStore()
@@ -360,7 +361,7 @@ async function deleteRecord(recordId: string): Promise<void> {
             </div>
           </section>
         </div>
-        <p v-else class="assembly-editor-empty">试卷篮为空，请去题库选题。</p>
+        <StatePanel v-else kind="empty" title="试卷篮为空" description="请去题库选题。" />
         <details class="assembly-full-preview"><summary>预览试卷 · {{ assembly.draft.preview_mode === 'teacher' ? '教师版' : '学生版' }}</summary>
         <article class="assembly-sheet">
           <header>
@@ -415,7 +416,7 @@ async function deleteRecord(recordId: string): Promise<void> {
               加载更多题目（还有 {{ section.questions.length - previewVisibleCount(section.id) }} 题）
             </button>
           </section>
-          <p v-if="!assembly.orderedQuestions.length" class="assembly-editor-empty">去题库选题，把题目加入试卷篮后会在这里生成预览。</p>
+          <StatePanel v-if="!assembly.orderedQuestions.length" kind="empty" title="去题库选题" description="把题目加入试卷篮后会在这里生成预览。" />
         </article></details>
       </main>
 

@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { knowledgeLeafLabel, type CurriculumVolume } from '../../api/question-bank'
 import type { TrainingDiagnosis } from '../../api/training'
+import StatePanel from '../design-system/StatePanel.vue'
 type Tier = 'weak' | 'unsteady' | 'stable' | 'insufficient'
 const props = defineProps<{ volume: CurriculumVolume | null; diagnosis: TrainingDiagnosis; mode: 'range' | 'select-one'; studentIds?: string[]; purpose?: 'training' | 'handout' | 'wrong_book'; progressId?: string }>()
 const rangeKeys = defineModel<string[]>('rangeKeys', { default: () => [] })
@@ -82,7 +83,7 @@ function unlearned(order: number) { return props.mode === 'range' && scopeMode.v
     <p v-if="purpose === 'wrong_book'" class="range-book-note">错题本：综合＝所选考试的全部错题；专项＝只收所勾章节的错题</p>
     <div class="range-legend"><span v-for="tier in tiers" :key="tier"><i :class="tier" />{{ labels[tier] }}</span></div>
     <p class="range-stat-basis">{{ mode === 'range' ? '按已选学生统计，每人取本节最弱档位' : '按当前范围学生统计，每人取本节最弱档位' }}</p>
-    <p v-if="mode === 'range' && !selectedStudents.length" class="practice-empty">勾选学生后显示</p>
+    <StatePanel v-if="mode === 'range' && !selectedStudents.length" kind="empty" compact title="勾选学生后显示" />
     <div v-for="chapter in chapters" :key="chapter.id" class="range-chapter" :class="{ 'is-unlearned': unlearned(chapter.order) }">
       <header>
         <label v-if="mode === 'range' && scopeMode === 'focused'"><input type="checkbox" :aria-label="`选择${chapter.label}`" :checked="chapterChecked(chapter)" @change="toggleChapter(chapter)">{{ chapter.label }}</label>

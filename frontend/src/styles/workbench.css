@@ -1,5 +1,5 @@
 .workbench-view { min-width: 0; }
-.workbench-content { max-width: 1280px; margin: 0 auto; padding: var(--space-4) var(--space-6) var(--space-8); }
+.workbench-content { max-width: 1280px; margin: 0 auto; padding: var(--page-inset-top) var(--page-inset-x) var(--page-inset-bottom); }
 .workbench-content > .feedback-banner { margin-bottom: var(--space-3); }
 .workbench-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; grid-template-rows: max-content minmax(0, 1fr); gap: var(--space-4); align-items: start; }
 .workbench-sidebar { grid-column: 2; grid-row: 1 / span 2; position: sticky; top: var(--space-4); display: grid; gap: var(--space-4); min-width: 0; }

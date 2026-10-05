@@ -20,7 +20,6 @@ import AnalysisConfirmDialog from '../components/file-center/AnalysisConfirmDial
 import FileReportLedger from '../components/file-center/FileReportLedger.vue'
 import ScoreExcelSettingsDialog from '../components/file-center/ScoreExcelSettingsDialog.vue'
 import {
-  formatTime,
   reportFilename,
   reportTypeLabel,
 } from '../components/file-center/report-format'
@@ -30,6 +29,7 @@ import { useResultsCenterStore } from '../stores/results-center'
 import { useSessionStore } from '../stores/session'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import AppButton from '../components/design-system/AppButton.vue'
+import StatePanel from '../components/design-system/StatePanel.vue'
 
 const props = withDefaults(defineProps<{
   embedded?: boolean
@@ -522,27 +522,14 @@ defineExpose({ dialogOpen })
       'file-center--embedded': props.embedded,
       'file-center--popover': isPopover,
     }"
-    :aria-labelledby="chromeless ? undefined : 'file-center-title'"
-    :aria-label="chromeless ? '导出文件' : undefined"
+    :aria-label="'导出文件'"
   >
-    <header v-if="!chromeless" class="file-center__hero">
-      <div>
-        <p class="file-center__eyebrow">安全出件登记簿</p>
-        <h1 id="file-center-title" tabindex="-1">文件中心</h1>
-        <p>统一生成和下载成绩表、批注原卷与训练材料，不显示本机存放位置。</p>
-      </div>
-      <div class="file-center__hero-actions">
-        <span v-if="fileCenter.updatedAt">更新于 {{ formatTime(fileCenter.updatedAt) }}</span>
-        <AppButton variant="secondary" @click="refresh">
-          刷新登记簿
-        </AppButton>
-      </div>
-    </header>
-
-    <div v-if="sessionStore.selectedSessionId === null" class="file-center__empty">
-      <strong>请先在顶部选择考试</strong>
-      <span>选择后，这里会显示该考试的成绩表和批注原卷。</span>
-    </div>
+    <StatePanel
+      v-if="sessionStore.selectedSessionId === null"
+      kind="empty"
+      title="请先选择考试"
+      description="在左侧栏“当前考试”中选择。"
+    />
 
     <template v-else>
       <p v-if="actionMessage" class="file-center__notice" role="status">{{ actionMessage }}</p>
@@ -551,10 +538,13 @@ defineExpose({ dialogOpen })
         <span>当前显示上次成功读取的记录，最新状态暂时无法取得。</span>
         <AppButton variant="ghost" @click="refresh">重新加载</AppButton>
       </div>
-      <div v-else-if="fileCenter.state === 'error'" class="file-center__error" role="alert">
-        <span>{{ fileCenter.errorMessage }}</span>
-        <AppButton variant="ghost" @click="refresh">重新加载</AppButton>
-      </div>
+      <StatePanel
+        v-else-if="fileCenter.state === 'error'"
+        kind="error"
+        :title="fileCenter.errorMessage || '文件记录暂时无法读取'"
+        retry-label="重新加载"
+        @retry="refresh"
+      />
 
       <section
         class="file-section"
@@ -565,13 +555,11 @@ defineExpose({ dialogOpen })
           <h2 id="report-files-title">考试文件</h2>
         </div>
 
-        <div
+        <StatePanel
           v-if="fileCenter.state === 'loading' && !fileCenter.reportContext"
-          class="file-ledger__empty"
-          role="status"
-        >
-          正在读取文件记录…
-        </div>
+          kind="loading"
+          title="正在读取文件记录…"
+        />
         <FileReportLedger :originals-available="originalsAvailable" :personal-summary="personalSummary" :personal-generation-count="personalTargetIds.length"
           v-else
           :rows="reportRows"

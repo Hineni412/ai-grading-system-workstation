@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import type { TrainingDiagnosis, TrainingStudentProfile } from '../../api/training'
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 const props = defineProps<{ diagnosis: TrainingDiagnosis }>()
 const selected = defineModel<string[]>({ required: true })
 const emit = defineEmits<{ 'show-student': [student: TrainingStudentProfile] }>()
@@ -49,7 +50,7 @@ function scoreClass(student: TrainingStudentProfile) { return score(student) ===
           </div>
         </div>
       </section>
-      <p v-if="!groups.length" class="practice-empty">没有符合检索条件的学生。</p>
+      <StatePanel v-if="!groups.length" kind="empty" compact title="没有符合检索条件的学生。" />
     </div>
   </section>
 </template>

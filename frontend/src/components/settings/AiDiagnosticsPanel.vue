@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import AppButton from '@/components/design-system/AppButton.vue'
+import StatePanel from '@/components/design-system/StatePanel.vue'
 
 import { computed, markRaw, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 
@@ -366,19 +367,22 @@ onBeforeUnmount(() => {
       </aside>
 
       <article class="ai-diagnostic-detail" aria-live="polite">
-        <div v-if="diagnosticDetailState === 'loading'" class="ai-diagnostic-detail__state">
-          正在读取这次调用的完整记录…
-        </div>
-        <div
+        <StatePanel
+          v-if="diagnosticDetailState === 'loading'"
+          kind="loading"
+          title="正在读取这次调用的完整记录…"
+        />
+        <StatePanel
           v-else-if="diagnosticDetailState === 'error'"
-          class="ai-diagnostic-detail__state ai-diagnostic-detail__state--error"
-        >
-          {{ diagnosticsError || '这次调用的详情没有加载成功。' }}
-        </div>
-        <div v-else-if="selectedDiagnostic === null" class="ai-diagnostic-detail__empty">
-          <strong>选择一条调用记录</strong>
-          <p>可以查看发送内容、附件、模型返回和解析结果。</p>
-        </div>
+          kind="error"
+          :title="diagnosticsError || '这次调用的详情没有加载成功。'"
+        />
+        <StatePanel
+          v-else-if="selectedDiagnostic === null"
+          kind="empty"
+          title="选择一条调用记录"
+          description="可以查看发送内容、附件、模型返回和解析结果。"
+        />
         <template v-else>
           <header class="ai-diagnostic-detail__header">
             <div>

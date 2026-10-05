@@ -4,8 +4,12 @@
   gap: var(--space-6);
   max-width: none;
   margin: 0 auto;
-  padding: var(--knowledge-training-inset);
+  padding: 0 0 var(--page-inset-bottom);
   width: 100%;
+}
+
+.training-workspace > :not(.page-header):not(.page-header__sentinel) {
+  margin-inline: var(--page-inset-x);
 }
 
 .training-section-heading,
@@ -54,15 +58,6 @@
 .training-jobs span {
   color: var(--color-text-secondary);
   font-size: var(--font-size-caption);
-}
-
-.training-eyebrow {
-  margin: 0 0 var(--space-1);
-  color: var(--color-text-muted);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .training-scope,
@@ -1099,7 +1094,7 @@
 .practice-box-heading>span{color:var(--color-text-muted);font-size:var(--font-size-caption);margin-left:auto}.practice-box-heading .app-button{padding:0;min-height:var(--control-height-small)}
 .practice-segment{display:inline-flex;border:1px solid var(--color-border-default);border-radius:var(--radius-control);overflow:hidden;background:var(--color-bg-surface)}
 .practice-segment button{border:0;background:transparent;min-height:var(--control-height-small);padding:0 var(--space-3);font-size:var(--font-size-dense);color:var(--color-text-secondary);cursor:pointer}.practice-segment button.is-active{background:var(--color-accent);color:var(--color-bg-surface);font-weight:var(--font-weight-semibold)}
-.practice-link{font-size:var(--font-size-caption);color:var(--color-accent)!important;cursor:pointer}.practice-empty{font-size:var(--font-size-dense);color:var(--color-text-muted);padding:var(--space-3);line-height:1.7}
+.practice-link{font-size:var(--font-size-caption);color:var(--color-accent)!important;cursor:pointer}
 .practice-workspace{min-width:0}.practice-layout>.training-groups{margin:0}.practice-layout .training-groups__grid{grid-template-columns:minmax(0,1fr)}
 .practice-layout .training-groups__heading{flex-wrap:wrap}.practice-layout .training-groups__stats{gap:var(--space-2)}.practice-layout .training-groups__stats dd{font-size:var(--font-size-dense)}
 @media(max-width:1199px){.practice-layout{grid-template-columns:minmax(0,1fr)}.practice-layout>.paper-settings-panel{position:static}}

@@ -652,9 +652,7 @@ watch(
     />
     <template v-else>
       <div id="config-intake-status-slot" />
-      <p v-if="sessionStore.sessions.length === 0" class="session-config-view__empty">
-        还没有考试，先创建草稿。
-      </p>
+      <StatePanel v-if="sessionStore.sessions.length === 0" kind="empty" title="还没有考试" description="先创建草稿。" />
       <Transition :name="transitionName" mode="out-in" @after-enter="focusPendingStage">
         <section v-if="activePanel === 'source'" key="source" class="config-workspace__panel" aria-label="试卷准备">
           <div id="config-source-stage" tabindex="-1">
@@ -793,6 +791,5 @@ watch(
 <style scoped>
 .session-config-view p { margin: 0; }
 .session-config-view__state { margin: var(--space-4) var(--space-6); }
-.session-config-view__empty { padding: var(--space-3) var(--space-6); border-block-end: var(--border-width) solid var(--border); color: var(--color-text-secondary); }
 .config-workspace__panel { min-width: 0; }
 </style>

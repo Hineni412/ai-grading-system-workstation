@@ -389,7 +389,6 @@ async function save(): Promise<void> {
           <section v-if="wrongOptionRows.length || otherPatterns.length || patternEdit || patternError || patternMessage" class="qb-paper-section qb-patterns" aria-labelledby="qb-patterns-title">
             <header class="qb-section-heading">
               <div>
-                <p class="qb-eyebrow">TYPICAL ERRORS</p>
                 <h3 id="qb-patterns-title">本题典型错法</h3>
               </div>
             </header>
@@ -455,7 +454,6 @@ async function save(): Promise<void> {
           <details class="qb-tags qb-property-editor"><summary>编辑题目属性 / 选择小节</summary>
             <header class="qb-section-heading">
               <div>
-                <p class="qb-eyebrow">TEACHER CONFIRMATION</p>
                 <h3 id="qb-tags-title">标签核对</h3>
               </div>
               <div class="qb-tag-add">

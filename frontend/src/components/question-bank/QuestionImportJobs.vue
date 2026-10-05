@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import AppButton from '@/components/design-system/AppButton.vue'
+import StatePanel from '@/components/design-system/StatePanel.vue'
 
 import { computed, onMounted, ref } from 'vue'
 
@@ -301,7 +302,6 @@ function downloadFailures(job: JobResponse): void {
   <section class="qb-jobs" aria-labelledby="qb-import-title">
     <header class="qb-jobs__heading">
       <div>
-        <p class="qb-eyebrow">IMPORT & TASKS</p>
         <h2 id="qb-import-title">上传试卷与任务</h2>
         <p>Word/PDF 会先安全上传，再由后台生成试卷和题目。</p>
       </div>
@@ -505,7 +505,7 @@ function downloadFailures(job: JobResponse): void {
           </div>
         </article>
       </div>
-      <p v-else class="qb-empty">当前浏览器还没有记录题库任务。</p>
+      <StatePanel v-else kind="empty" compact title="当前浏览器还没有记录题库任务。" />
     </details>
     <QuestionPreviewDialog
       :question-id="previewQuestionId"

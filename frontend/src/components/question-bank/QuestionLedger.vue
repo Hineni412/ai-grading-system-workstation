@@ -126,7 +126,6 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
   <section class="qb-ledger" aria-labelledby="qb-ledger-title">
     <header class="qb-section-heading">
       <div>
-        <p class="qb-eyebrow">QUESTION LIST</p>
         <h2 id="qb-ledger-title">试题内容</h2>
       </div>
       <div class="qb-ledger__heading-actions">
@@ -185,7 +184,6 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
       <DialogContent v-if="similarSource" as="aside" class="qb-similar-drawer qb-similar-dialog" :aria-describedby="undefined">
         <header>
           <div>
-            <p class="qb-eyebrow">LOCAL SIMILARITY</p>
             <DialogTitle as="h2">相似题推荐</DialogTitle>
             <p>基于本机题库文本和标签匹配，不会调用大模型或产生费用。</p>
           </div>

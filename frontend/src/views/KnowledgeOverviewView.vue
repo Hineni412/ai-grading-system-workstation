@@ -3,7 +3,9 @@ import { computed } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
 import type { TrainingOverviewNode } from '../api/training'
 import AppButton from '../components/design-system/AppButton.vue'
+import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
+import StatePanel from '../components/design-system/StatePanel.vue'
 import OverviewScopeBar from '../components/knowledge-overview/OverviewScopeBar.vue'
 import OverviewStudentTable from '../components/knowledge-overview/OverviewStudentTable.vue'
 import OverviewTierBar from '../components/knowledge-overview/OverviewTierBar.vue'
@@ -47,11 +49,24 @@ function questions(node: TrainingOverviewNode) {
       <template #navigation><KnowledgeTrainingTabs /></template>
     </PageHeader>
     <OverviewScopeBar />
-    <p v-if="!curriculum.selectedVolumeId" class="knowledge-overview-notice" role="status">请先在顶部选择教学学期</p>
-    <div v-else-if="store.loadState === 'loading' && !overview" class="knowledge-overview-skeleton" role="status" aria-busy="true">正在汇总本学期掌握度…</div>
-    <div v-else-if="store.loadState === 'error'" class="knowledge-overview-error" role="alert"><p>{{ store.errorMessage }}</p><AppButton @click="store.load(curriculum.selectedVolumeId, true)">重新加载</AppButton></div>
+    <StatePanel v-if="!curriculum.selectedVolumeId" kind="empty" title="请先选择教学学期" description="在左侧栏“当前考试”中选择教学学期。" />
+    <StatePanel v-else-if="store.loadState === 'loading' && !overview" kind="loading" title="正在汇总本学期掌握度…" />
+    <StatePanel
+      v-else-if="store.loadState === 'error'"
+      kind="error"
+      :title="store.errorMessage || '学情总览暂时无法读取'"
+      retry-label="重新加载"
+      @retry="store.load(curriculum.selectedVolumeId, true)"
+    />
     <template v-if="overview && metrics">
-      <div v-if="store.loadState === 'stale-error'" class="knowledge-overview-error" role="alert"><p>当前显示上次成功读取的结果，最新内容暂时无法确认。</p><AppButton @click="store.load(curriculum.selectedVolumeId, true)">重新加载</AppButton></div>
+      <FeedbackBanner
+        v-if="store.loadState === 'stale-error'"
+        tone="warning"
+        title="当前显示上次成功读取的结果，最新内容暂时无法确认。"
+        description=""
+        action-label="重新加载"
+        @action="store.load(curriculum.selectedVolumeId, true)"
+      />
       <dl class="overview-summary-strip" aria-label="学期汇总">
         <div><dt>有证据学生</dt><dd>{{ metrics.evidence_student_count }}<small> / {{ metrics.student_count }} 人</small></dd></div>
         <div><dt>本学期平均得分率</dt><dd>{{ formatPercent(metrics.exam_score_rate) }}<small>有成绩 {{ metrics.exam_student_count }} 人</small></dd></div>
@@ -61,7 +76,7 @@ function questions(node: TrainingOverviewNode) {
       <div class="overview-action-layout">
         <section class="overview-card overview-priorities" aria-labelledby="overview-priorities-title">
           <header class="overview-card__header"><h2 id="overview-priorities-title">本周建议优先处理</h2><span>按明显薄弱人数排序</span></header>
-          <p v-if="!priorities.length" class="overview-empty">当前范围没有明显薄弱的技能</p>
+          <StatePanel v-if="!priorities.length" kind="empty" compact title="当前范围没有明显薄弱的技能" />
           <article v-for="(node, index) in priorities" :key="node.knowledge_key" class="overview-priority" :data-knowledge="node.knowledge_key">
             <div class="overview-priority-heading"><span class="overview-rank">{{ index + 1 }}</span><h3>{{ shortNodeName(node) }}</h3><span class="overview-weak-count">{{ node.distribution.weak }} 人明显薄弱</span></div>
             <p class="overview-location">属于 {{ nodeLocation(node, overview.nodes) }}</p>
@@ -76,7 +91,7 @@ function questions(node: TrainingOverviewNode) {
         <div class="overview-action-sidebar">
           <section class="overview-card" aria-labelledby="overview-attention-title">
             <header class="overview-card__header"><h2 id="overview-attention-title">需要个别关注的学生</h2></header>
-            <p v-if="!attention.length" class="overview-empty">当前范围没有明显薄弱的学生。</p>
+            <StatePanel v-if="!attention.length" kind="empty" compact title="当前范围没有明显薄弱的学生。" />
             <button v-for="student in attention" :key="student.student_id" type="button" class="overview-attention-student" @click="router.push({ name: 'student-evidence', params: { studentId: student.student_id }, query: { from: 'overview' } })">
               <span class="overview-attention-heading"><strong>{{ student.student_name }}</strong><span>{{ formatPercent(student.score_rate) }}</span><b>明显薄弱 {{ student.topics.weak + student.skills.weak }} 项</b></span>
               <span class="overview-location">{{ student.class_id || '—' }} · {{ student.student_code || '—' }}</span><OverviewTierBar :distribution="studentDistribution(student)" />

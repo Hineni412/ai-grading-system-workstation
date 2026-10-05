@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import type { ResultsCenterStudent } from '../../api/results-center'
 
 defineProps<{
@@ -37,7 +38,6 @@ const manualStudentSearch = defineModel<string>('manualStudentSearch', { require
     >
       <div class="excel-settings-dialog__heading">
         <div>
-          <p class="file-center__eyebrow">Excel 导出设置</p>
           <h3 id="excel-settings-title">精简打印姓名，不改变成绩统计</h3>
         </div>
         <AppButton variant="ghost"
@@ -137,9 +137,7 @@ const manualStudentSearch = defineModel<string>('manualStudentSearch', { require
               </span>
             </label>
           </div>
-          <p v-else class="excel-settings-empty">
-            {{ eligibleStudents.length ? '没有匹配的完整成绩学生。' : '完整成绩读取完成后，可在这里手动选择学生。' }}
-          </p>
+          <StatePanel v-else kind="empty" compact :title="eligibleStudents.length ? '没有匹配的完整成绩学生。' : '完整成绩读取完成后，可在这里手动选择学生。'" />
         </template>
       </fieldset>
 

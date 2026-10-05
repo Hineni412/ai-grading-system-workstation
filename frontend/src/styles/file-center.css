@@ -9,7 +9,6 @@
   width: 100%;
 }
 
-.file-center__hero,
 .file-section__heading {
   display: flex;
   align-items: center;
@@ -17,46 +16,15 @@
   gap: var(--space-4);
 }
 
-.file-center__hero {
-  align-items: flex-end;
-  padding-bottom: var(--space-5);
-  border-bottom: var(--border-width) solid var(--color-border-default);
-}
 
-.file-center__hero h1,
 .file-section h2,
 .file-section h3 {
   margin: 0;
   color: var(--color-text-primary);
 }
 
-.file-center__hero h1 {
-  margin-top: var(--space-1);
-  font-size: var(--font-size-display);
-}
 
-.file-center__hero p:not(.file-center__eyebrow) {
-  max-width: 680px;
-  margin: var(--space-2) 0 0;
-  color: var(--color-text-secondary);
-}
 
-.file-center__eyebrow {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.file-center__hero-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  color: var(--color-text-muted);
-  font-size: var(--font-size-caption);
-}
 
 .file-section {
   display: grid;
@@ -222,16 +190,6 @@
   margin-top: var(--space-1);
 }
 
-.excel-settings-dialog__explanation,
-.excel-settings-dialog__actions > span,
-.excel-settings-group small,
-.excel-settings-empty {
-  margin: 0;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-dense);
-  line-height: 1.6;
-}
-
 .excel-settings-preview {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -356,22 +314,6 @@
   outline-offset: var(--focus-offset);
 }
 
-.file-ledger__empty,
-.file-center__empty {
-  padding: var(--space-5);
-  border: var(--border-width) dashed var(--input);
-  border-radius: var(--radius);
-  color: var(--color-text-secondary);
-  text-align: center;
-}
-
-.file-center__empty {
-  display: grid;
-  gap: var(--space-2);
-  min-height: 180px;
-  place-content: center;
-}
-
 .file-status {
   flex: 0 0 auto;
   padding: var(--space-1) var(--space-2);
@@ -432,7 +374,6 @@
     padding: var(--space-4);
   }
 
-  .file-center__hero,
   .file-section__heading {
     align-items: flex-start;
     flex-direction: column;
@@ -445,12 +386,7 @@
 }
 
 @media (max-width: 640px) {
-  .file-center__hero-actions {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .excel-settings-dialog__heading,
+    .excel-settings-dialog__heading,
   .excel-settings-dialog__actions {
     align-items: flex-start;
     flex-direction: column;

@@ -1034,8 +1034,7 @@ async function confirmPermanentDelete(): Promise<void> {
   <section ref="libraryElement" class="paper-library" aria-labelledby="paper-library-title">
     <header class="paper-library__header" :class="{ 'is-relocated': headerTarget }">
       <div v-if="!headerTarget">
-        <p class="paper-library__eyebrow">PAPER LIBRARY</p>
-        <h1 id="paper-library-title">试卷库</h1>
+        <h2 id="paper-library-title">试卷库</h2>
         <p>上传 Word 或 PDF 试卷后自动分析，只有无法确定的个别题目需要核对。</p>
       </div>
       <div class="paper-library__stats" aria-label="试卷库概况">
@@ -1442,7 +1441,6 @@ async function confirmPermanentDelete(): Promise<void> {
           :aria-describedby="undefined"
           aria-labelledby="paper-permanent-delete-title"
         >
-          <p class="paper-trash-confirm__eyebrow">不可恢复</p>
           <DialogTitle as="h2" id="paper-permanent-delete-title">确认彻底删除？</DialogTitle>
           <strong v-if="pendingDeletePapers.length <= 1">
             {{ pendingDeletePapers[0]?.title || `未命名试卷 #${pendingDeletePapers[0]?.id}` }}
@@ -1503,7 +1501,6 @@ async function confirmPermanentDelete(): Promise<void> {
           :aria-describedby="undefined"
           aria-labelledby="paper-answer-draft-title"
         >
-          <p class="paper-trash-confirm__eyebrow">AI 补答案</p>
           <DialogTitle as="h2" id="paper-answer-draft-title">确认生成答案草稿？</DialogTitle>
           <strong>
             选中的 {{ pendingAnswerDraft.paperCount }} 份试卷、共 {{ pendingAnswerDraft.questionIds.length }} 道题
@@ -1551,15 +1548,7 @@ async function confirmPermanentDelete(): Promise<void> {
   justify-content: space-between;
 }
 
-.paper-library__eyebrow {
-  color: var(--color-accent) !important;
-  font-size: var(--font-size-caption) !important;
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: .13em;
-  margin: 0 0 5px !important;
-}
-
-.paper-library__header h1 {
+.paper-library__header h2 {
   color: var(--color-text-primary);
   font-size: var(--font-size-display);
   letter-spacing: -.04em;
@@ -2318,14 +2307,6 @@ async function confirmPermanentDelete(): Promise<void> {
   width: 470px;
 }
 
-.paper-trash-confirm__eyebrow {
-  color: var(--color-danger) !important;
-  font-size: var(--font-size-caption) !important;
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: .12em;
-  margin: 0 0 6px !important;
-}
-
 .paper-trash-confirm h2 {
   color: var(--color-text-primary);
   font-size: var(--font-size-h2);
@@ -2338,7 +2319,7 @@ async function confirmPermanentDelete(): Promise<void> {
   font-size: var(--font-size-body);
 }
 
-.paper-trash-confirm > p:not(.paper-trash-confirm__eyebrow, .paper-trash-confirm__message) {
+.paper-trash-confirm > p:not(.paper-trash-confirm__message) {
   color: var(--color-text-secondary);
   font-size: var(--font-size-dense);
   line-height: 1.7;

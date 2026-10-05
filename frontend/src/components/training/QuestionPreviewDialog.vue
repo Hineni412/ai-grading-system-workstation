@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 
 import { questionBankApi, type QuestionBankDetail } from '../../api/question-bank'
 import { ApiError } from '../../api/errors'
+import StatePanel from '../design-system/StatePanel.vue'
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
 
 const props = defineProps<{
@@ -78,17 +79,23 @@ function close(): void {
         aria-modal="true"
         aria-labelledby="question-preview-title"
       >
-        <div v-if="panelState === 'loading'" class="question-preview__empty" role="status">
-          正在打开题库题目…
-        </div>
-        <div v-else-if="panelState === 'missing'" class="question-preview__empty" role="alert">
-          <span>该题已不在题库中；草稿内容不受影响，可关闭预览继续审核。</span>
-          <button type="button" class="question-preview__close-inline" @click="close">关闭</button>
-        </div>
-        <div v-else-if="panelState === 'error'" class="question-preview__empty" role="alert">
-          <span>题目暂时无法读取，草稿内容不受影响。</span>
-          <button type="button" class="question-preview__retry" @click="retry">重试</button>
-        </div>
+        <StatePanel v-if="panelState === 'loading'" kind="loading" title="正在打开题库题目…" />
+        <StatePanel
+          v-else-if="panelState === 'missing'"
+          kind="empty"
+          title="该题已不在题库中"
+          description="草稿内容不受影响，可关闭预览继续审核。"
+        >
+          <template #actions><button type="button" class="question-preview__close-inline" @click="close">关闭</button></template>
+        </StatePanel>
+        <StatePanel
+          v-else-if="panelState === 'error'"
+          kind="error"
+          title="题目暂时无法读取"
+          description="草稿内容不受影响。"
+          retry-label="重试"
+          @retry="retry"
+        />
         <template v-else-if="detail">
           <header class="question-preview__heading">
             <div>
@@ -129,7 +136,6 @@ function close(): void {
 <style scoped>
 .question-preview-layer { position: fixed; inset: 0; z-index: 60; display: flex; justify-content: flex-end; background: color-mix(in srgb, var(--color-text-primary) 24%, transparent); }
 .question-preview { width: min(620px, 94vw); max-width: 100%; height: 100%; overflow-y: auto; padding: 20px; border-left: 1px solid var(--color-border-default); background: var(--color-bg-surface); box-shadow: -18px 0 44px color-mix(in srgb, var(--color-text-primary) 14%, transparent); }
-.question-preview__empty { display: grid; gap: var(--space-3); justify-items: start; padding: var(--space-6) 0; color: var(--color-text-secondary); }
 .question-preview__retry,
 .question-preview__close-inline { padding: 6px 14px; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-accent-active); cursor: pointer; }
 .question-preview__heading { display: flex; justify-content: space-between; align-items: start; gap: var(--space-3); }

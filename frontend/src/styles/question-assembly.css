@@ -591,14 +591,6 @@
   color: var(--color-danger);
 }
 
-.assembly-editor-empty {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-caption);
-  line-height: 1.55;
-  padding: 20px 8px;
-  text-align: center;
-}
-
 @media (max-width: 1060px) {
 
   .assembly-editor__workspace {
@@ -674,7 +666,6 @@
 .assembly-full-preview { margin: 0 12px 12px; }
 .assembly-full-preview > summary { padding: 9px 12px; border: 1px solid var(--color-border-subtle); border-radius: 9px; }
 .assembly-full-preview .assembly-sheet { box-shadow: none; padding: 20px; min-height: 0; margin-top: 10px; }
-.assembly-editor-empty { padding: 12px 14px; margin: 0; color: var(--color-text-muted); font-size: var(--font-size-caption); }
 .assembly-editor-panel--export > p { display: none; }
 .assembly-export-actions { padding: 13px 14px; display: block; margin: 0; }
 .assembly-export-actions > button { width: 100%; }

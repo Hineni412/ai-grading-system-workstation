@@ -167,7 +167,6 @@
   color: var(--sidebar-ink-3);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
-  letter-spacing: 0.08em;
   white-space: nowrap;
 }
 
@@ -376,7 +375,6 @@
   color: var(--sidebar-ink-3);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
-  letter-spacing: 0.06em;
 }
 
 /* 状态文字：标签行右侧，按色调着色（文字本身即语义，不靠颜色单独表达） */

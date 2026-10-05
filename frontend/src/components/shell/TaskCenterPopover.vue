@@ -8,6 +8,7 @@ import { exportsApi } from '../../api/exports'
 import { useJobStore } from '../../stores/jobs'
 import { useSessionStore } from '../../stores/session'
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import { taskDetail, taskName, taskOutcome, taskScope } from './task-center-format'
 
 const jobs = useJobStore()
@@ -93,7 +94,7 @@ async function cancel(id: number) {
     <PopoverPortal>
       <PopoverContent class="task-center-popover fx-popover" side="right" align="end" :side-offset="12" :collision-padding="12" aria-label="任务中心">
         <header><strong>任务中心</strong><AppButton variant="ghost" :disabled="refreshing" @click="refresh">{{ refreshing ? '正在刷新…' : '刷新' }}</AppButton></header>
-        <p v-if="!entries.length" class="task-center-empty">当前没有任务</p>
+        <StatePanel v-if="!entries.length" kind="empty" compact title="当前没有任务" />
         <p v-if="downloadError" role="alert">{{ downloadError }}</p>
         <ul v-if="entries.length">
           <li v-for="job in entries" :key="job.id" :data-job-id="job.id">
@@ -120,7 +121,6 @@ async function cancel(id: number) {
 .task-center-popover ul { padding: 0; margin: 6px 0 0; list-style: none; }
 .task-center-popover li { padding: 10px 0; border-top: 1px solid var(--color-border-subtle); }
 .task-center-popover p { color: var(--color-text-muted); overflow-wrap: anywhere; margin: 5px 0; }
-.task-center-popover .task-center-empty { padding: 20px 0; text-align: center; }
 .task-center-popover .is-error { color: var(--color-danger); }
 .task-center-popover .is-warning { color: var(--color-warning); }
 .task-center-popover .is-success { color: var(--color-success); }

@@ -252,7 +252,7 @@ describe('knowledge overview view', () => {
   it('shows the semester prompt and sends no request without a volume', async () => {
     const host = await mountView(null)
     await settle()
-    expect(host.textContent).toContain('请先在顶部选择教学学期')
+    expect(host.textContent).toContain('请先选择教学学期')
     expect(trainingApi.overview).not.toHaveBeenCalled()
   })
 

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import PageHeader from '../components/design-system/PageHeader.vue'
+import StatePanel from '../components/design-system/StatePanel.vue'
 import { DialogRoot, DialogPortal, DialogContent, DialogTitle } from 'reka-ui'
 import { useRoute, useRouter } from 'vue-router'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
@@ -173,6 +174,18 @@ async function openCriteriaQuestion(question: QuestionBankListItem): Promise<voi
   openPaper(paper, question.id)
 }
 
+async function openCandidateQuestion(ref: { questionId: number; paperId: number | null }): Promise<void> {
+  if (bank.papersState !== 'ready') await bank.loadPapers()
+  let paperId = ref.paperId
+  if (paperId == null) {
+    try { paperId = (await questionBankApi.getQuestion(ref.questionId)).paper_id } catch { paperId = null }
+  }
+  const paper = bank.papers.find((item) => item.id === paperId)
+  if (!paper) return
+  showCriteriaReview.value = false
+  openPaper(paper, ref.questionId)
+}
+
 </script>
 
 <template>
@@ -183,9 +196,9 @@ async function openCriteriaQuestion(question: QuestionBankListItem): Promise<voi
     <QuestionSkillBrowser v-if="tab === 'skill'" :index="index" :loading="indexLoading" :error="indexError" @retry="loadIndex" @skill="openSkill" @repair="openRepair('skills')" />
     <div v-show="tab === 'paper'" class="qb-paper-layout">
       <aside class="qb-paper-sidebar qb-browse-pane"><PaperLibrary ref="library" :active-paper-id="activePaper?.id" :header-target="'#qb-library-actions'" :pending-taxonomy-count="taxonomyReview.pendingCount" :pending-taxonomy-state="taxonomyReview.loadState" @open="openPaper" @import="showImport = true" @review-taxonomy="openTaxonomyReview" @review-criteria="openCriteriaReview" /></aside>
-      <main class="qb-paper-detail qb-browse-pane"><template v-if="activePaper"><header class="qb-paper-heading"><div><h2>{{ activePaper.title }}</h2><p>{{ [activePaper.year, activePaper.grade, activePaper.semester, activePaper.exam_type].filter(Boolean).join(' · ') }} · {{ activePaper.question_count }} 题</p></div><button class="qb-button" :disabled="bank.listState !== 'ready' || assembly.saveState === 'saving'" @click="addPaper">整卷加入试卷篮</button><details class="qb-card-menu"><summary aria-label="试卷更多操作">⋯</summary><div><button @click="bank.selectCurrentPage(true)">选择整卷题目</button><button @click="library?.editPaper(activePaper)">编辑信息</button><button @click="library?.continuePaper(activePaper)">继续分析</button><button @click="library?.retagPaper(activePaper)">重新打标签</button><button @click="library?.answerPaper(activePaper)">生成答案草稿</button></div></details></header><nav class="qb-number-nav" aria-label="试卷题号"><button v-for="question in bank.questions" :key="`${question.id}:${question.question_number}`" :title="`第 ${question.question_number} 题 · ${questionState(question)}`" :aria-label="`第 ${question.question_number} 题 · ${questionState(question)}`" :class="{ 'is-active': bank.selectedQuestionId === question.id, 'is-warning': questionState(question) === '判定点待审核', 'is-unlinked': questionState(question) === '未挂技能', 'is-incomplete': questionState(question) === '分析未完成' }" @click="navigateQuestion(question.id)">{{ question.question_number }} <small>{{ questionState(question) === '完整' ? '✓' : questionState(question) === '判定点待审核' ? '!' : questionState(question) === '未挂技能' ? '◇' : '…' }}</small></button></nav><div class="qb-number-legend"><span>□ 完整</span><span>▣ 待审</span><span>◇ 未挂技能</span><span>▧ 未完成</span></div><p v-if="assembly.message" class="qb-feedback" role="status">{{ assembly.message }}</p><QuestionLedger paper-mode @skill="openSkill" /></template><p v-else class="qb-help">在左侧选择一份试卷，即可逐题浏览整卷。</p></main>
+      <main class="qb-paper-detail qb-browse-pane"><template v-if="activePaper"><header class="qb-paper-heading"><div><h2>{{ activePaper.title }}</h2><p>{{ [activePaper.year, activePaper.grade, activePaper.semester, activePaper.exam_type].filter(Boolean).join(' · ') }} · {{ activePaper.question_count }} 题</p></div><button class="qb-button" :disabled="bank.listState !== 'ready' || assembly.saveState === 'saving'" @click="addPaper">整卷加入试卷篮</button><details class="qb-card-menu"><summary aria-label="试卷更多操作">⋯</summary><div><button @click="bank.selectCurrentPage(true)">选择整卷题目</button><button @click="library?.editPaper(activePaper)">编辑信息</button><button @click="library?.continuePaper(activePaper)">继续分析</button><button @click="library?.retagPaper(activePaper)">重新打标签</button><button @click="library?.answerPaper(activePaper)">生成答案草稿</button></div></details></header><nav class="qb-number-nav" aria-label="试卷题号"><button v-for="question in bank.questions" :key="`${question.id}:${question.question_number}`" :title="`第 ${question.question_number} 题 · ${questionState(question)}`" :aria-label="`第 ${question.question_number} 题 · ${questionState(question)}`" :class="{ 'is-active': bank.selectedQuestionId === question.id, 'is-warning': questionState(question) === '判定点待审核', 'is-unlinked': questionState(question) === '未挂技能', 'is-incomplete': questionState(question) === '分析未完成' }" @click="navigateQuestion(question.id)">{{ question.question_number }} <small>{{ questionState(question) === '完整' ? '✓' : questionState(question) === '判定点待审核' ? '!' : questionState(question) === '未挂技能' ? '◇' : '…' }}</small></button></nav><div class="qb-number-legend"><span>□ 完整</span><span>▣ 待审</span><span>◇ 未挂技能</span><span>▧ 未完成</span></div><p v-if="assembly.message" class="qb-feedback" role="status">{{ assembly.message }}</p><QuestionLedger paper-mode @skill="openSkill" /></template><StatePanel v-else kind="empty" title="在左侧选择一份试卷" /></main>
     </div>
-    <QuestionBankTodo v-if="tab === 'todo'" :index="index" :pending-count="taxonomyReview.pendingCount" @question="openCriteriaQuestion" @skill="openSkill" @criteria="openCriteriaReview" @taxonomy="openTaxonomyReview" @repair="openRepair" />
+    <QuestionBankTodo v-if="tab === 'todo'" :index="index" :pending-count="taxonomyReview.pendingCount" @question="openCriteriaQuestion" @open-question="openCandidateQuestion" @skill="openSkill" @criteria="openCriteriaReview" @taxonomy="openTaxonomyReview" @repair="openRepair" />
     </div>
     <QuestionBasketDrawer v-model:open="showBasket" />
     <QuestionRepairDialog :open="repairOpen" :volume-id="scope.selectedVolumeId || ''" :volume-label="scope.selectedVolume?.label || ''" :kind="repairKind" @close="repairOpen = false" @refreshed="bank.loadPapers(); loadIndex()" />

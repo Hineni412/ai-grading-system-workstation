@@ -47,10 +47,7 @@
 .ai-diagnostic-panel { padding: 12px 14px; min-width: 0; }
 .ai-diagnostic-panel pre, .ai-diagnostic-detail pre { margin: 0; font: var(--font-size-caption)/1.6 var(--font-family-mono); color: var(--color-text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; max-height: 360px; }
 .ai-diagnostic-panel dl, .ai-diagnostic-error dl { font-size: var(--font-size-caption); display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; }
-.ai-diagnostic-panel dd { margin: 0; overflow-wrap: anywhere; }
-.ai-diagnostics-ledger__state, .ai-diagnostic-detail__state, .ai-diagnostic-detail__empty { color: var(--color-text-muted); padding: 20px 14px; font-size: var(--font-size-caption); }
-.ai-diagnostic-detail__empty p { font-size: var(--font-size-caption); margin-top: 5px; }
+.ai-diagnostic-panel dd { margin: 0; overflow-wrap: anywhere; }
 .ai-diagnostics-ledger__more { width: 100%; border: 0; padding: 8px; background: transparent; font-size: var(--font-size-caption); color: var(--color-accent); }
-.ai-diagnostic-detail__state--error { color: var(--color-danger); }
 .ai-diagnostic-attachments { display: grid; gap: 8px; font-size: var(--font-size-caption); }
 @media (max-width: 720px) { .ai-diagnostics__workspace { grid-template-columns: 1fr; } .ai-diagnostics-ledger { border-right: 0; border-bottom: 1px solid var(--color-border-subtle); } }

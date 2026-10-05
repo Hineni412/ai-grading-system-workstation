@@ -15,6 +15,7 @@ import { jobApi, TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import { useJobStore } from '../../stores/jobs'
 import { useSessionStore } from '../../stores/session'
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import { Skeleton } from '../ui/skeleton'
 import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
 import {
@@ -1314,7 +1315,7 @@ onMounted(() => {
                     </button>
                   </li>
                 </ol>
-                <p v-else class="overview__empty">无明显变化</p>
+                <StatePanel v-else kind="empty" compact title="无明显变化" />
               </div>
             </div>
             <button

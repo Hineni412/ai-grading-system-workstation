@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import type { ResultsCenterQuestion } from '../../api/results-center'
 import type { ReviewQuestionSummary } from '../../api/review'
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import { useResultsCenterStore } from '../../stores/results-center'
 import type { InterventionState, InterventionSummary, ScanStageId } from './scan-stage'
 
@@ -171,8 +172,8 @@ function selectStage(id: ScanStageId): void {
     <div class="scan-stage__heading">
       <h2 id="review-title">复核</h2>
     </div>
-    <p v-if="state === 'loading'" class="scan-empty">正在读取人工干预摘要…</p>
-    <p v-else-if="state === 'error'" class="scan-empty">摘要暂时无法读取，仍可进入工作台查看完整队列。</p>
+    <StatePanel v-if="state === 'loading'" kind="loading" title="正在读取人工干预摘要…" />
+    <StatePanel v-else-if="state === 'error'" kind="error" title="摘要暂时无法读取" description="仍可进入工作台查看完整队列。" />
     <template v-else-if="state === 'ready' && summary.total > 0">
       <div class="review-status" data-review-status>
         <div class="review-status__main">
@@ -285,10 +286,9 @@ function selectStage(id: ScanStageId): void {
         </aside>
       </div>
     </template>
-    <div v-else-if="state === 'ready'" class="scan-empty">
-      <p>还没有评分结果，批改后这里显示各题得分与待处理项。</p>
-      <AppButton variant="secondary" @click="selectStage('grade')">去批改</AppButton>
-    </div>
-    <p v-else class="scan-empty">完成扫描预检后，这里会建立本场考试的人工干预队列。</p>
+    <StatePanel v-else-if="state === 'ready'" kind="empty" title="还没有评分结果" description="批改后这里显示各题得分与待处理项。">
+      <template #actions><AppButton variant="secondary" @click="selectStage('grade')">去批改</AppButton></template>
+    </StatePanel>
+    <StatePanel v-else kind="empty" title="完成扫描预检后，这里会建立本场考试的人工干预队列。" />
   </section>
 </template>

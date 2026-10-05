@@ -5,6 +5,7 @@ import { trainingApi, type TrainingDiagnosis, type TrainingGroup, type TrainingG
   type TrainingStudentScopeRequest, type TrainingExamScopeRequest } from '../../api/training'
 import type { ChapterGroupEditor, AdoptedChapterGroup, ChapterGroupSort } from '../../features/training/paper-selection-session'
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
 import { ApiError } from '../../api/errors'
 import { useTrainingStore } from '../../stores/training'
@@ -274,7 +275,7 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
     </header>
     <p v-if="scope.score_rate_min != null || scope.score_rate_max != null" class="training-groups__note">已启用辅助条件：在得分率 {{ Math.round((scope.score_rate_min ?? 0) * 100) }}%–{{ Math.round((scope.score_rate_max ?? 1) * 100) }}% 范围内推荐。</p>
     <p v-if="message" class="training-groups__alert" role="alert">{{ message }}</p>
-    <p v-if="!result && busy" class="training-groups__empty">正在核对训练目标、证据和可用题目……</p>
+    <StatePanel v-if="!result && busy" kind="loading" title="正在核对训练目标、证据和可用题目……" />
     <template v-if="!editing">
       <div v-if="result?.groups.length" class="training-groups__sorting">
         <label>排序
@@ -310,7 +311,7 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
           </footer>
         </article>
       </div>
-      <p v-if="result && !result.groups.length && !busy" class="training-groups__empty">暂未形成可靠的公共训练组。可查看下方原因，或到按学生训练选择多人同卷。</p>
+      <StatePanel v-if="result && !result.groups.length && !busy" kind="empty" title="暂未形成可靠的公共训练组。" description="可查看下方原因，或到按学生训练选择多人同卷。" />
       <AppButton v-if="(result?.groups.length ?? 0) > 6" class="training-groups__more" @click="showAll = !showAll">{{ showAll ? '收起更多小组' : `查看其余 ${result!.groups.length - 6} 个小组` }}</AppButton>
     </template>
     <section v-else class="training-groups__editor" aria-label="调整训练小组">
@@ -383,7 +384,6 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
 .training-groups__card-footer strong{font-weight:var(--font-weight-medium)}.training-groups__card-footer span{color:var(--color-text-secondary);font-size:var(--font-size-caption)}
 .training-groups__card-footer button{flex-shrink:0}.training-groups__more{justify-self:center}
 .training-groups__alert{font-size:var(--font-size-caption);line-height:1.6;color:var(--color-warning);background:var(--color-warning-subtle);padding:.6rem .8rem;border-radius:var(--radius-control)}
-.training-groups__empty{padding:2rem 1rem;line-height:1.8;color:var(--color-text-secondary);background:var(--color-bg-subtle)}
 .training-groups__editor{display:grid;gap:1rem}
 .training-groups__stats--selection{max-width:760px;gap:1.5rem}.training-groups__stats--selection dd{font-size:var(--font-size-h2)}
 .training-groups fieldset{display:flex;flex-wrap:wrap;gap:.6rem 1rem;padding:.8rem;border:1px solid var(--color-border-default);border-radius:var(--radius-control)}

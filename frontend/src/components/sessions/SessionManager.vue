@@ -11,6 +11,7 @@ import { useSessionSwitch } from '../../composables/useSessionSwitch'
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { useSessionStore } from '../../stores/session'
 import type { SessionSummary } from '../../api/sessions'
+import StatePanel from '../design-system/StatePanel.vue'
 
 const emit = defineEmits<{ navigate: [] }>()
 
@@ -165,30 +166,30 @@ onMounted(() => {
       >重试清理</button>
     </div>
 
-    <p
+    <StatePanel
       v-if="sessionStore.loadState === 'loading'"
-      class="session-manager__status"
-      role="status"
-    >正在读取考试列表</p>
-    <p
+      kind="loading"
+      title="正在读取考试列表"
+    />
+    <StatePanel
       v-else-if="sessionStore.loadState === 'error'"
-      class="session-manager__status is-danger"
-      role="alert"
-    >
-      {{ sessionStore.errorMessage }}
-      <button type="button" class="session-manager__inline-retry" @click="sessionStore.initialize()">重新加载</button>
-    </p>
-    <div v-else-if="filteredSessions.length === 0" class="session-manager__empty">
-      <p>还没有考试</p>
-      <RouterLink
-        class="session-manager__new"
-        :to="sessionRouteDefinition.path"
-        @click="emit('navigate')"
-      >
-        <Plus :size="14" :stroke-width="2" aria-hidden="true" />
-        新建考试
-      </RouterLink>
-    </div>
+      kind="error"
+      :title="sessionStore.errorMessage || '考试列表暂时无法读取'"
+      retry-label="重新加载"
+      @retry="sessionStore.initialize()"
+    />
+    <StatePanel v-else-if="filteredSessions.length === 0" kind="empty" title="还没有考试">
+      <template #actions>
+        <RouterLink
+          class="session-manager__new"
+          :to="sessionRouteDefinition.path"
+          @click="emit('navigate')"
+        >
+          <Plus :size="14" :stroke-width="2" aria-hidden="true" />
+          新建考试
+        </RouterLink>
+      </template>
+    </StatePanel>
     <ul v-else class="session-manager__list">
       <li
         v-for="session in filteredSessions"
@@ -427,15 +428,6 @@ onMounted(() => {
   background: var(--color-bg-surface);
 }
 
-.session-manager__status {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-caption);
-}
-
-.session-manager__status.is-danger {
-  color: var(--color-danger);
-}
-
 .session-manager__inline-retry {
   border: 0;
   background: transparent;
@@ -444,15 +436,6 @@ onMounted(() => {
   font-size: var(--font-size-caption);
   text-decoration: underline;
   cursor: pointer;
-}
-
-.session-manager__empty {
-  display: grid;
-  padding: var(--space-5) 0;
-  justify-items: center;
-  gap: var(--space-2);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-dense);
 }
 
 .session-manager__list {

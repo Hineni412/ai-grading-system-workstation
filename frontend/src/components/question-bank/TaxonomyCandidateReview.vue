@@ -16,6 +16,7 @@ import {
 } from '../../api/question-bank-taxonomy'
 import { useTaxonomyReviewStore } from '../../stores/taxonomy-review'
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 
 interface CandidateDraft {
@@ -1091,7 +1092,6 @@ onBeforeUnmount(() => {
       >
         <header class="qb-inspector__heading">
           <div>
-            <p class="qb-eyebrow">QUESTION PREVIEW</p>
             <DialogTitle as="h2" id="taxonomy-question-preview-title">
               题目 #{{ previewQuestionId }}
             </DialogTitle>
@@ -1108,23 +1108,15 @@ onBeforeUnmount(() => {
           </button>
         </header>
 
-        <div
-          v-if="previewState === 'loading'"
-          class="qb-inspector__empty"
-          role="status"
-        >
-          正在读取题目…
-        </div>
-        <div
+        <StatePanel v-if="previewState === 'loading'" kind="loading" title="正在读取题目…" />
+        <StatePanel
           v-else-if="previewState === 'error'"
-          class="qb-inspector__empty"
-          role="alert"
-        >
-          <span>题目暂时无法读取，候选词草稿不受影响。</span>
-          <AppButton variant="secondary" @click="retryQuestionPreview">
-            重新读取
-          </AppButton>
-        </div>
+          kind="error"
+          title="题目暂时无法读取"
+          description="候选词草稿不受影响。"
+          retry-label="重新读取"
+          @retry="retryQuestionPreview"
+        />
         <template v-else-if="previewQuestion">
           <dl class="qb-facts">
             <div><dt>原题号</dt><dd>{{ previewQuestion.question_number || previewQuestion.id }}</dd></div>

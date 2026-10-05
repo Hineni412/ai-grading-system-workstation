@@ -25,7 +25,9 @@ function clearFilters() { roster.search = ''; roster.className = ''; clearTimeou
     </div>
     <StatePanel v-if="roster.loadState === 'loading' && !roster.workspace" kind="loading" title="正在读取学生名单…" description="" />
     <StatePanel v-else-if="roster.loadState === 'error'" kind="error" title="学生名单暂时无法读取" :description="roster.errorMessage" retry-label="重新读取" @retry="roster.load()" />
-    <div v-else-if="roster.workspace?.total === 0" class="student-empty"><p>没有符合条件的学生</p><AppButton variant="ghost" @click="clearFilters">清除筛选</AppButton></div>
+    <StatePanel v-else-if="roster.workspace?.total === 0" kind="empty" compact title="没有符合条件的学生">
+      <template #actions><AppButton variant="ghost" @click="clearFilters">清除筛选</AppButton></template>
+    </StatePanel>
     <ul v-else class="student-roster-grid" data-testid="student-roster-table" aria-label="学生名单">
       <li v-for="student in roster.workspace?.items" :key="student.id" class="student-roster-entry">
         <div class="student-roster-entry__identity"><strong>{{ student.name }}</strong><span>{{ student.student_code }}</span></div>

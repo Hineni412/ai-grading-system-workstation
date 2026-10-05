@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import StatePanel from '../design-system/StatePanel.vue'
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -117,7 +118,7 @@ function openStudent(student: TrainingOverviewStudent): void {
           </tr>
         </tbody>
       </table>
-      <p v-if="!filtered.length" class="overview-empty">没有匹配的学生。</p>
+      <StatePanel v-if="!filtered.length" kind="empty" compact title="没有匹配的学生。" />
     </div>
   </section>
 </template>

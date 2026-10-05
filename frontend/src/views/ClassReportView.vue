@@ -14,6 +14,8 @@ import {
 } from '../api/model-profiles'
 import AppButton from '../components/design-system/AppButton.vue'
 import BackButton from '../components/design-system/BackButton.vue'
+import PageHeader from '../components/design-system/PageHeader.vue'
+import StatePanel from '../components/design-system/StatePanel.vue'
 import ClassAnalysisGenerateConfirm from '../components/results-center/ClassAnalysisGenerateConfirm.vue'
 import { useJobStore } from '../stores/jobs'
 import { useSessionStore } from '../stores/session'
@@ -259,40 +261,32 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="class-report" aria-labelledby="class-report-title">
-    <header class="class-report__hero">
-      <BackButton label="成绩中心" @click="backToResults" />
-      <div>
-        <p class="results-center__eyebrow">成绩中心 · 班级报告</p>
-        <h1 id="class-report-title" tabindex="-1">
-          {{ sessionStore.currentSession?.name ?? '班级报告' }}
-        </h1>
-        <p>AI 分析按班级分别生成；统计使用当前成绩，教师复核分优先。</p>
-      </div>
-    </header>
+    <PageHeader :title="sessionStore.currentSession?.name ?? '班级报告'" title-id="class-report-title">
+      <template #back><BackButton label="成绩中心" @click="backToResults" /></template>
+    </PageHeader>
 
-    <div v-if="sessionStore.selectedSessionId === null" class="results-state-panel">
-      <strong>请先在顶部选择考试</strong>
-      <span>选择后，这里会显示该考试的班级分析报告。</span>
-    </div>
+    <StatePanel
+      v-if="sessionStore.selectedSessionId === null"
+      kind="empty"
+      title="请先选择考试"
+      description="在左侧栏“当前考试”中选择。"
+    />
 
-    <div
+    <StatePanel
       v-else-if="loadState === 'loading' && !analysis"
-      class="results-state-panel"
-      role="status"
-    >
-      <strong>正在读取班级报告状态</strong>
-      <span>正在核对当前成绩的生成情况。</span>
-    </div>
+      kind="loading"
+      title="正在读取班级报告状态"
+      description="正在核对当前成绩的生成情况。"
+    />
 
-    <div
+    <StatePanel
       v-else-if="loadState === 'error'"
-      class="results-state-panel results-state-panel--error"
-      role="alert"
-    >
-      <strong>班级报告暂时无法读取</strong>
-      <span>{{ errorMessage }}</span>
-      <AppButton variant="secondary" @click="load">重新加载</AppButton>
-    </div>
+      kind="error"
+      title="班级报告暂时无法读取"
+      :description="errorMessage"
+      retry-label="重新加载"
+      @retry="load"
+    />
 
     <template v-else-if="analysis">
       <div class="class-report__toolbar">
@@ -326,27 +320,32 @@ onBeforeUnmount(() => {
         </AppButton>
       </div>
 
-      <div v-if="analysis.status === 'no_data'" class="results-state-panel">
-        <strong>当前考试还没有可分析的成绩</strong>
-        <span>完成批改后，这里可以生成班级分析报告。</span>
-      </div>
+      <StatePanel
+        v-if="analysis.status === 'no_data'"
+        kind="empty"
+        title="当前考试还没有可分析的成绩"
+        description="完成批改后，这里可以生成班级分析报告。"
+      />
 
-      <div
+      <StatePanel
         v-else-if="generating && !narrative"
-        class="results-state-panel"
-        role="status"
-      >
-        <strong>班级报告生成中…</strong>
-        <span>完成后页面会自动更新，无需手动刷新。</span>
-      </div>
+        kind="loading"
+        title="班级报告生成中…"
+        description="完成后页面会自动更新，无需手动刷新。"
+      />
 
-      <div v-else-if="!narrative" class="results-state-panel">
-        <strong>{{ narrativeFailed ? '班级报告生成失败' : '尚未生成班级报告' }}</strong>
-        <span>{{ narrativeFailed ? '可点击「重新生成分析」重试。' : '点击「生成班级报告」，确认模型与调用次数后开始生成。' }}</span>
-        <AppButton variant="secondary" data-testid="class-report-generate-empty" :disabled="!canSubmit" @click="openConfirm">
-          {{ narrativeFailed ? '重新生成分析' : '生成班级报告' }}
-        </AppButton>
-      </div>
+      <StatePanel
+        v-else-if="!narrative"
+        :kind="narrativeFailed ? 'error' : 'empty'"
+        :title="narrativeFailed ? '班级报告生成失败' : '尚未生成班级报告'"
+        :description="narrativeFailed ? '可点击「重新生成分析」重试。' : '点击「生成班级报告」，确认模型与调用次数后开始生成。'"
+      >
+        <template #actions>
+          <AppButton variant="secondary" data-testid="class-report-generate-empty" :disabled="!canSubmit" @click="openConfirm">
+            {{ narrativeFailed ? '重新生成分析' : '生成班级报告' }}
+          </AppButton>
+        </template>
+      </StatePanel>
 
       <template v-else>
         <div v-if="stale" class="class-analysis__banner" role="status">
