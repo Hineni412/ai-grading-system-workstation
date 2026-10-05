@@ -1537,7 +1537,7 @@ async function confirmPermanentDelete(): Promise<void> {
 .paper-library__maintenance-items { position: absolute; right: 0; top: 100%; z-index: 31; display: grid; gap: 8px; width: min(290px, 85vw); padding: 16px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 8px 24px #18283f20; }
 .paper-library__standard { padding: 18px; border: 1px solid #d8dee8; border-radius: 12px; overflow-wrap: anywhere; }
 .paper-library__standard-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.paper-library__standard h2 { font-size: 17px; }
+.paper-library__standard h2 { font-size: var(--font-size-h3); }
 .paper-library__standard p, .paper-library__standard li { line-height: 1.7; }
 .paper-library {
   display: grid;
@@ -1553,22 +1553,22 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-library__eyebrow {
   color: var(--color-accent) !important;
-  font-size: 11px !important;
-  font-weight: 750;
+  font-size: var(--font-size-caption) !important;
+  font-weight: var(--font-weight-semibold);
   letter-spacing: .13em;
   margin: 0 0 5px !important;
 }
 
 .paper-library__header h1 {
   color: var(--color-text-primary);
-  font-size: 30px;
+  font-size: var(--font-size-display);
   letter-spacing: -.04em;
   margin: 0;
 }
 
 .paper-library__header p {
   color: var(--color-text-secondary);
-  font-size: 14px;
+  font-size: var(--font-size-body);
   margin: 7px 0 0;
 }
 
@@ -1582,12 +1582,12 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-library__stats span {
   color: var(--color-text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
 }
 
 .paper-library__stats strong {
   color: var(--color-text-primary);
-  font-size: 19px;
+  font-size: var(--font-size-h2);
   margin-right: 2px;
 }
 
@@ -1605,8 +1605,8 @@ async function confirmPermanentDelete(): Promise<void> {
 .paper-library__filters label {
   color: var(--color-text-secondary);
   display: grid;
-  font-size: 11px;
-  font-weight: 650;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   gap: 5px;
 }
 
@@ -1617,8 +1617,8 @@ async function confirmPermanentDelete(): Promise<void> {
   border-radius: 8px;
   color: var(--color-text-primary);
   font: inherit;
-  font-size: 13px;
-  height: 36px;
+  font-size: var(--font-size-dense);
+  height: var(--control-height-large);
   min-width: 0;
   padding: 0 10px;
 }
@@ -1709,13 +1709,13 @@ async function confirmPermanentDelete(): Promise<void> {
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--color-text-secondary);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   padding: 3px 8px;
 }
 
 .paper-folder__count {
   color: var(--color-text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   margin-left: auto;
 }
 
@@ -1801,14 +1801,14 @@ async function confirmPermanentDelete(): Promise<void> {
   background: var(--background);
   border-radius: 999px;
   color: var(--color-text-secondary);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   padding: 3px 8px;
 }
 
 .paper-chip.is-format {
   background: color-mix(in srgb, var(--color-accent) 10%, transparent);
   color: var(--color-accent);
-  font-weight: 700;
+  font-weight: var(--font-weight-semibold);
 }
 
 .paper-card h2 {
@@ -1841,7 +1841,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-card__meta {
   color: var(--color-text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   margin: 0;
   line-height: var(--line-height-body);
   overflow-wrap: anywhere;
@@ -1886,15 +1886,15 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-card__live {
   color: var(--color-accent);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   margin: 8px 0 0;
 }
 
 .paper-card__leftovers {
   color: var(--color-warning);
   display: grid;
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   gap: 2px;
   list-style: none;
   margin: 8px 0 0;
@@ -1906,7 +1906,7 @@ async function confirmPermanentDelete(): Promise<void> {
   border-top: 1px solid var(--border);
   color: var(--color-text-muted);
   display: flex;
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   gap: 10px;
   margin-top: 12px;
   padding-top: 11px;
@@ -1922,8 +1922,8 @@ async function confirmPermanentDelete(): Promise<void> {
   color: var(--color-accent);
   cursor: pointer;
   font: inherit;
-  font-size: 12px;
-  font-weight: 650;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   padding: 4px 2px;
   white-space: nowrap;
 }
@@ -1946,8 +1946,8 @@ async function confirmPermanentDelete(): Promise<void> {
   cursor: pointer;
   display: inline-flex;
   font: inherit;
-  font-size: 15px;
-  height: 30px;
+  font-size: var(--font-size-body);
+  height: var(--control-height-small);
   justify-content: center;
   line-height: 1;
   width: 30px;
@@ -1979,7 +1979,7 @@ async function confirmPermanentDelete(): Promise<void> {
   cursor: pointer;
   display: block;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--font-size-dense);
   padding: 9px 12px;
   text-align: left;
   width: 100%;
@@ -2023,18 +2023,18 @@ async function confirmPermanentDelete(): Promise<void> {
   color: var(--color-text-primary);
   cursor: pointer;
   display: flex;
-  font-size: 13px;
+  font-size: var(--font-size-dense);
   gap: 8px;
 }
 
 .paper-batch-bar__info {
   color: var(--color-text-secondary);
-  font-size: 13px;
+  font-size: var(--font-size-dense);
 }
 
 .paper-batch-bar.is-active .paper-batch-bar__info {
   color: var(--color-accent);
-  font-weight: 650;
+  font-weight: var(--font-weight-semibold);
 }
 
 .paper-batch-bar__spacer {
@@ -2120,7 +2120,7 @@ async function confirmPermanentDelete(): Promise<void> {
   background: var(--color-warning);
   border-radius: 999px;
   color: var(--primary-foreground);
-  font-size: 10px;
+  font-size: var(--font-size-caption);
   line-height: 18px;
   margin: 0;
   min-width: 18px;
@@ -2131,7 +2131,7 @@ async function confirmPermanentDelete(): Promise<void> {
   width: 38px;
   min-width: 38px;
   padding-inline: 0;
-  font-size: 20px;
+  font-size: var(--font-size-h2);
   line-height: 1;
 }
 
@@ -2142,7 +2142,7 @@ async function confirmPermanentDelete(): Promise<void> {
   border-radius: 6px;
   background: var(--color-accent-subtle);
   color: var(--color-text-secondary);
-  font-size: 13px;
+  font-size: var(--font-size-dense);
 }
 
 .paper-editor-layer {
@@ -2193,7 +2193,7 @@ async function confirmPermanentDelete(): Promise<void> {
 .paper-trash-filters label {
   color: var(--color-text-secondary);
   display: grid;
-  font-size: 10px;
+  font-size: var(--font-size-caption);
   gap: 4px;
 }
 
@@ -2205,7 +2205,7 @@ async function confirmPermanentDelete(): Promise<void> {
   border-radius: 8px;
   color: var(--color-text-primary);
   font: inherit;
-  height: 36px;
+  height: var(--control-height-large);
   min-width: 0;
   padding: 0 9px;
 }
@@ -2234,7 +2234,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-trash-selection-bar span {
   color: var(--color-text-secondary);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
 }
 
 .paper-trash-list article {
@@ -2263,14 +2263,14 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-trash-list h3 {
   color: var(--color-text-primary);
-  font-size: 15px;
+  font-size: var(--font-size-body);
   line-height: 1.45;
   margin: 7px 0 4px;
 }
 
 .paper-trash-list p {
   color: var(--color-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   margin: 0;
 }
 
@@ -2284,7 +2284,7 @@ async function confirmPermanentDelete(): Promise<void> {
   border: 1px solid color-mix(in srgb, var(--color-accent) 18%, transparent);
   border-radius: 8px;
   color: var(--color-accent);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   line-height: 1.55;
   margin: 0;
   padding: 10px 12px;
@@ -2320,27 +2320,27 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-trash-confirm__eyebrow {
   color: var(--color-danger) !important;
-  font-size: 11px !important;
-  font-weight: 750;
+  font-size: var(--font-size-caption) !important;
+  font-weight: var(--font-weight-semibold);
   letter-spacing: .12em;
   margin: 0 0 6px !important;
 }
 
 .paper-trash-confirm h2 {
   color: var(--color-text-primary);
-  font-size: 21px;
+  font-size: var(--font-size-h2);
   margin: 0 0 14px;
 }
 
 .paper-trash-confirm > strong {
   color: var(--color-text-primary);
   display: block;
-  font-size: 14px;
+  font-size: var(--font-size-body);
 }
 
 .paper-trash-confirm > p:not(.paper-trash-confirm__eyebrow, .paper-trash-confirm__message) {
   color: var(--color-text-secondary);
-  font-size: 13px;
+  font-size: var(--font-size-dense);
   line-height: 1.7;
   margin: 8px 0 0;
 }
@@ -2364,19 +2364,19 @@ async function confirmPermanentDelete(): Promise<void> {
   border-radius: var(--radius-control);
   color: var(--color-text-secondary);
   display: grid;
-  font-size: 10px;
+  font-size: var(--font-size-caption);
   gap: 2px;
   padding: 8px;
 }
 
 .paper-permanent-impact b {
   color: var(--color-text-primary);
-  font-size: 16px;
+  font-size: var(--font-size-h3);
 }
 
 .paper-trash-confirm__list {
   color: var(--color-text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   line-height: 1.7;
   margin: 8px 0 0;
   max-height: 140px;
@@ -2387,7 +2387,7 @@ async function confirmPermanentDelete(): Promise<void> {
 .paper-permanent-confirmation {
   color: var(--color-text-secondary);
   display: grid;
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   gap: 6px;
   margin-top: 14px;
 }
@@ -2403,8 +2403,8 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-editor__header p {
   color: var(--color-accent);
-  font-size: 11px;
-  font-weight: 750;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   letter-spacing: .13em;
   margin: 0 0 5px;
   text-transform: uppercase;
@@ -2412,7 +2412,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-editor__header h2 {
   color: var(--color-text-primary);
-  font-size: 22px;
+  font-size: var(--font-size-h2);
   letter-spacing: -.02em;
   margin: 0;
 }
@@ -2420,7 +2420,7 @@ async function confirmPermanentDelete(): Promise<void> {
 .paper-editor__header span {
   color: var(--color-text-secondary);
   display: block;
-  font-size: 13px;
+  font-size: var(--font-size-dense);
   margin-top: 7px;
 }
 
@@ -2434,8 +2434,8 @@ async function confirmPermanentDelete(): Promise<void> {
   display: inline-flex;
   flex: 0 0 auto;
   font: inherit;
-  font-size: 22px;
-  height: 36px;
+  font-size: var(--font-size-h2);
+  height: var(--control-height-large);
   justify-content: center;
   line-height: 1;
   width: 36px;
@@ -2452,8 +2452,8 @@ async function confirmPermanentDelete(): Promise<void> {
 .paper-editor__region label {
   color: var(--color-text-secondary);
   display: grid;
-  font-size: 12px;
-  font-weight: 650;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   gap: 7px;
 }
 
@@ -2467,7 +2467,7 @@ async function confirmPermanentDelete(): Promise<void> {
   border-radius: 8px;
   color: var(--color-text-primary);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--font-size-body);
   height: 40px;
   min-width: 0;
   padding: 0 11px;
@@ -2485,8 +2485,8 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-editor__form small {
   color: var(--color-text-muted);
-  font-size: 11px;
-  font-weight: 400;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular);
   line-height: 1.5;
 }
 
@@ -2506,8 +2506,8 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-editor__region legend {
   color: var(--color-text-secondary);
-  font-size: 12px;
-  font-weight: 700;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   padding: 0 5px;
 }
 
@@ -2516,7 +2516,7 @@ async function confirmPermanentDelete(): Promise<void> {
   border: 1px solid color-mix(in srgb, var(--color-accent) 18%, transparent);
   border-radius: 8px;
   color: var(--color-accent);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   grid-column: 1 / -1;
   line-height: 1.55;
   margin: 0;
@@ -2594,25 +2594,25 @@ async function confirmPermanentDelete(): Promise<void> {
 <style scoped>
 .paper-library { display: flex; flex-direction: column; gap: 0; height: 100%; min-height: 0; }
 .paper-library__tools { display: grid; gap: 8px; padding: 11px 12px 10px; border-bottom: 1px solid var(--color-border-subtle); }
-.paper-search .app-input { width: 100%; height: 30px; min-height: 30px; font-size: 12px; }
-.paper-category-chips, .paper-library__tool-line { display: flex; gap: 5px; align-items: center; font-size: 12px; }
+.paper-search .app-input { width: 100%; height: var(--control-height-small); min-height: var(--control-height-small); font-size: var(--font-size-caption); }
+.paper-category-chips, .paper-library__tool-line { display: flex; gap: 5px; align-items: center; font-size: var(--font-size-caption); }
 .paper-library__tool-line { justify-content: space-between; }
 .paper-library__tool-line > label { display: inline-flex; align-items: center; gap: 6px; }
 .paper-library__extra-filters { position: relative; }
-.paper-library__extra-filters summary { cursor: pointer; color: var(--color-text-secondary); font-size: 11.5px; }
+.paper-library__extra-filters summary { cursor: pointer; color: var(--color-text-secondary); font-size: var(--font-size-caption); }
 .paper-library__filters { position: absolute; z-index: 10; top: 24px; right: 0; display: grid; gap: 8px; width: 250px; padding: 12px; border: 1px solid var(--color-border-default); border-radius: 10px; background: var(--card); box-shadow: var(--shadow-overlay); }
 .paper-library__filters label { min-width: 0; }
-.paper-batch-bar { flex-wrap: wrap; gap: 6px; padding: 6px 12px; border: 0; border-bottom: 1px solid var(--color-border-subtle); border-radius: 0; box-shadow: none; min-height: 0; position: static; font-size: 11px; }
-.paper-batch-bar__info, .paper-batch-bar__select-all { font-size: 11px; }
+.paper-batch-bar { flex-wrap: wrap; gap: 6px; padding: 6px 12px; border: 0; border-bottom: 1px solid var(--color-border-subtle); border-radius: 0; box-shadow: none; min-height: 0; position: static; font-size: var(--font-size-caption); }
+.paper-batch-bar__info, .paper-batch-bar__select-all { font-size: var(--font-size-caption); }
 .paper-batch-bar.is-active { box-shadow: none; }
 .paper-folders { display: block; gap: 0; flex: 1; min-height: 0; overflow-y: auto; }
 .paper-folder { display: block; gap: 0; }
 .paper-folder__head { padding: 10px 12px 4px; gap: 6px; min-height: 0; border: 0; border-radius: 0; background: transparent; }
 .paper-folder__check { padding: 0; align-self: auto; }
-.paper-folder__header { gap: 6px; font-size: 11.5px; min-width: 0; min-height: 0; flex-wrap: nowrap; padding: 0; }
-.paper-folder__header strong { font-weight: 600; }
+.paper-folder__header { gap: 6px; font-size: var(--font-size-caption); min-width: 0; min-height: 0; flex-wrap: nowrap; padding: 0; }
+.paper-folder__header strong { font-weight: var(--font-weight-semibold); }
 .paper-folder__kind { display: none; }
-.paper-folder__count { font-size: 11px; margin-left: auto; }
+.paper-folder__count { font-size: var(--font-size-caption); margin-left: auto; }
 .paper-folder__chevron { width: 12px; height: 12px; }
 .paper-library__grid { display: grid; grid-template-columns: minmax(0,1fr); gap: 0; }
 .paper-card { position: relative; display: block; padding: 8px 10px 8px 12px; border: 0; border-left: 3px solid transparent; border-radius: 0; background: transparent; box-shadow: none; }
@@ -2624,27 +2624,27 @@ async function confirmPermanentDelete(): Promise<void> {
 .paper-card__check { padding: 0; }
 .paper-card__check input, .paper-folder__check input { width: 12px; height: 12px; }
 .paper-card__text { flex: 1; min-width: 0; }
-.paper-card h2 { margin: 0; font-size: 12.5px; line-height: 1.5; }
-.paper-card__title { display: block; width: 100%; min-width: 0; min-height: 0; padding: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
-.paper-card__compact-meta { display: flex; align-items: center; gap: 6px; margin-top: 3px; color: var(--color-text-muted); font-size: 11px; white-space: nowrap; }
+.paper-card h2 { margin: 0; font-size: var(--font-size-caption); line-height: 1.5; }
+.paper-card__title { display: block; width: 100%; min-width: 0; min-height: 0; padding: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: var(--font-weight-medium); }
+.paper-card__compact-meta { display: flex; align-items: center; gap: 6px; margin-top: 3px; color: var(--color-text-muted); font-size: var(--font-size-caption); white-space: nowrap; }
 .paper-card__compact-meta > span { overflow-wrap: normal; }
 .paper-card__compact-progress { flex: none; width: 48px; height: 4px; border-radius: 2px; background: var(--color-border-subtle); overflow: hidden; }
 .paper-card__compact-progress i { display: block; height: 100%; background: var(--color-accent); }
 .paper-card__statuses { flex: none; display: grid; gap: 3px; justify-items: end; }
-.paper-card__statuses :deep([data-slot='badge']) { font-size: 10px; padding: 1px 5px; }
-.paper-card__complete { color: var(--color-success); font-size: 11px; }
+.paper-card__statuses :deep([data-slot='badge']) { font-size: var(--font-size-caption); padding: 1px 5px; }
+.paper-card__complete { color: var(--color-success); font-size: var(--font-size-caption); }
 .paper-card footer { position: absolute; right: 6px; top: 10px; display: flex; padding: 0; margin: 0; border: 0; }
 .paper-card__more-toggle { width: 22px; height: 22px; border: 0; background: transparent; }
 .paper-card__more-menu { min-width: 210px; }
-.paper-card__metadata { padding: 7px 10px; font-size: 11.5px; }
+.paper-card__metadata { padding: 7px 10px; font-size: var(--font-size-caption); }
 .paper-card__metadata summary { cursor: pointer; }
 .paper-card__metadata p { margin: 6px 0; }
 .paper-library__filters { grid-template-columns: minmax(0,1fr); }
-.paper-library__tools { --app-control-height: 30px; }
-.paper-card__compact-meta { gap: 5px; font-size: 10.5px; }
+.paper-library__tools { --app-control-height: var(--control-height-small); }
+.paper-card__compact-meta { gap: 5px; font-size: var(--font-size-caption); }
 .paper-card__compact-progress { width: 32px; }
-.paper-card__live, .paper-card__leftovers { font-size: 11px; margin: 2px 0 0 18px; }
-.paper-library__pagination { padding: 8px 12px; border-top: 1px solid var(--color-border-subtle); font-size: 11px; flex-wrap: nowrap; gap: 8px; }
-.paper-library__pagination .app-button { --app-control-height: 26px; --app-control-font: 11px; --app-control-padding: 10px; }
+.paper-card__live, .paper-card__leftovers { font-size: var(--font-size-caption); margin: 2px 0 0 18px; }
+.paper-library__pagination { padding: 8px 12px; border-top: 1px solid var(--color-border-subtle); font-size: var(--font-size-caption); flex-wrap: nowrap; gap: 8px; }
+.paper-library__pagination .app-button { --app-control-height: var(--control-height-small); --app-control-font: var(--font-size-caption); --app-control-padding: 10px; }
 .paper-trash-row { display: flex; gap: 12px; flex-wrap: wrap; padding: 12px; border-bottom: 1px solid var(--color-border-default); }
 </style>

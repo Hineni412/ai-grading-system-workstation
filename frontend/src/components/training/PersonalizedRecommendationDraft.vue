@@ -1009,14 +1009,14 @@ async function editItem(
 .personalized-stage-badge{padding:2px var(--space-2);border-radius:var(--radius-tag);font-size:var(--font-size-caption);background:var(--color-accent-subtle);color:var(--color-accent)}
 .personalized-stage-badge.is-prerequisite{background:var(--color-warning-subtle);color:var(--color-warning)}
 .personalized-stage-badge.is-transfer{background:var(--color-ai-subtle);color:var(--color-ai)}
-.personalized-match__stem{padding:var(--space-3) 0;font:16px/1.7 var(--font-family-document);white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto}
+.personalized-match__stem{padding:var(--space-3) 0;font:var(--font-size-h3)/1.7 var(--font-family-document);white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto}
 .personalized-item-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:start}
 .personalized-match__evidence{flex:1;min-width:200px;font-size:var(--font-size-caption);color:var(--color-text-secondary);margin-left:auto;padding:var(--space-2) 0}
 .personalized-match__evidence summary{color:var(--color-accent);cursor:pointer;text-align:right}
 .personalized-match__evidence[open]{flex-basis:100%;border-top:1px solid var(--color-border-subtle);padding-top:var(--space-3);line-height:var(--line-height-relaxed)}
 .personalized-match__evidence p{margin:var(--space-2) 0}
 .personalized-match__evidence>div{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2)}
-.personalized-composition,.personalized-skill-note{font-size:var(--font-size-caption);color:var(--color-text-muted);margin:var(--space-2) 0}.personalized-section-heading{list-style:none;font-size:var(--font-size-h3);font-weight:600;padding:var(--space-4) 0 var(--space-2);border-bottom:1px solid var(--color-border-default)}
+.personalized-composition,.personalized-skill-note{font-size:var(--font-size-caption);color:var(--color-text-muted);margin:var(--space-2) 0}.personalized-section-heading{list-style:none;font-size:var(--font-size-h3);font-weight:var(--font-weight-semibold);padding:var(--space-4) 0 var(--space-2);border-bottom:1px solid var(--color-border-default)}
 .personalized-shortages{margin:var(--space-4) 0;padding:var(--space-4);border-radius:var(--radius-control);background:var(--color-warning-subtle);color:var(--color-warning);font-size:var(--font-size-dense)}
 .personalized-shortages p{margin-top:var(--space-2);color:var(--color-text-secondary)}
 .personalized-shortages details{margin-top:var(--space-3)}.personalized-shortages summary{cursor:pointer}

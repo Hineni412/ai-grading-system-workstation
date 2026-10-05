@@ -484,18 +484,18 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
 .question-content {
   color: var(--color-text-primary);
   font-family: var(--font-family-document);
-  font-size: 16px;
+  font-size: var(--font-size-h3);
   line-height: 1.86;
   min-width: 0;
 }
 
 .question-content.is-compact {
-  font-size: 14px;
+  font-size: var(--font-size-body);
   line-height: 1.68;
 }
 
 .question-content.is-dense {
-  font-size: 13px;
+  font-size: var(--font-size-dense);
   line-height: 1.62;
 }
 
@@ -670,7 +670,7 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
 
 .question-content :deep(sup),
 .question-content :deep(sub) {
-  font-size: .72em;
+  font-size: var(--font-size-caption);
   line-height: 0;
   position: relative;
   vertical-align: baseline;
@@ -865,14 +865,14 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
 
 .question-content.is-dense .question-content__media figcaption,
 .question-content.is-dense .question-content__empty {
-  font-size: 11px;
+  font-size: var(--font-size-caption);
 }
 
 .question-content__media figcaption,
 .question-content__empty {
   color: var(--color-text-muted);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--font-size-dense);
   margin: 0;
 }
 
@@ -882,7 +882,7 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
   color: var(--color-accent);
   cursor: pointer;
   font: inherit;
-  font-weight: 650;
+  font-weight: var(--font-weight-semibold);
   padding: 2px 4px;
 }
 
@@ -932,7 +932,7 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
   border-radius: var(--radius-md);
   color: var(--color-text-primary);
   cursor: pointer;
-  min-height: 34px;
+  min-height: var(--control-height-default);
   padding: 0 11px;
 }
 

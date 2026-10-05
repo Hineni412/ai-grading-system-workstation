@@ -291,23 +291,23 @@ function onTrapTab(event: KeyboardEvent): void {
   background: var(--color-bg-app); color: var(--color-text-primary); outline: none;
 }
 .wt__warn {
-  margin: 0; padding: 6px 18px; font-size: 13px;
+  margin: 0; padding: 6px 18px; font-size: var(--font-size-dense);
   color: var(--color-warning); background: var(--color-warning-subtle);
 }
 .wt__main { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 18px; }
 .wt__loading { margin: auto; color: var(--color-text-muted); }
 .wt__end { margin: auto; max-width: 560px; width: 100%; overflow: auto; }
-.wt__end-title { font-size: 18px; }
-.wt__end-cat h3 { font-size: 13px; color: var(--color-text-muted); margin: 10px 0 4px; }
+.wt__end-title { font-size: var(--font-size-h2); }
+.wt__end-cat h3 { font-size: var(--font-size-dense); color: var(--color-text-muted); margin: 10px 0 4px; }
 .wt__end-row {
   display: block; width: 100%; text-align: left; padding: 6px 10px; margin: 2px 0;
   border: 1px solid var(--color-border-subtle); border-radius: 8px;
-  background: var(--card); cursor: pointer; font-size: 13px;
+  background: var(--card); cursor: pointer; font-size: var(--font-size-dense);
 }
 .wt__end-row:hover { border-color: var(--color-accent); }
 .wt__foot {
   padding: 8px 18px; border-top: 1px solid var(--color-border-subtle);
-  color: var(--color-text-muted); font-size: 12px; text-align: center; background: var(--card);
+  color: var(--color-text-muted); font-size: var(--font-size-caption); text-align: center; background: var(--card);
 }
 .wt__zoom {
   position: fixed; inset: 0; z-index: 70; background: rgba(20, 26, 30, 0.85);

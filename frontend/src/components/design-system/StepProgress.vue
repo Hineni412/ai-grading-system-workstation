@@ -93,7 +93,7 @@ const emit = defineEmits<{
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 30px;
+  min-height: var(--control-height-small);
   margin: 0;
   padding: 0;
   border: 0;
@@ -130,7 +130,7 @@ const emit = defineEmits<{
   border-radius: var(--radius-circle);
   box-sizing: border-box;
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: var(--font-size-caption);
   font-variant-numeric: tabular-nums;
 }
 
@@ -167,7 +167,7 @@ const emit = defineEmits<{
 .step-progress--vertical .step-progress__item { min-width: 0; }
 .step-progress--vertical button {
   display: grid; grid-template-columns: 18px minmax(0, 1fr) auto;
-  gap: var(--space-2); width: 100%; min-height: 32px; text-align: left;
+  gap: var(--space-2); width: 100%; min-height: var(--control-height-default); text-align: left;
   border-radius: var(--radius-control); white-space: normal;
 }
 .step-progress--vertical button:hover:not(:disabled) { background: var(--color-bg-subtle); }

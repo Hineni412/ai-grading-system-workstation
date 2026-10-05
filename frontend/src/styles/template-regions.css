@@ -21,7 +21,7 @@
   padding-inline: var(--space-3);
 }
 .template-regions-view.is-focus-layout .template-regions-view__header .config-stage-rail button {
-  min-height: 26px;
+  min-height: var(--control-height-small);
   padding-inline: var(--space-2);
   font-size: var(--font-size-caption);
 }
@@ -51,7 +51,7 @@
   gap: var(--space-1);
 }
 .template-regions-view.is-focus-layout .template-regions-view__faces button {
-  min-height: 28px;
+  min-height: var(--control-height-small);
   padding-inline: var(--space-2);
   font-size: var(--font-size-caption);
   white-space: nowrap;
@@ -246,7 +246,7 @@
 .template-regions-view .toolbar-group { gap: 2px; }
 
 .template-regions-view .tool-button {
-  min-height: 30px;
+  min-height: var(--control-height-small);
   padding: 4px var(--space-2);
   box-shadow: none;
   font-size: var(--font-size-dense);
@@ -289,14 +289,14 @@
 }
 
 .template-regions-view .zoom-tools .tool-button {
-  min-height: 28px;
+  min-height: var(--control-height-small);
   padding-inline: var(--space-1);
 }
 
 .template-regions-view .zoom-value { min-width: 40px; }
 
 .template-regions-view .tool-button.primary {
-  min-height: 32px;
+  min-height: var(--control-height-default);
   padding-inline: var(--space-4);
 }
 

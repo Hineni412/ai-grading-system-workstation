@@ -105,7 +105,7 @@ watch(open, (value) => {
   display: inline-flex;
   flex: 0 0 auto;
   font: inherit;
-  font-size: 22px;
+  font-size: var(--font-size-h2);
   height: var(--control-height-default);
   justify-content: center;
   width: var(--control-height-default);

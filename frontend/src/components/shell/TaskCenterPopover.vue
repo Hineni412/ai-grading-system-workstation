@@ -113,10 +113,10 @@ async function cancel(id: number) {
 <style>
 .task-center-trigger.app-sidebar__link { background: transparent; color: var(--sidebar-ink-2); text-align: left; }
 .task-center-trigger.app-sidebar__link:hover, .task-center-trigger.app-sidebar__link[aria-expanded=true] { background: var(--sidebar-hover); color: var(--sidebar-ink-1); }
-.task-center-count { margin-left: 8px; font-size: 11px; color: var(--sidebar-status-warning); }
-.task-center-popover { width: 340px; max-width: calc(100vw - 24px); max-height: min(480px, 80vh); overflow: auto; z-index: 70; border: 1px solid var(--color-border-default); border-radius: var(--radius-panel); background: var(--color-bg-surface); color: var(--color-text-primary); box-shadow: var(--shadow-overlay); padding: 10px 14px; font-size: 12.5px; }
+.task-center-count { margin-left: 8px; font-size: var(--font-size-caption); color: var(--sidebar-status-warning); }
+.task-center-popover { width: 340px; max-width: calc(100vw - 24px); max-height: min(480px, 80vh); overflow: auto; z-index: 70; border: 1px solid var(--color-border-default); border-radius: var(--radius-panel); background: var(--color-bg-surface); color: var(--color-text-primary); box-shadow: var(--shadow-overlay); padding: 10px 14px; font-size: var(--font-size-caption); }
 .task-center-popover header, .task-center-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.task-center-popover strong { font-weight: 600; }
+.task-center-popover strong { font-weight: var(--font-weight-semibold); }
 .task-center-popover ul { padding: 0; margin: 6px 0 0; list-style: none; }
 .task-center-popover li { padding: 10px 0; border-top: 1px solid var(--color-border-subtle); }
 .task-center-popover p { color: var(--color-text-muted); overflow-wrap: anywhere; margin: 5px 0; }
@@ -126,5 +126,5 @@ async function cancel(id: number) {
 .task-center-popover .is-success { color: var(--color-success); }
 .task-center-popover .task-center-scope { color: var(--color-text-secondary); }
 .task-center-status { flex-shrink: 0; }
-.task-center-popover .app-button { --app-control-height: 28px; --app-control-font-size: 12px; --app-control-padding-x: 8px; }
+.task-center-popover .app-button { --app-control-height: var(--control-height-small); --app-control-font-size: var(--font-size-caption); --app-control-padding-x: 8px; }
 </style>

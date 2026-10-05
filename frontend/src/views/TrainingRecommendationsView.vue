@@ -611,7 +611,7 @@ onBeforeUnmount(() => studentsController?.abort())
 .training-scope-filters{margin-top:0}
 .training-scope-filters :deep(.evidence-scope__quickbar){gap:var(--space-3);padding:var(--space-3) var(--space-4)}
 .training-scope-filters :deep(.evidence-scope__snapshot-text){flex-direction:column;gap:2px;border-left-width:2px;padding-block:0}
-.training-scope-filters :deep(.evidence-scope__snapshot-text strong){font-size:var(--font-size-caption);font-weight:500}
+.training-scope-filters :deep(.evidence-scope__snapshot-text strong){font-size:var(--font-size-caption);font-weight:var(--font-weight-medium)}
 .training-scope-filters :deep(.evidence-scope__quickbar>label){flex-basis:112px;min-width:112px}
 .training-mode-panel,.paper-workspace{min-width:0;background:var(--color-bg-surface);border:1px solid var(--color-border-default);border-radius:var(--radius-panel);overflow:clip;box-shadow:var(--shadow-raised)}
 .training-mode-panel__heading{display:flex;justify-content:space-between;align-items:center;gap:var(--space-4);padding:var(--space-4) var(--space-5);border-bottom:1px solid var(--color-border-default)}

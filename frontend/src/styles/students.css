@@ -3,9 +3,9 @@
 .student-roster-entry { min-width: 0; display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--color-border-subtle); border-right: 1px solid var(--color-border-subtle); }
 .student-roster-entry:hover { background: var(--color-bg-subtle); }
 .student-roster-entry__identity { min-width: 0; flex: 1; display: grid; gap: 3px; }
-.student-roster-entry__identity strong { font-size: 14px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
-.student-roster-entry__identity > span { font-size: 12px; line-height: 1.4; color: var(--color-text-muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.student-roster-entry__class { font-size: 12px; color: var(--color-text-secondary); max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.student-roster-entry__identity strong { font-size: var(--font-size-body); font-weight: var(--font-weight-medium); line-height: 1.4; overflow-wrap: anywhere; }
+.student-roster-entry__identity > span { font-size: var(--font-size-caption); line-height: 1.4; color: var(--color-text-muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.student-roster-entry__class { font-size: var(--font-size-caption); color: var(--color-text-secondary); max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .student-roster-entry > button { flex-shrink: 0; }
 @container (max-width: 860px) { .student-roster-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .student-roster-entry:nth-child(2n) { border-right: 0; } }
 @container (max-width: 520px) { .student-roster-grid { grid-template-columns: minmax(0, 1fr); } .student-roster-entry { border-right: 0 !important; } .student-ledger__toolbar > input { flex: 1; min-width: 180px; } }
@@ -14,12 +14,12 @@
 .student-ledger__toolbar > select { width: auto; max-width: 150px; }
 .student-import-trigger { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .student-empty { text-align: center; padding: 28px 12px; color: var(--color-text-muted); }
-.student-pagination { display: flex; justify-content: flex-end; align-items: center; gap: 8px; border-top: 1px solid var(--color-border-subtle); padding: 6px 12px; font-size: 12px; color: var(--color-text-muted); }
+.student-pagination { display: flex; justify-content: flex-end; align-items: center; gap: 8px; border-top: 1px solid var(--color-border-subtle); padding: 6px 12px; font-size: var(--font-size-caption); color: var(--color-text-muted); }
 .student-danger { border-top: 1px solid var(--color-border-subtle); padding-top: 14px; margin-top: 5px; display: grid; gap: 10px; justify-items: start; }
-.student-danger h3 { font-size: 12px; color: var(--color-text-muted); margin: 0; }
-.student-danger p { font-size: 12px; line-height: 1.7; margin: 0; color: var(--color-text-secondary); }
+.student-danger h3 { font-size: var(--font-size-caption); color: var(--color-text-muted); margin: 0; }
+.student-danger p { font-size: var(--font-size-caption); line-height: 1.7; margin: 0; color: var(--color-text-secondary); }
 .student-import-dialog { width: 760px; }
-.student-import__mapping { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; font-size: 12px; }
+.student-import__mapping { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; font-size: var(--font-size-caption); }
 .student-import__mapping label { display: flex; gap: 5px; align-items: center; }
 .student-import__mapping select { width: 100px; }
 .student-import__counts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }

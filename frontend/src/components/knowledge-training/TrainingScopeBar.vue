@@ -22,8 +22,8 @@ function applyFloor() {
 </template>
 <style scoped>
 .training-scope-bar{padding:var(--space-2) var(--space-3);gap:var(--space-2)}
-strong{font-size:var(--font-size-dense)}label{display:flex;align-items:center;gap:var(--space-2);margin-left:auto;font-size:var(--font-size-caption);color:var(--color-text-secondary);white-space:nowrap}input{width:65px;min-height:28px;text-align:center;flex:none}
+strong{font-size:var(--font-size-dense)}label{display:flex;align-items:center;gap:var(--space-2);margin-left:auto;font-size:var(--font-size-caption);color:var(--color-text-secondary);white-space:nowrap}input{width:65px;min-height:var(--control-height-small);text-align:center;flex:none}
 </style>
 <style scoped>
-.training-scope-bar input.app-input{width:65px;flex:0 0 65px}
+.training-scope-bar input.app-input{width:80px;flex:0 0 80px}
 </style>

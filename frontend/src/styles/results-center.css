@@ -90,7 +90,7 @@
 }
 
 .results-inline-warning button {
-  min-height: 28px;
+  min-height: var(--control-height-small);
   border: 0;
   background: transparent;
   color: inherit;
@@ -221,7 +221,7 @@
 }
 
 .results-link-button {
-  min-height: 28px;
+  min-height: var(--control-height-small);
   padding: 0;
   border: 0;
   background: transparent;
@@ -238,7 +238,7 @@
 }
 
 .results-filter-bar button {
-  min-height: 30px;
+  min-height: var(--control-height-small);
   padding-inline: var(--space-3);
   border-color: var(--border);
   color: var(--muted-foreground);
@@ -336,7 +336,7 @@
 
 .results-panel--matrix .results-filter-bar select,
 .results-panel--matrix .results-filter-bar input[type="search"] {
-  min-height: 32px;
+  min-height: var(--control-height-default);
   padding-inline: var(--space-3);
   border: var(--border-width) solid var(--border);
   border-radius: var(--radius-control);
@@ -351,7 +351,7 @@
 }
 
 .results-panel--matrix .results-filter-bar input[type="search"] {
-  width: 220px;
+  width: 240px;
   min-width: 140px;
 }
 
@@ -402,7 +402,7 @@
 .results-matrix thead th > span {
   margin-top: 2px;
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   font-weight: var(--font-weight-regular);
 }
 
@@ -438,7 +438,7 @@
 
 .results-matrix__sort {
   display: inline-flex;
-  min-height: 28px;
+  min-height: var(--control-height-small);
   align-items: center;
   justify-content: center;
   gap: var(--space-1);
@@ -467,7 +467,7 @@
 
 .results-matrix__sort > i {
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   font-style: normal;
 }
 
@@ -503,7 +503,7 @@
   margin-top: 2px;
   overflow: hidden;
   color: var(--muted-foreground);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   font-weight: var(--font-weight-regular);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -544,7 +544,7 @@
 .results-matrix__score button > span,
 .results-matrix__missing small {
   color: var(--muted-foreground);
-  font-size: 10px;
+  font-size: var(--font-size-caption);
 }
 
 .results-matrix__score button[data-status="ai_review"] {
@@ -749,7 +749,7 @@
 
 .overview__scope button,
 .overview__sort button {
-  min-height: 30px;
+  min-height: var(--control-height-small);
   padding: 0 var(--space-3);
   border: var(--border-width) solid var(--border);
   border-radius: 999px;
@@ -990,7 +990,7 @@
 .overview__notes-student small {
   margin-inline-start: var(--space-1);
   color: var(--muted-foreground);
-  font-weight: var(--font-weight-normal);
+  font-weight: var(--font-weight-regular);
 }
 
 .overview__notes-question {
@@ -2114,7 +2114,7 @@ button.class-analysis__score-chip:focus-visible {
 
 .class-analysis__score-band-arrow {
   color: var(--primary);
-  font-size: 9px;
+  font-size: var(--font-size-caption);
 }
 
 .class-analysis__score-band-arrow.is-expanded {
@@ -2199,13 +2199,13 @@ button.class-analysis__score-chip:focus-visible {
 
 .class-analysis__cause-category {
   margin: 0 0 0.8rem;
-  font-size: 0.85rem;
+  font-size: var(--font-size-dense);
 }
 
 .class-analysis__cause-category > summary {
   cursor: pointer;
   color: var(--color-text-muted);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
   padding: 0.3rem 0;
 }
 
@@ -2215,7 +2215,7 @@ button.class-analysis__score-chip:focus-visible {
 
 .class-analysis__cause-observation {
   margin: 0.8rem 0 0.3rem;
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
   overflow-wrap: anywhere;
 }
 
@@ -2253,8 +2253,8 @@ button.class-analysis__score-chip:focus-visible {
   background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-default);
   color: var(--color-text-muted);
-  font-size: 0.72rem;
-  font-weight: 600;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   line-height: 1;
   white-space: nowrap;
   vertical-align: 1px;
@@ -2276,7 +2276,7 @@ button.class-analysis__score-chip:focus-visible {
   flex: none;
   align-self: flex-start;
   margin-left: 0.5rem;
-  font-size: 0.78rem;
+  font-size: var(--font-size-caption);
   line-height: 1.5;
   white-space: nowrap;
 }
@@ -2286,7 +2286,7 @@ button.class-analysis__score-chip:focus-visible {
   flex-direction: column;
   gap: 0.3rem;
   margin: 0.7rem 0;
-  font-size: 0.82rem;
+  font-size: var(--font-size-dense);
 }
 
 .class-analysis__field > span {
@@ -2306,7 +2306,7 @@ button.class-analysis__score-chip:focus-visible {
   padding: 0.65rem 0.8rem;
   border-left: 2px solid var(--color-border-default);
   background: var(--color-bg-subtle);
-  font-size: 0.82rem;
+  font-size: var(--font-size-dense);
 }
 
 .class-analysis__cause-evidence p {
@@ -2328,7 +2328,7 @@ button.class-analysis__score-chip:focus-visible {
 
 .class-analysis__cause-review {
   margin-top: 0.75rem;
-  font-size: 0.82rem;
+  font-size: var(--font-size-dense);
 }
 
 .class-analysis__cause-review summary {
@@ -2350,7 +2350,7 @@ button.class-analysis__score-chip:focus-visible {
 .class-analysis__cause-action p {
   margin: 0.3rem 0 0;
   max-width: 40rem;
-  font-size: 0.85rem;
+  font-size: var(--font-size-dense);
   color: var(--color-text-muted);
 }
 

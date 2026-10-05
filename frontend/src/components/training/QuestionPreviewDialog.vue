@@ -135,9 +135,9 @@ function close(): void {
 .question-preview__heading { display: flex; justify-content: space-between; align-items: start; gap: var(--space-3); }
 .question-preview__heading h2 { margin: 0 0 var(--space-1); }
 .question-preview__heading p { margin: 0; color: var(--color-text-secondary); font-size: var(--font-size-dense); }
-.question-preview__close { flex: none; width: 32px; height: 32px; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-text-secondary); font-size: 18px; line-height: 1; cursor: pointer; }
+.question-preview__close { flex: none; width: 32px; height: var(--control-height-default); border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-text-secondary); font-size: var(--font-size-h2); line-height: 1; cursor: pointer; }
 .question-preview__section { margin-top: var(--space-4); }
 .question-preview__section h3 { margin: 0 0 var(--space-2); }
-.question-preview__section summary { cursor: pointer; font-weight: 700; }
+.question-preview__section summary { cursor: pointer; font-weight: var(--font-weight-semibold); }
 .question-preview__section summary + * { margin-top: var(--space-2); }
 </style>

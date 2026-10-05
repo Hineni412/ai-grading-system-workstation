@@ -986,7 +986,7 @@ function assetCountFor(question: ConfigQuestionPreview): number {
 }
 
 .question-review__filters button {
-  min-height: 26px;
+  min-height: var(--control-height-small);
   padding: 0 var(--space-2);
   border: 0;
   border-radius: var(--radius-tag);
@@ -1040,7 +1040,7 @@ function assetCountFor(question: ConfigQuestionPreview): number {
 .question-review__ignored-item img { width: 64px; height: 64px; object-fit: contain; filter: grayscale(1); opacity: .55; }
 .question-review__ignored-item small { display: block; color: var(--color-text-secondary); font-size: var(--font-size-caption); }
 .question-review__restore-button {
-  min-height: 32px;
+  min-height: var(--control-height-default);
   padding-inline: var(--space-3);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-sm);
@@ -1107,7 +1107,7 @@ function assetCountFor(question: ConfigQuestionPreview): number {
   background: var(--color-accent-subtle);
 }
 
-.question-review__dot { font-size: 9px; }
+.question-review__dot { font-size: var(--font-size-caption); }
 .question-review__dot.is-passed { color: var(--color-success); }
 .question-review__dot.is-blocked,
 .question-review__dot.is-failed { color: var(--color-danger); }
@@ -1124,7 +1124,7 @@ function assetCountFor(question: ConfigQuestionPreview): number {
   border: var(--border-width) solid var(--color-border-default);
   border-radius: var(--radius-tag);
   color: var(--color-text-secondary);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1152,7 +1152,7 @@ function assetCountFor(question: ConfigQuestionPreview): number {
 }
 
 .question-review__warn { color: var(--color-warning); font-size: var(--font-size-caption); }
-.question-review__asset-count { color: var(--color-text-muted); font-size: 11px; }
+.question-review__asset-count { color: var(--color-text-muted); font-size: var(--font-size-caption); }
 
 .question-review__flag {
   flex: 0 0 auto;
@@ -1163,14 +1163,14 @@ function assetCountFor(question: ConfigQuestionPreview): number {
   border-radius: var(--radius-tag);
   background: var(--color-warning-subtle);
   color: var(--color-warning);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .question-review__flag-more {
   flex: 0 0 auto;
   color: var(--color-warning);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
 }
 
 .question-review__dup-offline {
@@ -1273,14 +1273,14 @@ function assetCountFor(question: ConfigQuestionPreview): number {
   inset-inline-end: var(--space-2);
   display: grid;
   width: 34px;
-  height: 34px;
+  height: var(--control-height-default);
   place-items: center;
   padding: 0;
   border: 1px solid color-mix(in srgb, var(--color-text-secondary) 35%, transparent);
   border-radius: 50%;
   background: color-mix(in srgb, var(--card) 76%, transparent);
   color: var(--color-text-secondary);
-  font-size: 24px;
+  font-size: var(--font-size-h1);
   line-height: 1;
   cursor: pointer;
   backdrop-filter: blur(3px);
@@ -1359,7 +1359,7 @@ function assetCountFor(question: ConfigQuestionPreview): number {
 
 .question-review__answer-expand {
   align-self: flex-start;
-  min-height: 32px;
+  min-height: var(--control-height-default);
   padding-inline: 8px;
   border: 0;
   background: transparent;
@@ -1401,7 +1401,7 @@ function assetCountFor(question: ConfigQuestionPreview): number {
 .question-review__answer-drawer h3,
 .question-review__answer-drawer small { margin: 0; }
 .question-review__answer-drawer small { color: var(--color-text-secondary); }
-.question-review__answer-drawer button { font-size: 24px; line-height: 1; }
+.question-review__answer-drawer button { font-size: var(--font-size-h1); line-height: 1; }
 
 .question-review__paper-panel > header {
   display: flex;
@@ -1514,7 +1514,7 @@ function assetCountFor(question: ConfigQuestionPreview): number {
 
 .question-review__placed-asset select {
   width: 100%;
-  min-height: 34px;
+  min-height: var(--control-height-default);
 }
 
 .question-review__image-well > span {

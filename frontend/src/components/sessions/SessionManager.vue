@@ -341,7 +341,7 @@ onMounted(() => {
 .session-manager__search input {
   width: 100%;
   min-width: 0;
-  min-height: 30px;
+  min-height: var(--control-height-small);
   border: 0;
   background: transparent;
   color: var(--color-text-primary);
@@ -357,7 +357,7 @@ onMounted(() => {
 .session-manager__toolbar select {
   flex: none;
   max-width: 150px;
-  min-height: 32px;
+  min-height: var(--control-height-default);
   padding: 0 24px 0 8px;
   border: var(--border-width) solid var(--color-border-default);
   border-radius: var(--radius-control);
@@ -371,7 +371,7 @@ onMounted(() => {
 .session-manager__new {
   display: inline-flex;
   flex: none;
-  min-height: 32px;
+  min-height: var(--control-height-default);
   align-items: center;
   gap: 5px;
   padding-inline: var(--space-3);
@@ -412,7 +412,7 @@ onMounted(() => {
 }
 
 .session-manager__cleanup-retry {
-  min-height: 24px;
+  min-height: var(--control-height-small);
   padding-inline: 8px;
   border: var(--border-width) solid var(--color-danger);
   border-radius: var(--radius-tag);
@@ -508,7 +508,7 @@ onMounted(() => {
   border-radius: var(--radius-tag);
   background: var(--color-bg-selected);
   color: var(--color-accent);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
   line-height: 18px;
 }
@@ -563,7 +563,7 @@ onMounted(() => {
 .session-manager__actions button {
   display: grid;
   width: 26px;
-  height: 26px;
+  height: var(--control-height-small);
   place-items: center;
   border: 0;
   border-radius: var(--radius-control);
@@ -591,7 +591,7 @@ onMounted(() => {
 .session-manager__rename-input {
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 28px;
+  min-height: var(--control-height-small);
   padding-inline: 8px;
   border: var(--border-width) solid var(--color-accent);
   border-radius: var(--radius-control);
@@ -638,7 +638,7 @@ onMounted(() => {
 }
 
 .session-manager__delete {
-  min-height: 28px;
+  min-height: var(--control-height-small);
   padding-inline: var(--space-3);
   border: var(--border-width) solid var(--color-danger);
   border-radius: var(--radius-control);
@@ -655,7 +655,7 @@ onMounted(() => {
 }
 
 .session-manager__cancel {
-  min-height: 28px;
+  min-height: var(--control-height-small);
   padding-inline: var(--space-3);
   border: var(--border-width) solid var(--color-border-default);
   border-radius: var(--radius-control);

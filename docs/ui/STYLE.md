@@ -5,7 +5,7 @@
 ## 复用与层级
 
 - 颜色、字号、间距、圆角、阴影和动效使用 `frontend/src/styles/tokens.css` 及主题映射；先复用现有组件与令牌。
-- 默认无衬线字体从全局继承。展示标题、试题正文和等宽内容分别使用现有 display、document、mono 字体令牌。
+- 默认无衬线字体从全局继承。展示标题、试题正文和等宽内容分别使用现有 display、document、mono 字体令牌。字号只用 `--font-size-*` 令牌，字重只用 `--font-weight-*` 令牌，不写像素、rem 或数字值；正文 15px，可阅读文字不小于 13px。固定尺寸的徽标、题号和计数框按文字大小留足空间。
 - 基础外观参考 AIHOT：暖白工作区（`#faf9f6`）、白色内容面、青色强调（`#176b75`）、细灰绿边框和轻阴影。通过对齐、留白、字重、文字颜色和字号区分层级；阴影只用 `--shadow-raised`（静置面板）、`--shadow-floating`（浮起元素）、`--shadow-overlay`（弹层）三级。背景只允许工作区顶部的浅色主色晕染，不加无关插画、强阴影或每段内容单独套卡片。
 - 文字层级先用字重（`--font-weight-regular`、`--font-weight-medium`、`--font-weight-semibold`）和文字颜色（`--color-text-primary`、`--color-text-secondary`、`--color-text-muted`）区分，仍不够时再加大字号；不使用低于 400 的字重。
 - 用间距分组时，组内间距小于组间间距：字段标签离自己的输入框近，离下一个字段远；小标题离下文近，离上文远。

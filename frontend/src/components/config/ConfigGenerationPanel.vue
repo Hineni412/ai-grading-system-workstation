@@ -964,7 +964,7 @@ button:disabled { cursor: not-allowed; opacity: var(--opacity-disabled); }
 .config-generation__success .config-generation__primary { margin-inline-start: auto; }
 .config-generation__console { position: sticky; z-index: 7; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-block-start: var(--space-3); padding: var(--space-2) var(--space-3); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: color-mix(in srgb, var(--color-bg-surface) 94%, transparent); box-shadow: 0 -4px 16px color-mix(in srgb, var(--color-accent-active) 8%, transparent); backdrop-filter: blur(8px); }
 .config-generation__console-volume { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--font-size-caption); font-weight: var(--font-weight-medium); }
-.config-generation__console-volume select { min-height: 34px; max-width: 180px; }
+.config-generation__console-volume select { min-height: var(--control-height-default); max-width: 180px; }
 .config-generation__console-count { margin-inline-start: auto; color: var(--color-text-secondary); font-size: var(--font-size-caption); white-space: nowrap; }
 .config-generation__console-reuse { color: var(--color-accent); font-size: var(--font-size-caption); white-space: nowrap; }
 .config-generation__job p { margin: 0 0 var(--space-3); color: var(--color-text-secondary); }

@@ -444,7 +444,7 @@ function decideBankAnswer(): void {
   border-radius: var(--radius-sm);
 }
 
-.dup-compare__answers strong { font-size: 11px; }
+.dup-compare__answers strong { font-size: var(--font-size-caption); }
 .dup-compare__answers p {
   margin: var(--space-1) 0 0;
   font-size: var(--font-size-caption);
@@ -508,7 +508,7 @@ function decideBankAnswer(): void {
 
 .dup-compare__action-note small {
   color: var(--color-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
 }
 
 .dup-compare__decided {
@@ -517,7 +517,7 @@ function decideBankAnswer(): void {
   border-radius: var(--radius-tag);
   background: var(--secondary);
   color: var(--color-text-secondary);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
 }
 
 .dup-compare__undo {

@@ -58,7 +58,7 @@ function toggle(): void {
   color: var(--muted-foreground);
   font: inherit;
   font-size: var(--font-size-caption, 12px);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
   letter-spacing: 0.06em;
   text-align: left;
   cursor: pointer;

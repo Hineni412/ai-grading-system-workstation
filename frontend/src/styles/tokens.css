@@ -64,12 +64,12 @@
   --font-family-document: "Songti SC", "SimSun", serif;
   /* 诊断输出、编号等需要对齐的字符 */
   --font-family-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
-  --font-size-caption: 12px;
-  --font-size-dense: 13px;
-  --font-size-body: 14px;
-  --font-size-h3: 16px;
-  --font-size-h2: 20px;
-  --font-size-h1: 24px;
+  --font-size-caption: 13px;
+  --font-size-dense: 14px;
+  --font-size-body: 15px;
+  --font-size-h3: 17px;
+  --font-size-h2: 22px;
+  --font-size-h1: 26px;
   --font-size-display: 32px;
   --font-weight-regular: 400;
   --font-weight-medium: 500;
@@ -96,9 +96,9 @@
   --border-width: 1px;
   --border-selected-width: 4px;
 
-  --control-height-small: 30px;
-  --control-height-default: 34px;
-  --control-height-large: 38px;
+  --control-height-small: 32px;
+  --control-height-default: 36px;
+  --control-height-large: 40px;
   --content-max-width: 1180px;
 
   /* 桌面顶栏已在 shell 重构中移除，保留 0 供存量粘性定位计算 */

@@ -17,8 +17,8 @@
 
 .assembly-kicker {
   color: var(--color-accent) !important;
-  font-size: 10px !important;
-  font-weight: 750;
+  font-size: var(--font-size-caption) !important;
+  font-weight: var(--font-weight-semibold);
   letter-spacing: .14em;
   margin: 0 0 4px !important;
 }
@@ -32,9 +32,9 @@
   cursor: pointer;
   display: inline-flex;
   font: inherit;
-  font-size: 12px;
-  font-weight: 650;
-  height: 34px;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  height: var(--control-height-default);
   justify-content: center;
   padding: 0 12px;
   text-decoration: none;
@@ -75,8 +75,8 @@
   color: var(--color-accent);
   cursor: pointer;
   font: inherit;
-  font-size: 12px;
-  font-weight: 650;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   padding: 3px;
   text-decoration: none;
 }
@@ -104,7 +104,7 @@
   justify-content: space-between;
 }
 .assembly-panel-heading h2{
-  font-size: 16px;
+  font-size: var(--font-size-h3);
   letter-spacing: -.02em;
   margin: 0;
 }
@@ -116,8 +116,8 @@
   border-radius: 8px;
   color: var(--color-text-primary);
   font: inherit;
-  font-size: 11px;
-  height: 34px;
+  font-size: var(--font-size-caption);
+  height: var(--control-height-default);
   min-width: 0;
   padding: 0 9px;
 }
@@ -138,9 +138,9 @@
   display: inline-flex;
   flex: 0 0 auto;
   font: inherit;
-  height: 25px;
+  height: var(--control-height-small);
   justify-content: center;
-  min-height: 25px;
+  min-height: var(--control-height-small);
   padding: 0;
   width: 25px;
 }
@@ -183,8 +183,8 @@
 .assembly-settings label:not(.assembly-check) {
   color: var(--color-text-secondary);
   display: grid;
-  font-size: 10px;
-  font-weight: 650;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   gap: 5px;
 }
 
@@ -192,7 +192,7 @@
   align-items: center;
   color: var(--color-text-secondary);
   display: flex;
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   gap: 7px;
 }
 
@@ -208,17 +208,17 @@
 
 .assembly-section-editor > header strong {
   display: block;
-  font-size: 11px;
+  font-size: var(--font-size-caption);
 }
 
 .assembly-section-editor > header small {
   color: var(--color-text-muted);
-  font-size: 9px;
+  font-size: var(--font-size-caption);
 }
 
 .assembly-section-editor > p {
   color: var(--color-text-muted);
-  font-size: 9px;
+  font-size: var(--font-size-caption);
   line-height: 1.5;
 }
 
@@ -241,7 +241,7 @@
 
 .assembly-section-list span {
   color: var(--color-text-muted);
-  font-size: 9px;
+  font-size: var(--font-size-caption);
 }
 
 .assembly-tiles {
@@ -266,8 +266,8 @@
 
 .assembly-tile-group__title {
   color: var(--color-text-secondary);
-  font-size: 10px;
-  font-weight: 600;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   margin: 0;
 }
 
@@ -275,7 +275,7 @@
   border: 1px dashed var(--color-border-strong);
   border-radius: 8px;
   color: var(--color-text-muted);
-  font-size: 9px;
+  font-size: var(--font-size-caption);
   margin: 0;
   padding: 10px;
   text-align: center;
@@ -311,7 +311,7 @@
   align-items: center;
   cursor: grab;
   display: flex;
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   height: 100%;
   justify-content: center;
   user-select: none;
@@ -327,7 +327,7 @@
   cursor: pointer;
   display: inline-flex;
   font: inherit;
-  font-size: 10px;
+  font-size: var(--font-size-caption);
   height: 16px;
   justify-content: center;
   padding: 0;
@@ -356,7 +356,7 @@
 }
 
 .assembly-paper__heading h2 {
-  font-size: 16px;
+  font-size: var(--font-size-h3);
   margin: 0;
 }
 
@@ -364,7 +364,7 @@
   background: color-mix(in srgb, var(--color-accent) 10%, transparent);
   border-radius: 999px;
   color: var(--color-accent);
-  font-size: 10px;
+  font-size: var(--font-size-caption);
   padding: 4px 8px;
 }
 
@@ -385,14 +385,14 @@
 
 .assembly-sheet > header h2 {
   font-family: var(--font-family-document);
-  font-size: 21px;
+  font-size: var(--font-size-h2);
   margin: 0 0 12px;
 }
 
 .assembly-sheet > header p {
   color: var(--color-text-secondary);
   font-family: var(--font-family-document);
-  font-size: 13px;
+  font-size: var(--font-size-dense);
   margin: 0;
 }
 
@@ -403,7 +403,7 @@
 .assembly-sheet > section > h3 {
   border-bottom: 1px solid var(--border);
   font-family: var(--font-family-document);
-  font-size: 15px;
+  font-size: var(--font-size-body);
   margin: 0 0 18px;
   padding-bottom: 8px;
 }
@@ -428,7 +428,7 @@
   color: var(--color-text-secondary);
   float: right;
   font-family: var(--font-family-document);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   margin-left: 8px;
 }
 
@@ -457,14 +457,14 @@
 .assembly-sheet__answer > strong {
   color: var(--color-accent);
   display: block;
-  font-size: 10px;
+  font-size: var(--font-size-caption);
   margin-bottom: 5px;
 }
 
 .assembly-editor-panel--export > p,
 .assembly-record-section > p {
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: var(--font-size-caption);
   line-height: 1.5;
 }
 
@@ -489,12 +489,12 @@
 }
 
 .assembly-job strong {
-  font-size: 10px;
+  font-size: var(--font-size-caption);
 }
 
 .assembly-job span {
   color: var(--color-text-muted);
-  font-size: 9px;
+  font-size: var(--font-size-caption);
 }
 
 .assembly-job progress {
@@ -515,12 +515,12 @@
 }
 
 .assembly-record-section > header strong {
-  font-size: 11px;
+  font-size: var(--font-size-caption);
 }
 
 .assembly-record-section > header span {
   color: var(--color-text-muted);
-  font-size: 9px;
+  font-size: var(--font-size-caption);
 }
 
 .assembly-records {
@@ -546,7 +546,7 @@
 }
 
 .assembly-records strong {
-  font-size: 10px;
+  font-size: var(--font-size-caption);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -555,7 +555,7 @@
 .assembly-records span,
 .assembly-records small {
   color: var(--color-text-muted);
-  font-size: 8px;
+  font-size: var(--font-size-caption);
   overflow-wrap: anywhere;
 }
 
@@ -569,8 +569,8 @@
   background: var(--color-accent-subtle);
   border-radius: 999px;
   color: var(--color-accent);
-  font-size: 9px;
-  font-weight: 600;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
   padding: 1px 6px;
   width: fit-content;
 }
@@ -580,7 +580,7 @@
   border: 1px solid color-mix(in srgb, var(--color-accent) 16%, transparent);
   border-radius: 8px;
   color: var(--color-accent);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   margin: 0;
   padding: 9px 11px;
 }
@@ -593,7 +593,7 @@
 
 .assembly-editor-empty {
   color: var(--color-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   line-height: 1.55;
   padding: 20px 8px;
   text-align: center;
@@ -632,7 +632,7 @@
   background: transparent;
   color: var(--color-text-secondary);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--font-size-dense);
 }
 
 .assembly-sheet__more:hover {
@@ -641,47 +641,47 @@
 }
 
 /* Prototype: settings, question order, export; full preview remains expandable. */
-.assembly-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 0; --app-control-height: 30px; --app-control-padding: 10px; }
+.assembly-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 0; --app-control-height: var(--control-height-small); --app-control-padding: 10px; }
 .assembly-editor__workspace { display: grid; grid-template-columns: 280px minmax(0,1fr) 300px; gap: 14px; flex: 1; min-height: 0; align-items: stretch; }
 .assembly-editor-panel, .assembly-paper { min-width: 0; min-height: 0; padding: 0; background: var(--card); border: 1px solid var(--color-border-default); border-radius: 12px; overflow-y: auto; position: static; max-height: none; }
 .assembly-panel-heading, .assembly-paper__heading { margin: 0; padding: 13px 15px 11px; border-bottom: 1px solid var(--color-border-subtle); display: flex; align-items: baseline; gap: 8px; }
-.assembly-panel-heading h2, .assembly-paper__heading h2 { margin: 0; font-size: 13px; }
+.assembly-panel-heading h2, .assembly-paper__heading h2 { margin: 0; font-size: var(--font-size-dense); }
 .assembly-panel-heading .assembly-kicker, .assembly-paper__heading .assembly-kicker { display: none; }
-.assembly-paper__heading > span { background: transparent; color: var(--color-text-muted); font-size: 11px; padding: 0; }
+.assembly-paper__heading > span { background: transparent; color: var(--color-text-muted); font-size: var(--font-size-caption); padding: 0; }
 .assembly-settings { padding: 13px 14px; display: grid; gap: 8px; margin: 0; }
-.assembly-settings label:not(.assembly-check) { display: grid; gap: 6px; font-size: 11.5px; font-weight: 400; color: var(--color-text-secondary); }
+.assembly-settings label:not(.assembly-check) { display: grid; gap: 6px; font-size: var(--font-size-caption); font-weight: var(--font-weight-regular); color: var(--color-text-secondary); }
 .assembly-settings .app-input { width: 100%; }
-.assembly-settings .app-input.app-input.app-input { font-size: 12px; }
-.assembly-more-settings summary, .assembly-full-preview > summary { cursor: pointer; color: var(--color-text-secondary); font-size: 12px; }
+.assembly-settings .app-input.app-input.app-input { font-size: var(--font-size-caption); }
+.assembly-more-settings summary, .assembly-full-preview > summary { cursor: pointer; color: var(--color-text-secondary); font-size: var(--font-size-caption); }
 .assembly-more-settings label { margin-top: 8px; }
 .assembly-section-editor { margin: 0; padding: 0 14px 13px; border: 0; }
 .assembly-section-editor > header { margin: 0 0 8px; display: flex; justify-content: space-between; gap: 7px; }
-.assembly-section-editor strong { font-size: 11.5px; font-weight: 500; }
-.assembly-section-list > div, .assembly-default-sections > div { border: 1px solid var(--color-border-subtle); border-radius: 8px; padding: 7px 9px; display: flex; gap: 8px; font-size: 12.5px; margin: 4px 0; }
+.assembly-section-editor strong { font-size: var(--font-size-caption); font-weight: var(--font-weight-medium); }
+.assembly-section-list > div, .assembly-default-sections > div { border: 1px solid var(--color-border-subtle); border-radius: 8px; padding: 7px 9px; display: flex; gap: 8px; font-size: var(--font-size-caption); margin: 4px 0; }
 .assembly-section-list input { flex: 1; min-width: 0; }
-.assembly-default-sections small { margin-left: auto; font-size: 11px; color: var(--color-text-muted); }
-.assembly-section-list span { font-size: 11px; }
+.assembly-default-sections small { margin-left: auto; font-size: var(--font-size-caption); color: var(--color-text-muted); }
+.assembly-section-list span { font-size: var(--font-size-caption); }
 .assembly-tiles { border: 0; margin: 0; padding: 6px 12px 12px; display: grid; gap: 5px; }
 .assembly-tile-group { padding: 0; gap: 5px; }
-.assembly-tile-group__title { font-size: 11.5px; font-weight: 600; color: var(--color-text-muted); padding: 8px 2px 2px; }
+.assembly-tile-group__title { font-size: var(--font-size-caption); font-weight: var(--font-weight-semibold); color: var(--color-text-muted); padding: 8px 2px 2px; }
 .assembly-tile-grid { display: grid; grid-template-columns: minmax(0,1fr); gap: 5px; }
-.assembly-tile { display: flex; align-items: center; gap: 8px; padding: 7px 9px; background: var(--card); aspect-ratio: auto; border-radius: 8px; font-size: 12.5px; }
-.assembly-tile__number { width: 20px; height: auto; flex: none; text-align: right; font-size: 12px; color: var(--color-text-muted); }
+.assembly-tile { display: flex; align-items: center; gap: 8px; padding: 7px 9px; background: var(--card); aspect-ratio: auto; border-radius: 8px; font-size: var(--font-size-caption); }
+.assembly-tile__number { width: 20px; height: auto; flex: none; text-align: right; font-size: var(--font-size-caption); color: var(--color-text-muted); }
 .assembly-tile__text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-secondary); }
-.assembly-tile__type { flex: none; padding: 1px 6px; border: 1px solid var(--color-border-subtle); border-radius: 5px; font-size: 11px; color: var(--color-text-secondary); }
-.assembly-tile__difficulty { font-size: 11px; color: var(--color-text-muted); }
-.assembly-tile__move, .assembly-tile__remove { position: static; width: 22px; height: 22px; min-height: 22px; padding: 0; border: 1px solid var(--color-border-default); border-radius: 6px; background: var(--card); font-size: 11px; color: var(--color-text-secondary); flex: none; }
+.assembly-tile__type { flex: none; padding: 1px 6px; border: 1px solid var(--color-border-subtle); border-radius: 5px; font-size: var(--font-size-caption); color: var(--color-text-secondary); }
+.assembly-tile__difficulty { font-size: var(--font-size-caption); color: var(--color-text-muted); }
+.assembly-tile__move, .assembly-tile__remove { position: static; width: 22px; height: 22px; min-height: 22px; padding: 0; border: 1px solid var(--color-border-default); border-radius: 6px; background: var(--card); font-size: var(--font-size-caption); color: var(--color-text-secondary); flex: none; }
 .assembly-full-preview { margin: 0 12px 12px; }
 .assembly-full-preview > summary { padding: 9px 12px; border: 1px solid var(--color-border-subtle); border-radius: 9px; }
 .assembly-full-preview .assembly-sheet { box-shadow: none; padding: 20px; min-height: 0; margin-top: 10px; }
-.assembly-editor-empty { padding: 12px 14px; margin: 0; color: var(--color-text-muted); font-size: 12px; }
+.assembly-editor-empty { padding: 12px 14px; margin: 0; color: var(--color-text-muted); font-size: var(--font-size-caption); }
 .assembly-editor-panel--export > p { display: none; }
 .assembly-export-actions { padding: 13px 14px; display: block; margin: 0; }
 .assembly-export-actions > button { width: 100%; }
 .assembly-record-section { padding: 0 14px; margin-top: 0; border: 0; }
-.assembly-record-section > header { padding: 0 0 8px; font-size: 12.5px; }
-.assembly-records li { border: 0; border-bottom: 1px solid var(--color-border-subtle); padding: 8px 0; font-size: 12px; }
-.assembly-records strong { font-size: 12px; font-weight: 500; }
-.assembly-records small { color: var(--color-text-muted); font-size: 11px; }
+.assembly-record-section > header { padding: 0 0 8px; font-size: var(--font-size-caption); }
+.assembly-records li { border: 0; border-bottom: 1px solid var(--color-border-subtle); padding: 8px 0; font-size: var(--font-size-caption); }
+.assembly-records strong { font-size: var(--font-size-caption); font-weight: var(--font-weight-medium); }
+.assembly-records small { color: var(--color-text-muted); font-size: var(--font-size-caption); }
 @media(max-width:1100px) { .assembly-editor__workspace { grid-template-columns: 250px minmax(0,1fr) 250px; } }
 @media(max-width:900px) { .assembly-editor__workspace { display: flex; flex-direction: column; } .assembly-editor-panel { overflow: visible; } .assembly-editor { flex: none; } }

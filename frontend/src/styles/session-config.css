@@ -268,7 +268,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: 32px;
+  min-height: var(--control-height-default);
   padding: 0 var(--space-2);
   border: 0;
   border-inline-start: 2px solid transparent;
@@ -295,7 +295,7 @@
   white-space: nowrap;
 }
 
-.rubric-ledger__outline-dot { color: var(--color-warning); font-size: 9px; }
+.rubric-ledger__outline-dot { color: var(--color-warning); font-size: var(--font-size-caption); }
 
 .rubric-ledger__outline-score {
   color: var(--color-text-muted);
@@ -977,7 +977,7 @@
 
 .scoring-unit-editor__step-card textarea {
   width: 100%;
-  min-height: 38px;
+  min-height: var(--control-height-large);
   resize: vertical;
 }
 
@@ -994,12 +994,12 @@
 
 .scoring-unit-editor button.scoring-unit-editor__remove-step {
   min-width: 32px;
-  min-height: 32px;
+  min-height: var(--control-height-default);
   padding-inline: 0;
   border-color: transparent;
   background: transparent;
   color: var(--color-danger);
-  font-size: 1.25rem;
+  font-size: var(--font-size-h2);
 }
 
 .scoring-unit-editor button.scoring-unit-editor__add-step {

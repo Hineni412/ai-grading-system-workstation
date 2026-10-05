@@ -278,7 +278,7 @@ watch([renderedHtml, () => props.typesetText, () => props.inline], hydrateFormul
 .question-html__image-fallback {
   color: var(--color-text-muted);
   display: inline-block;
-  font-size: 13px;
+  font-size: var(--font-size-dense);
   padding: 4px 6px;
 }
 </style>

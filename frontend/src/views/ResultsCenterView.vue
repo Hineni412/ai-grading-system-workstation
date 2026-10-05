@@ -1244,10 +1244,10 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
 </template>
 
 <style scoped>
-.personal-report-status{display:inline-flex!important;width:28px!important;min-width:28px;height:28px;align-items:center;justify-content:center;vertical-align:top;margin-left:6px;border-radius:5px!important;font-size:17px!important;padding:0!important}
+.personal-report-status{display:inline-flex!important;width:var(--control-height-small)!important;min-width:var(--control-height-small);height:var(--control-height-small);align-items:center;justify-content:center;vertical-align:top;margin-left:6px;border-radius:5px!important;font-size:var(--font-size-h3)!important;padding:0!important}
 .results-matrix tbody .results-matrix__identity > button:not(.personal-report-status){display:inline-grid;width:calc(100% - 38px);vertical-align:top}
 .personal-report-status--current{color:#368260!important;background:#edf7ef!important}.personal-report-status--stale{color:#aa7b22!important;background:#fff3d8!important}.personal-report-status--missing{color:#87929c!important;background:#f2f4f6!important}
-.personal-report-unavailable{font-size:11px;color:#84919e;margin-left:4px}.personal-report-help{color:#7b8b98;font-size:12px;margin:5px 20px 12px}.personal-report-highlight{outline:2px solid #6c9bb3;outline-offset:-2px}.personal-report-drawer{padding:16px 0;margin-top:12px;border-top:1px solid #e0e7ed}.personal-report-drawer b{display:block;font-size:14px}.personal-report-drawer p{color:#778490;font-size:12px;margin:8px 0}.personal-report-drawer button{border:0;background:#edf4f7;color:#326d88;padding:7px 10px;border-radius:5px;font-size:13px;margin-top:8px;cursor:pointer}
+.personal-report-unavailable{font-size:var(--font-size-caption);color:#84919e;margin-left:4px}.personal-report-help{color:#7b8b98;font-size:var(--font-size-caption);margin:5px 20px 12px}.personal-report-highlight{outline:2px solid #6c9bb3;outline-offset:-2px}.personal-report-drawer{padding:16px 0;margin-top:12px;border-top:1px solid #e0e7ed}.personal-report-drawer b{display:block;font-size:var(--font-size-body)}.personal-report-drawer p{color:#778490;font-size:var(--font-size-caption);margin:8px 0}.personal-report-drawer button{border:0;background:#edf4f7;color:#326d88;padding:7px 10px;border-radius:5px;font-size:var(--font-size-dense);margin-top:8px;cursor:pointer}
 
 .results-drawer__cmp {
   margin: 0;
