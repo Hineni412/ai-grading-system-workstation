@@ -24,7 +24,7 @@ from backend.scan_grading.workspace import (
     ScanGradingWorkspace,
     ScanGradingWorkspaceError,
 )
-from session_originals import OriginalPagesCleared, require_original_pages
+from backend.files.session_originals import OriginalPagesCleared, require_original_pages
 
 router = APIRouter(prefix="/api", tags=["media"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store"}

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from session_originals import (
+from backend.files.session_originals import (
     OriginalPagesCleared, clear_session_originals, clear_legacy_annotations,
     originals_state, receipt_path,
     release_session_scans, storage_overview,
@@ -130,7 +130,7 @@ def test_storage_categories_add_up_without_writes(tmp_path):
 
 
 def test_storage_reports_unreadable_directory_without_breaking_readable_totals(tmp_path, monkeypatch):
-    import session_originals
+    import backend.files.session_originals as session_originals
     _write(tmp_path / "exams" / "test.jpg", b"123")
     blocked = tmp_path / "question_bank" / "test-busy"
     blocked.mkdir(parents=True)

@@ -6,12 +6,12 @@ from pathlib import Path
 import pytest
 
 from backend.repositories.sessions import SessionDeletionRevisionConflict
-from db_manager import DBManager
+from backend.repositories.db_manager import DBManager
 from question_bank.database.schema import (
     connect as connect_question_bank,
     initialize_database as initialize_question_bank,
 )
-from session_cleanup import (
+from backend.files.session_cleanup import (
     SessionStorageDeletionIncomplete,
     hard_delete_session_from_archive,
     hard_delete_session_from_recycle_bin,
@@ -28,7 +28,7 @@ def _write(path: Path, content: str = "x") -> Path:
 
 
 def test_stored_reference_resolution_keeps_root_boundary_and_legacy_inputs(tmp_path):
-    from session_cleanup import _resolve_stored_candidate
+    from backend.files.session_cleanup import _resolve_stored_candidate
     root = tmp_path / "user_data"
     inside = _write(root / "exams" / "TEST-original.jpg")
     outside = _write(tmp_path / "TEST-outside.jpg")
@@ -223,7 +223,7 @@ def test_success_with_pending_storage_cleanup_is_idempotently_recoverable(
     _seed_question_bank_link(question_bank_db, session_id)
 
     monkeypatch.setattr(
-        "session_cleanup._purge_staged_storage",
+        "backend.files.session_cleanup._purge_staged_storage",
         lambda *_args, **_kwargs: False,
     )
 

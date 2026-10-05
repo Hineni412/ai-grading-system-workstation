@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from db_manager import DBManager
-from manual_review_service import ManualReviewService
+from backend.repositories.db_manager import DBManager
+from backend.review.manual_review_service import ManualReviewService
 from backend.repositories.grading_database import open_grading_repositories
 
 

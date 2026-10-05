@@ -90,7 +90,7 @@ def test_merge_session_notes_atomic_write_leaves_no_temp(tmp_path: Path) -> None
 
 
 def test_collect_review_notes_maps_label_and_lock() -> None:
-    from analysis_report_exporter import _collect_review_notes
+    from backend.reporting.analysis_report_exporter import _collect_review_notes
     from backend.session_analysis import QuestionInfo, StudentReportData
 
     info_by_qid = {
@@ -162,7 +162,7 @@ def _student_ids(db) -> dict[str, int]:
 def test_personal_export_writes_review_notes_sidecar(
     analysis_db, tmp_path: Path
 ) -> None:
-    from analysis_report_exporter import AnalysisReportGenerator
+    from backend.reporting.analysis_report_exporter import AnalysisReportGenerator
 
     db, session_id, root = analysis_db
     reports_dir = tmp_path / "reports"
@@ -194,7 +194,7 @@ def test_personal_export_writes_review_notes_sidecar(
 def test_personal_export_merge_scoped_and_lock_revision(
     analysis_db, tmp_path: Path
 ) -> None:
-    from analysis_report_exporter import AnalysisReportGenerator
+    from backend.reporting.analysis_report_exporter import AnalysisReportGenerator
 
     db, session_id, root = analysis_db
     reports_dir = tmp_path / "reports"

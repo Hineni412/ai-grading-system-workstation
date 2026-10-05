@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from backend.domain_models import GradingResult, QuestionGradingDetail, SecondaryError
-from db_manager import DBManager
+from backend.repositories.db_manager import DBManager
 from backend.repositories.grading_database import open_grading_repositories
 
 

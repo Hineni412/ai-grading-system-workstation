@@ -29,7 +29,7 @@ from backend.jobs.manager import JobCancellationRequested
 from backend.repositories.grading_database import open_grading_repositories
 from question_bank.database.schema import initialize_database
 
-from question_id_contract import canonical_parent_id
+from backend.question_id_contract import canonical_parent_id
 
 from tests.test_config_generation_job import (
     _deferred_combined_item,

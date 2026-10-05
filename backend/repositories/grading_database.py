@@ -13,7 +13,7 @@ def open_grading_repositories(
     *,
     external_connection: sqlite3.Connection | None = None,
 ) -> GradingRepositoryAccess:
-    from db_manager import DBManager
+    from backend.repositories.db_manager import DBManager
 
     return GradingRepositoryAccess(
         DBManager(

@@ -21,7 +21,7 @@ from backend.repositories.students import StudentRepositoryGateway
 from backend.repositories.templates import TemplateRegionRepositoryGateway
 
 if TYPE_CHECKING:
-    from db_manager import DBManager
+    from backend.repositories.db_manager import DBManager
 
 
 class GradingRepositoryAccess:

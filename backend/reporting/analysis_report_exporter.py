@@ -35,13 +35,13 @@ from typing import Any
 
 from PIL import Image
 
-from analysis_report_prompts import (
+from backend.reporting.analysis_report_prompts import (
     CLASS_ALIAS_PREFIX,
     PERSONAL_STUDENT_ALIAS,
     PERSONAL_SYSTEM_PROMPT,
     personal_output_token_limit,
 )
-from answer_region_geometry import (
+from backend.answer_regions.answer_region_geometry import (
     answer_regions_with_template_source_sizes,
     scaled_region_bbox,
 )
@@ -75,9 +75,9 @@ from backend.session_analysis import (
     report_math_span,
     split_session_analysis_by_class,
 )
-from export_names import safe_filename_fragment, session_export_path_name
+from backend.reporting.export_names import safe_filename_fragment, session_export_path_name
 from path_manager import resolve_stored_file_path
-from question_id_contract import (
+from backend.question_id_contract import (
     question_id_coordinates,
     resolve_known_question_id,
 )
@@ -804,7 +804,7 @@ def lost_question_shot_specs(
 
 
 def capture_lost_question_shots(repositories, data, student, *, regions, data_root, paper_context=None):
-    from session_originals import originals_state
+    from backend.files.session_originals import originals_state
     if data_root is not None and originals_state(data_root, data.session_id) in {"clearing", "cleared"}:
         return {}
     shots = {}
@@ -1688,7 +1688,7 @@ def _report_stem_html(info: QuestionInfo | None, fallback: str) -> str:
 
 @lru_cache(maxsize=1)
 def _report_knowledge_assets() -> tuple[str, str]:
-    root = Path(__file__).resolve().parent / 'backend' / 'report_assets'
+    root = Path(__file__).resolve().parents[1] / 'report_assets'
     return ((root / 'personal_knowledge.css').read_text(encoding='utf-8'),
             (root / 'personal_knowledge.js').read_text(encoding='utf-8'))
 
@@ -1696,7 +1696,7 @@ def _report_knowledge_assets() -> tuple[str, str]:
 @lru_cache(maxsize=1)
 def _report_math_assets() -> str:
     """Embed the same KaTeX engine as the question bank, including offline fonts."""
-    root = Path(__file__).resolve().parent / "backend" / "report_assets" / "katex"
+    root = Path(__file__).resolve().parents[1] / "report_assets" / "katex"
     css = (root / "katex.min.css").read_text(encoding="utf-8")
     def font_source(match):
         font = root / match.group(1)
@@ -3103,7 +3103,7 @@ class AnalysisReportGenerator:
         score_revision: str = "",
     ) -> list[Path]:
         """以班级页面相同的数据、提示词和缓存规则批量导出自包含 HTML。"""
-        from analysis_report_prompts import CLASS_SYSTEM_PROMPT
+        from backend.reporting.analysis_report_prompts import CLASS_SYSTEM_PROMPT
         from backend.class_analysis import (
             _class_narrative,
             question_category_counts,
@@ -3418,7 +3418,7 @@ class AnalysisReportGenerator:
                                 lock_revisions,
                             )
                         )
-                    from session_originals import originals_state
+                    from backend.files.session_originals import originals_state
                     try:
                         html_text = _render_personal_html(
                             data,

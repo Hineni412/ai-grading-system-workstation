@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import Depends, Request
 
-from api_profiles import get_api_profile_store
+from backend.llm.api_profiles import get_api_profile_store
 from backend.analytics import SessionAnalysisService
 from backend.api.read_connections import (
     RequestReadContext,
@@ -43,7 +43,7 @@ from backend.training_assessment import (
 from backend.workbench.service import WorkbenchService
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from integration.training_prewarm import foreground_request
-from manual_review_service import ManualReviewService
+from backend.review.manual_review_service import ManualReviewService
 from path_manager import PathManager, get_path_manager
 from question_bank.personalized_papers import PersonalizedPaperModule
 from question_bank.recommendation.personalized import (
@@ -68,7 +68,7 @@ from question_bank.taxonomy.governance import (
 )
 from question_bank.training_criteria import TrainingCriterionModule
 from question_bank.training_submissions import TrainingSubmissionModule
-from template_upload_service import TemplateUploadService
+from backend.exam_intake.template_upload_service import TemplateUploadService
 
 _TEMPLATE_UPLOAD_SERVICE_GUARD = threading.Lock()
 
@@ -501,7 +501,7 @@ def get_scan_grading_workspace(
         return sum(len(item.get("missing_question_ids") or []) for item in rows)
 
     def reset_replaced_scan_data(session_id: int) -> list[str]:
-        from session_cleanup import (
+        from backend.files.session_cleanup import (
             clear_question_bank_session_references,
             question_bank_session_reference_impact,
         )
@@ -511,7 +511,7 @@ def get_scan_grading_workspace(
             session_id,
         )
         if impact["blocking_training_tasks"]:
-            from session_cleanup import SessionDerivedTrainingDataExists
+            from backend.files.session_cleanup import SessionDerivedTrainingDataExists
 
             raise SessionDerivedTrainingDataExists(
                 list(impact["blocking_training_tasks"])

@@ -18,7 +18,13 @@
 | `frontend/src/stores/review-queue.ts` | 复核队列、地址参数与选中状态同步；页面离开或考试切换后忽略旧加载结果 |
 | `frontend/src/components/` | 业务组件与共享控件 |
 | `path_manager.py` | 数据、配置、日志、输出与备份路径 |
-| `session_originals.py` | 原卷空间统计、文件清理及回执；复用考试生命周期锁和已有评分、复核状态，不修改分数归属 |
+| `backend/scan_grading/` | 扫描归卷、评分执行、评分完整性与运行记录 |
+| `backend/answer_regions/` | 自动预框、题框草稿、几何、校验与确认锁 |
+| `backend/reporting/` | 成绩表、班级与个人报告、批注原卷的导出与命名 |
+| `backend/media/`、`backend/document_parsing/` | 批注绘制、图像预处理、本地 OCR 与文档转换 |
+| `backend/repositories/db_manager.py` | 考试阅卷数据库生命周期与仓储装配 |
+| `backend/question_id_contract.py` | 考试、题库与训练共用的题号标识与校验规则 |
+| `backend/files/session_originals.py` | 原卷空间统计、文件清理及回执；复用考试生命周期锁和已有评分、复核状态，不修改分数归属 |
 
 核心业务包括考试配置、学生、扫描、阅卷、复核、结果、题库、组卷、知识图谱与训练。
 
@@ -67,7 +73,7 @@ JobManager 在应用进程内用线程池执行任务，阅卷与扫描流程使
 
 ## 模型通道
 
-样卷题框自动预框、姓名预检、原卷得分标注与文档准备中的本地文字识别共用 `local_ocr.py` 的 MinerU PP-OCRv6 ONNX 实例与识别锁，首次使用时加载模型，使用 CPU，不调用远程模型。`answer_region_auto_proposal.py` 通过只读 `GET /api/sessions/{session_id}/regions/auto-proposal` 生成建议，与原卷得分标注共用印刷题号候选提取；前端把建议交给现有草稿保存流程，正式题框与确认快照的归属不变。已确认样卷正反面的预检由本机识别卷面姓名与班级，按名单做一对一分配（`scan_identity.py`），不调用远程模型；仅当本地文字模型缺失或没有固定正反面时才走原有识别与远程兜底。整页 OCR 提供文字与位置，不等于完整 PDF 题目、公式和答案解析。
+样卷题框自动预框、姓名预检、原卷得分标注与文档准备中的本地文字识别共用 `backend/document_parsing/local_ocr.py` 的 MinerU PP-OCRv6 ONNX 实例与识别锁，首次使用时加载模型，使用 CPU，不调用远程模型。`backend/answer_regions/answer_region_auto_proposal.py` 通过只读 `GET /api/sessions/{session_id}/regions/auto-proposal` 生成建议，与原卷得分标注共用印刷题号候选提取；前端把建议交给现有草稿保存流程，正式题框与确认快照的归属不变。已确认样卷正反面的预检由本机识别卷面姓名与班级，按名单做一对一分配（`backend/scan_grading/scan_identity.py`），不调用远程模型；仅当本地文字模型缺失或没有固定正反面时才走原有识别与远程兜底。整页 OCR 提供文字与位置，不等于完整 PDF 题目、公式和答案解析。
 
 本地文字模型放在 `runtime/models/mineru/MinerU-4_models_onnx/OCR/paddleocr/`，包含 `ch_PP-OCRv6_tiny_det_infer.onnx` 与 `ch_PP-OCRv6_small_rec_infer.onnx`；与运行环境一起预置，识别过程中不下载。现有完整打包入口会复制 `runtime/models`。缺少依赖或模型时，姓名走原有远程兜底、得分标注沿用题框位置，文档管线保留空文字页和待复核状态。完整解析另需 `Layout/PP-DocLayoutV2` 与 `MFR/PP-FormulaNet_plus-M` 模型；导入扫描卷时优先走 `mineru.parse(tier='basic')` 输出带 LaTeX 公式的文本，缺文件时回退行级 OCR。
 
@@ -86,7 +92,7 @@ JobManager 在应用进程内用线程池执行任务，阅卷与扫描流程使
 | 领域 | 入口 |
 |---|---|
 | 当前知识标准 | `question_bank/taxonomy/curriculum_catalog.py` |
-| 个人报告在线读取与批量导出 | `backend/personal_reports.py` 负责本人输入修订、叙述索引、状态与只读渲染；`backend/jobs/personal_report_bundle.py` 只读叙述后暂存、打包并发布下载副本，下载成功后删除。在线与离线共用 `analysis_report_exporter.py` 的个人报告渲染器，在线作答图从受控原卷裁切返回，不保存副本 |
+| 个人报告在线读取与批量导出 | `backend/personal_reports.py` 负责本人输入修订、叙述索引、状态与只读渲染；`backend/jobs/personal_report_bundle.py` 只读叙述后暂存、打包并发布下载副本，下载成功后删除。在线与离线共用 `backend/reporting/analysis_report_exporter.py` 的个人报告渲染器，在线作答图从受控原卷裁切返回，不保存副本 |
 | 知识发布加载 | `question_bank/knowledge_graph_release/loader.py` |
 | 掌握度 | `question_bank/mastery/current.py`（唯一入口）、`question_bank/mastery/model.py`（拟合与区间）；集成层 `DiagnosisProfileService.semester_mastery` 提供全年级结果 |
 | 普通组卷导出 | `backend/jobs/assembly_export.py` 复用草稿修订、暂存发布和导出记录；`question_bank/exporters/paper_docx_exporter.py` 与 `paper_pdf_exporter.py` 分别生成 Word、LaTeX PDF。题库公开读取与普通、训练渲染复用 `question_bank/services/rich_content_service.py` 的题干分值隐藏函数，只处理副本；身份、分析与冻结资料保留原文，作答空间先按原文计算。PDF 排版测量状态属于单次导出，原题与图片只读；编译器与公式转换复用 `question_bank/personalized_papers/latex_render.py`，不套用训练冻结或页面身份流程 |

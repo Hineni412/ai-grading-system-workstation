@@ -9,9 +9,9 @@ from uuid import uuid4
 import numpy as np
 from PIL import Image
 
-from answer_region_models import MIN_REGION_SIZE, QuestionBindingCatalog, normalize_regions
-from original_paper_exporter import printed_question_candidates, read_ocr_lines
-from question_id_contract import question_id_coordinates
+from backend.answer_regions.answer_region_models import MIN_REGION_SIZE, QuestionBindingCatalog, normalize_regions
+from backend.reporting.original_paper_exporter import printed_question_candidates, read_ocr_lines
+from backend.question_id_contract import question_id_coordinates
 
 NAME_ID = "__student_name__"
 _NAME_FOLLOWING_LABELS = ("班级", "考号", "学号", "座号")
@@ -22,7 +22,7 @@ def propose_answer_regions(
 ) -> dict[str, Any]:
     """Compute suggestions without changing templates, drafts or the database."""
     if ocr_engine is None:
-        from local_ocr import get_local_ocr
+        from backend.document_parsing.local_ocr import get_local_ocr
 
         ocr_engine = get_local_ocr()
     bindings = {}

@@ -15,7 +15,7 @@ from backend.students import (
     StudentRosterModule,
 )
 from backend.repositories.students import StudentRecord
-from db_manager import DBManager
+from backend.repositories.db_manager import DBManager
 from backend.repositories.grading_database import open_grading_repositories
 
 
@@ -100,7 +100,7 @@ def test_delete_student_aborts_when_backup_fails(tmp_path, monkeypatch) -> None:
 
 
 def test_delete_student_rolls_back_when_a_related_delete_fails(tmp_path) -> None:
-    from grading_run_store import GradingRunStore
+    from backend.scan_grading.grading_run_store import GradingRunStore
 
     roster, db = _roster(tmp_path)
     db.students.upsert_students([StudentRecord("S001", "匿名学生甲", "一班")])

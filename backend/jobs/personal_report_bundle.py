@@ -6,10 +6,10 @@ import tempfile
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from analysis_report_exporter import AnalysisReportGenerator
+from backend.reporting.analysis_report_exporter import AnalysisReportGenerator
 from backend.repositories.grading_database import open_grading_repositories
 from backend.session_analysis import assemble_session_analysis
-from export_names import safe_filename_fragment
+from backend.reporting.export_names import safe_filename_fragment
 
 
 def bundle_filename(session_names, student_count: int, scope_label: str, volume_label="本学期") -> str:

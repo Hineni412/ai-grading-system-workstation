@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from ai_batch_grading_service import run_ai_batch_grading
-from scanner import ExamPaperGroup
+from backend.scan_grading.ai_batch_grading_service import run_ai_batch_grading
+from backend.scan_grading.scanner import ExamPaperGroup
 
 
 def _manifest() -> dict:

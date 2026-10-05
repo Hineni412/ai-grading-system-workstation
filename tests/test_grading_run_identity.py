@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from grading_run_identity import (
+from backend.scan_grading.grading_run_identity import (
     CandidatePaper,
     CompletedIdentity,
     classify_student_candidates,

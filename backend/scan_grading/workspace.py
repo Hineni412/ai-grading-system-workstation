@@ -139,7 +139,7 @@ class ScanGradingWorkspace:
     def get_grading_run(self, session_id: int) -> dict[str, Any] | None:
         if self.grading_db_path is None:
             return None
-        from grading_run_store import GradingRunStore
+        from backend.scan_grading.grading_run_store import GradingRunStore
 
         store = GradingRunStore(self.grading_db_path)
         run = store.latest(int(session_id))
@@ -354,7 +354,7 @@ class ScanGradingWorkspace:
         if self.job_manager is None:
             raise ScanGradingWorkspaceError("scan analysis job manager is unavailable")
         with self._lock(session_id):
-            from session_originals import originals_state, ScanSourcesReleased
+            from backend.files.session_originals import originals_state, ScanSourcesReleased
             if originals_state(self.data_root or self.exams_root.parent, session_id) != "complete":
                 raise ScanSourcesReleased()
             clean_payload = dict(payload)
@@ -371,7 +371,7 @@ class ScanGradingWorkspace:
     def pause_grading_run(self, session_id: int, run_id: int) -> dict[str, Any]:
         if self.grading_db_path is None:
             raise ScanGradingWorkspaceError("grading run store is unavailable")
-        from grading_run_store import GradingRunStore
+        from backend.scan_grading.grading_run_store import GradingRunStore
 
         store = GradingRunStore(self.grading_db_path)
         run = store.get_run(int(run_id))
@@ -394,7 +394,7 @@ class ScanGradingWorkspace:
     ) -> dict[str, Any]:
         if self.grading_db_path is None:
             raise ScanGradingWorkspaceError("grading run store is unavailable")
-        from grading_run_store import GradingRunStore
+        from backend.scan_grading.grading_run_store import GradingRunStore
 
         store = GradingRunStore(self.grading_db_path)
         run = store.get_run(int(run_id))
@@ -444,7 +444,7 @@ class ScanGradingWorkspace:
             raise ScanGradingWorkspaceError("cancelled grading run cannot resume")
         self._require_current_config(session_id, run)
         if run.state in {"running", "pause_requested"} and self._active_grading_job(session_id) is None:
-            from grading_run_store import GradingRunStore
+            from backend.scan_grading.grading_run_store import GradingRunStore
 
             GradingRunStore(self.grading_db_path).finish(run.run_token, "paused")
         elif run.state != "paused":
@@ -675,7 +675,7 @@ class ScanGradingWorkspace:
         """Validate the current batch and create its only active job atomically."""
         if self.job_manager is None:
             raise ScanGradingWorkspaceError("grading job manager is unavailable")
-        from answer_region_session_lock import get_answer_region_session_lock
+        from backend.answer_regions.answer_region_session_lock import get_answer_region_session_lock
 
         with self._lock(session_id):
             with get_answer_region_session_lock(self._session_dir(session_id)):
@@ -734,7 +734,7 @@ class ScanGradingWorkspace:
                 self._write_manifest(session_id, previous_manifest)
             run_floor_id = int(previous_manifest.get("run_floor_id") or 0)
             if self.grading_db_path is not None:
-                from grading_run_store import GradingRunStore
+                from backend.scan_grading.grading_run_store import GradingRunStore
 
                 latest_run = GradingRunStore(self.grading_db_path).latest(int(session_id))
                 if latest_run is not None:
@@ -791,7 +791,7 @@ class ScanGradingWorkspace:
     def _require_run(self, session_id: int, run_id: int):
         if self.grading_db_path is None:
             raise ScanGradingWorkspaceError("grading run store is unavailable")
-        from grading_run_store import GradingRunStore
+        from backend.scan_grading.grading_run_store import GradingRunStore
 
         store = GradingRunStore(self.grading_db_path)
         run = store.get_run(int(run_id))
@@ -1114,7 +1114,7 @@ class ScanGradingWorkspace:
                 "replacement cleanup is incomplete"
             ) from exc
         try:
-            from session_originals import receipt_path
+            from backend.files.session_originals import receipt_path
             receipt_path(self.data_root or self.exams_root.parent, session_id).unlink(missing_ok=True)
             self._replacement_commit_path(session_id).unlink(missing_ok=True)
         except OSError as exc:
@@ -1240,7 +1240,7 @@ class ScanGradingWorkspace:
             )
 
         from backend.repositories.grading_database import open_grading_repositories
-        from template_upload_service import TemplateUploadError, TemplateUploadService
+        from backend.exam_intake.template_upload_service import TemplateUploadError, TemplateUploadService
 
         try:
             current = TemplateUploadService(self.templates_root).load_current(
@@ -1858,12 +1858,12 @@ class ScanGradingWorkspace:
         return f"/api/sessions/{int(session_id)}/scan/preflight/media/{target_type}:{target_id}:{side}"
 
     def _require_original_pages(self, session_id: int) -> None:
-        from session_originals import require_original_pages
+        from backend.files.session_originals import require_original_pages
         require_original_pages(self.data_root or self.exams_root.parent, session_id)
 
     @contextmanager
     def _lock(self, session_id: int):
-        from session_cleanup import session_lifecycle_guard
+        from backend.files.session_cleanup import session_lifecycle_guard
         key = f"{self.templates_root.resolve()}:{int(session_id)}"
         with self._locks_guard:
             lock = self._locks.setdefault(key, threading.RLock())

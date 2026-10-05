@@ -1,6 +1,6 @@
 """MinerU full-parse entry for scanned PDF import (layout + formula + OCR).
 
-Unlike the line-level text OCR in ``local_ocr.py``/``document_pipeline``,
+Unlike the line-level text OCR in ``backend/document_parsing/local_ocr.py``/``document_pipeline``,
 ``mineru.parse(tier="basic")`` runs layout analysis and PP-FormulaNet formula
 recognition on top of OCR, returning Markdown with LaTeX (``$...$``) formulas.
 All model files must already exist locally; import never triggers downloads.
@@ -783,7 +783,7 @@ def _region_line_image(page: object, region: object) -> object:
 def _ocr_region_line(page: object, region: object) -> str:
     """用本地 PP-OCR 识别单个答案碎片（适合单字/短答案/单个选项字母）。"""
     try:
-        from local_ocr import get_local_ocr
+        from backend.document_parsing.local_ocr import get_local_ocr
 
         image = _region_line_image(page, region)
         rows, _elapsed = get_local_ocr()(image)

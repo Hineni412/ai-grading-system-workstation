@@ -9,7 +9,7 @@ import pytest
 
 def test_released_scans_cannot_be_reanalyzed_and_replacement_resets_receipt(tmp_path):
     from backend.scan_grading.workspace import ScanGradingWorkspace
-    from session_originals import ScanSourcesReleased, receipt_path, originals_state
+    from backend.files.session_originals import ScanSourcesReleased, receipt_path, originals_state
     from types import SimpleNamespace
     workspace = ScanGradingWorkspace(exams_root=tmp_path / "exams", templates_root=tmp_path / "templates", data_root=tmp_path, job_manager=SimpleNamespace(list=lambda **kwargs: ([], 0)), replacement_reset=lambda sid: [])
     old = _jpeg(b"test old")

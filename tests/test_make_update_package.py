@@ -35,6 +35,14 @@ def _build_fake_source(source: Path) -> None:
     (source / "backend" / "api" / "app.py").write_text(
         "APP_READY = True\n", encoding="utf-8"
     )
+    for relative in (
+        'backend/scan_grading/scanner.py',
+        'backend/answer_regions/answer_region_models.py',
+        'backend/reporting/report.py',
+    ):
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('READY = True\n', encoding='utf-8')
     (source / "migrations" / "grading").mkdir(parents=True)
     (source / "migrations" / "grading" / "0001_init.sql").write_text(
         "CREATE TABLE demo (id INTEGER);\n", encoding="utf-8"
@@ -86,4 +94,11 @@ def test_make_update_package_is_consumable_by_apply_update_dry_run(
     assert result["new_version"] == "v9.9"
     assert result["files_updated"] > 0
     assert result["error"] is None
+    for relative in (
+        'backend/scan_grading/scanner.py',
+        'backend/answer_regions/answer_region_models.py',
+        'backend/reporting/report.py',
+    ):
+        assert (update_dir / 'app' / relative).is_file()
+    assert not (update_dir / 'app' / 'user_data').exists()
     assert not (target / "backend").exists()

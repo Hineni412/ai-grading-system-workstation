@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from api_profiles import get_api_profile_store, resolve_profile_for_task
+from backend.llm.api_profiles import get_api_profile_store, resolve_profile_for_task
 from backend.llm import (
     LLMProtocolAdapter,
     LLMRequestKind,
@@ -19,7 +19,7 @@ from backend.llm import (
     policy_overrides_from_profile,
 )
 from backend.llm.errors import LLMErrorCategory, classify_transport_error
-from llm_client import (
+from backend.llm.llm_client import (
     LLMClient,
     LLMOutputTruncatedError,
     LLMResponseFormatError,

@@ -12,7 +12,7 @@ from backend.review.service import (
     ReviewRevisionConflictError,
     ReviewValidationError,
 )
-from manual_review_service import ManualReviewService
+from backend.review.manual_review_service import ManualReviewService
 from tests.test_review_media_service import _seed_media
 
 
@@ -105,7 +105,7 @@ def confirmation(seed, **overrides):
 
 
 def test_original_cleanup_keeps_teacher_score_lock_and_allows_later_confirmation(tmp_path):
-    from session_originals import clear_session_originals
+    from backend.files.session_originals import clear_session_originals
     seed, session, context, service = seed_step_review(tmp_path)
     service.confirm(seed.session_id, session, "Q1", [confirmation(seed)], manual_context=context, defer_annotations=True)
     (before,) = service.list_items(seed.session_id, session, manual_context=context)

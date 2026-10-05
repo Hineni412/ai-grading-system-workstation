@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
-from question_id_contract import (
+from backend.question_id_contract import (
     canonical_parent_id,
     canonical_part_id,
 )

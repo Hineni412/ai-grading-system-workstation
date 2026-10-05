@@ -267,7 +267,7 @@ def test_parser_failure_after_asset_write_removes_all_new_owned_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import rubric_auto_cropper
+    import backend.document_parsing.rubric_auto_cropper as rubric_auto_cropper
     import backend.config_workspace.sources as sources_module
 
     monkeypatch.setattr(

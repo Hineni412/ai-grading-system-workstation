@@ -74,7 +74,7 @@ class MineruOcrAdapter:
 
         engine = self._engine
         if engine is None:
-            from local_ocr import get_local_ocr
+            from backend.document_parsing.local_ocr import get_local_ocr
 
             engine = get_local_ocr()
             self._engine = engine

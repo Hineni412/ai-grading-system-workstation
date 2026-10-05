@@ -8,12 +8,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from answer_region_geometry import answer_regions_with_template_source_sizes
-from answer_region_session_lock import get_answer_region_session_lock
+from backend.answer_regions.answer_region_geometry import answer_regions_with_template_source_sizes
+from backend.answer_regions.answer_region_session_lock import get_answer_region_session_lock
 from backend.config_workspace.publish import load_editor_config
 from backend.repositories.access import GradingRepositoryAccess
-from scanner import ScanAnalysis, Scanner, student_name_region_from_regions
-from template_upload_service import TemplateUploadError, TemplateUploadService
+from backend.scan_grading.scanner import ScanAnalysis, Scanner, student_name_region_from_regions
+from backend.exam_intake.template_upload_service import TemplateUploadError, TemplateUploadService
 
 
 class ScannerFactory(Protocol):

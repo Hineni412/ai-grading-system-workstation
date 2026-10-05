@@ -50,7 +50,7 @@ def pattern_snapshot(path: Path) -> dict[int, tuple]:
 
 
 def reconcile_errors(bank: Path, grading: Path, data_root: Path, sessions: list[int]) -> dict:
-    from db_manager import DBManager
+    from backend.repositories.db_manager import DBManager
     from backend.class_analysis import (
         ClassAnalysisStateStore, assemble_cause_data, build_cause_inputs,
         cause_source_state, CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION,

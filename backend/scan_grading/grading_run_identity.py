@@ -74,7 +74,7 @@ def grading_config_fingerprint(
     grading_model: object,
 ) -> str:
     """对影响批改结果的配置做稳定哈希；并发/RPM 等运行参数不参与。"""
-    from question_id_contract import canonicalize_question_document
+    from backend.question_id_contract import canonicalize_question_document
 
     payload = {
         "rubric": canonicalize_question_document(rubric),

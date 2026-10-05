@@ -5,8 +5,8 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
-from answer_region_geometry import scaled_region_bbox
-from question_id_contract import question_id_coordinates, resolve_known_question_id
+from backend.answer_regions.answer_region_geometry import scaled_region_bbox
+from backend.question_id_contract import question_id_coordinates, resolve_known_question_id
 
 
 class AnnotationCoverageError(ValueError):

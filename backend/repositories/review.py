@@ -9,7 +9,7 @@ from typing import Any
 
 from backend.repositories.base import RepositorySession, RepositorySessionProvider
 from backend.repositories.results import _safe_json_loads
-from question_id_contract import question_id_coordinates
+from backend.question_id_contract import question_id_coordinates
 
 
 class ReviewAdjustmentOwnershipError(ValueError):
@@ -247,7 +247,7 @@ class ReviewRepository:
                 def legacy(value: str | None) -> bool:
                     if not value:
                         return False
-                    from session_cleanup import _resolve_stored_candidate, _is_under
+                    from backend.files.session_cleanup import _resolve_stored_candidate, _is_under
                     candidate = _resolve_stored_candidate(value, legacy_root.parent)
                     # Also invalidate missing old files, which will be regenerated.
                     fallback = Path(value)

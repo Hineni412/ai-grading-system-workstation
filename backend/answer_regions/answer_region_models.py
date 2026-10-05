@@ -128,7 +128,7 @@ def load_question_binding_catalog(rubric_path: Path) -> QuestionBindingCatalog:
         rubric = {}
 
     # 通过统一题号契约得到规范明细号；单小问大题折叠为父题号，多小问展开为 Q<n>(P<m>)。
-    from question_id_contract import QuestionIdCatalog
+    from backend.question_id_contract import QuestionIdCatalog
 
     catalog = None
     try:

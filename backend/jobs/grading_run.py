@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
-from grading_service import GradingService
+from backend.scan_grading.grading_service import GradingService
 from path_manager import resolve_stored_file_path
 
 

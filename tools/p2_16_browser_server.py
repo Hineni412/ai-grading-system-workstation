@@ -161,7 +161,7 @@ def _prepare_paths(data_root: Path, *, fresh: bool = False):
 
 
 def _seed_question_bank(paths) -> None:
-    from db_manager import DBManager
+    from backend.repositories.db_manager import DBManager
     from question_bank.database.schema import initialize_database
 
     DBManager(paths.db_path).initialize()

@@ -155,7 +155,7 @@ def test_auto_proposal_is_read_only_and_metadata_survives_draft_and_commit(tmp_p
             return [_ocr_row("姓名：", 220, 70, w=50), _ocr_row("1. printed", 50, 200, w=820)], 0.0
         return [], 0.0
 
-    monkeypatch.setattr("local_ocr.get_local_ocr", lambda: ocr)
+    monkeypatch.setattr("backend.document_parsing.local_ocr.get_local_ocr", lambda: ocr)
     session_dir = tmp_path / "templates" / f"session_{session_id}"
     session_dir.mkdir(parents=True, exist_ok=True)
     corrupt_draft = session_dir / "region_draft.json"
@@ -204,7 +204,7 @@ def test_auto_proposal_reports_empty_recognition_and_local_model_failure(tmp_pat
     Image.new("RGB", (1000, 1400), "white").save(back)
     assert client.get(f"/api/sessions/{session_id}/regions/auto-proposal").status_code == 404
     _bind_template(client, session_id, front, back)
-    monkeypatch.setattr("local_ocr.get_local_ocr", lambda: lambda image: ([], 0.0))
+    monkeypatch.setattr("backend.document_parsing.local_ocr.get_local_ocr", lambda: lambda image: ([], 0.0))
     response = client.get(f"/api/sessions/{session_id}/regions/auto-proposal")
     assert response.status_code == 200
     assert response.json()["regions"] == []
@@ -213,7 +213,7 @@ def test_auto_proposal_reports_empty_recognition_and_local_model_failure(tmp_pat
     def missing_model(image):
         raise FileNotFoundError("synthetic missing local model")
 
-    monkeypatch.setattr("local_ocr.get_local_ocr", lambda: missing_model)
+    monkeypatch.setattr("backend.document_parsing.local_ocr.get_local_ocr", lambda: missing_model)
     response = client.get(f"/api/sessions/{session_id}/regions/auto-proposal")
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "answer_region_auto_unavailable"
@@ -363,7 +363,7 @@ def test_draft_save_rejects_a_stale_revision_and_returns_no_internal_paths(
 def test_pending_snapshot_can_be_retried_without_recommitting_regions(
     tmp_path, monkeypatch
 ) -> None:
-    import answer_region_commit_service as commit_module
+    import backend.answer_regions.answer_region_commit_service as commit_module
 
     client, db = _client_with_db(tmp_path)
     session_id = _session(db)

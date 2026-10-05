@@ -9,7 +9,7 @@ import pytest
 def personal_bundle_data(tmp_path):
     from backend.repositories.grading_database import open_grading_repositories
     from tests.test_analysis_report import _seed_analysis_session, FakeLLMClient
-    from analysis_report_exporter import AnalysisReportGenerator
+    from backend.reporting.analysis_report_exporter import AnalysisReportGenerator
     db = open_grading_repositories(tmp_path / "databases" / "grading.db")
     db.initialize()
     sid = _seed_analysis_session(db, tmp_path)
@@ -67,7 +67,7 @@ def test_personal_bundle_single_and_multiple_sessions_with_checklist(personal_bu
 def test_personal_bundle_render_failure_isolated_and_cancel_never_publishes(personal_bundle_data, monkeypatch):
     from backend.jobs.personal_report_bundle import run_personal_report_bundle
     from backend.jobs.manager import JobCancellationRequested
-    import analysis_report_exporter as exporter
+    import backend.reporting.analysis_report_exporter as exporter
     db, sid, students, reports = personal_bundle_data
     original = exporter._render_personal_html
     def render(data, student, *args, **kwargs):
@@ -92,7 +92,7 @@ def test_personal_bundle_render_failure_isolated_and_cancel_never_publishes(pers
 
 def test_personal_generation_publish_false_has_counts_and_no_artifact(personal_bundle_data, monkeypatch):
     from backend.jobs.default_handlers import _build_report_export_handler
-    from analysis_report_exporter import AnalysisReportGenerator
+    from backend.reporting.analysis_report_exporter import AnalysisReportGenerator
     from tests.test_analysis_report import FakeLLMClient
     db, sid, students, reports = personal_bundle_data
     monkeypatch.setattr("backend.class_analysis.run_cause_analysis", lambda *_args, **_kw: {})

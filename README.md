@@ -119,7 +119,7 @@ cd ..
 ```text
 .
 ├── frontend/       Vue 页面、组件、状态与前端测试
-├── backend/        API、后台任务、模型通道与维护能力
+├── backend/        API、阅卷、题框、报告、模型通道与维护能力
 ├── question_bank/  题库、知识标准、掌握度、推荐与训练卷
 ├── integration/    考试结果与题库训练之间的协作
 ├── components/     题框编辑器等独立组件
@@ -128,6 +128,8 @@ cd ..
 ├── update_tools/   备份、更新与回退工具
 └── docs/           产品规则、安全、维护、测试与样式文档
 ```
+
+根目录的 Python 文件只有 `path_manager.py`（本机路径）与 `package_v1.5.0.py`（私有打包入口）。阅卷、题框和报告代码分别位于 `backend/scan_grading/`、`backend/answer_regions/` 和 `backend/reporting/`；其他后端职责与数据位置见 [系统架构](ARCHITECTURE.md)。
 
 详细模块连接和代码入口见 [ARCHITECTURE.md](ARCHITECTURE.md)，业务术语见 [CONTEXT.md](CONTEXT.md)。
 

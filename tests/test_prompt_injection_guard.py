@@ -5,12 +5,12 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from ai_batch_grading_service import (
+from backend.scan_grading.ai_batch_grading_service import (
     _detail_from_ai_item,
     build_major_question_specs,
 )
-from objective_batch_recognition_service import run_objective_batch_recognition
-from scanner import ExamPaperGroup
+from backend.scan_grading.objective_batch_recognition_service import run_objective_batch_recognition
+from backend.scan_grading.scanner import ExamPaperGroup
 
 
 def _save(path: Path) -> None:

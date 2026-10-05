@@ -18,15 +18,15 @@ from typing import Any, List
 
 from PIL import Image, ImageDraw
 
-from answer_region_geometry import scaled_region_bbox
+from backend.answer_regions.answer_region_geometry import scaled_region_bbox
 from backend.domain_models import ExamPaperGroup
 from backend.llm.execution import execution_snapshot_from_profile
-from grading_limits import PRECHECK_WORKERS_MAX, PRECHECK_WORKERS_MIN, bounded_int
-from image_preprocessor import ENHANCER_VERSION, enhance_for_ai, enhance_image_file
-from llm_client import LLMClient
+from backend.scan_grading.grading_limits import PRECHECK_WORKERS_MAX, PRECHECK_WORKERS_MIN, bounded_int
+from backend.media.image_preprocessor import ENHANCER_VERSION, enhance_for_ai, enhance_image_file
+from backend.llm.llm_client import LLMClient
 
 try:
-    from scan_identity import IDENTITY_METHOD
+    from backend.scan_grading.scan_identity import IDENTITY_METHOD
 except Exception:  # pragma: no cover - numpy/mineru absent keeps the legacy path
     IDENTITY_METHOD = "roster"
 
@@ -910,8 +910,8 @@ class Scanner:
         if self.front_page_parity not in {"odd", "even"} or not students:
             return None
         try:
-            from local_ocr import get_local_ocr
-            from scan_identity import (
+            from backend.document_parsing.local_ocr import get_local_ocr
+            from backend.scan_grading.scan_identity import (
                 RosterEntry,
                 assign_identities,
                 build_vocabulary,
@@ -1071,7 +1071,7 @@ class Scanner:
         try:
             import numpy as np
 
-            from local_ocr import get_local_ocr
+            from backend.document_parsing.local_ocr import get_local_ocr
 
             img_cv = np.asarray(image.convert("RGB"))[:, :, ::-1].copy()
             result, _ = get_local_ocr()(img_cv)

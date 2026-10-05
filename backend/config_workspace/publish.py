@@ -33,7 +33,7 @@ from backend.config_workspace.secure_fs import (
     SecureRootFilesystem,
 )
 from path_manager import resolve_stored_file_path
-from question_id_contract import canonicalize_grading_config_payload
+from backend.question_id_contract import canonicalize_grading_config_payload
 
 if TYPE_CHECKING:
     from backend.jobs.store import JobStore
@@ -410,7 +410,7 @@ def refresh_template_mapping_from_session(
     back = resolve_stored_file_path(template.get("back_template_path"), data_root=data_root)
     if not front.exists() or not back.exists():
         return "reconfirm_required"
-    from template_analyzer import create_template_mapping_package
+    from backend.config_generation.template_analyzer import create_template_mapping_package
 
     package = create_template_mapping_package(
         front,

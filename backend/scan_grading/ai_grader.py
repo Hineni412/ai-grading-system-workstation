@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from backend.domain_models import SecondaryError
-from llm_client import LLMClient
-from question_id_contract import (
+from backend.llm.llm_client import LLMClient
+from backend.question_id_contract import (
     QuestionIdCatalog,
     QuestionIdContractError,
     canonicalize_grading_config_payload,

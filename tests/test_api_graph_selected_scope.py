@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from backend.api.app import create_app
 from backend.api.dependencies import get_request_diagnosis_profile_service
 from backend.api.routers.graph import get_current_graph_query_service
-from db_manager import DBManager
+from backend.repositories.db_manager import DBManager
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from question_bank.database.schema import connect, initialize_database
 from question_bank.relations.query_service import CurrentKnowledgeGraphQueryService

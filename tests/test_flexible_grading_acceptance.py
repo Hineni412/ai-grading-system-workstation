@@ -8,7 +8,7 @@ import pytest
 
 from backend.domain_models import GradingResult
 from backend.repositories.results import ResultRepository
-from ai_batch_grading_service import _detail_from_ai_item, build_major_question_specs
+from backend.scan_grading.ai_batch_grading_service import _detail_from_ai_item, build_major_question_specs
 from backend.repositories.grading_database import open_grading_repositories
 
 

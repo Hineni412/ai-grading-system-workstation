@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from db_manager import DBManager
-from report import ReportGenerator
+from backend.repositories.db_manager import DBManager
+from backend.reporting.report import ReportGenerator
 
 
 def _write_rubric(tmp_path: Path) -> Path:

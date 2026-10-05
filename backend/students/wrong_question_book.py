@@ -14,7 +14,7 @@ from question_bank.services.knowledge_order import (
     OrderEntry, knowledge_sections, parsed_difficulty, question_primary_skills,
     section_placements, skill_placements,
 )
-from question_id_contract import question_id_coordinates
+from backend.question_id_contract import question_id_coordinates
 
 
 def _question_order(question_id: str) -> tuple:

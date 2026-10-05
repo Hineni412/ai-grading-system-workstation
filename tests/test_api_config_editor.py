@@ -16,7 +16,7 @@ from backend.api.dependencies import (
 )
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
-from db_manager import DBManager
+from backend.repositories.db_manager import DBManager
 from backend.repositories.grading_database import open_grading_repositories
 
 

@@ -6,7 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from db_manager import DBManager
+from backend.repositories.db_manager import DBManager
 
 
 RUBRIC = {

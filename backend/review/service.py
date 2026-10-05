@@ -13,9 +13,9 @@ from backend.repositories.access import GradingRepositoryAccess, as_grading_repo
 from backend.repositories.results import RubricUnreadableError
 from backend.repositories.review import ReviewAdjustmentOwnershipError
 from backend.review.rubric import ReviewRubricConfigError
-from grading_completeness import is_objective_detail, review_confidence_threshold
+from backend.scan_grading.grading_completeness import is_objective_detail, review_confidence_threshold
 from path_manager import resolve_stored_file_path
-from question_id_contract import (
+from backend.question_id_contract import (
     QuestionIdCatalog,
     QuestionIdContractError,
     canonicalize_question_document,
@@ -755,7 +755,7 @@ class ReviewApplicationService:
         manual_context: dict[str, Any] | None = None,
         defer_annotations: bool = False,
     ) -> ReviewConfirmationResult:
-        from answer_region_session_lock import get_answer_region_session_lock
+        from backend.answer_regions.answer_region_session_lock import get_answer_region_session_lock
 
         lock = (
             get_answer_region_session_lock(
@@ -1024,7 +1024,7 @@ def _data_root(db: GradingRepositoryAccess) -> Path | None:
 def _normalize_teacher_steps(
     submitted: list[dict[str, Any]], rubric: dict[str, Any], item: ReviewItem, total: float,
 ) -> list[dict[str, Any]]:
-    from solution_answer_guard import integer_business_score, rubric_scoring_unit_steps
+    from backend.scan_grading.solution_answer_guard import integer_business_score, rubric_scoring_unit_steps
 
     if item.result_id is None or item.detail_id is None:
         raise ReviewValidationError("Step review requires an existing grading detail.")

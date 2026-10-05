@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from db_manager import DBManager
+from backend.repositories.db_manager import DBManager
 from question_bank.database.schema import initialize_database
 from question_bank.services.question_read_service import (
     QuestionBankSnapshotUnavailable,

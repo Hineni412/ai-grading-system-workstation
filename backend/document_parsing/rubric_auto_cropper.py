@@ -22,7 +22,7 @@ def convert_docx_to_pdf_images(docx_bytes: bytes) -> list[bytes]:
     import tempfile
     from pathlib import Path
     
-    project_temp = Path(__file__).parent / "user_data" / "temp"
+    project_temp = Path(__file__).resolve().parents[2] / "user_data" / "temp"
     project_temp.mkdir(parents=True, exist_ok=True)
     
     with tempfile.TemporaryDirectory(dir=str(project_temp)) as tmpdir:
@@ -34,7 +34,7 @@ def convert_docx_to_pdf_images(docx_bytes: bytes) -> list[bytes]:
 
         import subprocess
         
-        ps_script = os.path.join(os.path.dirname(__file__), "docx2pdf.ps1")
+        ps_script = os.path.join(str(Path(__file__).resolve().parents[2]), "docx2pdf.ps1")
         if not os.path.exists(ps_script):
             raise RuntimeError(f"Missing conversion script: {ps_script}")
             

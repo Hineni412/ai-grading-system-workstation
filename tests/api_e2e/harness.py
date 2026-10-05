@@ -39,8 +39,8 @@ from backend.jobs.grading_run import run_grading_job
 from backend.jobs.manager import JobManager
 from backend.jobs.scan_analysis import run_scan_analysis
 from backend.jobs.store import JobStore
-from report import ReportGenerator
-from scanner import ExamPaperGroup, ScanAnalysis
+from backend.reporting.report import ReportGenerator
+from backend.scan_grading.scanner import ExamPaperGroup, ScanAnalysis
 from backend.repositories.grading_database import open_grading_repositories
 
 

@@ -11,15 +11,15 @@ from uuid import uuid4
 
 from PIL import Image, ImageDraw, UnidentifiedImageError
 
-from answer_region_geometry import attach_region_source_image_sizes, scaled_region_bbox
+from backend.answer_regions.answer_region_geometry import attach_region_source_image_sizes, scaled_region_bbox
 from backend.file_access import (
     ControlledFileError,
     ResolvedFile,
     resolve_controlled_file,
 )
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
-from question_id_contract import question_id_coordinates
-from session_originals import OriginalPagesCleared, require_original_pages
+from backend.question_id_contract import question_id_coordinates
+from backend.files.session_originals import OriginalPagesCleared, require_original_pages
 
 IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".webp"})
 _CROP_RENDER_VERSION = "review-crop-v1"
@@ -92,10 +92,10 @@ class ReviewMediaService:
                 or (annotated is not None and int(annotated["session_id"]) != int(session_id))
             ):
                 raise ReviewMediaNotFound("Review media resource was not found.")
-            from manual_review_service import ManualReviewService
+            from backend.review.manual_review_service import ManualReviewService
             renderer = ManualReviewService(self.db, self.annotated_dir)
             if not annotated or not all(renderer._is_cached_annotation(annotated.get(f"annotated_{side}_path")) for side in ("front", "back")):
-                from manual_review_service import ManualReviewService
+                from backend.review.manual_review_service import ManualReviewService
 
                 try:
                     renderer.ensure_result_annotation(int(result_id))

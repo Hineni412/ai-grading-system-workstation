@@ -16,7 +16,7 @@ from backend.api.schemas.analytics import (
     StudentAnalysisListResponse,
 )
 from backend.repositories.access import GradingRepositoryAccess
-from session_originals import originals_state
+from backend.files.session_originals import originals_state
 
 router = APIRouter(prefix="/api", tags=["analytics"])
 

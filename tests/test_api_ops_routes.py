@@ -68,7 +68,7 @@ def test_storage_reuses_references_per_read_including_archived_owners(tmp_path, 
     from types import SimpleNamespace
     from backend.api.routers.ops import get_storage
     import backend.api.routers.sessions as sessions_router
-    import session_cleanup
+    import backend.files.session_cleanup as session_cleanup
     shared = tmp_path / "shared.jpg"
     own = tmp_path / "own.jpg"
     shared.write_bytes(b"shared")

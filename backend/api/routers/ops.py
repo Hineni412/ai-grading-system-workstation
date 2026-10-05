@@ -55,9 +55,9 @@ OPS_MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 @router.get("/storage")
 def get_storage(db=Depends(get_grading_db), data_root: Path=Depends(get_data_root),
                 workspace=Depends(get_scan_grading_workspace), review_service=Depends(get_review_application_service)):
-    from session_originals import storage_overview
+    from backend.files.session_originals import storage_overview
     from backend.api.routers.sessions import _originals_snapshot
-    from session_cleanup import session_lifecycle_guard, _collect_session_file_paths
+    from backend.files.session_cleanup import session_lifecycle_guard, _collect_session_file_paths
     overview = storage_overview(data_root)
     sessions = db.sessions.list_grading_sessions(include_deleted=True)
     # Reuse file ownership only within this read. Clear/release actions still
@@ -84,7 +84,7 @@ def get_storage(db=Depends(get_grading_db), data_root: Path=Depends(get_data_roo
 
 @router.post("/storage/legacy-annotations/clear")
 def clear_old_annotations(db=Depends(get_grading_db), data_root: Path=Depends(get_data_root)):
-    from session_originals import clear_legacy_annotations
+    from backend.files.session_originals import clear_legacy_annotations
     try:
         return clear_legacy_annotations(db, data_root)
     except OSError as exc:

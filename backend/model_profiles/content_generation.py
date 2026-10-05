@@ -6,10 +6,10 @@
 
 from __future__ import annotations
 
-from api_profiles import get_api_profile_store, resolve_profile_for_task
+from backend.llm.api_profiles import get_api_profile_store, resolve_profile_for_task
 from backend.llm.policy import policy_overrides_from_profile
 from backend.llm.trace import safe_endpoint_host
-from llm_client import LLMSettings, normalize_openai_base_url
+from backend.llm.llm_client import LLMSettings, normalize_openai_base_url
 
 
 def resolve_content_generation_settings() -> LLMSettings | None:

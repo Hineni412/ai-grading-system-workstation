@@ -138,7 +138,7 @@ def _profile_calculation_state() -> tuple:
         root / "backend/api/routers/graph.py",
         root / 'backend/api/routers/training.py', root / 'backend/api/schemas/training.py',
         root / 'backend/public_data.py', root / 'backend/class_analysis.py',
-        root / 'backend/session_analysis.py', root / 'db_manager.py',
+        root / 'backend/session_analysis.py', root / 'backend/repositories/db_manager.py',
     }
     return tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in sorted(files))
 
@@ -1680,9 +1680,9 @@ def _session_error_code_state() -> tuple:
         root / "backend" / "config_workspace" / "sources.py",
         root / "backend" / "document_parsing" / "question_blocks.py",
         root / "backend" / "repositories" / "results.py",
-        root / "solution_answer_guard.py",
-        root / "question_id_contract.py",
-        root / "grading_completeness.py",
+        root / "backend/scan_grading/solution_answer_guard.py",
+        root / "backend/question_id_contract.py",
+        root / "backend/scan_grading/grading_completeness.py",
         root / "path_manager.py",
     ]
     return tuple(

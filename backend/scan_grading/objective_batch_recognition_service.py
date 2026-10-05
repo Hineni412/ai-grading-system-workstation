@@ -12,15 +12,15 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
-from answer_key_utils import answer_forms_map
-from answer_normalizer import (
+from backend.scan_grading.answer_key_utils import answer_forms_map
+from backend.scan_grading.answer_normalizer import (
     SCORE_BAIT_REVIEW_REASON,
     grading_item_bait_status,
     normalize_answer_text,
 )
 from backend.domain_models import ExamPaperGroup, QuestionGradingDetail
 from backend.llm import LLMProtocolAdapter, LLMRequestKind
-from usage_logger import extract_usage_fields
+from backend.llm.usage_logger import extract_usage_fields
 
 OBJECTIVE_BATCH_TYPES = {"choice", "fill_blank"}
 OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE = 0.7
@@ -421,7 +421,7 @@ def build_objective_paper_entries(paper_groups: list[ExamPaperGroup]) -> list[Ob
 def build_objective_question_specs(session_id: str, rubric: dict[str, Any], answer_key: dict[str, Any]) -> list[ObjectiveQuestionSpec]:
     answer_map = answer_forms_map(answer_key)
     # 标准答案来源读取失败必须终止识别：按空答案继续会把客观题判成缺答。
-    from objective_answer_loader import (
+    from backend.scan_grading.objective_answer_loader import (
         get_standard_answer_for_question,
         load_objective_answer_sources,
     )
@@ -527,7 +527,7 @@ class ObjectivePaperAtlasBuilder:
                     rgb = source_image.convert("RGB")
                     try:
                         width, height = rgb.size
-                        from answer_region_geometry import scaled_region_bbox
+                        from backend.answer_regions.answer_region_geometry import scaled_region_bbox
 
                         scaled_regions: list[tuple[str, tuple[int, int, int, int]]] = []
                         for region in page_regions:
@@ -778,7 +778,7 @@ class ObjectiveBatchRecognitionClient:
         model: str | None = None,
         usage_callback: Any = None,
     ) -> dict[str, Any]:
-        from api_profiles import get_objective_api_config
+        from backend.llm.api_profiles import get_objective_api_config
 
         config = get_objective_api_config()
         if not config.get("enabled"):
@@ -1223,7 +1223,7 @@ def crop_objective_region(
     with Image.open(source) as image:
         rgb = image.convert("RGB")
         width, height = rgb.size
-        from answer_region_geometry import scaled_region_bbox
+        from backend.answer_regions.answer_region_geometry import scaled_region_bbox
         left, top, right, bottom = scaled_region_bbox(region, width, height)
         if right <= left or bottom <= top:
             raise ValueError("objective_invalid_bbox")

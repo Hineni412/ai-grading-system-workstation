@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from annotation_renderer import render_annotated_paper
+from backend.media.annotation_renderer import render_annotated_paper
 
 
 def _source_page(path: Path) -> None:

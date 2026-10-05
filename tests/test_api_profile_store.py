@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-import api_profiles
+import backend.llm.api_profiles as api_profiles
 
 
 POLICY_PROFILE = {

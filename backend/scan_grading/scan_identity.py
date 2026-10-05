@@ -213,10 +213,10 @@ def extract_paper_evidence(
     column 0); vocabulary entries the recognizer does not know are dropped
     consistently from both the columns and the scoring alphabet.
     """
-    from scanner import _student_name_crop_box  # local import: scanner imports us
+    from backend.scan_grading.scanner import _student_name_crop_box  # local import: scanner imports us
 
     if ocr is None:
-        from local_ocr import get_local_ocr
+        from backend.document_parsing.local_ocr import get_local_ocr
         ocr = get_local_ocr()
     width, height = page.size
     left, top, right, bottom = _student_name_crop_box(name_region, width, height)

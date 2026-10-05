@@ -184,7 +184,7 @@ def main() -> None:
 
     from backend.api.app import create_app
     from backend.api.dependencies import get_grading_db
-    from db_manager import DBManager
+    from backend.repositories.db_manager import DBManager
     import uvicorn
 
     backup_failure = {"next": False}

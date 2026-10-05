@@ -21,7 +21,7 @@ warnings.filterwarnings(
 
 from fastapi.testclient import TestClient
 
-from db_manager import DBManager
+from backend.repositories.db_manager import DBManager
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from question_bank.database.schema import connect, initialize_database
 from question_bank.services.source_question_link_service import (

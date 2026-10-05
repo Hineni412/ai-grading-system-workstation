@@ -5,7 +5,7 @@ from pathlib import Path
 
 from backend.repositories.access import GradingRepositoryAccess
 from question_bank.services.source_question_link_service import SourceQuestionLinkService
-from question_id_contract import question_id_coordinates
+from backend.question_id_contract import question_id_coordinates
 
 
 def confirmed_bank_question_links(

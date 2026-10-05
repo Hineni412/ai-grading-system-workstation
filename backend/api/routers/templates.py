@@ -9,18 +9,18 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse
 
-from answer_region_commit_service import (
+from backend.answer_regions.answer_region_commit_service import (
     AnswerRegionCommitResult,
     AnswerRegionCommitService,
 )
-from answer_region_auto_proposal import propose_answer_regions
-from answer_region_draft_service import (
+from backend.answer_regions.answer_region_auto_proposal import propose_answer_regions
+from backend.answer_regions.answer_region_draft_service import (
     AnswerRegionDraftService,
     DraftLoadResult,
     DraftRevisionConflictError,
     DraftTemplateMismatchError,
 )
-from answer_region_models import (
+from backend.answer_regions.answer_region_models import (
     load_question_binding_catalog,
     normalize_regions,
     validate_regions,
@@ -53,7 +53,7 @@ from backend.config_workspace.publish import load_editor_config
 from backend.exam_intake import exam_intake_blocks_progress
 from backend.repositories.access import GradingRepositoryAccess
 from path_manager import resolve_stored_file_path
-from template_upload_service import (
+from backend.exam_intake.template_upload_service import (
     TemplatePageAssignmentConflictError,
     TemplatePageAssignmentDraftConflictError,
     TemplatePageAssignmentUnsupportedError,

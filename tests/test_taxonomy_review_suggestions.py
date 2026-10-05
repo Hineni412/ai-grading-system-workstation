@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from llm_client import LLMResponseFormatError
+from backend.llm.llm_client import LLMResponseFormatError
 from question_bank.knowledge_graph_release.loader import DEFAULT_TAXONOMY_PATH
 from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.taxonomy_review_suggestions import (

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from grading_completeness import (
+from backend.scan_grading.grading_completeness import (
     audit_grading_details,
 )
 

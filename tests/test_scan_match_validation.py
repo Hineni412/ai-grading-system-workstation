@@ -9,8 +9,8 @@ import pytest
 
 from backend.grading_workflow import build_grading_plan, preflight_match_status
 from backend.scan_grading.workspace import ScanGradingWorkspace, ScanMatchConflictError
-from grading_service import apply_scan_manual_decisions
-from scanner import ScanAnalysis
+from backend.scan_grading.grading_service import apply_scan_manual_decisions
+from backend.scan_grading.scanner import ScanAnalysis
 
 
 ROSTER = [

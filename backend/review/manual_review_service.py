@@ -8,18 +8,18 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from annotation_renderer import render_annotated_paper
-from answer_region_geometry import answer_regions_with_template_source_sizes
-from answer_region_session_lock import get_answer_region_session_lock
+from backend.media.annotation_renderer import render_annotated_paper
+from backend.answer_regions.answer_region_geometry import answer_regions_with_template_source_sizes
+from backend.answer_regions.answer_region_session_lock import get_answer_region_session_lock
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.repositories.base import RepositoryError
 from path_manager import resolve_stored_file_path
-from question_id_contract import (
+from backend.question_id_contract import (
     QuestionIdContractError,
     canonicalize_question_document,
     resolve_known_question_id,
 )
-from session_originals import require_original_pages
+from backend.files.session_originals import require_original_pages
 
 ANNOTATION_RETRY_MESSAGE = "Annotation rendering failed; retry required."
 _ANNOTATED_IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".webp"})
@@ -248,7 +248,7 @@ class ManualReviewService:
             return False
 
     def _trim_annotation_cache(self, max_bytes: int = 256 * 1024 * 1024, *, keep: set[Path] | None = None) -> None:
-        from session_originals import _files
+        from backend.files.session_originals import _files
         entries = []
         for path in _files(self.annotated_dir, self.annotated_dir):
             if path.suffix.lower() == ".jpg" and path.parent.name.startswith("session_"):

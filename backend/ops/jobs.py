@@ -11,7 +11,7 @@ from typing import Any
 
 from backend.jobs.execution_locks import keyed_execution_locks
 from backend.jobs.manager import JobContext, JobManager
-from data_transfer_service import (
+from backend.files.data_transfer_service import (
     ExportEntry,
     build_export_manifest,
     default_export_sources,

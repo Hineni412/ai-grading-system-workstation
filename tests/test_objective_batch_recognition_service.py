@@ -9,12 +9,12 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from objective_batch_recognition_service import (
+from backend.scan_grading.objective_batch_recognition_service import (
     ObjectivePaperEntry,
     crop_objective_region,
     run_objective_batch_recognition,
 )
-from scanner import ExamPaperGroup
+from backend.scan_grading.scanner import ExamPaperGroup
 from backend.repositories.grading_database import open_grading_repositories
 
 
@@ -285,7 +285,7 @@ def test_hybrid_model_scores_survive_storage_and_teacher_confirmation(
     from backend.repositories.papers import PaperRepositoryGateway
     from backend.repositories.results import ResultRepositoryGateway
     from backend.repositories.review import ReviewRepositoryGateway
-    from ai_batch_grading_service import run_ai_batch_grading
+    from backend.scan_grading.ai_batch_grading_service import run_ai_batch_grading
 
     database = tmp_path / "scores.db"
     db = open_grading_repositories(database)
@@ -379,7 +379,7 @@ def test_hybrid_model_scores_survive_storage_and_teacher_confirmation(
 def test_hybrid_missing_model_score_remains_ungraded_and_can_be_targeted(
     tmp_path: Path,
 ) -> None:
-    from ai_batch_grading_service import run_ai_batch_grading
+    from backend.scan_grading.ai_batch_grading_service import run_ai_batch_grading
 
     class MissingOneScore(FakeBatchClient):
         def json_from_images(self, *args, **kwargs):
@@ -450,7 +450,7 @@ def test_hybrid_missing_model_score_remains_ungraded_and_can_be_targeted(
 
 
 def test_completely_unreadable_objective_answer_stays_unscored() -> None:
-    from objective_batch_recognition_service import (
+    from backend.scan_grading.objective_batch_recognition_service import (
         ObjectiveQuestionSpec,
         validate_objective_paper_response,
     )
@@ -504,7 +504,7 @@ def _uncertain_paper_fill_blank_item(**overrides: Any) -> dict[str, Any]:
 def _validate_paper_item(
     item: dict[str, Any], spec: Any
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    from objective_batch_recognition_service import validate_objective_paper_response
+    from backend.scan_grading.objective_batch_recognition_service import validate_objective_paper_response
 
     return validate_objective_paper_response(
         response={
@@ -519,8 +519,8 @@ def _validate_paper_item(
 
 
 def test_same_score_candidate_readings_waive_objective_review() -> None:
-    from grading_completeness import details_require_review
-    from objective_batch_recognition_service import ObjectiveQuestionSpec
+    from backend.scan_grading.grading_completeness import details_require_review
+    from backend.scan_grading.objective_batch_recognition_service import ObjectiveQuestionSpec
 
     spec = ObjectiveQuestionSpec("Q1", "fill_blank", "x≤5", 3, {})
     accepted, review = _validate_paper_item(_uncertain_paper_fill_blank_item(), spec)
@@ -548,7 +548,7 @@ def test_same_score_candidate_readings_waive_objective_review() -> None:
 
 
 def test_different_score_candidate_readings_still_need_review() -> None:
-    from objective_batch_recognition_service import ObjectiveQuestionSpec
+    from backend.scan_grading.objective_batch_recognition_service import ObjectiveQuestionSpec
 
     spec = ObjectiveQuestionSpec("Q1", "fill_blank", "x≤5", 3, {})
     item = _uncertain_paper_fill_blank_item(
@@ -571,9 +571,9 @@ def test_unreadable_answer_source_file_stops_objective_recognition(
     tmp_path, monkeypatch
 ) -> None:
     """标准答案文件损坏时必须中止识别，不能按空答案把客观题判成缺答。"""
-    import objective_answer_loader
-    from objective_answer_loader import load_objective_answer_sources
-    from objective_batch_recognition_service import (
+    import backend.scan_grading.objective_answer_loader as objective_answer_loader
+    from backend.scan_grading.objective_answer_loader import load_objective_answer_sources
+    from backend.scan_grading.objective_batch_recognition_service import (
         build_objective_question_specs,
     )
 

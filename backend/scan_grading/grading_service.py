@@ -12,8 +12,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ai_batch_grading_service import run_ai_batch_grading
-from ai_grader import AIGrader
+from backend.scan_grading.ai_batch_grading_service import run_ai_batch_grading
+from backend.scan_grading.ai_grader import AIGrader
 from backend.domain_models import (
     ExamPaperGroup,
     GradingResult,
@@ -24,7 +24,7 @@ from backend.domain_models import (
 from backend.grading_workflow import preflight_match_status, rubric_scoring_item_scores
 from backend.llm.execution import execution_snapshot_from_profile
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
-from grading_completeness import (
+from backend.scan_grading.grading_completeness import (
     audit_grading_details,
     details_require_review,
     is_objective_detail,
@@ -33,7 +33,7 @@ from grading_completeness import (
     merge_detail_metadata,
     review_confidence_threshold,
 )
-from grading_limits import (
+from backend.scan_grading.grading_limits import (
     FULL_PAPER_WORKERS_MAX,
     FULL_PAPER_WORKERS_MIN,
     GRADING_RPM_MAX,
@@ -44,12 +44,12 @@ from grading_limits import (
     OBJECTIVE_BATCH_SIZE_MIN,
     bounded_int,
 )
-from image_preprocessor import enhance_image_file, is_standard_pdf_page
+from backend.media.image_preprocessor import enhance_image_file, is_standard_pdf_page
 from integration.question_tag_projection_service import QuestionTagProjectionService
-from llm_client import LLMClient
+from backend.llm.llm_client import LLMClient
 from path_manager import get_path_manager
-from request_pacer import RequestPacer
-from scanner import (
+from backend.llm.request_pacer import RequestPacer
+from backend.scan_grading.scanner import (
     STUDENT_NAME_REGION_ALIASES,
     ScanAnalysis,
     Scanner,
@@ -184,7 +184,7 @@ class GradingService:
         session = self.db.sessions.get_grading_session(session_id)
         rubric = _load_rubric_for_preflight(rubric_path)
         _validate_session_exam_identity(session, rubric)
-        from answer_region_geometry import answer_regions_with_template_source_sizes
+        from backend.answer_regions.answer_region_geometry import answer_regions_with_template_source_sizes
         data_root = self.db.db_path.parent.parent if self.db.db_path.parent.name == "databases" else None
         answer_regions = answer_regions_with_template_source_sizes(self.db, session_id, data_root=data_root)
         if str(grading_mode or "").strip() in {"full_paper", "hybrid_batch"}:
@@ -258,7 +258,7 @@ class GradingService:
         config_fingerprint = ""
         run_record_write_failed = False
         strict_existing_run = resume_run_id is not None or supplement_run_id is not None
-        from grading_run_store import GradingRunResumeMismatchError
+        from backend.scan_grading.grading_run_store import GradingRunResumeMismatchError
 
         def _record_run_write_failure(action: str, exc: BaseException) -> None:
             nonlocal run_record_write_failed
@@ -277,8 +277,8 @@ class GradingService:
                 _record_run_write_failure(action, exc)
 
         try:
-            from grading_run_identity import grading_config_fingerprint
-            from grading_run_store import GradingRunStore
+            from backend.scan_grading.grading_run_identity import grading_config_fingerprint
+            from backend.scan_grading.grading_run_store import GradingRunStore
 
             config_fingerprint = grading_config_fingerprint(
                 rubric=grader.rubric,
@@ -469,7 +469,7 @@ class GradingService:
                     return
                 source_fingerprint = ""
                 if supplement_only:
-                    from grading_run_identity import paper_fingerprint
+                    from backend.scan_grading.grading_run_identity import paper_fingerprint
 
                     source_fingerprint = paper_fingerprint(
                         group.front_image,
@@ -1128,7 +1128,7 @@ class GradingService:
         self,
         session_id: int,
     ) -> tuple[set[str], set[int]]:
-        from grading_run_identity import paper_fingerprint
+        from backend.scan_grading.grading_run_identity import paper_fingerprint
 
         rows = self.papers.get_session_paper_identities(session_id)
         fingerprints = {
@@ -1165,7 +1165,7 @@ class GradingService:
         if run_store is None or run is None or not matched_records:
             return list(matched_records), run_item_by_paper
 
-        from grading_run_identity import (
+        from backend.scan_grading.grading_run_identity import (
             CandidatePaper,
             CompletedIdentity,
             classify_student_candidates,
@@ -1315,7 +1315,7 @@ def _target_question_ids_from_regions(regions: list[dict], rubric: dict | None =
 
     catalog = None
     if isinstance(rubric, dict) and rubric.get("questions"):
-        from question_id_contract import QuestionIdCatalog
+        from backend.question_id_contract import QuestionIdCatalog
 
         try:
             catalog = QuestionIdCatalog.from_document(rubric)
@@ -1545,7 +1545,7 @@ def _load_rubric_for_preflight(rubric_path: Path) -> dict:
             f"评分依据文件内容不是 JSON 对象：{rubric_path.name}，"
             "请修复该文件后重新发起批改"
         )
-    from question_id_contract import canonicalize_question_document
+    from backend.question_id_contract import canonicalize_question_document
 
     try:
         return canonicalize_question_document(payload)

@@ -1,10 +1,10 @@
 import unittest
 
-from ai_batch_grading_service import (
+from backend.scan_grading.ai_batch_grading_service import (
     _detail_from_ai_item,
     build_major_question_specs,
 )
-from solution_answer_guard import validate_step_assessments
+from backend.scan_grading.solution_answer_guard import validate_step_assessments
 
 
 _PROOF_RUBRIC = {

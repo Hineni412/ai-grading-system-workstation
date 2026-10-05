@@ -6,25 +6,25 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from analysis_report_exporter import (
+from backend.reporting.analysis_report_exporter import (
     ANALYSIS_REPORT_TYPES,
     AnalysisReportGenerator,
 )
-from api_profiles import get_api_profile_store, resolve_profile_for_task
+from backend.llm.api_profiles import get_api_profile_store, resolve_profile_for_task
 from backend.llm.policy import policy_overrides_from_profile
 from backend.model_profiles.content_generation import (
     resolve_content_generation_settings,
 )
 from backend.repositories.access import GradingRepositoryAccess
 from backend.repositories.grading_database import open_grading_repositories
-from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
-from original_paper_exporter import OriginalPaperExporter
+from backend.llm.llm_client import LLMClient, LLMSettings, normalize_openai_base_url
+from backend.reporting.original_paper_exporter import OriginalPaperExporter
 from question_bank.document_pipeline import QuestionDocumentPipeline
 from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.taxonomy.governance import get_taxonomy_governance
-from report import ReportGenerator
+from backend.reporting.report import ReportGenerator
 
 from .answer_draft import run_answer_draft_job
 from .assembly_export import run_assembly_export_job

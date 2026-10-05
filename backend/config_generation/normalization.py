@@ -6,13 +6,13 @@ import math
 import re
 from typing import Any
 
-from answer_normalizer import complete_answer_set_values
-from equivalence_engine import merge_equivalent_forms
-from question_id_contract import (
+from backend.scan_grading.answer_normalizer import complete_answer_set_values
+from backend.scan_grading.equivalence_engine import merge_equivalent_forms
+from backend.question_id_contract import (
     canonical_parent_id,
     canonicalize_grading_config_payload,
 )
-from score_policy import (
+from backend.config_generation.score_policy import (
     MAX_QUESTION_SCORE,
     OBJECTIVE_TYPES,
     _integerize_deductions,

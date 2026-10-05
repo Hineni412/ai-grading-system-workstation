@@ -51,7 +51,7 @@ def student_report_revision(repositories, session_id: int, student_id: int) -> s
 
 
 def personal_cache_key(session_id: int, student_id: int, revision: str) -> str:
-    from analysis_report_exporter import AnalysisNarrativeCache
+    from backend.reporting.analysis_report_exporter import AnalysisNarrativeCache
     return AnalysisNarrativeCache.cache_key(session_id=session_id, score_revision="student:" + revision,
         rendition_version=report_narrative_version("personal_analysis_html"), report_key=f"personal:{student_id}")
 
@@ -66,7 +66,7 @@ def read_personal_index(cache_dir: Path, session_id: int) -> dict:
 
 def publish_personal_index(cache_dir: Path, session_id: int, student_id: int, revision: str) -> None:
     """在生成任务的调用线程中执行；查看请求从不调用。"""
-    from analysis_report_exporter import AnalysisNarrativeCache
+    from backend.reporting.analysis_report_exporter import AnalysisNarrativeCache
     key = personal_cache_key(session_id, student_id, revision)
     if AnalysisNarrativeCache(cache_dir).load(key) is None:
         return
@@ -86,7 +86,7 @@ def publish_personal_index(cache_dir: Path, session_id: int, student_id: int, re
 
 def lookup_personal_narrative(cache, session_id: int, student_id: int, revision: str,
                               session_revision: str, *, allow_stale: bool = True, index=None) -> dict:
-    from analysis_report_exporter import AnalysisNarrativeCache
+    from backend.reporting.analysis_report_exporter import AnalysisNarrativeCache
     from backend.report_exports import LEGACY_PERSONAL_NARRATIVE_VERSIONS
     index = read_personal_index(cache.cache_dir, session_id) if index is None else index
     saved = index.get(str(student_id))
@@ -113,7 +113,7 @@ def lookup_personal_narrative(cache, session_id: int, student_id: int, revision:
 
 
 def personal_report_states(repositories, session_id: int, reports_dir: Path, *, data=None, revision=None) -> dict:
-    from analysis_report_exporter import AnalysisNarrativeCache
+    from backend.reporting.analysis_report_exporter import AnalysisNarrativeCache
     data = data or assemble_session_analysis(repositories, session_id, data_root=infer_data_root(repositories.db_path), page_only=True)
     revision = revision or score_revision(repositories, session_id)
     revisions = student_report_revisions(repositories, session_id, [s.student_id for s in data.students])
@@ -148,7 +148,7 @@ def _read_generation(repositories, root: Path, reports_dir: Path):
 
 def student_personal_report_exams(repositories, student_id: int, reports_dir: Path, volume_id=None) -> dict:
     """缓存同学期的轻量成绩投影；叙述状态每次从当前缓存和索引读取。"""
-    from analysis_report_exporter import AnalysisNarrativeCache
+    from backend.reporting.analysis_report_exporter import AnalysisNarrativeCache
     root = infer_data_root(repositories.db_path)
     key = (str(repositories.db_path), volume_id, _read_generation(repositories, root, reports_dir))
     with _context_lock:
@@ -189,7 +189,7 @@ def student_personal_report_exams(repositories, student_id: int, reports_dir: Pa
 
 
 def personal_render_context(repositories, session_id: int, reports_dir: Path) -> dict:
-    from analysis_report_exporter import _load_student_histories, load_session_regions, _load_personal_error_histories
+    from backend.reporting.analysis_report_exporter import _load_student_histories, load_session_regions, _load_personal_error_histories
     from backend.class_analysis import ClassAnalysisStateStore, build_cause_inputs
     from backend.session_analysis import enrich_personal_questions, enrich_personal_knowledge
     root = infer_data_root(repositories.db_path)
@@ -199,7 +199,7 @@ def personal_render_context(repositories, session_id: int, reports_dir: Path) ->
     except OSError:
         mtime = 0
     # 原卷状态与其他场次成绩同样影响页面；读取不写缓存文件。
-    from session_originals import originals_state
+    from backend.files.session_originals import originals_state
     sessions = repositories.sessions.list_grading_sessions()
     key = (str(repositories.db_path), session_id, mtime, originals_state(root, session_id),
            _digest([dict(s) for s in sessions]), _read_generation(repositories, root, reports_dir))
@@ -226,7 +226,7 @@ def personal_render_context(repositories, session_id: int, reports_dir: Path) ->
 def crop_personal_report_shot(image_path: Path, region) -> str | None:
     """同一答卷的多个题框复用解码结果；仅在内存保留最多两页、128 MiB。"""
     from PIL import Image
-    from analysis_report_exporter import _crop_region_data_uri
+    from backend.reporting.analysis_report_exporter import _crop_region_data_uri
     state = image_path.stat()
     key = (str(image_path), state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns)
     with _page_lock:
@@ -250,10 +250,10 @@ def crop_personal_report_shot(image_path: Path, region) -> str | None:
 
 def render_personal_report(repositories, session_id: int, student_id: int, reports_dir: Path,
                            *, narrative_mode="auto", review_links=False, online=True) -> str:
-    from analysis_report_exporter import (AnalysisNarrativeCache, _render_personal_html, lost_question_shot_specs,
+    from backend.reporting.analysis_report_exporter import (AnalysisNarrativeCache, _render_personal_html, lost_question_shot_specs,
         capture_lost_question_shots)
     from backend.class_analysis import student_error_map
-    from session_originals import originals_state
+    from backend.files.session_originals import originals_state
     context = personal_render_context(repositories, session_id, reports_dir)
     matched = next(((g, s) for g in context["groups"].values()
                     for s in g.students if s.student_id == student_id), None)

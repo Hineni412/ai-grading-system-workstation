@@ -14,7 +14,7 @@ from types import FunctionType
 
 from backend.performance.metrics import instrument_sqlite_connection
 from backend.schema_migrations import ensure_schema_current
-from db_manager import DBManager
+from backend.repositories.db_manager import DBManager
 from question_bank.current_knowledge import (
     CurrentKnowledgeResolver,
     ensure_checked_in_current_standard,

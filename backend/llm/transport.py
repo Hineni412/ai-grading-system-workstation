@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 from openai import OpenAI
 
-import usage_logger
+import backend.llm.usage_logger as usage_logger
 
 from .diagnostics import DIAGNOSTIC_LOG_FILE, JsonlDiagnosticJournal
 from .gateway import LLMGateway

@@ -24,7 +24,7 @@ def _pdf(pages):
 
 
 def test_two_column_crops_do_not_capture_neighbor_and_last_question_crosses_page():
-    from rubric_auto_cropper import extract_pdf_question_images
+    from backend.document_parsing.rubric_auto_cropper import extract_pdf_question_images
 
     payload = _pdf(
         [

@@ -11,15 +11,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from answer_region_models import (
+from backend.answer_regions.answer_region_models import (
     RegionIssue,
     RegionValidationResult,
     normalize_regions,
     validate_regions,
 )
-from answer_region_session_lock import get_answer_region_session_lock
+from backend.answer_regions.answer_region_session_lock import get_answer_region_session_lock
 from path_manager import resolve_stored_file_path
-from question_id_contract import QuestionIdCatalog, QuestionIdContractError
+from backend.question_id_contract import QuestionIdCatalog, QuestionIdContractError
 
 logger = logging.getLogger(__name__)
 _SAFE_TOKEN = re.compile(r"[A-Za-z0-9_-]+")

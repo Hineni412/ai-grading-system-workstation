@@ -56,7 +56,7 @@ def _prepare_paths(data_root: Path):
 
 
 def _seed_training_data(paths) -> None:
-    from db_manager import DBManager
+    from backend.repositories.db_manager import DBManager
     from question_bank.database.schema import connect, initialize_database
     from question_bank.services.source_question_link_service import (
         SourceQuestionLinkService,

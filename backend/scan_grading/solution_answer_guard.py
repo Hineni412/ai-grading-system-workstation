@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from answer_normalizer import normalize_answer_text
+from backend.scan_grading.answer_normalizer import normalize_answer_text
 
 SOLUTION_TYPES = {"proof", "calculation", "comprehensive"}
 NON_PROCESS_RESPONSE_MODES = {"exact_objective", "short_answer_points", "visual_construction"}

@@ -41,7 +41,7 @@
 | 文件 | 位置 | 写入方 | 之后谁读 |
 |---|---|---|---|
 | 上传的扫描 PDF（全班一个或多个） | `user_data/exams/session_N/scan_batches/<batch>/files/<sha256>.pdf`，97.8 MB | `ScanGradingWorkspace.add_upload` | 仅扫描预检 `scanner.render_pdf_to_standard_pages`（重新预检/归卷） |
-| 样卷上传时整份全班 PDF 的**副本** | `user_data/templates/session_N/template-versions/<ver>/template_source_full_class.pdf`，52.9 MB；sha256 与上面某个扫描 PDF 完全相同 | `template_upload_service.py` 第 152–156 行 | **无人读取**（`source_path` 赋值后未使用；`data_transfer_service.py` 的 lean 导出已跳过它） |
+| 样卷上传时整份全班 PDF 的**副本** | `user_data/templates/session_N/template-versions/<ver>/template_source_full_class.pdf`，52.9 MB；sha256 与上面某个扫描 PDF 完全相同 | `backend/exam_intake/template_upload_service.py` 第 152–156 行 | **无人读取**（`source_path` 赋值后未使用；`backend/files/data_transfer_service.py` 的 lean 导出已跳过它） |
 | 每页工作图 | `.../files/_pdf_pages/<sha256>/page_###.jpg` + `source_manifest.json`，33.7 MB | `scanner.render_pdf_to_standard_pages` | `exam_papers.front_image/back_image` 指向它们；复核原卷/裁剪图、AI 批改、批注图生成、批注原卷导出、个人报告截图 |
 | 批注图（整页重画的红笔图） | `user_data/annotated/session_N/result_<rid>_<uuid>_{front,back}_annotated.jpg`，35.4 MB；`annotated_results` 表存路径 | `ManualReviewService._render_result_annotation_locked` | 仅复核页 `variant=annotated` 媒体接口 |
 
@@ -54,7 +54,7 @@
 - AI 批改 `grading_service.run_session_grading` 在给出 `scan_analysis` 时直接用已存分析与工作图，不调用 `scanner.analyze`；只有无分析时才重新拆 PDF（待验证项见 6.4）。
 - 复核裁剪图缓存：`user_data/cache/review_crops/`，256 MB 上限，`ReviewMediaService.clear_detail_crop_cache()` 可整体清空（可再生成）。
 - 普通备份（`update_tools/backup_core.py`）包含 `exams/`、`templates/`、`annotated/`、`reports/` 等，不包含 `cache/`。
-- 考试永久删除已有一套“暂存 + 清单 + 恢复”的安全删除实现：`session_cleanup.py`（`session_lifecycle_guard`、`_resolve_stored_candidate`、`_is_under` 等），以及“先只读预览影响 + 版本号 + 确认文字”的接口模式：`backend/api/routers/sessions.py` 的 `deletion-impact` / `permanent`。
+- 考试永久删除已有一套“暂存 + 清单 + 恢复”的安全删除实现：`backend/files/session_cleanup.py`（`session_lifecycle_guard`、`_resolve_stored_candidate`、`_is_under` 等），以及“先只读预览影响 + 版本号 + 确认文字”的接口模式：`backend/api/routers/sessions.py` 的 `deletion-impact` / `permanent`。
 - 设置页现状：`frontend/src/views/SettingsHubView.vue`（内部左侧菜单，section 为 `ai | ai-trace | backup | maintenance`）、`SettingsOpsView.vue`、`ModelProfilesView.vue`、`components/settings/AiDiagnosticsPanel.vue`、`styles/settings-ops.css`。`/model-profiles` 重定向时写的是 `section=models`，这不是有效值（顺手修）。
 - 学生名单现状：`views/StudentsView.vue` + `components/students/{StudentRosterTable,StudentInspector,StudentImportDesk}.vue` + `stores/students.ts` + `styles/students.css`；路由 `/students`；侧栏底部 `settingsNavigationItems = [students, aiTrace, settings]`（`navigation.ts` 第 255 行），由 `components/shell/AppSidebar.vue` 渲染。
 - 页面级视图标签的现行写法：`ResultsCenterView.vue` 把 `<nav class="results-rail">` 放进 `PageHeader` 的 `#actions` 插槽（标题行右侧），样式在 `styles/base.css` 第 334–369 行的 `:is(.results-rail, .page-tabs)`。
@@ -167,7 +167,7 @@
 
 ## 5. 后端：样卷上传不再保存整份全班 PDF
 
-- `template_upload_service.py`：不再写 `template_source_full_class.pdf`（删除 `source_temp` 的写入与 `source_path` 变量；PDF 字节只在内存中打开以渲染两页）。模板指纹、版本目录、激活回执逻辑不变。
+- `backend/exam_intake/template_upload_service.py`：不再写 `template_source_full_class.pdf`（删除 `source_temp` 的写入与 `source_path` 变量；PDF 字节只在内存中打开以渲染两页）。模板指纹、版本目录、激活回执逻辑不变。
 - `data_transfer_service.LEAN_SKIP_FILE_NAMES` 中的该文件名保留（兼容输入：旧版本目录里仍可能有）。
 - 现有文件由「释放扫描文件」顺带删除（见 6.3）。
 
@@ -175,9 +175,9 @@
 
 ## 6. 后端：原卷状态、空间统计与清理
 
-### 6.1 新模块 `session_originals.py`（项目根目录，与 `session_cleanup.py` 同层）
+### 6.1 新模块 `backend/files/session_originals.py`（项目根目录，与 `backend/files/session_cleanup.py` 同层）
 
-复用候选与理由：`session_cleanup.py` 是“整场考试永久删除”，带暂存与回滚，因为它要与数据库删除保持一致；原卷清理的目标就是删除文件、数据库记录保持不变，不需要回滚，只需要可重入。因此新建模块，但**复用** `session_cleanup.session_lifecycle_guard`、`_resolve_stored_candidate`、`_is_under`（直接 import；如嫌私有名，可在 `session_cleanup.py` 去掉前导下划线并保留旧名别名，二选一，不要复制实现）。只有一种实现，不建接口/策略层。
+复用候选与理由：`backend/files/session_cleanup.py` 是“整场考试永久删除”，带暂存与回滚，因为它要与数据库删除保持一致；原卷清理的目标就是删除文件、数据库记录保持不变，不需要回滚，只需要可重入。因此新建模块，但**复用** `session_cleanup.session_lifecycle_guard`、`_resolve_stored_candidate`、`_is_under`（直接 import；如嫌私有名，可在 `backend/files/session_cleanup.py` 去掉前导下划线并保留旧名别名，二选一，不要复制实现）。只有一种实现，不建接口/策略层。
 
 **回执文件**：`user_data/exams/session_{id}/originals_receipt.json`（随 `exams/` 进入普通备份；永久删除考试时随目录删除）。用临时文件 + `os.replace` 原子写入。
 
@@ -361,7 +361,7 @@ def clear_legacy_annotations(db, data_root: Path) -> dict
 
 - `docs/maintenance/storage-policy.md`：数据类别表加 `cache/annotated_pages/`（批注图缓存，256 MiB，可再生成，不进备份），“批注与导出”一行改为旧批注图为兼容数据；默认保留规则加“样卷上传不再保存全班 PDF”“原卷清理两档及回执”“清理只在设置页由教师触发”。
 - `docs/product/GRADING.md`：“批量保存与确认”第 255 行改为批注图按需生成并缓存；新增“原卷清理”小节（两档、条件、保留与不可用的功能、确认方式、继续清理）；“成绩与导出 / 原卷 PDF”加“原卷已清理的考试不能导出”。
-- `ARCHITECTURE.md`：领域代码入口表加 `session_originals.py`（原卷状态、清理与空间统计）；说明批注图缓存位置与上限。
+- `ARCHITECTURE.md`：领域代码入口表加 `backend/files/session_originals.py`（原卷状态、清理与空间统计）；说明批注图缓存位置与上限。
 - `README.md`：第 12 行「设置页的“AI 服务”」保持；如有“学生管理”入口描述则改为设置页。
 - `CONTEXT.md`：增加术语「释放扫描文件」「清除原卷」「原卷已清理」各一行。
 - `docs/testing/README.md`：「学生管理」专项入口说明改为“设置页学生名单”。

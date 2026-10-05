@@ -9,12 +9,12 @@ from typing import Any
 import pytest
 from PIL import Image
 
-import grading_service
-from ai_batch_grading_service import AIBatchRunResult, PaperEntry
+import backend.scan_grading.grading_service as grading_service
+from backend.scan_grading.ai_batch_grading_service import AIBatchRunResult, PaperEntry
 from backend.repositories.students import StudentGradingActiveError
-from db_manager import DBManager
-from grading_run_store import GradingRunStore
-from scanner import ExamPaperGroup
+from backend.repositories.db_manager import DBManager
+from backend.scan_grading.grading_run_store import GradingRunStore
+from backend.scan_grading.scanner import ExamPaperGroup
 from backend.repositories.grading_database import open_grading_repositories
 
 
@@ -142,7 +142,7 @@ def patched(monkeypatch, tmp_path):
         lambda session_id, scan_analysis=None: "odd",
     )
 
-    import answer_region_geometry
+    import backend.answer_regions.answer_region_geometry as answer_region_geometry
 
     monkeypatch.setattr(
         answer_region_geometry,
@@ -158,7 +158,7 @@ def _service(db) -> Any:
 
 def test_released_scan_pdf_is_not_read_when_grading_existing_pages(patched, tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from session_originals import release_session_scans
+    from backend.files.session_originals import release_session_scans
     from tests.test_session_originals import _scans
 
     db, session_id = _seed(tmp_path, [(1, "stu1")])
@@ -400,7 +400,7 @@ def test_legacy_run_cannot_be_resumed(patched, tmp_path, monkeypatch):
     legacy_run = store.begin(session_id, "a" * 64, "full_paper")
     store.finish(legacy_run.run_token, "paused")
 
-    from grading_run_store import GradingRunResumeMismatchError
+    from backend.scan_grading.grading_run_store import GradingRunResumeMismatchError
 
     with pytest.raises(GradingRunResumeMismatchError, match="旧批改方式已停用"):
         list(
@@ -560,7 +560,7 @@ def test_run_record_write_failure_keeps_grades_and_surfaces_warning(
             return getattr(self._real, name)
 
     monkeypatch.setattr(
-        "grading_run_store.GradingRunStore",
+        "backend.scan_grading.grading_run_store.GradingRunStore",
         lambda db_path: _FailingRunStore(db_path),
     )
 

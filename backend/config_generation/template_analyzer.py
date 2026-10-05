@@ -8,8 +8,8 @@ from typing import Any
 
 from PIL import Image
 
-from llm_client import LLMClient, _compress_image_for_api
-from score_policy import MAX_QUESTION_SCORE, enforce_integer_scores_by_type
+from backend.llm.llm_client import LLMClient, _compress_image_for_api
+from backend.config_generation.score_policy import MAX_QUESTION_SCORE, enforce_integer_scores_by_type
 
 
 def analyze_template_package(

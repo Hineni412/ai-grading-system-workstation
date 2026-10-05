@@ -6,7 +6,7 @@ import copy
 from collections.abc import Sequence
 from typing import Any
 
-from question_id_contract import canonical_parent_id
+from backend.question_id_contract import canonical_parent_id
 
 from .normalization import preserve_regenerated_question_scores
 

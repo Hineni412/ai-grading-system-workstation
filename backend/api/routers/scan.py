@@ -47,10 +47,10 @@ from backend.scan_grading.workspace import (
     ScanUploadTooLargeError,
     UploadBatchRevisionError,
 )
-from session_cleanup import SessionDerivedTrainingDataExists
-from template_upload_service import TemplateUploadError, TemplateUploadService
+from backend.files.session_cleanup import SessionDerivedTrainingDataExists
+from backend.exam_intake.template_upload_service import TemplateUploadError, TemplateUploadService
 
-from session_originals import ScanSourcesReleased
+from backend.files.session_originals import ScanSourcesReleased
 
 router = APIRouter(prefix="/api", tags=["scan"])
 

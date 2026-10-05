@@ -11,7 +11,7 @@ from backend.config_generation.normalization import validate_generated_config
 from backend.config_generation.quality import (
     refresh_generated_config_quality_warnings,
 )
-from question_id_contract import (
+from backend.question_id_contract import (
     canonical_parent_id,
     canonical_part_id,
     question_id_coordinates,
@@ -1132,7 +1132,7 @@ def _warning_issues(payload: dict[str, Any]) -> list[ConfigEditorIssue]:
 
 
 def _score_policy_warnings(payload: dict[str, Any]) -> list[ConfigEditorIssue]:
-    from score_policy import MAX_QUESTION_SCORE
+    from backend.config_generation.score_policy import MAX_QUESTION_SCORE
 
     issues: list[ConfigEditorIssue] = []
 

@@ -24,8 +24,8 @@ def test_auto_regions_supplement_commit_scan_and_complete_grading_plan(api_e2e, 
     import hashlib
     from PIL import Image, ImageDraw
     from backend.scan_grading.workspace import ScanGradingWorkspace
-    from grading_service import _target_question_ids_from_regions
-    from original_paper_exporter import detect_printed_question_anchors
+    from backend.scan_grading.grading_service import _target_question_ids_from_regions
+    from backend.reporting.original_paper_exporter import detect_printed_question_anchors
     from tests.test_original_paper_score_contract import _ocr_row
 
     client = api_e2e.client
@@ -62,7 +62,7 @@ def test_auto_regions_supplement_commit_scan_and_complete_grading_plan(api_e2e, 
             rows.insert(0, _ocr_row('姓名：', 220, 70, w=50))
         return rows, 0.0
 
-    monkeypatch.setattr('local_ocr.get_local_ocr', lambda: ocr)
+    monkeypatch.setattr('backend.document_parsing.local_ocr.get_local_ocr', lambda: ocr)
     anchors_before = detect_printed_question_anchors(paths, [f'Q{i}' for i in range(1, 7)])
     proposed = client.get(f'/api/sessions/{sid}/regions/auto-proposal')
     assert proposed.status_code == 200

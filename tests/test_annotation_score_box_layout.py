@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from annotation_renderer import AnnotationCoverageError, render_annotated_paper
+from backend.media.annotation_renderer import AnnotationCoverageError, render_annotated_paper
 
 
 def _blank_page(path: Path) -> None:

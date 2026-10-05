@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from answer_normalizer import match_fill_blank_answer
+from backend.scan_grading.answer_normalizer import match_fill_blank_answer
 
 
 @pytest.mark.parametrize("answer,matched", [("4", True), ("4cm^2", True), ("4cm^{2}", True), ("6", False), ("48", False)])

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from agent_bridge.respond_subj import _detail
-from grading_completeness import (
+from backend.scan_grading.grading_completeness import (
     is_objective_detail,
     merge_detail_metadata,
     details_require_review,

@@ -9,7 +9,7 @@ from typing import Any, Literal
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.review.service import ReviewApplicationService
 from path_manager import resolve_stored_file_path
-from question_id_contract import (
+from backend.question_id_contract import (
     QuestionIdContractError,
     canonicalize_question_document,
     question_id_coordinates,

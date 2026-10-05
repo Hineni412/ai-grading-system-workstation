@@ -25,10 +25,10 @@ from backend.repositories.access import (
     as_grading_repositories,
 )
 from backend.repositories.grading_database import open_grading_repositories
-from export_names import session_export_path_name
-from grading_completeness import resolve_grading_completeness
+from backend.reporting.export_names import session_export_path_name
+from backend.scan_grading.grading_completeness import resolve_grading_completeness
 from path_manager import resolve_stored_file_path
-from question_id_contract import resolve_known_question_id
+from backend.question_id_contract import resolve_known_question_id
 
 
 class ReportGenerator:

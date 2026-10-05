@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from data_transfer_service import (
+from backend.files.data_transfer_service import (
     build_export_manifest,
     default_export_sources,
 )

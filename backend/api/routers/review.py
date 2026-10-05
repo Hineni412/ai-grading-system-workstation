@@ -39,7 +39,7 @@ from backend.review.service import (
     ReviewValidationError,
 )
 from backend.scan_grading.workspace import ScanGradingWorkspace
-from session_originals import originals_state
+from backend.files.session_originals import originals_state
 
 router = APIRouter(prefix="/api", tags=["review"])
 

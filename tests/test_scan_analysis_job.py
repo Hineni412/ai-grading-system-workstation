@@ -13,7 +13,7 @@ def test_template_change_during_scan_analysis_preserves_previous_preflight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from backend.jobs.scan_analysis import run_scan_analysis
-    from scanner import ScanAnalysis
+    from backend.scan_grading.scanner import ScanAnalysis
 
     template_changed = False
 

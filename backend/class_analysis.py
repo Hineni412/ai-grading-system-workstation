@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from analysis_report_prompts import CLASS_MAX_TOKENS, CLASS_SYSTEM_PROMPT
+from backend.reporting.analysis_report_prompts import CLASS_MAX_TOKENS, CLASS_SYSTEM_PROMPT
 from backend.jobs.manager import (
     ActiveJobExistsError,
     JobContext,
@@ -162,7 +162,7 @@ def _cause_evidence(student: Any, record: Any, data: Any = None, *, by_step: boo
     }
     rubric = getattr(data, "rubric", None)
     if by_step and getattr(record, "failed_steps", None) and isinstance(rubric, dict):
-        from solution_answer_guard import rubric_scoring_unit_steps
+        from backend.scan_grading.solution_answer_guard import rubric_scoring_unit_steps
         steps = rubric_scoring_unit_steps(rubric, record.question_id)
         units = []
         for failed in record.failed_steps:
@@ -545,7 +545,7 @@ def student_error_records(
     """
     from backend.error_causes import CAUSE_KIND_CATEGORIES
     from backend.session_analysis import parent_question_id
-    from solution_answer_guard import rubric_scoring_unit_steps
+    from backend.scan_grading.solution_answer_guard import rubric_scoring_unit_steps
 
     hash_items = source["evidence"] if by_step else [
         {key: value for key, value in item.items() if key != "failed_steps"}
@@ -1327,7 +1327,7 @@ def _enrich_error_record_skills(data: Any, out: dict[int, dict[str, list[dict[st
     try:
         from backend.session_analysis import parent_question_id, question_bank_db_path
         from question_bank.solution_evidence.knowledge_links import load_point_links
-        from solution_answer_guard import rubric_scoring_unit_steps
+        from backend.scan_grading.solution_answer_guard import rubric_scoring_unit_steps
 
         bank_path = question_bank_db_path(Path(db.db_path))
         rubric = getattr(data, "rubric", None)
@@ -1803,7 +1803,7 @@ def _class_narrative(
     class_name: str | None = None,
 ) -> dict[str, Any] | None:
     """缓存命中直接返回；否则恰好调用 1 次模型，任何异常只降级不重发。"""
-    from analysis_report_exporter import AnalysisNarrativeCache
+    from backend.reporting.analysis_report_exporter import AnalysisNarrativeCache
 
     key = AnalysisNarrativeCache.cache_key(
         session_id=int(session_id),
@@ -1839,7 +1839,7 @@ def run_class_analysis_generate(
     llm_client_factory: Callable[[], Any] | None,
 ) -> dict[str, object]:
     """class_analysis_generate job：装配数据 → 生成 AI 叙述 → 写状态文件。"""
-    from analysis_report_exporter import (
+    from backend.reporting.analysis_report_exporter import (
         AnalysisNarrativeCache,
         build_class_payload,
         build_report_prompt,

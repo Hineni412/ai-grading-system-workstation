@@ -54,7 +54,7 @@ def test_media_route_returns_expired_without_leaking_deleted_path(media_client) 
 
 
 def test_media_routes_show_originals_cleared(media_client) -> None:
-    from session_originals import clear_session_originals
+    from backend.files.session_originals import clear_session_originals
     client, seed, _ = media_client
     clear_session_originals(seed.db, seed.data_root, seed.session_id, clear_crop_cache=seed.service.clear_detail_crop_cache)
     for suffix in ("front", "front?variant=annotated"):
@@ -65,7 +65,7 @@ def test_media_routes_show_originals_cleared(media_client) -> None:
 
 
 def test_analysis_keeps_scores_and_removes_evidence_links_after_cleanup(media_client) -> None:
-    from session_originals import clear_session_originals
+    from backend.files.session_originals import clear_session_originals
     client, seed, _ = media_client
     url = f"/api/sessions/{seed.session_id}/analysis/questions/Q1/students"
     before = client.get(url)

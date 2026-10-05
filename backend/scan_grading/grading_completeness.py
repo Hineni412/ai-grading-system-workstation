@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from question_id_contract import (
+from backend.question_id_contract import (
     QuestionIdCatalog,
     canonicalize_question_document,
 )

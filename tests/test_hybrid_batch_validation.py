@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """AI batch major-question validation tolerance and retry regressions."""
 
-from ai_batch_grading_service import (
+from backend.scan_grading.ai_batch_grading_service import (
     MajorQuestionSpec,
     grade_major_question_batch,
     validate_ai_major_response,

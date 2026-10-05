@@ -248,7 +248,7 @@ class ReportRepositoryGateway:
                 int(session_id),
             )
             from path_manager import resolve_stored_file_path
-            from question_id_contract import canonicalize_question_document
+            from backend.question_id_contract import canonicalize_question_document
             try:
                 rubric_path = resolve_stored_file_path(
                     (snapshot.session or {}).get("rubric_path"),

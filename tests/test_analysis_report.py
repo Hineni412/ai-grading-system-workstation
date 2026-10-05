@@ -236,7 +236,7 @@ def analysis_db(tmp_path: Path):
 
 
 def _make_generator(db, out_dir: Path, cache_dir: Path, llm_client) -> "object":
-    from analysis_report_exporter import AnalysisReportGenerator
+    from backend.reporting.analysis_report_exporter import AnalysisReportGenerator
 
     return AnalysisReportGenerator(
         db,
@@ -248,7 +248,7 @@ def _make_generator(db, out_dir: Path, cache_dir: Path, llm_client) -> "object":
 
 
 def test_llm_failure_degrades_to_data_only_report(analysis_db, tmp_path: Path) -> None:
-    from llm_client import LLMResponseFormatError
+    from backend.llm.llm_client import LLMResponseFormatError
 
     db, session_id, _root = analysis_db
     client = FakeLLMClient(error=LLMResponseFormatError("bad json"))
@@ -316,9 +316,9 @@ def analysis_api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def _patch_configured(monkeypatch: pytest.MonkeyPatch, configured: bool) -> None:
-    import analysis_report_exporter as exporter
+    import backend.reporting.analysis_report_exporter as exporter
     import backend.model_profiles.content_generation as content_generation
-    from llm_client import LLMSettings
+    from backend.llm.llm_client import LLMSettings
 
     settings = (
         LLMSettings(
@@ -499,7 +499,7 @@ def test_visual_reports_include_manual_students_and_keep_final_scores(
 
 @pytest.mark.parametrize("legacy_version", ["personal_analysis_html_v11_parent_brief", "personal_analysis_html_v10_actions", "personal_analysis_html_v9_problem_refs", "personal_analysis_html_v8_parts"])
 def test_knowledge_prompt_upgrade_keeps_old_cache_but_generates_current_narrative(analysis_db, tmp_path, legacy_version):
-    from analysis_report_exporter import AnalysisNarrativeCache
+    from backend.reporting.analysis_report_exporter import AnalysisNarrativeCache
     from backend.session_analysis import assemble_session_analysis
 
     db, session_id, root = analysis_db
@@ -529,7 +529,7 @@ def test_knowledge_prompt_upgrade_keeps_old_cache_but_generates_current_narrativ
     assert client.calls == len(data.students)
 
 def test_personal_report_revision_keeps_peers_current_and_reads_stale_text(analysis_db, tmp_path):
-    from analysis_report_exporter import AnalysisReportGenerator
+    from backend.reporting.analysis_report_exporter import AnalysisReportGenerator
     from backend.personal_reports import personal_report_states, render_personal_report
     db, sid, root = analysis_db
     with sqlite3.connect(db.db_path) as conn:
@@ -561,7 +561,7 @@ def test_personal_report_revision_keeps_peers_current_and_reads_stale_text(analy
 
 
 def test_personal_cache_only_and_legacy_lookup_do_not_write_or_create_client(analysis_db, tmp_path):
-    from analysis_report_exporter import AnalysisNarrativeCache, AnalysisReportGenerator
+    from backend.reporting.analysis_report_exporter import AnalysisNarrativeCache, AnalysisReportGenerator
     from backend.report_exports import score_revision, report_narrative_version
     from backend.personal_reports import personal_report_states
     db, sid, root = analysis_db
@@ -600,7 +600,7 @@ def test_personal_online_and_offline_images_share_content_and_released_notice(an
     assert 'data:image/jpeg' not in online
     assert 'data:image/jpeg' in offline
     assert 'class="review-link"' not in online
-    from analysis_report_exporter import _PERSONAL_KEYBOARD_JS
+    from backend.reporting.analysis_report_exporter import _PERSONAL_KEYBOARD_JS
     assert 'personal-report:key' in online and 'personal-report:key' not in offline
     normalize = lambda html: re.sub(r'src="(?:/api/[^\"]+|data:image/jpeg[^\"]+)"', 'src="SHOT"', html.replace(_PERSONAL_KEYBOARD_JS, ''))
     assert normalize(online) == normalize(offline)
@@ -610,7 +610,7 @@ def test_personal_online_and_offline_images_share_content_and_released_notice(an
     before = asdict(personal_render_context(db, sid, root / 'reports')['data'])
     render_personal_report(db, sid, papers[1]['student_id'], root / 'reports', narrative_mode='none')
     assert asdict(personal_render_context(db, sid, root / 'reports')['data']) == before
-    monkeypatch.setattr("session_originals.originals_state", lambda *_a: "cleared")
+    monkeypatch.setattr("backend.files.session_originals.originals_state", lambda *_a: "cleared")
     for mode in (True, False):
         html = render_personal_report(db, sid, student_id, root / "reports", narrative_mode="none", online=mode)
         assert RELEASED_SHOT_NOTE in html
@@ -636,7 +636,7 @@ def test_personal_report_teacher_and_bank_changes_invalidate_input(analysis_db, 
 def test_personal_index_corruption_and_caller_thread_writes(analysis_db, monkeypatch):
     import threading
     import backend.personal_reports as personal
-    from analysis_report_exporter import AnalysisReportGenerator
+    from backend.reporting.analysis_report_exporter import AnalysisReportGenerator
     db, sid, root = analysis_db
     owner = threading.get_ident()
     original = personal.publish_personal_index

@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
-import scan_identity
-from scan_identity import (
+import backend.scan_grading.scan_identity as scan_identity
+from backend.scan_grading.scan_identity import (
     MIN_EVIDENCE,
     IdentityDecision,
     PaperEvidence,
@@ -21,7 +21,7 @@ from scan_identity import (
     read_class_name,
     roster_scores,
 )
-from scanner import (
+from backend.scan_grading.scanner import (
     PageRecord,
     Scanner,
     _identity_suggestions,
@@ -223,9 +223,9 @@ def test_analyze_assigns_roster_identity_without_remote_model(
         [("", 0.1, weak)],                # paper 2 name box
         [("", 0.1, np.zeros((2, 1)))],    # paper 2 class band
     ])
-    fake_local_ocr = types.ModuleType("local_ocr")
+    fake_local_ocr = types.ModuleType("backend.document_parsing.local_ocr")
     fake_local_ocr.get_local_ocr = lambda: fake  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "local_ocr", fake_local_ocr)
+    monkeypatch.setitem(sys.modules, "backend.document_parsing.local_ocr", fake_local_ocr)
 
     for name in ("p1a.jpg", "p1b.jpg", "p2a.jpg", "p2b.jpg"):
         Image.new("RGB", (800, 1100), "white").save(tmp_path / name)
@@ -344,7 +344,7 @@ def test_pdf_parity_pairing_uses_roster_decisions(tmp_path: Path) -> None:
 
 def test_detected_class_reports_only_the_papers_own_reading() -> None:
     """File-majority prior class must not show up as the paper's 卷面班级."""
-    from scanner import _roster_decision_paper
+    from backend.scan_grading.scanner import _roster_decision_paper
 
     roster = [RosterEntry(1, "张三", "9"), RosterEntry(2, "李四", "10")]
     papers = [

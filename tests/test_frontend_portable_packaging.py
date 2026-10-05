@@ -30,6 +30,17 @@ def test_copy_sources_carries_only_built_frontend_assets(tmp_path: Path) -> None
     (source / "backend" / "api" / "app.py").write_text(
         "APP_READY = True\n", encoding="utf-8"
     )
+    modules = (
+        'backend/scan_grading/scanner.py',
+        'backend/answer_regions/answer_region_geometry.py',
+        'backend/reporting/analysis_report_exporter.py',
+        'backend/llm/llm_client.py',
+        'backend/repositories/db_manager.py',
+    )
+    for relative in modules:
+        module_path = source / relative
+        module_path.parent.mkdir(parents=True, exist_ok=True)
+        module_path.write_text('READY = True\n', encoding='utf-8')
     (source / "frontend" / "dist" / "index.html").write_text(
         "<div id='app'></div>", encoding="utf-8"
     )
@@ -49,6 +60,7 @@ def test_copy_sources_carries_only_built_frontend_assets(tmp_path: Path) -> None
     assert (package / "frontend" / "dist" / "index.html").is_file()
     assert (package / "frontend" / "dist" / "assets" / "app.js").is_file()
     assert (package / "backend" / "api" / "app.py").is_file()
+    assert all((package / relative).read_text(encoding='utf-8') == 'READY = True\n' for relative in modules)
     assert not (package / "frontend" / "src").exists()
     assert not (package / "frontend" / "node_modules").exists()
     assert not (package / "pages").exists()

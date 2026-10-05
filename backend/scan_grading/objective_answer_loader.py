@@ -3,7 +3,7 @@ import logging
 from typing import Any
 
 from path_manager import get_path_manager
-from question_id_contract import (
+from backend.question_id_contract import (
     QuestionIdContractError,
     canonical_part_id,
     question_id_coordinates,

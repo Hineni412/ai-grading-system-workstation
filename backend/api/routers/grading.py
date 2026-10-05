@@ -41,7 +41,7 @@ from backend.jobs.manager import (
 )
 from backend.repositories.access import GradingRepositoryAccess
 from path_manager import resolve_stored_file_path
-from session_originals import OriginalPagesCleared
+from backend.files.session_originals import OriginalPagesCleared
 
 router = APIRouter(prefix="/api", tags=["grading"])
 
@@ -483,7 +483,7 @@ def run_session_grading(
         return _job_response(job)
 
     if request.resume_run_id is not None:
-        from grading_run_store import GradingRunStore
+        from backend.scan_grading.grading_run_store import GradingRunStore
 
         stored_run = GradingRunStore(db.db_path).get_run(int(request.resume_run_id))
         if stored_run is not None and str(stored_run.grading_mode) != "ai":

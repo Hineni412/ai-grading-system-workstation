@@ -9,9 +9,9 @@ from queue import Empty
 
 import pytest
 
-import answer_region_draft_service as draft_module
-from answer_region_draft_service import AnswerRegionDraftService, DraftLoadResult
-from answer_region_session_lock import get_answer_region_session_lock
+import backend.answer_regions.answer_region_draft_service as draft_module
+from backend.answer_regions.answer_region_draft_service import AnswerRegionDraftService, DraftLoadResult
+from backend.answer_regions.answer_region_session_lock import get_answer_region_session_lock
 
 
 def test_write_failure_preserves_good_draft_and_removes_partial_temp(

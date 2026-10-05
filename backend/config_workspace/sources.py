@@ -1545,7 +1545,7 @@ class ConfigSourceService:
 
         from question_bank.document_pipeline.pipeline import QuestionDocumentPipeline
         from question_bank.importers.batch_importer import _extract_paper
-        from rubric_auto_cropper import (
+        from backend.document_parsing.rubric_auto_cropper import (
             extract_pdf_images,
             extract_pdf_question_images,
         )

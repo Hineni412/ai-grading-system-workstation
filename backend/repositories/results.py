@@ -17,14 +17,14 @@ from backend.repositories.papers import (
     PaperRepository,
     sanitize_incomplete_failure_summary,
 )
-from grading_completeness import (
+from backend.scan_grading.grading_completeness import (
     audit_grading_details,
     details_require_review,
     merge_detail_metadata,
     resolve_grading_completeness,
 )
 from path_manager import resolve_stored_file_path
-from solution_answer_guard import integer_business_score
+from backend.scan_grading.solution_answer_guard import integer_business_score
 
 try:
     from question_bank.taxonomy.registry import (

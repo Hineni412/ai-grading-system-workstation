@@ -15,8 +15,8 @@ from backend.repositories.grading_database import open_grading_repositories
 @pytest.mark.parametrize("action, item_status, run_state", [("resume", "pending", "paused"), ("retry-failed", "failed", "failed")])
 @pytest.mark.parametrize("clear", [False, True])
 def test_originals_release_allows_resume_retry_and_clear_blocks_them(tmp_path, action, item_status, run_state, clear):
-    from grading_run_store import GradingRunStore
-    from session_originals import release_session_scans, clear_session_originals
+    from backend.scan_grading.grading_run_store import GradingRunStore
+    from backend.files.session_originals import release_session_scans, clear_session_originals
     from tests.test_session_originals import _scans
     client, db, manager = _system(tmp_path, config_fingerprint_resolver=lambda *_: "a" * 64)
     sid = db.sessions.create_grading_session("隔离原卷入口测试", "rubric.json", "answer.json")
@@ -48,7 +48,7 @@ def _configure_preflight_binding(db, tmp_path, session_id: int) -> dict:
     from PIL import Image
 
     from backend.config_workspace.publish import load_editor_config
-    from template_upload_service import TemplateUploadService
+    from backend.exam_intake.template_upload_service import TemplateUploadService
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -194,7 +194,7 @@ def test_cancelled_run_cannot_resume_and_legacy_run_retry_is_rejected(
     tmp_path,
 ) -> None:
     from backend.repositories.students import StudentRecord
-    from grading_run_store import GradingRunStore
+    from backend.scan_grading.grading_run_store import GradingRunStore
 
     client, db, manager = _system(tmp_path)
     db.students.upsert_students([StudentRecord("S001", "学生甲", "七年级 1 班")])
@@ -464,7 +464,7 @@ def test_start_requires_current_frozen_preflight_and_pending_issue_confirmation(
         assert started.json()["payload"]["grading_mode"] == "ai"
         assert "exams_dir" not in started.json()["payload"]
 
-        from grading_run_store import GradingRunStore
+        from backend.scan_grading.grading_run_store import GradingRunStore
 
         active_run = GradingRunStore(db.db_path).begin(
             session_id, "d" * 64, "ai"
@@ -489,7 +489,7 @@ def test_resume_rejects_changed_grading_configuration_before_submitting_job(
     tmp_path,
 ) -> None:
     from backend.repositories.students import StudentRecord
-    from grading_run_store import GradingRunStore
+    from backend.scan_grading.grading_run_store import GradingRunStore
 
     client, db, manager = _system(
         tmp_path,
@@ -533,7 +533,7 @@ def test_terminal_legacy_run_cannot_be_supplemented(
     tmp_path,
     grading_mode: str,
 ) -> None:
-    from grading_run_store import GradingRunStore
+    from backend.scan_grading.grading_run_store import GradingRunStore
 
     client, db, manager = _system(
         tmp_path,

@@ -52,7 +52,7 @@ def test_originals_preview_disables_ineligible_exam(tmp_path, monkeypatch, condi
 
 
 def test_originals_confirmation_revision_and_resume(tmp_path):
-    from session_originals import receipt_path
+    from backend.files.session_originals import receipt_path
     client, seed, _ = _originals_client(tmp_path)
     url = f"/api/sessions/{seed.session_id}/originals"
     preview = client.get(url).json()

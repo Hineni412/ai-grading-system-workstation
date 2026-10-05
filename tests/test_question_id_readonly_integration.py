@@ -2,9 +2,9 @@ import hashlib
 import json
 from pathlib import Path
 
-from answer_region_models import load_question_binding_catalog
-from grading_completeness import audit_grading_details
-from grading_service import _load_rubric_for_preflight, _target_question_ids_from_regions
+from backend.answer_regions.answer_region_models import load_question_binding_catalog
+from backend.scan_grading.grading_completeness import audit_grading_details
+from backend.scan_grading.grading_service import _load_rubric_for_preflight, _target_question_ids_from_regions
 
 
 def digest(path: Path) -> str:
@@ -12,7 +12,7 @@ def digest(path: Path) -> str:
 
 
 def test_repeated_id_lookup_keeps_alias_ambiguity_and_tracks_changed_known_scope():
-    from question_id_contract import question_id_coordinates, resolve_known_question_id
+    from backend.question_id_contract import question_id_coordinates, resolve_known_question_id
     known = ["Q12", "Q13(P1)", "Q13(P2)"]
     for _ in range(3):
         assert resolve_known_question_id("Q12（1）", iter(known)) == "Q12"

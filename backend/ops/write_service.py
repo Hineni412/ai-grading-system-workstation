@@ -11,7 +11,7 @@ from typing import Any
 
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobRecord
-from data_transfer_service import (
+from backend.files.data_transfer_service import (
     build_export_manifest,
     default_export_sources,
     normalize_export_scope,

@@ -1,34 +1,53 @@
 from __future__ import annotations
 
 import subprocess
+import re
+from pathlib import PurePosixPath
 
 
-def is_allowed_tracked_user_data(path: str) -> bool:
-    normalized = path.replace("\\", "/")
-    if not normalized.startswith("user_data/"):
-        return True
-    return normalized.endswith("/.gitkeep") or normalized == "user_data/.gitkeep"
+PRIVATE_PREFIXES = (
+    'user_data/', 'backups/', 'logs/', 'output/', 'outputs/', 'runtime/',
+    'dist/', 'build/', 'node_modules/', '.test-runs/', '.codex_artifacts/',
+    '.p35t/', '.codex-review/', 'scratch/', 'frontend/node_modules/',
+    'frontend/dist/', 'frontend/test-results/', 'frontend/playwright-report/',
+)
 
 
-def tracked_user_data_files() -> list[str]:
+def is_allowed_tracked_path(path: str) -> bool:
+    normalized = path.replace('\\', '/').casefold()
+    if normalized.startswith(PRIVATE_PREFIXES):
+        return False
+    name = PurePosixPath(normalized).name
+    if name == 'api_profiles.json' or name.startswith('api_profiles.json.'):
+        return False
+    if name.endswith(('.db', '.sqlite', '.sqlite3', '.pem', '.key')):
+        return False
+    if re.search(r'\.(db|sqlite|sqlite3)[-.](wal|shm|journal|bak|backup)$', name):
+        return False
+    return not (name.startswith('.env') and name not in {
+        '.env.example', '.env.sample', '.env.template',
+    })
+
+
+def tracked_files() -> list[str]:
     result = subprocess.run(
-        ["git", "-c", "core.quotepath=false", "ls-files", "user_data"],
+        ["git", "ls-files", "-z"],
         check=True,
         capture_output=True,
         text=True,
         encoding="utf-8",
     )
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return [path for path in result.stdout.split('\0') if path]
 
 
 def main() -> int:
-    blocked = [path for path in tracked_user_data_files() if not is_allowed_tracked_user_data(path)]
+    blocked = [path for path in tracked_files() if not is_allowed_tracked_path(path)]
     if not blocked:
-        print("OK: no tracked runtime user data")
+        print("OK: no tracked private data, credential files or generated runtime files")
         return 0
-    print("Tracked runtime user data should be removed from Git index:")
+    print("Private or generated files should be removed from Git index:")
     for path in blocked[:200]:
-        print(path)
+        print(repr(path))
     if len(blocked) > 200:
         print(f"... and {len(blocked) - 200} more")
     return 1

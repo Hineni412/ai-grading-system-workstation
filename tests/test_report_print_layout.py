@@ -6,8 +6,8 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from db_manager import DBManager
-from report import ReportGenerator
+from backend.repositories.db_manager import DBManager
+from backend.reporting.report import ReportGenerator
 
 
 RUBRIC = {

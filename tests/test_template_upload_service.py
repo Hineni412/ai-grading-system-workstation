@@ -8,8 +8,8 @@ import sqlite3
 import fitz
 import pytest
 
-from db_manager import DBManager
-from template_upload_service import (
+from backend.repositories.db_manager import DBManager
+from backend.exam_intake.template_upload_service import (
     TemplateUploadService,
     TemplateUploadInProgressError,
     TemplateUploadSubmissionConflictError,

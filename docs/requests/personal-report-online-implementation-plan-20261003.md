@@ -20,7 +20,7 @@
 
 ## 2. 现状（已查证）
 
-- 生成与导出：`analysis_report_exporter.py::AnalysisReportExporter.export_session(session_id, report_type, *, score_revision, student_ids=None, html_only=False)` → `_export_personal`。每生一个模型请求（最多并发 3），先整理错因（`backend/class_analysis.py::run_cause_analysis`，整场逐题、已整理不重复调用），再渲染 `_render_personal_html` 并打包 ZIP。`student_ids` 只在导出器内部可用，API 和任务没有暴露。
+- 生成与导出：`backend/reporting/analysis_report_exporter.py::AnalysisReportExporter.export_session(session_id, report_type, *, score_revision, student_ids=None, html_only=False)` → `_export_personal`。每生一个模型请求（最多并发 3），先整理错因（`backend/class_analysis.py::run_cause_analysis`，整场逐题、已整理不重复调用），再渲染 `_render_personal_html` 并打包 ZIP。`student_ids` 只在导出器内部可用，API 和任务没有暴露。
 - 叙述缓存：`AnalysisNarrativeCache`，文件在 `user_data/reports/.analysis_narrative_cache/<sha256>.json`，键 = `(session_id, score_revision, rendition_version, "personal:{student_id}")` 的哈希。`backend/report_exports.py::score_revision` 是整场哈希（全场成绩、明细、教师锁及关联题库资料），所以任何一人改分都会让全场缓存失配。没有按学生的索引，无法找到“上一次生成”的叙述。
 - 图片：`capture_lost_question_shots` 读取原卷正反面并按题框裁切，编码为 base64 写进 HTML（`_render_personal_html` 第 2066、2707 行使用 `shot["data_uri"]`）；题库题图在第 2131 行同样内嵌。公式资源由 `_report_math_assets()` 内嵌。
 - 任务与下载：`POST /api/sessions/{id}/reports/export`（`backend/api/routers/reports.py`）→ `submit_report_export`（按报告类型与整场修订号去重）→ `backend/jobs/default_handlers.py` 的 `report_export` 处理；`backend/files/service.py` 中 `personal_analysis_html` 属于 `RETAINED_REPORT_TYPES`，下载后不删除。错题本任务（`backend/jobs/wrong_question_export.py`，`consume_after_download=True`）是“只读生成 → 打包 → 下载后删除”的现成样板。
@@ -58,7 +58,7 @@
 
 ### 3.4 新模块位置
 
-新建 `backend/personal_reports.py`，承担：本人修订号、索引读写、状态计算、单生在线渲染上下文缓存。不继续加大 `analysis_report_exporter.py`（已 3555 行）；导出器只做必要的拆分（4.2）。属于考试阅卷模块，不读写训练或题库写入路径。
+新建 `backend/personal_reports.py`，承担：本人修订号、索引读写、状态计算、单生在线渲染上下文缓存。不继续加大 `backend/reporting/analysis_report_exporter.py`（已 3555 行）；导出器只做必要的拆分（4.2）。属于考试阅卷模块，不读写训练或题库写入路径。
 
 ### 3.5 在线与导出的区别
 
@@ -84,7 +84,7 @@
 | 批量导出 | `report_export`（会调模型、整场一包、留存） / 错题本任务 | 新任务类型 `personal_report_bundle`，照错题本样板：只读、多场多人、下载后删除 |
 | 状态 | 无 | 新建只读接口 |
 
-### 4.2 导出器拆分（`analysis_report_exporter.py`）
+### 4.2 导出器拆分（`backend/reporting/analysis_report_exporter.py`）
 
 1. 把 `capture_lost_question_shots` 拆成 `lost_question_shot_specs(...)`（返回 `[{key, parent_question_id, region_question_id, caption, page, region, image_path}]`，不读像素）和现有的编码函数。导出继续调用编码（含 12 MiB 预算）；在线调用规格并生成 URL。键格式沿用 `parent` / `parent:index`。
 2. `_render_personal_html` 中作答图改读 `shot.get("src") or shot["data_uri"]`；新增关键字参数 `online: bool = False` 与 `review_links: bool = False`。`online=True` 时 `<img>` 不加懒加载（保证打印时已加载），正文通过同源消息传递 Esc 和左右翻页按键；外层校验消息来源窗口与来源地址。`review_links=True` 时在答题一览展开详情和失分题附录每题旁输出 `<a href="#" class="review-link" data-question-id="Q5">去复核这题 ›</a>`，并附一小段脚本：点击后 `window.parent.postMessage({type: 'personal-report:open-review', questionId}, location.origin)`。

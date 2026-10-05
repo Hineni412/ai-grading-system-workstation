@@ -13,7 +13,7 @@ from backend.llm.errors import LLMErrorCategory, classify_transport_error
 
 @pytest.mark.parametrize("error", [RuntimeError("synthetic callback detail"), KeyboardInterrupt()])
 def test_usage_callback_preserves_response_and_control_signals(error, caplog) -> None:
-    from llm_client import LLMClient
+    from backend.llm.llm_client import LLMClient
 
     client = LLMClient.__new__(LLMClient)
     gateway = _RecordingGateway()

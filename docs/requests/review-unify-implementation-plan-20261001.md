@@ -35,7 +35,7 @@
    - `_normalize_teacher_steps` 只存 `part_id/step_id/score_awarded/max_score/achievement/core_goal/evidence_point_ids/carried_error_from`。
    - 错因整理读取的字段是 `session_analysis._STEP_UNIT_FIELDS` 里的 `reason/missing_or_error/student_evidence`，教师记录里没有这几项。
 4. **AI 已经对每一步给出"拿不准"标记。**
-   - `solution_answer_guard.py` 的步骤完成状态允许 `uncertain`；`uncertain_step_ids()` 能取出这些步骤。
+   - `backend/scan_grading/solution_answer_guard.py` 的步骤完成状态允许 `uncertain`；`uncertain_step_ids()` 能取出这些步骤。
    - 复核列表接口默认带 `step_assessments`（`review/service.py` 的 `include_evidence=True`）。
    - AI 没有百分比形式的分步置信度。用户已决定**不新增**分步置信度，也不改提示词。
 5. 掌握度规则已经符合用户要求，**知识训练模块不需要改**：

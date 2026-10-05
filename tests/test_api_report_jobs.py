@@ -154,7 +154,7 @@ def personal_api(tmp_path):
 
 
 def test_personal_api_states_html_shots_and_read_only_boundaries(personal_api, monkeypatch):
-    from analysis_report_exporter import AnalysisReportGenerator
+    from backend.reporting.analysis_report_exporter import AnalysisReportGenerator
     from tests.test_analysis_report import FakeLLMClient
     client, db, sid, papers, reports, _manager = personal_api
     student_id = papers[0]["student_id"]
@@ -174,7 +174,7 @@ def test_personal_api_states_html_shots_and_read_only_boundaries(personal_api, m
     assert shot.content.startswith(b"\xff\xd8")
     assert client.get(f"{prefix}/{student_id}/shots/Q2").content == shot.content
     from PIL import Image
-    from analysis_report_exporter import lost_question_shot_specs
+    from backend.reporting.analysis_report_exporter import lost_question_shot_specs
     from backend.personal_reports import personal_render_context
     context = personal_render_context(db, sid, reports)
     student = next(s for s in context['data'].students if s.student_id == student_id)
@@ -187,14 +187,14 @@ def test_personal_api_states_html_shots_and_read_only_boundaries(personal_api, m
         narrative_cache_dir=reports / ".analysis_narrative_cache", llm_client_factory=lambda: FakeLLMClient())
     generator.export_session(sid, "personal_analysis_html", html_only=True)
     assert client.get(f"{prefix}/{student_id}/html").status_code == 200
-    monkeypatch.setattr("session_originals.originals_state", lambda *_args: "cleared")
+    monkeypatch.setattr("backend.files.session_originals.originals_state", lambda *_args: "cleared")
     assert client.get(f"{prefix}/{student_id}/shots/Q2").status_code == 410
     released = client.get(f"{prefix}/{student_id}/html")
     assert '原卷已释放，无法显示作答图；分数与批语不受影响' in released.text
 
 
 def test_personal_summary_matches_current_stale_and_missing_list(personal_api):
-    from analysis_report_exporter import AnalysisReportGenerator
+    from backend.reporting.analysis_report_exporter import AnalysisReportGenerator
     from backend.personal_reports import personal_report_summary
     from tests.test_analysis_report import FakeLLMClient
     client, db, sid, papers, reports, _manager = personal_api

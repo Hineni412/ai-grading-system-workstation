@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
-from session_originals import originals_state
+from backend.files.session_originals import originals_state
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import get_request_diagnosis_profile_service
 from backend.api.schemas.graph import (

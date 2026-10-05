@@ -103,7 +103,7 @@ def test_student_delete_is_rejected_while_grading_is_active(
     run_state: str,
 ) -> None:
     from backend.repositories.students import StudentRecord
-    from grading_run_store import GradingRunStore
+    from backend.scan_grading.grading_run_store import GradingRunStore
 
     client, db = _client_with_db(tmp_path)
     db.students.upsert_students([StudentRecord("S001", "Alice", "Class 1")])

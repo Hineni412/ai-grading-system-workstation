@@ -6,8 +6,8 @@ import subprocess
 from pathlib import Path
 
 from backend.jobs.store import JobStore
-from db_manager import DBManager
-from grading_run_store import GradingRunStore
+from backend.repositories.db_manager import DBManager
+from backend.scan_grading.grading_run_store import GradingRunStore
 from question_bank.database.schema import initialize_database
 
 

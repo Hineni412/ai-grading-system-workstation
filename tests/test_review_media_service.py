@@ -13,8 +13,8 @@ from backend.repositories.grading_database import open_grading_repositories
 
 
 def test_legacy_annotations_regenerate_in_cache_and_remain_until_cleanup(tmp_path, monkeypatch):
-    import manual_review_service
-    from manual_review_service import ManualReviewService
+    import backend.review.manual_review_service as manual_review_service
+    from backend.review.manual_review_service import ManualReviewService
     seed = _seed_media(tmp_path)
     legacy = seed.data_root / "annotated" / "session_1" / "front_annotated.jpg"
     _image(legacy)
@@ -33,7 +33,7 @@ def test_legacy_annotations_regenerate_in_cache_and_remain_until_cleanup(tmp_pat
 def test_annotation_cache_prunes_oldest_but_keeps_recent_and_current(tmp_path):
     import os
     import time
-    from manual_review_service import ManualReviewService
+    from backend.review.manual_review_service import ManualReviewService
     seed = _seed_media(tmp_path)
     directory = seed.annotated_dir / "session_1"
     directory.mkdir(parents=True)
@@ -75,9 +75,9 @@ def _render_annotation_in_separate_process(
     release_first_render,
     completed,
 ) -> None:
-    import manual_review_service as manual_review_module
+    import backend.review.manual_review_service as manual_review_module
     
-    from manual_review_service import ManualReviewService
+    from backend.review.manual_review_service import ManualReviewService
 
     def fake_render(**kwargs):
         score = int(float(kwargs["question_scores"]["Q1"]["score_awarded"]))
@@ -213,7 +213,7 @@ def _seed_media(tmp_path: Path) -> SeededMedia:
 def test_annotation_rerender_failure_preserves_previous_published_pair(
     tmp_path: Path,
 ) -> None:
-    from manual_review_service import ManualReviewService
+    from backend.review.manual_review_service import ManualReviewService
 
     seed = _seed_media(tmp_path)
     service = ManualReviewService(seed.db, seed.annotated_dir)

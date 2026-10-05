@@ -8,6 +8,10 @@
 
 `运行.bat` 默认把模型配置放在 `user_data/config/api_profiles.json`，未覆盖时路径管理器使用 Windows 账户本机配置目录。本机业务数据库、备份和含密钥的配置不进入 Git。模型配置也不进入业务导出和文档。
 
+`.gitignore` 排除本机数据与生成文件。`tools/check_tracked_user_data.py` 检查已进入 Git 的文件路径，覆盖业务数据、数据库及其 WAL、SHM、回滚日志和备份、模型配置及其备份、环境密钥文件、私钥和运行产物；CI 在后端测试前执行该检查。路径检查不会扫描代码正文中的硬编码密钥，提交前仍需核对实际改动。
+
+如果密钥曾经公开，仓库中删除密钥不能使旧密钥失效，必须在服务商后台撤销或更换。历史重写也不会清除别人已有的副本或 GitHub 的旧 PR 引用、缓存；后两项需通过 [GitHub Support](https://support.github.com/) 申请，具体条件见 [GitHub 敏感数据清理说明](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)。清理旧 PR 引用可能使相关历史差异页无法再查看。
+
 ## 模型发送
 
 请求按功能包含题干、答案、答卷文字或图片及必要上下文；供应商处理方式由所配置服务的政策决定。

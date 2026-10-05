@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 MODEL_DIRECTORY = (
-    Path(__file__).resolve().parent / "runtime" / "models" / "mineru"
+    Path(__file__).resolve().parents[2] / "runtime" / "models" / "mineru"
     / "MinerU-4_models_onnx" / "OCR" / "paddleocr"
 )
 MODEL_FILENAMES = (

@@ -7,15 +7,15 @@ from queue import Empty
 
 import pytest
 
-import answer_region_commit_service as commit_module
-from answer_region_commit_service import AnswerRegionCommitService
-from answer_region_draft_service import AnswerRegionDraftService
-from answer_region_session_lock import get_answer_region_session_lock
+import backend.answer_regions.answer_region_commit_service as commit_module
+from backend.answer_regions.answer_region_commit_service import AnswerRegionCommitService
+from backend.answer_regions.answer_region_draft_service import AnswerRegionDraftService
+from backend.answer_regions.answer_region_session_lock import get_answer_region_session_lock
 from backend.repositories.access import (
     GradingRepositoryAccess,
     as_grading_repositories,
 )
-from db_manager import DBManager
+from backend.repositories.db_manager import DBManager
 
 
 IMAGE_SIZES = {"front": (200, 300), "back": (200, 300)}

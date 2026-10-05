@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 
-from request_pacer import RequestPacer
+from backend.llm.request_pacer import RequestPacer
 
 from .policy import LLMRequestKind
 

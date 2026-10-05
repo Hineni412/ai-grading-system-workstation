@@ -74,7 +74,7 @@ from question_bank.taxonomy.curriculum_catalog import (
     curriculum_volume,
     infer_curriculum_volume_from_text,
 )
-from session_cleanup import (
+from backend.files.session_cleanup import (
     SessionDerivedTrainingDataExists,
     SessionPermanentDeletionRecoveryFailed,
     SessionStorageDeletionIncomplete,
@@ -96,7 +96,7 @@ class OriginalsActionRequest(BaseModel):
 
 
 def _originals_snapshot(session_id, db, data_root, workspace, review_service, backup_service=None, *, shared_refs=None):
-    from session_originals import measure_session_originals, originals_state, _receipt
+    from backend.files.session_originals import measure_session_originals, originals_state, _receipt
     from backend.review.manual_context import current_manual_context
     try:
         impact = db.sessions.session_deletion_impact(session_id)
@@ -163,7 +163,7 @@ def _check_originals_action(snapshot, request, *, clear):
 def release_original_scans(session_id: int, request: OriginalsActionRequest, db=Depends(get_grading_db),
                            data_root: Path=Depends(get_data_root), workspace=Depends(get_scan_grading_workspace),
                            review_service=Depends(get_review_application_service)):
-    from session_originals import release_session_scans
+    from backend.files.session_originals import release_session_scans
     with session_lifecycle_guard(session_id):
         snapshot = _originals_snapshot(session_id, db, data_root, workspace, review_service)
         _check_originals_action(snapshot, request, clear=False)
@@ -177,7 +177,7 @@ def release_original_scans(session_id: int, request: OriginalsActionRequest, db=
 def clear_original_pages(session_id: int, request: OriginalsActionRequest, db=Depends(get_grading_db),
                          data_root: Path=Depends(get_data_root), workspace=Depends(get_scan_grading_workspace),
                          review_service=Depends(get_review_application_service), media_service=Depends(get_media_service)):
-    from session_originals import clear_session_originals
+    from backend.files.session_originals import clear_session_originals
     with session_lifecycle_guard(session_id):
         snapshot = _originals_snapshot(session_id, db, data_root, workspace, review_service)
         if snapshot["originals_state"] == "cleared" and request.confirmation_phrase == "确认清除":

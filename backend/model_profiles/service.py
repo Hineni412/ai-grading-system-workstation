@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from api_profiles import PROFILE_FIELD_REMOVE, ApiProfileStore
+from backend.llm.api_profiles import PROFILE_FIELD_REMOVE, ApiProfileStore
 from backend.llm.execution import (
     LLMExecutionGovernorRegistry,
     LLMExecutionSettingsError,

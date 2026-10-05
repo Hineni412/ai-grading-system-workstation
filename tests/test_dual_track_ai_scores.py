@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from backend.domain_models import GradingResult, QuestionGradingDetail
-from db_manager import DBManager
+from backend.repositories.db_manager import DBManager
 from backend.repositories.grading_database import open_grading_repositories
 
 
@@ -21,10 +21,10 @@ def _detail_by_question(db: DBManager, result_id: int) -> dict[str, dict[str, ob
 def test_hybrid_run_grades_locked_questions_and_teacher_score_wins(
     tmp_path: Path,
 ) -> None:
-    from grading_service import GradingService
-    from ai_batch_grading_service import AIBatchRunResult, PaperEntry
-    from llm_client import LLMClient
-    from scanner import ExamPaperGroup
+    from backend.scan_grading.grading_service import GradingService
+    from backend.scan_grading.ai_batch_grading_service import AIBatchRunResult, PaperEntry
+    from backend.llm.llm_client import LLMClient
+    from backend.scan_grading.scanner import ExamPaperGroup
 
     exams_dir = tmp_path / "exams"
     exams_dir.mkdir()
@@ -175,7 +175,7 @@ def test_hybrid_run_grades_locked_questions_and_teacher_score_wins(
 
     service = GradingService(db, MagicMock(spec=LLMClient))
     with patch(
-        "grading_service.run_ai_batch_grading", return_value=batch_result
+        "backend.scan_grading.grading_service.run_ai_batch_grading", return_value=batch_result
     ) as run:
         events = list(
             service.run_session_grading(

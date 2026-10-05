@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ai_grader import _normalize_grading_errors
+from backend.scan_grading.ai_grader import _normalize_grading_errors
 from backend.class_analysis import (
     CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION, CausePatternEditError,
     ClassAnalysisStateStore, edit_cause_pattern,
@@ -650,7 +650,7 @@ def test_grading_category_survives_without_legacy_error_type_tag():
 
 
 def test_ai_grading_prompt_uses_actual_work_not_legacy_tag_as_constraint():
-    from ai_batch_grading_service import MajorQuestionSpec, build_ai_major_prompt
+    from backend.scan_grading.ai_batch_grading_service import MajorQuestionSpec, build_ai_major_prompt
 
     spec = MajorQuestionSpec(
         question_id="Q1", detail_question_ids=["Q1"],

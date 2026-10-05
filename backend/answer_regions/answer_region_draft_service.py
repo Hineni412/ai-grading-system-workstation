@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
-from answer_region_session_lock import get_answer_region_session_lock
+from backend.answer_regions.answer_region_session_lock import get_answer_region_session_lock
 
 DraftLoadStatus = Literal["missing", "compatible", "incompatible", "corrupt"]
 _SCHEMA_VERSION = 1

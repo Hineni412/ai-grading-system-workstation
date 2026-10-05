@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from original_paper_exporter import (
+from backend.reporting.original_paper_exporter import (
     OriginalPaperExporter,
     PrintableScoreContractError,
     aggregate_parent_question_scores,
@@ -14,7 +14,7 @@ from original_paper_exporter import (
 
 
 def test_cleared_original_export_fails_with_readable_message(tmp_path):
-    from session_originals import clear_session_originals, OriginalPagesCleared
+    from backend.files.session_originals import clear_session_originals, OriginalPagesCleared
     from tests.test_review_media_service import _seed_media
     seed = _seed_media(tmp_path)
     clear_session_originals(seed.db, seed.data_root, seed.session_id, clear_crop_cache=lambda: 0)
@@ -142,7 +142,7 @@ def test_original_export_detects_template_anchors_once_and_renders_every_student
         }
 
     monkeypatch.setattr(
-        "original_paper_exporter.detect_printed_question_anchors",
+        "backend.reporting.original_paper_exporter.detect_printed_question_anchors",
         fake_detection,
     )
 
@@ -208,8 +208,8 @@ def test_shared_candidates_preserve_original_score_anchor_choice(tmp_path):
 
 
 def test_auto_regions_strip_rescues_missing_line_orders_numbers_and_spans_pages(tmp_path):
-    from answer_region_auto_proposal import propose_answer_regions
-    from answer_region_models import QuestionBindingCatalog, validate_regions
+    from backend.answer_regions.answer_region_auto_proposal import propose_answer_regions
+    from backend.answer_regions.answer_region_models import QuestionBindingCatalog, validate_regions
 
     pages = _synthetic_region_pages(tmp_path)
     catalog = QuestionBindingCatalog(
@@ -256,8 +256,8 @@ def test_auto_regions_strip_rescues_missing_line_orders_numbers_and_spans_pages(
 
 
 def test_auto_regions_double_columns_name_label_and_missing_name_fallback(tmp_path):
-    from answer_region_auto_proposal import propose_answer_regions
-    from answer_region_models import QuestionBindingCatalog
+    from backend.answer_regions.answer_region_auto_proposal import propose_answer_regions
+    from backend.answer_regions.answer_region_models import QuestionBindingCatalog
 
     pages = _synthetic_region_pages(tmp_path)
     calls = []

@@ -12,7 +12,7 @@ from backend.review.service import (
     ReviewApplicationService,
     ReviewConfirmationInput,
 )
-from db_manager import DBManager
+from backend.repositories.db_manager import DBManager
 from backend.repositories.grading_database import open_grading_repositories
 
 

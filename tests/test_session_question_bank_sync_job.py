@@ -20,7 +20,7 @@ from backend.jobs.store import (
     JobStore,
     QuestionBankSyncRequestTokenConflictError,
 )
-from db_manager import DBManager
+from backend.repositories.db_manager import DBManager
 from question_bank.database.schema import connect, initialize_database
 from tests.current_knowledge_support import install_current_knowledge
 from question_bank.services.question_write_service import QuestionBankWriteService

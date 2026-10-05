@@ -225,8 +225,8 @@ def _business_database_baselines(request, monkeypatch, current_schema_database):
     if relative not in DATABASE_BASELINE_TEST_PATHS:
         return
 
-    import db_manager
-    import grading_run_store
+    import backend.repositories.db_manager as db_manager
+    import backend.scan_grading.grading_run_store as grading_run_store
     from backend import schema_migrations
     from backend.jobs import store as job_store
     from question_bank.database import schema as question_bank_schema

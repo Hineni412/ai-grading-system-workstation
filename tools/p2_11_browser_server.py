@@ -130,7 +130,7 @@ def _grading_handler(paths):
         from backend.scan_grading.config_fingerprint import (
             session_grading_config_fingerprint,
         )
-        from grading_run_store import GradingRunStore
+        from backend.scan_grading.grading_run_store import GradingRunStore
 
         session_id = int(context.payload["session_id"])
         mode = str(context.payload.get("grading_mode") or "ai")

@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from session_originals import originals_state
+from backend.files.session_originals import originals_state
 from backend.api.app import ApiError, ErrorResponse
 from backend.error_causes import display_error_category
 from backend.api.dependencies import (

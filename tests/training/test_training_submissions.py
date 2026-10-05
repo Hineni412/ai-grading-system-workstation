@@ -232,7 +232,7 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
     from question_bank.mastery.current import CurrentMasteryCalculator
     from question_bank.current_knowledge import CurrentKnowledgeResolver
 
-    from db_manager import DBManager
+    from backend.repositories.db_manager import DBManager
     from integration.diagnosis_profile_service import DiagnosisProfileService
     from question_bank.training_criteria.analysis import (
         grading_config_skeleton_from_solution_evidence,

@@ -22,9 +22,9 @@ CURRENT_QUESTION_BANK_MIGRATION = sorted(QUESTION_BANK_MIGRATIONS.glob("*.sql"))
     -1
 ].stem
 RUNTIME_SCHEMA_OWNERS = (
-    PROJECT_ROOT / "db_manager.py",
+    PROJECT_ROOT / "backend/repositories/db_manager.py",
     PROJECT_ROOT / "backend" / "jobs" / "store.py",
-    PROJECT_ROOT / "grading_run_store.py",
+    PROJECT_ROOT / "backend/scan_grading/grading_run_store.py",
     PROJECT_ROOT / "question_bank" / "database" / "schema.py",
 )
 

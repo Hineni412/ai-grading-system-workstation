@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from api_profiles import ApiProfileStore
+from backend.llm.api_profiles import ApiProfileStore
 from backend.api.dependencies import get_model_profile_service
 from backend.api.routers.model_profiles import router
 from backend.model_profiles import ModelProfileService

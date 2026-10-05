@@ -4,7 +4,7 @@ import html
 import re
 from typing import Any
 
-from equivalence_engine import merge_equivalent_forms
+from backend.scan_grading.equivalence_engine import merge_equivalent_forms
 from question_bank.importers.batch_importer import (
     _extract_question_marker_number,
     _looks_like_answer_section_heading,

@@ -2865,7 +2865,7 @@ def test_handout_100_exports_in_order_and_consumes_download_without_training(dir
     from backend.jobs.store import JobStore
     from backend.jobs.training_handout import run_training_handout_export
     from backend.files.service import JobFileService
-    from db_manager import DBManager
+    from backend.repositories.db_manager import DBManager
     from question_bank.personalized_papers import PersonalizedPaperModule, CreatePaperCommand, PaperInvalid
 
     direct_module.clock = lambda: datetime.now(UTC)

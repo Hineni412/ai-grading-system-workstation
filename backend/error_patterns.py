@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from answer_normalizer import normalize_answer_text
+from backend.scan_grading.answer_normalizer import normalize_answer_text
 from backend.error_causes import (
     CAUSE_CATEGORIES,
     CAUSE_KIND_CATEGORIES,

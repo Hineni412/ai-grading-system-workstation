@@ -42,7 +42,7 @@ from backend.llm.transport import (
 from backend.llm.transport import (
     normalize_openai_base_url as _shared_normalize_openai_base_url,
 )
-from usage_logger import LOG_FILE as LLM_USAGE_LOG_FILE
+from backend.llm.usage_logger import LOG_FILE as LLM_USAGE_LOG_FILE
 
 
 def _default_usage_sink() -> JsonlUsageSink:

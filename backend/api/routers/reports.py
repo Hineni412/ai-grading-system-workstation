@@ -106,11 +106,11 @@ def get_personal_report_shot(session_id: int, student_id: int, shot_key: str,
         db=Depends(get_grading_db), reports_dir: Path = Depends(get_reports_dir)):
     import base64
     from fastapi.responses import Response
-    from analysis_report_exporter import lost_question_shot_specs
+    from backend.reporting.analysis_report_exporter import lost_question_shot_specs
     from backend.personal_reports import personal_render_context, crop_personal_report_shot
     from backend.session_analysis import infer_data_root
     from backend.file_access import resolve_controlled_file, ControlledFileExpired
-    from session_originals import originals_state
+    from backend.files.session_originals import originals_state
     _require_session(db.sessions, session_id)
     root = infer_data_root(db.db_path)
     if originals_state(root, session_id) in {"clearing", "cleared"}:
@@ -242,7 +242,7 @@ def get_analysis_report_preflight(
     student_ids: str | None = Query(default=None, max_length=4000),
 ) -> AnalysisPreflightResponse:
     """生成前预估：目标服务/模型、实际调用次数与 token 粗估（费用取决于服务商定价）。"""
-    from analysis_report_exporter import build_analysis_preflight
+    from backend.reporting.analysis_report_exporter import build_analysis_preflight
 
     _require_session(db.sessions, session_id)
     payload = build_analysis_preflight(
@@ -421,7 +421,7 @@ def get_class_analysis(
     manager: JobManager = Depends(get_job_manager),
     reports_dir: Path = Depends(get_reports_dir),
 ) -> ClassAnalysisResponse:
-    from analysis_report_exporter import (
+    from backend.reporting.analysis_report_exporter import (
         build_class_page_data,
         class_narrative_with_student_names,
     )
@@ -575,7 +575,7 @@ def get_class_analysis_report(
     reports_dir: Path = Depends(get_reports_dir),
 ) -> HTMLResponse:
     """内嵌班级报告页：按已生成的班级叙述渲染自包含 HTML，供系统内页面嵌套展示。"""
-    from analysis_report_exporter import render_class_html
+    from backend.reporting.analysis_report_exporter import render_class_html
     from backend.class_analysis import question_category_counts, session_error_records
     from backend.session_analysis import (
         assemble_session_analysis,

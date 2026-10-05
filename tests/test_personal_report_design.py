@@ -7,7 +7,7 @@ from tests.test_analysis_report import analysis_db  # noqa: F401
 
 
 def test_graph_uses_current_mastery_separately_from_exam_scores(analysis_db):
-    from analysis_report_exporter import _personal_knowledge_view, _class_knowledge_view, _knowledge_view_html
+    from backend.reporting.analysis_report_exporter import _personal_knowledge_view, _class_knowledge_view, _knowledge_view_html
     from backend.session_analysis import assemble_session_analysis
 
     db, session, root = analysis_db
@@ -84,7 +84,7 @@ def test_graph_uses_current_mastery_separately_from_exam_scores(analysis_db):
 
 
 def test_exam_points_require_specific_evidence_for_losses(analysis_db):
-    from analysis_report_exporter import _personal_exam_points, _personal_knowledge_view
+    from backend.reporting.analysis_report_exporter import _personal_exam_points, _personal_knowledge_view
     from backend.session_analysis import assemble_session_analysis
 
     db, session, root = analysis_db
@@ -126,7 +126,7 @@ def test_exam_points_require_specific_evidence_for_losses(analysis_db):
 
 
 def test_followups_show_actions_and_overlapping_question_losses(analysis_db):
-    from analysis_report_exporter import _render_personal_html
+    from backend.reporting.analysis_report_exporter import _render_personal_html
     from backend.session_analysis import assemble_session_analysis
     from tests.test_analysis_report import PERSONAL_NARRATIVE
 
@@ -160,7 +160,7 @@ def test_followups_show_actions_and_overlapping_question_losses(analysis_db):
 
 
 def test_personal_payload_exposes_exact_knowledge_focus_without_inventing_weaknesses(analysis_db):
-    from analysis_report_exporter import build_personal_payload
+    from backend.reporting.analysis_report_exporter import build_personal_payload
     from backend.session_analysis import assemble_session_analysis
 
     db, session, root = analysis_db
@@ -189,7 +189,7 @@ def test_personal_payload_exposes_exact_knowledge_focus_without_inventing_weakne
 
 
 def test_history_distinguishes_same_pattern_and_same_category(analysis_db, monkeypatch):
-    from analysis_report_exporter import _load_personal_error_histories, _render_personal_html
+    from backend.reporting.analysis_report_exporter import _load_personal_error_histories, _render_personal_html
     from backend.session_analysis import assemble_session_analysis
     from tests.test_analysis_report import PERSONAL_NARRATIVE
 
@@ -221,7 +221,7 @@ def test_history_distinguishes_same_pattern_and_same_category(analysis_db, monke
 
 
 def test_partial_narrative_uses_data_followups_without_raw_grading_reason(analysis_db):
-    from analysis_report_exporter import _render_personal_html
+    from backend.reporting.analysis_report_exporter import _render_personal_html
     from backend.session_analysis import assemble_session_analysis
 
     db, session, root = analysis_db
@@ -252,7 +252,7 @@ def test_score_comparison_reports_correct_direction_and_equal_full_scores(
     analysis_db, student_index, previous_score, previous_rank, previous_full, expected,
 ):
     from bs4 import BeautifulSoup
-    from analysis_report_exporter import _render_personal_html
+    from backend.reporting.analysis_report_exporter import _render_personal_html
     from backend.session_analysis import assemble_session_analysis
 
     db, session, root = analysis_db

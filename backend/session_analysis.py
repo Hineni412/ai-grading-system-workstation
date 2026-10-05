@@ -22,21 +22,21 @@ from typing import Any
 
 from PIL import Image
 
-from answer_key_utils import answer_forms_map
+from backend.scan_grading.answer_key_utils import answer_forms_map
 from backend.analytics.service import load_session_score_type_maps
 from backend.repositories.access import (
     GradingRepositoryAccess,
     as_grading_repositories,
 )
-from grading_completeness import resolve_grading_completeness
+from backend.scan_grading.grading_completeness import resolve_grading_completeness
 from path_manager import resolve_stored_file_path
-from question_id_contract import (
+from backend.question_id_contract import (
     QuestionIdContractError,
     canonicalize_question_document,
     question_id_coordinates,
     resolve_known_question_id,
 )
-from report import natural_question_order
+from backend.reporting.report import natural_question_order
 
 SMALL_SAMPLE_LIMIT = 10
 
@@ -351,7 +351,7 @@ def assemble_session_analysis(
         # Match the review queue's per-item rules; the original whole-paper AI
         # flag remains historical after a teacher confirms a flagged answer.
         from backend.review.service import _is_substantive_review_reason
-        from grading_completeness import is_objective_detail
+        from backend.scan_grading.grading_completeness import is_objective_detail
         pending_review = False
         for detail in details_by_result.get(student.result_id, []):
             qid = resolve_known_question_id(str(detail.get("question_id") or ""), score_map) or str(detail.get("question_id") or "")
@@ -840,7 +840,7 @@ def _validated_teacher_steps(
     review: Any, lock: Any, score: float, rubric: Any, question_id: str,
 ) -> list[dict[str, Any]] | None:
     """教师逐步改分记录仅在对应当前最终分锁时可信；任一校验失败即不使用。"""
-    from solution_answer_guard import rubric_scoring_unit_steps
+    from backend.scan_grading.solution_answer_guard import rubric_scoring_unit_steps
 
     if not isinstance(review, dict) or not isinstance(lock, dict):
         return None

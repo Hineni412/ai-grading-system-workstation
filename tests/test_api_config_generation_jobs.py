@@ -25,7 +25,7 @@ from backend.config_workspace.sources import ConfigSourceRecord, ConfigSourceSer
 from backend.jobs.config_generation import load_config_generation_input
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
-from db_manager import DBManager
+from backend.repositories.db_manager import DBManager
 from backend.repositories.grading_database import open_grading_repositories
 
 

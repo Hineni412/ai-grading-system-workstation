@@ -9,10 +9,10 @@ import pytest
 from PIL import Image
 
 from backend.domain_models import GradingResult, QuestionGradingDetail
-from db_manager import DBManager
-from grading_service import GradingService
-from llm_client import LLMClient
-from scanner import ExamPaperGroup
+from backend.repositories.db_manager import DBManager
+from backend.scan_grading.grading_service import GradingService
+from backend.llm.llm_client import LLMClient
+from backend.scan_grading.scanner import ExamPaperGroup
 
 
 RUBRIC = {

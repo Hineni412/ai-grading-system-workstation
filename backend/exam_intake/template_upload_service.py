@@ -21,11 +21,11 @@ else:
 import fitz
 from PIL import Image
 
-from answer_region_draft_service import AnswerRegionDraftService
-from answer_region_session_lock import get_answer_region_session_lock
+from backend.answer_regions.answer_region_draft_service import AnswerRegionDraftService
+from backend.answer_regions.answer_region_session_lock import get_answer_region_session_lock
 from backend.repositories.access import GradingRepositoryAccess
 from path_manager import resolve_stored_file_path
-from template_analyzer import create_template_mapping_package
+from backend.config_generation.template_analyzer import create_template_mapping_package
 
 TemplatePageRole = Literal["front", "back"]
 LOGGER = logging.getLogger(__name__)

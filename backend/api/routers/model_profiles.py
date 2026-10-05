@@ -4,7 +4,7 @@ from typing import Annotated, NoReturn
 
 from fastapi import APIRouter, Depends, Path
 
-from api_profiles import ApiProfileStorageError
+from backend.llm.api_profiles import ApiProfileStorageError
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import get_model_profile_service
 from backend.api.schemas.model_profiles import (

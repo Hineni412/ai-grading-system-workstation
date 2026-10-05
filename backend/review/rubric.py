@@ -7,7 +7,7 @@ from typing import Any
 from backend.config_workspace.editor import project_config_editor
 from backend.config_workspace.publish import load_editor_config
 from backend.repositories.access import GradingRepositoryAccess
-from question_id_contract import (
+from backend.question_id_contract import (
     QuestionIdCatalog,
     QuestionIdContractError,
     canonicalize_grading_config_payload,

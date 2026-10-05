@@ -49,7 +49,7 @@ class AnswerDraftService:
 
             settings = resolve_content_generation_settings()
             if settings is not None:
-                from llm_client import LLMClient
+                from backend.llm.llm_client import LLMClient
 
                 llm_client = LLMClient(settings)
         self._client = llm_client

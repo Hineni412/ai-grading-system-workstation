@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from scanner import Scanner
+from backend.scan_grading.scanner import Scanner
 
 
 class _BatchClient:

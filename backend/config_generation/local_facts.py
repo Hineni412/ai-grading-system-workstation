@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from equivalence_engine import merge_equivalent_forms
+from backend.scan_grading.equivalence_engine import merge_equivalent_forms
 
 
 def _apply_local_question_facts(payload: dict[str, Any], question_blocks: list[dict[str, Any]]) -> None:

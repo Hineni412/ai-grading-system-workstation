@@ -902,7 +902,7 @@ def test_session_error_records_and_category_counts(tmp_path: Path, monkeypatch) 
         save_cause_result,
         session_error_records,
     )
-    from analysis_report_exporter import build_class_page_data
+    from backend.reporting.analysis_report_exporter import build_class_page_data
     
 
     db = open_grading_repositories(tmp_path / "databases" / "grading.db")
@@ -1094,8 +1094,8 @@ def test_review_confirmed_marker_never_surfaces_as_error_type() -> None:
     from backend.error_causes import display_error_category
     from backend.repositories.results import _normalize_error_category
     from integration.mastery_adapter import _normalize_error_types
-    from analysis_report_exporter import _record_brief_text
-    from report import _loss_entry_label
+    from backend.reporting.analysis_report_exporter import _record_brief_text
+    from backend.reporting.report import _loss_entry_label
 
     for marker in (
         "已复核",
@@ -1398,7 +1398,7 @@ def test_normalize_cause_result_assigns_step_units() -> None:
 def test_step_aware_error_records_and_counts(tmp_path: Path) -> None:
     """步骤单元各物化一行；大类计数仍按学生去重。"""
     import backend.jobs
-    from analysis_report_exporter import build_class_page_data
+    from backend.reporting.analysis_report_exporter import build_class_page_data
     from backend.class_analysis import (
         ClassAnalysisStateStore,
         apply_cause_results,
@@ -1470,7 +1470,7 @@ def test_pre_step_v3_results_display_then_upgrade(tmp_path: Path) -> None:
     import backend.jobs
     from types import SimpleNamespace
 
-    from analysis_report_exporter import build_class_page_data
+    from backend.reporting.analysis_report_exporter import build_class_page_data
     from backend.class_analysis import (
         CAUSE_PRE_STEP_VERSION,
         ClassAnalysisStateStore,
@@ -1574,7 +1574,7 @@ def test_pre_step_source_dedupes_evidence_collapsed_by_step_split(
     旧 v3 结果仍按兼容输入识别、展示，并为两人返回错因记录。"""
     import backend.jobs
 
-    from analysis_report_exporter import build_class_page_data
+    from backend.reporting.analysis_report_exporter import build_class_page_data
     from backend.class_analysis import (
         CAUSE_PRE_STEP_VERSION,
         ClassAnalysisStateStore,

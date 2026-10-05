@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from answer_region_session_lock import get_answer_region_session_lock
+from backend.answer_regions.answer_region_session_lock import get_answer_region_session_lock
 from backend.repositories.access import as_grading_repositories
-from session_cleanup import _collect_other_session_references, _is_under, session_lifecycle_guard
+from backend.files.session_cleanup import _collect_other_session_references, _is_under, session_lifecycle_guard
 
 _MEDIA_SUFFIXES = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 

@@ -197,7 +197,7 @@ def preview_backup(
     for source_dir, prefix in backup_sources:
         if not source_dir.exists():
             continue
-        from data_transfer_service import ensure_controlled_path
+        from backend.files.data_transfer_service import ensure_controlled_path
 
         ensure_controlled_path(source_dir, source_dir)
         for item in sorted(source_dir.rglob("*")):

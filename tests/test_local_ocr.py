@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 from PIL import Image
 
-import local_ocr
-from local_ocr import MineruOcr
-from scanner import Scanner, _build_student_lookup
+import backend.document_parsing.local_ocr as local_ocr
+from backend.document_parsing.local_ocr import MineruOcr
+from backend.scan_grading.scanner import Scanner, _build_student_lookup
 
 
 def test_shared_ocr_initializes_once_and_serializes_parallel_inference(

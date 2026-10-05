@@ -8,13 +8,13 @@ from typing import Any
 
 from PIL import Image
 
-from annotation_renderer import render_annotated_paper
-from answer_region_geometry import answer_regions_with_template_source_sizes
+from backend.media.annotation_renderer import render_annotated_paper
+from backend.answer_regions.answer_region_geometry import answer_regions_with_template_source_sizes
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
-from export_names import safe_filename_fragment, session_export_path_name
-from image_preprocessor import _enhanced_name
+from backend.reporting.export_names import safe_filename_fragment, session_export_path_name
+from backend.media.image_preprocessor import _enhanced_name
 from path_manager import resolve_stored_file_path
-from question_id_contract import (
+from backend.question_id_contract import (
     QuestionIdCatalog,
     canonical_parent_id,
     question_id_coordinates,
@@ -41,7 +41,7 @@ class OriginalPaperExporter:
         self.output_dir = output_dir
 
     def export_session_originals(self, session_id: int) -> Path:
-        from session_originals import require_original_pages
+        from backend.files.session_originals import require_original_pages
         require_original_pages(self._data_root(), session_id)
         results = self.db.results.get_session_results(session_id)
         if not results:
@@ -350,7 +350,7 @@ def detect_printed_question_anchors(
 
     if ocr_engine is None:
         try:
-            from local_ocr import get_local_ocr
+            from backend.document_parsing.local_ocr import get_local_ocr
 
             ocr_engine = get_local_ocr()
         except Exception:
