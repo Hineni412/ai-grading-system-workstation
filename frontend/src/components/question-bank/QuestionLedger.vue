@@ -12,6 +12,8 @@ import {
 } from '../../api/question-bank'
 import { useAssemblyStore } from '../../stores/assembly'
 import { useQuestionBankStore } from '../../stores/question-bank'
+import AppIconButton from '../design-system/AppIconButton.vue'
+import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import QuestionCard from './QuestionCard.vue'
@@ -154,13 +156,11 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
         >
           加入试卷篮
         </AppButton>
-        <button type="button" class="qb-link" @click="store.clearSelection">清空选择</button>
+        <AppButton type="button" variant="ghost" size="small" @click="store.clearSelection">清空选择</AppButton>
       </span>
     </div>
 
-    <p v-if="store.listState === 'stale-error'" class="qb-feedback is-warning" role="alert">
-      新数据暂时无法读取，当前仍显示上一次成功结果。
-    </p>
+    <FeedbackBanner v-if="store.listState === 'stale-error'" role="alert" tone="warning" description="新数据暂时无法读取，当前仍显示上一次成功结果。" />
     <StatePanel v-if="store.listState === 'loading' && store.questions.length === 0" kind="loading" title="正在读取试题…" description="" />
     <StatePanel v-else-if="store.listState === 'error'" kind="error" :title="store.listError" description="" retry-label="重新读取" @retry="store.loadQuestions(store.appliedFilters)" />
     <StatePanel v-else-if="store.listState === 'empty'" kind="empty" title="当前条件下没有试题，可以清除筛选后再查看。" description="" />
@@ -186,8 +186,7 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
           <div>
             <DialogTitle as="h2">相似题推荐</DialogTitle>
             <p>基于本机题库文本和标签匹配，不会调用大模型或产生费用。</p>
-          </div>
-          <button type="button" class="qb-drawer-close" aria-label="关闭相似题" @click="closeSimilar">×</button>
+          </div><AppIconButton label="关闭相似题" @click="closeSimilar" icon="close" />
         </header>
 
         <StatePanel v-if="similarState === 'loading'" kind="loading" title="正在查找相似题…" description="" />
@@ -225,7 +224,6 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
               <span>{{ item.paper_title || '未命名试卷' }}</span>
               <AppButton variant="secondary"
                 type="button"
-                class="qb-button"
                 :class="{ 'is-selected': isInBasket(item.id) }"
                 :disabled="assembly.saveState === 'saving'"
                 @click="toggleBasket(item.id)"

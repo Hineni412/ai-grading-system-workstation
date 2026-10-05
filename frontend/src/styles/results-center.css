@@ -30,6 +30,11 @@
   line-height: var(--line-height-tight);
 }
 
+.results-drawer h2 {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-semibold);
+}
+
 .results-button {
   min-height: var(--control-height-default);
   padding-inline: var(--space-4);
@@ -590,9 +595,7 @@
   color: var(--muted-foreground);
 }
 
-.results-drawer__close {
-  flex: none;
-}
+
 
 .results-drawer__total {
   display: grid;
@@ -2021,13 +2024,7 @@ button.class-analysis__score-chip:focus-visible {
   font-size: var(--font-size-caption);
 }
 
-.class-analysis__link {
-  border: 0;
-  background: transparent;
-  color: var(--primary);
-  font-weight: var(--font-weight-medium);
-  cursor: pointer;
-}
+
 
 .class-analysis__toggle select {
   max-width: 260px;
@@ -2331,7 +2328,7 @@ button.class-analysis__score-chip:focus-visible {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  padding: var(--space-6);
+  padding: var(--space-5);
   background: var(--card);
   color: var(--foreground);
   box-shadow: var(--shadow-overlay);

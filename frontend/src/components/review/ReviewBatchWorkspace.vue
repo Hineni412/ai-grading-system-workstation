@@ -17,6 +17,7 @@ import {
   useReviewDraftStore,
 } from '../../stores/review-drafts'
 import type { ReviewScope, ReviewSort } from '../../stores/review-queue'
+import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import ReviewAnswerSheet from './ReviewAnswerSheet.vue'
 import ReviewAnswerPanel from './ReviewAnswerPanel.vue'
@@ -339,23 +340,23 @@ watch([sessionId, () => props.selectedQuestionId], async ([session, question]) =
         <span v-else>{{ draftStore.dirtyCount }} 条草稿未确认</span>
       </div>
     <nav class="review-batch-pagination" aria-label="答卷批次">
-      <button type="button" :disabled="page <= 1" @click="emit('updatePage', page - 1)">
+      <AppButton type="button" :disabled="page <= 1" variant="secondary" size="small" @click="emit('updatePage', page - 1)">
         ‹ 上一批
-      </button>
+      </AppButton>
       <span>第 {{ page }} / {{ totalPages }} 批</span>
-      <button type="button" :disabled="page >= totalPages" @click="emit('updatePage', page + 1)">
+      <AppButton type="button" :disabled="page >= totalPages" variant="secondary" size="small" @click="emit('updatePage', page + 1)">
         下一批 ›
-      </button>
+      </AppButton>
     </nav>
 
-      <button
+      <AppButton
         type="button"
         data-testid="confirm-batch"
         :disabled="submitDisabled"
-        @click="submitBatch()"
+        variant="primary" @click="submitBatch()"
       >
         {{ submitting ? '正在确认本题…' : `确认本题处理结果（${actionableItems.length}）` }}
-      </button>
+      </AppButton>
       <p class="review-batch-shortcuts"><kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> 下一个 / 上一个红框 · <kbd>Enter</kbd> 下一个，最后一个确认本题 · <kbd>J</kbd> / <kbd>K</kbd> 切换选中 · <kbd>/</kbd> 搜索</p>
     </footer>
   </section>

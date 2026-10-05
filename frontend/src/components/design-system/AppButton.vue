@@ -8,6 +8,7 @@ defineOptions({ inheritAttrs: false })
 
 const props = withDefaults(defineProps<{
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger'
+  size?: 'default' | 'small'
   type?: 'button' | 'submit' | 'reset'
   disabled?: boolean
   loading?: boolean
@@ -16,6 +17,7 @@ const props = withDefaults(defineProps<{
   ripple?: boolean
 }>(), {
   variant: 'secondary',
+  size: 'default',
   type: 'button',
   disabled: false,
   loading: false,
@@ -30,6 +32,11 @@ const variantMap: Record<NonNullable<typeof props.variant>, ButtonVariants['vari
   ghost: 'ghost',
   danger: 'destructive',
 }
+
+const root = ref<{ $el?: HTMLElement } | null>(null)
+defineExpose({
+  focus: () => { const el = root.value?.$el ?? root.value; (el as HTMLElement | undefined)?.focus?.() },
+})
 
 const buttonClass = computed(() =>
   cn(
@@ -70,10 +77,12 @@ function handleRippleClick(event: MouseEvent): void {
 
 <template>
   <Button
+    ref="root"
     v-bind="$attrs"
     :variant="variantMap[variant]"
     :class="buttonClass"
     :data-variant="variant"
+    :data-size="size"
     :type="type"
     :disabled="disabled || loading"
     :aria-busy="loading || undefined"

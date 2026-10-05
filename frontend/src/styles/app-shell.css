@@ -591,15 +591,6 @@
   font-size: var(--font-size-caption);
 }
 
-.exam-switcher-popover__retry {
-  border: 0;
-  background: transparent;
-  color: var(--color-accent-active);
-  font: inherit;
-  font-size: var(--font-size-caption);
-  text-decoration: underline;
-  cursor: pointer;
-}
 
 .exam-switcher-popover__list {
   min-width: 0;

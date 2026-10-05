@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppIconButton from '../design-system/AppIconButton.vue'
 import { computed, ref, watch } from 'vue'
 import {
   DialogClose,
@@ -134,8 +135,7 @@ function decideBankAnswer(): void {
             >{{ kindTag.label }}</span>
             <DialogTitle class="dup-compare__title">{{ heading }}</DialogTitle>
             <span class="dup-compare__reason" :title="item.reason">{{ item.reason }}</span>
-            <span class="dup-compare__counter">{{ index + 1 }}/{{ total }}</span>
-            <DialogClose class="dup-compare__close" aria-label="关闭对照">关闭</DialogClose>
+            <span class="dup-compare__counter">{{ index + 1 }}/{{ total }}</span><DialogClose as-child><AppIconButton label="关闭对照" icon="close" /></DialogClose>
           </header>
 
           <div class="dup-compare__panes">
@@ -316,7 +316,7 @@ function decideBankAnswer(): void {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: color-mix(in srgb, var(--color-text-primary) 32%, transparent);
+  background: var(--color-overlay-mask);
 }
 
 .dup-compare {
@@ -368,14 +368,6 @@ function decideBankAnswer(): void {
   font-variant-numeric: tabular-nums;
 }
 
-.dup-compare__close {
-  flex: 0 0 auto;
-  border: none;
-  background: none;
-  color: var(--color-accent);
-  font-size: var(--font-size-caption);
-  cursor: pointer;
-}
 
 .dup-compare__panes {
   display: grid;
@@ -532,7 +524,7 @@ function decideBankAnswer(): void {
 
 .dup-compare__nav-button:focus-visible,
 .dup-compare__action:focus-visible,
-.dup-compare__close:focus-visible,
+
 .dup-compare__undo:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 1px;

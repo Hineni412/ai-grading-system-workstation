@@ -489,7 +489,7 @@ describe('personal report reading and review return', () => {
     const next = [...document.querySelectorAll<HTMLButtonElement>('.personal-reader button')].find(b => b.textContent === '下一位 →')!
     next.click()
     await vi.waitFor(() => expect(document.querySelector('.personal-reader__identity')?.textContent).toContain('合成乙'))
-    await vi.waitFor(() => expect(document.querySelector('.personal-reader__notice')?.textContent).toContain('上次生成'))
+    await vi.waitFor(() => expect(document.querySelector('.personal-reader [data-testid="feedback-banner"]')?.textContent).toContain('上次生成'))
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await vi.waitFor(() => expect(document.querySelector('.personal-reader')).toBeNull())
     expect(document.querySelector('#student-result-title')?.textContent).toBe('合成乙')

@@ -15,6 +15,8 @@ import {
 import { questionBankCriteriaApi, type TrainingCriterionWorkspace } from '../../api/question-bank-criteria'
 import { CAUSE_CATEGORIES } from '../../api/class-analysis'
 import { useQuestionBankStore } from '../../stores/question-bank'
+import AppIconButton from '../design-system/AppIconButton.vue'
+import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 import TrainingCriterionReview from './TrainingCriterionReview.vue'
@@ -352,14 +354,14 @@ async function save(): Promise<void> {
 <template>
   <div class="qb-annotation">
     <p v-if="store.detailState === 'loading'" role="status">正在打开题目详情…</p>
-    <div v-else-if="store.detailState === 'error'" role="alert">{{ store.detailError }} <button class="qb-link" @click="store.selectQuestion(store.selectedQuestionId)">重新打开</button></div>
+    <div v-else-if="store.detailState === 'error'" role="alert">{{ store.detailError }} <AppButton variant="ghost" size="small" @click="store.selectQuestion(store.selectedQuestionId)">重新打开</AppButton></div>
     <template v-else-if="store.detail">
       <div class="qb-expanded-columns">
         <div class="qb-expanded-stem">
           <QuestionContentRenderer :blocks="store.detail.rich_content.question_blocks" :fallback="store.detail.question_text" image-alt="题目配图" media-mode="detail" />
           <details class="qb-answer-section"><summary>答案与解析</summary><QuestionContentRenderer :blocks="store.detail.rich_content.answer_blocks" :fallback="store.detail.answer_text" empty-label="暂未录入答案或解析" image-alt="答案配图" media-mode="detail" /></details>
           <div class="qb-expanded-links">
-            <template v-for="preview in store.detail.previews" :key="preview.preview_type"><a v-if="preview.url" class="qb-link" :href="preview.url" target="_blank" rel="noopener">{{ preview.preview_type === 'question' ? '打开原卷' : '打开答案原卷' }}<span v-if="preview.page_number"> · 第 {{ preview.page_number }} 页</span></a></template>
+            <template v-for="preview in store.detail.previews" :key="preview.preview_type"><AppButton v-if="preview.url" :as="'a'" variant="ghost" size="small" :href="preview.url" target="_blank" rel="noopener">{{ preview.preview_type === 'question' ? '打开原卷' : '打开答案原卷' }}<span v-if="preview.page_number"> · 第 {{ preview.page_number }} 页</span></AppButton></template>
             <slot name="similar" />
           </div>
         </div>
@@ -370,7 +372,7 @@ async function save(): Promise<void> {
               <div><template v-if="editing"><AppButton variant="primary" @click="saveAnnotation">保存</AppButton><AppButton variant="ghost" @click="cancelAnnotation">取消</AppButton></template><AppButton v-else variant="secondary" @click="editing = true">编辑标注</AppButton></div>
             </header>
             <p v-if="editing" class="qb-help">修改不会改写已有考试成绩与报告</p>
-            <p v-if="evidenceError" class="qb-feedback is-error" role="alert">{{ evidenceError }}</p>
+            <FeedbackBanner v-if="evidenceError" role="alert" tone="error" :description="evidenceError" />
             <p v-else-if="!points.length" class="qb-help">尚无可用判定点，请核对判定点。</p>
             <div v-if="points.length && !editing" class="qb-evidence-columns"><span>编号</span><span>判定点内容</span><span>状态</span></div>
             <div v-for="(point, index) in points" v-show="!editing" :key="point.evidence_point_id" class="qb-evidence-row">
@@ -379,12 +381,12 @@ async function save(): Promise<void> {
                 <div class="qb-skill-capsules"><button v-for="skill in directSkills(point)" :key="skill.key" type="button" class="qb-skill-capsule" :class="{ 'is-current': skill.key === currentSkill }" @click="emit('skill', skill.key)">{{ skill.label }}</button>
                   <span v-for="link in point.fine_term_links.filter(link => link.role === 'direct' && link.core_resolution.stable_keys.some(key => key.startsWith('kp_')))" :key="link.fine_term_id" class="qb-topic-capsule">{{ knowledgeLeafLabel(link.fine_term_name) }}</span>
                 </div>
-                <div v-for="item in mappedPatterns(point.evidence_point_id)" :key="item.id" class="qb-point-error"><strong>↳ {{ item.pattern }}</strong><p>{{ item.explanation }}</p><button class="qb-link" @click="beginPatternEdit(item)">调整</button> <button class="qb-link" :disabled="patternSaving" @click="changePattern(item, 'reject')">驳回</button></div>
+                <div v-for="item in mappedPatterns(point.evidence_point_id)" :key="item.id" class="qb-point-error"><strong>↳ {{ item.pattern }}</strong><p>{{ item.explanation }}</p><AppButton variant="ghost" size="small" @click="beginPatternEdit(item)">调整</AppButton> <AppButton :disabled="patternSaving" variant="ghost" size="small" @click="changePattern(item, 'reject')">驳回</AppButton></div>
               </div>
               <small><span v-if="store.detail.criteria_needs_review">待审核</span><span v-if="!directSkills(point).length">未挂技能</span></small>
             </div>
             <div v-show="editing"><TrainingCriterionReview v-if="store.selectedQuestionId" ref="review" :question-id="store.selectedQuestionId" :skill-labels="skillLabels" :loader="loadCriterion" :evidence-loader="loadEvidence" @updated="criterion = $event" /></div>
-            <button v-if="!editing" type="button" class="qb-link" @click="editing = true">核对判定点 / 重新生成</button>
+            <AppButton v-if="!editing" type="button" variant="ghost" size="small" @click="editing = true">核对判定点 / 重新生成</AppButton>
           </section>
           <section v-if="wrongOptionRows.length || otherPatterns.length || patternEdit || patternError || patternMessage" class="qb-paper-section qb-patterns" aria-labelledby="qb-patterns-title">
             <header class="qb-section-heading">
@@ -405,8 +407,8 @@ async function save(): Promise<void> {
                     <p v-if="patternSkillHint(item)" class="qb-patterns__meta">{{ patternSkillHint(item) }}</p>
                     <p class="qb-patterns__meta">{{ item.category || '未分类' }} · {{ patternSource(item.source) }} · {{ item.has_evidence ? '已有实际作答记录' : '尚无实际作答记录' }}</p>
                     <div class="qb-patterns__actions">
-                      <button type="button" class="qb-link" @click="beginPatternEdit(item)">调整</button>
-                      <button type="button" class="qb-link" :disabled="patternSaving" @click="changePattern(item, 'reject')">驳回</button>
+                      <AppButton type="button" variant="ghost" size="small" @click="beginPatternEdit(item)">调整</AppButton>
+                      <AppButton type="button" :disabled="patternSaving" variant="ghost" size="small" @click="changePattern(item, 'reject')">驳回</AppButton>
                     </div>
                   </div>
                 </div>
@@ -420,8 +422,8 @@ async function save(): Promise<void> {
                 <p v-if="patternSkillHint(item)" class="qb-patterns__meta">{{ patternSkillHint(item) }}</p>
                 <p class="qb-patterns__meta">{{ item.category || '未分类' }} · {{ patternTrigger(item) }} · {{ patternSource(item.source) }} · {{ item.has_evidence ? '已有实际作答记录' : '尚无实际作答记录' }}</p>
                 <div class="qb-patterns__actions">
-                  <button type="button" class="qb-link" @click="beginPatternEdit(item)">调整</button>
-                  <button type="button" class="qb-link" :disabled="patternSaving" @click="changePattern(item, 'reject')">驳回</button>
+                  <AppButton type="button" variant="ghost" size="small" @click="beginPatternEdit(item)">调整</AppButton>
+                  <AppButton type="button" :disabled="patternSaving" variant="ghost" size="small" @click="changePattern(item, 'reject')">驳回</AppButton>
                 </div>
               </div>
             </div>
@@ -435,12 +437,12 @@ async function save(): Promise<void> {
                 当前技能由判定点得出；选择其他技能将作为教师设定保存。
               </p>
               <div class="qb-patterns__actions">
-                <button type="button" class="qb-link" @click="patternEdit = null">取消</button>
+                <AppButton type="button" variant="ghost" size="small" @click="patternEdit = null">取消</AppButton>
                 <AppButton variant="primary" :disabled="patternSaving || !patternName.trim() || !patternCategory" @click="changePattern(patternEdit, 'edit')">{{ patternSaving ? '正在保存…' : '保存错法' }}</AppButton>
               </div>
             </div>
-            <p v-if="patternError" class="qb-feedback is-error" role="alert">{{ patternError }}</p>
-            <p v-if="patternMessage" class="qb-feedback" role="status">{{ patternMessage }}</p>
+            <FeedbackBanner v-if="patternError" role="alert" tone="error" :description="patternError" />
+            <FeedbackBanner v-if="patternMessage" role="status" tone="info" :description="patternMessage" />
           </section>
 
 
@@ -462,7 +464,7 @@ async function save(): Promise<void> {
                     {{ tagLabels[type] || type }}
                   </option>
                 </select>
-                <button type="button" class="qb-link" @click="addSelectedTag">添加</button>
+                <AppButton type="button" variant="ghost" size="small" @click="addSelectedTag">添加</AppButton>
               </div>
             </header>
 
@@ -516,7 +518,7 @@ async function save(): Promise<void> {
               >
                 <div class="qb-tag-group__heading">
                   <strong>{{ group.label }}</strong>
-                  <button type="button" class="qb-link" @click="addTag(group.type)">添加</button>
+                  <AppButton type="button" variant="ghost" size="small" @click="addTag(group.type)">添加</AppButton>
                 </div>
                 <div class="qb-tag-group__items">
                   <div
@@ -534,15 +536,12 @@ async function save(): Promise<void> {
                       maxlength="160"
                       :aria-label="`${group.label}标签值`"
                       placeholder="标签值"
-                    >
-                    <button
-                      type="button"
-                      class="qb-tag-chip__remove"
-                      :aria-label="`移除${tag.tag_value || group.label}标签`"
+                    ><AppIconButton :label="`移除${tag.tag_value || group.label}标签`"
+                     
+                     
+                     
                       @click="removeTag(index)"
-                    >
-                      ×
-                    </button>
+                     icon="close" />
                   </div>
                 </div>
               </div>
@@ -551,14 +550,7 @@ async function save(): Promise<void> {
               当前仅有历史学生层级标签；它会继续保留，但不再参与新筛选和完整度判断。
             </p>
             <p v-else class="qb-help">当前没有标签。可手动添加，或在导入任务区选择题目后启动 AI 标注。</p>
-            <p
-              v-if="store.writeMessage"
-              class="qb-feedback"
-              :class="{ 'is-error': store.writeState !== 'idle' }"
-              role="status"
-            >
-              {{ store.writeMessage }}
-            </p>
+            <FeedbackBanner v-if="store.writeMessage" :class="{ 'is-error': store.writeState !== 'idle' }" role="status" tone="info" :description="store.writeMessage" />
             <AppButton
               variant="primary"
               :disabled="store.writeState === 'saving' || !validTags()"

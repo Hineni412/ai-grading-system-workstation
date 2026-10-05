@@ -233,9 +233,9 @@ describe('taxonomy review', () => {
 
     const cards = [...document.body.querySelectorAll<HTMLElement>('.taxonomy-candidate')]
     expect(cards).toHaveLength(2)
-    cards[0]?.querySelector<HTMLButtonElement>(
-      '.taxonomy-candidate__merge-actions .qb-button',
-    )?.click()
+    ;[...cards[0]!.querySelectorAll<HTMLButtonElement>('.taxonomy-candidate__merge-actions button')]
+      .find((button) => button.textContent?.includes('确认归并'))
+      ?.click()
 
     await vi.waitFor(() => {
       expect(cards[0]?.textContent).toContain('标签状态当前不能写入')

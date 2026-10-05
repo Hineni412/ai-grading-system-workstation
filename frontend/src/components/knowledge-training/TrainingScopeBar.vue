@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import '../../styles/knowledge-overview.css'
-const props = defineProps<{ volumeLabel: string; sessionCount: number; classes: string[]; selectedClass: string; scoreFloor: number | null }>()
+const props = withDefaults(defineProps<{ volumeLabel: string; sessionCount: number; classes: string[]; selectedClass: string; scoreFloor: number | null; hasVolume?: boolean }>(), { hasVolume: true })
 const emit = defineEmits<{ 'select-class': [name: string]; 'update-score-floor': [value: number | null] }>()
 const floorText = ref('')
 watch(() => props.scoreFloor, value => { floorText.value = value === null ? '' : String(Math.round(value * 100)) }, { immediate: true })
@@ -15,9 +15,11 @@ function applyFloor() {
 <template>
   <div class="knowledge-overview-scope-bar training-scope-bar" role="group" aria-label="学生范围">
     <strong>{{ volumeLabel }}</strong><span>本学期 {{ sessionCount }} 场考试 + 已发布训练</span>
-    <button type="button" :class="{ 'is-active': !selectedClass }" :aria-pressed="!selectedClass" @click="emit('select-class', '')">全部学生</button>
-    <button v-for="name in classes" :key="name" type="button" :class="{ 'is-active': selectedClass === name }" :aria-pressed="selectedClass === name" @click="emit('select-class', name)">{{ /^\d+$/.test(name) ? `${name} 班` : name }}</button>
-    <label>最低考试得分率<input v-model="floorText" class="app-input" aria-label="最低考试得分率" type="number" min="0" max="100" placeholder="不限" @blur="applyFloor" @keydown.enter="applyFloor">%</label>
+    <template v-if="hasVolume">
+      <button type="button" :class="{ 'is-active': !selectedClass }" :aria-pressed="!selectedClass" @click="emit('select-class', '')">全部学生</button>
+      <button v-for="name in classes" :key="name" type="button" :class="{ 'is-active': selectedClass === name }" :aria-pressed="selectedClass === name" @click="emit('select-class', name)">{{ /^\d+$/.test(name) ? `${name} 班` : name }}</button>
+      <label>最低考试得分率<input v-model="floorText" class="app-input" aria-label="最低考试得分率" type="number" min="0" max="100" placeholder="不限" @blur="applyFloor" @keydown.enter="applyFloor">%</label>
+    </template>
   </div>
 </template>
 <style scoped>

@@ -12,10 +12,10 @@
 .settings-panel__heading > :last-child:not(h2) { margin-left: auto; }
 .settings-panel__body { padding: 12px 15px 14px; font-size: var(--font-size-caption); }
 .settings-note { font-size: var(--font-size-caption); color: var(--color-text-muted); }
-.settings-feedback { margin: 8px 0; font-size: var(--font-size-caption); }
-.settings-panel > .settings-feedback { margin: 8px 15px; }
-.settings-feedback.is-error { color: var(--color-danger); }
-.settings-feedback.is-success { color: var(--color-success); }
+
+
+
+
 .settings-inline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .settings-table { width: 100%; border-collapse: collapse; font-size: var(--font-size-caption); text-align: left; }
 .settings-table th { padding: 6px 10px; border-bottom: 1px solid var(--color-border-default); font-size: var(--font-size-caption); color: var(--color-text-muted); font-weight: var(--font-weight-semibold); white-space: nowrap; }
@@ -31,15 +31,15 @@
 .settings-danger-ghost.app-button.app-button.app-button[data-variant=ghost]:hover { background: var(--color-danger-subtle); }
 .settings-danger-outline.app-button.app-button.app-button[data-variant=danger] { background: var(--color-bg-surface); color: var(--color-danger); border: 1px solid color-mix(in srgb, var(--color-danger) 35%, transparent); box-shadow: var(--shadow-raised); }
 .settings-danger-outline.app-button.app-button.app-button[data-variant=danger]:hover { background: var(--color-danger-subtle); }
-.settings-link { color: var(--color-accent); font-size: var(--font-size-caption); cursor: pointer; text-decoration: none; border: 0; padding: 0; background: transparent; }
-.settings-link:hover { text-decoration: underline; }
+
+
 .settings-disclosure { margin-top: 10px; border: 1px solid var(--color-border-subtle); border-radius: 9px; }
 .settings-disclosure > summary { cursor: pointer; list-style: none; padding: 8px 12px; color: var(--color-text-secondary); font-size: var(--font-size-caption); font-weight: var(--font-weight-medium); }
 .settings-disclosure > summary::-webkit-details-marker { display: none; }
 .settings-disclosure > summary::after { content: '▸'; float: right; color: var(--color-text-muted); }
 .settings-disclosure[open] > summary::after { content: '▾'; }
 .settings-overlay { position: fixed; inset: 0; z-index: 60; background: var(--color-overlay-mask); }
-.settings-dialog { position: fixed; top: 50%; left: 50%; translate: -50% -50%; z-index: 61; width: 500px; max-width: 92vw; max-height: 86vh; overflow: auto; padding: 20px 22px 18px; border-radius: var(--radius-overlay); box-shadow: var(--shadow-overlay); background: var(--color-bg-surface); color: var(--color-text-primary); }
+.settings-dialog { position: fixed; top: 50%; left: 50%; translate: -50% -50%; z-index: 61; width: 500px; max-width: 92vw; max-height: 86vh; overflow: auto; padding: var(--space-5); border-radius: var(--radius-overlay); box-shadow: var(--shadow-overlay); background: var(--color-bg-surface); color: var(--color-text-primary); }
 .settings-dialog h2 { margin: 0 0 10px; font-size: var(--font-size-h3); font-weight: var(--font-weight-semibold); }
 .settings-dialog p { margin: 10px 0; font-size: var(--font-size-dense); line-height: 1.65; color: var(--color-text-secondary); }
 .settings-dialog__footer { display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin-top: 16px; }

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, watch } from 'vue'
+import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { useMasteryOverviewStore } from '../../stores/mastery-overview'
 const curriculum = useCurriculumScopeStore()
@@ -31,6 +32,6 @@ watch([() => curriculum.loadState, () => curriculum.selectedVolumeId], () => {
       </div>
     </details>
   </div>
-  <p v-if="store.studentsError" class="knowledge-overview-error" role="alert">班级和学生列表暂时无法读取。
-    <button type="button" class="overview-link-button" @click="store.loadStudents()">重新加载筛选项</button></p>
+  <FeedbackBanner v-if="store.studentsError" role="alert" tone="error" description="班级和学生列表暂时无法读取。"
+    action-label="重新加载筛选项" @action="store.loadStudents()" />
 </template>

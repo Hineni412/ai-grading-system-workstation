@@ -8,6 +8,7 @@ import {
   type TrainingCriterionVersion,
   type TrainingCriterionWorkspace,
 } from '../../api/question-bank-criteria'
+import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import SolutionEvidenceReview from './SolutionEvidenceReview.vue'
 import type { QuestionSolutionEvidenceResponse } from '../../api/question-bank'
@@ -310,14 +311,14 @@ defineExpose({ saveDraft, cancelDraft })
       <div>
         <h3 id="criterion-review-title">判定点</h3>
       </div>
-      <button
+      <AppButton
         type="button"
-        class="qb-link"
+       
         :disabled="loadState === 'loading' || writeState !== 'idle'"
-        @click="load"
+        variant="ghost" size="small" @click="load"
       >
         刷新
-      </button>
+      </AppButton>
     </header>
 
     <div v-if="skillLabels?.length" class="criterion-skills">
@@ -332,9 +333,7 @@ defineExpose({ saveDraft, cancelDraft })
     <p v-if="loadState === 'loading'" class="criterion-review__loading" role="status">
       正在读取判定点…
     </p>
-    <div v-else-if="loadState === 'error'" class="qb-feedback is-error" role="alert">
-      {{ message }}
-    </div>
+    <FeedbackBanner v-else-if="loadState === 'error'" role="alert" tone="error" :description="message" />
     <template v-else-if="workspace">
       <div class="criterion-status" :data-tone="statusCopy.tone">
         <span class="criterion-status__mark" aria-hidden="true" />
@@ -375,14 +374,14 @@ defineExpose({ saveDraft, cancelDraft })
                 <span>判定点编号</span>
                 <input class="app-input" v-model="point.point_id" maxlength="64" :aria-label="`第 ${index + 1} 个判定点编号`">
               </label>
-              <button
+              <AppButton
                 type="button"
-                class="qb-link is-danger"
+                class="is-danger"
                 :disabled="editorPoints.length <= 1 || writeState !== 'idle'"
-                @click="removePoint(index)"
+                variant="ghost" size="small" @click="removePoint(index)"
               >
                 移除
-              </button>
+              </AppButton>
             </div>
             <label>
               <span>要达成什么</span>
@@ -451,7 +450,7 @@ defineExpose({ saveDraft, cancelDraft })
         </AppButton>
         <AppButton variant="primary"
           type="button"
-          class="qb-button is-ai"
+         
           :disabled="writeState !== 'idle'"
           @click="regenerate"
         >
@@ -459,14 +458,7 @@ defineExpose({ saveDraft, cancelDraft })
         </AppButton>
       </div>
 
-      <p
-        v-if="message"
-        class="qb-feedback"
-        :class="{ 'is-error': message.includes('没有') || message.includes('不能') || message.includes('失败') }"
-        role="status"
-      >
-        {{ message }}
-      </p>
+      <FeedbackBanner v-if="message" :class="{ 'is-error': message.includes('没有') || message.includes('不能') || message.includes('失败') }" role="status" tone="info" :description="message" />
 
       <details v-if="workspace.versions.length" class="criterion-history">
         <summary>查看版本记录（{{ workspace.versions.length }}）</summary>

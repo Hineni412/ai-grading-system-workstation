@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { knowledgeLeafLabel, type CurriculumVolume } from '../../api/question-bank'
 import type { TrainingDiagnosis } from '../../api/training'
+import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 type Tier = 'weak' | 'unsteady' | 'stable' | 'insufficient'
 const props = defineProps<{ volume: CurriculumVolume | null; diagnosis: TrainingDiagnosis; mode: 'range' | 'select-one'; studentIds?: string[]; purpose?: 'training' | 'handout' | 'wrong_book'; progressId?: string }>()
@@ -77,7 +78,7 @@ function unlearned(order: number) { return props.mode === 'range' && scopeMode.v
   <section class="practice-box knowledge-range-list" aria-label="章节与小节">
     <header class="practice-box-heading"><strong>{{ mode === 'range' ? '训练范围' : '章节与小节' }}</strong></header>
     <div v-if="mode === 'range'" class="range-tools">
-      <div class="practice-segment" aria-label="训练范围模式"><button type="button" :aria-pressed="scopeMode === 'comprehensive'" :class="{ 'is-active': scopeMode === 'comprehensive' }" @click="scopeMode = 'comprehensive'">综合</button><button type="button" :aria-pressed="scopeMode === 'focused'" :class="{ 'is-active': scopeMode === 'focused' }" @click="scopeMode = 'focused'">专项</button></div>
+      <div class="app-segmented" aria-label="训练范围模式"><button type="button" :aria-pressed="scopeMode === 'comprehensive'" :class="{ 'is-active': scopeMode === 'comprehensive' }" @click="scopeMode = 'comprehensive'">综合</button><button type="button" :aria-pressed="scopeMode === 'focused'" :class="{ 'is-active': scopeMode === 'focused' }" @click="scopeMode = 'focused'">专项</button></div>
       <label v-if="scopeMode === 'comprehensive'">已学到<select v-model="progress" class="app-input" aria-label="已学到的章节"><option value="">{{ selectedProgress?.label ?? '按所选学生的作答推断' }}</option><option v-for="chapter in chapters" :key="chapter.id" :value="chapter.id">{{ chapter.label }}</option></select></label>
     </div>
     <p v-if="purpose === 'wrong_book'" class="range-book-note">错题本：综合＝所选考试的全部错题；专项＝只收所勾章节的错题</p>
@@ -94,7 +95,7 @@ function unlearned(order: number) { return props.mode === 'range' && scopeMode.v
         <div class="range-section-row">
           <label v-if="mode === 'range' && scopeMode === 'focused'"><input type="checkbox" :aria-label="`选择${section.label}`" :checked="rangeKeys.includes(section.knowledge_id) || rangeKeys.includes(chapter.knowledge_id)" @change="toggleSection(section.knowledge_id)"><span>{{ section.label }}</span></label>
           <button v-else-if="mode === 'select-one'" type="button" :class="{ 'is-active': sectionKey === section.knowledge_id }" @click="select(chapter.knowledge_id, section.knowledge_id)">{{ section.label }}</button>
-          <span v-else>{{ section.label }}</span><button type="button" class="practice-link" :aria-label="`${expanded.includes(section.knowledge_id) ? '收起' : '展开'}${section.label}`" :aria-expanded="expanded.includes(section.knowledge_id)" @click="toggleExpanded(section.knowledge_id)">{{ expanded.includes(section.knowledge_id) ? '▴' : '▾' }}</button>
+          <span v-else>{{ section.label }}</span><AppButton type="button" :aria-label="`${expanded.includes(section.knowledge_id) ? '收起' : '展开'}${section.label}`" :aria-expanded="expanded.includes(section.knowledge_id)" variant="ghost" size="small" @click="toggleExpanded(section.knowledge_id)">{{ expanded.includes(section.knowledge_id) ? '▴' : '▾' }}</AppButton>
         </div>
         <div v-if="statistics.get(section.knowledge_id)?.total" class="range-section-stats">
           <div class="range-tier-bar" :aria-label="tiers.map(tier => `${labels[tier]} ${statistics.get(section.knowledge_id)!.counts[tier]} 人`).join('，')"><i v-for="tier in tiers" :key="tier" :class="tier" :style="{ flexGrow: statistics.get(section.knowledge_id)!.counts[tier] }" /></div>

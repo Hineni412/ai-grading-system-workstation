@@ -770,7 +770,7 @@ watch(
         <p>{{ questionBankSyncCopy }}</p>
         <p v-if="intakeQuestionIds.length > 0">
           需要核对：
-          <button v-for="id in intakeQuestionIds" :key="id" type="button" @click="locateQuestion(id)">定位 {{ id }}</button>
+          <AppButton v-for="id in intakeQuestionIds" :key="id" type="button" variant="ghost" size="small" @click="locateQuestion(id)">定位 {{ id }}</AppButton>
         </p>
         <template v-if="canResumeIntake">
           <p>继续时复用已保存的分析，先补齐入库，再在本地赋分；不会重新发送已完成题目给 AI。</p>

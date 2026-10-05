@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppButton from './design-system/AppButton.vue'
 import { nextTick, onErrorCaptured, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -58,8 +59,8 @@ async function returnToWorkbench(): Promise<void> {
     <h1 id="application-error-title" tabindex="-1">当前页面暂时无法显示</h1>
     <p>当前页面的操作已中断；当前考试选择和业务数据不会改变。</p>
     <div class="application-error__actions">
-      <button type="button" @click="retryCurrentPage">重新加载当前页面</button>
-      <button type="button" @click="returnToWorkbench">返回工作台</button>
+      <AppButton type="button" variant="primary" @click="retryCurrentPage">重新加载当前页面</AppButton>
+      <AppButton type="button" variant="secondary" @click="returnToWorkbench">返回工作台</AppButton>
     </div>
   </section>
   <div v-else :key="contentKey" class="application-boundary__content">

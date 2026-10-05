@@ -14,6 +14,7 @@ import {
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
 import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
 import DuplicateCompareDialog from './DuplicateCompareDialog.vue'
+import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
 import type { ConfigQuestionGenerationState } from '../../api/config-workspace'
 import { useConfigQuestionFocus } from '../../composables/useConfigQuestionFocus'
@@ -929,8 +930,7 @@ function assetCountFor(question: ConfigQuestionPreview): number {
             <div>
               <small>{{ expandedAnswer.question_id }}</small>
               <h3>完整答案</h3>
-            </div>
-            <button type="button" aria-label="关闭完整答案" @click="closeFullAnswer">×</button>
+            </div><AppIconButton label="关闭完整答案" @click="closeFullAnswer" icon="close" />
           </header>
           <QuestionContentRenderer
             :blocks="textBlocks(expandedAnswer, 'answer')"
@@ -1375,7 +1375,7 @@ function assetCountFor(question: ConfigQuestionPreview): number {
   inset: 0;
   display: flex;
   justify-content: flex-end;
-  background: color-mix(in srgb, var(--color-text-primary) 38%, transparent);
+  background: var(--color-overlay-mask);
 }
 
 .question-review__answer-drawer {
@@ -1388,7 +1388,7 @@ function assetCountFor(question: ConfigQuestionPreview): number {
   padding: var(--space-5);
   overflow: auto;
   background: var(--color-bg-surface);
-  box-shadow: -12px 0 32px color-mix(in srgb, var(--color-text-primary) 12%, transparent);
+  box-shadow: var(--shadow-overlay);
 }
 
 .question-review__answer-drawer > header {

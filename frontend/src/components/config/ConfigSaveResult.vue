@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppButton from '../design-system/AppButton.vue'
 import { ref, watch } from 'vue'
 import type { ConfigEditorIssue } from '../../api/config-workspace'
 
@@ -47,8 +48,8 @@ watch(() => props.status, () => { confirmingReload.value = false })
     <strong>服务器已有较新版本，本地修改尚未保存。</strong>
     <span v-if="!confirmingReload">可以继续核对本地修改，或重新加载服务器版本。</span>
     <span v-else>重新加载后，本地修改将被丢弃，且不会自动合并。</span>
-    <button v-if="!confirmingReload" type="button" name="重新加载最新版本" @click="confirmingReload = true">重新加载最新版本</button>
-    <button v-else type="button" name="确认丢弃并重新加载" @click="emit('reload')">确认丢弃并重新加载</button>
+    <AppButton v-if="!confirmingReload" type="button" name="重新加载最新版本" variant="secondary" @click="confirmingReload = true">重新加载最新版本</AppButton>
+    <AppButton v-else type="button" name="确认丢弃并重新加载" variant="danger" @click="emit('reload')">确认丢弃并重新加载</AppButton>
   </div>
   <div v-else-if="status === 'unknown'" class="config-save-result config-save-result--conflict" role="alert">
     <strong>保存结果未知，暂时无法完成核对。</strong>

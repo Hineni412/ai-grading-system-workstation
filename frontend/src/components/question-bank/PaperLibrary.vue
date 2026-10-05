@@ -9,6 +9,8 @@ import {
   watch,
 } from 'vue'
 import { storeToRefs } from 'pinia'
+import AppIconButton from '../design-system/AppIconButton.vue'
+import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import { DialogRoot, DialogPortal, DialogContent, DialogTitle } from 'reka-ui'
 
@@ -1058,8 +1060,8 @@ async function confirmPermanentDelete(): Promise<void> {
       </div>
     </header>
 
-    <p v-if="retagMessage" class="paper-library__notice" role="status">{{ retagMessage }}</p>
-    <p v-if="deleteNotice" class="paper-library__notice" role="status">{{ deleteNotice }}</p>
+    <FeedbackBanner v-if="retagMessage" role="status" tone="info" :description="retagMessage" />
+    <FeedbackBanner v-if="deleteNotice" role="status" tone="info" :description="deleteNotice" />
 
     <div class="paper-library__tools">
       <label class="paper-search"><span class="sr-only">搜索试卷</span><input class="app-input" v-model="keyword" type="search" placeholder="搜索试卷名称、地区或教材"></label>
@@ -1218,11 +1220,11 @@ async function confirmPermanentDelete(): Promise<void> {
                 class="paper-card__more-menu"
                 role="menu"
               >
-                <button
+                <AppButton
                   type="button"
                   role="menuitem"
-                  @click="closePaperMenu(); editPaper(paper)"
-                >编辑资料</button>
+                  variant="ghost" size="small" @click="closePaperMenu(); editPaper(paper)"
+                >编辑资料</AppButton>
                 <details class="paper-card__metadata"><summary>来源与分析资料</summary><p>{{ [paper.province, paper.city, paper.district, paper.grade, paper.semester, paper.textbook_version].filter(Boolean).join(' · ') || '来源信息待补充' }}</p><p>标签 {{ paper.tagged_question_count }}/{{ paper.question_count }} · 判定点 {{ paper.criteria_question_count }}/{{ paper.question_count }} · 完整 {{ paper.complete_analysis_count }}/{{ paper.question_count }}</p></details>
 
                 <button role="menuitem" :disabled="batchActionsDisabled && retagAllBusy" @click="closePaperMenu(); continuePaper(paper)">继续分析</button>
@@ -1278,16 +1280,13 @@ async function confirmPermanentDelete(): Promise<void> {
               <p>试卷标签</p>
               <DialogTitle as="h2" id="paper-editor-title">编辑试卷资料</DialogTitle>
               <span>这里的内容会显示在试卷卡片，并用于题库筛选。</span>
-            </div>
-            <button
-              type="button"
-              class="paper-editor__close"
-              aria-label="关闭试卷资料编辑"
+            </div><AppIconButton label="关闭试卷资料编辑"
+             
+             
+             
               :disabled="store.paperWriteState === 'saving'"
               @click="closePaperEditor"
-            >
-              ×
-            </button>
+             icon="close" />
           </header>
 
           <form class="paper-editor__form" @submit.prevent="savePaperMetadata">
@@ -1398,17 +1397,8 @@ async function confirmPermanentDelete(): Promise<void> {
               </label>
             </fieldset>
 
-            <p v-if="formError" class="paper-editor__message is-error" role="alert">
-              {{ formError }}
-            </p>
-            <p
-              v-else-if="store.paperWriteMessage"
-              class="paper-editor__message"
-              :class="{ 'is-error': store.paperWriteState === 'error' || store.paperWriteState === 'conflict' }"
-              :role="store.paperWriteState === 'error' || store.paperWriteState === 'conflict' ? 'alert' : 'status'"
-            >
-              {{ store.paperWriteMessage }}
-            </p>
+            <FeedbackBanner v-if="formError" role="alert" tone="error" :description="formError" />
+            <FeedbackBanner v-else-if="store.paperWriteMessage" :class="{ 'is-error': store.paperWriteState === 'error' || store.paperWriteState === 'conflict' }" :role="store.paperWriteState === 'error' || store.paperWriteState === 'conflict' ? 'alert' : 'status'" tone="info" :description="store.paperWriteMessage" />
 
             <footer class="paper-editor__actions is-wide">
               <AppButton
@@ -1472,9 +1462,7 @@ async function confirmPermanentDelete(): Promise<void> {
               另有 {{ permanentDeleteImpact.shared_file_count }} 个共享文件仍被其他试卷使用，将保留。
             </template>
           </p>
-          <p v-if="permanentDeleteMessage" class="paper-trash-confirm__message is-error" role="alert">
-            {{ permanentDeleteMessage }}
-          </p>
+          <FeedbackBanner v-if="permanentDeleteMessage" role="alert" tone="error" :description="permanentDeleteMessage" />
           <footer>
             <AppButton
               variant="secondary"
@@ -2136,7 +2124,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-editor-layer {
   align-items: stretch;
-  background: color-mix(in srgb, var(--color-text-primary) 38%, transparent);
+  background: var(--color-overlay-mask);
   display: flex;
   inset: 0;
   justify-content: flex-end;
@@ -2158,7 +2146,7 @@ async function confirmPermanentDelete(): Promise<void> {
 .paper-trash-drawer {
   background: var(--card);
   border-left: 1px solid var(--border);
-  box-shadow: -12px 0 32px color-mix(in srgb, var(--color-text-primary) 12%, transparent);
+  box-shadow: var(--shadow-overlay);
   display: flex;
   flex-direction: column;
   max-width: 100%;
@@ -2288,7 +2276,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-trash-confirm-layer {
   align-items: center;
-  background: color-mix(in srgb, var(--color-text-primary) 42%, transparent);
+  background: var(--color-overlay-mask);
   display: flex;
   inset: 0;
   justify-content: center;
@@ -2301,9 +2289,9 @@ async function confirmPermanentDelete(): Promise<void> {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius-overlay);
-  box-shadow: 0 18px 52px color-mix(in srgb, var(--color-text-primary) 18%, transparent);
+  box-shadow: var(--shadow-overlay);
   max-width: 100%;
-  padding: 24px;
+  padding: var(--space-5);
   width: 470px;
 }
 
@@ -2405,22 +2393,7 @@ async function confirmPermanentDelete(): Promise<void> {
   margin-top: 7px;
 }
 
-.paper-editor__close {
-  align-items: center;
-  background: var(--card);
-  border: 1px solid var(--color-border-strong);
-  border-radius: 8px;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  display: inline-flex;
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: var(--font-size-h2);
-  height: var(--control-height-large);
-  justify-content: center;
-  line-height: 1;
-  width: 36px;
-}
+
 
 .paper-editor__form {
   display: grid;

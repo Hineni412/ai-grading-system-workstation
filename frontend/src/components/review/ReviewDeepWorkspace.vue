@@ -10,6 +10,7 @@ import {
 import type { EvidenceSource } from '../../composables/use-evidence-viewer'
 import type { ScanStudentMatchOption } from '../../api/scan-grading'
 import AppIcon from '../shell/AppIcon.vue'
+import AppButton from '../design-system/AppButton.vue'
 import BackButton from '../design-system/BackButton.vue'
 import StudentMatchSelect from '../scan-grading/StudentMatchSelect.vue'
 import ReviewAnswerPanel from './ReviewAnswerPanel.vue'
@@ -167,7 +168,7 @@ const emit = defineEmits<{
         role="group"
         aria-label="切换学生"
       >
-        <button
+        <AppButton
           type="button"
           :disabled="studentNav.previousName === null"
           :title="studentNav.previousName
@@ -176,14 +177,14 @@ const emit = defineEmits<{
           :aria-label="studentNav.previousName
             ? `上一名学生：${studentNav.previousName}`
             : '上一名学生（已是第一个）'"
-          @click="emit('student-nav', -1)"
+          variant="secondary" size="small" @click="emit('student-nav', -1)"
         >
           ‹ 上一名 ↑
-        </button>
+        </AppButton>
         <span v-if="studentNav.position" class="review-deep-workspace__position">
           {{ studentNav.position }}
         </span>
-        <button
+        <AppButton
           type="button"
           :disabled="studentNav.nextName === null"
           :title="studentNav.nextName
@@ -192,10 +193,10 @@ const emit = defineEmits<{
           :aria-label="studentNav.nextName
             ? `下一名学生：${studentNav.nextName}`
             : '下一名学生（已是最后一个）'"
-          @click="emit('student-nav', 1)"
+          variant="secondary" size="small" @click="emit('student-nav', 1)"
         >
           下一名 ↓ ›
-        </button>
+        </AppButton>
         <div v-if="studentOptions?.length" class="review-deep-workspace__student-search">
           <AppIcon name="search" :size="14" class="review-deep-workspace__search-icon" />
           <StudentMatchSelect

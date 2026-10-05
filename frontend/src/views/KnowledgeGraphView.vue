@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { TrainingOverviewNode } from '../api/training'
+import AppIconButton from '../components/design-system/AppIconButton.vue'
 import AppButton from '../components/design-system/AppButton.vue'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
@@ -162,7 +163,7 @@ onBeforeUnmount(() => {
         @action="store.load(curriculum.selectedVolumeId, true)"
       />
       <div class="mastery-map-toolbar">
-        <div role="group" aria-label="地图筛选"><button v-for="option in filters" :key="option.key" type="button" :aria-pressed="filter === option.key" :class="{ 'is-active': filter === option.key }" @click="router.replace({ name: 'knowledge-graph', query: queryFor(selectedKey, option.key) })">{{ option.label }}</button></div>
+        <div class="app-segmented" role="group" aria-label="地图筛选"><button v-for="option in filters" :key="option.key" type="button" :aria-pressed="filter === option.key" :class="{ 'is-active': filter === option.key }" @click="router.replace({ name: 'knowledge-graph', query: queryFor(selectedKey, option.key) })">{{ option.label }}</button></div>
         <div class="mastery-map-legend" aria-label="热度图例"><span v-for="(label, index) in WEAK_HEAT_LABELS" :key="label"><i :class="`heat-${index}`" />{{ label }}</span><span><i class="heat--1" />无证据</span></div>
         <p>底色越深＝明显薄弱的学生占比越高（分母：有证据学生）；底部细条＝四档人数分布。</p>
         <div class="mastery-tier-legend"><span class="is-weak">明显薄弱</span><span class="is-unsteady">还不稳</span><span class="is-stable">较稳定</span><span class="is-insufficient">证据不足</span><span>实线：同一小问 · 虚线：仅同题出现</span></div>
@@ -188,7 +189,7 @@ onBeforeUnmount(() => {
           </details>
         </div>
         <aside v-if="selected" ref="drawer" class="mastery-map-drawer fx-drawer-right" tabindex="-1" role="region" :aria-label="`${shortNodeName(selected)}详情`">
-          <header><div><span class="mastery-map-type">{{ selected.kind === 'skill' ? '技能' : '知识点' }}</span><h2>{{ shortNodeName(selected) }}</h2></div><AppButton variant="ghost" aria-label="关闭详情" @click="close">×</AppButton></header>
+          <header><div><span class="mastery-map-type">{{ selected.kind === 'skill' ? '技能' : '知识点' }}</span><h2>{{ shortNodeName(selected) }}</h2></div><AppIconButton label="关闭详情" @click="close" icon="close" /></header>
           <p class="overview-location">属于 {{ nodeLocation(selected, overview.nodes) }}</p>
           <p v-if="selected.definition" class="mastery-map-definition">{{ selected.definition }}</p>
           <div class="mastery-map-mastery"><span>群体掌握度</span><strong>{{ formatPercent(selected.group_mastery) }}</strong><small>80% 群体区间 {{ formatPercent(selected.group_interval_low) }}–{{ formatPercent(selected.group_interval_high) }}</small></div>

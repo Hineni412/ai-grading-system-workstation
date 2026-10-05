@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppButton from '../design-system/AppButton.vue'
 import { computed, ref, watch } from 'vue'
 
 import type {
@@ -149,12 +150,12 @@ watch(
             <strong>第 {{ partIndex + 1 }} 小问</strong>
             <span>{{ part.steps.length }} 个步骤点 · {{ partTotal(part) }} 分</span>
           </div>
-          <button
+          <AppButton
             type="button"
             :disabled="disabled || localParts.length <= 1"
             :aria-label="`删除第 ${partIndex + 1} 小问`"
-            @click="removePart(partIndex)"
-          >删除小问</button>
+            class="is-danger" variant="ghost" size="small" @click="removePart(partIndex)"
+          >删除小问</AppButton>
         </header>
         <div class="scoring-unit-editor__step-grid">
           <div v-for="(step, stepIndex) in part.steps" :key="stepIndex" class="scoring-unit-editor__step-card">
@@ -205,18 +206,18 @@ watch(
       本题由 {{ expectedTotal }} 分调整为 {{ draftTotal }} 分，可以按当前人工设置保存。
     </p>
     <footer class="scoring-unit-editor__actions">
-      <button
+      <AppButton
         type="button"
         name="单题AI重试"
         :disabled="disabled"
-        @click="emit('retry', questionId)"
-      >AI 只重试这道题</button>
-      <button
+        variant="ghost" size="small" @click="emit('retry', questionId)"
+      >AI 只重试这道题</AppButton>
+      <AppButton
         type="button"
         name="保存本题结构"
         :disabled="disabled || Boolean(manualValidationError)"
-        @click="applyStructure"
-      >保存本题结构</button>
+        variant="primary" @click="applyStructure"
+      >保存本题结构</AppButton>
     </footer>
   </section>
 </template>

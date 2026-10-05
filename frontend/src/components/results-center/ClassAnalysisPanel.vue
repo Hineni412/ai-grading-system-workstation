@@ -20,6 +20,7 @@ import {
 } from '../../api/model-profiles'
 import { useJobStore } from '../../stores/jobs'
 import { useResultsCenterStore } from '../../stores/results-center'
+import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import ClassAnalysisGenerateConfirm from './ClassAnalysisGenerateConfirm.vue'
@@ -732,13 +733,13 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
                               <span v-if="cause.pattern_status === 'candidate'" class="class-analysis__cause-tag class-analysis__cause-tag--new">新错法</span>
                               <span v-if="cause.teacher_edited" class="class-analysis__cause-tag class-analysis__cause-tag--edited" data-testid="cause-teacher-edited">老师改过</span>
                               <QuestionHtmlBlock :text="cause.reason" inline typeset-text /><b>{{ cause.count }} 人</b>
-                              <button
+                              <AppButton
                                 v-if="canEditPattern(cause)"
                                 type="button"
-                                class="class-analysis__link class-analysis__cause-confirm"
+                                class="class-analysis__cause-confirm"
                                 data-testid="cause-edit"
-                                @click.stop.prevent="openPatternEdit(selectedQuestion, cause)"
-                              >修改</button>
+                                variant="ghost" size="small" @click.stop.prevent="openPatternEdit(selectedQuestion, cause)"
+                              >修改</AppButton>
                             </summary>
                             <template v-if="openDetails.has(`${section.key}#${causeIndex}`)">
                             <div v-for="(variant, variantIndex) in (cause.manifestations ?? [{ description: '', source_question_id: null, evidence: cause.evidence }])" :key="variantIndex" class="class-analysis__cause-manifestation">
@@ -759,19 +760,19 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
                             <span v-if="cause.category" class="class-analysis__cause-tag">{{ cause.category }}</span>
                             <span v-if="cause.teacher_edited" class="class-analysis__cause-tag class-analysis__cause-tag--edited" data-testid="cause-teacher-edited">老师改过</span>
                             <QuestionHtmlBlock :text="cause.reason" inline typeset-text /><b>{{ cause.count }} 人</b>
-                            <button
+                            <AppButton
                               v-if="canEditPattern(cause)"
                               type="button"
-                              class="class-analysis__link class-analysis__cause-confirm"
+                              class="class-analysis__cause-confirm"
                               data-testid="cause-edit"
-                              @click="openPatternEdit(selectedQuestion, cause)"
-                            >修改</button>
+                              variant="ghost" size="small" @click="openPatternEdit(selectedQuestion, cause)"
+                            >修改</AppButton>
                           </template>
                         </li>
                       </ol>
-                      <button v-if="section.causes.length > 5" type="button" class="class-analysis__link class-analysis__causes-toggle" :aria-expanded="expandedCauses.has(section.key)" @click="toggleCauses(section.key)">
+                      <AppButton v-if="section.causes.length > 5" type="button" class="class-analysis__causes-toggle" :aria-expanded="expandedCauses.has(section.key)" variant="ghost" size="small" @click="toggleCauses(section.key)">
                         {{ expandedCauses.has(section.key) ? '收起错因' : `展开其余 ${section.causes.length - 5} 条错因` }} · 共 {{ section.causes.length }} 条
-                      </button>
+                      </AppButton>
                     </details>
                     <span v-if="selectedQuestion.causes_outdated" class="class-analysis__note" data-testid="causes-outdated">旧版整理 · 待升级（暂无错误大类）</span>
                     <span v-if="!selectedQuestion.causeSections.length" class="class-analysis__note">{{ selectedQuestion.records.length ? (selectedQuestion.causes_grouped ? '没有可确认的共同错因，见下方原始证据' : '未记录具体错因') : '—' }}</span>
@@ -827,8 +828,7 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
       <DialogOverlay class="class-analysis__overlay" />
       <DialogContent class="class-analysis__preview" data-testid="cause-edit-dialog" :aria-describedby="undefined">
         <div class="class-analysis__dialog-heading">
-          <DialogTitle>{{ patternEdit?.questionId }} · 修改错法</DialogTitle>
-          <DialogClose class="class-analysis__link" aria-label="关闭修改对话框">关闭</DialogClose>
+          <DialogTitle>{{ patternEdit?.questionId }} · 修改错法</DialogTitle><DialogClose as-child><AppIconButton label="关闭修改对话框" icon="close" /></DialogClose>
         </div>
         <template v-if="patternEdit">
           <p class="class-analysis__note">错法已自动整理并回挂题库；这里可以按需修改名称和大类，修改后同题考试会沿用新名称。</p>
@@ -844,7 +844,7 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
           </label>
           <p v-if="patternEditError" class="class-analysis__error" role="alert">{{ patternEditError }}</p>
           <div class="class-analysis__dialog-actions">
-            <button type="button" class="class-analysis__link" :disabled="patternEditLoading" @click="patternEdit = null">取消</button>
+            <AppButton type="button" :disabled="patternEditLoading" variant="ghost" size="small" @click="patternEdit = null">取消</AppButton>
             <AppButton variant="primary" :loading="patternEditLoading" loading-label="正在保存" :disabled="!patternEdit.newReason.trim()" data-testid="cause-edit-submit" @click="savePatternEdit">
               保存修改
             </AppButton>

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import AppIconButton from '../design-system/AppIconButton.vue'
+import AppButton from '../design-system/AppButton.vue'
 import { computed, nextTick, ref } from 'vue'
 
 import type { QuestionBankRichBlock } from '../../api/question-bank'
@@ -414,7 +416,7 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
               </button>
               <figcaption v-else>
                 图片暂时无法读取。
-                <button type="button" @click="retryImage(url)">重新加载</button>
+                <AppButton type="button" variant="ghost" size="small" @click="retryImage(url)">重新加载</AppButton>
               </figcaption>
             </figure>
           </div>
@@ -443,7 +445,7 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
         </button>
         <figcaption v-else>
           图片暂时无法读取。
-          <button type="button" @click="retryImage(url)">重新加载</button>
+          <AppButton type="button" variant="ghost" size="small" @click="retryImage(url)">重新加载</AppButton>
         </figcaption>
       </figure>
     </div>
@@ -465,8 +467,7 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
           <span>{{ Math.round(imageZoom * 100) }}%</span>
           <button type="button" aria-label="缩小图片" @click="adjustZoom(-.25)">−</button>
           <button type="button" aria-label="恢复图片原始缩放" @click="imageZoom = 1">复位</button>
-          <button type="button" aria-label="放大图片" @click="adjustZoom(.25)">＋</button>
-          <button type="button" aria-label="关闭大图" @click="closeImage">关闭</button>
+          <button type="button" aria-label="放大图片" @click="adjustZoom(.25)">＋</button><AppIconButton label="关闭大图" @click="closeImage" icon="close" />
         </div>
         <div class="question-image-viewer__canvas">
           <img

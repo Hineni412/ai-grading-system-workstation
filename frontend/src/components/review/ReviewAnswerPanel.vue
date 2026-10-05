@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import AppIconButton from '../design-system/AppIconButton.vue'
+import AppButton from '../design-system/AppButton.vue'
 import { computed, ref, watch } from 'vue'
 
 import {
@@ -104,14 +106,11 @@ watch(
     aria-label="题目与答案"
   >
     <header v-if="props.embedded !== true" class="review-answer-panel__header">
-      <h3>题目与答案</h3>
-      <button
-        type="button"
-        aria-label="关闭题目与答案面板"
+      <h3>题目与答案</h3><AppIconButton label="关闭题目与答案面板"
+       
+       
         @click="emit('close')"
-      >
-        ×
-      </button>
+       icon="close" />
     </header>
 
     <div class="review-answer-panel__scroll">
@@ -129,7 +128,7 @@ watch(
         </div>
         <p v-else-if="previewState === 'error'" class="review-answer-panel__warning" role="alert">
           原题暂时无法读取。
-          <button type="button" @click="loadPreview">重试</button>
+          <AppButton type="button" variant="ghost" size="small" @click="loadPreview">重试</AppButton>
         </p>
         <template v-else-if="preview">
           <p v-if="preview.notice" class="review-answer-panel__muted">{{ preview.notice }}</p>
@@ -151,7 +150,7 @@ watch(
         </p>
         <p v-else-if="rubricState === 'error'" class="review-answer-panel__warning" role="alert">
           评分标准暂时无法读取。
-          <button type="button" @click="loadRubric">重试</button>
+          <AppButton type="button" variant="ghost" size="small" @click="loadRubric">重试</AppButton>
         </p>
         <p v-else-if="rubric && rubric.points.length === 0" class="review-answer-panel__muted">
           当前题没有更细的评分要点。

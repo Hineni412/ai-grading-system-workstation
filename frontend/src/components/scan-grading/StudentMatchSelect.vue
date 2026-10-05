@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppIconButton from '../design-system/AppIconButton.vue'
 import { computed, nextTick, ref, useId, watch } from 'vue'
 
 import type { ScanStudentMatchOption } from '../../api/scan-grading'
@@ -152,17 +153,14 @@ function onKeydown(event: KeyboardEvent): void {
       @input="onInput"
       @blur="closeList"
       @keydown="onKeydown"
-    >
-    <button
+    ><AppIconButton label="清除已选学生"
       v-if="modelValue"
-      type="button"
-      class="student-match-select__clear"
-      aria-label="清除已选学生"
+     
+     
+     
       @mousedown.prevent
       @click="clearSelection"
-    >
-      ×
-    </button>
+     icon="close" />
     <div
       v-if="isOpen"
       :id="listId"

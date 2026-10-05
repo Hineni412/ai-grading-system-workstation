@@ -6,6 +6,7 @@ import {
   questionBankApi,
   type QuestionBankListItem,
 } from '../../api/question-bank'
+import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 
@@ -99,16 +100,13 @@ onBeforeUnmount(() => {
           <div>
             <DialogTitle as="h2" id="criteria-review-title">判定点待审核</DialogTitle>
             <p>正常通过质检的判定点已自动可用。这里只列出仍无法确定的个别题目；点开后可修正或重新生成。</p>
-          </div>
-          <button
+          </div><AppIconButton label="关闭判定点待审核"
             ref="closeButton"
-            type="button"
-            class="qb-drawer-close"
-            aria-label="关闭判定点待审核"
+           
+           
+           
             @click="emit('close')"
-          >
-            ×
-          </button>
+           icon="close" />
         </header>
 
         <div class="taxonomy-review__toolbar">

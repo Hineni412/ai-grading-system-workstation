@@ -11,6 +11,8 @@ import { useSessionSwitch } from '../../composables/useSessionSwitch'
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { useSessionStore } from '../../stores/session'
 import type { SessionSummary } from '../../api/sessions'
+import FeedbackBanner from '../design-system/FeedbackBanner.vue'
+import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 
 const emit = defineEmits<{ navigate: [] }>()
@@ -146,9 +148,7 @@ onMounted(() => {
       </RouterLink>
     </div>
 
-    <p v-if="deletion.notice.value" class="session-manager__notice" role="status">
-      {{ deletion.notice.value }}
-    </p>
+    <FeedbackBanner v-if="deletion.notice.value" role="status" tone="info" :description="deletion.notice.value" />
 
     <div v-if="deletion.pendingCleanups.value.length" class="session-manager__cleanup">
       <span class="session-manager__cleanup-text">
@@ -293,11 +293,11 @@ onMounted(() => {
           </template>
           <div v-else class="session-manager__detail-actions">
             <p class="session-manager__detail-error" role="alert">{{ deletion.rowMessage.value }}</p>
-            <button
+            <AppButton
               type="button"
-              class="session-manager__inline-retry"
-              @click="deletion.review(session.id)"
-            >重新查看影响</button>
+             
+              variant="ghost" size="small" @click="deletion.review(session.id)"
+            >重新查看影响</AppButton>
           </div>
         </div>
       </li>
@@ -428,15 +428,6 @@ onMounted(() => {
   background: var(--color-bg-surface);
 }
 
-.session-manager__inline-retry {
-  border: 0;
-  background: transparent;
-  color: var(--color-accent-active);
-  font: inherit;
-  font-size: var(--font-size-caption);
-  text-decoration: underline;
-  cursor: pointer;
-}
 
 .session-manager__list {
   display: grid;

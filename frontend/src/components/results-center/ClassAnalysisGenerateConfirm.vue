@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ModelTaskBinding } from '../../api/model-profiles'
+import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
 
 const props = defineProps<{
@@ -27,8 +28,7 @@ const emit = defineEmits<{
     <div class="class-analysis__dialog-heading">
       <div>
         <h3 id="regenerate-confirm-title">{{ props.kind === 'causes' ? '整理本场各题错因' : '生成班级分析' }}</h3>
-      </div>
-      <button type="button" class="class-analysis__link" @click="emit('close')">关闭</button>
+      </div><AppIconButton label="关闭" @click="emit('close')" icon="close" />
     </div>
 
     <p v-if="props.loading" role="status">正在读取模型配置…</p>

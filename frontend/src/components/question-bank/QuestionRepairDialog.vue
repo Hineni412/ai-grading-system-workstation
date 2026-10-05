@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { DialogRoot, DialogPortal, DialogContent, DialogTitle, DialogDescription } from 'reka-ui'
+import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
 import { questionBankApi, type QuestionRepairKind, type QuestionRepairPart, type QuestionRepairPreview } from '../../api/question-bank'
 import { ApiError, isAmbiguousWriteError } from '../../api/errors'
@@ -80,7 +81,7 @@ onBeforeUnmount(() => controller?.abort())
   <DialogRoot :open="open" @update:open="!$event && emit('close')"><DialogPortal>
     <div v-if="open" class="qb-modal-layer" @click.self="emit('close')">
       <DialogContent class="qb-repair-dialog qb-import-dialog" @close-auto-focus="restoreFocus">
-        <header><DialogTitle as="h2">只补缺失部分</DialogTitle><button class="qb-link" aria-label="关闭补齐面板" @click="emit('close')">关闭</button></header>
+        <header><DialogTitle as="h2">只补缺失部分</DialogTitle><AppIconButton label="关闭补齐面板" @click="emit('close')" icon="close" /></header>
         <DialogDescription>{{ volumeLabel }} · {{ kind === 'skills' ? '未挂技能题目' : kind === 'analysis' ? '分析未完成题目' : '有缺失的题目' }}</DialogDescription>
         <p v-if="state === 'loading'" role="status">正在统计题目和缺失部分，此步骤不调用模型…</p>
         <p v-if="message" role="alert">{{ message }}</p>
@@ -88,7 +89,7 @@ onBeforeUnmount(() => controller?.abort())
           <p role="status">{{ job.status === 'queued' ? '等待开始' : job.status === 'running' ? '正在补齐缺失部分' : job.status === 'succeeded' ? `已补齐 ${job.result.completed_count ?? 0} / ${job.result.requested_count ?? 0} 题` : job.status === 'cancelled' ? '任务已取消，已完成的部分已保留' : '本次补齐未完成，已完成的部分已保留' }}</p>
           <progress :value="job.progress" max="1" />
           <p>{{ job.detail }}</p>
-          <p v-if="jobs.syncErrors[job.id]" role="alert">进度暂时无法更新，任务可能仍在进行。<button class="qb-link" @click="jobs.refresh(job.id)">更新进度</button></p>
+          <p v-if="jobs.syncErrors[job.id]" role="alert">进度暂时无法更新，任务可能仍在进行。<AppButton variant="ghost" size="small" @click="jobs.refresh(job.id)">更新进度</AppButton></p>
           <ul v-if="remaining.length" class="qb-repair-results"><li v-for="item in remaining" :key="item.id">第 {{ item.question_number }} 题：{{ item.missing.map(part => labels[part]).join('、') }} · {{ item.reason }}</li></ul>
           <AppButton v-if="TERMINAL_JOB_STATUSES.has(job.status)" variant="secondary" @click="activeJobId = null; load()">重新查看剩余缺失</AppButton>
         </template>

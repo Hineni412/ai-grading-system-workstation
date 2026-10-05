@@ -4,6 +4,7 @@ import { computed, ref, watch } from 'vue'
 import { resolveReviewItem, type ReviewItemLike, type ReviewRubricSection } from '../../api/review'
 import { reviewDraftKey, reviewDraftIssue, scoreIssue, stepNumber, stepNeedsReview, aiStepFor, useReviewDraftStore } from '../../stores/review-drafts'
 import { displayErrorCategory, translateGradingReason } from '../../utils/grading-reasons'
+import AppButton from '../design-system/AppButton.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
 import ReviewImageDialog from './ReviewImageDialog.vue'
 import ReviewStepRecord from './ReviewStepRecord.vue'
@@ -154,7 +155,7 @@ watch(
       >
       <div v-else class="review-answer-sheet__image-error" role="status">
         <span>答卷图片暂时无法显示</span>
-        <button type="button" @click="retryImage">重新加载答卷图片</button>
+        <AppButton type="button" variant="ghost" size="small" @click="retryImage">重新加载答卷图片</AppButton>
       </div>
     </div>
 

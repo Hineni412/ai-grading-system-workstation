@@ -7,6 +7,7 @@ import {
   fetchReviewQuestions,
   type ReviewQuestionSummary,
 } from '../api/review'
+import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import StepProgress, { type StepProgressStep } from '../components/design-system/StepProgress.vue'
 import ScanGradeStage from '../components/scan-grading/ScanGradeStage.vue'
@@ -193,10 +194,7 @@ watch(
     </PageHeader>
 
     <div class="scan-grading__body">
-      <main class="scan-grading__main">
-
-    <p v-if="store.errorMessage" class="scan-grading__notice" role="alert">{{ store.errorMessage }}</p>
-    <p v-if="store.loadState === 'loading'" class="scan-grading__notice" role="status">正在恢复本次批改工作区…</p>
+      <main class="scan-grading__main"><FeedbackBanner v-if="store.errorMessage" role="alert" tone="info" :description="store.errorMessage" /><FeedbackBanner v-if="store.loadState === 'loading'" role="status" tone="info" description="正在恢复本次批改工作区…" />
 
     <Transition v-if="store.workspace" :name="stageTransition" mode="out-in">
       <ScanPreflightStage

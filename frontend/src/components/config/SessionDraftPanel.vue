@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FeedbackBanner from '@/components/design-system/FeedbackBanner.vue'
 import AppButton from '@/components/design-system/AppButton.vue'
 
 import { computed, ref, watch } from 'vue'
@@ -130,7 +131,7 @@ async function renameDraft(): Promise<void> {
       >
         {{ sessionStore.currentSession ? '保存' : '创建草稿' }}
       </AppButton>
-      <p v-if="message" class="session-draft-panel__message" role="status">{{ message }}</p>
+      <FeedbackBanner v-if="message" role="status" tone="info" :description="message" />
     </form>
   </section>
 </template>

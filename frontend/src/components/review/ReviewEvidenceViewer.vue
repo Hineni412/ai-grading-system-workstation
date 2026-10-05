@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppButton from '../design-system/AppButton.vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { resolveReviewItem, type ReviewItemLike } from '../../api/review'
@@ -221,14 +222,14 @@ onBeforeUnmount(() => {
   <section class="review-evidence-viewer" aria-label="答卷证据查看器">
     <p v-if="reviewItem.media.originals_available === false" class="review-evidence-cleared" role="status">原卷已清理，分数和作答记录仍保留。</p>
     <div v-else class="review-evidence-toolbar" role="toolbar" aria-label="图片查看工具">
-      <button type="button" @click="viewer.fitWidth">适应宽度</button>
-      <button type="button" @click="viewer.setActualSize">原比例</button>
-      <button type="button" @click="viewer.zoomBy(-0.25)">缩小</button>
+      <AppButton type="button" variant="ghost" size="small" @click="viewer.fitWidth">适应宽度</AppButton>
+      <AppButton type="button" variant="ghost" size="small" @click="viewer.setActualSize">原比例</AppButton>
+      <AppButton type="button" variant="ghost" size="small" @click="viewer.zoomBy(-0.25)">缩小</AppButton>
       <output aria-label="当前缩放比例">{{ scaleLabel }}</output>
-      <button type="button" @click="viewer.zoomBy(0.25)">放大</button>
-      <button type="button" @click="viewer.rotateBy(-90)">向左旋转</button>
-      <button type="button" @click="viewer.rotateBy(90)">向右旋转</button>
-      <button v-if="expandable !== false" type="button" @click="emit('expand')">弹窗放大</button>
+      <AppButton type="button" variant="ghost" size="small" @click="viewer.zoomBy(0.25)">放大</AppButton>
+      <AppButton type="button" variant="ghost" size="small" @click="viewer.rotateBy(-90)">向左旋转</AppButton>
+      <AppButton type="button" variant="ghost" size="small" @click="viewer.rotateBy(90)">向右旋转</AppButton>
+      <AppButton v-if="expandable !== false" type="button" variant="ghost" size="small" @click="emit('expand')">弹窗放大</AppButton>
     </div>
 
     <div
@@ -263,7 +264,7 @@ onBeforeUnmount(() => {
       </p>
       <div v-else-if="viewer.loadState.value === 'error'" class="review-evidence-state" role="alert">
         <p>{{ errorMessage }}</p>
-        <button type="button" @click.stop="retryImage">重新加载</button>
+        <AppButton type="button" variant="ghost" size="small" @click.stop="retryImage">重新加载</AppButton>
       </div>
     </div>
 

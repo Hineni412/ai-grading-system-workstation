@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FeedbackBanner from '@/components/design-system/FeedbackBanner.vue'
 import AppButton from '@/components/design-system/AppButton.vue'
 
 import { computed, ref } from 'vue'
@@ -90,7 +91,7 @@ async function commit(): Promise<void> {
               <td><StatusBadge :tone="operationTones[row.operation]" :label="operationLabels[row.operation]" /></td><td>{{ row.issues.join('；') || '—' }}</td>
             </tr></tbody>
           </table><StatePanel v-if="!visibleRows.length" kind="empty" compact title="没有有变化的行" /></div>
-          <p v-if="roster.errorMessage" class="settings-feedback is-error" role="alert">{{ roster.errorMessage }}</p>
+          <FeedbackBanner v-if="roster.errorMessage" role="alert" tone="error" :description="roster.errorMessage" />
           <footer class="settings-dialog__footer">
             <span class="settings-note">已选 {{ roster.selectedImportRows.length }} 行，确认后才会写入。</span>
             <AppButton variant="secondary" :disabled="roster.importState === 'committing'" @click="open = false">取消</AppButton>

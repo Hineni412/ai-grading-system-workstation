@@ -135,6 +135,63 @@ small {
   color: var(--color-accent);
 }
 
+.app-button.app-button.app-button[data-size='small'] {
+  --app-control-height: var(--control-height-small);
+  --app-control-padding: var(--space-3);
+  --app-control-font: var(--font-size-dense);
+}
+
+.app-button.app-button.app-button[data-variant='ghost'].is-danger {
+  color: var(--color-danger);
+}
+
+.app-button .app-button__count {
+  min-width: 20px;
+  padding: 0 var(--space-1);
+  border-radius: 999px;
+  background: var(--color-warning);
+  color: #fff;
+  font-size: var(--font-size-caption);
+  line-height: 18px;
+  text-align: center;
+}
+
+.app-segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--color-bg-subtle);
+  border: var(--border-width) solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+}
+
+.app-segmented > * {
+  min-height: var(--control-height-small);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: calc(var(--radius-control) - 2px);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-dense);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.app-segmented > .is-active,
+.app-segmented > [aria-pressed='true'],
+.app-segmented > [aria-checked='true'],
+.app-segmented > [aria-selected='true'] {
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+  box-shadow: var(--shadow-floating);
+}
+
+.app-segmented > :disabled {
+  opacity: var(--opacity-disabled);
+  cursor: default;
+}
+
 .app-button.app-button.app-button:focus-visible,
 .app-icon-button.app-icon-button.app-icon-button:focus-visible {
   outline: 2px solid var(--color-accent);

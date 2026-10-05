@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { AnalysisPreflight, ReportType } from '../../api/exports'
+import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import { formatTokenCount, reportTypeLabel } from './report-format'
@@ -35,12 +36,9 @@ const emit = defineEmits<{
           <h3 id="analysis-confirm-title">
             {{ reportType ? reportTypeLabel(reportType) : '分析报告' }}
           </h3>
-        </div>
-        <AppButton variant="ghost"
+        </div><AppIconButton label="关闭"
           @click="emit('close')"
-        >
-          关闭
-        </AppButton>
+         icon="close" />
       </div>
 
       <StatePanel

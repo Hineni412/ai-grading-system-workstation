@@ -290,7 +290,7 @@ async function deleteRecord(recordId: string): Promise<void> {
             <div>
               <strong>分节</strong>
             </div>
-            <button type="button" class="assembly-link" @click="addSection">添加分节</button>
+            <AppButton type="button" variant="ghost" size="small" @click="addSection">添加分节</AppButton>
           </header>
           <div v-if="editableSections.length" class="assembly-section-list">
             <div v-for="section in editableSections" :key="section.id">
@@ -426,7 +426,7 @@ async function deleteRecord(recordId: string): Promise<void> {
             <p class="assembly-kicker">EXPORT</p>
             <h2 id="assembly-export-title">导出</h2>
           </div>
-          <button type="button" class="assembly-link" @click="assembly.loadRecords">刷新</button>
+          <AppButton type="button" variant="ghost" size="small" @click="assembly.loadRecords">刷新</AppButton>
         </header>
         <p>确认预览后生成文件。导出不会改写题库内容。</p>
         <div class="assembly-export-actions">
@@ -450,13 +450,10 @@ async function deleteRecord(recordId: string): Promise<void> {
           </div>
           <progress :value="currentJob.progress" max="1" />
           <div class="assembly-job__actions">
-            <a
-              v-if="currentJob.status === 'succeeded' && typeof currentJob.result.download_url === 'string'"
-              class="assembly-button is-primary"
-              :href="currentJob.result.download_url"
-            >
+            <AppButton
+              v-if="currentJob.status === 'succeeded' && typeof currentJob.result.download_url === 'string'" variant="primary" :as="'a'" :href="currentJob.result.download_url">
               下载文件
-            </a>
+            </AppButton>
             <AppButton v-if="!currentJobDone" variant="secondary" @click="jobs.cancel(currentJob.id)">取消</AppButton>
             <AppButton
               v-if="currentJob.status === 'failed' || currentJob.status === 'cancelled'"
@@ -482,9 +479,9 @@ async function deleteRecord(recordId: string): Promise<void> {
                 <small>{{ record.filename }}</small>
               </div>
               <div>
-                <a class="assembly-link" :href="record.download_url">下载</a>
-                <button type="button" class="assembly-link" @click="assembly.restoreRecord(record.id)">恢复</button>
-                <button type="button" class="assembly-link is-danger" @click="deleteRecord(record.id)">删除</button>
+                <AppButton :as="'a'" variant="ghost" size="small" :href="record.download_url">下载</AppButton>
+                <AppButton type="button" variant="ghost" size="small" @click="assembly.restoreRecord(record.id)">恢复</AppButton>
+                <AppButton type="button" class="is-danger" variant="ghost" size="small" @click="deleteRecord(record.id)">删除</AppButton>
               </div>
             </li>
           </ul>

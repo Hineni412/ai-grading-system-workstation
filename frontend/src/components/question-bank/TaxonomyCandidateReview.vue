@@ -15,6 +15,8 @@ import {
   type TaxonomyTerm,
 } from '../../api/question-bank-taxonomy'
 import { useTaxonomyReviewStore } from '../../stores/taxonomy-review'
+import AppIconButton from '../design-system/AppIconButton.vue'
+import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
@@ -603,16 +605,13 @@ onBeforeUnmount(() => {
           <div>
             <DialogTitle as="h2" id="taxonomy-review-title">标签治理</DialogTitle>
             <p>当前候选只在确认后写入；历史 AI 批次单独查看。</p>
-          </div>
-          <button
+          </div><AppIconButton label="关闭新词审核"
             ref="closeButton"
-            type="button"
-            class="qb-drawer-close"
-            aria-label="关闭新词审核"
+           
+           
+           
             @click="emit('close')"
-          >
-            ×
-          </button>
+           icon="close" />
         </header>
 
         <div class="taxonomy-review__toolbar">
@@ -817,17 +816,7 @@ onBeforeUnmount(() => {
           </button>
         </nav>
 
-        <p
-          v-if="store.message"
-          class="qb-feedback taxonomy-review__feedback"
-          :class="{
-            'is-warning': store.writeState === 'conflict',
-            'is-error': store.writeState === 'error',
-          }"
-          role="status"
-        >
-          {{ store.message }}
-        </p>
+        <FeedbackBanner v-if="store.message" :class="{ 'is-warning': store.writeState === 'conflict', 'is-error': store.writeState === 'error', }" role="status" tone="info" :description="store.message" />
 
         <div v-if="!store.batchPreview && !showHistoricalRun && store.loadState === 'loading' && !store.proposals.length" class="taxonomy-review__state">
           正在读取新词候选…
@@ -843,7 +832,7 @@ onBeforeUnmount(() => {
         </div>
         <div v-else-if="!store.batchPreview && !showHistoricalRun && visibleGroups.length === 0" class="taxonomy-review__state">
           <strong>这个维度暂时没有候选</strong>
-          <button type="button" class="qb-link" @click="activeDimension = 'all'">查看全部候选</button>
+          <AppButton type="button" variant="ghost" size="small" @click="activeDimension = 'all'">查看全部候选</AppButton>
         </div>
 
         <div v-else-if="!store.batchPreview && !showHistoricalRun" class="taxonomy-review__groups">
@@ -963,9 +952,9 @@ onBeforeUnmount(() => {
               >
                 <span>系统找到近似规范词</span>
                 <strong>{{ termFor(proposal, proposal.nearest_id)?.name }}</strong>
-                <button type="button" class="qb-link" @click="useNearest(proposal)">
+                <AppButton type="button" variant="ghost" size="small" @click="useNearest(proposal)">
                   选为合并目标
-                </button>
+                </AppButton>
               </div>
 
               <details open class="taxonomy-candidate__merge">
@@ -1007,7 +996,7 @@ onBeforeUnmount(() => {
                     </span>
                     <AppButton variant="primary"
                       type="button"
-                      class="qb-button is-primary"
+                      
                       :disabled="
                         selectedTerms(proposal).length === 0
                         || store.busyProposalId === proposal.id
@@ -1062,14 +1051,14 @@ onBeforeUnmount(() => {
 
               <footer>
                 <span>批准后才会成为 AI 今后可选的规范词。</span>
-                <button
+                <AppButton
                   type="button"
-                  class="qb-link is-danger"
+                  class="is-danger"
                   :disabled="store.busyProposalId === proposal.id"
-                  @click="reject(proposal)"
+                  variant="ghost" size="small" @click="reject(proposal)"
                 >
                   拒绝这个新词
-                </button>
+                </AppButton>
               </footer>
             </article>
           </section>
@@ -1096,16 +1085,13 @@ onBeforeUnmount(() => {
               题目 #{{ previewQuestionId }}
             </DialogTitle>
             <p>只读预览，用于判断新词应归并到哪些现有标签。</p>
-          </div>
-          <button
+          </div><AppIconButton label="关闭题目预览"
             ref="previewCloseButton"
-            type="button"
-            class="qb-drawer-close"
-            aria-label="关闭题目预览"
+           
+           
+           
             @click="closeQuestionPreview"
-          >
-            ×
-          </button>
+           icon="close" />
         </header>
 
         <StatePanel v-if="previewState === 'loading'" kind="loading" title="正在读取题目…" />

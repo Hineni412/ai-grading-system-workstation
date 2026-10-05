@@ -22,6 +22,7 @@ import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { useSessionStore } from '../../stores/session'
 import { useSessionSwitch } from '../../composables/useSessionSwitch'
 import SessionManagementDrawer from '../sessions/SessionManagementDrawer.vue'
+import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 
 type SwitcherMode = 'expanded' | 'rail' | 'drawer'
 
@@ -313,14 +314,14 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
                 {{ volume.label }}
               </option>
             </select>
-            <p
+            <FeedbackBanner
               v-if="curriculumScope.loadState === 'error'"
-              class="exam-switcher-popover__alert"
               role="alert"
-            >
-              <span>{{ curriculumScope.errorMessage }}</span>
-              <button type="button" class="exam-switcher-popover__retry" @click="curriculumScope.initialize()">重新加载</button>
-            </p>
+              tone="error"
+              :description="curriculumScope.errorMessage"
+              action-label="重新加载"
+              @action="curriculumScope.initialize()"
+            />
           </div>
 
           <div class="exam-switcher-popover__search">
@@ -340,14 +341,14 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
             class="exam-switcher-popover__status"
             role="status"
           >正在读取考试列表</p>
-          <p
+          <FeedbackBanner
             v-else-if="sessionListFailed"
-            class="exam-switcher-popover__alert"
             role="alert"
-          >
-            <span>考试列表加载失败。</span>
-            <button type="button" class="exam-switcher-popover__retry" @click="retrySessions">重新加载</button>
-          </p>
+            tone="error"
+            description="考试列表加载失败。"
+            action-label="重新加载"
+            @action="retrySessions"
+          />
           <template v-else>
             <p
               v-if="currentSessionOutsideScope"

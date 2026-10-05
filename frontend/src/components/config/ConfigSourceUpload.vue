@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppButton from '../design-system/AppButton.vue'
 import { computed, ref } from 'vue'
 
 import {
@@ -217,12 +218,12 @@ function formatBytes(bytes: number): string {
       <span>正在上传并拆题，请保持页面打开…</span>
     </div>
     <p v-if="errorMessage" class="config-source__error" role="alert">{{ errorMessage }}</p>
-    <button
+    <AppButton
       v-if="submissionUnknown"
       type="button"
       :disabled="uploading"
-      @click="reconcileUpload"
-    >重新核对上传结果</button>
+      variant="ghost" size="small" @click="reconcileUpload"
+    >重新核对上传结果</AppButton>
 
     <p v-if="source && source.questions.length === 0" class="config-source__empty" role="status">
       未识别到题目。当前来源已接收，可以选择更换文件。

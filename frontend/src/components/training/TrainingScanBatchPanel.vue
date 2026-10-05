@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } fro
 import type { PersonalizedPaperInstance, TrainingPointState } from '../../api/training'
 import { useTrainingReturn } from '../../features/training/use-training-return'
 import { actionable, batchLabel, nextPending, type InitialFocus, type ReturnRow } from '../../features/training/training-return'
+import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import TrainingReturnStart from './TrainingReturnStart.vue'
 import TrainingReturnSummary from './TrainingReturnSummary.vue'
@@ -90,7 +91,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', keydown))
   <section ref="root" class="training-scan-panel" aria-label="答卷回收与批改">
     <TrainingReturnSummary v-if="batch" :batch="batch" :batches="batches" :rows="rows" :busy="busy" :bulk="bulk" :filter="countFilter" @batch="controller.openBatch" @refresh="controller.openBatch(batch.batch_id)" @filter="filterCount" @supplement="supplement = !supplement" @assess="askAssessment(true)" @publish="publishBatch" @issue="selectedId = rows.find(r => r.stage === 'issue')?.id ?? selectedId" @stop="controller.stopRemaining" />
     <div v-else-if="batches.length" class="return-history"><select class="app-input" aria-label="扫描批次" value="" :disabled="busy" @change="controller.openBatch(($event.target as HTMLSelectElement).value)"><option value="">新建批次…</option><option v-for="b in batches" :key="b.batch_id" :value="b.batch_id">{{ batchLabel(b) }}</option></select></div>
-    <p v-if="message" class="return-notice" role="status">{{ message }}</p><p v-if="errorMessage" class="return-error" role="alert">{{ errorMessage }}</p>
+    <FeedbackBanner v-if="message" role="status" tone="info" :description="message" /><FeedbackBanner v-if="errorMessage" role="alert" tone="error" :description="errorMessage" />
     <div v-if="!historyLoaded && busy" class="return-loading" aria-label="正在恢复扫描批次"><div v-for="n in 3" :key="n" /></div>
     <AppButton v-else-if="!historyLoaded" variant="secondary" @click="controller.restoreBatches">重新读取批次</AppButton>
     <TrainingReturnStart v-else-if="!batch" :instances="instances" :busy="busy" @import="controller.importFiles" />

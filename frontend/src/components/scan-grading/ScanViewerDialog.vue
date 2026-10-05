@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from 'vue'
 
+import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
 import StudentMatchSelect from './StudentMatchSelect.vue'
 import type { ScanPreflightController } from './useScanPreflight'
@@ -57,17 +58,16 @@ onBeforeUnmount(() => {
         <div>
           <span>原卷核对</span>
           <h2 id="scan-viewer-title">{{ activeViewerTarget.title }}</h2>
-        </div>
-        <AppButton variant="secondary" aria-label="关闭原卷大图" @click="closeViewer">关闭</AppButton>
+        </div><AppIconButton label="关闭原卷大图" @click="closeViewer" icon="close" />
       </header>
       <div class="scan-viewer__toolbar" aria-label="原卷查看工具">
-        <button type="button" :disabled="activeViewerIndex <= 0" @click="moveViewer(-1)">上一份</button>
+        <AppButton type="button" :disabled="activeViewerIndex <= 0" variant="ghost" size="small" @click="moveViewer(-1)">上一份</AppButton>
         <button type="button" :aria-pressed="viewerSide === 'front'" @click="setViewerSide('front')">正面</button>
         <button type="button" :disabled="!activeViewerTarget.backUrl" :aria-pressed="viewerSide === 'back'" @click="setViewerSide('back')">反面</button>
-        <button type="button" @click="changeViewerZoom(-0.25)">缩小</button>
+        <AppButton type="button" variant="ghost" size="small" @click="changeViewerZoom(-0.25)">缩小</AppButton>
         <span>{{ Math.round(viewerZoom * 100) }}%</span>
-        <button type="button" @click="changeViewerZoom(0.25)">放大</button>
-        <button type="button" :disabled="activeViewerIndex >= viewerTargets.length - 1" @click="moveViewer(1)">下一份</button>
+        <AppButton type="button" variant="ghost" size="small" @click="changeViewerZoom(0.25)">放大</AppButton>
+        <AppButton type="button" :disabled="activeViewerIndex >= viewerTargets.length - 1" variant="ghost" size="small" @click="moveViewer(1)">下一份</AppButton>
       </div>
       <div class="scan-viewer__body">
         <div

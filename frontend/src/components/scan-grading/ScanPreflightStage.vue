@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import StudentMatchSelect from './StudentMatchSelect.vue'
@@ -167,8 +168,7 @@ function selectStage(id: ScanStageId): void {
         <span>对应 <strong>{{ store.preflight.summary.unique_students ?? 0 }}</strong> 名学生</span>
         <span>有效可批改 <strong>{{ store.preflight.summary.ready_to_grade ?? 0 }}</strong> 份</span>
         <span>未决 <strong>{{ pendingCount }}</strong> 份</span>
-        <span>无效 <strong>{{ invalidCount }}</strong> 份</span>
-        <span v-if="matchConflicts.length" class="scan-stats__alert" role="alert">有 {{ matchConflicts.length }} 份答卷归属冲突，处理后才能开始批改</span>
+        <span>无效 <strong>{{ invalidCount }}</strong> 份</span><FeedbackBanner v-if="matchConflicts.length" role="alert" tone="error">有 {{ matchConflicts.length }} 份答卷归属冲突，处理后才能开始批改</FeedbackBanner>
         <span v-else-if="pendingCount" class="scan-stats__warn">仍有 {{ pendingCount }} 份异常答卷待处理</span>
         <span class="scan-stats__note">PDF 第 1 页为{{ preflightPageAssignment.first_page_role === 'front' ? '正面' : '反面' }}（正面在{{ preflightPageAssignment.front_page_parity === 'odd' ? '奇数页' : '偶数页' }}）</span>
       </div>

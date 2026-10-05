@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../ui/sheet'
+import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import { useStudentRosterStore } from '../../stores/students'
 const roster = useStudentRosterStore()
@@ -44,8 +45,7 @@ async function save() {
               <label class="settings-field"><span>输入学号 {{ roster.selectedStudent.student_code }} 确认</span><input v-model="deleteConfirmation" class="app-input" name="delete-confirmation" autocomplete="off" :disabled="busy"></label>
               <AppButton variant="danger" data-action="delete-student" :disabled="!canDelete || busy" @click="roster.deleteSelected()">{{ roster.deletionState === 'deleting' ? '正在备份并删除…' : '备份并删除' }}</AppButton>
             </template>
-          </section>
-          <p v-if="roster.errorMessage" role="alert" class="settings-feedback is-error">{{ roster.errorMessage }}</p>
+          </section><FeedbackBanner v-if="roster.errorMessage" role="alert" tone="error" :description="roster.errorMessage" />
         </div>
         <footer class="settings-drawer__footer"><AppButton variant="secondary" :disabled="busy" @click="close">取消</AppButton><AppButton variant="primary" type="submit" data-action="save-student" :disabled="!form.student_code || !form.name || busy">{{ saving ? '正在保存…' : '保存' }}</AppButton></footer>
       </form>

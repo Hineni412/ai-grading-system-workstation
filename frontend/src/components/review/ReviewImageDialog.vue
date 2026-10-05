@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppIconButton from '../design-system/AppIconButton.vue'
 import { onMounted, ref } from 'vue'
 import type { ReviewItemLike } from '../../api/review'
 import type { EvidenceSource } from '../../composables/use-evidence-viewer'
@@ -20,8 +21,7 @@ onMounted(() => dialog.value?.showModal())
       @click.self="dialog?.close()"
     >
       <header>
-        <strong>{{ item.student_name }} · {{ item.question_id }}</strong>
-        <button type="button" autofocus @click="dialog?.close()">关闭放大窗口（Esc）</button>
+        <strong>{{ item.student_name }} · {{ item.question_id }}</strong><AppIconButton label="关闭放大窗口（Esc）" autofocus @click="dialog?.close()" icon="close" />
       </header>
       <ReviewEvidenceViewer
         :item="item"

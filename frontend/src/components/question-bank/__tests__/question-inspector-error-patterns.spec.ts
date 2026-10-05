@@ -140,7 +140,8 @@ it('shows each wrong option, edits and rejects the shared question pattern, then
 
   bank.detail = detail([items[0]!], ['A'])
   await nextTick()
-  section.querySelector<HTMLButtonElement>('.qb-patterns__item .qb-link')!.click()
+  ;[...section.querySelectorAll<HTMLButtonElement>('.qb-patterns__item button')]
+    .find((button) => button.textContent === '调整')!.click()
   await nextTick()
   expect(section.querySelector('.qb-patterns__editor')).not.toBeNull()
   bank.selectedQuestionId = 2
@@ -200,7 +201,8 @@ it('renders all linked skills with their derivation source', async () => {
   // 编辑面板保留教师改选入口；判定点来源给出提示。
   const stepRow = [...section.querySelectorAll<HTMLElement>('.qb-patterns__item')]
     .find((row) => row.textContent?.includes('判定点多技能错法'))!
-  stepRow.querySelector<HTMLButtonElement>('.qb-link')!.click()
+  ;[...stepRow.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent === '调整')!.click()
   await nextTick()
   expect(section.querySelector('.qb-patterns__editor select')).not.toBeNull()
 })

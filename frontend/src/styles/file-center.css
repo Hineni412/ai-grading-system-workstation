@@ -172,7 +172,7 @@
   overflow-y: auto;
   padding: var(--space-5);
   border: var(--border-width) solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-overlay);
   background: var(--card);
   box-shadow: var(--shadow-overlay);
 }

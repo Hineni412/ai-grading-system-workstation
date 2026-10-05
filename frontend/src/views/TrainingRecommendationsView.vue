@@ -504,7 +504,7 @@ onBeforeUnmount(() => studentsController?.abort())
     <TrainingScopeBar v-if="referenceState !== 'error' && trainingMode !== 'paper'"
       :volume-label="curriculumScope.selectedVolume?.label ?? '未选择教学学期'"
       :session-count="training.diagnosis?.exam_scope.sessions?.length ?? 0" :classes="classes" :selected-class="selectedClass"
-      :score-floor="training.studentScope.scoreRateMin" @select-class="setScopeClass" @update-score-floor="setScoreFloor" />
+      :score-floor="training.studentScope.scoreRateMin" :has-volume="!!curriculumScope.selectedVolumeId" @select-class="setScopeClass" @update-score-floor="setScoreFloor" />
 
     <FeedbackBanner
       v-if="referenceState === 'error'"
@@ -542,7 +542,7 @@ onBeforeUnmount(() => studentsController?.abort())
       <StatePanel v-else kind="empty" title="当前范围尚未汇总掌握度。">
         <template #actions><AppButton @click="analyze">重新加载</AppButton></template>
       </StatePanel>
-      <details v-if="training.diagnosis?.warnings.length" class="training-data-note"><summary>数据说明（{{ training.diagnosis.warnings.length }}）</summary><ul><li v-for="warning in training.diagnosis.warnings" :key="warning">{{ warning }}</li></ul></details>
+      <details v-if="curriculumScope.selectedVolumeId && training.diagnosis?.warnings.length" class="training-data-note"><summary>数据说明（{{ training.diagnosis.warnings.length }}）</summary><ul><li v-for="warning in training.diagnosis.warnings" :key="warning">{{ warning }}</li></ul></details>
       <StudentQuickView v-if="training.diagnosis" v-model:open="quickOpen" :student="quickStudent" :diagnosis="training.diagnosis" @wrong-book="chooseWrongBook" />
     </section>
 

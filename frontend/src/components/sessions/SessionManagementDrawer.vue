@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppIconButton from '../design-system/AppIconButton.vue'
 import { computed, nextTick, ref, watch } from 'vue'
 
 import { useSessionStore } from '../../stores/session'
@@ -35,13 +36,12 @@ watch(open, (value) => {
           <h2 id="session-management-title">
             考试管理
             <span class="session-management-drawer__count">共 {{ sessionCount }} 场</span>
-          </h2>
-          <button
+          </h2><AppIconButton label="关闭考试管理"
             ref="closeButton"
-            type="button"
-            aria-label="关闭考试管理"
+           
+           
             @click="close"
-          >×</button>
+           icon="close" />
         </header>
         <div class="session-management-drawer__body">
           <SessionManager @navigate="close" />
@@ -77,7 +77,7 @@ watch(open, (value) => {
   display: flex;
   gap: var(--space-4);
   justify-content: space-between;
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-4) var(--space-5);
 }
 
 .session-management-drawer__header h2 {
@@ -95,25 +95,9 @@ watch(open, (value) => {
   font-weight: var(--font-weight-medium);
 }
 
-.session-management-drawer__header button {
-  align-items: center;
-  background: var(--color-bg-surface);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  display: inline-flex;
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: var(--font-size-h2);
-  height: var(--control-height-default);
-  justify-content: center;
-  width: var(--control-height-default);
-}
-
 .session-management-drawer__body {
   min-height: 0;
   overflow: auto;
-  padding: var(--space-3) var(--space-4) var(--space-6);
+  padding: var(--space-5);
 }
 </style>

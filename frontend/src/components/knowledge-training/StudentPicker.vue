@@ -41,7 +41,7 @@ function scoreClass(student: TrainingStudentProfile) { return score(student) ===
     <div class="student-picker-tools"><input v-model="search" class="app-input" aria-label="检索姓名或学号" placeholder="检索姓名／学号"><label><input v-model="onlyWeak" type="checkbox">只看有明显薄弱点</label></div>
     <div class="student-picker-roster">
       <section v-for="[name, rows] in groups" :key="name" class="student-picker-class">
-        <header><button type="button" :aria-expanded="!collapsed.includes(name)" @click="fold(name)">{{ collapsed.includes(name) ? '▸' : '▾' }} {{ /^\d+$/.test(name) ? `${name}班` : name }} <small>（{{ rows.length }} 人）</small></button><button type="button" class="practice-link" @click="toggleClass(name)">{{ allSelected(name) ? '取消本班' : '全选本班' }}</button></header>
+        <header><button type="button" :aria-expanded="!collapsed.includes(name)" @click="fold(name)">{{ collapsed.includes(name) ? '▸' : '▾' }} {{ /^\d+$/.test(name) ? `${name}班` : name }} <small>（{{ rows.length }} 人）</small></button><AppButton type="button" variant="ghost" size="small" @click="toggleClass(name)">{{ allSelected(name) ? '取消本班' : '全选本班' }}</AppButton></header>
         <div v-if="!collapsed.includes(name)">
           <div v-for="student in rows" :key="student.student_id" class="student-picker-row">
             <input type="checkbox" :aria-label="`选择${student.student_name}`" :checked="selected.includes(student.student_id)" @change="toggle(student.student_id)">

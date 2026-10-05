@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 import { Button, type ButtonVariants } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -28,10 +28,16 @@ const variantMap: Record<NonNullable<typeof props.variant>, ButtonVariants['vari
 const buttonClass = computed(() =>
   cn('app-icon-button flex-none', props.variant === 'secondary' && 'bg-card'),
 )
+
+const root = ref<{ $el?: HTMLElement } | null>(null)
+defineExpose({
+  focus: () => { const el = root.value?.$el ?? root.value; (el as HTMLElement | undefined)?.focus?.() },
+})
 </script>
 
 <template>
   <Button
+    ref="root"
     v-bind="$attrs"
     :variant="variantMap[variant]"
     size="icon"

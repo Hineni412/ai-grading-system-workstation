@@ -15,6 +15,7 @@ import {
   type StudentExamResultSession,
   type StudentSummary,
 } from '../api/students'
+import AppIconButton from '../components/design-system/AppIconButton.vue'
 import AppButton from '../components/design-system/AppButton.vue'
 import BackButton from '../components/design-system/BackButton.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
@@ -428,7 +429,7 @@ onBeforeUnmount(() => {
     </PageHeader>
 
     <div v-if="!knowledgeMode && !groupMode" class="student-evidence__toolbar">
-      <div class="student-evidence__modes" role="group" aria-label="作答范围">
+      <div class="app-segmented" role="group" aria-label="作答范围">
         <button type="button" :class="{ 'is-active': onlyDeducted }" @click="toggleDeducted(true)">只看错题</button>
         <button type="button" :class="{ 'is-active': !onlyDeducted }" @click="toggleDeducted(false)">全部作答</button>
       </div>
@@ -642,8 +643,7 @@ onBeforeUnmount(() => {
                   第 {{ questionPanelDetail.question_number || questionPanelDetail.id }} 题
                 </h2>
                 <p>{{ questionPanelDetail.paper_title || '未命名试卷' }}</p>
-              </div>
-              <button type="button" class="question-panel__close" aria-label="关闭原题预览" @click="closeQuestionPanel">×</button>
+              </div><AppIconButton label="关闭原题预览" @click="closeQuestionPanel" icon="close" />
             </header>
 
             <dl class="question-panel__facts">
@@ -722,9 +722,9 @@ onBeforeUnmount(() => {
 .student-evidence__meta-line { margin: 0; }
 .student-evidence__toolbar { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); margin: var(--space-4) 0; }
 .student-evidence__toolbar > span { color: var(--color-text-secondary); font-size: var(--font-size-dense); }
-.student-evidence__modes { display: flex; padding: var(--space-1); border-radius: var(--radius-control); background: var(--color-bg-subtle); }
-.student-evidence__modes button { padding: .45rem .75rem; border: 0; border-radius: calc(var(--radius) - 2px); background: transparent; color: var(--color-text-secondary); cursor: pointer; }
-.student-evidence__modes button.is-active { background: var(--color-bg-surface); color: var(--color-accent-active); font-weight: var(--font-weight-semibold); }
+
+
+
 .student-evidence__session { margin-top: var(--space-4); border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); overflow: hidden; }
 .student-evidence__session > header { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-4); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-border-default); background: var(--color-bg-subtle); }
 .student-evidence__session > header span { margin-left: var(--space-2); color: var(--color-text-secondary); font-size: var(--font-size-dense); }
@@ -745,21 +745,21 @@ onBeforeUnmount(() => {
 .student-evidence__thumb { padding: 0; border: 1px solid var(--color-border-default); border-radius: calc(var(--radius) - 2px); background: var(--color-bg-subtle); cursor: zoom-in; }
 .student-evidence__thumb img { display: block; width: 96px; height: 64px; object-fit: cover; }
 .student-evidence__more { margin-bottom: var(--space-4); }
-.student-evidence__preview { max-width: min(90vw, 960px); padding: var(--space-3); border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); }
-.student-evidence__preview::backdrop { background: rgb(0 0 0 / .45); }
+.student-evidence__preview { max-width: min(90vw, 960px); padding: var(--space-3); border: 1px solid var(--color-border-default); border-radius: var(--radius-overlay); background: var(--color-bg-surface); }
+.student-evidence__preview::backdrop { background: var(--color-overlay-mask); }
 .student-evidence__preview img { display: block; max-width: 100%; max-height: 80vh; }
 .student-evidence__question-bar { display: flex; align-items: center; gap: var(--space-2); padding-right: var(--space-3); }
 .student-evidence__question-bar .student-evidence__question-heading { flex: 1; min-width: 0; }
 .student-evidence__original { flex: none; padding: 3px 10px; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-accent-active); font-size: var(--font-size-caption); cursor: pointer; }
 .student-evidence__original:hover { border-color: var(--color-accent); background: var(--color-bg-selected); }
-.question-panel-layer { position: fixed; inset: 0; z-index: 1100; display: flex; justify-content: flex-end; width: 100vw; height: 100dvh; background: color-mix(in srgb, var(--color-text-primary) 32%, transparent); }
-.question-panel { width: min(560px, 92vw); max-width: 100%; height: 100%; overflow-y: auto; padding: 20px; border-left: 1px solid var(--color-border-default); background: var(--color-bg-surface); box-shadow: -18px 0 44px color-mix(in srgb, var(--color-text-primary) 14%, transparent); }
+.question-panel-layer { position: fixed; inset: 0; z-index: 1100; display: flex; justify-content: flex-end; width: 100vw; height: 100dvh; background: var(--color-overlay-mask); }
+.question-panel { width: min(560px, 92vw); max-width: 100%; height: 100%; overflow-y: auto; padding: var(--space-5); border-left: 1px solid var(--color-border-default); background: var(--color-bg-surface); box-shadow: var(--shadow-overlay); }
 
 
 .question-panel__heading { display: flex; justify-content: space-between; align-items: start; gap: var(--space-3); }
-.question-panel__heading h2 { margin: 0 0 var(--space-1); }
+.question-panel__heading h2 { margin: 0 0 var(--space-1); font-size: var(--font-size-h3); font-weight: var(--font-weight-semibold); }
 .question-panel__heading p { margin: 0; color: var(--color-text-secondary); font-size: var(--font-size-dense); }
-.question-panel__close { flex: none; width: 32px; height: var(--control-height-default); border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-text-secondary); font-size: var(--font-size-h2); line-height: 1; cursor: pointer; }
+
 .question-panel__facts { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-2) var(--space-4); margin: var(--space-4) 0; padding: var(--space-3); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-control); background: var(--color-bg-subtle); }
 .question-panel__facts div { display: flex; justify-content: space-between; gap: var(--space-3); }
 .question-panel__facts dt { color: var(--color-text-muted); }

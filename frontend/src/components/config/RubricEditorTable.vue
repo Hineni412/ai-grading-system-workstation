@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppButton from '../design-system/AppButton.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type { ConfigEditorEdit, ConfigEditorIssue, ConfigEditorRow } from '../../api/config-workspace'
@@ -392,16 +393,16 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
         <label>
           <span>选择题每题</span>
           <input class="app-input" v-model.number="choiceScore" aria-label="选择题每题分值" type="number" step="any" :disabled="disabled || choiceQuestionIds.length === 0">
-          <button type="button" :disabled="disabled || choiceQuestionIds.length === 0 || !Number.isFinite(choiceScore)" @click="applyBulkScore('choice', choiceScore)">
+          <AppButton type="button" :disabled="disabled || choiceQuestionIds.length === 0 || !Number.isFinite(choiceScore)" variant="secondary" size="small" @click="applyBulkScore('choice', choiceScore)">
             应用到 {{ choiceQuestionIds.length }} 题
-          </button>
+          </AppButton>
         </label>
         <label>
           <span>填空题每题总分</span>
           <input class="app-input" v-model.number="fillQuestionScore" aria-label="填空题每题总分" type="number" step="any" :disabled="disabled || fillQuestionIds.length === 0">
-          <button type="button" :disabled="disabled || fillQuestionIds.length === 0 || !Number.isFinite(fillQuestionScore)" @click="applyBulkScore('fill_blank', fillQuestionScore)">
+          <AppButton type="button" :disabled="disabled || fillQuestionIds.length === 0 || !Number.isFinite(fillQuestionScore)" variant="secondary" size="small" @click="applyBulkScore('fill_blank', fillQuestionScore)">
             应用到 {{ fillQuestionIds.length }} 题
-          </button>
+          </AppButton>
         </label>
       </div>
       <details v-if="warningIssues.length" class="rubric-ledger__issues-toggle">
@@ -439,12 +440,12 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
           <p>只重新分析被拦题目；正式版本保留到新版本完整成功。操作会调用模型并可能产生费用。</p>
         </div>
         <div class="rubric-ledger__regeneration-actions">
-          <button
+          <AppButton
             type="button"
             name="重新分析被拦题目"
             :disabled="disabled || regenerationBusy || !canRegenerateBatched"
-            @click="emit('regenerate')"
-          >{{ batchedButtonLabel }}</button>
+            variant="secondary" size="small" @click="emit('regenerate')"
+          >{{ batchedButtonLabel }}</AppButton>
         </div>
         <p
           v-if="!canRegenerateBatched"

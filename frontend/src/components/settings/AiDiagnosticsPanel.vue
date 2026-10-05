@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import AppButton from '@/components/design-system/AppButton.vue'
+import FeedbackBanner from '@/components/design-system/FeedbackBanner.vue'
 import StatePanel from '@/components/design-system/StatePanel.vue'
 
 import { computed, markRaw, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
@@ -422,13 +423,9 @@ onBeforeUnmount(() => {
 
           <section v-if="diagnosticTab === 'request'" class="ai-diagnostic-panel" aria-label="发送内容">
             <p>图片正文已替换为附件编号；其余内容是发送给模型的文本和参数。</p>
-            <p v-if="requestPreview.truncated" class="ai-diagnostic-panel__notice">
-              内容较长，先显示前面 {{ JSON_DISPLAY_LIMIT }} 个字符，以免页面卡住。后面还有
-              {{ requestPreview.hiddenChars }} 个字符。
-              <button type="button" class="ai-diagnostic-panel__expand" @click="expandRequestJson = true">
-                显示全部
-              </button>
-            </p>
+            <FeedbackBanner v-if="requestPreview.truncated" tone="info"
+              :description="'内容较长，先显示前面 ' + JSON_DISPLAY_LIMIT + ' 个字符，以免页面卡住。后面还有 ' + requestPreview.hiddenChars + ' 个字符。'"
+              action-label="显示全部" @action="expandRequestJson = true" />
             <pre>{{ requestPreview.text }}</pre>
           </section>
           <section
@@ -455,13 +452,9 @@ onBeforeUnmount(() => {
                 ? `${selectedDiagnostic.response_chars} 个字符`
                 : '没有收到可显示的文本返回' }}
             </p>
-            <p v-if="rawResponsePreview.truncated" class="ai-diagnostic-panel__notice">
-              返回正文较长，先显示前面 {{ JSON_DISPLAY_LIMIT }} 个字符。后面还有
-              {{ rawResponsePreview.hiddenChars }} 个字符。
-              <button type="button" class="ai-diagnostic-panel__expand" @click="expandRawResponse = true">
-                显示全部
-              </button>
-            </p>
+            <FeedbackBanner v-if="rawResponsePreview.truncated" tone="info"
+              :description="'返回正文较长，先显示前面 ' + JSON_DISPLAY_LIMIT + ' 个字符。后面还有 ' + rawResponsePreview.hiddenChars + ' 个字符。'"
+              action-label="显示全部" @action="expandRawResponse = true" />
             <pre>{{ rawResponsePreview.text }}</pre>
           </section>
           <section
@@ -484,13 +477,9 @@ onBeforeUnmount(() => {
             >
               校验原因码：{{ selectedDiagnostic.validation_issue_codes.join('、') }}
             </p>
-            <p v-if="parsedPreview.truncated" class="ai-diagnostic-panel__notice">
-              解析结果较长，先显示前面 {{ JSON_DISPLAY_LIMIT }} 个字符。后面还有
-              {{ parsedPreview.hiddenChars }} 个字符。
-              <button type="button" class="ai-diagnostic-panel__expand" @click="expandParsedJson = true">
-                显示全部
-              </button>
-            </p>
+            <FeedbackBanner v-if="parsedPreview.truncated" tone="info"
+              :description="'解析结果较长，先显示前面 ' + JSON_DISPLAY_LIMIT + ' 个字符。后面还有 ' + parsedPreview.hiddenChars + ' 个字符。'"
+              action-label="显示全部" @action="expandParsedJson = true" />
             <pre>{{ parsedPreview.text }}</pre>
           </section>
           <section v-else class="ai-diagnostic-panel" aria-label="错误与重试">

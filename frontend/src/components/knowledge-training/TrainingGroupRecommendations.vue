@@ -4,6 +4,7 @@ import { knowledgeLeafLabel } from '../../api/question-bank'
 import { trainingApi, type TrainingDiagnosis, type TrainingGroup, type TrainingGrouping, type TrainingGroupingRequest,
   type TrainingStudentScopeRequest, type TrainingExamScopeRequest } from '../../api/training'
 import type { ChapterGroupEditor, AdoptedChapterGroup, ChapterGroupSort } from '../../features/training/paper-selection-session'
+import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
@@ -274,7 +275,7 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
       <AppButton :disabled="busy || disabled" @click="refresh(true)">{{ busy ? '正在核对…' : '刷新建议' }}</AppButton>
     </header>
     <p v-if="scope.score_rate_min != null || scope.score_rate_max != null" class="training-groups__note">已启用辅助条件：在得分率 {{ Math.round((scope.score_rate_min ?? 0) * 100) }}%–{{ Math.round((scope.score_rate_max ?? 1) * 100) }}% 范围内推荐。</p>
-    <p v-if="message" class="training-groups__alert" role="alert">{{ message }}</p>
+    <FeedbackBanner v-if="message" role="alert" tone="warning" :description="message" />
     <StatePanel v-if="!result && busy" kind="loading" title="正在核对训练目标、证据和可用题目……" />
     <template v-if="!editing">
       <div v-if="result?.groups.length" class="training-groups__sorting">
@@ -304,7 +305,7 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
             <span>训练目标掌握度 {{ percent(stats.minimum) }}–{{ percent(stats.maximum) }}</span>
           </div>
           <p v-if="stats.scored < group.members.length || stats.historical" class="training-groups__note">{{ stats.scored }} 人有考试成绩<span v-if="stats.historical">，其中 {{ stats.historical }} 人参考历史</span></p>
-          <p v-for="issue in group.issues" :key="issue" class="training-groups__alert">{{ issue }}</p>
+          <FeedbackBanner v-for="issue in group.issues" :key="issue" tone="warning" :description="issue" />
           <footer class="training-groups__card-footer">
             <div><strong>{{ group.available_question_count }} 道可用题</strong><span v-if="group.targets.some(target => target.sparse_member_count > 0)">部分目标仅有一次作答依据</span></div>
             <AppButton :disabled="busy || stale || disabled" @click="inspect(group)">查看小组</AppButton>
@@ -337,11 +338,11 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
       </div>
       <div class="training-groups__editor-tools"><AppButton @click="showAdd = !showAdd">{{ showAdd ? '收起添加成员' : '从当前范围添加成员' }}</AppButton><AppButton @click="restore">恢复原名单与目标</AppButton></div>
       <div v-if="showAdd" class="training-groups__add"><input class="app-input" v-model="search" type="search" placeholder="搜索姓名、班级或学号" aria-label="搜索可添加成员"><label v-for="student in otherMembers" :key="student.student_id"><input type="checkbox" :aria-label="`添加 ${classLabel(student.class_id)} ${student.student_name} ${student.student_code}`" @change="toggleMember(student.student_id)">{{ student.student_name }} · {{ classLabel(student.class_id) }} · {{ student.student_code }}</label></div>
-      <p v-if="memberIds.length < 2" class="training-groups__alert">请至少保留两名成员。</p>
-      <p v-if="!targetKeys.length" class="training-groups__alert">请至少保留一个训练目标。</p>
-      <p v-for="issue in checked?.issues ?? []" :key="issue" class="training-groups__alert">{{ issue }}</p>
+      <FeedbackBanner v-if="memberIds.length < 2" tone="warning" description="请至少保留两名成员。" />
+      <FeedbackBanner v-if="!targetKeys.length" tone="warning" description="请至少保留一个训练目标。" />
+      <FeedbackBanner v-for="issue in checked?.issues ?? []" :key="issue" tone="warning" :description="issue" />
       <p v-for="warning in checked?.warnings ?? []" :key="warning" class="training-groups__note">{{ warning }}</p>
-      <div v-if="overlaps.length" class="training-groups__alert"><p>与本页此前生成草稿的小组有成员及目标重合。请调整名单或目标；确需重复训练时，请先核对安排。</p><label><input v-model="overlapConfirmed" type="checkbox">已核对重合，仍采用本组</label></div>
+      <FeedbackBanner v-if="overlaps.length" tone="warning" description="与本页此前生成草稿的小组有成员及目标重合。请调整名单或目标；确需重复训练时，请先核对安排。"><label><input v-model="overlapConfirmed" type="checkbox">已核对重合，仍采用本组</label></FeedbackBanner>
       <footer><span>{{ memberIds.length }} 人 · {{ targetKeys.length }} 个训练目标</span><AppButton variant="primary" :disabled="!ready" @click="adopt">采用小组并核对出卷设置</AppButton></footer>
     </section>
     <details v-if="result?.unassigned.length" class="training-groups__unassigned"><summary>暂未推荐 {{ result.unassigned.length }} 人<span v-if="unassignedBreakdown">（{{ unassignedBreakdown }}）</span> · 查看原因</summary><p v-for="student in result.unassigned" :key="student.student_id"><strong>{{ student.student_name }} · {{ classLabel(student.class_id) }}</strong>：{{ student.reason }}</p></details>

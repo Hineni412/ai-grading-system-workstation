@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle } from 'reka-ui'
+import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
@@ -158,8 +159,8 @@ onBeforeUnmount(() => controller.abort())
 <template>
   <section class="settings-data" aria-label="数据与空间">
     <div v-if="outcome" class="settings-outcome" role="status"><span>{{ outcome }}</span><AppButton v-if="ops.operationState && ['prepared', 'restart_required'].includes(ops.operationState.status)" variant="secondary" :disabled="ops.operationLoading" @click="ops.cancelCurrent(opsApi)">撤销</AppButton></div>
-    <p v-if="error" role="alert" class="settings-feedback is-error">{{ error }} <AppButton variant="ghost" :disabled="loading" @click="refreshStorage">刷新</AppButton></p>
-    <p v-if="notice" role="status" class="settings-feedback is-success">{{ notice }}</p>
+    <FeedbackBanner v-if="error" role="alert" tone="error" :description="error"><AppButton variant="ghost" size="small" :disabled="loading" @click="refreshStorage">刷新</AppButton></FeedbackBanner>
+    <FeedbackBanner v-if="notice" role="status" tone="success" :description="notice" />
     <section class="settings-panel">
       <header class="settings-panel__heading"><h2>空间占用</h2></header>
       <div class="settings-panel__body">
@@ -175,7 +176,7 @@ onBeforeUnmount(() => controller.abort())
     </section>
     <section class="settings-panel">
       <header class="settings-panel__heading"><h2>考试原卷</h2></header>
-      <div class="settings-table-note">清除前建议先备份。<button class="settings-link" @click="backupBlock?.scrollIntoView({ behavior: 'smooth', block: 'center' })">立即备份</button></div>
+      <div class="settings-table-note">清除前建议先备份。<AppButton variant="ghost" size="small" @click="backupBlock?.scrollIntoView({ behavior: 'smooth', block: 'center' })">立即备份</AppButton></div>
       <div v-if="selectedRows.length" class="settings-selection-bar"><span>已选 {{ selectedRows.length }} 场 · 可腾出 {{ bytes(selectedRows.reduce((sum, row) => sum + row.clear_bytes, 0)) }}</span><div><AppButton variant="secondary" :disabled="!canReleaseBatch || busy" @click="beginCleanup('release', selectedRows)">释放扫描文件</AppButton><AppButton variant="danger" class="settings-danger-outline" :disabled="!canClearBatch || busy" @click="beginCleanup('clear', selectedRows)">清除原卷</AppButton></div></div>
       <div class="settings-table-scroll"><table class="settings-table settings-originals-table">
         <thead><tr><th><input type="checkbox" aria-label="全选可清理的考试" :checked="selectableRows.length > 0 && selected.length === selectableRows.length" :disabled="busy || selectableRows.length === 0" @change="toggleAll"></th><th>考试</th><th>状态</th><th>扫描文件</th><th>页面与批注图</th><th>原卷</th><th>操作</th></tr></thead>
@@ -196,16 +197,16 @@ onBeforeUnmount(() => controller.abort())
         <template v-if="backupRunning"><progress class="settings-progress" :value="ops.activeJob?.progress ?? undefined" max="1" /><span class="settings-note">{{ ops.activeJob?.detail || '正在准备…' }}</span></template>
         <AppButton v-if="backupSucceeded" variant="secondary" @click="downloadResult">下载</AppButton>
       </div>
-      <p v-if="ops.activeJob?.status === 'failed'" class="settings-feedback is-error" role="alert">{{ ops.activeJob.job_type.endsWith('_prepare') ? '恢复准备失败，业务数据尚未应用；请刷新备份清单后重新预检。' : '备份失败，没有生成可下载结果，请刷新状态后重试。' }}</p>
-      <p v-if="ops.actionError" class="settings-feedback is-error" role="alert">{{ ops.actionError.message }}；{{ ops.actionError.impact }}</p>
-      <p v-if="ops.resultUnknown" class="settings-feedback is-error">提交结果未知，请刷新状态，不要重复操作。<AppButton variant="ghost" @click="jobs.initialize().then(() => ops.initialize(opsApi))">刷新状态</AppButton></p>
+      <FeedbackBanner v-if="ops.activeJob?.status === 'failed'" role="alert" tone="error" :description="ops.activeJob.job_type.endsWith('_prepare') ? '恢复准备失败，业务数据尚未应用；请刷新备份清单后重新预检。' : '备份失败，没有生成可下载结果，请刷新状态后重试。'" />
+      <FeedbackBanner v-if="ops.actionError" role="alert" tone="error">{{ ops.actionError.message }}；{{ ops.actionError.impact }}</FeedbackBanner>
+      <FeedbackBanner v-if="ops.resultUnknown" tone="error" description="提交结果未知，请刷新状态，不要重复操作。"><AppButton variant="ghost" size="small" @click="jobs.initialize().then(() => ops.initialize(opsApi))">刷新状态</AppButton></FeedbackBanner>
     </section>
     <section class="settings-panel">
       <header class="settings-panel__heading"><h2>恢复</h2><AppButton variant="danger" class="settings-danger-outline" data-testid="preflight-restore" :disabled="!selectedBackup || ops.hasBlockingOperation || ops.resultUnknown" @click="beginRestore">恢复所选备份</AppButton></header>
       <table class="settings-table"><thead><tr><th></th><th>时间</th><th>原因</th><th>大小</th></tr></thead><tbody>
         <tr v-for="item in zipBackups" :key="item.filename"><td><input v-model="selectedBackup" type="radio" name="restore-backup" :value="item.filename" :aria-label="`选择 ${time(item.created_at)} 的备份`"></td><td>{{ time(item.created_at) }}</td><td>{{ reasons[item.reason] ?? '未记录' }}</td><td>{{ bytes(item.size_bytes) }}</td></tr>
       </tbody></table>
-      <p v-if="ops.backupsError" class="settings-feedback is-error" role="alert">{{ ops.backupsError.message }} <AppButton variant="ghost" @click="ops.refreshBackups(opsApi)">刷新</AppButton></p><StatePanel v-else-if="!zipBackups.length" kind="empty" compact title="当前没有可恢复的备份" />
+      <FeedbackBanner v-if="ops.backupsError" role="alert" tone="error" :description="ops.backupsError.message"><AppButton variant="ghost" size="small" @click="ops.refreshBackups(opsApi)">刷新</AppButton></FeedbackBanner><StatePanel v-else-if="!zipBackups.length" kind="empty" compact title="当前没有可恢复的备份" />
     </section>
     <DialogRoot :open="dialog !== null" @update:open="closeDialog">
       <DialogPortal><DialogOverlay class="settings-overlay fx-overlay" /><DialogContent class="settings-dialog fx-dialog" :aria-describedby="undefined" @escape-key-down="event => { if (busy || ops.submitting) event.preventDefault() }" @interact-outside="event => { if (busy || ops.submitting) event.preventDefault() }">
@@ -223,8 +224,8 @@ onBeforeUnmount(() => controller.abort())
         <template v-if="dialog === 'restore'"><p>用这份备份覆盖当前同名数据。重启应用后才生效，重启前可以撤销。</p><p class="settings-note">{{ ops.preflight?.summary.file_count ?? '—' }} 个文件 · {{ bytes(ops.preflight?.summary.total_expanded_bytes ?? ops.preflight?.summary.total_size_bytes ?? 0) }}</p></template>
         <label v-if="dialog === 'clear' || dialog === 'restore'" class="settings-confirm-line"><span>输入「{{ dialog === 'clear' ? '确认清除' : '确认恢复' }}」继续</span><input v-model="phrase" class="app-input" data-testid="confirmation-phrase" autocomplete="off" :aria-label="dialog === 'clear' ? '输入确认清除' : '输入确认恢复'" :disabled="busy || ops.submitting"></label>
         <p v-if="busy" class="settings-inline" role="status"><progress class="settings-progress" />{{ progress || '正在清理…' }}</p>
-        <p v-if="dialogError" class="settings-feedback is-error" role="alert">{{ dialogError }} <AppButton variant="ghost" :disabled="busy" @click="refreshCleanup">刷新</AppButton></p>
-        <p v-if="ops.actionError && dialog === 'clear'" class="settings-feedback is-error" role="alert">{{ ops.actionError.message }}</p>
+        <FeedbackBanner v-if="dialogError" role="alert" tone="error" :description="dialogError"><AppButton variant="ghost" size="small" :disabled="busy" @click="refreshCleanup">刷新</AppButton></FeedbackBanner>
+        <FeedbackBanner v-if="ops.actionError && dialog === 'clear'" role="alert" tone="error" :description="ops.actionError.message" />
         <footer class="settings-dialog__footer"><AppButton variant="secondary" :disabled="busy || ops.submitting" @click="closeDialog()">取消</AppButton><AppButton :variant="dialog === 'clear' || dialog === 'restore' ? 'danger' : 'primary'" data-testid="confirm-operation" :disabled="busy || ops.submitting || !!dialogError || (dialog === 'clear' && phrase !== '确认清除') || (dialog === 'restore' && phrase !== '确认恢复')" @click="submitDialog">{{ dialog === 'release' ? '释放' : dialog === 'clear' ? '清除原卷' : dialog === 'legacy' ? '清理' : '恢复' }}</AppButton></footer>
       </DialogContent></DialogPortal>
     </DialogRoot>

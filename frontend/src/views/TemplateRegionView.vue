@@ -5,6 +5,8 @@ import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import TemplateRegionEditor from '../components/template-regions/TemplateRegionEditor.vue'
 import TemplateUploadPanel from '../components/template-regions/TemplateUploadPanel.vue'
 import ConfigStageRail from '../components/config/ConfigStageRail.vue'
+import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
+import AppButton from '../components/design-system/AppButton.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import BackButton from '../components/design-system/BackButton.vue'
 import { useTemplateRegionStore } from '../stores/template-regions'
@@ -126,17 +128,17 @@ watch(focusLayout, syncFocusLayout, { flush: 'post' })
     <div v-if="store.loadState === 'loading'" class="template-regions-view__state" role="status">正在读取样卷工作区…</div>
     <div v-else-if="store.loadState === 'error'" class="template-regions-view__state" role="alert">
       <p>{{ store.errorMessage }}</p>
-      <button type="button" @click="store.load(routeSessionId)">重新读取</button>
+      <AppButton type="button" variant="ghost" size="small" @click="store.load(routeSessionId)">重新读取</AppButton>
     </div>
     <section v-else-if="store.workspace" class="template-regions-view__workspace">
       <div class="template-regions-view__ruler" :data-state="store.readOnly ? 'confirmed' : 'draft'">
         <strong>{{ store.readOnly ? '正式版本 · 只读' : '草稿标定中' }}</strong>
         <span>{{ store.saveState === 'saving' ? '正在保存草稿' : store.saveState === 'saved' ? '草稿已保存' : '按原图像素记录' }}</span>
         <span v-if="store.snapshotPending">正式区域已保存，确认快照待补写</span>
-        <div v-if="store.editorReady" class="template-regions-view__faces" aria-label="正反面题框状态">
-          <button type="button" class="secondary" :aria-pressed="store.editorState.active_page === 'front'"
+        <div v-if="store.editorReady" class="template-regions-view__faces app-segmented" aria-label="正反面题框状态">
+          <button type="button" :aria-pressed="store.editorState.active_page === 'front'"
             @click="store.showPage('front')">正面 {{ pageCounts.front.total }} 框 · 已绑定 {{ pageCounts.front.bound }} · 待处理 {{ pageCounts.front.pending }} · 异常 {{ pageCounts.front.issues }}</button>
-          <button type="button" class="secondary" :aria-pressed="store.editorState.active_page === 'back'"
+          <button type="button" :aria-pressed="store.editorState.active_page === 'back'"
             @click="store.showPage('back')">反面 {{ pageCounts.back.total }} 框 · 已绑定 {{ pageCounts.back.bound }} · 待处理 {{ pageCounts.back.pending }} · 异常 {{ pageCounts.back.issues }}</button>
         </div>
       </div>
@@ -145,33 +147,24 @@ watch(focusLayout, syncFocusLayout, { flush: 'post' })
           <div>
             <p v-if="store.autoProposalState === 'loading'">正在自动框题…扫描任务运行时需等待，可取消后手动框选。</p>
             <p v-else-if="store.autoProposalMessage">{{ store.autoProposalMessage }}</p>
-            <p v-if="store.autoProposalState !== 'loading' && missingLabels" class="template-regions-view__missing" role="alert">
-              未框：{{ missingLabels }}，请补框。未框题目不会被批改。
-            </p>
+            <FeedbackBanner v-if="store.autoProposalState !== 'loading' && missingLabels" role="alert" tone="warning"
+              :description="`未框：${missingLabels}，请补框。未框题目不会被批改。`" />
           </div>
-          <button v-if="store.autoProposalState === 'loading'" type="button" class="secondary" @click="store.cancelAutoProposal">取消自动框题</button>
-          <button v-else type="button" class="secondary" :disabled="!store.canAutoPropose" @click="regenerate">重新自动框题</button>
+          <AppButton v-if="store.autoProposalState === 'loading'" type="button" variant="secondary" @click="store.cancelAutoProposal">取消自动框题</AppButton>
+          <AppButton v-else type="button" variant="secondary" :disabled="!store.canAutoPropose" @click="regenerate">重新自动框题</AppButton>
         </div>
-        <p v-if="store.errorMessage" class="template-regions-view__notice" role="alert">{{ store.errorMessage }}</p>
-        <div v-if="store.saveState === 'error'" class="template-regions-view__notice" role="alert">
-          <p>草稿仍保留在当前页面，可以再次尝试保存。</p>
-          <button type="button" @click="store.flushDraft">重试保存草稿</button>
-        </div>
-        <div v-if="store.saveState === 'conflict'" class="template-regions-view__notice" role="alert">
-          <p>服务器已有较新草稿，自动保存已停止。</p>
-          <button type="button" @click="store.load(routeSessionId)">重新加载服务器草稿</button>
-        </div>
-        <div v-if="store.draftChoiceRequired" class="template-regions-view__choice" role="status">
-          <h2>发现上次未完成的草稿</h2>
-          <p>请选择继续上次草稿，或丢弃它并从已确认版本重新开始。</p>
-          <button type="button" @click="store.continueDraft">继续上次草稿</button>
-          <button type="button" class="secondary" @click="store.restartFromFormal">从已确认版本重新开始</button>
-        </div>
-        <div v-if="store.workspace.draft.status === 'incompatible' || store.workspace.draft.status === 'corrupt'"
-          class="template-regions-view__notice" role="alert">
-          <p>旧草稿与当前样卷不一致，未自动套用。可丢弃旧草稿后从已确认版本重新开始。</p>
-          <button type="button" @click="store.discardDraft">丢弃旧草稿</button>
-        </div>
+        <FeedbackBanner v-if="store.errorMessage" role="alert" tone="error" :description="store.errorMessage" />
+        <FeedbackBanner v-if="store.saveState === 'error'" role="alert" tone="error" description="草稿仍保留在当前页面，可以再次尝试保存。" action-label="重试保存草稿" @action="store.flushDraft" />
+        <FeedbackBanner v-if="store.saveState === 'conflict'" role="alert" tone="error" description="服务器已有较新草稿，自动保存已停止。" action-label="重新加载服务器草稿" @action="store.load(routeSessionId)" />
+        <FeedbackBanner v-if="store.draftChoiceRequired" role="status" tone="info" title="发现上次未完成的草稿" description="请选择继续上次草稿，或丢弃它并从已确认版本重新开始。">
+          <div class="template-regions-view__choice-actions">
+            <AppButton type="button" variant="secondary" @click="store.continueDraft">继续上次草稿</AppButton>
+            <AppButton type="button" variant="secondary" @click="store.restartFromFormal">从已确认版本重新开始</AppButton>
+          </div>
+        </FeedbackBanner>
+        <FeedbackBanner v-if="store.workspace.draft.status === 'incompatible' || store.workspace.draft.status === 'corrupt'"
+          role="alert" tone="error" description="旧草稿与当前样卷不一致，未自动套用。可丢弃旧草稿后从已确认版本重新开始。"
+          action-label="丢弃旧草稿" @action="store.discardDraft" />
       </div>
       <TemplateUploadPanel
         :template="store.workspace.template"
@@ -198,17 +191,17 @@ watch(focusLayout, syncFocusLayout, { flush: 'post' })
       />
       <div v-if="store.snapshotPending" class="template-regions-view__snapshot">
         <p>答题区域已经正式保存，只差补写本机确认快照。</p>
-        <button type="button" @click="retrySnapshotAndContinue">重试生成确认快照</button>
+        <AppButton type="button" variant="secondary" @click="retrySnapshotAndContinue">重试生成确认快照</AppButton>
       </div>
       <div v-else-if="store.readOnly" class="template-regions-view__snapshot template-regions-view__snapshot--confirmed">
         <p>题框已保存，可重新编辑。</p>
-        <button type="button" class="secondary" @click="store.startEditingConfirmed">重新编辑题框草稿</button>
+        <AppButton type="button" variant="secondary" @click="store.startEditingConfirmed">重新编辑题框草稿</AppButton>
       </div>
     </section>
     <section v-else-if="!store.scoringConfigured" class="template-regions-view__prerequisite">
       <h2>请先完成评分依据</h2>
       <p>样卷题框需要使用已保存的题号和评分依据。返回第 4 步保存后再继续。</p>
-      <button type="button" @click="router.push('/sessions')">返回评分依据</button>
+      <AppButton type="button" variant="ghost" size="small" @click="router.push('/sessions')">返回评分依据</AppButton>
     </section>
     <TemplateUploadPanel v-else :template="null" :status="store.uploadState"
       @upload="replaceTemplate" @reconcile="store.reconcileUpload" />

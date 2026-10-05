@@ -1354,7 +1354,7 @@ onMounted(() => {
             <AppButton
               v-else
               variant="ghost"
-              size="sm"
+              size="small"
               class="overview__notes-action"
               @click="openReviewNote(note)"
             >去核对</AppButton>

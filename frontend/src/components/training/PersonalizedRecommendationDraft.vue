@@ -18,6 +18,7 @@ import {
 import { knowledgeLeafLabel } from '../../api/question-bank'
 import { ApiError, isAmbiguousWriteError } from '../../api/errors'
 import { difficultyLevel } from '../../lib/utils'
+import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import type { StepProgressStep } from '../design-system/StepProgress.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
@@ -968,11 +969,11 @@ async function editItem(
           <details v-if="hasPrintablePapers" class="print-more"><summary>其他导出与重新出卷</summary><AppButton v-if="paperBatch?.downloads.bundle" variant="secondary" :disabled="Boolean(paperBusy)" @click="downloadBatch('bundle')">下载 DOCX 版 ZIP</AppButton><AppButton variant="secondary" :disabled="Boolean(paperBusy) || !eligiblePaperCount" @click="createPaperBatch">{{ paperBusy === 'batch' ? '正在逐人生成 PDF…' : '重新生成全部 PDF' }}</AppButton></details>
         </section>
         <div v-if="!isHandout && paperInstances.length" class="paper-download-list"><header><strong>学生试卷</strong><span>保留各版本，可分别下载</span></header><template v-for="student in draft.students" :key="student.student_id"><article v-for="instance in instancesForStudent(student.student_id)" :key="instance.paper_instance_id"><div><strong>{{ student.student_name || student.student_code || student.student_id }}</strong><span>V{{ instance.series_version }} · {{ instance.question_count }} 题 · {{ instance.pages.length }} 页</span></div><StatusBadge :tone="instance.status === 'frozen' ? 'success' : 'warning'" :label="instance.status === 'frozen' ? '可打印' : '待生成 PDF'" /><AppButton v-if="instance.downloads.frozen_pdf" variant="ghost" :disabled="Boolean(paperBusy)" @click="downloadPaper(instance, 'frozen_pdf')">下载 PDF 试卷</AppButton><AppButton v-if="instance.downloads.review_docx" variant="ghost" :disabled="Boolean(paperBusy)" @click="downloadPaper(instance, 'review_docx')">下载 DOCX</AppButton><p v-if="instance.formula_fallbacks?.length" class="formula-note">{{ instance.formula_fallbacks.length }} 处公式已保留原式或题图，打印前请预览核对。</p></article></template></div>
-        <p v-if="actionMessage" class="draft-action-message" role="status">{{ actionMessage }}</p>
+        <FeedbackBanner v-if="actionMessage" role="status" tone="info" :description="actionMessage" />
       </section>
       <section v-if="!isHandout && hasPrintablePapers" v-show="viewStep === 'scan'" class="personalized-scan"><TrainingScanBatchPanel ref="returnPanel" :instances="paperInstances" :initial-focus="initialFocus" @focus-consumed="emit('focusConsumed')" @progress-change="scanProgress = $event" @open-draft="openNextDraft" /></section>
     </template>
-    <p v-else-if="actionMessage" class="draft-action-message" role="status">{{ actionMessage }}</p>
+    <FeedbackBanner v-else-if="actionMessage" role="status" tone="info" :description="actionMessage" />
     <QuestionPreviewDialog :question-id="previewQuestionId" :title="previewTitle" @close="closePreview" />
   </section>
 </template>

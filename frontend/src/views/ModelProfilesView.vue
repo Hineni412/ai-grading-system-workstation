@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet'
 import { onBeforeRouteLeave } from 'vue-router'
+import FeedbackBanner from '@/components/design-system/FeedbackBanner.vue'
 import AppButton from '@/components/design-system/AppButton.vue'
 import StatePanel from '@/components/design-system/StatePanel.vue'
 import StatusBadge from '@/components/design-system/StatusBadge.vue'
@@ -420,7 +421,7 @@ onBeforeUnmount(() => {
 </script>
 <template>
   <article class="model-profiles-view">
-    <p v-if="profilesStore.errorMessage || localError" class="settings-feedback is-error" role="alert">{{ localError || profilesStore.errorMessage }}</p>
+    <FeedbackBanner v-if="profilesStore.errorMessage || localError" role="alert" tone="error" :description="localError || profilesStore.errorMessage" />
     <StatePanel v-if="profilesStore.loadState === 'loading'" kind="loading" title="正在读取本机 AI 服务…" description="" />
     <StatePanel v-else-if="profilesStore.loadState === 'error'" kind="error" title="服务列表暂时无法读取" description="" retry-label="重新加载" @retry="reloadProfiles" />
     <template v-else>
@@ -486,7 +487,7 @@ onBeforeUnmount(() => {
               </section>
               <AppButton variant="secondary" :disabled="!canActivate" @click="activateProfile">{{ isCurrent ? '已是默认服务' : '设为默认服务（旧任务使用）' }}</AppButton>
             </div></details>
-            <p v-if="localError || profilesStore.errorMessage" class="settings-feedback is-error" role="alert">{{ localError || profilesStore.errorMessage }}</p>
+            <FeedbackBanner v-if="localError || profilesStore.errorMessage" role="alert" tone="error" :description="localError || profilesStore.errorMessage" />
           </div>
           <footer class="settings-drawer__footer"><AppButton variant="secondary" :disabled="isBusy" @click="closeDrawer()">取消</AppButton><AppButton variant="primary" type="submit" :disabled="isBusy || !isDirty">{{ isBusy ? '正在保存…' : '保存' }}</AppButton></footer>
         </form>

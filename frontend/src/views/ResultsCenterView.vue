@@ -856,7 +856,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
           <PopoverTrigger as-child>
             <AppButton
               variant="secondary"
-              size="sm"
+              size="small"
               class="results-export-toggle"
               aria-label="导出文件"
             >
@@ -1036,7 +1036,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
           </div>
 
           <p class="personal-report-help">点姓名看成绩详情 · 点 ✓ 直接打开个人报告 · 点分数进入成绩复核
-            <span v-if="personalStateError"> · {{ personalStateError }} <button @click="refreshPersonalStates">重试</button></span>
+            <span v-if="personalStateError"> · {{ personalStateError }} <AppButton variant="ghost" size="small" @click="refreshPersonalStates">重试</AppButton></span>
           </p>
           <div
             ref="matrixScroller"
@@ -1175,16 +1175,13 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
               {{ selectedStudent.student_code || '未填写学号' }}
               <template v-if="selectedStudent.class_name"> · {{ selectedStudent.class_name }}</template>
             </p>
-          </div>
-          <button
+          </div><AppIconButton label="关闭学生成绩详情"
             ref="drawerCloseButton"
-            type="button"
-            class="results-drawer__close"
-            aria-label="关闭学生成绩详情"
+           
+           
+           
             @click="closeStudentDrawer()"
-          >
-            关闭
-          </button>
+           icon="close" />
         </header>
 
         <div class="results-drawer__total">
@@ -1205,9 +1202,9 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
 
         <div class="personal-report-drawer">
           <b>个人报告</b>
-          <template v-if="reportState(selectedStudent)?.status === 'current'"><button @click="openPersonalReport(selectedStudent)">查看个人报告 ›</button></template>
-          <template v-else-if="reportState(selectedStudent)?.status === 'stale'"><p>成绩已变化，显示上次生成的 AI 分析。</p><button @click="openPersonalReport(selectedStudent)">查看个人报告（上次生成） ›</button></template>
-          <template v-else-if="reportState(selectedStudent)?.status === 'missing'"><p>本场报告未生成</p><button @click="openPersonalReport(selectedStudent, true)">先看数据版 ›</button></template>
+          <template v-if="reportState(selectedStudent)?.status === 'current'"><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent)">查看个人报告 ›</AppButton></template>
+          <template v-else-if="reportState(selectedStudent)?.status === 'stale'"><p>成绩已变化，显示上次生成的 AI 分析。</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent)">查看个人报告（上次生成） ›</AppButton></template>
+          <template v-else-if="reportState(selectedStudent)?.status === 'missing'"><p>本场报告未生成</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent, true)">先看数据版 ›</AppButton></template>
           <p v-else>{{ reportState(selectedStudent)?.reason ?? '正在读取报告状态…' }}</p>
         </div>
         <div class="results-drawer__items">
@@ -1245,7 +1242,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
 .personal-report-status{display:inline-flex!important;width:var(--control-height-small)!important;min-width:var(--control-height-small);height:var(--control-height-small);align-items:center;justify-content:center;vertical-align:top;margin-left:6px;border-radius:5px!important;font-size:var(--font-size-h3)!important;padding:0!important}
 .results-matrix tbody .results-matrix__identity > button:not(.personal-report-status){display:inline-grid;width:calc(100% - 38px);vertical-align:top}
 .personal-report-status--current{color:#368260!important;background:#edf7ef!important}.personal-report-status--stale{color:#aa7b22!important;background:#fff3d8!important}.personal-report-status--missing{color:#87929c!important;background:#f2f4f6!important}
-.personal-report-unavailable{font-size:var(--font-size-caption);color:#84919e;margin-left:4px}.personal-report-help{color:#7b8b98;font-size:var(--font-size-caption);margin:5px 20px 12px}.personal-report-highlight{outline:2px solid #6c9bb3;outline-offset:-2px}.personal-report-drawer{padding:16px 0;margin-top:12px;border-top:1px solid #e0e7ed}.personal-report-drawer b{display:block;font-size:var(--font-size-body)}.personal-report-drawer p{color:#778490;font-size:var(--font-size-caption);margin:8px 0}.personal-report-drawer button{border:0;background:#edf4f7;color:#326d88;padding:7px 10px;border-radius:5px;font-size:var(--font-size-dense);margin-top:8px;cursor:pointer}
+.personal-report-unavailable{font-size:var(--font-size-caption);color:#84919e;margin-left:4px}.personal-report-help{color:#7b8b98;font-size:var(--font-size-caption);margin:5px 20px 12px}.personal-report-highlight{outline:2px solid #6c9bb3;outline-offset:-2px}.personal-report-drawer{padding:16px 0;margin-top:12px;border-top:1px solid #e0e7ed}.personal-report-drawer b{display:block;font-size:var(--font-size-body)}.personal-report-drawer p{color:#778490;font-size:var(--font-size-caption);margin:8px 0}
 
 .results-drawer__cmp {
   margin: 0;

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FeedbackBanner from '@/components/design-system/FeedbackBanner.vue'
 import AppButton from '@/components/design-system/AppButton.vue'
 import StatePanel from '@/components/design-system/StatePanel.vue'
 
@@ -309,11 +310,11 @@ function downloadFailures(job: JobResponse): void {
         <span>{{ jobs.length }} 个历史任务</span>
         <AppButton variant="secondary"
           type="button"
-          class="qb-button is-review"
+         
           @click="emit('reviewTaxonomy')"
         >
           待审核新词
-          <strong>{{ pendingTaxonomyLabel }}</strong>
+          <span class="app-button__count">{{ pendingTaxonomyLabel }}</span>
         </AppButton>
       </div>
     </header>
@@ -339,7 +340,7 @@ function downloadFailures(job: JobResponse): void {
       </label>
       <AppButton variant="primary"
         type="button"
-        class="qb-button is-ai"
+       
         :disabled="bank.selectedCount === 0 || busy"
         @click="startTagging"
       >
@@ -347,7 +348,7 @@ function downloadFailures(job: JobResponse): void {
       </AppButton>
     </div>
     <p class="qb-help">不会自动调用 AI；只有确认题数和费用提示后才会提交。</p>
-    <p v-if="feedback" class="qb-feedback" role="status">{{ feedback }}</p>
+    <FeedbackBanner v-if="feedback" role="status" tone="info" :description="feedback" />
 
     <ul v-if="queuedFiles.length" class="qb-upload-queue" aria-label="本次文件队列">
       <li v-for="file in queuedFiles" :key="file.name">
@@ -368,13 +369,9 @@ function downloadFailures(job: JobResponse): void {
           </header>
           <p>{{ jobCompletionNote(job) }}</p>
           <template v-if="job.job_type === 'question_import' && TERMINAL_JOB_STATUSES.has(job.status)">
-            <p
-              v-for="dup in duplicatePapers(job.result)"
-              :key="`dup-${dup.paperId}`"
-              class="qb-feedback is-warning"
-            >
+            <FeedbackBanner v-for="dup in duplicatePapers(job.result)" :key="`dup-${dup.paperId}`" tone="warning">
               这份试卷已在题库中（《{{ dup.title }}》），本次未重复入库。
-            </p>
+            </FeedbackBanner>
             <details
               v-if="exactDuplicates(job.result).length || nearDuplicateHints(job.result).length"
               class="qb-import-detail"
@@ -386,11 +383,11 @@ function downloadFailures(job: JobResponse): void {
                   <ul>
                     <li v-for="(entry, index) in exactDuplicates(job.result)" :key="`exact-${index}`">
                       <span>本卷第 {{ entry.questionNumber }} 题 ↔ {{ matchedLabel(entry) }}</span>
-                      <button
+                      <AppButton
                         type="button"
-                        class="qb-link"
-                        @click="openPreview(entry.matchedQuestionId, matchedLabel(entry))"
-                      >查看</button>
+                       
+                        variant="ghost" size="small" @click="openPreview(entry.matchedQuestionId, matchedLabel(entry))"
+                      >查看</AppButton>
                     </li>
                   </ul>
                 </section>
@@ -400,17 +397,17 @@ function downloadFailures(job: JobResponse): void {
                     <li v-for="(entry, index) in similarHints(job.result)" :key="`similar-${index}`">
                       <span>本卷第 {{ entry.questionNumber }} 题 ↔ {{ matchedLabel(entry) }}</span>
                       <small v-if="entry.reason">{{ entry.reason }}</small>
-                      <button
+                      <AppButton
                         type="button"
-                        class="qb-link"
-                        @click="openPreview(entry.matchedQuestionId, matchedLabel(entry))"
-                      >查看</button>
-                      <button
+                       
+                        variant="ghost" size="small" @click="openPreview(entry.matchedQuestionId, matchedLabel(entry))"
+                      >查看</AppButton>
+                      <AppButton
                         v-if="entry.questionId !== null"
                         type="button"
-                        class="qb-link"
-                        @click="openPreview(entry.questionId, `本卷第 ${entry.questionNumber} 题`)"
-                      >查看新题</button>
+                       
+                        variant="ghost" size="small" @click="openPreview(entry.questionId, `本卷第 ${entry.questionNumber} 题`)"
+                      >查看新题</AppButton>
                     </li>
                   </ul>
                 </section>
@@ -421,68 +418,56 @@ function downloadFailures(job: JobResponse): void {
                     <li v-for="(entry, index) in conflictHints(job.result)" :key="`conflict-${index}`">
                       <span>本卷第 {{ entry.questionNumber }} 题 ↔ {{ matchedLabel(entry) }}</span>
                       <small v-if="entry.reason">{{ entry.reason }}</small>
-                      <button
+                      <AppButton
                         type="button"
-                        class="qb-link"
-                        @click="openPreview(entry.matchedQuestionId, matchedLabel(entry))"
-                      >查看</button>
-                      <button
+                       
+                        variant="ghost" size="small" @click="openPreview(entry.matchedQuestionId, matchedLabel(entry))"
+                      >查看</AppButton>
+                      <AppButton
                         v-if="entry.questionId !== null"
                         type="button"
-                        class="qb-link"
-                        @click="openPreview(entry.questionId, `本卷第 ${entry.questionNumber} 题`)"
-                      >查看新题</button>
+                       
+                        variant="ghost" size="small" @click="openPreview(entry.questionId, `本卷第 ${entry.questionNumber} 题`)"
+                      >查看新题</AppButton>
                     </li>
                   </ul>
                 </section>
               </div>
             </details>
           </template>
-          <p v-if="job.result.outcome === 'partial'" class="qb-feedback is-warning">
+          <FeedbackBanner v-if="job.result.outcome === 'partial'" tone="warning">
             部分完成：成功
             {{ safeCount(job.result, 'tagged_count') || safeCount(job.result, 'question_count') }}，
             跳过 {{ safeCount(job.result, 'skipped_complete_count') }}，
             失败 {{ safeCount(job.result, 'failed_count') }}。
-          </p>
-          <p
-            v-if="safeCount(job.result, 'criteria_needs_review_count') > 0"
-            class="qb-feedback is-warning"
-          >
+          </FeedbackBanner>
+          <FeedbackBanner v-if="safeCount(job.result, 'criteria_needs_review_count') > 0" tone="warning">
             待审核判定点 {{ safeCount(job.result, 'criteria_needs_review_count') }} 道；
             审核通过前不会显示为成功。
-          </p>
-          <p
-            v-if="job.job_type === 'question_import' && job.result.restore_required === true"
-            class="qb-feedback is-warning"
-          >
-            这是旧版删除流程留下的任务记录。无需恢复旧试卷；重新上传时会按当前流程全新入库。
-          </p>
-          <p v-if="job.error" class="qb-feedback is-error">{{ job.error }}</p>
-          <p v-if="jobStore.syncErrors[job.id]" class="qb-feedback is-error" role="alert">
-            {{ jobStore.syncErrors[job.id]?.message }}
-            <template v-if="jobStore.syncErrors[job.id]?.requestId">
-              请求编号：{{ jobStore.syncErrors[job.id]?.requestId }}
-            </template>
-          </p>
+          </FeedbackBanner>
+          <FeedbackBanner v-if="job.job_type === 'question_import' && job.result.restore_required === true" tone="warning" description="这是旧版删除流程留下的任务记录。无需恢复旧试卷；重新上传时会按当前流程全新入库。" />
+          <FeedbackBanner v-if="job.error" tone="error" :description="job.error" />
+          <FeedbackBanner v-if="jobStore.syncErrors[job.id]" role="alert" tone="error"
+            :description="jobStore.syncErrors[job.id]?.message + (jobStore.syncErrors[job.id]?.requestId ? ` 请求编号：${jobStore.syncErrors[job.id]?.requestId}` : '')" />
           <div class="qb-job__actions">
-            <button
+            <AppButton
               v-if="!TERMINAL_JOB_STATUSES.has(job.status)"
               type="button"
-              class="qb-link"
-              @click="jobStore.cancel(job.id)"
+             
+              variant="ghost" size="small" @click="jobStore.cancel(job.id)"
             >
               请求取消
-            </button>
-            <button type="button" class="qb-link" @click="jobStore.refresh(job.id)">刷新</button>
-            <button
+            </AppButton>
+            <AppButton type="button" variant="ghost" size="small" @click="jobStore.refresh(job.id)">刷新</AppButton>
+            <AppButton
               v-if="questionJobFailures(job.result).length"
               type="button"
-              class="qb-link"
-              @click="downloadFailures(job)"
+             
+              variant="ghost" size="small" @click="downloadFailures(job)"
             >
               下载失败清单
-            </button>
-            <button
+            </AppButton>
+            <AppButton
               v-if="
                 TERMINAL_JOB_STATUSES.has(job.status) &&
                 (
@@ -496,12 +481,12 @@ function downloadFailures(job: JobResponse): void {
                 ) && job.result.restore_required !== true
               "
               type="button"
-              class="qb-link"
+             
               :disabled="busy"
-              @click="retry(job)"
+              variant="ghost" size="small" @click="retry(job)"
             >
               重试允许的失败项
-            </button>
+            </AppButton>
           </div>
         </article>
       </div>

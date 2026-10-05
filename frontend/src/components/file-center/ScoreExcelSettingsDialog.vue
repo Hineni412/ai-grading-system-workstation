@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import type { ResultsCenterStudent } from '../../api/results-center'
@@ -39,12 +40,9 @@ const manualStudentSearch = defineModel<string>('manualStudentSearch', { require
       <div class="excel-settings-dialog__heading">
         <div>
           <h3 id="excel-settings-title">精简打印姓名，不改变成绩统计</h3>
-        </div>
-        <AppButton variant="ghost"
+        </div><AppIconButton label="关闭"
           @click="emit('close')"
-        >
-          关闭
-        </AppButton>
+         icon="close" />
       </div>
 
       <p class="excel-settings-dialog__explanation">

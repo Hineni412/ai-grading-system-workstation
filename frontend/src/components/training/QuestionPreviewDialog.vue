@@ -3,6 +3,8 @@ import { ref, watch } from 'vue'
 
 import { questionBankApi, type QuestionBankDetail } from '../../api/question-bank'
 import { ApiError } from '../../api/errors'
+import AppButton from '../design-system/AppButton.vue'
+import AppIconButton from '../design-system/AppIconButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
 
@@ -86,7 +88,7 @@ function close(): void {
           title="该题已不在题库中"
           description="草稿内容不受影响，可关闭预览继续审核。"
         >
-          <template #actions><button type="button" class="question-preview__close-inline" @click="close">关闭</button></template>
+          <template #actions><AppButton variant="ghost" size="small" @click="close">关闭</AppButton></template>
         </StatePanel>
         <StatePanel
           v-else-if="panelState === 'error'"
@@ -103,8 +105,7 @@ function close(): void {
                 {{ title || `第 ${detail.question_number || detail.id} 题` }}
               </h2>
               <p>{{ detail.paper_title || '未命名试卷' }}</p>
-            </div>
-            <button type="button" class="question-preview__close" aria-label="关闭题目预览" @click="close">×</button>
+            </div><AppIconButton label="关闭题目预览" @click="close" icon="close" />
           </header>
 
           <section class="question-preview__section">
@@ -134,14 +135,12 @@ function close(): void {
 </template>
 
 <style scoped>
-.question-preview-layer { position: fixed; inset: 0; z-index: 60; display: flex; justify-content: flex-end; background: color-mix(in srgb, var(--color-text-primary) 24%, transparent); }
-.question-preview { width: min(620px, 94vw); max-width: 100%; height: 100%; overflow-y: auto; padding: 20px; border-left: 1px solid var(--color-border-default); background: var(--color-bg-surface); box-shadow: -18px 0 44px color-mix(in srgb, var(--color-text-primary) 14%, transparent); }
+.question-preview-layer { position: fixed; inset: 0; z-index: 60; display: flex; justify-content: flex-end; background: var(--color-overlay-mask); }
+.question-preview { width: min(620px, 94vw); max-width: 100%; height: 100%; overflow-y: auto; padding: var(--space-5); border-left: 1px solid var(--color-border-default); background: var(--color-bg-surface); box-shadow: var(--shadow-overlay); }
 .question-preview__retry,
-.question-preview__close-inline { padding: 6px 14px; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-accent-active); cursor: pointer; }
 .question-preview__heading { display: flex; justify-content: space-between; align-items: start; gap: var(--space-3); }
 .question-preview__heading h2 { margin: 0 0 var(--space-1); }
 .question-preview__heading p { margin: 0; color: var(--color-text-secondary); font-size: var(--font-size-dense); }
-.question-preview__close { flex: none; width: 32px; height: var(--control-height-default); border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-text-secondary); font-size: var(--font-size-h2); line-height: 1; cursor: pointer; }
 .question-preview__section { margin-top: var(--space-4); }
 .question-preview__section h3 { margin: 0 0 var(--space-2); }
 .question-preview__section summary { cursor: pointer; font-weight: var(--font-weight-semibold); }

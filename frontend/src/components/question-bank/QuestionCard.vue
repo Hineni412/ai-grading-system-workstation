@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import { knowledgeLeafLabel, questionTypeWithSubtype, type QuestionBankListItem } from '../../api/question-bank'
 import { useAssemblyStore } from '../../stores/assembly'
 import { useQuestionBankStore } from '../../stores/question-bank'
@@ -67,9 +68,9 @@ watch(expanded, async (value, wasExpanded) => {
         <span v-if="question.skills?.length === 0" class="qb-warning">未挂技能</span>
       </div>
       <div class="qb-inline-card__tags"><span>{{ questionTypeWithSubtype(question.question_type, question.tags) }}</span><span>难度 {{ question.difficulty || '待定' }}</span><span v-for="tag in tags" :key="tag.tag_value" :title="tag.tag_value">{{ knowledgeLeafLabel(tag.tag_value) }}</span></div>
-      <details v-if="question.duplicate_members?.length" class="qb-duplicate-members"><summary>另有 {{ question.duplicate_members.length }} 道相同题 ▸</summary><p v-for="member in question.duplicate_members" :key="member.id"><RouterLink class="qb-link" :to="{ path: '/question-bank', query: { tab: 'paper', paper: member.paper_id, question: member.id } }">第 {{ member.question_number }} 题 · {{ member.paper_title }}</RouterLink></p></details>
-      <footer><small>判定点 {{ question.evidence_point_count ?? '待核对' }} · 技能 {{ question.skills?.length ?? 0 }}<template v-if="question.criteria_needs_review"> · 判定点待审核</template></small><div class="qb-inline-card__footer-actions"><button type="button" class="qb-link" @click="toggle">展开标注</button><button type="button" class="qb-link" @click="emit('similar', question)">相似题</button><AppButton variant="secondary" :disabled="assembly.saveState === 'saving'" @click="basket">{{ inBasket ? '已在试卷篮' : '加入试卷篮' }}</AppButton></div></footer>
+      <details v-if="question.duplicate_members?.length" class="qb-duplicate-members"><summary>另有 {{ question.duplicate_members.length }} 道相同题 ▸</summary><p v-for="member in question.duplicate_members" :key="member.id"><AppButton :to="{ path: '/question-bank', query: { tab: 'paper', paper: member.paper_id, question: member.id } }" variant="ghost" size="small" :as="RouterLink">第 {{ member.question_number }} 题 · {{ member.paper_title }}</AppButton></p></details>
+      <footer><small>判定点 {{ question.evidence_point_count ?? '待核对' }} · 技能 {{ question.skills?.length ?? 0 }}<template v-if="question.criteria_needs_review"> · 判定点待审核</template></small><div class="qb-inline-card__footer-actions"><AppButton type="button" variant="ghost" size="small" @click="toggle">展开标注</AppButton><AppButton type="button" variant="ghost" size="small" @click="emit('similar', question)">相似题</AppButton><AppButton variant="secondary" :disabled="assembly.saveState === 'saving'" @click="basket">{{ inBasket ? '已在试卷篮' : '加入试卷篮' }}</AppButton></div></footer>
     </div>
-    <QuestionAnnotationPanel v-else :id="`qb-annotation-${question.id}`" :current-skill="currentSkill" @skill="emit('skill', $event)"><template #similar><button class="qb-link" type="button" @click="emit('similar', question)">相似题</button></template></QuestionAnnotationPanel>
+    <QuestionAnnotationPanel v-else :id="`qb-annotation-${question.id}`" :current-skill="currentSkill" @skill="emit('skill', $event)"><template #similar><AppButton type="button" variant="ghost" size="small" @click="emit('similar', question)">相似题</AppButton></template></QuestionAnnotationPanel>
   </article>
 </template>
