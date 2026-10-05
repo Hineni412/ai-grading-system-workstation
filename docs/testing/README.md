@@ -54,15 +54,21 @@
 - 需已安装前端依赖和 Playwright Chromium；截图、失败追踪和浏览器日志保存在本次新建的 `output/review_browser_*` 目录。
 - `full` 在前端检查通过后执行同一浏览器步骤；`review` 是只验证相关业务的较小入口，不能跳过前端；`full --skip-frontend` 与默认 `npm run e2e` 不包含这项真实保存验收。
 
+默认 `npm run e2e` 只收录八个模拟接口文件：`app-shell`、`session-config`、`knowledge-graph`、`template-region-editor`、`review-evidence`、`review-queue`、`workbench-overview`、`training-recommendations-real-api`。最后一个文件也使用模拟接口。各文件复用 `e2e/mock-fixtures.ts`：未提供合成响应的 API 请求会失败，测试结束会检查遗漏；教材目录复用 `e2e/mock-curriculum.ts`。测试禁用服务工作线程；启动服务前用 Vite 在新建的 `output/TEST-e2e-mock-*` 目录构建并预览，关闭 `/api` 转发且不复用已有服务。真实 API 与演示服务器的流程使用各自的 `playwright.p2-*.config.ts`；改分保存专项使用 `review` 入口。
+
+工作台几何检查使用“减少动态效果”，核对静止布局的间距、重叠和吸顶位置。
+
+题框真实 API 专项用替身返回空的自动建议，保留人工框选、保存、确认及重新进入的检查；它不验证 OCR 质量。扫描专项准备已确认样卷后验证预检、暂停、续跑、后来匹配补批、替换批次与取消。批量复核保留超分和非整数拒绝、整批失败保留草稿及只发送一次的检查。
+
 在 `frontend` 目录运行专项入口：
 
 | 要检查的操作 | 命令 | 前端来源 |
 |---|---|---|
-| 批量复核演示流程 | `npm run e2e:review-batch` | 普通入口先构建，再启动合成演示服务 |
+| 批量复核演示流程 | `npm run e2e:review-batch` | 普通入口先构建，再启动合成演示服务；并行任务可将 `P2_08_FRONTEND_DIST` 设为独立构建目录后运行 `:prepared` |
 | 样卷题框编辑 | `npm run e2e:template-regions` | 使用当前源码的开发服务，不需要预构建 |
-| 扫描与批改 | `npm run e2e:scan-grading` | 普通入口先构建，后端使用隔离测试数据 |
+| 扫描与批改 | `npm run e2e:scan-grading` | 普通入口先构建，后端使用隔离测试数据；并行任务可将 `SCAN_BROWSER_FRONTEND_DIST` 设为独立构建目录后运行 `:prepared` |
 | 设置页学生名单 | `npm run e2e:students` | 普通入口先构建，后端使用隔离测试数据；覆盖导入预览、编辑与输入确认删除；并行任务可将 `STUDENT_BROWSER_FRONTEND_DIST` 设为独立构建目录后运行 `:prepared`，避免改写共享成品 |
-| 技能找题、原地标注、整卷、待处理与试卷篮 | `npm run e2e:question-bank` | 普通入口先构建，每次新建 TEST-question-bank 合成目录，独立端口；覆盖 1280/1440、Esc 与焦点返回 |
+| 技能找题、原地标注、整卷、待处理与试卷篮 | `npm run e2e:question-bank` | 普通入口先构建，每次新建 TEST-question-bank 合成目录，独立端口；在原测试文件拆成技能编辑与共享试卷篮、大整卷恢复、待办跳转三条流程；保留 2,005 道题、1280/1440、Esc 与焦点返回 |
 | 训练推荐 | `npm run e2e:training-recommendations` | 普通入口先构建；浏览器使用当前源码与模拟接口，覆盖三栏／窄屏、选人、讲义预设、抽屉、批量错题本及下载 |
 
 依赖前端成品的四组入口保留同名 `:prepared` 命令；训练推荐的 `:prepared` 直接使用当前源码与模拟接口；已有当前且完整的构建产物时可直接运行，不重建共享 `frontend/dist`。题框编辑入口直接使用源码，没有单独的 prepared 命令。专项配置从项目 `runtime/python/python.exe` 启动后端，历史配置文件名保留，入口按业务操作命名。
@@ -99,7 +105,11 @@
 
 实验的合成边界验证复用 `tests/training/test_personalized_recommendation.py`，覆盖共同适用、只补弱用途与范围、缺题和空卷、补弱优先及未测目标上限、已有有效正确或失分记录不算未测、过难与超范围补充拒绝、未测题换题及保存、下一轮参数恢复、原限制内换题及新增/失去目标、兼容配置、空卷讲义跳过与草稿不变、只读写入拒绝、对照条件保留分数、匿名配对统计、难度与近期原题限制及重叠入卷限制。粗粒度总分失分只安排受新练习上限约束的独立诊断短题，不计补弱覆盖。适合难度覆盖掌握度模型的基准与范围计算、最基础题与出卷上限两种收口、模型字段缺失或无证据的回退、预计做对可能性说明，并保留经验规则的失分依据统计、教师上限与缺分不算失分；选题覆盖新目标比例及先探测后提高难度。作答方式覆盖客观来源配过程作答的完整覆盖、过程来源配客观作答的环节练习，以及未知来源作答方式不标完整覆盖。选题验证同一学生同一技能需要去重、最新掌握度改变优先级而不删除历史失分、两题联合替换突破单题技能冲突并继续遵守解答题和相似题限制，以及章节分组按共用卷保留每名成员至少四分之三个人薄弱练习且不少于 6 道题的质量判定，连同共同技能需要比例、难度窗口相交与目标难度差的相容前置检查。班级核心候选及相近任务卷内限制复用 `tests/test_unified_practice_rules.py`，区分作答方式、技能集合、题图与规范化题面，多小问题不因部分重合删除整题；候选仍保留到难度评价阶段。前端请求与讲义导出复用 `frontend/src/__tests__/personalized-recommendation-draft.spec.ts`。实验设置、解释与未完成部分见 [当前实现与交接说明](../requests/training-recommendation-backend-handoff-20261004.md)。
 
-推荐算法改动或后端性能优化的前后配对比较使用 `tools/compare_training_endpoints.py --output <目录> --baseline-remediation-only --baseline-max-unmeasured-questions 4 --max-unmeasured-questions 4`：目录下 `baseline/`、`latest/` 分别放两版 `personalized.py`、`diagnosis_profile_service.py` 与 `question_tag_projection_service.py`，工具在同一只读输入上重跑第一章、第二章与两章合卷的个人卷和小组卷，核对两端个人选题与各自正式内存草稿一致，并按最新规则复核难度、失分关系与近期原题；`tools/build_training_endpoint_report.py <目录>` 生成匿名 HTML 报告，`tools/serve_training_endpoint_report.py <目录> --port <端口>` 在本机只读显示题面。报告只含匿名编号、题号和派生判断。当前效果依据为 `output/test_training_skill_model_v4_20261003/`，解释与性能交接见[当前实现与交接说明](../requests/training-recommendation-backend-handoff-20261004.md)。
+推荐算法改动的前后配对比较使用 `tools/compare_training_endpoints.py --output <目录> --baseline-remediation-only --baseline-max-unmeasured-questions 4 --max-unmeasured-questions 4`：目录下 `baseline/`、`latest/` 分别放两版 `personalized.py`、`diagnosis_profile_service.py` 与 `question_tag_projection_service.py`，工具在同一只读输入上重跑第一章、第二章与两章合卷的个人卷和小组卷，核对两端个人选题与各自正式内存草稿一致，并按最新规则复核难度、失分关系与近期原题。仅优化 `personalized.py` 的性能时使用同一工具的 `--performance-only`：诊断与投影两份源文件必须相同，两端共用只读事务、诊断和固定时钟；在内存中按规范化 JSON 完整比较分组成员、目标、卡片、警告和来源版本，以及所有个人和小组草稿的题目、题序、用途、理由、缺口与警告。测量候选缓存清空后的分组、同进程再次分组、91 人个人草稿、5 人逐人草稿和最大组的所选成员复核；`performance.json` 只保存耗时、汇总人数及组数和代码摘要，每个范围通过后保存汇总，仅全部完成及来源不变时标记 `completed: true`。
+
+合成回归扩展现有个性化推荐与统一练习规则测试，核对重复评价减少、近期原题并集过滤后的完整输出、候选池扩大时重算、生成小组草稿不重建自动分组、内部共享输入不被改写及公开副本独立；固定偏好和匹配覆盖内容、作答方式、错因状态与教材位置变化，选卷计数覆盖配额改变和重复已选题，掌握度资料覆盖诊断说明、当前模型输出与真实合成提交的失效。页面计时可用当前前端的独立构建与正式只读诊断路由，不启动生产应用生命周期、写业务库或保存真实响应；只导出汇总耗时与逐字节相等判断。首次无快照、完整响应命中和真实更新后计时须分开报告。
+
+效果报告使用 `tools/build_training_endpoint_report.py <目录>` 生成匿名 HTML，`tools/serve_training_endpoint_report.py <目录> --port <端口>` 在本机只读显示题面，只含匿名编号、题号和派生判断。当前效果依据为 `output/test_training_skill_model_v4_20261003/`，解释与性能交接见[当前实现与交接说明](../requests/training-recommendation-backend-handoff-20261004.md)。
 
 ## 工作台首页
 

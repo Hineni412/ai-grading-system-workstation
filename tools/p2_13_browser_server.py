@@ -43,6 +43,7 @@ def _prepare_paths(data_root: Path):
     paths._data_root = candidate / "data"
     paths._logs_root = candidate / "logs"
     paths._api_profiles_path = candidate / "machine-config" / "api_profiles.json"
+    paths._taxonomy_state_path = candidate / "machine-config" / "taxonomy_state_v2.json"
     paths._ops_state_dir = candidate / "ops"
     paths.ensure_directories()
     os.environ["AI_GRADING_DATA_DIR"] = str(paths.data_root)

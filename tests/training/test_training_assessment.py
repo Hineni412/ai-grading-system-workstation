@@ -636,6 +636,37 @@ def test_pending_summary_uses_current_revisions_and_excludes_cancelled_scans(ass
     assert module.pending_summary() == {"items": []}
 
 
+def test_pending_summary_includes_unassigned_pages_without_submissions(assessment_workspace):
+    db_path, data_root = assessment_workspace
+    gateway = FakeTrainingAssessmentGateway({"results": []})
+    module = TrainingAssessmentModule(db_path=db_path, data_root=data_root, gateway=gateway)
+    with connect(db_path) as conn:
+        conn.execute("UPDATE training_submission_pages SET state='unassigned', "
+                     "issue_code='invalid_identity', submission_id=NULL, paper_instance_id=NULL")
+        conn.execute("DELETE FROM training_submissions")
+        # Several students can share a paper batch; an unassigned page counts once.
+        extra = dict(conn.execute("SELECT * FROM personalized_paper_instances").fetchone())
+        extra.update(paper_instance_id="b" * 64, operation_token="a" * 32,
+                     student_id="SYN-002", student_code_snapshot="002")
+        conn.execute("INSERT INTO personalized_paper_instances (" + ",".join(extra) + ") "
+                     "VALUES (" + ",".join("?" for _ in extra) + ")", tuple(extra.values()))
+    before = db_path.read_bytes()
+    item = module.pending_summary()["items"][0]
+    assert item["draft_id"] == DRAFT_ID
+    assert item["scan_page_count"] == 1
+    assert item["review_submission_count"] == 0
+    assert item["publish_submission_count"] == 0
+    assert db_path.read_bytes() == before
+    assert gateway.calls == 0
+    with connect(db_path) as conn:
+        conn.execute("UPDATE training_submission_pages SET state='dismissed'")
+    assert module.pending_summary() == {"items": []}
+    with connect(db_path) as conn:
+        conn.execute("UPDATE training_submission_pages SET state='unassigned'")
+        conn.execute("UPDATE training_scan_batches SET status='cancelled'")
+    assert module.pending_summary() == {"items": []}
+
+
 def test_next_round_token_matches_legacy_frozen_request(
     assessment_workspace: tuple[Path, Path],
 ) -> None:

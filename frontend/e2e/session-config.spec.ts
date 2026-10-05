@@ -1,4 +1,5 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, type Page, type Route } from '@playwright/test';
+import { test } from './mock-fixtures'
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
@@ -8,7 +9,7 @@ const initialRevision = 'c'.repeat(64)
 const savedRevision = 'd'.repeat(64)
 
 const session = {
-  id: 7, name: '七年级数学期末', status: 'created', is_deleted: false,
+  id: 7, name: '七年级数学期末', status: 'created', curriculum_volume_id: null, is_deleted: false,
   deleted_at: null, created_at: '2026-07-15T08:00:00Z', updated_at: '2026-07-15T08:00:00Z',
 }
 
@@ -23,6 +24,7 @@ const questions = [
     question_id: 'Q2', question_type: 'comprehensive',
     question_preview: '在平行四边形中证明两组对边分别相等。',
     answer_preview: '连接对角线后证明全等', answer_present: true, needs_review: true,
+    question_type_review_required: true,
     local_answer_trusted: false, has_question_asset: false, has_answer_asset: false,
   },
   {
@@ -173,6 +175,25 @@ async function installConfigWorkspaceMockApi(page: Page, options: MockOptions = 
       }
     } else if (path === `/api/sessions/7/config/sources/${sourceId}` && method === 'GET') {
       await route.fulfill({ json: source })
+    } else if (path === '/api/sessions/7/config/sources/active' && method === 'GET') {
+      if (state.hasSource) await route.fulfill({ json: source })
+      else await route.fulfill({ status: 404, ...errorBody(route, 'config_source_not_found', 'TEST-no-source') })
+    } else if (path === '/api/sessions/7/config/sources/active/duplicates' && method === 'GET') {
+      await route.fulfill({ json: { source_id: sourceId, source_revision: sourceRevision, items: [] } })
+    } else if (path === '/api/sessions/7/config/generation-jobs/latest' && method === 'GET') {
+      const latest = [...state.jobs.values()].at(-1)
+      if (latest) await route.fulfill({ json: latest })
+      else await route.fulfill({ status: 404, ...errorBody(route, 'job_not_found', 'TEST-no-job') })
+    } else if (/^\/api\/sessions\/7\/config\/generation-jobs\/\d+\/question-states$/.test(path) && method === 'GET') {
+      const current = state.jobs.get(Number(path.split('/').at(-2)))
+      const complete = current?.result.outcome === 'complete'
+      await route.fulfill({ json: {
+        job_id: current?.id,
+        questions: ['Q1', 'Q2', 'Q3'].map((question_id) => ({
+          question_id, state: question_id === 'Q3' && !complete ? 'failed' : 'passed',
+          reason: '', retryable: question_id === 'Q3' && !complete,
+        })),
+      } })
     } else if (path === '/api/sessions/7/config/generate-from-source' && method === 'POST') {
       state.generationRequests += 1
       const mode = state.generationRequests === 1
@@ -233,7 +254,7 @@ async function installConfigWorkspaceMockApi(page: Page, options: MockOptions = 
         } } })
       }
     } else {
-      await route.fulfill({ status: 404, ...errorBody(route, 'not_found', '合成路由不存在') })
+      await route.fallback()
     }
   })
   await page.route('**/api/sessions', async (route) => {
@@ -266,10 +287,11 @@ async function openSeededWorkspace(page: Page, state: MockState, jobId: number |
     }
   }, { sourceIdValue: sourceId, revisionValue: sourceRevision, seededJobId: jobId })
   await page.goto('/sessions')
-  await expect(page.getByRole('heading', { name: '核对拆题结果' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: state.editorReady ? '本场赋分' : '拆题结果', exact: true })).toBeVisible()
 }
 
 async function makeEditorDirtyAndSavable(page: Page): Promise<void> {
+  await page.getByRole('button', { name: /^Q1 P1 S1，.*点击编辑$/ }).click()
   await page.getByLabel('Q1 P1 S1 分值').fill('20')
   await page.getByLabel('Q1 P1 S1 分值').press('Tab')
   await expect(page.getByRole('button', { name: '保存评分依据' })).toBeEnabled()
@@ -294,18 +316,21 @@ test('draft to saved rubric survives partial generation and refresh', async ({ p
     return
   }
   await page.getByLabel('考试名称').fill('七年级数学期末')
-  await page.getByRole('button', { name: '创建考试草稿' }).click()
+  await page.getByRole('button', { name: '创建草稿', exact: true }).click()
   await uploadSyntheticDocx(page)
-  await expect(page.getByRole('heading', { name: '核对拆题结果' })).toBeVisible()
-  await page.getByLabel('Q2 题型').selectOption('proof')
-  await page.getByRole('button', { name: '开始生成' }).click()
-  await expect(page.getByText('已成功 2 题')).toBeVisible()
+  await expect(page.getByRole('heading', { name: '拆题结果', exact: true })).toBeVisible()
+  await page.getByRole('combobox', { name: /^题型建议（可选修改）/ }).selectOption('proof')
+  await page.getByRole('button', { name: '分析并入库', exact: true }).click()
+  await page.getByRole('combobox', { name: '选择教材册别', exact: true }).selectOption('volume-1')
+  await page.getByRole('button', { name: '开始分析并入库' }).click()
+  await expect(page.getByText('已成功 2 道题', { exact: false })).toBeVisible()
 
   await page.reload()
   await expect(page.getByLabel('选择失败批次 B001')).toBeVisible()
   await page.getByLabel('选择失败批次 B001').check()
-  await page.getByRole('button', { name: '重试所选批次' }).click()
-  await expect(page.getByRole('heading', { name: '编辑评分依据' })).toBeVisible()
+  await page.getByRole('button', { name: '重试所选失败题' }).click()
+  await expect(page.getByRole('heading', { name: '本场赋分', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: /^Q1 P1 S1，.*点击编辑$/ }).click()
   await page.getByLabel('Q1 P1 S1 分值').fill('20')
   await page.getByLabel('Q1 P1 S1 分值').press('Tab')
   await expect(page.getByRole('button', { name: '保存评分依据' })).toBeEnabled()
@@ -318,7 +343,7 @@ test('409 retains local work and reloads only after explicit confirmation', asyn
   const state = await installConfigWorkspaceMockApi(page, { initialSessions: true, saveFailure: '409' })
   state.editorReady = true
   await openSeededWorkspace(page, state)
-  await expect(page.getByRole('heading', { name: '编辑评分依据' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '本场赋分', exact: true })).toBeVisible()
   await makeEditorDirtyAndSavable(page)
   await page.getByLabel('Q1 P1 S1 标准答案').fill('本地未保存答案')
   await page.getByLabel('Q1 P1 S1 标准答案').press('Tab')
@@ -339,7 +364,7 @@ test('stale conflict reload cannot overwrite a newer local edit', async ({ page 
   })
   state.editorReady = true
   await openSeededWorkspace(page, state)
-  await expect(page.getByRole('heading', { name: '编辑评分依据' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '本场赋分', exact: true })).toBeVisible()
   await makeEditorDirtyAndSavable(page)
   await page.getByRole('button', { name: '保存评分依据' }).click()
   await page.getByRole('button', { name: '重新加载最新版本' }).click()

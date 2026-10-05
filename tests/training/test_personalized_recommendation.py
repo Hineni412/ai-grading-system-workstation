@@ -225,6 +225,18 @@ def test_training_fit_match_audit_separates_level_and_recent_gates():
     assert match_rejection(entry, set()) == "paper_difficulty_ceiling"
 
 
+def test_training_performance_comparison_rejects_changed_profile_sources(tmp_path):
+    from tools.compare_training_endpoints import run_performance
+
+    for label in ("baseline", "latest"):
+        folder = tmp_path / label
+        folder.mkdir()
+        (folder / "diagnosis_profile_service.py").write_text(label, encoding="utf-8")
+    # Refuse differing input pipelines before opening any real database.
+    with pytest.raises(ValueError, match="identical diagnosis/projection"):
+        run_performance(tmp_path)
+
+
 def test_training_fit_unselected_audit_keeps_overlapping_paper_limits():
     from tools.experiment_training_fit import unselected_rejections
     def candidate(qid):
@@ -345,6 +357,12 @@ def test_frozen_exam_sources_keep_each_exam_task_with_shared_part_cache():
         assert enriched["task_evidence_version_matches"] is True
         tasks = _training_tasks({"stable_key": BNU_TARGET, "source_question_refs": [enriched]})
         assert [(task["code"], task["basis"]) for task in tasks] == [(code, "observed_step")]
+        borrowed = module._enrich_source_ref(ref, metadata, part_cache=cache, copy_fields=False)
+        assert borrowed == enriched
+        assert _training_tasks({"stable_key": BNU_TARGET, "source_question_refs": [borrowed]}) == tasks
+        # Internal reads share frozen arrays, while the normal return stays isolated.
+        assert borrowed["target_facets"] is metadata[900]["exam_sources"][str(session)]["EX"]["target_facets"]
+        enriched["target_facets"].append({"part_id": "TEST-PRIVATE"})
         assert ref == before
     assert metadata == original
 
@@ -1165,6 +1183,15 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
         return original_eligible(*args, **kwargs)
 
     monkeypatch.setattr(direct_module, "_eligible_candidates", read_eligible)
+    import question_bank.recommendation.personalized as recommendation
+    preference_reads = []
+    original_preference = recommendation._direct_preference
+
+    def read_preference(*args, **kwargs):
+        preference_reads.append(1)
+        return original_preference(*args, **kwargs)
+
+    monkeypatch.setattr(recommendation, "_direct_preference", read_preference)
     response = client.post(
         "/api/training/diagnosis",
         json={"scope": {"mode": "all"}, "exam_scope": exams, "grouping": settings},
@@ -1173,11 +1200,13 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
     # Each group reuses the source snapshot covering the full selected roster.
     assert metadata_reads == [len(source["students"])]
     cached_eligibility_reads = len(eligibility_reads)
+    cached_preference_reads = len(preference_reads)
     assert cached_eligibility_reads < len(source["students"])
     original_entries = direct_module._candidate_entries
 
     def entries_without_reuse(**kwargs):
-        kwargs.update(source_part_cache=None, target_match_cache=None, source_links=None, eligibility_cache=None)
+        kwargs.update(source_part_cache=None, target_match_cache=None, source_links=None, eligibility_cache=None,
+                      target_evaluation_cache=None, preference_cache=None)
         return original_entries(**kwargs)
 
     with monkeypatch.context() as uncached:
@@ -1190,6 +1219,7 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
     assert baseline.status_code == 200, baseline.text
     assert baseline.json() == response.json()
     assert len(eligibility_reads) - cached_eligibility_reads > cached_eligibility_reads
+    assert len(preference_reads) - cached_preference_reads > cached_preference_reads
     group = next(
         group
         for group in response.json()["grouping"]["groups"]
@@ -1206,6 +1236,12 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
         },
     )
     assert checked.status_code == 200, checked.text
+    # Adopting a checked group must only validate its members, without rebuilding
+    # every automatic group. The source-version and request-token checks remain.
+    def unexpected_regrouping(**kwargs):
+        raise AssertionError("group adoption rebuilt automatic groups")
+
+    monkeypatch.setattr("question_bank.recommendation.personalized._quality_group_members", unexpected_regrouping)
     request_url = "/api/training/personalized-drafts/by-request/" + "8" * 32
     assert client.get(request_url).status_code == 404
     created = client.post(
@@ -1795,6 +1831,40 @@ def test_task_need_ids_pair_each_loss_with_its_skill_once():
     distinct = [entry(2, "sk_cube"), entry(2, "sk_area")]
     chosen = _choose_practice_entries([first, *distinct], 1, PersonalizedRecommendationConfig())
     assert chosen[0][0]["candidate"]["question_id"] == 2
+
+
+def test_mastery_snapshot_cache_tracks_model_source_and_private_returns(direct_module, monkeypatch):
+    import question_bank.recommendation.personalized as recommendation
+    from question_bank.mastery.current import CurrentMastery
+    from dataclasses import replace
+    recommendation._MASTERY_SNAPSHOT_CACHE.clear()
+    model = {("A", BNU_TARGET): CurrentMastery(BNU_TARGET, "TEST-skill", "available",
+        .2, 2, 1., recommendation.CURRENT_MASTERY_PARAMETERS.version)}
+    monkeypatch.setattr(recommendation.CurrentMasteryCalculator, "calculate", lambda *args: model)
+    monkeypatch.setattr(recommendation.CurrentMasteryCalculator, "training_observations", lambda *args, **kwargs: {})
+    prepared = direct_module._prepare_mastery_snapshot
+    calls = []
+    def counted(*args):
+        calls.append(1)
+        return prepared(*args)
+    monkeypatch.setattr(direct_module, "_prepare_mastery_snapshot", counted)
+    diagnosis = _direct_diagnosis()
+    before = deepcopy(diagnosis)
+    first = direct_module._mastery_snapshot(diagnosis)
+    expected = deepcopy(first)
+    first[("A", BNU_TARGET)]["source_question_refs"].append({"TEST": "private"})
+    assert direct_module._mastery_snapshot(diagnosis) == expected
+    assert len(calls) == 1 and diagnosis == before
+    diagnosis["students"][0]["weak_points"][0]["source_question_refs"][0]["deduction_reason"] = "TEST changed note"
+    direct_module._mastery_snapshot(diagnosis)
+    assert len(calls) == 2
+    model[("A", BNU_TARGET)] = replace(model[("A", BNU_TARGET)], value=.8)
+    assert direct_module._mastery_snapshot(diagnosis)[("A", BNU_TARGET)]["value"] == .8
+    assert len(calls) == 3
+    with connect(direct_module.db_path) as conn:
+        conn.execute("UPDATE questions SET question_text=question_text || ' TEST-CACHE-EDIT' WHERE id=900")
+    direct_module._mastery_snapshot(diagnosis)
+    assert len(calls) == 4
 
 
 def test_latest_mastery_changes_priority_without_erasing_historical_loss(monkeypatch):
@@ -2505,6 +2575,34 @@ def test_recent_originals_follow_purpose_in_generation_preview_and_edit(direct_m
                     target_keys=(BNU_TARGET,), purpose=purpose, **settings), member_ids=("A", "B"))["selection"]
             assert preview["available_question_count"] == 8
             assert preview["source_version"]
+            # Reuse a broader individual evaluation, then apply the group's
+            # recent-original union and a smaller target list. All warning
+            # counts and entry order must equal a fresh shared evaluation.
+            from dataclasses import replace
+            candidates, _, _ = direct_module._source_snapshot(
+                knowledge_keys=direct_module._candidate_scope(diagnosis, config), candidate_config=config)
+            prepared = dict(diagnosis=diagnosis, candidates=candidates,
+                            mastery=direct_module._mastery_snapshot(diagnosis),
+                            source_metadata=direct_module._source_practice_metadata(diagnosis),
+                            recent={sid: set(ids) for sid, ids in request["recent_question_ids"].items()})
+            memo = {}
+            direct_module.evaluate_candidates(**prepared, config=replace(config, paper_mode="individual"),
+                                               evaluation_memo=memo)
+            restricted = replace(config, target_keys=(BNU_TARGET,))
+            reused = direct_module.evaluate_candidates(**prepared, config=restricted, evaluation_memo=memo)
+            fresh = direct_module.evaluate_candidates(**prepared, config=restricted)
+            assert reused == fresh
+            before = deepcopy(prepared)
+            borrowed = direct_module.evaluate_candidates(**prepared, config=restricted, _borrow_inputs=True)
+            assert borrowed == fresh
+            assert prepared == before
+            fresh["targets"]["A"][0]["source_question_refs"].append({"TEST": "private-return"})
+            assert prepared == before
+            # A growing eligible pool must recalculate rather than reuse an
+            # incomplete pool from a previous exclusion set.
+            expanded = {**prepared, "recent": {"A": set(), "B": set()}}
+            assert direct_module.evaluate_candidates(**expanded, config=restricted, evaluation_memo=memo) == (
+                direct_module.evaluate_candidates(**expanded, config=restricted))
 
     # A later marked activity cannot change either stored exclusion snapshot.
     _record_legacy_training(direct_module, (1001,), name="SYN-LATER", occurred_at="2026-07-31")

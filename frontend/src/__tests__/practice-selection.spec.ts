@@ -120,8 +120,8 @@ describe('学生和章节选择', () => {
     const input = host.querySelector<HTMLInputElement>('input')!
     input.value = '20'; input.dispatchEvent(new Event('input', { bubbles: true })); await nextTick()
     expect(apply).not.toHaveBeenCalled()
-    input.dispatchEvent(new Event('blur')); await nextTick(); expect(apply).toHaveBeenCalledWith(.2)
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); expect(apply).toHaveBeenCalledOnce()
+    input.dispatchEvent(new Event('blur')); await nextTick(); expect(apply).toHaveBeenCalledExactlyOnceWith(.2)
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); expect(apply).toHaveBeenCalledExactlyOnceWith(.2)
     input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true })); await nextTick()
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); await nextTick(); expect(apply).toHaveBeenLastCalledWith(null)
     button(host, '2 班').click(); expect(select).toHaveBeenCalledWith('2')

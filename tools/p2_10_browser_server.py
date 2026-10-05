@@ -32,6 +32,7 @@ def _prepare_isolated_paths(data_root: Path):
     paths._data_root = resolved / "data"
     paths._logs_root = resolved / "logs"
     paths._api_profiles_path = resolved / "machine-config" / "api_profiles.json"
+    paths._taxonomy_state_path = resolved / "machine-config" / "taxonomy_state_v2.json"
     paths._ops_state_dir = resolved / "ops"
     paths.ensure_directories()
     os.environ["AI_GRADING_DATA_DIR"] = str(paths.data_root)
@@ -102,8 +103,12 @@ def main() -> None:
 
     from backend.api.app import create_app
     import uvicorn
+    from unittest.mock import patch
 
-    uvicorn.run(create_app(path_manager=paths), host="127.0.0.1", port=args.port)
+    # This flow checks manual region editing and persistence, not OCR quality.
+    with patch("backend.api.routers.templates.propose_answer_regions",
+               return_value={"regions": [], "missing_question_ids": ["Q1"]}):
+        uvicorn.run(create_app(path_manager=paths), host="127.0.0.1", port=args.port)
 
 
 if __name__ == "__main__":

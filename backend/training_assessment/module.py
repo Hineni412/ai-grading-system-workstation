@@ -225,8 +225,7 @@ class TrainingAssessmentModule:
                 SELECT DISTINCT d.draft_id, d.created_at
                 FROM personalized_recommendation_drafts d
                 JOIN personalized_paper_instances p ON p.draft_id = d.draft_id
-                JOIN training_submissions s ON s.paper_instance_id = p.paper_instance_id
-                JOIN training_scan_batches b ON b.batch_id = s.batch_id
+                JOIN training_scan_batches b ON b.paper_batch_id = p.paper_batch_id
                 WHERE b.status <> 'cancelled'
                 ORDER BY d.created_at DESC, d.draft_id
             """).fetchall()
@@ -239,9 +238,8 @@ class TrainingAssessmentModule:
                 SELECT p.draft_id, COUNT(*) AS total
                 FROM training_submission_pages page
                 JOIN training_scan_batches b ON b.batch_id = page.batch_id
-                JOIN (SELECT DISTINCT s.batch_id, p.draft_id FROM training_submissions s
-                      JOIN personalized_paper_instances p ON p.paper_instance_id = s.paper_instance_id) p
-                  ON p.batch_id = b.batch_id
+                JOIN (SELECT DISTINCT paper_batch_id, draft_id FROM personalized_paper_instances) p
+                  ON p.paper_batch_id = b.paper_batch_id
                 LEFT JOIN training_submissions s ON s.submission_id = page.submission_id
                 WHERE b.status <> 'cancelled' AND COALESCE(s.status, '') <> 'cancelled'
                   AND page.issue_code IS NOT NULL AND page.issue_code <> ''

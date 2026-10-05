@@ -1,7 +1,8 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, type Page, type Route } from '@playwright/test';
+import { test } from './mock-fixtures'
 
 const fingerprint = 'a'.repeat(64)
-const session = { id: 7, name: '匿名数学考试', status: 'created', is_deleted: false,
+const session = { id: 7, name: '匿名数学考试', status: 'created', curriculum_volume_id: null, is_deleted: false,
   deleted_at: null, created_at: null, updated_at: null }
 const template = {
   session_id: 7, template_id: 3, template_fingerprint: fingerprint, first_page_role: 'back',
@@ -26,6 +27,10 @@ async function installApi(page: Page, initiallyUploaded = false,
   let snapshotPending = false
   let revision = 0
   let regions: Array<Record<string, unknown>> = []
+  await page.route(/\/api\/sessions\/7\/grading-workspace$/, route => route.fulfill({
+    status: 503, json: { error: { code: 'TEST-other-workspace', message: 'TEST-region-only', request_id: 'TEST' } },
+  }))
+  await page.route(/\/api\/sessions\/7\/scan\/student-options$/, route => route.fulfill({ json: { items: [] } }))
   await page.route(/^https?:\/\/[^/]+\/api\//, async (route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -38,6 +43,8 @@ async function installApi(page: Page, initiallyUploaded = false,
         session_id: 7, scoring_configured: true, template_present: uploaded,
         template_ready: committed,
       } })
+    } else if (path === '/api/sessions/7/regions/auto-proposal' && method === 'GET') {
+      await route.fulfill({ json: { regions: [], missing_question_ids: ['Q1'], template_fingerprint: fingerprint } })
     } else if (path === '/api/sessions/7/regions/workspace' && method === 'GET') {
       if (!uploaded) await route.fulfill(apiError(route, 'template_not_found', 'missing'))
       else await route.fulfill({ json: {
@@ -83,7 +90,7 @@ async function installApi(page: Page, initiallyUploaded = false,
       || path === '/api/sessions/7/config/editor') {
       await route.fulfill(apiError(route, 'config_not_found', 'missing'))
     } else {
-      await route.fulfill(apiError(route, 'not_found', 'missing'))
+      await route.fallback()
     }
   })
 }
@@ -91,7 +98,7 @@ async function installApi(page: Page, initiallyUploaded = false,
 test('stops autosave on a browser-visible revision conflict and offers reload', async ({ page }) => {
   await installApi(page, true, 'conflict')
   await page.goto('/sessions/7/regions')
-  await page.getByRole('button', { name: '新增框' }).click()
+  await page.getByRole('button', { name: '连续框选' }).click()
   const canvas = page.locator('[data-role="canvas"]')
   const box = await canvas.boundingBox()
   expect(box).not.toBeNull()
@@ -106,7 +113,7 @@ test('stops autosave on a browser-visible revision conflict and offers reload', 
 test('keeps confirmed regions available when the snapshot needs a retry', async ({ page }) => {
   await installApi(page, true, 'snapshot')
   await page.goto('/sessions/7/regions')
-  await page.getByRole('button', { name: '新增框' }).click()
+  await page.getByRole('button', { name: '连续框选' }).click()
   const canvas = page.locator('[data-role="canvas"]')
   const box = await canvas.boundingBox()
   expect(box).not.toBeNull()
@@ -124,5 +131,9 @@ test('keeps confirmed regions available when the snapshot needs a retry', async 
   await expect(page.locator('[data-region-uuid]')).toHaveCount(1)
 
   await page.getByRole('button', { name: '重试生成确认快照' }).click()
-  await expect(page.getByText(/P2-11/)).toBeVisible()
+  await expect(page).toHaveURL(/\/sessions\/7\/grading-run$/)
+  await page.goto('/sessions/7/regions')
+  await expect(page.getByText('正式版本 · 只读')).toBeVisible()
+  await expect(page.getByRole('button', { name: '重试生成确认快照' })).toHaveCount(0)
+  await expect(page.locator('[data-region-uuid]')).toHaveCount(1)
 })

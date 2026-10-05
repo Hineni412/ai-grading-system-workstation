@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
+import { test } from './mock-fixtures'
 const volumeId = 'bnu24-math-g8-upper'
 const catalog = { schema_version: 2, catalog_id: 'TEST-catalog', knowledge_standard_id: 'TEST-standard',
   publisher: 'TEST出版社', subject: '数学', edition: '2024',
@@ -27,9 +28,10 @@ function overview() {
     associations: [{ topic_key: 'topic', skill_key: 'skill', question_count: 12, same_part_question_count: 10, basis: 'same_part' },
       { topic_key: 'topic', skill_key: 'skill2', question_count: 3, same_part_question_count: 0, basis: 'question_cooccurrence' }] }
 }
-function diagnosis(body: { scope: { student_ids: string[] } }) {
+function diagnosis(body: { scope: { mode: string; student_ids?: string[]; class_ids?: string[] } }) {
   const data = overview()
-  return { ...data, students: data.students.filter(s => body.scope.student_ids.includes(s.student_id)).map(s => ({ ...s, weak_points: [] })),
+  return { ...data, students: data.students.filter(s => body.scope.mode === 'class'
+    ? body.scope.class_ids?.includes(s.class_id) : body.scope.student_ids?.includes(s.student_id)).map(s => ({ ...s, weak_points: [] })),
     group_weak_points: [], knowledge_catalog: data.nodes.map(n => ({ knowledge_key: n.knowledge_key, knowledge_point: n.display_name, parent_knowledge_key: n.kind === 'chapter' ? null : n.kind === 'section' ? 'ch' : n.section_key, node_kind: n.kind })),
     knowledge_associations: data.associations, coverage: { covered_items: 0, total_items: 0, missing_items: {} }, confirmed_concept_ids: [], suggested_terms: [], unmapped_terms: [], diagnosis_identity: 'question_tag' }
 }
@@ -53,6 +55,7 @@ async function install(page: Page) {
   })
   return requests
 }
+
 test('map groups, same-part and cooccurrence lines, drawer, keyboard focus, and shared requests', async ({ page }) => {
   const requests = await install(page)
   await page.goto('/knowledge-overview')
@@ -93,6 +96,7 @@ test('map groups, same-part and cooccurrence lines, drawer, keyboard focus, and 
   await expect(page.locator('.mastery-map-node.is-topic')).toHaveCount(0)
   expect(requests.filter(r => r.path.startsWith('/api/graph'))).toHaveLength(0)
 })
+
 test('narrow map stacks both columns and uses a full-width bottom drawer without lines', async ({ page }) => {
   await install(page); await page.setViewportSize({ width: 800, height: 900 }); await page.goto('/knowledge-graph')
   const source = page.locator('.mastery-map-node[data-knowledge="topic"]')
@@ -102,13 +106,16 @@ test('narrow map stacks both columns and uses a full-width bottom drawer without
   expect(box?.width).toBeCloseTo(800, 1); await expect(page.locator('.mastery-map-connections')).toHaveCount(0)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
+
 test('overview opens existing student training with presets and sends no create request', async ({ page }) => {
   const requests = await install(page); await page.goto('/knowledge-overview')
   await page.locator('.overview-priority').first().getByRole('button', { name: /给这 1 人出训练卷/ }).click()
   await expect(page).toHaveURL(/\/training\?mode=student$/)
   await expect(page.getByRole('heading', { name: '按学生训练', exact: true })).toBeVisible()
   const selection = await page.evaluate(() => ({ scope: JSON.parse(localStorage.getItem('p4-evidence-scope-v1')!), paper: JSON.parse(localStorage.getItem('ai-grading:personalized-paper-selection:v1')!) }))
-  expect(selection.scope.scope.student_ids).toEqual(['1'])
+  await expect(page.getByRole('checkbox', { name: '选择测试甲', exact: true })).toBeChecked()
+  await expect(page.getByRole('checkbox', { name: '选择测试乙', exact: true })).toHaveCount(0)
+  expect(selection.paper.selectedStudentIds).toEqual(['1'])
   expect(selection.paper).toMatchObject({ targetKeys: ['skill'], rangeKeys: ['sec'], scopeMode: 'focused', paperMode: 'individual' })
   expect(requests.filter(r => r.method === 'POST' && !['/api/training/overview', '/api/training/diagnosis'].includes(r.path))).toHaveLength(0)
 })

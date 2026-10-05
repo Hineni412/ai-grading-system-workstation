@@ -1,7 +1,8 @@
 import { once } from 'node:events';
 import { createDeflate } from 'node:zlib';
 
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, type Page, type Route } from '@playwright/test';
+import { test } from './mock-fixtures'
 
 const STORAGE_KEY = 'ai-grading:selected-session:v1'
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
@@ -10,13 +11,14 @@ const session = {
   id: 7,
   name: '匿名阅卷测试',
   status: 'grading',
+  curriculum_volume_id: null,
   is_deleted: false,
   deleted_at: null,
   created_at: '2026-07-13T00:00:00Z',
   updated_at: '2026-07-13T00:00:00Z',
 }
 const questions = [
-  { question_id: 'Q1', total_count: 4, needs_review_count: 0, max_score: 5 },
+  { question_id: 'Q1', question_type: null, total_count: 4, needs_review_count: 0, max_score: 5 },
 ]
 const items = Array.from({ length: 4 }, (_, offset) => {
   const detailId = offset + 1
@@ -159,6 +161,7 @@ interface MediaState {
 }
 
 async function installApi(page: Page, mediaState: MediaState): Promise<void> {
+  await page.route(/\/api\/sessions\/7\/review\/questions\/Q1\/rubric$/, route => route.fulfill({ json: null }))
   await page.route(/\/api\/sessions$/, (route) =>
     fulfillJson(route, { items: [session], total: 1 }),
   )
@@ -169,11 +172,11 @@ async function installApi(page: Page, mediaState: MediaState): Promise<void> {
       },
     }),
   )
-  await page.route(/\/api\/sessions\/7\/review\/questions$/, (route) =>
+  await page.route(/\/api\/sessions\/7\/review\/questions(?:\?.*)?$/, (route) =>
     fulfillJson(route, { items: questions, total: questions.length }),
   )
   await page.route(
-    /\/api\/sessions\/7\/review\/questions\/Q1\/items\?needs_review_only=false$/,
+    /\/api\/sessions\/7\/review\/questions\/Q1\/items\?(?:needs_review_only=false|scope=all)$/,
     (route) => fulfillJson(route, { items, total: items.length }),
   )
   await page.route(/\/api\/media\/(?:crop|original\/front|original\/back)\/\d+$/, async (route) => {
@@ -207,7 +210,7 @@ async function openViewer(
 ): Promise<void> {
   await page.addInitScript(([key]) => localStorage.setItem(key, '7'), [STORAGE_KEY])
   await page.goto(`/grading?question=Q1&detail=${detailId}`, { waitUntil })
-  await expect(page.getByRole('heading', { name: '复核队列', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '人工干预工作台', exact: true })).toBeVisible()
   await expect(page.locator('.review-evidence-viewer img')).toHaveCount(1)
 }
 
@@ -227,7 +230,7 @@ function freshMediaState(): MediaState {
   }
 }
 
-test('fit, actual size, zoom, rotate, wheel center and pointer drag change the transform predictably', async ({
+test('fit, actual size, zoom, rotate and drag work while wheel keeps the image scale', async ({
   page,
 }) => {
   const state = freshMediaState()
@@ -249,7 +252,7 @@ test('fit, actual size, zoom, rotate, wheel center and pointer drag change the t
   expect(box).not.toBeNull()
   await page.mouse.move(box!.x + box!.width * 0.25, box!.y + box!.height * 0.25)
   await page.mouse.wheel(0, -100)
-  await expect.poll(() => image.getAttribute('style')).not.toBe(beforeWheel)
+  await expect(image).toHaveAttribute('style', beforeWheel ?? '')
 
   const beforeDrag = await image.getAttribute('style')
   await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2)
@@ -276,7 +279,7 @@ test('a delayed old original cannot alter the newly selected crop state', async 
 
   await page.getByLabel('答卷图片画布').focus()
   await page.keyboard.press('j')
-  await expect(page).toHaveURL(/detail=2$/)
+  await expect(page).toHaveURL(/item=7:Q1:2$/)
   await waitForImage(page)
   const image = page.locator('.review-evidence-viewer img')
   await expect(image).toHaveAttribute('src', '/api/media/crop/2')

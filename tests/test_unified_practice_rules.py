@@ -114,7 +114,7 @@ def test_comprehensive_scope_includes_earlier_chapters_and_preserves_focused_sco
         resolve_practice_scope(replace(base, teaching_progress_chapter_id=''), {'students': []}, direct_module.current_knowledge)
 
 
-def test_new_needs_and_different_methods_precede_small_distance_advantages():
+def test_new_needs_and_different_methods_precede_small_distance_advantages(monkeypatch):
     def entry(qid, key, method, distance):
         return {'candidate': {'question_id': qid, 'stable_keys': [f'sk_{qid}'],
                 'similarity_profile': {'tags': [{'tag_type': 'method', 'tag_value': method}]}},
@@ -126,14 +126,45 @@ def test_new_needs_and_different_methods_precede_small_distance_advantages():
     new_method = entry(4, 'need_b', 'method_b', .5)
     chosen = _choose_practice_entries([first, repeated_need, repeated_method, new_method], 2)
     assert [e['candidate']['question_id'] for e, _ in chosen] == [1, 4]
+    import question_bank.recommendation.personalized as recommendation
+    original = recommendation.text_similarity
+    calls = []
+    def counted(left, right):
+        calls.append((left, right))
+        return original(left, right)
+    monkeypatch.setattr(recommendation, "text_similarity", counted)
+    left = {"solution_template": "TEST numerical derivation " * 3}
+    right = {"solution_template": "TEST numerical derivation " * 3}
+    memo = {}
+    assert recommendation._pattern_count(left, [right], pair_memo=memo) == 1
+    assert recommendation._pattern_count(left, [right, right], pair_memo=memo) == 2
+    assert len(calls) == 1
+    assert recommendation._pattern_count(left, [], pair_memo=memo) == 0
 
 
-def test_same_skill_candidates_are_not_automatically_folded_as_similar():
+def test_same_skill_candidates_are_not_automatically_folded_as_similar(monkeypatch):
     from question_bank.recommendation.personalized import paper_similarity_allowed
     first = {'question_id': 1, 'stable_keys': ['sk_a'], 'question_text': '合成测量任务'}
     second = {'question_id': 2, 'stable_keys': ['sk_a'], 'question_text': '合成图形推理'}
     assert paper_similarity_allowed(first, [second])
     assert not _paper_diversity_allowed(first, [second])
+    import question_bank.recommendation.personalized as recommendation
+    similarity_calls = []
+
+    def count_similarity(candidate, selected):
+        similarity_calls.append(1)
+        return paper_similarity_allowed(candidate, selected)
+
+    monkeypatch.setattr(recommendation, "paper_similarity_allowed", count_similarity)
+    pair_memo = {}
+    relaxed = PersonalizedRecommendationConfig(max_questions_per_skill=2)
+    assert _paper_diversity_allowed(first, [second], relaxed, pair_memo=pair_memo)
+    assert _paper_diversity_allowed(first, [second], relaxed, pair_memo=pair_memo)
+    assert len(similarity_calls) == 1
+    # A reusable content check never bypasses the current paper's skill quota.
+    assert not _paper_diversity_allowed(first, [second], pair_memo=pair_memo)
+    assert _paper_diversity_allowed(first, [], pair_memo=pair_memo)
+    assert not _paper_diversity_allowed(first, [second, second], relaxed, pair_memo=pair_memo)
     from question_bank.recommendation.personalized import paper_task_duplicates
     triplets = {'question_id': 21, 'question_type': '选择题', 'difficulty': 2,
         'stable_keys': ['sk_TEST_triples'], 'question_text': '下列各组数中，是勾股数的是 A. 3,4,5 B. 2,3,4'}
@@ -152,6 +183,7 @@ def test_same_skill_candidates_are_not_automatically_folded_as_similar():
     # Same skill, single part and the same response form fold a numeric variant.
     assert paper_task_duplicates(variant, [root]) == [23]
     assert not _paper_diversity_allowed(variant, [root])
+    assert not _paper_diversity_allowed(variant, [root], relaxed, pair_memo=pair_memo)
     assert paper_task_duplicates({**variant, 'question_text': '√2的算术平方根是____'}, [root]) == []
     other_skill = {**variant, 'stable_keys': ['sk_TEST_other_root']}
     assert paper_task_duplicates(other_skill, [root]) == []
@@ -199,6 +231,59 @@ def test_auxiliary_tags_and_actual_causes_help_rank_without_creating_evidence():
     before = deepcopy(source)
     assert _direct_preference(rich, BNU_TARGET, source) > _direct_preference(plain, BNU_TARGET, source)
     assert source == before
+    from question_bank.recommendation.personalized import _fixed_preference, _json, _preference_candidate_input
+    _fixed_preference.cache_clear()
+    for candidate in (plain, rich):
+        inputs = (_json(candidate), BNU_TARGET, _json(source), "[]")
+        assert _fixed_preference(*inputs) == _direct_preference(candidate, BNU_TARGET, source, tasks=[])
+        misses = _fixed_preference.cache_info().misses
+        assert _fixed_preference(*inputs) == _direct_preference(candidate, BNU_TARGET, source, tasks=[])
+        assert _fixed_preference.cache_info().misses == misses
+    changed = deepcopy(source)
+    changed['causes'][0]['pattern_status'] = 'rejected'
+    assert _fixed_preference(_json(rich), BNU_TARGET, _json(changed), "[]") == (
+        _direct_preference(rich, BNU_TARGET, changed, tasks=[]))
+    assert _fixed_preference(_json(rich), BNU_TARGET, _json(changed), "[]") < (
+        _fixed_preference(_json(rich), BNU_TARGET, _json(source), "[]"))
+    # The scorer uses response modes, while full point text remains available to
+    # the separate response-coverage check and to the eventual draft.
+    rich.update(practice_observations_by_key={BNU_TARGET: [
+        {"part_id": "TEST-part", "response_mode": "process_required", "observable": "TEST-observed"}]},
+        target_facets=[{"part_id": "TEST-part"}], solution_observable="TEST-solution")
+    tasks = [{"code": "written_reasoning", "response_modes": ["process_required"]}]
+    for mode in ("process_required", "short_answer_points", "exact_objective", "unknown"):
+        rich["practice_observations_by_key"][BNU_TARGET][0]["response_mode"] = mode
+        compact = _preference_candidate_input(rich)
+        assert "TEST-observed" not in compact and "TEST-solution" not in compact
+        assert _fixed_preference(compact, BNU_TARGET, _json(source), _json(tasks)) == (
+            _direct_preference(rich, BNU_TARGET, source, tasks=tasks))
+
+
+def test_content_cached_matching_follows_parts_and_knowledge_location():
+    from question_bank.recommendation.personalized import _fixed_target_matches, _match_facets_input
+    from question_bank.recommendation.target_matching import match_target
+    _fixed_target_matches.cache_clear()
+    sources = [{'part_id': 'TEST-source', 'direct_keys': ['sk_TEST']}]
+    candidates = [{'part_id': 'TEST-candidate', 'skill_keys': ['sk_TEST'],
+                   'section_keys': ['TEST-section'], 'chapter_keys': ['TEST-chapter']}]
+    def matched(section, chapter):
+        cached = _fixed_target_matches('sk_TEST', _match_facets_input(sources),
+            _match_facets_input(candidates), section, chapter)
+        expected = match_target('sk_TEST', sources, candidates, {'sk_TEST': {'section': section, 'chapter': chapter}})
+        decoded = [json.loads(value) for value in cached]
+        assert decoded == ([expected] if expected else [])
+        return decoded
+    assert matched('TEST-section', 'TEST-chapter')[0]['match_level'] == 2
+    matched('TEST-section', 'TEST-chapter')[0]['match_level'] = 99
+    assert matched('TEST-section', 'TEST-chapter')[0]['match_level'] == 2
+    assert _fixed_target_matches.cache_info().hits == 2
+    assert matched('TEST-section', 'TEST-other')[0]['match_level'] == 4
+    assert not matched('TEST-other', 'TEST-other')
+    sources[0]['topic_keys'] = ['TEST-topic']
+    candidates[0]['topic_keys'] = ['TEST-topic']
+    assert matched('TEST-other', 'TEST-other')[0]['match_level'] == 1
+    candidates[0]['skill_keys'] = ['sk_TEST-other']
+    assert matched('TEST-other', 'TEST-other')[0]['match_level'] == 3
 
 
 def test_difficulty_features_use_current_content_and_affect_preference():

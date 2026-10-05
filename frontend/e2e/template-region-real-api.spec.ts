@@ -5,13 +5,13 @@ test('real isolated API uploads, saves, confirms and restores answer regions', a
   await page.goto('/sessions/1/regions')
   await expect(page.getByRole('heading', { name: '上传双页样卷' })).toBeVisible()
 
-  await page.getByLabel('样卷 PDF').setInputFiles(
+  await page.getByLabel('样卷 PDF', { exact: true }).and(page.locator('input[type="file"]')).setInputFiles(
     resolve('test-results', 'p2-10-real', 'anonymous-two-page.pdf'),
   )
   await page.getByRole('button', { name: '上传并打开画框' }).click()
   await expect(page.getByText('草稿标定中')).toBeVisible()
 
-  await page.getByRole('button', { name: '新增框' }).click()
+  await page.getByRole('button', { name: '连续框选' }).click()
   const canvas = page.locator('[data-role="canvas"]')
   const box = await canvas.boundingBox()
   expect(box).not.toBeNull()
@@ -25,8 +25,9 @@ test('real isolated API uploads, saves, confirms and restores answer regions', a
 
   page.once('dialog', (dialog) => dialog.accept())
   await page.getByRole('button', { name: '完成标定' }).click()
+  await expect(page).toHaveURL(/\/sessions\/1\/grading-run$/)
+  await page.goto('/sessions/1/regions')
   await expect(page.getByText('正式版本 · 只读')).toBeVisible()
-  await expect(page.getByText(/P2-11/)).toBeVisible()
 
   await page.reload()
   await expect(page.getByText('正式版本 · 只读')).toBeVisible()

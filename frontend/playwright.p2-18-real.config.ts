@@ -11,6 +11,7 @@ export default defineConfig({
     baseURL: 'http://127.0.0.1:8018',
     trace: 'on-first-retry',
     acceptDownloads: true,
+    serviceWorkers: 'block',
   },
   projects: [
     {
@@ -19,7 +20,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev -- --port 8018',
+    command: 'npm run dev -- --port 8018 --strictPort',
+    env: { AI_GRADING_E2E_MOCK: '1' },
     url: 'http://127.0.0.1:8018',
     reuseExistingServer: false,
     timeout: 60_000,

@@ -50,6 +50,7 @@ const stageTransition = ref<'fx-stage-forward' | 'fx-stage-back'>('fx-stage-forw
 const interventionSummary = computed(() => summarizeIntervention(interventionQuestions.value))
 // defaultStage 只按真实进度计算；activeStage 跟随它，也允许用户手动切换面板。
 const defaultStage = computed<ScanStageId>(() => {
+  if (store.replacementBatch) return 'prepare'
   if (runTerminal.value || gradingCompletedWithoutRun.value) return 'review'
   if (store.gradingRun || gradingStarting.value) return 'grade'
   if (preflight.preflightActive.value) return 'prepare'

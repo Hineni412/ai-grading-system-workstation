@@ -3,6 +3,7 @@
     "id": 7,
     "name": "P2-08 匿名样板验收",
     "status": "grading",
+    "curriculum_volume_id": null,
     "is_deleted": false,
     "deleted_at": null,
     "created_at": "2026-07-13T00:00:00Z",

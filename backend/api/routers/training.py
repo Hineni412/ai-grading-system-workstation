@@ -1778,7 +1778,7 @@ def _raise_paper_api_error(exc: Exception) -> NoReturn:
             422,
             "personalized_paper_budget_exceeded",
             "Whole-paper assessment budget was exceeded",
-            {"budget": _strip_training_storage_fields(exc.budget)},
+            {"budget": _public_training_mapping(exc.budget)},
         ) from exc
     if isinstance(exc, PaperInvalid):
         raise ApiError(

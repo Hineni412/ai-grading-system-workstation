@@ -273,7 +273,8 @@ describe('personalized recommendation draft', () => {
     expect(host.querySelectorAll('.personalized-section-heading')).toHaveLength(1)
     expect(host.querySelector('.personalized-section-heading')?.textContent).toBe('合成章 · 合成节')
     expect(host.querySelector('.personalized-skill-note')?.textContent).toContain('技能：合成技能')
-    if (paperMode === 'individual') expect(host.querySelector('.personalized-composition')?.textContent).toContain('补弱 0 题')
+    expect(Boolean(host.querySelector('.personalized-composition'))).toBe(paperMode === 'individual')
+    expect(host.querySelector('.personalized-composition')?.textContent?.includes('补弱 0 题') ?? false).toBe(paperMode === 'individual')
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({
       purpose: 'handout', question_count: 100, max_questions_per_skill: 20,
       max_written_questions: 20, recent_activity_count: 0, difficulty_max: 10,
@@ -293,8 +294,8 @@ describe('personalized recommendation draft', () => {
     const returning = createApp(PersonalizedRecommendationDraftView, props)
     mounted.push(returning); returning.mount(host)
     await vi.waitFor(() => expect(trainingApiMock.getHandoutExportByRequest).toHaveBeenCalledWith(draft.draft_id, token))
-    if (skipped) await vi.waitFor(() => expect(host.textContent).toContain('1 名学生暂无可配补弱题，已跳过空卷'))
-    else expect(host.textContent).not.toContain('已跳过空卷')
+    await vi.waitFor(() => expect(host.textContent?.includes('已跳过空卷')).toBe(skipped > 0))
+    expect(host.textContent?.includes('1 名学生暂无可配补弱题，已跳过空卷')).toBe(skipped > 0)
     expect(trainingApiMock.exportHandout).toHaveBeenCalledExactlyOnceWith(draft.draft_id, expect.objectContaining({ expected_revision: 1 }))
   })
 

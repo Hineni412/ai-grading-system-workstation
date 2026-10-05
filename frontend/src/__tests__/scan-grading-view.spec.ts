@@ -204,6 +204,14 @@ describe('scan grading workspace', () => {
     const second = await mountView()
     expect(second.host.querySelector('[data-step-id="review"]')?.getAttribute('aria-current')).toBe('step')
     expect(second.host.textContent).toContain('复核')
+
+    done.replacement_batch = {
+      ...done.upload_batch, batch_id: 'replacement-1', state: 'draft', frozen_at: null,
+    }
+    const replacing = await mountView()
+    expect(replacing.host.querySelector('[data-step-id="prepare"]')?.getAttribute('aria-current')).toBe('step')
+    expect(replacing.host.textContent).toContain('旧答卷和已有成果目前仍然保留')
+    expect(replacing.host.querySelector('.scan-stage')?.getAttribute('aria-labelledby')).toBe('prepare-title')
   })
 
   it('shows a finished run as finished instead of an in-progress placeholder', async () => {

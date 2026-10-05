@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>工作台首页 · 原型（演示 · 合成数据）</title>
+<!--
+  ============================================================
+  一次性原型（throwaway prototype），2026-10-03
+  用途：演示教师应用"工作台"首页的改版方向——
+  · 首屏回答"现在该做什么"：待处理分三组（正在运行/需要处理/可以继续）；
+  · 左列：待处理 + 最近考试；右列：当前考试五步进度 + 本学期学情摘要；
+  · 侧栏与正式应用一致：品牌即工作台入口、当前考试卡片、快速跳转入位。
+  不调用模型、不产生费用、不连接真实接口；全部为合成数据。
+  "原型控制"角标可切换 5 种状态，并可叠加"标注数据来源"查看每块的取数口径。
+  尚未实现到正式应用的内容：真实数据接入与口径对齐、各入口的实际跳转、
+  Ctrl K 快速跳转、任务中心对接、新建考试入口流程、以及性能与分页。
+  ============================================================
+-->
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="views.css">
+</head>
+<body>
+
+<div class="app">
+  <aside class="side">
+    <button class="brand on" type="button" data-t="已进入 工作台（当前页）"><div class="mark">知</div><div><b>知衡</b><span>教师教学工作台</span></div></button>
+    <div class="examcard" id="examcard"></div>
+    <button class="quickrow" type="button" data-t="将打开 快速跳转（Ctrl K）"><span>快速跳转</span><kbd>Ctrl K</kbd></button>
+    <nav class="navgrp">
+      <div class="gl">考试与阅卷</div>
+      <a href="#" data-t="将进入 考试配置">考试配置</a><a href="#" data-t="将进入 考试批改">考试批改</a><a href="#" data-t="将进入 成绩中心">成绩中心</a>
+      <div class="gl">题库与组卷</div>
+      <a href="#" data-t="将进入 题库管理">题库管理</a><a href="#" data-t="将进入 组卷工作台">组卷工作台</a><a href="#" data-t="将进入 命题练习">命题练习</a>
+      <div class="gl">教学分析</div>
+      <a href="#" data-t="将进入 知识与训练">知识与训练</a>
+    </nav>
+    <div class="sidelow"><a href="#" data-t="将进入 任务中心">任务中心</a><a href="#" data-t="将进入 设置">设置</a></div>
+    <div class="sidever">v1.5.0 · 原型演示</div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <h1>工作台</h1>
+      <span class="meta" id="hdrMeta"></span>
+      <span class="proto">原型演示 · 合成数据</span>
+      <div class="sp"></div>
+      <button class="btn" type="button" data-t="将进入 考试配置 · 新建考试">新建考试</button>
+    </header>
+
+    <div class="page">
+      <div class="wrap">
+        <div class="banner" id="banner" hidden>
+          <span>考试概况暂时无法读取，其他入口仍可使用。</span>
+          <button class="btn small" type="button" data-t="将重新加载 考试概况">重新加载</button>
+        </div>
+        <div class="wbgrid">
+          <div class="wbcol">
+            <section class="panel" id="pTodo"></section>
+            <section class="panel" id="pExams"></section>
+          </div>
+          <div class="wbcol wbcol-r">
+            <section class="panel" id="pExam"></section>
+            <section class="panel" id="pSkills"></section>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 原型控制：默认收起为角标，点击展开 -->
+<div id="protoCtl">
+  <div id="pcBody">
+    <div class="pc-t">原型控制 · 仅演示，不影响数据</div>
+    <label><input type="radio" name="ctlstate" value="grading"> 批改进行中</label>
+    <label><input type="radio" name="ctlstate" value="review"> 待复核</label>
+    <label><input type="radio" name="ctlstate" value="done" checked> 已完成</label>
+    <label><input type="radio" name="ctlstate" value="newterm"> 新学期 · 尚无考试</label>
+    <label><input type="radio" name="ctlstate" value="error"> 读取失败</label>
+    <label><input type="checkbox" id="ctlSrc"> 标注数据来源</label>
+    <div class="pc-n">切换状态会重渲染侧栏考试卡片与四个面板；页头不受影响。</div>
+  </div>
+  <button id="pcToggle" type="button">原型控制</button>
+</div>
+
+<div id="toast"></div>
+
+<script src="data.js"></script>
+<script src="views.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

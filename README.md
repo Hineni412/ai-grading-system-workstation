@@ -144,6 +144,7 @@ cd ..
 | [测试](docs/testing/README.md) | 选择针对性测试或合成环境验收入口时 |
 | [样式](docs/ui/STYLE.md) | 修改页面视觉与通用交互时 |
 | [Word 与 LaTeX 排版调查](docs/requests/question-bank-latex-layout-evaluation-20261002.md)、[一手项目来源](docs/requests/latex-question-bank-primary-sources-20261002.md) | 查 PDF 导出方向、题型实排证据、外部参考与尚未验证的范围 |
+| [训练推荐性能方案调查](docs/requests/training-recommendation-performance-options-20261004.md)、[方案图](docs/requests/training-recommendation-performance-options-20261004.html) | 查开源优化方法、现有模块复用候选及尚未实施的建议 |
 
 产品文档记录业务规则，架构记录连接方式，代码与配置提供具体实现。维护时按当前任务查阅，不要求每次通读；发现不一致时核对实现和用户需求，修正文档，不能为迁就过期文字修改正常功能。
 

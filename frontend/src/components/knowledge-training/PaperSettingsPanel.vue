@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import AppButton from '../design-system/AppButton.vue'
 import WrongQuestionBookExport from './WrongQuestionBookExport.vue'
-const props = defineProps<{ context: 'student' | 'group'; studentIds: string[]; volumeId: string; scopeKeys: string[]; valid: boolean; blockedReason?: string; generating?: boolean }>()
+defineProps<{ context: 'student' | 'group'; studentIds: string[]; volumeId: string; scopeKeys: string[]; valid: boolean; blockedReason?: string; generating?: boolean }>()
 const emit = defineEmits<{ goPaper: [] }>()
 const purpose = defineModel<'training' | 'handout' | 'wrong_book'>('purpose', { default: 'training' })
 const paperMode = defineModel<'individual' | 'shared'>('paperMode', { default: 'individual' })

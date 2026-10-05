@@ -2,6 +2,7 @@ import { createServer } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'
 import { extname, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { curriculumCatalog } from '../e2e/mock-curriculum.ts'
 
 const LOOPBACK = '127.0.0.1'
 const DEFAULT_DATASET_URL = new URL('./p2-08-dataset.json', import.meta.url)
@@ -64,6 +65,7 @@ function questionSummaries(state) {
     const items = state.items.filter((item) => item.question_id === question.question_id)
     return {
       question_id: question.question_id,
+      question_type: question.question_type ?? null,
       total_count: items.length,
       needs_review_count: items.filter((item) => item.needs_review).length,
       max_score: question.max_score,
@@ -176,6 +178,15 @@ export async function startP208Server({ port = 4188, staticRoot = resolve('dist'
       if (request.method === 'GET' && pathname === '/api/sessions') {
         return sendJson(response, 200, { items: [state.session], total: 1 })
       }
+      if (request.method === 'GET' && pathname === '/api/question-bank/curriculum') {
+        return sendJson(response, 200, curriculumCatalog())
+      }
+      if (request.method === 'GET' && pathname === '/api/jobs') {
+        return sendJson(response, 200, { items: [], total: 0 })
+      }
+      if (request.method === 'GET' && /\/review\/questions\/[^/]+\/rubric$/.test(pathname)) {
+        return sendJson(response, 200, null)
+      }
 
       if (request.method === 'GET' && pathname === `/api/sessions/${state.session.id}/config`) {
         return sendJson(response, 200, { rubric: state.rubric })
@@ -285,7 +296,8 @@ const isCli = process.argv[1]
   : false
 
 if (isCli) {
-  const staticRoot = resolve(fileURLToPath(new URL('../dist', import.meta.url)))
+  const staticRoot = resolve(process.env.P2_08_FRONTEND_DIST
+    ?? fileURLToPath(new URL('../dist', import.meta.url)))
   const port = Number(process.env.P2_08_PORT ?? 4188)
   const runtime = await startP208Server({ port, staticRoot })
   process.stdout.write(`Phase 2 anonymous recalibration: ${runtime.origin}/grading?question=Q1\n`)

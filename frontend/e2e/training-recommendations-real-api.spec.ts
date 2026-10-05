@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
+import { test } from './mock-fixtures'
 import type { PersonalizedPaperInstance, PersonalizedRecommendationDraft, TrainingAssessmentOutcome, TrainingAssessmentQuestion, TrainingScanBatch } from '../src/api/training'
 const volumeId = 'bnu24-math-g8-upper'
 const chapter = 'kp_test_c1', section = 'kp_test_c1_s1', skill = 'sk_test_skill'
@@ -46,6 +47,7 @@ async function install(page: Page) {
   })
   return { calls, errors }
 }
+
 test('student selection, separate handout defaults, chapter layout, drawer focus, and responsive columns', async ({ page }) => {
   const { calls, errors } = await install(page)
   await page.setViewportSize({ width: 1440, height: 900 })
@@ -57,7 +59,7 @@ test('student selection, separate handout defaults, chapter layout, drawer focus
   await page.getByRole('button', { name: '合成学生1', exact: true }).click()
   await expect(page.getByRole('dialog')).toBeVisible()
   await page.keyboard.press('Escape')
-  await expect(page.getByRole('dialog')).not.toBeVisible()
+  await expect(page.getByRole('dialog')).toBeHidden()
   await page.getByRole('button', { name: '全选本班', exact: true }).first().click()
   await page.getByRole('button', { name: '刷题讲义', exact: true }).click()
   await expect(page.getByLabel('每卷题数', { exact: true })).toHaveValue('30')
@@ -79,6 +81,7 @@ test('student selection, separate handout defaults, chapter layout, drawer focus
   expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
   expect(errors).toEqual([])
 })
+
 test('wrong book preview, scope filtering, options, export, and download', async ({ page }) => {
   const { calls, errors } = await install(page)
   await page.goto('/training?mode=student')

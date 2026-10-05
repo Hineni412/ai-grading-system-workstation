@@ -38,6 +38,7 @@ def _prepare_paths(data_root: Path):
     paths._data_root = candidate / "data"
     paths._logs_root = candidate / "logs"
     paths._api_profiles_path = candidate / "machine-config" / "api_profiles.json"
+    paths._taxonomy_state_path = candidate / "machine-config" / "taxonomy_state_v2.json"
     paths._ops_state_dir = candidate / "ops"
     paths.ensure_directories()
     os.environ["AI_GRADING_DATA_DIR"] = str(paths.data_root)
@@ -58,8 +59,10 @@ def _seed(paths) -> None:
     db.initialize()
     rubric = paths.upload_config_dir / "anonymous-rubric.json"
     answer = paths.upload_config_dir / "anonymous-answer.json"
-    rubric.write_text(json.dumps({"total_score": 10, "questions": []}), encoding="utf-8")
-    answer.write_text(json.dumps({"questions": []}), encoding="utf-8")
+    rubric.write_text(json.dumps({"total_score": 10, "questions": [
+        {"question_id": "Q1", "question_type": "subjective", "max_score": 10},
+    ]}), encoding="utf-8")
+    answer.write_text(json.dumps({"questions": [{"question_id": "Q1"}]}), encoding="utf-8")
     session_id = db.sessions.create_grading_session("匿名浏览器批改考试", str(rubric), str(answer))
     if session_id != 1:
         raise RuntimeError("isolated P2-11 session must have id 1")
@@ -75,6 +78,15 @@ def _seed(paths) -> None:
     draw.rectangle((40, 40, 860, 1160), outline="black", width=4)
     draw.text((90, 100), "ANONYMOUS CLASS SCAN", fill="black")
     image.save(fixture, format="JPEG", quality=90)
+    # The real preflight endpoint requires a confirmed sample before dispatch.
+    # The model substitute below tests controls, not sample detection quality.
+    sample_dir = paths.templates_dir / f"session_{session_id}"
+    sample_dir.mkdir(parents=True, exist_ok=True)
+    front, back = sample_dir / "front.png", sample_dir / "back.png"
+    image.save(front)
+    image.save(back)
+    db.templates.upsert_session_template(session_id, str(front), str(back))
+    db.templates.mark_template_confirmed(session_id, True)
 
 
 def _scan_handler(paths):
@@ -89,6 +101,11 @@ def _scan_handler(paths):
         context.report(0.4, "scan_analysis", "matching anonymous pages")
         target.write_text(json.dumps({
             "scan_batch_id": str(context.payload.get("scan_batch_id") or ""),
+            "config_revision": context.payload["config_revision"],
+            "template_id": context.payload["template_id"],
+            "template_fingerprint": context.payload["template_fingerprint"],
+            "template_first_page_role": context.payload["template_first_page_role"],
+            "front_page_parity": context.payload["front_page_parity"],
             "groups": [{
                 "front_image": str(scans[0]), "back_image": str(scans[0]),
                 "student_name": students[0]["name"], "student_id": students[0]["id"],
@@ -166,7 +183,9 @@ def _grading_handler(paths):
                     status=status,
                 )
         context.report(0.42, "grading_run", "anonymous grading active")
-        for _ in range(40):
+        # Keep the first run open for browser pause/cancel controls. A resumed
+        # run completes on its own; real processing time is not under test.
+        for _ in range(600 if not resume_run_id else 40):
             current = store.get_run(run.id)
             if current is not None and current.state == "pause_requested":
                 store.finish(run.run_token, "paused")
@@ -175,6 +194,8 @@ def _grading_handler(paths):
                 store.finish(run.run_token, "paused")
                 context.raise_if_cancelled()
             time.sleep(0.1)
+        if not resume_run_id:
+            raise RuntimeError("synthetic initial run expected a pause or cancel request")
         store.finish(run.run_token, "completed")
         return {"state": "completed", "run_id": run.id}
     return handler
@@ -197,26 +218,16 @@ def main() -> None:
     manager = JobManager(JobStore(paths.db_path), max_workers=2)
     manager.register("scan_analysis", _scan_handler(paths))
     manager.register("grading_run", _grading_handler(paths))
-    app = create_app(path_manager=paths)
-    app.dependency_overrides[get_job_manager] = lambda: manager
-    frontend_dist = REPO_ROOT / "frontend" / "dist"
+    frontend_dist = Path(os.environ.get(
+        "SCAN_BROWSER_FRONTEND_DIST", str(REPO_ROOT / "frontend" / "dist")
+    )).resolve()
     if not (frontend_dist / "index.html").is_file():
         raise RuntimeError("build the frontend before running the P2-11 browser gate")
-    from fastapi import HTTPException
-    from fastapi.responses import FileResponse
-    from fastapi.staticfiles import StaticFiles
-
-    app.mount(
-        "/assets",
-        StaticFiles(directory=frontend_dist / "assets"),
-        name="p2-11-assets",
-    )
-
-    @app.get("/{frontend_path:path}", include_in_schema=False)
-    def serve_frontend(frontend_path: str):
-        if frontend_path.startswith("api/"):
-            raise HTTPException(status_code=404)
-        return FileResponse(frontend_dist / "index.html")
+    from unittest.mock import patch
+    from backend.api.frontend import mount_frontend
+    with patch("backend.api.app.mount_frontend", lambda app, _dist: mount_frontend(app, frontend_dist)):
+        app = create_app(path_manager=paths)
+    app.dependency_overrides[get_job_manager] = lambda: manager
 
     uvicorn.run(app, host="127.0.0.1", port=args.port)
 

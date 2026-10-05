@@ -1,17 +1,19 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, type Page, type Route } from '@playwright/test';
+import { test } from './mock-fixtures'
 
 const STORAGE_KEY = 'ai-grading:selected-session:v1'
 const session = {
   id: 7,
   name: '七年级数学期末质量监测',
   status: 'grading',
+  curriculum_volume_id: null,
   is_deleted: false,
   deleted_at: null,
   created_at: '2026-07-01T00:00:00Z',
   updated_at: '2026-07-01T00:00:00Z',
 }
 const questions = [
-  { question_id: 'Q1', total_count: 1000, needs_review_count: 500, max_score: 5 },
+  { question_id: 'Q1', question_type: null, total_count: 1000, needs_review_count: 500, max_score: 5 },
 ]
 const continuousReviewText = 'A'.repeat(512)
 const media = {
@@ -105,6 +107,7 @@ function fulfillJson(route: Route, body: unknown): Promise<void> {
 }
 
 async function installReviewApi(page: Page, state: MockState): Promise<void> {
+  await page.route(/\/api\/sessions\/7\/review\/questions\/Q1\/rubric$/, route => route.fulfill({ json: null }))
   await page.route(/\/api\/media\//, (route) => route.fulfill({
     status: 200,
     contentType: 'image/png',
@@ -121,7 +124,7 @@ async function installReviewApi(page: Page, state: MockState): Promise<void> {
       },
     }),
   )
-  await page.route(/\/api\/sessions\/7\/review\/questions$/, (route) => {
+  await page.route(/\/api\/sessions\/7\/review\/questions(?:\?.*)?$/, (route) => {
     if (state.questions === 'error') {
       return route.fulfill({ status: 503, body: 'private question failure' })
     }
@@ -129,7 +132,7 @@ async function installReviewApi(page: Page, state: MockState): Promise<void> {
     return fulfillJson(route, { items: responseItems, total: responseItems.length })
   })
   await page.route(
-    /\/api\/sessions\/7\/review\/questions\/Q1\/items\?needs_review_only=false$/,
+    /\/api\/sessions\/7\/review\/questions\/Q1\/items\?(?:needs_review_only=false|scope=all)$/,
     (route) => {
       if (state.items === 'error') {
         return route.fulfill({ status: 503, body: 'private item failure' })
@@ -142,19 +145,7 @@ async function installReviewApi(page: Page, state: MockState): Promise<void> {
 async function openReviewQueue(page: Page, path = '/grading'): Promise<void> {
   await page.addInitScript(([key]) => localStorage.setItem(key, '7'), [STORAGE_KEY])
   await page.goto(path)
-  await expect(page.getByRole('heading', { name: '复核队列', exact: true })).toBeVisible()
-}
-
-async function selectedRow(page: Page) {
-  return page.locator('.review-queue-row[aria-current="true"]')
-}
-
-async function scrollPositions(page: Page) {
-  return page.evaluate(() => ({
-    page: document.scrollingElement?.scrollTop ?? 0,
-    workspace: document.querySelector<HTMLElement>('#main-workspace')?.scrollTop ?? 0,
-    queue: document.querySelector<HTMLElement>('.review-queue-list')?.scrollTop ?? 0,
-  }))
+  await expect(page.getByRole('heading', { name: '人工干预工作台', exact: true })).toBeVisible()
 }
 
 test('restores URL context and crosses the 100/101 boundary with keyboard navigation', async ({
@@ -166,37 +157,28 @@ test('restores URL context and crosses the 100/101 boundary with keyboard naviga
   await openReviewQueue(page, '/grading?question=Q1&detail=201&discard=me')
   const evidenceViewer = page.locator('.review-evidence-viewer')
 
-  await expect(page).toHaveURL(/\/grading\?question=Q1&detail=201$/)
-  await expect(page.getByText('当前位置 100 / 1000')).toBeVisible()
-  await expect(await selectedRow(page)).toContainText('学生0201')
-  await expect(page.getByText('第 1 / 10 页')).toBeVisible()
-  const initialScroll = await scrollPositions(page)
+  await expect(page).toHaveURL(/\/grading\?scope=all&session=7&question=Q1&item=7:Q1:201$/)
+  await expect(page.getByText('第 100 / 1000 人')).toBeVisible()
+  await expect(page.getByRole('heading', { name: '学生0201', exact: true })).toBeVisible()
 
   await page.keyboard.press('j')
 
-  await expect(page).toHaveURL(/detail=203$/)
-  await expect(page.getByText('当前位置 101 / 1000')).toBeVisible()
-  await expect(await selectedRow(page)).toContainText('学生0203')
-  await expect(await selectedRow(page)).toBeInViewport()
+  await expect(page).toHaveURL(/item=7:Q1:203$/)
+  await expect(page.getByText('第 101 / 1000 人')).toBeVisible()
+  await expect(page.getByRole('heading', { name: '学生0203', exact: true })).toBeVisible()
   await expect(evidenceViewer).toBeInViewport()
-  await expect(page.getByText('第 2 / 10 页')).toBeVisible()
-  const pageTwoScroll = await scrollPositions(page)
 
   await page.keyboard.press('k')
-  await expect(page).toHaveURL(/detail=201$/)
-  await expect(page.getByText('当前位置 100 / 1000')).toBeVisible()
-  await expect(await selectedRow(page)).toBeInViewport()
+  await expect(page).toHaveURL(/item=7:Q1:201$/)
+  await expect(page.getByText('第 100 / 1000 人')).toBeVisible()
   await expect(evidenceViewer).toBeInViewport()
-  const returnedPageOneScroll = await scrollPositions(page)
-
-  expect(initialScroll.page).toBe(0)
-  expect(pageTwoScroll.page).toBe(0)
-  expect(returnedPageOneScroll.page).toBe(0)
-  expect(initialScroll.workspace).toBe(0)
-  expect(pageTwoScroll.workspace).toBe(0)
-  expect(returnedPageOneScroll.workspace).toBe(0)
-  expect(initialScroll.queue).toBeGreaterThan(pageTwoScroll.queue)
-  expect(returnedPageOneScroll.queue).toBeGreaterThan(pageTwoScroll.queue)
+  await page.getByRole('button', { name: '返回Q1 批量复核' }).click()
+  await expect(page.getByText('第 5 / 42 批')).toBeVisible()
+  await expect(page.getByTestId('review-answer-sheet').first()).toContainText('学生0195')
+  await page.getByRole('button', { name: '下一批 ›' }).click()
+  await expect(page.getByText('第 6 / 42 批')).toBeVisible()
+  await expect(page.getByTestId('review-answer-sheet').first()).toContainText('学生0243')
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
 
 test('input focus suppresses J/K navigation', async ({ page }) => {
@@ -214,6 +196,6 @@ test('input focus suppresses J/K navigation', async ({ page }) => {
   await expect(search).toBeFocused()
   await expect(search).toHaveValue('')
   expect(page.url()).toBe(initialUrl)
-  await expect(await selectedRow(page)).toHaveAttribute('aria-current', 'true')
-  await expect(await selectedRow(page)).toContainText('Zulu Risk')
+  await expect(page.getByTestId('review-answer-sheet').first()).toContainText('Zulu Risk')
+  await expect(page.getByTestId('review-batch-workspace')).toBeVisible()
 })

@@ -1,8 +1,11 @@
 import { expect, test } from '@playwright/test'
 
-test('real API skill, paper, todo and shared basket flows preserve guarded edits', async ({ page }) => {
+test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('ai-grading:curriculum-scope:v1', 'bnu24-math-g8-upper'))
   await page.emulateMedia({ reducedMotion: 'reduce' })
+})
+
+test('real API skill edits, guarded dialogs and shared assembly basket persist', async ({ page }) => {
   const requests: string[] = []
   page.on('request', request => requests.push(new URL(request.url()).pathname))
   await page.goto('/question-bank?tab=skill')
@@ -14,8 +17,8 @@ test('real API skill, paper, todo and shared basket flows preserve guarded edits
   for (const width of [1440, 1280]) {
     await page.setViewportSize({ width, height: 900 })
     const panes = await page.locator('.qb-skill-layout > .qb-browse-pane').evaluateAll(elements => elements.map(element => { const rect = element.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }))
-    expect(panes).toEqual([{ x: 200, y: 72, width: 44, height: 808 }, { x: 258, y: 72, width: 270, height: 808 }, { x: 542, y: 72, width: width - 562, height: 808 }])
-    await page.screenshot({ path: `test-results/question-bank-collapsed-${width}.png` })
+    expect(panes).toEqual([{ x: 200, y: 72, width: 280, height: 808 }, { x: 494, y: 72, width: width - 514, height: 808 }])
+    await page.screenshot({ path: `test-results/question-bank-browse-${width}.png` })
   }
   await page.getByRole('button', { name: '上传试卷', exact: true }).click()
   await expect(page.getByRole('dialog', { name: '上传试卷与任务' })).toBeVisible()
@@ -76,11 +79,11 @@ test('real API skill, paper, todo and shared basket flows preserve guarded edits
   await page.getByRole('button', { name: '按技能', exact: true }).click()
   await page.getByRole('searchbox', { name: '搜题干' }).fill('')
   await page.getByRole('button', { name: /未挂技能/ }).click()
-  await expect(page.locator('.qb-skill-pane')).toHaveCount(0)
+  await expect(page.locator('.qb-skill-pane')).toBeVisible()
   await expect(page.locator('.qb-question-card')).toHaveCount(20)
   for (const width of [1440, 1280]) {
     await page.setViewportSize({ width, height: 900 })
-    expect(await page.locator('.qb-question-pane').evaluate(el => el.getBoundingClientRect().width)).toBeGreaterThan(820)
+    expect(await page.locator('.qb-question-pane').evaluate(el => el.getBoundingClientRect().width)).toBe(width - 514)
     await page.screenshot({ path: `test-results/question-bank-unlinked-${width}.png` })
   }
   const repairButton = page.getByRole('button', { name: 'AI 补挂技能', exact: true })
@@ -90,6 +93,22 @@ test('real API skill, paper, todo and shared basket flows preserve guarded edits
   await page.screenshot({ path: 'test-results/question-bank-repair-preview.png' })
   await page.keyboard.press('Escape')
   await expect(repairButton).toBeFocused()
+  await page.goto('/question-assembly?mode=browse')
+  await expect(page.locator('.page-tabs .is-active')).toHaveText('整理与导出')
+  await expect(page.locator('.page-tabs button')).toHaveCount(2)
+  await expect(page.locator('.assembly-editor__workspace')).toBeVisible()
+  for (const width of [1440, 1280]) {
+    await page.setViewportSize({ width, height: 900 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
+    expect(await page.locator('.assembly-editor__workspace > *').evaluateAll(elements => elements.map(element => { const rect = element.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }))).toEqual([{ x: 200, y: 72, width: 280, height: 808 }, { x: 494, y: 72, width: width - 828, height: 808 }, { x: width - 320, y: 72, width: 300, height: 808 }])
+    await page.screenshot({ path: `test-results/question-assembly-${width}.png` })
+  }
+  await page.getByRole('button', { name: '去题库选题', exact: true }).first().click()
+  await expect(page).toHaveURL(/question-bank\?tab=skill/)
+})
+
+test('real API keeps all 2005 paper questions and restores the selected question', async ({ page }) => {
+  await page.goto('/question-bank?tab=paper')
   await page.getByRole('button', { name: '按试卷', exact: true }).click()
   await page.getByRole('button', { name: '匿名九年级期末试卷', exact: true }).click()
   await expect(page.locator('.qb-paper-detail .qb-question-card')).toHaveCount(2005, { timeout: 60000 })
@@ -100,6 +119,10 @@ test('real API skill, paper, todo and shared basket flows preserve guarded edits
   await page.reload()
   await expect(page.locator('.qb-paper-detail .qb-annotation')).toBeVisible({ timeout: 60000 })
   await page.keyboard.press('Escape')
+})
+
+test('real API todo dialogs and paper jump preserve focus and responsive layout', async ({ page }) => {
+  await page.goto('/question-bank?tab=todo')
   await page.getByRole('button', { name: '待处理', exact: true }).click()
   await expect(page.locator('.qb-todo-stats')).toContainText('分析未完成')
   await expect(page.locator('.qb-todo-group').first().getByRole('button', { name: '判定点批量审核' })).toBeVisible()
@@ -121,16 +144,4 @@ test('real API skill, paper, todo and shared basket flows preserve guarded edits
     expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
     await page.screenshot({ path: `test-results/question-bank-paper-${width}.png` })
   }
-  await page.goto('/question-assembly?mode=browse')
-  await expect(page.locator('.page-tabs .is-active')).toHaveText('整理与导出')
-  await expect(page.locator('.page-tabs button')).toHaveCount(2)
-  await expect(page.locator('.assembly-editor__workspace')).toBeVisible()
-  for (const width of [1440, 1280]) {
-    await page.setViewportSize({ width, height: 900 })
-    expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
-    expect(await page.locator('.assembly-editor__workspace > *').evaluateAll(elements => elements.map(element => { const rect = element.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }))).toEqual([{ x: 200, y: 72, width: 280, height: 808 }, { x: 494, y: 72, width: width - 828, height: 808 }, { x: width - 320, y: 72, width: 300, height: 808 }])
-    await page.screenshot({ path: `test-results/question-assembly-${width}.png` })
-  }
-  await page.getByRole('button', { name: '去题库选题', exact: true }).first().click()
-  await expect(page).toHaveURL(/question-bank\?tab=skill/)
 })

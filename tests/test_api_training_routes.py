@@ -144,7 +144,8 @@ def test_saved_profiles_survive_new_process_and_wal_checkpoint(training_services
         assert first is not None and restored._read_local_profile(key) == first
         assert loads == [True]
         saved_bytes = entry_path.read_bytes()
-        entry_path.write_bytes(b'TEST-corrupt-replacement')
+        # STOP without an object is corrupt pickle data without a large fake length.
+        entry_path.write_bytes(b'\x80\x04.')
         assert restored._read_local_profile(key) is None
         replacement = entry_path.with_suffix('.TEST-replacement')
         replacement.write_bytes(saved_bytes)
@@ -722,6 +723,7 @@ def test_source_changed_during_preparation_does_not_publish_stale_snapshot(train
 
 @pytest.fixture
 def training_services(tmp_path: Path) -> DiagnosisProfileService:
+    from backend.api.app import create_app  # Initialize routers before direct imports.
     # db 必须放在名为 "databases" 的目录下,生产代码据此把 tmp_path 推断为
     # data root(受控根),否则 resolve_stored_file_path 会拒绝 tmp_path 下的
     # rubric.json 等存储路径。
@@ -927,6 +929,8 @@ def test_training_diagnosis_uses_question_tag_identity(
     grouping = SimpleNamespace(db_path=training_services.question_bank_db_path,
         current_knowledge=SimpleNamespace(release_id='TEST-release'), clock=lambda: datetime(2026, 10, 3, tzinfo=UTC),
         chapter_groups=chapter_groups)
+    from backend.api.routers import training as router_module
+    monkeypatch.setattr(router_module, 'datetime', SimpleNamespace(now=lambda _tz: grouping.clock()))
     training_client.app.dependency_overrides[_grouping_module] = lambda: grouping
     grouped_body = {'scope': {'mode': 'student', 'student_ids': ['12']},
         'exam_scope': {'mode': 'current', 'session_ids': [14]},

@@ -25,6 +25,7 @@ _TAXONOMY_CATALOG_PATH = (
 
 
 _CURRENT_PAPER_QUESTION_FK_CHILDREN = {
+    ("authoring_works", "questions", "source_question_id"),
     ("evidence_point_knowledge_links", "questions", "question_id"),
     ("grading_question_links", "questions", "bank_question_id"),
     ("paper_question_occurrences", "papers", "paper_id"),
@@ -107,6 +108,11 @@ def _seed_complete_analysis_dependencies(
     )
     conn.execute(
         "INSERT INTO question_frequency_cache (question_id) VALUES (?)",
+        (question_id,),
+    )
+    conn.execute(
+        "INSERT INTO authoring_works (work_id, kind, source_question_id, source_snapshot_json) "
+        "VALUES ('TEST-kept-authoring', 'adapt', ?, '{\"question\":\"TEST-frozen-source\"}')",
         (question_id,),
     )
     conn.execute(
@@ -549,6 +555,11 @@ def test_permanent_delete_handles_every_current_fk_child_of_a_complete_analysis(
             == 1
         )
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        authoring = conn.execute(
+            "SELECT source_question_id, source_snapshot_json FROM authoring_works "
+            "WHERE work_id='TEST-kept-authoring'"
+        ).fetchone()
+        assert tuple(authoring) == (None, '{"question":"TEST-frozen-source"}')
 
 
 def test_paper_delete_rehomes_canonical_question_to_surviving_paper(

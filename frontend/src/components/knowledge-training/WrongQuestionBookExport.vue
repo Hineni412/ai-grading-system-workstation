@@ -5,7 +5,7 @@ const props = defineProps<{ studentIds: string[]; volumeId: string; scopeKeys: s
 const sessionIds = defineModel<number[] | null>('sessionIds', { default: null })
 const includeSourceLabel = defineModel<boolean>('includeSourceLabel', { default: true })
 const includeAnswerSpace = defineModel<boolean>('includeAnswerSpace', { default: true })
-const { preview, loading, submitting, downloading, downloaded, message, token, job, jobs, busy, result,
+const { preview, loading, submitting, downloading, downloaded, message, job, jobs, busy, result,
   missing, emptyStudents, failedStudents, canSelect, loadPreview, recover, submit, download, reset } = useWrongQuestionBookExport(
     () => ({ studentIds: props.studentIds, volumeId: props.volumeId, scopeKeys: props.scopeKeys }), sessionIds, includeSourceLabel, includeAnswerSpace)
 </script>

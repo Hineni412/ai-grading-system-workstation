@@ -26,6 +26,7 @@ export const serverConfig = {
 
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
+  optimizeDeps: { entries: ['index.html'] },
   build: {
     rolldownOptions: {
       output: {
@@ -58,5 +59,7 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
-  server: serverConfig,
+  server: process.env.AI_GRADING_E2E_MOCK === '1'
+    ? { ...serverConfig, proxy: undefined }
+    : serverConfig,
 })

@@ -1,0 +1,101 @@
+/* ===== 工作台页专属样式 ===== */
+.wrap{max-width:1280px}
+
+/* 侧栏补充：品牌为工作台入口、快速跳转 */
+.brand{cursor:pointer;width:100%;text-align:left;border-radius:10px;border:1px solid transparent;font:inherit}
+.brand:hover{background:rgba(255,255,255,.05)}
+.brand.on{border-color:rgba(43,160,173,.35);background:rgba(43,160,173,.08)}
+.quickrow{display:flex;align-items:center;justify-content:space-between;width:calc(100% - 4px);height:32px;margin:0 2px 4px;padding:0 10px 0 12px;border-radius:8px;font-size:13px;color:#a7bfc2;text-align:left}
+.quickrow:hover{background:rgba(255,255,255,.06);color:#e4eff0}
+.quickrow kbd{font:10.5px var(--font);color:#82a4aa;border:1px solid rgba(255,255,255,.18);border-radius:4px;padding:0 5px}
+
+/* 错误横幅 */
+.banner{display:flex;align-items:center;gap:12px;margin-bottom:12px;padding:8px 14px;
+  border:1px solid rgba(184,135,58,.4);border-radius:10px;background:var(--warn-soft);
+  font-size:12.5px;color:var(--warn)}
+.banner .btn{margin-left:auto}
+.banner[hidden]{display:none}
+
+/* 两栏网格 */
+.wbgrid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+.wbcol{display:flex;flex-direction:column;gap:16px;min-width:0}
+.wbcol-r{position:sticky;top:16px}
+@media (max-width:1199px){
+  .wbgrid{grid-template-columns:1fr}
+  .wbcol-r{position:static}
+}
+
+/* 面板通用 */
+.panel{border:1px solid var(--bd2);border-radius:12px;background:#fff;box-shadow:var(--sh1);padding:14px 16px}
+.ph{display:flex;align-items:baseline;gap:8px;margin-bottom:4px}
+.ph h2{font-size:15px;font-weight:600}
+.cnt{font-size:11.5px;color:var(--ink3)}
+.pmeta{font-size:12px;color:var(--ink3);margin-bottom:8px}
+.pfoot{margin-top:8px}
+.quiet{text-align:center;color:var(--ink3);font-size:12.5px;padding:16px 0 4px}
+.qrow{display:flex;justify-content:center;align-items:center;gap:12px;padding:8px 0 2px}
+
+/* 数据来源标注（勾选后显示） */
+.srctag{display:none;align-items:center;height:16px;padding:0 6px;border:1px dashed #9db4b8;
+  border-radius:4px;font-size:11px;color:#4f767c;white-space:nowrap}
+body.showsrc .srctag{display:inline-flex}
+.ph .srctag{margin-left:auto}
+.tft .srctag{margin-left:8px}
+
+/* ===== 待处理 ===== */
+.subh{font-size:12px;color:var(--ink3);margin-top:12px;padding-bottom:2px}
+.trow{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--bd2)}
+.trow:last-child{border-bottom:0}
+.trow .bd{flex:none}
+.trow .tt{flex:1;min-width:0}
+.tnm{display:block;font-size:14px;font-weight:600}
+.trow.run .tnm{flex:1;min-width:0;display:block}
+.tft{display:flex;align-items:center;font-size:12.5px;color:var(--ink2);margin-top:1px}
+.pct{font-size:12px;color:var(--ink2);font-variant-numeric:tabular-nums;flex:none}
+.stage{font-size:12px;color:var(--ink3);flex:none}
+.pbar{flex:none;width:120px;height:6px;border-radius:3px;background:var(--subtle);overflow:hidden}
+.pbar i{display:block;height:100%;background:var(--ac)}
+.trow.run .pbar i{background-image:linear-gradient(45deg,rgba(255,255,255,.22) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.22) 50%,rgba(255,255,255,.22) 75%,transparent 75%);
+  background-size:14px 14px;animation:stripe .8s linear infinite}
+@keyframes stripe{to{background-position:14px 0}}
+@media (prefers-reduced-motion:reduce){.trow.run .pbar i{animation:none}}
+
+/* ===== 最近考试 ===== */
+.xt{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+.xt th{font-size:11px;color:var(--ink3);font-weight:600;text-align:left;padding:2px 8px 8px;white-space:nowrap}
+.xt td{padding:8px;border-top:1px solid var(--bd2);white-space:nowrap;vertical-align:middle}
+.xt tr.cur td{background:var(--ac-soft)}
+.xname{font-weight:600}
+.xlink{color:var(--ink);font-weight:600;cursor:pointer}
+.xlink:hover{color:var(--ac);text-decoration:underline}
+.gbar{display:inline-block;width:80px;height:6px;border-radius:3px;background:var(--subtle);overflow:hidden;vertical-align:middle;margin-right:6px}
+.gbar i{display:block;height:100%;background:var(--ac)}
+.rv.warn{color:var(--warn);font-weight:600}
+.xt .link{padding:0}
+
+/* ===== 当前考试 ===== */
+.exname{font-size:16px;font-weight:600}
+.exmeta{font-size:12px;color:var(--ink2);margin-top:2px}
+.steps{margin:8px 0 4px}
+.step{position:relative;display:flex;align-items:center;gap:10px;width:100%;padding:6px 6px 6px 2px;border-radius:6px;text-align:left}
+.step:hover{background:var(--subtle)}
+.step:not(:last-child)::before{content:"";position:absolute;left:9px;top:24px;bottom:-10px;width:2px;background:var(--bd)}
+.sdot{flex:none;width:16px;height:16px;border-radius:50%;display:grid;place-items:center;font-size:10px;color:#fff}
+.step.done .sdot{background:var(--ac)}
+.step.prog .sdot{border:2px solid var(--ac);background:#fff}
+.step.todo .sdot{border:2px solid var(--bd3);background:#fff}
+.sl{flex:1;min-width:0;font-size:13px}
+.step.todo .sl{color:var(--ink3)}
+.ss{font-size:12px;color:var(--ink2);white-space:nowrap}
+.step.todo .ss{color:var(--ink3)}
+
+/* ===== 本学期学情 ===== */
+.srow{padding:8px 0;border-bottom:1px solid var(--bd2)}
+.srow:last-of-type{border-bottom:0}
+.sl1{display:flex;align-items:baseline;gap:8px}
+.sl1 .sn{font-size:13px;font-weight:600}
+.sl1 .sch{display:block;font-size:11.5px;color:var(--ink3);font-weight:400;margin-top:1px}
+.sl1 .sw2{margin-left:auto;font-size:12px;color:var(--ink2);font-variant-numeric:tabular-nums;white-space:nowrap}
+.hbar{height:6px;border-radius:3px;background:var(--subtle);overflow:hidden;margin-top:5px}
+.hbar i{display:block;height:100%;background:#c65a41}
+.sev{font-size:12px;color:var(--ink3);margin-top:8px}

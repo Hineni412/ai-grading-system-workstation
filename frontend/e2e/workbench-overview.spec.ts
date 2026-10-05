@@ -1,4 +1,5 @@
-import { expect, test, type Page, type Route, type TestInfo } from '@playwright/test';
+import { expect, type Page, type Route, type TestInfo } from '@playwright/test';
+import { curriculumCatalog, test } from './mock-fixtures'
 
 const STORAGE_KEY = 'ai-grading:selected-session:v1'
 
@@ -111,60 +112,6 @@ function configEditor(sessionId: number) {
     total_score: 0,
     issues: [],
     source: null,
-  }
-}
-
-function curriculumCatalog() {
-  const volumes = [
-    ['七年级', '上学期'],
-    ['七年级', '下学期'],
-    ['八年级', '上学期'],
-    ['八年级', '下学期'],
-    ['九年级', '上学期'],
-  ] as const
-  return {
-    schema_version: 2,
-    catalog_id: 'bnu-math-2024',
-    knowledge_standard_id: 'bnu-math-2024-curriculum-knowledge-v2',
-    publisher: '北京师范大学出版社',
-    subject: '初中数学',
-    edition: '2024',
-    statistics: {
-      raw_nodes: 5,
-      excluded_nodes: 0,
-      retained_nodes: 5,
-      chapters: 5,
-      sections: 0,
-      knowledge_points: 0,
-    },
-    volumes: volumes.map(([grade, semester], index) => ({
-      id: `volume-${index + 1}`,
-      order: index + 1,
-      label: `${grade}${semester === '上学期' ? '上册' : '下册'}`,
-      grade,
-      semester,
-      textbook_version: '北师大版2024',
-      source: { provider: '组卷网' },
-      statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 },
-      chapters: [{
-        id: `chapter-${index + 1}`,
-        knowledge_id: `chapter-${index + 1}`,
-        order: 1,
-        number: '第一章',
-        title: `测试章节${index + 1}`,
-        label: `第一章 测试章节${index + 1}`,
-        kind: 'chapter',
-        display_name: `${grade}${semester === '上学期' ? '上册' : '下册'}｜第一章 测试章节${index + 1}`,
-        source_ref: {
-          node_id: `node-${index + 1}`,
-          relative_url: `/czsx/zj${index + 1}`,
-        },
-        exam_scope_values: [
-          `${grade}${semester === '上学期' ? '上册' : '下册'} 测试范围${index + 1}`,
-        ],
-        sections: [],
-      }],
-    })),
   }
 }
 
@@ -293,8 +240,32 @@ async function captureVisualEvidence(page: Page, testInfo: TestInfo, width: numb
 }
 
 
+type PanelBox = { x: number; y: number; right: number; bottom: number }
+
+async function expectWideLayout(page: Page, boxes: PanelBox[]) {
+  expect(boxes[1]!.x).toBeGreaterThanOrEqual(boxes[0]!.right)
+  expect(boxes[3]!.y - boxes[0]!.bottom).toBeLessThanOrEqual(17)
+  await page.locator('.workbench-grid').evaluate(el => (el as HTMLElement).style.minHeight = '1800px')
+  await page.locator('.main-workspace').evaluate(el => el.scrollTop = 180)
+  await expect(page.locator('.workbench-sidebar')).toHaveCSS('position', 'sticky')
+  const sticky = await page.locator('.workbench-sidebar').boundingBox()
+  expect(sticky!.y).toBeGreaterThanOrEqual(15)
+  expect(sticky!.y).toBeLessThanOrEqual(18)
+  await page.locator('.main-workspace').evaluate(el => el.scrollTop = 0)
+  await page.locator('.workbench-grid').evaluate(el => (el as HTMLElement).style.minHeight = '')
+}
+
+async function expectStackedLayout(_page: Page, boxes: PanelBox[]) {
+  expect(boxes[1]!.y).toBeGreaterThanOrEqual(boxes[0]!.bottom)
+  expect(boxes[2]!.y).toBeGreaterThanOrEqual(boxes[1]!.bottom)
+  expect(boxes[3]!.y).toBeGreaterThanOrEqual(boxes[2]!.bottom)
+}
+
 for (const viewport of viewports) {
+  const expectLayout = viewport.width >= 1200 ? expectWideLayout : expectStackedLayout
+
   test(`${viewport.width}x${viewport.height} matches the home panels without overlap`, async ({ page }, testInfo) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' })
     const errors = trackBrowserErrors(page)
     const requests = await installSyntheticApi(page)
     await page.setViewportSize(viewport)
@@ -310,22 +281,7 @@ for (const viewport of viewports) {
     const boxes = await page.locator('.workbench-panel').evaluateAll(elements => elements.map(el => {
       const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom }
     }))
-    if (viewport.width >= 1200) {
-      expect(boxes[1]!.x).toBeGreaterThanOrEqual(boxes[0]!.right)
-      expect(boxes[3]!.y - boxes[0]!.bottom).toBeLessThanOrEqual(17)
-      await page.locator('.workbench-grid').evaluate(el => (el as HTMLElement).style.minHeight = '1800px')
-      await page.locator('.main-workspace').evaluate(el => el.scrollTop = 180)
-      await expect(page.locator('.workbench-sidebar')).toHaveCSS('position', 'sticky')
-      const sticky = await page.locator('.workbench-sidebar').boundingBox()
-      expect(sticky!.y).toBeGreaterThanOrEqual(15)
-      expect(sticky!.y).toBeLessThanOrEqual(18)
-      await page.locator('.main-workspace').evaluate(el => el.scrollTop = 0)
-      await page.locator('.workbench-grid').evaluate(el => (el as HTMLElement).style.minHeight = '')
-    } else {
-      expect(boxes[1]!.y).toBeGreaterThanOrEqual(boxes[0]!.bottom)
-      expect(boxes[2]!.y).toBeGreaterThanOrEqual(boxes[1]!.bottom)
-      expect(boxes[3]!.y).toBeGreaterThanOrEqual(boxes[2]!.bottom)
-    }
+    await expectLayout(page, boxes)
     await expectNoHorizontalOverflow(page)
     await captureVisualEvidence(page, testInfo, viewport.width)
     expectReadOnlyRequests(requests)
@@ -357,7 +313,7 @@ test('second phase keeps units, report status and training draft entry visible',
   await captureVisualEvidence(page, testInfo, 1440)
   expectReadOnlyRequests(requests)
   await page.locator(`[data-todo="scan-${'d'.repeat(64)}"]`).getByRole('button').click()
-  await expect(page).toHaveURL(new RegExp(`/training\\?mode=paper&draft=${'d'.repeat(64)}$`))
+  await expect(page).toHaveURL(new RegExp(`/training\\?mode=paper&draft=${'d'.repeat(64)}&from=workbench&focus=scan$`))
 })
 
 test('training source failure preserves exam panels', async ({ page }) => {

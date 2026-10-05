@@ -124,6 +124,8 @@ def test_paper_budget_and_invalid_upload_fail_safely(
             "status": "blocked",
             "blockers": ["context_window_limit"],
             "estimated_total_tokens": 40000,
+            "source_file": str(module.artifact),
+            "internal": {"output_path": str(module.artifact), "api_key": "TEST-secret"},
         }
     )
     blocked = client.post(
@@ -139,6 +141,12 @@ def test_paper_budget_and_invalid_upload_fail_safely(
         "personalized_paper_budget_exceeded"
     )
     assert "path" not in blocked.text.casefold()
+    assert blocked.json()["error"]["details"]["budget"] == {
+        "status": "blocked",
+        "blockers": ["context_window_limit"],
+        "estimated_total_tokens": 40000,
+    }
+    assert "TEST-secret" not in blocked.text
 
     invalid = client.post(
         f"/api/training/paper-instances/{'e' * 64}/freeze"

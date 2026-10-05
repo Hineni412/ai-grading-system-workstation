@@ -16,6 +16,7 @@ import sys
 import time
 from collections import Counter
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -273,6 +274,157 @@ def run(output, *, baseline_remediation_only=False, max_unmeasured_questions=0,
     return report
 
 
+def run_performance(output):
+    """Compare complete outputs in memory; save only timings and aggregate counts.
+
+    Both engines receive one diagnosis, one clock and one read-only transaction.
+    This mode covers performance changes in personalized.py; it rejects changed
+    profile snapshots rather than silently mixing different pipeline inputs.
+    """
+    for name in ("diagnosis_profile_service.py", "question_tag_projection_service.py"):
+        if (output / "baseline" / name).read_bytes() != (output / "latest" / name).read_bytes():
+            raise ValueError("Performance mode requires identical diagnosis/projection sources")
+    pipelines = [load_pipeline(output / label, "perf_" + label) for label in ("baseline", "latest")]
+    engines = [pipeline[0] for pipeline in pipelines]
+    profile_module = pipelines[1][1]
+    data = ROOT / "user_data"
+    gp, bp = (data / "databases" / name for name in ("grading_system.db", "question_bank.db"))
+    started = time.perf_counter()
+    fixed_now = datetime.now(UTC)
+    config_before = config_fingerprint(data)
+    report = {"model_requests": 0, "database_writes": 0, "raw_student_exports": 0,
+              "fixed_clock": fixed_now.isoformat(), "completed": False, "scopes": []}
+
+    def timed(phase, operation):
+        began = time.perf_counter()
+        value = operation()
+        seconds = round(time.perf_counter() - began, 4)
+        experiment.progress(phase, seconds=seconds)
+        return value, seconds
+
+    def encoded(value):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    def require_same(before, after, description):
+        # Never print a failing payload: it can contain real student evidence.
+        if encoded(before) != encoded(after):
+            raise AssertionError("Complete output differs: " + description)
+
+    with experiment.readonly_runtime() as reading:
+        with reading(gp) as grading, reading(bp) as bank:
+            fingerprints = [profile_module._database_content_revision(path, connection)
+                            for path, connection in ((gp, grading), (bp, bank))]
+            service = profile_module.DiagnosisProfileService(gp, bp,
+                grading_db=open_grading_repositories(gp, external_connection=grading),
+                question_bank_connection=bank, data_root=data, persist_snapshots=False)
+            with patch.object(service, "_read_local_profile", return_value=None):
+                raw, report["diagnosis_seconds"] = timed("performance_diagnosis", lambda: service.build_profiles(
+                    scope={"mode": "all", "use_historical_fallback": False},
+                    exam_scope={"mode": "semester", "curriculum_volume_id": VOLUME}))
+            diagnosis = engines[1]._normalize_diagnosis(raw)
+            diagnosis_before = encoded(diagnosis)
+            sids = tuple(p["student_id"] for p in diagnosis["students"])
+            report["student_count"] = len(sids)
+            activities = service.graded_activities(sids)
+            modules = [engine.PersonalizedRecommendationModule(db_path=bp, data_root=data,
+                clock=lambda: fixed_now, semester_mastery=service.semester_mastery) for engine in engines]
+            mastery, report["mastery_seconds"] = timed("performance_mastery", lambda: modules[0]._mastery_snapshot(diagnosis))
+            recent = modules[0]._recent_question_ids(sids, diagnosis=diagnosis, graded_activities=activities,
+                                                    recent_activity_count=3)
+            for chapters in ((1,), (2,), (1, 2)):
+                keys = tuple(f"kp_bnu24_math_g8_upper_{chapter}" for chapter in chapters)
+                scope_report = {"chapters": list(chapters), "grouping": [], "personal_drafts": [],
+                                "shared_drafts": [], "selected_group_validation": []}
+                configs = [engine.PersonalizedRecommendationConfig(scope_keys=keys,
+                    curriculum_volume_id=VOLUME, remediation_only=True, max_unmeasured_questions=4) for engine in engines]
+                group_configs = [replace(config, paper_mode="shared", group_scope_keys=keys, remediation_only=False)
+                                 for config in configs]
+                grouped = []
+                for label, engine, module, config in zip(("baseline", "latest"), engines, modules, group_configs):
+                    engine._SOURCE_SNAPSHOT_CACHE.clear()
+                    operation = lambda: module.chapter_groups(diagnosis=diagnosis, config=config,
+                                                              graded_activities=activities)
+                    cold, cold_seconds = timed("performance_group_cold_" + label, operation)
+                    warm, warm_seconds = timed("performance_group_warm_" + label, operation)
+                    require_same(cold, warm, label + " cold/warm grouping")
+                    scope_report["grouping"].append({"cold_seconds": cold_seconds, "warm_seconds": warm_seconds})
+                    grouped.append(cold)
+                require_same(*grouped, "group members/targets/statistics/warnings/source versions")
+                scope_report.update(group_count=len(grouped[0]["groups"]),
+                                    grouped_student_count=grouped[0]["summary"]["grouped_student_count"])
+                pools = [module._source_snapshot(knowledge_keys=module._candidate_scope(diagnosis, config),
+                                                 candidate_config=config) for module, config in zip(modules, configs)]
+                require_same(pools[0], pools[1], "candidate inputs and source versions")
+                drafts = []
+                for label, module, config, (candidates, relations, _) in zip(("baseline", "latest"), modules, configs, pools):
+                    draft, seconds = timed("performance_personal_" + label, lambda: module._build_draft(
+                        diagnosis=diagnosis, config=config, candidates=candidates, relations=relations,
+                        mastery=mastery, recent=recent, excluded_question_ids=set()))
+                    drafts.append(draft)
+                    scope_report["personal_drafts"].append({"seconds": seconds})
+                require_same(*drafts, "all personal draft fields")
+                del drafts
+                # Match the handoff's five-person single-draft timing with prepared inputs.
+                for label, module, config, (candidates, relations, _) in zip(("baseline", "latest"), modules, configs, pools):
+                    def singles():
+                        for student in diagnosis["students"][:5]:
+                            module._build_draft(diagnosis={**diagnosis, "students": [student]}, config=config,
+                                candidates=candidates, relations=relations, mastery=mastery,
+                                recent=recent, excluded_question_ids=set())
+                    _, seconds = timed("performance_single_" + label, singles)
+                    scope_report["personal_drafts"][("baseline", "latest").index(label)]["single_mean_seconds"] = round(seconds / min(5, len(sids)), 4)
+                shared = [[], []]
+                shared_seconds = [0., 0.]
+                for group in grouped[0]["groups"]:
+                    members = [member["student_id"] for member in group["members"]]
+                    scoped = {**diagnosis, "students": [p for p in diagnosis["students"] if p["student_id"] in members]}
+                    targets = tuple(row["knowledge_key"] for row in group["targets"])
+                    for index, (module, config, (candidates, relations, _)) in enumerate(zip(modules, configs, pools)):
+                        began = time.perf_counter()
+                        shared[index].append(module._build_draft(diagnosis=scoped,
+                            config=replace(config, paper_mode="shared", remediation_only=False, target_keys=targets),
+                            candidates=candidates, relations=relations, mastery=mastery,
+                            recent={sid: recent[sid] for sid in members}, excluded_question_ids=set()))
+                        shared_seconds[index] += time.perf_counter() - began
+                require_same(*shared, "all shared draft fields")
+                scope_report["shared_drafts"] = [round(value, 4) for value in shared_seconds]
+                del shared
+                if grouped[0]["groups"]:
+                    largest = max(grouped[0]["groups"], key=lambda group: len(group["members"]))
+                    members = [member["student_id"] for member in largest["members"]]
+                    scoped = {**diagnosis, "students": [p for p in diagnosis["students"] if p["student_id"] in members]}
+                    targets = tuple(row["knowledge_key"] for row in largest["targets"])
+                    selections = []
+                    for index, (module, config) in enumerate(zip(modules, group_configs)):
+                        config = replace(config, target_keys=targets, group_source_version=largest["source_version"])
+                        extra = {"_selection_only": True} if index else {}
+                        selection, seconds = timed("performance_selected_group_" + str(index), lambda: module.chapter_groups(
+                            diagnosis=scoped, config=config, member_ids=members, target_keys=targets,
+                            graded_activities=activities, **extra)["selection"])
+                        selections.append(selection)
+                        scope_report["selected_group_validation"].append({"seconds": seconds, "members": len(members)})
+                    require_same(*selections, "selected group validation and source version")
+                scope_report["complete_outputs_equal"] = True
+                report["scopes"].append(scope_report)
+                write_chunks(output / "performance.json", json.dumps(report, ensure_ascii=False, indent=2))
+                experiment.progress("performance_scope_complete", chapters=list(chapters), complete_outputs_equal=True)
+            if encoded(diagnosis) != diagnosis_before:
+                raise AssertionError("Comparison mutated the diagnosis input")
+            report["same_read_versions"] = fingerprints == [profile_module._database_content_revision(path, connection)
+                for path, connection in ((gp, grading), (bp, bank))]
+            if not report["same_read_versions"]:
+                raise AssertionError("Database inputs changed during comparison")
+    if config_before != config_fingerprint(data):
+        raise AssertionError("Exam configuration changed during comparison")
+    report["seconds"] = round(time.perf_counter() - started, 4)
+    report["completed"] = True
+    report["source_hashes"] = {str(path.relative_to(output)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for folder in ("baseline", "latest") for path in (output / folder).glob("*.py")}
+    write_chunks(output / "performance.json", json.dumps(report, ensure_ascii=False, indent=2))
+    experiment.progress("performance_comparison_saved", seconds=report["seconds"])
+    return report
+
+
 def process_scopes(engines, modules, diagnoses, masteries, metadata, activities, recent,
                    students, aliases, tiers, resolver, relations, *, baseline_remediation_only=False,
                    max_unmeasured_questions=0, baseline_max_unmeasured_questions=0, intermediate=None, personal_only=False):
@@ -420,7 +572,11 @@ if __name__ == "__main__":
     parser.add_argument("--baseline-max-unmeasured-questions", type=int, default=0)
     parser.add_argument("--include-unmeasured-stage", action="store_true")
     parser.add_argument("--personal-only", action="store_true", help="Recheck individual papers only; leave group comparison explicitly empty")
+    parser.add_argument("--performance-only", action="store_true", help="Compare all grouping/draft fields in memory; save aggregate timings only")
     args = parser.parse_args()
+    if args.performance_only:
+        run_performance(args.output.resolve())
+        sys.exit(0)
     run(args.output.resolve(), baseline_remediation_only=args.baseline_remediation_only,
         max_unmeasured_questions=args.max_unmeasured_questions,
         baseline_max_unmeasured_questions=args.baseline_max_unmeasured_questions,
