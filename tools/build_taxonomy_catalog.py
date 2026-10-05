@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from question_bank.taxonomy.registry import CANONICAL_KNOWLEDGE  # noqa: E402
+from tools.build_release_v3 import _write_json  # noqa: E402
 
 
 CATALOG_DIR = ROOT / "question_bank" / "taxonomy" / "catalogs"
@@ -748,9 +749,7 @@ def build() -> dict[str, Any]:
 
 def main() -> None:
     payload = build()
-    OUTPUT_PATH.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    _write_json(OUTPUT_PATH, payload)
     counts: dict[str, int] = {}
     for term in payload["terms"]:
         counts[term["dimension"]] = counts.get(term["dimension"], 0) + 1

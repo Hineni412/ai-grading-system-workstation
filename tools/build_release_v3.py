@@ -47,11 +47,34 @@ def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _render_json(payload: Any) -> str:
+    """Keep generated catalogs readable with one short record per line.
+
+    Object and array order, scalar types and strings retain their JSON meaning.
+    Release identities still use the canonical content hash, not file whitespace.
+    """
+    def render(value: Any, depth: int) -> str:
+        compact = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if not isinstance(value, (dict, list)) or not value:
+            return compact
+        if depth and len(compact.encode("utf-8")) <= 800:
+            return compact
+        indent = "  " * (depth + 1)
+        closing = "  " * depth
+        if isinstance(value, dict):
+            rows = [
+                indent + json.dumps(key, ensure_ascii=False) + ": " + render(item, depth + 1)
+                for key, item in value.items()
+            ]
+            return "{\n" + ",\n".join(rows) + "\n" + closing + "}"
+        rows = [indent + render(item, depth + 1) for item in value]
+        return "[\n" + ",\n".join(rows) + "\n" + closing + "]"
+
+    return render(payload, 0) + "\n"
+
+
 def _write_json(path: Path, payload: Any) -> None:
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    path.write_text(_render_json(payload), encoding="utf-8", newline="\n")
 
 
 def _load_skills(skills_dir: Path) -> list[dict[str, Any]]:

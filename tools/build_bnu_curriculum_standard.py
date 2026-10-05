@@ -7,9 +7,15 @@ import unicodedata
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.build_release_v3 import _write_json
+
 CATALOG_DIR = ROOT / "question_bank" / "taxonomy" / "catalogs"
 SOURCE_PATH = (
     CATALOG_DIR / "xkw_bnu_math_2024_curriculum_2026-08-05.source.json"
@@ -45,13 +51,6 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"{path.name} must contain one JSON object")
     return payload
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
 
 
 def _normalized(value: object) -> str:

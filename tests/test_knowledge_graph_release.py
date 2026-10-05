@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+import json
 
 import pytest
 
@@ -34,6 +35,30 @@ def _database(tmp_path: Path) -> Path:
     db_path = tmp_path / "question_bank.db"
     initialize_database(db_path)
     return db_path
+
+
+@pytest.mark.parametrize('revision', range(3, 11))
+def test_compact_catalog_roundtrip_preserves_legacy_release_and_vocabulary(
+    tmp_path: Path, revision: int,
+) -> None:
+    from question_bank.knowledge_graph_release.loader import load_taxonomy_catalog_for_release
+    from question_bank.knowledge_graph_release.validation import validate_release
+    from tools.build_release_v3 import _write_json
+
+    original = load_release_for_taxonomy_revision(revision)
+    vocabulary = load_taxonomy_catalog_for_release(original)
+    release_path = tmp_path / 'release.json'
+    vocabulary_path = tmp_path / 'vocabulary.json'
+    _write_json(release_path, original.to_dict())
+    _write_json(vocabulary_path, vocabulary)
+    restored = KnowledgeGraphRelease.from_path(release_path)
+    restored_vocabulary = json.loads(vocabulary_path.read_text(encoding='utf-8'))
+    assert restored.release_id == original.release_id
+    assert restored.content_hash == original.content_hash
+    assert restored.taxonomy_revision == revision
+    assert restored.to_dict() == original.to_dict()
+    assert restored_vocabulary == vocabulary
+    assert not validate_release(restored, restored_vocabulary).errors
 
 
 def test_symmetry_skill_release_preserves_existing_definitions() -> None:

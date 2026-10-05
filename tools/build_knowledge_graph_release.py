@@ -19,6 +19,7 @@ from question_bank.knowledge_graph_release.contracts import (
 )
 from question_bank.knowledge_graph_release.validation import validate_release
 from question_bank.knowledge_graph_release.contracts import KnowledgeGraphRelease
+from tools.build_release_v3 import _render_json
 
 
 TAXONOMY_PATH = (
@@ -767,7 +768,7 @@ def main() -> int:
     args = parser.parse_args()
     catalog = json.loads(TAXONOMY_PATH.read_text(encoding="utf-8"))
     payload = build_release(catalog)
-    rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    rendered = _render_json(payload)
     if args.check:
         if not OUTPUT_PATH.exists() or OUTPUT_PATH.read_text(encoding="utf-8") != rendered:
             raise SystemExit("knowledge graph release is not up to date")

@@ -148,6 +148,7 @@ cd ..
 | [源码环境准备](docs/maintenance/source-setup.md) | 首次从 GitHub 获取源码，准备 Python、前端和本地资源时 |
 | [参与维护](.github/CONTRIBUTING.md) | 报告问题、提出改进建议或准备 PR 时 |
 | [测试](docs/testing/README.md) | 选择针对性测试或合成环境验收入口时 |
+| [调查与待办](docs/requests/README.md) | 查看仍有用途的调查、未完成事项与未接入的实验原型 |
 | [样式](docs/ui/STYLE.md) | 修改页面视觉与通用交互时 |
 | [Word 与 LaTeX 排版调查](docs/requests/question-bank-latex-layout-evaluation-20261002.md)、[一手项目来源](docs/requests/latex-question-bank-primary-sources-20261002.md) | 查 PDF 导出方向、题型实排证据、外部参考与尚未验证的范围 |
 | [训练推荐性能方案调查](docs/requests/training-recommendation-performance-options-20261004.md)、[方案图](docs/requests/training-recommendation-performance-options-20261004.html) | 查开源优化方法、现有模块复用候选及尚未实施的建议 |

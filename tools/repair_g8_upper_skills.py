@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.build_release_v3 import build_release, build_vocabulary
+from tools.build_release_v3 import build_release, build_vocabulary, _write_json
 from question_bank.knowledge_graph_release.contracts import KnowledgeGraphRelease, compute_content_hash, stable_record_hash
 from question_bank.knowledge_graph_release.validation import validate_release
 
@@ -314,7 +314,7 @@ def main():
     payload, vocabulary, retired = build_v6()
     if args.write_catalogs:
         for filename, value in [('knowledge_graph_release_v6.json', payload), ('tag_vocabulary_v7.json', vocabulary), ('teaching_skills_g8_upper_v6.json', standard())]:
-            (CATALOG / filename).write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+            _write_json(CATALOG / filename, value)
     summary = {'retired_skills': len(retired), 'new_skills': len(SPECS), 'model_calls': 0}
     if args.preview_db:
         folder = ROOT / 'user_data/previews' / ('g8_skill_v6_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
