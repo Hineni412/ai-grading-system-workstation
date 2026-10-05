@@ -1,0 +1,18 @@
+name: 改进建议
+description: 描述教学场景和希望解决的问题。
+title: '[建议] '
+body:
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景与当前问题
+      description: 谁在什么流程遇到了问题？当前怎样处理？请使用合成示例。
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: 希望得到的结果
+      description: 说明操作完成后应得到什么结果，以及怎样判断改进成功。
+    validations:
+      required: true

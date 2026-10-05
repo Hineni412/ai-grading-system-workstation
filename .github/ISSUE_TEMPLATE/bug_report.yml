@@ -1,0 +1,32 @@
+name: 问题报告
+description: 报告能复现的运行或界面问题。
+title: '[Bug] '
+body:
+  - type: markdown
+    attributes:
+      value: 请用合成示例描述问题。不要上传学生资料、答卷、数据库、密钥或原始诊断日志。
+  - type: input
+    id: version
+    attributes:
+      label: 版本与环境
+      description: 应用版本或提交号、Windows 版本，以及源码运行或便携包运行。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从哪个页面开始，每一步做了什么？
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 实际结果与预期结果
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 去除敏感信息后的证据
+      description: 可提供错误提示、合成示例或已遮盖敏感信息的截图。

@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Python quick checks
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-test.txt
+            constraints.txt
+      - name: Install locked dependencies
+        run: python -m pip install -r requirements.txt -r requirements-test.txt -c constraints.txt
+      - name: Check repository data boundary
+        run: python tools/check_tracked_user_data.py
+      - name: Check documentation
+        run: python tools/check_documentation.py
+      - name: Run existing backend quick suite
+        run: python tools/run_test_suite.py quick --skip-frontend --workers 2 --durations 0
+
+  frontend:
+    name: Frontend checks
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.13.1'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Use declared npm version
+        run: npm install --global npm@11.8.0
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Lint, unit tests, type check and production build
+        run: npm run verify
+      - name: Check synthetic demo server
+        run: npm run demo:test
+      - name: Install test browser
+        run: npx playwright install chromium
+      - name: Run isolated mock browser flows
+        run: npx playwright test --reporter=line

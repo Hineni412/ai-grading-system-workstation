@@ -1,5 +1,7 @@
 # AI 阅卷系统
 
+[![CI](https://github.com/Hineni412/ai-grading-system-workstation/actions/workflows/ci.yml/badge.svg)](https://github.com/Hineni412/ai-grading-system-workstation/actions/workflows/ci.yml)
+
 ![AI 阅卷系统：考试阅卷、题库组卷、知识训练](docs/assets/readme-cover.svg)
 
 <p align="center">
@@ -81,7 +83,7 @@
 | 前端构建 | Node.js 22.x 且 ≥ 22.18.0，或 Node.js ≥ 24.12.0；npm 11.8.0，以 [依赖声明](frontend/package.json) 为准 |
 | 本地功能资源 | OCR 模型和 PDF 排版引擎等资源按便携运行环境准备；见 [打包说明](docs/maintenance/packaging.md) |
 
-准备好运行环境后，在项目根目录安装前端依赖，再启动：
+首次获取源码时，先按 [源码环境准备](docs/maintenance/source-setup.md) 创建启动脚本所需的 Python 运行时，并准备本地资源。已有运行环境时，在项目根目录安装前端依赖，再启动：
 
 ```powershell
 cd frontend
@@ -90,7 +92,7 @@ cd ..
 .\运行.bat
 ```
 
-源码启动时会检查前端：输入与产物未变化时复用上次成功构建，否则重新构建；构建失败会停止启动。前端开发方式见 [系统架构](ARCHITECTURE.md)。
+源码启动时会检查前端：输入与产物未变化时复用上次成功构建，否则重新构建；构建失败会停止启动。前端开发方式见 [系统架构](ARCHITECTURE.md)。当前完整打包脚本用于保存本机私有快照；仓库尚未提供可公开下载的干净安装包。
 
 ### AI、数据与使用范围
 
@@ -141,6 +143,8 @@ cd ..
 | [安全与诊断](docs/security/SECURITY.md) | 涉及模型发送、本机数据、日志或部署边界时 |
 | [存储与备份](docs/maintenance/storage-policy.md) | 查文件保留、备份范围、归档与去重时 |
 | [打包与更新](docs/maintenance/packaging.md) | 制作便携包、升级、回退或数据库迁移时 |
+| [源码环境准备](docs/maintenance/source-setup.md) | 首次从 GitHub 获取源码，准备 Python、前端和本地资源时 |
+| [参与维护](.github/CONTRIBUTING.md) | 报告问题、提出改进建议或准备 PR 时 |
 | [测试](docs/testing/README.md) | 选择针对性测试或合成环境验收入口时 |
 | [样式](docs/ui/STYLE.md) | 修改页面视觉与通用交互时 |
 | [Word 与 LaTeX 排版调查](docs/requests/question-bank-latex-layout-evaluation-20261002.md)、[一手项目来源](docs/requests/latex-question-bank-primary-sources-20261002.md) | 查 PDF 导出方向、题型实排证据、外部参考与尚未验证的范围 |
@@ -153,6 +157,10 @@ cd ..
 ```powershell
 & .\runtime\python\python.exe tools\check_documentation.py
 ```
+
+## 使用与再发布
+
+仓库目前未设置项目许可证。第三方代码和资源保留各自的使用条件。公开安装包发布前，需要先核对授权，并在不含真实数据和模型配置的环境中制作和验收；当前私有打包脚本的产物不能直接作为公开安装包。
 
 业务与页面测试按本次改动选择，入口见 [测试与人工验收](docs/testing/README.md)。
 

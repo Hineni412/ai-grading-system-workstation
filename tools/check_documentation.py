@@ -24,13 +24,18 @@ AUTHORITY_DOCUMENT_PATHS = (
     "docs/security/SECURITY.md",
     "docs/maintenance/storage-policy.md",
     "docs/maintenance/packaging.md",
+    "docs/maintenance/source-setup.md",
+    ".github/CONTRIBUTING.md",
     "docs/testing/README.md",
     "docs/ui/STYLE.md",
 )
 
-RETAINED_NON_AUTHORITY_DOCUMENT_PATHS: tuple[str, ...] = ()
+RETAINED_NON_AUTHORITY_DOCUMENT_PATHS: tuple[str, ...] = (
+    ".github/pull_request_template.md",
+)
 
 SCANNED_DOCUMENT_ROOTS = (
+    ".github",
     "docs",
     "frontend",
     "tools",
