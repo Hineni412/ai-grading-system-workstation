@@ -14,7 +14,7 @@ import {
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
 import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
 import DuplicateCompareDialog from './DuplicateCompareDialog.vue'
-import AppIconButton from '../design-system/AppIconButton.vue'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../ui/sheet'
 import AppButton from '../design-system/AppButton.vue'
 import type { ConfigQuestionGenerationState } from '../../api/config-workspace'
 import { useConfigQuestionFocus } from '../../composables/useConfigQuestionFocus'
@@ -914,33 +914,28 @@ function assetCountFor(question: ConfigQuestionPreview): number {
       </div>
     </div>
 
-    <Teleport to="body">
-      <div
-        v-if="expandedAnswer"
-        class="question-review__answer-layer"
-        @click.self="closeFullAnswer"
+    <Sheet
+      :open="expandedAnswer !== undefined"
+      @update:open="(value: boolean) => { if (!value) closeFullAnswer() }"
+    >
+      <SheetContent
+        class="question-review__answer-drawer"
+        :aria-describedby="undefined"
       >
-        <aside
-          class="question-review__answer-drawer"
-          role="dialog"
-          aria-modal="true"
-          :aria-label="`${expandedAnswer.question_id} 完整答案`"
-        >
-          <header>
-            <div>
-              <small>{{ expandedAnswer.question_id }}</small>
-              <h3>完整答案</h3>
-            </div><AppIconButton label="关闭完整答案" @click="closeFullAnswer" icon="close" />
-          </header>
+        <template v-if="expandedAnswer">
+          <SheetHeader class="question-review__answer-head">
+            <small>{{ expandedAnswer.question_id }}</small>
+            <SheetTitle>完整答案</SheetTitle>
+          </SheetHeader>
           <QuestionContentRenderer
             :blocks="textBlocks(expandedAnswer, 'answer')"
             :fallback="expandedAnswer.answer_preview"
             empty-label="答案内容暂未识别。"
             media-mode="review"
           />
-        </aside>
-      </div>
-    </Teleport>
+        </template>
+      </SheetContent>
+    </Sheet>
 
     <DuplicateCompareDialog
       :item="compareItem"
@@ -1369,39 +1364,17 @@ function assetCountFor(question: ConfigQuestionPreview): number {
 
 .question-review__answer-expand:hover { background: color-mix(in srgb, var(--color-accent) 8%, transparent); }
 
-.question-review__answer-layer {
-  position: fixed;
-  z-index: 1300;
-  inset: 0;
-  display: flex;
-  justify-content: flex-end;
-  background: var(--color-overlay-mask);
-}
-
 .question-review__answer-drawer {
-  display: flex;
   width: min(720px, 100%);
-  max-width: 100%;
-  height: 100%;
-  flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-5);
+  max-width: none;
   overflow: auto;
-  background: var(--color-bg-surface);
-  box-shadow: var(--shadow-overlay);
 }
 
-.question-review__answer-drawer > header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
+.question-review__answer-head {
+  gap: var(--space-1);
 }
 
-.question-review__answer-drawer h3,
-.question-review__answer-drawer small { margin: 0; }
-.question-review__answer-drawer small { color: var(--color-text-secondary); }
-.question-review__answer-drawer button { font-size: var(--font-size-h1); line-height: 1; }
+.question-review__answer-drawer small { margin: 0; color: var(--color-text-secondary); }
 
 .question-review__paper-panel > header {
   display: flex;

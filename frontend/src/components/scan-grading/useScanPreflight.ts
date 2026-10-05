@@ -6,6 +6,7 @@ import type {
   ScanIssueSuggestion,
 } from '../../api/scan-grading'
 import { useScanGradingStore } from '../../stores/scan-grading'
+import { useConfirm } from '../../composables/useConfirm'
 
 export interface AssignedPaper {
   targetType: 'group' | 'issue'
@@ -78,6 +79,7 @@ export type ScanPreflightController = ReturnType<typeof useScanPreflight>
 // 预检面板和查看器，切换阶段时不会因组件卸载丢失已选学生和核对进度。
 export function useScanPreflight(sessionId: Ref<number>) {
   const store = useScanGradingStore()
+  const { confirm } = useConfirm()
 
   const selectedStudents = ref<Record<string, number | undefined>>({})
   const decisionNotice = ref('')
@@ -694,10 +696,13 @@ export function useScanPreflight(sessionId: Ref<number>) {
     input.value = ''
   }
 
-  function confirmReplacement(): void {
-    const confirmed = window.confirm(
-      '确认改用这批最新答卷？\n\n确认后会永久删除旧答卷、预检结果、批改进度、教师最终分、报表和知识图谱贡献，且无法恢复。考试配置、评分规则、模板、题框和学生名单会保留。',
-    )
+  async function confirmReplacement(): Promise<void> {
+    const confirmed = await confirm({
+      title: '改用这批最新答卷？',
+      message: '确认后会永久删除旧答卷、预检结果、批改进度、教师最终分、报表和知识图谱贡献，且无法恢复。考试配置、评分规则、模板、题框和学生名单会保留。',
+      confirmLabel: '改用',
+      danger: true,
+    })
     if (confirmed) void store.commitReplacement()
   }
 

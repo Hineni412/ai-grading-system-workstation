@@ -154,36 +154,17 @@
   font-weight: var(--font-weight-regular);
 }
 
-.excel-settings-backdrop {
-  position: fixed;
-  z-index: 80;
-  inset: 0;
-  display: grid;
-  padding: var(--space-6);
-  background: var(--color-overlay-mask);
-  place-items: center;
-}
-
-.excel-settings-dialog {
-  display: grid;
-  width: min(760px, 100%);
-  max-height: min(820px, calc(100vh - (2 * var(--space-6))));
-  gap: var(--space-4);
-  overflow-y: auto;
-  padding: var(--space-5);
-  border: var(--border-width) solid var(--border);
-  border-radius: var(--radius-overlay);
-  background: var(--card);
-  box-shadow: var(--shadow-overlay);
-}
-
 .excel-settings-dialog__heading,
-.excel-settings-dialog__actions,
 .excel-settings-dialog__actions > div {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
+}
+
+.excel-settings-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .excel-settings-dialog__heading h3 {

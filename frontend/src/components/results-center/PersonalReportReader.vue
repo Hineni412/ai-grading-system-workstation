@@ -7,6 +7,7 @@ import { useJobStore } from '../../stores/jobs'
 import AnalysisConfirmDialog from '../file-center/AnalysisConfirmDialog.vue'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
+import AppDialog from '../design-system/AppDialog.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import { usePersonalReportGeneration } from './personal-report-generation'
 
@@ -136,8 +137,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <Teleport to="body">
-    <section class="personal-reader" role="dialog" aria-modal="true" aria-label="学生个人报告" data-testid="personal-report-reader">
+  <AppDialog :open="true" title="学生个人报告" layout="fullscreen" hide-header :dismissible="false">
+    <section class="personal-reader" data-testid="personal-report-reader">
       <header class="personal-reader__header">
         <AppButton ref="back" variant="ghost" size="small" @click="emit('close', currentStudentId)">← 返回成绩明细（Esc）</AppButton>
         <div class="personal-reader__identity"><b>{{ student?.student_name }}</b><span>{{ student?.student_code }} · {{ student?.class_name }}</span></div>
@@ -178,11 +179,11 @@ onBeforeUnmount(() => {
       <AnalysisConfirmDialog v-if="generation.open.value" :preflight="generation.preflight.value" :loading="generation.loading.value"
         report-type="personal_analysis_html" :submitting="generation.submitting.value" @close="generation.close" @confirm="confirm" />
     </section>
-  </Teleport>
+  </AppDialog>
 </template>
 
 <style scoped>
-.personal-reader{position:fixed;inset:0;z-index:100;background:#f1f4f6;display:flex;flex-direction:column;color:var(--ink,#24364a)}
+.personal-reader{flex:1;min-height:0;background:#f1f4f6;display:flex;flex-direction:column;color:var(--ink,#24364a)}
 .personal-reader__header{display:flex;gap:12px;align-items:center;padding:12px 20px;background:white;border-bottom:1px solid #dce3e8;flex-wrap:wrap}
 .personal-reader__identity{display:flex;gap:8px;align-items:baseline}.personal-reader__identity b{font-size:var(--font-size-h2)}.personal-reader__identity span,.personal-reader__position{font-size:var(--font-size-caption);color:#687988}
 .personal-reader__position span{display:block}.personal-reader__actions{margin-left:auto;display:flex;gap:8px}

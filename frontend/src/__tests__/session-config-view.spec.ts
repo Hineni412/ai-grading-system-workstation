@@ -10,6 +10,7 @@ import { useConfigWorkspaceStore } from '../stores/config-workspace';
 import { useJobStore } from '../stores/jobs';
 import { useSessionStore } from '../stores/session';
 import SessionConfigView from '../views/SessionConfigView.vue'
+import ConfirmDialogHost from '../components/design-system/ConfirmDialogHost.vue'
 
 vi.mock('../api/config-workspace', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/config-workspace')>(),
@@ -87,6 +88,24 @@ async function chooseAndSubmit(host: HTMLElement): Promise<void> {
   await settle()
 }
 
+function mountConfirmHost(): { unmount: () => void } {
+  const el = document.createElement('div')
+  document.body.append(el)
+  const app = createApp(ConfirmDialogHost)
+  app.mount(el)
+  return app
+}
+
+async function clickConfirmDialog(label: string): Promise<void> {
+  await vi.waitFor(() => {
+    expect(document.body.querySelector('[data-testid="app-confirm-dialog"]')).not.toBeNull()
+  })
+  const dialog = document.body.querySelector<HTMLElement>('[data-testid="app-confirm-dialog"]')!
+  ;[...dialog.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.trim() === label)!.click()
+  await settle()
+}
+
 beforeEach(() => {
   document.body.innerHTML = ''
   localStorage.clear()
@@ -158,16 +177,18 @@ describe('SessionConfigView source replacement guard', () => {
   })
 
   it('retains the dirty editor when a confirmed replacement fails', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const confirmApp = mountConfirmHost()
     vi.mocked(uploadConfigSource).mockRejectedValue(new Error('private path'))
     const mounted = await mountDirtyView()
     await chooseAndSubmit(mounted.host)
+    await clickConfirmDialog('替换')
 
     expect(uploadConfigSource).toHaveBeenCalledOnce()
     expect(mounted.workspace.sourceId).toBe('a'.repeat(32))
     expect(mounted.workspace.editor).not.toBeNull()
     expect(mounted.workspace.hasDirtyEditor).toBe(true)
     expect(mounted.host.textContent).not.toContain('private path')
+    confirmApp.unmount()
   })
 
   it('disables upload and editor save while a configuration job is active', async () => {

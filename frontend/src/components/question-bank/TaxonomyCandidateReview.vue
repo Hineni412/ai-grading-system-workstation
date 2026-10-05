@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { DialogRoot, DialogPortal, DialogContent, DialogTitle } from 'reka-ui'
 
 import {
   questionBankApi,
@@ -14,8 +13,9 @@ import {
   type TaxonomySuggestion,
   type TaxonomyTerm,
 } from '../../api/question-bank-taxonomy'
+import { useConfirm } from '../../composables/useConfirm'
 import { useTaxonomyReviewStore } from '../../stores/taxonomy-review'
-import AppIconButton from '../design-system/AppIconButton.vue'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../ui/sheet'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
@@ -39,15 +39,21 @@ const emit = defineEmits<{
   close: []
 }>()
 
+function onCloseAutoFocus(event: Event): void {
+  if (!props.returnFocus) return
+  event.preventDefault()
+  props.returnFocus.focus()
+}
+
 const store = useTaxonomyReviewStore()
-const closeButton = ref<HTMLButtonElement | null>(null)
+const { confirm } = useConfirm()
 const activeDimension = ref<'all' | TaxonomyDimension>('all')
 const drafts = reactive<Record<string, CandidateDraft>>({})
 const previewQuestion = ref<QuestionBankDetail | null>(null)
 const previewQuestionId = ref<number | null>(null)
 const previewState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const previewReturnFocus = ref<HTMLElement | null>(null)
-const previewCloseButton = ref<HTMLButtonElement | null>(null)
+
 const resultsSection = ref<HTMLElement | null>(null)
 const showHistoricalRun = ref(false)
 let previewController: AbortController | null = null
@@ -145,7 +151,7 @@ watch(
     }
     if (store.loadState !== 'loading' && store.writeState !== 'saving') void store.load()
     scheduleSuggestionRefresh()
-    void nextTick(() => closeButton.value?.focus())
+    void nextTick(() => document.querySelector<HTMLElement>('.taxonomy-review .app-icon-button')?.focus())
   },
 )
 
@@ -250,9 +256,12 @@ async function merge(proposal: TaxonomyProposal): Promise<void> {
 }
 
 async function reject(proposal: TaxonomyProposal): Promise<void> {
-  const confirmed = window.confirm(
-    `确认拒绝“${proposal.proposed_name}”吗？拒绝后它不会进入正式词表。`,
-  )
+  const confirmed = await confirm({
+    title: `拒绝“${proposal.proposed_name}”？`,
+    message: '拒绝后它不会进入正式词表。',
+    confirmLabel: '驳回',
+    danger: true,
+  })
   if (!confirmed) return
   if (await store.review(proposal.id, {
     decision: 'reject',
@@ -542,7 +551,7 @@ async function loadQuestionPreview(questionId: number): Promise<void> {
   previewController = controller
   previewQuestion.value = null
   previewState.value = 'loading'
-  void nextTick(() => previewCloseButton.value?.focus())
+  void nextTick(() => document.querySelector<HTMLElement>('.taxonomy-question-preview .app-icon-button')?.focus())
   try {
     previewQuestion.value = await questionBankApi.getQuestion(
       questionId,
@@ -574,12 +583,6 @@ function closeQuestionPreview(): void {
   if (returnTarget) void nextTick(() => returnTarget.focus())
 }
 
-function onKeydown(event: KeyboardEvent): void {
-  if (!props.open || event.key !== 'Escape') return
-  if (previewState.value !== 'idle') { event.preventDefault(); closeQuestionPreview() }
-  else emit('close')
-}
-
 onBeforeUnmount(() => {
   previewController?.abort()
   clearSuggestionTimer()
@@ -587,32 +590,19 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <DialogRoot :open="open" @update:open="!$event && emit('close')"><DialogPortal>
-    <div
-      v-if="open"
-      class="qb-drawer-layer taxonomy-review-layer"
-      role="presentation"
-      @click.self="emit('close')"
+  <Sheet :open="open" @update:open="(value: boolean) => { if (!value) emit('close') }">
+    <SheetContent
+      class="taxonomy-review"
+      :aria-describedby="undefined"
+      aria-labelledby="taxonomy-review-title"
+      @close-auto-focus="onCloseAutoFocus"
     >
-      <DialogContent as="aside"
-        class="taxonomy-review"
-        :aria-describedby="undefined"
-        @escape-key-down="onKeydown"
-        aria-labelledby="taxonomy-review-title"
-        @close-auto-focus="returnFocus && ($event.preventDefault(), returnFocus.focus())"
-      >
-        <header class="taxonomy-review__header">
+      <template v-if="open">
+        <SheetHeader class="taxonomy-review__header">
           <div>
-            <DialogTitle as="h2" id="taxonomy-review-title">标签治理</DialogTitle>
-            
-          </div><AppIconButton label="关闭新词审核"
-            ref="closeButton"
-           
-           
-           
-            @click="emit('close')"
-           icon="close" />
-        </header>
+            <SheetTitle as="h2" id="taxonomy-review-title">标签治理</SheetTitle>
+          </div>
+        </SheetHeader>
 
         <div class="taxonomy-review__toolbar">
           <div class="taxonomy-review__summary">
@@ -1063,36 +1053,29 @@ onBeforeUnmount(() => {
             </article>
           </section>
         </div>
-      </DialogContent>
-    </div>
-  </DialogPortal></DialogRoot>
+      </template>
+    </SheetContent>
+  </Sheet>
 
-  <DialogRoot :open="previewState !== 'idle'" @update:open="!$event && closeQuestionPreview()"><DialogPortal>
-    <div
-      v-if="previewState !== 'idle'"
-      class="qb-drawer-layer taxonomy-question-preview-layer"
-      role="presentation"
-      @click.self="closeQuestionPreview"
+  <Sheet
+    :open="previewState !== 'idle'"
+    @update:open="(value: boolean) => { if (!value) closeQuestionPreview() }"
+  >
+    <SheetContent
+      side="left"
+      class="taxonomy-question-preview"
+      :aria-describedby="undefined"
+      aria-labelledby="taxonomy-question-preview-title"
     >
-      <DialogContent as="aside"
-        class="taxonomy-question-preview"
-        :aria-describedby="undefined"
-        aria-labelledby="taxonomy-question-preview-title"
-      >
-        <header class="qb-inspector__heading">
+      <template v-if="previewState !== 'idle'">
+        <SheetHeader class="qb-inspector__heading">
           <div>
-            <DialogTitle as="h2" id="taxonomy-question-preview-title">
+            <SheetTitle as="h2" id="taxonomy-question-preview-title">
               题目 #{{ previewQuestionId }}
-            </DialogTitle>
+            </SheetTitle>
             <p>只读预览</p>
-          </div><AppIconButton label="关闭题目预览"
-            ref="previewCloseButton"
-           
-           
-           
-            @click="closeQuestionPreview"
-           icon="close" />
-        </header>
+          </div>
+        </SheetHeader>
 
         <StatePanel v-if="previewState === 'loading'" kind="loading" title="正在读取题目…" />
         <StatePanel
@@ -1130,7 +1113,7 @@ onBeforeUnmount(() => {
             />
           </details>
         </template>
-      </DialogContent>
-    </div>
-  </DialogPortal></DialogRoot>
+      </template>
+    </SheetContent>
+  </Sheet>
 </template>

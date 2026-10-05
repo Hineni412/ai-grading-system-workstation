@@ -3,6 +3,7 @@ import { createApp, nextTick } from 'vue'
 import { createPinia } from 'pinia'
 
 import QuestionAnnotationPanel from '../QuestionAnnotationPanel.vue'
+import ConfirmDialogHost from '../../design-system/ConfirmDialogHost.vue'
 import { questionBankApi, type QuestionBankDetail, type QuestionErrorPattern } from '../../../api/question-bank'
 import { useQuestionBankStore } from '../../../stores/question-bank'
 
@@ -119,12 +120,21 @@ it('shows each wrong option, edits and rejects the shared question pattern, then
   expect(section.textContent).toContain('把概念混为一谈')
   expect(section.textContent).toContain('教师调整')
 
-  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  const confirmEl = document.createElement('div')
+  document.body.append(confirmEl)
+  const confirmApp = createApp(ConfirmDialogHost)
+  confirmApp.mount(confirmEl)
+  apps.push(confirmApp)
   edit.mockResolvedValueOnce(detail([changed.error_patterns![1]!], ['A', 'C', 'D']))
   const aRow = [...section.querySelectorAll<HTMLElement>('.qb-patterns__option')]
     .find((row) => row.querySelector('.qb-patterns__letter')?.textContent?.trim() === 'A')!
   ;[...aRow.querySelectorAll<HTMLButtonElement>('button')]
     .find((button) => button.textContent?.includes('驳回'))!.click()
+  await vi.waitFor(() => {
+    expect(document.body.querySelector('[data-testid="app-confirm-dialog"]')).not.toBeNull()
+  })
+  ;[...document.body.querySelector('[data-testid="app-confirm-dialog"]')!.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.trim() === '驳回')!.click()
   await vi.waitFor(() => expect(edit).toHaveBeenLastCalledWith(1, items[0], { action: 'reject' }))
 
   bank.detail = detail([{

@@ -20,6 +20,7 @@ import { sessionStatusLabel, sessionStatusTone } from '../../lib/session-status'
 import { useConfigWorkspaceStore } from '../../stores/config-workspace'
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { useSessionStore } from '../../stores/session'
+import { useConfirm } from '../../composables/useConfirm'
 import { useSessionSwitch } from '../../composables/useSessionSwitch'
 import SessionManagementDrawer from '../sessions/SessionManagementDrawer.vue'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
@@ -34,6 +35,7 @@ const sessionStore = useSessionStore()
 const curriculumScope = useCurriculumScopeStore()
 const configStore = useConfigWorkspaceStore()
 const { switchSession } = useSessionSwitch()
+const { confirm, alert } = useConfirm()
 
 const isRail = computed(() => props.mode === 'rail')
 /* 桌面（展开/图标轨）从侧栏右侧弹出，不遮挡触发卡；≤900px 抽屉内向下展开 */
@@ -149,7 +151,7 @@ watch(() => sessionStore.selectedSessionId, (value) => {
 })
 
 /* 与原顶栏 selectCurriculumVolume 一致：待核对提交阻止、脏编辑确认丢弃、跨学期收起考试 */
-function selectCurriculumVolume(event: Event): void {
+async function selectCurriculumVolume(event: Event): Promise<void> {
   const selector = event.currentTarget as HTMLSelectElement
   const nextVolumeId = selector.value || null
   const selectedSession = sessionStore.currentSession
@@ -162,12 +164,17 @@ function selectCurriculumVolume(event: Event): void {
     selector.value = curriculumScope.selectedVolumeId ?? ''
   }
   if (changesCurrentExam && configStore.hasPendingSubmission) {
-    window.alert('当前考试仍有上传或生成结果等待核对。请先完成核对，再切换教学学期。')
+    await alert({ title: '请先完成核对', message: '当前考试仍有上传或生成结果等待核对。请先完成核对，再切换教学学期。' })
     restoreScopeSelection()
     return
   }
   if (changesCurrentExam && configStore.hasDirtyEditor) {
-    const discard = window.confirm('当前评分依据有未保存修改。切换教学学期会收起当前考试并丢弃这些修改，是否继续？')
+    const discard = await confirm({
+      title: '切换教学学期？',
+      message: '当前评分依据有未保存修改，切换教学学期会收起当前考试并丢弃这些修改。',
+      confirmLabel: '切换',
+      danger: true,
+    })
     if (!discard) {
       restoreScopeSelection()
       return
@@ -184,8 +191,8 @@ function selectCurriculumVolume(event: Event): void {
   curriculumScope.selectVolume(nextVolumeId)
 }
 
-function pickSession(id: number | null): void {
-  if (!switchSession(id)) {
+async function pickSession(id: number | null): Promise<void> {
+  if (!await switchSession(id)) {
     // 守卫拒绝：保持浮层打开、勾选回退到当前考试
     listSelection.value = sessionStore.selectedSessionId ?? NONE_VALUE
     return

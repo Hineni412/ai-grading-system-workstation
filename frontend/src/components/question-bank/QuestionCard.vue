@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { knowledgeLeafLabel, questionTypeWithSubtype, type QuestionBankListItem } from '../../api/question-bank'
 import { useAssemblyStore } from '../../stores/assembly'
+import { useConfirm } from '../../composables/useConfirm'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import AppButton from '../design-system/AppButton.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
@@ -12,6 +13,7 @@ const props = defineProps<{ question: QuestionBankListItem; paperMode?: boolean;
 const emit = defineEmits<{ similar: [question: QuestionBankListItem]; skill: [key: string] }>()
 const bank = useQuestionBankStore()
 const assembly = useAssemblyStore()
+const { confirm } = useConfirm()
 const heading = ref<HTMLButtonElement | null>(null)
 const expanded = computed(() => bank.selectedQuestionId === props.question.id)
 const inBasket = computed(() => assembly.draft.basket_ids.includes(props.question.id))
@@ -28,7 +30,12 @@ async function basket() {
   else await assembly.addQuestions([props.question.id])
 }
 async function remove() {
-  if (window.confirm(`确认把第 ${props.question.question_number || props.question.id} 题移出当前题库吗？删除后可立即恢复。`)) await bank.deleteCurrent()
+  if (await confirm({
+    title: `把第 ${props.question.question_number || props.question.id} 题移出当前题库？`,
+    message: '删除后可立即恢复。',
+    confirmLabel: '移出',
+    danger: true,
+  })) await bank.deleteCurrent()
 }
 watch(expanded, async (value, wasExpanded) => {
   if (!value && wasExpanded && !bank.selectedQuestionId) {

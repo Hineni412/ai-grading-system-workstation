@@ -21,7 +21,7 @@ const props = withDefaults(defineProps<{
   sessionId: number
   source?: ConfigSource | null
   uploader?: (sessionId: number, file: File, requestToken: string) => Promise<ConfigSource>
-  beforeUpload?: () => boolean
+  beforeUpload?: () => boolean | Promise<boolean>
   submissionLoader?: (sessionId: number, requestToken: string) => Promise<ConfigSourceSubmission>
   submissionAbandoner?: (sessionId: number, requestToken: string) => Promise<void>
   activeSourceLoader?: (sessionId: number) => Promise<ConfigSource>
@@ -133,7 +133,7 @@ async function submit(): Promise<void> {
     errorMessage.value = validation
     return
   }
-  if (!props.beforeUpload()) return
+  if (!await props.beforeUpload()) return
   const requestToken = createClientRequestToken()
   if (!configStore.markUploadSubmissionPending(requestToken)) return
   uploading.value = true

@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted } from 'vue'
 
 import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
+import AppDialog from '../design-system/AppDialog.vue'
 import StudentMatchSelect from './StudentMatchSelect.vue'
 import type { ScanPreflightController } from './useScanPreflight'
 
@@ -46,14 +47,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div
-    v-if="activeViewerTarget"
-    class="scan-viewer"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="scan-viewer-title"
+  <AppDialog
+    :open="Boolean(activeViewerTarget)"
+    title="原卷核对"
+    hide-header
+    :dismissible="false"
+    class="scan-viewer-dialog"
+    @update:open="(value: boolean) => { if (!value) closeViewer() }"
   >
-    <div class="scan-viewer__shell">
+    <template v-if="activeViewerTarget">
       <header class="scan-viewer__header">
         <div>
           <span>原卷核对</span>
@@ -109,6 +111,6 @@ onBeforeUnmount(() => {
           </p>
         </aside>
       </div>
-    </div>
-  </div>
+    </template>
+  </AppDialog>
 </template>

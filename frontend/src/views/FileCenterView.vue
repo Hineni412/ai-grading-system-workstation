@@ -23,6 +23,7 @@ import {
   reportFilename,
   reportTypeLabel,
 } from '../components/file-center/report-format'
+import { useConfirm } from '../composables/useConfirm'
 import { useFileCenterStore } from '../stores/file-center'
 import { useJobStore } from '../stores/jobs'
 import { useResultsCenterStore } from '../stores/results-center'
@@ -44,6 +45,7 @@ const chromeless = computed(() => props.embedded || isPopover.value)
 
 const router = useRouter()
 const sessionStore = useSessionStore()
+const { confirm } = useConfirm()
 const curriculumScope = useCurriculumScopeStore()
 const personalVolumeLabel = computed(() => curriculumScope.volumes.find(v => v.id === sessionStore.currentSession?.curriculum_volume_id)?.label)
 const fileCenter = useFileCenterStore()
@@ -466,9 +468,12 @@ async function download(job: JobResponse): Promise<void> {
 }
 
 async function deleteReport(job: ReportHistoryJob): Promise<void> {
-  const confirmed = window.confirm(
-    `删除「${reportFilename(job)}」后，本机不再保留这份报告；之后如需这份报告，要重新生成并再次产生模型调用费用。确认删除吗？`,
-  )
+  const confirmed = await confirm({
+    title: `删除「${reportFilename(job)}」？`,
+    message: '删除后，本机不再保留这份报告；之后如需这份报告，要重新生成并再次产生模型调用费用。',
+    confirmLabel: '删除',
+    danger: true,
+  })
   if (!confirmed) return
   actionError.value = ''
   actionMessage.value = ''

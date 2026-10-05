@@ -20,6 +20,7 @@ import { CURRICULUM_SCOPE_STORAGE_KEY } from '../stores/curriculum-scope'
 import { useJobStore } from '../stores/jobs'
 import { useQuestionBankStore } from '../stores/question-bank'
 import QuestionBankView from '../views/QuestionBankView.vue'
+import ConfirmDialogHost from '../components/design-system/ConfirmDialogHost.vue'
 
 const revision = 'a'.repeat(64)
 const item = {
@@ -125,6 +126,28 @@ function cardMenuItem(label: string): HTMLButtonElement {
 function batchBarButton(host: HTMLElement, label: string): HTMLButtonElement {
   const bar = host.querySelector('.paper-batch-bar')!
   return [...bar.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.trim() === label)!
+}
+
+function mountConfirmHost(): void {
+  const el = document.createElement('div')
+  document.body.append(el)
+  const app = createApp(ConfirmDialogHost)
+  app.mount(el)
+  mounted.push(app)
+}
+
+async function confirmDialogOpen(): Promise<HTMLElement> {
+  let dialog: HTMLElement | null = null
+  await vi.waitFor(() => {
+    dialog = document.body.querySelector<HTMLElement>('[data-testid="app-confirm-dialog"]')
+    expect(dialog).not.toBeNull()
+  })
+  return dialog!
+}
+
+function confirmDialogButton(dialog: HTMLElement, label: string): HTMLButtonElement {
+  return [...dialog.querySelectorAll<HTMLButtonElement>('button')]
     .find((button) => button.textContent?.trim() === label)!
 }
 
@@ -1016,7 +1039,7 @@ describe('question bank workspace', () => {
     expect(previewButtons.length).toBeGreaterThanOrEqual(5)
     previewButtons[0]!.click()
     await nextTick()
-    expect(document.body.querySelector('.question-preview')).not.toBeNull()
+    expect(document.body.querySelector('.question-preview-sheet')).not.toBeNull()
   })
 
   it('notes when a whole file was already in the bank', async () => {
@@ -1200,7 +1223,7 @@ describe('question bank workspace', () => {
     store.papersState = 'ready'
     app.mount(host)
     mounted.push(app)
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mountConfirmHost()
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
       if (url.startsWith('/api/question-bank/question-refs')) {
@@ -1232,11 +1255,14 @@ describe('question bank workspace', () => {
     await openCardMenu(host, '匿名期末试卷')
     cardMenuItem('重新打标签').click()
 
+    const dialog = await confirmDialogOpen()
+    expect(dialog.textContent).toContain('1 道题')
+    confirmDialogButton(dialog, '继续').click()
+
     await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
       ([request, options]) => String(request) === '/api/question-bank/tagging-jobs'
         && options?.method === 'POST',
     )).toBe(true))
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('1 道题'))
     const submitCall = fetchSpy.mock.calls.find(
       ([request, options]) => String(request) === '/api/question-bank/tagging-jobs'
         && options?.method === 'POST',
@@ -1530,7 +1556,7 @@ describe('question bank workspace', () => {
     store.papersState = 'ready'
     app.mount(host)
     mounted.push(app)
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mountConfirmHost()
     const taggingBodies: Array<Record<string, unknown>> = []
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
@@ -1572,10 +1598,12 @@ describe('question bank workspace', () => {
     await nextTick()
     batchBarButton(host, '继续完成未完成题目').click()
 
+    const batchDialog = await confirmDialogOpen()
+    expect(batchDialog.textContent).toContain('还有 2 道题未打全标签')
+    expect(batchDialog.textContent).toContain('共 2 道题提交后端逐题核对')
+    confirmDialogButton(batchDialog, '继续').click()
+
     await vi.waitFor(() => expect(taggingBodies).toHaveLength(2))
-    expect(confirmSpy).toHaveBeenCalledTimes(1)
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('还有 2 道题未打全标签'))
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('共 2 道题提交后端逐题核对'))
     expect(taggingBodies.map((body) => body.question_ids)).toEqual([[3_004], [3_005]])
     expect(taggingBodies.every((body) => body.force_retag === undefined)).toBe(true)
     expect(host.textContent).toContain('已提交 2 份试卷等待后端核对（其中 2 道题未打全标签）')

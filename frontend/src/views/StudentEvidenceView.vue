@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { fetchGraphEvidence, type GraphEvidenceItem, type GraphQueryInput } from '../api/graph'
@@ -15,8 +15,9 @@ import {
   type StudentExamResultSession,
   type StudentSummary,
 } from '../api/students'
-import AppIconButton from '../components/design-system/AppIconButton.vue'
 import AppButton from '../components/design-system/AppButton.vue'
+import AppDialog from '../components/design-system/AppDialog.vue'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet'
 import BackButton from '../components/design-system/BackButton.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
@@ -100,7 +101,6 @@ function openWrongBook() {
 const loadState = ref<'loading' | 'ready' | 'error'>('loading')
 const loadingMore = ref(false)
 const previewUrl = ref('')
-const previewDialog = ref<HTMLDialogElement | null>(null)
 const knowledgeSessions = ref<KnowledgeSessionGroup[]>([])
 const questionSessions = ref<QuestionSessionGroup[]>([])
 const knowledgeStudentName = ref('')
@@ -286,11 +286,9 @@ function toggleQuestion(key: string): void {
 
 function openPreview(url: string): void {
   previewUrl.value = url
-  void nextTick(() => previewDialog.value?.showModal?.())
 }
 
 function closePreview(): void {
-  previewDialog.value?.close?.()
   previewUrl.value = ''
 }
 
@@ -390,10 +388,6 @@ function closeQuestionPanel(): void {
   questionPanelState.value = 'idle'
 }
 
-function onPanelKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape' && questionPanelState.value !== 'idle') closeQuestionPanel()
-}
-
 function reloadSemester(): void {
   if (curriculumScope.loadState !== 'ready') return
   sessions.value = []
@@ -404,11 +398,9 @@ function reloadSemester(): void {
 }
 watch([() => curriculumScope.loadState, () => curriculumScope.selectedVolumeId], reloadSemester)
 onMounted(() => {
-  window.addEventListener('keydown', onPanelKeydown)
   reloadSemester()
 })
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onPanelKeydown)
   controller?.abort()
   questionPanelController?.abort()
 })
@@ -611,18 +603,13 @@ onBeforeUnmount(() => {
       </template>
     </template>
 
-    <dialog ref="previewDialog" class="student-evidence__preview" @click="closePreview">
-      <img v-if="previewUrl" :src="previewUrl" alt="作答证据大图">
-    </dialog>
+    <AppDialog :open="Boolean(previewUrl)" title="作答证据大图" class="student-evidence__preview" @update:open="(value: boolean) => { if (!value) closePreview() }">
+      <img v-if="previewUrl" :src="previewUrl" alt="作答证据大图" @click="closePreview">
+    </AppDialog>
 
-    <Teleport to="body">
-      <div
-        v-if="questionPanelState !== 'idle'"
-        class="question-panel-layer"
-        role="presentation"
-        @click.self="closeQuestionPanel"
-      >
-        <aside class="question-panel" role="dialog" aria-modal="true" aria-labelledby="question-panel-title">
+    <Sheet :open="questionPanelState !== 'idle'" @update:open="(value: boolean) => { if (!value) closeQuestionPanel() }">
+      <SheetContent class="question-panel" :aria-describedby="undefined">
+          <SheetTitle v-if="questionPanelState !== 'ready' || !questionPanelDetail" class="n">题库原题</SheetTitle>
           <StatePanel
             v-if="questionPanelState === 'loading'"
             kind="loading"
@@ -637,14 +624,14 @@ onBeforeUnmount(() => {
             @retry="retryQuestionPanel"
           />
           <template v-else-if="questionPanelDetail">
-            <header class="question-panel__heading">
+            <SheetHeader class="question-panel__heading">
               <div>
-                <h2 id="question-panel-title" tabindex="-1">
+                <SheetTitle as="h2" id="question-panel-title" tabindex="-1">
                   第 {{ questionPanelDetail.question_number || questionPanelDetail.id }} 题
-                </h2>
+                </SheetTitle>
                 <p>{{ questionPanelDetail.paper_title || '未命名试卷' }}</p>
-              </div><AppIconButton label="关闭原题预览" @click="closeQuestionPanel" icon="close" />
-            </header>
+              </div>
+            </SheetHeader>
 
             <dl class="question-panel__facts">
               <div><dt>题型</dt><dd>{{ questionPanelDetail.question_type || '未分类' }}</dd></div>
@@ -710,9 +697,8 @@ onBeforeUnmount(() => {
               </div>
             </section>
           </template>
-        </aside>
-      </div>
-    </Teleport>
+      </SheetContent>
+    </Sheet>
   </section>
 </template>
 
@@ -745,15 +731,13 @@ onBeforeUnmount(() => {
 .student-evidence__thumb { padding: 0; border: 1px solid var(--color-border-default); border-radius: calc(var(--radius) - 2px); background: var(--color-bg-subtle); cursor: zoom-in; }
 .student-evidence__thumb img { display: block; width: 96px; height: 64px; object-fit: cover; }
 .student-evidence__more { margin-bottom: var(--space-4); }
-.student-evidence__preview { max-width: min(90vw, 960px); padding: var(--space-3); border: 1px solid var(--color-border-default); border-radius: var(--radius-overlay); background: var(--color-bg-surface); }
-.student-evidence__preview::backdrop { background: var(--color-overlay-mask); }
+.student-evidence__preview { width: auto; max-width: min(90vw, 960px); }
 .student-evidence__preview img { display: block; max-width: 100%; max-height: 80vh; }
 .student-evidence__question-bar { display: flex; align-items: center; gap: var(--space-2); padding-right: var(--space-3); }
 .student-evidence__question-bar .student-evidence__question-heading { flex: 1; min-width: 0; }
 .student-evidence__original { flex: none; padding: 3px 10px; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-accent-active); font-size: var(--font-size-caption); cursor: pointer; }
 .student-evidence__original:hover { border-color: var(--color-accent); background: var(--color-bg-selected); }
-.question-panel-layer { position: fixed; inset: 0; z-index: 1100; display: flex; justify-content: flex-end; width: 100vw; height: 100dvh; background: var(--color-overlay-mask); }
-.question-panel { width: min(560px, 92vw); max-width: 100%; height: 100%; overflow-y: auto; padding: var(--space-5); border-left: 1px solid var(--color-border-default); background: var(--color-bg-surface); box-shadow: var(--shadow-overlay); }
+.question-panel { width: min(560px, 92vw); max-width: 100%; overflow-y: auto; padding: var(--space-5); gap: 0; }
 
 
 .question-panel__heading { display: flex; justify-content: space-between; align-items: start; gap: var(--space-3); }

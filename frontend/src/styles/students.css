@@ -17,7 +17,10 @@
 .student-danger { border-top: 1px solid var(--color-border-subtle); padding-top: 14px; margin-top: 5px; display: grid; gap: 10px; justify-items: start; }
 .student-danger h3 { font-size: var(--font-size-caption); color: var(--color-text-muted); margin: 0; }
 .student-danger p { font-size: var(--font-size-caption); line-height: 1.7; margin: 0; color: var(--color-text-secondary); }
-.student-import-dialog { width: 760px; }
+.app-dialog.student-import-dialog { width: min(760px, calc(100vw - 2 * var(--space-5))); --app-control-height: var(--control-height-small); --app-control-padding: 11px; --app-control-font: var(--font-size-caption); }
+.student-import-dialog .app-input.app-input.app-input { min-height: var(--control-height-small); height: var(--control-height-small); padding: 0 10px; font-size: var(--font-size-caption); }
+.student-import-dialog .status-badge { min-height: 18px; height: 18px; font-size: var(--font-size-caption); padding: 0 7px; border: 0; border-radius: var(--radius-tag); line-height: 1; }
+.student-import-dialog .settings-dialog__footer .app-button { --app-control-height: var(--control-height-default); --app-control-padding-x: 14px; --app-control-font-size: var(--font-size-dense); }
 .student-import__mapping { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; font-size: var(--font-size-caption); }
 .student-import__mapping label { display: flex; gap: 5px; align-items: center; }
 .student-import__mapping select { width: 100px; }
@@ -26,4 +29,3 @@
 .student-import__preview thead { position: sticky; top: 0; background: var(--color-bg-surface); }
 .student-import__preview td { max-width: 180px; overflow-wrap: anywhere; }
 
-.student-import__title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: var(--font-size-h3); font-weight: var(--font-weight-semibold); }

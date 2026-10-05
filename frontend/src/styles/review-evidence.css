@@ -466,26 +466,18 @@
     padding-inline: var(--space-2);
   }
 }
-.review-image-dialog {
+.app-dialog.review-image-dialog {
   width: min(96vw, 1600px);
-  height: 94dvh;
   max-width: 96vw;
+  height: 94dvh;
   max-height: 94dvh;
-  padding: var(--space-4);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
 }
 
-.review-image-dialog[open] {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: var(--space-3);
+.review-image-dialog .app-dialog__body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.review-image-dialog::backdrop { background: rgb(0 0 0 / 65%); }
-.review-image-dialog > header { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); }
-.review-image-dialog > header button { padding: var(--space-2) var(--space-3); cursor: pointer; }
 .review-image-dialog .review-evidence-viewer { min-height: 0; height: 100%; }
 .review-answer-sheet__image-frame img[role="button"] { cursor: zoom-in; }

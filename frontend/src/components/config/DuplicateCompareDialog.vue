@@ -1,14 +1,6 @@
 <script setup lang="ts">
-import AppIconButton from '../design-system/AppIconButton.vue'
 import { computed, ref, watch } from 'vue'
-import {
-  DialogClose,
-  DialogContent,
-  DialogOverlay,
-  DialogPortal,
-  DialogRoot,
-  DialogTitle,
-} from 'reka-ui'
+import AppDialog from '../design-system/AppDialog.vue'
 
 import type {
   ConfigQuestionPreview,
@@ -117,26 +109,24 @@ function decideBankAnswer(): void {
 </script>
 
 <template>
-  <DialogRoot :open="item !== null" @update:open="!$event && emit('close')">
-    <DialogPortal>
-      <DialogOverlay class="dup-compare__overlay" />
-      <DialogContent
-        class="dup-compare"
-        data-testid="dup-compare-dialog"
-        :aria-describedby="undefined"
-        @keydown="onKeydown"
-      >
-        <template v-if="item && question">
-          <header class="dup-compare__head">
-            <span
-              v-if="kindTag"
-              class="question-review__flag"
-              :class="`question-review__flag--${kindTag.tone ?? 'warning'}`"
-            >{{ kindTag.label }}</span>
-            <DialogTitle class="dup-compare__title">{{ heading }}</DialogTitle>
-            <span class="dup-compare__reason" :title="item.reason">{{ item.reason }}</span>
-            <span class="dup-compare__counter">{{ index + 1 }}/{{ total }}</span><DialogClose as-child><AppIconButton label="关闭对照" icon="close" /></DialogClose>
-          </header>
+  <AppDialog
+    :open="item !== null"
+    :title="heading || '与题库已有题目对照'"
+    class="dup-compare"
+    data-testid="dup-compare-dialog"
+    @update:open="!$event && emit('close')"
+    @keydown="onKeydown"
+  >
+    <template #header-extra>
+      <span
+        v-if="kindTag"
+        class="question-review__flag"
+        :class="`question-review__flag--${kindTag.tone ?? 'warning'}`"
+      >{{ kindTag.label }}</span>
+      <span v-if="item" class="dup-compare__reason" :title="item.reason">{{ item.reason }}</span>
+      <span v-if="item" class="dup-compare__counter">{{ index + 1 }}/{{ total }}</span>
+    </template>
+    <template v-if="item && question">
 
           <div class="dup-compare__panes">
             <section class="dup-compare__pane">
@@ -305,52 +295,27 @@ function decideBankAnswer(): void {
               </template>
             </div>
           </footer>
-        </template>
-      </DialogContent>
-    </DialogPortal>
-  </DialogRoot>
+    </template>
+  </AppDialog>
 </template>
 
-<style scoped>
-.dup-compare__overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  background: var(--color-overlay-mask);
+<style>
+.dup-compare {
+  width: 88vw;
+  max-width: none;
+  height: 88dvh;
 }
 
-.dup-compare {
-  position: fixed;
-  inset: 6vh 6vw;
-  z-index: 61;
+.dup-compare .app-dialog__body {
   display: flex;
   flex-direction: column;
-  min-width: 0;
-  padding: var(--space-4);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-overlay);
-  background: var(--color-bg-surface);
-  box-shadow: var(--shadow-overlay);
-}
-
-.dup-compare__head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  padding-block-end: var(--space-2);
-  border-block-end: var(--border-width) solid var(--color-border-subtle);
-}
-
-.dup-compare__title {
-  margin: 0;
+  min-height: 0;
   overflow: hidden;
-  font-size: var(--font-size-h3);
-  font-weight: var(--font-weight-semibold);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  padding: var(--space-4);
 }
+</style>
 
+<style scoped>
 .dup-compare__reason {
   flex: 1 1 auto;
   min-width: 0;
@@ -423,6 +388,7 @@ function decideBankAnswer(): void {
 }
 
 .dup-compare__answers {
+  flex: none;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: var(--space-2);
@@ -443,6 +409,7 @@ function decideBankAnswer(): void {
 }
 
 .dup-compare__foot {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;

@@ -76,7 +76,7 @@ function volumeFullLabel(session: SessionSummary): string {
 
 function setCurrent(session: SessionSummary): void {
   // 守卫拒绝（待核对提交 / 未保存修改）时保持现状，由 switchSession 自己提示
-  switchSession(session.id)
+  void switchSession(session.id)
 }
 
 /* 函数 ref：v-for 内的 ref 属性会被收集成数组，改用回调拿到单个输入框 */

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle } from 'reka-ui'
+import AppDialog from '../design-system/AppDialog.vue'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
@@ -208,9 +208,7 @@ onBeforeUnmount(() => controller.abort())
       </tbody></table>
       <FeedbackBanner v-if="ops.backupsError" role="alert" tone="error" :description="ops.backupsError.message"><AppButton variant="ghost" size="small" @click="ops.refreshBackups(opsApi)">刷新</AppButton></FeedbackBanner><StatePanel v-else-if="!zipBackups.length" kind="empty" compact title="当前没有可恢复的备份" />
     </section>
-    <DialogRoot :open="dialog !== null" @update:open="closeDialog">
-      <DialogPortal><DialogOverlay class="settings-overlay fx-overlay" /><DialogContent class="settings-dialog fx-dialog" :aria-describedby="undefined" @escape-key-down="event => { if (busy || ops.submitting) event.preventDefault() }" @interact-outside="event => { if (busy || ops.submitting) event.preventDefault() }">
-        <DialogTitle>{{ dialogTitle }}</DialogTitle>
+    <AppDialog :open="dialog !== null" :title="dialogTitle" class="settings-ops-dialog" :dismissible="!(busy || ops.submitting)" @update:open="closeDialog">
         <p v-if="dialog === 'legacy'">清理后，查看批注卷时会重新生成。</p>
         <p v-if="dialog === 'release'">可腾出 {{ bytes(freedEstimate) }}。分数、查看原卷、AI 继续批改都不受影响；之后不能再重新扫描归卷。</p>
         <template v-if="dialog === 'clear'">
@@ -226,8 +224,7 @@ onBeforeUnmount(() => controller.abort())
         <p v-if="busy" class="settings-inline" role="status"><progress class="settings-progress" />{{ progress || '正在清理…' }}</p>
         <FeedbackBanner v-if="dialogError" role="alert" tone="error" :description="dialogError"><AppButton variant="ghost" size="small" :disabled="busy" @click="refreshCleanup">刷新</AppButton></FeedbackBanner>
         <FeedbackBanner v-if="ops.actionError && dialog === 'clear'" role="alert" tone="error" :description="ops.actionError.message" />
-        <footer class="settings-dialog__footer"><AppButton variant="secondary" :disabled="busy || ops.submitting" @click="closeDialog()">取消</AppButton><AppButton :variant="dialog === 'clear' || dialog === 'restore' ? 'danger' : 'primary'" data-testid="confirm-operation" :disabled="busy || ops.submitting || !!dialogError || (dialog === 'clear' && phrase !== '确认清除') || (dialog === 'restore' && phrase !== '确认恢复')" @click="submitDialog">{{ dialog === 'release' ? '释放' : dialog === 'clear' ? '清除原卷' : dialog === 'legacy' ? '清理' : '恢复' }}</AppButton></footer>
-      </DialogContent></DialogPortal>
-    </DialogRoot>
+        <template #footer><AppButton variant="secondary" :disabled="busy || ops.submitting" @click="closeDialog()">取消</AppButton><AppButton :variant="dialog === 'clear' || dialog === 'restore' ? 'danger' : 'primary'" data-testid="confirm-operation" :disabled="busy || ops.submitting || !!dialogError || (dialog === 'clear' && phrase !== '确认清除') || (dialog === 'restore' && phrase !== '确认恢复')" @click="submitDialog">{{ dialog === 'release' ? '释放' : dialog === 'clear' ? '清除原卷' : dialog === 'legacy' ? '清理' : '恢复' }}</AppButton></template>
+    </AppDialog>
   </section>
 </template>

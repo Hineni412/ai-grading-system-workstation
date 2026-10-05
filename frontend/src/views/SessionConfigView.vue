@@ -28,6 +28,7 @@ import {
 } from '../api/config-workspace'
 import type { JobResponse } from '../api/jobs'
 import { fetchRegionReadiness, type RegionReadiness } from '../api/template-regions'
+import { useConfirm } from '../composables/useConfirm'
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
 import { useJobStore } from '../stores/jobs'
 import { useSessionStore } from '../stores/session'
@@ -52,6 +53,7 @@ const props = withDefaults(defineProps<{
 const sessionStore = useSessionStore()
 const configStore = useConfigWorkspaceStore()
 const jobStore = useJobStore()
+const { confirm } = useConfirm()
 const requestedStage = ref(new URLSearchParams(window.location.search).get('stage'))
 type StageId = 'draft' | 'source' | 'generation' | 'editor' | 'template'
 const activePanel = ref<'source' | 'editor'>('source')
@@ -235,9 +237,14 @@ watch([
   } catch { /* keep the conservative not-started state without exposing details */ }
 }, { immediate: true })
 
-function confirmSourceUpload(): boolean {
+async function confirmSourceUpload(): Promise<boolean> {
   if (!configStore.hasDirtyEditor) return true
-  return window.confirm('替换试卷会在新文件接收成功后清除尚未保存的评分依据修改。是否继续？')
+  return confirm({
+    title: '替换试卷？',
+    message: '替换试卷会在新文件接收成功后清除尚未保存的评分依据修改。',
+    confirmLabel: '替换',
+    danger: true,
+  })
 }
 
 function sameValue(left: unknown, right: unknown): boolean {
@@ -433,9 +440,12 @@ async function regenerateEditorQuestions(
   if (regenerationBusy.value || saving.value
     || configStore.sessionId === null) return
   if (targetedQuestionIds.length === 0) return
-  if (configStore.hasDirtyEditor && !window.confirm(
-    `评分依据还有未保存修改。${targetedQuestionIds.join('、')} 重新分析成功后会发布新版本，未保存修改不会保留。是否继续？`,
-  )) return
+  if (configStore.hasDirtyEditor && !await confirm({
+    title: '重新分析选中题目？',
+    message: `评分依据还有未保存修改。${targetedQuestionIds.join('、')} 重新分析成功后会发布新版本，未保存修改不会保留。`,
+    confirmLabel: '继续',
+    danger: true,
+  })) return
 
   const sessionId = configStore.sessionId
   const generationContext = configStore.captureGenerationContext()

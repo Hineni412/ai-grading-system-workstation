@@ -24,9 +24,9 @@
 .settings-table strong { font-weight: var(--font-weight-medium); }
 .settings-table small { display: block; margin-top: 1px; font-size: var(--font-size-caption); color: var(--color-text-muted); }
 .settings-table input[type=checkbox], .settings-check input { accent-color: var(--color-accent); }
-.settings-hub .app-button, .settings-dialog .app-button, .settings-drawer .app-button { --app-control-height: var(--control-height-small); --app-control-padding: 11px; --app-control-font: var(--font-size-caption); }
-.settings-hub .app-input.app-input.app-input, .settings-dialog .app-input.app-input.app-input, .settings-drawer .app-input.app-input.app-input { --app-control-height: var(--control-height-small); min-height: var(--control-height-small); height: var(--control-height-small); padding: 0 10px; font-size: var(--font-size-caption); }
-.settings-hub .status-badge, .settings-dialog .status-badge { min-height: 18px; height: 18px; font-size: var(--font-size-caption); padding: 0 7px; border: 0; border-radius: var(--radius-tag); line-height: 1; }
+.settings-hub .app-button, .settings-drawer .app-button { --app-control-height: var(--control-height-small); --app-control-padding: 11px; --app-control-font: var(--font-size-caption); }
+.settings-hub .app-input.app-input.app-input, .settings-drawer .app-input.app-input.app-input { --app-control-height: var(--control-height-small); min-height: var(--control-height-small); height: var(--control-height-small); padding: 0 10px; font-size: var(--font-size-caption); }
+.settings-hub .status-badge { min-height: 18px; height: 18px; font-size: var(--font-size-caption); padding: 0 7px; border: 0; border-radius: var(--radius-tag); line-height: 1; }
 .settings-danger-ghost.app-button.app-button.app-button[data-variant=ghost] { color: var(--color-danger); }
 .settings-danger-ghost.app-button.app-button.app-button[data-variant=ghost]:hover { background: var(--color-danger-subtle); }
 .settings-danger-outline.app-button.app-button.app-button[data-variant=danger] { background: var(--color-bg-surface); color: var(--color-danger); border: 1px solid color-mix(in srgb, var(--color-danger) 35%, transparent); box-shadow: var(--shadow-raised); }
@@ -38,12 +38,12 @@
 .settings-disclosure > summary::-webkit-details-marker { display: none; }
 .settings-disclosure > summary::after { content: '▸'; float: right; color: var(--color-text-muted); }
 .settings-disclosure[open] > summary::after { content: '▾'; }
-.settings-overlay { position: fixed; inset: 0; z-index: 60; background: var(--color-overlay-mask); }
-.settings-dialog { position: fixed; top: 50%; left: 50%; translate: -50% -50%; z-index: 61; width: 500px; max-width: 92vw; max-height: 86vh; overflow: auto; padding: var(--space-5); border-radius: var(--radius-overlay); box-shadow: var(--shadow-overlay); background: var(--color-bg-surface); color: var(--color-text-primary); }
-.settings-dialog h2 { margin: 0 0 10px; font-size: var(--font-size-h3); font-weight: var(--font-weight-semibold); }
-.settings-dialog p { margin: 10px 0; font-size: var(--font-size-dense); line-height: 1.65; color: var(--color-text-secondary); }
 .settings-dialog__footer { display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin-top: 16px; }
 .settings-dialog__footer > .settings-note { margin-right: auto; }
+.settings-ops-dialog { --app-control-height: var(--control-height-small); --app-control-padding: 11px; --app-control-font: var(--font-size-caption); }
+.settings-ops-dialog .app-input.app-input.app-input { --app-control-height: var(--control-height-small); min-height: var(--control-height-small); height: var(--control-height-small); padding: 0 10px; font-size: var(--font-size-caption); }
+.settings-ops-dialog .app-dialog__footer .app-button { --app-control-height: var(--control-height-default); --app-control-padding-x: 14px; --app-control-font-size: var(--font-size-dense); }
+.settings-ops-dialog p { margin: 10px 0; font-size: var(--font-size-dense); line-height: 1.65; color: var(--color-text-secondary); }
 .settings-drawer[data-slot=sheet-content] { z-index: 62; width: 380px; max-width: 94vw; gap: 0; padding: 0; background: var(--color-bg-surface); box-shadow: var(--shadow-overlay); animation-duration: var(--duration-drawer); }
 body:has(.settings-drawer[data-state=open]) [data-slot=sheet-overlay] { background: var(--color-overlay-mask); z-index: 60; }
 .settings-drawer__header { padding: 14px 16px; border-bottom: 1px solid var(--color-border-subtle); }

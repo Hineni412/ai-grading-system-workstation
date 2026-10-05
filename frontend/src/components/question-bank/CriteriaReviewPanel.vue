@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { DialogRoot, DialogPortal, DialogContent, DialogTitle } from 'reka-ui'
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import {
   questionBankApi,
   type QuestionBankListItem,
 } from '../../api/question-bank'
-import AppIconButton from '../design-system/AppIconButton.vue'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../ui/sheet'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 
@@ -20,7 +19,12 @@ const emit = defineEmits<{
   openQuestion: [question: QuestionBankListItem]
 }>()
 
-const closeButton = ref<HTMLButtonElement | null>(null)
+function onCloseAutoFocus(event: Event): void {
+  if (!props.returnFocus) return
+  event.preventDefault()
+  props.returnFocus.focus()
+}
+
 const loadState = ref<'idle' | 'loading' | 'ready' | 'empty' | 'error'>('idle')
 const items = ref<QuestionBankListItem[]>([])
 const total = ref(0)
@@ -35,7 +39,7 @@ watch(
       return
     }
     void load()
-    void nextTick(() => closeButton.value?.focus())
+    void nextTick(() => document.querySelector<HTMLElement>('.criteria-review .app-icon-button')?.focus())
   },
   { immediate: true },
 )
@@ -71,42 +75,25 @@ function openQuestion(question: QuestionBankListItem): void {
   emit('openQuestion', question)
 }
 
-function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape' && props.open) emit('close')
-}
-
-onMounted(() => window.addEventListener('keydown', onKeydown))
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKeydown)
   loadController?.abort()
 })
 </script>
 
 <template>
-  <DialogRoot :open="open" @update:open="!$event && emit('close')"><DialogPortal>
-    <div
-      v-if="open"
-      class="qb-drawer-layer taxonomy-review-layer"
-      role="presentation"
-      @click.self="emit('close')"
+  <Sheet :open="open" @update:open="(value: boolean) => { if (!value) emit('close') }">
+    <SheetContent
+      class="taxonomy-review criteria-review"
+      :aria-describedby="undefined"
+      aria-labelledby="criteria-review-title"
+      @close-auto-focus="onCloseAutoFocus"
     >
-      <DialogContent as="aside"
-        class="taxonomy-review criteria-review"
-        :aria-describedby="undefined"
-        aria-labelledby="criteria-review-title"
-        @close-auto-focus="returnFocus && ($event.preventDefault(), returnFocus.focus())"
-      >
-        <header class="taxonomy-review__header">
+      <template v-if="open">
+        <SheetHeader class="taxonomy-review__header">
           <div>
-            <DialogTitle as="h2" id="criteria-review-title">判定点待审核</DialogTitle>
-                      </div><AppIconButton label="关闭判定点待审核"
-            ref="closeButton"
-           
-           
-           
-            @click="emit('close')"
-           icon="close" />
-        </header>
+            <SheetTitle as="h2" id="criteria-review-title">判定点待审核</SheetTitle>
+          </div>
+        </SheetHeader>
 
         <div class="taxonomy-review__toolbar">
           <div class="taxonomy-review__summary">
@@ -142,7 +129,7 @@ onBeforeUnmount(() => {
         <p v-if="loadState === 'ready' && total > items.length" class="criteria-review__empty">
           仅显示前 {{ items.length }} 道，其余请刷新或逐卷打开处理。
         </p>
-      </DialogContent>
-    </div>
-  </DialogPortal></DialogRoot>
+      </template>
+    </SheetContent>
+  </Sheet>
 </template>

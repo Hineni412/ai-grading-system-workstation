@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { DialogClose, DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
+import AppDialog from '../design-system/AppDialog.vue'
 
 import {
   classAnalysisApi,
@@ -20,7 +20,6 @@ import {
 } from '../../api/model-profiles'
 import { useJobStore } from '../../stores/jobs'
 import { useResultsCenterStore } from '../../stores/results-center'
-import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import ClassAnalysisGenerateConfirm from './ClassAnalysisGenerateConfirm.vue'
@@ -822,13 +821,7 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
       @confirm="confirmRegenerate"
     />
 
-  <DialogRoot :open="patternEdit !== null" @update:open="!$event && (patternEdit = null)">
-    <DialogPortal>
-      <DialogOverlay class="class-analysis__overlay" />
-      <DialogContent class="class-analysis__preview" data-testid="cause-edit-dialog" :aria-describedby="undefined">
-        <div class="class-analysis__dialog-heading">
-          <DialogTitle>{{ patternEdit?.questionId }} · 修改错法</DialogTitle><DialogClose as-child><AppIconButton label="关闭修改对话框" icon="close" /></DialogClose>
-        </div>
+  <AppDialog :open="patternEdit !== null" :title="patternEdit ? `${patternEdit.questionId} · 修改错法` : '修改错法'" class="class-analysis__preview" data-testid="cause-edit-dialog" @update:open="(value: boolean) => { if (!value) patternEdit = null }">
         <template v-if="patternEdit">
           <p class="class-analysis__note">修改名称后，同题考试会沿用新名称。</p>
           <label class="class-analysis__field">
@@ -849,7 +842,5 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
             </AppButton>
           </div>
         </template>
-      </DialogContent>
-    </DialogPortal>
-  </DialogRoot>
+  </AppDialog>
 </template>

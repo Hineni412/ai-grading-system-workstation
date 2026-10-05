@@ -6,6 +6,7 @@ import { createMemoryHistory, createRouter } from 'vue-router';
 
 import type { SessionSummary } from '../../../api/sessions';
 import AppShell from '../../../layouts/AppShell.vue'
+import ConfirmDialogHost from '../../design-system/ConfirmDialogHost.vue'
 import { createAppRouter } from '../../../router';
 import { useConfigWorkspaceStore } from '../../../stores/config-workspace';
 
@@ -46,6 +47,25 @@ async function openExamSwitcher(host: HTMLElement): Promise<HTMLElement> {
 
 function switcherRows(popover: ParentNode): HTMLElement[] {
   return [...popover.querySelectorAll<HTMLElement>('.exam-switcher-popover__row')]
+}
+
+function mountConfirmHost(): ReturnType<typeof createApp> {
+  const el = document.createElement('div')
+  document.body.append(el)
+  const confirmApp = createApp(ConfirmDialogHost)
+  confirmApp.mount(el)
+  return confirmApp
+}
+
+function confirmDialog(): HTMLElement {
+  const found = document.body.querySelector<HTMLElement>('[data-testid="app-confirm-dialog"]')
+  if (!found) throw new Error('confirm dialog not open')
+  return found
+}
+
+function confirmDialogButton(label: string): HTMLButtonElement {
+  return [...confirmDialog().querySelectorAll<HTMLButtonElement>('button')]
+    .find(item => item.textContent?.trim() === label)!
 }
 
 /* wide=true → ≥1440px 展开模式（显示切换卡）；false → 图标轨 */
@@ -272,11 +292,15 @@ describe('AppShell', () => {
       total_score: 0, issues: [], source: null,
     })
     configStore.updateEditor({ row_id: 'row-1', standard_answer: '未保存答案' })
-    vi.stubGlobal('confirm', vi.fn(() => false))
+    const confirmApp = mountConfirmHost()
 
     const popover = await openExamSwitcher(host)
     const row = switcherRows(popover).find(el => el.textContent?.includes('考试二'))!
     row.click()
+    await settleUi()
+
+    expect(confirmDialog().textContent).toContain('切换考试？')
+    confirmDialogButton('取消').click()
     await settleUi()
 
     /* 守卫拒绝：浮层保持打开、选择不变 */
@@ -285,6 +309,7 @@ describe('AppShell', () => {
     expect(configStore.sessionId).toBe(7)
     expect(configStore.editorEdits[0]?.standard_answer).toBe('未保存答案')
     app.unmount()
+    confirmApp.unmount()
   })
 
   it.each(['generation', 'upload'] as const)(
@@ -301,18 +326,22 @@ describe('AppShell', () => {
       configStore.selectSession(7)
       if (kind === 'generation') configStore.markJobSubmissionPending('1'.repeat(32), 'retry')
       else configStore.markUploadSubmissionPending('2'.repeat(32))
-      const alert = vi.spyOn(window, 'alert').mockImplementation(() => undefined)
+      const confirmApp = mountConfirmHost()
 
       const popover = await openExamSwitcher(host)
       const row = switcherRows(popover).find(el => el.textContent?.includes('考试二'))!
       row.click()
       await settleUi()
 
-      expect(alert).toHaveBeenCalledWith(expect.stringContaining('核对'))
+      expect(confirmDialog().textContent).toContain('核对')
+      confirmDialogButton('知道了').click()
+      await settleUi()
+      expect(document.body.querySelector('[data-testid="app-confirm-dialog"]')).toBeNull()
       expect(document.body.querySelector('.exam-switcher-popover')).not.toBeNull()
       expect(sessionStore.selectedSessionId).toBe(7)
       expect(configStore.sessionId).toBe(7)
       app.unmount()
+      confirmApp.unmount()
     },
   )
 

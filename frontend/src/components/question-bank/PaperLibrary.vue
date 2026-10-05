@@ -9,10 +9,10 @@ import {
   watch,
 } from 'vue'
 import { storeToRefs } from 'pinia'
-import AppIconButton from '../design-system/AppIconButton.vue'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import StatePanel from '../design-system/StatePanel.vue'
-import { DialogRoot, DialogPortal, DialogContent, DialogTitle } from 'reka-ui'
+import AppDialog from '../design-system/AppDialog.vue'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../ui/sheet'
 
 import type {
   QuestionBankPaper,
@@ -20,6 +20,7 @@ import type {
   QuestionBankPaperPermanentDeleteImpact,
 } from '../../api/question-bank'
 import { questionBankApi } from '../../api/question-bank'
+import { useConfirm } from '../../composables/useConfirm'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import { useJobStore } from '../../stores/jobs'
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
@@ -53,6 +54,7 @@ const emit = defineEmits<{
 }>()
 
 const store = useQuestionBankStore()
+const { confirm } = useConfirm()
 const jobStore = useJobStore()
 const curriculumScope = useCurriculumScopeStore()
 const keyword = ref('')
@@ -754,9 +756,11 @@ async function fillSelectedPapers(): Promise<void> {
       ),
       0,
     )
-    if (!window.confirm(
-      `选中的 ${plans.length} 份试卷还有 ${incomplete} 道题未打全标签。将把共 ${total} 道题提交后端逐题核对：只补齐缺失、失败或已过期的标签和判定点，真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。${skippedVolumeNote(skippedWithoutVolume)}确认继续吗？`,
-    )) return
+    if (!await confirm({
+      title: '补齐所选试卷的标签？',
+      message: `选中的 ${plans.length} 份试卷还有 ${incomplete} 道题未打全标签。将把共 ${total} 道题提交后端逐题核对：只补齐缺失、失败或已过期的标签和判定点，真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。${skippedVolumeNote(skippedWithoutVolume)}`,
+      confirmLabel: '继续',
+    })) return
     const count = await submitTaggingPlans(plans, false)
     retagMessage.value = `已提交 ${plans.length} 份试卷等待后端核对（其中 ${incomplete} 道题未打全标签），共 ${count} 个任务；只会补齐缺失、失败或已过期的内容。${skippedVolumeNote(skippedWithoutVolume)}`
   } catch {
@@ -782,9 +786,11 @@ async function retagSelectedPapers(): Promise<void> {
         : '选中的试卷没有可重新标注的题目。'
       return
     }
-    if (!window.confirm(
-      `将重新分析选中的 ${plans.length} 份试卷共 ${total} 道题，可能产生模型费用；人工修改的标签会保留。${skippedVolumeNote(skippedWithoutVolume)}确认继续吗？`,
-    )) return
+    if (!await confirm({
+      title: '重新标注所选试卷？',
+      message: `将重新分析选中的 ${plans.length} 份试卷共 ${total} 道题，可能产生模型费用；人工修改的标签会保留。${skippedVolumeNote(skippedWithoutVolume)}`,
+      confirmLabel: '继续',
+    })) return
     const count = await submitTaggingPlans(plans, true)
     retagMessage.value = `已提交 ${total} 道题，共 ${count} 个重新标注任务。${skippedVolumeNote(skippedWithoutVolume)}`
   } catch {
@@ -867,9 +873,11 @@ async function retagPaper(paper: QuestionBankPaper): Promise<void> {
       retagMessage.value = '这份试卷没有可重新标注的题目。'
       return
     }
-    if (!window.confirm(
-      `将重新分析“${paper.title || `试卷 #${paper.id}`}”的 ${ids.length} 道题，可能产生模型费用；人工修改的标签会保留。确认继续吗？`,
-    )) return
+    if (!await confirm({
+      title: '重新标注这份试卷？',
+      message: `将重新分析“${paper.title || `试卷 #${paper.id}`}”的 ${ids.length} 道题，可能产生模型费用；人工修改的标签会保留。`,
+      confirmLabel: '继续',
+    })) return
     const count = await submitTaggingPlans([{ paper, ids }], true)
     retagMessage.value = `已提交 ${ids.length} 道题，共 ${count} 个重新标注任务。`
   } catch {
@@ -1263,31 +1271,19 @@ async function confirmPermanentDelete(): Promise<void> {
       <AppButton variant="secondary" :disabled="paperPage === paperPageCount" @click="changePaperPage(1)">下一页</AppButton>
     </nav>
 
-    <DialogRoot :open="editingPaperId !== null" @update:open="!$event && closePaperEditor()"><DialogPortal>
-      <div
-        v-if="editingPaperId !== null"
-        class="paper-editor-layer"
-        @click.self="closePaperEditor"
-      >
-        <DialogContent as="aside"
-          class="paper-editor"
+    <Sheet :open="editingPaperId !== null" @update:open="(value: boolean) => { if (!value) closePaperEditor() }">
+      <SheetContent
+          class="paper-editor overflow-y-auto gap-0"
           :aria-describedby="undefined"
-          aria-labelledby="paper-editor-title"
           @close-auto-focus="returnEditorFocus"
         >
-          <header class="paper-editor__header">
+          <SheetHeader class="paper-editor__header">
             <div>
               <p>试卷标签</p>
-              <DialogTitle as="h2" id="paper-editor-title">编辑试卷资料</DialogTitle>
+              <SheetTitle as="h2">编辑试卷资料</SheetTitle>
               <span>这里的内容会显示在试卷卡片，并用于题库筛选。</span>
-            </div><AppIconButton label="关闭试卷资料编辑"
-             
-             
-             
-              :disabled="store.paperWriteState === 'saving'"
-              @click="closePaperEditor"
-             icon="close" />
-          </header>
+            </div>
+          </SheetHeader>
 
           <form class="paper-editor__form" @submit.prevent="savePaperMetadata">
             <label class="is-wide">
@@ -1417,21 +1413,10 @@ async function confirmPermanentDelete(): Promise<void> {
               </AppButton>
             </footer>
           </form>
-        </DialogContent>
-      </div>
-    </DialogPortal></DialogRoot>
-    <DialogRoot :open="Boolean(permanentDeleteImpact)" @update:open="!$event && cancelPermanentDelete()"><DialogPortal>
-      <div
-        v-if="permanentDeleteImpact"
-        class="paper-trash-confirm-layer"
-        @click.self="cancelPermanentDelete"
-      >
-        <DialogContent as="section"
-          class="paper-trash-confirm"
-          :aria-describedby="undefined"
-          aria-labelledby="paper-permanent-delete-title"
-        >
-          <DialogTitle as="h2" id="paper-permanent-delete-title">确认彻底删除？</DialogTitle>
+      </SheetContent>
+    </Sheet>
+    <AppDialog :open="Boolean(permanentDeleteImpact)" title="确认彻底删除？" class="paper-trash-confirm" @update:open="(value: boolean) => { if (!value) cancelPermanentDelete() }">
+        <template v-if="permanentDeleteImpact">
           <strong v-if="pendingDeletePapers.length <= 1">
             {{ pendingDeletePapers[0]?.title || `未命名试卷 #${pendingDeletePapers[0]?.id}` }}
           </strong>
@@ -1475,21 +1460,10 @@ async function confirmPermanentDelete(): Promise<void> {
               @click="confirmPermanentDelete"
             >{{ permanentDeleteState === 'working' ? '正在彻底删除…' : '确认彻底删除' }}</AppButton>
           </footer>
-        </DialogContent>
-      </div>
-    </DialogPortal></DialogRoot>
-    <DialogRoot :open="Boolean(pendingAnswerDraft)" @update:open="!$event && cancelAnswerDraft()"><DialogPortal>
-      <div
-        v-if="pendingAnswerDraft"
-        class="paper-trash-confirm-layer"
-        @click.self="cancelAnswerDraft"
-      >
-        <DialogContent as="section"
-          class="paper-trash-confirm"
-          :aria-describedby="undefined"
-          aria-labelledby="paper-answer-draft-title"
-        >
-          <DialogTitle as="h2" id="paper-answer-draft-title">确认生成答案草稿？</DialogTitle>
+        </template>
+    </AppDialog>
+    <AppDialog :open="Boolean(pendingAnswerDraft)" title="确认生成答案草稿？" class="paper-trash-confirm" @update:open="(value: boolean) => { if (!value) cancelAnswerDraft() }">
+        <template v-if="pendingAnswerDraft">
           <strong>
             选中的 {{ pendingAnswerDraft.paperCount }} 份试卷、共 {{ pendingAnswerDraft.questionIds.length }} 道题
           </strong>
@@ -1509,9 +1483,8 @@ async function confirmPermanentDelete(): Promise<void> {
               @click="confirmAnswerDraft"
             >{{ answerDraftBusy ? '正在提交…' : '确认生成' }}</AppButton>
           </footer>
-        </DialogContent>
-      </div>
-    </DialogPortal></DialogRoot>
+        </template>
+    </AppDialog>
   </section>
 </template>
 
@@ -2122,25 +2095,9 @@ async function confirmPermanentDelete(): Promise<void> {
   font-size: var(--font-size-dense);
 }
 
-.paper-editor-layer {
-  align-items: stretch;
-  background: var(--color-overlay-mask);
-  display: flex;
-  inset: 0;
-  justify-content: flex-end;
-  position: fixed;
-  z-index: 1200;
-}
-
 .paper-editor {
-  background: var(--card);
-  border-left: 1px solid var(--border);
-  box-shadow: -12px 0 32px color-mix(in srgb, var(--color-text-primary) 12%, transparent);
-  display: flex;
-  flex-direction: column;
-  max-width: 100%;
-  overflow: auto;
   width: 580px;
+  max-width: 100%;
 }
 
 .paper-trash-drawer {
@@ -2274,40 +2231,18 @@ async function confirmPermanentDelete(): Promise<void> {
   color: var(--color-danger);
 }
 
-.paper-trash-confirm-layer {
-  align-items: center;
-  background: var(--color-overlay-mask);
-  display: flex;
-  inset: 0;
-  justify-content: center;
-  padding: 20px;
-  position: fixed;
-  z-index: 1250;
-}
-
 .paper-trash-confirm {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-overlay);
-  box-shadow: var(--shadow-overlay);
-  max-width: 100%;
-  padding: var(--space-5);
   width: 470px;
+  max-width: 100%;
 }
 
-.paper-trash-confirm h2 {
-  color: var(--color-text-primary);
-  font-size: var(--font-size-h3);
-  margin: 0 0 14px;
-}
-
-.paper-trash-confirm > strong {
+.paper-trash-confirm strong {
   color: var(--color-text-primary);
   display: block;
   font-size: var(--font-size-body);
 }
 
-.paper-trash-confirm > p:not(.paper-trash-confirm__message) {
+.paper-trash-confirm p:not(.paper-trash-confirm__message) {
   color: var(--color-text-secondary);
   font-size: var(--font-size-dense);
   line-height: 1.7;

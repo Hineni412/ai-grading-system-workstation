@@ -141,8 +141,8 @@ function selectStep(step: string) {
   openPath(step === 'setup' ? setupPath(id, readiness.value) : step === 'review' ? '/grading'
     : step === 'results' ? '/results' : `/sessions/${id}/grading-run`)
 }
-function selectExam(id: number, results: boolean) {
-  if (!switchSession(id)) return
+async function selectExam(id: number, results: boolean) {
+  if (!await switchSession(id)) return
   if (results) openPath('/results')
 }
 </script>

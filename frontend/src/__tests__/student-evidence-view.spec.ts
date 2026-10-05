@@ -288,8 +288,7 @@ describe('student evidence view original question panel', () => {
     await vi.waitFor(() => expect(document.body.textContent).toContain('利用边角关系证明两个三角形全等'))
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
-    await nextTick()
-    expect(document.querySelector('.question-panel')).toBeNull()
+    await vi.waitFor(() => expect(document.querySelector('.question-panel')).toBeNull())
   })
 
 })

@@ -308,30 +308,30 @@ describe('file center view', () => {
       Array.from({length: 10}, (_, i) => i + 1),
     ))
     await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="analysis-confirm-dialog"]'),
+      document.querySelector('[data-testid="analysis-confirm-dialog"]'),
     ).not.toBeNull())
 
     expect(
-      host.querySelector('[data-testid="analysis-service"]')?.textContent,
+      document.querySelector('[data-testid="analysis-service"]')?.textContent,
     ).toContain('默认内容服务')
     expect(
-      host.querySelector('[data-testid="analysis-model"]')?.textContent,
+      document.querySelector('[data-testid="analysis-model"]')?.textContent,
     ).toContain('qwen-plus')
     expect(
-      host.querySelector('[data-testid="analysis-call-count"]')?.textContent,
+      document.querySelector('[data-testid="analysis-call-count"]')?.textContent,
     ).toContain('10')
     expect(
-      host.querySelector('[data-testid="analysis-tokens"]')?.textContent,
+      document.querySelector('[data-testid="analysis-tokens"]')?.textContent,
     ).toContain('120,000')
-    expect(host.textContent).toContain('粗略估算')
-    expect(host.textContent).toContain('其中 3 份复用已生成内容，不重复计费')
-    expect(host.textContent).toContain('实际费用取决于服务商定价')
-    expect(host.textContent).toContain('学生答卷图片')
-    expect(host.textContent).toContain('图片用量另计')
-    expect(host.textContent).toContain('AI 分析内容仅供参考')
+    expect(document.body.textContent).toContain('粗略估算')
+    expect(document.body.textContent).toContain('其中 3 份复用已生成内容，不重复计费')
+    expect(document.body.textContent).toContain('实际费用取决于服务商定价')
+    expect(document.body.textContent).toContain('学生答卷图片')
+    expect(document.body.textContent).toContain('图片用量另计')
+    expect(document.body.textContent).toContain('AI 分析内容仅供参考')
     expect(apiMock.submitReport).not.toHaveBeenCalled()
 
-    host.querySelector<HTMLButtonElement>('[data-testid="confirm-analysis"]')!.click()
+    document.querySelector<HTMLButtonElement>('[data-testid="confirm-analysis"]')!.click()
     await vi.waitFor(() => expect(apiMock.submitReport).toHaveBeenCalledWith(
       7,
       'personal_analysis_html',
@@ -341,7 +341,7 @@ describe('file center view', () => {
       {student_ids: Array.from({length: 10}, (_, i) => i + 1), publish: false},
     ))
     await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="analysis-confirm-dialog"]'),
+      document.querySelector('[data-testid="analysis-confirm-dialog"]'),
     ).toBeNull())
   })
 
@@ -451,11 +451,11 @@ describe('personal report export selection', () => {
     const {host} = await mountView()
     await vi.waitFor(() => expect(host.querySelector('[data-testid="generate-personal_analysis_html"]')).not.toBeNull())
     host.querySelector<HTMLButtonElement>('[data-testid="generate-personal_analysis_html"]')!.click()
-    await vi.waitFor(() => expect(host.querySelector('[data-testid="analysis-confirm-dialog"]')).not.toBeNull())
-    const cancel = [...host.querySelectorAll<HTMLButtonElement>('[data-testid="analysis-confirm-dialog"] button')].find(b => b.textContent?.trim() === '取消')!
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="analysis-confirm-dialog"]')).not.toBeNull())
+    const cancel = [...document.querySelectorAll<HTMLButtonElement>('[data-testid="analysis-confirm-dialog"] button')].find(b => b.textContent?.trim() === '取消')!
     cancel.click()
     await nextTick()
     expect(apiMock.submitReport).not.toHaveBeenCalled()
-    expect(host.querySelector('[data-testid="analysis-confirm-dialog"]')).toBeNull()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="analysis-confirm-dialog"]')).toBeNull())
   })
 })

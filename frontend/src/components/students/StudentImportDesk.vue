@@ -3,7 +3,7 @@ import FeedbackBanner from '@/components/design-system/FeedbackBanner.vue'
 import AppButton from '@/components/design-system/AppButton.vue'
 
 import { computed, ref } from 'vue'
-import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle } from 'reka-ui'
+import AppDialog from '../design-system/AppDialog.vue'
 
 import type { StudentImportOperation } from '../../api/students'
 import { useStudentRosterStore } from '../../stores/students'
@@ -62,11 +62,17 @@ async function commit(): Promise<void> {
     <AppButton variant="secondary" :disabled="roster.importState === 'previewing'" @click="picker?.click()">{{ roster.importState === 'previewing' ? '正在比对…' : '导入名单' }}</AppButton>
     <input ref="picker" class="sr-only" type="file" aria-label="选择学生名单" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" @change="chooseFile">
   </div>
-  <DialogRoot v-model:open="open">
-    <DialogPortal>
-      <DialogOverlay class="settings-overlay fx-overlay" />
-      <DialogContent class="settings-dialog student-import-dialog fx-dialog" :aria-describedby="undefined" @escape-key-down="event => { if (roster.importState === 'committing') event.preventDefault() }" @interact-outside="event => { if (roster.importState === 'committing') event.preventDefault() }">
-        <DialogTitle class="student-import__title">导入名单 <span class="settings-note">· {{ selectedFile?.name }}</span><AppButton variant="ghost" :disabled="roster.importState === 'committing' || roster.importState === 'previewing'" @click="picker?.click()">换一个文件</AppButton></DialogTitle>
+  <AppDialog
+    :open="open"
+    title="导入名单"
+    class="student-import-dialog"
+    :dismissible="roster.importState !== 'committing'"
+    @update:open="(value: boolean) => { open = value }"
+  >
+    <template #header-extra>
+      <span class="settings-note">· {{ selectedFile?.name }}</span>
+      <AppButton variant="ghost" :disabled="roster.importState === 'committing' || roster.importState === 'previewing'" @click="picker?.click()">换一个文件</AppButton>
+    </template>
         <template v-if="roster.preview">
           <div class="student-import__mapping">
             <span>表格里哪一列是：</span>
@@ -98,7 +104,5 @@ async function commit(): Promise<void> {
             <AppButton variant="primary" data-action="commit-import" :disabled="roster.selectedImportRows.length === 0 || roster.importState === 'committing' || roster.importState === 'previewing'" @click="commit">{{ roster.importState === 'committing' ? '正在写入…' : `写入名单（${roster.selectedImportRows.length} 人）` }}</AppButton>
           </footer>
         </template>
-      </DialogContent>
-    </DialogPortal>
-  </DialogRoot>
+  </AppDialog>
 </template>

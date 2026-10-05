@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { DialogRoot, DialogPortal, DialogContent, DialogTitle, DialogDescription } from 'reka-ui'
-import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
+import AppDialog from '../design-system/AppDialog.vue'
 import { questionBankApi, type QuestionRepairKind, type QuestionRepairPart, type QuestionRepairPreview } from '../../api/question-bank'
 import { ApiError, isAmbiguousWriteError } from '../../api/errors'
 import { useJobStore } from '../../stores/jobs'
@@ -78,11 +77,14 @@ onBeforeUnmount(() => controller?.abort())
 </script>
 
 <template>
-  <DialogRoot :open="open" @update:open="!$event && emit('close')"><DialogPortal>
-    <div v-if="open" class="qb-modal-layer" @click.self="emit('close')">
-      <DialogContent class="qb-repair-dialog qb-import-dialog" @close-auto-focus="restoreFocus">
-        <header><DialogTitle as="h2">只补缺失部分</DialogTitle><AppIconButton label="关闭补齐面板" @click="emit('close')" icon="close" /></header>
-        <DialogDescription>{{ volumeLabel }} · {{ kind === 'skills' ? '未挂技能题目' : kind === 'analysis' ? '分析未完成题目' : '有缺失的题目' }}</DialogDescription>
+  <AppDialog
+    :open="open"
+    title="只补缺失部分"
+    :description="`${volumeLabel} · ${kind === 'skills' ? '未挂技能题目' : kind === 'analysis' ? '分析未完成题目' : '有缺失的题目'}`"
+    class="qb-repair-dialog"
+    @update:open="(value: boolean) => { if (!value) emit('close') }"
+    @close-auto-focus="restoreFocus"
+  >
         <p v-if="state === 'loading'" role="status">正在统计题目和缺失部分…</p>
         <p v-if="message" role="alert">{{ message }}</p>
         <template v-if="state === 'running' && job">
@@ -99,10 +101,11 @@ onBeforeUnmount(() => controller?.abort())
           <div class="qb-repair-steps"><div v-for="part in (['tags', 'evidence', 'criteria', 'skills'] as const)" :key="part"><strong>{{ labels[part] }} · {{ preview.counts[part] }} 题缺失</strong><span>{{ part === 'tags' ? '只为缺失或过期标签的题补标签' : part === 'evidence' || part === 'criteria' ? '进入判定点分析流程，保留已有可用结果' : '已有判定点直接补关联；缺判定点先补齐再关联' }}</span></div></div>
           <details class="qb-repair-list" open><summary>查看逐题清单 · {{ preview.items.length }} 题</summary><table><thead><tr><th>题目</th><th>缺失部分</th><th>本次处理</th></tr></thead><tbody><tr v-for="item in preview.items" :key="item.id"><td><strong>第 {{ item.question_number }} 题</strong><small>{{ item.paper_title }}</small></td><td>{{ item.missing.map(part => labels[part]).join('、') }}</td><td>{{ item.blocked_reason || (targetIds.includes(item.id) ? '只补左侧所列部分' : '下一批处理') }}</td></tr></tbody></table></details>
           <p class="qb-repair-cost">确认后将使用配置的 AI 模型，按服务商计费，金额取决于题目长度和模型。已有完整题不提交；失败或结果不确定时不自动追加请求。</p>
-          <footer><AppButton variant="secondary" @click="emit('close')">取消</AppButton><AppButton variant="primary" :disabled="!targetIds.length || state === 'submitting' || state === 'error'" @click="start">{{ state === 'ambiguous' ? '找回本次任务' : state === 'submitting' ? '正在提交…' : `确认补齐 ${targetIds.length} 题` }}</AppButton></footer>
         </template>
         <AppButton v-if="state === 'error'" variant="secondary" @click="load">重新统计</AppButton>
-      </DialogContent>
-    </div>
-  </DialogPortal></DialogRoot>
+        <template v-if="state === 'submitting' || state === 'ambiguous' || state === 'ready'" #footer>
+          <AppButton variant="secondary" @click="emit('close')">取消</AppButton>
+          <AppButton variant="primary" :disabled="!targetIds.length || state === 'submitting'" @click="start">{{ state === 'ambiguous' ? '找回本次任务' : state === 'submitting' ? '正在提交…' : `确认补齐 ${targetIds.length} 题` }}</AppButton>
+        </template>
+  </AppDialog>
 </template>

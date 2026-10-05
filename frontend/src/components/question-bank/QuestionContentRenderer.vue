@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
+import AppDialog from '../design-system/AppDialog.vue'
 import { computed, nextTick, ref } from 'vue'
 
 import type { QuestionBankRichBlock } from '../../api/question-bank'
@@ -450,17 +451,20 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
       </figure>
     </div>
 
-    <Teleport to="body">
+    <AppDialog
+      :open="Boolean(activeImageUrl)"
+      :title="`${activeImageAlt || imageAlt}大图查看`"
+      layout="fullscreen"
+      hide-header
+      @update:open="(value: boolean) => { if (!value) closeImage() }"
+      @keydown="handleViewerKey"
+    >
       <div
         v-if="activeImageUrl"
         ref="imageViewer"
         class="question-image-viewer"
-        role="dialog"
-        aria-modal="true"
-        :aria-label="`${activeImageAlt}大图查看`"
         tabindex="-1"
         @click.self="closeImage"
-        @keydown="handleViewerKey"
       >
         <div class="question-image-viewer__toolbar">
           <strong>{{ activeImageAlt }}</strong>
@@ -477,7 +481,7 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
           >
         </div>
       </div>
-    </Teleport>
+    </AppDialog>
   </div>
 </template>
 
@@ -895,11 +899,10 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
 .question-image-viewer {
   background: color-mix(in srgb, var(--color-text-primary) 86%, transparent);
   display: grid;
+  flex: 1;
   grid-template-rows: auto minmax(0, 1fr);
-  inset: 0;
+  min-height: 0;
   padding: 18px;
-  position: fixed;
-  z-index: 1800;
 }
 
 .question-image-viewer__toolbar {
@@ -986,3 +989,4 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
   }
 }
 </style>
+

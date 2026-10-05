@@ -10,6 +10,7 @@ import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import { BorderBeam } from '@/components/ui/border-beam'
 import { useScanGradingStore } from '../../stores/scan-grading'
+import { useConfirm } from '../../composables/useConfirm'
 import type { InterventionSummary, ScanStageId } from './scan-stage'
 
 const props = defineProps<{
@@ -25,6 +26,7 @@ const emit = defineEmits<{
 
 const router = useRouter()
 const store = useScanGradingStore()
+const { confirm } = useConfirm()
 
 const confirmPending = ref(false)
 
@@ -205,8 +207,13 @@ function formatPlanNumber(source: GradingPlanMetrics | undefined, keys: string[]
 function issueText(message: string, count?: number): string {
   return count === undefined ? message : `${message}（${count} 项）`
 }
-function cancelRun(): void {
-  if (window.confirm('取消后，本次运行会结束；已经完成的成绩会保留，未完成部分以后可重新发起。确认取消吗？')) {
+async function cancelRun(): Promise<void> {
+  if (await confirm({
+    title: '取消本次运行？',
+    message: '取消后，本次运行会结束；已经完成的成绩会保留，未完成部分以后可重新发起。',
+    confirmLabel: '取消运行',
+    danger: true,
+  })) {
     void store.cancel()
   }
 }

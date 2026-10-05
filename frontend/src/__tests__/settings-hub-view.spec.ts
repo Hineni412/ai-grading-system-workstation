@@ -9,6 +9,7 @@ import { modelProfilesApi } from '../api/model-profiles'
 import { studentRosterApi } from '../api/students'
 import { opsApi } from '../api/ops'
 import SettingsHubView from '../views/SettingsHubView.vue'
+import ConfirmDialogHost from '../components/design-system/ConfirmDialogHost.vue'
 
 const mounted: VueApp[] = []
 
@@ -114,9 +115,19 @@ describe('SettingsHubView', () => {
     input.value = '尚未保存的服务'
     input.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    const confirm = vi.spyOn(globalThis, 'confirm').mockReturnValue(false)
-    await router.replace('/settings?section=data')
-    expect(confirm).toHaveBeenCalledOnce()
+    const confirmEl = document.createElement('div')
+    document.body.appendChild(confirmEl)
+    const confirmApp = createApp(ConfirmDialogHost)
+    confirmApp.mount(confirmEl)
+    mounted.push(confirmApp)
+    void router.replace('/settings?section=data')
+    await vi.waitFor(() => expect(document.body.querySelector('[data-testid="app-confirm-dialog"]')).not.toBeNull())
+    const dialog = document.body.querySelector('[data-testid="app-confirm-dialog"]')!
+    expect(dialog.textContent).toContain('离开 AI 服务设置？')
+    const cancel = [...dialog.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.trim() === '取消')!
+    cancel.click()
+    await vi.waitFor(() => expect(document.body.querySelector('[data-testid="app-confirm-dialog"]')).toBeNull())
+    await nextTick()
     expect(router.currentRoute.value.query.section).toBe('ai')
     expect(input.value).toBe('尚未保存的服务')
   })

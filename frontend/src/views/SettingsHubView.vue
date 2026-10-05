@@ -2,6 +2,7 @@
 import { computed, defineAsyncComponent, ref, watch, type ComponentPublicInstance } from 'vue'
 import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import PageHeader from '../components/design-system/PageHeader.vue'
+import { useConfirm } from '../composables/useConfirm'
 import '../styles/settings.css'
 const SettingsStudentsPanel = defineAsyncComponent(() => import('../components/settings/SettingsStudentsPanel.vue'))
 const ModelProfilesView = defineAsyncComponent(() => import('./ModelProfilesView.vue'))
@@ -22,9 +23,15 @@ function stored(): Section {
   return 'students'
 }
 const section = computed(() => valid(route.query.section) ? route.query.section : stored())
-onBeforeRouteUpdate(to => {
+const { confirm } = useConfirm()
+onBeforeRouteUpdate(async to => {
   if (section.value === 'ai' && to.query.section !== 'ai' && modelView.value?.hasUnsavedChanges) {
-    return globalThis.confirm('AI 服务还有未保存修改。离开后会丢失这些修改，是否继续？')
+    return confirm({
+      title: '离开 AI 服务设置？',
+      message: '还有未保存的修改，离开后会丢失。',
+      confirmLabel: '离开',
+      danger: true,
+    })
   }
 })
 watch(() => route.query.section, value => {

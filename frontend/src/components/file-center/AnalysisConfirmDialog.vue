@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import type { AnalysisPreflight, ReportType } from '../../api/exports'
-import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
+import AppDialog from '../design-system/AppDialog.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import { formatTokenCount, reportTypeLabel } from './report-format'
 
-defineProps<{
+const props = defineProps<{
   preflight: AnalysisPreflight | null
   loading: boolean
   reportType: ReportType | null
@@ -18,29 +18,15 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div
-    class="excel-settings-backdrop"
-    data-testid="analysis-confirm-backdrop"
-    @click.self="emit('close')"
+  <AppDialog
+    open
+    :title="props.reportType ? reportTypeLabel(props.reportType) : '分析报告'"
+    width="wide"
+    :dismissible="!props.submitting"
+    data-testid="analysis-confirm-dialog"
+    @update:open="emit('close')"
   >
-    <form
-      class="excel-settings-dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="analysis-confirm-title"
-      data-testid="analysis-confirm-dialog"
-      @submit.prevent="emit('confirm')"
-    >
-      <div class="excel-settings-dialog__heading">
-        <div>
-          <h3 id="analysis-confirm-title">
-            {{ reportType ? reportTypeLabel(reportType) : '分析报告' }}
-          </h3>
-        </div><AppIconButton label="关闭"
-          @click="emit('close')"
-         icon="close" />
-      </div>
-
+    <form @submit.prevent="emit('confirm')">
       <StatePanel
         v-if="loading"
         kind="loading"
@@ -129,5 +115,5 @@ const emit = defineEmits<{
         </div>
       </div>
     </form>
-  </div>
+  </AppDialog>
 </template>

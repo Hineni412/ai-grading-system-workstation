@@ -11,6 +11,7 @@ import {
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import SolutionEvidenceReview from './SolutionEvidenceReview.vue'
+import { useConfirm } from '../../composables/useConfirm'
 import type { QuestionSolutionEvidenceResponse } from '../../api/question-bank'
 
 interface EditorPoint extends TrainingCriterionPoint {
@@ -25,6 +26,7 @@ const props = defineProps<{ questionId: number; skillLabels?: string[];
 
 const workspace = ref<TrainingCriterionWorkspace | null>(null)
 const emit = defineEmits<{ updated: [workspace: TrainingCriterionWorkspace] }>()
+const { confirm } = useConfirm()
 watch(workspace, value => { if (value) emit('updated', value) })
 const loadState = ref<'loading' | 'ready' | 'error'>('loading')
 const writeState = ref<'idle' | 'saving' | 'generating'>('idle')
@@ -279,9 +281,11 @@ async function saveDraft(): Promise<boolean> {
 }
 
 async function regenerate(): Promise<void> {
-  const confirmed = window.confirm(
-    '确认只为这道题重新生成判定点吗？这可能调用已配置的 AI 服务并产生费用；当前已批准版本会继续有效，直到新版再次获批。',
-  )
+  const confirmed = await confirm({
+    title: '为这道题重新生成判定点？',
+    message: '这可能调用已配置的 AI 服务并产生费用；当前已批准版本会继续有效，直到新版再次获批。',
+    confirmLabel: '重新生成',
+  })
   if (!confirmed) return
   writeState.value = 'generating'
   message.value = ''

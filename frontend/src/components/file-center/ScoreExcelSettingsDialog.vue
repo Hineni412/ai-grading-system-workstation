@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
+import AppDialog from '../design-system/AppDialog.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import type { ResultsCenterStudent } from '../../api/results-center'
 
-defineProps<{
+const props = defineProps<{
   eligibleStudents: ResultsCenterStudent[]
   filteredManualStudents: ResultsCenterStudent[]
   hiddenCount: number
@@ -24,27 +24,15 @@ const manualStudentSearch = defineModel<string>('manualStudentSearch', { require
 </script>
 
 <template>
-  <div
-    class="excel-settings-backdrop"
-    data-testid="excel-settings-backdrop"
-    @click.self="emit('close')"
+  <AppDialog
+    open
+    title="精简打印姓名，不改变成绩统计"
+    width="wide"
+    :dismissible="!props.submitting"
+    data-testid="excel-settings-dialog"
+    @update:open="emit('close')"
   >
-    <form
-      class="excel-settings-dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="excel-settings-title"
-      data-testid="excel-settings-dialog"
-      @submit.prevent="emit('submit')"
-    >
-      <div class="excel-settings-dialog__heading">
-        <div>
-          <h3 id="excel-settings-title">精简打印姓名，不改变成绩统计</h3>
-        </div><AppIconButton label="关闭"
-          @click="emit('close')"
-         icon="close" />
-      </div>
-
+    <form @submit.prevent="emit('submit')">
       <p class="excel-settings-dialog__explanation">
         均分、得分率、失分人数和排名始终统计全部正常参考且已完整批改的学生。下面的选择只影响每道题打印哪些失分学生姓名。
       </p>
@@ -139,7 +127,6 @@ const manualStudentSearch = defineModel<string>('manualStudentSearch', { require
       </fieldset>
 
       <div class="excel-settings-dialog__actions">
-        <span>这些设置只用于本次导出的 Excel，不会修改成绩中心数据。</span>
         <div>
           <AppButton variant="secondary"
             @click="emit('close')"
@@ -155,5 +142,5 @@ const manualStudentSearch = defineModel<string>('manualStudentSearch', { require
         </div>
       </div>
     </form>
-  </div>
+  </AppDialog>
 </template>

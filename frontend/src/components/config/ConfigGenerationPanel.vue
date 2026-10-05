@@ -27,6 +27,7 @@ import {
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { useJobStore } from '../../stores/jobs'
 import { useConfigQuestionFocus } from '../../composables/useConfigQuestionFocus'
+import { useConfirm } from '../../composables/useConfirm'
 import AppButton from '../design-system/AppButton.vue'
 
 const props = withDefaults(defineProps<{
@@ -58,6 +59,7 @@ const emit = defineEmits<{
 const configStore = useConfigWorkspaceStore()
 const jobStore = useJobStore()
 const curriculumScope = useCurriculumScopeStore()
+const { confirm } = useConfirm()
 const submitting = ref(false)
 const requestError = ref('')
 const editorError = ref('')
@@ -498,9 +500,12 @@ async function startGeneration(requestedMode: GenerationMode = 'batched'): Promi
     requestError.value = '请先选择这份试卷对应的年级和上下册；选择前不会调用模型。'
     return
   }
-  if (configStore.hasDirtyEditor && !window.confirm(
-    '评分依据还有未保存修改。新一轮完整生成成功后会用新结果替换当前正式版本，未保存修改不会保留。是否继续？',
-  )) return
+  if (configStore.hasDirtyEditor && !await confirm({
+    title: '开始新一轮完整生成？',
+    message: '评分依据还有未保存修改。新一轮完整生成成功后会用新结果替换当前正式版本，未保存修改不会保留。',
+    confirmLabel: '继续',
+    danger: true,
+  })) return
   const context = configStore.captureGenerationContext()
   const sessionId = configStore.sessionId
   const requestToken = createClientRequestToken()

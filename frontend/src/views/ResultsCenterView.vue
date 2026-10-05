@@ -31,6 +31,7 @@ import StatePanel from '../components/design-system/StatePanel.vue'
 import AppIconButton from '../components/design-system/AppIconButton.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import { Input } from '../components/ui/input'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet'
 import { useResultsCenterStore, type ResultsViewState } from '../stores/results-center'
 import { useSessionStore } from '../stores/session'
 import { translateGradingReason } from '../utils/grading-reasons'
@@ -61,8 +62,6 @@ const matrixSort = ref<{
   direction: 'ascending',
   questionId: null,
 })
-const drawer = ref<HTMLElement | null>(null)
-const drawerCloseButton = ref<HTMLButtonElement | null>(null)
 let drawerTrigger: HTMLElement | null = null
 
 const tabs = [
@@ -685,7 +684,11 @@ function openStudentDrawer(
     ? event.currentTarget
     : null
   selectedStudent.value = student
-  void nextTick(() => drawerCloseButton.value?.focus())
+}
+
+function focusDrawerClose(event: Event): void {
+  event.preventDefault()
+  void nextTick(() => document.querySelector<HTMLElement>('.results-drawer .app-icon-button')?.focus())
 }
 
 function openStudentById(studentId: number): void {
@@ -801,27 +804,7 @@ function closeStudentDrawer(restoreFocus = true): void {
   if (restoreFocus && trigger) void nextTick(() => trigger.focus())
 }
 
-function handleDrawerKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') {
-    event.preventDefault()
-    closeStudentDrawer()
-    return
-  }
-  if (event.key !== 'Tab' || !drawer.value) return
-  const focusable = [...drawer.value.querySelectorAll<HTMLElement>(
-    'button:not(:disabled), [href], input:not(:disabled), [tabindex]:not([tabindex="-1"])',
-  )]
-  if (focusable.length === 0) return
-  const first = focusable[0]
-  const last = focusable[focusable.length - 1]
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault()
-    last?.focus()
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault()
-    first?.focus()
-  }
-}
+
 </script>
 
 <template>
@@ -1152,35 +1135,22 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
     </template>
   </section>
 
-  <Teleport to="body">
-    <div
-      v-if="selectedStudent"
-      class="results-drawer-backdrop"
-      @mousedown.self="closeStudentDrawer()"
+  <Sheet :open="selectedStudent !== null" @update:open="(value: boolean) => { if (!value) closeStudentDrawer() }">
+    <SheetContent
+      class="results-drawer"
+      :aria-describedby="undefined"
+      @open-auto-focus="focusDrawerClose"
     >
-      <aside
-        ref="drawer"
-        class="results-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="student-result-title"
-        @keydown="handleDrawerKeydown"
-      >
-        <header class="results-drawer__header">
+      <template v-if="selectedStudent">
+        <SheetHeader class="results-drawer__header">
           <div>
-            <h2 id="student-result-title">{{ selectedStudent.student_name }}</h2>
+            <SheetTitle as="h2" id="student-result-title">{{ selectedStudent.student_name }}</SheetTitle>
             <p>
               {{ selectedStudent.student_code || '未填写学号' }}
               <template v-if="selectedStudent.class_name"> · {{ selectedStudent.class_name }}</template>
             </p>
-          </div><AppIconButton label="关闭学生成绩详情"
-            ref="drawerCloseButton"
-           
-           
-           
-            @click="closeStudentDrawer()"
-           icon="close" />
-        </header>
+          </div>
+        </SheetHeader>
 
         <div class="results-drawer__total">
           <span>{{ currentTotalPrefix(selectedStudent) }}总分</span>
@@ -1227,9 +1197,9 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             <span aria-hidden="true">›</span>
           </button>
         </div>
-      </aside>
-    </div>
-  </Teleport>
+      </template>
+    </SheetContent>
+  </Sheet>
   <PersonalReportReader v-if="readerStudentId !== null && sessionStore.selectedSessionId !== null"
     :students="readerStudents" :student-id="readerStudentId" :session-id="sessionStore.selectedSessionId"
     :report-session-id="readerReportSessionId" :volume-id="sessionStore.currentSession?.curriculum_volume_id"

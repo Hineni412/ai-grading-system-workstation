@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import AppIconButton from '../design-system/AppIconButton.vue'
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick } from 'vue'
 
 import { useSessionStore } from '../../stores/session'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../ui/sheet'
 import SessionManager from './SessionManager.vue'
 
 const open = defineModel<boolean>('open', { default: false })
-const closeButton = ref<HTMLButtonElement | null>(null)
 const sessionStore = useSessionStore()
 const sessionCount = computed(() => sessionStore.sessions.length)
 
@@ -14,61 +13,38 @@ function close(): void {
   open.value = false
 }
 
-watch(open, (value) => {
-  if (value) void nextTick(() => closeButton.value?.focus())
-})
+function focusClose(event: Event): void {
+  event.preventDefault()
+  void nextTick(() => document.querySelector<HTMLElement>('.session-management-drawer .app-icon-button')?.focus())
+}
 </script>
 
 <template>
-  <Teleport to="body">
-    <div
-      v-if="open"
-      class="session-management-layer fx-overlay"
-      @click.self="close"
+  <Sheet v-model:open="open">
+    <SheetContent
+      class="session-management-drawer"
+      :aria-describedby="undefined"
+      @open-auto-focus="focusClose"
     >
-      <aside
-        class="session-management-drawer fx-drawer-right"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="session-management-title"
-      >
-        <header class="session-management-drawer__header">
-          <h2 id="session-management-title">
-            考试管理
-            <span class="session-management-drawer__count">共 {{ sessionCount }} 场</span>
-          </h2><AppIconButton label="关闭考试管理"
-            ref="closeButton"
-           
-           
-            @click="close"
-           icon="close" />
-        </header>
-        <div class="session-management-drawer__body">
-          <SessionManager @navigate="close" />
-        </div>
-      </aside>
-    </div>
-  </Teleport>
+      <SheetHeader class="session-management-drawer__header">
+        <SheetTitle as="h2">
+          考试管理
+          <span class="session-management-drawer__count">共 {{ sessionCount }} 场</span>
+        </SheetTitle>
+      </SheetHeader>
+      <div class="session-management-drawer__body">
+        <SessionManager @navigate="close" />
+      </div>
+    </SheetContent>
+  </Sheet>
 </template>
 
 <style scoped>
-.session-management-layer {
-  background: var(--color-overlay-mask);
-  display: flex;
-  inset: 0;
-  justify-content: flex-end;
-  position: fixed;
-  z-index: 1300;
-}
-
 .session-management-drawer {
-  background: var(--color-bg-surface);
-  border-inline-start: var(--border-width) solid var(--color-border-default);
-  box-shadow: var(--shadow-overlay);
-  display: flex;
-  flex-direction: column;
   max-width: 100%;
   width: min(560px, 100vw - 24px);
+  gap: 0;
+  padding: 0;
 }
 
 .session-management-drawer__header {
@@ -96,6 +72,7 @@ watch(open, (value) => {
 }
 
 .session-management-drawer__body {
+  flex: 1;
   min-height: 0;
   overflow: auto;
   padding: var(--space-5);

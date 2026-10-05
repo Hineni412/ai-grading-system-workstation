@@ -7,6 +7,7 @@ import {
   permanentlyDeleteSession,
 } from '../../api/sessions'
 import { isAmbiguousWriteError } from '../../api/errors'
+import { useConfirm } from '../../composables/useConfirm'
 import { useSessionStore } from '../../stores/session'
 import AppIconButton from '../design-system/AppIconButton.vue'
 
@@ -23,6 +24,7 @@ const emit = defineEmits<{
 }>()
 
 const sessionStore = useSessionStore()
+const { confirm, alert } = useConfirm()
 const working = ref(false)
 
 function errorMessage(error: unknown): string {
@@ -41,12 +43,15 @@ async function remove(): Promise<void> {
   try {
     const impact = await fetchSessionDeletionImpact(props.sessionId)
     if (!impact.can_permanently_delete) {
-      window.alert('这场考试仍有生成、同步或批改任务未结束，请先完成或取消任务。')
+      await alert({ title: '暂时无法删除', message: '这场考试仍有生成、同步或批改任务未结束，请先完成或取消任务。' })
       return
     }
-    const confirmed = window.confirm(
-      `确认彻底删除“${props.sessionName}”吗？\n\n这会永久删除本场考试的配置、答卷、成绩和知识图谱贡献，且无法恢复。学生名单和已经入库的题库试题会保留。`,
-    )
+    const confirmed = await confirm({
+      title: `彻底删除“${props.sessionName}”？`,
+      message: '这会永久删除本场考试的配置、答卷、成绩和知识图谱贡献，且无法恢复。学生名单和已经入库的题库试题会保留。',
+      confirmLabel: '彻底删除',
+      danger: true,
+    })
     if (!confirmed) return
     try {
       await permanentlyDeleteSession(
@@ -63,7 +68,7 @@ async function remove(): Promise<void> {
     await sessionStore.initialize()
     emit('archived', props.sessionId)
   } catch (error) {
-    window.alert(errorMessage(error))
+    await alert({ title: '删除失败', message: errorMessage(error) })
   } finally {
     working.value = false
   }

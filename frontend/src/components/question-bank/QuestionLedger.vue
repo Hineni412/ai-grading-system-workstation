@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle } from 'reka-ui'
 
 import {
   knowledgeLeafLabel,
@@ -12,7 +11,7 @@ import {
 } from '../../api/question-bank'
 import { useAssemblyStore } from '../../stores/assembly'
 import { useQuestionBankStore } from '../../stores/question-bank'
-import AppIconButton from '../design-system/AppIconButton.vue'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../ui/sheet'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
@@ -179,15 +178,12 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
     </footer>
   </section>
 
-  <DialogRoot :open="Boolean(similarSource)" @update:open="!$event && closeSimilar()"><DialogPortal>
-    <DialogOverlay class="qb-drawer-layer" />
-      <DialogContent v-if="similarSource" as="aside" class="qb-similar-drawer qb-similar-dialog" :aria-describedby="undefined">
-        <header>
-          <div>
-            <DialogTitle as="h2">相似题推荐</DialogTitle>
-            
-          </div><AppIconButton label="关闭相似题" @click="closeSimilar" icon="close" />
-        </header>
+  <Sheet :open="Boolean(similarSource)" @update:open="(value: boolean) => { if (!value) closeSimilar() }">
+    <SheetContent class="qb-similar-drawer gap-0" :aria-describedby="undefined">
+      <template v-if="similarSource">
+        <SheetHeader class="qb-similar-head">
+          <SheetTitle as="h2">相似题推荐</SheetTitle>
+        </SheetHeader>
 
         <StatePanel v-if="similarState === 'loading'" kind="loading" title="正在查找相似题…" />
         <StatePanel v-else-if="similarState === 'error'" kind="error" title="相似题暂时无法读取。" retry-label="重新查找" @retry="openSimilar(similarSource)" />
@@ -233,6 +229,7 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
             </footer>
           </article>
         </div>
-      </DialogContent>
-  </DialogPortal></DialogRoot>
+      </template>
+    </SheetContent>
+  </Sheet>
 </template>

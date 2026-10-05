@@ -9,6 +9,7 @@ import {
 import type { ClassAnalysisQuestion } from '../../api/class-analysis'
 import type { ResultsCenterStudent } from '../../api/results-center'
 import AppButton from '../design-system/AppButton.vue'
+import AppDialog from '../design-system/AppDialog.vue'
 import BackButton from '../design-system/BackButton.vue'
 import PageHeader from '../design-system/PageHeader.vue'
 import PaperWalkthroughCard from './PaperWalkthroughCard.vue'
@@ -198,28 +199,14 @@ function onKeydown(event: KeyboardEvent): void {
   }
 }
 
-function onTrapTab(event: KeyboardEvent): void {
-  if (event.key !== 'Tab' || !overlay.value) return
-  const focusable = [...overlay.value.querySelectorAll<HTMLElement>(
-    'button:not(:disabled), [href], input:not(:disabled), [tabindex]:not([tabindex="-1"])',
-  )]
-  if (!focusable.length) { event.preventDefault(); return }
-  const first = focusable[0]!; const last = focusable[focusable.length - 1]!
-  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
-  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
-}
 </script>
 
 <template>
-  <Teleport to="body">
+  <AppDialog :open="true" title="看卷 10 分钟" layout="fullscreen" hide-header :dismissible="false">
     <div
       ref="overlay"
       class="wt"
-      role="dialog"
-      aria-modal="true"
-      aria-label="看卷 10 分钟"
       tabindex="-1"
-      @keydown.tab="onTrapTab"
     >
       <PageHeader title="看卷 10 分钟">
         <template #back>
@@ -282,12 +269,12 @@ function onTrapTab(event: KeyboardEvent): void {
         <img v-for="url in zoomUrls" :key="url" :src="url" alt="答卷放大图">
       </div>
     </div>
-  </Teleport>
+  </AppDialog>
 </template>
 
 <style scoped>
 .wt {
-  position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column;
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
   background: var(--color-bg-app); color: var(--color-text-primary); outline: none;
 }
 .wt__warn {

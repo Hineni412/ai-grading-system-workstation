@@ -27,6 +27,7 @@ import {
   type ModelTaskBindings,
   type RequestSpeedMode,
 } from '../api/model-profiles'
+import { useConfirm } from '../composables/useConfirm'
 import { useModelProfilesStore } from '../stores/model-profiles'
 import '../styles/model-profiles.css'
 
@@ -66,6 +67,7 @@ interface ModelProfileDraft {
 }
 
 const profilesStore = useModelProfilesStore()
+const { confirm } = useConfirm()
 const formElement = ref<HTMLFormElement | null>(null)
 const nameInput = ref<HTMLInputElement | null>(null)
 const localError = ref('')
@@ -130,7 +132,12 @@ const isDirty = computed(() => draftSnapshot() !== baseline.value)
 const bindingsDirty = computed(() => JSON.stringify(taskBindingsDraft.value) !== JSON.stringify(profilesStore.taskBindings))
 const hasUnsavedChanges = computed(() => isDirty.value || bindingsDirty.value)
 defineExpose({ hasUnsavedChanges })
-onBeforeRouteLeave(() => !hasUnsavedChanges.value || window.confirm('AI 服务还有未保存修改。离开后会丢失这些修改，是否继续？'))
+onBeforeRouteLeave(async () => !hasUnsavedChanges.value || await confirm({
+  title: '离开 AI 服务设置？',
+  message: 'AI 服务还有未保存修改。离开后会丢失这些修改。',
+  confirmLabel: '离开',
+  danger: true,
+}))
 function hostname(url: string): string { try { return new URL(url).host } catch { return url } }
 async function loadAccountStatuses() {
   await Promise.all(profilesStore.profiles.map(async profile => {
@@ -140,9 +147,13 @@ async function loadAccountStatuses() {
     } catch { /* Runtime information is optional; profile editing remains available. */ }
   }))
 }
-function closeDrawer(value = false) {
+async function closeDrawer(value = false) {
   if (value || isBusy.value) return
-  if (!confirmDiscard('当前表单有未保存修改。关闭会丢弃这些修改，是否继续？')) return
+  if (!await confirmDiscard({
+    title: '关闭编辑？',
+    message: '当前表单有未保存修改。关闭会丢弃这些修改。',
+    confirmLabel: '关闭',
+  })) return
   drawerOpen.value = false
   if (profilesStore.selectedProfile) applyProfile(profilesStore.selectedProfile)
   else applyBlankProfile()
@@ -283,13 +294,17 @@ async function saveTaskBindings(): Promise<void> {
   }
 }
 
-function confirmDiscard(message: string): boolean {
-  return !isDirty.value || window.confirm(message)
+async function confirmDiscard(options: { title: string; message: string; confirmLabel: string }): Promise<boolean> {
+  return !isDirty.value || await confirm({ ...options, danger: true })
 }
 
-function chooseProfile(profile: ModelProfile): void {
+async function chooseProfile(profile: ModelProfile): Promise<void> {
   if (
-    !confirmDiscard('当前表单有未保存修改。切换配置会丢弃这些修改，是否继续？')
+    !await confirmDiscard({
+      title: '切换配置？',
+      message: '当前表单有未保存修改。切换配置会丢弃这些修改。',
+      confirmLabel: '切换',
+    })
   ) return
   drawerOpen.value = true
   profilesStore.selectProfile(profile.name)
@@ -298,7 +313,11 @@ function chooseProfile(profile: ModelProfile): void {
 }
 
 async function beginNewProfile(): Promise<void> {
-  if (!confirmDiscard('当前表单有未保存修改。新建配置会丢弃这些修改，是否继续？')) {
+  if (!await confirmDiscard({
+    title: '新建配置？',
+    message: '当前表单有未保存修改。新建配置会丢弃这些修改。',
+    confirmLabel: '新建',
+  })) {
     return
   }
   drawerOpen.value = true
@@ -358,9 +377,12 @@ async function activateProfile(): Promise<void> {
   if (draft.sourceName === null || !canActivate.value) return
   if (
     isDirty.value
-    && !window.confirm(
-      '当前表单有未保存修改。切换当前配置会使用已经保存的版本，并丢弃这些修改，是否继续？',
-    )
+    && !await confirm({
+      title: '设为默认服务？',
+      message: '当前表单有未保存修改。切换当前配置会使用已经保存的版本，并丢弃这些修改。',
+      confirmLabel: '切换',
+      danger: true,
+    })
   ) return
   if (isDirty.value) {
     const saved = profilesStore.profiles.find(
@@ -376,9 +398,12 @@ async function activateProfile(): Promise<void> {
 async function deleteProfile(profile?: ModelProfile): Promise<void> {
   const name = profile?.name ?? draft.sourceName
   if (name === null || isBusy.value) return
-  if (!window.confirm(
-    `确定永久删除模型配置“${name}”吗？\n\n使用它的工作模型安排会自动改用剩余的当前配置；如果没有其他配置，对应 AI 功能会暂时不可用。`,
-  )) return
+  if (!await confirm({
+    title: `永久删除模型配置“${name}”？`,
+    message: '使用它的工作模型安排会自动改用剩余的当前配置；如果没有其他配置，对应 AI 功能会暂时不可用。',
+    confirmLabel: '彻底删除',
+    danger: true,
+  })) return
   const deleted = await profilesStore.deleteProfile(name)
   if (!deleted) return
   syncFromSelection()
@@ -388,7 +413,11 @@ async function deleteProfile(profile?: ModelProfile): Promise<void> {
 
 async function reloadProfiles(): Promise<void> {
   if (
-    !confirmDiscard('重新加载会丢弃当前未保存修改，是否继续？')
+    !await confirmDiscard({
+      title: '重新加载？',
+      message: '重新加载会丢弃当前未保存修改。',
+      confirmLabel: '重新加载',
+    })
   ) return
   const loaded = await profilesStore.load()
   if (loaded) {

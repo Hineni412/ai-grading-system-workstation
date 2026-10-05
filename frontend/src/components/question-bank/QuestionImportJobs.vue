@@ -16,6 +16,7 @@ import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 import QuestionPreviewDialog from '../training/QuestionPreviewDialog.vue'
 import { CURRICULUM_SCOPE_STORAGE_KEY } from '../../stores/curriculum-scope'
 import { useJobStore } from '../../stores/jobs'
+import { useConfirm } from '../../composables/useConfirm'
 import { useQuestionBankStore } from '../../stores/question-bank'
 
 const props = withDefaults(defineProps<{
@@ -38,6 +39,7 @@ const emit = defineEmits<{
 
 const bank = useQuestionBankStore()
 const jobStore = useJobStore()
+const { confirm } = useConfirm()
 const busy = ref(false)
 const feedback = ref('')
 const queuedFiles = ref<Array<{ name: string; state: string }>>([])
@@ -224,9 +226,11 @@ async function chooseFiles(event: Event): Promise<void> {
 async function startTagging(): Promise<void> {
   const count = bank.selectedQuestionIds.length
   if (count === 0 || busy.value) return
-  const confirmed = window.confirm(
-    `将对已选 ${count} 道题调用 AI 标注，可能产生外部费用。确认现在启动吗？`,
-  )
+  const confirmed = await confirm({
+    title: '启动 AI 标注？',
+    message: `将对已选 ${count} 道题调用 AI 标注，可能产生外部费用。`,
+    confirmLabel: '启动',
+  })
   if (!confirmed) return
   busy.value = true
   feedback.value = ''
@@ -261,9 +265,11 @@ async function retry(job: JobResponse): Promise<void> {
       feedback.value = '服务端没有提供可安全重试的题目范围，请先刷新任务。'
       return
     }
-    const confirmed = window.confirm(
-      `只重试 ${ids.length} 道失败题目，仍可能产生外部费用。确认继续吗？`,
-    )
+    const confirmed = await confirm({
+      title: '重试失败题目？',
+      message: `只重试 ${ids.length} 道失败题目，仍可能产生外部费用。`,
+      confirmLabel: '重试',
+    })
     if (!confirmed) return
     busy.value = true
     try {
@@ -303,7 +309,7 @@ function downloadFailures(job: JobResponse): void {
   <section class="qb-jobs" aria-labelledby="qb-import-title">
     <header class="qb-jobs__heading">
       <div>
-        <h2 id="qb-import-title">上传试卷与任务</h2>
+        <h2 id="qb-import-title" class="sr-only">上传试卷与任务</h2>
               </div>
       <div class="qb-jobs__heading-actions">
         <span>{{ jobs.length }} 个历史任务</span>

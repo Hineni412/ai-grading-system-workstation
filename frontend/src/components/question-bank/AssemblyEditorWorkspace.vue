@@ -4,12 +4,14 @@ import { computed, reactive, ref } from 'vue'
 import type { AssemblyExportSubmitFormat, AssemblyQuestion, AssemblySection } from '../../api/assembly'
 import { TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import { useAssemblyStore } from '../../stores/assembly'
+import { useConfirm } from '../../composables/useConfirm'
 import { useJobStore } from '../../stores/jobs'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 
 const assembly = useAssemblyStore()
+const { confirm } = useConfirm()
 const jobs = useJobStore()
 const draggedQuestionId = ref<number | null>(null)
 const exportFormat = ref<AssemblyExportSubmitFormat>('docx')
@@ -210,7 +212,12 @@ function answerSpaceLines(questionType: string | null): number {
 }
 
 async function deleteRecord(recordId: string): Promise<void> {
-  const confirmed = window.confirm('确认删除这条导出记录吗？已下载到其他位置的文件不受影响。')
+  const confirmed = await confirm({
+    title: '删除这条导出记录？',
+    message: '已下载到其他位置的文件不受影响。',
+    confirmLabel: '删除',
+    danger: true,
+  })
   if (confirmed) await assembly.deleteRecord(recordId)
 }
 </script>

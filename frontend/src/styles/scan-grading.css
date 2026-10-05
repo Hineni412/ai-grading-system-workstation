@@ -238,8 +238,8 @@
 .review-distribution__scale { display: flex; justify-content: space-between; margin: var(--space-1) 0 var(--space-2); padding: 0; color: var(--color-text-muted); font-size: var(--font-size-caption); list-style: none; }
 .review-distribution__note { margin: var(--space-2) 0 0; color: var(--color-text-muted); font-size: var(--font-size-caption); }
 
-.scan-viewer { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: var(--space-5); background: color-mix(in srgb, var(--color-text-primary) 72%, transparent); }
-.scan-viewer__shell { display: grid; grid-template-rows: auto auto minmax(0, 1fr); width: min(94vw, 1520px); height: min(92vh, 980px); overflow: hidden; border: var(--border-width) solid var(--border); border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow-overlay); }
+.app-dialog.scan-viewer-dialog { width: min(94vw, 1520px); max-width: none; height: min(92vh, 980px); }
+.scan-viewer-dialog .app-dialog__body { display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; padding: 0; }
 .scan-viewer__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-3) var(--space-4); border-block-end: var(--border-width) solid var(--color-border-default); }
 .scan-viewer__header > div { display: grid; gap: var(--space-1); min-width: 0; }
 .scan-viewer__header span { color: var(--color-accent); font-size: var(--font-size-caption); font-weight: var(--font-weight-semibold); }

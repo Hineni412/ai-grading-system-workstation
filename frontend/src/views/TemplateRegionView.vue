@@ -9,6 +9,7 @@ import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import AppButton from '../components/design-system/AppButton.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import BackButton from '../components/design-system/BackButton.vue'
+import { useConfirm } from '../composables/useConfirm'
 import { useTemplateRegionStore } from '../stores/template-regions'
 import type { PageRole } from '../api/template-regions'
 import '../styles/template-regions.css'
@@ -16,6 +17,7 @@ import '../styles/template-regions.css'
 const route = useRoute()
 const router = useRouter()
 const store = useTemplateRegionStore()
+const { confirm } = useConfirm()
 const routeSessionId = computed(() => Number(route.params.sessionId))
 const focusLayout = computed(() => store.workspace !== null && store.editorReady)
 let mainWorkspace: HTMLElement | null = null
@@ -43,14 +45,19 @@ const commitSummary = computed(() => {
   const bound = pageCounts.value.front.bound + pageCounts.value.back.bound
   const missing = store.missingQuestionIds.map((id) => id === '__student_name__' ? '姓名区' : id)
   const missingSummary = missing.length ? `仍未框：${missing.join('、')}。未框题目不会被批改。` : ''
-  return `正面 ${pageCounts.value.front.total} 框，反面 ${pageCounts.value.back.total} 框；已绑定 ${bound} 框，待处理 ${total - bound} 框，校验问题 ${store.workspace?.issues.length ?? 0} 项。${missingSummary}确认保存为正式版本？`
+  return `正面 ${pageCounts.value.front.total} 框，反面 ${pageCounts.value.back.total} 框；已绑定 ${bound} 框，待处理 ${total - bound} 框，校验问题 ${store.workspace?.issues.length ?? 0} 项。${missingSummary}`
 })
 const missingLabels = computed(() => store.missingQuestionIds
   .map((id) => id === '__student_name__' ? '姓名区' : id).join('、'))
 
-function regenerate(): void {
+async function regenerate(): Promise<void> {
   if (store.editorState.regions.length > 0 || store.workspace?.draft.status === 'compatible') {
-    if (!window.confirm('将替换当前草稿中的全部题框。确认重新自动框题？')) return
+    if (!await confirm({
+      title: '重新自动框题？',
+      message: '将替换当前草稿中的全部题框。',
+      confirmLabel: '重新框题',
+      danger: true,
+    })) return
   }
   void store.autoPropose()
 }
@@ -61,7 +68,7 @@ function loadRoute(): void {
   }
 }
 async function finish(): Promise<void> {
-  if (!window.confirm(commitSummary.value)) return
+  if (!await confirm({ title: '保存为正式版本？', message: commitSummary.value, confirmLabel: '保存' })) return
   const result = await store.commit()
   if (result?.committed && !result.snapshot_pending) await openGradingRun()
 }
@@ -78,12 +85,22 @@ function selectStage(stage: 'draft' | 'source' | 'generation' | 'editor' | 'temp
   if (stage === 'template') return
   void router.push({ path: '/sessions', query: { stage } })
 }
-function replaceTemplate(file: File, role: PageRole): void {
-  if (store.workspace && !window.confirm('替换样卷后，旧草稿不会自动套用到新样卷。确认继续上传？')) return
+async function replaceTemplate(file: File, role: PageRole): Promise<void> {
+  if (store.workspace && !await confirm({
+    title: '继续上传新样卷？',
+    message: '替换样卷后，旧草稿不会自动套用到新样卷。',
+    confirmLabel: '继续上传',
+    danger: true,
+  })) return
   void store.upload(file, role)
 }
-function confirmLeave(): boolean {
-  return !store.hasUnsavedWork || window.confirm('当前画框或上传状态尚未安全保存，确认离开？')
+async function confirmLeave(): Promise<boolean> {
+  return !store.hasUnsavedWork || await confirm({
+    title: '离开画框页面？',
+    message: '当前画框或上传状态尚未安全保存。',
+    confirmLabel: '离开',
+    danger: true,
+  })
 }
 function beforeUnload(event: BeforeUnloadEvent): void {
   if (!store.hasUnsavedWork) return

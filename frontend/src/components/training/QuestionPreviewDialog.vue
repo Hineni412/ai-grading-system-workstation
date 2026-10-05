@@ -4,8 +4,8 @@ import { ref, watch } from 'vue'
 import { questionBankApi, type QuestionBankDetail } from '../../api/question-bank'
 import { ApiError } from '../../api/errors'
 import AppButton from '../design-system/AppButton.vue'
-import AppIconButton from '../design-system/AppIconButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../ui/sheet'
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
 
 const props = defineProps<{
@@ -65,82 +65,72 @@ function close(): void {
   controller = null
   emit('close')
 }
+
+function onUpdateOpen(open: boolean): void {
+  if (!open) close()
+}
 </script>
 
 <template>
-  <Teleport to="body">
-    <div
-      v-if="panelState !== 'idle'"
-      class="question-preview-layer"
-      role="presentation"
-      @click.self="close"
+  <Sheet :open="panelState !== 'idle'" @update:open="onUpdateOpen">
+    <SheetContent
+      class="question-preview-sheet"
+      :aria-describedby="undefined"
     >
-      <aside
-        class="question-preview"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="question-preview-title"
+      <StatePanel v-if="panelState === 'loading'" kind="loading" title="正在打开题库题目…" />
+      <StatePanel
+        v-else-if="panelState === 'missing'"
+        kind="empty"
+        title="该题已不在题库中"
+        description="草稿内容不受影响，可关闭预览继续审核。"
       >
-        <StatePanel v-if="panelState === 'loading'" kind="loading" title="正在打开题库题目…" />
-        <StatePanel
-          v-else-if="panelState === 'missing'"
-          kind="empty"
-          title="该题已不在题库中"
-          description="草稿内容不受影响，可关闭预览继续审核。"
-        >
-          <template #actions><AppButton variant="ghost" size="small" @click="close">关闭</AppButton></template>
-        </StatePanel>
-        <StatePanel
-          v-else-if="panelState === 'error'"
-          kind="error"
-          title="题目暂时无法读取"
-          description="草稿内容不受影响。"
-          retry-label="重试"
-          @retry="retry"
-        />
-        <template v-else-if="detail">
-          <header class="question-preview__heading">
-            <div>
-              <h2 id="question-preview-title" tabindex="-1">
-                {{ title || `第 ${detail.question_number || detail.id} 题` }}
-              </h2>
-              <p>{{ detail.paper_title || '未命名试卷' }}</p>
-            </div><AppIconButton label="关闭题目预览" @click="close" icon="close" />
-          </header>
+        <template #actions><AppButton variant="ghost" size="small" @click="close">关闭</AppButton></template>
+      </StatePanel>
+      <StatePanel
+        v-else-if="panelState === 'error'"
+        kind="error"
+        title="题目暂时无法读取"
+        description="草稿内容不受影响。"
+        retry-label="重试"
+        @retry="retry"
+      />
+      <template v-else-if="detail">
+        <SheetHeader class="question-preview__heading">
+          <SheetTitle tabindex="-1">
+            {{ title || `第 ${detail.question_number || detail.id} 题` }}
+          </SheetTitle>
+          <p class="question-preview__sub">{{ detail.paper_title || '未命名试卷' }}</p>
+        </SheetHeader>
 
-          <section class="question-preview__section">
-            <h3>题干</h3>
-            <QuestionContentRenderer
-              :blocks="detail.rich_content.question_blocks"
-              :fallback="detail.question_text"
-              image-alt="题目配图"
-              media-mode="detail"
-            />
-          </section>
+        <section class="question-preview__section">
+          <h3>题干</h3>
+          <QuestionContentRenderer
+            :blocks="detail.rich_content.question_blocks"
+            :fallback="detail.question_text"
+            image-alt="题目配图"
+            media-mode="detail"
+          />
+        </section>
 
-          <details class="question-preview__section">
-            <summary>答案与解析</summary>
-            <QuestionContentRenderer
-              :blocks="detail.rich_content.answer_blocks"
-              :fallback="detail.answer_text"
-              empty-label="暂未录入答案或解析"
-              image-alt="答案配图"
-              media-mode="detail"
-            />
-          </details>
-        </template>
-      </aside>
-    </div>
-  </Teleport>
+        <details class="question-preview__section">
+          <summary>答案与解析</summary>
+          <QuestionContentRenderer
+            :blocks="detail.rich_content.answer_blocks"
+            :fallback="detail.answer_text"
+            empty-label="暂未录入答案或解析"
+            image-alt="答案配图"
+            media-mode="detail"
+          />
+        </details>
+      </template>
+    </SheetContent>
+  </Sheet>
 </template>
 
 <style scoped>
-.question-preview-layer { position: fixed; inset: 0; z-index: 60; display: flex; justify-content: flex-end; background: var(--color-overlay-mask); }
-.question-preview { width: min(620px, 94vw); max-width: 100%; height: 100%; overflow-y: auto; padding: var(--space-5); border-left: 1px solid var(--color-border-default); background: var(--color-bg-surface); box-shadow: var(--shadow-overlay); }
-.question-preview__retry,
-.question-preview__heading { display: flex; justify-content: space-between; align-items: start; gap: var(--space-3); }
-.question-preview__heading h2 { margin: 0 0 var(--space-1); font-size: var(--font-size-h3); font-weight: var(--font-weight-semibold); }
-.question-preview__heading p { margin: 0; color: var(--color-text-secondary); font-size: var(--font-size-dense); }
+.question-preview-sheet { width: min(620px, 94vw); max-width: none; padding: 0 var(--space-5) var(--space-5); overflow-y: auto; }
+.question-preview__heading p,
+.question-preview__sub { margin: 0; color: var(--color-text-secondary); font-size: var(--font-size-dense); }
 .question-preview__section { margin-top: var(--space-4); }
 .question-preview__section h3 { margin: 0 0 var(--space-2); }
 .question-preview__section summary { cursor: pointer; font-weight: var(--font-weight-semibold); }

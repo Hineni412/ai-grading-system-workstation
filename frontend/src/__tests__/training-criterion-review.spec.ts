@@ -5,6 +5,7 @@ import { ApiError } from '../api/errors';
 import { questionBankApi } from '../api/question-bank';
 import { questionBankCriteriaApi, type TrainingCriterionVersion, type TrainingCriterionWorkspace } from '../api/question-bank-criteria';
 import TrainingCriterionReview from '../components/question-bank/TrainingCriterionReview.vue'
+import ConfirmDialogHost from '../components/design-system/ConfirmDialogHost.vue'
 
 const version: TrainingCriterionVersion = {
   version_id: 'a'.repeat(64),
@@ -71,6 +72,20 @@ afterEach(() => {
   document.body.innerHTML = ''
   vi.restoreAllMocks()
 })
+
+function mountConfirmHost(): void {
+  const el = document.createElement('div')
+  document.body.append(el)
+  const app = createApp(ConfirmDialogHost)
+  app.mount(el)
+  mounted.push(app)
+}
+
+function confirmDialog(): HTMLElement {
+  const found = document.body.querySelector<HTMLElement>('[data-testid="app-confirm-dialog"]')
+  if (!found) throw new Error('confirm dialog not open')
+  return found
+}
 
 async function mountReview(): Promise<HTMLElement> {
   if (!vi.isMockFunction(questionBankApi.getSolutionEvidence)) {
@@ -191,7 +206,6 @@ describe('training criterion review', () => {
     vi.spyOn(questionBankCriteriaApi, 'getWorkspace').mockResolvedValue(
       workspace(null),
     )
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const start = vi.spyOn(
       questionBankCriteriaApi,
       'startBackfill',
@@ -215,15 +229,23 @@ describe('training criterion review', () => {
       job: null,
     })
     const host = await mountReview()
+    mountConfirmHost()
     const regenerate = [...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.includes('重新生成'))
     regenerate?.click()
 
     await vi.waitFor(() => {
+      const dialog = confirmDialog()
+      expect(dialog.textContent).toContain('为这道题重新生成判定点？')
+      expect(dialog.textContent).toContain('可能调用已配置的 AI 服务并产生费用')
+    })
+    ;[...confirmDialog().querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '重新生成')!.click()
+
+    await vi.waitFor(() => {
       expect(start).toHaveBeenCalledOnce()
       expect(host.textContent).toContain('完成后刷新这里')
     })
-    expect(window.confirm).toHaveBeenCalledOnce()
     expect(start.mock.calls[0]?.[0]).toEqual([17])
     expect(start.mock.calls[0]?.[2]).toBe('regenerate')
   })

@@ -14,6 +14,7 @@ import {
 } from '../../api/question-bank'
 import { questionBankCriteriaApi, type TrainingCriterionWorkspace } from '../../api/question-bank-criteria'
 import { CAUSE_CATEGORIES } from '../../api/class-analysis'
+import { useConfirm } from '../../composables/useConfirm'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import AppIconButton from '../design-system/AppIconButton.vue'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
@@ -24,6 +25,7 @@ import TrainingCriterionReview from './TrainingCriterionReview.vue'
 defineProps<{ currentSkill?: string }>()
 const emit = defineEmits<{ skill: [key: string] }>()
 const store = useQuestionBankStore()
+const { confirm } = useConfirm()
 const evidence = ref<QuestionSolutionEvidenceResponse | null>(null)
 const criterion = ref<TrainingCriterionWorkspace | null>(null)
 const evidenceError = ref('')
@@ -149,7 +151,11 @@ function beginPatternEdit(item: QuestionErrorPattern): void {
 async function changePattern(item: QuestionErrorPattern, action: 'edit' | 'reject'): Promise<void> {
   const questionId = store.detail?.id
   if (!questionId || patternSaving.value) return
-  if (action === 'reject' && !window.confirm(`驳回“${item.pattern}”这条典型错法？`)) return
+  if (action === 'reject' && !await confirm({
+    title: `驳回“${item.pattern}”这条典型错法？`,
+    confirmLabel: '驳回',
+    danger: true,
+  })) return
   if (action === 'edit' && (!patternName.value.trim() || !patternCategory.value)) return
   patternSaving.value = true
   patternError.value = ''

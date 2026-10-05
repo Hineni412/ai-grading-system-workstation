@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import AppIconButton from '../components/design-system/AppIconButton.vue'
+import AppDialog from '../components/design-system/AppDialog.vue'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import AppButton from '../components/design-system/AppButton.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
-import { DialogRoot, DialogPortal, DialogContent, DialogTitle } from 'reka-ui'
 import { useRoute, useRouter } from 'vue-router'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import { useAssemblyStore } from '../stores/assembly'
@@ -205,17 +204,13 @@ async function openCandidateQuestion(ref: { questionId: number; paperId: number 
     </div>
     <QuestionBasketDrawer v-model:open="showBasket" />
     <QuestionRepairDialog :open="repairOpen" :volume-id="scope.selectedVolumeId || ''" :volume-label="scope.selectedVolume?.label || ''" :kind="repairKind" @close="repairOpen = false" @refreshed="bank.loadPapers(); loadIndex()" />
-    <DialogRoot :open="showImport" @update:open="showImport = $event"><DialogPortal>
-      <div v-if="showImport" class="qb-modal-layer" role="presentation" @click.self="showImport = false">
-        <DialogContent class="qb-import-dialog" :aria-describedby="undefined"><DialogTitle class="sr-only">上传试卷与任务</DialogTitle><AppIconButton label="关闭上传窗口" @click="showImport = false" icon="close" />
-          <QuestionImportJobs
-            :pending-taxonomy-count="taxonomyReview.pendingCount"
-            :pending-taxonomy-state="taxonomyReview.loadState"
-            @review-taxonomy="openTaxonomyReview"
-          />
-        </DialogContent>
-      </div>
-    </DialogPortal></DialogRoot>
+    <AppDialog :open="showImport" title="上传试卷与任务" class="qb-import-dialog" @update:open="(value: boolean) => { showImport = value }">
+      <QuestionImportJobs
+        :pending-taxonomy-count="taxonomyReview.pendingCount"
+        :pending-taxonomy-state="taxonomyReview.loadState"
+        @review-taxonomy="openTaxonomyReview"
+      />
+    </AppDialog>
 
     <TaxonomyCandidateReview
       v-if="showTaxonomyReview"

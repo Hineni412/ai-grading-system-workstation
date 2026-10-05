@@ -8,6 +8,7 @@ import {
   type SessionPendingCleanup,
 } from '../api/sessions'
 import { ApiError, isAmbiguousWriteError } from '../api/errors'
+import { useConfirm } from './useConfirm'
 import { useSessionStore } from '../stores/session'
 
 export type SessionDeletionState =
@@ -18,6 +19,7 @@ export type SessionDeletionState =
    绝不重发删除请求；只有删掉的恰是当前考试时才清空选择。 */
 export function useSessionDeletion() {
   const sessionStore = useSessionStore()
+  const { confirm } = useConfirm()
   const expandedId = ref<number | null>(null)
   const state = ref<SessionDeletionState>('idle')
   const impact = ref<SessionDeletionImpact | null>(null)
@@ -84,7 +86,12 @@ export function useSessionDeletion() {
   async function submitDeletion(): Promise<void> {
     const reviewed = impact.value
     if (!reviewed?.can_permanently_delete || state.value === 'working') return
-    if (!window.confirm(`确认彻底删除“${reviewed.session.name}”吗？此操作无法恢复。`)) return
+    if (!await confirm({
+      title: `彻底删除“${reviewed.session.name}”？`,
+      message: '此操作无法恢复。',
+      confirmLabel: '彻底删除',
+      danger: true,
+    })) return
     state.value = 'working'
     rowMessage.value = ''
     try {

@@ -22,6 +22,8 @@ vi.mock('../../../api/sessions', async (importOriginal) => ({
 }))
 
 import SessionManager from '../SessionManager.vue'
+import ConfirmDialogHost from '../../design-system/ConfirmDialogHost.vue'
+import { useConfirm } from '../../../composables/useConfirm'
 
 function session(overrides: Partial<SessionSummary> & { id: number; name: string }): SessionSummary {
   return {
@@ -95,6 +97,20 @@ function row(host: ParentNode, name: string): HTMLElement {
   return found
 }
 
+function mountConfirmHost(): ReturnType<typeof createApp> {
+  const el = document.createElement('div')
+  document.body.append(el)
+  const confirmApp = createApp(ConfirmDialogHost)
+  confirmApp.mount(el)
+  return confirmApp
+}
+
+function confirmDialog(): HTMLElement {
+  const found = document.body.querySelector<HTMLElement>('[data-testid="app-confirm-dialog"]')
+  if (!found) throw new Error('confirm dialog not open')
+  return found
+}
+
 async function mountManager(
   sessions: SessionSummary[] = [older, newer],
 ): Promise<{ app: ReturnType<typeof createApp>; host: HTMLElement }> {
@@ -138,7 +154,7 @@ beforeEach(() => {
 describe('SessionManager', () => {
 
   it('expands a row with read-only impact, then one irreversible confirm', async () => {
-    vi.stubGlobal('confirm', vi.fn(() => false))
+    const confirmApp = mountConfirmHost()
     const { app, host } = await mountManager()
 
     button(row(host, '三月月考'), `删除 三月月考`).click()
@@ -153,9 +169,14 @@ describe('SessionManager', () => {
 
     button(detail, '彻底删除').click()
     await settle()
-    expect(window.confirm).toHaveBeenCalledWith('确认彻底删除“三月月考”吗？此操作无法恢复。')
+    const dialog = confirmDialog()
+    expect(dialog.textContent).toContain('彻底删除“三月月考”？')
+    expect(dialog.textContent).toContain('此操作无法恢复。')
+    button(dialog, '取消').click()
+    await settle()
     expect(api.permanentlyDeleteSession).not.toHaveBeenCalled()
     app.unmount()
+    confirmApp.unmount()
   })
 
   it.each<[string, Partial<SessionDeletionImpact>, string]>([
@@ -178,7 +199,7 @@ describe('SessionManager', () => {
   })
 
   it('reconciles an ambiguous delete that actually landed', async () => {
-    vi.stubGlobal('confirm', vi.fn(() => true))
+    const confirmApp = mountConfirmHost()
     api.permanentlyDeleteSession.mockRejectedValue(new ApiError({
       kind: 'timeout', status: null, code: 'request_timeout',
       message: 'timeout', details: {}, requestId: 'req-2', retryable: true,
@@ -195,16 +216,19 @@ describe('SessionManager', () => {
     await settle()
     button(target.querySelector('.session-manager__detail')!, '彻底删除').click()
     await settle()
+    button(confirmDialog(), '彻底删除').click()
+    await settle()
 
     expect(host.textContent).toContain('已重新核对')
     expect(host.textContent).toContain('已彻底删除')
     expect(host.textContent).not.toContain('结果暂时无法确认')
     expect(api.permanentlyDeleteSession).toHaveBeenCalledOnce()
     app.unmount()
+    confirmApp.unmount()
   })
 
   it('surfaces pending storage cleanup and retries it without resubmitting the delete', async () => {
-    vi.stubGlobal('confirm', vi.fn(() => true))
+    const confirmApp = mountConfirmHost()
     api.fetchPendingSessionCleanups
       .mockReset()
       .mockResolvedValueOnce([])
@@ -223,20 +247,51 @@ describe('SessionManager', () => {
     await settle()
     button(target.querySelector('.session-manager__detail')!, '彻底删除').click()
     await settle()
+    button(confirmDialog(), '彻底删除').click()
+    await vi.waitFor(() => expect(host.textContent).toContain('主要数据已永久删除'))
 
-    expect(host.textContent).toContain('主要数据已永久删除')
     expect(host.textContent).toContain('文件清理尚未完成')
     expect(host.textContent).toContain('1 场已删除考试的文件待清理')
     expect(api.permanentlyDeleteSession).toHaveBeenCalledOnce()
 
     button(host.querySelector('.session-manager__cleanup')!, '重试清理').click()
-    await settle()
+    await vi.waitFor(() => expect(host.textContent).toContain('遗留文件清理已完成'))
 
     expect(api.permanentlyDeleteSession).toHaveBeenCalledTimes(2)
     expect(api.permanentlyDeleteSession).toHaveBeenLastCalledWith(7, '0'.repeat(64), '恢复文件清理')
-    expect(host.textContent).toContain('遗留文件清理已完成')
     expect(host.querySelector('.session-manager__cleanup')).toBeNull()
     app.unmount()
+    confirmApp.unmount()
+  })
+
+  it('keeps a queued confirm pending after the first resolves', async () => {
+    const confirmApp = mountConfirmHost()
+    const { confirm } = useConfirm()
+    const first = confirm({ title: '第一个确认？' })
+    const second = confirm({ title: '第二个确认？', danger: true })
+    await settle()
+
+    let dialog = confirmDialog()
+    expect(dialog.textContent).toContain('第一个确认？')
+    button(dialog, '确认').click()
+    await settle()
+
+    dialog = confirmDialog()
+    expect(dialog.textContent).toContain('第二个确认？')
+    expect(dialog.textContent).not.toContain('第一个确认？')
+    await expect(first).resolves.toBe(true)
+    await vi.waitFor(() => expect(document.activeElement).toBe(button(dialog, '取消')))
+
+    let secondSettled = false
+    void second.then(() => { secondSettled = true })
+    await settle()
+    expect(secondSettled).toBe(false)
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await settle()
+    await expect(second).resolves.toBe(false)
+    expect(document.body.querySelector('[data-testid="app-confirm-dialog"]')).toBeNull()
+    confirmApp.unmount()
   })
 
 })

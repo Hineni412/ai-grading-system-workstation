@@ -65,8 +65,8 @@ function openPage(item: WorkspaceRouteDefinition): void {
   void router.push(resolveNavigationTarget(item, sessionStore.selectedSessionId))
 }
 
-function chooseSession(session: SessionSummary): void {
-  if (switchSession(session.id)) open.value = false
+async function chooseSession(session: SessionSummary): Promise<void> {
+  if (await switchSession(session.id)) open.value = false
 }
 
 function onGlobalKeydown(event: KeyboardEvent): void {
