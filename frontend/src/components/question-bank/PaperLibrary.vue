@@ -2509,12 +2509,12 @@ async function confirmPermanentDelete(): Promise<void> {
 .paper-card.is-selected { border-left-color: var(--color-accent); box-shadow: none; }
 .paper-card:hover { background: var(--color-bg-subtle); transform: none; box-shadow: none; }
 .paper-card__body { display: grid; grid-template-columns: minmax(0,1fr); min-width: 0; gap: 4px; padding: 0; }
-.paper-card__row { display: flex; min-width: 0; gap: 7px; align-items: center; padding-right: 20px; }
-.paper-card__check { padding: 0; }
+.paper-card__row { display: flex; min-width: 0; gap: 7px; align-items: flex-start; padding-right: 20px; }
+.paper-card__check { padding: 4px 0 0; }
 .paper-card__check input, .paper-folder__check input { width: 12px; height: 12px; }
 .paper-card__text { flex: 1; min-width: 0; }
-.paper-card h2 { margin: 0; font-size: var(--font-size-caption); line-height: 1.5; }
-.paper-card__title { display: block; width: 100%; min-width: 0; min-height: 0; padding: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: var(--font-weight-medium); }
+.paper-card h2 { margin: 0; font-size: var(--font-size-dense); line-height: 1.5; }
+.paper-card__title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; width: 100%; min-width: 0; min-height: 0; padding: 0; white-space: normal; overflow: hidden; overflow-wrap: anywhere; font-weight: var(--font-weight-medium); }
 .paper-card__compact-meta { display: flex; align-items: center; gap: 6px; margin-top: 3px; color: var(--color-text-muted); font-size: var(--font-size-caption); white-space: nowrap; }
 .paper-card__compact-meta > span { overflow-wrap: normal; }
 .paper-card__compact-progress { flex: none; width: 48px; height: 4px; border-radius: 2px; background: var(--color-border-subtle); overflow: hidden; }

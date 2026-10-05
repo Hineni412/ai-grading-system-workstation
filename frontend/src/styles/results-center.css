@@ -372,7 +372,10 @@
   inset-block-start: 0;
   min-width: 102px;
   height: 54px;
-  background: var(--muted);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
 }
 
 .results-matrix thead th > strong,
@@ -470,7 +473,6 @@
   color: var(--primary);
 }
 
-.results-matrix tbody .results-matrix__identity > button > strong,
 .results-matrix tbody .results-matrix__identity > button > span {
   width: 100%;
   overflow: hidden;
@@ -478,7 +480,7 @@
   white-space: nowrap;
 }
 
-.results-matrix tbody .results-matrix__identity > button > span,
+.results-matrix tbody .results-matrix__identity > button > span:not(.results-matrix__name),
 .results-matrix__total > span {
   display: block;
   margin-top: 2px;
@@ -490,8 +492,25 @@
   white-space: nowrap;
 }
 
+.results-matrix__name {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+}
+
+.results-matrix__name > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .results-matrix__rank {
+  flex: none;
   color: var(--primary);
+  font-size: var(--font-size-caption);
   font-style: normal;
   font-weight: var(--font-weight-medium);
 }
@@ -769,25 +788,9 @@
   overflow-x: auto;
 }
 
-.overview__table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--font-size-dense);
-  font-variant-numeric: tabular-nums;
-}
-
 .overview__table th,
 .overview__table td {
-  padding: var(--space-2);
-  border-bottom: var(--border-width) solid var(--color-border-subtle);
-  text-align: left;
   white-space: nowrap;
-}
-
-.overview__table thead th {
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
 }
 
 .overview__table tbody tr.is-active {

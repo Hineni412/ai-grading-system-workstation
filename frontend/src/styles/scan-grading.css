@@ -205,6 +205,11 @@
 .review-rates__head { display: flex; align-items: baseline; gap: var(--space-2); margin-bottom: var(--space-2); }
 .review-rates__head h3 { margin: 0; font-size: var(--font-size-dense); font-weight: var(--font-weight-semibold); }
 .review-rates__head small { color: var(--color-text-muted); font-size: var(--font-size-caption); }
+.review-rate-legend { display: flex; gap: var(--space-3); margin: 0 0 0 auto; color: var(--color-text-secondary); font-size: var(--font-size-caption); }
+.review-rate-legend > span { display: inline-flex; align-items: center; gap: var(--space-1); }
+.review-rate-legend i { display: block; width: 12px; height: 12px; border: 1px solid var(--color-border-subtle); border-radius: 3px; }
+.review-rate-legend i.is-high { background: var(--color-success-subtle); }
+.review-rate-legend i.is-low { background: var(--color-warning-subtle); }
 .review-rate-group h4 { margin: var(--space-3) 0 var(--space-2); color: var(--color-text-secondary); font-size: var(--font-size-caption); font-weight: var(--font-weight-medium); }
 .review-rate-group:first-of-type h4 { margin-top: 0; }
 .review-rate-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: var(--space-2); }

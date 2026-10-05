@@ -164,26 +164,13 @@
   overflow-x: auto;
 }
 
-.overview-student-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--font-size-dense);
-}
-
 .overview-student-table th,
 .overview-student-table td {
-  padding: var(--space-2) var(--space-3);
-  border-block-end: var(--border-width) solid var(--color-border-subtle);
-  text-align: start;
   white-space: nowrap;
 }
 
 .overview-student-table tbody tr {
   cursor: pointer;
-}
-
-.overview-student-table tbody tr:hover {
-  background: var(--color-bg-subtle);
 }
 
 .overview-student-table tbody tr:focus-visible {

@@ -1072,14 +1072,8 @@ function closeStudentDrawer(restoreFocus = true): void {
                 <tr v-for="student in matrixStudents" :key="student.student_id" :class="{'personal-report-highlight': highlightedStudentId === student.student_id}">
                   <th scope="row" class="results-matrix__identity">
                     <button type="button" @click="openStudentDrawer(student, $event)">
-                      <strong>{{ student.student_name }}</strong>
-                      <span>
-                        {{ student.student_code || '无学号' }}
-                        <template v-if="student.class_name"> · {{ student.class_name }}</template>
-                        <template v-if="studentRankText(student)">
-                          · <em class="results-matrix__rank" :title="studentRankTitle(student) ?? undefined">{{ studentRankText(student) }}</em>
-                        </template>
-                      </span>
+                      <span class="results-matrix__name"><strong>{{ student.student_name }}</strong><em v-if="studentRankText(student)" class="results-matrix__rank" :title="studentRankTitle(student) ?? undefined">{{ studentRankText(student) }}</em></span>
+                      <span>{{ student.student_code || '无学号' }}<template v-if="student.class_name"> · {{ student.class_name }}</template></span>
                     </button>
                     <button v-if="reportState(student) && reportState(student)?.status !== 'unavailable'"
                       type="button" :class="['personal-report-status', `personal-report-status--${reportState(student)?.status}`]"

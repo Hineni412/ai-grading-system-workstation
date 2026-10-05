@@ -39,9 +39,8 @@
 .workbench-skill .workbench-bar { display: block; margin-top: var(--space-1); }
 .workbench-skill .workbench-bar i { background: var(--color-danger); }
 .workbench-insight-total { margin-top: var(--space-2); }
-.workbench-exams-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: var(--font-size-caption); font-variant-numeric: tabular-nums; }
-.workbench-exams-table th { padding: var(--space-1) 6px var(--space-2); text-align: left; color: var(--color-text-muted); font-weight: var(--font-weight-medium); }
-.workbench-exams-table td { padding: var(--space-2) 6px; border-top: 1px solid var(--color-border-subtle); vertical-align: middle; overflow-wrap: anywhere; }
+.workbench-exams-table { table-layout: fixed; }
+.workbench-exams-table td { overflow-wrap: anywhere; }
 .workbench-exams-table th:nth-child(1) { width: 29%; }
 .workbench-exams-table th:nth-child(2) { width: 16%; }
 .workbench-exams-table th:nth-child(3) { width: 9%; }
@@ -53,6 +52,7 @@
 .workbench-exams-name button:hover { color: var(--color-accent); text-decoration: underline; }
 .workbench-exams-name .status-badge { margin-left: var(--space-1); }
 .workbench-table-progress { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); }
+.is-num .workbench-table-progress { justify-content: flex-end; }
 .workbench-table-progress .workbench-bar { max-width: 60px; min-width: 24px; flex: 1; }
 .workbench-exams-status { display: flex; flex-wrap: wrap; gap: var(--space-1); }
 .workbench-exams-table .app-button { padding: 0; font-size: var(--font-size-caption); }

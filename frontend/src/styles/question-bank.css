@@ -2278,27 +2278,9 @@
   overflow-x: auto;
 }
 
-.taxonomy-ai-results__table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
 .taxonomy-ai-results__table th,
 .taxonomy-ai-results__table td {
-  border-bottom: 1px solid var(--border);
-  padding: 8px 10px;
-  text-align: left;
   vertical-align: top;
-}
-
-.taxonomy-ai-results__table thead th {
-  color: var(--color-text-secondary, #5c6672);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-}
-
-.taxonomy-ai-results__table tbody th {
-  font-weight: var(--font-weight-semibold);
 }
 
 .taxonomy-ai-results__table td p,
@@ -2509,8 +2491,6 @@
 .qb-repair-steps span, .qb-repair-list small { color: var(--color-text-secondary); line-height: 1.6; }
 .qb-repair-list { flex: 1; min-height: 100px; overflow: auto; max-height: 34vh; border: 1px solid var(--color-border-subtle); border-radius: 8px; }
 .qb-repair-list summary { cursor: pointer; padding: 10px 12px; font-size: var(--font-size-dense); }
-.qb-repair-list table { width: 100%; border-collapse: collapse; font-size: var(--font-size-caption); }
-.qb-repair-list th, .qb-repair-list td { padding: 8px 12px; text-align: left; vertical-align: top; border-top: 1px solid var(--color-border-subtle); }
 .qb-repair-list td:first-child { max-width: 280px; }
 .qb-repair-list small { display: block; }
 .qb-repair-cost { color: var(--color-warning); }

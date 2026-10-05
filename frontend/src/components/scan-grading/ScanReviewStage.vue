@@ -210,7 +210,7 @@ function selectStage(id: ScanStageId): void {
         <section class="review-rates" aria-label="各题得分率">
           <div class="review-rates__head">
             <h3>各题得分率</h3>
-            
+            <p class="review-rate-legend"><span><i class="is-high" aria-hidden="true" />得分率 ≥80%</span><span><i class="is-low" aria-hidden="true" />低于 50%</span></p>
           </div>
           <div v-for="group in reviewRateGroups" :key="group.label" class="review-rate-group">
             <h4>{{ group.label }}</h4>

@@ -68,19 +68,19 @@ function openStudent(student: TrainingOverviewStudent): void {
       </label>
     </header>
     <div class="overview-table-wrap">
-      <table class="overview-student-table">
+      <table class="app-table app-table--interactive overview-student-table">
         <thead>
           <tr>
             <th scope="col">姓名（学号）</th>
             <th scope="col">班级</th>
-            <th scope="col">
+            <th scope="col" class="is-num">
               <button type="button" class="overview-sort" @click="toggleSort('score_rate')">
                 考试得分率{{ sortKey === 'score_rate' ? (sortAsc ? ' ↑' : ' ↓') : '' }}
               </button>
             </th>
             <th scope="col">知识点</th>
             <th scope="col">技能</th>
-            <th scope="col">
+            <th scope="col" class="is-num">
               <button type="button" class="overview-sort" @click="toggleSort('weak')">
                 明显薄弱{{ sortKey === 'weak' ? (sortAsc ? ' ↑' : ' ↓') : '' }}
               </button>
@@ -97,7 +97,7 @@ function openStudent(student: TrainingOverviewStudent): void {
           >
             <td>{{ student.student_name }}（{{ student.student_code || '—' }}）</td>
             <td>{{ student.class_id || '—' }}</td>
-            <td>{{ student.score_rate === null ? '—' : formatPercent(student.score_rate) }}</td>
+            <td class="is-num">{{ student.score_rate === null ? '—' : formatPercent(student.score_rate) }}</td>
             <td>
               <span v-if="student.topics.evidence === 0" class="overview-tier-insufficient">证据不足</span>
               <span v-else class="overview-tier-counts">
@@ -114,7 +114,7 @@ function openStudent(student: TrainingOverviewStudent): void {
                 <i class="is-stable">{{ student.skills.stable }}</i><i class="is-insufficient">{{ student.skills.insufficient }}</i>
               </span>
             </td>
-            <td>{{ student.topics.weak + student.skills.weak }}</td>
+            <td class="is-num">{{ student.topics.weak + student.skills.weak }}</td>
           </tr>
         </tbody>
       </table>

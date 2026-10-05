@@ -17,13 +17,11 @@
 
 
 .settings-inline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.settings-table { width: 100%; border-collapse: collapse; font-size: var(--font-size-caption); text-align: left; }
-.settings-table th { padding: 6px 10px; border-bottom: 1px solid var(--color-border-default); font-size: var(--font-size-caption); color: var(--color-text-muted); font-weight: var(--font-weight-semibold); white-space: nowrap; }
-.settings-table td { padding: 8px 10px; border-bottom: 1px solid var(--color-border-subtle); vertical-align: middle; overflow-wrap: anywhere; }
-.settings-table tr:last-child td { border-bottom: 0; }
-.settings-table strong { font-weight: var(--font-weight-medium); }
-.settings-table small { display: block; margin-top: 1px; font-size: var(--font-size-caption); color: var(--color-text-muted); }
-.settings-table input[type=checkbox], .settings-check input { accent-color: var(--color-accent); }
+.settings-originals-table strong,
+.model-task-table strong { font-weight: var(--font-weight-medium); }
+.settings-originals-table small,
+.model-task-table small { display: block; margin-top: 1px; font-size: var(--font-size-caption); color: var(--color-text-muted); }
+.app-table input[type=checkbox], .app-table input[type=radio], .settings-check input { accent-color: var(--color-accent); }
 .settings-hub .app-button, .settings-drawer .app-button { --app-control-height: var(--control-height-small); --app-control-padding: 11px; --app-control-font: var(--font-size-caption); }
 .settings-hub .app-input.app-input.app-input, .settings-drawer .app-input.app-input.app-input { --app-control-height: var(--control-height-small); min-height: var(--control-height-small); height: var(--control-height-small); padding: 0 10px; font-size: var(--font-size-caption); }
 .settings-hub .status-badge { min-height: 18px; height: 18px; font-size: var(--font-size-caption); padding: 0 7px; border: 0; border-radius: var(--radius-tag); line-height: 1; }
@@ -70,7 +68,8 @@ body:has(.settings-drawer[data-state=open]) [data-slot=sheet-overlay] { backgrou
 .settings-selection-bar { display: flex; align-items: center; gap: 10px; padding: 8px 15px; font-size: var(--font-size-caption); color: var(--color-accent); background: var(--color-accent-subtle); }
 .settings-selection-bar > div { margin-left: auto; display: flex; gap: 8px; }
 .settings-table-scroll { overflow-x: auto; }
-.settings-originals-table th:first-child { width: 30px; }
+.settings-originals-table th:first-child,
+.settings-backups-table th:first-child { width: 30px; }
 .settings-originals-table td:nth-child(2) { min-width: 130px; }
 .settings-num { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .settings-row-actions { display: flex; gap: 6px; flex-wrap: wrap; }

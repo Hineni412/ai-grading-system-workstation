@@ -493,11 +493,11 @@ onBeforeUnmount(() => {
           <div><strong>{{ session.sessionName }}</strong></div>
           <b>{{ session.items.length }} 道错题</b>
         </header>
-        <table>
+        <table class="app-table">
           <thead>
             <tr>
               <th scope="col">题号</th>
-              <th scope="col">得分 / 满分</th>
+              <th scope="col" class="is-num">得分 / 满分</th>
               <th scope="col">扣分原因</th>
               <th scope="col">作答图像</th>
               <th scope="col">原题</th>
@@ -506,7 +506,7 @@ onBeforeUnmount(() => {
           <tbody>
             <tr v-for="row in session.items" :key="row.key">
               <td>{{ row.questionId }}</td>
-              <td>{{ formatScore(row.scoreAwarded) }} / {{ formatScore(row.fullScore) }}</td>
+              <td class="is-num">{{ formatScore(row.scoreAwarded) }} / {{ formatScore(row.fullScore) }}</td>
               <td>{{ row.reason || '—' }}<br><small>{{ row.assessment }}</small></td>
               <td>
                 <button
@@ -547,12 +547,12 @@ onBeforeUnmount(() => {
             </div>
             <b>{{ formatScore(session.student_score) }} / {{ formatScore(session.total_score) }}</b>
           </header>
-          <table>
+          <table class="app-table">
             <thead>
               <tr>
                 <th scope="col">题号</th>
-                <th scope="col">得分 / 满分</th>
-                <th scope="col">扣分</th>
+                <th scope="col" class="is-num">得分 / 满分</th>
+                <th scope="col" class="is-num">扣分</th>
                 <th scope="col">扣分原因</th>
                 <th scope="col">作答图像</th>
                 <th scope="col">原题</th>
@@ -561,8 +561,8 @@ onBeforeUnmount(() => {
             <tbody>
               <tr v-for="item in session.items" :key="item.detail_id">
                 <td>{{ item.question_id }}</td>
-                <td>{{ formatScore(item.score_awarded) }} / {{ item.max_score === null ? '—' : formatScore(item.max_score) }}</td>
-                <td>{{ item.deduction_amount === null ? '—' : formatScore(item.deduction_amount) }}</td>
+                <td class="is-num">{{ formatScore(item.score_awarded) }} / {{ item.max_score === null ? '—' : formatScore(item.max_score) }}</td>
+                <td class="is-num">{{ item.deduction_amount === null ? '—' : formatScore(item.deduction_amount) }}</td>
                 <td>{{ reasonText(item) }}</td>
                 <td>
                   <button
@@ -715,10 +715,6 @@ onBeforeUnmount(() => {
 .student-evidence__session > header { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-4); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-border-default); background: var(--color-bg-subtle); }
 .student-evidence__session > header span { margin-left: var(--space-2); color: var(--color-text-secondary); font-size: var(--font-size-dense); }
 .student-evidence__session > header b { font-size: var(--font-size-h3); }
-.student-evidence__session table { width: 100%; border-collapse: collapse; }
-.student-evidence__session th, .student-evidence__session td { padding: .45rem var(--space-3); border-bottom: 1px solid var(--color-border-default); text-align: left; }
-.student-evidence__session thead th { color: var(--color-text-secondary); font-size: var(--font-size-caption); font-weight: var(--font-weight-medium); }
-.student-evidence__session tbody tr:last-child td { border-bottom: 0; }
 .student-evidence__question { border-bottom: 1px solid var(--color-border-default); }
 .student-evidence__question:last-child { border-bottom: 0; }
 .student-evidence__question-heading { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); width: 100%; padding: var(--space-2) var(--space-4); border: 0; background: transparent; color: var(--color-text-primary); cursor: pointer; }

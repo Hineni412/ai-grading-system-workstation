@@ -825,17 +825,17 @@ onMounted(() => {
     <section class="overview__section" aria-labelledby="overview-classes-title">
       <h2 id="overview-classes-title" class="overview__title">班级对比</h2>
       <div class="overview__table-wrap">
-        <table class="overview__table">
+        <table class="app-table overview__table">
           <thead>
             <tr>
               <th scope="col">班级</th>
-              <th scope="col">参考</th>
-              <th scope="col">缺考</th>
-              <th scope="col">平均</th>
-              <th scope="col">中位</th>
-              <th scope="col">最高/最低</th>
-              <th scope="col">及格率</th>
-              <th scope="col">优秀率</th>
+              <th scope="col" class="is-num">参考</th>
+              <th scope="col" class="is-num">缺考</th>
+              <th scope="col" class="is-num">平均</th>
+              <th scope="col" class="is-num">中位</th>
+              <th scope="col" class="is-num">最高/最低</th>
+              <th scope="col" class="is-num">及格率</th>
+              <th scope="col" class="is-num">优秀率</th>
               <th scope="col">分数分布</th>
             </tr>
           </thead>
@@ -853,13 +853,13 @@ onMounted(() => {
                   @click="scope = row.key"
                 >{{ row.label }}</button>
               </th>
-              <td>{{ row.studentCount }}</td>
-              <td>{{ row.absentCount === null ? '—' : row.absentCount }}</td>
-              <td>{{ formatScore(row.average) }}</td>
-              <td>{{ formatScore(row.median) }}</td>
-              <td>{{ formatScore(row.highest) }} / {{ formatScore(row.lowest) }}</td>
-              <td>{{ formatRate(row.passRate) }}</td>
-              <td>{{ formatRate(row.excellentRate) }}</td>
+              <td class="is-num">{{ row.studentCount }}</td>
+              <td class="is-num">{{ row.absentCount === null ? '—' : row.absentCount }}</td>
+              <td class="is-num">{{ formatScore(row.average) }}</td>
+              <td class="is-num">{{ formatScore(row.median) }}</td>
+              <td class="is-num">{{ formatScore(row.highest) }} / {{ formatScore(row.lowest) }}</td>
+              <td class="is-num">{{ formatRate(row.passRate) }}</td>
+              <td class="is-num">{{ formatRate(row.excellentRate) }}</td>
               <td>
                 <span
                   class="overview__bandbar"

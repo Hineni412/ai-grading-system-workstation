@@ -89,11 +89,11 @@ async function commit(): Promise<void> {
             <StatusBadge v-for="operation in (['insert', 'update', 'unchanged', 'invalid', 'duplicate'] as const)" :key="operation" :tone="operationTones[operation]" :label="`${operationLabels[operation]} ${roster.preview.counts[operation]}`" />
           </div>
           <label class="settings-check"><input v-model="onlyChanges" type="checkbox">只看有变化的行</label>
-          <div class="student-import__preview"><table class="settings-table">
-            <thead><tr><th><span class="sr-only">选择写入行</span></th><th>行号</th><th>学号</th><th>姓名</th><th>班级</th><th>变化</th><th>说明</th></tr></thead>
+          <div class="student-import__preview"><table class="app-table app-table--sticky">
+            <thead><tr><th><span class="sr-only">选择写入行</span></th><th class="is-num">行号</th><th>学号</th><th>姓名</th><th>班级</th><th>变化</th><th>说明</th></tr></thead>
             <tbody><tr v-for="row in visibleRows" :key="row.source_row" data-testid="import-preview-row">
               <td><input type="checkbox" :aria-label="`选择源文件第 ${row.source_row} 行`" :checked="roster.selectedSourceRows.includes(row.source_row)" :disabled="!row.selectable || roster.importState === 'committing'" @change="roster.toggleImportRow(row.source_row, ($event.currentTarget as HTMLInputElement).checked)"></td>
-              <td>{{ row.source_row }}</td><td>{{ row.student_code || '—' }}</td><td>{{ row.name || '—' }}</td><td>{{ row.class_name || '—' }}</td>
+              <td class="is-num">{{ row.source_row }}</td><td>{{ row.student_code || '—' }}</td><td>{{ row.name || '—' }}</td><td>{{ row.class_name || '—' }}</td>
               <td><StatusBadge :tone="operationTones[row.operation]" :label="operationLabels[row.operation]" /></td><td>{{ row.issues.join('；') || '—' }}</td>
             </tr></tbody>
           </table><StatePanel v-if="!visibleRows.length" kind="empty" compact title="没有有变化的行" /></div>

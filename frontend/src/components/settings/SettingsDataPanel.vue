@@ -178,12 +178,12 @@ onBeforeUnmount(() => controller.abort())
       <header class="settings-panel__heading"><h2>考试原卷</h2></header>
       <div class="settings-table-note">清除前建议先备份。<AppButton variant="ghost" size="small" @click="backupBlock?.scrollIntoView({ behavior: 'smooth', block: 'center' })">立即备份</AppButton></div>
       <div v-if="selectedRows.length" class="settings-selection-bar"><span>已选 {{ selectedRows.length }} 场 · 可腾出 {{ bytes(selectedRows.reduce((sum, row) => sum + row.clear_bytes, 0)) }}</span><div><AppButton variant="secondary" :disabled="!canReleaseBatch || busy" @click="beginCleanup('release', selectedRows)">释放扫描文件</AppButton><AppButton variant="danger" class="settings-danger-outline" :disabled="!canClearBatch || busy" @click="beginCleanup('clear', selectedRows)">清除原卷</AppButton></div></div>
-      <div class="settings-table-scroll"><table class="settings-table settings-originals-table">
-        <thead><tr><th><input type="checkbox" aria-label="全选可清理的考试" :checked="selectableRows.length > 0 && selected.length === selectableRows.length" :disabled="busy || selectableRows.length === 0" @change="toggleAll"></th><th>考试</th><th>状态</th><th>扫描文件</th><th>页面与批注图</th><th>原卷</th><th>操作</th></tr></thead>
+      <div class="settings-table-scroll"><table class="app-table settings-originals-table">
+        <thead><tr><th><input type="checkbox" aria-label="全选可清理的考试" :checked="selectableRows.length > 0 && selected.length === selectableRows.length" :disabled="busy || selectableRows.length === 0" @change="toggleAll"></th><th>考试</th><th>状态</th><th class="is-num">扫描文件</th><th class="is-num">页面与批注图</th><th>原卷</th><th>操作</th></tr></thead>
         <tbody><tr v-for="row in storage?.sessions" :key="row.session_id">
           <td><input v-model="selected" type="checkbox" :value="row.session_id" :aria-label="`选择 ${row.name}`" :disabled="busy || !(row.can_release_scans || row.can_clear)"></td>
           <td><strong>{{ row.name }}</strong><small>{{ time(row.created_at).slice(0, 10) }}</small></td><td><StatusBadge :label="row.status_label" :tone="row.status_label === '已完成' ? 'success' : 'neutral'" /></td>
-          <td class="settings-num">{{ row.scan_bytes ? bytes(row.scan_bytes) : '—' }}</td><td class="settings-num">{{ row.page_bytes ? bytes(row.page_bytes) : '—' }}</td><td><StatusBadge :tone="row.originals_state === 'clearing' ? 'warning' : row.originals_state === 'complete' ? 'success' : 'neutral'" :label="stateLabels[row.originals_state]" /></td>
+          <td class="settings-num is-num">{{ row.scan_bytes ? bytes(row.scan_bytes) : '—' }}</td><td class="settings-num is-num">{{ row.page_bytes ? bytes(row.page_bytes) : '—' }}</td><td><StatusBadge :tone="row.originals_state === 'clearing' ? 'warning' : row.originals_state === 'complete' ? 'success' : 'neutral'" :label="stateLabels[row.originals_state]" /></td>
           <td><div class="settings-row-actions"><AppButton v-if="row.scan_bytes > 0 && row.originals_state !== 'cleared' && row.originals_state !== 'clearing'" variant="secondary" :disabled="!row.can_release_scans || busy" @click="beginCleanup('release', [row])">释放扫描文件</AppButton><AppButton v-if="row.originals_state !== 'cleared'" variant="danger" class="settings-danger-outline" :disabled="!row.can_clear || busy" @click="beginCleanup('clear', [row])">{{ row.originals_state === 'clearing' ? '继续清理' : '清除原卷' }}</AppButton></div><small v-if="row.blocked_reason">{{ row.blocked_reason }}</small></td>
         </tr></tbody>
       </table></div>
@@ -203,8 +203,8 @@ onBeforeUnmount(() => controller.abort())
     </section>
     <section class="settings-panel">
       <header class="settings-panel__heading"><h2>恢复</h2><AppButton variant="danger" class="settings-danger-outline" data-testid="preflight-restore" :disabled="!selectedBackup || ops.hasBlockingOperation || ops.resultUnknown" @click="beginRestore">恢复所选备份</AppButton></header>
-      <table class="settings-table"><thead><tr><th></th><th>时间</th><th>原因</th><th>大小</th></tr></thead><tbody>
-        <tr v-for="item in zipBackups" :key="item.filename"><td><input v-model="selectedBackup" type="radio" name="restore-backup" :value="item.filename" :aria-label="`选择 ${time(item.created_at)} 的备份`"></td><td>{{ time(item.created_at) }}</td><td>{{ reasons[item.reason] ?? '未记录' }}</td><td>{{ bytes(item.size_bytes) }}</td></tr>
+      <table class="app-table settings-backups-table"><thead><tr><th></th><th>时间</th><th>原因</th><th class="is-num">大小</th></tr></thead><tbody>
+        <tr v-for="item in zipBackups" :key="item.filename"><td><input v-model="selectedBackup" type="radio" name="restore-backup" :value="item.filename" :aria-label="`选择 ${time(item.created_at)} 的备份`"></td><td>{{ time(item.created_at) }}</td><td>{{ reasons[item.reason] ?? '未记录' }}</td><td class="is-num">{{ bytes(item.size_bytes) }}</td></tr>
       </tbody></table>
       <FeedbackBanner v-if="ops.backupsError" role="alert" tone="error" :description="ops.backupsError.message"><AppButton variant="ghost" size="small" @click="ops.refreshBackups(opsApi)">刷新</AppButton></FeedbackBanner><StatePanel v-else-if="!zipBackups.length" kind="empty" compact title="当前没有可恢复的备份" />
     </section>

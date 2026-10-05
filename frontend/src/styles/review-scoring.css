@@ -238,7 +238,7 @@
   gap: var(--space-1) var(--space-2);
   margin: var(--space-2) 0 0;
   font-size: var(--font-size-caption);
-  line-height: var(--line-height-normal);
+  line-height: var(--line-height-body);
 }
 
 .review-rubric-point__details dt {

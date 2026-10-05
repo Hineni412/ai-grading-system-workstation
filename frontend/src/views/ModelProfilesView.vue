@@ -456,7 +456,7 @@ onBeforeUnmount(() => {
     <template v-else>
       <section class="settings-panel" aria-labelledby="model-task-routing-title">
         <header class="settings-panel__heading"><h2 id="model-task-routing-title">用哪个 AI</h2></header>
-        <table class="settings-table model-task-table"><tbody>
+        <table class="app-table model-task-table"><tbody>
           <tr v-for="row in taskRows" :key="row.key">
             <td><strong>{{ row.title }}</strong><small>{{ row.detail }}</small></td>
             <td><select v-model="taskBindingsDraft[row.key].profile_name" class="app-input" :aria-label="`${row.title}使用的服务账号`" :disabled="isBusy || !profilesStore.profiles.length"><option :value="null" disabled>选择服务账号</option><option v-for="profile in profilesStore.profiles" :key="profile.name" :value="profile.name">{{ profile.name }}</option></select></td>

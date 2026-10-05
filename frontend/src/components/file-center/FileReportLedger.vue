@@ -181,7 +181,7 @@ const fileCenter = useFileCenterStore()
       </ul>
     </li>
   </ul>
-  <table v-else class="file-report-table">
+  <table v-else class="app-table file-report-table">
     <thead>
       <tr>
         <th scope="col">文件</th>

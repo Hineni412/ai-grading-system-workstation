@@ -721,7 +721,7 @@ onBeforeUnmount(() => {
           </header>
 
           <div class="taxonomy-ai-results__table-wrap">
-            <table class="taxonomy-ai-results__table">
+            <table class="app-table taxonomy-ai-results__table">
               <thead>
                 <tr>
                   <th>新词</th>

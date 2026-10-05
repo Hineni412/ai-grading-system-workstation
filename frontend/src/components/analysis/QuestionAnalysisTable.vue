@@ -21,14 +21,14 @@ function scoreValue(value: number | null): string {
 
 <template>
   <div class="workbench-table-wrap">
-    <table class="analysis-table">
+    <table class="app-table analysis-table">
       <caption class="sr-only">题目得分、样本量和失分人数</caption>
       <thead>
         <tr>
           <th scope="col">题目与得分率</th>
-          <th scope="col">平均得分</th>
-          <th scope="col">满分</th>
-          <th scope="col">失分人数</th>
+          <th scope="col" class="is-num">平均得分</th>
+          <th scope="col" class="is-num">满分</th>
+          <th scope="col" class="is-num">失分人数</th>
         </tr>
       </thead>
       <tbody>
@@ -56,9 +56,9 @@ function scoreValue(value: number | null): string {
               <span>{{ item.attempt_count }} 份</span>
             </button>
           </td>
-          <td>{{ scoreValue(item.average_score) }}</td>
-          <td>{{ scoreValue(item.max_score) }}</td>
-          <td>{{ item.deduction_count }} 人</td>
+          <td class="is-num">{{ scoreValue(item.average_score) }}</td>
+          <td class="is-num">{{ scoreValue(item.max_score) }}</td>
+          <td class="is-num">{{ item.deduction_count }} 人</td>
         </tr>
       </tbody>
     </table>
