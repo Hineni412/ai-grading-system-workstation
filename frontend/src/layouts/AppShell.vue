@@ -5,11 +5,13 @@ import { RouterView, useRoute } from 'vue-router'
 import AppSidebar from '../components/shell/AppSidebar.vue'
 import AppTopbar from '../components/shell/AppTopbar.vue'
 import CommandPalette from '../components/shell/CommandPalette.vue'
+import { gradingRunRouteDefinition } from '../navigation'
 import { useReviewDraftStore } from '../stores/review-drafts'
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import { useSessionStore } from '../stores/session'
 import { useJobStore } from '../stores/jobs'
+import { useScanGradingStore } from '../stores/scan-grading'
 
 const route = useRoute()
 const questionWorkspace = computed(() => ['/question-bank', '/question-assembly'].includes(route.path))
@@ -18,6 +20,7 @@ const draftStore = useReviewDraftStore()
 const configStore = useConfigWorkspaceStore()
 const curriculumScope = useCurriculumScopeStore()
 const jobs = useJobStore()
+const scanGradingStore = useScanGradingStore()
 const SIDEBAR_COLLAPSED_KEY = 'zhiheng.sidebar.collapsed'
 const hydratingWorkspace = ref(false)
 let hydratedConfigSession: number | null = null
@@ -159,11 +162,46 @@ watch(
 
 watch(() => route.path, () => { void hydrateConfigWorkspace() })
 
+/* 空闲时预取考试批改工作区与页面块：首次进入按已加载数据处理，不再闪恢复横幅。
+   每次选场变化只排一次，不做轮询。 */
+let scanPrefetchIdleId: number | null = null
+let scanPrefetchTimer: ReturnType<typeof setTimeout> | null = null
+function cancelScanPrefetch(): void {
+  if (scanPrefetchIdleId !== null && typeof cancelIdleCallback === 'function') {
+    cancelIdleCallback(scanPrefetchIdleId)
+  }
+  scanPrefetchIdleId = null
+  if (scanPrefetchTimer !== null) clearTimeout(scanPrefetchTimer)
+  scanPrefetchTimer = null
+}
+function runScanPrefetch(id: number): void {
+  scanPrefetchIdleId = null
+  scanPrefetchTimer = null
+  // 已在批改页时由页面自身负责加载，这里不重复请求。
+  if (route.name === gradingRunRouteDefinition.id) return
+  void import('../views/ScanGradingView.vue')
+  void scanGradingStore.prefetch(id)
+}
+watch(
+  [() => sessionStore.loadState, () => sessionStore.selectedSessionId],
+  ([state, id]) => {
+    cancelScanPrefetch()
+    if (state !== 'ready' || id === null) return
+    if (typeof requestIdleCallback === 'function') {
+      scanPrefetchIdleId = requestIdleCallback(() => runScanPrefetch(id), { timeout: 2000 })
+    } else {
+      scanPrefetchTimer = setTimeout(() => runScanPrefetch(id), 1000)
+    }
+  },
+  { immediate: true },
+)
+
 onBeforeUnmount(() => {
   navigationMediaQuery?.removeEventListener('change', syncNavigationMode)
   wideMediaQuery?.removeEventListener('change', syncWideViewport)
   window.removeEventListener('beforeunload', onBeforeUnload)
   document.documentElement.style.removeProperty('--shell-sidebar-offset')
+  cancelScanPrefetch()
 })
 </script>
 

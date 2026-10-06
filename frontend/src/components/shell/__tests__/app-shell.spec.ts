@@ -7,8 +7,10 @@ import { createMemoryHistory, createRouter } from 'vue-router';
 import type { SessionSummary } from '../../../api/sessions';
 import AppShell from '../../../layouts/AppShell.vue'
 import ConfirmDialogHost from '../../design-system/ConfirmDialogHost.vue'
+import { gradingRunRouteDefinition } from '../../../navigation';
 import { createAppRouter } from '../../../router';
 import { useConfigWorkspaceStore } from '../../../stores/config-workspace';
+import { useScanGradingStore } from '../../../stores/scan-grading';
 
 import { useReviewDraftStore } from '../../../stores/review-drafts';
 import { useSessionStore } from '../../../stores/session';
@@ -81,7 +83,10 @@ async function mountShell({
   if (prepareStore) await store.initialize(async () => [])
   const initialize = vi.spyOn(store, 'initialize')
   if (prepareStore) initialize.mockResolvedValue()
-  const router = stubPages ? createRouter({ history: createMemoryHistory(), routes: ['/question-bank', '/results', '/sessions'].map(path => ({ path, component: { render: () => h('section', [h('h1', { tabindex: -1 }, path === '/results' ? '合成结果页' : '合成题库页'), h('button', '合成题卡')]) } })) }) : createAppRouter(createMemoryHistory())
+  const router = stubPages ? createRouter({ history: createMemoryHistory(), routes: [
+    ...['/question-bank', '/results', '/sessions'].map(path => ({ path, component: { render: () => h('section', [h('h1', { tabindex: -1 }, path === '/results' ? '合成结果页' : '合成题库页'), h('button', '合成题卡')]) } })),
+    { path: gradingRunRouteDefinition.path, name: gradingRunRouteDefinition.id, component: { render: () => h('section', [h('h1', { tabindex: -1 }, '合成批改页')]) } },
+  ] }) : createAppRouter(createMemoryHistory())
   await router.push(path)
   await router.isReady()
 
@@ -259,6 +264,46 @@ describe('AppShell', () => {
     expect(taskDetail(task({ detail: 'secret-file.zip' }))).not.toContain('secret-file')
     expect(taskOutcome(task({ cancel_requested: true })).label).toBe('正在取消')
   })
+  it('prefetches the grading workspace while idle for the selected exam', async () => {
+    /* jsdom 没有 requestIdleCallback：桩成手动队列，断言只在回调触发后才预取 */
+    const idle: (() => void)[] = []
+    vi.stubGlobal('requestIdleCallback', vi.fn((cb: () => void) => {
+      idle.push(cb)
+      return idle.length
+    }))
+    vi.stubGlobal('cancelIdleCallback', vi.fn())
+    const { app, router } = await mountShell({ path: '/results', stubPages: true })
+    const sessions = useSessionStore()
+    sessions.sessions = [7, 9].map(id => ({
+      id, name: `合成考试${id}`, status: 'created', is_deleted: false,
+      deleted_at: null, created_at: null, updated_at: null,
+    }))
+    const prefetch = vi.spyOn(useScanGradingStore(), 'prefetch').mockResolvedValue()
+
+    sessions.selectSession(7)
+    await settleUi()
+    expect(prefetch).not.toHaveBeenCalled()
+    expect(idle.length).toBe(1)
+    idle.pop()!()
+    expect(prefetch).toHaveBeenCalledWith(7)
+
+    /* 换场重新排队，预取新一场 */
+    sessions.selectSession(9)
+    await settleUi()
+    expect(idle.length).toBe(1)
+    idle.pop()!()
+    expect(prefetch).toHaveBeenCalledWith(9)
+
+    /* 当前就在批改页时由页面自己加载，空闲回调不重复预取 */
+    await router.push({ name: gradingRunRouteDefinition.id, params: { sessionId: 9 } })
+    await settleUi()
+    sessions.selectSession(7)
+    await settleUi()
+    idle.pop()!()
+    expect(prefetch).toHaveBeenCalledTimes(2)
+    app.unmount()
+  })
+
   it('preserves focus for question-bank bookmarks and focuses the heading on page navigation', async () => {
     const { app, host, router } = await mountShell({ path: '/question-bank', stubPages: true })
     const workspace = host.querySelector('#main-workspace')!

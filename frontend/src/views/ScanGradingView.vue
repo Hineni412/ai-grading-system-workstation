@@ -1,16 +1,9 @@
-<script lang="ts">
-import type { ReviewQuestionSummary } from '../api/review'
-
-// 复核题摘要按考试保留在同次会话里：重进页面先展示上次结果，后台再刷新。
-const interventionSummaryCache = new Map<number, ReviewQuestionSummary[]>()
-</script>
-
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { TERMINAL_JOB_STATUSES } from '../api/jobs'
-import { fetchReviewQuestions } from '../api/review'
+import { fetchReviewQuestions, type ReviewQuestionSummary } from '../api/review'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import StepProgress, { type StepProgressStep } from '../components/design-system/StepProgress.vue'
@@ -141,7 +134,7 @@ async function loadInterventionSummary(id: number): Promise<void> {
     if (sessionId.value !== id) return
     interventionQuestions.value = questions
     interventionState.value = 'ready'
-    interventionSummaryCache.set(id, questions)
+    store.rememberInterventionSummary(id, questions)
   } catch {
     if (sessionId.value !== id) return
     if (interventionState.value !== 'ready') interventionState.value = 'error'
@@ -151,7 +144,7 @@ async function loadInterventionSummary(id: number): Promise<void> {
 async function loadRoute(): Promise<void> {
   const id = sessionId.value
   if (!Number.isSafeInteger(id) || id <= 0) return
-  const cached = interventionSummaryCache.get(id)
+  const cached = store.cachedInterventionSummary(id)
   interventionQuestions.value = cached ?? []
   interventionState.value = cached ? 'ready' : 'idle'
   void loadInterventionSummary(id)

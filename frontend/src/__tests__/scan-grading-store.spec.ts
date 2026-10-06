@@ -3,9 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from '../api/scan-grading'
 import { ApiError } from '../api/errors';
+import { fetchReviewQuestions } from '../api/review';
 import { fetchStudents } from '../api/students';
 
 import { useJobStore } from '../stores/jobs';
+import { useResultsCenterStore } from '../stores/results-center';
 import { useScanGradingStore } from '../stores/scan-grading';
 
 vi.mock('../api/scan-grading', async (importOriginal) => ({
@@ -14,6 +16,11 @@ vi.mock('../api/scan-grading', async (importOriginal) => ({
   freezeScans: vi.fn(), startPreflight: vi.fn(), fetchPreflight: vi.fn(),
   saveScanDecisions: vi.fn(), startGrading: vi.fn(), controlGrading: vi.fn(), cancelGrading: vi.fn(),
   supplementGrading: vi.fn(), startNewScanBatch: vi.fn(), commitScanReplacement: vi.fn(),
+  beginScanReplacement: vi.fn(), cancelScanReplacement: vi.fn(),
+}))
+vi.mock('../api/review', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../api/review')>(),
+  fetchReviewQuestions: vi.fn(),
 }))
 vi.mock('../api/students', () => ({ fetchStudents: vi.fn() }))
 
@@ -176,5 +183,59 @@ describe('scan grading store isolation and recovery', () => {
     expect(store.loadState).toBe('ready')
     expect(store.preflight).toBeNull()
     expect(store.errorMessage).toContain('Invalid scan preflight identity')
+  })
+
+  it('prefetch warms the workspace and intervention cache before first entry', async () => {
+    const completed = workspace(1, 'frozen')
+    completed.grading_run = {
+      run_id: 21, mode: 'full_paper', state: 'completed',
+      counts: { graded: 4, grading: 0, pending: 0, skipped: 0, failed: 0, conflict: 0, total: 4 },
+      allowed_actions: ['supplement_new_matches'],
+    }
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(completed)
+    vi.mocked(api.fetchPreflight).mockResolvedValue({
+      revision: 0, summary: {}, groups: [], issues: [], absent_students: [], warnings: [],
+      decisions: [], pending_issue_count: 0,
+    })
+    const summary = [{ question_id: 'Q1', question_type: null, total_count: 4,
+      needs_review_count: 1, max_score: 5 }]
+    vi.mocked(fetchReviewQuestions).mockResolvedValue(summary)
+    // 复核就绪时预取顺带暖起成绩中心；没有运行记录时不暖
+    const resultsLoad = vi.spyOn(useResultsCenterStore(), 'load').mockResolvedValue()
+    const store = useScanGradingStore()
+
+    await store.prefetch(1)
+    expect(api.fetchGradingWorkspace).toHaveBeenCalledTimes(1)
+    expect(fetchReviewQuestions).toHaveBeenCalledWith(1, { scope: 'all' })
+    expect(store.cachedInterventionSummary(1)).toEqual(summary)
+    expect(store.loadState).toBe('ready')
+    expect(resultsLoad).toHaveBeenCalledWith(1)
+
+    // 同一场考试已就绪时再次预取不再发请求
+    await store.prefetch(1)
+    expect(api.fetchGradingWorkspace).toHaveBeenCalledTimes(1)
+    expect(fetchReviewQuestions).toHaveBeenCalledTimes(1)
+
+    // 预取后首次 load 走静默重查：旧工作区保持展示
+    const shownWorkspace = store.workspace
+    let resolveLoad!: (value: api.GradingWorkspace) => void
+    vi.mocked(api.fetchGradingWorkspace)
+      .mockReturnValueOnce(new Promise((resolve) => { resolveLoad = resolve }))
+    const pending = store.load(1)
+    await Promise.resolve()
+    expect(store.loadState).toBe('ready')
+    expect(store.workspace).toBe(shownWorkspace)
+    resolveLoad(workspace(1, 'frozen'))
+    await pending
+
+    // 没有批改运行记录的考试不触发成绩中心预热
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(workspace(2, 'frozen'))
+    vi.mocked(api.fetchPreflight).mockResolvedValue({
+      revision: 0, summary: {}, groups: [], issues: [], absent_students: [], warnings: [],
+      decisions: [], pending_issue_count: 0,
+    })
+    await store.prefetch(2)
+    expect(store.loadState).toBe('ready')
+    expect(resultsLoad).toHaveBeenCalledTimes(1)
   })
 })

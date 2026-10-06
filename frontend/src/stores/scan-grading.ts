@@ -29,8 +29,10 @@ import {
   type ScanStudentMatchOption,
 } from '../api/scan-grading'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../api/jobs'
+import { fetchReviewQuestions, type ReviewQuestionSummary } from '../api/review'
 import { ApiError, isAmbiguousWriteError } from '../api/errors'
 import { useJobStore } from './jobs'
+import { useResultsCenterStore } from './results-center'
 
 export const useScanGradingStore = defineStore('scan-grading', () => {
   const jobStore = useJobStore()
@@ -53,6 +55,8 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
   let jobsInitialized = false
   let workspaceRefresh: Promise<void> | null = null
   let workspaceRefreshQueued = false
+  // 复核题摘要按考试保留在同次会话里：预取与重进页面先展示上次结果，后台再刷新。
+  const interventionSummaryCache = new Map<number, ReviewQuestionSummary[]>()
 
   const uploadBatch = computed(() => workspace.value?.upload_batch ?? null)
   const replacementBatch = computed(() => workspace.value?.replacement_batch ?? null)
@@ -300,6 +304,34 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
       }
       loadState.value = 'error'
       errorMessage.value = safeMessage(error)
+    }
+  }
+
+  function cachedInterventionSummary(id: number): ReviewQuestionSummary[] | null {
+    return interventionSummaryCache.get(id) ?? null
+  }
+
+  function rememberInterventionSummary(id: number, questions: ReviewQuestionSummary[]): void {
+    interventionSummaryCache.set(id, questions)
+  }
+
+  // 空闲时预取工作区与复核题摘要：首次进入批改页按已加载数据处理，不再闪恢复横幅。
+  async function prefetch(id: number): Promise<void> {
+    if (busyAction.value || (sessionId.value === id && (loadState.value === 'loading'
+      || (loadState.value === 'ready' && workspace.value !== null)))) {
+      return
+    }
+    const summary = interventionSummaryCache.has(id)
+      ? null
+      : fetchReviewQuestions(id, { scope: 'all' })
+        .then((questions) => { rememberInterventionSummary(id, questions) })
+        .catch(() => {})
+    await load(id)
+    await summary
+    if (sessionId.value === id
+      && ['completed', 'failed', 'cancelled'].includes(gradingRun.value?.state ?? '')) {
+      const results = useResultsCenterStore()
+      if (results.sessionId !== id || !results.results) void results.load(id)
     }
   }
 
@@ -617,7 +649,8 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
   return { sessionId, workspace, preflight, students, loadState, busyAction, errorMessage, decisionConflicts,
     activeJobId, preflightJobId, selectedMode, gradingPlan, planState, planErrorMessage,
     uploadBatch, replacementBatch, gradingRun, preflightJob, gradingJob,
-    load, addFiles, remove, clear, analyze, refreshPreflight,
+    load, prefetch, cachedInterventionSummary, rememberInterventionSummary,
+    addFiles, remove, clear, analyze, refreshPreflight,
     saveDecisions, previewPlan, begin, control, cancel, supplement, newBatch,
     cancelReplacement, commitReplacement }
 })
