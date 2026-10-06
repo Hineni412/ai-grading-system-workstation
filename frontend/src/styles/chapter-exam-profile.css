@@ -1,13 +1,5 @@
-/* 章节考情：出现频次热力沿用学情总览的色阶做法，但由主题色与内容面色混合派生，
-   因为频次不代表好坏；掌握度薄弱仍沿用危险色斜纹含义。 */
-
-.chapter-exam {
-  --cep-heat-1: color-mix(in srgb, var(--color-accent) 10%, var(--color-bg-surface));
-  --cep-heat-2: color-mix(in srgb, var(--color-accent) 20%, var(--color-bg-surface));
-  --cep-heat-3: color-mix(in srgb, var(--color-accent) 32%, var(--color-bg-surface));
-  --cep-heat-4: color-mix(in srgb, var(--color-accent) 45%, var(--color-bg-surface));
-  --cep-heat-5: color-mix(in srgb, var(--color-accent) 60%, var(--color-bg-surface));
-}
+/* 章节考情：频次热力沿用共享 app-heat-table 的主题色胶囊色阶（频次不代表好坏）；
+   掌握度薄弱仍沿用危险色斜纹含义。 */
 
 /* 章节考情以分析栏为主栏：覆盖父布局 280px 的技能列宽。 */
 .chapter-exam.qb-skill-layout {
@@ -73,6 +65,17 @@
   overflow-x: auto;
 }
 
+.chapter-exam .app-heat-table td,
+.chapter-exam .cep-table-scroll td {
+  white-space: nowrap;
+}
+
+/* 总览两栏列宽约 516px：难度表收紧横向内边距以占满列宽不换行。 */
+.chapter-exam .cep-table-scroll .app-table th,
+.chapter-exam .cep-table-scroll .app-table td {
+  padding-inline: 8px;
+}
+
 .chapter-exam .cep-scroll p {
   margin: 0;
 }
@@ -102,35 +105,30 @@
   color: var(--color-text-primary);
 }
 
-.chapter-exam table.cep-table {
-  border-collapse: collapse;
-  width: max-content;
-  font-size: var(--font-size-caption);
-  color: var(--color-text-primary);
-}
-
-.chapter-exam .cep-table th,
-.chapter-exam .cep-table td {
-  border: 1px solid var(--color-border-default);
-  padding: 4px 6px;
-  text-align: center;
-  vertical-align: middle;
-  font-weight: var(--font-weight-regular);
-  white-space: nowrap;
-}
-
-/* 宽表在自身容器内横向滚动，行标签列吸附在左侧。 */
+/* 宽表在自身容器内横向滚动，行标签列吸附在左侧；吸附格底色跟随斑马纹与悬停。 */
 .chapter-exam .cep-table-scroll .cep-row-label,
-.chapter-exam .cep-table-scroll thead th:first-child {
+.chapter-exam .cep-table-scroll thead th:first-child,
+.chapter-exam .app-heat-table-wrap .cep-row-label,
+.chapter-exam .app-heat-table-wrap thead th:first-child {
   position: sticky;
   left: 0;
   z-index: 1;
-  background: var(--card);
+  background: var(--color-bg-surface);
 }
 
-.chapter-exam .cep-table-scroll thead th:first-child {
-  background: var(--color-bg-subtle);
+.chapter-exam .cep-table-scroll thead th:first-child,
+.chapter-exam .app-heat-table-wrap thead th:first-child {
   z-index: 2;
+}
+
+.chapter-exam .app-heat-table-wrap tbody tr:nth-child(even) .cep-row-label,
+.chapter-exam .app-heat-table-wrap tbody tr:nth-child(even) .cep-stage-tag {
+  background: color-mix(in srgb, var(--color-bg-subtle) 50%, var(--color-bg-surface));
+}
+
+.chapter-exam .app-heat-table-wrap tbody tr:hover .cep-row-label,
+.chapter-exam .app-heat-table-wrap tbody tr:hover .cep-stage-tag {
+  background: var(--color-bg-subtle);
 }
 
 .chapter-exam .cep-pos-table td.cep-row-label {
@@ -145,17 +143,15 @@
   z-index: 1;
   width: 36px;
   min-width: 36px;
-  background: var(--card);
+  background: var(--color-bg-surface);
 }
 
 .chapter-exam .cep-pos-table thead th:nth-child(2) {
-  background: var(--color-bg-subtle);
   z-index: 2;
 }
 
 .chapter-exam .cep-pos-table th,
 .chapter-exam .cep-pos-table td {
-  padding: 3px 1px;
   min-width: 20px;
 }
 
@@ -164,18 +160,7 @@
   min-width: 26px;
 }
 
-.chapter-exam .cep-pos-table td button.cep-cell {
-  min-width: 16px;
-}
-
-.chapter-exam .cep-table thead th {
-  background: var(--color-bg-subtle);
-  color: var(--color-text-secondary);
-  font-weight: var(--font-weight-medium);
-  white-space: nowrap;
-}
-
-.chapter-exam .cep-table .cep-row-label {
+.chapter-exam .cep-row-label {
   text-align: left;
   white-space: nowrap;
   max-width: 220px;
@@ -183,7 +168,7 @@
   text-overflow: ellipsis;
 }
 
-.chapter-exam .cep-table button.cep-row-link {
+.chapter-exam button.cep-row-link {
   border: 0;
   background: transparent;
   padding: 0;
@@ -197,11 +182,11 @@
   white-space: nowrap;
 }
 
-.chapter-exam .cep-table button.cep-row-link:hover {
+.chapter-exam button.cep-row-link:hover {
   color: var(--color-accent);
 }
 
-.chapter-exam .cep-table .cep-row-static {
+.chapter-exam .cep-row-static {
   text-align: left;
   color: var(--color-text-muted);
   display: inline-flex;
@@ -210,19 +195,15 @@
   white-space: nowrap;
 }
 
-.chapter-exam .cep-table button.cep-cell {
-  display: block;
-  width: 100%;
-  min-width: 30px;
+.chapter-exam button.cep-cell {
   border: 0;
   background: transparent;
-  padding: 0;
   font: inherit;
   color: inherit;
   cursor: pointer;
 }
 
-.chapter-exam .cep-table button.cep-cell:hover {
+.chapter-exam button.cep-cell:hover {
   text-decoration: underline;
 }
 
@@ -244,14 +225,8 @@
   cursor: default;
 }
 
-.chapter-exam .cep-table td.cep-heat-1 { background: var(--cep-heat-1); }
-.chapter-exam .cep-table td.cep-heat-2 { background: var(--cep-heat-2); }
-.chapter-exam .cep-table td.cep-heat-3 { background: var(--cep-heat-3); }
-.chapter-exam .cep-table td.cep-heat-4 { background: var(--cep-heat-4); }
-.chapter-exam .cep-table td.cep-heat-5 { background: var(--cep-heat-5); color: var(--color-text-primary); }
-
-.chapter-exam .cep-table tr.is-empty .cep-row-label,
-.chapter-exam .cep-table tr.is-empty td {
+.chapter-exam .app-heat-table tr.is-empty .cep-row-label,
+.chapter-exam .app-heat-table tr.is-empty td {
   color: var(--color-text-muted);
 }
 
@@ -272,10 +247,6 @@
   .chapter-exam.is-full .cep-ov-grid {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     align-items: start;
-  }
-
-  .chapter-exam.is-full .cep-ov-grid .cep-table {
-    width: 100%;
   }
 
   .chapter-exam.is-full .cep-ov-grid .cep-panels {
@@ -301,8 +272,35 @@
   font-weight: var(--font-weight-medium);
 }
 
+/* 考法热力：计数列只要胶囊宽度，表头允许折行，把列宽让给技能名与薄弱占比。 */
+.chapter-exam .cep-skill-table thead th:not(:first-child):not(:last-child) {
+  white-space: normal;
+  min-width: 40px;
+  padding-inline: 4px;
+}
+
+/* 考法热力技能名列：窄栏内技能名占首行，n=/归属/定义/标记折到第二行，最多两行。 */
+.chapter-exam td.cep-skill-cell {
+  white-space: normal;
+  overflow: visible;
+}
+
+.chapter-exam .cep-skill-title {
+  display: block;
+}
+
 .chapter-exam .cep-skill-name {
+  display: -webkit-box;
+  overflow: hidden;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* 定义展开后取消两行截断。 */
+.chapter-exam .cep-skill-name:has(.cep-skill-definition[open]) {
   display: inline;
+  overflow: visible;
 }
 
 .chapter-exam .cep-skill-name small {
@@ -340,7 +338,7 @@
 }
 
 .chapter-exam .cep-mastery {
-  min-width: 106px;
+  min-width: 176px;
   text-align: left;
   white-space: nowrap;
 }

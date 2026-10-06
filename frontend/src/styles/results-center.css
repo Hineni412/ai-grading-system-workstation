@@ -249,8 +249,6 @@
   position: relative;
   max-height: min(62vh, 720px);
   overflow: auto;
-  border: var(--border-width) solid var(--border);
-  border-radius: var(--radius);
   scrollbar-color: var(--color-border-strong) transparent;
 }
 
@@ -359,7 +357,6 @@
 .results-matrix td {
   height: 66px;
   padding: var(--space-2);
-  border-inline-end: var(--border-width) solid var(--border);
   border-block-end: var(--border-width) solid var(--border);
   background: var(--card);
   text-align: center;

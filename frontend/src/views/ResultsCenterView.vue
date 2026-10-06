@@ -1021,12 +1021,12 @@ function closeStudentDrawer(restoreFocus = true): void {
           <p v-if="personalStateError" class="personal-report-help">{{ personalStateError }} <AppButton variant="ghost" size="small" @click="refreshPersonalStates">重试</AppButton></p>
           <div
             ref="matrixScroller"
-            class="results-matrix-wrap"
+            class="results-matrix-wrap app-heat-table-wrap"
             tabindex="0"
             aria-label="逐题成绩表，可横向滚动"
             @scroll.passive="onMatrixScroll"
           >
-            <table class="results-matrix">
+            <table class="app-heat-table results-matrix">
               <thead>
                 <tr>
                   <th
@@ -1084,9 +1084,8 @@ function closeStudentDrawer(restoreFocus = true): void {
                   </th>
                   <td
                     class="results-matrix__total"
-                    :style="totalHeatStyle(student)"
                   >
-                    <strong>
+                    <strong class="app-heat-chip" :style="totalHeatStyle(student)">
                       {{ currentTotalPrefix(student) }}{{ formatScore(student.current_score) }}
                       <small>/ {{ formatScore(student.max_score) }}</small>
                     </strong>
@@ -1096,7 +1095,6 @@ function closeStudentDrawer(restoreFocus = true): void {
                     v-for="question in matrixQuestions"
                     :key="question.question_id"
                     class="results-matrix__score"
-                    :style="questionHeatStyle(student, question.question_id)"
                   >
                     <button
                       v-if="itemFor(student, question.question_id)"
@@ -1105,7 +1103,7 @@ function closeStudentDrawer(restoreFocus = true): void {
                       :aria-label="`${student.student_name}，${question.question_id}，${scoreStatusLabel(itemFor(student, question.question_id)!.score_status)}，得分 ${formatScore(itemFor(student, question.question_id)!.score_awarded)}，查看作答`"
                       @click="navigateToReview(itemFor(student, question.question_id)!, student)"
                     >
-                      <strong>{{ formatScore(itemFor(student, question.question_id)!.score_awarded) }}</strong>
+                      <strong class="app-heat-chip" :style="questionHeatStyle(student, question.question_id)">{{ formatScore(itemFor(student, question.question_id)!.score_awarded) }}</strong>
                       <span>{{ shortScoreStatusLabel(itemFor(student, question.question_id)!.score_status) }}</span>
                     </button>
                     <span v-else class="results-matrix__missing">—<small>无记录</small></span>

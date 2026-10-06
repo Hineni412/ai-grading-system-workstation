@@ -78,7 +78,7 @@ const posMax = computed(() => {
 
 function heatOf(value: number, max: number): string {
   if (!value) return ''
-  return `cep-heat-${Math.max(1, Math.ceil((value / Math.max(max, 1)) * 5))}`
+  return `is-heat-${Math.max(1, Math.ceil((value / Math.max(max, 1)) * 5))}`
 }
 
 function openCell(skill: ChapterExamSkillRow, col: (typeof COLS)[number]): void {
@@ -120,8 +120,8 @@ function isWeakPick(skill: ChapterExamSkillRow): boolean {
 
   <section class="cep-block" aria-labelledby="cep-heat-title">
     <h3 id="cep-heat-title" class="cep-block-title">考法热力 · {{ stageTitle }}</h3>
-    <div class="cep-table-scroll">
-    <table class="cep-table">
+    <div class="app-heat-table-wrap">
+    <table class="app-heat-table app-heat-table--compact cep-skill-table">
       <thead>
         <tr>
           <th>技能</th>
@@ -131,9 +131,9 @@ function isWeakPick(skill: ChapterExamSkillRow): boolean {
       </thead>
       <tbody>
         <tr v-for="skill in section.skills" :key="skill.key ?? 'unlinked'">
-          <td class="cep-row-label">
+          <td class="cep-row-label cep-skill-cell">
             <span class="cep-skill-name">
-              {{ skill.name }}
+              <span class="cep-skill-title">{{ skill.name }}</span>
               <small>n={{ skill.total }}</small>
               <small v-if="skill.home_section_label">（属 {{ skill.home_section_label }}）</small>
               <details v-if="skill.definition" class="cep-skill-definition">
@@ -151,7 +151,7 @@ function isWeakPick(skill: ChapterExamSkillRow): boolean {
             <button
               v-if="cellIds(skill, col.key).length"
               type="button"
-              class="cep-cell"
+              class="cep-cell app-heat-chip"
               @click="openCell(skill, col)"
             >{{ cellIds(skill, col.key).length }}</button>
           </td>
@@ -179,8 +179,8 @@ function isWeakPick(skill: ChapterExamSkillRow): boolean {
 
   <section class="cep-block" aria-labelledby="cep-pos-title">
     <h3 id="cep-pos-title" class="cep-block-title">题位分布</h3>
-    <div class="cep-table-scroll">
-    <table class="cep-table cep-pos-table">
+    <div class="app-heat-table-wrap">
+    <table class="app-heat-table app-heat-table--compact cep-pos-table">
       <thead>
         <tr>
           <th>技能</th>
@@ -201,7 +201,7 @@ function isWeakPick(skill: ChapterExamSkillRow): boolean {
               <button
                 v-if="skill.positions[posStage]?.[bucket]?.length"
                 type="button"
-                class="cep-cell"
+                class="cep-cell app-heat-chip"
                 @click="openPosition(skill, posStage, bucket)"
               >{{ skill.positions[posStage][bucket].length }}</button>
             </td>

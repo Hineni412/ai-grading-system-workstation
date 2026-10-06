@@ -65,11 +65,11 @@ function coverageDelta(section: ChapterExamSection): string {
 
 function coverageHeat(percent: number | null): string {
   if (percent === null) return ''
-  if (percent >= 90) return 'cep-heat-5'
-  if (percent >= 75) return 'cep-heat-4'
-  if (percent >= 60) return 'cep-heat-3'
-  if (percent >= 40) return 'cep-heat-2'
-  if (percent > 0) return 'cep-heat-1'
+  if (percent >= 90) return 'is-heat-5'
+  if (percent >= 75) return 'is-heat-4'
+  if (percent >= 60) return 'is-heat-3'
+  if (percent >= 40) return 'is-heat-2'
+  if (percent > 0) return 'is-heat-1'
   return ''
 }
 
@@ -87,7 +87,7 @@ const overviewMax = computed(() => {
 
 function countHeat(value: number): string {
   if (!value) return ''
-  return `cep-heat-${Math.max(1, Math.ceil((value / Math.max(overviewMax.value, 1)) * 5))}`
+  return `is-heat-${Math.max(1, Math.ceil((value / Math.max(overviewMax.value, 1)) * 5))}`
 }
 
 function openCell(section: ChapterExamSection, stage: ChapterExamStage, col: (typeof COLS)[number]): void {
@@ -106,8 +106,8 @@ function ratio(part: number, whole: number): string {
   <div class="cep-ov-col">
   <section class="cep-block" aria-labelledby="cep-coverage-title">
     <h3 id="cep-coverage-title" class="cep-block-title">小节出卷率</h3>
-    <div class="cep-table-scroll">
-    <table class="cep-table">
+    <div class="app-heat-table-wrap">
+    <table class="app-heat-table app-heat-table--compact">
       <thead>
         <tr><th>小节</th><th>期中</th><th>期末</th><th>变化</th></tr>
       </thead>
@@ -122,8 +122,14 @@ function ratio(part: number, whole: number): string {
             >{{ section.label }}<small>{{ section.main_count }} 题</small></button>
             <span v-else class="cep-row-static">{{ section.label }}<small>无主考题</small></span>
           </td>
-          <td :class="coverageHeat(section.coverage.midterm.percent)">{{ coverageText(section, 'midterm') }}</td>
-          <td :class="coverageHeat(section.coverage.final.percent)">{{ coverageText(section, 'final') }}</td>
+          <td :class="coverageHeat(section.coverage.midterm.percent)">
+            <span v-if="section.coverage.midterm.percent !== null" class="app-heat-chip">{{ coverageText(section, 'midterm') }}</span>
+            <template v-else>{{ coverageText(section, 'midterm') }}</template>
+          </td>
+          <td :class="coverageHeat(section.coverage.final.percent)">
+            <span v-if="section.coverage.final.percent !== null" class="app-heat-chip">{{ coverageText(section, 'final') }}</span>
+            <template v-else>{{ coverageText(section, 'final') }}</template>
+          </td>
           <td>{{ coverageDelta(section) }}</td>
         </tr>
       </tbody>
@@ -135,28 +141,28 @@ function ratio(part: number, whole: number): string {
   <section class="cep-block" aria-labelledby="cep-difficulty-title">
     <h3 id="cep-difficulty-title" class="cep-block-title">难度与题型</h3>
     <div class="cep-table-scroll">
-    <table class="cep-table">
+    <table class="app-table">
       <thead>
         <tr>
           <th>阶段</th>
-          <th>总题数</th>
-          <th v-for="col in DIFFICULTY_COLS" :key="col.key">{{ col.label }}</th>
-          <th>选择</th>
-          <th>填空</th>
-          <th>解答</th>
+          <th class="is-num">总题数</th>
+          <th v-for="col in DIFFICULTY_COLS" :key="col.key" class="is-num">{{ col.label }}</th>
+          <th class="is-num">选择</th>
+          <th class="is-num">填空</th>
+          <th class="is-num">解答</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="stage in (['midterm', 'final'] as ChapterExamStage[])" :key="stage">
           <td class="cep-row-label">{{ stageLabel(stage) }}</td>
-          <td>{{ chapter.difficulty[stage].total }}</td>
-          <td v-for="col in DIFFICULTY_COLS" :key="col.key">
+          <td class="is-num">{{ chapter.difficulty[stage].total }}</td>
+          <td v-for="col in DIFFICULTY_COLS" :key="col.key" class="is-num">
             {{ chapter.difficulty[stage][col.key] }}
             <small class="cep-stage-tag">{{ ratio(chapter.difficulty[stage][col.key], chapter.difficulty[stage].total) }}</small>
           </td>
-          <td>{{ chapter.difficulty[stage].choice }}</td>
-          <td>{{ chapter.difficulty[stage].fill }}</td>
-          <td>{{ chapter.difficulty[stage].written }}</td>
+          <td class="is-num">{{ chapter.difficulty[stage].choice }}</td>
+          <td class="is-num">{{ chapter.difficulty[stage].fill }}</td>
+          <td class="is-num">{{ chapter.difficulty[stage].written }}</td>
         </tr>
       </tbody>
     </table>
@@ -175,8 +181,8 @@ function ratio(part: number, whole: number): string {
     <div class="cep-panels">
       <div v-for="panel in panels" :key="panel">
         <p class="cep-panel-title">{{ stageLabel(panel) }}</p>
-        <div class="cep-table-scroll">
-        <table class="cep-table">
+        <div class="app-heat-table-wrap">
+        <table class="app-heat-table">
           <thead>
             <tr><th>小节</th><th v-for="col in COLS" :key="col.key">{{ col.label }}</th></tr>
           </thead>
@@ -199,7 +205,7 @@ function ratio(part: number, whole: number): string {
                 <button
                   v-if="section.overview[panel][col.key].length"
                   type="button"
-                  class="cep-cell"
+                  class="cep-cell app-heat-chip"
                   @click="openCell(section, panel, col)"
                 >{{ section.overview[panel][col.key].length }}</button>
               </td>
