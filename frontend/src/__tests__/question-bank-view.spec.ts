@@ -190,13 +190,14 @@ describe('question bank workspace', () => {
     const app = createApp(QuestionBankView); app.use(pinia).use(router).mount(host); mounted.push(app)
     await nextTick()
 
-    const nav = host.querySelector<HTMLElement>('nav.qb-viewnav')!
-    expect(nav.getAttribute('aria-label')).toBe('题库视图')
+    const nav = host.querySelector<HTMLElement>('nav.page-tabs[aria-label="题库视图"]')!
+    expect(nav).not.toBeNull()
+    expect(host.querySelector('.page-header__navigation')).not.toBeNull()
+    expect(host.querySelector('nav.qb-viewnav')).toBeNull()
     expect([...nav.querySelectorAll('button')].map(b => b.textContent?.trim()))
       .toEqual(['章节考情', '按技能', '按试卷', '待处理'])
     const current = () => nav.querySelector('button[aria-current="page"]')?.textContent?.trim()
     expect(current()).toBe('章节考情')
-    expect(host.querySelector('.page-header__navigation')).toBeNull()
 
     for (const [query, label] of [
       ['?skill=sk_1', '按技能'], ['?topic=t_1', '按技能'], ['?tagDim=idea', '按技能'],

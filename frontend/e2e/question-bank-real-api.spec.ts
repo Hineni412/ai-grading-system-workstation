@@ -12,12 +12,12 @@ test('real API skill edits, guarded dialogs and shared assembly basket persist',
   await expect(page.getByRole('heading', { name: '题库管理', exact: true })).toBeVisible()
   await expect(page.locator('.qb-skill-row').first()).toBeVisible()
   await expect(page.locator('.qb-question-card').first()).toBeVisible()
-  await expect(page.locator('.qb-viewnav button[aria-current="page"]')).toHaveText('按技能')
+  await expect(page.locator('.page-tabs .is-active')).toHaveText('按技能')
   await expect(page.getByRole('checkbox', { name: '折叠重复题' })).toBeChecked()
   for (const width of [1440, 1280]) {
     await page.setViewportSize({ width, height: 900 })
     const panes = await page.locator('.qb-skill-layout > .qb-browse-pane').evaluateAll(elements => elements.map(element => { const rect = element.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }))
-    expect(panes).toEqual([{ x: 344, y: 72, width: 280, height: 808 }, { x: 638, y: 72, width: width - 662, height: 808 }])
+    expect(panes).toEqual([{ x: 204, y: 72, width: 280, height: 808 }, { x: 498, y: 72, width: width - 522, height: 808 }])
     await page.screenshot({ path: `test-results/question-bank-browse-${width}.png` })
   }
   await page.getByRole('button', { name: '上传试卷', exact: true }).click()
@@ -34,7 +34,7 @@ test('real API skill edits, guarded dialogs and shared assembly basket persist',
   for (const width of [1440, 1280]) {
     await page.setViewportSize({ width, height: 900 })
     expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
-    expect(await page.locator('.qb-question-pane').evaluate(el => el.getBoundingClientRect().width)).toBeGreaterThan(width - 480)
+    expect(await page.locator('.qb-question-pane').evaluate(el => el.getBoundingClientRect().width)).toBeGreaterThan(940)
     await page.screenshot({ path: `test-results/question-bank-skill-${width}.png` })
   }
   expect(requests.filter(path => path === '/api/question-bank/questions/1')).toHaveLength(1)
@@ -83,7 +83,7 @@ test('real API skill edits, guarded dialogs and shared assembly basket persist',
   await expect(page.locator('.qb-question-card')).toHaveCount(20)
   for (const width of [1440, 1280]) {
     await page.setViewportSize({ width, height: 900 })
-    expect(await page.locator('.qb-question-pane').evaluate(el => el.getBoundingClientRect().width)).toBe(width - 662)
+    expect(await page.locator('.qb-question-pane').evaluate(el => el.getBoundingClientRect().width)).toBe(width - 522)
     await page.screenshot({ path: `test-results/question-bank-unlinked-${width}.png` })
   }
   const repairButton = page.getByRole('button', { name: 'AI 补挂技能', exact: true })

@@ -22,7 +22,6 @@ import { useJobStore } from '../stores/jobs'
 import { useQuestionBankStore } from '../stores/question-bank'
 import { useTaxonomyReviewStore } from '../stores/taxonomy-review'
 import '../styles/question-bank.css'
-import '../styles/question-bank-nav.css'
 
 const QuestionImportJobs = defineAsyncComponent(
   () => import('../components/question-bank/QuestionImportJobs.vue'),
@@ -207,12 +206,8 @@ async function openCandidateQuestion(ref: { questionId: number; paperId: number 
 
 <template>
   <section class="question-bank">
-    <PageHeader title="题库管理"><template #meta>{{ scope.selectedVolume?.label || '请选择教学学期' }} · {{ index?.question_count ?? 0 }} 题 · {{ skillCount }} 项技能</template><template #actions><AppButton variant="secondary" @click="showBasket = true">试卷篮 · {{ assembly.selectedQuestionCount }}</AppButton><AppButton :disabled="!scope.selectedVolumeId" variant="secondary" @click="openRepair()">AI 补齐缺失</AppButton><div id="qb-library-actions" /></template></PageHeader>
+    <PageHeader title="题库管理"><template #meta>{{ scope.selectedVolume?.label || '请选择教学学期' }} · {{ index?.question_count ?? 0 }} 题 · {{ skillCount }} 项技能</template><template #navigation><nav class="page-tabs" aria-label="题库视图"><button v-for="item in VIEW_TABS" :key="item.key" type="button" :class="{ 'is-active': tab === item.key }" :aria-current="tab === item.key ? 'page' : undefined" @click="setTab(item.key)">{{ item.label }}</button></nav></template><template #actions><AppButton variant="secondary" @click="showBasket = true">试卷篮 · {{ assembly.selectedQuestionCount }}</AppButton><AppButton :disabled="!scope.selectedVolumeId" variant="secondary" @click="openRepair()">AI 补齐缺失</AppButton><div id="qb-library-actions" /></template></PageHeader>
     <div class="qb-workspace">
-    <nav class="qb-viewnav" aria-label="题库视图">
-      <button v-for="item in VIEW_TABS" :key="item.key" type="button" :class="{ 'is-active': tab === item.key }" :aria-current="tab === item.key ? 'page' : undefined" @click="setTab(item.key)">{{ item.label }}</button>
-    </nav>
-    <div class="qb-main">
     <FeedbackBanner v-if="bank.lastDeleted" role="status" tone="warning" :description="bank.writeMessage" action-label="立即恢复" @action="bank.restoreLastDeleted()" />
     <QuestionSkillBrowser v-if="tab === 'skill'" :index="index" :loading="indexLoading" :error="indexError" @retry="loadIndex" @skill="openSkill" @repair="openRepair('skills')" />
     <div v-show="tab === 'paper'" class="qb-paper-layout">
@@ -221,7 +216,6 @@ async function openCandidateQuestion(ref: { questionId: number; paperId: number 
     </div>
     <ChapterExamProfile v-if="tab === 'exam'" @skill="openSkill" />
     <QuestionBankTodo v-if="tab === 'todo'" :index="index" :pending-count="taxonomyReview.pendingCount" @question="openCriteriaQuestion" @open-question="openCandidateQuestion" @skill="openSkill" @criteria="openCriteriaReview" @taxonomy="openTaxonomyReview" @repair="openRepair" />
-    </div>
     </div>
     <QuestionBasketDrawer v-model:open="showBasket" />
     <QuestionRepairDialog :open="repairOpen" :volume-id="scope.selectedVolumeId || ''" :volume-label="scope.selectedVolume?.label || ''" :kind="repairKind" @close="repairOpen = false" @refreshed="bank.loadPapers(); loadIndex()" />
