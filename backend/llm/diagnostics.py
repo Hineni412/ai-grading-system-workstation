@@ -13,15 +13,19 @@ import json
 import re
 import threading
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
+
+from path_manager import get_path_manager
 
 from .json_repair import parse_json_object_locally
 from .trace import safe_host_label, safe_trace_label, utc_timestamp
 from .usage import response_diagnostics
 
 DIAGNOSTIC_LOG_FILE = Path("logs/llm_diagnostics.jsonl")
+_MAX_LISTED_CALLS = 100
+_REVERSE_BLOCK_BYTES = 1024 * 1024
 DIAGNOSTIC_SCHEMA_VERSION = 1
 DIAGNOSTIC_MAX_FILE_BYTES = 32 * 1024 * 1024
 DIAGNOSTIC_ROTATED_FILE_COUNT = 3
@@ -84,6 +88,31 @@ _VALIDATION_ISSUE_CODES = frozenset(
 )
 _LOCKS_GUARD = threading.Lock()
 _PATH_LOCKS: dict[str, threading.RLock] = {}
+
+
+def diagnostic_log_path() -> Path:
+    return get_path_manager().logs_dir / "llm_diagnostics.jsonl"
+
+
+def _reverse_lines(path: Path) -> Iterator[str]:
+    """Yield complete lines newest-first, reading backwards in blocks."""
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        position = handle.tell()
+        remainder = b""
+        while position > 0:
+            block_size = min(_REVERSE_BLOCK_BYTES, position)
+            position -= block_size
+            handle.seek(position)
+            block = handle.read(block_size) + remainder
+            lines = block.split(b"\n")
+            remainder = lines[0]
+            for chunk in reversed(lines[1:]):
+                text = chunk.decode("utf-8", errors="replace").rstrip("\r")
+                if text.strip():
+                    yield text
+        if remainder.strip():
+            yield remainder.decode("utf-8", errors="replace").rstrip("\r")
 
 
 def _path_lock(path: Path) -> threading.RLock:
@@ -596,8 +625,10 @@ def _line_mentions_call_id(line: str, call_id: str) -> bool:
 
 
 class JsonlDiagnosticJournal:
-    def __init__(self, path: str | Path = DIAGNOSTIC_LOG_FILE) -> None:
-        self.path = Path(path)
+    def __init__(self, path: str | Path | None = None) -> None:
+        self.path = (
+            Path(path) if path is not None else diagnostic_log_path()
+        )
         self._summary_cache: tuple[tuple[object, ...], list[dict[str, object]], int, bool] | None = None
 
     def for_workspace(
@@ -860,7 +891,10 @@ class JsonlDiagnosticJournal:
                 for path in self._read_paths()
             )
             if self._summary_cache is None or self._summary_cache[0] != fingerprint:
-                calls, scanned_event_count, read_truncated = self._merged_calls(include_bodies=False)
+                events, scanned_event_count, read_truncated = self._recent_events(
+                    _MAX_LISTED_CALLS
+                )
+                calls = _merge_events(events, include_bodies=False)
                 summaries = [self._summary(call) for call in calls.values()]
                 self._summary_cache = (fingerprint, summaries, scanned_event_count, read_truncated)
             _, summaries, scanned_event_count, read_truncated = self._summary_cache
@@ -1009,97 +1043,71 @@ class JsonlDiagnosticJournal:
                             recent.append(record)
             except OSError:
                 return {}, 0, False
-        calls: dict[str, dict[str, Any]] = {}
-        for event in recent:
-            call_id = str(event.get("call_id") or "")
-            if not re.fullmatch(r"[0-9a-f]{24}", call_id):
-                continue
-            if target_call_id and call_id != target_call_id:
-                continue
-            current = calls.setdefault(
-                call_id,
-                {
-                    "call_id": call_id,
-                    "operation_id": str(event.get("operation_id") or ""),
-                    "request_id": str(event.get("request_id") or ""),
-                    "attempt": max(0, int(event.get("attempt") or 0)),
-                    "request_kind": str(event.get("request_kind") or ""),
-                    "protocol": str(event.get("protocol") or ""),
-                    "model": str(event.get("model") or ""),
-                    "endpoint_host": str(event.get("endpoint_host") or ""),
-                    "workspace_module": str(event.get("workspace_module") or ""),
-                    "workspace_task_kind": str(event.get("workspace_task_kind") or ""),
-                    "started_at_utc": "",
-                    "finished_at_utc": "",
-                    "outcome": "pending",
-                    "elapsed_ms": 0,
-                    "image_count": 0,
-                    "retry_limit": 0,
-                    "retry_index": 0,
-                    "will_retry": False,
-                    "retry_delay_ms": 0,
-                    "request": {},
-                    "attachments": [],
-                    "raw_response": "",
-                    "response_chars": 0,
-                    "response_sha256": "",
-                    "parse_status": "not_available",
-                    "parse_operations": [],
-                    "parse_error": "",
-                    "parsed_result": None,
-                    "validation_issue_codes": [],
-                    "error": None,
-                },
-            )
-            event_type = str(event.get("event") or "")
-            if event_type == "request":
-                current["started_at_utc"] = str(
-                    event.get("timestamp_utc") or ""
-                )
-                attachments = event.get("attachments") or []
-                current["image_count"] = (
-                    len(attachments)
-                    if isinstance(attachments, list)
-                    else 0
-                )
-                current["retry_limit"] = max(
-                    0,
-                    int(event.get("retry_limit") or 0),
-                )
-                current["retry_index"] = max(
-                    0,
-                    int(event.get("retry_index") or 0),
-                )
-                if include_bodies:
-                    current["request"] = event.get("request") or {}
-                    current["attachments"] = attachments
-            elif event_type in {"response", "failure"}:
-                current["finished_at_utc"] = str(
-                    event.get("timestamp_utc") or ""
-                )
-                for key in (
-                    "outcome",
-                    "elapsed_ms",
-                    "will_retry",
-                    "retry_delay_ms",
-                    "response_chars",
-                    "response_sha256",
-                    "parse_status",
-                    "parse_operations",
-                    "parse_error",
-                    "error",
-                ):
-                    current[key] = event.get(key)
-                if include_bodies:
-                    current["raw_response"] = event.get("raw_response")
-                    current["parsed_result"] = event.get("parsed_result")
-            elif event_type == "validation":
-                codes = event.get("validation_issue_codes")
-                if isinstance(codes, list):
-                    current["validation_issue_codes"] = [
-                        str(item) for item in codes
-                    ]
+        calls = _merge_events(
+            recent,
+            include_bodies=include_bodies,
+            only_call_id=target_call_id,
+        )
         return calls, scanned, scanned > len(recent)
+
+    def _recent_events(
+        self,
+        max_calls: int,
+    ) -> tuple[list[dict[str, Any]], int, bool]:
+        """Collect events for the newest calls without reading whole files.
+
+        Walks the current file then rotated files newest-first and returns the
+        matching events in chronological order. ``seen_ids`` maps each accepted
+        call_id to whether its ``request`` event (the oldest event of a call)
+        has been reached yet.
+        """
+        events: list[dict[str, Any]] = []
+        seen_ids: dict[str, bool] = {}
+        scanned = 0
+        truncated = False
+        with _path_lock(self.path):
+            try:
+                for path in reversed(self._read_paths()):
+                    if not path.exists():
+                        continue
+                    stop = False
+                    for line in _reverse_lines(path):
+                        scanned += 1
+                        if scanned > _MAX_READ_EVENTS:
+                            truncated = True
+                            stop = True
+                            break
+                        try:
+                            record = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(record, dict):
+                            continue
+                        call_id = str(record.get("call_id") or "")
+                        if not re.fullmatch(r"[0-9a-f]{24}", call_id):
+                            continue
+                        if (
+                            len(seen_ids) >= max_calls
+                            and call_id not in seen_ids
+                        ):
+                            continue
+                        for key in _HEAVY_EVENT_KEYS:
+                            record.pop(key, None)
+                        events.append(record)
+                        is_request = record.get("event") == "request"
+                        if call_id not in seen_ids:
+                            seen_ids[call_id] = is_request
+                        elif is_request:
+                            seen_ids[call_id] = True
+                        if len(seen_ids) >= max_calls and all(seen_ids.values()):
+                            stop = True
+                            break
+                    if stop:
+                        break
+            except OSError:
+                return [], 0, False
+        events.reverse()
+        return events, scanned, truncated
 
     @staticmethod
     def _summary(call: Mapping[str, object]) -> dict[str, object]:
@@ -1128,3 +1136,102 @@ class JsonlDiagnosticJournal:
             ),
             "will_retry": bool(call.get("will_retry")),
         }
+
+
+def _merge_events(
+    events: Iterable[dict[str, Any]],
+    *,
+    include_bodies: bool,
+    only_call_id: str = "",
+) -> dict[str, dict[str, Any]]:
+    calls: dict[str, dict[str, Any]] = {}
+    for event in events:
+        call_id = str(event.get("call_id") or "")
+        if not re.fullmatch(r"[0-9a-f]{24}", call_id):
+            continue
+        if only_call_id and call_id != only_call_id:
+            continue
+        current = calls.setdefault(
+            call_id,
+            {
+                "call_id": call_id,
+                "operation_id": str(event.get("operation_id") or ""),
+                "request_id": str(event.get("request_id") or ""),
+                "attempt": max(0, int(event.get("attempt") or 0)),
+                "request_kind": str(event.get("request_kind") or ""),
+                "protocol": str(event.get("protocol") or ""),
+                "model": str(event.get("model") or ""),
+                "endpoint_host": str(event.get("endpoint_host") or ""),
+                "workspace_module": str(event.get("workspace_module") or ""),
+                "workspace_task_kind": str(event.get("workspace_task_kind") or ""),
+                "started_at_utc": "",
+                "finished_at_utc": "",
+                "outcome": "pending",
+                "elapsed_ms": 0,
+                "image_count": 0,
+                "retry_limit": 0,
+                "retry_index": 0,
+                "will_retry": False,
+                "retry_delay_ms": 0,
+                "request": {},
+                "attachments": [],
+                "raw_response": "",
+                "response_chars": 0,
+                "response_sha256": "",
+                "parse_status": "not_available",
+                "parse_operations": [],
+                "parse_error": "",
+                "parsed_result": None,
+                "validation_issue_codes": [],
+                "error": None,
+            },
+        )
+        event_type = str(event.get("event") or "")
+        if event_type == "request":
+            current["started_at_utc"] = str(
+                event.get("timestamp_utc") or ""
+            )
+            attachments = event.get("attachments") or []
+            current["image_count"] = (
+                len(attachments)
+                if isinstance(attachments, list)
+                else 0
+            )
+            current["retry_limit"] = max(
+                0,
+                int(event.get("retry_limit") or 0),
+            )
+            current["retry_index"] = max(
+                0,
+                int(event.get("retry_index") or 0),
+            )
+            if include_bodies:
+                current["request"] = event.get("request") or {}
+                current["attachments"] = attachments
+        elif event_type in {"response", "failure"}:
+            current["finished_at_utc"] = str(
+                event.get("timestamp_utc") or ""
+            )
+            for key in (
+                "outcome",
+                "elapsed_ms",
+                "will_retry",
+                "retry_delay_ms",
+                "response_chars",
+                "response_sha256",
+                "parse_status",
+                "parse_operations",
+                "parse_error",
+                "error",
+            ):
+                current[key] = event.get(key)
+            if include_bodies:
+                current["raw_response"] = event.get("raw_response")
+                current["parsed_result"] = event.get("parsed_result")
+        elif event_type == "validation":
+            codes = event.get("validation_issue_codes")
+            if isinstance(codes, list):
+                current["validation_issue_codes"] = [
+                    str(item) for item in codes
+                ]
+    return calls

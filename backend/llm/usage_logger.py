@@ -3,7 +3,13 @@ import json
 import os
 from pathlib import Path
 
+from path_manager import get_path_manager
+
 LOG_FILE = Path("logs/llm_usage.jsonl")
+
+
+def usage_log_path() -> Path:
+    return get_path_manager().logs_dir / "llm_usage.jsonl"
 
 def extract_usage_fields(response_or_usage: object) -> dict:
     result = {
@@ -56,9 +62,9 @@ def extract_usage_fields(response_or_usage: object) -> dict:
             
     return result
 
-def log_llm_usage(record: dict, *, log_file: Path = LOG_FILE) -> None:
+def log_llm_usage(record: dict, *, log_file: Path | None = None) -> None:
     try:
-        log_file = Path(log_file)
+        log_file = usage_log_path() if log_file is None else Path(log_file)
         os.makedirs(log_file.parent, exist_ok=True)
         # Ensure default fields are present
         default_record = {

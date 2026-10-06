@@ -80,7 +80,7 @@ const taskBindingsDraft = ref<ModelTaskBindings>({
   grading: { profile_name: null, model: '' },
 })
 const taskRows = [
-  { key: 'content_generation', title: '出题与评分标准', detail: '题库标注、评分标准、组卷' },
+  { key: 'content_generation', title: '出题、评分标准与报告', detail: '题库标注、评分标准、组卷、班级与个人分析报告' },
   { key: 'grading', title: '批改试卷', detail: '含姓名补充识别' },
 ] as const
 let executionStatusController: AbortController | null = null

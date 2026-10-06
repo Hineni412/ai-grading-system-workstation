@@ -96,9 +96,9 @@
   --border-width: 1px;
   --border-selected-width: 4px;
 
-  --control-height-small: 32px;
-  --control-height-default: 36px;
-  --control-height-large: 40px;
+  --control-height-small: 30px;
+  --control-height-default: 34px;
+  --control-height-large: 38px;
   --content-max-width: 1180px;
   --page-inset-x: var(--space-6);
   --page-inset-top: var(--space-4);

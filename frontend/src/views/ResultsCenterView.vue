@@ -170,7 +170,7 @@ function studentRankText(student: ResultsCenterStudent): string | null {
   const entry = classRanks.value.get(student.student_id)
   return entry === null || entry === undefined
     ? null
-    : `班内第 ${entry.rank} 名`
+    : `第 ${entry.rank} 名`
 }
 
 function studentRankTitle(student: ResultsCenterStudent): string | null {
@@ -1230,8 +1230,8 @@ function closeStudentDrawer(restoreFocus = true): void {
 </template>
 
 <style scoped>
-.personal-report-status{display:inline-flex!important;width:var(--control-height-small)!important;min-width:var(--control-height-small);height:var(--control-height-small);align-items:center;justify-content:center;vertical-align:top;margin-left:6px;border-radius:5px!important;font-size:var(--font-size-h3)!important;padding:0!important}
-.results-matrix tbody .results-matrix__identity > button:not(.personal-report-status){display:inline-grid;width:calc(100% - 38px);vertical-align:top}
+.personal-report-status{display:inline-flex!important;width:26px!important;min-width:26px;height:26px;align-items:center;justify-content:center;vertical-align:top;margin-left:6px;border-radius:5px!important;font-size:var(--font-size-body)!important;padding:0!important}
+.results-matrix tbody .results-matrix__identity > button:not(.personal-report-status){display:inline-grid;width:calc(100% - 32px);vertical-align:top}
 .personal-report-status--current{color:#368260!important;background:#edf7ef!important}.personal-report-status--stale{color:#aa7b22!important;background:#fff3d8!important}.personal-report-status--missing{color:#87929c!important;background:#f2f4f6!important}
 .personal-report-unavailable{font-size:var(--font-size-caption);color:#84919e;margin-left:4px}.personal-report-help{color:#7b8b98;font-size:var(--font-size-caption);margin:5px 20px 12px}.personal-report-highlight{outline:2px solid #6c9bb3;outline-offset:-2px}.personal-report-drawer{padding:16px 0;margin-top:12px;border-top:1px solid #e0e7ed}.personal-report-drawer b{display:block;font-size:var(--font-size-body)}.personal-report-drawer p{color:#778490;font-size:var(--font-size-caption);margin:8px 0}
 

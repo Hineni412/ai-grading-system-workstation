@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+from path_manager import get_path_manager
+
 _SAFE_LABEL = re.compile(r"^[A-Za-z0-9._:/-]{1,160}$")
 _SAFE_HOST = re.compile(r"^(?:[A-Za-z0-9-]+\.)*[A-Za-z0-9-]+$|^[0-9A-Fa-f:]+$")
 _TEXT_FIELDS = frozenset(
@@ -94,6 +96,10 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _LOCKS_GUARD = threading.Lock()
 _PATH_LOCKS: dict[str, threading.Lock] = {}
 TRACE_LOG_FILE = Path("logs/llm_api_calls.jsonl")
+
+
+def trace_log_path() -> Path:
+    return get_path_manager().logs_dir / "llm_api_calls.jsonl"
 
 
 @dataclass(frozen=True, slots=True)

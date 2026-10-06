@@ -8,13 +8,13 @@ from openai import OpenAI
 
 import backend.llm.usage_logger as usage_logger
 
-from .diagnostics import DIAGNOSTIC_LOG_FILE, JsonlDiagnosticJournal
+from .diagnostics import JsonlDiagnosticJournal
 from .gateway import LLMGateway
 from .policy import LLMRequestKind
 from .trace import (
-    TRACE_LOG_FILE,
     JsonlCallTraceSink,
     safe_endpoint_host,
+    trace_log_path,
 )
 from .usage import JsonlUsageSink
 
@@ -62,15 +62,15 @@ def create_openai_client(
 
 
 def _default_usage_sink() -> JsonlUsageSink:
-    return JsonlUsageSink(usage_logger.LOG_FILE)
+    return JsonlUsageSink(usage_logger.usage_log_path())
 
 
 def _default_trace_sink() -> JsonlCallTraceSink:
-    return JsonlCallTraceSink(TRACE_LOG_FILE)
+    return JsonlCallTraceSink(trace_log_path())
 
 
 def _default_diagnostic_sink() -> JsonlDiagnosticJournal:
-    return JsonlDiagnosticJournal(DIAGNOSTIC_LOG_FILE)
+    return JsonlDiagnosticJournal()
 
 
 class LLMProtocolAdapter:

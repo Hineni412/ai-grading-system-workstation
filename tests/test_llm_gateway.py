@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict
 from types import SimpleNamespace
 
@@ -14,12 +16,12 @@ def test_diagnostic_summary_cache_invalidates_on_append_rotation_replacement_and
     from backend.llm.diagnostics import JsonlDiagnosticJournal
     journal = JsonlDiagnosticJournal(tmp_path / "test-diagnostics.jsonl")
     scans = 0
-    original = journal._merged_calls
-    def read(**kwargs):
+    original = journal._recent_events
+    def read(*args, **kwargs):
         nonlocal scans
         scans += 1
-        return original(**kwargs)
-    monkeypatch.setattr(journal, "_merged_calls", read)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(journal, "_recent_events", read)
     def append(call_id, timestamp):
         journal._append({"event": "request", "call_id": call_id,
             "timestamp_utc": timestamp, "workspace_module": "grading",
@@ -45,6 +47,88 @@ def test_diagnostic_summary_cache_invalidates_on_append_rotation_replacement_and
     replacement.write_text(journal.path.read_text(encoding="utf-8").replace("d" * 24, "e" * 24), encoding="utf-8")
     replacement.replace(journal.path)
     assert journal.list_calls()["items"][0]["call_id"] == "e" * 24 and scans == 6
+
+
+def test_list_calls_reads_only_the_latest_100_calls(tmp_path):
+    from backend.llm.diagnostics import JsonlDiagnosticJournal
+    journal = JsonlDiagnosticJournal(tmp_path / "test-diagnostics.jsonl")
+    call_ids = [
+        hashlib.sha256(f"req-{index}".encode()).hexdigest()[:24]
+        for index in range(130)
+    ]
+
+    def event(index, kind):
+        return {
+            "event": kind,
+            "call_id": call_ids[index],
+            "request_id": f"req-{index}",
+            "operation_id": f"op-{index}",
+            "attempt": 1,
+            "request_kind": "grading",
+            "timestamp_utc": (
+                f"2026-10-01T00:{index // 60:02d}:{index % 60:02d}Z"
+            ),
+            "request": {"index": index},
+            "attachments": [],
+            "outcome": "success" if kind == "response" else None,
+            "elapsed_ms": 5,
+            "raw_response": "{}",
+            "response_chars": 2,
+        }
+
+    with journal.path.open("w", encoding="utf-8", newline="") as handle:
+        # Requests first, responses later: each request sits far before its
+        # response so the tail reader must keep scanning for open call_ids.
+        for index in range(130):
+            handle.write(json.dumps(event(index, "request")) + "\n")
+        for index in range(130):
+            handle.write(json.dumps(event(index, "response")) + "\n")
+        oversized_id = hashlib.sha256(b"req-oversized").hexdigest()[:24]
+        oversized = event(0, "request")
+        oversized["call_id"] = oversized_id
+        oversized["request_id"] = "req-oversized"
+        oversized["timestamp_utc"] = "2026-10-01T01:00:00Z"
+        oversized["request"] = {"pad": "x" * 1_200_000}
+        handle.write(json.dumps(oversized) + "\n")
+        oversized_response = event(0, "response")
+        oversized_response["call_id"] = oversized_id
+        oversized_response["request_id"] = "req-oversized"
+        oversized_response["timestamp_utc"] = "2026-10-01T01:00:01Z"
+        handle.write(json.dumps(oversized_response) + "\n")
+
+    result = journal.list_calls(limit=100)
+    expected = [oversized_id, *reversed(call_ids[31:])]
+    assert result["matching"] == 100
+    assert [item["call_id"] for item in result["items"]] == expected
+    assert {item["outcome"] for item in result["items"]} == {"success"}
+
+    detail = journal.get_call(call_ids[0])
+    assert detail is not None
+    assert detail["call_id"] == call_ids[0]
+    assert detail["request"] == {"index": 0}
+
+
+def test_reverse_lines_yields_newest_first_across_block_boundaries(
+    tmp_path,
+    monkeypatch,
+):
+    import backend.llm.diagnostics as diagnostics
+    monkeypatch.setattr(diagnostics, "_REVERSE_BLOCK_BYTES", 16)
+    long_line = "x" * 100
+    path = tmp_path / "lines.txt"
+    path.write_text(
+        "\n".join(["first", long_line, "third", "fourth"]) + "\n",
+        encoding="utf-8",
+    )
+    assert list(diagnostics._reverse_lines(path)) == [
+        "fourth",
+        "third",
+        long_line,
+        "first",
+    ]
+    unterminated = tmp_path / "unterminated.txt"
+    unterminated.write_text("alpha\nbeta", encoding="utf-8")
+    assert list(diagnostics._reverse_lines(unterminated)) == ["beta", "alpha"]
 
 
 class StatusError(Exception):

@@ -28,10 +28,8 @@ from backend.llm import (
 )
 from backend.llm.json_repair import parse_json_object_locally
 from backend.llm.trace import (
-    TRACE_LOG_FILE as LLM_TRACE_LOG_FILE,
-)
-from backend.llm.trace import (
     safe_endpoint_host,
+    trace_log_path,
 )
 from backend.llm.transport import (
     create_openai_client as _shared_create_openai_client,
@@ -42,15 +40,15 @@ from backend.llm.transport import (
 from backend.llm.transport import (
     normalize_openai_base_url as _shared_normalize_openai_base_url,
 )
-from backend.llm.usage_logger import LOG_FILE as LLM_USAGE_LOG_FILE
+from backend.llm.usage_logger import usage_log_path
 
 
 def _default_usage_sink() -> JsonlUsageSink:
-    return JsonlUsageSink(LLM_USAGE_LOG_FILE)
+    return JsonlUsageSink(usage_log_path())
 
 
 def _default_trace_sink() -> JsonlCallTraceSink:
-    return JsonlCallTraceSink(LLM_TRACE_LOG_FILE)
+    return JsonlCallTraceSink(trace_log_path())
 
 
 @dataclass

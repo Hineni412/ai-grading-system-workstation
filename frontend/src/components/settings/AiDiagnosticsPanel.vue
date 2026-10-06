@@ -16,14 +16,13 @@ import '../../styles/model-profiles.css'
 
 type DiagnosticTab = 'request' | 'attachments' | 'response' | 'parsed' | 'error'
 
-const DIAGNOSTIC_PAGE_SIZE = 20
+const DIAGNOSTIC_PAGE_SIZE = 100
 
 const diagnostics = ref<AiDiagnosticSummary[]>([])
 const diagnosticsState = ref<'idle' | 'loading' | 'error'>('idle')
 const diagnosticsError = ref('')
 const diagnosticsNotice = ref('')
 const diagnosticsMatching = ref(0)
-const diagnosticsLoadingMore = ref(false)
 const diagnosticOutcome = ref<'' | AiDiagnosticOutcome>('')
 const diagnosticKind = ref('')
 const selectedDiagnosticId = ref('')
@@ -46,7 +45,7 @@ const diagnosticKinds = [
   { value: '', label: '全部用途' },
   { value: 'recognition', label: '识别' },
   { value: 'grading', label: '批改' },
-  { value: 'config_generation', label: '评分标准' },
+  { value: 'config_generation', label: '评分标准与报告' },
   { value: 'tagging', label: '题库标注' },
   { value: 'workspace', label: '工作台' },
 ] as const
@@ -170,10 +169,6 @@ async function loadDiagnosticDetail(callId: string): Promise<void> {
   }
 }
 
-const hasMoreDiagnostics = computed(
-  () => diagnostics.value.length < diagnosticsMatching.value,
-)
-
 async function loadDiagnostics(): Promise<void> {
   diagnosticsController?.abort()
   const controller = new AbortController()
@@ -202,38 +197,6 @@ async function loadDiagnostics(): Promise<void> {
     diagnosticsError.value = error instanceof Error
       ? error.message
       : 'AI 调用记录没有加载成功。'
-  }
-}
-
-async function loadMoreDiagnostics(): Promise<void> {
-  if (diagnosticsLoadingMore.value || diagnosticsState.value === 'loading') return
-  diagnosticsController?.abort()
-  const controller = new AbortController()
-  diagnosticsController = controller
-  diagnosticsLoadingMore.value = true
-  diagnosticsError.value = ''
-  try {
-    const result = await aiDiagnosticsApi.list({
-      limit: DIAGNOSTIC_PAGE_SIZE,
-      offset: diagnostics.value.length,
-      requestKind: diagnosticKind.value,
-      outcome: diagnosticOutcome.value,
-      signal: controller.signal,
-    })
-    const seen = new Set(diagnostics.value.map(({ call_id }) => call_id))
-    diagnostics.value = [
-      ...diagnostics.value,
-      ...result.items.filter(({ call_id }) => !seen.has(call_id)),
-    ]
-    diagnosticsMatching.value = result.matching
-  } catch (error) {
-    if (controller.signal.aborted) return
-    diagnosticsError.value = error instanceof Error
-      ? error.message
-      : '更早的调用记录没有加载成功。'
-  } finally {
-    if (diagnosticsController === controller) diagnosticsController = null
-    diagnosticsLoadingMore.value = false
   }
 }
 
@@ -295,8 +258,8 @@ onBeforeUnmount(() => {
         文本请求、文本响应与解析／校验原因只写入 <code>logs/llm_diagnostics.jsonl</code>；
         不会复制到终端、访问日志、任务摘要或浏览器存储，也不会进入 Git 或普通备份。
         API 密钥、Authorization、Cookie、密码、访问／刷新令牌，以及附件、图片、音频、
-        长 base64 和本机绝对路径不会保留正文。每条最多 1 MB；单个文件约 32 MB 时滚动，
-        保留当前文件和最近 3 个旧文件。
+        长 base64 和本机绝对路径不会保留正文。每条最多 1 MB。
+        这里只列出最近 100 次调用；更早的记录仍保存在 logs/llm_diagnostics.jsonl 及其滚动文件里。
       </p>
     </details>
 
@@ -312,7 +275,8 @@ onBeforeUnmount(() => {
       <aside class="ai-diagnostics-ledger" aria-label="AI 调用列表">
         <header>
           <strong>最近调用</strong>
-          <span>{{ diagnostics.length }} / {{ diagnosticsMatching }} 条</span>
+          <span>{{ diagnostics.length }} 条</span>
+          <span>只保留最近 100 次调用</span>
         </header>
         <p
           v-if="diagnosticsState === 'loading' && diagnostics.length === 0"
@@ -351,15 +315,6 @@ onBeforeUnmount(() => {
             </button>
           </li>
         </ul>
-        <button
-          v-if="hasMoreDiagnostics"
-          type="button"
-          class="ai-diagnostics-ledger__more"
-          :disabled="diagnosticsLoadingMore"
-          @click="loadMoreDiagnostics"
-        >
-          {{ diagnosticsLoadingMore ? '正在读取更早的记录…' : `加载更早（还有 ${diagnosticsMatching - diagnostics.length} 条）` }}
-        </button>
       </aside>
 
       <article class="ai-diagnostic-detail" aria-live="polite">
