@@ -287,6 +287,18 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
         return sanitize_public_mapping(
             {key: job.result[key] for key in allowed if key in job.result}
         )
+    if job.job_type == "skill_candidate":
+        allowed = (
+            "run_id",
+            "status",
+            "curriculum_volume_id",
+            "progress",
+            "stale",
+            "retryable",
+        )
+        return sanitize_public_mapping(
+            {key: job.result[key] for key in allowed if key in job.result}
+        )
     if job.job_type == "config_generation":
         allowed = (
             "session_id",
@@ -477,6 +489,11 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
+    if job.job_type == "skill_candidate":
+        allowed = ("run_id", "operation", "retry_of_job_id")
+        return sanitize_public_mapping(
+            {key: job.payload[key] for key in allowed if key in job.payload}
+        )
     if job.job_type == "config_generation":
         allowed = ("session_id", "mode")
         if str(job.payload.get("source_id") or "").strip():
@@ -584,6 +601,7 @@ def submit_job(
         "question_bank_sync",
         "tagging_sync",
         "taxonomy_suggestion",
+        "skill_candidate",
         "assembly_export",
         "wrong_question_export",
         "personalized_handout_export",

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sqlite3
 import hashlib
+import pickle
 import threading
 from collections import OrderedDict
 from contextlib import closing
@@ -25,6 +26,44 @@ from typing import Union
 from integration.result_cache import ResultCache
 
 _PATH_TYPE = Union[str, Path]
+
+
+def grading_content_revision(path: Path, connection: sqlite3.Connection | None = None) -> str:
+    """Hash grading inputs without unrelated jobs and their sequence counter.
+
+    Every other table and all schema definitions remain included. This is a
+    read-only derived identity, not a database schema or write-generation change.
+    """
+    if connection is None:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as owned:
+            owned.execute("PRAGMA query_only = ON")
+            owned.execute("BEGIN DEFERRED")
+            return grading_content_revision(path, owned)
+    digest = hashlib.sha256(b"grading-input-without-job-progress-v1")
+    def include(value):
+        encoded = pickle.dumps(value, pickle.HIGHEST_PROTOCOL)
+        digest.update(len(encoded).to_bytes(8, 'big'))
+        digest.update(encoded)
+    tables = connection.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name"
+    ).fetchall()
+    for definition in connection.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"
+    ):
+        include(tuple(definition))
+    for name, sql in tables:
+        include((name, sql))
+        if name == 'jobs':
+            continue
+        quoted = '"' + str(name).replace('"', '""') + '"'
+        columns = [row[1] for row in connection.execute(f'PRAGMA table_info({quoted})')]
+        order = ','.join('"' + str(column).replace('"', '""') + '"' for column in columns)
+        cursor = connection.execute(f'SELECT * FROM {quoted}' + (f' ORDER BY {order}' if order else ''))
+        for row in cursor:
+            if name == 'sqlite_sequence' and row[0] == 'jobs':
+                continue
+            include(tuple(row))
+    return digest.hexdigest()
 
 
 def database_content_revision(path: Path, connection: sqlite3.Connection | None = None) -> str:

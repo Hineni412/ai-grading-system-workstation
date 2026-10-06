@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>当前后端性能复审｜2026-10-05</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';mermaid.initialize({startOnLoad:true,theme:'neutral',securityLevel:'strict'});</script>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f2f4ef;color:#1c302b;font:16px/1.7 "Microsoft YaHei","Segoe UI",sans-serif}main{max-width:1120px;margin:auto;padding:45px 28px 65px}h1,h2,h3,p{margin:0}h1{font-size:clamp(28px,4vw,44px);line-height:1.3}h2{font-size:25px;line-height:1.45}h3{font-size:15px}a{color:#176751;text-underline-offset:3px}code{font:13px Consolas,monospace}.eyebrow{font-size:12px;letter-spacing:2px;color:#176751;margin-bottom:12px}.lead{font-size:19px;margin:17px 0 8px}.muted{color:#53665e}.small{font-size:13px}.nav{display:flex;flex-wrap:wrap;gap:8px;margin:24px 0}.nav a{background:#e1ebe2;padding:5px 12px;border-radius:20px;text-decoration:none;font-size:14px}.card{padding:26px;background:#fff;border:1px solid #d7e1d8;border-radius:15px;margin:22px 0;scroll-margin-top:15px}.cardtop{display:flex;gap:15px;justify-content:space-between;align-items:flex-start}.badge{display:inline-block;font-size:12px;white-space:nowrap;border-radius:20px;background:#e0efdf;color:#155837;padding:4px 11px}.badge.explore{background:#f9eccf;color:#825d12}.files{font:12px/1.65 Consolas,"Microsoft YaHei",monospace;color:#52675b;margin-top:10px;overflow-wrap:anywhere}.facts{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:22px 0}.fact{border:1px solid #d7e1d8;border-radius:11px;background:#fff;padding:18px}.fact strong{font-size:32px;line-height:1.2;display:block;color:#176751}.fact p{font-size:14px;margin-top:10px}.notice{font-size:14px;border-left:3px solid #b89147;background:#f8f0db;padding:12px 16px;margin:15px 0}.split{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:18px 0}.diagram{border:1px solid #d3ddd3;border-radius:10px;background:#f5f7f2;padding:18px;min-height:238px}.diagram.after{background:#edf5ec}.diagram h3{font-size:13px;color:#4e6857;margin-bottom:13px}.flow{display:flex;flex-direction:column;gap:7px}.box{text-align:center;font-size:14px;line-height:1.5;background:#fff;border:1px solid #bdcdbd;border-radius:6px;padding:10px}.box small{display:block;font-size:12px;opacity:.86}.box.red{color:#a14336;border-color:#deb2a5;background:#fff3ec}.box.deep{background:#176751;border:3px solid #176751;color:#fff;padding:13px}.arrow{text-align:center;font-size:18px;color:#829383;line-height:1}.row{display:flex;gap:8px}.row .box{flex:1}.evidence{background:#f3f7ef;border-radius:7px;padding:13px 15px;margin:13px 0;font-size:14px}.detail{display:grid;grid-template-columns:64px 1fr;gap:8px 12px;font-size:15px}.detail dt{color:#176751;font-weight:600}.detail dd{margin:0}.wins{display:flex;flex-wrap:wrap;gap:7px;margin:13px 0}.wins span{font-size:13px;background:#e9f1e6;padding:4px 9px;border-radius:5px}.technical{border-top:1px solid #d7e1d8;margin-top:13px;padding-top:11px;font-size:13px;color:#52665a}.tablewrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:14px;margin-top:15px}th,td{padding:11px 13px;text-align:left;vertical-align:top;border-bottom:1px solid #d7e1d8}th{background:#edf3e8;color:#176751}.recommendation{background:#173e31;color:#fff;border-radius:15px;padding:27px;margin:28px 0}.recommendation a{color:#d0f1dc}.recommendation p{margin-top:13px}.recommendation .muted{color:#caddce}footer{font-size:13px;color:#53665e;margin-top:26px}.mermaid{font-size:12px}@media(max-width:760px){main{padding:25px 15px}.facts,.split{grid-template-columns:1fr}.card{padding:19px}.cardtop{display:block}.badge{margin-top:9px}.diagram{min-height:0}.detail{grid-template-columns:54px 1fr}}
+main h1{font-size:clamp(28px,4vw,44px);font-weight:700;line-height:1.3}main h2{font-size:25px;font-weight:600;line-height:1.45}
+</style></head><body><main>
+<header><p class="eyebrow">后端性能复审 · 2026-10-05 · 本次匹配复用代码 f01f865b</p>
+<h1>调整出卷设置可复用匹配，平均少等约 19%～24%。</h1>
+<p class="lead">跨题数和配额复用已接入正式代码。相同输入下，改设置后仍重新分组、选卷和核对来源；六次完整结果与重新计算相同。难度筛选前置和同次请求摘要复用也已实现。评分与选题规则保持原样。</p>
+<p class="small muted">用途：实施结果与验证边界。六项基础方案及三项完整分组优化已实现；下方调查图与计数注明修改前条件，各轮配对比较分别列出。真实输入只用于只读比较，未复制业务数据库、保存真实派生缓存或调用远程模型。</p>
+<div class="facts"><div class="fact"><strong>21.2 → 16.8 秒</strong><p>题数改为 8 的正式代码比较，平均减少约 20.9%；每版两个样本，只计后端分组。</p></div><div class="fact"><strong>完整结果相同</strong><p>91 名学生、476 道候选、16 个分组。三项设置分别改变，每项两轮比较。</p></div><div class="fact"><strong>49.3 MiB</strong><p>本批匹配保留的序列化数据。最多一份、64 MiB；不是整个进程内存上限。</p></div></div>
+<div class="notice">首次新数据重算仍慢。此前 31.3 秒只计已准备输入后的分组。本轮独立进程把诊断、题库、掌握度准备纳入观察，发现缩小匹配范围尚不足以大幅提速。详见<a href="#first-run">首次耗时：实测与下一步方案</a>。已实现的跨设置复用仍见<a href="#grouping-followup">同轮比较</a>；正式页面、真实保存与长期进程内存仍未验收。</div>
+<nav class="nav"><a href="#implemented">已实现</a><a href="#group">① 小组核对</a><a href="#draft">② 快速起草</a><a href="#reports">③ 报告读取</a><a href="#invalidation">④ 失效范围</a><a href="#memory">⑤ 内存保留</a><a href="#snapshot">⑥ 版本绑定</a><a href="#measurements">当前测量</a><a href="#recommendation">推荐顺序</a></nav>
+<p class="small muted">图例：实框表示 module（模块）；绿色粗框表示集中承担工作的 deep module；红框表示修改前的重复或额外等待。Seam 指调用交接处。右图为本次实现。</p>
+</header>
+<section class="card" id="implemented"><h2>这些旧建议已过期，不再列为待实现项</h2>
+<div class="tablewrap"><table><thead><tr><th>当前已实现</th><th>核对入口</th><th>仍需区分的条件</th></tr></thead><tbody>
+<tr><td>完整候选题池可在重启后恢复</td><td>personalized.py:4437–4474</td><td>按题库内容、资源清单和计算版本校验；按题号组合的读取仍只用内存缓存</td></tr>
+<tr><td>题目身份与固定输入可持久复用</td><td>duplicate_analysis_copy_service.py:245–295；file_cache.py:426</td><td>规范题身份和近期原题身份含义不同，仍分别生成</td></tr>
+<tr><td>题库修改后只重校验变化的题目正文</td><td>question_read_service.py:1342–1368</td><td>适用于技能投影；不能推广为推荐池全部计算都按单题更新</td></tr>
+<tr><td>同周跨天、重启及未变场次输入复用</td><td>diagnosis_profile_service.py:409、1296；persistent_entries.py</td><td>完整模型输入相同可避免拟合；上层诊断仍可能因无关提交而失效</td></tr>
+<tr><td>预热已有前台空闲检查</td><td>training_prewarm.py:276、312</td><td>在任务之间避让；已开始的计算不会被新前台请求中途暂停</td></tr>
+</tbody></table></div>
+<p class="technical">该调查以测量时源码和新探针为证据，不沿用旧冷读秒数。测量时后端关键文件没有未提交修改；六项实施后对应文件已有本地改动。其他任务的修改保持原样；没有恢复已删除的旧报告。</p>
+</section>
+<article class="card" id="group"><div class="cardtop"><h2>① 只核对所选小组，共用每轮选卷状态</h2><span class="badge">已完成</span></div>
+<p class="files">backend/api/routers/training.py:232、291 · question_bank/recommendation/personalized.py:1514、1537、1770 · TrainingRecommendationsView.vue:290</p>
+<div class="split"><div class="diagram"><h3>修改前：一个小组也走完整分组</h3><div class="flow"><div class="box">核对指定成员与目标</div><div class="arrow">↓</div><div class="box red">原范围逐生评价 → 试组 → 全部卡片</div><div class="arrow">↓</div><div class="box">所选小组核对 → 保存时再次核对</div></div></div><div class="diagram after"><h3>已实施：按当前操作准备结果</h3><div class="flow"><div class="box">指定成员与目标</div><div class="arrow">↓</div><div class="box deep">现有推荐 module 集中核对<small>只准备所选小组；来源更新与问题提示保留</small></div><div class="arrow">↓</div><div class="box">保存时继续核对来源与操作令牌</div></div></div></div>
+<div class="evidence"><b>本轮重新验证：</b>6 名合成学生、指定 2 人。默认核对仍进入全范围分组 1 次，候选评价累计 14 个学生访问；现有仅所选核对为 0 次全范围分组、2 个学生访问。同一学生可重复计数，内部复用可能命中。14 与 2 不是计算倍数。</div>
+<dl class="detail"><dt>方案</dt><dd>复用现有仅所选核对能力，把编辑小组与生成前的核对收敛到所需范围。完整分组缓存命中时当前可快返；首次成员组合或相关设置变化时仍有额外计算。</dd><dt>收益</dt><dd>删除误用完整分组带来的工作。对于确实需要全部分组的场景，再在现有选卷循环内每轮准备一次当前配额状态，减少每个候选反复构造相同状态和统计查找。</dd><dt>验证</dt><dd>按相同输入比较所有成员、题序、警告、来源版本及冲突结果；计时覆盖首次采用、改成员、改设置和核对后来源变化。</dd></dl>
+<p class="technical">当前分组剖析：候选评价 21.46 秒累计、质量试组 14.12 秒累计。它们嵌套，不能相加。选卷数量统计已有缓存；剩余机会是每个候选仍重复构造当前卷状态，不能再把“新增题对缓存”当作从零方案。</p>
+<div class="wins"><span>depth：核对隐藏计算编排</span><span>locality：当前卷状态集中</span><span>leverage：编辑与生成共用</span></div>
+<p class="technical">Interface：保留现有核对与生成行为。Seam：推荐核对与选卷输入的交接处。Adapter：沿用实际实现。Deletion test：不能删来源更新、问题提示或保存核对；应删除连带全范围计算和重复准备。该按钮净提速尚未测量。</p>
+</article>
+<article class="card" id="draft"><div class="cardtop"><h2>② 快速起草复用本次已读题目</h2><span class="badge">已完成</span></div>
+<p class="files">backend/api/routers/assembly.py:373、378 · question_bank/recommendation/personalized.py:1421、1430、2919</p>
+<div class="split"><div class="diagram"><h3>修改前：每加一道题重新准备</h3><div class="flow"><div class="box">试候选题</div><div class="arrow">↓</div><div class="box red">读取“已选题 + 候选”的整卷资料</div><div class="arrow">↓</div><div class="box red">加题后再读取该题资料</div></div></div><div class="diagram after"><h3>已实施：资料准备留在本次起草内</h3><div class="flow"><div class="box deep">现有整卷规则 module<small>共用候选资料与题对结果</small></div><div class="arrow">↓</div><div class="box">仅更新当前卷的数量与技能状态</div><div class="arrow">↓</div><div class="box">按原顺序输出 → 最终来源核对</div></div></div></div>
+<div class="evidence"><b>本轮合成计数：</b>从空篮加入 8 道题，整卷校验 8 次，资料入口调用 16 次，形成 15 种不同题号组合。题号参数访问累计 44 个，实际不同题为 8 道。这不是 44 次磁盘读取；底层正文和身份缓存仍可能复用。</div>
+<dl class="detail"><dt>问题</dt><dd>新持久缓存面向完整题池。按题号组合读取仍仅用内存缓存；逐个增长的整卷题号组合难以共用同一个完整结果。</dd><dt>方案</dt><dd>由现有整卷规则 module 在一次起草内统一准备只读资料，保留动态配额、相似题、相近任务与具体拒绝原因。</dd><dt>验证</dt><dd>比较新增题序、跳过原因、警告与来源；覆盖近期原题、同技能及解答题上限、计算中来源变化。测整次请求和资料入口次数。</dd></dl>
+<div class="wins"><span>depth：规则包含资料生命周期</span><span>locality：整卷状态集中</span><span>leverage：每轮尝试复用</span></div>
+<p class="technical">Interface：保留已有整卷规则和拒绝原因。Seam：规则与本次只读资料之间。Adapter：沿用候选读取实现。Deletion test：保留共同规则，消除重复取资料；不能把规则复制到起草入口。当前没有真实快速起草耗时，不能承诺秒数。</p>
+</article>
+<article class="card" id="reports"><div class="cardtop"><h2>③ 报告共用修订输入，不同考试独立准备</h2><span class="badge">已完成</span></div>
+<p class="files">backend/personal_reports.py:31、115、154、206 · backend/report_exports.py:42 · backend/repositories/reporting.py:232 · backend/workbench/service.py:90</p>
+<div class="split"><div class="diagram"><h3>修改前：轻状态也走较重输入准备</h3><div class="flow"><div class="box">刷新报告状态／首页汇总</div><div class="arrow">↓</div><div class="box red">整场修订读明细 → 本人修订再读明细</div><div class="arrow">↓</div><div class="box red">报告准备持有全局锁<small>其他考试的报告缓存命中也等待</small></div></div></div><div class="diagram after"><h3>已实施：共享本场输入，按键共算</h3><div class="flow"><div class="box deep">现有个人报告 module<small>一次输入供状态、修订与渲染使用</small></div><div class="arrow">↓</div><div class="row"><div class="box">考试 A 准备</div><div class="box">考试 B 快返</div></div><div class="arrow">↓</div><div class="box">同键请求共算，保留本人修订规则</div></div></div></div>
+<div class="evidence"><b>当前合成探针：</b>已有整场分析的 91 名学生状态读取，仍调用明细函数 182 次、成绩列表 2 次、教师锁 2 次。不包含前置分析，也不能把函数次数当作 SQL 次数。另一探针确认：考试 A 冷准备时，考试 B 报告上下文已命中也会等待同一锁。</div>
+<dl class="detail"><dt>已改善</dt><dd>同场翻页和学期列表已有有限缓存；本人叙述修订不会直接因其他学生改分过期。当前重复准备和跨考试锁仍未变化。</dd><dt>方案</dt><dd>复用一致读取快照、本人输入修订号和叙述索引，在现有 module 内集中输入准备。让较重计算在全局锁外完成，同一个键仍合并计算。</dd><dt>验证</dt><dd>比较状态、本人修订、教师最终分锁、批语与题库关联结果；覆盖同键并发和不同考试冷热交错。计时分别测首页、状态刷新、首次报告与连续翻页。</dd></dl>
+<div class="wins"><span>depth：隐藏输入与并发安排</span><span>locality：修订规则集中</span><span>leverage：首页与报告共用</span></div>
+<p class="technical">Interface：保留状态、汇总、列表及阅读入口。Seam：本场输入与报告读取之间。Adapter：沿用仓储快照。Deletion test：消除重复准备，不添加转发层。已有快照字段不足以直接替代修订输入，必须核全原始结果、明细和教师锁。真实页面等待未测量。</p>
+</article>
+<article class="card" id="invalidation"><div class="cardtop"><h2>④ 诊断版本排除无关的任务进度</h2><span class="badge">已完成</span></div>
+<p class="files">integration/diagnosis_profile_service.py:221、409、412、1296 · integration/data_generation.py:30 · backend/jobs/store.py:1493</p>
+<div class="split"><div class="diagram"><h3>修改前：稳定路径仍用整库签名</h3><div class="flow"><div class="row"><div class="box">成绩变化</div><div class="box red">仅任务进度变化</div></div><div class="arrow">↓</div><div class="box red">整库提交代次与内容签名变化</div><div class="arrow">↓</div><div class="box">内存键变化 + 持久条目校验不通过</div></div></div><div class="diagram after"><h3>已实施：实际学情输入决定重算</h3><div class="flow"><div class="box deep">现有诊断来源 module<small>依据成绩、教师锁、题库、名册与训练证据</small></div><div class="arrow">↓</div><div class="box">只改变任务状态 → 复用计算</div><div class="arrow">↓</div><div class="box">有关输入变化 → 正确失效与刷新</div></div></div></div>
+<div class="evidence"><b>本轮新增持久恢复验证：</b>合成库只调用正式任务进度更新。内存键改变；持久文件路径不变，但签名改变。更新前可恢复，更新后不能恢复。考试标记不变。说明稳定持久键解决了重启代次变化，却没有隔离业务无关的任务提交。</div>
+<dl class="detail"><dt>已改善</dt><dd>未变化场次的错因已有按输入复用；完整模型输入相同时可避免重新拟合。不能说每次任务更新都重算全部考试或重新拟合。</dd><dt>方案</dt><dd>复用现有范围解析、场次输入哈希、错因指纹和完整模型输入判断。先确认哪些字段决定诊断，再让无关更新复用结果；保留底层提交和文件替换检测。</dd><dt>验证</dt><dd>只改任务进度允许复用；改分、教师最终分锁、出勤、名册、判定点、训练证据和错因必须正确失效。计入输入核对本身的成本，覆盖读取期间提交和恢复。</dd></dl>
+<div class="wins"><span>depth：内部辨认有关变化</span><span>locality：来源判断集中</span><span>leverage：诊断与组卷共用</span></div>
+<p class="technical">Interface：保留现有诊断读取与版本取得。Seam：业务来源与缓存键之间。Adapter：沿用只读 SQLite。Deletion test：不能删底层版本检测，也不能简单延长失效时间。整库内容哈希仍包含任务状态；换成它不能直接解决这个问题。真实影响频率与秒数未测量。</p>
+</article>
+<article class="card" id="memory"><div class="cardtop"><h2>⑤ 释放旧解析版本，限制估计保留字节</h2><span class="badge">已完成</span></div>
+<p class="files">integration/persistent_entries.py:22、47、58–73、95、138</p>
+<div class="split"><div class="diagram"><h3>修改前：磁盘一份，内存累积修订</h3><div class="flow"><div class="box">同一请求来源更新 64 次</div><div class="arrow">↓</div><div class="box">磁盘：当前条目覆盖旧条目</div><div class="arrow">↓</div><div class="box red">内存：按文件身份保留 64 份解析结果<small>淘汰磁盘条目也不清理对应内存</small></div></div></div><div class="diagram after"><h3>已实施：同一 module 管理版本与容量</h3><div class="flow"><div class="box deep">现有持久条目 module<small>统一管理磁盘与内存当前版本</small></div><div class="arrow">↓</div><div class="box">替换条目 → 释放该请求旧版本</div><div class="arrow">↓</div><div class="box">内存容量独立受限，读取仍校验签名</div></div></div></div>
+<div class="evidence"><b>本轮合成实验：</b>1 个请求、64 次来源更新，每次载荷为 64 KiB。磁盘最终 1 个文件，共 65,638 字节；解析结果缓存保留 64 份，载荷合计 4 MiB。当前输出正确，旧签名也被拒绝。这个数字是合成载荷量，不是实际进程内存测量。</div>
+<dl class="detail"><dt>问题</dt><dd>解析缓存按文件修订身份存储，最多 512 项。同一文件更新后，旧解析对象仍占容量；磁盘数量和字节上限不约束这些内存对象。</dd><dt>方案</dt><dd>在现有持久条目 module 内管理同一请求的最新解析结果及内存容量。保留损坏回退、并发替换核对和当前签名检查，不新增缓存框架。</dd><dt>验证</dt><dd>连续改来源、重复同一来源、交错不同请求和磁盘淘汰；核对正确结果与旧签名拒绝，并测保留对象和长期运行内存。真实秒级影响尚未证实。</dd></dl>
+<div class="wins"><span>depth：管理完整条目生命周期</span><span>locality：版本与容量集中</span><span>leverage：所有持久条目共用</span></div>
+<p class="technical">Interface：保留 get 与 put 行为。Seam：磁盘条目与解析结果之间。Adapter：沿用本机文件实现。Deletion test：不另建清理层；把旧版本释放规则放在已有条目管理处。512 项已有数量上限，不能声称无限增长；仍缺少按载荷容量约束。</p>
+</article>
+<article class="card" id="snapshot"><div class="cardtop"><h2>⑥ 读取快照与缓存版本已绑定</h2><span class="badge">已完成</span></div>
+<p class="files">backend/api/read_connections.py:63–98 · integration/data_generation.py · integration/diagnosis_profile_service.py:221</p>
+<div class="split"><div class="diagram"><h3>修改前：两个时间点分别取值</h3><div class="flow"><div class="box">捕获旧考试快照</div><div class="arrow">↓</div><div class="box red">此时源数据库发生提交</div><div class="arrow">↓</div><div class="box red">读取新代次，给旧快照赋新缓存标识</div></div></div><div class="diagram after"><h3>已实施：读取 module 负责一致绑定</h3><div class="flow"><div class="box deep">现有请求读取 module<small>快照与对应版本由同一处负责取得</small></div><div class="arrow">↓</div><div class="box">核对捕获期间的来源变化</div><div class="arrow">↓</div><div class="box">只发布与快照一致的缓存标识<small>不稳定时走已有重试或拒绝路径</small></div></div></div>
+</div>
+<div class="evidence"><b>本轮确定复现：</b>1 名 TEST 学生，源姓名从 TEST-old 更新为 TEST-new。把提交放在考试快照取得后、缓存身份赋值前：当前请求读旧值，下一请求读新值，但两者缓存身份和诊断键相同，都标为 <code>commits:2</code>。未生成真实诊断，也没有证明实际使用中的发生频率。</div>
+<dl class="detail"><dt>影响</dt><dd>不同快照可被当成同一版本缓存。这是结果新鲜度问题，尚未证明是慢刷新来源；进一步扩大缓存复用前，应先修正这个条件。</dd><dt>方案</dt><dd>复用现有快照捕获、提交检测、来源稳定性核对和请求清理。在现有读取 module 中取得对应身份，保留跨数据库没有原子事务的约定。</dd><dt>验证</dt><dd>提交落在捕获前、捕获中、捕获后及身份分配前后；覆盖两个数据库、文件替换、并发相同请求与后续缓存读取。先证明不同有效输入不会误用同键结果。</dd></dl>
+<div class="wins"><span>depth：快照包含身份责任</span><span>locality：时间关系集中</span><span>leverage：所有学情读取共用</span></div>
+<p class="technical">Interface：保留现有请求上下文。Seam：快照捕获与缓存身份之间。Adapter：沿用 SQLite 快照和直接读取实现。捕获期间提交最多重新捕获三次，仍不稳定返回已有忙碌错误；已通过两库提交、关闭资源和捕获后提交回归。这不是两库原子读取。</p>
+</article>
+<section class="recommendation" id="recommendation"><p class="eyebrow" style="color:#c5e0cf">IMPLEMENTED IN ORDER</p><h2>已完成：⑥ → ① → ② → ③ → ④ → ⑤。</h2>
+<p>⑥在捕获前后核对版本并有限重试；①固定成员读取不自动重新分组，共用每轮选卷状态；②复用本次已读题目，来源变化返回冲突并保留试卷篮。</p>
+<p class="muted">③共用修订输入，让不同考试独立准备；④只排除 jobs 行和该表自动编号，其他结构与表内容仍纳入；⑤释放同文件旧修订和磁盘淘汰对象，并限制解析缓存的估计字节量。真实整页和长期内存仍未验收。</p><p><a href="#snapshot">查看版本绑定证据 →</a>　<a href="#group">查看小组核对 →</a></p></section>
+<section class="card" id="implementation-results"><h2>同等输入的实施后比较</h2>
+<p class="small muted">同一只读数据、固定时钟、相同候选与掌握度资料。两章合卷 91 名学生、476 道候选；核对使用其中 22 人小组。每版先准备一次，再各测一次；其他进程负载未控制。</p>
+<div class="tablewrap"><table><thead><tr><th>后端计算</th><th>修改前</th><th>修改后</th><th>判断</th></tr></thead><tbody>
+<tr><td>核对所选 22 人小组</td><td>22.034 秒</td><td>5.933 秒</td><td>减少约 73.1%；完整所选结果相等</td></tr>
+<tr><td>全部自动分组</td><td>20.975 秒</td><td>20.788 秒</td><td>完整结果相等；单次差异不足以证明明显提速</td></tr>
+</tbody></table></div>
+<div class="notice">以上只计后端计算，候选与掌握度已经准备。不是完整页面、真实保存或电脑重启后的耗时。不能把准备阶段相加推广为整页，也不能据单次比较承诺固定加速倍数。</div>
+<p class="small">合成回归另验证：快速起草每个题号同次请求只读取一次；报告明细从两轮减为一轮；任务进度与任务编号不改变诊断键和有效持久条目；64 次同文件更新后仅保留当前解析版本。不同考试缓存命中和同键共算保持可用。</p>
+<p class="technical">依据：<a href="../../output/TEST-backend-performance-implementation-20261005/paired_training.py">只读配对脚本</a> · <a href="../../output/TEST-backend-performance-implementation-20261005/paired-training-summary.json">匿名结果</a>。完整分组结果只在内存比较。167 项相关后端检查通过；正式页面、真实保存计时和长期内存未验收。</p>
+</section>
+<section class="card" id="grouping-followup"><div class="cardtop"><h2>完整分组：三项已落实，首次重算仍需改进</h2><span class="badge">三项已实现</span></div>
+<p style="margin-top:15px">已实现难度筛选前置、同次请求复用不变输入摘要，以及跨出卷设置复用初始匹配。普通评价的输入改变后仍重新校验。以下表格分别对应不同轮次；每张表内使用同等输入比较，不能跨表相加或推算秒数。</p>
+<div class="tablewrap"><table><thead><tr><th>两项落实后的比较</th><th>修改前</th><th>修改后</th><th>条件</th></tr></thead><tbody>
+<tr><td>两章完整分组</td><td>18.810、20.935 秒；平均 19.872 秒</td><td>17.907、17.258 秒；平均 17.582 秒</td><td>平均减少约 11.5%；每版两个样本，按正序、反序运行</td></tr>
+<tr><td>第一章完整分组</td><td>9.652 秒</td><td>7.569 秒</td><td>每版单次，完整结果相等</td></tr>
+<tr><td>第二章完整分组</td><td>13.846 秒</td><td>12.028 秒</td><td>每版单次，完整结果相等</td></tr>
+<tr><td>核对所选 22 人小组</td><td>5.691 秒</td><td>4.776 秒</td><td>每版单次，仅所选核对，完整结果相等</td></tr>
+</tbody></table></div>
+<div class="notice">范围：八年级上册第一、第二章，91 名学生，476 道候选，16 个分组。同一只读输入、固定时钟、已准备候选和掌握度；只计后端计算。未控制其他进程负载。不是整页、首次启动或保存耗时，不能承诺固定秒数。</div>
+<h3 style="font-size:19px;margin-top:20px">本次已落实：同一输入下，改变题数或配额复用匹配</h3>
+<div class="split"><div class="diagram"><h3>修改前：完整响应缓存未命中时</h3><div class="flow"><div class="box">改题数／同技能或解答题上限</div><div class="arrow">↓</div><div class="box red">重新逐生逐目标评价候选</div><div class="arrow">↓</div><div class="box">按本次设置试组、选卷和核对来源</div></div></div><div class="diagram after"><h3>已实施：复用初始匹配</h3><div class="flow"><div class="box">按值核对数据来源与匹配输入</div><div class="arrow">↓</div><div class="box deep">现有推荐 module 复用匹配资料<small>最多一份、64 MiB；同键并发共用计算</small></div><div class="arrow">↓</div><div class="box">按新题数／配额重新试组和选卷</div></div></div></div>
+<div class="tablewrap"><table><thead><tr><th>本次正式比较</th><th>修改前平均</th><th>修改后平均</th><th>减少比例</th></tr></thead><tbody>
+<tr><td>题数由 10 改为 8</td><td>21.186 秒</td><td>16.760 秒</td><td>约 20.9%</td></tr>
+<tr><td>同技能上限由 1 改为 2</td><td>27.752 秒</td><td>20.971 秒</td><td>约 24.4%</td></tr>
+<tr><td>解答题上限由 2 改为 0</td><td>21.324 秒</td><td>17.242 秒</td><td>约 19.1%</td></tr>
+</tbody></table></div>
+<p class="small muted" style="margin-top:12px">每项设置、每版两个样本，第二轮反转先后次序。先按 10 题、同技能 1 题、解答题 2 题准备匹配，随后在同一进程分别改变一项设置。六次均复用，初始匹配只计算一次；完整分组、成员、题目相关结果、顺序、警告和来源版本均与新设置下的原计算相同。未控制其他进程负载；不是整页或首次启动时间。此前试验单次结果不作为本次正式收益。</p>
+<dl class="detail" style="margin-top:15px"><dt>适用</dt><dd>考试、学生、候选资料、知识标准、掌握度、匹配范围、难度与近期原题排除输入都相同，只改变题数或卷内配额。现有完整响应缓存仍保留；本次复用针对不同设置导致完整响应缓存未命中的情况。</dd><dt>边界</dt><dd>新数据首次计算没有明显改善。本轮初次建立缓存 31.294 秒，修改前同条件 32.387 秒，各一次；不能承诺首次打开两三秒。本批保留 51,690,274 字节，约 49.296 MiB；最多保留一份、64 MiB 的序列化数据。超过预算时本次仍能返回，但不保留。解码对象、在途请求及其他缓存的内存另外计算；长期进程内存未验收。</dd><dt>已核实</dt><dd>真实输入只读，完整结果只在内存比较；不写业务数据库、保存真实派生缓存或调用模型。合成检查验证改题数、配额可复用；改成绩输入、掌握度、资料、候选内容、近期原题、排除集合、难度、题库代次或知识内容都会重新计算，并核对交错输入、同键并发与容量。</dd><dt>复用处</dt><dd>沿用 evaluate_candidates、请求内逐目标记录、ResultCache 和章节分组。计算条件和恢复规则集中在现有推荐 module；不新增产品接口。缓存按数据值比较，避免同值快照因内存共享关系不同而未命中。选择、填空及解答题的证据口径保持原样。</dd></dl>
+<p class="technical">Interface：保留分组读取和出卷设置。Seam：逐生候选评价与试组之间。Adapter：沿用只读资料。Depth：推荐 module 内处理复用与失效。Locality：匹配条件集中核对。Leverage：不同题数、配额请求共用已计算资料。Deletion test：删除不必要的重复评价，保留新设置下的试组、配额、警告和来源校验。</p>
+<h3 style="font-size:19px;margin-top:20px">已探索但暂不优先的方向</h3>
+<div class="tablewrap"><table><thead><tr><th>方向</th><th>同轮结果</th><th>判断</th></tr></thead><tbody>
+<tr><td>按技能、知识点与小节提前定位候选</td><td>候选访问约 994,422 → 275,042 次；完整分组平均 17.582 → 16.074 秒</td><td>内部工作减少约 72.3%，总耗时约少 8.6%。两章整体有收益，单章未证明稳定收益</td></tr>
+<tr><td>再预编选卷条件、复用相同来源的 JSON 片段</td><td>另一轮正式代码平均 21.346 秒，组合试验 18.168 秒，单独索引试验 17.897 秒</td><td>完整结果及来源版本相等；没有证明组合比单独索引更快</td></tr>
+<tr><td>四个本机进程并行逐生匹配</td><td>同轮串行平均 17.179 秒，并行 18.390 秒；启动约 5.294 秒，首次并行加启动约 24.279 秒</td><td>实际四进程参与，完整结果相同；没有证明提速，暂不建议接入</td></tr>
+</tbody></table></div>
+<div class="notice">计时方法修正：此前探针安装 Python 审计回调，id() 也会触发该回调，读数包含额外工作。当前两项实施比较、候选索引和跨设置复用计时改为仅拦截文件与网络操作，并保留 SQLite 只读事务。此前 20.8 秒和 21.4% 只适用于原探针条件，不能直接视为正式页面耗时。各轮输入预处理与负载不同，表间数字不能相加或跨轮推算。</div>
+<p class="small">本次 168 项回归通过，覆盖现有推荐、统一规则、题库读取、训练路由、组卷和图谱检查。在两份现有测试文件新增 5 个用例，核对配额复用、输入失效、同键并发、独立返回和缓存容量。产品规则与术语无需变更；架构、存储和测试说明已更新。正式页面、首次启动及真实保存未验收。</p>
+<p class="technical">依据：<a href="../../output/TEST-grouping-implementation-20261005/matching_cache_implemented_probe.py">本次正式匹配复用比较</a> · <a href="../../output/TEST-grouping-implementation-20261005/matching-cache-implemented-summary.json">本次匿名结果及各次耗时</a> · <a href="../../output/TEST-grouping-implementation-20261005/clean-summary.json">此前两项实施比较</a> · <a href="../../output/TEST-grouping-implementation-20261005/parallel-clean-summary.json">四进程结果</a>。<a href="https://docs.python.org/3/library/functions.html#id">Python 官方文档说明 id 的审计事件</a>。</p>
+</section>
+<section class="card" id="first-run"><div class="cardtop"><h2>首次耗时：需要同时减少准备、匹配与试组成本</h2><span class="badge explore">分析与试验，尚未实施</span></div>
+<p style="margin-top:15px">大幅压缩首次点击等待，可以提前准备当前范围。要让完全未准备的新输入也快，需要改匹配与选卷的计算结构。现有完整响应缓存、匹配复用和后台预热已经存在；继续增加同类缓存不能替代首次计算。</p>
+<div class="tablewrap"><table><thead><tr><th>独立进程场景</th><th>首次分组</th><th>含前置准备的本地计算段</th><th>结果与边界</th></tr></thead><tbody>
+<tr><td>当前正式代码，第一个进程</td><td>27.668 秒</td><td>52.569 秒</td><td>参考结果；诊断、候选和掌握度准备另占时间</td></tr>
+<tr><td>只计算可能同组学生会用到的目标</td><td>20.532 秒</td><td>35.455 秒</td><td>学生×目标评价由 2,262 项减至 1,961 项；完整结果相同</td></tr>
+<tr><td>试组实际用到某学生、某目标时再计算</td><td>19.904 秒</td><td>34.286 秒</td><td>评价减至 1,738 项，分为 350 批；完整结果相同。试验尚未接入跨配额缓存</td></tr>
+<tr><td>当前正式代码，最后一个新进程</td><td>20.631 秒</td><td>35.722 秒</td><td>同一代码、同一输入也明显变快，不能把前后全部差值归因于方案</td></tr>
+</tbody></table></div>
+<p class="small muted" style="margin-top:12px">范围：八年级上册第一、第二章，91 名学生、476 道候选、16 个小组。四次分别启动新 Python 进程，固定时钟，输入内容和完整输出摘要一致。数据只读，程序代码在比较期间不变。未清空操作系统文件缓存，也未控制其他进程负载；这里只测本地计算段，未包含 HTTP、页面呈现与应用启动。两个试验各一次，不能据此承诺稳定百分比。</p>
+<div class="notice">结论：两个试验都没有证明首次耗时能够减半。早先同进程试验出现约 17% 的平均差值，但共享的通用缓存及运行次序会影响结果；本节以独立进程复核为主要依据。隔离诊断还观察到正式代码每轮约 2.1～2.2 秒用于循环垃圾回收，它也不能解释全部等待；不建议在正式服务全局关闭回收。</div>
+<div class="split"><div class="diagram"><h3>当前：点击后还有整段计算</h3><div class="flow"><div class="box">准备学生诊断、候选和掌握度</div><div class="arrow">↓</div><div class="box red">展开学生×目标×候选记录<small>本批可缓存匹配结果约 49.3 MiB</small></div><div class="arrow">↓</div><div class="box">反复试组与选卷，再生成卡片</div></div></div><div class="diagram after"><h3>建议：轻量计算，完成后生成展示资料</h3><div class="flow"><div class="box">数据变化后优先准备当前范围</div><div class="arrow">↓</div><div class="box deep">推荐 module 使用编号与数值表<small>候选资料一份；学生目标参数一份；批量匹配和试组</small></div><div class="arrow">↓</div><div class="box">选定小组后整理详情与来源凭据</div></div></div></div>
+<div class="tablewrap"><table><thead><tr><th>顺序与建议</th><th>具体改法</th><th>主要作用</th><th>证据与限度</th></tr></thead><tbody>
+<tr><td>① 轻量匹配计算表<br>Strong：优先验证</td><td>沿用候选投影、偏好和判定点资料；题目与冻结来源只保存一份。每名学生的目标难度、掌握度和适合题目以编号、数组表示。循环中不反复组装完整说明对象。</td><td>降低首次匹配的对象创建、遍历、复制和序列化成本</td><td>首次分组的匹配与保存阶段是主要耗时。轻量表的收益尚未实测；49.3 MiB 是序列化保留量，不能当作可节省的时间或进程总内存</td></tr>
+<tr><td>② 批量试组与选卷<br>Worth exploring</td><td>复用现有相容检查、候选交集和题对资料，把覆盖、配额和排序计算建立在轻量表上。试加成员时更新受影响统计，仍按原规则重新作出选题决定。</td><td>减少试出许多张临时卷时的重复记录遍历</td><td>原流程已有廉价淘汰和请求内复用；简单再加缓存不足。必须核对人数、薄弱技能保留比例、难度、题序及同分排序完全一致</td></tr>
+<tr><td>③ 调整现有提前准备顺序<br>Strong：改善首次点击等待</td><td>现有预热每 15 秒检查变化，并先准备题库浏览和多个默认范围。建议在数据变更完成后及时准备当前考试、班级和章节；再准备其他范围，并在阶段之间让位于正在使用的页面。</td><td>让教师进入时更可能已有当前版本的完整结果</td><td>已有预热本身无需重建。这会提前完成工作；新数据刚写完就立即进入时仍可能等待，不能把提前计算说成总计算量下降</td></tr>
+</tbody></table></div>
+<p class="small" style="margin-top:12px">建议先做①的小范围对照实现，再接②；同时单独核对③的准备命中率。验收目标设为：在同等、未准备输入上，准备加完整分组的总耗时至少减半；把 5 秒作为进一步目标。两者都是待验证目标。每次同时比较完整结果，保留全年级观测拟合、选择和填空作答结果、解答题逐点证据、来源校验与教师最终分锁。</p>
+<p class="technical">复用候选：personalized.py 中现有候选投影、_preference_candidate_input、_match_facets_input、_paper_quota_state 和章节分组；training_prewarm.py 中现有调度。Module：推荐计算。Interface：保留当前诊断与分组读取。Seam：来源准备、数值计算和结果整理之间。Adapter：沿用只读来源。Depth：由同一模块承担紧凑表示与恢复。Locality：计算规则集中。Leverage：首次分组与后续出卷共用计算表。Deletion test：移除循环内重复资料组装，不新增通用缓存框架或后台服务。</p>
+<p class="technical">依据：<a href="../../output/TEST-first-grouping-20261005/fresh_matrix.py">独立进程比较</a> · <a href="../../output/TEST-first-grouping-20261005/fresh-summary.json">匿名耗时及相等检查</a> · <a href="../../output/TEST-first-grouping-20261005/summary.json">同进程范围缩减试验</a> · <a href="../../output/TEST-first-grouping-20261005/lazy-summary.json">按需评价试验</a> · <a href="../../output/TEST-first-grouping-20261005/allocation-summary.json">内存回收诊断</a>。本轮只新增隔离试验与调查内容，正式实现仍为 f01f865b；前述 168 项回归属于已实施版本，不代表这些待实施方案已验收。</p>
+</section>
+<section class="card" id="measurements"><h2>实施前调查样本：保留原测量条件</h2>
+<p class="small muted" style="margin-top:10px">本轮匿名汇总经用户单独授权写入本调查文档。范围为八年级上册、全体 91 名学生、第一与第二章、476 道候选、16 个分组。数据库留在原处，用只读连接和只读事务读取；禁用所有派生文件保存并阻断网络调用。</p>
+<div class="tablewrap"><table><thead><tr><th>场景</th><th>本次秒数</th><th>实际缓存条件</th></tr></thead><tbody>
+<tr><td>完整诊断，本进程首次</td><td>13.850</td><td>允许读取已有持久条目；5 次查找均未命中。不能代表有效条目恢复耗时</td></tr>
+<tr><td>完整诊断，同进程再次读取</td><td>0.252</td><td>已有完整业务对象缓存；未计响应清理、校验、JSON、HTTP 与浏览器</td></tr>
+<tr><td>候选题池，本进程首次</td><td>7.969</td><td>允许读取持久条目；1 次查找未命中</td></tr>
+<tr><td>候选题池受控重算</td><td>9.159</td><td>绕过内存与持久题池；底层身份和文件缓存保留。不是磁盘冷启动</td></tr>
+<tr><td>候选已准备，完整分组重算</td><td>46.670</td><td>直接调用分组，不使用完整分组公开响应缓存；仍含本次推荐输入准备</td></tr>
+</tbody></table></div>
+<div class="notice">每行是单次样本，不是中位数或较慢分位数。阶段由同一进程顺序执行，缓存条件不同，不能相加当作页面总耗时。分析器另外运行，不能把分析器秒数当普通请求耗时。未控制其他进程负载，没有测正式保存、导出、HTTP 或页面。</div>
+<p class="small">受控候选重算的完整输出与首次结果相等；分组普通执行与分析器执行的完整输出相等。两库读取代次和五个关键源文件哈希在测量前后保持相同。仅在内存比较，不保存学生或题目明细。交付时复核：后续提交 a4c7c673 没有改动本报告涉及的后端代码，五个文件哈希仍相同。</p>
+<div class="tablewrap"><table><thead><tr><th>分析器热点</th><th>调用次数</th><th>累计秒数</th><th>优化意义</th></tr></thead><tbody>
+<tr><td>evaluate_candidates</td><td>17</td><td>21.461</td><td>逐生逐目标评价仍是主要路径</td></tr>
+<tr><td>_quality_group_members</td><td>1</td><td>14.116</td><td>尝试成员组合时真正生成共用卷</td></tr>
+<tr><td>_paper_diversity_allowed</td><td>211,901</td><td>4.931</td><td>统计值已复用；每候选还重复准备当前卷状态</td></tr>
+<tr><td>_hash_payload</td><td>3,462</td><td>4.774</td><td>签名与 JSON 构造仍有成本</td></tr>
+</tbody></table></div>
+<p class="technical">累计时间包括下级函数，不能相加。分析器记录约 3,419 万次函数调用，不等于数据库或模型请求次数。本轮没有测量任何建议的独立提速。</p>
+</section>
+<section class="card"><h2>有等待关系，但暂不排在首位的方向</h2>
+<dl class="detail" style="margin-top:15px"><dt>缓存锁</dt><dd>ResultCache 已在锁外解包，不同键不因解包占用实例锁。同键等待者从本次计算载荷各自解码，超大结果不需要重复计算。技能投影构建仍使用全局锁；真实等待影响尚未测量。</dd><dt>预热</dt><dd>任务开始后无法因新请求中途避让。真实请求与预热同时运行的负载尚未测量，不能直接认定为当前主因。</dd><dt>题池增量</dt><dd>技能投影已有按题变更复核，推荐完整题池仍用来源签名整体判断。进一步复用推荐固定资料值得测量；当前证据不支持承诺完整增量更新收益。</dd></dl>
+<p class="technical">先减少明确的重复工作，再用同等输入测这些方向。既有 module 可承担现阶段优化，没有证据要求新建通用缓存框架、后台队列或注册表。评分、教师最终分锁、训练四态、全年级拟合、来源校验及幂等规则保持原约定。</p>
+</section>
+<section class="card"><h2>可复现材料与完成标准</h2>
+<div class="tablewrap"><table><thead><tr><th>材料</th><th>覆盖范围</th><th>限度</th></tr></thead><tbody>
+<tr><td><a href="../../output/TEST-backend-reaudit-20261005/current_training_probe.py">当前计时脚本</a> · <a href="../../output/TEST-backend-reaudit-20261005/current-training-summary.json">匿名汇总</a> · <a href="../../output/TEST-backend-reaudit-20261005/current-grouping-profile.txt">热点</a></td><td>当前真实数据只读；完整候选和分组输出在内存比较</td><td>没有正式 HTTP、页面或优化后的配对测量</td></tr>
+<tr><td><a href="../../output/TEST-backend-reaudit-20261005-training/synthetic-counts.json">小组与起草计数</a></td><td>当前原函数，合成学生、候选与规则依赖</td><td>验证控制流和次数，不是推荐质量或提速倍数</td></tr>
+<tr><td><a href="../../output/TEST-backend-reaudit-20261005-reports/probe.py">报告与失效探针</a> · <a href="../../output/TEST-backend-reaudit-20261005-reports/summary.json">汇总</a></td><td>当前状态函数；正式任务进度写入仅发生在合成库</td><td>验证重复读取、持久失效与锁等待，未测真实秒数</td></tr>
+<tr><td><a href="../../output/TEST-backend-reaudit-20261005-shared/probe_persistent_retention.py">旧修订保留探针</a> · <a href="../../output/TEST-backend-reaudit-20261005-shared/persistent-retention-summary.json">汇总</a></td><td>合成条目连续更新</td><td>测保留载荷，不是实际进程内存</td></tr>
+<tr><td><a href="../../output/TEST-backend-reaudit-20261005-shared/probe_snapshot_identity.py">快照版本探针</a> · <a href="../../output/TEST-backend-reaudit-20261005-shared/snapshot-identity-summary.json">汇总</a></td><td>1 名 TEST 学生，实际姓名字段在受控时间提交</td><td>确定复现同键不同数据；未测实际频率，未构建完整诊断</td></tr>
+<tr><td><a href="../../output/TEST-backend-reaudit-20261005-shared/probe_locks.py">共享锁探针</a> · <a href="../../output/TEST-backend-reaudit-20261005-shared/locks-summary.json">汇总</a></td><td>合成事件控制与实际 pickle 解包</td><td>等待关系不能换算为真实提速</td></tr>
+</tbody></table></div>
+<p class="technical">复现使用项目便携 Python，以 -B 禁止写字节码。探针只新增到本轮 TEST 输出目录。当前权威规则仍见 ARCHITECTURE.md、CONTEXT.md 和产品文档。项目没有 docs/adr；本报告未重新讨论已确定的模块归属。</p>
+<div class="diagram" style="margin-top:18px;min-height:0"><h3>优化验收顺序</h3><pre class="mermaid">
+flowchart LR
+ A[先验证快照与版本一致] --> B[固定输入采集基线]
+ B --> C[现有 module 内小范围改动]
+ C --> D{完整结果和规则相同}
+ D -->|是| E[测原操作与更新后等待]
+ D -->|否| F[修正差异后重新验证]
+ F --> D
+ classDef deep fill:#176751,stroke:#176751,color:#fff
+ class A,C deep
+</pre></div>
+</section>
+<footer><p>验证：本次 168 项相关后端检查通过；三项设置、每项两轮的真实只读配对结果完整相等，输入与代码在比较期间不变。正式页面、真实保存计时和长期进程内存未验收。</p><p>测试：本次在推荐和题库读取两份现有测试文件新增 5 个用例，核对复用、失效、交错输入、并发、独立返回和容量；未新增或删除测试文件。</p><p>文档：更新本报告、请求索引、架构、存储约束和测试入口。产品规则与术语未改变。匿名规模与耗时沿用用户授权；学生身份、题面、答卷及评分明细未写入文档。真实业务数据未写入，正式系统未启动。</p><p style="margin-top:10px">内嵌样式保证离线可读。Tailwind 与 Mermaid 使用 CDN；离线时最后一张图可能显示定义，其余前后图仍可读。</p></footer>
+</main></body></html>

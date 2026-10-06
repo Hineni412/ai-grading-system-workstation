@@ -39,9 +39,11 @@ def report_narrative_version(report_type: str) -> str:
     return report_rendition_version(report_type)
 
 
-def score_revision(db: GradingRepositoryAccess, session_id: int, *, include_question_bank: bool = True) -> str:
+def _report_revision_inputs(db: GradingRepositoryAccess, session_id: int, *, include_question_bank: bool = True, student_ids=None) -> dict:
     rows: list[dict[str, object]] = []
     for result in db.results.get_session_results(int(session_id)):
+        if student_ids is not None and int(result.get('student_id') or 0) not in student_ids:
+            continue
         result_id = int(result["result_id"])
         rows.append(
             {
@@ -65,6 +67,12 @@ def score_revision(db: GradingRepositoryAccess, session_id: int, *, include_ques
         source = _question_bank_report_source(Path(db.db_path), int(session_id))
         if source:
             payload["question_bank_source"] = source
+    return payload
+
+
+def score_revision(db: GradingRepositoryAccess, session_id: int, *, include_question_bank: bool = True, _inputs=None) -> str:
+    payload = (_report_revision_inputs(db, session_id, include_question_bank=include_question_bank)
+               if _inputs is None else _inputs)
     serialized = json.dumps(
         payload,
         ensure_ascii=False,

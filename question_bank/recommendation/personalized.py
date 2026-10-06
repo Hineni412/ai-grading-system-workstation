@@ -27,7 +27,7 @@ from question_bank.mastery.current import (
     CurrentMasteryCalculator,
 )
 from question_bank.mastery.model import sigmoid
-from question_bank.recommendation.recommendation_engine import text_similarity
+from question_bank.recommendation.recommendation_engine import normalize_question_text, text_similarity
 from question_bank.recommendation.target_matching import (
     MATCH_LABELS,
     _question_evidence_metadata,
@@ -38,11 +38,13 @@ from question_bank.recommendation.target_matching import (
 )
 from question_bank.services import standard_difficulty
 from question_bank.services.knowledge_order import OrderEntry, knowledge_sections, skill_placements, section_placements
-from question_bank.services.duplicate_analysis_copy_service import (
-    exact_question_key,
-    exam_original_key,
-    exam_original_text_key,
+from question_bank.services.question_identity import (
+    question_identities,
+    same_question,
+    same_question_ids,
+    stored_exact_keys,
 )
+from question_bank.services.similarity_service import strip_leading_score
 from question_bank.taxonomy.curriculum_catalog import (
     curriculum_volume,
     eligible_curriculum_knowledge_nodes,
@@ -68,6 +70,9 @@ TOO_HARD_SUCCESS = 0.60
 # generation + release + effective read constraints; pickle bytes with single-flight.
 _SOURCE_SNAPSHOT_CACHE = ResultCache(limit=8)
 _MASTERY_SNAPSHOT_CACHE = ResultCache(limit=2)
+# Only the broad, per-student matching pass is reusable across paper quotas.
+# Retain at most one serialized frame; selected papers and cards stay fresh.
+_GROUP_MATCHING_CACHE = ResultCache(limit=1, max_bytes=64 * 1024 * 1024)
 Stage = Literal["direct", "prerequisite", "transfer"]
 Action = Literal["lock", "unlock", "exclude", "replace"]
 _PRACTICE_TAG_KINDS = ("method", "model", "thought", "ability", "special_type")
@@ -762,7 +767,9 @@ def _valid_difficulty_features(question: Mapping[str, Any], rows: Sequence[Any])
 def _practice_template(text: str) -> str:
     """A paper-local comparison only; it never changes stored question tags."""
     value = re.sub(r"\[\[IMAGE:.*?\]\]|!\[[^\]]*\]\([^)]*\)|<img\b[^>]*>", "", text, flags=re.I)
+    value = strip_leading_score(value)
     value = re.sub(r"^\s*(?:第\s*)?\d+\s*[.．、题]\s*", "", value)
+    value = strip_leading_score(value)
     stem = re.split(r"(?:^|\s|[。？?）)])(?:[A-D][.．、:：]|[（(][A-D][）)])", value, maxsplit=1)[0]
     # When the options contain the actual statements, keep them in comparison.
     if len(re.sub(r"\W", "", stem)) >= 16:
@@ -776,8 +783,16 @@ def _practice_template(text: str) -> str:
 def _practice_literal(text: str) -> str:
     """Keep all numbers/options when comparing reprinted question and answer."""
     value = re.sub(r"\[\[IMAGE:.*?\]\]|!\[[^\]]*\]\([^)]*\)|<img\b[^>]*>", "", text, flags=re.I)
-    value = re.sub(r"^\s*[（(]\d+(?:\.\d+)?分[）)]", "", value)
+    value = strip_leading_score(value)
     return re.sub(r"\s+", "", value).replace("．", ".").replace("•", "·")
+
+
+@lru_cache(maxsize=8192)
+def _practice_stem_literal(text: str) -> str:
+    """Printed stem with numbers kept; question numbers and score labels removed."""
+    value = _practice_literal(text)
+    value = re.sub(r"^(?:第)?\d+[.．、题](?!\d)", "", value)
+    return normalize_question_text(strip_leading_score(value))
 
 
 def _paper_skill_limit_exceeded(candidate: Mapping[str, Any], selected: Sequence[Mapping[str, Any]],
@@ -788,9 +803,27 @@ def _paper_skill_limit_exceeded(candidate: Mapping[str, Any], selected: Sequence
             if sum(key in other.get("stable_keys", ()) for other in selected) >= (config.max_questions_per_skill if config else 1)}
 
 
+def _paper_quota_state(selected, pair_memo):
+    state = ("quota-counts", tuple(id(other) for other in selected))
+    if state not in pair_memo:
+        counts, written = {}, 0
+        for other in selected:
+            identity = ("quota-facts", id(other))
+            if identity not in pair_memo:
+                pair_memo[identity] = (other,
+                    {key for key in other.get("stable_keys", ()) if str(key).startswith("sk_")},
+                    _is_written_question(other))
+            skills, is_written = pair_memo[identity][1:]
+            written += is_written
+            for key in skills:
+                counts[key] = counts.get(key, 0) + 1
+        pair_memo[state] = counts, written
+    return pair_memo[state]
+
+
 def _paper_diversity_allowed(candidate: Mapping[str, Any], selected: Sequence[Mapping[str, Any]],
                              config: PersonalizedRecommendationConfig | None = None, *,
-                             pair_memo: dict | None = None) -> bool:
+                              pair_memo: dict | None = None, quota_state=None) -> bool:
     if pair_memo is None:
         if _paper_skill_limit_exceeded(candidate, selected, config):
             return False
@@ -805,16 +838,7 @@ def _paper_diversity_allowed(candidate: Mapping[str, Any], selected: Sequence[Ma
                 _is_written_question(question))
         return pair_memo[identity][1:]
     # Counts belong to the exact current paper, never a prior selection state.
-    state = ("quota-counts", tuple(id(other) for other in selected))
-    if state not in pair_memo:
-        counts, written = {}, 0
-        for other in selected:
-            skills, is_written = facts(other)
-            written += is_written
-            for key in skills:
-                counts[key] = counts.get(key, 0) + 1
-        pair_memo[state] = counts, written
-    counts, written = pair_memo[state]
+    counts, written = quota_state if quota_state is not None else _paper_quota_state(selected, pair_memo)
     skills, is_written = facts(candidate)
     if any(counts.get(key, 0) >= (config.max_questions_per_skill if config else 1) for key in skills):
         return False
@@ -881,11 +905,20 @@ def paper_task_duplicates(candidate: Mapping[str, Any], selected: Sequence[Mappi
 def paper_similarity_allowed(candidate: Mapping[str, Any], selected: Sequence[Mapping[str, Any]]) -> bool:
     """Compare question content only; candidate folding must not apply paper quotas."""
     template = _practice_template(str(candidate.get("question_text") or ""))
+    stem = _practice_stem_literal(str(candidate.get("question_text") or ""))
+    solution = normalize_question_text(_practice_literal(str(candidate.get("solution_observable") or "")))
     for other in selected:
-        practice_identity = candidate.get("practice_identity")
-        if practice_identity and practice_identity == other.get("practice_identity"):
+        if same_question(candidate, other):
             return False
-        if candidate.get("duplicate_identity", candidate["question_id"]) == other.get("duplicate_identity", other["question_id"]):
+        other_stem = _practice_stem_literal(str(other.get("question_text") or ""))
+        other_solution = normalize_question_text(_practice_literal(str(other.get("solution_observable") or "")))
+        # Reprints imported as separate records may carry different picture
+        # encodings or skill tags; matching stem and worked solution still repeat.
+        if (min(len(stem), len(other_stem)) >= 20 and min(len(solution), len(other_solution)) >= 20
+                and min(len(stem), len(other_stem)) >= .9 * max(len(stem), len(other_stem))
+                and min(len(solution), len(other_solution)) >= .8 * max(len(solution), len(other_solution))
+                and text_similarity(stem, other_stem) >= .95
+                and text_similarity(solution, other_solution) >= .9):
             return False
         if not set(candidate.get("stable_keys", [])).intersection(other.get("stable_keys", [])):
             continue
@@ -1096,8 +1129,8 @@ def _order_practice_items(items: list[dict[str, Any]], placements=None) -> None:
 def _group_rank(group: Sequence[Mapping[str, Any]], needs: set,
                 priorities: Mapping[tuple[str, ...], float], *,
                 members: set = frozenset(), covered: set = frozenset(),
-                practiced: set = frozenset(), printed: Sequence[Mapping[str, Any]] = (),
-                rank_memo: dict | None = None, pattern_memo: dict | None = None) -> tuple:
+                practiced: set = frozenset(), rank_memo: dict | None = None) -> tuple:
+    """Cheap rank columns; pattern variety belongs between columns 6 and 7."""
     static = rank_memo.get(id(group)) if rank_memo is not None else None
     if static is None:
         core = [e for e in group if _is_core(e) and e.get("practice_purpose", "remediation") == "remediation"]
@@ -1112,7 +1145,7 @@ def _group_rank(group: Sequence[Mapping[str, Any]], needs: set,
     beneficiaries, practice_needs, no_core, repeated, match_level, distance, preference, qid = static
     return (-len(beneficiaries - members), -sum(priorities.get(n, .5) for n in needs - covered),
             -len(needs - covered), no_core, repeated, -len(practice_needs - practiced),
-            _pattern_count(group[0]["candidate"], printed, pair_memo=pattern_memo), match_level, distance, preference, qid)
+            match_level, distance, preference, qid)
 
 
 def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: int,
@@ -1145,13 +1178,19 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
     selected, covered, members, practiced = [], set(), set(), set()
     while groups and len(selected) < question_count:
         printed = [e["candidate"] for e, _ in selected]
-        usable = [group for group in groups.values() if _paper_diversity_allowed(group[0]["candidate"], printed, config, pair_memo=pair_memo)]
+        quota_state = _paper_quota_state(printed, pair_memo)
+        usable = [group for group in groups.values() if _paper_diversity_allowed(group[0]["candidate"], printed, config, pair_memo=pair_memo, quota_state=quota_state)]
         if not usable:
             break
-        group = min(usable, key=lambda group: _group_rank(
+        ranked = [(group, _group_rank(
             group, group_needs[group[0]["candidate"].get("duplicate_identity") or group[0]["candidate"]["question_id"]],
-            priorities, members=members, covered=covered, practiced=practiced, printed=printed,
-            rank_memo=rank_memo, pattern_memo=pair_memo))
+            priorities, members=members, covered=covered, practiced=practiced,
+            rank_memo=rank_memo)) for group in usable]
+        # Lexicographic ranks can only be changed by variety when the first
+        # six columns tie. Avoid text comparison for already-losing questions.
+        leading = min(rank[:6] for _, rank in ranked)
+        group, _ = min(((group, rank) for group, rank in ranked if rank[:6] == leading),
+            key=lambda item: (_pattern_count(item[0][0]["candidate"], printed, pair_memo=pair_memo), item[1][6:]))
         best = min(group, key=lambda e: (not _is_core(e), e["distance"], -e["preference"], e["student_id"], e["key"]))
         selected.append((best, group))
         covered.update(group_needs[best["candidate"].get("duplicate_identity") or best["candidate"]["question_id"]])
@@ -1164,9 +1203,10 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
         added = 0
         while added < config.max_unmeasured_questions and len(selected) < question_count:
             printed = [entry["candidate"] for entry, _ in selected]
+            quota_state = _paper_quota_state(printed, pair_memo)
             choices = [group for group in unmeasured_groups.values() if group
                        and any(e["key"] not in practiced for e in group)
-                       and _paper_diversity_allowed(group[0]["candidate"], printed, config, pair_memo=pair_memo)]
+                       and _paper_diversity_allowed(group[0]["candidate"], printed, config, pair_memo=pair_memo, quota_state=quota_state)]
             if not choices:
                 break
             primer = added == 0 and min(config.max_unmeasured_questions, question_count - len(selected)) >= 2
@@ -1193,8 +1233,9 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
         added = 0
         while added < config.max_consolidation_questions and len(selected) < question_count:
             printed = [entry['candidate'] for entry, _ in selected]
+            quota_state = _paper_quota_state(printed, pair_memo)
             choices = [group for group in consolidation_groups.values()
-                       if _paper_diversity_allowed(group[0]['candidate'], printed, config, pair_memo=pair_memo)]
+                       if _paper_diversity_allowed(group[0]['candidate'], printed, config, pair_memo=pair_memo, quota_state=quota_state)]
             if not choices:
                 break
             def consolidation_rank(group):
@@ -1418,7 +1459,7 @@ class PersonalizedRecommendationModule:
         if violations:
             raise ValueError(violations[0]["message"])
 
-    def paper_rule_violations(self, question_ids: Sequence[int], rules: Mapping[str, Any] | None = None, *, recent_question_ids: Sequence[int] = ()) -> list[dict[str, Any]]:
+    def paper_rule_violations(self, question_ids: Sequence[int], rules: Mapping[str, Any] | None = None, *, recent_question_ids: Sequence[int] = (), _candidate_cache: dict | None = None) -> list[dict[str, Any]]:
         """Apply the same whole-paper limits when a teacher assembles a practice."""
         if not question_ids:
             return []
@@ -1427,8 +1468,16 @@ class PersonalizedRecommendationModule:
         config = PersonalizedRecommendationConfig(purpose=rules.get("purpose", "handout"), question_count=rules.get("question_count", 10),
             difficulty_max=rules.get("difficulty_max", 8), max_questions_per_skill=rules.get("max_questions_per_skill", 1),
             max_written_questions=rules.get("max_written_questions", 2), recent_activity_count=rules.get("recent_activity_count", 3))
-        candidates, _, _ = self._source_snapshot(question_ids=question_ids)
-        by_id = {item["question_id"]: item for item in candidates}
+        if _candidate_cache is None:
+            candidates, _, _ = self._source_snapshot(question_ids=question_ids)
+            by_id = {item["question_id"]: item for item in candidates}
+        else:
+            missing = [qid for qid in dict.fromkeys(question_ids) if qid not in _candidate_cache]
+            if missing:
+                candidates, _, _ = self._source_snapshot(question_ids=missing)
+                _candidate_cache.update((qid, None) for qid in missing)
+                _candidate_cache.update((item["question_id"], item) for item in candidates)
+            by_id = _candidate_cache
         selected = []
         violations = []
         for qid in dict.fromkeys(question_ids):
@@ -1502,7 +1551,9 @@ class PersonalizedRecommendationModule:
             _unlinked_loss_count(student, set(leaves),
                                  lambda r: self._enrich_source_ref(r, metadata, links, part_cache))
             for student in normalized["students"])
-        evaluation_memo: dict = {}
+        # All borrowed inputs below are read-only for this grouping call.
+        # Fingerprints retain their objects and never survive the request.
+        evaluation_memo: dict = {"group_input_hashes": {}}
         # Read question bodies whenever any member need could be served; a
         # coarse-only diagnosis needs no question pool.
         if need_sids or member_ids:
@@ -1513,15 +1564,14 @@ class PersonalizedRecommendationModule:
         pools: dict[str, list[dict[str, Any]]] = {}
         if need_sids and not _selection_only:
             need_set = set(need_sids)
-            evaluated = self.evaluate_candidates(
+            pools = self._group_matching_pools(
                 diagnosis={**normalized, "students": [profile for profile in normalized["students"]
                                                       if str(profile["student_id"]) in need_set]},
                 config=replace(config, paper_mode="individual",
                                target_keys=tuple(sorted({key for sid in need_sids for key in needs[sid]}))),
                 candidates=candidates, mastery=mastery, source_metadata=metadata,
                 recent={sid: recent.get(sid, set()) for sid in need_sids},
-                excluded=excluded, evaluation_memo=evaluation_memo, _borrow_inputs=True)
-            pools = evaluated["pools"]
+                excluded=excluded, evaluation_memo=evaluation_memo)
         grouped_members = (_quality_group_members(needs=needs, pools=pools, recent=recent, config=config,
                                                   pair_memo=evaluation_memo.setdefault("paper_pairs", {}))
                            if not _selection_only else [])
@@ -1557,8 +1607,62 @@ class PersonalizedRecommendationModule:
                                 "reason_kind": ("no_group_fit" if needs[student["student_id"]] else "no_direct_evidence"),
                                 "reason": ("与其他同学共用一卷时，本人能练到的薄弱技能少于单独出卷的四分之三，或可共用的题不足 6 道；建议一人一卷。"
                                            if needs[student["student_id"]] else "暂无足够的直接薄弱证据；无证据、整题或多目标综合失分不按不会处理。")}
-                               for student in normalized["students"] if student["student_id"] not in covered],
+                               for student in normalized["students"] if not _selection_only and student["student_id"] not in covered],
                 "warnings": ["按同技能多次作答形成的适合难度范围分组，共用卷须保留每位成员至少四分之三的个人补弱练习；无证据不推断薄弱。"]}
+
+    def _group_matching_pools(
+        self, *, diagnosis: Mapping[str, Any], config: PersonalizedRecommendationConfig,
+        candidates: Sequence[dict[str, Any]],
+        mastery: Mapping[tuple[str, str], Mapping[str, Any]],
+        source_metadata: Mapping[int, Mapping[str, Any]],
+        recent: Mapping[str, set[int]], excluded: set[int], evaluation_memo: dict,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Reuse initial matching, never quota-sensitive selection or warnings."""
+        constraints = asdict(config)
+        for field in ("question_count", "max_questions_per_skill", "max_written_questions"):
+            constraints.pop(field)
+        # Metadata does not contain every live evidence-point link. The bank
+        # generation and knowledge release also guard those lookup inputs.
+        methods = (self.evaluate_candidates, self._candidate_entries)
+        source_identity = (
+            str(self.db_path.resolve()), str(self.data_root.resolve()),
+            self.current_knowledge.release_id, self.current_knowledge.content_hash,
+            commit_generation(self.db_path), ENGINE_VERSION,
+            tuple(id(getattr(method, "__func__", method)) for method in methods),
+        )
+        # Compare values, not pickle's object-alias layout: a snapshot restored
+        # from its own cache must match an equal freshly constructed snapshot.
+        signature = _hash_payload((
+            source_identity, diagnosis, constraints, candidates,
+            [(owner, key, value) for (owner, key), value in sorted(mastery.items())],
+            source_metadata, {sid: sorted(ids) for sid, ids in recent.items()}, sorted(excluded),
+        ))
+
+        def compute():
+            # The owner also needs its request-local fingerprints for cards;
+            # only pools and target records enter the cross-request cache.
+            memo = evaluation_memo
+            memo.setdefault("group_input_hashes", {})
+            result = self.evaluate_candidates(
+                diagnosis=diagnosis, config=config, candidates=candidates, mastery=mastery,
+                source_metadata=source_metadata, recent=recent, excluded=excluded,
+                evaluation_memo=memo, _borrow_inputs=True,
+            )
+            return result["pools"], memo["target_evaluations"]
+
+        pools, records = _GROUP_MATCHING_CACHE.get_or_compute(signature, compute)
+        # Pickle hits are independent objects. Restore this request's candidate
+        # identities for pair selection and its target-record keys for cards.
+        by_id = {candidate["question_id"]: candidate for candidate in candidates}
+        for entries in pools.values():
+            for entry in entries:
+                entry["candidate"] = by_id[entry["candidate"]["question_id"]]
+        target_cache = evaluation_memo.setdefault("target_evaluations", {})
+        for key, record in records.items():
+            for entry in record["entries"].values():
+                entry["candidate"] = by_id[entry["candidate"]["question_id"]]
+            target_cache[(id(candidates), id(source_metadata), *key[2:])] = record
+        return pools
 
     def _chapter_group_summary(
         self, *, diagnosis: Mapping[str, Any], members: Sequence[str], targets: Sequence[str],
@@ -2366,6 +2470,7 @@ class PersonalizedRecommendationModule:
         target_evaluation_cache: dict | None = None,
         preference_cache: dict | None = None,
         fixed_candidate_inputs: dict | None = None,
+        _input_hashes: dict | None = None,
         _borrow_inputs: bool = False,
         direct_only: bool = False,
         core_only: bool = False,
@@ -2390,10 +2495,10 @@ class PersonalizedRecommendationModule:
         auxiliary_plans = {}
         matched_ids, suitable_ids = set(), set()
         eligible_ids = frozenset(candidate["question_id"] for candidate in eligible)
-        profile_version = _hash_payload(profile) if target_evaluation_cache is not None else None
+        profile_version = _hash_payload(profile, _memo=_input_hashes) if target_evaluation_cache is not None else None
         for target in targets:
             key = str(target.get("stable_key") or target.get("knowledge_key"))
-            cache_key = ((id(candidates), id(metadata), profile_version, _hash_payload(target),
+            cache_key = ((id(candidates), id(metadata), profile_version, _hash_payload(target, _memo=_input_hashes),
                           config.difficulty_max, tuple(supplement_keys), direct_only, core_only)
                          if target_evaluation_cache is not None else None)
             cached = target_evaluation_cache.get(cache_key) if target_evaluation_cache is not None else None
@@ -2409,6 +2514,7 @@ class PersonalizedRecommendationModule:
                         warnings.append(warning)
                 continue
             target_start = len(entries)
+            target_loss = None
             target_matched, target_suitable, target_warnings = set(), set(), []
             refs = [self._enrich_source_ref(r, metadata, links, source_part_cache,
                                            copy_fields=not _borrow_inputs)
@@ -2471,18 +2577,27 @@ class PersonalizedRecommendationModule:
                             "chapter_keys": [anchor["chapter"]] if anchor["chapter"] else []}]
             selected_target = {**enriched, "target_difficulty": plan["aim"], "difficulty_plan": plan,
                                "overall_score_rate": _rate(profile.get("score_rate")), "training_tasks": tasks}
+            # Internal grouping borrows immutable inputs. Keep one target row
+            # per difficulty plan instead of copying its evidence for every
+            # accepted question. Public evaluation still owns its target dicts.
+            selection_targets = {id(plan): selected_target}
             source_match_key = (key, tuple((str(part.get("part_id") or ""),
                 *(tuple(part.get(field, ())) for field in ("direct_keys", "topic_keys", "section_keys", "chapter_keys")))
                 for part in sources))
             source_match_input = _match_facets_input(sources)
             location = index.get(key, {})
+            # Match rows contain only the fixed question/source relationship.
+            # Resolve the source signature once per target, not per question.
+            match_rows = (target_match_cache.setdefault(("rows", id(candidates), source_match_key), {})
+                          if target_match_cache is not None else None)
+            frozen_source = any(r.get("assessment", {}).get("evidence_version_id") for r in refs)
             for candidate in eligible:
                 if direct_only and key not in candidate["stable_keys"]:
                     continue
                 if sources and candidate.get("target_facets"):
-                    match_key = (source_match_key, candidate["question_id"])
-                    if target_match_cache is not None and match_key in target_match_cache:
-                        matches = target_match_cache[match_key]
+                    qid = candidate["question_id"]
+                    if match_rows is not None and qid in match_rows:
+                        direct, match = match_rows[qid]
                     else:
                         if target_match_cache is None:
                             matches = [match_target(key, sources, [part], index) for part in candidate["target_facets"]]
@@ -2497,17 +2612,17 @@ class PersonalizedRecommendationModule:
                             matches = [json.loads(match) for match in _fixed_target_matches(key,
                                 source_match_input, candidate_input,
                                 location.get("section", ""), location.get("chapter", ""))]
-                        if target_match_cache is not None:
-                            # Per-student practice_role is added below; cache only the source match.
-                            target_match_cache[match_key] = [dict(match) for match in matches]
-                    if not matches:
+                        direct_matches = [m for m in matches if m["match_level"] <= 2
+                                          and key in candidate["stable_keys"]]
+                        direct = bool(direct_matches)
+                        match = (min(direct_matches or matches, key=lambda m: (m["match_level"], m["candidate_part_id"]))
+                                 if matches else None)
+                        if match_rows is not None:
+                            match_rows[qid] = direct, match
+                    if match is None:
                         continue
-                    direct_matches = [m for m in matches if m["match_level"] <= 2
-                                      and key in candidate["stable_keys"]]
-                    direct = bool(direct_matches)
-                    match = dict(min(direct_matches or matches, key=lambda m: (m["match_level"], m["candidate_part_id"])))
                 else:
-                    direct = key in candidate["stable_keys"] and not any(r.get("assessment", {}).get("evidence_version_id") for r in refs)
+                    direct = key in candidate["stable_keys"] and not frozen_source
                     if not direct and not supplement_scope.intersection(candidate["stable_keys"]):
                         continue
                     match = {"match_level": 2 if direct else 4,
@@ -2516,17 +2631,6 @@ class PersonalizedRecommendationModule:
                     continue
                 if core_only and not direct:
                     continue
-                if direct:
-                    parts = [part for part in candidate.get("practice_observations_by_key", {}).get(key, [])
-                             if not match.get("candidate_part_id") or part.get("part_id") == match["candidate_part_id"]]
-                    if purpose == "remediation":
-                        full_response = any(_full_response_supported(part, tasks, source_practice_parts,
-                            solution=str(candidate.get("solution_observable") or "") if len(candidate.get("target_facets", [])) == 1 else "")
-                            for part in parts)
-                    else:
-                        full_response = not tasks or any(_practice_part_fits(part, tasks) for part in parts)
-                    match["practice_role"] = "full_response" if full_response else "step_practice"
-                    match["task_evidence_level"] = task_level
                 if diagnostic:
                     # A whole multipart total does not authorise targeted
                     # remediation. Only an independent short result can probe it.
@@ -2556,15 +2660,41 @@ class PersonalizedRecommendationModule:
                     candidate_plan = auxiliary_plans[matched_key]
                 if not candidate_plan["minimum"] <= candidate["difficulty"] <= candidate_plan["maximum"]:
                     continue
+                # Per-student classification must not mutate the shared row.
+                match = dict(match)
+                # Task expansion cannot affect difficulty or warning counts.
+                # Only accepted questions need full-response classification.
+                if direct:
+                    parts = [part for part in candidate.get("practice_observations_by_key", {}).get(key, [])
+                             if not match.get("candidate_part_id") or part.get("part_id") == match["candidate_part_id"]]
+                    if purpose == "remediation":
+                        full_response = any(_full_response_supported(part, tasks, source_practice_parts,
+                            solution=str(candidate.get("solution_observable") or "") if len(candidate.get("target_facets", [])) == 1 else "")
+                            for part in parts)
+                    else:
+                        full_response = not tasks or any(_practice_part_fits(part, tasks) for part in parts)
+                    match["practice_role"] = "full_response" if full_response else "step_practice"
+                    match["task_evidence_level"] = task_level
                 target_suitable.add(candidate["question_id"])
+                if target_loss is None:
+                    target_loss = max((1-float(r.get("score_awarded") or 0)/float(r["full_score"]) for r in losses), default=0.)
+                if _borrow_inputs:
+                    entry_target = selection_targets.get(id(candidate_plan))
+                    if entry_target is None:
+                        entry_target = {**selected_target, "target_difficulty": candidate_plan["aim"],
+                                        "difficulty_plan": candidate_plan}
+                        selection_targets[id(candidate_plan)] = entry_target
+                else:
+                    entry_target = {**selected_target, "target_difficulty": candidate_plan["aim"],
+                                    "difficulty_plan": candidate_plan}
                 entries.append({"candidate": candidate, "key": key, **match,
-                    "target": {**selected_target, "target_difficulty": candidate_plan["aim"], "difficulty_plan": candidate_plan},
+                    "target": entry_target,
                     "matched_key": matched_key, "selection_kind": "direct" if direct else "supplement",
                     "practice_purpose": purpose if direct else "new",
                     "difficulty_basis": candidate_plan["basis"], "evidence_confidence": candidate_plan["confidence"],
                     "student_id": str(profile["student_id"]), "distance": abs(candidate["difficulty"] - candidate_plan["aim"]),
                     "preference": preference(candidate),
-                    "loss": max((1-float(r.get("score_awarded") or 0)/float(r["full_score"]) for r in losses), default=0.)})
+                    "loss": target_loss})
             matched_ids.update(target_matched)
             suitable_ids.update(target_suitable)
             if target_evaluation_cache is not None:
@@ -2631,6 +2761,7 @@ class PersonalizedRecommendationModule:
         target_evaluation_cache = memo.setdefault("target_evaluations", {}) if evaluation_memo is not None else None
         preference_cache = memo.setdefault("preferences", {})
         fixed_candidate_inputs = memo.setdefault("fixed_candidate_inputs", {})
+        input_hashes = memo.get("group_input_hashes") if _borrow_inputs else None
         source_links = self._links_for_metadata(metadata)
         # Index once instead of scanning the full population for every member.
         mastery_by_student: dict[str, dict[str, Any]] = {}
@@ -2640,7 +2771,7 @@ class PersonalizedRecommendationModule:
         pools, targets_by_student, warnings = {}, {}, {}
         for profile in diagnosis["students"]:
             sid = str(profile["student_id"])
-            known = {key: dict(value) if _borrow_inputs else deepcopy(value)
+            known = {key: (value if input_hashes is not None else dict(value)) if _borrow_inputs else deepcopy(value)
                      for key, value in mastery_by_student.get(sid, {}).items()
                      if (key in explicit if limited_personal else not explicit or key in explicit)}
             for key in sorted(explicit):
@@ -2656,6 +2787,7 @@ class PersonalizedRecommendationModule:
                 target_evaluation_cache=target_evaluation_cache,
                 preference_cache=preference_cache,
                 fixed_candidate_inputs=fixed_candidate_inputs,
+                _input_hashes=input_hashes,
                 _borrow_inputs=_borrow_inputs,
                 recent=recent.get(sid, set()), excluded=excluded, direct_only=direct_only, core_only=core_only)
         return {"pools": pools, "targets": targets_by_student, "warnings": warnings, "candidates": candidates}
@@ -2865,7 +2997,7 @@ class PersonalizedRecommendationModule:
         question_ids: Sequence[int] = (),
     ) -> tuple:
         return (
-            "source-snapshot-v2-read-constraints",
+            "source-snapshot-v3-read-constraints",
             str(Path(self.db_path).resolve(strict=False)),
             str(Path(self.data_root).resolve(strict=False)),
             str(self.current_knowledge.release_id),
@@ -3160,6 +3292,9 @@ class PersonalizedRecommendationModule:
         )
         with connect(self.db_path) as connection:
             patterns = list_patterns(connection, candidate_ids, include_predicted=True, statuses=("candidate", "confirmed"))
+            # Indexed exact keys are reused while each question's files are
+            # unchanged; changed or unindexed questions are recomputed inside.
+            exact_keys = stored_exact_keys(connection, candidate_ids, data_root=self.data_root)
         candidates: list[dict[str, Any]] = []
         image_cache: dict[str, str] = {}
         # Drafts keep the full usable snapshot and their existing source versions.
@@ -3285,8 +3420,8 @@ class PersonalizedRecommendationModule:
                 candidates.append(
                     {
                         "question_id": question_id,
-                        "duplicate_identity": exact_question_key(dict(row), data_root=self.data_root, image_cache=image_cache) or str(question_id),
-                        "practice_identity": exam_original_key(dict(row), data_root=self.data_root, image_cache=image_cache),
+                        **question_identities(dict(row), data_root=self.data_root, image_cache=image_cache,
+                                              exact_key=exact_keys.get(question_id)),
                         "question_number": str(
                             row["question_number"] or question_id
                         ),
@@ -3582,14 +3717,12 @@ class PersonalizedRecommendationModule:
                 result[sid] = {qid for _, event in events for qid in event['ids']}
             ids = set().union(*result.values()) if result else set()
             if ids:
-                questions = conn.execute("SELECT * FROM questions WHERE is_deleted=0").fetchall()
-                texts = {exam_original_text_key(dict(row)) for row in questions if int(row['id']) in ids}
-                cache = {}
-                identities = {int(row['id']): exam_original_key(dict(row), data_root=self.data_root, image_cache=cache)
-                              for row in questions if exam_original_text_key(dict(row)) in texts}
+                same = same_question_ids(conn, ids, data_root=self.data_root)
                 for sid, used in result.items():
-                    keys = {identities[q] for q in used if identities.get(q)}
-                    result[sid] = used | {q for q, key in identities.items() if key and key in keys}
+                    merged = set(used)
+                    for qid in used:
+                        merged.update(same.get(qid, ()))
+                    result[sid] = merged
         return result
 
     def current_exam_question_ids(self, diagnosis: Mapping[str, Any], *,
@@ -3945,19 +4078,37 @@ def _quality_group_members(*, needs: Mapping[str, Mapping[str, Any]],
         return median((item.get("difficulty_plan") or _difficulty_plan(
             {}, item.get("score_rate"), 8, item))["aim"] for item in needs[sid].values())
 
-    core_qids = {sid: {key: {entry["candidate"]["question_id"] for entry in pools.get(sid, ())
-                             if entry["key"] == key and _is_core(entry)
-                             and entry.get("practice_purpose") == "remediation"}
-                       for key in needs[sid]} for sid in sids}
-    pool_cache: dict[tuple[str, ...], tuple[frozenset[str], set[int]]] = {}
+    levels = {sid: level(sid) for sid in sids}
+    need_keys = {sid: frozenset(needs[sid]) for sid in sids}
+    # Dense question bits are a request-local matching table. Trials combine
+    # integer masks instead of repeatedly walking full evidence dictionaries.
+    question_ids = sorted({entry["candidate"]["question_id"]
+                           for sid in sids for entry in pools.get(sid, ())})
+    question_bits = {qid: 1 << index for index, qid in enumerate(question_ids)}
+    key_masks, core_masks, indexed_entries, recent_masks = {}, {}, {}, {}
+    for sid in sids:
+        key_masks[sid], core_masks[sid], indexed_entries[sid] = {}, {}, {}
+        for position, entry in enumerate(pools.get(sid, ())):
+            qid, key = entry["candidate"]["question_id"], entry["key"]
+            bit = question_bits[qid]
+            key_masks[sid][key] = key_masks[sid].get(key, 0) | bit
+            indexed_entries[sid].setdefault(bit, []).append((position, entry))
+            if _is_core(entry) and entry.get("practice_purpose") == "remediation":
+                core_masks[sid][key] = core_masks[sid].get(key, 0) | bit
+        recent_masks[sid] = 0
+        for qid in recent.get(sid, ()):
+            recent_masks[sid] |= question_bits.get(qid, 0)
+    pool_cache: dict[tuple[str, ...], tuple[frozenset[str], int]] = {}
 
-    def shared_pool(members: tuple[str, ...]) -> tuple[frozenset[str], set[int]]:
+    def shared_pool(members: tuple[str, ...]) -> tuple[frozenset[str], int]:
         if members not in pool_cache:
-            keys = frozenset().union(*(set(needs[sid]) for sid in members))
-            pool = set.intersection(*(
-                {entry["candidate"]["question_id"] for entry in pools.get(sid, ())
-                 if entry["key"] in keys} for sid in members))
-            pool -= set().union(*(recent.get(sid, set()) for sid in members))
+            keys = frozenset().union(*(need_keys[sid] for sid in members))
+            pool = (1 << len(question_ids)) - 1
+            for sid in members:
+                eligible = 0
+                for key in keys:
+                    eligible |= key_masks[sid].get(key, 0)
+                pool &= eligible & ~recent_masks[sid]
             pool_cache[members] = (keys, pool)
         return pool_cache[members]
 
@@ -3967,8 +4118,17 @@ def _quality_group_members(*, needs: Mapping[str, Mapping[str, Any]],
         members = tuple(sorted(members))
         if members not in paper_cache:
             keys, pool = shared_pool(members)
-            entries = [entry for sid in members for entry in pools.get(sid, ())
-                       if entry["key"] in keys and entry["candidate"]["question_id"] in pool]
+            bits, pending = [], pool
+            while pending:
+                bit = pending & -pending
+                bits.append(bit)
+                pending ^= bit
+            entries = []
+            for sid in members:
+                rows = [row for bit in bits for row in indexed_entries[sid].get(bit, ()) if row[1]["key"] in keys]
+                # Preserve the original target/question order, including ties
+                # between duplicate identities and different practice reasons.
+                entries.extend(row[1] for row in sorted(rows, key=lambda row: row[0]))
             chosen = _choose_practice_entries(
                 _common_entries(entries, members), config.question_count,
                 replace(config, paper_mode="shared", target_keys=tuple(sorted(keys))), pair_memo=pair_memo)
@@ -3983,18 +4143,18 @@ def _quality_group_members(*, needs: Mapping[str, Mapping[str, Any]],
 
     def viable(members: Sequence[str]) -> bool:
         _, pool = shared_pool(tuple(sorted(members)))
-        if len(pool) < min_questions:
+        if pool.bit_count() < min_questions:
             return False
-        return all(sum(bool(core_qids[sid][key] & pool) for key in needs[sid])
+        return all(sum(bool(core_masks[sid].get(key, 0) & pool) for key in needs[sid])
                    >= GROUP_MIN_RETENTION * len(solo[sid]) for sid in members)
 
-    remaining = [sid for sid in sorted(sids, key=lambda sid: (level(sid), sid)) if solo[sid]]
+    remaining = [sid for sid in sorted(sids, key=lambda sid: (levels[sid], sid)) if solo[sid]]
     groups = []
     while remaining:
         seed = remaining.pop(0)
         members = [seed]
-        for sid in sorted(remaining, key=lambda t: (-len(set(needs[t]) & set(needs[seed])),
-                                                  abs(level(t) - level(seed)), t)):
+        for sid in sorted(remaining, key=lambda t: (-len(need_keys[t] & need_keys[seed]),
+                                                  abs(levels[t] - levels[seed]), t)):
             if not all(_students_compatible(needs[sid], needs[member]) for member in members):
                 continue
             trial = (*members, sid)
@@ -4506,8 +4666,16 @@ def _required_text(value: object, field: str) -> str:
     return text
 
 
-def _hash_payload(value: object) -> str:
-    return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
+def _hash_payload(value: object, *, _memo: dict | None = None) -> str:
+    """Optional memo is only for read-only inputs within one grouping call."""
+    stored = _memo.get(id(value)) if _memo is not None else None
+    if stored is not None and stored[0] is value:
+        return stored[1]
+    fingerprint = hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
+    if _memo is not None:
+        # Retention prevents an object's id from being reused during the call.
+        _memo[id(value)] = (value, fingerprint)
+    return fingerprint
 
 
 def _json(value: object) -> str:

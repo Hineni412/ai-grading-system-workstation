@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 _SNAPSHOT_LIMIT = 512
+_SNAPSHOT_MAX_BYTES = 32 * 1024 * 1024
 _SAVED_LIMIT = 2048
 
 
@@ -45,6 +46,9 @@ class PersistentEntryStore:
         # Parsed entry snapshots keyed by verified file identity, so repeated
         # reads of an unchanged file do not unpickle again.
         self._snapshots: OrderedDict[tuple, Any] = OrderedDict()
+        self._snapshot_sizes: dict[tuple, int] = {}
+        self._snapshot_bytes = 0
+        self._snapshot_max_bytes = min(self._max_bytes, _SNAPSHOT_MAX_BYTES)
         # Verified on-disk state per entry file so a repeated put can skip
         # rewriting identical bytes without loading the file back.
         self._saved: OrderedDict[str, tuple] = OrderedDict()
@@ -67,11 +71,27 @@ class PersistentEntryStore:
         if _file_state(path) != file_state:
             return None  # The file changed under the read.
         with self._lock:
+            if _file_state(path) != file_state:
+                return None
+            self._drop_snapshots(str(path))
+            if file_state[3] > self._snapshot_max_bytes:
+                return snapshot
             self._snapshots[file_state] = snapshot
+            self._snapshot_sizes[file_state] = file_state[3]
+            self._snapshot_bytes += file_state[3]
             self._snapshots.move_to_end(file_state)
-            while len(self._snapshots) > _SNAPSHOT_LIMIT:
-                self._snapshots.popitem(last=False)
+            while (len(self._snapshots) > _SNAPSHOT_LIMIT
+                   or self._snapshot_bytes > self._snapshot_max_bytes):
+                oldest, _ = self._snapshots.popitem(last=False)
+                self._snapshot_bytes -= self._snapshot_sizes.pop(oldest)
         return snapshot
+
+    def _drop_snapshots(self, path: str) -> None:
+        """Caller holds the store lock; discard revisions of one file."""
+        for state in tuple(self._snapshots):
+            if state[0] == path:
+                self._snapshots.pop(state)
+                self._snapshot_bytes -= self._snapshot_sizes.pop(state)
 
     def get(self, key: Any, signature: Any | Callable[[Any], Any]) -> Any:
         """Return the stored payload, or ``None`` on any mismatch or error."""
@@ -117,6 +137,7 @@ class PersistentEntryStore:
                     temporary = Path(saved.name)
                     saved.write(data)
                 os.replace(temporary, path)
+                self._drop_snapshots(str(path))
                 try:
                     file_state = _file_state(path)
                     self._saved[str(path)] = (file_state, signature, digest)
@@ -157,6 +178,7 @@ class PersistentEntryStore:
                 try:
                     item_size = item.stat().st_size
                     item.unlink()
+                    self._drop_snapshots(str(item))
                     self._saved.pop(str(item), None)
                     overflow -= 1
                     size -= item_size

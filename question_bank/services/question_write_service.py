@@ -2898,7 +2898,7 @@ def _derived_ownership(
     ).fetchone()
     if row is None:
         return None
-    version_id = str(row["evidence_version_id"])
+    version_id = str(row[0])
     grouped = load_point_links(
         Path(db_path),
         [version_id],

@@ -20,6 +20,7 @@ from integration.data_generation import (
     cached_content_revision,
     commit_generation,
     database_content_revision as _database_content_revision,
+    grading_content_revision,
 )
 from integration.evidence_scope import EvidenceScopeResolver
 from integration.persistent_entries import persistent_entry_store
@@ -52,6 +53,7 @@ _LOCAL_PROFILE_MAX_BYTES = 512 * 1024 * 1024
 _SESSION_ERROR_MAX_ENTRIES = 64
 _SESSION_ERROR_MAX_BYTES = 256 * 1024 * 1024
 _LOCAL_SOURCE_REVISIONS = ResultCache(2)
+_GRADING_SOURCE_REVISIONS = ResultCache(8)
 _MASTERY_INPUT_RESULTS = ResultCache(2)
 # Cached payloads are stored as pickle bytes: rebuilding a hit with
 # pickle.loads is far cheaper than deepcopy on large profiles, and bytes are
@@ -231,6 +233,7 @@ class DiagnosisProfileService:
             *_path_generation(self.grading_db_path),
             *_path_generation(self.question_bank_db_path),
         )
+        source_identity = self._profile_source_identity(source_identity)
         source_identity = (*source_identity,
             *_dir_generation(self.data_root / "reports" / ".class_analysis"),
             json.dumps(_profile_semantics(), default=str))
@@ -409,20 +412,29 @@ class DiagnosisProfileService:
     def _local_profile_entry_path(self, cache_key: tuple[str, ...]) -> Path:
         return self._local_profile_store().entry_path(cache_key[1:])
 
+    def _profile_source_identity(self, origins, *, grading_path=None):
+        source_state = _database_file_state(Path(origins[0]))
+        revision = _GRADING_SOURCE_REVISIONS.get_or_compute((tuple(origins[:3]), source_state),
+            lambda: grading_content_revision(Path(grading_path or self.grading_db_path)))
+        return (*origins[:2], 'grading-input:' + revision, *origins[3:])
+
     def _local_profile_signature(self, cache_key: tuple[str, ...]) -> tuple | None:
         try:
             origins = self.cache_identity[:6] if self.cache_identity else ()
             paths = ((Path(origins[0]), Path(origins[3])) if len(origins) == 6
                      else (self.grading_db_path, self.question_bank_db_path))
             live = (*_path_generation(paths[0]), *_path_generation(paths[1]))
-            expected = "\u0000".join((*live,
+            if origins and tuple(origins[3:]) != tuple(live[3:]):
+                return None
+            semantic = self._profile_source_identity(live, grading_path=paths[0])
+            expected = "\u0000".join((*semantic,
                 *_dir_generation(self.data_root / "reports" / ".class_analysis"),
                 json.dumps(_profile_semantics(), default=str)))
             if cache_key[0] != expected:
                 return None  # A writer moved beyond the captured read transaction.
             state = tuple(_database_file_state(path) for path in paths)
             revisions = _LOCAL_SOURCE_REVISIONS.get_or_compute((live, state), lambda: (
-                _database_content_revision(self.grading_db_path),
+                semantic[2],
                 _database_content_revision(self.question_bank_db_path, self.question_bank_connection),
             ))
             if live != (*_path_generation(paths[0]), *_path_generation(paths[1])):

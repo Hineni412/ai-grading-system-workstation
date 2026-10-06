@@ -394,3 +394,121 @@ def test_exact_identity_checks_pixels_and_preserves_figure_positions(tmp_path):
     assert exact_question_key(first, data_root=root) != exact_question_key(
         swapped, data_root=root
     )
+
+
+def _seed_figure(data_root: Path, name: str, color: str) -> str:
+    from PIL import Image
+    asset = data_root / "question_bank" / "extracted_images" / name
+    asset.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (16, 16), color).save(asset)
+    return f"question_bank/extracted_images/{name}"
+
+
+def _bank_question_count(db_path: Path, paper_title: str) -> int:
+    with connect(db_path) as conn:
+        return int(
+            conn.execute(
+                """SELECT COUNT(*) FROM questions q
+                   JOIN papers p ON p.id = q.paper_id WHERE p.title = ?""",
+                (paper_title,),
+            ).fetchone()[0]
+        )
+
+
+def _bank_occurrence(db_path: Path, paper_title: str):
+    with connect(db_path) as conn:
+        return conn.execute(
+            """SELECT occ.question_id FROM paper_question_occurrences occ
+               JOIN papers p ON p.id = occ.paper_id WHERE p.title = ?""",
+            (paper_title,),
+        ).fetchone()
+
+
+def test_text_identical_question_merges_despite_different_image_pixels(
+    bank: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # 题面文字一致即同一题：换过编码的配图不拆成新题。
+    stem = "已知直角三角形两条直角边的长度分别为3和4，求斜边的长度并写出依据。"
+    figure_a = _seed_figure(bank["data_root"], "text_same_a.png", "red")
+    paper_a = f"1. {stem}[[IMAGE:{figure_a}]]\n答案：\n1. 42"
+    monkeypatch.setattr(batch_importer, "_extract_paper", _fake_extract(paper_a))
+    _import_paper(tmp_path, bank["db"], bank["data_root"], name="a.docx", text=paper_a)
+    source_id = _single_question_id(bank["db"], "a")
+    _seed_tags(bank["db"], source_id)
+
+    figure_b = _seed_figure(bank["data_root"], "text_same_b.png", "blue")
+    paper_b = f"1. {stem}[[IMAGE:{figure_b}]]\n答案：\n1. 42"
+    monkeypatch.setattr(batch_importer, "_extract_paper", _fake_extract(paper_b))
+    second = _import_paper(tmp_path, bank["db"], bank["data_root"], name="b.docx", text=paper_b)
+
+    assert second.question_count == 1
+    assert second.exact_duplicate_count == 1
+    assert second.analysis_reused_count == 1
+    assert second.near_duplicate_hints == ()
+    assert list(second.exact_duplicates) == [
+        {
+            "question_number": "1",
+            "matched_question_id": source_id,
+            "matched_paper_title": "a",
+            "matched_question_number": "1",
+        }
+    ]
+    assert _bank_question_count(bank["db"], "b") == 0
+    occurrence = _bank_occurrence(bank["db"], "b")
+    assert occurrence is not None and int(occurrence[0]) == source_id
+
+
+def test_short_illustrated_stem_still_needs_matching_image(
+    bank: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # 带图且题面不足 20 字的题仍按配图区分。
+    stem = "如图，求x的值"
+    figure_a = _seed_figure(bank["data_root"], "short_a.png", "red")
+    paper_a = f"1. {stem}[[IMAGE:{figure_a}]]\n答案：\n1. 2"
+    monkeypatch.setattr(batch_importer, "_extract_paper", _fake_extract(paper_a))
+    _import_paper(tmp_path, bank["db"], bank["data_root"], name="a.docx", text=paper_a)
+
+    figure_b = _seed_figure(bank["data_root"], "short_b.png", "blue")
+    paper_b = f"1. {stem}[[IMAGE:{figure_b}]]\n答案：\n1. 2"
+    monkeypatch.setattr(batch_importer, "_extract_paper", _fake_extract(paper_b))
+    second = _import_paper(tmp_path, bank["db"], bank["data_root"], name="b.docx", text=paper_b)
+
+    assert second.exact_duplicate_count == 0
+    assert _bank_occurrence(bank["db"], "b") is None
+    assert _bank_question_count(bank["db"], "b") == 1
+
+
+def test_text_identical_question_with_conflicting_answer_stays_separate(
+    bank: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # 题面一致但答案冲突时保留新题行，等待人工核对。
+    stem = "某校七年级学生参加实践活动，每小时测量一次气温并记录变化，求三小时内的总变化量。"
+    figure_a = _seed_figure(bank["data_root"], "conflict_a.png", "red")
+    paper_a = f"1. {stem}[[IMAGE:{figure_a}]]\n答案：\n1. 42"
+    monkeypatch.setattr(batch_importer, "_extract_paper", _fake_extract(paper_a))
+    _import_paper(tmp_path, bank["db"], bank["data_root"], name="a.docx", text=paper_a)
+    source_id = _single_question_id(bank["db"], "a")
+
+    figure_b = _seed_figure(bank["data_root"], "conflict_b.png", "blue")
+    paper_b = f"1. {stem}[[IMAGE:{figure_b}]]\n答案：\n1. 43"
+    monkeypatch.setattr(batch_importer, "_extract_paper", _fake_extract(paper_b))
+    second = _import_paper(tmp_path, bank["db"], bank["data_root"], name="b.docx", text=paper_b)
+
+    assert second.exact_duplicate_count == 0
+    hint = second.near_duplicate_hints[0]
+    assert hint["match_kind"] == "answer_conflict"
+    assert hint["matched_question_id"] == source_id
+    assert _bank_occurrence(bank["db"], "b") is None
+    assert _bank_question_count(bank["db"], "b") == 1
+    with connect(bank["db"]) as conn:
+        row = conn.execute(
+            """SELECT q.answer_text, q.needs_review FROM questions q
+               JOIN papers p ON p.id = q.paper_id WHERE p.title = 'b'"""
+        ).fetchone()
+    assert tuple(row) == ("43", 1)

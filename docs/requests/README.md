@@ -6,6 +6,7 @@
 |---|---|---|
 | 待办 | [未完成事项](open-items.md) | 汇总仍未完成或待核实的候选，不充当已实现功能说明 |
 | 首次刷新 | [性能调查](backend-first-refresh-performance-investigation-20261003.md) | 合并首次刷新与两秒目标的证据边界；真实更新后的完整页面耗时待验收 |
+| 后端性能复审 | [实施与验证报告](backend-performance-reaudit-20261005.html) | 六项基础优化及完整分组三项已落实；首次耗时补充独立进程比较，缩减匹配范围尚未证明大幅提速。轻量计算表、批量试组和现有预热顺序调整为待验证方案。匿名规模与耗时经用户授权保存 |
 | 训练推荐 | [实现与测量交接](training-recommendation-backend-handoff-20261004.md) | 定位当前相关入口与比较条件；实现规则仍以架构和产品文档为准 |
 | 推荐优化候选 | [方法调查](training-recommendation-performance-options-20261004.md)、[方案图](training-recommendation-performance-options-20261004.html) | 比较可复用方法及未实施的适用条件 |
 | 掌握度模型 | [模型调查](mastery-model-v3-plan-20261001.md) | 保留模型与参数选择依据；原型代码不用于当前运行 |

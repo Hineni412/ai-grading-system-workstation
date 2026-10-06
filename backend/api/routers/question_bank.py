@@ -14,6 +14,7 @@ from backend.api.dependencies import (
     get_question_bank_db_path,
     get_question_bank_read_service,
     get_question_bank_write_service,
+    get_skill_candidate_service,
     get_taxonomy_review_service,
     get_taxonomy_suggestion_service,
     get_training_criterion_module,
@@ -54,6 +55,10 @@ from backend.api.schemas.question_bank import (
     QuestionWriteResponse,
     SimilarQuestionItem,
     SimilarQuestionListResponse,
+    SkillCandidateApprovedUpdateRequest,
+    SkillCandidateReviewRequest,
+    SkillCandidateRunCreateRequest,
+    SkillCandidateRunRetryRequest,
     TaxonomyCatalogResponse,
     TaxonomyProposalApplicationRetryRequest,
     TaxonomyProposalListResponse,
@@ -86,6 +91,8 @@ from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.jobs.question_bank_repair import repair_preview
 from backend.jobs.store import (
     JobRecord,
+    SkillCandidateJobBusyError,
+    SkillCandidateJobRequestConflictError,
     TaggingSyncJobRequestConflictError,
     TaxonomySuggestionJobBusyError,
     TaxonomySuggestionJobRequestConflictError,
@@ -126,6 +133,15 @@ from question_bank.services.taxonomy_review_service import (
     TaxonomyReviewSelectionInvalid,
     TaxonomyReviewService,
     TaxonomyReviewUndoConflict,
+)
+from question_bank.services.skill_candidates import (
+    SkillCandidateBusy,
+    SkillCandidateInvalid,
+    SkillCandidateNotFound,
+    SkillCandidateRequestConflict,
+    SkillCandidateRevisionConflict,
+    SkillCandidateService,
+    SkillCandidateStale,
 )
 from question_bank.services.taxonomy_review_suggestions import (
     TaxonomySuggestionInvalid,
@@ -244,6 +260,13 @@ TAXONOMY_SUGGESTION_ERROR_RESPONSES = {
     422: {"model": ErrorResponse, "description": "Suggestion request is invalid"},
     **TAXONOMY_READ_ERROR_RESPONSES,
 }
+SKILL_CANDIDATE_ERROR_RESPONSES = {
+    404: {"model": ErrorResponse, "description": "Skill candidate not found"},
+    409: {"model": ErrorResponse, "description": "Skill candidate state conflict"},
+    422: {"model": ErrorResponse, "description": "Skill candidate request is invalid"},
+    **TAXONOMY_READ_ERROR_RESPONSES,
+    **QUESTION_SNAPSHOT_ERROR_RESPONSES,
+}
 CRITERION_WRITE_ERROR_RESPONSES = {
     404: {
         "model": ErrorResponse,
@@ -309,11 +332,17 @@ def get_taxonomy_catalog() -> TaxonomyCatalogResponse:
     return TaxonomyCatalogResponse(**payload)
 
 
-@router.get("/standard-summary")
+@router.get("/standard-summary", responses=QUESTION_SNAPSHOT_ERROR_RESPONSES)
 def get_standard_summary(
+    curriculum_volume_id: Annotated[str, Query(min_length=1)],
     service: QuestionBankReadService = Depends(get_question_bank_read_service),
 ) -> dict[str, Any]:
-    return service.standard_summary()
+    try:
+        return service.standard_summary(curriculum_volume_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except QuestionBankSnapshotError as exc:
+        _raise_question_snapshot_api_error(exc)
 
 
 @router.get("/skill-index", responses=QUESTION_SNAPSHOT_ERROR_RESPONSES)
@@ -340,6 +369,418 @@ def get_chapter_exam_profile(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except QuestionBankSnapshotError as exc:
         _raise_question_snapshot_api_error(exc)
+
+
+@router.get("/skill-gaps", responses=SKILL_CANDIDATE_ERROR_RESPONSES)
+def get_skill_gaps(
+    curriculum_volume_id: Annotated[str, Query(min_length=1)],
+    service: SkillCandidateService = Depends(get_skill_candidate_service),
+) -> dict[str, Any]:
+    try:
+        return service.gap_preview(curriculum_volume_id)
+    except SkillCandidateInvalid as exc:
+        raise ApiError(
+            422, "skill_candidate_invalid", "Skill gap request is invalid"
+        ) from exc
+    except QuestionBankSnapshotError as exc:
+        _raise_question_snapshot_api_error(exc)
+    except (OSError, TimeoutError, RuntimeError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+
+
+@router.post(
+    "/skill-candidate-runs",
+    status_code=202,
+    responses=SKILL_CANDIDATE_ERROR_RESPONSES,
+)
+def start_skill_candidate_run(
+    body: SkillCandidateRunCreateRequest,
+    service: SkillCandidateService = Depends(get_skill_candidate_service),
+    manager: JobManager = Depends(get_job_manager),
+) -> dict[str, Any]:
+    token = body.client_request_token.lower()
+    try:
+        run = service.create_run(
+            curriculum_volume_id=body.curriculum_volume_id,
+            fingerprint=body.fingerprint,
+            request_token=token,
+        )
+        job, _created = manager.submit_idempotent_skill_candidate(
+            {
+                "run_id": run["run_id"],
+                "operation": "process",
+                "client_request_token": token,
+            }
+        )
+    except SkillCandidateRevisionConflict as exc:
+        raise ApiError(
+            409,
+            "skill_candidate_revision_conflict",
+            "Skill gaps changed; refresh the preview and retry",
+        ) from exc
+    except SkillCandidateBusy as exc:
+        raise ApiError(
+            409,
+            "skill_candidate_busy",
+            "Another skill candidate run is still active",
+        ) from exc
+    except SkillCandidateRequestConflict as exc:
+        raise ApiError(
+            409,
+            "skill_candidate_request_conflict",
+            "This request token was already used",
+        ) from exc
+    except SkillCandidateJobRequestConflictError as exc:
+        raise ApiError(
+            409,
+            "skill_candidate_job_request_conflict",
+            "This request token was already used",
+        ) from exc
+    except SkillCandidateJobBusyError as exc:
+        raise ApiError(
+            409,
+            "skill_candidate_busy",
+            "This skill candidate run already has active work",
+        ) from exc
+    except (SkillCandidateInvalid, ValueError) as exc:
+        raise ApiError(
+            422,
+            "skill_candidate_invalid",
+            "Skill candidate request is invalid",
+        ) from exc
+    except UnsupportedJobTypeError as exc:
+        raise ApiError(
+            503,
+            "skill_candidate_unavailable",
+            "Skill candidate processing is temporarily unavailable",
+        ) from exc
+    except QuestionBankSnapshotError as exc:
+        _raise_question_snapshot_api_error(exc)
+    except (OSError, TimeoutError, RuntimeError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return {"job": _job_response(job), "run": run}
+
+
+@router.get(
+    "/skill-candidate-runs/{run_id}",
+    responses=SKILL_CANDIDATE_ERROR_RESPONSES,
+)
+def get_skill_candidate_run(
+    run_id: str,
+    service: SkillCandidateService = Depends(get_skill_candidate_service),
+    manager: JobManager = Depends(get_job_manager),
+) -> dict[str, Any]:
+    try:
+        run = service.get_run(run_id)
+        latest_job = _latest_skill_candidate_job(manager, run_id)
+        if (
+            run.get("status") in {"queued", "running", "cancelling"}
+            and latest_job is not None
+            and latest_job.status in {"succeeded", "failed", "cancelled"}
+        ):
+            run = service.recover_interrupted(
+                run_id,
+                cancelled=(
+                    latest_job.status == "cancelled"
+                    or run.get("status") == "cancelling"
+                ),
+            )
+    except SkillCandidateNotFound as exc:
+        raise ApiError(
+            404,
+            "skill_candidate_not_found",
+            "Skill candidate run not found",
+            {"run_id": run_id},
+        ) from exc
+    except (OSError, TimeoutError, RuntimeError, ValueError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return run
+
+
+@router.post(
+    "/skill-candidate-runs/{run_id}/retry",
+    status_code=202,
+    responses=SKILL_CANDIDATE_ERROR_RESPONSES,
+)
+def retry_skill_candidate_run(
+    run_id: str,
+    body: SkillCandidateRunRetryRequest,
+    service: SkillCandidateService = Depends(get_skill_candidate_service),
+    manager: JobManager = Depends(get_job_manager),
+) -> dict[str, Any]:
+    token = body.client_request_token.lower()
+    try:
+        run = service.get_run(run_id)
+        if run.get("stale"):
+            raise ApiError(
+                409,
+                "skill_candidate_stale",
+                "Knowledge standard changed; start a new candidate run",
+            )
+        operation = (
+            "process"
+            if run.get("status") in {"queued", "running"}
+            else "retry"
+        )
+        job, _created = manager.submit_idempotent_skill_candidate(
+            {
+                "run_id": run["run_id"],
+                "operation": operation,
+                "client_request_token": token,
+            }
+        )
+    except ApiError:
+        raise
+    except SkillCandidateNotFound as exc:
+        raise ApiError(
+            404,
+            "skill_candidate_not_found",
+            "Skill candidate run not found",
+            {"run_id": run_id},
+        ) from exc
+    except SkillCandidateJobRequestConflictError as exc:
+        raise ApiError(
+            409,
+            "skill_candidate_job_request_conflict",
+            "This request token was already used",
+        ) from exc
+    except SkillCandidateJobBusyError as exc:
+        raise ApiError(
+            409,
+            "skill_candidate_busy",
+            "This skill candidate run already has active work",
+        ) from exc
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "skill_candidate_invalid",
+            "Skill candidate retry is invalid",
+        ) from exc
+    except UnsupportedJobTypeError as exc:
+        raise ApiError(
+            503,
+            "skill_candidate_unavailable",
+            "Skill candidate processing is temporarily unavailable",
+        ) from exc
+    except (OSError, TimeoutError, RuntimeError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return {"job": _job_response(job), "run": run}
+
+
+@router.post(
+    "/skill-candidate-runs/{run_id}/cancel",
+    responses=SKILL_CANDIDATE_ERROR_RESPONSES,
+)
+def cancel_skill_candidate_run(
+    run_id: str,
+    service: SkillCandidateService = Depends(get_skill_candidate_service),
+    manager: JobManager = Depends(get_job_manager),
+) -> dict[str, Any]:
+    try:
+        run = service.cancel_run(run_id)
+        for job in _active_skill_candidate_jobs(manager, run_id):
+            manager.cancel(job.id)
+    except SkillCandidateNotFound as exc:
+        raise ApiError(
+            404,
+            "skill_candidate_not_found",
+            "Skill candidate run not found",
+            {"run_id": run_id},
+        ) from exc
+    except (OSError, TimeoutError, RuntimeError, ValueError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return run
+
+
+@router.get("/skill-candidates/summary", responses=SKILL_CANDIDATE_ERROR_RESPONSES)
+def get_skill_candidate_summary(
+    curriculum_volume_id: Annotated[str, Query(min_length=1)],
+    service: SkillCandidateService = Depends(get_skill_candidate_service),
+) -> dict[str, Any]:
+    try:
+        return service.summary(curriculum_volume_id)
+    except SkillCandidateInvalid as exc:
+        raise ApiError(
+            422, "skill_candidate_invalid", "Skill candidate request is invalid"
+        ) from exc
+    except QuestionBankSnapshotError as exc:
+        _raise_question_snapshot_api_error(exc)
+    except (OSError, TimeoutError, RuntimeError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+
+
+@router.get("/skill-candidates", responses=SKILL_CANDIDATE_ERROR_RESPONSES)
+def list_skill_candidates(
+    curriculum_volume_id: Annotated[str, Query(min_length=1)],
+    service: SkillCandidateService = Depends(get_skill_candidate_service),
+) -> dict[str, Any]:
+    try:
+        return service.list_candidates(curriculum_volume_id)
+    except SkillCandidateInvalid as exc:
+        raise ApiError(
+            422, "skill_candidate_invalid", "Skill candidate request is invalid"
+        ) from exc
+    except QuestionBankSnapshotError as exc:
+        _raise_question_snapshot_api_error(exc)
+    except (OSError, TimeoutError, RuntimeError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+
+
+@router.post(
+    "/skill-candidates/{suggestion_id}/review",
+    responses=SKILL_CANDIDATE_ERROR_RESPONSES,
+)
+def review_skill_candidate(
+    suggestion_id: str,
+    body: SkillCandidateReviewRequest,
+    service: SkillCandidateService = Depends(get_skill_candidate_service),
+) -> dict[str, Any]:
+    try:
+        return service.review(
+            suggestion_id,
+            decision=body.decision,
+            expected_revision=body.expected_revision,
+            request_token=body.request_token.lower(),
+            edits=(
+                body.edits.model_dump() if body.edits is not None else None
+            ),
+            gap_keys=body.gap_keys,
+        )
+    except SkillCandidateNotFound as exc:
+        raise ApiError(
+            404,
+            "skill_candidate_not_found",
+            "Skill candidate suggestion not found",
+            {"suggestion_id": suggestion_id},
+        ) from exc
+    except SkillCandidateRevisionConflict as exc:
+        raise ApiError(
+            409,
+            "skill_candidate_revision_conflict",
+            "Skill candidate state changed; refresh and retry",
+        ) from exc
+    except SkillCandidateStale as exc:
+        raise ApiError(
+            409,
+            "skill_candidate_stale",
+            "Knowledge standard changed; this suggestion is limited",
+        ) from exc
+    except SkillCandidateRequestConflict as exc:
+        raise ApiError(
+            409,
+            "skill_candidate_request_conflict",
+            "This request token was already used",
+        ) from exc
+    except (SkillCandidateInvalid, ValueError) as exc:
+        raise ApiError(
+            422,
+            "skill_candidate_invalid",
+            "Skill candidate review is invalid",
+        ) from exc
+    except QuestionBankSnapshotError as exc:
+        _raise_question_snapshot_api_error(exc)
+    except (OSError, TimeoutError, RuntimeError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+
+
+@router.patch(
+    "/skill-candidates/approved/{skill_id}",
+    responses=SKILL_CANDIDATE_ERROR_RESPONSES,
+)
+def update_skill_candidate_approved(
+    skill_id: str,
+    body: SkillCandidateApprovedUpdateRequest,
+    service: SkillCandidateService = Depends(get_skill_candidate_service),
+) -> dict[str, Any]:
+    try:
+        return service.update_approved(
+            skill_id,
+            name=body.name,
+            include=body.include,
+            exclude=body.exclude,
+            examples=body.examples,
+            expected_revision=body.expected_revision,
+            request_token=body.request_token.lower(),
+        )
+    except SkillCandidateNotFound as exc:
+        raise ApiError(
+            404,
+            "skill_candidate_not_found",
+            "Approved skill not found",
+            {"skill_id": skill_id},
+        ) from exc
+    except SkillCandidateRevisionConflict as exc:
+        raise ApiError(
+            409,
+            "skill_candidate_revision_conflict",
+            "Skill candidate state changed; refresh and retry",
+        ) from exc
+    except SkillCandidateStale as exc:
+        raise ApiError(
+            409,
+            "skill_candidate_stale",
+            "Approved skill can no longer be edited",
+        ) from exc
+    except SkillCandidateRequestConflict as exc:
+        raise ApiError(
+            409,
+            "skill_candidate_request_conflict",
+            "This request token was already used",
+        ) from exc
+    except (SkillCandidateInvalid, ValueError) as exc:
+        raise ApiError(
+            422,
+            "skill_candidate_invalid",
+            "Approved skill update is invalid",
+        ) from exc
+    except QuestionBankSnapshotError as exc:
+        _raise_question_snapshot_api_error(exc)
+    except (OSError, TimeoutError, RuntimeError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+
+
+def _active_skill_candidate_jobs(
+    manager: JobManager,
+    run_id: str,
+) -> list[JobRecord]:
+    return _skill_candidate_jobs(
+        manager,
+        run_id,
+        statuses=("queued", "running", "paused"),
+    )
+
+
+def _latest_skill_candidate_job(
+    manager: JobManager,
+    run_id: str,
+) -> JobRecord | None:
+    jobs = _skill_candidate_jobs(manager, run_id)
+    return jobs[0] if jobs else None
+
+
+def _skill_candidate_jobs(
+    manager: JobManager,
+    run_id: str,
+    *,
+    statuses: tuple[str, ...] = (),
+) -> list[JobRecord]:
+    matched: list[JobRecord] = []
+    offset = 0
+    while True:
+        jobs, total = manager.list(
+            job_types=("skill_candidate",),
+            statuses=statuses,
+            limit=100,
+            offset=offset,
+        )
+        matched.extend(
+            job
+            for job in jobs
+            if str(job.payload.get("run_id") or "") == str(run_id)
+        )
+        offset += len(jobs)
+        if not jobs or offset >= total:
+            return matched
 
 
 @router.get(

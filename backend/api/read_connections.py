@@ -57,65 +57,68 @@ class RequestReadContext:
 
 @contextmanager
 def request_read_context(paths: _ReadPaths) -> Iterator[RequestReadContext]:
-    stack = ExitStack()
-    primary_error: BaseException | None = None
-    try:
-        grading_connection = stack.enter_context(
-            captured_sqlite_read_connection(
-                Path(paths.db_path),
-                required_tables=_GRADING_REQUIRED_TABLES,
-                check_same_thread=False,
-            )
-        )
-        grading_candidate = _main_candidate_path(grading_connection)
-
-        # The ~180 MB question bank is opened directly read-only instead of
-        # copying it per request; the small grading database keeps the
-        # captured snapshot.
-        question_bank_connection = stack.enter_context(
-            _direct_question_bank_read(
-                Path(paths.qb_db_path),
-                required_tables=_QUESTION_BANK_REQUIRED_TABLES,
-            )
-        )
-        question_bank_candidate = _main_candidate_path(question_bank_connection)
-
-        grading_db = open_grading_repositories(
-            Path(paths.db_path),
-            external_connection=grading_connection,
-        )
-        diagnosis_service = DiagnosisProfileService(
-            grading_candidate,
-            question_bank_candidate,
-            grading_db=grading_db,
-            question_bank_connection=question_bank_connection,
-            # SQL reads use the captured database; referenced images and config
-            # receipts still belong to the original data directory.
-            data_root=Path(paths.qb_db_path).parent.parent,
-            cache_identity=(
+    # Bind both captured transactions to the generations observed before
+    # capture. A commit during setup must not label an old snapshot as new.
+    for _attempt in range(3):
+        stack = ExitStack()
+        primary_error: BaseException | None = None
+        try:
+            captured_identity = (
                 *_database_generation(Path(paths.db_path)),
                 *_database_generation(Path(paths.qb_db_path)),
-            ),
-        )
-        yield RequestReadContext(
-            grading_candidate=grading_candidate,
-            question_bank_candidate=question_bank_candidate,
-            grading_connection=grading_connection,
-            question_bank_connection=question_bank_connection,
-            grading_db=grading_db,
-            diagnosis_service=diagnosis_service,
-        )
-    except BaseException as exc:
-        primary_error = exc
-        raise
-    finally:
-        try:
-            stack.close()
-        except BaseException as cleanup_error:
-            if primary_error is None:
-                raise RequestReadContextCleanupError(
-                    "Request read resources could not be closed"
-                ) from cleanup_error
+            )
+            grading_connection = stack.enter_context(
+                captured_sqlite_read_connection(
+                    Path(paths.db_path),
+                    required_tables=_GRADING_REQUIRED_TABLES,
+                    check_same_thread=False,
+                )
+            )
+            grading_candidate = _main_candidate_path(grading_connection)
+            question_bank_connection = stack.enter_context(
+                _direct_question_bank_read(
+                    Path(paths.qb_db_path),
+                    required_tables=_QUESTION_BANK_REQUIRED_TABLES,
+                )
+            )
+            question_bank_candidate = _main_candidate_path(question_bank_connection)
+            if captured_identity != (
+                *_database_generation(Path(paths.db_path)),
+                *_database_generation(Path(paths.qb_db_path)),
+            ):
+                continue
+            grading_db = open_grading_repositories(
+                Path(paths.db_path), external_connection=grading_connection,
+            )
+            diagnosis_service = DiagnosisProfileService(
+                grading_candidate,
+                question_bank_candidate,
+                grading_db=grading_db,
+                question_bank_connection=question_bank_connection,
+                data_root=Path(paths.qb_db_path).parent.parent,
+                cache_identity=captured_identity,
+            )
+            yield RequestReadContext(
+                grading_candidate=grading_candidate,
+                question_bank_candidate=question_bank_candidate,
+                grading_connection=grading_connection,
+                question_bank_connection=question_bank_connection,
+                grading_db=grading_db,
+                diagnosis_service=diagnosis_service,
+            )
+            return
+        except BaseException as exc:
+            primary_error = exc
+            raise
+        finally:
+            try:
+                stack.close()
+            except BaseException as cleanup_error:
+                if primary_error is None:
+                    raise RequestReadContextCleanupError(
+                        "Request read resources could not be closed"
+                    ) from cleanup_error
+    raise QuestionBankSnapshotBusy("Sources changed during capture; retry shortly")
 
 
 @contextmanager

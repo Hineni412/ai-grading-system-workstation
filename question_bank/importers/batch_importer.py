@@ -29,12 +29,12 @@ from question_bank.parsers.type_detector import (
 )
 from question_bank.services.duplicate_analysis_copy_service import (
     answers_conflict,
-    content_index_lookup,
     ensure_content_index,
     exact_question_key,
     record_paper_occurrence,
     upsert_content_index,
 )
+from question_bank.services.question_identity import SameQuestionIndex
 from question_bank.services.rich_content_service import save_question_rich_content
 from question_bank.services.similarity_service import (
     QuestionTextProfile,
@@ -423,13 +423,13 @@ class BatchImportResult:
 class _DuplicateIndex:
     """Cross-paper duplicate lookup state for one import batch.
 
-    ``exact`` maps the canonical question key to the most recently updated
-    bank question id; ``questions`` feeds the slower near-duplicate scan.
-    Both grow as the batch imports so later files match earlier ones.
+    ``identity`` decides whether a new question already exists in the bank;
+    ``questions`` feeds the slower near-duplicate scan.  Both grow as the
+    batch imports so later files match earlier ones.
     """
 
     data_root: Path = field(default_factory=Path)
-    exact: dict[str, int] = field(default_factory=dict)
+    identity: SameQuestionIndex = field(default_factory=SameQuestionIndex)
     questions: list[dict[str, Any]] = field(default_factory=list)
     _wording_index: WordingCandidateIndex | None = field(default=None, init=False, repr=False)
 
@@ -468,7 +468,7 @@ class _DuplicateIndex:
                 data_root=self.data_root,
             )
         if key:
-            self.exact.setdefault(key, int(question_id))
+            self.identity.register(key, int(question_id))
         self.questions.append(
             {
                 "id": int(question_id),
@@ -487,19 +487,9 @@ def _load_duplicate_index(db_path: Path, *, data_root: Path | None = None, conne
         # The persistent content index is built once and refreshed on writes;
         # lookups read stored keys instead of decoding every bank image.
         ensure_content_index(conn, data_root=root)
-        key_rows = conn.execute(
-            """
-            SELECT idx.content_key AS content_key, idx.question_id AS question_id
-            FROM question_content_index idx
-            JOIN questions q ON q.id = idx.question_id
-            LEFT JOIN papers p ON p.id = q.paper_id
-            WHERE COALESCE(q.is_deleted, 0) = 0
-              AND COALESCE(p.import_status, '') <> 'deleted'
-            """
-        ).fetchall()
         questions = _load_near_duplicate_questions(conn)
-        canonical = content_index_lookup(conn, {str(row["content_key"]) for row in key_rows})
-    return _DuplicateIndex(data_root=root, exact=canonical, questions=questions)
+        identity = SameQuestionIndex.load(conn)
+    return _DuplicateIndex(data_root=root, identity=identity, questions=questions)
 
 
 def _load_near_duplicate_questions(conn: Any) -> list[dict[str, Any]]:
@@ -924,8 +914,7 @@ def _import_scanned_paper(
             "answer_blocks": rich_content["answer"].get(item.question_number, []),
         })
         exact_keys[item.question_number] = key
-        source_id = duplicate_index.exact.get(key) if key else None
-        if source_id is not None:
+        if duplicate_index.identity.match(key) is not None:
             continue
         if confirmed_duplicates and item.question_number in confirmed_duplicates:
             # Teacher already confirmed this duplicate; the insert loop maps
@@ -962,12 +951,9 @@ def _import_scanned_paper(
             )
         # The batch has already refreshed the index. Recheck only matching
         # candidates under the write lock; concurrent imports remain visible.
-        refreshed_matches = content_index_lookup(
-            conn, set(exact_keys.values()), data_root=duplicate_index.data_root,
+        duplicate_index.identity.refresh(
+            conn, exact_keys.values(), data_root=duplicate_index.data_root,
         )
-        for key in exact_keys.values():
-            duplicate_index.exact.pop(key, None)
-        duplicate_index.exact.update(refreshed_matches)
         paper_cursor = conn.execute(
             """
             INSERT INTO papers (
@@ -1022,7 +1008,8 @@ def _import_scanned_paper(
                 )
                 pending_analysis_reuse.append((confirmed_bank_id, item.question_number))
                 continue
-            source_id = duplicate_index.exact.get(key) if key else None
+            match = duplicate_index.identity.match(key)
+            source_id = match.question_id if match is not None else None
             answer_conflict = False
             if source_id is not None and item.answer_text:
                 source_row = conn.execute(
@@ -1098,7 +1085,7 @@ def _import_scanned_paper(
                 # New canonical question: persist its identity key so later
                 # batches match it without recomputing image content.
                 upsert_content_index(conn, question_id=question_id, key=key)
-                duplicate_index.exact.setdefault(key, question_id)
+                duplicate_index.identity.register(key, question_id)
             question_blocks = rich_content["question"].get(item.question_number, [])
             answer_blocks = rich_content["answer"].get(item.question_number, [])
             if question_blocks or answer_blocks:

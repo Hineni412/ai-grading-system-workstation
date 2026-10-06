@@ -234,6 +234,7 @@ def _build_grouped_diagnosis(service, grouping_module, *, scope_dump, exam_scope
                 config=grouping_config,
                 member_ids=grouping.member_ids,
                 target_keys=grouping.target_keys,
+                _selection_only=bool(grouping.member_ids),
                 graded_activities=service.graded_activities(
                     tuple(
                         str(item["student_id"])

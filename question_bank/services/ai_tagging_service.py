@@ -436,6 +436,76 @@ class AITaggingService:
             if isinstance(item, Mapping)
         ]
 
+    def suggest_skill_candidates(
+        self, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Group one chapter's skill-gap evidence points into decisions."""
+        if self.mock_mode:
+            raise RuntimeError(
+                "未配置可用于技能候选整理的大模型，未生成模拟判断。"
+            )
+        prompt_input = [
+            {"role": "system", "content": _SKILL_CANDIDATE_PROMPT},
+            {
+                "role": "user",
+                "content": json.dumps(dict(payload), ensure_ascii=False),
+            },
+        ]
+        if self.llm_client is not None and not (
+            self.api_key
+            or self.client
+            or self._protocol_adapter_instance is not None
+        ):
+            prompt = "\n\n".join(
+                item["content"] for item in prompt_input
+            )
+            try:
+                parsed = _json_from_text_once_compat(
+                    self.llm_client,
+                    prompt,
+                    model=_model_for_llm_client(
+                        self.llm_client, self.model
+                    ),
+                    response_format=_chat_response_format(
+                        _skill_candidate_response_format()
+                    ),
+                )
+            except (
+                LLMOutputTruncatedError,
+                LLMResponseFormatError,
+            ) as exc:
+                raise TaxonomySuggestionModelResponseError(
+                    "技能候选整理返回格式无效"
+                ) from exc
+        else:
+            response = self._protocol_adapter().responses(
+                request_kind=LLMRequestKind.TAGGING,
+                model=self.model,
+                allow_retry=False,
+                kwargs={
+                    "text": {
+                        "format": _skill_candidate_response_format()
+                    },
+                    "input": prompt_input,
+                },
+            )
+            output_text = str(
+                getattr(response, "output_text", "") or ""
+            ).strip()
+            try:
+                parsed = json.loads(output_text)
+            except json.JSONDecodeError as exc:
+                raise TaxonomySuggestionModelResponseError(
+                    "技能候选整理返回格式无效"
+                ) from exc
+        if not isinstance(parsed, Mapping) or not isinstance(
+            parsed.get("groups"), list
+        ):
+            raise TaxonomySuggestionModelResponseError(
+                "技能候选整理返回缺少 groups 列表"
+            )
+        return dict(parsed)
+
     def analyze_review_question(
         self,
         context: TaggingContext,
@@ -1372,6 +1442,82 @@ def _taxonomy_suggestion_response_format() -> dict[str, Any]:
                 }
             },
             "required": ["results"],
+            "additionalProperties": False,
+        },
+    }
+
+
+_SKILL_CANDIDATE_PROMPT = (
+    "你在维护一套初中数学“技能”词表。技能是判定点可以直接观察到的一个数学操作能力，"
+    "挂在教材小节下，用于判断学生会不会做某一步。\n\n"
+    "输入给出同一章的教材小节列表（sections）、该章现有技能及其定义、纳入和排除条件"
+    "（existing_skills），以及一批“技能缺口判定点”（gap_points）——这些判定点目前"
+    "没有挂上任何技能。\n\n"
+    "请把全部缺口判定点分组，每组给出一个结论（decision）：\n"
+    "1. link_existing：这些判定点考查的就是某个现有技能的操作，只是漏挂。skill_key 必须"
+    "从 existing_skills 中选择；判定点的操作要满足该技能的纳入条件，且不触犯排除条件。\n"
+    "2. new_skill：这些判定点考查同一个可观察的数学操作，现有技能都不覆盖。在 new_skill "
+    "中给出：\n"
+    "   - section_key：从 sections 中选择该操作最主要所属的小节；\n"
+    "   - name：动宾短语，说明学生要完成的操作，约 12 字，不超过 30 字，不写题目情境；\n"
+    "   - include：可观察操作与纳入条件，写清判定时看什么；\n"
+    "   - exclude：排除条件，写明容易混淆、不属于该技能的情形；\n"
+    "   - examples：1 到 3 条典型作答表现，概括自输入判定点，不照抄整题。\n"
+    "   新技能必须与现有技能明显不同；如果只是现有技能的同义说法，改用 link_existing。\n"
+    "3. keep_section：判定点只给出最终答案、包含多个不同操作，或描述含糊，无法对应到单一"
+    "可观察操作，应保持只归小节。不要为这类判定点硬造技能。\n\n"
+    "规则：\n"
+    "- 每个 gap_id 必须且只能出现在一个组里。\n"
+    "- 同一组的判定点必须考查同一个操作；不同操作分成不同组。只有一个判定点也可以单独成组。\n"
+    "- 按学生实际要完成的操作分组，不按题目情境、知识点名称或关键词相似分组。\n"
+    "- reason 用一句话说明判断依据。\n"
+    "- 不适用的字段填空字符串或空数组：link_existing 和 keep_section 的 new_skill 各字段为空；"
+    "new_skill 和 keep_section 的 skill_key 为空。\n"
+    "- 所有教师可见文字使用简体中文。"
+)
+
+
+def _skill_candidate_response_format() -> dict[str, Any]:
+    new_skill_properties = {
+        "section_key": {"type": "string"},
+        "name": {"type": "string"},
+        "include": {"type": "string"},
+        "exclude": {"type": "string"},
+        "examples": {"type": "array", "items": {"type": "string"}},
+    }
+    group_properties = {
+        "gap_ids": {"type": "array", "items": {"type": "string"}},
+        "decision": {
+            "type": "string",
+            "enum": ["link_existing", "new_skill", "keep_section"],
+        },
+        "skill_key": {"type": "string"},
+        "new_skill": {
+            "type": "object",
+            "properties": new_skill_properties,
+            "required": list(new_skill_properties),
+            "additionalProperties": False,
+        },
+        "reason": {"type": "string"},
+    }
+    return {
+        "type": "json_schema",
+        "name": "skill_gap_candidates",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "groups": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": group_properties,
+                        "required": list(group_properties),
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["groups"],
             "additionalProperties": False,
         },
     }

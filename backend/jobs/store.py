@@ -57,6 +57,14 @@ class TaxonomySuggestionJobBusyError(RuntimeError):
     pass
 
 
+class SkillCandidateJobRequestConflictError(RuntimeError):
+    pass
+
+
+class SkillCandidateJobBusyError(RuntimeError):
+    pass
+
+
 class TaggingSyncJobRequestConflictError(RuntimeError):
     pass
 
@@ -277,6 +285,105 @@ class JobStore:
         if loaded is None:
             raise RuntimeError(
                 f"created taxonomy suggestion job {job_id} could not be loaded"
+            )
+        return loaded, True
+
+    def create_idempotent_skill_candidate_job(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
+        clean_payload = dict(payload)
+        run_id = str(clean_payload.get("run_id") or "").strip().casefold()
+        if _SOURCE_ID.fullmatch(run_id) is None:
+            raise ValueError("run_id must contain 32 hexadecimal characters")
+        operation = str(clean_payload.get("operation") or "").strip()
+        if operation not in {"process", "retry"}:
+            raise ValueError("skill candidate operation is invalid")
+        token = _clean_request_token(
+            clean_payload.get("client_request_token")
+        )
+        clean_payload["run_id"] = run_id
+        clean_payload["operation"] = operation
+        clean_payload["client_request_token"] = token
+        payload_json = json.dumps(
+            clean_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM jobs
+                    WHERE job_type = 'skill_candidate'
+                      AND (
+                        (
+                          json_valid(payload_json) = 1
+                          AND json_extract(
+                            payload_json, '$.client_request_token'
+                          ) = ?
+                        )
+                        OR (
+                          status IN ('queued', 'running', 'paused')
+                          AND json_valid(payload_json) = 1
+                          AND json_extract(payload_json, '$.run_id') = ?
+                        )
+                      )
+                    ORDER BY id DESC
+                    """,
+                    (token, run_id),
+                ).fetchall()
+                for row in rows:
+                    try:
+                        existing_payload = json.loads(
+                            str(row["payload_json"] or "{}")
+                        )
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(existing_payload, dict):
+                        continue
+                    if (
+                        existing_payload.get("client_request_token")
+                        == token
+                    ):
+                        if (
+                            existing_payload.get("run_id") != run_id
+                            or existing_payload.get("operation") != operation
+                        ):
+                            raise SkillCandidateJobRequestConflictError(
+                                "skill candidate request token was reused"
+                            )
+                        conn.commit()
+                        return _job_record(row), False
+                    if (
+                        existing_payload.get("run_id") == run_id
+                        and str(row["status"])
+                        in {"queued", "running", "paused"}
+                    ):
+                        if existing_payload.get("operation") == operation:
+                            conn.commit()
+                            return _job_record(row), False
+                        raise SkillCandidateJobBusyError(
+                            "skill candidate run already has active work"
+                        )
+                cursor = conn.execute(
+                    """
+                    INSERT INTO jobs (job_type, payload_json, status)
+                    VALUES ('skill_candidate', ?, 'queued')
+                    """,
+                    (payload_json,),
+                )
+                job_id = int(cursor.lastrowid)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        loaded = self.get_job(job_id)
+        if loaded is None:
+            raise RuntimeError(
+                f"created skill candidate job {job_id} could not be loaded"
             )
         return loaded, True
 

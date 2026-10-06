@@ -22,6 +22,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,7 @@ _RECENT_GENERATION = 0
 _RECENT_TARGET_LIMIT = 60
 _RECENTS_FILE_NAME = "recent_requests.json"
 _RECENTS_MAX_AGE = timedelta(days=14)
+_REPLAY_STATE = threading.local()
 
 # Foreground read requests counted via get_request_read_context. The worker
 # yields while one is active and briefly afterwards so a refresh batch never
@@ -77,6 +79,8 @@ def record_request(
 ) -> None:
     """Remember a (scope, exam_scope) request for background refresh."""
 
+    if getattr(_REPLAY_STATE, "active", False):
+        return
     global _RECENT_GENERATION
     key = (
         json.dumps(dict(scope), sort_keys=True, default=str),
@@ -92,7 +96,8 @@ def record_request(
                 "touched": time.monotonic(),
             }
             _RECENT[key] = entry
-        if entry['kinds'].get(str(kind)) != dict(params):
+        if (entry['kinds'].get(str(kind)) != dict(params)
+                or key != next(reversed(_RECENT), None)):
             _RECENT_GENERATION += 1
         entry["kinds"][str(kind)] = dict(params)
         entry["touched"] = time.monotonic()
@@ -115,6 +120,8 @@ def record_target(
     plan per filter set still holds however many skills the panel prefetches.
     """
 
+    if getattr(_REPLAY_STATE, "active", False):
+        return
     key = (
         json.dumps(dict(scope), sort_keys=True, default=str),
         json.dumps(dict(exam_scope), sort_keys=True, default=str),
@@ -167,7 +174,7 @@ def recent_requests() -> list[dict[str, Any]]:
         ]
         for key in stale:
             _RECENT.pop(key, None)
-        return [dict(entry) for entry in _RECENT.values()]
+        return deepcopy(list(_RECENT.values()))
 
 
 def clear_recent_requests() -> None:
@@ -180,6 +187,18 @@ def clear_recent_requests() -> None:
 def _recent_generation() -> int:
     with _RECENT_LOCK:
         return _RECENT_GENERATION
+
+
+@contextmanager
+def _background_replay() -> Iterator[None]:
+    """Request helpers must not record the worker as a teacher visit."""
+
+    previous = getattr(_REPLAY_STATE, "active", False)
+    _REPLAY_STATE.active = True
+    try:
+        yield
+    finally:
+        _REPLAY_STATE.active = previous
 
 
 def prewarm_enabled() -> bool:
@@ -277,6 +296,12 @@ class TrainingPrewarmWorker:
             if self._stop.is_set() or self._jobs_active() or not self._wait_for_idle():
                 interrupted = True
                 break
+            # A foreground visit can change the scope while this batch waits
+            # for idle time or computes its previous item. Re-plan next tick.
+            if (self._jobs_active()
+                    or _recent_generation() != recent_generation):
+                interrupted = True
+                break
             try:
                 task()
                 completed += 1
@@ -370,15 +395,21 @@ class TrainingPrewarmWorker:
                     "touched": time.monotonic(),
                 })
             with _RECENT_LOCK:
+                # Foreground reads may arrive during the startup delay. Disk
+                # entries are older; keep live duplicates and live LRU order.
+                restored: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
                 for entry in loaded:
                     key = (
                         json.dumps(entry["scope"], sort_keys=True, default=str),
                         json.dumps(entry["exam_scope"], sort_keys=True, default=str),
                     )
                     if key not in _RECENT:
-                        _RECENT[key] = entry
-                    while len(_RECENT) > _RECENT_LIMIT:
-                        _RECENT.popitem(last=False)
+                        restored[key] = entry
+                restored.update(_RECENT)
+                _RECENT.clear()
+                _RECENT.update(restored)
+                while len(_RECENT) > _RECENT_LIMIT:
+                    _RECENT.popitem(last=False)
         except (OSError, json.JSONDecodeError, TypeError, AttributeError):
             pass
 
@@ -421,28 +452,26 @@ class TrainingPrewarmWorker:
 
     def _refresh_plan(self) -> list[Callable[[], None]]:
         tasks: list[Callable[[], None]] = []
-        # The 按技能 browse page is the heaviest cold read in the app; warm
-        # it first, at startup and after every question-bank write.
+        # The latest actual request takes priority over generic browse work.
+        # With no recent scope, keep the original question-bank-first order.
         qb_generation = commit_generation(Path(self._paths.qb_db_path))
-        if qb_generation != self._seen_qb_browse_generation:
-            tasks.append(
-                lambda generation=qb_generation: self._warm_question_bank(generation)
-            )
+        browse_task = lambda generation=qb_generation: self._warm_question_bank(generation)
         seen: set[tuple[str, str, str, str]] = set()
-        entries = recent_requests()
-        if not self._startup_done:
-            # What the teacher most recently opened comes before the generic
-            # startup defaults; afterwards keep the recorded order.
-            entries = list(reversed(entries))
-        for entry in entries:
+        entries = list(reversed(recent_requests()))
+        if not entries and qb_generation != self._seen_qb_browse_generation:
+            tasks.append(browse_task)
+        for index, entry in enumerate(entries):
             scope = dict(entry["scope"])
             exam_scope = dict(entry["exam_scope"])
             targets = entry.get("targets") or {}
-            for kind, params in entry["kinds"].items():
+            kinds = sorted(entry["kinds"].items(), key=lambda item: item[0] != "grouped_diagnosis")
+            for kind, params in kinds:
                 tasks.extend(
                     self._tasks_for(kind, scope, exam_scope, params, seen,
                                     targets=targets.get(str(kind)))
                 )
+            if index == 0 and qb_generation != self._seen_qb_browse_generation:
+                tasks.append(browse_task)
         if not self._startup_done:
             tasks.extend(self._startup_tasks(seen))
         return tasks
@@ -723,7 +752,7 @@ class TrainingPrewarmWorker:
         from backend.api.read_connections import request_read_context
         from integration.mastery_overview import overview_payload
 
-        with request_read_context(self._paths) as ctx:
+        with _background_replay(), request_read_context(self._paths) as ctx:
             service = ctx.diagnosis_service
             # Only the existing idle background refresher writes derived local
             # profiles. Foreground recommendation requests remain read-only.

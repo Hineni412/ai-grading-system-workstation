@@ -200,6 +200,9 @@ def build_question_filter_query(
         )
     else:
         joins.append("LEFT JOIN papers p ON p.id = q.paper_id")
+    # JOIN clauses precede WHERE in the SQL text, so a parameterised JOIN
+    # contributes its markers to the head of the returned params list.
+    join_params: list[Any] = []
     where = ["q.is_deleted = ?", "COALESCE(p.import_status, '') <> 'deleted'"]
     params: list[Any] = [1 if is_deleted else 0]
     if clean := _filter_text(knowledge_point):
@@ -207,7 +210,7 @@ def build_question_filter_query(
             "JOIN question_tags kt ON kt.question_id = q.id "
             "AND kt.tag_type = 'knowledge_point' AND kt.tag_value LIKE ?"
         )
-        params.append(f"%{clean}%")
+        join_params.append(f"%{clean}%")
     if clean := _filter_text(question_number):
         number_column = (
             "COALESCE(occ.question_number, q.question_number)"
@@ -322,7 +325,7 @@ def build_question_filter_query(
             where.append(complete)
         elif clean == "未打标签":
             where.append(f"NOT ({complete})")
-    return joins, where, params
+    return joins, where, [*join_params, *params]
 
 
 def _filter_text(value: object) -> str:
@@ -1335,7 +1338,8 @@ class QuestionBankReadService:
             if (not isinstance(snapshot, dict)
                     or any(not isinstance(snapshot.get(key), dict) for key in (
                         "nodes", "questions", "members", "volumes", "by_skill", "by_question",
-                        "point_counts", "topics", "topic_keys", "sections"))
+                        "point_counts", "topics", "topic_keys", "sections",
+                        "evidence_versions", "gap_points"))
                     or any(not isinstance(snapshot.get(key), set) for key in ("no_usable", "unlinked"))):
                 return None
             if any(snapshot[key] != inventory[key] for key in ("release", "nodes", "questions", "members", "volumes")):
@@ -1479,48 +1483,96 @@ class QuestionBankReadService:
             _read_result_cache_put(key, result)
         return result
 
-    def standard_summary(self) -> dict[str, Any]:
-        """Maintenance metadata, using the same current evidence and links as training."""
-        from question_bank.solution_evidence.knowledge_links import load_point_links
-        from question_bank.solution_evidence.part_assessments import load_profiles
+    def standard_summary(self, curriculum_volume_id: str) -> dict[str, Any]:
+        """Current teaching standard, release history and volume-level counts."""
+        from question_bank.services.question_skill_index import skill_anchor_ids
+        from question_bank.services.skill_gaps import (
+            gap_items,
+            teacher_protected_versions,
+        )
+        from question_bank.taxonomy.curriculum_catalog import curriculum_volume
 
+        volume = curriculum_volume(volume_id=curriculum_volume_id)
+        if volume is None:
+            raise ValueError("请选择有效的教学学期")
         with _read_connection(self.db_path) as conn:
-            versions = [dict(row) for row in conn.execute(
+            snapshot = self._skill_snapshot(volume_id=curriculum_volume_id)
+            rows = conn.execute(
                 "SELECT release_id, taxonomy_revision, status, activated_at, created_at "
                 "FROM knowledge_graph_releases ORDER BY created_at DESC, release_id DESC"
-            )]
-            active = next((row for row in versions if row["status"] == "active"), None)
-            ids = [int(row[0]) for row in conn.execute("SELECT id FROM questions WHERE is_deleted=0")]
-            profiles = load_profiles(self.db_path, ids, connection=conn, data_root=self.data_root)
-            usable = {qid: profile for qid, profile in profiles.items() if profile.get("available")}
-            links = load_point_links(self.db_path,
-                [profile["evidence_version_id"] for profile in usable.values()],
-                active["release_id"] if active else None, connection=conn)
-            skill_ids, coarse_ids, missing_ids, older_ids = set(), set(), set(), set()
-            for qid, profile in usable.items():
-                point_links = links.get(profile["evidence_version_id"], {})
-                for part in profile["evidence"].get("parts", []):
-                    for point in part.get("evidence_points", []):
-                        rows = [row for row in point_links.get(point["evidence_point_id"], ()) if row.role == "direct"]
-                        resolved = [row for row in rows if row.resolution_status == "resolved" and row.stable_key]
-                        if not resolved:
-                            missing_ids.add(qid)
-                        elif any(row.stable_key.startswith("sk_") for row in resolved):
-                            skill_ids.add(qid)
-                        else:
-                            coarse_ids.add(qid)
-                        if active and any(row.graph_release_id != active["release_id"] for row in rows):
-                            older_ids.add(qid)
-            return {
-                "active_release_id": active["release_id"] if active else None,
-                "taxonomy_revision": active["taxonomy_revision"] if active else None,
-                "versions": versions, "question_count": len(ids),
-                "usable_question_count": len(usable), "skill_question_count": len(skill_ids),
-                "section_only_question_count": len(coarse_ids),
-                "missing_link_question_count": len(missing_ids),
-                "older_link_question_count": len(older_ids),
-                "model_calls": 0,
+            ).fetchall()
+            events = {
+                str(row["release_id"]): str(row["reason"] or "")
+                for row in conn.execute(
+                    "SELECT release_id, reason FROM knowledge_graph_release_events "
+                    "WHERE event_type = 'activated'"
+                )
             }
+            protected = teacher_protected_versions(conn)
+        versions = [
+            {
+                "release_id": str(row["release_id"]),
+                "label": _release_label(str(row["release_id"])),
+                "taxonomy_revision": row["taxonomy_revision"],
+                "status": str(row["status"]),
+                "activated_at": row["activated_at"],
+                "reason": events.get(str(row["release_id"]), ""),
+            }
+            for row in rows
+        ]
+        versions.sort(
+            key=lambda item: (
+                str(item["activated_at"] or ""),
+                str(item["release_id"]),
+            ),
+            reverse=True,
+        )
+        active = next(
+            (
+                {
+                    key: item[key]
+                    for key in (
+                        "release_id",
+                        "label",
+                        "taxonomy_revision",
+                        "activated_at",
+                        "reason",
+                    )
+                }
+                for item in versions
+                if item["status"] == "active"
+            ),
+            None,
+        )
+        volume = dict(volume)
+        skill_count = sum(
+            1
+            for key, node in snapshot["nodes"].items()
+            if key.startswith("sk_") and skill_anchor_ids(node, volume)
+        )
+        question_ids = set(snapshot["volumes"].get(curriculum_volume_id, ()))
+        gaps = gap_items(snapshot, curriculum_volume_id, protected, volume)
+        return {
+            "curriculum_volume_id": curriculum_volume_id,
+            "graph_release_id": snapshot["release"],
+            "active_release": active,
+            "versions": versions,
+            "skill_count": skill_count,
+            "question_count": len(question_ids),
+            "unlinked_question_count": len(
+                (question_ids & snapshot["unlinked"]) - snapshot["no_usable"]
+            ),
+            "no_usable_evidence_count": len(
+                question_ids & snapshot["no_usable"]
+            ),
+            "gap_point_count": len(gaps),
+            "unlocated_gap_point_count": sum(
+                1
+                for item in gaps
+                if not item["section_key"] and not item["chapter_key"]
+            ),
+            "model_calls": 0,
+        }
 
     def list_papers(self, *, deleted: bool = False) -> list[dict[str, Any]]:
         generation = (
@@ -4469,3 +4521,8 @@ def _is_absolute_or_file_uri(value: str) -> bool:
         or PureWindowsPath(clean_value).is_absolute()
         or PurePosixPath(clean_value).is_absolute()
     )
+
+
+def _release_label(release_id: str) -> str:
+    match = re.search(r"_v(\d+)$", release_id)
+    return f"v{match.group(1)}" if match else release_id

@@ -433,14 +433,23 @@ def test_lower_rules_can_save_and_block_export_without_removing_questions(client
     assert workspace.load_draft().order_ids == (2,3)
 
 
-def test_quick_draft_fills_remaining_slots_reports_rejections_and_never_saves(client_and_source, monkeypatch):
+@pytest.mark.parametrize('change_source', [False, True])
+def test_quick_draft_fills_remaining_slots_reports_rejections_and_never_saves(client_and_source, monkeypatch, change_source):
+    import sqlite3
     from types import SimpleNamespace as NS
     from backend.api.routers import assembly as router
     client, _, _, workspace = client_and_source
     descriptors = [{'question_id':q, 'question_type':'解答题' if q==2 else '选择题',
         'difficulty':9 if q==3 else 3, 'stable_keys':[f'sk_{q}'], 'question_text':f'不同合成题{q}',
         **({'duplicate_identity':'duplicate'} if q in (4,5) else {})} for q in (32,2,3,4,5,6)]
-    monkeypatch.setattr(PersonalizedRecommendationModule, '_source_snapshot', lambda self, **kw: ([q for q in descriptors if q['question_id'] in kw['question_ids']], (), 'test'))
+    source_reads = []
+    def source_snapshot(self, **kw):
+        if change_source and not source_reads:
+            with sqlite3.connect(self.db_path) as writer:
+                writer.execute("UPDATE questions SET question_text='TEST-updated-during-quick-draft' WHERE id=32")
+        source_reads.extend(kw['question_ids'])
+        return ([q for q in descriptors if q['question_id'] in kw['question_ids']], (), 'test')
+    monkeypatch.setattr(PersonalizedRecommendationModule, '_source_snapshot', source_snapshot)
     needs = [(32,[32]),(2,[2]),(3,[3,4]),(5,[5]),(6,[6])]
     service = NS(assembly_exam_questions=lambda **_: {'exams':[{'session_id':7,'questions':[
         {'key':str(q),'class_rate':.2,'skill_keys':[f'sk_{q}']} for q,_ in needs]}]})
@@ -452,6 +461,11 @@ def test_quick_draft_fills_remaining_slots_reports_rejections_and_never_saves(cl
     before = workspace.draft_path.read_bytes()
     rules = {'purpose':'handout','question_count':3,'difficulty_max':8,'max_written_questions':0,'max_questions_per_skill':1,'recent_activity_count':0}
     response = client.post('/api/question-assembly/assistant/quick-draft', json=request(session_ids=[7],question_ids=[32],rules=rules))
+    if change_source:
+        assert response.status_code == 409, response.text
+        assert response.json()['error']['code'] == 'assembly_source_changed'
+        assert workspace.draft_path.read_bytes() == before
+        return
     assert response.status_code == 200, response.text
     assert response.json()['question_ids'] == [4,6]
     assert response.json()['skipped'] == {'skill':1,'written':1,'difficulty':0,'similar':1,'unavailable':0}
@@ -459,6 +473,7 @@ def test_quick_draft_fills_remaining_slots_reports_rejections_and_never_saves(cl
     assert captured and all(kw['record'] is False for kw in captured)
     assert workspace.draft_path.read_bytes() == before
     assert workspace.list_records() == []
+    assert source_reads == [32, 2, 3, 4, 5, 6]
 
 
 @pytest.mark.parametrize('client_and_source', [8], indirect=True)

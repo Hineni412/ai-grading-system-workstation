@@ -73,6 +73,7 @@ def _existing_storage_files(state_path: Path) -> Iterable[Path]:
     yield state_path.with_name(f"{state_path.name}.bak")
     yield _companion_path(state_path, "review_receipts")
     yield _companion_path(state_path, "suggestions")
+    yield _companion_path(state_path, "skill_candidates")
 
 
 def _raise_preflight_error(

@@ -20,6 +20,7 @@ from question_bank.database.schema import connect
 from question_bank.knowledge_graph_release.repository import load_active_release
 from question_bank.solution_evidence.knowledge_links import (
     LINK_JOB_KIND,
+    carry_forward_effective_links,
     drop_later_chapter_supporting_links,
     replace_point_links,
     skill_layer_report,
@@ -254,6 +255,7 @@ def _run_knowledge_link_job(
         "questions_linked": 0,
         "questions_failed": 0,
         "links_written": 0,
+        "links_carried_forward": 0,
         "unresolved_links": [],
         "dropped_links": [],
         "downgraded_links": [],
@@ -697,8 +699,9 @@ def _run_knowledge_link_job(
                 continue
             try:
                 with connect(db_path) as connection:
-                    if mode == 'missing_skills':
+                    if mode in {'missing_skills', 'missing_only'}:
                         connection.execute('BEGIN IMMEDIATE')
+                    if mode == 'missing_skills':
                         current = load_profiles(db_path, [question_id], connection=connection, data_root=data_root).get(question_id, {})
                         active_now = load_active_release(db_path)
                         if (not current.get('available') or current['evidence_version_id'] != item['evidence_version_id']
@@ -712,9 +715,26 @@ def _run_knowledge_link_job(
                                            and any(link['role'] == 'direct' and link['stable_key'].startswith('sk_') for link in point['links'])]
                         if not points_to_write:
                             continue
+                        summary["links_carried_forward"] = int(summary["links_carried_forward"]) + carry_forward_effective_links(
+                            connection,
+                            db_path=db_path,
+                            question_id=question_id,
+                            evidence_version_id=item['evidence_version_id'],
+                            graph_release_id=release_id,
+                            skip_points={point['evidence_point_id'] for point in points_to_write},
+                        )
                         for point in points_to_write:
                             connection.execute("DELETE FROM evidence_point_knowledge_links WHERE evidence_version_id=? AND graph_release_id=? AND evidence_point_id=? AND source_kind=?",
                                 (item['evidence_version_id'], release_id, point['evidence_point_id'], LINK_JOB_KIND))
+                    if mode == 'missing_only':
+                        summary["links_carried_forward"] = int(summary["links_carried_forward"]) + carry_forward_effective_links(
+                            connection,
+                            db_path=db_path,
+                            question_id=question_id,
+                            evidence_version_id=item['evidence_version_id'],
+                            graph_release_id=release_id,
+                            skip_points={point['evidence_point_id'] for point in points_to_write},
+                        )
                     inserted = replace_point_links(
                         connection,
                         evidence_version_id=item["evidence_version_id"],

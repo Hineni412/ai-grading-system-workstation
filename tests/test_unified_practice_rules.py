@@ -140,6 +140,18 @@ def test_new_needs_and_different_methods_precede_small_distance_advantages(monke
     assert recommendation._pattern_count(left, [right, right], pair_memo=memo) == 2
     assert len(calls) == 1
     assert recommendation._pattern_count(left, [], pair_memo=memo) == 0
+    # A candidate that loses on already-covered needs must not trigger an
+    # expensive text comparison. Equal leading ranks still use variety.
+    pattern_candidates = []
+    original_pattern = recommendation._pattern_count
+    def counted_pattern(candidate, printed, **kwargs):
+        if printed:
+            pattern_candidates.append(candidate['question_id'])
+        return original_pattern(candidate, printed, **kwargs)
+    monkeypatch.setattr(recommendation, '_pattern_count', counted_pattern)
+    chosen = _choose_practice_entries([first, repeated_need, repeated_method, new_method], 2)
+    assert [e['candidate']['question_id'] for e, _ in chosen] == [1, 4]
+    assert set(pattern_candidates) == {3, 4}
 
 
 def test_same_skill_candidates_are_not_automatically_folded_as_similar(monkeypatch):
@@ -200,6 +212,68 @@ def test_same_skill_candidates_are_not_automatically_folded_as_similar(monkeypat
     module = object.__new__(PersonalizedRecommendationModule)
     module._source_snapshot = lambda **_: ((triplets, triangle), (), {})
     assert module.paper_rule_violations([21, 22]) == []
+    # Leading score labels such as （3分） never distinguish reprints.
+    from question_bank.recommendation.personalized import _practice_template
+    assert _practice_template('1．（3分）已知直角三角形两直角边分别为3和4，则斜边长为____．') == \
+        _practice_template('已知直角三角形两直角边分别为3和4，则斜边长为____．')
+    score_a = {'question_id': 41, 'question_type': '填空题', 'stable_keys': ['sk_TEST_hyp'],
+        'question_text': '（3分）已知直角三角形两直角边分别为3和4，则斜边长为____．'}
+    score_b = {**score_a, 'question_id': 42,
+        'question_text': '已知直角三角形两直角边分别为3和4，则斜边长为____．'}
+    assert not paper_similarity_allowed(score_a, [score_b])
+    # Reprints keep the same stem and worked solution even when the imported
+    # picture encodings or skill tags differ.
+    reprint_stem = '如图，在直角三角形ABC中，∠C为直角，两条直角边AC与BC的长度分别为3和4，求斜边AB的长度。'
+    reprint_solution = '解：由勾股定理，斜边的平方等于两条直角边的平方和，即3的平方加4的平方等于25，所以斜边AB的长度为5。'
+    reprint_c = {'question_id': 43, 'question_type': '填空题', 'stable_keys': ['sk_TEST_x'],
+        'question_text': reprint_stem, 'solution_observable': reprint_solution,
+        'image_identity': ('TEST_img_a',)}
+    reprint_d = {**reprint_c, 'question_id': 44, 'stable_keys': ['sk_TEST_y'],
+        'question_text': '（3分）' + reprint_stem, 'image_identity': ('TEST_img_b',)}
+    assert not paper_similarity_allowed(reprint_d, [reprint_c])
+    assert not paper_similarity_allowed(reprint_c, [reprint_d])
+    # A substantially different worked solution is not a reprint.
+    variant_e = {**reprint_d, 'question_id': 45,
+        'solution_observable': '答：将各选项逐一代入条件检验，先排除与已知长度矛盾的选项，再比较剩余选项得到唯一正确答案。'}
+    assert paper_similarity_allowed(variant_e, [reprint_c])
+    # Without a worked solution the reprint rule does not apply.
+    no_solution = {**reprint_d, 'question_id': 46, 'solution_observable': ''}
+    assert paper_similarity_allowed(no_solution, [reprint_c])
+    # Identical stem text, options and formulas are the same question even
+    # when picture encodings or skill tags differ.
+    from question_bank.services.question_identity import text_identity_from_exact_key
+    def exact_key(text, images=()):
+        return 'exact-v4:' + json.dumps(
+            {"text": text, "options": [], "formulas": [], "images": list(images)},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    long_stem = '已知直角三角形两直角边分别为3和4，求斜边长为多少，并说明理由'
+    key_a = exact_key(long_stem + '[[IMAGE:2x2:TEST_aaa]]', ['2x2:TEST_aaa'])
+    key_b = exact_key(long_stem + '[[IMAGE:9x9:TEST_bbb]]', ['9x9:TEST_bbb'])
+    identity = text_identity_from_exact_key(key_a)
+    assert identity and identity == text_identity_from_exact_key(key_b)
+    assert text_identity_from_exact_key(exact_key('如图求x的值[[IMAGE:1x1:TEST_c]]', ['1x1:TEST_c'])) == ''
+    assert text_identity_from_exact_key(exact_key('如图求x的值')) != ''
+    assert text_identity_from_exact_key('exam-original:TEST') == ''
+    assert text_identity_from_exact_key('') == ''
+    same_text_a = {'question_id': 51, 'question_type': '填空题', 'stable_keys': ['sk_TEST_p'],
+        'question_text': '题面文字完全相同的两题之一', 'text_identity': 'text-v1:TEST_same',
+        'image_identity': ('TEST_img_a',)}
+    same_text_b = {**same_text_a, 'question_id': 52, 'stable_keys': ['sk_TEST_q'],
+        'image_identity': ('TEST_img_b',)}
+    assert not paper_similarity_allowed(same_text_b, [same_text_a])
+    assert not paper_similarity_allowed(same_text_a, [same_text_b])
+    # A supplied indexed exact key is used verbatim: the text identity derives
+    # from it and exact_question_key is never recomputed.
+    import question_bank.services.question_identity as identity_module
+    from pathlib import Path
+    monkeypatch.setattr(identity_module, "exact_question_key",
+                        lambda *args, **kwargs: pytest.fail("exact_question_key recomputed"))
+    supplied = identity_module.question_identities(
+        {"id": 61, "question_text": long_stem, "image_paths": []},
+        data_root=Path("."), image_cache={}, exact_key=key_a)
+    assert supplied["duplicate_identity"] == key_a
+    assert supplied["text_identity"] == text_identity_from_exact_key(key_a)
+    assert supplied["practice_identity"].startswith("exam-original:")
 
 
 def test_repeated_successes_survive_one_trap_and_duplicate_tags():
@@ -438,6 +512,20 @@ def test_latest_three_graded_activities_merge_exams_and_unpublished_training(act
         conn.execute("INSERT INTO training_evidence_records VALUES ('A','2030-01-01','g1','{}','active')")
     assert activity_module._recent_question_ids(("A", "B"), diagnosis=diagnosis) == {"A": {3,5,6,7}, "B": {1}}
     assert activity_module.current_exam_question_ids(diagnosis) == {1,3,5,6,7}
+    # A text-identical bank question is excluded too, regardless of figures.
+    def exact(image):
+        return 'exact-v4:' + json.dumps(
+            {"text": "已知直角三角形两直角边分别为3和4，求斜边长。[[IMAGE:" + image + "]]",
+             "options": [], "formulas": [], "images": [image]},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    with sqlite3.connect(activity_module.db_path) as conn:
+        conn.execute("ALTER TABLE questions ADD COLUMN paper_id")
+        conn.execute("CREATE TABLE papers(id,import_status)")
+        conn.execute("CREATE TABLE question_content_index(question_id,content_key)")
+        conn.executemany("INSERT INTO questions(id,question_text,answer_text,is_deleted) VALUES (?,?,?,0)", [(6, '题干六', '6'), (99, '题干九九', '9')])
+        conn.executemany("INSERT INTO question_content_index VALUES (?,?)",
+                         [(6, exact('2x2:TEST_aa')), (99, exact('9x9:TEST_bb'))])
+    assert activity_module._recent_question_ids(("A", "B"), diagnosis=diagnosis) == {"A": {3,5,6,7,99}, "B": {1}}
 
 
 def test_graded_activity_participation_does_not_depend_on_wrong_answers_or_tags():

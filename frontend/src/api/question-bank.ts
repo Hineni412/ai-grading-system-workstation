@@ -1902,16 +1902,32 @@ export function questionJobRetryIds(job: JobResponse): number[] {
   return []
 }
 
+export interface StandardReleaseVersion {
+  release_id: string
+  label: string
+  taxonomy_revision: number
+  status: string
+  activated_at: string | null
+  reason: string
+}
+
 export interface QuestionStandardSummary {
-  active_release_id: string | null
-  taxonomy_revision: number | null
-  versions: { release_id: string; taxonomy_revision: number; status: string; activated_at: string | null; created_at: string }[]
+  curriculum_volume_id: string
+  graph_release_id: string | null
+  active_release: {
+    release_id: string
+    label: string
+    taxonomy_revision: number
+    activated_at: string | null
+    reason: string
+  } | null
+  versions: StandardReleaseVersion[]
+  skill_count: number
   question_count: number
-  usable_question_count: number
-  skill_question_count: number
-  section_only_question_count: number
-  missing_link_question_count: number
-  older_link_question_count: number
+  unlinked_question_count: number
+  no_usable_evidence_count: number
+  gap_point_count: number
+  unlocated_gap_point_count: number
   model_calls: number
 }
 
@@ -1971,6 +1987,7 @@ export function decodeQuestionSkillIndex(value: unknown): QuestionSkillIndex {
   }
   return value as unknown as QuestionSkillIndex
 }
+
 export type ChapterExamStage = 'midterm' | 'final'
 export type ChapterExamCellColumn = 'choice_basic' | 'choice_advanced' | 'fill' | 'written'
 
@@ -2003,6 +2020,8 @@ export interface ChapterExamSkillRow {
     question_id: number
     same_tier_count: number
     group_count: number
+    role?: string
+    reason?: string
   }[]
 }
 
@@ -2101,20 +2120,295 @@ export function decodeChapterExamProfile(value: unknown): ChapterExamProfile {
   return value as unknown as ChapterExamProfile
 }
 
+function isActiveRelease(value: unknown): boolean {
+  return isRecord(value) && typeof value.release_id === 'string' && typeof value.label === 'string'
+    && Number.isInteger(value.taxonomy_revision)
+    && isNullableString(value.activated_at) && typeof value.reason === 'string'
+}
+
+function isReleaseVersion(value: unknown): boolean {
+  return isActiveRelease(value) && typeof (value as Record<string, unknown>).status === 'string'
+}
 
 function decodeQuestionStandardSummary(value: unknown): QuestionStandardSummary {
-  if (!isRecord(value) || !isNullableString(value.active_release_id)
-    || !(value.taxonomy_revision === null || Number.isInteger(value.taxonomy_revision))
-    || !Array.isArray(value.versions)
-    || !value.versions.every((row) => isRecord(row) && typeof row.release_id === 'string'
-      && Number.isInteger(row.taxonomy_revision) && typeof row.status === 'string'
-      && isNullableString(row.activated_at) && typeof row.created_at === 'string')
-    || !['question_count', 'usable_question_count', 'skill_question_count', 'section_only_question_count',
-      'missing_link_question_count', 'older_link_question_count', 'model_calls']
+  if (!isRecord(value) || typeof value.curriculum_volume_id !== 'string'
+    || !isNullableString(value.graph_release_id)
+    || !(value.active_release === null || isActiveRelease(value.active_release))
+    || !Array.isArray(value.versions) || !value.versions.every(isReleaseVersion)
+    || !['skill_count', 'question_count', 'unlinked_question_count', 'no_usable_evidence_count',
+      'gap_point_count', 'unlocated_gap_point_count', 'model_calls']
       .every((key) => typeof value[key] === 'number' && Number.isInteger(value[key]) && value[key] >= 0)) {
     throw new Error('标准版本信息格式不正确')
   }
+  assertNoPathLikeKeys(value)
   return value as unknown as QuestionStandardSummary
+}
+
+export interface SkillGapCounts {
+  total: number
+  ready: number
+  pending_review: number
+  approved_new: number
+  dismissed: number
+  unlocated: number
+}
+
+export type SkillCandidateDecision = 'link_existing' | 'new_skill' | 'keep_section'
+export type SkillCandidateEditKind = 'link_existing' | 'new_skill' | 'merge_into_approved' | 'keep_section'
+
+export interface SkillGapPreview {
+  curriculum_volume_id: string
+  graph_release_id: string | null
+  fingerprint: string
+  counts: SkillGapCounts
+  max_per_run: number
+  planned_requests: number
+  batches: { chapter_key: string; chapter_label: string; gap_count: number }[]
+  items: {
+    gap_key: string
+    question_id: number
+    question_number: string
+    paper_title: string
+    chapter_key: string
+    section_key: string
+    target: string
+  }[]
+  model_calls: number
+}
+
+export interface SkillCandidateRunInfo {
+  run_id: string
+  curriculum_volume_id: string
+  graph_release_id: string | null
+  status: string
+  stale: boolean
+  retryable: boolean
+  batches: {
+    batch_id: string
+    chapter_key: string
+    gap_keys: string[]
+    status: string
+    attempts: number
+    error: { category: string; message: string } | null
+    uncovered_count: number
+  }[]
+  progress: {
+    total: number
+    processed: number
+    completed: number
+    failed: number
+    pending: number
+    cancelled: number
+  }
+  created_at?: string
+  updated_at?: string
+}
+
+export interface SkillCandidateSummary {
+  curriculum_volume_id: string
+  graph_release_id: string | null
+  counts: SkillGapCounts
+  pending_suggestion_count: number
+  approved_unpublished_skill_count: number
+  active_run: { run_id: string; status: string } | null
+  revision: number
+  model_calls: number
+}
+
+export interface SkillCandidateGapRef {
+  gap_key: string
+  question_id: number
+  evidence_version_id: string
+  point_id: string
+  part_id: string
+  target: string
+  section_key: string
+  question_number?: string
+  paper_title?: string
+  paper_id?: number
+}
+
+export interface SkillCandidateNewSkill {
+  section_key: string
+  name: string
+  include: string
+  exclude: string
+  examples: string[]
+}
+
+export interface SkillCandidateSuggestion {
+  suggestion_id: string
+  run_id: string
+  curriculum_volume_id: string
+  graph_release_id: string | null
+  chapter_key: string
+  decision: SkillCandidateDecision
+  skill_key: string
+  new_skill: SkillCandidateNewSkill
+  reason: string
+  gap_refs: SkillCandidateGapRef[]
+  status: 'pending' | 'accepted' | 'rejected'
+  stale: boolean
+  created_at: string
+  reviewed_at: string | null
+  result: Record<string, unknown> | null
+}
+
+export interface SkillCandidateApprovedSkill {
+  skill_id: string
+  section_key: string
+  chapter_key: string
+  name: string
+  include: string
+  exclude: string
+  examples: string[]
+  gap_refs: SkillCandidateGapRef[]
+  approved_at: string
+  source_suggestion_ids: string[]
+  published: boolean
+}
+
+export interface SkillCandidateList {
+  revision: number
+  graph_release_id: string | null
+  summary: SkillCandidateSummary
+  suggestions: SkillCandidateSuggestion[]
+  approved_skills: SkillCandidateApprovedSkill[]
+  active_run: { run_id: string; status: string } | null
+}
+
+export interface SkillCandidateRunStart {
+  job: JobResponse
+  run: SkillCandidateRunInfo
+}
+
+export interface SkillCandidateReviewEdits {
+  kind: SkillCandidateEditKind
+  skill_key?: string
+  approved_skill_id?: string
+  section_key?: string
+  name?: string
+  include?: string
+  exclude?: string
+  examples?: string[]
+}
+
+export interface SkillCandidateReviewResult {
+  suggestion: SkillCandidateSuggestion
+  result: Record<string, unknown>
+}
+
+function isGapCounts(value: unknown): value is SkillGapCounts {
+  return isRecord(value) && ['total', 'ready', 'pending_review', 'approved_new', 'dismissed', 'unlocated']
+    .every((key) => isNonnegativeInteger((value as Record<string, unknown>)[key]))
+}
+
+function isGapRef(value: unknown): value is SkillCandidateGapRef {
+  return isRecord(value) && typeof value.gap_key === 'string' && isPositiveInteger(value.question_id)
+    && typeof value.evidence_version_id === 'string' && typeof value.point_id === 'string'
+    && typeof value.part_id === 'string' && typeof value.target === 'string' && typeof value.section_key === 'string'
+}
+
+function isNewSkillShape(value: unknown): value is SkillCandidateNewSkill {
+  return isRecord(value) && ['section_key', 'name', 'include', 'exclude'].every((key) => typeof (value as Record<string, unknown>)[key] === 'string')
+    && Array.isArray(value.examples) && value.examples.every((entry) => typeof entry === 'string')
+}
+
+function decodeSkillGapPreview(value: unknown): SkillGapPreview {
+  if (!isRecord(value) || typeof value.curriculum_volume_id !== 'string'
+    || !isNullableString(value.graph_release_id) || typeof value.fingerprint !== 'string'
+    || !isGapCounts(value.counts) || !isPositiveInteger(value.max_per_run)
+    || !isNonnegativeInteger(value.planned_requests) || value.model_calls !== 0
+    || !Array.isArray(value.batches) || !value.batches.every((batch) => isRecord(batch)
+      && typeof batch.chapter_key === 'string' && typeof batch.chapter_label === 'string'
+      && isNonnegativeInteger(batch.gap_count))
+    || !Array.isArray(value.items) || !value.items.every((item) => isRecord(item)
+      && typeof item.gap_key === 'string' && isPositiveInteger(item.question_id)
+      && typeof item.question_number === 'string' && typeof item.paper_title === 'string'
+      && typeof item.chapter_key === 'string' && typeof item.section_key === 'string'
+      && typeof item.target === 'string')) {
+    throw new Error('技能缺口统计格式不正确')
+  }
+  assertNoPathLikeKeys(value)
+  return value as unknown as SkillGapPreview
+}
+
+function decodeSkillCandidateRun(value: unknown): SkillCandidateRunInfo {
+  if (!isRecord(value) || !isHex(value.run_id, 32)
+    || typeof value.curriculum_volume_id !== 'string' || !isNullableString(value.graph_release_id)
+    || typeof value.status !== 'string'
+    || !Array.isArray(value.batches) || !value.batches.every((batch) => isRecord(batch)
+      && typeof batch.batch_id === 'string' && typeof batch.chapter_key === 'string'
+      && Array.isArray(batch.gap_keys) && typeof batch.status === 'string'
+      && (batch.error === null || isRecord(batch.error)))
+    || !isRecord(value.progress)
+    || !['total', 'processed', 'completed', 'failed', 'pending', 'cancelled']
+      .every((key) => isNonnegativeInteger((value.progress as Record<string, unknown>)[key]))) {
+    throw new Error('技能候选任务格式不正确')
+  }
+  assertNoPathLikeKeys(value)
+  return value as unknown as SkillCandidateRunInfo
+}
+
+function decodeSkillCandidateSummary(value: unknown): SkillCandidateSummary {
+  if (!isRecord(value) || typeof value.curriculum_volume_id !== 'string'
+    || !isNullableString(value.graph_release_id) || !isGapCounts(value.counts)
+    || !isNonnegativeInteger(value.pending_suggestion_count)
+    || !isNonnegativeInteger(value.approved_unpublished_skill_count)
+    || !isNonnegativeInteger(value.revision) || value.model_calls !== 0
+    || !(value.active_run === null || (isRecord(value.active_run)
+      && typeof value.active_run.run_id === 'string' && typeof value.active_run.status === 'string'))) {
+    throw new Error('技能候选统计格式不正确')
+  }
+  assertNoPathLikeKeys(value)
+  return value as unknown as SkillCandidateSummary
+}
+
+function isSuggestion(value: unknown): value is SkillCandidateSuggestion {
+  return isRecord(value) && typeof value.suggestion_id === 'string'
+    && typeof value.run_id === 'string' && typeof value.chapter_key === 'string'
+    && ['link_existing', 'new_skill', 'keep_section'].includes(String(value.decision))
+    && typeof value.skill_key === 'string' && typeof value.reason === 'string'
+    && isNewSkillShape(value.new_skill)
+    && Array.isArray(value.gap_refs) && value.gap_refs.every(isGapRef)
+    && ['pending', 'accepted', 'rejected'].includes(String(value.status))
+}
+
+function isApprovedSkill(value: unknown): value is SkillCandidateApprovedSkill {
+  return isRecord(value) && typeof value.skill_id === 'string' && value.skill_id.startsWith('sk_')
+    && typeof value.section_key === 'string' && typeof value.name === 'string'
+    && typeof value.include === 'string' && typeof value.exclude === 'string'
+    && Array.isArray(value.examples) && value.examples.every((entry) => typeof entry === 'string')
+    && Array.isArray(value.gap_refs) && value.gap_refs.every(isGapRef)
+    && typeof value.published === 'boolean'
+}
+
+function decodeSkillCandidateList(value: unknown): SkillCandidateList {
+  if (!isRecord(value) || !isNonnegativeInteger(value.revision)
+    || !isNullableString(value.graph_release_id)
+    || !Array.isArray(value.suggestions) || !value.suggestions.every(isSuggestion)
+    || !Array.isArray(value.approved_skills) || !value.approved_skills.every(isApprovedSkill)
+    || !isRecord(value.summary)) {
+    throw new Error('技能候选清单格式不正确')
+  }
+  assertNoPathLikeKeys(value)
+  return {
+    ...(value as unknown as SkillCandidateList),
+    summary: decodeSkillCandidateSummary(value.summary),
+  }
+}
+
+function decodeSkillCandidateRunStart(value: unknown): SkillCandidateRunStart {
+  if (!isRecord(value) || !isRecord(value.job)) throw new Error('技能候选任务格式不正确')
+  return { job: decodeJobResponse(value.job), run: decodeSkillCandidateRun(value.run) }
+}
+
+function decodeSkillCandidateReview(value: unknown): SkillCandidateReviewResult {
+  if (!isRecord(value) || !isSuggestion(value.suggestion) || !isRecord(value.result)) {
+    throw new Error('技能候选审核结果格式不正确')
+  }
+  assertNoPathLikeKeys(value)
+  return value as unknown as SkillCandidateReviewResult
 }
 
 export const questionBankApi = {
@@ -2135,8 +2429,55 @@ export const questionBankApi = {
     const parameters = new URLSearchParams({ curriculum_volume_id: curriculumVolumeId })
     return apiClient.request(`/api/question-bank/chapter-exam-profile?${parameters}`, { decode: decodeChapterExamProfile, signal, timeoutMs: 60_000 })
   },
-  standardSummary(signal?: AbortSignal): Promise<QuestionStandardSummary> {
-    return apiClient.request('/api/question-bank/standard-summary', { decode: decodeQuestionStandardSummary, signal })
+  standardSummary(curriculumVolumeId: string, signal?: AbortSignal): Promise<QuestionStandardSummary> {
+    const parameters = new URLSearchParams({ curriculum_volume_id: curriculumVolumeId })
+    return apiClient.request(`/api/question-bank/standard-summary?${parameters}`, { decode: decodeQuestionStandardSummary, signal })
+  },
+  skillGapPreview(curriculumVolumeId: string, signal?: AbortSignal): Promise<SkillGapPreview> {
+    const parameters = new URLSearchParams({ curriculum_volume_id: curriculumVolumeId })
+    return apiClient.request(`/api/question-bank/skill-gaps?${parameters}`, { decode: decodeSkillGapPreview, signal, timeoutMs: 60_000 })
+  },
+  skillCandidateSummary(curriculumVolumeId: string, signal?: AbortSignal): Promise<SkillCandidateSummary> {
+    const parameters = new URLSearchParams({ curriculum_volume_id: curriculumVolumeId })
+    return apiClient.request(`/api/question-bank/skill-candidates/summary?${parameters}`, { decode: decodeSkillCandidateSummary, signal })
+  },
+  skillCandidates(curriculumVolumeId: string, signal?: AbortSignal): Promise<SkillCandidateList> {
+    const parameters = new URLSearchParams({ curriculum_volume_id: curriculumVolumeId })
+    return apiClient.request(`/api/question-bank/skill-candidates?${parameters}`, { decode: decodeSkillCandidateList, signal })
+  },
+  startSkillCandidateRun(curriculumVolumeId: string, fingerprint: string, token: string): Promise<SkillCandidateRunStart> {
+    return apiClient.request('/api/question-bank/skill-candidate-runs', { method: 'POST', decode: decodeSkillCandidateRunStart,
+      body: { curriculum_volume_id: curriculumVolumeId, fingerprint, client_request_token: token } })
+  },
+  skillCandidateRun(runId: string, signal?: AbortSignal): Promise<SkillCandidateRunInfo> {
+    return apiClient.request(`/api/question-bank/skill-candidate-runs/${encodeURIComponent(runId)}`, { decode: decodeSkillCandidateRun, signal })
+  },
+  retrySkillCandidateRun(runId: string, token: string): Promise<SkillCandidateRunStart> {
+    return apiClient.request(`/api/question-bank/skill-candidate-runs/${encodeURIComponent(runId)}/retry`, { method: 'POST', decode: decodeSkillCandidateRunStart,
+      body: { client_request_token: token } })
+  },
+  cancelSkillCandidateRun(runId: string): Promise<SkillCandidateRunInfo> {
+    return apiClient.request(`/api/question-bank/skill-candidate-runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST', decode: decodeSkillCandidateRun })
+  },
+  reviewSkillCandidate(suggestionId: string, body: {
+    decision: 'accept' | 'reject' | 'reopen'
+    expected_revision: number
+    request_token: string
+    edits?: SkillCandidateReviewEdits
+    gap_keys?: string[]
+  }): Promise<SkillCandidateReviewResult> {
+    return apiClient.request(`/api/question-bank/skill-candidates/${encodeURIComponent(suggestionId)}/review`, { method: 'POST', decode: decodeSkillCandidateReview, body })
+  },
+  updateApprovedSkill(skillId: string, body: {
+    name?: string
+    include?: string
+    exclude?: string
+    examples?: string[]
+    expected_revision: number
+    request_token: string
+  }): Promise<Record<string, unknown>> {
+    return apiClient.request(`/api/question-bank/skill-candidates/approved/${encodeURIComponent(skillId)}`, { method: 'PATCH',
+      decode: (value) => (isRecord(value) ? value : (() => { throw new Error('技能候选更新结果格式不正确') })()), body })
   },
   getCurriculum(
     signal?: AbortSignal,

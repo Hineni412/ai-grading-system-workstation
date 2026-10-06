@@ -1,12 +1,25 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { questionBankApi, type QuestionBankFilters, type QuestionBankListItem, type QuestionSkillIndex } from '../../api/question-bank'
+import { questionBankApi, type QuestionBankFilters, type QuestionBankListItem, type QuestionSkillIndex, type SkillCandidateSummary } from '../../api/question-bank'
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
+import QuestionBankStandardSummary from './QuestionBankStandardSummary.vue'
+import SkillCandidateRunDialog from './SkillCandidateRunDialog.vue'
+import SkillCandidateReview from './SkillCandidateReview.vue'
+import '../../styles/skill-candidates.css'
 const props = defineProps<{ index: QuestionSkillIndex | null; pendingCount: number }>()
-const emit = defineEmits<{ question: [question: QuestionBankListItem]; skill: [key: string]; criteria: []; taxonomy: []; repair: [kind: 'skills' | 'analysis'] }>()
+const emit = defineEmits<{ question: [question: QuestionBankListItem]; openQuestion: [ref: { questionId: number; paperId: number | null }]; skill: [key: string]; criteria: []; taxonomy: []; repair: [kind: 'skills' | 'analysis'] }>()
 const scope = useCurriculumScopeStore()
+const summaryRef = ref<InstanceType<typeof QuestionBankStandardSummary> | null>(null)
+const candidateSummary = ref<SkillCandidateSummary | null>(null)
+const runDialogOpen = ref(false)
+const reviewOpen = ref(false)
+const gapCount = computed(() => (candidateSummary.value?.counts.ready ?? 0) + (candidateSummary.value?.counts.pending_review ?? 0))
+const gapActive = computed(() => !!candidateSummary.value?.active_run)
+const reviewDisabled = computed(() => !candidateSummary.value || (!candidateSummary.value.pending_suggestion_count && !candidateSummary.value.approved_unpublished_skill_count))
+watch(() => scope.selectedVolumeId, () => { runDialogOpen.value = false; reviewOpen.value = false })
+function afterCandidateChange() { void summaryRef.value?.refresh(); void load() }
 const groups = ref<{ key: string; label: string; total: number; items: QuestionBankListItem[]; page: number; filter: QuestionBankFilters }[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -40,13 +53,17 @@ onBeforeUnmount(() => controller?.abort())
   <section class="qb-todo">
     <StatePanel v-if="!scope.selectedVolumeId" kind="empty" title="请先选择教学学期" description="在左侧栏“当前考试”中选择教学学期。" />
     <template v-else>
+    <QuestionBankStandardSummary ref="summaryRef" :volume-id="scope.selectedVolumeId" @candidate="candidateSummary = $event" />
     <div class="qb-todo-stats"><span v-for="group in groups" :key="group.key">{{ group.label }} <strong>{{ group.total }}</strong></span><span>新词例外 <strong>{{ pendingCount }}</strong></span><span>题量少技能 <strong>{{ underused.length }}</strong></span></div>
     <StatePanel v-if="loading" kind="loading" title="正在读取待处理题目…" />
     <StatePanel v-else-if="error" kind="error" :title="error" retry-label="重试" @retry="load" />
     <div class="qb-todo-list"><section v-for="group in groups" :key="group.key" class="qb-todo-group"><header><h2>{{ group.label }}</h2><button v-if="group.key === 'review'" class="qb-link" @click="emit('criteria')">判定点批量审核</button><button v-if="group.total && (group.key === 'unlinked' || group.key === 'incomplete')" class="qb-link" @click="emit('repair', group.key === 'unlinked' ? 'skills' : 'analysis')">{{ group.key === 'unlinked' ? 'AI 补挂技能' : 'AI 补齐分析' }}</button><span class="qb-todo-count">{{ group.total }}</span></header><p>{{ group.total ? descriptions[group.key] : '当前学期没有这类待处理题目。' }}</p><article v-for="question in group.items" :key="question.id"><strong>第{{ question.question_number }}题</strong><span>{{ question.paper_title }}</span><small>{{ group.key === 'unlinked' && !question.evidence_point_count ? '暂无可用判定点' : group.label }}</small><AppButton variant="secondary" @click="emit('question', question)">去处理 →</AppButton></article><button v-if="group.items.length < group.total" class="qb-link" @click="more(group)">查看更多</button></section>
     <section class="qb-todo-group"><header><h2>新词例外</h2><button class="qb-link" @click="emit('taxonomy')">去处理 →</button><span class="qb-todo-count">{{ pendingCount }}</span></header><p>分析中遇到的未收录表述，确认后归入知识点或细条目。</p></section>
+    <section class="qb-todo-group"><header><h2>技能缺口</h2><button v-if="candidateSummary" class="qb-link" :disabled="gapActive || !candidateSummary.counts.ready" @click="runDialogOpen = true">{{ gapActive ? '正在整理…' : '整理成技能候选' }}</button><button v-if="candidateSummary" class="qb-link" :disabled="reviewDisabled" @click="reviewOpen = true">审核技能候选（{{ candidateSummary.pending_suggestion_count }}）</button><span class="qb-todo-count">{{ gapCount }}</span></header><p>AI 补挂技能后仍挂不上任何技能的判定点。整理后可归入已有技能、提出新技能，或确认只归小节。</p></section>
     <section class="qb-todo-group"><header><h2>题量少技能</h2><span class="qb-todo-count">{{ underused.length }}</span></header><p>当前题量少于 5 道的技能。</p><article v-for="skill in underused.slice(0, underusedLimit)" :key="skill.stable_key"><span>{{ skill.display_name }} · {{ skill.question_count }} 题</span><AppButton variant="secondary" @click="emit('skill', skill.stable_key)">去处理 →</AppButton></article><button v-if="underusedLimit < underused.length" class="qb-link" @click="underusedLimit += 20">查看更多</button></section>
     </div><p class="qb-todo-note">查看清单和人工审核不产生模型费用；AI 补齐会先说明题目和缺失部分，确认后开始。</p>
+    <SkillCandidateRunDialog :open="runDialogOpen" :volume-id="scope.selectedVolumeId || ''" :active-run-id="candidateSummary?.active_run?.run_id ?? null" @close="runDialogOpen = false" @changed="afterCandidateChange" @review="runDialogOpen = false; reviewOpen = true" />
+    <SkillCandidateReview :open="reviewOpen" :volume-id="scope.selectedVolumeId || ''" :index="index" @close="reviewOpen = false" @changed="afterCandidateChange" @open-question="emit('openQuestion', $event)" />
     </template>
   </section>
 </template>

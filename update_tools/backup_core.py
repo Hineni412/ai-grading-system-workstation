@@ -99,6 +99,7 @@ def taxonomy_backup_members(paths: Any) -> dict[str, Path]:
         "config/taxonomy-governance/state.json.bak": base.with_name(base.name + ".bak"),
         "config/taxonomy-governance/review_receipts.json": base.with_name(f"{base.stem}.review_receipts{suffix}"),
         "config/taxonomy-governance/suggestions.json": base.with_name(f"{base.stem}.suggestions{suffix}"),
+        "config/taxonomy-governance/skill_candidates.json": base.with_name(f"{base.stem}.skill_candidates{suffix}"),
     }
 
 

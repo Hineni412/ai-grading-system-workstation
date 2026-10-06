@@ -58,6 +58,7 @@ from question_bank.services.question_read_service import (
     QuestionBankSnapshotError,
 )
 from question_bank.services.question_write_service import QuestionBankWriteService
+from question_bank.services.skill_candidates import SkillCandidateService
 from question_bank.services.taxonomy_review_service import TaxonomyReviewService
 from question_bank.services.taxonomy_review_suggestions import (
     TaxonomySuggestionService,
@@ -272,6 +273,21 @@ def get_taxonomy_suggestion_service() -> TaxonomySuggestionService:
             paths.qb_db_path,
             data_root=paths.data_root,
         ).get_questions,
+    )
+
+
+def get_skill_candidate_service() -> SkillCandidateService:
+    paths = get_path_manager()
+    return SkillCandidateService(
+        state_path=_taxonomy_companion_state_path(
+            Path(paths.taxonomy_state_path),
+            "skill_candidates",
+        ),
+        db_path=paths.qb_db_path,
+        read_service=QuestionBankReadService(
+            paths.qb_db_path,
+            data_root=paths.data_root,
+        ),
     )
 
 

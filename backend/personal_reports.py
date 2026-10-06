@@ -11,16 +11,53 @@ from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 
-from backend.report_exports import _question_bank_report_source, report_narrative_version, score_revision
+from backend.report_exports import _report_revision_inputs, report_narrative_version, score_revision
 from backend.session_analysis import assemble_session_analysis, infer_data_root, split_session_analysis_by_class
 
 _index_lock = threading.RLock()
 _context_lock = threading.RLock()
 _contexts: OrderedDict = OrderedDict()
 _semester_summaries: OrderedDict = OrderedDict()
+_context_flights: dict = {}
 _page_images: OrderedDict = OrderedDict()
 _page_lock = threading.Lock()
 RELEASED_SHOT_NOTE = "原卷已释放，无法显示作答图；分数与批语不受影响"
+
+
+def _cached_context(cache, key, compute):
+    """Share one preparation per key without blocking unrelated exams."""
+    flight_key = (id(cache), key)
+    while True:
+        with _context_lock:
+            if key in cache:
+                cache.move_to_end(key)
+                return cache[key]
+            flight = _context_flights.get(flight_key)
+            owner = flight is None
+            if owner:
+                flight = {'event': threading.Event(), 'error': None}
+                _context_flights[flight_key] = flight
+        if not owner:
+            flight['event'].wait()
+            if flight['error'] is not None:
+                raise flight['error']
+            continue
+        try:
+            result = compute()
+        except BaseException as error:
+            with _context_lock:
+                _context_flights.pop(flight_key, None)
+                flight['error'] = error
+                flight['event'].set()
+            raise
+        with _context_lock:
+            cache[key] = result
+            cache.move_to_end(key)
+            while len(cache) > 2:
+                cache.popitem(last=False)
+            _context_flights.pop(flight_key, None)
+            flight['event'].set()
+        return result
 
 
 def _digest(value) -> str:
@@ -28,17 +65,18 @@ def _digest(value) -> str:
                                     separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
 
 
-def student_report_revisions(repositories, session_id: int, student_ids) -> dict[int, str]:
-    rows = repositories.results.get_session_results(session_id)
-    locks = repositories.reviews.list_teacher_score_locks(session_id)
-    source = _question_bank_report_source(Path(repositories.db_path), session_id)
+def student_report_revisions(repositories, session_id: int, student_ids, *, _inputs=None) -> dict[int, str]:
     selected = set(student_ids)
+    inputs = (_report_revision_inputs(repositories, session_id, student_ids=selected)
+              if _inputs is None else _inputs)
+    locks = inputs['locks']
+    source = inputs.get('question_bank_source', {})
     by_student = {sid: [] for sid in selected}
-    for row in rows:
+    for item in inputs['results']:
+        row = item['result']
         sid = int(row.get("student_id") or 0)
         if sid in selected:
-            by_student[sid].append({"result": dict(row), "details": [dict(d) for d in
-                repositories.results.get_result_details(int(row["result_id"]))]})
+            by_student[sid].append(item)
     return {sid: _digest({"results": by_student[sid],
                          "locks": [dict(lock) for lock in locks if int(lock.get("student_id") or 0) == sid],
                          "question_bank_source": source,
@@ -115,8 +153,9 @@ def lookup_personal_narrative(cache, session_id: int, student_id: int, revision:
 def personal_report_states(repositories, session_id: int, reports_dir: Path, *, data=None, revision=None) -> dict:
     from backend.reporting.analysis_report_exporter import AnalysisNarrativeCache
     data = data or assemble_session_analysis(repositories, session_id, data_root=infer_data_root(repositories.db_path), page_only=True)
-    revision = revision or score_revision(repositories, session_id)
-    revisions = student_report_revisions(repositories, session_id, [s.student_id for s in data.students])
+    inputs = _report_revision_inputs(repositories, session_id)
+    revision = revision or score_revision(repositories, session_id, _inputs=inputs)
+    revisions = student_report_revisions(repositories, session_id, [s.student_id for s in data.students], _inputs=inputs)
     cache = AnalysisNarrativeCache(Path(reports_dir) / ".analysis_narrative_cache")
     index = read_personal_index(cache.cache_dir, session_id)
     students = []
@@ -151,39 +190,36 @@ def student_personal_report_exams(repositories, student_id: int, reports_dir: Pa
     from backend.reporting.analysis_report_exporter import AnalysisNarrativeCache
     root = infer_data_root(repositories.db_path)
     key = (str(repositories.db_path), volume_id, _read_generation(repositories, root, reports_dir))
-    with _context_lock:
-        summaries = _semester_summaries.get(key)
-        if summaries is None:
-            summaries = []
-            for row in repositories.sessions.list_grading_sessions():
-                if row.get("is_deleted") or (volume_id is not None and str(row.get("curriculum_volume_id") or "") != volume_id):
-                    continue
-                sid = int(row["id"])
-                data = assemble_session_analysis(repositories, sid, data_root=root, page_only=True)
-                summaries.append(dict(session_id=sid, session_name=data.session_name, graded_at=data.graded_at,
-                    max_score=data.full_score, scores={s.student_id: s.student_score for s in data.students},
-                    skipped={int(s["student_id"]): s["reason"] for s in data.skipped},
-                    revisions=student_report_revisions(repositories, sid, [s.student_id for s in data.students]),
-                    revision=score_revision(repositories, sid)))
-            _semester_summaries[key] = summaries
-            while len(_semester_summaries) > 2:
-                _semester_summaries.popitem(last=False)
-        else:
-            _semester_summaries.move_to_end(key)
-        cache = AnalysisNarrativeCache(reports_dir / ".analysis_narrative_cache")
-        items = []
-        for entry in summaries:
-            if student_id in entry["scores"]:
-                state = lookup_personal_narrative(cache, entry["session_id"], student_id,
-                    entry["revisions"][student_id], entry["revision"])
-                score = entry["scores"][student_id]
-            elif student_id in entry["skipped"]:
-                state = dict(status="unavailable", generated_at=None, reason=entry["skipped"][student_id])
-                score = None
-            else:
+    def prepare():
+        summaries = []
+        for row in repositories.sessions.list_grading_sessions():
+            if row.get("is_deleted") or (volume_id is not None and str(row.get("curriculum_volume_id") or "") != volume_id):
                 continue
-            items.append(dict(**{k: entry[k] for k in ("session_id", "session_name", "graded_at", "max_score")},
-                              score=score, **{k: state[k] for k in ("status", "generated_at", "reason")}))
+            sid = int(row["id"])
+            data = assemble_session_analysis(repositories, sid, data_root=root, page_only=True)
+            inputs = _report_revision_inputs(repositories, sid)
+            summaries.append(dict(session_id=sid, session_name=data.session_name, graded_at=data.graded_at,
+                max_score=data.full_score, scores={s.student_id: s.student_score for s in data.students},
+                skipped={int(s["student_id"]): s["reason"] for s in data.skipped},
+                revisions=student_report_revisions(repositories, sid, [s.student_id for s in data.students], _inputs=inputs),
+                revision=score_revision(repositories, sid, _inputs=inputs)))
+        return summaries
+
+    summaries = _cached_context(_semester_summaries, key, prepare)
+    cache = AnalysisNarrativeCache(reports_dir / ".analysis_narrative_cache")
+    items = []
+    for entry in summaries:
+        if student_id in entry["scores"]:
+            state = lookup_personal_narrative(cache, entry["session_id"], student_id,
+                entry["revisions"][student_id], entry["revision"])
+            score = entry["scores"][student_id]
+        elif student_id in entry["skipped"]:
+            state = dict(status="unavailable", generated_at=None, reason=entry["skipped"][student_id])
+            score = None
+        else:
+            continue
+        items.append(dict(**{k: entry[k] for k in ("session_id", "session_name", "graded_at", "max_score")},
+                          score=score, **{k: state[k] for k in ("status", "generated_at", "reason")}))
     items.sort(key=lambda s: (s["graded_at"] or "", s["session_id"]))
     return dict(student_id=student_id, sessions=items)
 
@@ -203,10 +239,7 @@ def personal_render_context(repositories, session_id: int, reports_dir: Path) ->
     sessions = repositories.sessions.list_grading_sessions()
     key = (str(repositories.db_path), session_id, mtime, originals_state(root, session_id),
            _digest([dict(s) for s in sessions]), _read_generation(repositories, root, reports_dir))
-    with _context_lock:
-        if key in _contexts:
-            _contexts.move_to_end(key)
-            return _contexts[key]
+    def prepare():
         revision = score_revision(repositories, session_id)
         data = assemble_session_analysis(repositories, session_id, data_root=root)
         enrich_personal_questions(repositories, data, root)
@@ -217,10 +250,9 @@ def personal_render_context(repositories, session_id: int, reports_dir: Path) ->
             regions=load_session_regions(repositories, session_id, data_root=root),
             error_state=store.load(session_id) or {}, error_sources=build_cause_inputs(data))
         context["error_histories"] = _load_personal_error_histories(repositories, context["histories"], session_id, reports_dir, root)
-        _contexts[key] = context
-        while len(_contexts) > 2:
-            _contexts.popitem(last=False)
         return context
+
+    return _cached_context(_contexts, key, prepare)
 
 
 def crop_personal_report_shot(image_path: Path, region) -> str | None:

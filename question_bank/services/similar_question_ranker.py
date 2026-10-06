@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from question_bank.recommendation.target_matching import part_facets, target_index
+from question_bank.services.similarity_service import strip_leading_score
 from question_bank.solution_evidence.knowledge_links import load_point_links
 from question_bank.solution_evidence.part_assessments import load_profiles
 
@@ -39,7 +40,7 @@ OPERATIONS = {
 def clean_text(text: object) -> str:
     value = IMAGE.sub("", str(text or ""))
     value = re.sub(r"^\s*(?:第\s*)?\d+\s*[.、．]\s*", "", value)
-    value = re.sub(r"^\s*[（(]\s*\d+(?:\.\d+)?\s*分\s*[）)]", "", value)
+    value = strip_leading_score(value)
     value = unicodedata.normalize("NFC", value).lower()
     value = value.translate(str.maketrans({"（": "(", "）": ")", "−": "-", "﹣": "-", "＝": "=", "＋": "+"}))
     return re.sub(r"\s+", "", value)

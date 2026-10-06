@@ -102,10 +102,12 @@ def source_duplicate_preview(
         _final_choice_letters,
         analysis_source_exact_key,
         answers_conflict,
-        content_index_lookup,
         ensure_content_index,
-        reusable_analysis,
         uncertain_image_candidates,
+    )
+    from question_bank.services.question_identity import (
+        SameQuestionIndex,
+        reusable_same_question_analysis,
     )
 
     record = service.load_active_record(session_id=session_id)
@@ -146,20 +148,26 @@ def source_duplicate_preview(
     initialize_database(bank_path)
     with connect(bank_path) as conn:
         ensure_content_index(conn, data_root=data_root)
-        matches = content_index_lookup(conn, list(keys.values()))
+        # Same stem text, options and formulas merge at import even when the
+        # picture encodings differ; preview reports them like exact matches.
+        same_questions = SameQuestionIndex.load(conn, keys=list(keys.values()))
         uncertain = uncertain_image_candidates(
             conn,
             tuple(
                 source
                 for source in sources
-                if keys.get(source.source_question_ref) not in matches
+                if same_questions.match(keys.get(source.source_question_ref, "")) is None
             ),
         )
         duplicate_index = None
         linked_ids = _session_linked_bank_ids(conn, session_id)
         matched_ids = {
             int(question_id)
-            for question_id in (*matches.values(), *uncertain.values())
+            for question_id in uncertain.values()
+        } | {
+            match.question_id
+            for source in sources
+            if (match := same_questions.match(keys.get(source.source_question_ref, ""))) is not None
         }
         meta = _bank_question_meta(conn, matched_ids)
 
@@ -202,7 +210,8 @@ def source_duplicate_preview(
         for source, block in zip(sources, blocks, strict=True):
             reference = source.source_question_ref
             key = keys.get(reference)
-            exact_id = matches.get(key or "", None)
+            match = same_questions.match(key or "")
+            exact_id = match.question_id if match is not None else None
             uncertain_id = uncertain.get(reference)
             if uncertain_id is not None and int(uncertain_id) in linked_ids:
                 items.append(item(source, "same_session", int(uncertain_id)))
@@ -235,9 +244,9 @@ def source_duplicate_preview(
                     )
                     continue
                 if (
-                    reusable_analysis(
+                    reusable_same_question_analysis(
                         bank_path,
-                        bank_question_id=bank_id,
+                        match=match,
                         target_question=source.question,
                         data_root=data_root,
                     )

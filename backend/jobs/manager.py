@@ -338,6 +338,32 @@ class JobManager:
         self._watch_completion(job.id, future)
         return job, True
 
+    def submit_idempotent_skill_candidate(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
+        handler = self._handlers.get("skill_candidate")
+        if handler is None:
+            raise UnsupportedJobTypeError(
+                "unsupported job type: skill_candidate"
+            )
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("JobManager has shut down")
+            job, created = (
+                self.store.create_idempotent_skill_candidate_job(
+                    payload
+                )
+            )
+            if not created:
+                return job, False
+            future = self._schedule_locked(
+                job, handler,
+                error_message="skill candidate job could not be scheduled",
+            )
+        self._watch_completion(job.id, future)
+        return job, True
+
     def submit_idempotent_tagging_sync(
         self,
         payload: dict[str, Any],

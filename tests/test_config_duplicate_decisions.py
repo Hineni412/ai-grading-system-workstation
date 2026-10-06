@@ -29,7 +29,10 @@ from tests.current_knowledge_support import install_current_knowledge
 from tests.test_config_source_duplicates import (
     _EmptyResolver,
     _insert_bank_questions,
+    _png,
+    _preview,
     _seed_analysis,
+    _service,
 )
 from tests.test_question_import_duplicates import _fake_extract, _single_question_id
 from tests.test_session_question_bank_sync_job import (
@@ -157,6 +160,52 @@ def test_answer_override_removes_conflict_and_allows_reuse(
     # block, so reuse proceeds with zero model calls.
     overridden = _reused(bank, sources_with(BANK_ANSWER))
     item = overridden["Q1"]
+    assert isinstance(item, DeferredCombinedAnalysisItem)
+    assert item.reused_from_question_id == 1
+
+
+def test_text_identical_reprint_reuses_analysis_in_preview_and_generation(
+    bank: dict[str, Path],
+) -> None:
+    """Picture re-encoding does not break identity: the preview reports the
+    same reusable bank question that the generation path actually reuses."""
+    import base64
+    import json
+
+    image_dir = bank["data_root"] / "question_bank" / "extracted_images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "TEST-bank-figure.png").write_bytes(_png("red"))
+    stem = "已知直角三角形两条直角边的长度分别为3和4，求斜边的长度并写出依据。"
+    _insert_bank_questions(bank["db"], [(1, "1", stem, "5", 1)])
+    with connect(bank["db"]) as conn:
+        conn.execute(
+            "UPDATE questions SET image_paths=? WHERE id=1",
+            (json.dumps(["question_bank/extracted_images/TEST-bank-figure.png"]),),
+        )
+    _seed_analysis(bank["db"], bank["data_root"], 1)
+
+    images = {"Q1": {"question": base64.b64encode(_png("blue")).decode()}}
+    service = _service(
+        [
+            {"question_id": "Q1", "question_number": "1",
+             "question_text": stem, "answer_text": "5"},
+        ],
+        images=images,
+    )
+    kinds = {item["question_id"]: item["kind"] for item in _preview(service, bank)["items"]}
+    assert kinds == {"Q1": "exact_reusable"}
+
+    sources, _blocks = config_analysis_source_questions(
+        [
+            {"question_id": "Q1", "question_number": "1",
+             "question_text": stem, "answer_text": "5", "question_type": "calculation"},
+        ],
+        images,
+        curriculum_volume_id="unresolved",
+        volume={},
+    )
+    reused = _reused(bank, sources)
+    item = reused["Q1"]
     assert isinstance(item, DeferredCombinedAnalysisItem)
     assert item.reused_from_question_id == 1
 

@@ -988,3 +988,46 @@ class TaxonomyReviewOperationResponse(_QuestionBankModel):
 class TaxonomyReviewOperationUndoRequest(_QuestionBankModel):
     expected_revision: int = Field(ge=0)
     request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+
+
+class SkillCandidateRunCreateRequest(_QuestionBankModel):
+    curriculum_volume_id: str = Field(min_length=1, max_length=120)
+    fingerprint: str = Field(min_length=1, max_length=128)
+    client_request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+
+
+class SkillCandidateRunRetryRequest(_QuestionBankModel):
+    client_request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+
+
+class SkillCandidateReviewEdits(_QuestionBankModel):
+    kind: Literal[
+        "link_existing",
+        "new_skill",
+        "merge_into_approved",
+        "keep_section",
+    ]
+    skill_key: str = ""
+    approved_skill_id: str = ""
+    section_key: str = ""
+    name: str = ""
+    include: str = ""
+    exclude: str = ""
+    examples: list[str] = Field(default_factory=list, max_length=8)
+
+
+class SkillCandidateReviewRequest(_QuestionBankModel):
+    decision: Literal["accept", "reject", "reopen"]
+    expected_revision: int = Field(ge=0)
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    edits: SkillCandidateReviewEdits | None = None
+    gap_keys: list[str] | None = Field(default=None, max_length=200)
+
+
+class SkillCandidateApprovedUpdateRequest(_QuestionBankModel):
+    name: str = Field(default="", max_length=120)
+    include: str = Field(default="", max_length=2000)
+    exclude: str = Field(default="", max_length=2000)
+    examples: list[str] = Field(default_factory=list, max_length=8)
+    expected_revision: int = Field(ge=0)
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")

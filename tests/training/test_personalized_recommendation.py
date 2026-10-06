@@ -1074,6 +1074,138 @@ def _make_direct(module, *, diagnosis=None, token="a", **settings):
     )
 
 
+def test_group_matching_reuses_quotas_and_preserves_complete_fresh_output(direct_module, monkeypatch):
+    from dataclasses import replace
+    import question_bank.recommendation.personalized as engine
+    from integration.result_cache import ResultCache
+
+    monkeypatch.setattr(engine, "_GROUP_MATCHING_CACHE", ResultCache(1, max_bytes=64 * 1024 * 1024))
+    module = direct_module
+    diagnosis = _direct_diagnosis((("A", .8, 900, BNU_TARGET), ("B", .8, 900, BNU_TARGET)))
+    config = PersonalizedRecommendationConfig(
+        scope_keys=(BNU_CHAPTER4,), group_scope_keys=(BNU_CHAPTER4,), paper_mode="shared",
+        question_count=10, max_questions_per_skill=10, remediation_only=False,
+    )
+    evaluations, prepared = [], {}
+    original = module.evaluate_candidates
+
+    def evaluate(**kwargs):
+        if kwargs["config"].paper_mode == "individual":
+            evaluations.append(1)
+            prepared.update({key: value for key, value in kwargs.items()
+                             if key not in {"evaluation_memo", "_borrow_inputs"}})
+        return original(**kwargs)
+
+    monkeypatch.setattr(module, "evaluate_candidates", evaluate)
+    initial = module.chapter_groups(diagnosis=diagnosis, config=config, graded_activities=[])
+    assert initial["groups"] and initial["summary"]["grouped_student_count"] == 2
+
+    def fresh_pools(**kwargs):
+        return original(**kwargs, _borrow_inputs=True)["pools"]
+
+    for settings in ({"question_count": 12}, {"max_questions_per_skill": 8}, {"max_written_questions": 0}):
+        changed = replace(config, **settings)
+        reused = module.chapter_groups(diagnosis=diagnosis, config=changed, graded_activities=[])
+        assert len(evaluations) == 1
+        with monkeypatch.context() as fresh:
+            fresh.setattr(module, "_group_matching_pools", fresh_pools)
+            expected = module.chapter_groups(diagnosis=diagnosis, config=changed, graded_activities=[])
+        assert reused == expected
+        # Neither a returned card nor an independent caller may alter stored matching.
+        reused["groups"][0]["members"].clear()
+        assert module.chapter_groups(diagnosis=diagnosis, config=changed, graded_activities=[]) == expected
+
+    # Exercise the actual evaluator with changed contents, not an evaluator stub.
+    unchanged = {key: value for key, value in prepared.items() if key != "config"}
+    individual = prepared["config"]
+    baseline_pools = module._group_matching_pools(**unchanged, config=individual, evaluation_memo={})
+    for field in ("diagnosis", "mastery", "source_metadata", "candidates", "recent", "excluded", "difficulty"):
+        inputs, settings = deepcopy(unchanged), individual
+        if field == "diagnosis":
+            inputs[field]["students"][0]["score_rate"] = .4
+        elif field == "mastery":
+            inputs[field][("A", BNU_TARGET)]["value"] = .01
+        elif field == "source_metadata":
+            inputs[field][900]["TEST_source_revision"] = "changed"
+        elif field == "candidates":
+            inputs[field][0]["question_text"] += " TEST-changed"
+        elif field == "recent":
+            inputs[field]["A"].add(100)
+        elif field == "excluded":
+            inputs[field].add(100)
+        else:
+            settings = replace(settings, difficulty_max=6)
+        before = len(evaluations)
+        reused = module._group_matching_pools(**inputs, config=settings, evaluation_memo={})
+        assert len(evaluations) == before + 1, field
+        assert reused == original(**inputs, config=settings, evaluation_memo={}, _borrow_inputs=True)["pools"], field
+        before = len(evaluations)
+        assert module._group_matching_pools(**unchanged, config=individual, evaluation_memo={}) == baseline_pools
+        assert len(evaluations) == before + 1  # One-entry cache evicts the other input.
+
+    # Live point links can change without changing the supplied metadata/candidate bytes.
+    before = len(evaluations)
+    with connect(module.db_path) as connection:
+        connection.execute("UPDATE questions SET question_text=question_text || ' TEST-generation' WHERE id=900")
+    module._group_matching_pools(**unchanged, config=individual, evaluation_memo={})
+    assert len(evaluations) == before + 1
+    before = len(evaluations)
+    with monkeypatch.context() as knowledge:
+        knowledge.setattr(module, "current_knowledge", deepcopy(module.current_knowledge))
+        # The resolver uses a validated release; simulate its next immutable release identity.
+        knowledge.setattr(module.current_knowledge, "content_hash", "TEST-new-knowledge-content")
+        module._group_matching_pools(**unchanged, config=individual, evaluation_memo={})
+    assert len(evaluations) == before + 1
+
+    # Concurrent callers restore their own candidate identities and records.
+    import threading
+    cache = engine._GROUP_MATCHING_CACHE
+    cache.clear()
+    started, waiting, release = (threading.Event() for _ in range(3))
+    computes = []
+
+    def blocked_evaluate(**kwargs):
+        computes.append(1)
+        started.set()
+        assert release.wait(5)
+        return original(**kwargs)
+
+    monkeypatch.setattr(module, "evaluate_candidates", blocked_evaluate)
+    first_inputs, second_inputs = deepcopy(unchanged), deepcopy(unchanged)
+    first_memo, second_memo = {}, {}
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(module._group_matching_pools, **first_inputs, config=individual,
+                                evaluation_memo=first_memo)
+        assert started.wait(5)
+        flight = next(iter(cache._flights.values()))
+        wait = flight.event.wait
+
+        def observed_wait():
+            waiting.set()
+            return wait(5)
+
+        monkeypatch.setattr(flight.event, "wait", observed_wait)
+        second = executor.submit(module._group_matching_pools, **second_inputs, config=individual,
+                                 evaluation_memo=second_memo)
+        try:
+            assert waiting.wait(5)
+        finally:
+            release.set()
+        first_pools, second_pools = first.result(timeout=5), second.result(timeout=5)
+    expected = original(**unchanged, config=individual, evaluation_memo={}, _borrow_inputs=True)["pools"]
+    assert first_pools == second_pools == expected and len(computes) == 1
+    for pools, inputs, memo in ((first_pools, first_inputs, first_memo), (second_pools, second_inputs, second_memo)):
+        candidates = {candidate["question_id"]: candidate for candidate in inputs["candidates"]}
+        assert all(entry["candidate"] is candidates[entry["candidate"]["question_id"]]
+                   for entries in pools.values() for entry in entries)
+        assert all(key[:2] == (id(inputs["candidates"]), id(inputs["source_metadata"]))
+                   for key in memo["target_evaluations"])
+    first_pools["A"].clear()
+    assert second_pools == expected
+    assert module._group_matching_pools(**unchanged, config=individual, evaluation_memo={}) == expected
+    assert len(computes) == 1
+
+
 def test_current_full_score_does_not_resurrect_historical_loss(direct_module):
     diagnosis = _direct_diagnosis()
     point = diagnosis["students"][0]["weak_points"][0]
@@ -1192,6 +1324,21 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
         return original_preference(*args, **kwargs)
 
     monkeypatch.setattr(recommendation, "_direct_preference", read_preference)
+    profile_hash_requests, profile_serializations = [], []
+    original_hash, original_json = recommendation._hash_payload, recommendation._json
+
+    def hash_input(value, *, _memo=None):
+        if _memo is not None and isinstance(value, dict) and "weak_points" in value:
+            profile_hash_requests.append((id(value), value["student_id"]))
+        return original_hash(value, _memo=_memo)
+
+    def serialize_input(value):
+        if isinstance(value, dict) and "student_id" in value and "weak_points" in value:
+            profile_serializations.append((id(value), value["student_id"]))
+        return original_json(value)
+
+    monkeypatch.setattr(recommendation, "_hash_payload", hash_input)
+    monkeypatch.setattr(recommendation, "_json", serialize_input)
     response = client.post(
         "/api/training/diagnosis",
         json={"scope": {"mode": "all"}, "exam_scope": exams, "grouping": settings},
@@ -1202,11 +1349,15 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
     cached_eligibility_reads = len(eligibility_reads)
     cached_preference_reads = len(preference_reads)
     assert cached_eligibility_reads < len(source["students"])
+    # The same profiles serve the first evaluation and the resulting cards.
+    # Serialize them once per grouping request, even when revisited.
+    assert len(profile_hash_requests) > len(profile_serializations)
+    assert len(profile_serializations) == len(set(profile_hash_requests))
     original_entries = direct_module._candidate_entries
 
     def entries_without_reuse(**kwargs):
         kwargs.update(source_part_cache=None, target_match_cache=None, source_links=None, eligibility_cache=None,
-                      target_evaluation_cache=None, preference_cache=None)
+                      target_evaluation_cache=None, preference_cache=None, _input_hashes=None)
         return original_entries(**kwargs)
 
     with monkeypatch.context() as uncached:
@@ -1227,6 +1378,9 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
     )
     assert group["ready"]
     targets = [target["knowledge_key"] for target in group["targets"]]
+    def unexpected_regrouping(**kwargs):
+        raise AssertionError("group adoption rebuilt automatic groups")
+    monkeypatch.setattr("question_bank.recommendation.personalized._quality_group_members", unexpected_regrouping)
     checked = client.post(
         "/api/training/diagnosis",
         json={
@@ -1236,12 +1390,10 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
         },
     )
     assert checked.status_code == 200, checked.text
+    assert checked.json()['grouping']['groups'] == []
+    assert checked.json()['grouping']['unassigned'] == []
     # Adopting a checked group must only validate its members, without rebuilding
     # every automatic group. The source-version and request-token checks remain.
-    def unexpected_regrouping(**kwargs):
-        raise AssertionError("group adoption rebuilt automatic groups")
-
-    monkeypatch.setattr("question_bank.recommendation.personalized._quality_group_members", unexpected_regrouping)
     request_url = "/api/training/personalized-drafts/by-request/" + "8" * 32
     assert client.get(request_url).status_code == 404
     created = client.post(
@@ -2062,7 +2214,8 @@ def test_printed_duplicates_are_excluded_from_generation_and_replacement(
     assert by_id[910]["practice_identity"] == by_id[911]["practice_identity"]
     relaxed_skill_cap = PersonalizedRecommendationConfig(max_questions_per_skill=5)
     assert not _paper_diversity_allowed(by_id[911], [by_id[910]], relaxed_skill_cap)
-    assert _paper_diversity_allowed(by_id[912], [by_id[910]], relaxed_skill_cap)
+    # Same stem text folds even when the drawing itself differs.
+    assert not _paper_diversity_allowed(by_id[912], [by_id[910]], relaxed_skill_cap)
     diagnosis = _direct_diagnosis(
         (("A", 0.9, 900, BNU_TARGET), ("B", 0.9, 900, BNU_TARGET))
     )
@@ -2073,12 +2226,11 @@ def test_printed_duplicates_are_excluded_from_generation_and_replacement(
     )
     for student in draft["students"]:
         chosen = {q["question_id"] for q in student["items"]}
-        assert len(chosen & {910, 911}) == 1
-        assert 912 in chosen  # The extra line encodes a genuinely different drawing.
+        assert len(chosen & {910, 911, 912}) == 1
     student = draft["students"][0]
     chosen = {q["question_id"] for q in student["items"]}
-    duplicate = ({910, 911} - chosen).pop()
-    other = next(q for q in student["items"] if q["question_id"] not in {910, 911})
+    duplicate = next(qid for qid in (910, 911, 912) if qid not in chosen)
+    other = next(q for q in student["items"] if q["question_id"] not in {910, 911, 912})
     message = (
         "shared paper questions cannot be edited"
         if shared
@@ -2345,6 +2497,12 @@ def test_quality_grouping_uses_shared_paper_coverage():
     pools = {"A": [_group_entry("A", qid, "sk_1") for qid in range(1, 9)],
              "B": [_group_entry("B", qid, "sk_1") for qid in range(1, 9)]}
     assert _quality_group_members(needs=needs, pools=pools, recent={}, config=config) == [("A", "B")]
+    assert _quality_group_members(needs=needs, pools=pools, recent={"A": {1, 2, 3}}, config=config) == []
+    assert _quality_group_members(needs=needs, pools=pools, recent={"A": {1, 2}, "B": {3}}, config=config) == []
+    # Unrelated recent originals do not consume the common pool. Request
+    # preparation may leave an empty row for a member with no eligible work.
+    assert _quality_group_members(needs=needs, pools=pools, recent={"A": {999}}, config=config) == [("A", "B")]
+    assert _quality_group_members(needs=needs, pools={"A": pools["A"], "B": []}, recent={}, config=config) == []
 
     # C's second skill is not shareable: joining would keep only half of its
     # personal coverage, so it stays unassigned.
@@ -2396,6 +2554,35 @@ def test_no_source_direct_match_is_level_two_same_skill_label(direct_module):
     entry = evaluated["pools"]["A"][0]
     assert entry["match_level"] == 2
     assert entry["match_label"] == "同技能练习"
+
+
+def test_candidate_difficulty_gate_skips_task_expansion_and_keeps_warning_counts(direct_module, monkeypatch):
+    import question_bank.recommendation.personalized as recommendation
+
+    diagnosis = _direct_diagnosis()
+    config = PersonalizedRecommendationConfig(target_keys=(BNU_TARGET,), question_count=8)
+    candidates, _, _ = direct_module._source_snapshot(candidate_config=config)
+    accepted = deepcopy(next(candidate for candidate in candidates if candidate["question_id"] == 100))
+    rejected = deepcopy(accepted)
+    rejected.update(question_id=10000, difficulty=1.)
+    for part in rejected["practice_observations_by_key"][BNU_TARGET]:
+        part["TEST_too_easy"] = True
+    expanded = []
+    original_response = recommendation._full_response_supported
+
+    def response(part, *args, **kwargs):
+        assert not part.get("TEST_too_easy"), "expanded a question outside the student's difficulty range"
+        expanded.append(1)
+        return original_response(part, *args, **kwargs)
+
+    monkeypatch.setattr(recommendation, "_full_response_supported", response)
+    result = direct_module.evaluate_candidates(diagnosis=diagnosis, config=config,
+        candidates=(rejected, accepted), recent={"A": set()}, excluded=set())
+    assert {entry["candidate"]["question_id"] for entry in result["pools"]["A"]} == {100}
+    assert expanded
+    warning = next(value for value in result["warnings"]["A"] if "目标匹配后" in value)
+    assert "目标匹配后 2 道" in warning
+    assert "学生适合难度检查后 1 道" in warning
 
 
 def test_failed_skill_plan_steps_back_or_caps_at_failed_difficulty():
@@ -2596,6 +2783,13 @@ def test_recent_originals_follow_purpose_in_generation_preview_and_edit(direct_m
             borrowed = direct_module.evaluate_candidates(**prepared, config=restricted, _borrow_inputs=True)
             assert borrowed == fresh
             assert prepared == before
+            # The private grouping calculation stores target evidence once;
+            # ordinary callers continue to receive separate target mappings.
+            direct_rows = [e for e in borrowed["pools"]["A"] if e["selection_kind"] == "direct"]
+            assert len(direct_rows) > 1
+            assert all(e["target"] is direct_rows[0]["target"] for e in direct_rows)
+            public_rows = [e for e in fresh["pools"]["A"] if e["selection_kind"] == "direct"]
+            assert len({id(e["target"]) for e in public_rows}) == len(public_rows)
             fresh["targets"]["A"][0]["source_question_refs"].append({"TEST": "private-return"})
             assert prepared == before
             # A growing eligible pool must recalculate rather than reuse an
@@ -2603,6 +2797,16 @@ def test_recent_originals_follow_purpose_in_generation_preview_and_edit(direct_m
             expanded = {**prepared, "recent": {"A": set(), "B": set()}}
             assert direct_module.evaluate_candidates(**expanded, config=restricted, evaluation_memo=memo) == (
                 direct_module.evaluate_candidates(**expanded, config=restricted))
+            # A caller-owned evaluation memo is reusable with mutable inputs.
+            # It must never inherit the grouping call's identity fingerprints.
+            changing = deepcopy(prepared)
+            mutable_memo = {}
+            earlier = direct_module.evaluate_candidates(**changing, config=restricted, evaluation_memo=mutable_memo)
+            changing["mastery"][("A", BNU_TARGET)]["value"] = .01
+            changed = direct_module.evaluate_candidates(**changing, config=restricted, evaluation_memo=mutable_memo)
+            assert changed == direct_module.evaluate_candidates(**changing, config=restricted)
+            assert changed != earlier
+            assert "group_input_hashes" not in mutable_memo
 
     # A later marked activity cannot change either stored exclusion snapshot.
     _record_legacy_training(direct_module, (1001,), name="SYN-LATER", occurred_at="2026-07-31")

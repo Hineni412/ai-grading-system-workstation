@@ -11,6 +11,14 @@ IMAGE_MARKER_PATTERN = re.compile(r"\[\[IMAGE:.+?\]\]")
 PUNCTUATION_PATTERN = re.compile(r"[\s\u3000，。！？；：、,.!?;:（）()【】\[\]{}《》<>“”\"'`~·…—_\-]+")
 
 
+LEADING_SCORE_PATTERN = re.compile(r"^\s*(?:[（(]\s*\d+(?:\.\d+)?\s*分\s*[）)]\s*)+")
+
+
+def strip_leading_score(text: str) -> str:
+    """Leading score labels such as （3分） never identify a question."""
+    return LEADING_SCORE_PATTERN.sub("", text, count=1)
+
+
 @dataclass(frozen=True)
 class SimilarQuestionGroup:
     question_ids: list[int]
@@ -273,8 +281,10 @@ def _groups_from_pairs(candidate_ids: list[int], pairs: list[tuple[int, int, flo
 
 def _normalize_question_text(value: object) -> str:
     text = IMAGE_MARKER_PATTERN.sub("", str(value or ""))
+    text = strip_leading_score(text)
     text = re.sub(r"^\s*(?:第\s*)?\d+\s*(?:[\.、．]|题|\)|）)?", "", text)
     text = re.sub(r"^\s*[（(]\s*\d+\s*[)）]\s*", "", text)
+    text = strip_leading_score(text)
     text = re.sub(r"\d{4}\s*[-—]\s*\d{4}\s*学年.*?(?:数学)?(?:试卷|真题)", "", text)
     return PUNCTUATION_PATTERN.sub("", text).lower()
 
@@ -293,6 +303,7 @@ __all__ = [
     "build_ai_upload_similarity_plan",
     "profiled_text_similarity",
     "question_text_profile",
+    "strip_leading_score",
     "text_similarity",
     "wording_similarity_upper_bound",
 ]

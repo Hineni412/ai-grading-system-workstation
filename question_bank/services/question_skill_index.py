@@ -100,22 +100,39 @@ def build_skill_snapshot(
     point_counts: dict[int, int] = {}
     by_skill: dict[str, set[int]] = defaultdict(set)
     by_question: dict[int, dict[str, list[dict[str, str]]]] = {}
+    evidence_versions: dict[int, str] = {}
+    gap_points: dict[int, list[dict[str, Any]]] = {}
     for qid, profile in usable.items():
         skills: dict[str, list[dict[str, str]]] = {}
         point_links = links.get(profile["evidence_version_id"], {})
+        evidence_versions[qid] = str(profile["evidence_version_id"])
         number = 0
+        gaps: list[dict[str, Any]] = []
         for part in profile["evidence"].get("parts", []):
+            part_id = str(part.get("part_id") or "")
             for point in part.get("evidence_points", []):
                 number += 1
                 point_id = str(point["evidence_point_id"])
-                for link in point_links.get(point_id, ()):
+                point_link_rows = point_links.get(point_id, ())
+                has_skill_link = False
+                for link in point_link_rows:
                     if link.role == "direct" and link.resolution_status == "resolved" and link.stable_key.startswith("sk_"):
+                        has_skill_link = True
                         hit = {"point_id": point_id, "point_label": f"判定点 {number}：{point.get('target', '')}"}
                         if hit not in skills.setdefault(link.stable_key, []):
                             skills[link.stable_key].append(hit)
                         by_skill[link.stable_key].add(qid)
+                if not has_skill_link:
+                    gaps.append({"point_id": point_id, "part_id": part_id, "number": number,
+                                 "target": str(point.get("target") or ""),
+                                 "observable_evidence": str(point.get("observable_evidence") or ""),
+                                 "direct_keys": [link.stable_key for link in point_link_rows
+                                                 if link.role == "direct" and link.resolution_status == "resolved"
+                                                 and link.stable_key and not link.stable_key.startswith("sk_")]})
         point_counts[qid] = number
         by_question[qid] = skills
+        if gaps:
+            gap_points[qid] = gaps
     topics: dict[str, set[int]] = defaultdict(set)
     topic_keys: dict[str, str] = {}
     sections: dict[str, set[int]] = defaultdict(set)
@@ -146,6 +163,7 @@ def build_skill_snapshot(
             "volumes": dict(volumes), "by_skill": dict(by_skill), "by_question": by_question,
             "point_counts": point_counts, "no_usable": set(questions) - set(usable),
             "unlinked": {qid for qid in questions if not by_question.get(qid)},
+            "evidence_versions": evidence_versions, "gap_points": gap_points,
             "topics": dict(topics), "topic_keys": topic_keys, "sections": dict(sections)}
 
 

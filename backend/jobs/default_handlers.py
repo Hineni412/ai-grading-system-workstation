@@ -38,6 +38,7 @@ from .manager import JobContext, JobManager
 from .question_bank_sync import run_session_question_bank_sync_job
 from .question_import import run_question_import_job
 from .scan_analysis import run_scan_analysis
+from .skill_candidates import run_skill_candidate_job
 from .tagging_sync import run_tagging_sync_job
 from .taxonomy_suggestions import run_taxonomy_suggestion_job
 
@@ -108,6 +109,9 @@ def register_default_job_handlers(
     taxonomy_suggestion_runner: Callable[
         ..., dict[str, object]
     ] = run_taxonomy_suggestion_job,
+    skill_candidate_runner: Callable[
+        ..., dict[str, object]
+    ] = run_skill_candidate_job,
     assembly_export_runner: Callable[..., dict[str, object]] = run_assembly_export_job,
     criterion_backfill_runner: Callable[
         ..., dict[str, object]
@@ -292,6 +296,16 @@ def register_default_job_handlers(
             question_bank_db_path=resolved_question_bank_db,
             data_root=base_data_root,
             taxonomy_suggestion_runner=taxonomy_suggestion_runner,
+            ai_service_factory=resolved_tagging_factory,
+            taxonomy_governance=resolved_taxonomy_governance,
+        ),
+    )
+    manager.register(
+        "skill_candidate",
+        _build_skill_candidate_handler(
+            question_bank_db_path=resolved_question_bank_db,
+            data_root=base_data_root,
+            skill_candidate_runner=skill_candidate_runner,
             ai_service_factory=resolved_tagging_factory,
             taxonomy_governance=resolved_taxonomy_governance,
         ),
@@ -489,6 +503,37 @@ def _build_taxonomy_suggestion_handler(
             suggestion_state_path=suggestion_state_path,
             taxonomy_governance=taxonomy_governance,
             question_loader=read_service.get_questions,
+            ai_service_factory=ai_service_factory,
+        )
+
+    return handler
+
+
+def _build_skill_candidate_handler(
+    *,
+    question_bank_db_path: Path,
+    data_root: Path,
+    skill_candidate_runner: Callable[..., dict[str, object]],
+    ai_service_factory: Callable[[], Any],
+    taxonomy_governance: Any,
+):
+    read_service = QuestionBankReadService(
+        question_bank_db_path,
+        data_root=data_root,
+    )
+    taxonomy_state_path = Path(taxonomy_governance.state_path)
+    taxonomy_state_suffix = taxonomy_state_path.suffix or ".json"
+    candidate_state_path = taxonomy_state_path.with_name(
+        f"{taxonomy_state_path.stem}.skill_candidates"
+        f"{taxonomy_state_suffix}"
+    )
+
+    def handler(context: JobContext) -> dict[str, object]:
+        return skill_candidate_runner(
+            context=context,
+            candidate_state_path=candidate_state_path,
+            question_bank_db_path=question_bank_db_path,
+            read_service=read_service,
             ai_service_factory=ai_service_factory,
         )
 

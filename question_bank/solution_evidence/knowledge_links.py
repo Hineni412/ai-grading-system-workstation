@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -35,6 +35,12 @@ class KnowledgeLink:
     resolution_status: str = "resolved"
     source_kind: str = ""
     graph_release_id: str = ""
+
+
+def _rows_as_dicts(cursor: sqlite3.Cursor) -> list[dict[str, Any]]:
+    """Fetch rows as dicts regardless of the connection's ``row_factory``."""
+    columns = [column[0] for column in cursor.description or []]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
 def load_point_links(
@@ -61,16 +67,18 @@ def load_point_links(
         return {}
     marks = ",".join("?" for _ in ids)
     with reading(Path(db_path), connection) as conn:
-        rows = conn.execute(
-            f"""
-            SELECT evidence_version_id, evidence_point_id, graph_release_id,
-                   role, term_id, stable_key, resolution_status, weight,
-                   source_kind, created_at
-            FROM evidence_point_knowledge_links
-            WHERE evidence_version_id IN ({marks})
-            """,
-            ids,
-        ).fetchall()
+        rows = _rows_as_dicts(
+            conn.execute(
+                f"""
+                SELECT evidence_version_id, evidence_point_id, graph_release_id,
+                       role, term_id, stable_key, resolution_status, weight,
+                       source_kind, created_at
+                FROM evidence_point_knowledge_links
+                WHERE evidence_version_id IN ({marks})
+                """,
+                ids,
+            )
+        )
         active_release = _active_release_id(conn)
     by_version: dict[str, dict[str, list[sqlite3.Row]]] = {}
     for row in rows:
@@ -152,15 +160,17 @@ def skill_parent_targets(
     if not keys:
         return {}
     marks = ",".join("?" for _ in keys)
-    rows = conn.execute(
-        f"""
-        SELECT source_key, target_key, release_id
-        FROM knowledge_graph_release_relations
-        WHERE relation_type = 'parent'
-          AND source_key IN ({marks})
-        """,
-        keys,
-    ).fetchall()
+    rows = _rows_as_dicts(
+        conn.execute(
+            f"""
+            SELECT source_key, target_key, release_id
+            FROM knowledge_graph_release_relations
+            WHERE relation_type = 'parent'
+              AND source_key IN ({marks})
+            """,
+            keys,
+        )
+    )
     preferred = str(preferred_release_id or "").strip()
     rows.sort(
         key=lambda row: 0
@@ -461,7 +471,7 @@ def refresh_question_scope_summary(
             (qid,),
         )
         return
-    version_id = str(row["evidence_version_id"])
+    version_id = str(row[0])
     grouped = load_point_links(
         Path(db_path) if db_path is not None else Path("."),
         [version_id],
@@ -580,14 +590,14 @@ def rebuild_question_scope_summaries(
     if connection is not None:
         conn = connection
         ids = [
-            int(row["question_id"])
+            int(row[0])
             for row in conn.execute(
                 "SELECT DISTINCT question_id "
                 "FROM question_solution_evidence_versions"
             )
         ]
         existing = {
-            int(row["question_id"])
+            int(row[0])
             for row in conn.execute(
                 "SELECT question_id FROM question_scope_summary"
             )
@@ -608,7 +618,7 @@ def _active_release_id(connection: sqlite3.Connection) -> str | None:
         LIMIT 1
         """
     ).fetchone()
-    return str(row["release_id"]) if row is not None else None
+    return str(row[0]) if row is not None else None
 
 
 def project_embedded_links(
@@ -763,6 +773,220 @@ def replace_point_links(
     return inserted
 
 
+def carry_forward_effective_links(
+    connection: sqlite3.Connection,
+    *,
+    db_path: Path,
+    question_id: int,
+    evidence_version_id: str,
+    graph_release_id: str,
+    skip_points: Collection[str],
+) -> int:
+    """Copy a version's effective links into ``graph_release_id``.
+
+    The caller holds a write transaction (``BEGIN IMMEDIATE``).  When the
+    version's effective link group still sits under an older release, every
+    effective row of every point not in ``skip_points`` is copied into
+    ``graph_release_id`` so that writes under the new release do not make
+    the untouched points lose their links on the read side.  ``link_job``
+    rows take precedence within a point, and rows whose stable key is not
+    an active node of the target release are skipped.  Returns the number
+    of inserted rows; a no-op (0) when the effective group is already the
+    target release or the version has no links.
+    """
+    release = str(graph_release_id)
+    version = str(evidence_version_id)
+    skipped = {str(point) for point in skip_points}
+    grouped = load_point_links(
+        Path(db_path), [version], release, connection=connection
+    )
+    effective = grouped.get(version, {})
+    group_release = next(
+        (
+            link.graph_release_id
+            for links in effective.values()
+            for link in links
+        ),
+        "",
+    )
+    inserted = 0
+    if group_release and group_release != release:
+        active_keys = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT stable_key FROM knowledge_graph_node_profiles "
+                "WHERE release_id = ? AND status = 'active'",
+                (release,),
+            )
+        }
+        raw_rows = _rows_as_dicts(
+            connection.execute(
+                """
+                SELECT evidence_point_id, part_id, role, term_id, stable_key,
+                       resolution_status, weight, source_kind
+                FROM evidence_point_knowledge_links
+                WHERE evidence_version_id = ? AND graph_release_id = ?
+                """,
+                (version, group_release),
+            )
+        )
+        by_point: dict[str, list[dict[str, Any]]] = {}
+        for row in raw_rows:
+            by_point.setdefault(str(row["evidence_point_id"]), []).append(row)
+        for point_id, rows in by_point.items():
+            if point_id in skipped:
+                continue
+            job_rows = [
+                row for row in rows if str(row["source_kind"]) == LINK_JOB_KIND
+            ]
+            for row in job_rows or rows:
+                stable_key = str(row["stable_key"] or "")
+                if not stable_key or stable_key not in active_keys:
+                    continue
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO evidence_point_knowledge_links (
+                        evidence_version_id, question_id, part_id,
+                        evidence_point_id, graph_release_id, role, term_id,
+                        stable_key, resolution_status, weight, source_kind,
+                        source_reference
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        version,
+                        int(question_id),
+                        str(row["part_id"]),
+                        point_id,
+                        release,
+                        str(row["role"]),
+                        str(row["term_id"]),
+                        stable_key,
+                        str(row["resolution_status"]),
+                        float(row["weight"]),
+                        str(row["source_kind"]),
+                        f"carry_forward:{group_release}",
+                    ),
+                )
+                inserted += 1
+    return inserted
+
+
+def link_points_to_skill(
+    connection: sqlite3.Connection,
+    *,
+    db_path: Path,
+    question_id: int,
+    evidence_version_id: str,
+    graph_release_id: str,
+    point_skills: Mapping[str, str],
+    part_ids: Mapping[str, str],
+    source_reference: str,
+) -> int:
+    """Link specific evidence points to a skill under the active release.
+
+    The caller holds a write transaction (``BEGIN IMMEDIATE``).  When the
+    version's effective link group still sits under an older release, every
+    effective row of every untouched point is first copied into
+    ``graph_release_id`` so the read-side switch to the active-release group
+    does not silently drop the other points' links.  For each target point
+    its existing ``link_job`` rows under the release are replaced by one
+    ``direct`` link to the skill (weight 1.0) plus copies of the point's
+    effective non-direct links; the previous direct link is intentionally
+    dropped.  Returns the number of inserted rows.
+    """
+    release = str(graph_release_id or "").strip()
+    if not release:
+        raise ValueError("graph_release_id is required")
+    version = str(evidence_version_id)
+    if not point_skills:
+        return 0
+    return _link_points_to_skill_locked(
+        connection,
+        db_path=Path(db_path),
+        question_id=question_id,
+        evidence_version_id=version,
+        graph_release_id=release,
+        point_skills=point_skills,
+        part_ids=part_ids,
+        source_reference=source_reference,
+    )
+
+
+def _link_points_to_skill_locked(
+    connection: sqlite3.Connection,
+    *,
+    db_path: Path,
+    question_id: int,
+    evidence_version_id: str,
+    graph_release_id: str,
+    point_skills: Mapping[str, str],
+    part_ids: Mapping[str, str],
+    source_reference: str,
+) -> int:
+    release = str(graph_release_id)
+    version = str(evidence_version_id)
+    grouped = load_point_links(
+        Path(db_path), [version], release, connection=connection
+    )
+    effective = grouped.get(version, {})
+    inserted = carry_forward_effective_links(
+        connection,
+        db_path=Path(db_path),
+        question_id=question_id,
+        evidence_version_id=version,
+        graph_release_id=release,
+        skip_points=set(point_skills),
+    )
+    for point_id in point_skills:
+        connection.execute(
+            """
+            DELETE FROM evidence_point_knowledge_links
+            WHERE evidence_version_id = ? AND graph_release_id = ?
+              AND evidence_point_id = ? AND source_kind = ?
+            """,
+            (version, release, str(point_id), LINK_JOB_KIND),
+        )
+    points = []
+    for point_id, skill_key in point_skills.items():
+        links = [
+            {
+                "term_id": str(skill_key),
+                "stable_key": str(skill_key),
+                "role": "direct",
+                "weight": 1.0,
+            }
+        ]
+        for link in effective.get(str(point_id), ()):
+            if link.role == "direct":
+                continue
+            links.append(
+                {
+                    "term_id": link.term_id,
+                    "stable_key": link.stable_key,
+                    "role": link.role,
+                    "weight": link.weight,
+                }
+            )
+        points.append(
+            {
+                "part_id": str(part_ids.get(str(point_id)) or ""),
+                "evidence_point_id": str(point_id),
+                "links": links,
+            }
+        )
+    inserted += replace_point_links(
+        connection,
+        evidence_version_id=version,
+        question_id=int(question_id),
+        graph_release_id=release,
+        points=points,
+        source_kind=LINK_JOB_KIND,
+        source_reference=str(source_reference or ""),
+        replace=False,
+    )
+    return inserted
+
+
 def skill_layer_report(
     connection: sqlite3.Connection,
     graph_release_id: str,
@@ -863,9 +1087,11 @@ __all__ = [
     "MIGRATED_KIND",
     "TEACHER_KIND",
     "load_point_links",
+    "carry_forward_effective_links",
     "direct_links_for_part",
     "direct_targets_for_part",
     "drop_later_chapter_supporting_links",
+    "link_points_to_skill",
     "links_from_embedded",
     "project_embedded_links",
     "replace_point_links",

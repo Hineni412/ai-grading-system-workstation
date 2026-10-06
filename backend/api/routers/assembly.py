@@ -333,6 +333,7 @@ def quick_draft(
     workspace: AssemblyWorkspaceService = Depends(get_assembly_workspace_service),
 ) -> dict:
     rules = body.rules.model_dump()
+    source_generation = commit_generation(recommendations.db_path)
     evidence = _cached_exam_questions(diagnosis_service, class_ids=body.class_ids, volume_id=body.curriculum_volume_id)
     questions = [q for e in evidence['exams'] if not body.session_ids or e['session_id'] in body.session_ids
                  for q in e['questions'] if q['class_rate'] is not None and (body.threshold == 100 or q['class_rate'] < body.threshold / 100)]
@@ -340,6 +341,8 @@ def quick_draft(
         questions.sort(key=lambda q: (q['class_rate'], q['key']))
     selected = list(dict.fromkeys(body.question_ids))
     descriptors, _, _ = recommendations._source_snapshot(question_ids=selected) if selected else ([], [], '')
+    candidate_cache = {qid: None for qid in selected}
+    candidate_cache.update((item['question_id'], item) for item in descriptors)
     covered = {key for q in descriptors for key in q['stable_keys'] if key.startswith('sk_')}
     additions, skipped = [], {k: 0 for k in ('skill', 'written', 'difficulty', 'similar', 'unavailable')}
     pools = {}
@@ -370,18 +373,20 @@ def quick_draft(
             qid = candidate['question_id']
             if qid in selected:
                 continue
-            violations = recommendations.paper_rule_violations([*selected, qid], rules)
+            violations = recommendations.paper_rule_violations([*selected, qid], rules, _candidate_cache=candidate_cache)
             if violations:
                 rejected.update(v['code'] for v in violations)
                 continue
             selected.append(qid)
-            added_descriptors, _, _ = recommendations._source_snapshot(question_ids=[qid])
-            covered.update(k for q in added_descriptors for k in q['stable_keys'] if k.startswith('sk_'))
+            descriptor = candidate_cache[qid]
+            covered.update(k for k in descriptor['stable_keys'] if k.startswith('sk_'))
             additions.append({'question_id': qid, 'source': question})
             break
         else:
             for code in rejected or {'unavailable'}:
                 skipped[code if code in skipped else 'unavailable'] += 1
+    if source_generation != commit_generation(recommendations.db_path):
+        raise ApiError(409, 'assembly_source_changed', '题库在起草期间已更新，请重新起草；已有试卷篮保持不变。')
     return {'question_ids': [a['question_id'] for a in additions], 'additions': additions, 'skipped': skipped}
 
 

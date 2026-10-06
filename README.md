@@ -178,6 +178,7 @@ cd ..
 | 知识标准初始发布文件重建 | `tools/build_knowledge_graph_release.py` | `--check` 只核对现有文件；不带参数会重写初始发布文件 |
 | 教学技能标准发布文件重建 | `tools/build_release_v5.py` | 必须提供 `--teaching-standard` JSON；默认预演，`--write` 生成发布文件；数据库应用是另行授权的操作 |
 | 词表修订发布文件重建 | `tools/build_release_v7.py` | 默认读取已有输入并验证，`--write` 生成对应发布包和词表；不会自动切换数据库中的活动标准 |
+| 技能候选发布 | `tools/build_skill_release.py` | 默认只预演并把已批准待发布的新技能并入下一版标准；`--write` 生成目录文件并打印需登记到 loader 的映射行；数据库激活是另行授权的操作，执行前先备份 |
 | 难度校准与推荐有效性回看 | `tools/difficulty_calibration_report.py`、`tools/recommendation_validity_report.py` | 按显式数据库路径读取统计结果，不改写评分、难度或推荐规则 |
 | 掌握度前向检验与参数选择 | `tools/mastery_validation.py` | `--volume` 指定教学学期；`--initial` 复现原型参数，`--grid` 选择参数；只读数据库，只向终端输出汇总数字，不调用模型、不落盘学生结果 |
 | 第一、二章训练卷适配实验 | `tools/experiment_training_fit.py` | 只读原位置数据，核对只补弱个人对照与内存试配、小组共用卷；`--evidence-loss` 检查历史证据粒度敏感性，`--match-audit` 追查匹配、目标关联库存与入卷限制，保存匿名汇总；不是教师盲评或学习效果证明，当前实现、效果与性能交接见 [说明](docs/requests/training-recommendation-backend-handoff-20261004.md) |

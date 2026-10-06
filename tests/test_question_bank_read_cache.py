@@ -26,6 +26,95 @@ def _clear_read_result_cache():
     read_module._SKILL_SOURCE_MEMO.clear()
 
 
+def test_result_cache_byte_budget_replacement_eviction_and_private_values():
+    import pickle
+    from integration.result_cache import ResultCache
+
+    value = {"TEST": [1, 2, 3]}
+    size = len(pickle.dumps(value, pickle.HIGHEST_PROTOCOL))
+    cache = ResultCache(limit=3, max_bytes=size * 2)
+    cache.put("A", value)
+    value["TEST"].append(4)
+    cached = cache.get_or_compute("A", lambda: pytest.fail("missed stored value"))
+    assert cached == {"TEST": [1, 2, 3]}
+    cached["TEST"].clear()
+    cache.put("B", {"TEST": [1, 2, 3]})
+    cache.get_or_compute("A", lambda: pytest.fail("missed unmodified value"))
+    cache.put("C", {"TEST": [1, 2, 3]})
+    assert list(cache._entries) == ["A", "C"]
+    assert cache._bytes == sum(map(len, cache._entries.values())) == size * 2
+    # An oversized replacement must not leave the old value under its key.
+    cache.put("A", "TEST" * size)
+    assert list(cache._entries) == ["C"]
+    assert cache.get_or_compute("A", lambda: "TEST-new") == "TEST-new"
+    assert cache._bytes <= size * 2
+    cache.clear()
+    assert not cache._entries and cache._bytes == 0
+
+
+@pytest.mark.parametrize("max_bytes,fail", [(None, False), (1, False), (1, True)])
+def test_result_cache_concurrent_flight_shares_private_result_and_failure(
+    monkeypatch, max_bytes, fail,
+):
+    import threading
+    import integration.result_cache as cache_module
+
+    started, waiting, release = (threading.Event() for _ in range(3))
+    original_flight = cache_module._Flight
+
+    class ObservedEvent:
+        def __init__(self):
+            self.event = threading.Event()
+
+        def wait(self):
+            waiting.set()
+            return self.event.wait(5)
+
+        def set(self):
+            self.event.set()
+
+    def flight():
+        result = original_flight()
+        result.event = ObservedEvent()
+        return result
+
+    monkeypatch.setattr(cache_module, "_Flight", flight)
+    cache = cache_module.ResultCache(limit=1, max_bytes=max_bytes)
+    computations = []
+
+    def compute():
+        computations.append(1)
+        started.set()
+        assert release.wait(5)
+        if fail:
+            raise ValueError("TEST-compute-failed")
+        return {"TEST": [1]}
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(cache.get_or_compute, "TEST", compute)
+        assert started.wait(5)
+        second = executor.submit(cache.get_or_compute, "TEST", compute)
+        try:
+            assert waiting.wait(5)
+        finally:
+            release.set()
+        if fail:
+            for result in (first, second):
+                with pytest.raises(ValueError, match="TEST-compute-failed"):
+                    result.result(timeout=5)
+        else:
+            owner, waiter = first.result(timeout=5), second.result(timeout=5)
+            assert owner == waiter == {"TEST": [1]}
+            owner["TEST"].clear()
+            assert waiter == {"TEST": [1]}
+    assert len(computations) == 1 and not cache._flights
+    if max_bytes == 1:
+        assert not cache._entries and cache._bytes == 0
+        assert cache.get_or_compute("TEST", lambda: "TEST-retry") == "TEST-retry"
+    else:
+        assert cache.get_or_compute("TEST", lambda: pytest.fail("miss")) == {"TEST": [1]}
+
+
 def _seed_paper(db_path: Path, paper_id: int = 1, title: str = "Paper") -> None:
     initialize_database(db_path)
     connection = sqlite3.connect(db_path)
@@ -130,6 +219,68 @@ def test_list_questions_frequency_sort_uses_exam_frequency_shares(tmp_path, monk
     assert calls == [True, True]
     # 升序按同一 max 指标：0.5 / 0.6 / 0.9，无值的 3 号仍垫底。
     assert [item["id"] for item in page_asc.items] == [1, 4, 2, 3]
+
+
+def test_filter_query_join_params_precede_where_params(tmp_path):
+    """带参 JOIN 的参数必须先于 WHERE 参数进入列表：SQL 文本按书写顺序
+    消费 ?，JOIN 子句在 WHERE 之前。knowledge_point JOIN 与考频 JSON
+    JOIN 共用同一约定，否则 JOIN 的 ? 会吞掉 WHERE 的首个参数。"""
+    db = tmp_path / "TEST-join-params.db"
+    _seed_paper(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO questions(id,paper_id,question_number,question_text,"
+            "question_type,difficulty) VALUES(1,1,'1','TEST-参数顺序题','解答题',5)"
+        )
+        conn.execute(
+            "INSERT INTO question_tags(question_id,tag_type,tag_value) "
+            "VALUES(1,'knowledge_point','TEST-参数顺序')"
+        )
+
+    joins, where, params = read_module.build_question_filter_query(
+        knowledge_point="TEST-参数顺序",
+        question_types=["解答题"],
+    )
+    where_sql = "WHERE " + " AND ".join(where)
+    with sqlite3.connect(db) as conn:
+        # 与 _list_questions 的 count 查询同构。
+        count = conn.execute(
+            " ".join(
+                [
+                    "SELECT COUNT(DISTINCT q.id) FROM questions q",
+                    *joins,
+                    where_sql,
+                ]
+            ),
+            params,
+        ).fetchone()[0]
+    assert count == 1
+
+    # 考频排序在 JOIN 之后、WHERE 之前插入 JSON 参数：插入位置为既有 JOIN
+    # 的 ? 数，组合后参数顺序须与文本 ? 顺序一致。
+    join_markers = sum(sql.count("?") for sql in joins)
+    list_joins = [
+        *joins,
+        "LEFT JOIN (SELECT CAST(json_extract(value, '$[0]') AS INTEGER) "
+        "AS question_id, json_extract(value, '$[1]') AS score_midterm, "
+        "json_extract(value, '$[2]') AS score_final, 0.0 AS score_zhongkao "
+        "FROM json_each(?)) qfc ON qfc.question_id = q.id",
+    ]
+    list_params = list(params)
+    list_params.insert(join_markers, json.dumps([[1, 0.5, 0.25]]))
+    with sqlite3.connect(db) as conn:
+        rows = conn.execute(
+            " ".join(
+                [
+                    "SELECT DISTINCT q.id FROM questions q",
+                    *list_joins,
+                    where_sql,
+                    "ORDER BY qfc.score_midterm DESC",
+                ]
+            ),
+            list_params,
+        ).fetchall()
+    assert [int(row[0]) for row in rows] == [1]
 
 
 def test_session_unlinked_count_reuses_skill_index_for_confirmed_live_questions(tmp_path):
@@ -576,6 +727,81 @@ def test_skill_repair_does_not_save_a_response_after_the_source_changes(tmp_path
         assert conn.execute('SELECT COUNT(*) FROM evidence_point_knowledge_links WHERE question_id=4').fetchone()[0] == 0
 
 
+def _seed_old_release_links(db, service):
+    """Give question 4's two points links that live only under an old release."""
+    from question_bank.database.schema import connect
+    release = service.skill_index('bnu24-math-g8-upper')['graph_release_id']
+    version = f'{4:064x}'
+    section = 'kp_bnu24_math_g8_upper_1_1'
+    with connect(db) as conn:
+        for point in ('p1', 'p2'):
+            conn.execute(
+                "INSERT INTO evidence_point_knowledge_links(evidence_version_id,"
+                "question_id,part_id,evidence_point_id,graph_release_id,role,"
+                "term_id,stable_key,resolution_status,source_kind) "
+                "VALUES(?,4,'part-1',?,'kgr_TEST_old','direct',?,?,'resolved',"
+                "'migrated_from_embedded')",
+                (version, point, section, section),
+            )
+    return release, version, section
+
+
+def _assert_carried_links(db, data_root, release, version, section, keys):
+    from question_bank.database.schema import connect
+    from question_bank.services.question_skill_index import build_skill_snapshot
+    from question_bank.solution_evidence.knowledge_links import load_point_links
+    links = load_point_links(db, [version], release)
+    p1 = links[version]['p1']
+    assert any(
+        link.role == 'direct' and link.stable_key == keys[0]
+        and link.resolution_status == 'resolved' for link in p1)
+    p2 = links[version]['p2']
+    assert any(
+        link.role == 'direct' and link.stable_key == section
+        and link.resolution_status == 'resolved' for link in p2)
+    assert not any(link.stable_key.startswith('sk_') for link in p2)
+    with connect(db) as conn:
+        snapshot = build_skill_snapshot(conn, db, data_root)
+    gaps = snapshot['gap_points']
+    assert [gap['point_id'] for gap in gaps.get(4, [])] == ['p2']
+
+
+def test_skill_repair_carries_forward_points_left_in_older_release(tmp_path):
+    from backend.jobs.knowledge_link_job import run_knowledge_link_job
+    from backend.jobs.manager import JobContext
+    from backend.jobs.store import JobStore
+    service, db, keys = _seed_skill_bank(tmp_path)
+    release, version, section = _seed_old_release_links(db, service)
+    store = JobStore(tmp_path / 'TEST-repair-jobs.db')
+    record = store.create_job('knowledge_link', {'mode': 'missing_skills', 'question_ids': [4]})
+    summary = run_knowledge_link_job(
+        context=JobContext(record.id, record.job_type, record.payload, store),
+        question_bank_db_path=db, data_root=tmp_path,
+        link_gateway=lambda request: {4: [
+            {'evidence_point_id': 'p1', 'links': [{'fine_term_id': keys[0], 'role': 'direct'}]},
+            {'evidence_point_id': 'p2', 'links': []}]})
+    assert summary['links_carried_forward'] >= 1
+    _assert_carried_links(db, tmp_path, release, version, section, keys)
+
+
+def test_missing_only_repair_carries_forward_points_left_in_older_release(tmp_path):
+    from backend.jobs.knowledge_link_job import run_knowledge_link_job
+    from backend.jobs.manager import JobContext
+    from backend.jobs.store import JobStore
+    service, db, keys = _seed_skill_bank(tmp_path)
+    release, version, section = _seed_old_release_links(db, service)
+    store = JobStore(tmp_path / 'TEST-repair-jobs.db')
+    record = store.create_job('knowledge_link', {'mode': 'missing_only', 'question_ids': [4]})
+    summary = run_knowledge_link_job(
+        context=JobContext(record.id, record.job_type, record.payload, store),
+        question_bank_db_path=db, data_root=tmp_path,
+        link_gateway=lambda request: {4: [
+            {'evidence_point_id': 'p1', 'links': [{'fine_term_id': keys[0], 'role': 'direct'}]},
+            {'evidence_point_id': 'p2', 'links': []}]})
+    assert summary['links_carried_forward'] >= 1
+    _assert_carried_links(db, tmp_path, release, version, section, keys)
+
+
 def test_repair_preview_lists_each_missing_product_without_model_calls(tmp_path):
     from backend.jobs.question_bank_repair import repair_preview
     service, db, _ = _seed_skill_bank(tmp_path)
@@ -674,8 +900,9 @@ def _prewarm_worker(db: Path, tmp_path: Path):
     return TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0)
 
 
-def test_question_bank_browse_prewarm_plans_first_and_replans_on_write(tmp_path, monkeypatch):
+def test_question_bank_browse_prewarm_follows_current_scope_and_replans_on_write(tmp_path, monkeypatch):
     from integration.data_generation import commit_generation
+    from integration.training_prewarm import clear_recent_requests, record_request
 
     _service, db, _keys = _seed_skill_bank(tmp_path)
     worker = _prewarm_worker(db, tmp_path)
@@ -695,13 +922,30 @@ def test_question_bank_browse_prewarm_plans_first_and_replans_on_write(tmp_path,
     for task in worker._refresh_plan():
         task()
     assert warmed == []
-    # A question-bank write re-plans the browse task first.
+    # With no recent scope, a question-bank write still plans browse first.
     with sqlite3.connect(db) as writer:
         writer.execute("UPDATE papers SET title='TEST-replan' WHERE id=1")
         writer.commit()
     plan = worker._refresh_plan()
     plan[0]()
     assert warmed == [commit_generation(db)]
+    # When a teacher has used a scope, finish its full grouping first, then
+    # browse, and only then spend time on older scopes.
+    planned = []
+    monkeypatch.setattr(worker, '_compute', lambda kind, scope, exams, params:
+                        planned.append((kind, scope)))
+    monkeypatch.setattr(worker, '_warm_question_bank', lambda generation:
+                        planned.append(('browse', generation)))
+    exams = {'mode': 'semester', 'curriculum_volume_id': 'bnu24-math-g8-upper'}
+    record_request('diagnosis', scope={'mode': 'all'}, exam_scope=exams, params={})
+    current_scope = {'mode': 'class', 'class_ids': ['TEST-current']}
+    record_request('grouped_diagnosis', scope=current_scope, exam_scope=exams,
+                   params={'grouping': {'scope_keys': ['kp_TEST-chapter']}})
+    for task in worker._refresh_plan():
+        task()
+    assert planned == [('diagnosis', current_scope), ('grouped_diagnosis', current_scope),
+                       ('browse', commit_generation(db)), ('diagnosis', {'mode': 'all'})]
+    clear_recent_requests()
     # A failed run leaves the generation unseen, so the next plan built for
     # any trigger re-plans the browse task.
     worker._seen_qb_browse_generation = None

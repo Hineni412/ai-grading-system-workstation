@@ -67,10 +67,13 @@ from question_bank.database.schema import connect
 from question_bank.parsers.type_detector import question_type_from_rubric
 from question_bank.services.duplicate_analysis_copy_service import (
     analysis_source_exact_key,
-    content_index_lookup,
     ensure_content_index,
     reusable_analysis,
     uncertain_image_candidates,
+)
+from question_bank.services.question_identity import (
+    SameQuestionIndex,
+    reusable_same_question_analysis,
 )
 from question_bank.services.source_paper_archive_service import (
     ArchivedSourcePaper,
@@ -2098,25 +2101,31 @@ def _reused_analysis_items(
         initialize_database(bank_path)
         with connect(bank_path) as conn:
             ensure_content_index(conn, data_root=data_root)
-            matches = content_index_lookup(conn, list(keys.values()))
+            same_questions = SameQuestionIndex.load(conn, keys=list(keys.values()))
             uncertain_images = uncertain_image_candidates(conn, tuple(source for source in matched_sources
-                if keys.get(source.source_question_ref) not in matches))
+                if same_questions.match(keys.get(source.source_question_ref, "")) is None))
     except Exception:
         LOGGER.exception("exact-duplicate index lookup failed")
         raise ValueError("题库查重索引暂不可用；尚未调用模型") from None
+    matches = {
+        reference: match
+        for reference, key in keys.items()
+        if (match := same_questions.match(key)) is not None
+    }
     if not matches and not uncertain_images:
         return result
     for source in matched_sources:
         uncertain = source.source_question_ref in uncertain_images
-        bank_id = matches.get(keys.get(source.source_question_ref, ""), uncertain_images.get(source.source_question_ref))
+        match = matches.get(source.source_question_ref)
+        bank_id = match.question_id if match is not None else uncertain_images.get(source.source_question_ref)
         if bank_id is None:
             continue
         try:
             if uncertain:
                 raise ValueError("diagram identity requires checking")
-            reused = reusable_analysis(
+            reused = reusable_same_question_analysis(
                 bank_path,
-                bank_question_id=int(bank_id),
+                match=match,
                 target_question=source.question,
                 data_root=data_root,
             )

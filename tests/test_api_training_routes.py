@@ -19,6 +19,60 @@ warnings.filterwarnings(
     message="Using `httpx` with `starlette.testclient` is deprecated.*",
 )
 
+
+def test_job_progress_preserves_diagnosis_key_and_durable_entry(tmp_path):
+    from backend.jobs.store import JobStore
+    grade, bank = tmp_path/'grading.db', tmp_path/'question-bank.db'
+    with sqlite3.connect(grade) as writer:
+        writer.execute('CREATE TABLE jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,status TEXT,progress REAL,stage TEXT,detail TEXT,updated_at TEXT)')
+        writer.execute("INSERT INTO jobs VALUES(1,'running',0,'TEST','','')")
+        writer.execute('CREATE TABLE exam_marker(value TEXT)')
+        writer.execute("INSERT INTO exam_marker VALUES('original')")
+    with sqlite3.connect(bank) as writer:
+        writer.execute('CREATE TABLE marker(value TEXT)')
+    service = DiagnosisProfileService.__new__(DiagnosisProfileService)
+    service.grading_db_path, service.question_bank_db_path = grade, bank
+    service.question_bank_connection, service.cache_identity = None, None
+    service.data_root = tmp_path
+    request = dict(scope={'mode':'all'}, exam_scope={'mode':'selected','session_ids':[1]})
+    key = service.tag_profile_cache_key(**request)
+    entry = (pickle.dumps({'TEST':True}), pickle.dumps({}))
+    service._save_local_profile(key, entry)
+    job = JobStore.__new__(JobStore)
+    job.db_path = grade
+    job.update_progress(1, progress=.5, stage='TEST')
+    assert service.tag_profile_cache_key(**request) == key
+    assert service._read_local_profile(key) == entry
+    with sqlite3.connect(grade) as writer:
+        writer.execute("INSERT INTO jobs(status) VALUES('queued')")
+    assert service.tag_profile_cache_key(**request) == key
+    assert service._read_local_profile(key) == entry
+    with sqlite3.connect(grade) as writer:
+        writer.execute("UPDATE exam_marker SET value='changed'")
+    assert service.tag_profile_cache_key(**request) != key
+    assert service._read_local_profile(key) is None
+
+
+def test_persistent_entry_replaces_old_memory_versions_and_caps_large_payload(tmp_path, monkeypatch):
+    import integration.persistent_entries as entries
+    store = entries.PersistentEntryStore(tmp_path/'entries', max_entries=2, max_bytes=256*1024)
+    payload = b'TEST' * (16*1024)
+    for version in range(64):
+        store.put('same-request', version, payload)
+        assert store.get('same-request', version) == payload
+        assert len(store._snapshots) == 1
+    assert store.get('same-request', -1) is None
+    store.put('other', 1, payload)
+    store.get('other', 1)
+    store.put('third', 1, payload)
+    assert all(Path(state[0]).is_file() for state in store._snapshots)
+    assert store._snapshot_bytes <= store._snapshot_max_bytes
+    monkeypatch.setattr(entries, '_SNAPSHOT_MAX_BYTES', 1024)
+    small = entries.PersistentEntryStore(tmp_path/'small', max_entries=2, max_bytes=256*1024)
+    small.put('large', 1, payload)
+    assert small.get('large', 1) == payload
+    assert not small._snapshots and small._snapshot_bytes == 0
+
 from fastapi.testclient import TestClient
 
 from backend.repositories.db_manager import DBManager
@@ -488,7 +542,7 @@ def test_prewarm_yields_to_foreground_requests(training_services, monkeypatch):
     assert worker.tick() and ran == [True]
 
 
-def test_recent_requests_round_trip_and_run_first_on_startup(training_services, monkeypatch):
+def test_recent_requests_round_trip_and_prioritize_latest_scope(training_services, monkeypatch):
     from integration import training_prewarm as prewarm
     from integration.training_prewarm import (
         TrainingPrewarmWorker, clear_recent_requests, recent_requests,
@@ -512,6 +566,14 @@ def test_recent_requests_round_trip_and_run_first_on_startup(training_services, 
     assert prewarm._recent_generation() == generation
     record_request('diagnosis', scope={'mode': 'all'},
         exam_scope={'mode': 'current', 'session_ids': [14]}, params={})
+    latest_scope = {'mode': 'all'}
+    latest_exams = {'mode': 'current', 'session_ids': [14]}
+    record_request('overview', scope=latest_scope, exam_scope=latest_exams,
+                   params={'volume_id': 'bnu24-math-g8-upper'})
+    grouping_params = {'grouping': {'scope_keys': ['kp_bnu24_math_g8_upper_2'],
+                                   'question_count': 8, 'max_written_questions': 1}}
+    record_request('grouped_diagnosis', scope=latest_scope, exam_scope=latest_exams,
+                   params=grouping_params)
     worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0)
     worker._persist_recents()
     recents_file = service.data_root / 'reports' / '.training_diagnosis' / 'recent_requests.json'
@@ -523,15 +585,156 @@ def test_recent_requests_round_trip_and_run_first_on_startup(training_services, 
     entries = recent_requests()
     assert [entry['targets'].get('assistant') for entry in entries] == [[('sk_a',), None], None]
     planned = []
-    monkeypatch.setattr(worker, '_compute', lambda *args: planned.append(args[0]))
+    monkeypatch.setattr(worker, '_compute', lambda *args: planned.append(args))
+    monkeypatch.setattr(worker, '_warm_question_bank', lambda generation: planned.append(('browse',)))
     monkeypatch.setattr(worker, '_latest_volume_id', lambda: 'bnu24-math-g8-upper')
     monkeypatch.setattr(worker, '_class_names', lambda: [])
     monkeypatch.setattr(worker, '_startup_scopes', lambda: [])
     for task in worker._refresh_plan():
         task()
-    # Newest recent first: the all-scope diagnosis entry precedes the class
-    # entry's evidence and per-target assistant tasks.
-    assert planned == ['diagnosis', 'diagnosis', 'assembly_exam', 'assistant', 'assistant']
+    # Complete grouping wins over the same scope's overview and generic browse
+    # preparation, even though its request kind was recorded afterwards.
+    assert [item[0] for item in planned] == ['diagnosis', 'grouped_diagnosis', 'overview',
+        'browse', 'diagnosis', 'assembly_exam', 'assistant', 'assistant']
+    assert planned[1] == ('grouped_diagnosis', latest_scope, latest_exams, grouping_params)
+    # Switching back to a stored scope schedules it first after startup too;
+    # repeated visits without changing scope or parameters do not add batches.
+    worker._startup_done = True
+    assistant_params = entries[0]['kinds']['assistant']
+    generation = prewarm._recent_generation()
+    record_request('assistant', scope=scope, exam_scope=exams, params=assistant_params)
+    assert prewarm._recent_generation() == generation + 1
+    record_request('assistant', scope=scope, exam_scope=exams, params=assistant_params)
+    assert prewarm._recent_generation() == generation + 1
+    planned.clear()
+    for task in worker._refresh_plan():
+        task()
+    assert [item[0] for item in planned] == ['diagnosis', 'assembly_exam', 'assistant',
+        'assistant', 'browse', 'diagnosis', 'grouped_diagnosis', 'overview']
+    assert planned[0][1:3] == (scope, exams)
+    clear_recent_requests()
+    # Requests arriving during startup precede disk history in priority. A
+    # live duplicate retains its current parameters instead of the saved ones.
+    startup_scope = {'mode': 'class', 'class_ids': ['TEST-startup']}
+    record_request('diagnosis', scope=startup_scope, exam_scope=exams, params={})
+    current_params = {**assistant_params, 'difficulty_max': 6}
+    record_request('assistant', scope=scope, exam_scope=exams, params=current_params)
+    live_entries = recent_requests()
+    worker._load_recents()
+    entries = recent_requests()
+    assert [entry['scope'] for entry in entries] == [latest_scope, startup_scope, scope]
+    assert entries[-2:] == live_entries
+    assert entries[-1]['kinds']['assistant'] == current_params
+    assert 'targets' not in entries[-1]
+    # Restoring additional older records must not evict any of the eight live
+    # scopes already accepted while the worker was waiting to start.
+    for index in range(6):
+        record_request('diagnosis', scope={'mode': 'class', 'class_ids': [f'TEST-live-{index}']},
+                       exam_scope=exams, params={})
+    live_entries = recent_requests()
+    assert len(live_entries) == 8
+    worker._load_recents()
+    assert recent_requests() == live_entries
+    clear_recent_requests()
+
+
+@pytest.mark.parametrize('change_during', ['wait', 'task'])
+def test_prewarm_replans_between_tasks_when_foreground_scope_changes(
+    training_services, monkeypatch, change_during,
+):
+    from integration import training_prewarm as prewarm
+    from integration.data_generation import commit_generation
+
+    prewarm.clear_recent_requests()
+    service = training_services
+    paths = SimpleNamespace(db_path=service.grading_db_path, qb_db_path=service.question_bank_db_path,
+                            data_root=service.data_root)
+    worker = prewarm.TrainingPrewarmWorker(paths, None, foreground_quiet_seconds=0)
+    worker._startup_done = worker._recents_loaded = True
+    worker._seen_qb_browse_generation = commit_generation(paths.qb_db_path)
+    exams = {'mode': 'current', 'session_ids': [14]}
+    old_scope, new_scope = {'mode': 'all'}, {'mode': 'class', 'class_ids': ['TEST-new']}
+    params = {'grouping': {'scope_keys': ['kp_bnu24_math_g8_upper_2']}}
+    prewarm.record_request('grouped_diagnosis', scope=old_scope, exam_scope=exams, params=params)
+    changed = []
+    ran = []
+
+    def change_scope():
+        if not changed:
+            prewarm.record_request('grouped_diagnosis', scope=new_scope, exam_scope=exams, params=params)
+            changed.append(True)
+
+    def wait_for_idle():
+        if change_during == 'wait':
+            change_scope()
+        return True
+
+    def compute(kind, scope, exam_scope, params):
+        ran.append((kind, scope))
+        if change_during == 'task':
+            change_scope()
+
+    monkeypatch.setattr(worker, '_wait_for_idle', wait_for_idle)
+    monkeypatch.setattr(worker, '_compute', compute)
+    assert worker.tick()
+    assert ran == ([] if change_during == 'wait' else [('diagnosis', old_scope)])
+    assert worker._seen_recent_generation is None
+    ran.clear()
+    assert worker.tick()
+    assert ran[:2] == [('diagnosis', new_scope), ('grouped_diagnosis', new_scope)]
+    assert worker._seen_recent_generation == prewarm._recent_generation()
+    prewarm.clear_recent_requests()
+
+
+def test_prewarm_replay_does_not_record_itself_or_hide_foreground_visits(training_services, monkeypatch):
+    import threading
+    from backend.api.routers import training as router
+    from integration import training_prewarm as prewarm
+    from question_bank.recommendation import personalized
+
+    prewarm.clear_recent_requests()
+    service = training_services
+    paths = SimpleNamespace(db_path=service.grading_db_path, qb_db_path=service.question_bank_db_path,
+                            data_root=service.data_root)
+    worker = prewarm.TrainingPrewarmWorker(paths, None, foreground_quiet_seconds=0)
+    old_scope, current_scope = {'mode': 'all'}, {'mode': 'class', 'class_ids': ['TEST-current']}
+    exams = {'mode': 'current', 'session_ids': [14]}
+    prewarm.record_request('diagnosis', scope=current_scope, exam_scope=exams, params={})
+    before = prewarm.recent_requests()
+    generation = prewarm._recent_generation()
+    fail = []
+
+    def replay(*args, **kwargs):
+        prewarm.record_request('grouped_diagnosis', scope=old_scope, exam_scope=exams, params={'TEST': 1})
+        prewarm.record_target('assistant', scope=old_scope, exam_scope=exams, target_keys=['TEST-target'])
+        if fail:
+            raise RuntimeError('TEST-replay-failure')
+        # A true foreground request on another thread must still be recorded.
+        thread = threading.Thread(target=lambda: prewarm.record_request(
+            'overview', scope=current_scope, exam_scope=exams, params={'volume_id': 'TEST-volume'}))
+        thread.start()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+    monkeypatch.setattr(router, '_grouped_diagnosis_response_bytes', replay)
+    monkeypatch.setattr(personalized, 'PersonalizedRecommendationModule', lambda **kwargs: None)
+    params = {'grouping': {'scope_keys': ['kp_TEST-chapter']}}
+    worker._compute('grouped_diagnosis', old_scope, exams, params)
+    entries = prewarm.recent_requests()
+    assert len(entries) == len(before) == 1
+    assert entries[0]['scope'] == current_scope
+    assert set(entries[0]['kinds']) == {'diagnosis', 'overview'}
+    assert 'targets' not in entries[0]
+    assert prewarm._recent_generation() == generation + 1
+    fail.append(True)
+    with pytest.raises(RuntimeError, match='TEST-replay-failure'):
+        worker._compute('grouped_diagnosis', old_scope, exams, params)
+    assert prewarm.recent_requests() == entries
+    # Failure restores this thread's normal foreground recording as well.
+    prewarm.record_request('diagnosis', scope=old_scope, exam_scope=exams, params={})
+    assert prewarm.recent_requests()[-1]['scope'] == old_scope
+    assert prewarm._recent_generation() == generation + 2
+    prewarm.clear_recent_requests()
 
 
 def test_prewarm_reuses_the_foreground_assistant_cache_keys(training_services, monkeypatch):

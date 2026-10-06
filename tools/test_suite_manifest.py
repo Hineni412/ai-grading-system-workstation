@@ -178,6 +178,7 @@ DATABASE_BASELINE_TEST_PATHS = frozenset(
         "tests/test_secondary_error_persistence.py",
         "tests/test_session_cleanup.py",
         "tests/test_session_question_bank_sync_job.py",
+        "tests/test_skill_candidates.py",
         "tests/test_smoke_check.py",
         "tests/test_student_roster_service.py",
         "tests/test_template_upload_service.py",
