@@ -234,7 +234,7 @@ function onCloseAutoFocus(event: Event): void {
     /* Primitive as-child 会接管 trigger 的 ref，改为查询当前真实节点
        （模式切换后 reka 缓存的节点可能已脱离 DOM） */
     rootRef.value
-      ?.querySelector<HTMLElement>('.exam-switcher__card, .exam-switcher__icon')
+      ?.querySelector<HTMLElement>('.exam-switcher__card')
       ?.focus()
   }
   interactedOutside.value = false
@@ -257,9 +257,11 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
     <PopoverRoot v-model:open="open">
       <PopoverTrigger as-child>
         <!-- 单个持久按钮：模式切换只改内容与样式，元素不被替换，
-             否则 reka 缓存的 trigger 节点脱离 DOM，popover 锚点会漂移到 0,0 -->
+             否则 reka 缓存的 trigger 节点脱离 DOM，popover 锚点会漂移到 0,0。
+             图标轨收起态由 CSS 把同一按钮缩成图标钮，悬停展开侧栏时恢复整张卡片 -->
         <button
-          :class="isRail ? 'exam-switcher__icon' : 'exam-switcher__card'"
+          class="exam-switcher__card"
+          :class="{ 'exam-switcher__card--rail': isRail }"
           type="button"
           :aria-label="isRail ? iconAriaLabel : undefined"
           :title="isRail ? iconAriaLabel : undefined"
@@ -271,29 +273,27 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocumentKeydown)
             </span>
             <span v-if="railVolumeAbbrev" class="exam-switcher__term">{{ railVolumeAbbrev }}</span>
           </template>
-          <template v-else>
-            <span class="exam-switcher__label-row">
-              <span class="exam-switcher__label">当前考试</span>
-              <span
-                v-if="currentStatusLabel"
-                class="exam-switcher__status"
-                :data-tone="currentStatusTone"
-              >{{ currentStatusLabel }}</span>
-            </span>
-            <span class="exam-switcher__name-row">
-              <span class="exam-switcher__name" :class="{ 'is-empty': !currentSession }">
-                {{ currentSession?.name ?? '未选择考试' }}
-              </span>
-              <span v-if="cardAttention" class="exam-switcher__attention" aria-hidden="true"></span>
-              <ChevronDown :size="14" :stroke-width="1.8" aria-hidden="true" class="exam-switcher__chevron" />
-            </span>
+          <span class="exam-switcher__label-row">
+            <span class="exam-switcher__label">当前考试</span>
             <span
-              v-if="currentMetaText"
-              class="exam-switcher__meta"
-              :class="{ 'is-attention': currentMetaAttention }"
-              :title="currentMetaText"
-            >{{ currentMetaText }}</span>
-          </template>
+              v-if="currentStatusLabel"
+              class="exam-switcher__status"
+              :data-tone="currentStatusTone"
+            >{{ currentStatusLabel }}</span>
+          </span>
+          <span class="exam-switcher__name-row">
+            <span class="exam-switcher__name" :class="{ 'is-empty': !currentSession }">
+              {{ currentSession?.name ?? '未选择考试' }}
+            </span>
+            <span v-if="cardAttention" class="exam-switcher__attention" aria-hidden="true"></span>
+            <ChevronDown :size="14" :stroke-width="1.8" aria-hidden="true" class="exam-switcher__chevron" />
+          </span>
+          <span
+            v-if="currentMetaText"
+            class="exam-switcher__meta"
+            :class="{ 'is-attention': currentMetaAttention }"
+            :title="currentMetaText"
+          >{{ currentMetaText }}</span>
         </button>
       </PopoverTrigger>
 

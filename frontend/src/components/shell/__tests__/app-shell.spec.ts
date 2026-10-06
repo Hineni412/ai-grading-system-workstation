@@ -126,6 +126,21 @@ describe('AppShell', () => {
     expect(config.editorEdits[0]?.standard_answer).toBe('未保存的合成答案')
     app.unmount()
   })
+  it('renders the full exam card inside the rail trigger so hover expansion can show it', async () => {
+    /* jsdom 的 matchMedia 全部不匹配 → 普通页面为图标轨模式；
+       悬停展开由 CSS 完成，这里只断言卡片内容仍在同一触发按钮中 */
+    const { app, host } = await mountShell()
+    const sessions = useSessionStore()
+    sessions.sessions = [{ id: 7, name: '合成考试', status: 'created', is_deleted: false, deleted_at: null, created_at: null, updated_at: null }]
+    sessions.selectSession(7)
+    await settleUi()
+    expect(host.querySelector('.app-shell--rail')).not.toBeNull()
+    const trigger = host.querySelector<HTMLButtonElement>('.exam-switcher__card')!
+    expect(trigger.classList.contains('exam-switcher__card--rail')).toBe(true)
+    expect(trigger.querySelector('.exam-switcher__icon-box')).not.toBeNull()
+    expect(trigger.querySelector('.exam-switcher__name')!.textContent).toContain('合成考试')
+    app.unmount()
+  })
   it('opens task center from the sidebar and cancels through the existing job store', async () => {
     const { app, host } = await mountShell({ path: '/question-bank', stubPages: true })
     const jobs = useJobStore()

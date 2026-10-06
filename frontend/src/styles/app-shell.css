@@ -355,14 +355,6 @@
   box-shadow: var(--sidebar-focus-ring);
 }
 
-.exam-switcher__icon:focus-visible {
-  outline: none;
-}
-
-.exam-switcher__icon:focus-visible .exam-switcher__icon-box {
-  box-shadow: var(--sidebar-focus-ring);
-}
-
 .exam-switcher__label-row {
   display: flex;
   min-width: 0;
@@ -437,26 +429,35 @@
   color: var(--sidebar-status-attention);
 }
 
-/* 图标轨模式：36×36 图标盒左锚定到导航图标列（不再居中于行宽），
-   悬停展开/宽度过渡时图标 x 位置与链接列保持一致，学期缩写置于盒下 */
+/* 图标轨收起态（侧栏未悬停/未聚焦）：切换卡缩成 36px 图标钮，
+   图标盒左锚定到导航图标列，学期缩写置于盒下；
+   悬停/聚焦展开侧栏时同一按钮恢复整张卡片，图标部分让位 */
 .exam-switcher--rail {
   display: flex;
   justify-content: flex-start;
 }
 
-.exam-switcher__icon {
-  display: grid;
+.app-shell--rail .app-sidebar:not(:hover):not(:focus-within) .exam-switcher__card--rail {
   width: 36px;
   /* 链接图标因 1px 描边内缩，中心线在 x=29；图标盒补 1px 对齐 */
   margin-inline-start: 1px;
   justify-items: center;
   gap: 3px;
   padding: 0;
-  border: 0;
+  border-width: 0;
   background: transparent;
   color: var(--sidebar-ink-2);
-  font: inherit;
-  cursor: pointer;
+}
+
+.app-shell--rail .app-sidebar:not(:hover):not(:focus-within) .exam-switcher__card--rail .exam-switcher__label-row,
+.app-shell--rail .app-sidebar:not(:hover):not(:focus-within) .exam-switcher__card--rail .exam-switcher__name-row,
+.app-shell--rail .app-sidebar:not(:hover):not(:focus-within) .exam-switcher__card--rail .exam-switcher__meta {
+  display: none;
+}
+
+.app-shell--rail .app-sidebar:is(:hover, :focus-within) .exam-switcher__icon-box,
+.app-shell--rail .app-sidebar:is(:hover, :focus-within) .exam-switcher__term {
+  display: none;
 }
 
 .exam-switcher__icon-box {
@@ -471,11 +472,6 @@
   transition:
     background-color var(--duration-fast),
     color var(--duration-fast);
-}
-
-.exam-switcher__icon:hover .exam-switcher__icon-box {
-  background: var(--sidebar-hover);
-  color: var(--sidebar-ink-1);
 }
 
 .exam-switcher__term {
