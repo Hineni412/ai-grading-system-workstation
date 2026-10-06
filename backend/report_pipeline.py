@@ -15,6 +15,7 @@ import json
 import logging
 import tempfile
 from collections.abc import Callable
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -256,33 +257,56 @@ def generate_session_class_reports(
     cache = AnalysisNarrativeCache(Path(reports_dir) / NARRATIVE_CACHE_DIRNAME)
     generated = 0
     failed = 0
-    for index, (name, group, digest) in enumerate(pending):
-        context.raise_if_cancelled()
-        context.report(
-            lo + (hi - lo) * index / max(1, len(pending)),
-            progress_stage,
-            f"正在生成班级报告 {name}",
-        )
-        narrative = _class_narrative(
-            client=client,
-            cache=cache,
-            session_id=int(session_id),
-            revision=str(revision),
-            class_name=name,
-            cause_digest=digest,
-            prompt=build_report_prompt(
-                CLASS_SYSTEM_PROMPT, build_class_payload(group, error_records)
-            ),
-        )
-        class_reports[name] = {
-            "status": "ready" if narrative is not None else "failed",
-            "narrative": narrative,
-            "cause_digest": digest,
-        }
-        if narrative is not None:
-            generated += 1
-        else:
-            failed += 1
+    # 各班叙述的模型调用按设置页并发数并行；缓存与状态写回留在主线程按
+    # 完成顺序处理（ClassAnalysisStateStore 的读改写不是线程安全的）。
+    execution = getattr(
+        getattr(client, "config_gateway", None), "execution_snapshot", None
+    )
+    parallel_limit = max(1, int(getattr(execution, "max_in_flight", 1)))
+    if pending:
+
+        def _call(item: tuple[str, Any, str]) -> tuple[str, str, Any]:
+            name, group, digest = item
+            narrative = _class_narrative(
+                client=client,
+                cache=cache,
+                session_id=int(session_id),
+                revision=str(revision),
+                class_name=name,
+                cause_digest=digest,
+                prompt=build_report_prompt(
+                    CLASS_SYSTEM_PROMPT, build_class_payload(group, error_records)
+                ),
+            )
+            return name, digest, narrative
+
+        done = 0
+        with ThreadPoolExecutor(
+            max_workers=min(len(pending), parallel_limit),
+            thread_name_prefix="class-report",
+        ) as executor:
+            inflight = {executor.submit(_call, item): None for item in pending}
+            while inflight:
+                finished, _ = wait(inflight, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    inflight.pop(future)
+                    name, digest, narrative = future.result()
+                    class_reports[name] = {
+                        "status": "ready" if narrative is not None else "failed",
+                        "narrative": narrative,
+                        "cause_digest": digest,
+                    }
+                    if narrative is not None:
+                        generated += 1
+                    else:
+                        failed += 1
+                    done += 1
+                    context.report(
+                        lo + (hi - lo) * done / max(1, len(pending)),
+                        progress_stage,
+                        f"正在生成班级报告 {name}",
+                    )
+                context.raise_if_cancelled()
     context.raise_if_cancelled()
     status = (
         "ready"

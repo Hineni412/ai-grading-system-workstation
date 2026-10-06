@@ -5,6 +5,7 @@ import sqlite3
 import warnings
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -716,6 +717,44 @@ def test_personal_report_teacher_and_bank_changes_invalidate_input(analysis_db, 
             conn.execute("""INSERT INTO teacher_score_locks(session_id,scan_batch_id,student_id,question_id,score_awarded,max_score,deduction_reason,source_target_type,source_target_id)
                 VALUES (?,'test-personal',?,'Q2',29,40,'教师补充批语','exam_paper',?)""", (sid, student_id, db.results.get_result_context(student["result_id"])["paper_id"]))
     assert student_report_revision(db, sid, student_id) != before
+
+
+@pytest.mark.parametrize("limit", [8, 1])
+def test_personal_report_executor_follows_configured_concurrency(
+    analysis_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit: int,
+) -> None:
+    """个人报告线程池并发数跟随模型配置，不再被固定上限 3 截断。"""
+    import backend.reporting.analysis_report_exporter as exporter_module
+
+    db, session_id, _root = analysis_db
+    client = FakeLLMClient()
+    client.config_gateway = SimpleNamespace(
+        execution_snapshot=SimpleNamespace(max_in_flight=limit)
+    )
+    captured: list[int] = []
+    real_executor = exporter_module.ThreadPoolExecutor
+
+    class Recorder:
+        def __init__(self, *args, **kwargs):
+            if kwargs.get("thread_name_prefix") == "personal-report":
+                captured.append(kwargs["max_workers"])
+            self._pool = real_executor(*args, **kwargs)
+
+        def __enter__(self):
+            return self._pool.__enter__()
+
+        def __exit__(self, *exc):
+            return self._pool.__exit__(*exc)
+
+        def submit(self, *args, **kwargs):
+            return self._pool.submit(*args, **kwargs)
+
+    monkeypatch.setattr(exporter_module, "ThreadPoolExecutor", Recorder)
+    generator = _make_generator(db, tmp_path / "out", tmp_path / "cache", client)
+    generator.export_session(
+        session_id, "personal_analysis_html", score_revision="rev-1"
+    )
+    assert captured == [limit]
 
 
 def test_personal_index_corruption_and_caller_thread_writes(analysis_db, monkeypatch):

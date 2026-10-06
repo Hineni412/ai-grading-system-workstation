@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -897,3 +899,233 @@ def test_question_detail_skill_edit_endpoint(tmp_path):
     assert response.status_code == 200, response.text
     row = _detail_pattern(response.json(), pid)
     assert (row["skill_key"], row["skill_source"]) == (_SKILL_KEY, "criterion")
+
+
+# ── 并行错因整理与班级报告并发 ────────────────────────────────────
+
+
+def _v3_cause_source(question_id: str) -> dict:
+    """不关联题库、非选择非填空的最小输入：plan_cause_question 走 v3 整题整理。"""
+    return {
+        "question_id": question_id,
+        "question_text": "题干",
+        "reference_analysis": "",
+        "canonical_answer": "x=2",
+        "rubric": {"max_score": 10},
+        "evidence": [{"id": f"{question_id}.e1", "student_answer": "错答"}],
+        "known_patterns": [],
+    }
+
+
+class _ConcurrentCauseClient:
+    """按题号返回指定错法名；记录并发峰值；名称合并请求单独计数。"""
+
+    def __init__(self, *, max_in_flight, reasons=None, merge_payload=None,
+                 merge_error=None, barrier=None, barrier_calls=0):
+        self.config_gateway = SimpleNamespace(
+            execution_snapshot=SimpleNamespace(max_in_flight=max_in_flight))
+        self._lock = threading.Lock()
+        self.inflight = 0
+        self.peak = 0
+        self.calls: list[dict] = []
+        self.merge_calls = 0
+        self._reasons = reasons or {}
+        self._merge_payload = merge_payload if merge_payload is not None else {"merges": []}
+        self._merge_error = merge_error
+        self._barrier = barrier
+        self._barrier_calls = barrier_calls
+
+    def json_from_text(self, prompt, extra_kwargs=None, **_kwargs):
+        body = json.loads(prompt.rsplit("\n", 1)[1])
+        is_merge = isinstance(body, dict) and "fresh" in body and "library" in body
+        with self._lock:
+            self.inflight += 1
+            self.peak = max(self.peak, self.inflight)
+            self.calls.append(body)
+            number = len(self.calls)
+        try:
+            if is_merge:
+                self.merge_calls += 1
+                if self._merge_error is not None:
+                    raise self._merge_error
+                return dict(self._merge_payload)
+            if self._barrier is not None and number <= self._barrier_calls:
+                self._barrier.wait()
+            qid = str(body["question_id"])
+            reason, category = self._reasons.get(qid, ("规范错法", "计算与化简"))
+            return {"groups": [{
+                "kind": "error", "category": category, "reason": reason,
+                "manifestation": "本题表现",
+                "evidence_ids": [item["id"] for item in body["evidence"]],
+            }]}
+        finally:
+            with self._lock:
+                self.inflight -= 1
+
+
+def _run_parallel_causes(tmp_path, monkeypatch, sources, client):
+    import backend.class_analysis as causes
+    import backend.error_patterns as pattern_module
+
+    path, _qid = _choice_question(tmp_path)
+    store = ClassAnalysisStateStore(tmp_path / "reports")
+    monkeypatch.setattr(
+        causes, "assemble_cause_data",
+        lambda *a, **k: SimpleNamespace(questions=[], students=[], rubric=None),
+    )
+    monkeypatch.setattr(causes, "build_cause_inputs", lambda *a, **k: sources)
+    monkeypatch.setattr(
+        pattern_module, "sync_session_patterns_to_bank", lambda *a, **k: 0)
+    context = SimpleNamespace(
+        payload={"session_id": 3},
+        raise_if_cancelled=lambda: None,
+        report=lambda *a, **k: None,
+    )
+    return causes.run_cause_analysis(
+        context,
+        db=SimpleNamespace(db_path=path.parent / "grading_system.db"),
+        data_root=tmp_path,
+        store=store,
+        llm_client_factory=lambda: client,
+    ), store
+
+
+def test_cause_analysis_questions_run_in_parallel(tmp_path, monkeypatch):
+    client = _ConcurrentCauseClient(
+        max_in_flight=4,
+        barrier=threading.Barrier(3, timeout=5),
+        barrier_calls=3,
+    )
+    sources = [_v3_cause_source(f"Q{i}") for i in range(1, 5)]
+    outcome, store = _run_parallel_causes(tmp_path, monkeypatch, sources, client)
+    # 前 3 个请求互相等待，串行执行会超时；能完成即证明并发 ≥3。
+    assert outcome["status"] == "ready" and outcome["failed_questions"] == 0
+    assert client.peak >= 3
+    assert len(client.calls) == 4  # 只有一个新错法名 → 不发合并请求
+    questions = store.load(3)["cause_analysis"]["questions"]
+    assert set(questions) == {"Q1", "Q2", "Q3", "Q4"}
+    assert all(not entry["failed"] for entry in questions.values())
+
+
+def test_cause_analysis_respects_configured_single_worker(tmp_path, monkeypatch):
+    client = _ConcurrentCauseClient(max_in_flight=1)
+    sources = [_v3_cause_source(f"Q{i}") for i in range(1, 5)]
+    outcome, _store = _run_parallel_causes(tmp_path, monkeypatch, sources, client)
+    assert outcome["status"] == "ready"
+    assert client.peak == 1
+
+
+def test_cause_analysis_parallel_writes_do_not_lose_results(tmp_path, monkeypatch):
+    reasons = {f"Q{i}": (f"错法{i}", "计算与化简") for i in range(1, 7)}
+    client = _ConcurrentCauseClient(max_in_flight=4, reasons=reasons)
+    sources = [_v3_cause_source(qid) for qid in reasons]
+    outcome, store = _run_parallel_causes(tmp_path, monkeypatch, sources, client)
+    assert outcome["status"] == "ready"
+    state = store.load(3)
+    assert set(state["cause_analysis"]["questions"]) == set(reasons)
+    assert set(state["error_records"]) == set(reasons)
+    assert client.merge_calls == 1  # 6 个新错法名 → 发一次合并请求
+
+
+def test_cause_analysis_merge_unifies_only_same_category_names(tmp_path, monkeypatch):
+    client = _ConcurrentCauseClient(
+        max_in_flight=4,
+        reasons={
+            "Q1": ("多加水平边", "审题与条件"),
+            "Q2": ("绳长多加一段", "审题与条件"),
+            "Q3": ("符号错误", "计算与化简"),
+        },
+        merge_payload={"merges": [
+            {"from": "绳长多加一段", "to": "多加水平边"},
+            {"from": "符号错误", "to": "多加水平边"},
+        ]},
+    )
+    sources = [_v3_cause_source(qid) for qid in ("Q1", "Q2", "Q3")]
+    outcome, store = _run_parallel_causes(tmp_path, monkeypatch, sources, client)
+    assert outcome["status"] == "ready" and outcome["name_merges"] == 1
+    questions = store.load(3)["cause_analysis"]["questions"]
+    assert {g["reason"] for g in questions["Q1"]["result"]["groups"]} == {"多加水平边"}
+    assert {g["reason"] for g in questions["Q2"]["result"]["groups"]} == {"多加水平边"}
+    assert {g["reason"] for g in questions["Q3"]["result"]["groups"]} == {"符号错误"}
+    merges = store.load(3)["cause_analysis"]["name_merges"]["cause_name_merges"]
+    assert merges == [
+        {"from": "绳长多加一段", "to": "多加水平边", "question_ids": ["Q2"]}
+    ]
+
+
+def test_cause_analysis_merge_call_failure_is_nonfatal(tmp_path, monkeypatch):
+    client = _ConcurrentCauseClient(
+        max_in_flight=4,
+        reasons={"Q1": ("错法甲", "计算与化简"), "Q2": ("错法乙", "计算与化简")},
+        merge_error=RuntimeError("merge unavailable"),
+    )
+    sources = [_v3_cause_source(qid) for qid in ("Q1", "Q2")]
+    outcome, store = _run_parallel_causes(tmp_path, monkeypatch, sources, client)
+    assert outcome["status"] == "ready" and outcome["name_merges"] == 0
+    questions = store.load(3)["cause_analysis"]["questions"]
+    assert {g["reason"] for g in questions["Q1"]["result"]["groups"]} == {"错法甲"}
+    assert {g["reason"] for g in questions["Q2"]["result"]["groups"]} == {"错法乙"}
+
+
+def test_cause_analysis_single_fresh_name_skips_merge_call(tmp_path, monkeypatch):
+    client = _ConcurrentCauseClient(max_in_flight=4)
+    sources = [_v3_cause_source(qid) for qid in ("Q1", "Q2")]
+    outcome, _store = _run_parallel_causes(tmp_path, monkeypatch, sources, client)
+    assert outcome["status"] == "ready"
+    assert len(client.calls) == 2 and client.merge_calls == 0
+
+
+def test_class_reports_generate_in_parallel(tmp_path, monkeypatch):
+    import backend.report_pipeline as pipeline
+    import backend.reporting.analysis_report_exporter as exporter_module
+    import backend.session_analysis as session_analysis
+
+    lock = threading.Lock()
+    inflight = [0]
+    peak = [0]
+    barrier = threading.Barrier(2, timeout=5)
+
+    class _Client:
+        config_gateway = SimpleNamespace(
+            execution_snapshot=SimpleNamespace(max_in_flight=4))
+
+        def json_from_text(self, prompt, extra_kwargs=None, **_kwargs):
+            with lock:
+                inflight[0] += 1
+                peak[0] = max(peak[0], inflight[0])
+            try:
+                barrier.wait()
+                return {"key_findings": [], "common_issues": [], "student_notes": []}
+            finally:
+                with lock:
+                    inflight[0] -= 1
+
+    groups = {
+        name: SimpleNamespace(students=[SimpleNamespace(student_id=index)])
+        for index, name in enumerate(("1 班", "2 班"), start=1)
+    }
+    monkeypatch.setattr(
+        session_analysis, "assemble_session_analysis",
+        lambda *a, **k: SimpleNamespace(students=[object()], small_sample=False),
+    )
+    monkeypatch.setattr(
+        session_analysis, "split_session_analysis_by_class", lambda _data: groups)
+    monkeypatch.setattr(pipeline, "session_error_records", lambda *a, **k: {})
+    monkeypatch.setattr(exporter_module, "build_class_payload", lambda *a, **k: {})
+    monkeypatch.setattr(exporter_module, "build_report_prompt", lambda *a, **k: "prompt")
+
+    context = SimpleNamespace(
+        payload={"session_id": 3}, raise_if_cancelled=lambda: None,
+        report=lambda *a, **k: None,
+    )
+    reports_dir = tmp_path / "reports"
+    summary = pipeline.generate_session_class_reports(
+        context, db=SimpleNamespace(), session_id=3, revision="r1",
+        reports_dir=reports_dir, data_root=tmp_path, client=_Client(),
+    )
+    # 两班叙述请求互相等待：串行执行会超时，完成即证明并发 ≥2。
+    assert summary["status"] == "ready" and summary["generated"] == 2
+    assert peak[0] >= 2
+    state = ClassAnalysisStateStore(reports_dir).load(3)
+    assert all(
+        entry["status"] == "ready" for entry in state["class_reports"].values())

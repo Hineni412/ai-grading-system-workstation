@@ -3376,7 +3376,9 @@ class AnalysisReportGenerator:
         else:
             error_maps = {}
         execution = getattr(getattr(client, "config_gateway", None), "execution_snapshot", None)
-        parallel_limit = min(3, max(1, int(getattr(execution, "max_in_flight", 3))))
+        # 并发数跟随 AI 服务设置页的并发配置（自动=20、自定义=N、保守=1）；
+        # 网关仍按实际限速节流。
+        parallel_limit = max(1, int(getattr(execution, "max_in_flight", 1)))
 
         def prepare(executor, data, student):
             paper_context = _student_paper_context(self.repositories, data, student)
@@ -3536,6 +3538,8 @@ def plan_cause_calls(
 
     retry_failed=False、upgrade_pre_step=False 对应导出前置阶段与自动管线：
     失败题不重发、v3 兼容结果不升级；手动口径把两者都算作待做。
+    待整理题目不少于 2 时，整理完成后还有一次统一错法名的小调用，
+    预估按 +1 计入 call_count。
     """
     from backend.class_analysis import (
         CAUSE_ANALYSIS_PROMPT,
@@ -3629,7 +3633,7 @@ def plan_cause_calls(
     return {
         "total_questions": len(sources),
         "pending_questions": pending_questions,
-        "call_count": call_count,
+        "call_count": call_count + (1 if pending_questions >= 2 else 0),
         "estimated_tokens": estimated_tokens,
     }
 

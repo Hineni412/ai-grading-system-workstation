@@ -24,6 +24,7 @@ import logging
 import os
 import threading
 from collections.abc import Callable, Iterable
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -81,6 +82,13 @@ reason 为可复用的规范名称，例如“选错目标量的组成部分”�
 肯定表述不成为错因；全部证据只支持正确、且没有任何待核对方面时放 positive_ids。整条不足以整理的放 uncertain_ids，遗漏项也由系统保留待核对。
 仅返回 JSON：{"groups":[{"kind":"error","category":"计算与化简","reason":"规范错因","manifestation":"本题证据支持的具体表现","evidence_ids":["E1"],"source_question_id":null}],"positive_ids":[],"uncertain_ids":[]}。
 覆盖全部输入 id（带 failed_steps 的证据以其步骤 id 计），只用输入 id；同一 id 可在多个组，但 positive_ids、uncertain_ids 与组成员互斥。不要输出人数、姓名、分数或评分调整；人数由系统去重。
+"""
+
+CAUSE_NAME_MERGE_PROMPT = """你是数学教师，负责统一一场考试里各题刚整理出的错法名称。
+fresh 是本场各题新起的规范错因名（reason），library 是题库和本场已有的名称。
+只做一件事：找出 fresh 里与 library 或其他 fresh 项同义的名称，把它们并到一个名称上。
+规则：同一 category 内才能合并；优先并到 library 里已有的名称；两个 fresh 同义时并到更通用、更规范的那个；表现不同但本质相同的错法应合并，只是场景不同的不同错法不要合并；拿不准就不合并。
+仅返回 JSON：{"merges":[{"from":"被合并的 fresh 名称","to":"保留的名称"}]}。没有可合并的返回 {"merges":[]}。
 """
 
 
@@ -946,16 +954,74 @@ def plan_cause_question(
     return {"path": "v3", "needs_call": True}
 
 
+def _option_model_call(client: Any, plan: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+    """纯模型调用：选项诊断返回补全后的 {选项: 错法}；不写任何状态。"""
+    from backend.error_patterns import (
+        OPTION_ANALYSIS_PROMPT,
+        build_option_analysis_input,
+        normalize_option_analysis,
+    )
+
+    call_input = build_option_analysis_input(
+        plan["text"], plan["correct"], str(source.get("reference_analysis") or ""))
+    call_input["missing_options"] = [
+        letter for letter in plan["required"]
+        if letter not in plan.get("base_patterns", {})
+    ]
+    payload = client.json_from_text(
+        OPTION_ANALYSIS_PROMPT + "\n" + json.dumps(call_input, ensure_ascii=False),
+        extra_kwargs={"temperature": 0.2, "max_tokens": 8000},
+    )
+    predicted = normalize_option_analysis(
+        payload, option_letters=plan["letters"], correct_option=plan["correct"])
+    blocked = set(plan.get("blocked") or ())
+    return {
+        letter: item
+        for letter, item in {**predicted, **plan.get("base_patterns", {})}.items()
+        if letter not in blocked
+    }
+
+
+def _save_option_plan(
+    *, store: Any, session_id: int, source: dict[str, Any], data: Any,
+    plan: dict[str, Any], patterns: dict[str, Any], source_label: str,
+) -> None:
+    """选项映射的持久化：诊断结果归档 + 错因结果保存；只在主线程调用。"""
+    from backend.error_patterns import (
+        OPTION_ANALYSIS_VERSION,
+        save_option_analysis,
+        synthesize_option_result,
+    )
+
+    save_option_analysis(store, session_id, source["question_id"], {
+        "version": OPTION_ANALYSIS_VERSION,
+        "input_fingerprint": plan["fingerprint"],
+        "bank_question_id": plan["bank_id"], "analysis": patterns,
+        "source": source_label, "analyzed_at": _now_iso(), "failed": False,
+    })
+    save_cause_result(store, session_id, source,
+                      synthesize_option_result(source, patterns),
+                      origin="option_map", data=data)
+
+
+def _option_failure_record(plan: dict[str, Any]) -> dict[str, Any]:
+    from backend.error_patterns import OPTION_ANALYSIS_VERSION
+
+    return {
+        "version": OPTION_ANALYSIS_VERSION,
+        "input_fingerprint": plan["fingerprint"],
+        "bank_question_id": plan["bank_id"], "failed": True,
+        "failed_input_fingerprint": plan["fingerprint"],
+    }
+
+
 def _run_option_plan(
     *, store: Any, session_id: int, source: dict[str, Any], data: Any,
     plan: dict[str, Any], get_client: Callable[[], Any],
 ) -> None:
     """执行选择题选项映射：patterns 缺失时调用一次模型做选项诊断。"""
     from backend.error_patterns import (
-        OPTION_ANALYSIS_PROMPT,
         OPTION_ANALYSIS_VERSION,
-        build_option_analysis_input,
-        normalize_option_analysis,
         save_option_analysis,
         synthesize_option_result,
     )
@@ -965,40 +1031,17 @@ def _run_option_plan(
         client = get_client()
         if client is None:
             raise ValueError("content generation model is not configured")
-        call_input = build_option_analysis_input(
-            plan["text"], plan["correct"], str(source.get("reference_analysis") or ""))
-        call_input["missing_options"] = [
-            letter for letter in plan["required"]
-            if letter not in plan.get("base_patterns", {})
-        ]
         try:
-            payload = client.json_from_text(
-                OPTION_ANALYSIS_PROMPT + "\n" + json.dumps(call_input, ensure_ascii=False),
-                extra_kwargs={"temperature": 0.2, "max_tokens": 8000},
-            )
-            predicted = normalize_option_analysis(
-                payload, option_letters=plan["letters"], correct_option=plan["correct"])
-            blocked = set(plan.get("blocked") or ())
-            patterns = {
-                letter: item
-                for letter, item in {**predicted, **plan.get("base_patterns", {})}.items()
-                if letter not in blocked
-            }
+            patterns = _option_model_call(client, plan, source)
         except Exception:
-            save_option_analysis(store, session_id, source["question_id"], {
-                "version": OPTION_ANALYSIS_VERSION,
-                "input_fingerprint": plan["fingerprint"],
-                "bank_question_id": plan["bank_id"], "failed": True,
-                "failed_input_fingerprint": plan["fingerprint"],
-            })
+            save_option_analysis(store, session_id, source["question_id"],
+                                 _option_failure_record(plan))
             raise
-        save_option_analysis(store, session_id, source["question_id"], {
-            "version": OPTION_ANALYSIS_VERSION,
-            "input_fingerprint": plan["fingerprint"],
-            "bank_question_id": plan["bank_id"], "analysis": patterns,
-            "source": "model", "analyzed_at": _now_iso(), "failed": False,
-        })
-    elif plan.get("patterns_source") == "bank_confirmed":
+        _save_option_plan(store=store, session_id=session_id, source=source,
+                          data=data, plan=plan, patterns=patterns,
+                          source_label="model")
+        return
+    if plan.get("patterns_source") == "bank_confirmed":
         save_option_analysis(store, session_id, source["question_id"], {
             "version": OPTION_ANALYSIS_VERSION,
             "input_fingerprint": plan["fingerprint"],
@@ -1062,7 +1105,7 @@ def run_cause_analysis(
     progress_band: tuple[float, float] = (0.0, 1.0),
     progress_stage: str = "class_analysis",
 ) -> dict[str, object]:
-    """逐题整理错因。
+    """各题并行整理错因；全部完成后再发一次很小的请求统一同义的错法名称。
 
     retry_failed=False 用于个人报告导出的前置阶段：整理失败的题不自动重发，
     报告照常生成、该题不显示错误类型；同一阶段 upgrade_pre_step=False：
@@ -1092,10 +1135,16 @@ def run_cause_analysis(
         sorted({bid for ctx in bank_context.values() for bid in ctx["bank_ids"]}),
     )
     data = assemble_cause_data(db, session_id, data_root=data_root)
-    sources = build_cause_inputs(
-        data,
-        known_patterns=known_cause_patterns(store, question_bank_path, session_id),
-    )
+    known = known_cause_patterns(store, question_bank_path, session_id)
+    sources = build_cause_inputs(data, known_patterns=known)
+    # 本次运行前题库与本场已有的错法名：整理后的名称合并只允许并到这些名称。
+    library_names: dict[str, Any] = {}
+    for item in [*(known.get("shared") or []),
+                 *(row for rows in (known.get("questions") or {}).values()
+                   for row in rows)]:
+        text = str(item.get("reason") or "").strip()
+        if text:
+            library_names.setdefault(text, item.get("category"))
     qtypes = {info.question_id: str(info.question_type or "") for info in data.questions}
     client = None
 
@@ -1107,7 +1156,9 @@ def run_cause_analysis(
 
     failed = 0
     lo, hi = progress_band
-    fresh_patterns: list[dict[str, Any]] = []
+    specs: list[dict[str, Any]] = []
+    # 第一阶段（主线程，无模型调用）：复用/跳过判定与零调用路径原样执行；
+    # 需要模型的题只收集调用规格，整理完成后统一发并行请求。
     for index, source in enumerate(sources):
         context.raise_if_cancelled()
         state = store.load(session_id) or {}
@@ -1143,41 +1194,32 @@ def run_cause_analysis(
             if plan["path"] == "skip":
                 continue
             if plan["path"] == "option":
-                _run_option_plan(store=store, session_id=session_id, source=source,
-                                 data=data, plan=plan["option"], get_client=get_client)
+                if plan.get("needs_call"):
+                    specs.append({
+                        "kind": "option", "source": source, "plan": plan["option"],
+                        "fingerprint": fingerprint, "saved": saved,
+                    })
+                else:
+                    _run_option_plan(store=store, session_id=session_id,
+                                     source=source, data=data,
+                                     plan=plan["option"], get_client=get_client)
                 continue
             if plan["path"] == "fill_covered":
                 save_cause_result(store, session_id, source, plan["payload"],
                                   origin="pattern_library", data=data)
                 continue
-            if get_client() is None:
-                raise ValueError("content generation model is not configured")
-            # 本次整理新产出的错法名也喂给后续题目，促使跨题复用同一名称；
-            # 存储的 input 仍是不含动态项的快照，指纹不受提示词变化影响。
-            prompt_source = {
-                **source,
-                "known_patterns": _merge_known_patterns(source.get("known_patterns"), fresh_patterns),
-            }
-            prompt = CAUSE_ANALYSIS_PROMPT + "\n" + json.dumps(prompt_source, ensure_ascii=False)
-            payload = client.json_from_text(prompt, extra_kwargs={"temperature": 0.2, "max_tokens": 12000})
-            context.raise_if_cancelled()
-            result = save_cause_result(store, session_id, source, payload, data=data)
-            if qtype in FILL_TYPES:
-                additions = additions_from_v3_result(
-                    source, result, source.get("canonical_answer"))
-                if additions:
-                    record_answer_patterns(
-                        store, session_id,
-                        parent_question_id(source["question_id"]), additions,
-                        bank_question_id=ctx.get("bank_id"),
-                    )
-            for group in result["groups"]:
-                if group["kind"] in CAUSE_KIND_CATEGORIES:
-                    fresh_patterns.append({
-                        "reason": group["reason"],
-                        "category": group.get("category"),
-                        "scope": "本次整理",
-                    })
+            specs.append({
+                "kind": "v3",
+                "source": source,
+                "prompt": CAUSE_ANALYSIS_PROMPT + "\n" + json.dumps(
+                    {**source, "known_patterns": source.get("known_patterns")},
+                    ensure_ascii=False,
+                ),
+                "qtype": qtype,
+                "ctx": ctx,
+                "fingerprint": fingerprint,
+                "saved": saved,
+            })
         except Exception:
             context.raise_if_cancelled()
             failed += 1
@@ -1186,6 +1228,135 @@ def run_cause_analysis(
                 **saved, "failed": True, "failed_input_fingerprint": fingerprint,
             }
             store.save(session_id, cause_analysis={"questions": old})
+    name_merges = 0
+    if specs:
+        if get_client() is None:
+            raise ValueError("content generation model is not configured")
+        # 第二阶段（工作线程）：只做模型调用，不写状态；
+        # 并发数跟随 AI 服务设置页的并发配置，网关仍按实际限速节流。
+        execution = getattr(
+            getattr(client, "config_gateway", None), "execution_snapshot", None
+        )
+        parallel_limit = max(1, int(getattr(execution, "max_in_flight", 1)))
+        fresh: dict[str, dict[str, Any]] = {}
+        saved_v3: dict[str, dict[str, Any]] = {}
+
+        def _cause_call(spec: dict[str, Any]) -> Any:
+            if spec["kind"] == "option":
+                return _option_model_call(client, spec["plan"], spec["source"])
+            return client.json_from_text(
+                spec["prompt"],
+                extra_kwargs={"temperature": 0.2, "max_tokens": 12000},
+            )
+
+        # 第三阶段（主线程）：按完成顺序做与串行版相同的持久化与失败登记。
+        done = 0
+        with ThreadPoolExecutor(
+            max_workers=min(len(specs), parallel_limit),
+            thread_name_prefix="cause-analysis",
+        ) as executor:
+            inflight = {executor.submit(_cause_call, spec): spec for spec in specs}
+            while inflight:
+                finished, _ = wait(inflight, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    spec = inflight.pop(future)
+                    source = spec["source"]
+                    call_error = future.exception()
+                    try:
+                        if call_error is not None:
+                            raise call_error
+                        payload = future.result()
+                        context.raise_if_cancelled()
+                        if spec["kind"] == "option":
+                            _save_option_plan(store=store, session_id=session_id,
+                                              source=source, data=data,
+                                              plan=spec["plan"], patterns=payload,
+                                              source_label="model")
+                        else:
+                            result = save_cause_result(
+                                store, session_id, source, payload, data=data)
+                            saved_v3[source["question_id"]] = {
+                                "source": source, "result": result,
+                            }
+                            if spec["qtype"] in FILL_TYPES:
+                                additions = additions_from_v3_result(
+                                    source, result, source.get("canonical_answer"))
+                                if additions:
+                                    record_answer_patterns(
+                                        store, session_id,
+                                        parent_question_id(source["question_id"]),
+                                        additions,
+                                        bank_question_id=spec["ctx"].get("bank_id"),
+                                    )
+                            for group in result["groups"]:
+                                if group["kind"] in CAUSE_KIND_CATEGORIES:
+                                    reason = str(group.get("reason") or "").strip()
+                                    if reason and reason not in library_names:
+                                        entry = fresh.setdefault(reason, {
+                                            "reason": reason,
+                                            "category": group.get("category"),
+                                            "manifestation": "",
+                                            "question_ids": [],
+                                        })
+                                        if not entry["manifestation"]:
+                                            variant = next(
+                                                (v for v in group.get("manifestations") or []
+                                                 if str(v.get("description") or "").strip()),
+                                                {},
+                                            )
+                                            entry["manifestation"] = str(
+                                                variant.get("description") or "")
+                                        entry["question_ids"].append(source["question_id"])
+                    except Exception:
+                        context.raise_if_cancelled()
+                        failed += 1
+                        # 失败不重发；其他已完成题目继续可用，旧输入的结果仍由读取端判定是否过期。
+                        questions = (((store.load(session_id) or {})
+                                      .get("cause_analysis") or {})
+                                     .get("questions")) or {}
+                        questions[source["question_id"]] = {
+                            **spec["saved"], "failed": True,
+                            "failed_input_fingerprint": spec["fingerprint"],
+                        }
+                        store.save(session_id,
+                                   cause_analysis={"questions": questions})
+                        if spec["kind"] == "option" and call_error is not None:
+                            from backend.error_patterns import save_option_analysis
+                            save_option_analysis(
+                                store, session_id, source["question_id"],
+                                _option_failure_record(spec["plan"]))
+                    done += 1
+                    context.report(
+                        lo + (hi - lo) * done / max(1, len(sources)),
+                        progress_stage, "grouping_error_causes",
+                    )
+                    context.raise_if_cancelled()
+        # 第四阶段（主线程）：新错法名不少于 2 个时发一次小请求统一同义名称；
+        # 合并失败只记日志，不影响本场整理结果。
+        if len(fresh) >= 2:
+            try:
+                merge_payload = client.json_from_text(
+                    CAUSE_NAME_MERGE_PROMPT + "\n" + json.dumps(
+                        {
+                            "library": [
+                                {"reason": reason, "category": category}
+                                for reason, category in library_names.items()
+                            ],
+                            "fresh": list(fresh.values()),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    extra_kwargs={"temperature": 0.1, "max_tokens": 4000},
+                )
+                rename = _resolve_cause_name_merges(
+                    merge_payload, fresh, library_names)
+            except Exception:
+                LOGGER.warning(
+                    "session %s cause name merge failed", session_id, exc_info=True)
+                rename = {}
+            if rename:
+                name_merges = _apply_cause_name_merges(
+                    store, session_id, saved_v3, rename, data)
     # P5：整理产出自动回挂题库；回挂失败只记日志，不影响本场整理结果。
     try:
         written = sync_session_patterns_to_bank(
@@ -1194,8 +1365,107 @@ def run_cause_analysis(
         LOGGER.warning("sync session %s patterns to bank failed", session_id, exc_info=True)
         written = 0
     return {"session_id": session_id, "kind": "causes", "failed_questions": failed,
-            "bank_patterns_written": written,
+            "bank_patterns_written": written, "name_merges": name_merges,
             "status": "failed" if failed else "ready"}
+
+
+def _resolve_cause_name_merges(
+    payload: Any,
+    fresh: dict[str, dict[str, Any]],
+    library_names: dict[str, Any],
+) -> dict[str, str]:
+    """校验并解析合并建议：from 只接受本次新名，to 可为库中已有名或新名，
+    大类必须一致且 from != to；链式合并解析到最终保留名，成环的丢弃。"""
+    direct: dict[str, str] = {}
+    for item in (payload or {}).get("merges") or []:
+        if not isinstance(item, dict):
+            continue
+        source_name = str(item.get("from") or "").strip()
+        target = str(item.get("to") or "").strip()
+        if not source_name or not target or source_name == target:
+            continue
+        if source_name not in fresh:
+            continue
+        if target in library_names:
+            target_category = library_names[target]
+        elif target in fresh:
+            target_category = fresh[target].get("category")
+        else:
+            continue
+        if target_category != fresh[source_name].get("category"):
+            continue
+        direct[source_name] = target
+    resolved: dict[str, str] = {}
+    for start in direct:
+        node = start
+        seen = {start}
+        while node in direct:
+            node = direct[node]
+            if node in seen:
+                break
+            seen.add(node)
+        if node in direct:
+            continue  # 回到环内节点：整条链丢弃。
+        resolved[start] = node
+    return resolved
+
+
+def _apply_cause_name_merges(
+    store: Any,
+    session_id: int,
+    saved_v3: dict[str, dict[str, Any]],
+    rename: dict[str, str],
+    data: Any,
+) -> int:
+    """把合并后的规范名写回本题结果：由已存结果重建模型口径的 payload 重新走
+    save_cause_result，normalize 会合并同名分组并去重人数；返回应用的合并数。"""
+    applied: dict[str, set[str]] = {}
+    for question_id, item in saved_v3.items():
+        result = item["result"]
+        groups = result.get("groups") or []
+        if not any(str(group.get("reason") or "") in rename for group in groups):
+            continue
+        payload = {
+            "groups": [
+                {
+                    "kind": group["kind"],
+                    "category": group.get("category"),
+                    "reason": rename.get(
+                        str(group.get("reason") or ""), group.get("reason")),
+                    "manifestation": str(variant.get("description") or ""),
+                    "evidence_ids": list(variant.get("evidence_ids") or []),
+                    "source_question_id": variant.get("source_question_id"),
+                }
+                for group in groups
+                for variant in (group.get("manifestations") or [])
+            ],
+            "positive_ids": list(result.get("positive_ids") or []),
+            "uncertain_ids": list(result.get("uncertain_ids") or []),
+        }
+        entry = ((((store.load(session_id) or {}).get("cause_analysis") or {})
+                  .get("questions") or {}).get(question_id)) or {}
+        save_cause_result(
+            store, session_id, item["source"], payload,
+            origin=entry.get("origin") or "model", data=data,
+        )
+        for group in groups:
+            reason = str(group.get("reason") or "")
+            if reason in rename:
+                applied.setdefault(reason, set()).add(question_id)
+    recorded = [
+        {"from": source_name, "to": rename[source_name],
+         "question_ids": sorted(question_ids)}
+        for source_name, question_ids in applied.items()
+        if question_ids
+    ]
+    if recorded:
+        cause = dict((store.load(session_id) or {}).get("cause_analysis") or {})
+        cause["name_merges"] = {
+            "cause_name_merges": recorded,
+            "merged_at": _now_iso(),
+        }
+        store.save(session_id, cause_analysis=cause)
+    return len(recorded)
 
 
 def _prepare_error_sources(

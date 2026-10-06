@@ -369,6 +369,8 @@ def test_cause_answer_context_survives_reentry_and_invalidates_without_feedback_
 
         def json_from_text(self, prompt, **kwargs):
             source = json.loads(prompt.rsplit("\n", 1)[1])
+            if "fresh" in source and "library" in source:
+                return {"merges": []}  # 错法名合并请求不计入逐题调用
             self.calls.append(source)
             groups = []
             for item in source["evidence"]:
@@ -1872,7 +1874,8 @@ def test_report_pipeline_status_counts_then_complete(
     assert status["active_job_id"] is None
     assert status["causes"]["pending_questions"] == 2
     assert status["causes"]["total_questions"] == 2
-    assert status["causes"]["call_count"] == 2
+    # 2 题整理 + 1 次统一错法名的合并预估调用。
+    assert status["causes"]["call_count"] == 3
     assert status["causes"]["estimated_tokens"] > 0
     # 错因摘要随整理结果变化：有错因待整理时全部有学生的班记为待做。
     assert status["class_reports"] == {"pending": 1, "total": 1}
