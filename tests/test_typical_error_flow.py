@@ -10,10 +10,13 @@ import pytest
 
 from backend.scan_grading.ai_grader import _normalize_grading_errors
 from backend.class_analysis import (
-    CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION, CausePatternEditError,
+    CAUSE_ANALYSIS_VERSION, CausePatternEditError,
     ClassAnalysisStateStore, edit_cause_pattern,
     plan_cause_question,
 )
+
+# 旧版提示词结果在会话内仍可修改错法名（迁移后 prompt_version 保留原值）。
+CAUSE_PRE_STEP_VERSION = "class_error_causes_v3"
 from backend.error_patterns import (
     OPTION_ANALYSIS_VERSION, bank_confirmed_triggers, question_fingerprint, save_option_analysis,
     synthesize_option_result,
@@ -58,32 +61,14 @@ def _predictions():
     ]
 
 
-def test_legacy_external_causes_accept_only_missing_supplemental_text():
-    from copy import deepcopy
-    from backend.class_analysis import cause_input_matches, _cause_input_fingerprint
-    old = {"question_id": "Q1", "question_text": "", "reference_analysis": "",
-           "canonical_answer": "B", "rubric": {"max_score": 3},
-           "evidence": [{"id": "E1", "student_answer": "C", "text": "误选 C"}]}
-    saved = {"input": old, "input_fingerprint": _cause_input_fingerprint(old)}
-    current = {**old, "question_text": "后补的题干", "reference_analysis": "后补的解析"}
-    assert cause_input_matches(saved, current)
-    for key, value in (("canonical_answer", "D"), ("rubric", {"max_score": 5}),
-                       ("evidence", [{"id": "E1", "student_answer": "B"}])):
-        assert not cause_input_matches(saved, {**current, key: value})
-    populated = deepcopy(current)
-    populated["question_text"] = "原有题干"
-    assert not cause_input_matches({"input": populated, "input_fingerprint": _cause_input_fingerprint(populated)}, current)
-
-
-def test_report_preparation_reuses_legacy_external_results_without_model(tmp_path, monkeypatch):
+def test_report_preparation_reuses_current_results_without_model(tmp_path, monkeypatch):
     import backend.class_analysis as causes
     path, _qid = _choice_question(tmp_path)
-    old = {"question_id": "Q1", "question_text": "", "reference_analysis": "", "evidence": []}
-    source = {**old, "question_text": "后补题干", "reference_analysis": "后补解析"}
-    fingerprint = causes._cause_input_fingerprint(old)
+    source = {"question_id": "Q1", "question_text": "题干", "reference_analysis": "解析", "evidence": []}
+    fingerprint = causes._cause_input_fingerprint(source)
     store = ClassAnalysisStateStore(tmp_path / "reports")
-    store.save(3, cause_analysis={"questions": {"Q1": {"version": CAUSE_ANALYSIS_VERSION,
-               "input": old, "input_fingerprint": fingerprint, "result": {"groups": []}}}},
+    store.save(3, cause_analysis={"questions": {"Q1": {"prompt_version": CAUSE_ANALYSIS_VERSION,
+               "input": source, "input_digest": fingerprint, "result": {"groups": []}}}},
                error_records={"Q1": {"input_fingerprint": fingerprint, "records": []}})
     monkeypatch.setattr(causes, "assemble_cause_data", lambda *a, **k: SimpleNamespace(questions=[], students=[]))
     monkeypatch.setattr(causes, "build_cause_inputs", lambda *a, **k: [source])
@@ -119,8 +104,8 @@ def test_backfill_skips_stale_state_and_is_idempotent(tmp_path):
     source = {"question_id": "Q1", "question_text": "题干\nA. 1\nB. 2\nC. 3\nD. 4", "canonical_answer": "B",
               "evidence": [{"id": "E1", "student_answer": "C"}]}
     store = ClassAnalysisStateStore(tmp_path / "reports")
-    store.save(3, cause_analysis={"questions": {"Q1": {"version": CAUSE_ANALYSIS_VERSION,
-               "input": source, "input_fingerprint": _cause_input_fingerprint(source), "origin": "option_map",
+    store.save(3, cause_analysis={"questions": {"Q1": {"prompt_version": CAUSE_ANALYSIS_VERSION,
+               "input": source, "input_digest": _cause_input_fingerprint(source), "origin": "option_map",
                "result": {"groups": [{"evidence_ids": ["E1"]}]}}}},
                option_analysis={"Q1": {"version": OPTION_ANALYSIS_VERSION,
                  "input_fingerprint": question_fingerprint(source["question_text"], "B"), "source": "model",
@@ -155,8 +140,8 @@ def test_step_organized_result_syncs_rows_per_evidence_point(tmp_path):
     fingerprint = _cause_input_fingerprint(source)
     store = ClassAnalysisStateStore(tmp_path / "reports")
     store.save(3, cause_analysis={"questions": {"Q2": {
-        "version": CAUSE_ANALYSIS_VERSION, "origin": "model",
-        "input": source, "input_fingerprint": fingerprint,
+        "prompt_version": CAUSE_ANALYSIS_VERSION, "origin": "model",
+        "input": source, "input_digest": fingerprint,
         "result": {"groups": [
             {"kind": "process", "category": "过程与依据", "reason": "缺少关系式",
              "evidence_ids": ["E1.S1"], "step_ids": ["S2"],
@@ -1101,7 +1086,9 @@ def test_class_reports_generate_in_parallel(tmp_path, monkeypatch):
                     inflight[0] -= 1
 
     groups = {
-        name: SimpleNamespace(students=[SimpleNamespace(student_id=index)])
+        name: SimpleNamespace(
+            students=[SimpleNamespace(student_id=index, records=[])]
+        )
         for index, name in enumerate(("1 班", "2 班"), start=1)
     }
     monkeypatch.setattr(
@@ -1120,7 +1107,11 @@ def test_class_reports_generate_in_parallel(tmp_path, monkeypatch):
     )
     reports_dir = tmp_path / "reports"
     summary = pipeline.generate_session_class_reports(
-        context, db=SimpleNamespace(), session_id=3, revision="r1",
+        context,
+        db=SimpleNamespace(
+            reviews=SimpleNamespace(list_teacher_score_locks=lambda _sid: [])
+        ),
+        session_id=3,
         reports_dir=reports_dir, data_root=tmp_path, client=_Client(),
     )
     # 两班叙述请求互相等待：串行执行会超时，完成即证明并发 ≥2。

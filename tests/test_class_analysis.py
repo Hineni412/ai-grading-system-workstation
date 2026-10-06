@@ -251,7 +251,7 @@ def test_cause_groups_persist_count_students_per_class_and_update_only_changed_q
     assert ClassAnalysisStateStore(reports_dir).load(sid)["cause_analysis"][
         "questions"
     ]["Q2"]["result"]
-    assert ClassAnalysisStateStore(reports_dir).load(sid)["narrative"] is None
+    assert ClassAnalysisStateStore(reports_dir).load(sid).get("narrative") is None
     # 普通读取、切班、再次整理都复用；改批语只重整受影响题目。
     _run_causes(db, sid, reports_dir.parent, reports_dir, fake)
     assert len(fake.calls) == 2
@@ -264,7 +264,8 @@ def test_cause_groups_persist_count_students_per_class_and_update_only_changed_q
     ).json()
     assert changed["cause_analysis"]["stale"] is True
     assert changed["cause_analysis"]["pending_questions"] == 1
-    assert not next(
+    # stale 结果仍按生成时的证据投影展示（界面文案"显示上次生成"）。
+    assert next(
         q for q in changed["data"]["questions"] if q["question_id"] == "Q2"
     ).get("causes_grouped")
     _run_causes(db, sid, reports_dir.parent, reports_dir, fake)
@@ -445,7 +446,8 @@ def test_cause_answer_context_survives_reentry_and_invalidates_without_feedback_
     current = ClassAnalysisStateStore(reports_dir).load(sid)["cause_analysis"][
         "questions"
     ]["Q2"]
-    assert current["history"][0]["input"] == stored_input
+    # history 已取消：重新生成直接覆盖 input 与指纹，不再累积历史。
+    assert "history" not in current
     assert current["input"] != stored_input
     # 参考解答改变也需要重新核对。
     answer_key["questions"][1]["analysis"] = "可接受等价分数，过程需完整。"
@@ -491,7 +493,7 @@ def test_class_analysis_switches_classes_and_persists_separate_narratives(
         )
     )
     assert set(state["class_reports"]) == {"1 班", "2 班"}
-    assert state["narrative"] is None
+    assert state.get("narrative") is None
 
 
 def test_report_pipeline_second_run_without_changes_makes_zero_model_calls(
@@ -511,12 +513,10 @@ def test_report_pipeline_second_run_without_changes_makes_zero_model_calls(
 
     # 无成绩/错因变化时再次触发：三个阶段全部幂等跳过，零模型调用。
     from backend.class_analysis import submit_class_analysis_generate
-    from backend.report_exports import score_revision
 
     second = submit_class_analysis_generate(
         manager=manager,
         session_id=session_id,
-        revision=score_revision(db, session_id, include_question_bank=False),
         mode="auto",
     )
     manager.wait(second.id, timeout=10)
@@ -1115,13 +1115,12 @@ def test_class_narrative_payload_carries_organized_causes(
     assert all("cause" not in r for r in q1_records)
 
 
-def test_old_rendition_marks_stale_without_model_call(
+def test_old_prompt_class_report_still_readable_without_regeneration(
     class_analysis_api_client,
 ) -> None:
-    """叙述版本升级后：页面仅提示需重新生成，不因版本变化自动调用模型。"""
+    """提示词版本升级后：旧叙述仍展示（old_prompt），读取与整理都不自动重发。"""
     from backend.class_analysis import (
         CLASS_ANALYSIS_JOB_TYPE,
-        CLASS_ANALYSIS_RENDITION_VERSION,
         ClassAnalysisStateStore,
     )
 
@@ -1136,32 +1135,34 @@ def test_old_rendition_marks_stale_without_model_call(
     assert fake.calls == 5
 
     store = ClassAnalysisStateStore(reports_dir)
-    state = store.load(sid)
-    assert state["rendition_version"] == CLASS_ANALYSIS_RENDITION_VERSION
-    # 模拟版本升级前的线上状态：就绪叙述、旧 rendition_version。
-    store.save(sid, rendition_version="class_analysis_page_v3_class_scope")
+    # 模拟旧提示词版本生成的就绪叙述：prompt_version 落后但输入未变。
+    reports = dict(store.load(sid)["class_reports"])
+    reports["1 班"] = {
+        **reports["1 班"],
+        "prompt_version": "class_analysis_page_v3_class_scope",
+    }
+    store.save(sid, class_reports=reports)
 
-    page = client.get(f"/api/sessions/{sid}/class-analysis").json()
-    assert page["stale"] is True
-    assert page["narrative"] is None
-    # 页面读取只标记过期，不提交生成任务、不调用模型。
+    page = client.get(
+        f"/api/sessions/{sid}/class-analysis", params={"class_name": "1 班"}
+    ).json()
+    # old_prompt 不算过期（stale 留给输入变化）；叙述仍展示，不触发模型。
+    assert page["stale"] is False
+    assert page["narrative"] is not None
     assert fake.calls == 5
     _jobs, total = manager.list(
         session_id=sid, job_types=(CLASS_ANALYSIS_JOB_TYPE,), limit=10
     )
     assert total == 1
 
-    # 手动「AI 整理」仍走缓存：同 (场次, 成绩版本, 叙述版本, 错因摘要) 命中，
-    # 不重复调用模型。
+    # 手动「AI 整理」同样跳过 old_prompt（新版重发由按对象的入口负责）。
     job = _pipeline_via_api(client, sid)
     manager.wait(job["id"], timeout=10)
     assert fake.calls == 5
     assert (
-        store.load(sid)["rendition_version"] == CLASS_ANALYSIS_RENDITION_VERSION
+        store.load(sid)["class_reports"]["1 班"]["prompt_version"]
+        == "class_analysis_page_v3_class_scope"
     )
-    page = client.get(f"/api/sessions/{sid}/class-analysis").json()
-    assert page["stale"] is False
-    assert page["narrative"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1552,14 +1553,14 @@ def test_step_aware_error_records_and_counts(tmp_path: Path) -> None:
     } == {("缺少等量关系", ("S2",)), ("结论不规范", ("S4",))}
 
 
-def test_pre_step_v3_results_display_then_upgrade(tmp_path: Path) -> None:
-    """v3 旧结果继续显示但不计入就绪；手动整理升级，报告前置不调用模型。"""
+def test_old_prompt_v3_results_display_then_regenerate_stale(tmp_path: Path) -> None:
+    """迁移后的 v3 结果：输入未变的题 old_prompt 仍展示不重发；输入口径已变的
+    题 stale 仍按原证据展示，整理时按当前输入重发。"""
     import backend.jobs
     from types import SimpleNamespace
 
     from backend.reporting.analysis_report_exporter import build_class_page_data
     from backend.class_analysis import (
-        CAUSE_PRE_STEP_VERSION,
         ClassAnalysisStateStore,
         _cause_input_fingerprint,
         apply_cause_results,
@@ -1593,8 +1594,8 @@ def test_pre_step_v3_results_display_then_upgrade(tmp_path: Path) -> None:
         )
         fingerprint = _cause_input_fingerprint(old)
         questions[old["question_id"]] = {
-            "version": CAUSE_PRE_STEP_VERSION, "input": old,
-            "input_fingerprint": fingerprint, "result": result,
+            "prompt_version": "class_error_causes_v3", "input": old,
+            "input_digest": fingerprint, "result": result,
             "generated_at": "2024-01-01T00:00:00", "origin": "model",
             "failed": False,
         }
@@ -1606,23 +1607,25 @@ def test_pre_step_v3_results_display_then_upgrade(tmp_path: Path) -> None:
     store.save(sid, cause_analysis={"questions": questions},
                error_records=error_records)
 
-    # Q1 无评分步骤：v3 输入与 v4 相同，旧结果直接视为新鲜。
-    # Q2 有失败步骤：v3 结果按兼容输入展示，标记按步骤整理前的结果。
+    # Q1 无评分步骤：v3 输入与 v4 相同 → old_prompt（仍展示、不重发）。
+    # Q2 有失败步骤：v3 输入口径不同 → stale（按生成时的证据展示、会重发）。
     page = build_class_page_data(data, compact=True)
     status = apply_cause_results(page, data, sources, store.load(sid))
     assert status["status"] == "partial"
-    assert status["pre_step_questions"] == 1
+    assert status["old_prompt_questions"] == 1
+    assert status["stale_questions"] == 1
     by_id = {q["question_id"]: q for q in page["questions"]}
-    # Q1 无评分步骤：v3 结果直接视为新鲜的按步骤口径结果。
-    assert by_id["Q1"]["causes_by_step"] is True
-    assert by_id["Q1"]["causes"]  # v3 结果照常显示
-    assert by_id["Q2"]["causes_by_step"] is False
+    assert by_id["Q1"]["cause_state"] == "old_prompt"
+    assert by_id["Q1"]["causes_by_step"] is False
+    assert by_id["Q1"]["causes"]  # old_prompt 结果照常显示
+    assert by_id["Q2"]["cause_state"] == "stale"
     assert by_id["Q2"]["causes"]
     lisi = next(s for s in data.students if s.student_name == "李四")
     mapped = student_error_map(store.load(sid), lisi, sources, data)
-    assert mapped["Q2"] and mapped["Q2"][0]["pattern"] == "旧错法"
-    # 按 v3 口径物化的记录保留其版本标记。
-    assert mapped["Q2"][0]["version"] == CAUSE_PRE_STEP_VERSION
+    # old_prompt（输入一致）的记录仍可物化展示；stale 的记录不展示。
+    assert mapped["Q1"] and mapped["Q1"][0]["pattern"] == "旧错法"
+    assert mapped["Q1"][0]["version"] == "class_error_causes_v3"
+    assert "Q2" not in mapped
 
     context = SimpleNamespace(
         payload={"session_id": sid},
@@ -1635,14 +1638,7 @@ def test_pre_step_v3_results_display_then_upgrade(tmp_path: Path) -> None:
             "groups": [], "positive_ids": [], "uncertain_ids": [],
         }
     )
-    # 报告前置阶段：兼容的 v3 结果不为升级而调用模型。
-    outcome = run_cause_analysis(
-        context, db=db, data_root=tmp_path, store=store,
-        llm_client_factory=lambda: client,
-        retry_failed=False, upgrade_pre_step=False,
-    )
-    assert outcome["status"] == "ready" and calls == []
-    # 手动整理：v3 兼容结果重发并升级为 v4。
+    # 整理阶段：old_prompt 不重发，stale 的 Q2 按当前输入重发为 v4。
     outcome = run_cause_analysis(
         context, db=db, data_root=tmp_path, store=store,
         llm_client_factory=lambda: client,
@@ -1650,20 +1646,19 @@ def test_pre_step_v3_results_display_then_upgrade(tmp_path: Path) -> None:
     )
     assert outcome["status"] == "ready" and len(calls) == 1
     saved = store.load(sid)["cause_analysis"]["questions"]
-    assert saved["Q2"]["version"] == "class_error_causes_v4"
-    assert saved["Q1"]["version"] == CAUSE_PRE_STEP_VERSION  # 无步骤题无需重发
+    assert saved["Q2"]["prompt_version"] == "class_error_causes_v4"
+    assert saved["Q1"]["prompt_version"] == "class_error_causes_v3"  # old_prompt 不重发
 
 
 def test_pre_step_source_dedupes_evidence_collapsed_by_step_split(
     tmp_path: Path,
 ) -> None:
     """两名学生作答与批语相同但失败步骤不同：v4 证据分两条、v3 并一条，
-    旧 v3 结果仍按兼容输入识别、展示，并为两人返回错因记录。"""
+    旧 v3 结果（输入口径已变）读出为 stale、按原证据展示但不返回错因记录。"""
     import backend.jobs
 
     from backend.reporting.analysis_report_exporter import build_class_page_data
     from backend.class_analysis import (
-        CAUSE_PRE_STEP_VERSION,
         ClassAnalysisStateStore,
         _cause_input_fingerprint,
         apply_cause_results,
@@ -1732,8 +1727,8 @@ def test_pre_step_source_dedupes_evidence_collapsed_by_step_split(
     store.save(
         sid,
         cause_analysis={"questions": {"Q2": {
-            "version": CAUSE_PRE_STEP_VERSION, "input": old,
-            "input_fingerprint": fingerprint, "result": result,
+            "prompt_version": "class_error_causes_v3", "input": old,
+            "input_digest": fingerprint, "result": result,
             "generated_at": "2024-01-01T00:00:00", "origin": "model",
             "failed": False,
         }}},
@@ -1746,16 +1741,18 @@ def test_pre_step_source_dedupes_evidence_collapsed_by_step_split(
 
     page = build_class_page_data(data, compact=True)
     status = apply_cause_results(page, data, [source], store.load(sid))
-    assert status["pre_step_questions"] == 1
+    # 输入口径已变（v3 合并证据 vs v4 分步证据）→ stale；stale 结果仍按
+    # 生成时的证据投影展示。
+    assert status["stale_questions"] == 1
     q2 = next(q for q in page["questions"] if q["question_id"] == "Q2")
-    assert q2["causes_by_step"] is False and q2["causes"]
+    assert q2["cause_state"] == "stale" and q2["causes"]
 
     state = store.load(sid)
     for name in ("张三", "李四"):
         student = next(s for s in data.students if s.student_name == name)
         mapped = student_error_map(state, student, [source], data)
-        assert mapped["Q2"] and mapped["Q2"][0]["pattern"] == "旧错法"
-        assert mapped["Q2"][0]["version"] == CAUSE_PRE_STEP_VERSION
+        # stale 题的物化记录不再展示（证据已变化，不能按旧口径匹配）。
+        assert "Q2" not in mapped
 
 
 def test_session_error_record_skill_enrichment_is_nonfatal(
@@ -1940,7 +1937,6 @@ def test_report_pipeline_manual_retries_failed_causes_but_auto_does_not(
         ClassAnalysisStateStore,
         submit_class_analysis_generate,
     )
-    from backend.report_exports import score_revision
 
     _patch_configured(monkeypatch, True)
     holder["client"] = FakeLLMClient(error=TimeoutError("synthetic cause failure"))
@@ -1953,9 +1949,8 @@ def test_report_pipeline_manual_retries_failed_causes_but_auto_does_not(
 
     good = PipelineClient()
     holder["client"] = good
-    revision = score_revision(db, sid, include_question_bank=False)
     auto = submit_class_analysis_generate(
-        manager=manager, session_id=sid, revision=revision, mode="auto",
+        manager=manager, session_id=sid, mode="auto",
     )
     manager.wait(auto.id, timeout=10)
     # 自动口径不重发失败题：错因未就绪 → 班级无摘要 → 叙述用无错因键生成。
@@ -1975,19 +1970,17 @@ def test_report_pipeline_manual_retries_failed_causes_but_auto_does_not(
     assert manager.get(manual.json()["id"]).result["status"] == "ready"
 
 
-def test_report_pipeline_manual_upgrades_pre_step_but_auto_keeps(
+def test_report_pipeline_regenerates_stale_but_keeps_old_prompt(
     class_analysis_api_client, tmp_path: Path,
 ) -> None:
-    """v3 兼容结果：自动保留不调用，手动升级重发。"""
+    """迁移后的 v3 结果：stale（输入口径已变）的题自动与手动都重发；
+    old_prompt（输入未变）的题不随整理重发。"""
     from backend.class_analysis import (
-        CAUSE_PRE_STEP_VERSION,
         ClassAnalysisStateStore,
         _cause_input_fingerprint,
-        _pre_step_source,
         assemble_cause_data,
         build_cause_inputs,
         normalize_cause_result,
-        save_cause_result,
         student_error_records,
     )
 
@@ -1998,69 +1991,68 @@ def test_report_pipeline_manual_upgrades_pre_step_but_auto_keeps(
     _make_stepped(db, sid)  # 只有带评分步骤的题才有 v3→v4 口径差异
     store = ClassAnalysisStateStore(reports_dir)
     data = assemble_cause_data(db, sid, data_root=reports_dir.parent)
-    source = next(
-        s for s in build_cause_inputs(data) if s["question_id"] == "Q2"
-    )
-    old = _pre_step_source(source)
-    result = normalize_cause_result(
-        {
-            "groups": [{
-                "kind": "error", "category": "概念理解",
-                "reason": "旧错法", "manifestation": "旧表现",
-                "evidence_ids": [item["id"] for item in old["evidence"]],
-            }],
-        },
-        old,
-    )
-    fingerprint = _cause_input_fingerprint(old)
+    old_sources = {
+        source["question_id"]: source
+        for source in build_cause_inputs(data, by_step=False)
+    }
+    questions: dict[str, dict] = {}
+    error_records: dict[str, dict] = {}
+    for qid, old in old_sources.items():
+        result = normalize_cause_result(
+            {
+                "groups": [{
+                    "kind": "error", "category": "概念理解",
+                    "reason": "旧错法", "manifestation": "旧表现",
+                    "evidence_ids": [item["id"] for item in old["evidence"]],
+                }],
+            },
+            old,
+        )
+        fingerprint = _cause_input_fingerprint(old)
+        questions[qid] = {
+            "prompt_version": "class_error_causes_v3",
+            "input": old,
+            "input_digest": fingerprint,
+            "result": result,
+            "generated_at": "2024-01-01T00:00:00",
+            "origin": "model",
+            "failed": False,
+        }
+        error_records[qid] = {
+            "input_fingerprint": fingerprint,
+            "generated_at": "2024-01-01T00:00:00",
+            "records": student_error_records(data, old, result, by_step=False),
+        }
     store.save(
         sid,
-        cause_analysis={
-            "questions": {
-                "Q2": {
-                    "version": CAUSE_PRE_STEP_VERSION,
-                    "input": old,
-                    "input_fingerprint": fingerprint,
-                    "result": result,
-                    "generated_at": "2024-01-01T00:00:00",
-                    "origin": "model",
-                    "failed": False,
-                }
-            }
-        },
-        error_records={
-            "Q2": {
-                "input_fingerprint": fingerprint,
-                "generated_at": "2024-01-01T00:00:00",
-                "records": student_error_records(data, old, result, by_step=False),
-            }
-        },
+        cause_analysis={"questions": questions},
+        error_records=error_records,
     )
 
     fake = PipelineClient()
     holder["client"] = fake
-    # 自动口径：v3 兼容结果不升级，只补缺失的 Q1。
+    # 自动口径：Q1 输入未变 → old_prompt 保留；Q2 输入口径已变 → stale 重发。
     from backend.class_analysis import submit_class_analysis_generate
-    from backend.report_exports import score_revision
 
     auto = submit_class_analysis_generate(
         manager=manager,
         session_id=sid,
-        revision=score_revision(db, sid, include_question_bank=False),
         mode="auto",
     )
     manager.wait(auto.id, timeout=10)
     saved = store.load(sid)["cause_analysis"]["questions"]
-    assert saved["Q2"]["version"] == CAUSE_PRE_STEP_VERSION
-    assert fake.kinds.count("cause") == 1  # 只有缺失的 Q1
+    assert saved["Q1"]["prompt_version"] == "class_error_causes_v3"
+    assert saved["Q2"]["prompt_version"] == "class_error_causes_v4"
+    assert fake.kinds.count("cause") == 1  # 只有 stale 的 Q2
 
-    # 手动口径：v3 兼容结果重发并升级为 v4；错因变化顺带重生成班级叙述。
+    # 手动口径同样跳过 old_prompt：Q1 保持 v3，不再产生错因调用。
     fake.kinds.clear()
     manual = _pipeline_via_api(client, sid)
     manager.wait(manual["id"], timeout=10)
     saved = store.load(sid)["cause_analysis"]["questions"]
-    assert saved["Q2"]["version"] == "class_error_causes_v4"
-    assert fake.kinds == ["cause", "class"]
+    assert saved["Q1"]["prompt_version"] == "class_error_causes_v3"
+    assert saved["Q2"]["prompt_version"] == "class_error_causes_v4"
+    assert "cause" not in fake.kinds
 
 
 def test_report_pipeline_personal_targets_only_missing_and_stale(
@@ -2084,8 +2076,9 @@ def test_report_pipeline_personal_targets_only_missing_and_stale(
     )
     with sqlite3.connect(db.db_path) as conn:
         conn.execute(
-            "UPDATE session_results SET total_score=total_score+5"
-            " WHERE session_id=? AND student_id=?",
+            "UPDATE session_details SET score_awarded=score_awarded-5"
+            " WHERE result_id=(SELECT id FROM session_results"
+            "  WHERE session_id=? AND student_id=?)",
             (sid, lisi_id),
         )
     states = client.get(f"/api/sessions/{sid}/personal-reports").json()["students"]
@@ -2205,7 +2198,8 @@ def test_class_cause_digest_invalidates_class_narrative(
     job = _pipeline_via_api(client, sid)
     manager.wait(job["id"], timeout=10)
     entry = ClassAnalysisStateStore(reports_dir).load(sid)["class_reports"]["1 班"]
-    assert entry["status"] == "ready" and entry["cause_digest"]
+    # 错因摘要已并入 input_digest：不再单列 cause_digest 字段。
+    assert entry["status"] == "ready" and entry["input_digest"]
     page = client.get(f"/api/sessions/{sid}/class-analysis").json()
     assert page["stale"] is False
 
@@ -2227,44 +2221,57 @@ def test_class_cause_digest_invalidates_class_narrative(
     fake.kinds.clear()
     second = _pipeline_via_api(client, sid)
     manager.wait(second["id"], timeout=10)
-    assert fake.kinds == ["class"]  # 只有该班叙述重生成
+    # 错法名变化同时进入个人报告输入指纹：该班叙述与两名学生的报告都重生成。
+    assert fake.kinds == ["class", "personal", "personal"]
     page = client.get(f"/api/sessions/{sid}/class-analysis").json()
     assert page["stale"] is False
 
 
-def test_class_narrative_cache_without_causes_still_hits(
+def test_class_narrative_store_hit_skips_model_call(
     class_analysis_api_client,
 ) -> None:
-    """无错因摘要的班级叙述沿用旧缓存键：已生成的缓存继续命中。"""
+    """已生成的班级叙述（input_digest 与当前输入一致）在再次整理时直接复用。"""
     client, db, sid, reports_dir, manager, holder, monkeypatch = (
         class_analysis_api_client
     )
-    from backend.class_analysis import (
-        CLASS_ANALYSIS_RENDITION_VERSION,
-        ClassAnalysisStateStore,
+    from backend.class_analysis import ClassAnalysisStateStore
+    from backend.report_pipeline import (
+        class_cause_digest,
+        class_report_input_digest,
     )
-    from backend.report_exports import score_revision
-    from backend.reporting.analysis_report_exporter import AnalysisNarrativeCache
+    from backend.report_results import prompt_version
+    from backend.session_analysis import (
+        assemble_session_analysis,
+        split_session_analysis_by_class,
+    )
 
     _patch_configured(monkeypatch, True)
-    revision = score_revision(db, sid, include_question_bank=False)
-    cache = AnalysisNarrativeCache(reports_dir / ".analysis_narrative_cache")
-    key = AnalysisNarrativeCache.cache_key(
-        session_id=sid,
-        score_revision=revision,
-        rendition_version=CLASS_ANALYSIS_RENDITION_VERSION,
-        report_key="class:1 班",
+    data = assemble_session_analysis(db, sid, data_root=reports_dir.parent)
+    group = split_session_analysis_by_class(data)["1 班"]
+    digest = class_report_input_digest(
+        db,
+        sid,
+        group,
+        cause_digest=class_cause_digest(
+            {}, [student.student_id for student in group.students]
+        ),
     )
-    cache.store(key, dict(CLASS_NARRATIVE))
+    store = ClassAnalysisStateStore(reports_dir)
+    store.save(sid, class_reports={"1 班": {
+        "narrative": dict(CLASS_NARRATIVE),
+        "input_digest": digest,
+        "prompt_version": prompt_version("class_report"),
+        "generated_at": "2024-01-01T00:00:00",
+        "status": "ready",
+    }})
 
-    fake = CauseFailClient()  # 错因始终失败 → 无摘要 → 走兼容缓存键
+    fake = CauseFailClient()  # 错因始终失败 → 无摘要；班级叙述命中已存结果
     holder["client"] = fake
     job = _pipeline_via_api(client, sid)
     manager.wait(job["id"], timeout=10)
     assert fake.kinds == ["cause", "cause", "personal", "personal"]
-    entry = ClassAnalysisStateStore(reports_dir).load(sid)["class_reports"]["1 班"]
+    entry = store.load(sid)["class_reports"]["1 班"]
     assert entry["status"] == "ready"
-    assert entry["cause_digest"] == ""
     assert entry["narrative"]["key_findings"] == CLASS_NARRATIVE["key_findings"]
 
 

@@ -658,9 +658,9 @@ def cause_group_bank_triggers(
     v4 按物化记录的证据点写 step 触发；组成员含无点记录（整条证据或
     无证据点的步骤）时补一条 observation。v3 沿用组上 step_id。
     """
-    from backend.class_analysis import CAUSE_ANALYSIS_VERSION
+    from backend.report_results import prompt_version
 
-    if str((entry or {}).get("version") or "") != CAUSE_ANALYSIS_VERSION:
+    if str((entry or {}).get("prompt_version") or "") != prompt_version("causes"):
         step_id = str(group.get("step_id") or "").strip()
         return [("step", step_id)] if step_id else [("observation", "")]
     rows = [
@@ -697,22 +697,24 @@ def sync_session_patterns_to_bank(
     出现快照、不重复建行。只写 bank_context 中已关联的题（写 ctx["bank_id"]，
     判重家族成员经 bank_ids 读取侧覆盖）；表缺失/未关联直接跳过。
     """
-    from backend.class_analysis import CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION, cause_source_state
+    from backend.report_results import cause_input_digest, prompt_version, resolve_result_state
     from question_bank.services.error_pattern_service import record_auto_patterns
 
     if question_bank_path is None or not bank_context:
         return 0
     state = store.load(session_id) or {}
     if current_sources is not None:
-        # 维护回填及正常整理只回挂当前输入匹配的成果；旧缓存不能制造新证据。
+        # 维护回填及正常整理只回挂当前输入匹配的成果；旧结果不能制造新证据。
+        # 迁移保留的 v3 旧提示词成果（old_prompt 且输入一致）仍可回挂。
         questions = ((state.get("cause_analysis") or {}).get("questions")) or {}
         valid = {}
         for source in current_sources:
             entry = questions.get(str(source["question_id"])) or {}
-            version, match = entry.get("version"), cause_source_state(entry, source)
-            if version == CAUSE_ANALYSIS_VERSION and match == "fresh":
-                valid[str(source["question_id"])] = source
-            elif version == CAUSE_PRE_STEP_VERSION and match in ("fresh", "pre_step"):
+            resolved = resolve_result_state(entry, cause_input_digest(source), "causes")
+            if resolved["status"] == "current" or (
+                resolved["status"] == "old_prompt"
+                and entry.get("prompt_version") == "class_error_causes_v3"
+            ):
                 valid[str(source["question_id"])] = source
         state = {**state, "cause_analysis": {"questions": {qid: questions[qid] for qid in valid}},
                  "option_analysis": {qid: entry for qid, entry in option_analysis_entries(state).items() if qid in valid},
@@ -823,8 +825,9 @@ def sync_session_patterns_to_bank(
         ctx = ctx_for(qid)
         if ctx is None or not isinstance(entry, dict):
             continue
-        if entry.get("version") not in (CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION) \
-                or entry.get("origin") != "model":
+        if entry.get("prompt_version") not in (
+                "class_error_causes_v4", "class_error_causes_v3",
+        ) or entry.get("origin") != "model":
             continue
         result = entry.get("result")
         if not isinstance(result, dict):

@@ -186,7 +186,7 @@ def test_personal_api_states_html_shots_and_read_only_boundaries(personal_api, m
     assert client.get(f"{prefix}/{student_id}/shots/not-a-key").status_code == 404
     assert not reports.exists()  # 查看没有新增持久文件
     generator = AnalysisReportGenerator(db, reports.parent / "test-generated", data_root=reports.parent,
-        narrative_cache_dir=reports / ".analysis_narrative_cache", llm_client_factory=lambda: FakeLLMClient())
+        reports_dir=reports, llm_client_factory=lambda: FakeLLMClient())
     generator.export_session(sid, "personal_analysis_html", html_only=True)
     assert client.get(f"{prefix}/{student_id}/html").status_code == 200
     monkeypatch.setattr("backend.files.session_originals.originals_state", lambda *_args: "cleared")
@@ -200,18 +200,20 @@ def test_personal_summary_matches_current_stale_and_missing_list(personal_api):
     from backend.personal_reports import personal_report_summary
     from tests.test_analysis_report import FakeLLMClient
     client, db, sid, papers, reports, _manager = personal_api
-    assert personal_report_summary(db, sid, reports) == dict(current=0, stale=0, missing=2)
+    assert personal_report_summary(db, sid, reports) == dict(current=0, stale=0, old_prompt=0, missing=2)
     assert not reports.exists()
     generator = AnalysisReportGenerator(db, reports.parent / "TEST-generated", data_root=reports.parent,
-        narrative_cache_dir=reports / ".analysis_narrative_cache", llm_client_factory=lambda: FakeLLMClient())
+        reports_dir=reports, llm_client_factory=lambda: FakeLLMClient())
     generator.export_session(sid, "personal_analysis_html", html_only=True)
-    assert personal_report_summary(db, sid, reports) == dict(current=2, stale=0, missing=0)
+    assert personal_report_summary(db, sid, reports) == dict(current=2, stale=0, old_prompt=0, missing=0)
     with sqlite3.connect(db.db_path) as connection:
-        connection.execute("UPDATE session_results SET total_score=total_score+1 WHERE session_id=? AND student_id=?",
+        # 输入指纹按逐题得分行计算：改 session_details 得分才会过期。
+        connection.execute("UPDATE session_details SET score_awarded=score_awarded-1"
+                           " WHERE result_id=(SELECT id FROM session_results WHERE session_id=? AND student_id=?)",
                            (sid, papers[0]["student_id"]))
     files_before = {str(path): path.stat().st_mtime_ns for path in reports.rglob('*') if path.is_file()}
     summary = personal_report_summary(db, sid, reports)
-    assert summary == dict(current=1, stale=1, missing=0)
+    assert summary == dict(current=1, stale=1, old_prompt=0, missing=0)
     states = client.get(f"/api/sessions/{sid}/personal-reports").json()["students"]
     assert summary == {status: sum(item['status'] == status for item in states) for status in summary}
     assert {str(path): path.stat().st_mtime_ns for path in reports.rglob('*') if path.is_file()} == files_before

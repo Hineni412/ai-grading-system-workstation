@@ -15,7 +15,7 @@ def personal_bundle_data(tmp_path):
     sid = _seed_analysis_session(db, tmp_path)
     reports = tmp_path / "reports"
     generator = AnalysisReportGenerator(db, tmp_path / "test-generated", data_root=tmp_path,
-        narrative_cache_dir=reports / ".analysis_narrative_cache", llm_client_factory=lambda: FakeLLMClient())
+        reports_dir=reports, llm_client_factory=lambda: FakeLLMClient())
     generator.export_session(sid, "personal_analysis_html", html_only=True)
     students = [s["student_id"] for s in db.results.get_session_results(sid)]
     yield db, sid, students, reports

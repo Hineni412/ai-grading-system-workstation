@@ -113,60 +113,6 @@ _QUESTION_TYPE_LABELS = {
 }
 
 
-class AnalysisNarrativeCache:
-    """AI 叙述 JSON 的本地缓存：命中即不再调用模型（重新生成幂等、不重复扣费）。"""
-
-    def __init__(self, cache_dir: Path) -> None:
-        self.cache_dir = Path(cache_dir)
-
-    @staticmethod
-    def cache_key(
-        *,
-        session_id: int,
-        score_revision: str,
-        rendition_version: str,
-        report_key: str,
-    ) -> str:
-        material = json.dumps(
-            {
-                "session_id": int(session_id),
-                "score_revision": str(score_revision),
-                "rendition_version": str(rendition_version),
-                "report_key": str(report_key),
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        return hashlib.sha256(material.encode("utf-8")).hexdigest()
-
-    def _path(self, key: str) -> Path:
-        return self.cache_dir / f"{key}.json"
-
-    def load(self, key: str) -> dict[str, Any] | None:
-        try:
-            payload = json.loads(self._path(key).read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
-        narrative = payload.get("narrative") if isinstance(payload, dict) else None
-        return narrative if isinstance(narrative, dict) else None
-
-    def store(self, key: str, narrative: dict[str, Any]) -> None:
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        target = self._path(key)
-        temp = target.with_name(f".{target.stem}.tmp")
-        try:
-            temp.write_text(
-                json.dumps(
-                    {"version": 1, "narrative": narrative},
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-            temp.replace(target)
-        except OSError:
-            temp.unlink(missing_ok=True)
-
-
 def estimate_prompt_tokens(text: str) -> int:
     """token 粗估：中文场景约 1.5 字符/token，仅用于生成前的量级提示。"""
     return math.ceil(len(text) / 1.5)
@@ -3063,7 +3009,6 @@ class AnalysisReportGenerator:
         output_dir: Path,
         *,
         llm_client_factory: Callable[[], Any] | None = None,
-        narrative_cache_dir: Path | None = None,
         data_root: Path | None = None,
         reports_dir: Path | None = None,
     ) -> None:
@@ -3075,11 +3020,6 @@ class AnalysisReportGenerator:
         self.db_path = self.repositories.db_path
         self.output_dir = Path(output_dir)
         self.llm_client_factory = llm_client_factory
-        self.cache = (
-            AnalysisNarrativeCache(narrative_cache_dir)
-            if narrative_cache_dir is not None
-            else None
-        )
         self.data_root = data_root or infer_data_root(self.db_path)
         # 受控 reports 目录：读取 .class_analysis 里的学生错因记录；缺省时不展示归类。
         self.reports_dir = Path(reports_dir) if reports_dir is not None else None
@@ -3124,20 +3064,16 @@ class AnalysisReportGenerator:
         session_id: int,
         *,
         class_names: set[str] | None = None,
-        score_revision: str = "",
     ) -> list[Path]:
-        """以班级页面相同的数据、提示词和缓存规则批量导出自包含 HTML。"""
-        from backend.reporting.analysis_report_prompts import CLASS_SYSTEM_PROMPT
+        """以班级页面相同的数据批量导出自包含 HTML；叙述只复用已生成结果。"""
         from backend.class_analysis import (
-            _class_narrative,
+            ClassAnalysisStateStore,
             question_category_counts,
             session_error_records,
         )
 
         data = assemble_session_analysis(self.repositories, session_id, data_root=self.data_root)
-        revision = score_revision or _compute_score_revision(self.repositories, session_id)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        cache = self.cache or AnalysisNarrativeCache(self.output_dir / ".analysis_narrative_cache")
         enrich_personal_knowledge(self.repositories, data, self.data_root)
         # 错因记录按整场装配（指纹口径），再按各班学生过滤统计；状态缺失时为空。
         error_records = (
@@ -3146,22 +3082,25 @@ class AnalysisReportGenerator:
             )
             if self.reports_dir is not None else {}
         )
-        from backend.report_pipeline import class_cause_digest
-
-        client = self._client()
+        # 班级叙述只复用「AI 整理」已保存的结果（含 stale/old_prompt，仍可读）；
+        # 导出任务不调用模型。
+        stored_reports = (
+            (
+                (ClassAnalysisStateStore(self.reports_dir).load(int(session_id)) or {})
+                .get("class_reports")
+            )
+            if self.reports_dir is not None
+            else None
+        ) or {}
         files = []
         for name, group in split_session_analysis_by_class(data).items():
             if not group.students or (class_names is not None and name not in class_names):
                 continue
-            narrative = _class_narrative(
-                client=client, cache=cache, session_id=session_id, revision=revision,
-                class_name=name,
-                cause_digest=class_cause_digest(
-                    error_records, [s.student_id for s in group.students]
-                ),
-                prompt=build_report_prompt(
-                    CLASS_SYSTEM_PROMPT, build_class_payload(group, error_records)
-                ),
+            entry = stored_reports.get(name) or {}
+            narrative = (
+                entry.get("narrative")
+                if isinstance(entry.get("narrative"), dict)
+                else None
             )
             cause_counts = question_category_counts(
                 error_records, student_ids=[s.student_id for s in group.students])
@@ -3184,68 +3123,14 @@ class AnalysisReportGenerator:
             )
         return self._llm_client
 
-    def _cached_narrative(
-        self,
-        *,
-        session_id: int,
-        revision: str,
-        report_type: str,
-        report_key: str,
-    ) -> dict[str, Any] | None:
-        """当前叙述版本优先；个人报告再按旧版叙述版本依次兼容读取。
-
-        旧版本命中直接返回，不调用模型、不写回新 key。
-        """
-        if self.cache is None:
-            return None
-        from backend.report_exports import (
-            LEGACY_PERSONAL_NARRATIVE_VERSIONS,
-            report_narrative_version,
-        )
-
-        versions = [report_narrative_version(report_type)]
-        if report_type == PERSONAL_ANALYSIS_REPORT_TYPE:
-            versions.extend(LEGACY_PERSONAL_NARRATIVE_VERSIONS)
-        for rendition_version in versions:
-            cached = self.cache.load(
-                AnalysisNarrativeCache.cache_key(
-                    session_id=session_id,
-                    score_revision=revision,
-                    rendition_version=rendition_version,
-                    report_key=report_key,
-                )
-            )
-            if cached is not None:
-                return cached
-        return None
-
     def _narrative(
         self,
         *,
-        session_id: int,
-        revision: str,
-        report_type: str,
-        report_key: str,
         prompt: str,
         max_tokens: int,
         image_blobs: list[bytes] | None = None,
     ) -> dict[str, Any] | None:
-        from backend.report_exports import report_narrative_version
-
-        key = AnalysisNarrativeCache.cache_key(
-            session_id=session_id,
-            score_revision=revision,
-            rendition_version=report_narrative_version(report_type),
-            report_key=report_key,
-        )
-        cached = self._cached_narrative(
-            session_id=session_id,
-            revision=revision,
-            report_type=report_type,
-            report_key=report_key,
-        )
-        if cached is not None:
-            return cached
+        """恰好调用 1 次模型；写回 PersonalReportStore 由调用方在主线程完成。"""
         client = self._client()
         if client is None:
             return None
@@ -3265,16 +3150,12 @@ class AnalysisReportGenerator:
             )
             # 模型超时/解析失败：本地修复仍失败则降级，不暗中重发（已确认偏差）。
             return None
-        if not isinstance(narrative, dict):
-            return None
-        if self.cache is not None:
-            self.cache.store(key, narrative)
-        return narrative
+        return narrative if isinstance(narrative, dict) else None
 
     def _export_personal(
         self,
         data: SessionAnalysisData,
-        revision: str,
+        revision: str = "",
         *,
         student_ids: set[int] | None = None,
         html_only: bool = False,
@@ -3305,15 +3186,55 @@ class AnalysisReportGenerator:
         if not scoped_students and narrative_mode != "cache_only":
             raise ValueError("所选学生没有可生成个人报告的成绩。")
         session_data = data
-        # Resolve once on the caller thread. Only model/cache work runs in workers;
-        # repository access, image preparation and rendering stay on this thread.
-        from backend.personal_reports import (student_report_revisions, lookup_personal_narrative, publish_personal_index)
-        revisions = student_report_revisions(self.repositories, data.session_id,
-            [student.student_id for _group, student in scoped_students])
-        cached_by_student = {student.student_id: lookup_personal_narrative(self.cache, data.session_id,
-            student.student_id, revisions[student.student_id], revision, allow_stale=narrative_mode == "cache_only")
-            if self.cache is not None else dict(narrative=None, status="missing")
-            for _group, student in scoped_students}
+        # Resolve once on the caller thread. Only model work runs in workers;
+        # repository access, result-store writes, image preparation and rendering
+        # stay on this thread.
+        from backend.personal_reports import student_report_digests
+        from backend.report_results import (
+            PersonalReportStore,
+            prompt_version,
+            resolve_result_state,
+        )
+
+        personal_store = (
+            PersonalReportStore(self.reports_dir)
+            if self.reports_dir is not None
+            else None
+        )
+        digests = (
+            student_report_digests(
+                self.repositories,
+                data.session_id,
+                session_data,
+                reports_dir=self.reports_dir,
+            )
+            if personal_store is not None
+            else {}
+        )
+
+        def _stored_narrative(student: Any) -> dict[str, Any] | None:
+            """可复用的已存叙述：生成口径只复用 current；cache_only 可读旧值。"""
+            if personal_store is None:
+                return None
+            entry = personal_store.load(data.session_id, student.student_id)
+            narrative = entry.get("narrative") if isinstance(entry, dict) else None
+            if not isinstance(narrative, dict):
+                return None
+            if narrative_mode == "cache_only":
+                return narrative
+            if (
+                resolve_result_state(
+                    entry, digests.get(student.student_id, ""), "personal_report"
+                )["status"]
+                == "current"
+            ):
+                return narrative
+            return None
+
+        cached_by_student = {
+            student.student_id: _stored_narrative(student)
+            for _group, student in scoped_students
+        }
         self.last_personal_files = {}
         self.last_personal_missing = [dict(item) for item in data.skipped
             if student_ids is None or int(item["student_id"]) in student_ids]
@@ -3321,7 +3242,7 @@ class AnalysisReportGenerator:
         if narrative_mode == "cache_only":
             available = []
             for group, student in scoped_students:
-                if cached_by_student[student.student_id]["narrative"] is None:
+                if cached_by_student[student.student_id] is None:
                     self.last_personal_missing.append(dict(student_id=student.student_id,
                         student_name=student.student_name, student_code=student.student_code,
                         class_name=student.class_name, reason="未生成"))
@@ -3329,7 +3250,7 @@ class AnalysisReportGenerator:
                 else:
                     available.append((group, student))
             scoped_students = available
-        all_cached = all(cached_by_student[student.student_id]["narrative"] is not None for _g, student in scoped_students)
+        all_cached = all(cached_by_student[student.student_id] is not None for _g, student in scoped_students)
         client = None if narrative_mode == "cache_only" or all_cached else self._client()
         # 同教学学期历次成绩每次导出只读取一轮，渲染时按学生取用。
         histories = _load_student_histories(
@@ -3386,7 +3307,7 @@ class AnalysisReportGenerator:
                 self.repositories, data, student, regions=regions,
                 data_root=self.data_root, paper_context=paper_context,
             )
-            cached = cached_by_student[student.student_id]["narrative"]
+            cached = cached_by_student[student.student_id]
             images, image_map = ([], []) if cached is not None or narrative_mode == "cache_only" else _personal_image_inputs(
                 data, student, shots, paper_context, self.data_root,
             )
@@ -3395,10 +3316,6 @@ class AnalysisReportGenerator:
             payload["material_notes"] = student.material_notes
             future = executor.submit(lambda value=cached: value) if cached is not None else executor.submit(
                 self._narrative,
-                session_id=data.session_id,
-                revision="student:" + revisions[student.student_id],
-                report_type=PERSONAL_ANALYSIS_REPORT_TYPE,
-                report_key=f"personal:{student.student_id}",
                 prompt=build_report_prompt(PERSONAL_SYSTEM_PROMPT, payload),
                 max_tokens=personal_output_token_limit(sum(record.lost for record in student.records)),
                 image_blobs=images,
@@ -3413,7 +3330,7 @@ class AnalysisReportGenerator:
             used_names.add(filename)
             report_path = staging_subdir / filename
             report_files.append(report_path)
-            return future, (data, student, shots, report_path)
+            return future, (data, student, shots, report_path, cached is not None)
 
         students = iter(scoped_students)
         with ThreadPoolExecutor(
@@ -3434,12 +3351,23 @@ class AnalysisReportGenerator:
                     break
                 completed, _ = wait(pending, return_when=FIRST_COMPLETED)
                 for future in completed:
-                    data, student, shots, report_path = pending.pop(future)
+                    data, student, shots, report_path, from_store = pending.pop(future)
                     history_index = history_error_index.get(student.student_id)
                     error_history = history_index or None
                     narrative = future.result()
-                    if self.cache is not None and narrative_mode == "generate" and narrative is not None:
-                        publish_personal_index(self.cache.cache_dir, data.session_id, student.student_id, revisions[student.student_id])
+                    if (
+                        personal_store is not None
+                        and narrative_mode == "generate"
+                        and narrative is not None
+                        and not from_store
+                    ):
+                        personal_store.save(
+                            data.session_id,
+                            student.student_id,
+                            narrative=narrative,
+                            input_digest=digests.get(student.student_id, ""),
+                            prompt_version=prompt_version("personal_report"),
+                        )
                     if self.reports_dir is not None and narrative_mode == "generate":
                         review_note_items.extend(
                             _collect_review_notes(
@@ -3532,25 +3460,21 @@ def plan_cause_calls(
     *,
     reports_dir: Path,
     retry_failed: bool,
-    upgrade_pre_step: bool,
+    regenerate_old_prompt: bool = False,
 ) -> dict[str, int]:
-    """错因整理的工作量预估，与 run_cause_analysis 同口径的跳题/重试/升级规则。
+    """错因整理的工作量预估，与 run_cause_analysis 同口径的跳题/重试规则。
 
-    retry_failed=False、upgrade_pre_step=False 对应导出前置阶段与自动管线：
-    失败题不重发、v3 兼容结果不升级；手动口径把两者都算作待做。
+    retry_failed=False 对应导出前置阶段与自动管线：失败题不重发；
+    current 与 old_prompt 结果都复用，不计入待做（regenerate_old_prompt
+    保留给按题手动重生成入口）。
     待整理题目不少于 2 时，整理完成后还有一次统一错法名的小调用，
     预估按 +1 计入 call_count。
     """
     from backend.class_analysis import (
         CAUSE_ANALYSIS_PROMPT,
-        CAUSE_ANALYSIS_VERSION,
-        CAUSE_PRE_STEP_VERSION,
         ClassAnalysisStateStore,
-        _cause_input_fingerprint,
-        _pre_step_source,
         assemble_cause_data,
         build_cause_inputs,
-        cause_input_matches,
         known_cause_patterns,
         plan_cause_question,
     )
@@ -3560,6 +3484,7 @@ def plan_cause_calls(
         build_option_analysis_input,
         session_bank_context,
     )
+    from backend.report_results import cause_input_digest, resolve_result_state
 
     repositories = as_grading_repositories(db)
     store = ClassAnalysisStateStore(Path(reports_dir))
@@ -3585,18 +3510,19 @@ def plan_cause_calls(
     call_count = 0
     estimated_tokens = 0
     for source in sources:
-        fingerprint = _cause_input_fingerprint(source)
+        fingerprint = cause_input_digest(source)
         saved = stored.get(source["question_id"]) or {}
-        if (saved.get("version") in (CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION)
-                and cause_input_matches(saved, source) and saved.get("result")):
+        has_result = isinstance(saved.get("result"), dict)
+        saved_status = resolve_result_state(
+            saved if has_result else None, fingerprint, "causes"
+        )["status"]
+        if saved_status == "current" or (
+            saved_status == "old_prompt" and not regenerate_old_prompt
+        ):
             continue
-        if (saved.get("version") == CAUSE_PRE_STEP_VERSION
-                and cause_input_matches(saved, _pre_step_source(source))):
-            if not upgrade_pre_step:
-                # 前置阶段/自动运行不为升级旧口径结果调用模型。
-                continue
-        elif (not retry_failed and saved.get("failed")
-                and saved.get("failed_input_fingerprint") == fingerprint):
+        if (not retry_failed and saved.get("failed") and not has_result
+                and str(saved.get("failed_input_digest")
+                        or saved.get("failed_input_fingerprint") or "") == fingerprint):
             continue
         plan = plan_cause_question(
             store, int(session_id), source,
@@ -3643,34 +3569,30 @@ def build_analysis_preflight(
     session_id: int,
     report_type: str,
     *,
-    score_revision: str,
-    cache_dir: Path,
-    reports_dir: Path | None = None,
+    reports_dir: Path,
     student_ids: set[int] | None = None,
     include_causes: bool = True,
 ) -> dict[str, Any]:
     """生成前的费用与调用预估：错因整理与报告叙述分开计数；只给 token 粗估。
 
     include_causes=False 时跳过错因整理预估（调用方已单独计算），
-    cause_* 字段按 0 返回。
+    cause_* 字段按 0 返回。cache_hits 只统计 current 的个人报告结果。
     """
     if report_type not in ANALYSIS_REPORT_TYPES:
         raise ValueError(f"不支持的分析报告类型: {report_type}")
-    from backend.report_exports import (
-        LEGACY_PERSONAL_NARRATIVE_VERSIONS,
-        report_narrative_version,
-    )
+    from backend.personal_reports import student_report_digests
+    from backend.report_results import PersonalReportStore, resolve_result_state
 
     repositories = as_grading_repositories(db)
     data = assemble_session_analysis(repositories, int(session_id))
     enrich_personal_questions(repositories, data, None)
-    cache = AnalysisNarrativeCache(cache_dir)
-    renditions = [report_narrative_version(report_type)]
-    if report_type == PERSONAL_ANALYSIS_REPORT_TYPE:
-        renditions.extend(LEGACY_PERSONAL_NARRATIVE_VERSIONS)
+    personal_store = PersonalReportStore(reports_dir)
+    digests = student_report_digests(
+        repositories, int(session_id), data, reports_dir=reports_dir
+    )
     entries = [
         (
-            f"personal:{student.student_id}",
+            student.student_id,
             build_report_prompt(
                 PERSONAL_SYSTEM_PROMPT,
                 build_personal_payload(data, student),
@@ -3682,15 +3604,14 @@ def build_analysis_preflight(
         if student_ids is None or student.student_id in student_ids
     ]
 
-    from backend.personal_reports import student_report_revisions, lookup_personal_narrative
-    revisions = student_report_revisions(repositories, int(session_id),
-        [int(key.split(":")[1]) for key, _p, _m in entries])
     cache_hits = 0
     estimated_tokens = 0
-    for report_key, prompt, max_tokens in entries:
-        sid = int(report_key.split(":")[1])
-        hit = lookup_personal_narrative(cache, int(session_id), sid, revisions[sid], score_revision,
-                                        allow_stale=False)["narrative"] is not None
+    for sid, prompt, max_tokens in entries:
+        entry = personal_store.load(int(session_id), sid)
+        hit = (
+            resolve_result_state(entry, digests.get(sid, ""), "personal_report")["status"]
+            == "current"
+        )
         if hit:
             cache_hits += 1
             continue
@@ -3706,9 +3627,8 @@ def build_analysis_preflight(
         cause_plan = plan_cause_calls(
             repositories,
             int(session_id),
-            reports_dir=Path(reports_dir) if reports_dir is not None else cache_dir.parent,
+            reports_dir=Path(reports_dir),
             retry_failed=False,
-            upgrade_pre_step=False,
         )
         cause_call_count = cause_plan["call_count"]
         cause_total_questions = cause_plan["total_questions"]

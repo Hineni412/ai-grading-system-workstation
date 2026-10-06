@@ -62,8 +62,6 @@ from backend.scan_grading.workspace import ScanGradingWorkspace
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
-_ANALYSIS_NARRATIVE_CACHE_DIRNAME = ".analysis_narrative_cache"
-
 
 def _parse_student_ids(value: str | None):
     if value is None:
@@ -250,8 +248,6 @@ def get_analysis_report_preflight(
         db,
         session_id,
         report_type,
-        score_revision=score_revision(db, session_id),
-        cache_dir=Path(reports_dir) / _ANALYSIS_NARRATIVE_CACHE_DIRNAME,
         reports_dir=Path(reports_dir),
         student_ids=_parse_student_ids(student_ids),
     )
@@ -427,7 +423,6 @@ def get_class_analysis(
         class_narrative_with_student_names,
     )
     from backend.class_analysis import (
-        CLASS_ANALYSIS_RENDITION_VERSION,
         apply_cause_results,
         assemble_cause_data,
         build_cause_inputs,
@@ -464,32 +459,36 @@ def get_class_analysis(
         limit=1,
     )
     active_job_id = active_jobs[0].id if active_jobs else None
-    current_revision = score_revision(db, session_id, include_question_bank=False) if state and view != "summary" else ""
-    stored_revision = str(state.get("score_revision") or "") if state else ""
-    # 存储的成绩版本与当前不一致 → 提示「成绩已更新，可重新生成」。
-    stale = view != "summary" and bool(stored_revision) and (
-        stored_revision != current_revision
-        or state.get("rendition_version") != CLASS_ANALYSIS_RENDITION_VERSION
-    )
     selected = {}
-    if state is not None and view != "summary":
+    entry_state = "missing"
+    if state is not None and view != "summary" and selected_class is not None:
         reports = state.get("class_reports")
         selected = reports.get(selected_class, {}) if isinstance(reports, dict) else {}
-        if not stale and selected.get("status") == "ready" and isinstance(selected.get("narrative"), dict):
-            # 班级叙述的错因摘要与当前物化记录不一致 → 随「AI 整理」重新生成。
-            from backend.class_analysis import session_error_records
-            from backend.report_pipeline import class_cause_digest
+        # 班级叙述的新鲜度由输入指纹判定：成绩行/教师锁/错因摘要任一变化 → stale。
+        from backend.class_analysis import session_error_records
+        from backend.report_pipeline import (
+            class_cause_digest,
+            class_report_input_digest,
+        )
+        from backend.report_results import resolve_result_state
 
-            digest = class_cause_digest(
+        digest = class_report_input_digest(
+            db,
+            int(session_id),
+            data,
+            cause_digest=class_cause_digest(
                 session_error_records(db, int(session_id), Path(reports_dir)),
                 [student.student_id for student in data.students],
-            )
-            stale = str(selected.get("cause_digest") or "") != digest
+            ),
+        )
+        entry_state = resolve_result_state(selected, digest, "class_report")["status"]
+    # 输入已变化 → 提示「成绩已更新，可重新生成」；旧结果（stale/old_prompt）仍展示。
+    stale = view != "summary" and entry_state == "stale"
     narrative = None
     narrative_failed = False
     if state is not None and view != "summary":
         narrative_failed = selected.get("status", state.get("status")) in {"failed", "not_configured"}
-        if not stale and selected.get("status") == "ready" and isinstance(selected.get("narrative"), dict):
+        if selected.get("status") == "ready" and isinstance(selected.get("narrative"), dict):
             # 叙述中的 S1/S2… 代号在服务端映射回真实姓名（教师本人页面，不脱敏）。
             narrative = class_narrative_with_student_names(
                 selected["narrative"],
@@ -739,7 +738,6 @@ def submit_report_pipeline(
     job = submit_class_analysis_generate(
         manager=manager,
         session_id=int(session_id),
-        revision=score_revision(db, session_id, include_question_bank=False),
         mode="manual",
     )
     return _job_response(job)

@@ -68,7 +68,6 @@ class AnalysisReportExporterFactory(Protocol):
         output_dir: Path,
         *,
         llm_client_factory: Callable[[], Any] | None = None,
-        narrative_cache_dir: Path | None = None,
         data_root: Path | None = None,
         reports_dir: Path | None = None,
     ) -> AnalysisReportGenerator:
@@ -662,9 +661,6 @@ def _build_report_export_handler(
                     open_grading_repositories(db_path),
                     staging_dir,
                     llm_client_factory=None,
-                    narrative_cache_dir=(
-                        reports_dir / ".analysis_narrative_cache"
-                    ),
                     data_root=data_root,
                     reports_dir=reports_dir,
                 )

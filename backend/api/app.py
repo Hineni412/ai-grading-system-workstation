@@ -75,6 +75,27 @@ def _validation_error_details(exc: RequestValidationError) -> dict[str, Any]:
     return {"errors": errors}
 
 
+def _migrate_report_results_on_startup(paths: Any) -> None:
+    """启动时把报告结果迁移到 input_digest/prompt_version 口径；幂等，失败只记日志。"""
+    try:
+        from backend.report_results import migrate_report_results
+        from backend.repositories.grading_database import open_grading_repositories
+
+        db = open_grading_repositories(Path(paths.db_path))
+        try:
+            summary = migrate_report_results(Path(paths.reports_dir), db)
+        finally:
+            db.close()
+        LOGGER.info(
+            "report_results_migration sessions=%d backup=%s cache_dir_deleted=%s",
+            len(summary.get("sessions") or {}),
+            summary.get("backup_dir"),
+            summary.get("cache_dir_deleted"),
+        )
+    except Exception:
+        LOGGER.warning("report_results_migration failed", exc_info=True)
+
+
 @asynccontextmanager
 async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
     from backend.api.dependencies import (
@@ -99,6 +120,7 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
             )
 
             ensure_checked_in_current_standard(Path(paths.qb_db_path))
+            _migrate_report_results_on_startup(paths)
         manager = create_job_manager(paths) if owns_manager else None
         ops_service = (
             create_ops_write_service(paths) if owns_ops_service else None

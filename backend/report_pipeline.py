@@ -4,8 +4,10 @@
 过期与失败的内容。三个阶段顺序执行，已有内容不重复生成；未配置内容
 生成模型时不产生任何模型调用。
 
-- 手动（manual）：重试此前整理失败的题目，并把按步骤整理前的 v3 结果升级；
-- 自动（auto）：失败题不重发、v3 兼容结果不升级，只补齐尚未整理的内容。
+- 手动（manual）：重试此前整理失败的题目；
+- 自动（auto）：失败题不重发，只补齐尚未整理的内容。
+- 两阶段口径：只重算 stale/missing 的结果；old_prompt 结果仍可读，
+  不随「AI 整理」自动重生成。
 """
 
 from __future__ import annotations
@@ -20,14 +22,17 @@ from pathlib import Path
 from typing import Any
 
 from backend.class_analysis import (
-    CLASS_ANALYSIS_RENDITION_VERSION,
-    NARRATIVE_CACHE_DIRNAME,
     ClassAnalysisStateStore,
     _class_narrative,
     _now_iso,
     run_cause_analysis,
     session_error_records,
     submit_class_analysis_generate,
+)
+from backend.report_results import (
+    class_input_digest,
+    prompt_version,
+    resolve_result_state,
 )
 from backend.jobs.manager import JobContext, JobManager
 from backend.jobs.store import JobRecord
@@ -59,13 +64,37 @@ def class_cause_digest(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def class_report_input_digest(
+    db: Any,
+    session_id: int,
+    group: Any,
+    *,
+    cause_digest: str,
+) -> str:
+    """班级报告输入指纹：本班成绩行、本班教师锁与错因摘要。"""
+    records = [
+        [student.student_id, record.question_id, record.score, record.max_score]
+        for student in group.students
+        for record in student.records
+    ]
+    student_ids = {student.student_id for student in group.students}
+    locks = [
+        [
+            int(lock.get("student_id") or 0),
+            str(lock.get("question_id") or ""),
+            lock.get("score_awarded"),
+        ]
+        for lock in db.reviews.list_teacher_score_locks(int(session_id))
+        if int(lock.get("student_id") or 0) in student_ids
+    ]
+    return class_input_digest(records=records, locks=locks, cause_digest=cause_digest)
+
+
 def class_report_entry_current(entry: Any, digest: str) -> bool:
-    """单班叙述是否与当前错因口径一致（成绩版本/版式由调用方先行判定）。"""
+    """单班叙述是否与当前输入指纹一致（含提示词版本判定）。"""
     return (
-        isinstance(entry, dict)
-        and entry.get("status") == "ready"
-        and isinstance(entry.get("narrative"), dict)
-        and str(entry.get("cause_digest") or "") == digest
+        resolve_result_state(entry, digest, "class_report")["status"]
+        == "current"
     )
 
 
@@ -79,7 +108,6 @@ def run_report_pipeline(
     exporter_factory: Callable[..., Any] | None = None,
 ) -> dict[str, object]:
     """顺序执行错因整理、班级叙述与个人叙述；每步只补缺失内容。"""
-    from backend.report_exports import score_revision
 
     session_id = int(context.payload["session_id"])
     mode = "auto" if str(context.payload.get("mode") or "") == "auto" else "manual"
@@ -93,7 +121,6 @@ def run_report_pipeline(
         store.save(
             session_id,
             status="not_configured",
-            narrative_error="内容生成模型未配置",
             generated_at=_now_iso(),
         )
         return {
@@ -113,7 +140,8 @@ def run_report_pipeline(
             store=store,
             llm_client_factory=lambda: client,
             retry_failed=(mode == "manual"),
-            upgrade_pre_step=(mode == "manual"),
+            # old_prompt 结果不随「AI 整理」自动重生成；按题重生成走独立入口。
+            regenerate_old_prompt=False,
             progress_band=(0.02, 0.35),
             progress_stage="report_pipeline",
         )
@@ -125,14 +153,10 @@ def run_report_pipeline(
 
     context.raise_if_cancelled()
     context.report(0.4, "report_pipeline", "正在生成班级报告")
-    revision = str(context.payload.get("score_revision") or "").strip() or score_revision(
-        db, session_id, include_question_bank=False
-    )
     class_summary = generate_session_class_reports(
         context,
         db=db,
         session_id=session_id,
-        revision=revision,
         reports_dir=Path(reports_dir),
         data_root=data_root,
         client=client,
@@ -180,16 +204,14 @@ def generate_session_class_reports(
     *,
     db: Any,
     session_id: int,
-    revision: str,
     reports_dir: Path,
     data_root: Path | None,
     client: Any,
     progress_band: tuple[float, float] = (0.0, 1.0),
     progress_stage: str = "report_pipeline",
 ) -> dict[str, Any]:
-    """为叙述不当前的班级生成 AI 叙述；已当前的班级保留原条目。"""
+    """为状态为 stale/missing 的班级生成 AI 叙述；current/old_prompt 保留原条目。"""
     from backend.reporting.analysis_report_exporter import (
-        AnalysisNarrativeCache,
         build_class_payload,
         build_report_prompt,
     )
@@ -208,11 +230,6 @@ def generate_session_class_reports(
     )
     generated_at = _now_iso()
     state = store.load(int(session_id)) or {}
-    revision_current = (
-        str(state.get("score_revision") or "") == str(revision)
-        and str(state.get("rendition_version") or "")
-        == CLASS_ANALYSIS_RENDITION_VERSION
-    )
     stored_reports = (
         state.get("class_reports") if isinstance(state.get("class_reports"), dict) else {}
     )
@@ -221,13 +238,9 @@ def generate_session_class_reports(
         store.save(
             int(session_id),
             status="failed",
-            narrative=None,
-            narrative_error="该场次暂无可分析的成绩数据",
-            score_revision=revision,
             generated_at=generated_at,
             small_sample=data.small_sample,
             class_reports={},
-            rendition_version=CLASS_ANALYSIS_RENDITION_VERSION,
         )
         return {
             "status": "failed",
@@ -237,27 +250,33 @@ def generate_session_class_reports(
             "generated_at": generated_at,
         }
 
-    class_reports = dict(stored_reports) if revision_current else {}
+    class_reports = dict(stored_reports)
     pending: list[tuple[str, Any, str]] = []
     skipped = 0
     for name, group in groups.items():
         if not group.students:
             continue
-        digest = class_cause_digest(
-            error_records, [student.student_id for student in group.students]
+        digest = class_report_input_digest(
+            db,
+            int(session_id),
+            group,
+            cause_digest=class_cause_digest(
+                error_records,
+                [student.student_id for student in group.students],
+            ),
         )
-        if revision_current and class_report_entry_current(
-            stored_reports.get(name), digest
-        ):
+        entry_state = resolve_result_state(
+            stored_reports.get(name), digest, "class_report"
+        )["status"]
+        if entry_state in {"current", "old_prompt"}:
             skipped += 1
             continue
         pending.append((name, group, digest))
 
     lo, hi = progress_band
-    cache = AnalysisNarrativeCache(Path(reports_dir) / NARRATIVE_CACHE_DIRNAME)
     generated = 0
     failed = 0
-    # 各班叙述的模型调用按设置页并发数并行；缓存与状态写回留在主线程按
+    # 各班叙述的模型调用按设置页并发数并行；状态写回留在主线程按
     # 完成顺序处理（ClassAnalysisStateStore 的读改写不是线程安全的）。
     execution = getattr(
         getattr(client, "config_gateway", None), "execution_snapshot", None
@@ -269,11 +288,6 @@ def generate_session_class_reports(
             name, group, digest = item
             narrative = _class_narrative(
                 client=client,
-                cache=cache,
-                session_id=int(session_id),
-                revision=str(revision),
-                class_name=name,
-                cause_digest=digest,
                 prompt=build_report_prompt(
                     CLASS_SYSTEM_PROMPT, build_class_payload(group, error_records)
                 ),
@@ -292,9 +306,11 @@ def generate_session_class_reports(
                     inflight.pop(future)
                     name, digest, narrative = future.result()
                     class_reports[name] = {
-                        "status": "ready" if narrative is not None else "failed",
                         "narrative": narrative,
-                        "cause_digest": digest,
+                        "input_digest": digest,
+                        "prompt_version": prompt_version("class_report"),
+                        "generated_at": _now_iso(),
+                        "status": "ready" if narrative is not None else "failed",
                     }
                     if narrative is not None:
                         generated += 1
@@ -320,17 +336,10 @@ def generate_session_class_reports(
     store.save(
         int(session_id),
         status=status,
-        narrative=(
-            next(iter(class_reports.values()))["narrative"]
-            if len(class_reports) == 1
-            else None
-        ),
-        narrative_error=None if status == "ready" else "AI 分析生成失败，可重新生成",
-        score_revision=revision,
         generated_at=generated_at,
         small_sample=data.small_sample,
         class_reports=class_reports,
-        rendition_version=CLASS_ANALYSIS_RENDITION_VERSION,
+        results_version=2,
     )
     return {
         "status": status,
@@ -377,7 +386,6 @@ def generate_pending_personal_reports(
             db,
             Path(staging),
             llm_client_factory=lambda: client,
-            narrative_cache_dir=Path(reports_dir) / NARRATIVE_CACHE_DIRNAME,
             data_root=data_root,
             reports_dir=Path(reports_dir),
         )
@@ -437,15 +445,16 @@ def build_report_pipeline_status(
     review_pending: int,
     active_job_id: int | None,
     retry_failed: bool = True,
-    upgrade_pre_step: bool = True,
 ) -> dict[str, Any]:
-    """「AI 整理」状态：配置、复核待办与三阶段待补数量（默认按手动口径）。"""
+    """「AI 整理」状态：配置、复核待办与三阶段待补数量（默认按手动口径）。
+
+    待补 = stale + missing；old_prompt 的结果仍可读，不计入待补、不自动重算。
+    """
     from backend.model_profiles.content_generation import (
         content_generation_public_info,
         resolve_content_generation_settings,
     )
     from backend.personal_reports import personal_report_states
-    from backend.report_exports import score_revision
     from backend.reporting.analysis_report_exporter import (
         build_analysis_preflight,
         plan_cause_calls,
@@ -458,9 +467,6 @@ def build_report_pipeline_status(
     repositories = as_grading_repositories(db)
     store = ClassAnalysisStateStore(Path(reports_dir))
     state = store.load(int(session_id)) or {}
-    revision = score_revision(
-        repositories, int(session_id), include_question_bank=False
-    )
     configured = resolve_content_generation_settings() is not None
     service_name, model_name = content_generation_public_info()
 
@@ -469,18 +475,12 @@ def build_report_pipeline_status(
         int(session_id),
         reports_dir=Path(reports_dir),
         retry_failed=retry_failed,
-        upgrade_pre_step=upgrade_pre_step,
     )
     causes_pending = int(cause_plan["pending_questions"]) > 0
 
     data = assemble_session_analysis(repositories, int(session_id), page_only=True)
     error_records = session_error_records(
         repositories, int(session_id), Path(reports_dir)
-    )
-    revision_current = (
-        str(state.get("score_revision") or "") == revision
-        and str(state.get("rendition_version") or "")
-        == CLASS_ANALYSIS_RENDITION_VERSION
     )
     stored_reports = (
         state.get("class_reports") if isinstance(state.get("class_reports"), dict) else {}
@@ -491,13 +491,18 @@ def build_report_pipeline_status(
         if not group.students:
             continue
         class_total += 1
-        digest = class_cause_digest(
-            error_records, [student.student_id for student in group.students]
+        digest = class_report_input_digest(
+            repositories,
+            int(session_id),
+            group,
+            cause_digest=class_cause_digest(
+                error_records,
+                [student.student_id for student in group.students],
+            ),
         )
-        current = (
-            revision_current
-            and class_report_entry_current(stored_reports.get(name), digest)
-        )
+        current = resolve_result_state(
+            stored_reports.get(name), digest, "class_report"
+        )["status"] in {"current", "old_prompt"}
         # 错因有待整理时各班摘要都会变化，全部视为待生成。
         if causes_pending or not current:
             class_pending += 1
@@ -517,8 +522,6 @@ def build_report_pipeline_status(
         repositories,
         int(session_id),
         PERSONAL_ANALYSIS_REPORT_TYPE,
-        score_revision=revision,
-        cache_dir=Path(reports_dir) / NARRATIVE_CACHE_DIRNAME,
         reports_dir=Path(reports_dir),
         student_ids=personal_pending_ids,
         # 错因预估已在上面按手动口径算过，这里不重复计算。
@@ -575,7 +578,6 @@ def maybe_auto_generate_report_pipeline(
     from backend.model_profiles.content_generation import (
         resolve_content_generation_settings,
     )
-    from backend.report_exports import score_revision
 
     repositories = as_grading_repositories(db)
     store = ClassAnalysisStateStore(Path(reports_dir))
@@ -599,7 +601,7 @@ def maybe_auto_generate_report_pipeline(
             exc_info=True,
         )
         return None
-    # 自动口径（不重试失败、不升级旧版）下无可补内容时不再排队空跑。
+    # 自动口径（不重试失败）下无可补内容时不再排队空跑。
     status = build_report_pipeline_status(
         db=repositories,
         session_id=int(session_id),
@@ -607,7 +609,6 @@ def maybe_auto_generate_report_pipeline(
         review_pending=0,
         active_job_id=None,
         retry_failed=False,
-        upgrade_pre_step=False,
     )
     if status["complete"]:
         return None
@@ -616,16 +617,12 @@ def maybe_auto_generate_report_pipeline(
         store.save(
             int(session_id),
             status="not_configured",
-            narrative_error="内容生成模型未配置",
             generated_at=_now_iso(),
         )
         return None
     return submit_class_analysis_generate(
         manager=manager,
         session_id=int(session_id),
-        revision=score_revision(
-            repositories, int(session_id), include_question_bank=False
-        ),
         mode="auto",
     )
 

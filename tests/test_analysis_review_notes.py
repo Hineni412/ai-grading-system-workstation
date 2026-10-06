@@ -171,7 +171,6 @@ def test_personal_export_writes_review_notes_sidecar(
         db,
         tmp_path / "out",
         llm_client_factory=lambda: client,
-        narrative_cache_dir=tmp_path / "cache",
         data_root=root,
         reports_dir=reports_dir,
     )
@@ -206,7 +205,6 @@ def test_personal_export_merge_scoped_and_lock_revision(
         db,
         tmp_path / "out",
         llm_client_factory=lambda: client,
-        narrative_cache_dir=tmp_path / "cache",
         data_root=root,
         reports_dir=reports_dir,
     )
@@ -233,7 +231,6 @@ def test_personal_export_merge_scoped_and_lock_revision(
         db,
         tmp_path / "out2",
         llm_client_factory=lambda: second_client,
-        narrative_cache_dir=tmp_path / "cache2",
         data_root=root,
         reports_dir=reports_dir,
     )

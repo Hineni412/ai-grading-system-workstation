@@ -19,10 +19,6 @@ _REPORT_RENDITION_VERSIONS = {
     "personal_analysis_html": "personal_analysis_html_v15_parent_point_note",
 }
 
-# 旧版泛化标题不满足当前知识点概括要求，不作为新生成任务的缓存命中。
-# 已导出的历史 HTML 继续可读，旧缓存保留；之后仅显示变化可在此列兼容版本。
-LEGACY_PERSONAL_NARRATIVE_VERSIONS: tuple[str, ...] = ()
-
 # 考试分析报告（AI 叙述）导出类型：提交时不带 excel_options。
 # 班级分析已改为系统内嵌页面（backend/class_analysis.py），不再是导出类型。
 ANALYSIS_REPORT_TYPES = frozenset({"personal_analysis_html"})
@@ -33,9 +29,11 @@ def report_rendition_version(report_type: str) -> str:
 
 
 def report_narrative_version(report_type: str) -> str:
-    # 精确知识点概括属于提示词语义变化；只在用户发起新生成时使用新叙述。
-    if report_type == 'personal_analysis_html':
-        return 'personal_analysis_html_v12_knowledge_focus'
+    """叙述提示词版本；唯一来源是 backend.report_results.prompt_version。"""
+    from backend.report_results import prompt_version
+
+    if report_type == "personal_analysis_html":
+        return prompt_version("personal_report")
     return report_rendition_version(report_type)
 
 

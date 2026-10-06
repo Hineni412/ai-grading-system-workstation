@@ -1,12 +1,11 @@
 """班级分析（教师版）内嵌页面：状态存储、生成 job 与阅卷完成后的自动触发。
 
 - 每场次一个状态文件：受控 reports 目录下 `.class_analysis/{session_id}.json`，
-  原子写入；AI 叙述本体直接内嵌在状态文件中，另按
-  (session_id, score_revision, rendition, report_key="class:{class_name}") 进
-  AnalysisNarrativeCache，重新生成命中缓存不再调用模型。
-- 页面数据（data）不落盘，GET 时按当前成绩实时装配；状态文件只记叙述与
-  score_revision，用于叙述 stale 判定。逐题错因归并同存于该状态文件，保留
-  批语映射及评分要求，读取时匹配当前输入并按所选班级去重统计人数。
+  原子写入；AI 叙述本体直接内嵌在 `class_reports` 条目中。
+- 页面数据（data）不落盘，GET 时按当前成绩实时装配；结果新鲜度统一由
+  backend.report_results 的 input_digest + prompt_version 判定。逐题错因归并
+  同存于该状态文件，保留批语映射及评分要求，读取时匹配当前输入并按所选班级
+  去重统计人数。
   归并结果同时物化为学生×题错因记录（error_records），供个人报告按题读取。
 - 错因整理、班级叙述与个人叙述统一由 backend.report_pipeline 的
   kind=pipeline 任务顺序执行；报告导出只复用已生成内容，不调用模型。
@@ -41,18 +40,22 @@ from backend.repositories.grading_database import open_grading_repositories
 
 LOGGER = logging.getLogger(__name__)
 
+from backend.report_results import (
+    cause_input_digest,
+    prompt_version,
+    resolve_result_state,
+)
+
 CLASS_ANALYSIS_JOB_TYPE = "class_analysis_generate"
 CLASS_ANALYSIS_STATE_DIRNAME = ".class_analysis"
-CLASS_ANALYSIS_RENDITION_VERSION = "class_analysis_page_v4_cause_payload"
 CLASS_ANALYSIS_REPORT_KEY = "class:session"
 NARRATIVE_CACHE_DIRNAME = ".analysis_narrative_cache"
-CAUSE_ANALYSIS_VERSION = "class_error_causes_v4"
-# 按步骤拆分前的整理结果：输入仍匹配时继续展示（兼容输入），手动整理时升级。
-CAUSE_PRE_STEP_VERSION = "class_error_causes_v3"
+# 提示词版本的唯一来源是 backend.report_results.prompt_version；此别名仅供
+# 既有调用方与测试辨认，不引入第二个字符串常量。
+CAUSE_ANALYSIS_VERSION = prompt_version("causes")
+# 迁移后仍可展示的旧提示词版本（按步骤拆分前的整理口径）。
+_CAUSE_PRE_STEP_PROMPT_VERSION = "class_error_causes_v3"
 CAUSE_KINDS = frozenset({"error", "process", "response_state", "carry_forward", "review"})
-# 仍可展示的旧版整理结果：v1 只有文本归并，v2 有 kind/manifestation 但没有大类。
-CAUSE_OUTDATED_VERSION = "class_error_causes_v2"
-CAUSE_LEGACY_VERSION = "class_error_causes_v1"
 
 CAUSE_ANALYSIS_PROMPT = """你是数学教师，依据本场考试的题目、参考解答、已有作答证据与批语整理失分情况，不重新评分。
 evidence 的每个 id 代表相同的批语、作答及前问证据组合，不是学生身份。批语是解释来源，不是不可质疑的事实。
@@ -203,75 +206,21 @@ def _evidence_hash(evidence_key: str) -> str:
     return hashlib.sha256(evidence_key.encode("utf-8")).hexdigest()[:20]
 
 
-def _cause_input_fingerprint(source: dict[str, Any]) -> str:
-    """整理输入指纹：known_patterns 每次生成时可变，不参与新旧判定。"""
-    comparable = {key: value for key, value in source.items() if key != "known_patterns"}
-    return hashlib.sha256(
-        json.dumps(comparable, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
-    ).hexdigest()
+# 旧名保留为别名：整理输入指纹的唯一实现是 report_results.cause_input_digest。
+_cause_input_fingerprint = cause_input_digest
 
 
-def cause_input_matches(saved: dict[str, Any], source: dict[str, Any]) -> bool:
-    """Current input, or an older export missing only supplemental bank text.
-
-    Legacy external runs omitted question_text/reference_analysis. Accept their
-    original evidence, answers and rubric only when those still match exactly;
-    never treat an edited, previously populated field as compatible.
-    """
-    previous = saved.get("input")
-    fingerprint = saved.get("input_fingerprint") or (
-        _cause_input_fingerprint(previous) if isinstance(previous, dict) else None
-    )
-    if fingerprint == _cause_input_fingerprint(source):
-        return True
-    if not isinstance(previous, dict) or fingerprint != _cause_input_fingerprint(previous):
-        return False
-    if previous.get("question_text"):
-        return False
-    comparable = dict(source)
-    for key in ("question_text", "reference_analysis"):
-        if not previous.get(key):
-            if key in previous:
-                comparable[key] = previous[key]
-            else:
-                comparable.pop(key, None)
-    return fingerprint == _cause_input_fingerprint(comparable)
+def _saved_prompt_version(saved: dict[str, Any]) -> str:
+    """已存条目的提示词版本；兼容迁移前以 version 键存放的状态文件。"""
+    return str(saved.get("prompt_version") or saved.get("version") or "")
 
 
-def _pre_step_source(source: dict[str, Any]) -> dict[str, Any]:
-    """按步骤拆分前的输入口径：v3 形状的 source。
-
-    去掉 failed_steps 后按 v3 的证据键去重、排序、重新编号——v3 输入先按
-    证据键合并不同学生的相同作答，证据 id 又按排序位置生成，两步都要复现
-    才能与旧输入一致。
-    """
-    items: dict[str, dict[str, Any]] = {}
-    for item in source["evidence"]:
-        stripped_item = {
-            key: value for key, value in item.items()
-            if key not in {"id", "failed_steps"}
-        }
-        items[_evidence_key(stripped_item)] = stripped_item
-    stripped = dict(source)
-    stripped["evidence"] = [
-        {"id": f"E{index}", **item}
-        for index, item in enumerate(sorted(items.values(), key=_evidence_key), start=1)
-    ]
-    return stripped
-
-
-def cause_source_state(saved: dict[str, Any], source: dict[str, Any]) -> str:
-    """已存整理结果对当前输入的匹配状态：fresh / pre_step / stale。
-
-    pre_step 表示 v3 结果与按步骤拆分前的输入一致（兼容输入，可展示可升级）。
-    """
-    if not isinstance(saved, dict):
-        return "stale"
-    if cause_input_matches(saved, source):
-        return "fresh"
-    if cause_input_matches(saved, _pre_step_source(source)):
-        return "pre_step"
-    return "stale"
+def _saved_input_digest(saved: dict[str, Any], source: dict[str, Any]) -> str:
+    """已存条目的输入指纹；兼容迁移前的 input_fingerprint 键。"""
+    digest = str(saved.get("input_digest") or saved.get("input_fingerprint") or "")
+    if not digest and isinstance(saved.get("input"), dict):
+        digest = cause_input_digest(saved["input"])
+    return digest
 
 
 def _merge_known_patterns(*groups: Any) -> list[dict[str, Any]]:
@@ -619,7 +568,9 @@ def student_error_records(
                     "max_score": record.max_score,
                     "lost_points": record.lost_points,
                     "version": (
-                        CAUSE_ANALYSIS_VERSION if by_step else CAUSE_PRE_STEP_VERSION
+                        prompt_version("causes")
+                        if by_step
+                        else _CAUSE_PRE_STEP_PROMPT_VERSION
                     ),
                 }
                 if bare_descriptions:
@@ -652,19 +603,24 @@ def save_cause_result(
     state = store.load(session_id) or {}
     current = state.get("cause_analysis") or {}
     questions = dict(current.get("questions") or {})
-    previous = questions.get(source["question_id"]) or {}
-    history = list(previous.get("history") or [])
-    if previous.get("result") and any((previous.get("version") != CAUSE_ANALYSIS_VERSION,
-                                      previous.get("input") != source, previous.get("result") != result)):
-        history.append({key: value for key, value in previous.items() if key not in {"history", "failed"}})
-    fingerprint = _cause_input_fingerprint(source)
+    fingerprint = cause_input_digest(source)
     questions[source["question_id"]] = {
-        "version": CAUSE_ANALYSIS_VERSION, "input": source, "input_fingerprint": fingerprint,
         "result": result,
-        "generated_at": _now_iso(), "origin": origin, "failed": False,
-        "history": history,
+        # input 保留生成时的证据列表与 id，供 stale/old_prompt 结果按原证据展示。
+        "input": source,
+        "input_digest": fingerprint,
+        "prompt_version": prompt_version("causes"),
+        "generated_at": _now_iso(),
+        "origin": origin,
+        "failed": False,
+        "failed_input_digest": None,
     }
-    fields: dict[str, Any] = {"cause_analysis": {"questions": questions}}
+    fields: dict[str, Any] = {
+        "cause_analysis": {
+            **{key: value for key, value in current.items() if key != "questions"},
+            "questions": questions,
+        }
+    }
     if data is not None:
         records = dict(state.get("error_records") or {})
         records[source["question_id"]] = {
@@ -682,10 +638,11 @@ def apply_cause_results(
     state: Any, *, session_id: int | None = None,
     question_bank_path: Path | None = None,
 ) -> dict[str, Any]:
-    """匹配当前作答证据后按班级投影；兼容的旧归并明确标记，等待手动升级。
+    """匹配当前作答证据后按班级投影；旧提示词/过期结果仍按原证据展示。
 
-    v3 结果按输入指纹判定新鲜；v2 旧结果在证据一致时仍展示（无错误大类，
-    标记 causes_outdated 等待重新整理）；v1 文本归并走原 legacy 路径。
+    每题状态由 resolve_result_state 判定：current / stale / old_prompt /
+    missing；stale 与 old_prompt 的已存结果继续按生成时的 input 证据投影
+    （条目标记 cause_state），missing 或整理失败的题只显示原始理由。
     传入 session_id + 题库路径时，额外标注每题题库关联。
     """
     from backend.error_causes import CAUSE_CATEGORIES
@@ -698,41 +655,31 @@ def apply_cause_results(
         bank_context = session_bank_context(question_bank_path, int(session_id))
         bank_map = {parent: int(ctx["bank_id"]) for parent, ctx in bank_context.items()}
     sources = {source["question_id"]: source for source in all_inputs}
-    ready, failed, legacy_count, outdated_count, pre_step_count, stale = 0, 0, 0, 0, 0, False
+    counts = {"current": 0, "stale": 0, "old_prompt": 0, "missing": 0, "failed": 0}
     times, origins = [], set()
     question_pages = {item["question_id"]: item for item in (page or {}).get("questions", [])}
     for question_id, source in sources.items():
         saved = stored.get(question_id) or {}
-        # 无步骤题目的 v3 输入与 v4 相同，其 v3 结果按指纹即为 fresh。
-        fresh = (saved.get("version") in (CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION)
-                 and cause_input_matches(saved, source)
-                 and isinstance(saved.get("result"), dict))
-        pre_step = (not fresh and saved.get("version") == CAUSE_PRE_STEP_VERSION
-                    and isinstance(saved.get("result"), dict)
-                    and cause_input_matches(saved, _pre_step_source(source)))
-        old_version = saved.get("version")
-        old_source = saved.get("input") or {}
-        compatible = isinstance(saved.get("result"), dict) and all(
-            old_source.get(key) == source.get(key)
-            for key in ("question_id", "max_score", "stem_summary", "canonical_answer")
-        ) and {item.get("text") for item in old_source.get("evidence", [])} == {
-            item["text"] for item in source["evidence"]}
-        legacy = compatible and old_version == CAUSE_LEGACY_VERSION
-        outdated = compatible and old_version == CAUSE_OUTDATED_VERSION
-        text_match = legacy or outdated
-        if not fresh and not pre_step:
-            stale |= bool(saved.get("result"))
-            failed += int(bool(saved.get("failed")))
-            if not text_match:
-                continue
-            if legacy:
-                legacy_count += 1
-            else:
-                outdated_count += 1
-        elif fresh:
-            ready += 1
-        else:
-            pre_step_count += 1
+        has_result = isinstance(saved.get("result"), dict)
+        question_state = resolve_result_state(
+            saved if has_result else None,
+            cause_input_digest(source),
+            "causes",
+        )["status"]
+        counts[question_state] += 1
+        if not has_result:
+            counts["failed"] += int(bool(saved.get("failed")))
+            continue
+        stored_version = _saved_prompt_version(saved)
+        # v1/v2 条目的成员按文本匹配（旧版没有证据 id 口径）。
+        text_match = stored_version not in (
+            prompt_version("causes"), _CAUSE_PRE_STEP_PROMPT_VERSION,
+        )
+        display_source = (
+            saved["input"]
+            if isinstance(saved.get("input"), dict) and saved["input"].get("evidence")
+            else source
+        )
         times.append(saved.get("generated_at") or "")
         origins.add(saved.get("origin") or "model")
         question = question_pages.get(question_id)
@@ -743,9 +690,9 @@ def apply_cause_results(
             for record in student.records:
                 if record.question_id == question_id and record.lost:
                     key = _cause_text(record) if text_match else _evidence_key(
-                        _cause_evidence(student, record, data, by_step=not pre_step))
+                        _cause_evidence(student, record, data,
+                                        by_step=stored_version == prompt_version("causes")))
                     by_evidence.setdefault(key, set()).add(student.student_id)
-        display_source = old_source if text_match or pre_step else source
         evidence = {item["id"]: item for item in display_source["evidence"]}
         unit_parent = {
             unit["id"]: item["id"]
@@ -808,29 +755,43 @@ def apply_cause_results(
         ]
         question["bank_question_id"] = bank_map.get(parent_question_id(question_id))
         question["cause_review"] = {
-            "positive": details(saved["result"]["positive_ids"]),
-            "uncertain": details(saved["result"]["uncertain_ids"]),
+            "positive": details(saved["result"].get("positive_ids") or []),
+            "uncertain": details(saved["result"].get("uncertain_ids") or []),
         }
         question["causes_grouped"] = True
-        question["causes_legacy"] = bool(legacy)
-        question["causes_outdated"] = bool(outdated)
-        question["causes_by_step"] = not pre_step
+        question["cause_state"] = question_state
+        question["causes_legacy"] = stored_version == "class_error_causes_v1"
+        question["causes_outdated"] = stored_version == "class_error_causes_v2"
+        question["causes_by_step"] = stored_version == prompt_version("causes")
     total = len(sources)
-    return {"status": "ready" if ready == total else "partial" if ready else "not_generated",
-            "pending_questions": total - ready, "total_questions": total, "failed_questions": failed,
-            "legacy_questions": legacy_count, "outdated_questions": outdated_count,
-            "pre_step_questions": pre_step_count,
-            "stale": stale, "generated_at": max(times, default="") or None,
+    displayable = counts["current"] + counts["stale"] + counts["old_prompt"]
+    return {"status": ("ready" if counts["current"] == total else
+                       "partial" if displayable or counts["failed"] else "not_generated"),
+            "pending_questions": total - counts["current"] - counts["old_prompt"],
+            "total_questions": total,
+            "current_questions": counts["current"],
+            "stale_questions": counts["stale"],
+            "old_prompt_questions": counts["old_prompt"],
+            "missing_questions": counts["missing"],
+            "failed_questions": counts["failed"],
+            "legacy_questions": counts["old_prompt"],
+            "outdated_questions": 0,
+            "pre_step_questions": counts["old_prompt"],
+            "stale": counts["stale"] > 0,
+            "generated_at": max(times, default="") or None,
             "origin": "assistant" if origins == {"assistant"} else "model" if origins else None}
 
 
 def _ensure_error_records(store: Any, session_id: int, state: Any,
-                          source: dict[str, Any], saved: dict[str, Any], data: Any,
-                          *, by_step: bool = True) -> None:
-    """已整理且输入未变的题：补齐早期任务未物化的学生错因记录。"""
-    match_source = source if by_step else _pre_step_source(source)
-    fingerprint = ((saved.get("input_fingerprint") or _cause_input_fingerprint(saved.get("input") or match_source))
-                   if cause_input_matches(saved, match_source) else _cause_input_fingerprint(match_source))
+                          source: dict[str, Any], saved: dict[str, Any], data: Any) -> None:
+    """已整理且输入未变的题：补齐早期任务未物化的学生错因记录。
+
+    物化输入取已存条目保存的 input（v3 条目保存的本来就是旧口径输入），
+    信封指纹沿用条目的 input_digest。
+    """
+    fingerprint = _saved_input_digest(saved, source)
+    by_step = _saved_prompt_version(saved) == prompt_version("causes")
+    match_source = saved.get("input") if isinstance(saved.get("input"), dict) else source
     records_state = dict(state.get("error_records") or {})
     envelope = records_state.get(source["question_id"]) or {}
     if envelope.get("input_fingerprint") == fingerprint and isinstance(envelope.get("records"), list):
@@ -1101,16 +1062,17 @@ def run_cause_analysis(
     context: Any, *, db: Any, data_root: Path | None, store: Any,
     llm_client_factory: Callable[[], Any] | None,
     retry_failed: bool = True,
-    upgrade_pre_step: bool = True,
+    regenerate_old_prompt: bool = False,
     progress_band: tuple[float, float] = (0.0, 1.0),
     progress_stage: str = "class_analysis",
 ) -> dict[str, object]:
     """各题并行整理错因；全部完成后再发一次很小的请求统一同义的错法名称。
 
     retry_failed=False 用于个人报告导出的前置阶段：整理失败的题不自动重发，
-    报告照常生成、该题不显示错误类型；同一阶段 upgrade_pre_step=False：
-    仍匹配旧口径的 v3 结果继续作为兼容输入展示，不为升级调用模型。
-    手动「整理错因」保持默认：v3 兼容结果重发并升级为按步骤整理。
+    报告照常生成、该题不显示错误类型。
+    current 与 old_prompt（提示词版本旧但输入未变）的结果都直接复用，不自动
+    重新生成；只有状态为 stale/missing 的题才调用模型。regenerate_old_prompt
+    保留给按题手动重生成入口（当前管线不置位）。
 
     已关联题库的选择题先复用题库选项预测，缺项才补做选项诊断；填空题先查错误答案库，全覆盖零调用，
     否则走 v3 整理并把新错法按规范化答案回写候选库。
@@ -1164,20 +1126,19 @@ def run_cause_analysis(
         state = store.load(session_id) or {}
         old = ((state.get("cause_analysis") or {}).get("questions")) or {}
         saved = old.get(source["question_id"]) or {}
-        fingerprint = _cause_input_fingerprint(source)
-        if (saved.get("version") in (CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION)
-                and cause_input_matches(saved, source) and saved.get("result")):
+        fingerprint = cause_input_digest(source)
+        has_result = isinstance(saved.get("result"), dict)
+        saved_status = resolve_result_state(
+            saved if has_result else None, fingerprint, "causes"
+        )["status"]
+        if saved_status == "current" or (
+            saved_status == "old_prompt" and not regenerate_old_prompt
+        ):
             _ensure_error_records(store, session_id, state, source, saved, data)
             continue
-        if (saved.get("version") == CAUSE_PRE_STEP_VERSION
-                and cause_input_matches(saved, _pre_step_source(source))):
-            if not upgrade_pre_step:
-                if saved.get("result"):
-                    _ensure_error_records(store, session_id, state, source, saved, data,
-                                          by_step=False)
-                continue
-        elif (not retry_failed and saved.get("failed")
-                and saved.get("failed_input_fingerprint") == fingerprint):
+        if (not retry_failed and saved.get("failed") and not has_result
+                and str(saved.get("failed_input_digest")
+                        or saved.get("failed_input_fingerprint") or "") == fingerprint):
             continue
         context.report(
             lo + (hi - lo) * (index + 0.2) / max(1, len(sources)),
@@ -1225,7 +1186,7 @@ def run_cause_analysis(
             failed += 1
             # 失败不重发；其他已完成题目继续可用，旧输入的结果仍由读取端判定是否过期。
             old[source["question_id"]] = {
-                **saved, "failed": True, "failed_input_fingerprint": fingerprint,
+                **saved, "failed": True, "failed_input_digest": fingerprint,
             }
             store.save(session_id, cause_analysis={"questions": old})
     name_merges = 0
@@ -1316,7 +1277,7 @@ def run_cause_analysis(
                                      .get("questions")) or {}
                         questions[source["question_id"]] = {
                             **spec["saved"], "failed": True,
-                            "failed_input_fingerprint": spec["fingerprint"],
+                            "failed_input_digest": spec["fingerprint"],
                         }
                         store.save(session_id,
                                    cause_analysis={"questions": questions})
@@ -1482,19 +1443,13 @@ def _prepare_error_sources(
     by_step: dict[str, bool] = {}
     for source in sources:
         saved = saved_questions.get(source["question_id"]) or {}
-        pre_step = False
-        if saved.get("version") == CAUSE_PRE_STEP_VERSION:
-            previous_source = _pre_step_source(source)
-            pre_step = (cause_input_matches(saved, previous_source)
-                        and not cause_input_matches(saved, source))
-            if pre_step:
-                source = previous_source
-        by_step[source["question_id"]] = not pre_step
-        fingerprints[source["question_id"]] = (
-            (saved.get("input_fingerprint")
-             or _cause_input_fingerprint(saved.get("input") or source))
-            if cause_input_matches(saved, source)
-            else _cause_input_fingerprint(source)
+        # 信封指纹与当前输入指纹比对：输入已变（stale）的题不展示记录；
+        # 证据哈希仍按学生证据逐条校验。
+        fingerprints[source["question_id"]] = cause_input_digest(source)
+        by_step[source["question_id"]] = (
+            _saved_prompt_version(saved) == prompt_version("causes")
+            if isinstance(saved.get("result"), dict)
+            else True
         )
     return fingerprints, by_step
 
@@ -1751,7 +1706,8 @@ def edit_cause_pattern(
     state = store.load(session_id) or {}
     questions = dict(((state.get("cause_analysis") or {}).get("questions")) or {})
     saved = questions.get(question_id) or {}
-    if saved.get("version") not in (CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION) \
+    if _saved_prompt_version(saved) not in (
+            prompt_version("causes"), _CAUSE_PRE_STEP_PROMPT_VERSION) \
             or not isinstance(saved.get("result"), dict):
         raise CausePatternEditError(
             "cause_pattern_not_ready", "该题尚未完成新版错因整理，不能修改错法")
@@ -1980,15 +1936,13 @@ class ClassAnalysisStateStore:
     def _default() -> dict[str, Any]:
         return {
             "version": 1,
+            # 报告结果格式：1 = 旧版（version/score_revision 口径），2 = digest 口径。
+            "results_version": 1,
             "auto_generate": True,
             "status": None,
-            "narrative": None,
-            "narrative_error": None,
-            "score_revision": "",
             "generated_at": None,
             "small_sample": False,
             "class_reports": {},
-            "rendition_version": "",
             "cause_analysis": None,
             "error_records": {},
             "option_analysis": {},
@@ -2006,8 +1960,6 @@ class ClassAnalysisStateStore:
         state.update({key: payload[key] for key in state if key in payload})
         if state["status"] not in _STATE_STATUSES:
             state["status"] = None
-        if not isinstance(state["narrative"], dict):
-            state["narrative"] = None
         state["auto_generate"] = bool(state["auto_generate"])
         return state
 
@@ -2038,13 +1990,11 @@ def submit_class_analysis_generate(
     *,
     manager: JobManager,
     session_id: int,
-    revision: str,
     mode: str = "manual",
 ) -> JobRecord:
     """提交「AI 整理」管线 job；已有 queued/running 同类 job 时直接复用返回。"""
     payload = {
         "session_id": int(session_id),
-        "score_revision": str(revision),
         "kind": "pipeline",
         "mode": "auto" if mode == "auto" else "manual",
     }
@@ -2062,34 +2012,8 @@ def submit_class_analysis_generate(
         raise
 
 
-def _class_narrative(
-    *,
-    client: Any,
-    cache: Any,
-    session_id: int,
-    revision: str,
-    prompt: str,
-    class_name: str | None = None,
-    cause_digest: str = "",
-) -> dict[str, Any] | None:
-    """缓存命中直接返回；否则恰好调用 1 次模型，任何异常只降级不重发。
-
-    cause_digest 是该班已整理错因记录的摘要：错因变化 → 叙述重新生成；
-    无错因入参时键与旧版一致，已生成的缓存仍可命中。
-    """
-    from backend.reporting.analysis_report_exporter import AnalysisNarrativeCache
-
-    base_key = f"class:{class_name}" if class_name is not None else CLASS_ANALYSIS_REPORT_KEY
-    report_key = f"{base_key}:{cause_digest[:16]}" if cause_digest else base_key
-    key = AnalysisNarrativeCache.cache_key(
-        session_id=int(session_id),
-        score_revision=revision,
-        rendition_version=CLASS_ANALYSIS_RENDITION_VERSION,
-        report_key=report_key,
-    )
-    cached = cache.load(key)
-    if cached is not None:
-        return cached
+def _class_narrative(*, client: Any, prompt: str) -> dict[str, Any] | None:
+    """恰好调用 1 次模型，任何异常只降级不重发；结果由调用方存入班级条目。"""
     try:
         narrative = client.json_from_text(
             prompt,
@@ -2100,10 +2024,7 @@ def _class_narrative(
             "optional operation unavailable: _class_narrative (%s)", type(exc).__name__,
         )
         return None
-    if not isinstance(narrative, dict):
-        return None
-    cache.store(key, narrative)
-    return narrative
+    return narrative if isinstance(narrative, dict) else None
 
 
 def run_class_analysis_generate(

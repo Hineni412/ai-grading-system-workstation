@@ -46,7 +46,7 @@ def run_personal_report_bundle(*, context, db_path: Path, reports_dir: Path, dat
                               class_name=s.class_name) for s in data.students}
                 identities.update({int(s["student_id"]): s for s in data.skipped})
                 exporter = exporter_factory(db, root / f"session-{sid}", data_root=data_root,
-                    reports_dir=reports_dir, narrative_cache_dir=reports_dir / ".analysis_narrative_cache",
+                    reports_dir=reports_dir,
                     llm_client_factory=None)
                 exporter.export_session(sid, "personal_analysis_html", student_ids=student_ids, html_only=True,
                     narrative_mode="cache_only", cancel_check=context.raise_if_cancelled,
