@@ -138,13 +138,25 @@ def _render_question_body(
     missing_images = _unembedded_image_paths(resolved_all_paths, excluded_paths)
 
     if not appended:
+        # Keep the raw paths for marker deduplication, but never leak
+        # answer-owned pictures into the question body.
+        answer_owned_paths = excluded_paths | {
+            str(_resolve_image_path(p, data_root=data_root) or p)
+            for p in _image_paths_from_text(question.get("answer_text") or "")
+        }
+        question_image_extras = [
+            str(p)
+            for p in (question.get("image_paths") or [])
+            if str(_resolve_image_path(p, data_root=data_root) or p)
+            not in answer_owned_paths
+        ]
         _add_text_and_images(
             document,
             strip_question_source_score(
                 question.get("question_text") or "",
                 question_number=str(question.get("question_number") or ""),
             ),
-            extra_image_paths=question.get("image_paths") or [],
+            extra_image_paths=question_image_extras,
             strip_leading_number=True,
             config=config,
             question_id=f"question-{int(question['id'])}",

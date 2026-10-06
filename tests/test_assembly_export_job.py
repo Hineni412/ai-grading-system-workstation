@@ -726,6 +726,64 @@ def test_word_export_reserves_space_below_floating_question_images(tmp_path: Pat
     assert 0 < int(rich_spacing.get(qn("w:line")))
 
 
+def test_word_export_does_not_leak_answer_images_into_question(tmp_path: Path):
+    # 富文本块退回纯文本渲染时，answer_text 合并进 image_paths 的图不得进题干区。
+    import re
+
+    from docx import Document
+    from PIL import Image
+
+    from question_bank.exporters.paper_docx_exporter import export_question_paper_docx
+    from question_bank.services.rich_content_service import save_question_rich_content
+
+    root = tmp_path / "data"
+    db_path = root / "databases" / "question_bank.db"
+    bank = QuestionBankTestStore(db_path)
+    assets = root / "question_bank" / "assets"
+    assets.mkdir(parents=True, exist_ok=True)
+    question_image = assets / "TEST-q.png"
+    answer_image = assets / "TEST-ans.png"
+    Image.new("RGB", (200, 200), "white").save(question_image)
+    Image.new("RGB", (200, 200), "white").save(answer_image)
+    question_marker = f"[[IMAGE:{question_image}]]"
+    answer_marker = f"[[IMAGE:{answer_image}]]"
+
+    question_id = bank.add_question(
+        QuestionCreate(
+            question_number="1",
+            question_type="解答题",
+            question_text=f"（5分）如图，测试题干{question_marker}",
+            answer_text=f"测试详解{answer_marker}",
+        )
+    )
+    # 与线上数据一致的空 xml 图位块：触发整题退回纯文本渲染。
+    save_question_rich_content(
+        question_id,
+        question_blocks=[{"xml": "", "text": question_marker}],
+        root=root / "question_bank" / "rich_content",
+    )
+    output = export_question_paper_docx(
+        db_path,
+        [question_id],
+        root / "exports",
+        title="TEST 答案图不串入题干",
+        include_answer=True,
+        include_answer_space=False,
+        include_student_fields=False,
+    )
+    document = Document(output)
+    body_xml = document.element.body.xml
+    break_at = body_xml.find('<w:br w:type="page"')
+    question_embeds = len(
+        re.findall(r'r:embed="rId\d+"', body_xml[:break_at])
+    )
+    answer_embeds = len(
+        re.findall(r'r:embed="rId\d+"', body_xml[break_at:])
+    )
+    assert question_embeds == 1
+    assert answer_embeds == 1
+
+
 @pytest.mark.parametrize("export_format", ["markdown", "pdf"])
 def test_assembly_export_cancel_after_generation_does_not_publish_or_clear_draft(
     tmp_path: Path,
