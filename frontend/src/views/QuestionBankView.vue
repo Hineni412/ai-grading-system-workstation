@@ -22,6 +22,7 @@ import { useJobStore } from '../stores/jobs'
 import { useQuestionBankStore } from '../stores/question-bank'
 import { useTaxonomyReviewStore } from '../stores/taxonomy-review'
 import '../styles/question-bank.css'
+import '../styles/question-bank-nav.css'
 
 const QuestionImportJobs = defineAsyncComponent(
   () => import('../components/question-bank/QuestionImportJobs.vue'),
@@ -42,7 +43,20 @@ const index = ref<QuestionSkillIndex | null>(null)
 const indexLoading = ref(false)
 const indexError = ref('')
 let indexController: AbortController | null = null
-const tab = computed(() => ['paper', 'exam', 'todo'].includes(String(route.query.tab)) ? String(route.query.tab) : 'skill')
+type BankTab = 'exam' | 'skill' | 'paper' | 'todo'
+const VIEW_TABS = [
+  { key: 'exam', label: '章节考情' },
+  { key: 'skill', label: '按技能' },
+  { key: 'paper', label: '按试卷' },
+  { key: 'todo', label: '待处理' },
+] as const
+const tab = computed<BankTab>(() => {
+  const explicit = String(route.query.tab ?? '')
+  if (explicit === 'exam' || explicit === 'skill' || explicit === 'paper' || explicit === 'todo') return explicit
+  if (route.query.skill !== undefined || route.query.topic !== undefined || route.query.tagDim !== undefined) return 'skill'
+  if (route.query.paper !== undefined) return 'paper'
+  return 'exam'
+})
 watch(tab, value => {
   if (value !== 'skill' && value !== 'exam' && bank.papersState === 'idle') void bank.loadPapers()
 }, { immediate: true })
@@ -66,7 +80,7 @@ watch(() => scope.selectedVolumeId, (value, previous) => { index.value = null; i
 watch(() => bank.papers, () => void loadIndex())
 watch(() => bank.writeState, (state, previous) => { if (previous === 'saving' && state === 'idle') void loadIndex() })
 onBeforeUnmount(() => indexController?.abort())
-function setTab(next: 'skill' | 'paper' | 'exam' | 'todo') { void bank.selectQuestion(null); void router.push({ query: { ...route.query, tab: next, question: undefined } }) }
+function setTab(next: BankTab) { void bank.selectQuestion(null); void router.push({ query: { ...route.query, tab: next, question: undefined } }) }
 function openSkill(key: string) {
   const chapter = index.value?.chapters.find(chapter => chapter.cross_section_skills.some(skill => skill.stable_key === key) || chapter.sections.some(section => section.skills.some(skill => skill.stable_key === key)))
   const section = chapter?.sections.find(section => section.skills.some(skill => skill.stable_key === key))
@@ -193,8 +207,12 @@ async function openCandidateQuestion(ref: { questionId: number; paperId: number 
 
 <template>
   <section class="question-bank">
-    <PageHeader title="题库管理"><template #meta>{{ scope.selectedVolume?.label || '请选择教学学期' }} · {{ index?.question_count ?? 0 }} 题 · {{ skillCount }} 项技能</template><template #navigation><nav class="page-tabs" aria-label="题库视图"><button v-for="item in [{ key: 'skill', label: '按技能' }, { key: 'paper', label: '按试卷' }, { key: 'exam', label: '章节考情' }, { key: 'todo', label: '待处理' }]" :key="item.key" type="button" :class="{ 'is-active': tab === item.key }" :aria-current="tab === item.key ? 'page' : undefined" @click="setTab(item.key as 'skill' | 'paper' | 'exam' | 'todo')">{{ item.label }}</button></nav></template><template #actions><AppButton variant="secondary" @click="showBasket = true">试卷篮 · {{ assembly.selectedQuestionCount }}</AppButton><AppButton :disabled="!scope.selectedVolumeId" variant="secondary" @click="openRepair()">AI 补齐缺失</AppButton><div id="qb-library-actions" /></template></PageHeader>
+    <PageHeader title="题库管理"><template #meta>{{ scope.selectedVolume?.label || '请选择教学学期' }} · {{ index?.question_count ?? 0 }} 题 · {{ skillCount }} 项技能</template><template #actions><AppButton variant="secondary" @click="showBasket = true">试卷篮 · {{ assembly.selectedQuestionCount }}</AppButton><AppButton :disabled="!scope.selectedVolumeId" variant="secondary" @click="openRepair()">AI 补齐缺失</AppButton><div id="qb-library-actions" /></template></PageHeader>
     <div class="qb-workspace">
+    <nav class="qb-viewnav" aria-label="题库视图">
+      <button v-for="item in VIEW_TABS" :key="item.key" type="button" :class="{ 'is-active': tab === item.key }" :aria-current="tab === item.key ? 'page' : undefined" @click="setTab(item.key)">{{ item.label }}</button>
+    </nav>
+    <div class="qb-main">
     <FeedbackBanner v-if="bank.lastDeleted" role="status" tone="warning" :description="bank.writeMessage" action-label="立即恢复" @action="bank.restoreLastDeleted()" />
     <QuestionSkillBrowser v-if="tab === 'skill'" :index="index" :loading="indexLoading" :error="indexError" @retry="loadIndex" @skill="openSkill" @repair="openRepair('skills')" />
     <div v-show="tab === 'paper'" class="qb-paper-layout">
@@ -203,6 +221,7 @@ async function openCandidateQuestion(ref: { questionId: number; paperId: number 
     </div>
     <ChapterExamProfile v-if="tab === 'exam'" @skill="openSkill" />
     <QuestionBankTodo v-if="tab === 'todo'" :index="index" :pending-count="taxonomyReview.pendingCount" @question="openCriteriaQuestion" @open-question="openCandidateQuestion" @skill="openSkill" @criteria="openCriteriaReview" @taxonomy="openTaxonomyReview" @repair="openRepair" />
+    </div>
     </div>
     <QuestionBasketDrawer v-model:open="showBasket" />
     <QuestionRepairDialog :open="repairOpen" :volume-id="scope.selectedVolumeId || ''" :volume-label="scope.selectedVolume?.label || ''" :kind="repairKind" @close="repairOpen = false" @refreshed="bank.loadPapers(); loadIndex()" />

@@ -102,6 +102,8 @@ function ratio(part: number, whole: number): string {
 </script>
 
 <template>
+  <div class="cep-ov-grid">
+  <div class="cep-ov-col">
   <section class="cep-block" aria-labelledby="cep-coverage-title">
     <h3 id="cep-coverage-title" class="cep-block-title">小节出卷率</h3>
     <div class="cep-table-scroll">
@@ -129,6 +131,44 @@ function ratio(part: number, whole: number): string {
     </div>
     <p class="cep-note">出卷率＝至少有 1 道本节主考题的试卷数 ÷ 该阶段试卷数（同源卷合并后）。点击表格中的数字查看对应题目。</p>
   </section>
+
+  <section class="cep-block" aria-labelledby="cep-difficulty-title">
+    <h3 id="cep-difficulty-title" class="cep-block-title">难度与题型</h3>
+    <div class="cep-table-scroll">
+    <table class="cep-table">
+      <thead>
+        <tr>
+          <th>阶段</th>
+          <th>总题数</th>
+          <th v-for="col in DIFFICULTY_COLS" :key="col.key">{{ col.label }}</th>
+          <th>选择</th>
+          <th>填空</th>
+          <th>解答</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="stage in (['midterm', 'final'] as ChapterExamStage[])" :key="stage">
+          <td class="cep-row-label">{{ stageLabel(stage) }}</td>
+          <td>{{ chapter.difficulty[stage].total }}</td>
+          <td v-for="col in DIFFICULTY_COLS" :key="col.key">
+            {{ chapter.difficulty[stage][col.key] }}
+            <small class="cep-stage-tag">{{ ratio(chapter.difficulty[stage][col.key], chapter.difficulty[stage].total) }}</small>
+          </td>
+          <td>{{ chapter.difficulty[stage].choice }}</td>
+          <td>{{ chapter.difficulty[stage].fill }}</td>
+          <td>{{ chapter.difficulty[stage].written }}</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="cep-note">
+      另有
+      <button type="button" class="cep-inline-link" :disabled="!crossMidterm.length" @click="emit('cell', '跨章涉及 · 期中', crossMidterm)">期中 {{ crossMidterm.length }} 题</button>、
+      <button type="button" class="cep-inline-link" :disabled="!crossFinal.length" @click="emit('cell', '跨章涉及 · 期末', crossFinal)">期末 {{ crossFinal.length }} 题</button>
+      主要考其他章、同时涉及本章。
+    </p>
+  </section>
+  </div>
 
   <section class="cep-block" aria-labelledby="cep-overview-title">
     <h3 id="cep-overview-title" class="cep-block-title">命题总览</h3>
@@ -171,41 +211,5 @@ function ratio(part: number, whole: number): string {
     </div>
     <p class="cep-note">基础＝难度 1–3.9，中高＝4–10；填空、解答不分难度。按整题计数。</p>
   </section>
-
-  <section class="cep-block" aria-labelledby="cep-difficulty-title">
-    <h3 id="cep-difficulty-title" class="cep-block-title">难度与题型</h3>
-    <div class="cep-table-scroll">
-    <table class="cep-table">
-      <thead>
-        <tr>
-          <th>阶段</th>
-          <th>总题数</th>
-          <th v-for="col in DIFFICULTY_COLS" :key="col.key">{{ col.label }}</th>
-          <th>选择</th>
-          <th>填空</th>
-          <th>解答</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="stage in (['midterm', 'final'] as ChapterExamStage[])" :key="stage">
-          <td class="cep-row-label">{{ stageLabel(stage) }}</td>
-          <td>{{ chapter.difficulty[stage].total }}</td>
-          <td v-for="col in DIFFICULTY_COLS" :key="col.key">
-            {{ chapter.difficulty[stage][col.key] }}
-            <small class="cep-stage-tag">{{ ratio(chapter.difficulty[stage][col.key], chapter.difficulty[stage].total) }}</small>
-          </td>
-          <td>{{ chapter.difficulty[stage].choice }}</td>
-          <td>{{ chapter.difficulty[stage].fill }}</td>
-          <td>{{ chapter.difficulty[stage].written }}</td>
-        </tr>
-      </tbody>
-    </table>
-    </div>
-    <p class="cep-note">
-      另有
-      <button type="button" class="cep-inline-link" :disabled="!crossMidterm.length" @click="emit('cell', '跨章涉及 · 期中', crossMidterm)">期中 {{ crossMidterm.length }} 题</button>、
-      <button type="button" class="cep-inline-link" :disabled="!crossFinal.length" @click="emit('cell', '跨章涉及 · 期末', crossFinal)">期末 {{ crossFinal.length }} 题</button>
-      主要考其他章、同时涉及本章。
-    </p>
-  </section>
+  </div>
 </template>

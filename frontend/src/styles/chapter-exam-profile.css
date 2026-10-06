@@ -255,6 +255,34 @@
   color: var(--color-text-muted);
 }
 
+/* 本章总览占满整宽时左右分栏：左列出卷率与难度，右列命题总览。 */
+.chapter-exam .cep-ov-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.chapter-exam .cep-ov-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+@media (min-width: 1280px) {
+  .chapter-exam.is-full .cep-ov-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .chapter-exam.is-full .cep-ov-grid .cep-table {
+    width: 100%;
+  }
+
+  .chapter-exam.is-full .cep-ov-grid .cep-panels {
+    flex-direction: column;
+  }
+}
+
 .chapter-exam .cep-panels {
   display: flex;
   flex-wrap: wrap;

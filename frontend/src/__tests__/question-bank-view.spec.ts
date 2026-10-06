@@ -178,6 +178,38 @@ describe('question bank workspace', () => {
     expect(load).toHaveBeenCalledTimes(1)
   })
 
+  it('defaults to the chapter exam tab and maps legacy query params to their views', async () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const pinia = createPinia()
+    vi.spyOn(useCurriculumScopeStore(pinia), 'initialize').mockResolvedValue()
+    vi.spyOn(useJobStore(pinia), 'initialize').mockResolvedValue()
+    vi.spyOn(useAssemblyStore(pinia), 'load').mockResolvedValue()
+    vi.spyOn(useQuestionBankStore(pinia), 'loadPapers').mockResolvedValue()
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/question-bank'); await router.isReady()
+    const app = createApp(QuestionBankView); app.use(pinia).use(router).mount(host); mounted.push(app)
+    await nextTick()
+
+    const nav = host.querySelector<HTMLElement>('nav.qb-viewnav')!
+    expect(nav.getAttribute('aria-label')).toBe('题库视图')
+    expect([...nav.querySelectorAll('button')].map(b => b.textContent?.trim()))
+      .toEqual(['章节考情', '按技能', '按试卷', '待处理'])
+    const current = () => nav.querySelector('button[aria-current="page"]')?.textContent?.trim()
+    expect(current()).toBe('章节考情')
+    expect(host.querySelector('.page-header__navigation')).toBeNull()
+
+    for (const [query, label] of [
+      ['?skill=sk_1', '按技能'], ['?topic=t_1', '按技能'], ['?tagDim=idea', '按技能'],
+      ['?paper=7', '按试卷'], ['?tab=todo&skill=sk_1', '待处理'], ['?tab=paper', '按试卷'],
+    ] as const) {
+      await router.push(`/question-bank${query}`); await nextTick()
+      expect(current()).toBe(label)
+    }
+
+    ;[...nav.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.trim() === '章节考情')!.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.tab).toBe('exam'))
+  })
+
   it('previews individual missing parts and recovers an ambiguous repair submission with the same token', async () => {
     const host = document.createElement('div'); document.body.append(host)
     const pinia = createPinia()
