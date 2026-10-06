@@ -90,12 +90,12 @@ def test_personal_bundle_render_failure_isolated_and_cancel_never_publishes(pers
     assert not (reports / "personal_report_bundles" / "job-103").exists()
 
 
-def test_personal_generation_publish_false_has_counts_and_no_artifact(personal_bundle_data, monkeypatch):
+def test_personal_export_cache_only_publishes_cached_narrative(personal_bundle_data):
+    """导出复用「AI 整理」已生成的叙述：publish=False 只出计数、不落报告文件。"""
     from backend.jobs.default_handlers import _build_report_export_handler
     from backend.reporting.analysis_report_exporter import AnalysisReportGenerator
     from tests.test_analysis_report import FakeLLMClient
     db, sid, students, reports = personal_bundle_data
-    monkeypatch.setattr("backend.class_analysis.run_cause_analysis", lambda *_args, **_kw: {})
     handler = _build_report_export_handler(db_path=db.db_path, reports_dir=reports,
         report_generator_factory=None, original_paper_exporter_factory=None,
         analysis_report_exporter_factory=AnalysisReportGenerator, analysis_llm_client_factory=lambda: FakeLLMClient(), data_root=reports.parent)
@@ -198,8 +198,10 @@ def test_report_cancel_during_export_does_not_publish_xlsx(tmp_path) -> None:
         manager.shutdown()
 
 
-def test_personal_report_export_survives_cause_failures(tmp_path) -> None:
-    """错因整理整体异常不阻断报告导出；单题失败也不重发。"""
+def test_personal_report_export_reuses_pipeline_content_without_model_calls(
+    tmp_path,
+) -> None:
+    """报告导出复用「AI 整理」产物：cache_only 口径、不持有客户端、零模型调用。"""
     from backend.jobs.default_handlers import register_default_job_handlers
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
@@ -218,11 +220,15 @@ def test_personal_report_export_survives_cause_failures(tmp_path) -> None:
             self.calls += 1
             raise TimeoutError("synthetic")
 
+    captured: dict[str, object] = {}
+
     class FakeAnalysisExporter:
-        def __init__(self, db, output_dir: Path, **_kwargs) -> None:
+        def __init__(self, db, output_dir: Path, **kwargs) -> None:
+            captured.update(kwargs)
             self.output_dir = output_dir
 
-        def export_session(self, session_id: int, report_type: str, **_kwargs) -> Path:
+        def export_session(self, session_id: int, report_type: str, **kwargs) -> Path:
+            captured["export_kwargs"] = kwargs
             output_path = self.output_dir / "个人分析报告.zip"
             output_path.write_bytes(b"zip")
             return output_path
@@ -243,6 +249,8 @@ def test_personal_report_export_survives_cause_failures(tmp_path) -> None:
     manager.wait(job.id, timeout=10)
     loaded = manager.get(job.id)
     assert loaded.status == "succeeded"
-    assert failing.calls == 2  # 两题各试一次，不重发
-    assert loaded.result["cause_analysis"]["status"] == "failed"
+    assert captured["llm_client_factory"] is None
+    assert captured["export_kwargs"]["narrative_mode"] == "cache_only"
+    assert failing.calls == 0  # 导出不再运行错因整理或叙述生成
+    assert "cause_analysis" not in loaded.result
     assert Path(loaded.result["file_path"]).is_file()

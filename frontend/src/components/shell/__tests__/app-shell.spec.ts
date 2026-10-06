@@ -209,7 +209,7 @@ describe('AppShell', () => {
   })
   it.each([
     ['grading_run', '答卷批改'], ['config_generation', '试卷分析与本场赋分'],
-    ['class_analysis_generate', '生成班级分析'], ['question_bank_repair', '补齐题库资料'],
+    ['class_analysis_generate', 'AI 整理（错因、班级与个人报告）'], ['question_bank_repair', '补齐题库资料'],
     ['report_export', '生成学生个人分析报告'], ['personalized_handout_export', '导出训练讲义'],
       ['personal_report_bundle', '导出学生个人报告'],
     ['unknown_future_job', '后台处理'],

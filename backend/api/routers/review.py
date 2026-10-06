@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import threading
 from dataclasses import asdict
 from pathlib import Path
 from typing import Literal
@@ -10,6 +12,8 @@ from fastapi import APIRouter, Depends
 from backend.api.app import ApiError
 from backend.api.dependencies import (
     get_grading_db,
+    get_job_manager,
+    get_reports_dir,
     get_review_application_service,
     get_scan_grading_workspace,
 )
@@ -42,6 +46,8 @@ from backend.scan_grading.workspace import ScanGradingWorkspace
 from backend.files.session_originals import originals_state
 
 router = APIRouter(prefix="/api", tags=["review"])
+
+LOGGER = logging.getLogger(__name__)
 
 
 @router.get(
@@ -161,11 +167,24 @@ def confirm_review_question_items(
     question_id: str,
     request: ReviewConfirmRequest,
     db: GradingRepositoryAccess = Depends(get_grading_db),
+    manager=Depends(get_job_manager),
+    reports_dir: Path = Depends(get_reports_dir),
     review_service: ReviewApplicationService = Depends(get_review_application_service),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ReviewConfirmResponse:
     session = _require_session(db.sessions, session_id)
     manual_context = current_manual_context(session_id, workspace)
+    # 只对真正清掉待复核条目的确认触发自动整理；对已是最终分的重复确认不产生调用。
+    had_pending = bool(
+        review_service.list_items(
+            session_id,
+            session,
+            requested_question_id=question_id,
+            scope="teacher_pending",
+            manual_context=manual_context,
+            include_evidence=False,
+        )
+    )
     try:
         result = review_service.confirm(
             session_id,
@@ -215,7 +234,70 @@ def confirm_review_question_items(
             "Review item changed in another window; refresh before saving",
             {"session_id": int(session_id), "question_id": question_id},
         ) from exc
+    if had_pending:
+        # 同一题还有待复核条目时整场必然未清空，直接跳过；否则把触发判定
+        # 放到后台线程里做，不占确认请求的响应时间。
+        still_pending = bool(
+            review_service.list_items(
+                session_id,
+                session,
+                requested_question_id=question_id,
+                scope="teacher_pending",
+                manual_context=manual_context,
+                include_evidence=False,
+            )
+        )
+        if not still_pending:
+            _launch_report_pipeline_trigger(
+                manager=manager,
+                db_path=Path(db.db_path),
+                session_id=int(session_id),
+                reports_dir=Path(reports_dir),
+                workspace=workspace,
+            )
     return ReviewConfirmResponse.model_validate(result, from_attributes=True)
+
+
+def _report_pipeline_trigger_runner(
+    *,
+    manager,
+    db_path: Path,
+    session_id: int,
+    reports_dir: Path,
+    workspace: ScanGradingWorkspace,
+) -> None:
+    """后台线程里用独立仓库连接做触发判定；异常只记日志。"""
+    try:
+        from backend.repositories.grading_database import (
+            open_grading_repositories,
+        )
+        from backend.report_pipeline import maybe_auto_generate_report_pipeline
+
+        maybe_auto_generate_report_pipeline(
+            manager=manager,
+            db=open_grading_repositories(Path(db_path)),
+            session_id=int(session_id),
+            reports_dir=Path(reports_dir),
+            workspace=workspace,
+        )
+    except Exception:
+        LOGGER.warning(
+            "report pipeline auto trigger failed for session %s",
+            session_id,
+            exc_info=True,
+        )
+
+
+def _launch_report_pipeline_trigger(**kwargs) -> threading.Thread:
+    """启动后台触发线程并返回句柄；测试可替换为同步执行。"""
+    thread = threading.Thread(
+        target=_report_pipeline_trigger_runner,
+        kwargs=kwargs,
+        daemon=True,
+        name=f"report-pipeline-trigger-{kwargs.get('session_id')}",
+    )
+    thread.start()
+    return thread
 
 
 def _review_item_response(item: object, *, data_root: Path | None = None) -> ReviewItemResponse:

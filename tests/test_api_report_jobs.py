@@ -169,6 +169,8 @@ def test_personal_api_states_html_shots_and_read_only_boundaries(personal_api, m
     html = client.get(f"{prefix}/{student_id}/html?narrative=none&review_links=1")
     assert html.status_code == 200 and html.headers["cache-control"] == "no-store"
     assert 'class="review-link"' in html.text and 'data:image/jpeg' not in html.text
+    # 数据版在线页：AI 部分占位提示，分数与老师批语为当前数据。
+    assert "AI 分析部分尚未整理" in html.text
     shot = client.get(f"{prefix}/{student_id}/shots/Q2")
     assert shot.status_code == 200 and shot.headers["content-type"] == "image/jpeg"
     assert shot.content.startswith(b"\xff\xd8")

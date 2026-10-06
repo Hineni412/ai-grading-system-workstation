@@ -3,20 +3,17 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import type {
-  AnalysisPreflight,
   ReportHistoryJob,
   ReportType,
   ScoreExcelOptions,
 } from '../api/exports'
 import { storageApi } from '../api/ops'
-import { exportsApi } from '../api/exports'
 import {
   TERMINAL_JOB_STATUSES,
   type JobResponse,
 } from '../api/jobs'
 import { personalReportsApi, type PersonalReportState } from '../api/personal-reports'
 import PersonalReportExportDialog from '../components/results-center/PersonalReportExportDialog.vue'
-import AnalysisConfirmDialog from '../components/file-center/AnalysisConfirmDialog.vue'
 import FileReportLedger from '../components/file-center/FileReportLedger.vue'
 import ScoreExcelSettingsDialog from '../components/file-center/ScoreExcelSettingsDialog.vue'
 import {
@@ -61,17 +58,10 @@ const hideBottomN = ref(8)
 const manualHideEnabled = ref(false)
 const manualHiddenStudentIds = ref<number[]>([])
 const manualStudentSearch = ref('')
-const analysisConfirmOpen = ref(false)
-const analysisPreflight = ref<AnalysisPreflight | null>(null)
-const analysisPreflightLoading = ref(false)
-const analysisPreflightType = ref<ReportType | null>(null)
-const analysisForceRegenerate = ref(false)
 const personalExportOpen = ref(false)
-const analysisStudentIds = ref<number[]>([])
 const personalStates = ref<PersonalReportState[]>([])
 const personalStatesReady = ref(false)
 let personalController: AbortController | null = null
-const personalTargetIds = computed(() => personalStates.value.filter(s => ['missing', 'stale'].includes(s.status)).map(s => s.student_id))
 const personalSummary = computed(() => personalStatesReady.value
   ? `本场：已生成 ${personalStates.value.filter(s => s.status === 'current').length} · 需重新生成 ${personalStates.value.filter(s => s.status === 'stale').length} · 未生成 ${personalStates.value.filter(s => s.status === 'missing').length} · 不可生成 ${personalStates.value.filter(s => s.status === 'unavailable').length}（人）`
   : '正在读取个人报告状态…')
@@ -95,7 +85,9 @@ watch(() => resultsStore.updatedAt, () => { void refreshPersonal() })
 const personalObservedJobs = new Set<number>()
 watch(() => Object.values(jobStore.jobs).map(j => `${j.id}:${j.status}`).join('|'), () => {
   for (const job of Object.values(jobStore.jobs)) {
-    if (job.job_type !== 'report_export' || job.payload.report_type !== 'personal_analysis_html') continue
+    const personalExport = job.job_type === 'report_export' && job.payload.report_type === 'personal_analysis_html'
+    const pipeline = job.job_type === 'class_analysis_generate' && job.payload.session_id === sessionStore.selectedSessionId
+    if (!personalExport && !pipeline) continue
     if (!TERMINAL_JOB_STATUSES.has(job.status)) personalObservedJobs.add(job.id)
     else if (personalObservedJobs.delete(job.id)) { void refreshPersonal(); void fileCenter.load(sessionStore.selectedSessionId!) }
   }
@@ -116,10 +108,6 @@ async function openPersonalExport() {
   }
   personalExportOpen.value = true
 }
-
-const ANALYSIS_REPORT_TYPES = new Set<ReportType>([
-  'personal_analysis_html',
-])
 
 const eligibleExcelStudents = computed(() => (
   resultsStore.results?.students ?? []
@@ -198,7 +186,7 @@ const reportDefinitions: Array<{
     type: 'personal_analysis_html',
     kind: 'AI 分析',
     title: '学生个人分析报告',
-    description: '在线查看个人报告；导出复用已生成叙述，不调用模型。',
+    description: '在线查看个人报告；AI 部分由成绩中心「AI 整理」生成。导出复用已生成内容，不调用模型。',
   },
 ]
 
@@ -258,7 +246,6 @@ watch(
     actionMessage.value = ''
     actionError.value = ''
     excelSettingsOpen.value = false
-    analysisConfirmOpen.value = false
     manualHiddenStudentIds.value = []
     manualStudentSearch.value = ''
     historyOpen.value = new Set()
@@ -297,10 +284,6 @@ async function generateReport(type: ReportType, forceRegenerate = false): Promis
     openExcelSettings(forceRegenerate)
     return
   }
-  if (ANALYSIS_REPORT_TYPES.has(type)) {
-    await openAnalysisConfirm(type, forceRegenerate)
-    return
-  }
   const sessionId = sessionStore.selectedSessionId
   if (sessionId === null) return
   actionError.value = ''
@@ -327,64 +310,6 @@ function openExcelSettings(forceRegenerate = false): void {
   excelForceRegenerate.value = forceRegenerate
   excelSettingsOpen.value = true
   actionError.value = ''
-}
-
-async function openAnalysisConfirm(
-  type: ReportType,
-  forceRegenerate: boolean,
-): Promise<void> {
-  const sessionId = sessionStore.selectedSessionId
-  if (sessionId === null) return
-  analysisPreflightType.value = type
-  analysisStudentIds.value = [...personalTargetIds.value]
-  analysisForceRegenerate.value = forceRegenerate
-  analysisPreflight.value = null
-  analysisPreflightLoading.value = true
-  analysisConfirmOpen.value = true
-  actionError.value = ''
-  try {
-    const preflight = await exportsApi.getAnalysisPreflight(sessionId, type, undefined, type === 'personal_analysis_html' ? analysisStudentIds.value : undefined)
-    if (sessionStore.selectedSessionId !== sessionId) return
-    analysisPreflight.value = preflight
-  } catch {
-    if (sessionStore.selectedSessionId !== sessionId) return
-    analysisConfirmOpen.value = false
-    actionError.value = '分析报告生成条件暂时无法读取，请稍后重试。'
-  } finally {
-    if (sessionStore.selectedSessionId === sessionId) {
-      analysisPreflightLoading.value = false
-    }
-  }
-}
-
-function closeAnalysisConfirm(): void {
-  analysisConfirmOpen.value = false
-  analysisPreflight.value = null
-  analysisPreflightType.value = null
-}
-
-async function confirmAnalysis(): Promise<void> {
-  const sessionId = sessionStore.selectedSessionId
-  const type = analysisPreflightType.value
-  if (sessionId === null || type === null) return
-  if (analysisPreflightLoading.value || analysisPreflight.value?.configured !== true) return
-  actionError.value = ''
-  actionMessage.value = ''
-  try {
-    const job = await exportsApi.submitReport(sessionId, type, analysisForceRegenerate.value,
-      undefined, undefined, {student_ids: analysisStudentIds.value, publish: false})
-    await jobStore.track(job)
-    if (sessionStore.selectedSessionId !== sessionId) return
-    await fileCenter.load(sessionId)
-    if (sessionStore.selectedSessionId !== sessionId) return
-    closeAnalysisConfirm()
-    actionMessage.value = job.status === 'succeeded'
-      ? '报告已生成，可从成绩明细查看。'
-      : `${reportTypeLabel(type)}已加入生成队列。`
-  } catch {
-    if (sessionStore.selectedSessionId !== sessionId) return
-    actionError.value = '分析报告生成请求未能提交，请稍后重试。'
-  }
 }
 
 function closeExcelSettings(): void {
@@ -514,7 +439,7 @@ function openReviewNotes(): void {
   })
 }
 
-const dialogOpen = computed(() => excelSettingsOpen.value || analysisConfirmOpen.value || personalExportOpen.value)
+const dialogOpen = computed(() => excelSettingsOpen.value || personalExportOpen.value)
 
 defineExpose({ dialogOpen })
 
@@ -565,7 +490,7 @@ defineExpose({ dialogOpen })
           kind="loading"
           title="正在读取文件记录…"
         />
-        <FileReportLedger :originals-available="originalsAvailable" :personal-summary="personalSummary" :personal-generation-count="personalTargetIds.length"
+        <FileReportLedger :originals-available="originalsAvailable" :personal-summary="personalSummary"
           v-else
           :rows="reportRows"
           :history-open="historyOpen"
@@ -597,17 +522,6 @@ defineExpose({ dialogOpen })
           :submitting="fileCenter.submittingKey === 'report:score_excel'"
           @close="closeExcelSettings"
           @submit="submitConfiguredScoreExcel"
-        />
-
-        <AnalysisConfirmDialog
-          v-if="analysisConfirmOpen"
-          :preflight="analysisPreflight"
-          :loading="analysisPreflightLoading"
-          :report-type="analysisPreflightType"
-          :submitting="analysisPreflightType !== null
-            && fileCenter.submittingKey === `report:${analysisPreflightType}`"
-          @close="closeAnalysisConfirm"
-          @confirm="confirmAnalysis"
         />
 
         <p

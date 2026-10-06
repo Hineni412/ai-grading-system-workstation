@@ -11,9 +11,6 @@ import ClassReportView from '../views/ClassReportView.vue'
 
 const apiMock = vi.hoisted(() => ({
   getClassAnalysis: vi.fn(),
-  updateSettings: vi.fn(),
-  regenerate: vi.fn(),
-  getQuestionPreview: vi.fn(),
 }))
 
 const modelProfilesMock = vi.hoisted(() => ({
@@ -131,10 +128,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
   apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis())
-  apiMock.updateSettings.mockImplementation(
-    async (_id: number, autoGenerate: boolean) => ({ auto_generate: autoGenerate }),
-  )
-  apiMock.regenerate.mockResolvedValue(makeJob({ id: 92, status: 'queued', progress: 0 }))
   jobsMock.getJob.mockResolvedValue(makeJob())
   jobsMock.getJobStatusBatch.mockResolvedValue([
     { id: 91, found: true, job: makeJob() },
@@ -163,25 +156,21 @@ afterEach(() => {
 
 describe('class report view', () => {
 
-  it('offers generation when no narrative exists and submits only after confirmation', async () => {
+  it('renders the data report with a pending banner when no AI narrative exists', async () => {
     apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
       narrative: null,
       generated_at: null,
     }))
     const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('尚未生成班级报告'))
-    expect(host.querySelector('[data-testid="class-report-frame"]')).toBeNull()
-
-    host.querySelector<HTMLButtonElement>('[data-testid="class-report-generate-empty"]')!.click()
     await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="regenerate-confirm-dialog"]'),
+      host.querySelector('[data-testid="class-report-frame"]'),
     ).not.toBeNull())
-    expect(host.textContent).toContain('默认内容服务')
-    expect(apiMock.regenerate).not.toHaveBeenCalled()
-
-    host.querySelector<HTMLButtonElement>('[data-testid="regenerate-confirm"]')!.click()
-    await vi.waitFor(() => expect(apiMock.regenerate).toHaveBeenCalledWith(7))
-    expect(useJobStore().jobs[92]).toBeDefined()
+    expect(
+      host.querySelector('[data-testid="class-report-frame"]')!.getAttribute('src'),
+    ).toContain('/api/sessions/7/class-analysis/report')
+    expect(host.querySelector('[data-testid="class-report-banner"]')?.textContent)
+      .toContain('AI 讲评部分尚未整理')
+    expect(host.querySelector('[data-testid="class-report-generate-empty"]')).toBeNull()
   })
 
   it('warns when the saved report is stale relative to current scores', async () => {
@@ -190,7 +179,8 @@ describe('class report view', () => {
     await vi.waitFor(() => expect(
       host.querySelector('.class-analysis__banner'),
     ).not.toBeNull())
-    expect(host.textContent).toContain('建议重新生成')
+    expect(host.textContent).toContain('AI 分析可能与当前成绩不一致')
+    expect(host.textContent).toContain('「AI 整理」')
   })
 
 })

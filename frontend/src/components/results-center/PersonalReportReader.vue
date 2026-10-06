@@ -4,12 +4,10 @@ import type { ResultsCenterStudent } from '../../api/results-center'
 import { personalReportsApi, reportStatusText, type PersonalReportExam } from '../../api/personal-reports'
 import { TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import { useJobStore } from '../../stores/jobs'
-import AnalysisConfirmDialog from '../file-center/AnalysisConfirmDialog.vue'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import AppDialog from '../design-system/AppDialog.vue'
 import StatePanel from '../design-system/StatePanel.vue'
-import { usePersonalReportGeneration } from './personal-report-generation'
 
 const props = defineProps<{
   students: ResultsCenterStudent[]
@@ -25,7 +23,6 @@ const emit = defineEmits<{
   refreshed: []
 }>()
 const jobs = useJobStore()
-const generation = usePersonalReportGeneration()
 const currentStudentId = ref(props.studentId)
 const reportSession = ref(props.reportSessionId ?? props.sessionId)
 const exams = ref<PersonalReportExam[]>([])
@@ -39,9 +36,10 @@ const ready = ref(false)
 const student = computed(() => props.students.find(s => s.student_id === currentStudentId.value))
 const position = computed(() => props.students.findIndex(s => s.student_id === currentStudentId.value))
 const exam = computed(() => exams.value.find(e => e.session_id === reportSession.value))
-const canRead = computed(() => exam.value && (['current', 'stale'].includes(exam.value.status) || (dataOnly.value && exam.value.status === 'missing')))
+const canRead = computed(() => exam.value && ['current', 'stale', 'missing'].includes(exam.value.status))
+const effectiveDataOnly = computed(() => dataOnly.value || exam.value?.status === 'missing')
 const src = computed(() => student.value && canRead.value ? personalReportsApi.htmlUrl(reportSession.value,
-  student.value.student_id, dataOnly.value, reportSession.value === props.sessionId, exam.value?.generated_at ?? '') : '')
+  student.value.student_id, effectiveDataOnly.value, reportSession.value === props.sessionId, exam.value?.generated_at ?? '') : '')
 let controller: AbortController | null = null
 let previousOverflow = ''
 async function load() {
@@ -67,10 +65,13 @@ watch(currentStudentId, (_id, previous) => {
 watch(reportSession, () => { dataOnly.value = false; message.value = '' })
 watch(src, () => { ready.value = false })
 const watchedJobs = new Set<number>()
-watch(() => Object.values(jobs.jobs).filter(j => j.job_type === 'report_export' &&
-  j.payload.report_type === 'personal_analysis_html').map(j => `${j.id}:${j.status}`).join('|'), () => {
+function affectsReport(job: { job_type: string; payload: Record<string, unknown> }): boolean {
+  if (job.job_type === 'report_export' && job.payload.report_type === 'personal_analysis_html') return true
+  return job.job_type === 'class_analysis_generate' && job.payload.session_id === props.sessionId
+}
+watch(() => Object.values(jobs.jobs).filter(affectsReport).map(j => `${j.id}:${j.status}`).join('|'), () => {
   for (const job of Object.values(jobs.jobs)) {
-    if (job.job_type !== 'report_export' || job.payload.report_type !== 'personal_analysis_html') continue
+    if (!affectsReport(job)) continue
     if (!TERMINAL_JOB_STATUSES.has(job.status)) watchedJobs.add(job.id)
     else if (watchedJobs.delete(job.id)) { void load(); emit('refreshed') }
   }
@@ -80,10 +81,6 @@ function move(delta: number) {
   if (next) currentStudentId.value = next.student_id
 }
 function handleKey(key: string, editing = false): boolean {
-  if (generation.open.value) {
-    if (key === 'Escape') { generation.close(); return true }
-    return false
-  }
   if (key === 'Escape') { emit('close', currentStudentId.value); return true }
   if (editing) return false
   if (key === 'ArrowLeft') { move(-1); return true }
@@ -104,15 +101,6 @@ function receive(event: MessageEvent) {
   if (reportSession.value !== props.sessionId || event.data?.type !== 'personal-report:open-review'
     || typeof event.data.questionId !== 'string') return
   emit('review', currentStudentId.value, event.data.questionId, reportSession.value)
-}
-async function prepare() { await generation.prepare(reportSession.value, [currentStudentId.value]) }
-async function confirm() {
-  const job = await generation.confirm()
-  if (job) {
-    message.value = '已加入任务中心，完成后自动更新报告。'
-    if (TERMINAL_JOB_STATUSES.has(job.status)) { await load(); emit('refreshed') }
-    else watchedJobs.add(job.id)
-  }
 }
 async function exportHtml() {
   try {
@@ -146,7 +134,6 @@ onBeforeUnmount(() => {
         <AppButton :disabled="position <= 0" variant="ghost" size="small" @click="move(-1)">← 上一位</AppButton>
         <AppButton :disabled="position >= students.length - 1" variant="ghost" size="small" @click="move(1)">下一位 →</AppButton>
         <div class="personal-reader__actions">
-          <AppButton v-if="exam?.status === 'stale'" variant="ghost" size="small" @click="prepare">重新生成（1 次叙述调用）</AppButton>
           <AppButton :disabled="!exam || !['current', 'stale'].includes(exam.status)" variant="ghost" size="small" @click="exportHtml">导出本场 HTML</AppButton>
           <AppButton :disabled="!ready || !canRead" variant="ghost" size="small" @click="iframe?.contentWindow?.print()">打印</AppButton>
         </div>
@@ -157,9 +144,10 @@ onBeforeUnmount(() => {
           <b>{{ item.session_name }}</b><span>{{ item.score ?? '—' }} / {{ item.max_score }} · {{ reportStatusText[item.status] }}</span>
         </button>
       </nav>
-      <FeedbackBanner v-if="exam?.status === 'stale'" tone="info" description="成绩已变化，显示的是上次生成的 AI 分析；分数和班级数据为当前值" />
+      <FeedbackBanner v-if="exam?.status === 'stale'" tone="info" description="成绩已变化，显示的是上次生成的 AI 分析；分数和班级数据为当前值。在成绩中心顶部点「AI 整理」可更新。" />
+      <FeedbackBanner v-else-if="exam?.status === 'missing'" tone="info" description="AI 分析部分尚未整理：复核完成后自动整理，或在成绩中心顶部点「AI 整理」。" />
       <FeedbackBanner v-if="message" role="status" tone="success" :description="message" />
-      <FeedbackBanner v-if="error || generation.error.value" role="alert" tone="info" :description="error || generation.error.value" />
+      <FeedbackBanner v-if="error" role="alert" tone="info" :description="error" />
       <StatePanel v-if="loading" kind="loading" title="正在读取个人报告…" />
       <iframe v-else-if="canRead" ref="iframe" :key="src" :src="src" class="personal-reader__body" title="个人报告正文" @load="ready = true" />
       <StatePanel
@@ -169,15 +157,9 @@ onBeforeUnmount(() => {
         :description="exam ? '成绩与教师批语保留在成绩明细中。' : '该生在所选考试没有可查看的报告。'"
       >
         <template #actions>
-          <template v-if="exam?.status === 'missing'">
-            <AppButton variant="primary" @click="prepare">生成该生报告（预估后确认）</AppButton>
-            <AppButton variant="ghost" size="small" @click="dataOnly = true">先看数据版</AppButton>
-          </template>
           <AppButton v-if="error" variant="ghost" size="small" @click="load">重新读取</AppButton>
         </template>
       </StatePanel>
-      <AnalysisConfirmDialog v-if="generation.open.value" :preflight="generation.preflight.value" :loading="generation.loading.value"
-        report-type="personal_analysis_html" :submitting="generation.submitting.value" @close="generation.close" @confirm="confirm" />
     </section>
   </AppDialog>
 </template>

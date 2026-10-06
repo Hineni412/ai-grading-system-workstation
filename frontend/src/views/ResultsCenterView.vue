@@ -14,6 +14,7 @@ import { personalReportsApi, reportStatusText, matchesReportStudent, type Person
 import { useJobStore } from '../stores/jobs'
 import { TERMINAL_JOB_STATUSES } from '../api/jobs'
 import PersonalReportReader from '../components/results-center/PersonalReportReader.vue'
+import ReportPipelineButton from '../components/results-center/ReportPipelineButton.vue'
 import ClassAnalysisPanel from '../components/results-center/ClassAnalysisPanel.vue'
 import ResultsOverviewPanel from '../components/results-center/ResultsOverviewPanel.vue'
 import { invalidateClassAnalysis } from '../components/results-center/class-analysis-cache'
@@ -403,6 +404,33 @@ watch(
   () => {
     const sessionId = sessionStore.selectedSessionId
     if (sessionId !== null) invalidateClassAnalysis(sessionId)
+  },
+)
+
+// 「AI 整理」管线任务（错因 → 班级 → 个人）；页面按最新一条同名 job 显示。
+const pipelineJob = computed(() => {
+  const sessionId = sessionStore.selectedSessionId
+  if (sessionId === null) return null
+  return (
+    Object.values(jobStore.jobs)
+      .filter((job) => (
+        job.job_type === 'class_analysis_generate'
+        && job.payload.session_id === sessionId
+      ))
+      .sort((left, right) => right.id - left.id)[0] ?? null
+  )
+})
+
+// 管线结束后：班级分析缓存失效、个人报告状态重新读取。
+watch(
+  () => (pipelineJob.value === null ? '' : `${pipelineJob.value.id}:${pipelineJob.value.status}`),
+  (key, previous) => {
+    if (!key || key === previous) return
+    const job = pipelineJob.value
+    const sessionId = sessionStore.selectedSessionId
+    if (job === null || sessionId === null || !TERMINAL_JOB_STATUSES.has(job.status)) return
+    invalidateClassAnalysis(sessionId)
+    void refreshPersonalStates()
   },
 )
 
@@ -835,6 +863,11 @@ function closeStudentDrawer(restoreFocus = true): void {
             <span class="results-rail__label">{{ tab.label }}</span>
           </button>
         </nav>
+        <ReportPipelineButton
+          v-if="sessionStore.selectedSessionId !== null"
+          :session-id="sessionStore.selectedSessionId"
+          :active-job="pipelineJob"
+        />
         <PopoverRoot v-model:open="exportOpen">
           <PopoverTrigger as-child>
             <AppButton
@@ -1164,7 +1197,7 @@ function closeStudentDrawer(restoreFocus = true): void {
           <b>个人报告</b>
           <template v-if="reportState(selectedStudent)?.status === 'current'"><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent)">查看个人报告 ›</AppButton></template>
           <template v-else-if="reportState(selectedStudent)?.status === 'stale'"><p>成绩已变化，显示上次生成的 AI 分析。</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent)">查看个人报告（上次生成） ›</AppButton></template>
-          <template v-else-if="reportState(selectedStudent)?.status === 'missing'"><p>本场报告未生成</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent, true)">先看数据版 ›</AppButton></template>
+          <template v-else-if="reportState(selectedStudent)?.status === 'missing'"><p>本场报告未生成</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent, true)">查看报告（数据版） ›</AppButton></template>
           <p v-else>{{ reportState(selectedStudent)?.reason ?? '正在读取报告状态…' }}</p>
         </div>
         <div class="results-drawer__items">

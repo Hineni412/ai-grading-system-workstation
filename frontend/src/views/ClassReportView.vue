@@ -6,17 +6,14 @@ import {
   classAnalysisApi,
   type ClassAnalysisResponse,
 } from '../api/class-analysis'
-import { ApiError } from '../api/errors'
 import { jobApi, TERMINAL_JOB_STATUSES } from '../api/jobs'
 import {
   modelProfilesApi,
   type ModelTaskBinding,
 } from '../api/model-profiles'
-import AppButton from '../components/design-system/AppButton.vue'
 import BackButton from '../components/design-system/BackButton.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
-import ClassAnalysisGenerateConfirm from '../components/results-center/ClassAnalysisGenerateConfirm.vue'
 import { useJobStore } from '../stores/jobs'
 import { useSessionStore } from '../stores/session'
 
@@ -29,12 +26,7 @@ const analysis = ref<ClassAnalysisResponse | null>(null)
 const selectedClass = ref('')
 const loadState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const errorMessage = ref('')
-const settingsSaving = ref(false)
-const confirmOpen = ref(false)
-const confirmLoading = ref(false)
-const confirmBinding = ref<ModelTaskBinding | null>(null)
-const confirmError = ref('')
-const regenerating = ref(false)
+const contentBinding = ref<ModelTaskBinding | null>(null)
 let loadGeneration = 0
 let loadController: AbortController | null = null
 
@@ -57,17 +49,29 @@ const generating = computed(() => {
   return activeJob.value !== null
     && !TERMINAL_JOB_STATUSES.has(activeJob.value.status)
 })
-const canSubmit = computed(() => (
-  analysis.value !== null && !generating.value && !regenerating.value
+const contentUnconfigured = computed(() => (
+  contentBinding.value !== null && !contentBinding.value.profile_name
 ))
 const classNames = computed(() => analysis.value?.class_names ?? [])
 const narrative = computed(() => analysis.value?.narrative ?? null)
 const narrativeFailed = computed(() => analysis.value?.narrative_failed ?? false)
 const stale = computed(() => analysis.value?.stale ?? false)
 
+const bannerText = computed(() => {
+  if (generating.value) return 'AI 正在整理，完成后自动更新。'
+  if (narrative.value === null) {
+    if (contentUnconfigured.value) return '未配置内容生成模型，请前往 设置→模型配置 绑定后，在成绩中心点「AI 整理」。'
+    if (narrativeFailed.value) return 'AI 整理未成功，可回到成绩中心点「AI 整理」重试。'
+    return 'AI 讲评部分尚未整理：复核完成后自动整理，或回到成绩中心点「AI 整理」。'
+  }
+  if (stale.value) return '成绩已更新或统计口径已调整，AI 分析可能与当前成绩不一致；回到成绩中心点「AI 整理」更新。'
+  return ''
+})
+
 const reportUrl = computed(() => {
   const sessionId = sessionStore.selectedSessionId
-  if (sessionId === null || narrative.value === null) return ''
+  // narrative 视图不返回 data；能否渲染只看场次是否有成绩数据。
+  if (sessionId === null || !analysis.value || analysis.value.status === 'no_data') return ''
   const query = new URLSearchParams()
   if (selectedClass.value) query.set('class_name', selectedClass.value)
   // generated_at 作为版本参数：重新生成后强制 iframe 重新读取。
@@ -97,7 +101,6 @@ watch(
 watch(
   () => sessionStore.selectedSessionId,
   () => {
-    closeConfirm()
     selectedClass.value = stringQuery(route.query.class) ?? ''
     analysis.value = null
     void load()
@@ -134,6 +137,14 @@ async function load(): Promise<void> {
     )
     if (generation !== loadGeneration || sessionStore.selectedSessionId !== sessionId) return
     analysis.value = next
+    try {
+      const modelState = await modelProfilesApi.getState()
+      if (generation !== loadGeneration || sessionStore.selectedSessionId !== sessionId) return
+      contentBinding.value = modelState.task_bindings.content_generation
+    } catch {
+      // 配置读取失败时按已配置处理，不显示未配置提示。
+      contentBinding.value = null
+    }
     if (selectedClass.value !== (next.selected_class ?? '')) {
       selectedClass.value = next.selected_class ?? next.class_names?.[0] ?? ''
     }
@@ -181,71 +192,6 @@ function backToResults(): void {
         : { class: stringQuery(route.query.class) }),
     },
   })
-}
-
-async function toggleAutoGenerate(event: Event): Promise<void> {
-  const input = event.target instanceof HTMLInputElement ? event.target : null
-  const sessionId = sessionStore.selectedSessionId
-  if (input === null || sessionId === null || settingsSaving.value) return
-  const checked = input.checked
-  settingsSaving.value = true
-  try {
-    const saved = await classAnalysisApi.updateSettings(sessionId, checked)
-    if (analysis.value !== null && sessionStore.selectedSessionId === sessionId) {
-      analysis.value = { ...analysis.value, auto_generate: saved.auto_generate }
-    }
-  } catch {
-    input.checked = !checked
-  } finally {
-    settingsSaving.value = false
-  }
-}
-
-async function openConfirm(): Promise<void> {
-  if (!canSubmit.value) return
-  confirmOpen.value = true
-  confirmBinding.value = null
-  confirmError.value = ''
-  confirmLoading.value = true
-  try {
-    const state = await modelProfilesApi.getState()
-    if (!confirmOpen.value) return
-    confirmBinding.value = state.task_bindings.content_generation
-  } catch {
-    if (!confirmOpen.value) return
-    confirmError.value = '模型配置暂时无法读取，请稍后重试。'
-  } finally {
-    if (confirmOpen.value) confirmLoading.value = false
-  }
-}
-
-function closeConfirm(): void {
-  confirmOpen.value = false
-  confirmBinding.value = null
-  confirmError.value = ''
-  confirmLoading.value = false
-}
-
-async function confirmGenerate(): Promise<void> {
-  const sessionId = sessionStore.selectedSessionId
-  if (sessionId === null || regenerating.value || confirmLoading.value) return
-  regenerating.value = true
-  confirmError.value = ''
-  try {
-    const job = await classAnalysisApi.regenerate(sessionId)
-    if (sessionStore.selectedSessionId !== sessionId) return
-    jobStore.track(job)
-    closeConfirm()
-    await load()
-  } catch (error) {
-    if (sessionStore.selectedSessionId !== sessionId) return
-    confirmError.value = error instanceof ApiError
-      && error.code === 'content_generation_model_not_configured'
-      ? '未配置内容生成模型，请前往 设置→模型配置 绑定后重试。'
-      : '生成请求未能提交，请稍后重试。'
-  } finally {
-    regenerating.value = false
-  }
 }
 
 function formatTime(value: string | null): string {
@@ -300,56 +246,19 @@ onBeforeUnmount(() => {
           </select>
         </label>
         <span v-else-if="selectedClass">{{ selectedClass }}</span>
-        <label class="class-analysis__toggle">
-          <input
-            type="checkbox"
-            :checked="analysis.auto_generate"
-            :disabled="settingsSaving"
-            @change="toggleAutoGenerate"
-          >
-          <span>阅卷完成后自动生成</span>
-        </label>
-        <AppButton
-          variant="secondary"
-          data-testid="class-report-generate"
-          :disabled="!canSubmit"
-          @click="openConfirm"
-        >
-          {{ generating ? '生成中…' : narrative ? '重新生成分析' : '生成班级报告' }}
-        </AppButton>
       </div>
 
       <StatePanel
-        v-if="analysis.status === 'no_data'"
+        v-if="analysis.status === 'no_data' || !reportUrl"
         kind="empty"
         title="当前考试还没有可分析的成绩"
       />
 
-      <StatePanel
-        v-else-if="generating && !narrative"
-        kind="loading"
-        title="班级报告生成中…"
-        description="完成后自动更新。"
-      />
-
-      <StatePanel
-        v-else-if="!narrative"
-        :kind="narrativeFailed ? 'error' : 'empty'"
-        :title="narrativeFailed ? '班级报告生成失败' : '尚未生成班级报告'"
-        :description="narrativeFailed ? '可点击「重新生成分析」重试。' : '点击「生成班级报告」，确认模型与调用次数后开始生成。'"
-      >
-        <template #actions>
-          <AppButton variant="secondary" data-testid="class-report-generate-empty" :disabled="!canSubmit" @click="openConfirm">
-            {{ narrativeFailed ? '重新生成分析' : '生成班级报告' }}
-          </AppButton>
-        </template>
-      </StatePanel>
-
       <template v-else>
-        <div v-if="stale" class="class-analysis__banner" role="status">
-          成绩已更新或统计口径已调整，报告可能与当前成绩不一致，建议重新生成。
+        <div v-if="bannerText" class="class-analysis__banner" role="status" data-testid="class-report-banner">
+          {{ bannerText }}
         </div>
-        <p class="class-report__meta">
+        <p v-if="narrative" class="class-report__meta">
           <span class="class-analysis__ai-badge">AI 分析 · 仅供参考</span>
           生成于 {{ formatTime(analysis.generated_at) }} · {{ selectedClass }}
         </p>
@@ -362,17 +271,5 @@ onBeforeUnmount(() => {
         ></iframe>
       </template>
     </template>
-
-    <ClassAnalysisGenerateConfirm
-      v-if="confirmOpen"
-      kind="narrative"
-      :loading="confirmLoading"
-      :binding="confirmBinding"
-      :error="confirmError"
-      :submitting="regenerating"
-      :call-count="classNames.length || 1"
-      @close="closeConfirm"
-      @confirm="confirmGenerate"
-    />
   </section>
 </template>

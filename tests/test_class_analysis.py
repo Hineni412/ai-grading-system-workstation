@@ -1,4 +1,4 @@
-"""班级分析内嵌页：GET 三态、settings 持久化、regenerate 防重、job 与自动触发。"""
+"""班级分析内嵌页：GET 三态、settings 持久化、「AI 整理」管线与自动触发。"""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from tests.test_analysis_report import (
     CLASS_NARRATIVE,
+    PERSONAL_NARRATIVE,
     FakeLLMClient,
     _patch_configured,
     _seed_analysis_session,
@@ -39,6 +40,75 @@ class BlockingLLMClient(FakeLLMClient):
         return super().json_from_text(prompt, extra_kwargs=extra_kwargs, **kwargs)
 
 
+class PipelineClient(FakeLLMClient):
+    """「AI 整理」管线用 fake：按请求内容分派错因分组、班级叙述与个人叙述。"""
+
+    def __init__(self) -> None:
+        super().__init__(narrative=CLASS_NARRATIVE)
+        self.kinds: list[str] = []
+
+    def _respond(self, prompt, images, extra_kwargs, kwargs):
+        self.calls += 1
+        self.requests.append(
+            {"prompt": prompt, "images": images, "options": extra_kwargs, **kwargs}
+        )
+        if self._error is not None:
+            raise self._error
+        kind = self._classify(prompt)
+        self.kinds.append(kind)
+        if kind == "cause":
+            source = json.loads(prompt.rsplit("\n", 1)[1])
+            return {
+                "groups": [
+                    {
+                        "kind": "error",
+                        "category": "概念理解",
+                        "reason": "垂直关系用错",
+                        "manifestation": "未证垂直就用性质",
+                        "evidence_ids": [
+                            item["id"] for item in source["evidence"]
+                        ],
+                    }
+                ],
+                "positive_ids": [],
+                "uncertain_ids": [],
+            }
+        return dict(CLASS_NARRATIVE if kind == "class" else PERSONAL_NARRATIVE)
+
+    @staticmethod
+    def _classify(prompt: str) -> str:
+        try:
+            payload = json.loads(prompt.rsplit("\n", 1)[1])
+        except (IndexError, TypeError, ValueError):
+            return "other"
+        if "evidence" in payload:
+            return "cause"
+        if "student" in payload:
+            return "personal"
+        if "students" in payload:
+            return "class"
+        return "other"
+
+
+class CauseFailClient(PipelineClient):
+    """只有错因整理失败的管线 fake：班级与个人叙述照常返回。"""
+
+    def _respond(self, prompt, images, extra_kwargs, kwargs):
+        if self._classify(prompt) == "cause":
+            self.calls += 1
+            self.kinds.append("cause")
+            self.requests.append(
+                {
+                    "prompt": prompt,
+                    "images": images,
+                    "options": extra_kwargs,
+                    **kwargs,
+                }
+            )
+            raise TimeoutError("synthetic cause failure")
+        return super()._respond(prompt, images, extra_kwargs, kwargs)
+
+
 @pytest.fixture
 def class_analysis_api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from backend.api.app import create_app
@@ -46,12 +116,13 @@ def class_analysis_api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         get_grading_db,
         get_job_manager,
         get_reports_dir,
+        get_scan_grading_workspace,
         get_upload_config_dir,
     )
     from backend.jobs.default_handlers import _build_class_analysis_generate_handler
     from backend.jobs.manager import JobManager
     from backend.jobs.store import JobStore
-    
+    from backend.scan_grading.workspace import ScanGradingWorkspace
 
     db = open_grading_repositories(tmp_path / "databases" / "grading.db")
     db.initialize()
@@ -70,6 +141,12 @@ def class_analysis_api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             llm_client_factory=lambda: llm_holder["client"],
         ),
     )
+    workspace = ScanGradingWorkspace(
+        exams_root=tmp_path / "exams",
+        templates_root=tmp_path / "templates",
+        grading_db_path=db.db_path,
+        data_root=tmp_path,
+    )
     app = create_app()
     app.dependency_overrides[get_grading_db] = lambda: db
     app.dependency_overrides[get_job_manager] = lambda: manager
@@ -77,6 +154,7 @@ def class_analysis_api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     app.dependency_overrides[get_upload_config_dir] = lambda: (
         tmp_path / "config" / "uploaded"
     )
+    app.dependency_overrides[get_scan_grading_workspace] = lambda: workspace
     with TestClient(app) as client:
         try:
             yield client, db, session_id, reports_dir, manager, llm_holder, monkeypatch
@@ -84,10 +162,31 @@ def class_analysis_api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             manager.shutdown()
 
 
-def _generate_via_api(client, session_id: int) -> dict:
-    response = client.post(f"/api/sessions/{session_id}/class-analysis/regenerate")
+def _pipeline_via_api(client, session_id: int) -> dict:
+    response = client.post(f"/api/sessions/{session_id}/report-pipeline")
     assert response.status_code == 202
     return response.json()
+
+
+def _run_causes(db, session_id: int, data_root: Path, reports_dir: Path, client, **kwargs) -> dict:
+    """直接跑「AI 整理」第一阶段错因整理（与管线同一实现），不经任务队列。"""
+    from types import SimpleNamespace
+
+    from backend.class_analysis import ClassAnalysisStateStore, run_cause_analysis
+
+    context = SimpleNamespace(
+        payload={"session_id": session_id},
+        raise_if_cancelled=lambda: None,
+        report=lambda *args, **kw: None,
+    )
+    return run_cause_analysis(
+        context,
+        db=db,
+        data_root=data_root,
+        store=ClassAnalysisStateStore(reports_dir),
+        llm_client_factory=lambda: client,
+        **kwargs,
+    )
 
 
 def test_cause_groups_persist_count_students_per_class_and_update_only_changed_questions(
@@ -123,11 +222,7 @@ def test_cause_groups_persist_count_students_per_class_and_update_only_changed_q
     holder["client"] = fake
     with sqlite3.connect(db.db_path) as conn:
         conn.execute("UPDATE students SET class_name='2 班' WHERE name='李四'")
-    job = client.post(
-        f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes"
-    ).json()
-    manager.wait(job["id"], timeout=5)
-    assert manager.get(job["id"]).status == "succeeded"
+    _run_causes(db, sid, reports_dir.parent, reports_dir, fake)
     assert len(fake.calls) == 2
     assert all("student_name" not in json.dumps(source) for source in fake.calls)
     assert all(source["rubric"] for source in fake.calls)
@@ -157,11 +252,8 @@ def test_cause_groups_persist_count_students_per_class_and_update_only_changed_q
         "questions"
     ]["Q2"]["result"]
     assert ClassAnalysisStateStore(reports_dir).load(sid)["narrative"] is None
-    # 普通读取、切班、再次点击整理都复用；改批语只重整受影响题目。
-    job = client.post(
-        f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes"
-    ).json()
-    manager.wait(job["id"], timeout=5)
+    # 普通读取、切班、再次整理都复用；改批语只重整受影响题目。
+    _run_causes(db, sid, reports_dir.parent, reports_dir, fake)
     assert len(fake.calls) == 2
     with sqlite3.connect(db.db_path) as conn:
         conn.execute(
@@ -175,10 +267,7 @@ def test_cause_groups_persist_count_students_per_class_and_update_only_changed_q
     assert not next(
         q for q in changed["data"]["questions"] if q["question_id"] == "Q2"
     ).get("causes_grouped")
-    job = client.post(
-        f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes"
-    ).json()
-    manager.wait(job["id"], timeout=5)
+    _run_causes(db, sid, reports_dir.parent, reports_dir, fake)
     assert len(fake.calls) == 3
     # 图像编码不进入文本归并请求；实际评分要求变化会使该题归并过期。
     rubric_path = Path(db.sessions.get_grading_session(sid)["rubric_path"])
@@ -188,10 +277,7 @@ def test_cause_groups_persist_count_students_per_class_and_update_only_changed_q
     rubric_path.write_text(json.dumps(rubric, ensure_ascii=False), encoding="utf-8")
     changed = client.get(f"/api/sessions/{sid}/class-analysis?view=summary").json()
     assert changed["cause_analysis"]["pending_questions"] == 1
-    job = client.post(
-        f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes"
-    ).json()
-    manager.wait(job["id"], timeout=5)
+    _run_causes(db, sid, reports_dir.parent, reports_dir, fake)
     assert len(fake.calls) == 4
     assert "synthetic-image-payload" not in json.dumps(fake.calls[-1])
 
@@ -199,14 +285,13 @@ def test_cause_groups_persist_count_students_per_class_and_update_only_changed_q
 def test_cause_model_failure_does_not_retry_or_replace_original_reasons(
     class_analysis_api_client,
 ):
-    client, _db, sid, _reports, manager, holder, monkeypatch = class_analysis_api_client
+    client, db, sid, reports_dir, manager, holder, monkeypatch = (
+        class_analysis_api_client
+    )
     _patch_configured(monkeypatch, True)
     fake = FakeLLMClient(error=TimeoutError("synthetic timeout"))
     holder["client"] = fake
-    job = client.post(
-        f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes"
-    ).json()
-    manager.wait(job["id"], timeout=5)
+    _run_causes(db, sid, reports_dir.parent, reports_dir, fake)
     assert fake.calls == 2  # 两题各一次，失败不重发。
     payload = client.get(f"/api/sessions/{sid}/class-analysis?view=summary").json()
     assert payload["cause_analysis"]["failed_questions"] == 2
@@ -303,11 +388,7 @@ def test_cause_answer_context_survives_reentry_and_invalidates_without_feedback_
     holder["client"] = fake
 
     def generate():
-        job = client.post(
-            f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes"
-        ).json()
-        manager.wait(job["id"], timeout=5)
-        assert manager.get(job["id"]).status == "succeeded"
+        _run_causes(db, sid, reports_dir.parent, reports_dir, holder["client"])
 
     generate()
     source = next(s for s in fake.calls if s["question_id"] == "Q2")
@@ -384,9 +465,14 @@ def test_class_analysis_switches_classes_and_persists_separate_narratives(
     with sqlite3.connect(db.db_path) as conn:
         conn.execute("UPDATE students SET class_name='2 班' WHERE name='李四'")
     _patch_configured(monkeypatch, True)
-    job = _generate_via_api(client, session_id)
-    manager.wait(job["id"], timeout=5)
-    assert llm["client"].calls == 2
+    llm["client"] = PipelineClient()
+    job = _pipeline_via_api(client, session_id)
+    manager.wait(job["id"], timeout=10)
+    # 管线顺序：错因整理（2 题）→ 班级叙述（2 班）→ 个人叙述（2 人）。
+    assert llm["client"].kinds == [
+        "cause", "cause", "class", "class", "personal", "personal"
+    ]
+    assert llm["client"].calls == 6
     for name, score, student in (("1 班", 90, "张三"), ("2 班", 50, "李四")):
         page = client.get(
             f"/api/sessions/{session_id}/class-analysis", params={"class_name": name}
@@ -406,32 +492,35 @@ def test_class_analysis_switches_classes_and_persists_separate_narratives(
     assert state["narrative"] is None
 
 
-def test_class_analysis_job_skips_model_call_for_same_ready_revision(
+def test_report_pipeline_second_run_without_changes_makes_zero_model_calls(
     class_analysis_api_client,
 ) -> None:
     client, db, session_id, _reports_dir, manager, llm_holder, monkeypatch = (
         class_analysis_api_client
     )
     _patch_configured(monkeypatch, True)
-    fake = llm_holder["client"]
+    fake = PipelineClient()
+    llm_holder["client"] = fake
 
-    first = _generate_via_api(client, session_id)
-    manager.wait(first["id"], timeout=5)
-    assert fake.calls == 1
+    first = _pipeline_via_api(client, session_id)
+    manager.wait(first["id"], timeout=10)
+    assert manager.get(first["id"]).status == "succeeded"
+    assert fake.calls == 5  # 错因 2 + 班级 1 + 个人 2。
 
-    # 非手动（force=False）的同 revision 自动生成：幂等跳过模型调用。
+    # 无成绩/错因变化时再次触发：三个阶段全部幂等跳过，零模型调用。
     from backend.class_analysis import submit_class_analysis_generate
     from backend.report_exports import score_revision
 
     second = submit_class_analysis_generate(
         manager=manager,
         session_id=session_id,
-        revision=score_revision(db, session_id),
-        force=False,
+        revision=score_revision(db, session_id, include_question_bank=False),
+        mode="auto",
     )
-    manager.wait(second.id, timeout=5)
-    assert manager.get(second.id).result["skipped"] is True
-    assert fake.calls == 1
+    manager.wait(second.id, timeout=10)
+    result = manager.get(second.id).result
+    assert result["kind"] == "pipeline" and result["status"] == "ready"
+    assert fake.calls == 5
 
 
 # ---------------------------------------------------------------------------
@@ -629,11 +718,7 @@ def test_choice_question_option_path_auto_bank_write_and_edit(
 
     fake = OptionAwareClient()
     holder["client"] = fake
-    job = client.post(
-        f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes"
-    ).json()
-    manager.wait(job["id"], timeout=10)
-    assert manager.get(job["id"]).status == "succeeded"
+    _run_causes(db, sid, reports_dir.parent, reports_dir, fake)
     # Q1 选项诊断 1 次 + Q2 整题整理 1 次；李四 Q1 选 C。
     assert sorted(fake.calls) == ["option", "v3"]
 
@@ -676,11 +761,7 @@ def test_choice_question_option_path_auto_bank_write_and_edit(
     assert q2_rows[0]["source"] == "ai_auto"
 
     # 再次整理：选项分析按题目指纹复用、Q2 结果仍新鲜 → 零新调用、零新增题库行。
-    job2 = client.post(
-        f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes"
-    ).json()
-    manager.wait(job2["id"], timeout=10)
-    assert manager.get(job2["id"]).status == "succeeded"
+    _run_causes(db, sid, reports_dir.parent, reports_dir, fake)
     assert len(fake.calls) == 2
     with connect(qb_path) as conn:
         total = conn.execute("SELECT COUNT(*) FROM question_error_patterns").fetchone()[
@@ -753,11 +834,7 @@ def test_choice_question_option_path_auto_bank_write_and_edit(
     questions = dict(state["cause_analysis"]["questions"])
     questions.pop("Q1")
     store.save(sid, cause_analysis={"questions": questions})
-    job3 = client.post(
-        f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes"
-    ).json()
-    manager.wait(job3["id"], timeout=10)
-    assert manager.get(job3["id"]).status == "succeeded"
+    _run_causes(db, sid, reports_dir.parent, reports_dir, fake)
     assert len(fake.calls) == 2  # 选项诊断与会话结果均复用，无新调用
     state = store.load(sid)
     reasons = {
@@ -802,11 +879,7 @@ def test_cause_edit_api_validation_and_unlinked_state_only(
             }
 
     holder["client"] = CauseClient()
-    job = client.post(
-        f"/api/sessions/{sid}/class-analysis/regenerate?kind=causes"
-    ).json()
-    manager.wait(job["id"], timeout=10)
-    assert manager.get(job["id"]).status == "succeeded"
+    _run_causes(db, sid, reports_dir.parent, reports_dir, holder["client"])
     url = f"/api/sessions/{sid}/class-analysis/causes/edit"
 
     resp = client.post(
@@ -1014,12 +1087,17 @@ def test_class_narrative_payload_carries_organized_causes(
         data=data,
     )
     _patch_configured(monkeypatch, True)
-    job = _generate_via_api(client, sid)
-    manager.wait(job["id"], timeout=5)
+    job = _pipeline_via_api(client, sid)
+    manager.wait(job["id"], timeout=10)
     fake = holder["client"]
-    assert fake.calls == 1
-    prompt = fake.requests[0]["prompt"]
-    payload = json.loads(prompt.split("输入 JSON：\n", 1)[1])
+    # Q1 错因 1 次 + 班级 1 次 + 个人 2 次；Q2 已有整理结果不再调用。
+    assert fake.calls == 4
+    class_payloads = [
+        json.loads(request["prompt"].split("输入 JSON：\n", 1)[1])
+        for request in fake.requests
+        if "输入 JSON：\n" in request["prompt"]
+    ]
+    payload = next(p for p in class_payloads if "students" in p)
     questions = {q["question_id"]: q for q in payload["questions"]}
     q2 = questions["Q2"]
     expected = {"category": "概念理解", "pattern": "垂直关系用错"}
@@ -1049,10 +1127,11 @@ def test_old_rendition_marks_stale_without_model_call(
         class_analysis_api_client
     )
     _patch_configured(monkeypatch, True)
-    job = _generate_via_api(client, sid)
-    manager.wait(job["id"], timeout=5)
-    fake = holder["client"]
-    assert fake.calls == 1
+    fake = PipelineClient()
+    holder["client"] = fake
+    job = _pipeline_via_api(client, sid)
+    manager.wait(job["id"], timeout=10)
+    assert fake.calls == 5
 
     store = ClassAnalysisStateStore(reports_dir)
     state = store.load(sid)
@@ -1064,16 +1143,17 @@ def test_old_rendition_marks_stale_without_model_call(
     assert page["stale"] is True
     assert page["narrative"] is None
     # 页面读取只标记过期，不提交生成任务、不调用模型。
-    assert fake.calls == 1
+    assert fake.calls == 5
     _jobs, total = manager.list(
         session_id=sid, job_types=(CLASS_ANALYSIS_JOB_TYPE,), limit=10
     )
     assert total == 1
 
-    # 手动重新生成仍走缓存：同 (场次, 成绩版本, 叙述版本) 命中，不重复调用模型。
-    job = _generate_via_api(client, sid)
-    manager.wait(job["id"], timeout=5)
-    assert fake.calls == 1
+    # 手动「AI 整理」仍走缓存：同 (场次, 成绩版本, 叙述版本, 错因摘要) 命中，
+    # 不重复调用模型。
+    job = _pipeline_via_api(client, sid)
+    manager.wait(job["id"], timeout=10)
+    assert fake.calls == 5
     assert (
         store.load(sid)["rendition_version"] == CLASS_ANALYSIS_RENDITION_VERSION
     )
@@ -1131,6 +1211,12 @@ def test_review_confirmed_marker_never_surfaces_as_error_type() -> None:
 def _seed_stepped_session(db, tmp_path: Path) -> int:
     """基础场次 + Q2 评分步骤；张三的批改证据带逐步评估（S3 沿用前步错误）。"""
     sid = _seed_analysis_session(db, tmp_path)
+    _make_stepped(db, sid)
+    return sid
+
+
+def _make_stepped(db, sid: int) -> None:
+    """把已播种场次的 Q2 改为按步骤评分，并给张三写入逐步评估证据。"""
     session = db.sessions.get_grading_session(sid)
     rubric_path = Path(session["rubric_path"])
     rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
@@ -1179,7 +1265,6 @@ def _seed_stepped_session(db, tmp_path: Path) -> int:
             "UPDATE session_results SET raw_json = ? WHERE id = ?",
             (json.dumps(raw, ensure_ascii=False), result_id),
         )
-    return sid
 
 
 def test_cause_inputs_split_independently_failed_steps(tmp_path: Path) -> None:
@@ -1765,3 +1850,579 @@ def test_session_error_record_skill_enrichment_is_nonfatal(
     }
     assert all("skill_keys" not in row for rows_ in fallback.values()
                for rs in rows_.values() for row in rs)
+
+
+# ---------------------------------------------------------------------------
+# 「AI 整理」统一管线：状态预检、手动/自动口径、占位渲染与自动触发
+# ---------------------------------------------------------------------------
+
+
+def test_report_pipeline_status_counts_then_complete(
+    class_analysis_api_client,
+) -> None:
+    """状态预检：错因待整理时全部班级记为待生成；管线跑完后 complete=true。"""
+    client, db, sid, _reports_dir, manager, holder, monkeypatch = (
+        class_analysis_api_client
+    )
+    _patch_configured(monkeypatch, True)
+    holder["client"] = PipelineClient()
+
+    status = client.get(f"/api/sessions/{sid}/report-pipeline").json()
+    assert status["configured"] is True
+    assert status["active_job_id"] is None
+    assert status["causes"]["pending_questions"] == 2
+    assert status["causes"]["total_questions"] == 2
+    assert status["causes"]["call_count"] == 2
+    assert status["causes"]["estimated_tokens"] > 0
+    # 错因摘要随整理结果变化：有错因待整理时全部有学生的班记为待做。
+    assert status["class_reports"] == {"pending": 1, "total": 1}
+    assert status["personal_reports"]["pending"] == 2
+    assert status["personal_reports"]["total"] == 2
+    assert status["personal_reports"]["call_count"] == 2
+    assert status["complete"] is False
+
+    job = _pipeline_via_api(client, sid)
+    manager.wait(job["id"], timeout=10)
+    assert manager.get(job["id"]).status == "succeeded"
+
+    done = client.get(f"/api/sessions/{sid}/report-pipeline").json()
+    assert done["complete"] is True
+    assert done["causes"]["pending_questions"] == 0
+    assert done["class_reports"]["pending"] == 0
+    assert done["personal_reports"]["pending"] == 0
+    assert done["personal_reports"]["call_count"] == 0
+
+
+def test_report_pipeline_post_validates_and_reuses_active_job(
+    class_analysis_api_client,
+) -> None:
+    """POST：无成绩 409、未配置模型 422；进行中任务直接复用同一 job。"""
+    client, db, sid, _reports_dir, manager, holder, monkeypatch = (
+        class_analysis_api_client
+    )
+    empty = db.sessions.create_grading_session("空场", "r.json", "a.json")
+    empty_response = client.post(f"/api/sessions/{empty}/report-pipeline")
+    assert empty_response.status_code == 409
+    assert empty_response.json()["error"]["code"] == "report_results_missing"
+
+    _patch_configured(monkeypatch, False)
+    unconfigured = client.post(f"/api/sessions/{sid}/report-pipeline")
+    assert unconfigured.status_code == 422
+    assert (
+        unconfigured.json()["error"]["code"]
+        == "content_generation_model_not_configured"
+    )
+
+    _patch_configured(monkeypatch, True)
+    blocker = BlockingLLMClient()
+    holder["client"] = blocker
+    first = _pipeline_via_api(client, sid)
+    assert blocker.started.wait(3)
+    second = client.post(f"/api/sessions/{sid}/report-pipeline")
+    assert second.status_code == 202
+    assert second.json()["id"] == first["id"]  # 进行中 job 直接复用
+    manager.cancel(first["id"])
+    blocker.release.set()
+    manager.wait(first["id"], timeout=5)
+
+
+def test_report_pipeline_manual_retries_failed_causes_but_auto_does_not(
+    class_analysis_api_client,
+) -> None:
+    """手动口径重发失败题并升级为就绪；自动口径跳过失败题、整体记 partial。"""
+    client, db, sid, reports_dir, manager, holder, monkeypatch = (
+        class_analysis_api_client
+    )
+    from backend.class_analysis import (
+        ClassAnalysisStateStore,
+        submit_class_analysis_generate,
+    )
+    from backend.report_exports import score_revision
+
+    _patch_configured(monkeypatch, True)
+    holder["client"] = FakeLLMClient(error=TimeoutError("synthetic cause failure"))
+    _run_causes(db, sid, reports_dir.parent, reports_dir, holder["client"])
+    store = ClassAnalysisStateStore(reports_dir)
+    state = store.load(sid)
+    assert all(
+        q["failed"] for q in state["cause_analysis"]["questions"].values()
+    )
+
+    good = PipelineClient()
+    holder["client"] = good
+    revision = score_revision(db, sid, include_question_bank=False)
+    auto = submit_class_analysis_generate(
+        manager=manager, session_id=sid, revision=revision, mode="auto",
+    )
+    manager.wait(auto.id, timeout=10)
+    # 自动口径不重发失败题：错因未就绪 → 班级无摘要 → 叙述用无错因键生成。
+    assert good.kinds == ["class", "personal", "personal"]
+    saved = store.load(sid)["cause_analysis"]["questions"]
+    assert all(q["failed"] for q in saved.values())
+    # 本轮未产生失败调用，自动口径下任务自身记 ready；失败标记留给手动重试。
+    assert manager.get(auto.id).result["status"] == "ready"
+
+    good.kinds.clear()
+    manual = client.post(f"/api/sessions/{sid}/report-pipeline")
+    assert manual.status_code == 202
+    manager.wait(manual.json()["id"], timeout=10)
+    assert good.kinds[:2] == ["cause", "cause"]  # 手动口径重发失败题
+    saved = store.load(sid)["cause_analysis"]["questions"]
+    assert not any(q["failed"] for q in saved.values())
+    assert manager.get(manual.json()["id"]).result["status"] == "ready"
+
+
+def test_report_pipeline_manual_upgrades_pre_step_but_auto_keeps(
+    class_analysis_api_client, tmp_path: Path,
+) -> None:
+    """v3 兼容结果：自动保留不调用，手动升级重发。"""
+    from backend.class_analysis import (
+        CAUSE_PRE_STEP_VERSION,
+        ClassAnalysisStateStore,
+        _cause_input_fingerprint,
+        _pre_step_source,
+        assemble_cause_data,
+        build_cause_inputs,
+        normalize_cause_result,
+        save_cause_result,
+        student_error_records,
+    )
+
+    client, db, sid, reports_dir, manager, holder, monkeypatch = (
+        class_analysis_api_client
+    )
+    _patch_configured(monkeypatch, True)
+    _make_stepped(db, sid)  # 只有带评分步骤的题才有 v3→v4 口径差异
+    store = ClassAnalysisStateStore(reports_dir)
+    data = assemble_cause_data(db, sid, data_root=reports_dir.parent)
+    source = next(
+        s for s in build_cause_inputs(data) if s["question_id"] == "Q2"
+    )
+    old = _pre_step_source(source)
+    result = normalize_cause_result(
+        {
+            "groups": [{
+                "kind": "error", "category": "概念理解",
+                "reason": "旧错法", "manifestation": "旧表现",
+                "evidence_ids": [item["id"] for item in old["evidence"]],
+            }],
+        },
+        old,
+    )
+    fingerprint = _cause_input_fingerprint(old)
+    store.save(
+        sid,
+        cause_analysis={
+            "questions": {
+                "Q2": {
+                    "version": CAUSE_PRE_STEP_VERSION,
+                    "input": old,
+                    "input_fingerprint": fingerprint,
+                    "result": result,
+                    "generated_at": "2024-01-01T00:00:00",
+                    "origin": "model",
+                    "failed": False,
+                }
+            }
+        },
+        error_records={
+            "Q2": {
+                "input_fingerprint": fingerprint,
+                "generated_at": "2024-01-01T00:00:00",
+                "records": student_error_records(data, old, result, by_step=False),
+            }
+        },
+    )
+
+    fake = PipelineClient()
+    holder["client"] = fake
+    # 自动口径：v3 兼容结果不升级，只补缺失的 Q1。
+    from backend.class_analysis import submit_class_analysis_generate
+    from backend.report_exports import score_revision
+
+    auto = submit_class_analysis_generate(
+        manager=manager,
+        session_id=sid,
+        revision=score_revision(db, sid, include_question_bank=False),
+        mode="auto",
+    )
+    manager.wait(auto.id, timeout=10)
+    saved = store.load(sid)["cause_analysis"]["questions"]
+    assert saved["Q2"]["version"] == CAUSE_PRE_STEP_VERSION
+    assert fake.kinds.count("cause") == 1  # 只有缺失的 Q1
+
+    # 手动口径：v3 兼容结果重发并升级为 v4；错因变化顺带重生成班级叙述。
+    fake.kinds.clear()
+    manual = _pipeline_via_api(client, sid)
+    manager.wait(manual["id"], timeout=10)
+    saved = store.load(sid)["cause_analysis"]["questions"]
+    assert saved["Q2"]["version"] == "class_error_causes_v4"
+    assert fake.kinds == ["cause", "class"]
+
+
+def test_report_pipeline_personal_targets_only_missing_and_stale(
+    class_analysis_api_client,
+) -> None:
+    """成绩变化只让受影响学生的个人报告过期；已当前的报告不再生成。"""
+    client, db, sid, reports_dir, manager, holder, monkeypatch = (
+        class_analysis_api_client
+    )
+    _patch_configured(monkeypatch, True)
+    fake = PipelineClient()
+    holder["client"] = fake
+    job = _pipeline_via_api(client, sid)
+    manager.wait(job["id"], timeout=10)
+    calls_before = list(fake.kinds)
+
+    lisi_id = next(
+        s["student_id"]
+        for s in client.get(f"/api/sessions/{sid}/personal-reports").json()["students"]
+        if s["status"] == "current"
+    )
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute(
+            "UPDATE session_results SET total_score=total_score+5"
+            " WHERE session_id=? AND student_id=?",
+            (sid, lisi_id),
+        )
+    states = client.get(f"/api/sessions/{sid}/personal-reports").json()["students"]
+    by_status = {
+        s["student_id"]: s["status"] for s in states if s["status"] != "unavailable"
+    }
+    assert by_status[lisi_id] == "stale"
+    other = next(sid_ for sid_, st in by_status.items() if sid_ != lisi_id)
+    assert by_status[other] == "current"
+
+    from backend.reporting.analysis_report_exporter import AnalysisReportGenerator
+
+    captured: dict[str, object] = {}
+    original_export = AnalysisReportGenerator.export_session
+
+    def spy_export(self, session_id, report_type, **kwargs):
+        captured["student_ids"] = set(kwargs.get("student_ids") or set())
+        return original_export(self, session_id, report_type, **kwargs)
+
+    monkeypatch.setattr(
+        AnalysisReportGenerator, "export_session", spy_export
+    )
+    fake.kinds.clear()
+    second = _pipeline_via_api(client, sid)
+    manager.wait(second["id"], timeout=10)
+    # 只有过期学生重新生成；已当前的学生保留原叙述。
+    assert captured["student_ids"] == {lisi_id}
+    assert fake.kinds.count("personal") == 1
+
+
+def test_report_pipeline_not_configured_makes_zero_calls(
+    class_analysis_api_client,
+) -> None:
+    """任务内的未配置兜底：写 not_configured 状态，返回不产生调用。"""
+    client, db, sid, reports_dir, manager, holder, monkeypatch = (
+        class_analysis_api_client
+    )
+    from backend.class_analysis import ClassAnalysisStateStore
+
+    _patch_configured(monkeypatch, True)  # 预检放行，任务内工厂返回 None
+    holder["client"] = None
+    job = _pipeline_via_api(client, sid)
+    manager.wait(job["id"], timeout=5)
+    record = manager.get(job["id"])
+    assert record.status == "succeeded"
+    assert record.result["status"] == "not_configured"
+    state = ClassAnalysisStateStore(reports_dir).load(sid)
+    assert state["status"] == "not_configured"
+    # 无既有叙述的班级仍走 narrative_failed → 页面显示未配置横幅。
+    page = client.get(f"/api/sessions/{sid}/class-analysis").json()
+    assert page["narrative"] is None
+    assert page["narrative_failed"] is True
+
+
+def test_report_pipeline_not_configured_preserves_existing_narrative(
+    class_analysis_api_client,
+) -> None:
+    """未配置兜底只写状态：已生成的班级叙述与班级条目原样保留可展示。"""
+    client, db, sid, reports_dir, manager, holder, monkeypatch = (
+        class_analysis_api_client
+    )
+    from backend.class_analysis import ClassAnalysisStateStore
+
+    _patch_configured(monkeypatch, True)
+    fake = PipelineClient()
+    holder["client"] = fake
+    job = _pipeline_via_api(client, sid)
+    manager.wait(job["id"], timeout=10)
+    assert manager.get(job["id"]).result["status"] == "ready"
+
+    # 任务内工厂返回 None → not_configured；已就绪的班级叙述不清空。
+    holder["client"] = None
+    second = _pipeline_via_api(client, sid)
+    manager.wait(second["id"], timeout=10)
+    assert manager.get(second["id"]).result["status"] == "not_configured"
+    state = ClassAnalysisStateStore(reports_dir).load(sid)
+    assert state["status"] == "not_configured"
+    assert state["class_reports"]["1 班"]["status"] == "ready"
+    assert state["class_reports"]["1 班"]["narrative"]["key_findings"]
+
+    page = client.get(f"/api/sessions/{sid}/class-analysis").json()
+    assert page["narrative"] is not None
+    assert page["narrative"]["student_notes"][0]["student_name"]
+    assert page["narrative_failed"] is False
+
+
+def test_report_pipeline_cancel_stops_between_units(
+    class_analysis_api_client,
+) -> None:
+    """取消在第一处检查点生效：job 记 cancelled，不继续跑后续阶段。"""
+    client, db, sid, _reports_dir, manager, holder, monkeypatch = (
+        class_analysis_api_client
+    )
+    _patch_configured(monkeypatch, True)
+    blocker = BlockingLLMClient()
+    holder["client"] = blocker
+    job = _pipeline_via_api(client, sid)
+    assert blocker.started.wait(3)
+    assert manager.cancel(job["id"])
+    blocker.release.set()
+    manager.wait(job["id"], timeout=5)
+    assert manager.get(job["id"]).status == "cancelled"
+
+
+def test_class_cause_digest_invalidates_class_narrative(
+    class_analysis_api_client,
+) -> None:
+    """错因变化 → 班级摘要变化 → 页面 stale，重整理重新生成叙述。"""
+    client, db, sid, reports_dir, manager, holder, monkeypatch = (
+        class_analysis_api_client
+    )
+    from backend.class_analysis import ClassAnalysisStateStore
+
+    _patch_configured(monkeypatch, True)
+    fake = PipelineClient()
+    holder["client"] = fake
+    job = _pipeline_via_api(client, sid)
+    manager.wait(job["id"], timeout=10)
+    entry = ClassAnalysisStateStore(reports_dir).load(sid)["class_reports"]["1 班"]
+    assert entry["status"] == "ready" and entry["cause_digest"]
+    page = client.get(f"/api/sessions/{sid}/class-analysis").json()
+    assert page["stale"] is False
+
+    # 教师修改错法名 → 物化记录变化 → 该班摘要不再匹配。
+    edit = client.post(
+        f"/api/sessions/{sid}/class-analysis/causes/edit",
+        json={
+            "question_id": "Q2",
+            "kind": "error",
+            "reason": "垂直关系用错",
+            "new_reason": "垂直条件误用",
+            "category": "概念理解",
+        },
+    )
+    assert edit.status_code == 200, edit.text
+    page = client.get(f"/api/sessions/{sid}/class-analysis").json()
+    assert page["stale"] is True
+
+    fake.kinds.clear()
+    second = _pipeline_via_api(client, sid)
+    manager.wait(second["id"], timeout=10)
+    assert fake.kinds == ["class"]  # 只有该班叙述重生成
+    page = client.get(f"/api/sessions/{sid}/class-analysis").json()
+    assert page["stale"] is False
+
+
+def test_class_narrative_cache_without_causes_still_hits(
+    class_analysis_api_client,
+) -> None:
+    """无错因摘要的班级叙述沿用旧缓存键：已生成的缓存继续命中。"""
+    client, db, sid, reports_dir, manager, holder, monkeypatch = (
+        class_analysis_api_client
+    )
+    from backend.class_analysis import (
+        CLASS_ANALYSIS_RENDITION_VERSION,
+        ClassAnalysisStateStore,
+    )
+    from backend.report_exports import score_revision
+    from backend.reporting.analysis_report_exporter import AnalysisNarrativeCache
+
+    _patch_configured(monkeypatch, True)
+    revision = score_revision(db, sid, include_question_bank=False)
+    cache = AnalysisNarrativeCache(reports_dir / ".analysis_narrative_cache")
+    key = AnalysisNarrativeCache.cache_key(
+        session_id=sid,
+        score_revision=revision,
+        rendition_version=CLASS_ANALYSIS_RENDITION_VERSION,
+        report_key="class:1 班",
+    )
+    cache.store(key, dict(CLASS_NARRATIVE))
+
+    fake = CauseFailClient()  # 错因始终失败 → 无摘要 → 走兼容缓存键
+    holder["client"] = fake
+    job = _pipeline_via_api(client, sid)
+    manager.wait(job["id"], timeout=10)
+    assert fake.kinds == ["cause", "cause", "personal", "personal"]
+    entry = ClassAnalysisStateStore(reports_dir).load(sid)["class_reports"]["1 班"]
+    assert entry["status"] == "ready"
+    assert entry["cause_digest"] == ""
+    assert entry["narrative"]["key_findings"] == CLASS_NARRATIVE["key_findings"]
+
+
+def test_class_report_renders_data_with_placeholder_before_pipeline(
+    class_analysis_api_client,
+) -> None:
+    """报告页先出数据段：叙述未整理时 AI 段显示占位文案而不是 409。"""
+    client, db, sid, _reports_dir, manager, holder, monkeypatch = (
+        class_analysis_api_client
+    )
+    response = client.get(f"/api/sessions/{sid}/class-analysis/report")
+    assert response.status_code == 200
+    assert "AI 整理后在此显示" in response.text
+    assert "成绩分布" in response.text or "参考人数" in response.text
+
+
+def _auto_workspace(db, tmp_path: Path):
+    from backend.scan_grading.workspace import ScanGradingWorkspace
+
+    return ScanGradingWorkspace(
+        exams_root=tmp_path / "exams",
+        templates_root=tmp_path / "templates",
+        grading_db_path=db.db_path,
+        data_root=tmp_path,
+    )
+
+
+def _mark_review_pending(db) -> None:
+    """制造一条待复核条目：批注含「需复核」字样。"""
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute(
+            "UPDATE session_details SET deduction_reason='需复核：字迹不清'"
+            " WHERE question_id='Q2'"
+        )
+
+
+def _clear_review_pending(db) -> None:
+    """等价于教师复核确认：清掉「需复核」批注与低置信度。"""
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE session_results SET needs_human_review=0")
+        conn.execute(
+            "UPDATE session_details SET deduction_reason='批注',"
+            " confidence_score=100"
+        )
+
+
+def test_auto_pipeline_skips_while_review_pending_and_fires_after_clear(
+    auto_generate_env, tmp_path: Path,
+) -> None:
+    from backend.report_pipeline import maybe_auto_generate_report_pipeline
+
+    db, sid, reports_dir, manager, fake, monkeypatch = auto_generate_env
+    _patch_configured(monkeypatch, True)
+    workspace = _auto_workspace(db, tmp_path)
+
+    _mark_review_pending(db)
+    # 有待复核条目：复核未完成不触发、不产生调用。
+    assert maybe_auto_generate_report_pipeline(
+        manager=manager, db=db, session_id=sid,
+        reports_dir=reports_dir, workspace=workspace,
+    ) is None
+    _clear_review_pending(db)
+    job = maybe_auto_generate_report_pipeline(
+        manager=manager, db=db, session_id=sid,
+        reports_dir=reports_dir, workspace=workspace,
+    )
+    assert job is not None
+    assert job.payload["kind"] == "pipeline"
+    assert job.payload["mode"] == "auto"
+    manager.wait(job.id, timeout=10)
+    assert manager.get(job.id).status == "succeeded"
+    # 内容已齐备：再次触发幂等返回 None，无新增模型调用。
+    calls = fake.calls
+    assert maybe_auto_generate_report_pipeline(
+        manager=manager, db=db, session_id=sid,
+        reports_dir=reports_dir, workspace=workspace,
+    ) is None
+    assert fake.calls == calls
+
+
+def test_auto_pipeline_never_fires_when_switch_off(
+    auto_generate_env, tmp_path: Path,
+) -> None:
+    from backend.class_analysis import ClassAnalysisStateStore
+    from backend.report_pipeline import maybe_auto_generate_report_pipeline
+
+    db, sid, reports_dir, manager, fake, monkeypatch = auto_generate_env
+    _patch_configured(monkeypatch, True)
+    ClassAnalysisStateStore(reports_dir).set_auto_generate(sid, False)
+    _clear_review_pending(db)
+    assert maybe_auto_generate_report_pipeline(
+        manager=manager, db=db, session_id=sid,
+        reports_dir=reports_dir, workspace=_auto_workspace(db, tmp_path),
+    ) is None
+    assert fake.calls == 0
+
+
+def test_auto_pipeline_skips_while_grading_incomplete(
+    auto_generate_env, tmp_path: Path,
+) -> None:
+    from backend.report_pipeline import maybe_auto_generate_report_pipeline
+
+    db, sid, reports_dir, manager, fake, monkeypatch = auto_generate_env
+    _patch_configured(monkeypatch, True)
+    _clear_review_pending(db)
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute(
+            "UPDATE session_results SET raw_json=?",
+            (json.dumps({"grading_completeness": {"status": "incomplete",
+                         "missing_question_ids": ["Q9"]}}),),
+        )
+    assert maybe_auto_generate_report_pipeline(
+        manager=manager, db=db, session_id=sid,
+        reports_dir=reports_dir, workspace=_auto_workspace(db, tmp_path),
+    ) is None
+    assert fake.calls == 0
+
+
+def test_auto_pipeline_saves_not_configured_without_calls(
+    auto_generate_env, tmp_path: Path,
+) -> None:
+    from backend.class_analysis import ClassAnalysisStateStore
+    from backend.report_pipeline import maybe_auto_generate_report_pipeline
+
+    db, sid, reports_dir, manager, fake, monkeypatch = auto_generate_env
+    _patch_configured(monkeypatch, False)
+    _clear_review_pending(db)
+    assert maybe_auto_generate_report_pipeline(
+        manager=manager, db=db, session_id=sid,
+        reports_dir=reports_dir, workspace=_auto_workspace(db, tmp_path),
+    ) is None
+    assert fake.calls == 0
+    assert (
+        ClassAnalysisStateStore(reports_dir).load(sid)["status"]
+        == "not_configured"
+    )
+
+
+def test_auto_pipeline_trigger_closure_used_by_grading_run(
+    auto_generate_env, tmp_path: Path,
+) -> None:
+    from backend.report_pipeline import build_report_pipeline_auto_trigger
+
+    db, sid, reports_dir, manager, fake, monkeypatch = auto_generate_env
+    _patch_configured(monkeypatch, True)
+    _clear_review_pending(db)
+    trigger = build_report_pipeline_auto_trigger(
+        manager=manager,
+        db_path=db.db_path,
+        reports_dir=reports_dir,
+        exams_dir=tmp_path / "exams",
+        templates_dir=tmp_path / "templates",
+        data_root=tmp_path,
+    )
+    trigger(sid)
+    jobs, total = manager.list(
+        session_id=sid, job_types=("class_analysis_generate",), limit=5
+    )
+    assert total == 1
+    assert jobs[0].payload["kind"] == "pipeline"
+    assert jobs[0].payload["mode"] == "auto"
+    manager.wait(jobs[0].id, timeout=10)
+    assert manager.get(jobs[0].id).status == "succeeded"
+

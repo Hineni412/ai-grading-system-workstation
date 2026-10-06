@@ -6,21 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   ClassAnalysisResponse,
 } from '../api/class-analysis'
-import { ApiError } from '../api/errors'
 import type { JobResponse } from '../api/jobs'
 import { useJobStore } from '../stores/jobs'
 import ClassAnalysisPanel from '../components/results-center/ClassAnalysisPanel.vue'
 
 const apiMock = vi.hoisted(() => ({
   getClassAnalysis: vi.fn(),
-  updateSettings: vi.fn(),
-  regenerate: vi.fn(),
   getQuestionPreview: vi.fn(),
   editCausePattern: vi.fn(),
-}))
-
-const modelProfilesMock = vi.hoisted(() => ({
-  getState: vi.fn(),
 }))
 
 const jobsMock = vi.hoisted(() => ({
@@ -32,11 +25,6 @@ const jobsMock = vi.hoisted(() => ({
 vi.mock('../api/class-analysis', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/class-analysis')>(),
   classAnalysisApi: apiMock,
-}))
-
-vi.mock('../api/model-profiles', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../api/model-profiles')>(),
-  modelProfilesApi: modelProfilesMock,
 }))
 
 vi.mock('../api/jobs', async (importOriginal) => ({
@@ -203,24 +191,10 @@ beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
   apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis())
-  apiMock.updateSettings.mockImplementation(
-    async (_id: number, autoGenerate: boolean) => ({ auto_generate: autoGenerate }),
-  )
-  apiMock.regenerate.mockResolvedValue(makeJob({ id: 92, status: 'queued', progress: 0 }))
   jobsMock.getJob.mockResolvedValue(makeJob())
   jobsMock.getJobStatusBatch.mockResolvedValue([
     { id: 91, found: true, job: makeJob() },
   ])
-  modelProfilesMock.getState.mockResolvedValue({
-    profiles: [],
-    active_profile_name: null,
-    active_profile: null,
-    task_bindings: {
-      content_generation: { profile_name: '默认内容服务', model: 'qwen-plus' },
-      grading: { profile_name: '默认内容服务', model: 'qwen-plus' },
-      class_teacher: { profile_name: '默认内容服务', model: 'qwen-plus' },
-    },
-  })
 })
 
 afterEach(() => {
@@ -285,8 +259,6 @@ describe('class analysis panel', () => {
     ).not.toBeNull())
     reopened.host.querySelector<HTMLElement>('[data-kind="error"] .class-analysis__cause-detail summary')!.click()
     await vi.waitFor(() => expect(reopened.host.textContent).toContain('用水平边替换竖直绳段'))
-    expect(apiMock.regenerate).not.toHaveBeenCalled()
-    expect(reopened.host.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.disabled).toBe(true)
   })
 
   it('shows top-level cause categories and marks outdated v2 results for upgrade', async () => {
@@ -355,7 +327,7 @@ describe('class analysis panel', () => {
     expect(host.querySelector('[data-kind="error"]')!.textContent).toContain('按步骤整理前的错因')
   })
 
-  it('opens source evidence and only submits cause grouping after explicit confirmation', async () => {
+  it('opens source evidence on demand without any generation entry', async () => {
     const result = makeAnalysis({ cause_analysis: { status: 'partial', pending_questions: 1, total_questions: 2,
       failed_questions: 0, stale: false, generated_at: null, origin: 'assistant' } })
     const question = result.data!.questions[0]!
@@ -374,13 +346,7 @@ describe('class analysis panel', () => {
     expect(detail.textContent).toContain('钱肖白（0 分）')
     expect(host.querySelector('.class-analysis__causes')!.textContent).not.toContain('方程及求解正确')
     expect(host.querySelector('.class-analysis__cause-review')!.textContent).toContain('未归为错因的批语')
-    expect(apiMock.regenerate).not.toHaveBeenCalled()
-    host.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.click()
-    await settle()
-    expect(host.textContent).toContain('各班共用逐题归并结果')
-    expect(apiMock.regenerate).not.toHaveBeenCalled()
-    host.querySelector<HTMLButtonElement>('[data-testid="regenerate-confirm"]')!.click()
-    await vi.waitFor(() => expect(apiMock.regenerate).toHaveBeenCalledWith(7, undefined, 'causes'))
+    expect(host.textContent).toContain('「AI 整理」')
   })
 
   it('shows diagnostics while AI generation is still running', async () => {
@@ -582,11 +548,10 @@ describe('class analysis panel', () => {
     expect(host.textContent).not.toContain('逐人失分点')
     expect(host.textContent).not.toContain('陈维懋')
     expect(host.textContent).not.toContain('两极分化严重')
-    expect(apiMock.regenerate).not.toHaveBeenCalled()
     expect(host.querySelector('[data-testid="ai-analysis-open"]')).toBeNull()
   })
 
-  it('requires confirmation before submitting cause grouping and tracks the new job', async () => {
+  it('points to the unified pipeline instead of offering a local generate action', async () => {
     apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
       cause_analysis: { status: 'partial', pending_questions: 1, total_questions: 2,
         failed_questions: 0, stale: false, generated_at: null, origin: 'assistant' },
@@ -594,83 +559,10 @@ describe('class analysis panel', () => {
     const { host } = await mountPanel()
     await vi.waitFor(() => expect(host.textContent).toContain('满分'))
 
-    host.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.click()
-    await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="regenerate-confirm-dialog"]'),
-    ).not.toBeNull())
-    await vi.waitFor(() => expect(modelProfilesMock.getState).toHaveBeenCalled())
-
-    expect(host.textContent).toContain('默认内容服务')
-    expect(host.textContent).toContain('qwen-plus')
-    expect(apiMock.regenerate).not.toHaveBeenCalled()
-
-    host.querySelector<HTMLButtonElement>('[data-testid="regenerate-confirm"]')!.click()
-    await vi.waitFor(() => expect(apiMock.regenerate).toHaveBeenCalledWith(7, undefined, 'causes'))
-    await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="regenerate-confirm-dialog"]'),
-    ).toBeNull())
-    expect(useJobStore().jobs[92]).toBeDefined()
-  })
-
-  it('blocks confirmation when no content generation model is configured', async () => {
-    modelProfilesMock.getState.mockResolvedValue({
-      profiles: [],
-      active_profile_name: null,
-      active_profile: null,
-      task_bindings: {
-        content_generation: { profile_name: null, model: '' },
-        grading: { profile_name: '默认内容服务', model: 'qwen-plus' },
-        class_teacher: { profile_name: '默认内容服务', model: 'qwen-plus' },
-      },
-    })
-    apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
-      cause_analysis: { status: 'partial', pending_questions: 1, total_questions: 2,
-        failed_questions: 0, stale: false, generated_at: null, origin: 'assistant' },
-    }))
-    const { host } = await mountPanel()
-    await vi.waitFor(() => expect(host.textContent).toContain('满分'))
-
-    host.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.click()
-    await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="regenerate-not-configured"]'),
-    ).not.toBeNull())
-
-    const confirm = host.querySelector<HTMLButtonElement>(
-      '[data-testid="regenerate-confirm"]',
-    )!
-    expect(confirm.disabled).toBe(true)
-    confirm.click()
-    await settle()
-    expect(apiMock.regenerate).not.toHaveBeenCalled()
-  })
-
-  it('explains the missing model configuration on a 422 regenerate response', async () => {
-    apiMock.regenerate.mockRejectedValue(new ApiError({
-      kind: 'validation',
-      status: 422,
-      code: 'content_generation_model_not_configured',
-      message: '内容生成模型未配置',
-      details: {},
-      requestId: 'req-1',
-      retryable: false,
-    }))
-    apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
-      cause_analysis: { status: 'partial', pending_questions: 1, total_questions: 2,
-        failed_questions: 0, stale: false, generated_at: null, origin: 'assistant' },
-    }))
-    const { host } = await mountPanel()
-    await vi.waitFor(() => expect(host.textContent).toContain('满分'))
-
-    host.querySelector<HTMLButtonElement>('[data-testid="group-causes-open"]')!.click()
-    await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="regenerate-confirm"]'),
-    ).not.toBeNull())
-    host.querySelector<HTMLButtonElement>('[data-testid="regenerate-confirm"]')!.click()
-
-    await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="regenerate-error"]')?.textContent,
-    ).toContain('未配置内容生成模型'))
-    expect(apiMock.regenerate).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('[data-testid="cause-analysis-status"]')?.textContent)
+      .toContain('点页面顶部「AI 整理」')
+    expect(host.querySelector('[data-testid="group-causes-open"]')).toBeNull()
+    expect(host.querySelector('[data-testid="regenerate-confirm"]')).toBeNull()
   })
 
   it('edits a cause name and category via the optional 修改 dialog', async () => {

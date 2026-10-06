@@ -23,7 +23,6 @@ defineProps<{
   isPopover: boolean
   originalsAvailable?: boolean
   personalSummary?: string
-  personalGenerationCount?: number
 }>()
 const emit = defineEmits<{
   'export-personal': []
@@ -96,7 +95,6 @@ const fileCenter = useFileCenterStore()
           下载
         </AppButton>
         <template v-if="row.type === 'personal_analysis_html'">
-          <AppButton v-if="personalGenerationCount" variant="secondary" data-testid="generate-personal_analysis_html" :disabled="!!row.liveJob" @click="emit('generate', row.type, false)">生成（{{ personalGenerationCount }} 人）</AppButton>
           <AppButton variant="primary" data-testid="export-personal-reports" @click="emit('export-personal')">导出…</AppButton>
         </template>
         <template v-else>
@@ -247,7 +245,6 @@ const fileCenter = useFileCenterStore()
               下载
             </AppButton>
             <template v-if="row.type === 'personal_analysis_html'">
-              <AppButton v-if="personalGenerationCount" variant="secondary" data-testid="generate-personal_analysis_html" :disabled="!!row.liveJob" @click="emit('generate', row.type, false)">生成（{{ personalGenerationCount }} 人）</AppButton>
               <AppButton variant="primary" data-testid="export-personal-reports" @click="emit('export-personal')">导出…</AppButton>
             </template>
             <template v-else>

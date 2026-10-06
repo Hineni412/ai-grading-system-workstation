@@ -176,6 +176,7 @@ def register_default_job_handlers(
             llm_client_factory=(
                 analysis_llm_client_factory or _content_generation_llm_client
             ),
+            exporter_factory=analysis_report_exporter_factory,
         ),
     )
     manager.register(
@@ -203,6 +204,17 @@ def register_default_job_handlers(
                 manager=manager,
                 db_path=Path(db_path),
                 reports_dir=Path(reports_dir),
+                exams_dir=(
+                    Path(exams_dir)
+                    if exams_dir is not None
+                    else base_data_root / "exams"
+                ),
+                templates_dir=(
+                    Path(templates_dir)
+                    if templates_dir is not None
+                    else base_data_root / "templates"
+                ),
+                data_root=base_data_root,
             ),
         ),
     )
@@ -580,7 +592,6 @@ def _build_report_export_handler(
             prefix=f".job-{context.job_id}-",
         ) as staging_dir_value:
             staging_dir = Path(staging_dir_value)
-            cause_summary: dict[str, object] | None = None
             if report_type == "score_excel":
                 generator = report_generator_factory(
                     open_grading_repositories(db_path),
@@ -600,35 +611,12 @@ def _build_report_export_handler(
                     )
                 )
             elif report_type in ANALYSIS_REPORT_TYPES:
-                if report_type == "personal_analysis_html":
-                    # 已确认流程：生成个人报告前先整理错因；失败题不重发，
-                    # 报告照常生成、该题不显示错误类型。
-                    from backend.class_analysis import (
-                        ClassAnalysisStateStore,
-                        run_cause_analysis,
-                    )
-                    try:
-                        cause_summary = run_cause_analysis(
-                            context,
-                            db=open_grading_repositories(db_path),
-                            data_root=data_root,
-                            store=ClassAnalysisStateStore(reports_dir),
-                            llm_client_factory=analysis_llm_client_factory,
-                            retry_failed=False,
-                            upgrade_pre_step=False,
-                            progress_band=(0.05, 0.45),
-                            progress_stage="report_export",
-                        )
-                    except Exception:
-                        context.raise_if_cancelled()
-                        # 整理整体异常不阻断报告导出，结果中如实记录。
-                        cause_summary = {"kind": "causes", "status": "error"}
-                    context.report(0.5, "report_export", "generating_reports")
-                # AI 叙述缓存放在受控 reports 目录下，跨 job 命中不重复调用模型。
+                # 报告导出只复用「AI 整理」已生成的错因与叙述：零模型调用，
+                # 未生成的学生列入 missing 清单而不在本任务中补做。
                 exporter = analysis_report_exporter_factory(
                     open_grading_repositories(db_path),
                     staging_dir,
-                    llm_client_factory=analysis_llm_client_factory,
+                    llm_client_factory=None,
                     narrative_cache_dir=(
                         reports_dir / ".analysis_narrative_cache"
                     ),
@@ -640,6 +628,7 @@ def _build_report_export_handler(
                         session_id,
                         report_type,
                         score_revision=score_revision,
+                        narrative_mode="cache_only",
                         **({"student_ids": set(context.payload["student_ids"])} if context.payload.get("student_ids") is not None else {}),
                         **({"html_only": True} if not context.payload.get("publish", True) else {}),
                     )
@@ -675,8 +664,6 @@ def _build_report_export_handler(
                 "file_path": str(output_path),
                 "filename": output_path.name,
             }
-            if cause_summary is not None:
-                result["cause_analysis"] = cause_summary
             if explicit_report_type:
                 result["report_type"] = report_type
             if score_revision:
@@ -693,14 +680,20 @@ def _build_class_analysis_trigger(
     manager: JobManager,
     db_path: Path,
     reports_dir: Path,
+    exams_dir: Path,
+    templates_dir: Path,
+    data_root: Path | None,
 ):
-    # 惰性导入避免 backend.class_analysis ↔ backend.jobs 循环导入
-    from backend.class_analysis import build_class_analysis_auto_trigger
+    # 惰性导入避免 backend.report_pipeline ↔ backend.jobs 循环导入
+    from backend.report_pipeline import build_report_pipeline_auto_trigger
 
-    return build_class_analysis_auto_trigger(
+    return build_report_pipeline_auto_trigger(
         manager=manager,
         db_path=db_path,
         reports_dir=reports_dir,
+        exams_dir=exams_dir,
+        templates_dir=templates_dir,
+        data_root=data_root,
     )
 
 
@@ -710,6 +703,7 @@ def _build_class_analysis_generate_handler(
     reports_dir: Path,
     data_root: Path | None,
     llm_client_factory: Callable[[], Any] | None,
+    exporter_factory: Callable[..., Any] | None = None,
 ):
     def handler(context: JobContext) -> dict[str, object]:
         from backend.class_analysis import run_class_analysis_generate
@@ -720,6 +714,7 @@ def _build_class_analysis_generate_handler(
             reports_dir=Path(reports_dir),
             data_root=data_root,
             llm_client_factory=llm_client_factory,
+            exporter_factory=exporter_factory,
         )
 
     return handler

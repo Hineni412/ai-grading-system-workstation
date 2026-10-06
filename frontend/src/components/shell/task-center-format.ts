@@ -8,7 +8,7 @@ const names: Record<string, string> = {
   ops_migration_prepare: '准备升级数据', scan_analysis: '扫描预检',
   grading_run: '答卷批改', grading: '答卷批改',
   config_generation: '试卷分析与本场赋分', config_generate: '生成评分依据',
-  class_analysis_generate: '生成班级分析', class_analysis: '生成班级分析',
+  class_analysis_generate: 'AI 整理（错因、班级与个人报告）', class_analysis: '生成班级分析',
   individual_report: '生成学生个人报告', question_bank_sync: '考试试题入库与分析',
   question_import: '试卷导入', tagging_sync: '题目标签与判定点分析',
   criterion_backfill: '补齐题目判定点', question_bank_repair: '补齐题库资料',
@@ -61,7 +61,7 @@ export function taskOutcome(job: JobResponse): TaskOutcome {
     return { label: '未完成', tone: 'error', note: '本次处理已结束，但业务结果未完成；请返回原操作页面检查。' }
   }
   if (['class_analysis_generate', 'class_analysis'].includes(job.job_type) && result.status === 'not_configured') {
-    return { label: '未完成', tone: 'warning', note: '班级分析尚未生成，请在设置中的 AI 服务配置所需模型。' }
+    return { label: '未完成', tone: 'warning', note: 'AI 整理未运行：请先在 设置→模型配置 绑定内容生成模型，再到成绩中心点「AI 整理」。' }
   }
   if (partial) {
     const reason = result.exam_intake_complete === false ? '题库入库尚未完成。'

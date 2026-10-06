@@ -1201,7 +1201,7 @@ onMounted(() => {
                 @click="reloadNarrative"
               >重试</AppButton>
             </template>
-            <strong v-else-if="narrativeGenerating" class="overview__tile-num">生成中…</strong>
+            <strong v-else-if="narrativeGenerating" class="overview__tile-num">AI 整理中…</strong>
             <template v-else-if="narrative?.narrative && !narrative.stale">
               <ul class="overview__tile-findings">
                 <li
@@ -1217,23 +1217,23 @@ onMounted(() => {
               >查看完整报告</AppButton>
             </template>
             <template v-else-if="narrative?.stale">
-              <strong class="overview__tile-num">成绩已变化</strong>
-              <span class="overview__tile-sub">报告需更新</span>
+              <span class="overview__tile-sub">成绩已变化，点页面顶部「AI 整理」更新</span>
               <AppButton
                 variant="ghost"
                 class="overview__tile-action"
                 @click="openReport"
-              >去更新</AppButton>
+              >查看报告</AppButton>
             </template>
             <template v-else>
               <strong class="overview__tile-num">
-                {{ narrative?.narrative_failed ? '上次生成失败' : '尚未生成' }}
+                {{ narrative?.narrative_failed ? 'AI 整理未成功' : 'AI 整理后显示' }}
               </strong>
+              <span class="overview__tile-sub">点页面顶部「AI 整理」补齐</span>
               <AppButton
                 variant="ghost"
                 class="overview__tile-action"
                 @click="openReport"
-              >去生成</AppButton>
+              >查看报告</AppButton>
             </template>
           </section>
 

@@ -14,15 +14,10 @@ import {
 import type { ResultsCenterStudent } from '../../api/results-center'
 import { ApiError } from '../../api/errors'
 import { jobApi, TERMINAL_JOB_STATUSES } from '../../api/jobs'
-import {
-  modelProfilesApi,
-  type ModelTaskBinding,
-} from '../../api/model-profiles'
 import { useJobStore } from '../../stores/jobs'
 import { useResultsCenterStore } from '../../stores/results-center'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
-import ClassAnalysisGenerateConfirm from './ClassAnalysisGenerateConfirm.vue'
 import ReviewAnswerPanel from '../review/ReviewAnswerPanel.vue'
 import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
 import { scoreStructureFor, subQuestionLabelFor } from './results-overview'
@@ -50,11 +45,6 @@ const listRoot = ref<HTMLElement | null>(null)
 const sortMode = ref<'rate' | 'number'>('rate')
 const loadState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const errorMessage = ref('')
-const confirmOpen = ref(false)
-const confirmLoading = ref(false)
-const confirmBinding = ref<ModelTaskBinding | null>(null)
-const confirmError = ref('')
-const regenerating = ref(false)
 let loadGeneration = 0
 let loadController: AbortController | null = null
 const expandedBands = ref(new Set<string>())
@@ -88,23 +78,19 @@ const generating = computed(() => {
     && !TERMINAL_JOB_STATUSES.has(activeJob.value.status)
 })
 
-const canRegenerate = computed(() => (
-  analysis.value !== null
-  && !generating.value
-  && !regenerating.value
-))
-
 const data = computed(() => analysis.value?.data ?? null)
 const causeAnalysis = computed(() => analysis.value?.cause_analysis ?? null)
 const causeStatusText = computed(() => {
   const state = causeAnalysis.value
-  if (state?.legacy_questions) return `${state.legacy_questions} 题保留既有归并；更新整理后，将结合真实作答分别整理错因、过程缺项和待核对事项。`
-  if (state?.outdated_questions) return `${state.outdated_questions} 题为旧版整理，暂无错误大类；重新整理后自动升级并补充大类。`
-  if (state?.pre_step_questions) return `${state.pre_step_questions} 题为按步骤整理前的结果；手动“整理错因”后按扣分步骤逐条整理。`
+  if (generating.value) return 'AI 整理中…'
+  const organizeTip = '复核完成后自动整理，或点页面顶部「AI 整理」。'
+  if (state?.legacy_questions) return `${state.legacy_questions} 题保留既有归并；${organizeTip}更新后将结合真实作答分别整理错因、过程缺项和待核对事项。`
+  if (state?.outdated_questions) return `${state.outdated_questions} 题为旧版整理，暂无错误大类；${organizeTip}整理后自动升级并补充大类。`
+  if (state?.pre_step_questions) return `${state.pre_step_questions} 题为按步骤整理前的结果；「AI 整理」后按扣分步骤逐条整理。`
   if (!state || state.status === 'not_generated') return state?.failed_questions
-    ? '错因整理未完成，保留原始理由；可重新整理。'
-    : state?.stale ? '作答、批语或题目依据已变化，建议更新整理。' : '当前按原始表述合并，可结合真实作答整理。'
-  if (state.status === 'partial') return `部分题目已整理，${state.pending_questions} 题仍显示原始理由，可继续整理。`
+    ? `错因整理未完成，保留原始理由；${organizeTip}`
+    : state?.stale ? `作答、批语或题目依据已变化；${organizeTip}` : `当前按原始表述合并；${organizeTip}整理后可结合真实作答。`
+  if (state.status === 'partial') return `部分题目已整理，${state.pending_questions} 题仍显示原始理由；${organizeTip}`
   return '已结合现有作答整理；展开可核对本题表现、作答与批语。同一学生同类只计一次，不同类可重复出现。'
 })
 const diagnosticQuestions = computed(() => {
@@ -274,7 +260,6 @@ function openStudentReview(questionId: string, record: QuestionRecord): void {
 watch(
   () => props.sessionId,
   () => {
-    closeConfirm()
     selectedClass.value = props.initialClass ?? ''
     analysis.value = null
     void load()
@@ -358,54 +343,6 @@ async function ensureTracked(id: number | null): Promise<void> {
     if (!TERMINAL_JOB_STATUSES.has(job.status)) jobStore.track(job)
   } catch {
     // 任务可能已结束或被清理；下次刷新时按最新状态展示。
-  }
-}
-
-async function openRegenerateConfirm(): Promise<void> {
-  if (!canRegenerate.value) return
-  confirmOpen.value = true
-  confirmBinding.value = null
-  confirmError.value = ''
-  confirmLoading.value = true
-  try {
-    const state = await modelProfilesApi.getState()
-    if (!confirmOpen.value) return
-    confirmBinding.value = state.task_bindings.content_generation
-  } catch {
-    if (!confirmOpen.value) return
-    confirmError.value = '模型配置暂时无法读取，请稍后重试。'
-  } finally {
-    if (confirmOpen.value) confirmLoading.value = false
-  }
-}
-
-function closeConfirm(): void {
-  confirmOpen.value = false
-  confirmBinding.value = null
-  confirmError.value = ''
-  confirmLoading.value = false
-}
-
-async function confirmRegenerate(): Promise<void> {
-  const sessionId = props.sessionId
-  if (sessionId === null || regenerating.value || confirmLoading.value) return
-  regenerating.value = true
-  confirmError.value = ''
-  try {
-    const job = await classAnalysisApi.regenerate(sessionId, undefined, 'causes')
-    if (props.sessionId !== sessionId) return
-    jobStore.track(job)
-    closeConfirm()
-    invalidateClassAnalysis(sessionId)
-    await load()
-  } catch (error) {
-    if (props.sessionId !== sessionId) return
-    confirmError.value = error instanceof ApiError
-      && error.code === 'content_generation_model_not_configured'
-      ? '未配置内容生成模型，请前往 设置→模型配置 绑定后重试。'
-      : '整理请求未能提交，请稍后重试。'
-  } finally {
-    regenerating.value = false
   }
 }
 
@@ -555,14 +492,6 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
           </p>
           <p class="class-analysis__cause-status" data-testid="cause-analysis-status">{{ causeStatusText }}</p>
           <div class="class-analysis__toolbar-actions">
-            <AppButton
-              variant="secondary"
-              data-testid="group-causes-open"
-              :disabled="!canRegenerate || causeAnalysis?.pending_questions === 0"
-              @click="openRegenerateConfirm()"
-            >
-              {{ causeAnalysis?.status === 'ready' ? '已整理' : causeAnalysis?.status === 'partial' || causeAnalysis?.stale ? '继续整理 / 更新' : '整理错因' }}
-            </AppButton>
             <span class="class-analysis__privacy">含学生姓名，请勿直接外发</span>
           </div>
         </div>
@@ -808,18 +737,6 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
         </template>
       </template>
     </section>
-
-    <ClassAnalysisGenerateConfirm
-      v-if="confirmOpen"
-      kind="causes"
-      :loading="confirmLoading"
-      :binding="confirmBinding"
-      :error="confirmError"
-      :submitting="regenerating"
-      :call-count="causeAnalysis?.pending_questions ?? data?.questions.filter((q) => q.records.length).length ?? 0"
-      @close="closeConfirm"
-      @confirm="confirmRegenerate"
-    />
 
   <AppDialog :open="patternEdit !== null" :title="patternEdit ? `${patternEdit.questionId} · 修改错法` : '修改错法'" class="class-analysis__preview" data-testid="cause-edit-dialog" @update:open="(value: boolean) => { if (!value) patternEdit = null }">
         <template v-if="patternEdit">

@@ -528,6 +528,84 @@ def test_knowledge_prompt_upgrade_keeps_old_cache_but_generates_current_narrativ
     generator.export_session(session_id, "personal_analysis_html", score_revision="existing-v1", html_only=True)
     assert client.calls == len(data.students)
 
+def test_report_status_shares_inputs_and_single_student_reads_only_their_details(analysis_db, monkeypatch):
+    from backend.personal_reports import personal_report_states, student_report_revisions
+    from backend.session_analysis import assemble_session_analysis
+    from backend.report_exports import _report_revision_inputs, score_revision
+    db, sid, root = analysis_db
+    data = assemble_session_analysis(db, sid, data_root=root, page_only=True)
+    rows = db.results.get_session_results(sid)
+    expected = student_report_revisions(db, sid, [s.student_id for s in data.students])
+    expected_session = score_revision(db, sid)
+    reads = []
+    original = db.results.get_result_details
+    def details(result_id):
+        reads.append(result_id)
+        return original(result_id)
+    monkeypatch.setattr(db.results, 'get_result_details', details)
+    personal_report_states(db, sid, root / 'reports', data=data)
+    assert reads == [r['result_id'] for r in rows]
+    reads.clear()
+    inputs = _report_revision_inputs(db, sid)
+    assert score_revision(db, sid, _inputs=inputs) == expected_session
+    assert student_report_revisions(db, sid, expected, _inputs=inputs) == expected
+    reads.clear()
+    student_report_revisions(db, sid, [data.students[0].student_id])
+    assert reads == [r['result_id'] for r in rows if r['student_id'] == data.students[0].student_id]
+
+
+def test_personal_context_cold_exam_does_not_block_cached_exam_and_shares_same_key(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from types import SimpleNamespace
+    from collections import Counter
+    import backend.personal_reports as personal
+    import backend.session_analysis as analysis
+    import backend.reporting.analysis_report_exporter as exporter
+    import backend.class_analysis as causes
+    import backend.files.session_originals as originals
+    entered, release = Event(), Event()
+    calls = Counter()
+    repos = SimpleNamespace(db_path=tmp_path/'grading.db',
+                            sessions=SimpleNamespace(list_grading_sessions=lambda: []))
+    monkeypatch.setattr(personal, '_read_generation', lambda *_: ('TEST',))
+    monkeypatch.setattr(personal, 'score_revision', lambda *_: 'TEST-revision')
+    monkeypatch.setattr(originals, 'originals_state', lambda *_: 'complete')
+    def assemble(_repos, sid, **_):
+        calls[sid] += 1
+        return SimpleNamespace(session_id=sid)
+    monkeypatch.setattr(personal, 'assemble_session_analysis', assemble)
+    monkeypatch.setattr(personal, 'split_session_analysis_by_class', lambda _: {})
+    monkeypatch.setattr(analysis, 'enrich_personal_questions', lambda *_: None)
+    def knowledge(_repos, data, _root):
+        if data.session_id == 1:
+            entered.set()
+            assert release.wait(3)
+    monkeypatch.setattr(analysis, 'enrich_personal_knowledge', knowledge)
+    monkeypatch.setattr(exporter, '_load_student_histories', lambda *_: {})
+    monkeypatch.setattr(exporter, 'load_session_regions', lambda *_, **__: {})
+    monkeypatch.setattr(exporter, '_load_personal_error_histories', lambda *_: {})
+    monkeypatch.setattr(causes, 'build_cause_inputs', lambda _: {})
+    personal._contexts.clear()
+    reports = tmp_path/'reports'
+    cached = personal.personal_render_context(repos, 2, reports)
+    try:
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            first = pool.submit(personal.personal_render_context, repos, 1, reports)
+            assert entered.wait(2)
+            second = pool.submit(personal.personal_render_context, repos, 1, reports)
+            hot = pool.submit(personal.personal_render_context, repos, 2, reports)
+            try:
+                assert hot.result(timeout=1) is cached
+            finally:
+                release.set()
+            assert first.result(timeout=2) is second.result(timeout=2)
+    finally:
+        release.set()
+        personal._contexts.clear()
+    assert calls == {1: 1, 2: 1}
+
+
 def test_personal_report_revision_keeps_peers_current_and_reads_stale_text(analysis_db, tmp_path):
     from backend.reporting.analysis_report_exporter import AnalysisReportGenerator
     from backend.personal_reports import personal_report_states, render_personal_report
@@ -602,7 +680,14 @@ def test_personal_online_and_offline_images_share_content_and_released_notice(an
     assert 'class="review-link"' not in online
     from backend.reporting.analysis_report_exporter import _PERSONAL_KEYBOARD_JS
     assert 'personal-report:key' in online and 'personal-report:key' not in offline
-    normalize = lambda html: re.sub(r'src="(?:/api/[^\"]+|data:image/jpeg[^\"]+)"', 'src="SHOT"', html.replace(_PERSONAL_KEYBOARD_JS, ''))
+    # 在线数据版带「AI 分析部分尚未整理」占位提示；离线导出不带。
+    assert "AI 分析部分尚未整理" in online and "AI 分析部分尚未整理" not in offline
+    strip_banner = lambda html: re.sub(
+        r'<div class="card"><div class="review-banner">AI 分析部分尚未整理.*?</div></div>'
+        r'|<div class="note">以下按失分排序；AI 跟进建议整理后显示。</div>',
+        '', html, flags=re.S,
+    )
+    normalize = lambda html: strip_banner(re.sub(r'src="(?:/api/[^\"]+|data:image/jpeg[^\"]+)"', 'src="SHOT"', html.replace(_PERSONAL_KEYBOARD_JS, '')))
     assert normalize(online) == normalize(offline)
     assert prepare.call_count == 1  # 同场连续读取只准备一次，在线与离线结果一致。
     from backend.personal_reports import personal_render_context
@@ -625,7 +710,7 @@ def test_personal_report_teacher_and_bank_changes_invalidate_input(analysis_db, 
     student_id = student["student_id"]
     before = student_report_revision(db, sid, student_id)
     if change == "bank":
-        monkeypatch.setattr("backend.personal_reports._question_bank_report_source", lambda *_a: {"links": [{"revision": "changed"}]})
+        monkeypatch.setattr("backend.report_exports._question_bank_report_source", lambda *_a: {"links": [{"revision": "changed"}]})
     else:
         with sqlite3.connect(db.db_path) as conn:
             conn.execute("""INSERT INTO teacher_score_locks(session_id,scan_batch_id,student_id,question_id,score_awarded,max_score,deduction_reason,source_target_type,source_target_id)

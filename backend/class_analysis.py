@@ -8,12 +8,12 @@
   score_revision，用于叙述 stale 判定。逐题错因归并同存于该状态文件，保留
   批语映射及评分要求，读取时匹配当前输入并按所选班级去重统计人数。
   归并结果同时物化为学生×题错因记录（error_records），供个人报告按题读取。
-- 错因整理由手动 kind=causes 任务触发，并作为个人报告导出 job 的前置阶段
-  （retry_failed=False：失败题不重发，报告照常生成）；普通读取、切班与
-  自动报告不调用。
-- 自动生成挂钩点：阅卷 run 判定为 completed 且该场次无未批完答卷时，
-  由 default_handlers 里的 grading_run handler 调用
-  maybe_auto_generate_class_analysis。
+- 错因整理、班级叙述与个人叙述统一由 backend.report_pipeline 的
+  kind=pipeline 任务顺序执行；报告导出只复用已生成内容，不调用模型。
+- 自动生成挂钩点：阅卷 run 判定为 completed、该场次无未批完答卷且无待
+  复核条目时，由 default_handlers 里的 grading_run handler 调用
+  maybe_auto_generate_report_pipeline；复核页确认最后一个待复核条目时
+  也会再次检查触发。
 """
 
 from __future__ import annotations
@@ -1769,15 +1769,14 @@ def submit_class_analysis_generate(
     manager: JobManager,
     session_id: int,
     revision: str,
-    force: bool = False,
-    kind: str = "narrative",
+    mode: str = "manual",
 ) -> JobRecord:
-    """提交班级分析生成 job；已有 queued/running 同类 job 时直接复用返回。"""
+    """提交「AI 整理」管线 job；已有 queued/running 同类 job 时直接复用返回。"""
     payload = {
         "session_id": int(session_id),
         "score_revision": str(revision),
-        "force": bool(force),
-        "kind": kind,
+        "kind": "pipeline",
+        "mode": "auto" if mode == "auto" else "manual",
     }
     try:
         return manager.submit_unique_active(CLASS_ANALYSIS_JOB_TYPE, payload)
@@ -1801,15 +1800,22 @@ def _class_narrative(
     revision: str,
     prompt: str,
     class_name: str | None = None,
+    cause_digest: str = "",
 ) -> dict[str, Any] | None:
-    """缓存命中直接返回；否则恰好调用 1 次模型，任何异常只降级不重发。"""
+    """缓存命中直接返回；否则恰好调用 1 次模型，任何异常只降级不重发。
+
+    cause_digest 是该班已整理错因记录的摘要：错因变化 → 叙述重新生成；
+    无错因入参时键与旧版一致，已生成的缓存仍可命中。
+    """
     from backend.reporting.analysis_report_exporter import AnalysisNarrativeCache
 
+    base_key = f"class:{class_name}" if class_name is not None else CLASS_ANALYSIS_REPORT_KEY
+    report_key = f"{base_key}:{cause_digest[:16]}" if cause_digest else base_key
     key = AnalysisNarrativeCache.cache_key(
         session_id=int(session_id),
         score_revision=revision,
         rendition_version=CLASS_ANALYSIS_RENDITION_VERSION,
-        report_key=f"class:{class_name}" if class_name is not None else CLASS_ANALYSIS_REPORT_KEY,
+        report_key=report_key,
     )
     cached = cache.load(key)
     if cached is not None:
@@ -1837,198 +1843,26 @@ def run_class_analysis_generate(
     reports_dir: Path,
     data_root: Path | None,
     llm_client_factory: Callable[[], Any] | None,
+    exporter_factory: Callable[..., Any] | None = None,
 ) -> dict[str, object]:
-    """class_analysis_generate job：装配数据 → 生成 AI 叙述 → 写状态文件。"""
-    from backend.reporting.analysis_report_exporter import (
-        AnalysisNarrativeCache,
-        build_class_payload,
-        build_report_prompt,
-    )
-    from backend.session_analysis import (
-        assemble_session_analysis,
-        split_session_analysis_by_class,
-    )
+    """class_analysis_generate job：错因整理 → 班级叙述 → 个人叙述的统一管线。
 
-    raw_session_id = context.payload.get("session_id")
-    if raw_session_id is None:
+    kind=pipeline：各段只补缺失/过期/失败的内容；未配置模型时写
+    not_configured 且不产生模型调用。"""
+    if context.payload.get("session_id") is None:
         raise ValueError("session_id is required")
-    session_id = int(raw_session_id)
-    # 延迟导入：backend.report_exports 的导入链会经 jobs/__init__ 回到本模块。
-    from backend.report_exports import score_revision
-
-    store = ClassAnalysisStateStore(reports_dir)
-    db = open_grading_repositories(Path(db_path))
-    if context.payload.get("kind") == "causes":
-        return run_cause_analysis(context, db=db, data_root=data_root, store=store,
-                                  llm_client_factory=llm_client_factory)
-    revision = str(context.payload.get("score_revision") or "").strip() or score_revision(
-        db, session_id, include_question_bank=False
-    )
-    force = bool(context.payload.get("force"))
-
-    # 幂等：同 (session_id, score_revision) 已有 ready 状态且非手动重新生成时跳过。
-    existing = store.load(session_id)
-    if (
-        not force
-        and existing is not None
-        and existing.get("status") == "ready"
-        and existing.get("score_revision") == revision
-        and existing.get("rendition_version") == CLASS_ANALYSIS_RENDITION_VERSION
-    ):
-        return {
-            "session_id": session_id,
-            "status": "ready",
-            "generated_at": existing.get("generated_at"),
-            "skipped": True,
-        }
-
-    context.raise_if_cancelled()
-    context.report(0.1, "class_analysis", "assembling")
-    data = assemble_session_analysis(db, session_id, data_root=data_root)
-    # 已整理的错因记录随班级叙述入参；无状态文件时为空，题目保持旧字段。
-    error_records = session_error_records(
-        db, session_id, Path(reports_dir), data_root=data_root
-    )
-    generated_at = _now_iso()
-    if not data.students:
-        store.save(
-            session_id,
-            status="failed",
-            narrative=None,
-            narrative_error="该场次暂无可分析的成绩数据",
-            score_revision=revision,
-            generated_at=generated_at,
-            small_sample=data.small_sample,
-            class_reports={},
-            rendition_version=CLASS_ANALYSIS_RENDITION_VERSION,
+    if str(context.payload.get("kind") or "") != "pipeline":
+        raise ValueError(
+            f"unsupported class_analysis_generate kind: {context.payload.get('kind')!r}"
         )
-        return {
-            "session_id": session_id,
-            "status": "failed",
-            "generated_at": generated_at,
-        }
+    # 延迟导入：backend.report_pipeline 反向引用本模块的整理与状态函数。
+    from backend.report_pipeline import run_report_pipeline
 
-    client = llm_client_factory() if llm_client_factory is not None else None
-    if client is None:
-        # 未配置内容生成模型：不静默换模型，记 not_configured 供页面降级显示。
-        store.save(
-            session_id,
-            status="not_configured",
-            narrative=None,
-            narrative_error="内容生成模型未配置",
-            score_revision=revision,
-            generated_at=generated_at,
-            small_sample=data.small_sample,
-            class_reports={},
-            rendition_version=CLASS_ANALYSIS_RENDITION_VERSION,
-        )
-        return {
-            "session_id": session_id,
-            "status": "not_configured",
-            "generated_at": generated_at,
-        }
-
-    context.report(0.4, "class_analysis", "generating_narrative")
-    class_reports = {}
-    for class_name, group in split_session_analysis_by_class(data).items():
-        if not group.students:
-            continue
-        context.raise_if_cancelled()
-        narrative = _class_narrative(
-            client=client,
-            cache=AnalysisNarrativeCache(Path(reports_dir) / NARRATIVE_CACHE_DIRNAME),
-            session_id=session_id, revision=revision, class_name=class_name,
-            prompt=build_report_prompt(
-                CLASS_SYSTEM_PROMPT, build_class_payload(group, error_records)
-            ),
-        )
-        class_reports[class_name] = {
-            "status": "ready" if narrative is not None else "failed",
-            "narrative": narrative,
-        }
-    context.raise_if_cancelled()
-    status = "ready" if all(item["status"] == "ready" for item in class_reports.values()) else "failed"
-    store.save(
-        session_id, status=status,
-        narrative=next(iter(class_reports.values()))["narrative"] if len(class_reports) == 1 else None,
-        narrative_error=None if status == "ready" else "AI 分析生成失败，可重新生成",
-        score_revision=revision, generated_at=generated_at, small_sample=data.small_sample,
-        class_reports=class_reports, rendition_version=CLASS_ANALYSIS_RENDITION_VERSION,
+    return run_report_pipeline(
+        context,
+        db_path=Path(db_path),
+        reports_dir=Path(reports_dir),
+        data_root=data_root,
+        llm_client_factory=llm_client_factory,
+        exporter_factory=exporter_factory,
     )
-    context.report(0.98, "class_analysis", status)
-    return {
-        "session_id": session_id,
-        "status": status,
-        "generated_at": generated_at,
-    }
-
-
-def maybe_auto_generate_class_analysis(
-    *,
-    manager: JobManager,
-    db: GradingRepositoryAccess | Any,
-    session_id: int,
-    reports_dir: Path,
-) -> JobRecord | None:
-    """阅卷完成后的自动触发：开关开 + 全部答卷批完 + 已配置模型才提交 job。
-
-    同 revision 已 ready 或已有进行中 job 时幂等跳过；未配置模型时记
-    not_configured 状态（页面降级显示），不提交 job、不产生费用。
-    """
-    from backend.model_profiles.content_generation import (
-        resolve_content_generation_settings,
-    )
-    from backend.report_exports import score_revision
-
-    repositories = as_grading_repositories(db)
-    store = ClassAnalysisStateStore(reports_dir)
-    existing = store.load(session_id)
-    if existing is not None and not bool(existing.get("auto_generate", True)):
-        return None
-    # 仍有未批完答卷时不算「阅卷结束」。
-    if repositories.results.list_incomplete_results(int(session_id)):
-        return None
-    revision = score_revision(repositories, session_id, include_question_bank=False)
-    if (
-        existing is not None
-        and existing.get("status") == "ready"
-        and existing.get("score_revision") == revision
-        and existing.get("rendition_version") == CLASS_ANALYSIS_RENDITION_VERSION
-    ):
-        return None
-    if resolve_content_generation_settings() is None:
-        store.save(
-            session_id,
-            status="not_configured",
-            narrative=None,
-            narrative_error="内容生成模型未配置",
-            score_revision=revision,
-            generated_at=_now_iso(),
-            class_reports={},
-            rendition_version=CLASS_ANALYSIS_RENDITION_VERSION,
-        )
-        return None
-    return submit_class_analysis_generate(
-        manager=manager,
-        session_id=int(session_id),
-        revision=revision,
-    )
-
-
-def build_class_analysis_auto_trigger(
-    *,
-    manager: JobManager,
-    db_path: Path,
-    reports_dir: Path,
-) -> Callable[[int], None]:
-    """供 grading_run handler 在批改完成后调用的闭包；任何失败不外抛。"""
-
-    def trigger(session_id: int) -> None:
-        maybe_auto_generate_class_analysis(
-            manager=manager,
-            db=open_grading_repositories(Path(db_path)),
-            session_id=int(session_id),
-            reports_dir=Path(reports_dir),
-        )
-
-    return trigger

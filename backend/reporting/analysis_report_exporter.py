@@ -2504,7 +2504,12 @@ def _render_personal_html(
     error_map: dict[str, list[dict[str, Any]]] | None = None,
     error_history: dict[str, dict[str, list[Any]]] | None = None,
     *, online: bool = False, review_links: bool = False, originals_released: bool = False,
+    ai_placeholder: bool | None = None,
 ) -> str:
+    # 在线页 narrative_mode="none" 的数据版：AI 段落显示占位文案而不是失败提示。
+    if ai_placeholder is None:
+        ai_placeholder = online and narrative is None
+    pending_ai = bool(ai_placeholder) and narrative is None
     info_by_qid = {info.question_id: info for info in data.questions}
     analysis_by_qid = _narrative_analysis_index(narrative, info_by_qid)
     history = [e for e in (history or []) if isinstance(e, dict)]
@@ -2838,6 +2843,7 @@ def _render_personal_html(
         card_d = f"""
 <div class="card">
   <h2>这次重点跟进</h2>
+  {'<div class="note">以下按失分排序；AI 跟进建议整理后显示。</div>' if pending_ai else ""}
   {inner}
 </div>"""
 
@@ -2895,6 +2901,11 @@ def _render_personal_html(
     card_f = f'<div class="card">{appendix}</div>' if appendix else ""
 
     released_note = '<div class="card">原卷已释放，无法显示作答图；分数与批语不受影响</div>' if originals_released else ""
+    pending_ai_note = (
+        '<div class="card"><div class="review-banner">AI 分析部分尚未整理，整理后自动显示；'
+        '分数、名次与老师批语为当前数据。</div></div>'
+        if pending_ai else ""
+    )
     review_script = _PERSONAL_REVIEW_JS if review_links else ""
     keyboard_script = _PERSONAL_KEYBOARD_JS if online else ""
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -2909,6 +2920,7 @@ def _render_personal_html(
 </head>
 <body>
 <div class="page">
+{pending_ai_note}
 {card_a}
 {card_b}
 {card_c}
@@ -2936,11 +2948,15 @@ def render_class_html(
     data: SessionAnalysisData,
     narrative: dict[str, Any] | None,
     cause_counts: dict[str, list[tuple[str, int]]] | None = None,
+    *,
+    ai_placeholder: bool = False,
 ) -> str:
+    """班级报告自包含 HTML；ai_placeholder 时叙述缺失的段落显示「AI 整理后在此显示」。"""
     page = build_class_page_data(data)
     class_name = data.class_name or "未分班"
     class_label = class_name if class_name.endswith("班") else f"{class_name}班"
     failed = narrative is None
+    pending = narrative is None and ai_placeholder
     narrative = class_narrative_with_student_names(narrative, data.students) if narrative is not None else {}
     analyzed = len(data.students)
     fmt = lambda value: fmt_num(value) if value is not None else '—'
@@ -2954,11 +2970,15 @@ def render_class_html(
                           for label, value in metrics)
     findings = ''.join(f'<article><h3>{math_text(item["title"])}</h3>{_report_paragraphs(item["detail"])}</article>'
                        for item in narrative.get('key_findings', []))
-    if failed:
+    if pending:
+        findings = '<p class="muted">AI 整理后在此显示。</p>'
+    elif failed:
         findings = f'<p>{esc(AI_FAILED_NOTE)}</p>'
     issues = ''.join(f'<article><h3>{math_text(item["title"])}</h3>{_report_paragraphs(item["evidence"])}'
                      f'<div class="action">{_report_paragraphs(item["teaching_action"])}</div></article>'
                      for item in narrative.get('common_issues', []))
+    if pending:
+        issues = '<p class="muted">AI 整理后在此显示。</p>'
     bands = ''.join(f'<div class="band"><span>{esc(label)}</span><div class="track">'
                     f'<i style="width:{count/max(1,analyzed)*100:.2f}%"></i></div><b>{count}人</b></div>'
                     for label, count in stats['bands'].items())
@@ -2982,6 +3002,8 @@ def render_class_html(
     notes = ''.join(f'<article><h3>{esc(aliases.get(item["alias"], item["alias"]))}</h3>'
                     f'{_report_paragraphs(item["note"])}<div class="action">{_report_paragraphs(item["suggestion"])}</div></article>'
                     for item in narrative.get('student_notes', []))
+    if pending:
+        notes = '<p class="muted">AI 整理后在此显示。</p>'
     knowledge_html = _knowledge_view_html(_class_knowledge_view(data))
     if not knowledge_html:
         knowledge_html = ('<section id="knowledge-map"><h2>班级知识与技能掌握图</h2>'
@@ -3021,7 +3043,9 @@ def render_class_html(
         f'<section><h2>分数分布</h2>{bands}<p class="muted">各分数段互不重叠，参与统计{analyzed}人。</p></section>'
         '<section><h2>逐题得分</h2><div class="table-wrap"><table><thead><tr><th>题目</th><th>满分</th><th>均分</th>'
         f'<th>得分率</th><th>未得满分</th><th>主要错误</th><th>参考答案</th></tr></thead><tbody>{questions}</tbody></table></div></section>'
-        f'{knowledge_html}<section><h2>下一节讲评课</h2>{issues}<h3>分层安排</h3>{_report_paragraphs(narrative.get("grouping_advice", ""))}</section>'
+        f'{knowledge_html}<section><h2>下一节讲评课</h2>{issues}<h3>分层安排</h3>'
+        + ('<p class="muted">AI 整理后在此显示。</p>' if pending else _report_paragraphs(narrative.get("grouping_advice", "")))
+        + '</section>'
         f'<section><h2>个别跟进</h2>{notes}</section><section><details><summary>全班成绩与失分题目（{analyzed}人）</summary>'
         '<div class="table-wrap"><table class="roster"><thead><tr><th>名次</th><th>姓名</th><th>成绩</th><th>失分题目</th></tr></thead>'
         f'<tbody>{roster}</tbody></table></div></details></section>'
@@ -3122,6 +3146,8 @@ class AnalysisReportGenerator:
             )
             if self.reports_dir is not None else {}
         )
+        from backend.report_pipeline import class_cause_digest
+
         client = self._client()
         files = []
         for name, group in split_session_analysis_by_class(data).items():
@@ -3130,6 +3156,9 @@ class AnalysisReportGenerator:
             narrative = _class_narrative(
                 client=client, cache=cache, session_id=session_id, revision=revision,
                 class_name=name,
+                cause_digest=class_cause_digest(
+                    error_records, [s.student_id for s in group.students]
+                ),
                 prompt=build_report_prompt(
                     CLASS_SYSTEM_PROMPT, build_class_payload(group, error_records)
                 ),
@@ -3495,6 +3524,116 @@ def _compute_score_revision(
     return score_revision(repositories, session_id)
 
 
+def plan_cause_calls(
+    db: GradingRepositoryAccess | Any,
+    session_id: int,
+    *,
+    reports_dir: Path,
+    retry_failed: bool,
+    upgrade_pre_step: bool,
+) -> dict[str, int]:
+    """错因整理的工作量预估，与 run_cause_analysis 同口径的跳题/重试/升级规则。
+
+    retry_failed=False、upgrade_pre_step=False 对应导出前置阶段与自动管线：
+    失败题不重发、v3 兼容结果不升级；手动口径把两者都算作待做。
+    """
+    from backend.class_analysis import (
+        CAUSE_ANALYSIS_PROMPT,
+        CAUSE_ANALYSIS_VERSION,
+        CAUSE_PRE_STEP_VERSION,
+        ClassAnalysisStateStore,
+        _cause_input_fingerprint,
+        _pre_step_source,
+        assemble_cause_data,
+        build_cause_inputs,
+        cause_input_matches,
+        known_cause_patterns,
+        plan_cause_question,
+    )
+    from backend.error_patterns import (
+        OPTION_ANALYSIS_PROMPT,
+        bank_confirmed_triggers,
+        build_option_analysis_input,
+        session_bank_context,
+    )
+
+    repositories = as_grading_repositories(db)
+    store = ClassAnalysisStateStore(Path(reports_dir))
+    stored = (
+        (store.load(int(session_id)) or {}).get("cause_analysis") or {}
+    ).get("questions") or {}
+    cause_data = assemble_cause_data(repositories, int(session_id))
+    sources = build_cause_inputs(
+        cause_data,
+        known_patterns=known_cause_patterns(
+            store, question_bank_db_path(repositories.db_path), int(session_id),
+        ),
+    )
+    qb_path = question_bank_db_path(repositories.db_path)
+    option_scope = True
+    bank_context = session_bank_context(qb_path, int(session_id))
+    confirmed_by_bank = bank_confirmed_triggers(
+        qb_path,
+        sorted({bid for ctx in bank_context.values() for bid in ctx["bank_ids"]}),
+    )
+    qtypes = {info.question_id: str(info.question_type or "") for info in cause_data.questions}
+    pending_questions = 0
+    call_count = 0
+    estimated_tokens = 0
+    for source in sources:
+        fingerprint = _cause_input_fingerprint(source)
+        saved = stored.get(source["question_id"]) or {}
+        if (saved.get("version") in (CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION)
+                and cause_input_matches(saved, source) and saved.get("result")):
+            continue
+        if (saved.get("version") == CAUSE_PRE_STEP_VERSION
+                and cause_input_matches(saved, _pre_step_source(source))):
+            if not upgrade_pre_step:
+                # 前置阶段/自动运行不为升级旧口径结果调用模型。
+                continue
+        elif (not retry_failed and saved.get("failed")
+                and saved.get("failed_input_fingerprint") == fingerprint):
+            continue
+        plan = plan_cause_question(
+            store, int(session_id), source,
+            qtype=qtypes.get(source["question_id"], ""),
+            option_scope=option_scope,
+            ctx=bank_context.get(parent_question_id(source["question_id"])) or {},
+            confirmed_by_bank=confirmed_by_bank,
+            question_bank_path=qb_path,
+            retry_failed=retry_failed,
+        )
+        if plan["path"] == "skip":
+            continue
+        pending_questions += 1
+        if not plan["needs_call"]:
+            continue
+        call_count += 1
+        if plan["path"] == "option":
+            option = plan["option"]
+            estimated_tokens += (
+                estimate_prompt_tokens(
+                    OPTION_ANALYSIS_PROMPT + "\n" + json.dumps(
+                        build_option_analysis_input(
+                            option["text"], option["correct"],
+                            str(source.get("reference_analysis") or "")),
+                        ensure_ascii=False)
+                ) + 8000
+            )
+        else:
+            estimated_tokens += (
+                estimate_prompt_tokens(
+                    CAUSE_ANALYSIS_PROMPT + "\n" + json.dumps(source, ensure_ascii=False)
+                ) + 12000
+            )
+    return {
+        "total_questions": len(sources),
+        "pending_questions": pending_questions,
+        "call_count": call_count,
+        "estimated_tokens": estimated_tokens,
+    }
+
+
 def build_analysis_preflight(
     db: GradingRepositoryAccess | Any,
     session_id: int,
@@ -3504,8 +3643,13 @@ def build_analysis_preflight(
     cache_dir: Path,
     reports_dir: Path | None = None,
     student_ids: set[int] | None = None,
+    include_causes: bool = True,
 ) -> dict[str, Any]:
-    """生成前的费用与调用预估：错因整理与报告叙述分开计数；只给 token 粗估。"""
+    """生成前的费用与调用预估：错因整理与报告叙述分开计数；只给 token 粗估。
+
+    include_causes=False 时跳过错因整理预估（调用方已单独计算），
+    cause_* 字段按 0 返回。
+    """
     if report_type not in ANALYSIS_REPORT_TYPES:
         raise ValueError(f"不支持的分析报告类型: {report_type}")
     from backend.report_exports import (
@@ -3549,92 +3693,22 @@ def build_analysis_preflight(
         # 文本粗估 = 输入 token（字符数/1.5）+ 输出上限；图片计费由模型决定。
         estimated_tokens += estimate_prompt_tokens(prompt) + max_tokens
 
-    # 错因整理是报告导出的前置阶段：与实际任务同口径估算——已整理且输入未变
-    # 的题与整理失败且输入未变的题都不重复调用。已关联题库的选择题走选项诊断
-    # （可复用，未复用时也只计 1 次）；填空题错误答案库全覆盖时零调用。
+    # 错因整理的工作量与实际任务同口径（见 plan_cause_calls）；报告导出自身
+    # 不再执行整理，这里只展示手动补齐所需的预估。
     cause_call_count = 0
     cause_total_questions = 0
     cause_estimated_tokens = 0
-    if report_type == PERSONAL_ANALYSIS_REPORT_TYPE:
-        from backend.class_analysis import (
-            CAUSE_ANALYSIS_PROMPT,
-            CAUSE_ANALYSIS_VERSION,
-            CAUSE_PRE_STEP_VERSION,
-            ClassAnalysisStateStore,
-            _cause_input_fingerprint,
-            _pre_step_source,
-            assemble_cause_data,
-            build_cause_inputs,
-            cause_input_matches,
-            known_cause_patterns,
-            plan_cause_question,
+    if include_causes and report_type == PERSONAL_ANALYSIS_REPORT_TYPE:
+        cause_plan = plan_cause_calls(
+            repositories,
+            int(session_id),
+            reports_dir=Path(reports_dir) if reports_dir is not None else cache_dir.parent,
+            retry_failed=False,
+            upgrade_pre_step=False,
         )
-        from backend.error_patterns import (
-            OPTION_ANALYSIS_PROMPT,
-            bank_confirmed_triggers,
-            build_option_analysis_input,
-            session_bank_context,
-        )
-
-        store = ClassAnalysisStateStore(Path(reports_dir) if reports_dir is not None else cache_dir.parent)
-        stored = ((store.load(int(session_id)) or {}).get("cause_analysis") or {}).get("questions") or {}
-        cause_data = assemble_cause_data(repositories, int(session_id))
-        sources = build_cause_inputs(
-            cause_data,
-            known_patterns=known_cause_patterns(
-                store, question_bank_db_path(repositories.db_path), int(session_id),
-            ),
-        )
-        cause_total_questions = len(sources)
-        qb_path = question_bank_db_path(repositories.db_path)
-        option_scope = True
-        bank_context = session_bank_context(qb_path, int(session_id))
-        confirmed_by_bank = bank_confirmed_triggers(
-            qb_path,
-            sorted({bid for ctx in bank_context.values() for bid in ctx["bank_ids"]}),
-        )
-        qtypes = {info.question_id: str(info.question_type or "") for info in cause_data.questions}
-        for source in sources:
-            fingerprint = _cause_input_fingerprint(source)
-            saved = stored.get(source["question_id"]) or {}
-            if (saved.get("version") in (CAUSE_ANALYSIS_VERSION, CAUSE_PRE_STEP_VERSION)
-                    and cause_input_matches(saved, source) and saved.get("result")):
-                continue
-            if (saved.get("version") == CAUSE_PRE_STEP_VERSION
-                    and cause_input_matches(saved, _pre_step_source(source))):
-                # 前置阶段不为升级旧口径结果调用模型。
-                continue
-            if saved.get("failed") and saved.get("failed_input_fingerprint") == fingerprint:
-                continue
-            plan = plan_cause_question(
-                store, int(session_id), source,
-                qtype=qtypes.get(source["question_id"], ""),
-                option_scope=option_scope,
-                ctx=bank_context.get(parent_question_id(source["question_id"])) or {},
-                confirmed_by_bank=confirmed_by_bank,
-                question_bank_path=qb_path,
-                retry_failed=False,
-            )
-            if not plan["needs_call"]:
-                continue
-            cause_call_count += 1
-            if plan["path"] == "option":
-                option = plan["option"]
-                cause_estimated_tokens += (
-                    estimate_prompt_tokens(
-                        OPTION_ANALYSIS_PROMPT + "\n" + json.dumps(
-                            build_option_analysis_input(
-                                option["text"], option["correct"],
-                                str(source.get("reference_analysis") or "")),
-                            ensure_ascii=False)
-                    ) + 8000
-                )
-            else:
-                cause_estimated_tokens += (
-                    estimate_prompt_tokens(
-                        CAUSE_ANALYSIS_PROMPT + "\n" + json.dumps(source, ensure_ascii=False)
-                    ) + 12000
-                )
+        cause_call_count = cause_plan["call_count"]
+        cause_total_questions = cause_plan["total_questions"]
+        cause_estimated_tokens = cause_plan["estimated_tokens"]
 
     configured = resolve_content_generation_settings() is not None
     service_name, model_name = content_generation_public_info()

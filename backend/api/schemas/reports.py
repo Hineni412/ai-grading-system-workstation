@@ -145,6 +145,51 @@ class ClassAnalysisSettingsResponse(BaseModel):
     auto_generate: bool
 
 
+class ReportPipelineCausesStatus(BaseModel):
+    """错因整理待补情况；call_count/estimated_tokens 按手动口径（含失败重试与旧版升级）预估。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pending_questions: int = Field(ge=0)
+    total_questions: int = Field(ge=0)
+    call_count: int = Field(ge=0)
+    estimated_tokens: int = Field(ge=0)
+
+
+class ReportPipelineClassesStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pending: int = Field(ge=0)
+    total: int = Field(ge=0)
+
+
+class ReportPipelinePersonalStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pending: int = Field(ge=0)
+    total: int = Field(ge=0)
+    call_count: int = Field(ge=0)
+    cache_hits: int = Field(ge=0)
+    estimated_tokens: int = Field(ge=0)
+
+
+class ReportPipelineStatusResponse(BaseModel):
+    """「AI 整理」统一管线状态：三阶段待补数量与是否有进行中任务。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    auto_generate: bool
+    configured: bool
+    service_name: str | None
+    model_name: str | None
+    active_job_id: int | None
+    review_pending: int = Field(ge=0)
+    causes: ReportPipelineCausesStatus
+    class_reports: ReportPipelineClassesStatus
+    personal_reports: ReportPipelinePersonalStatus
+    complete: bool
+
+
 class AnalysisReviewNoteItem(BaseModel):
     """个人报告"建议核对"条目；review_item_id 为复核页实际条目标识。"""
 

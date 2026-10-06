@@ -1,5 +1,4 @@
 import { apiClient } from './client'
-import { decodeJobResponse, type JobResponse } from './jobs'
 import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
 import type { QuestionBankRichContent } from './question-bank'
 import { isConfigRichContent } from './config-workspace'
@@ -606,19 +605,6 @@ export const classAnalysisApi = {
       method: 'PUT',
       body: { auto_generate: autoGenerate },
       decode: decodeClassAnalysisSettings,
-      signal,
-    })
-  },
-
-  async regenerate(
-    sessionId: number,
-    signal?: AbortSignal,
-    kind: 'narrative' | 'causes' = 'narrative',
-  ): Promise<JobResponse> {
-    const id = requireSessionId(sessionId)
-    return apiClient.request(`/api/sessions/${id}/class-analysis/regenerate${kind === 'causes' ? '?kind=causes' : ''}`, {
-      method: 'POST',
-      decode: decodeJobResponse,
       signal,
     })
   },

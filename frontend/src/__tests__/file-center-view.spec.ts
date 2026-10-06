@@ -294,55 +294,17 @@ describe('file center view', () => {
     expect(host.querySelector('[data-testid="generate-score_excel"]')).not.toBeNull()
   })
 
-  it('confirms preflight details before submitting an analysis report', async () => {
+  it('offers only the export entry on the personal report card', async () => {
     const { host } = await mountView()
     await vi.waitFor(() => expect(host.textContent).toContain('学生个人分析报告'))
 
-    host.querySelector<HTMLButtonElement>(
-      '[data-testid="generate-personal_analysis_html"]',
-    )!.click()
-    await vi.waitFor(() => expect(apiMock.getAnalysisPreflight).toHaveBeenCalledWith(
-      7,
-      'personal_analysis_html',
-      undefined,
-      Array.from({length: 10}, (_, i) => i + 1),
-    ))
-    await vi.waitFor(() => expect(
-      document.querySelector('[data-testid="analysis-confirm-dialog"]'),
-    ).not.toBeNull())
-
-    expect(
-      document.querySelector('[data-testid="analysis-service"]')?.textContent,
-    ).toContain('默认内容服务')
-    expect(
-      document.querySelector('[data-testid="analysis-model"]')?.textContent,
-    ).toContain('qwen-plus')
-    expect(
-      document.querySelector('[data-testid="analysis-call-count"]')?.textContent,
-    ).toContain('10')
-    expect(
-      document.querySelector('[data-testid="analysis-tokens"]')?.textContent,
-    ).toContain('120,000')
-    expect(document.body.textContent).toContain('粗略估算')
-    expect(document.body.textContent).toContain('其中 3 份复用已生成内容，不重复计费')
-    expect(document.body.textContent).toContain('实际费用取决于服务商定价')
-    expect(document.body.textContent).toContain('学生答卷图片')
-    expect(document.body.textContent).toContain('图片用量另计')
-    expect(document.body.textContent).toContain('AI 分析内容仅供参考')
-    expect(apiMock.submitReport).not.toHaveBeenCalled()
-
-    document.querySelector<HTMLButtonElement>('[data-testid="confirm-analysis"]')!.click()
-    await vi.waitFor(() => expect(apiMock.submitReport).toHaveBeenCalledWith(
-      7,
-      'personal_analysis_html',
-      false,
-      undefined,
-      undefined,
-      {student_ids: Array.from({length: 10}, (_, i) => i + 1), publish: false},
-    ))
-    await vi.waitFor(() => expect(
-      document.querySelector('[data-testid="analysis-confirm-dialog"]'),
-    ).toBeNull())
+    const cardTitle = [...host.querySelectorAll('th[title]')]
+      .find((cell) => cell.textContent?.includes('学生个人分析报告'))
+    expect(cardTitle?.getAttribute('title')).toContain('AI 部分由成绩中心「AI 整理」生成')
+    expect(host.querySelector('[data-testid="generate-personal_analysis_html"]')).toBeNull()
+    expect(host.querySelector('[data-testid="regenerate-personal_analysis_html"]')).toBeNull()
+    expect(host.querySelector('[data-testid="export-personal-reports"]')).not.toBeNull()
+    expect(apiMock.getAnalysisPreflight).not.toHaveBeenCalled()
   })
 
   it('links a finished personal report job to the review notes in results center', async () => {
@@ -445,17 +407,5 @@ describe('personal report export selection', () => {
     await vi.waitFor(() => expect(personalMock.bundle).toHaveBeenCalledWith([7, 8], [1], '指定1人'))
     expect(apiMock.submitReport).not.toHaveBeenCalled()
     await vi.waitFor(() => expect(host.textContent).toContain('完成后在任务中心下载'))
-  })
-
-  it('cancels generation confirmation without submitting any model task', async () => {
-    const {host} = await mountView()
-    await vi.waitFor(() => expect(host.querySelector('[data-testid="generate-personal_analysis_html"]')).not.toBeNull())
-    host.querySelector<HTMLButtonElement>('[data-testid="generate-personal_analysis_html"]')!.click()
-    await vi.waitFor(() => expect(document.querySelector('[data-testid="analysis-confirm-dialog"]')).not.toBeNull())
-    const cancel = [...document.querySelectorAll<HTMLButtonElement>('[data-testid="analysis-confirm-dialog"] button')].find(b => b.textContent?.trim() === '取消')!
-    cancel.click()
-    await nextTick()
-    expect(apiMock.submitReport).not.toHaveBeenCalled()
-    await vi.waitFor(() => expect(document.querySelector('[data-testid="analysis-confirm-dialog"]')).toBeNull())
   })
 })

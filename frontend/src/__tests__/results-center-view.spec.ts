@@ -7,6 +7,8 @@ import { decodeResultsCenterResponse, fetchResultsCenter, type ResultsCenterItem
 import { fetchReviewItems, fetchReviewQuestions, fetchReviewRubric, type ResolvedReviewItem } from '../api/review'
 import { useSessionStore } from '../stores/session'
 import { useResultsCenterStore } from '../stores/results-center'
+import { useJobStore } from '../stores/jobs'
+import type { JobResponse } from '../api/jobs'
 import ResultsCenterView from '../views/ResultsCenterView.vue'
 import type { ClassAnalysisResponse } from '../api/class-analysis'
 import { invalidateClassAnalysis } from '../components/results-center/class-analysis-cache'
@@ -29,10 +31,44 @@ vi.mock('../api/results-center', async (original) => ({
   fetchResultsCenter: vi.fn(),
 }))
 
+const pipelineMock = vi.hoisted(() => ({ getStatus: vi.fn(), start: vi.fn() }))
+vi.mock('../api/report-pipeline', async (original) => ({
+  ...await original<typeof import('../api/report-pipeline')>(),
+  reportPipelineApi: pipelineMock,
+}))
+
+const jobsMock = vi.hoisted(() => {
+  const defaultJob = async (id: number): Promise<JobResponse> => ({
+    id,
+    job_type: 'class_analysis_generate',
+    payload: { session_id: 7 },
+    result: {},
+    status: 'succeeded',
+    progress: 1,
+    stage: 'report_pipeline',
+    detail: '',
+    error: null,
+    cancel_requested: false,
+    created_at: '2026-10-03T10:00:00Z',
+    started_at: '2026-10-03T10:00:00Z',
+    updated_at: '2026-10-03T10:00:01Z',
+    finished_at: '2026-10-03T10:00:01Z',
+  })
+  return {
+    getJob: vi.fn(defaultJob),
+    getJobStatusBatch: vi.fn(async () => []),
+    cancelJob: vi.fn(),
+    defaultJob,
+  }
+})
+vi.mock('../api/jobs', async (original) => ({
+  ...await original<typeof import('../api/jobs')>(),
+  jobApi: jobsMock,
+}))
+
 const classAnalysisMock = vi.hoisted(() => ({
   getClassAnalysis: vi.fn(),
   updateSettings: vi.fn(),
-  regenerate: vi.fn(),
   getQuestionPreview: vi.fn(),
   editCausePattern: vi.fn(),
 }))
@@ -117,6 +153,9 @@ function reviewItems(qid: string): ResolvedReviewItem[] {
 
 async function mountView(tab: string | null = 'details', analysis?: ClassAnalysisResponse, open = '') {
   localStorage.clear()
+  pipelineMock.getStatus.mockClear()
+  pipelineMock.start.mockClear()
+  jobsMock.getJob.mockClear().mockImplementation(jobsMock.defaultJob)
   personalMock.states.mockResolvedValue([['current', 1], ['stale', 2], ['missing', 3], ['unavailable', 4]].map(([status, id]) => ({student_id: id, status, generated_at: '2026-10-03', reason: status === 'unavailable' ? '缺考' : null})))
   personalMock.exams.mockImplementation(async (id: number) => [{session_id: 7, session_name: '合成成绩验证', graded_at: '2026-10-03', score: 8, max_score: 10,
     status: id === 1 ? 'current' : id === 2 ? 'stale' : id === 3 ? 'missing' : 'unavailable', generated_at: '2026-10-03', reason: id === 4 ? '缺考' : null}])
@@ -297,6 +336,31 @@ describe('results center class filtering and return position', () => {
     expect(classAnalysisMock.getClassAnalysis).toHaveBeenCalledWith(7, expect.any(AbortSignal), '', 'full')
   })
 
+  it('points the missing-narrative tile at the header button instead of a second entry', async () => {
+    const { host } = await mountView('overview', {
+      status: 'ready', auto_generate: true, small_sample: false, data: null,
+      cause_analysis: null, generated_at: null, stale: false, active_job_id: null,
+      narrative_failed: false, class_names: ['一班'], selected_class: '一班',
+      narrative: null,
+    })
+    await vi.waitFor(() => expect(host.textContent).toContain('AI 整理后显示'))
+    expect(host.textContent).toContain('点页面顶部「AI 整理」补齐')
+    expect(host.textContent).not.toContain('去 AI 整理')
+  })
+
+  it('points the stale-narrative tile at the header button instead of a second entry', async () => {
+    const { host } = await mountView('overview', {
+      status: 'ready', auto_generate: true, small_sample: false, data: null,
+      cause_analysis: null, generated_at: '2026-10-03', stale: true, active_job_id: null,
+      narrative_failed: false, class_names: ['一班'], selected_class: '一班',
+      narrative: { key_findings: [{ title: '合成观察', detail: '旧叙述', severity: 'info' }],
+        common_issues: [], student_notes: [], grouping_advice: '' },
+    })
+    await vi.waitFor(() => expect(host.textContent).toContain('成绩已变化，点页面顶部「AI 整理」更新'))
+    expect(host.textContent).toContain('查看报告')
+    expect(host.textContent).not.toContain('去 AI 整理')
+  })
+
   it('uses the visible class, status and search scope without averaging incomplete scores as zero', async () => {
     const { host } = await mountView()
     input(host.querySelector<HTMLSelectElement>('[aria-label="成绩明细班级"]')!, '一班')
@@ -411,6 +475,171 @@ describe('results center class filtering and return position', () => {
     })
   })
 
+  it('runs the unified AI pipeline from the header after confirming the preflight', async () => {
+    pipelineMock.getStatus.mockResolvedValue({
+      session_id: 7,
+      auto_generate: true,
+      configured: true,
+      service_name: '默认内容服务',
+      model_name: 'qwen-plus',
+      active_job_id: null,
+      review_pending: 1,
+      causes: { pending_questions: 2, total_questions: 4, call_count: 3, estimated_tokens: 12000 },
+      class_reports: { pending: 2, total: 2 },
+      personal_reports: { pending: 3, total: 4, call_count: 5, cache_hits: 1, estimated_tokens: 34000 },
+      complete: false,
+    })
+    pipelineMock.start.mockResolvedValue({
+      id: 93,
+      job_type: 'class_analysis_generate',
+      payload: { session_id: 7, kind: 'pipeline', mode: 'manual' },
+      result: {},
+      status: 'queued',
+      progress: 0,
+      stage: 'report_pipeline',
+      detail: null,
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-10-03T10:00:00Z',
+      started_at: null,
+      updated_at: '2026-10-03T10:00:00Z',
+      finished_at: null,
+    })
+    const { host } = await mountView()
+    host.querySelector<HTMLButtonElement>('[data-testid="report-pipeline-open"]')!.click()
+    await vi.waitFor(() => expect(
+      document.querySelector('[data-testid="pipeline-service"]')?.textContent,
+    ).toContain('默认内容服务'))
+    expect(document.querySelector('[data-testid="pipeline-model"]')?.textContent)
+      .toContain('qwen-plus')
+    expect(document.querySelector('[data-testid="pipeline-breakdown"]')?.textContent)
+      .toContain('错因整理 2 题（约 3 次调用）')
+    expect(document.querySelector('[data-testid="pipeline-breakdown"]')?.textContent)
+      .toContain('个人报告 3 人（其中 1 份复用已生成内容）')
+    expect(document.querySelector('[data-testid="pipeline-review-pending"]')?.textContent)
+      .toContain('还有 1 项待复核')
+
+    document.querySelector<HTMLButtonElement>('[data-testid="pipeline-confirm"]')!.click()
+    await vi.waitFor(() => expect(pipelineMock.start).toHaveBeenCalledWith(7))
+    await vi.waitFor(() => expect(
+      document.querySelector('[data-testid="report-pipeline-dialog"]'),
+    ).toBeNull())
+    expect(useJobStore().jobs[93]).toBeDefined()
+  })
+
+  it('disables the pipeline confirm when everything is already current', async () => {
+    pipelineMock.getStatus.mockResolvedValue({
+      session_id: 7,
+      auto_generate: true,
+      configured: true,
+      service_name: '默认内容服务',
+      model_name: 'qwen-plus',
+      active_job_id: null,
+      review_pending: 0,
+      causes: { pending_questions: 0, total_questions: 4, call_count: 0, estimated_tokens: 0 },
+      class_reports: { pending: 0, total: 2 },
+      personal_reports: { pending: 0, total: 4, call_count: 0, cache_hits: 0, estimated_tokens: 0 },
+      complete: true,
+    })
+    const { host } = await mountView()
+    host.querySelector<HTMLButtonElement>('[data-testid="report-pipeline-open"]')!.click()
+    await vi.waitFor(() => expect(
+      document.querySelector('[data-testid="pipeline-complete"]'),
+    ).not.toBeNull())
+    const confirm = document.querySelector<HTMLButtonElement>('[data-testid="pipeline-confirm"]')!
+    expect(confirm.disabled).toBe(true)
+    confirm.click()
+    await nextTick()
+    expect(pipelineMock.start).not.toHaveBeenCalled()
+  })
+
+  it('shows the running notice and disables confirm while status reports an active job', async () => {
+    pipelineMock.getStatus.mockResolvedValue({
+      session_id: 7,
+      auto_generate: true,
+      configured: true,
+      service_name: '默认内容服务',
+      model_name: 'qwen-plus',
+      active_job_id: 88,
+      review_pending: 0,
+      causes: { pending_questions: 2, total_questions: 4, call_count: 3, estimated_tokens: 12000 },
+      class_reports: { pending: 2, total: 2 },
+      personal_reports: { pending: 3, total: 4, call_count: 5, cache_hits: 1, estimated_tokens: 34000 },
+      complete: false,
+    })
+    const { host } = await mountView()
+    host.querySelector<HTMLButtonElement>('[data-testid="report-pipeline-open"]')!.click()
+    await vi.waitFor(() => expect(
+      document.querySelector('[data-testid="pipeline-running"]')?.textContent,
+    ).toContain('正在整理中，完成后各页面自动更新。'))
+    const confirm = document.querySelector<HTMLButtonElement>('[data-testid="pipeline-confirm"]')!
+    expect(confirm.disabled).toBe(true)
+    confirm.click()
+    await nextTick()
+    expect(pipelineMock.start).not.toHaveBeenCalled()
+  })
+
+  it('shows the running notice and disables confirm while the tracked job is running', async () => {
+    jobsMock.getJob.mockImplementation(async (id: number) => ({
+      id,
+      job_type: 'class_analysis_generate',
+      payload: { session_id: 7, kind: 'pipeline', mode: 'manual' },
+      result: {},
+      status: 'running',
+      progress: 0.4,
+      stage: 'report_pipeline',
+      detail: '',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-10-03T10:00:00Z',
+      started_at: '2026-10-03T10:00:00Z',
+      updated_at: '2026-10-03T10:00:01Z',
+      finished_at: null,
+    }))
+    pipelineMock.getStatus.mockResolvedValue({
+      session_id: 7,
+      auto_generate: true,
+      configured: true,
+      service_name: '默认内容服务',
+      model_name: 'qwen-plus',
+      active_job_id: null,
+      review_pending: 0,
+      causes: { pending_questions: 2, total_questions: 4, call_count: 3, estimated_tokens: 12000 },
+      class_reports: { pending: 2, total: 2 },
+      personal_reports: { pending: 3, total: 4, call_count: 5, cache_hits: 1, estimated_tokens: 34000 },
+      complete: false,
+    })
+    const { host } = await mountView()
+    useJobStore().track({
+      id: 91,
+      job_type: 'class_analysis_generate',
+      payload: { session_id: 7, kind: 'pipeline', mode: 'manual' },
+      result: {},
+      status: 'running',
+      progress: 0.4,
+      stage: 'report_pipeline',
+      detail: '',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-10-03T10:00:00Z',
+      started_at: '2026-10-03T10:00:00Z',
+      updated_at: '2026-10-03T10:00:01Z',
+      finished_at: null,
+    })
+    await nextTick()
+    expect(host.querySelector('[data-testid="report-pipeline-open"]')?.textContent)
+      .toContain('AI 整理中…')
+    host.querySelector<HTMLButtonElement>('[data-testid="report-pipeline-open"]')!.click()
+    await vi.waitFor(() => expect(
+      document.querySelector('[data-testid="pipeline-running"]')?.textContent,
+    ).toContain('正在整理中，完成后各页面自动更新。'))
+    const confirm = document.querySelector<HTMLButtonElement>('[data-testid="pipeline-confirm"]')!
+    expect(confirm.disabled).toBe(true)
+    confirm.click()
+    await nextTick()
+    expect(pipelineMock.start).not.toHaveBeenCalled()
+  })
+
   it('surfaces the server error message when the score load fails', async () => {
     const { ApiError } = await import('../api/errors')
     vi.mocked(fetchResultsCenter).mockReset().mockRejectedValue(new ApiError({
@@ -458,7 +687,7 @@ describe('personal report reading and review return', () => {
     await vi.waitFor(() => expect(document.querySelector('.personal-reader')).toBeNull())
     expect(document.querySelector('#student-result-title')?.textContent).toBe('合成乙')
   })
-  it.each([[1, '查看个人报告'], [2, '上次生成'], [3, '先看数据版'], [4, '缺考']])('shows the report block in student %i drawer', async (id, text) => {
+  it.each([[1, '查看个人报告'], [2, '上次生成'], [3, '查看报告（数据版）'], [4, '缺考']])('shows the report block in student %i drawer', async (id, text) => {
     const { host } = await mountView()
     await vi.waitFor(() => expect(host.querySelectorAll('.personal-report-status')).toHaveLength(3))
     host.querySelectorAll<HTMLTableRowElement>('.results-matrix tbody tr')[Number(id) - 1]!.querySelector<HTMLButtonElement>('th > button')!.click()
@@ -468,7 +697,7 @@ describe('personal report reading and review return', () => {
     const { host, router } = await mountView()
     await vi.waitFor(() => expect(host.querySelectorAll('.personal-report-status')).toHaveLength(3))
     host.querySelectorAll<HTMLTableRowElement>('.results-matrix tbody tr')[2]!.querySelector<HTMLButtonElement>('th > button')!.click()
-    await vi.waitFor(() => expect(document.querySelector('.personal-report-drawer')?.textContent).toContain('先看数据版'))
+    await vi.waitFor(() => expect(document.querySelector('.personal-report-drawer')?.textContent).toContain('查看报告（数据版）'))
     document.querySelector<HTMLButtonElement>('.personal-report-drawer button')!.click()
     await vi.waitFor(() => expect(document.querySelector('iframe')?.getAttribute('src')).toContain('narrative=none'))
     window.dispatchEvent(new MessageEvent('message', {origin: location.origin,
@@ -508,11 +737,10 @@ describe('personal report reading and review return', () => {
     expect(document.querySelector('.personal-reader__identity')?.textContent).toContain('合成乙')
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
     await vi.waitFor(() => expect(document.querySelector('.personal-reader__identity')?.textContent).toContain('合成丙'))
-    await vi.waitFor(() => expect(document.querySelector('[data-testid="state-panel"]')?.textContent).toContain('本场报告尚未生成'))
-    const data = [...document.querySelectorAll<HTMLButtonElement>('.personal-reader button')].find(b => b.textContent === '先看数据版')!
-    data.click()
-    await nextTick()
-    expect(document.querySelector('iframe')?.getAttribute('src')).toContain('narrative=none')
+    // 未生成的报告直接显示数据版并提示由「AI 整理」补齐。
+    await vi.waitFor(() => expect(document.querySelector('iframe')?.getAttribute('src')).toContain('narrative=none'))
+    expect(document.querySelector('[data-testid="feedback-banner"]')?.textContent)
+      .toContain('AI 分析部分尚未整理')
   })
 
   it('validates iframe message origin and source and restores the report after review', async () => {

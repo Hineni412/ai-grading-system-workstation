@@ -34,6 +34,7 @@ from backend.api.schemas.reports import (
     ReportExportHistoryItem,
     ReportExportRequest,
     ReportFileDeleteResponse,
+    ReportPipelineStatusResponse,
     PersonalReportBundleRequest,
 )
 from backend.class_analysis import (
@@ -470,11 +471,23 @@ def get_class_analysis(
         stored_revision != current_revision
         or state.get("rendition_version") != CLASS_ANALYSIS_RENDITION_VERSION
     )
-    narrative = None
-    narrative_failed = False
+    selected = {}
     if state is not None and view != "summary":
         reports = state.get("class_reports")
         selected = reports.get(selected_class, {}) if isinstance(reports, dict) else {}
+        if not stale and selected.get("status") == "ready" and isinstance(selected.get("narrative"), dict):
+            # 班级叙述的错因摘要与当前物化记录不一致 → 随「AI 整理」重新生成。
+            from backend.class_analysis import session_error_records
+            from backend.report_pipeline import class_cause_digest
+
+            digest = class_cause_digest(
+                session_error_records(db, int(session_id), Path(reports_dir)),
+                [student.student_id for student in data.students],
+            )
+            stale = str(selected.get("cause_digest") or "") != digest
+    narrative = None
+    narrative_failed = False
+    if state is not None and view != "summary":
         narrative_failed = selected.get("status", state.get("status")) in {"failed", "not_configured"}
         if not stale and selected.get("status") == "ready" and isinstance(selected.get("narrative"), dict):
             # 叙述中的 S1/S2… 代号在服务端映射回真实姓名（教师本人页面，不脱敏）。
@@ -596,13 +609,12 @@ def get_class_analysis_report(
     state = ClassAnalysisStateStore(reports_dir).load(session_id)
     reports = state.get("class_reports") if isinstance(state, dict) else None
     entry = reports.get(selected_class, {}) if isinstance(reports, dict) else {}
-    if entry.get("status") != "ready" or not isinstance(entry.get("narrative"), dict):
-        raise ApiError(
-            409,
-            "class_report_not_ready",
-            "The class report has not been generated yet",
-            {"class_name": selected_class},
-        )
+    # 数据段先渲染；叙述未生成/失败的段落显示「AI 整理后在此显示」占位，
+    # 已有叙述（含成绩过期）照常展示。
+    ready_narrative = (
+        entry.get("status") == "ready" and isinstance(entry.get("narrative"), dict)
+    )
+    narrative = entry["narrative"] if ready_narrative else None
     selected = groups[selected_class]
     enrich_personal_knowledge(db, selected, None)
     cause_counts = question_category_counts(
@@ -610,7 +622,13 @@ def get_class_analysis_report(
         student_ids=[student.student_id for student in selected.students],
     )
     return HTMLResponse(
-        render_class_html(selected, entry["narrative"], cause_counts=cause_counts))
+        render_class_html(
+            selected,
+            narrative,
+            cause_counts=cause_counts,
+            ai_placeholder=narrative is None,
+        )
+    )
 
 
 @router.get("/sessions/{session_id}/class-analysis/questions/{question_id}/preview")
@@ -642,19 +660,71 @@ def put_class_analysis_settings(
     return ClassAnalysisSettingsResponse(auto_generate=bool(state["auto_generate"]))
 
 
-@router.post(
-    "/sessions/{session_id}/class-analysis/regenerate",
-    response_model=JobResponse,
-    status_code=202,
+@router.get(
+    "/sessions/{session_id}/report-pipeline",
+    response_model=ReportPipelineStatusResponse,
 )
-def regenerate_class_analysis(
+def get_report_pipeline_status(
     session_id: int,
-    kind: Literal["narrative", "causes"] = Query(default="narrative"),
     db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     reports_dir: Path = Depends(get_reports_dir),
+    review_service: ReviewApplicationService = Depends(
+        get_review_application_service
+    ),
+    workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+) -> ReportPipelineStatusResponse:
+    """「AI 整理」状态：配置、复核待办与三阶段待补数量（手动口径预估）。"""
+    from backend.report_pipeline import (
+        build_report_pipeline_status,
+        pending_review_count,
+    )
+
+    session = _require_session(db.sessions, session_id)
+    active_jobs, _total = manager.list(
+        session_id=int(session_id),
+        job_types=(CLASS_ANALYSIS_JOB_TYPE,),
+        statuses=("queued", "running"),
+        limit=1,
+    )
+    return ReportPipelineStatusResponse(
+        **build_report_pipeline_status(
+            db=db,
+            session_id=int(session_id),
+            reports_dir=Path(reports_dir),
+            review_pending=pending_review_count(
+                db,
+                int(session_id),
+                session,
+                workspace,
+                review_service=review_service,
+            ),
+            active_job_id=active_jobs[0].id if active_jobs else None,
+        )
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/report-pipeline",
+    response_model=JobResponse,
+    status_code=202,
+)
+def submit_report_pipeline(
+    session_id: int,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
+    """手动触发「AI 整理」：补齐缺失、过期、失败与旧版的内容；进行中任务直接复用。"""
     _require_session(db.sessions, session_id)
+    has_results = bool(db.results.get_session_results(int(session_id))) or bool(
+        db.reviews.list_teacher_score_locks(int(session_id))
+    )
+    if not has_results:
+        raise ApiError(
+            409,
+            "report_results_missing",
+            "The exam has no grading results to organize",
+        )
     # 兜底校验：未配置内容生成模型时不得静默改用阅卷模型或空跑计费。
     from backend.model_profiles.content_generation import (
         resolve_content_generation_settings,
@@ -670,8 +740,7 @@ def regenerate_class_analysis(
         manager=manager,
         session_id=int(session_id),
         revision=score_revision(db, session_id, include_question_bank=False),
-        force=True,
-        kind=kind,
+        mode="manual",
     )
     return _job_response(job)
 
