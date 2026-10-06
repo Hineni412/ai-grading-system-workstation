@@ -123,12 +123,10 @@ function ratio(part: number, whole: number): string {
             <span v-else class="cep-row-static">{{ section.label }}<small>无主考题</small></span>
           </td>
           <td :class="coverageHeat(section.coverage.midterm.percent)">
-            <span v-if="section.coverage.midterm.percent !== null" class="app-heat-chip">{{ coverageText(section, 'midterm') }}</span>
-            <template v-else>{{ coverageText(section, 'midterm') }}</template>
+            {{ coverageText(section, 'midterm') }}
           </td>
           <td :class="coverageHeat(section.coverage.final.percent)">
-            <span v-if="section.coverage.final.percent !== null" class="app-heat-chip">{{ coverageText(section, 'final') }}</span>
-            <template v-else>{{ coverageText(section, 'final') }}</template>
+            {{ coverageText(section, 'final') }}
           </td>
           <td>{{ coverageDelta(section) }}</td>
         </tr>
@@ -205,7 +203,7 @@ function ratio(part: number, whole: number): string {
                 <button
                   v-if="section.overview[panel][col.key].length"
                   type="button"
-                  class="cep-cell app-heat-chip"
+                  class="cep-cell"
                   @click="openCell(section, panel, col)"
                 >{{ section.overview[panel][col.key].length }}</button>
               </td>

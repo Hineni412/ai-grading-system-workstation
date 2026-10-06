@@ -1117,8 +1117,9 @@ function closeStudentDrawer(restoreFocus = true): void {
                   </th>
                   <td
                     class="results-matrix__total"
+                    :style="totalHeatStyle(student)"
                   >
-                    <strong class="app-heat-chip" :style="totalHeatStyle(student)">
+                    <strong>
                       {{ currentTotalPrefix(student) }}{{ formatScore(student.current_score) }}
                       <small>/ {{ formatScore(student.max_score) }}</small>
                     </strong>
@@ -1128,6 +1129,7 @@ function closeStudentDrawer(restoreFocus = true): void {
                     v-for="question in matrixQuestions"
                     :key="question.question_id"
                     class="results-matrix__score"
+                    :style="questionHeatStyle(student, question.question_id)"
                   >
                     <button
                       v-if="itemFor(student, question.question_id)"
@@ -1136,7 +1138,7 @@ function closeStudentDrawer(restoreFocus = true): void {
                       :aria-label="`${student.student_name}，${question.question_id}，${scoreStatusLabel(itemFor(student, question.question_id)!.score_status)}，得分 ${formatScore(itemFor(student, question.question_id)!.score_awarded)}，查看作答`"
                       @click="navigateToReview(itemFor(student, question.question_id)!, student)"
                     >
-                      <strong class="app-heat-chip" :style="questionHeatStyle(student, question.question_id)">{{ formatScore(itemFor(student, question.question_id)!.score_awarded) }}</strong>
+                      <strong>{{ formatScore(itemFor(student, question.question_id)!.score_awarded) }}</strong>
                       <span>{{ shortScoreStatusLabel(itemFor(student, question.question_id)!.score_status) }}</span>
                     </button>
                     <span v-else class="results-matrix__missing">—<small>无记录</small></span>

@@ -158,6 +158,7 @@ afterEach(() => {
   document.body.innerHTML = ''
   localStorage.clear()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('question bank workspace', () => {
@@ -722,28 +723,12 @@ describe('question bank workspace', () => {
     await vi.waitFor(() => expect(overview).toHaveBeenCalledWith(expect.objectContaining({ include_student_detail: false }), expect.anything()), { timeout: 4000 })
   })
 
-  it('renders the chapter exam profile and loads count cells into the shared ledger', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const router = createAppRouter(createMemoryHistory())
-    await router.push('/question-bank?tab=exam&section=sec_TEST_21')
-    const scope = useCurriculumScopeStore(pinia)
-    scope.selectedVolumeId = 'bnu24-math-g8-upper'
-    scope.loadState = 'ready'
-    scope.volumes = [{ id: scope.selectedVolumeId, label: '八年级上册', order: 1, grade: '八年级', semester: '上学期', textbook_version: '北师大版（2024）', source: {}, statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 }, chapters: [] }]
-    const bank = useQuestionBankStore(pinia)
-    const list = vi.spyOn(bank, 'loadQuestions').mockResolvedValue()
-    vi.spyOn(studentsApi, 'fetchStudents').mockResolvedValue([])
-    vi.spyOn(trainingApi, 'overview').mockResolvedValue({
-      nodes: [{ kind: 'skill', knowledge_key: 'sk_TEST_a', display_name: '区分有理数无理数', chapter_key: 'ch', section_key: 'sec', group_mastery: 0.5, evidence_student_count: 4, distribution: { weak: 2, unsteady: 1, stable: 1, insufficient: 0 }, students: [] }],
-      exam_scope: { sessions: [] },
-    } as unknown as Awaited<ReturnType<typeof trainingApi.overview>>)
-    const profile: ChapterExamProfileData = {
-      curriculum_volume_id: scope.selectedVolumeId,
+  function examProfile(): ChapterExamProfileData {
+    return {
+      curriculum_volume_id: 'bnu24-math-g8-upper',
       graph_release_id: 'kgr_TEST',
       model_calls: 0,
-      counted_question_count: 4,
+      counted_question_count: 6,
       stages: [
         { stage: 'midterm', label: '期中', paper_count: 2, group_count: 1, unit: '组' },
         { stage: 'final', label: '期末', paper_count: 1, group_count: 1, unit: '份' },
@@ -751,10 +736,10 @@ describe('question bank workspace', () => {
       merged_groups: [{ stage: 'midterm', papers: [{ id: 1, title: '期中A' }, { id: 2, title: '期中B' }] }],
       chapters: [{
         id: 'ch_TEST_2', label: '第二章 实数',
-        totals: { midterm: { main: 3, cross: 0 }, final: { main: 1, cross: 0 } },
+        totals: { midterm: { main: 5, cross: 0 }, final: { main: 2, cross: 0 } },
         difficulty: {
-          midterm: { total: 3, basic: 2, mid: 1, hard: 0, choice: 3, fill: 0, written: 0 },
-          final: { total: 1, basic: 0, mid: 1, hard: 0, choice: 0, fill: 0, written: 1 },
+          midterm: { total: 5, basic: 3, mid: 2, hard: 0, choice: 4, fill: 0, written: 1 },
+          final: { total: 2, basic: 0, mid: 2, hard: 0, choice: 0, fill: 0, written: 2 },
         },
         cross_question_ids: { midterm: [], final: [] },
         sections: [{
@@ -775,43 +760,240 @@ describe('question bank workspace', () => {
               final: { choice_basic: [], choice_advanced: [], fill: [], written: [4] },
             },
             positions: { midterm: { '1': [1], '2': [2] }, final: { '13': [4] } },
-            typical: [{ tier: 'basic', question_id: 1, same_tier_count: 2, group_count: 1 }],
+            typical: [{ tier: 'basic', question_id: 1, same_tier_count: 2, group_count: 1, role: '基础入口', reason: '本节第1常考技能' }],
           }],
+        }, {
+          id: 'sec_TEST_22', label: '2.2 平方根与立方根', synthesis: false, main_count: 2,
+          coverage: {
+            midterm: { groups: 1, of: 1, percent: 100, questions: 2 },
+            final: { groups: 0, of: 1, percent: 0, questions: 0 },
+          },
+          overview: {
+            midterm: { choice_basic: [9], choice_advanced: [8], fill: [], written: [] },
+            final: { choice_basic: [], choice_advanced: [], fill: [], written: [] },
+          },
+          skills: [{
+            key: 'sk_TEST_b', name: '求平方根', unlinked: false,
+            home_section_label: '', definition: '', total: 2,
+            cells: {
+              midterm: { choice_basic: [9], choice_advanced: [8], fill: [], written: [] },
+              final: { choice_basic: [], choice_advanced: [], fill: [], written: [] },
+            },
+            positions: { midterm: {}, final: {} },
+            typical: [{ tier: 'basic', question_id: 9, same_tier_count: 3, group_count: 2, role: '基础入口', reason: '本节第1常考技能' }],
+          }],
+        }, {
+          id: 'sec_TEST_23', label: '☆ 问题解决策略', synthesis: false, main_count: 0,
+          coverage: {
+            midterm: { groups: 0, of: 1, percent: 0, questions: 0 },
+            final: { groups: 0, of: 1, percent: 0, questions: 0 },
+          },
+          overview: {
+            midterm: { choice_basic: [], choice_advanced: [], fill: [], written: [] },
+            final: { choice_basic: [], choice_advanced: [], fill: [], written: [] },
+          },
+          skills: [],
         }],
       }],
     }
-    vi.spyOn(questionBankApi, 'chapterExamProfile').mockResolvedValue(profile)
+  }
+
+  class MockIntersectionObserver {
+    static instances: MockIntersectionObserver[] = []
+    readonly callback: IntersectionObserverCallback
+    elements = new Set<Element>()
+    constructor(callback: IntersectionObserverCallback) {
+      this.callback = callback
+      MockIntersectionObserver.instances.push(this)
+    }
+    static reset(): void { MockIntersectionObserver.instances = [] }
+    observe(el: Element): void { this.elements.add(el) }
+    unobserve(el: Element): void { this.elements.delete(el) }
+    disconnect(): void { this.elements.clear() }
+    fire(ids: string[]): void {
+      const entries = [...this.elements].map(el => ({
+        target: el,
+        isIntersecting: ids.includes((el as HTMLElement).dataset.cepBlock ?? ''),
+      })) as unknown as IntersectionObserverEntry[]
+      this.callback(entries, this as unknown as IntersectionObserver)
+    }
+  }
+
+  function mountExamProfile(query: string) {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const router = createAppRouter(createMemoryHistory())
+    const scope = useCurriculumScopeStore(pinia)
+    scope.selectedVolumeId = 'bnu24-math-g8-upper'
+    scope.loadState = 'ready'
+    scope.volumes = [{ id: scope.selectedVolumeId, label: '八年级上册', order: 1, grade: '八年级', semester: '上学期', textbook_version: '北师大版（2024）', source: {}, statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 }, chapters: [] }]
+    vi.spyOn(studentsApi, 'fetchStudents').mockResolvedValue([])
+    vi.spyOn(trainingApi, 'overview').mockResolvedValue({
+      nodes: [{ kind: 'skill', knowledge_key: 'sk_TEST_a', display_name: '区分有理数无理数', chapter_key: 'ch', section_key: 'sec', group_mastery: 0.5, evidence_student_count: 4, distribution: { weak: 2, unsteady: 1, stable: 1, insufficient: 0 }, students: [] }],
+      exam_scope: { sessions: [] },
+    } as unknown as Awaited<ReturnType<typeof trainingApi.overview>>)
+    vi.spyOn(questionBankApi, 'chapterExamProfile').mockResolvedValue(examProfile())
+    return { host, pinia, router, query }
+  }
+
+  it('renders the chapter exam profile as one scroll and loads count cells into the shared ledger', async () => {
+    const { host, pinia, router, query } = mountExamProfile('?tab=exam&section=sec_TEST_21')
+    await router.push(`/question-bank${query}`)
+    const bank = useQuestionBankStore(pinia)
+    const list = vi.spyOn(bank, 'loadQuestions').mockResolvedValue()
     const app = createApp({ render: () => h(ChapterExamProfile) })
     app.use(pinia).use(router).mount(host)
     mounted.push(app)
-    // 小节页默认在右栏列出该节典型题（保持技能顺序、档位顺序）。
+    // 右栏列出当前小节典型题（保持技能顺序、档位顺序）。
     await vi.waitFor(() => expect(list).toHaveBeenCalledWith(
       expect.objectContaining({ questionIds: [1], includeSkills: true, tagStatus: 'all', collapseDuplicates: false }),
       expect.anything(),
     ))
     await vi.waitFor(() => expect(host.textContent).toContain('考法热力'))
-    expect(host.textContent).toContain('区分有理数无理数')
+    // 小节索引条：本章总览 + 各小节，无主考题的小节禁用。
+    const chips = [...host.querySelectorAll<HTMLButtonElement>('.cep-index-chip')]
+    expect(chips.map(chip => chip.textContent?.trim())).toEqual(['本章总览', '2.1', '2.2', '☆'])
+    expect(chips[3]!.disabled).toBe(true)
+    expect(chips[1]!.classList.contains('is-active')).toBe(true)
+    // 小节块标题行含小节名、主考数与出卷率。
+    const block = host.querySelector<HTMLElement>('[data-cep-block="sec_TEST_21"]')!
+    expect(block.textContent).toContain('2.1 认识实数')
+    expect(block.textContent).toContain('本节主考 4 题')
+    expect(block.textContent).toContain('出卷率')
+    expect(block.textContent).toContain('区分有理数无理数')
     expect(host.textContent).toContain('同源卷合并')
     // 本班明显薄弱列：弱占比 2/4 = 50%，且主考 4 题 ≥3 → 常考且薄弱。
-    await vi.waitFor(() => expect(host.textContent).toContain('50%（2/4 人）'))
-    expect(host.textContent).toContain('常考且薄弱')
-    // 合计档点击单元格 → 题单只含该格题目（期中 2 题 + 期末 0 题）。
-    const basicCell = [...host.querySelectorAll<HTMLButtonElement>('.cep-cell')].find(button => button.textContent?.trim() === '2')!
+    await vi.waitFor(() => expect(block.textContent).toContain('50%（2/4 人）'))
+    expect(block.textContent).toContain('常考且薄弱')
+    // 合计档点击单元格 → 题单只含该格题目（期中 2 题 + 期末 0 题），出现「回到典型题」。
+    const basicCell = [...block.querySelectorAll<HTMLButtonElement>('.cep-cell')].find(button => button.textContent?.trim() === '2')!
     basicCell.click()
     await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(
       expect.objectContaining({ questionIds: [1, 2], sort: 'difficulty_asc' }),
       expect.anything(),
     ))
     expect(host.textContent).toContain('2.1 认识实数 · 区分有理数无理数 · 选择·基础 · 合计 2 题')
+    expect(host.textContent).toContain('回到典型题')
+    // 回到典型题恢复该节典型题题单。
+    const back = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '回到典型题')!
+    back.click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ questionIds: [1] }), expect.anything()))
     // 阶段切换驱动热力表计数：期末档基础格为空、解答格剩 1 题。
     const finalStage = [...host.querySelectorAll<HTMLButtonElement>('.app-segmented button')].find(button => button.textContent === '期末')!
     finalStage.click()
     await vi.waitFor(() => expect(router.currentRoute.value.query.stage).toBe('final'))
-    await vi.waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ questionIds: [1] }), expect.anything()))
-    expect(host.textContent).toContain('考法热力 · 期末')
-    const finalCells = [...host.querySelectorAll<HTMLButtonElement>('.cep-cell')].map(button => button.textContent?.trim())
+    expect(block.textContent).toContain('考法热力 · 期末')
+    const finalCells = [...block.querySelectorAll<HTMLButtonElement>('.cep-cell')].map(button => button.textContent?.trim())
     expect(finalCells).toContain('1')
     expect(finalCells).not.toContain('2')
+  })
+
+  it('scrolls to a section block from the index chip and updates the query', async () => {
+    MockIntersectionObserver.reset()
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    const { host, pinia, router } = mountExamProfile('?tab=exam&chapter=ch_TEST_2')
+    await router.push('/question-bank?tab=exam&chapter=ch_TEST_2')
+    const bank = useQuestionBankStore(pinia)
+    vi.spyOn(bank, 'loadQuestions').mockResolvedValue()
+    const app = createApp({ render: () => h(ChapterExamProfile) })
+    app.use(pinia).use(router).mount(host)
+    mounted.push(app)
+    await vi.waitFor(() => expect(host.querySelectorAll('.cep-index-chip')).toHaveLength(4))
+    const chip = [...host.querySelectorAll<HTMLButtonElement>('.cep-index-chip')]
+      .find(item => item.textContent?.trim() === '2.2')!
+    chip.click()
+    await nextTick()
+    expect(scrollIntoView).toHaveBeenCalled()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.section).toBe('sec_TEST_22'), { timeout: 2000 })
+    expect(router.currentRoute.value.query.chapter).toBe('ch_TEST_2')
+    const active = host.querySelector<HTMLButtonElement>('.cep-index-chip.is-active')!
+    expect(active.textContent?.trim()).toBe('2.2')
+  })
+
+  it('restores the saved chapter, section and stage when the query has none', async () => {
+    localStorage.setItem(
+      'chapter-exam:last:bnu24-math-g8-upper',
+      JSON.stringify({ chapterId: 'ch_TEST_2', sectionId: 'sec_TEST_22', stage: 'final' }),
+    )
+    const { host, pinia, router } = mountExamProfile('?tab=exam')
+    await router.push('/question-bank?tab=exam')
+    const bank = useQuestionBankStore(pinia)
+    const list = vi.spyOn(bank, 'loadQuestions').mockResolvedValue()
+    const app = createApp({ render: () => h(ChapterExamProfile) })
+    app.use(pinia).use(router).mount(host)
+    mounted.push(app)
+    await vi.waitFor(() => expect(router.currentRoute.value.query.section).toBe('sec_TEST_22'))
+    expect(router.currentRoute.value.query.chapter).toBe('ch_TEST_2')
+    expect(router.currentRoute.value.query.stage).toBe('final')
+    await vi.waitFor(() => expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ questionIds: [9] }),
+      expect.anything(),
+    ))
+    expect(host.querySelector('.cep-index-chip.is-active')?.textContent?.trim()).toBe('2.2')
+  })
+
+  it('falls back to the chapter overview when the saved position is stale', async () => {
+    localStorage.setItem(
+      'chapter-exam:last:bnu24-math-g8-upper',
+      JSON.stringify({ chapterId: 'ch_GONE', sectionId: 'sec_GONE', stage: 'final' }),
+    )
+    const { host, pinia, router } = mountExamProfile('?tab=exam')
+    await router.push('/question-bank?tab=exam')
+    const bank = useQuestionBankStore(pinia)
+    const list = vi.spyOn(bank, 'loadQuestions').mockResolvedValue()
+    const app = createApp({ render: () => h(ChapterExamProfile) })
+    app.use(pinia).use(router).mount(host)
+    mounted.push(app)
+    // 失效的章节号不写入地址，落在第一章总览并加载全章典型题。
+    await vi.waitFor(() => expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ questionIds: [1, 9] }),
+      expect.anything(),
+    ))
+    expect(router.currentRoute.value.query.chapter).toBeUndefined()
+    expect(router.currentRoute.value.query.section).toBeUndefined()
+    expect(host.querySelector('.cep-index-chip.is-active')?.textContent?.trim()).toBe('本章总览')
+  })
+
+  it('switches the ledger between blocks from the cached picks without a new list request', async () => {
+    MockIntersectionObserver.reset()
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
+    const { host, pinia, router } = mountExamProfile('?tab=exam&chapter=ch_TEST_2')
+    await router.push('/question-bank?tab=exam&chapter=ch_TEST_2')
+    const bank = useQuestionBankStore(pinia)
+    const itemsById = new Map([[1, { ...item, id: 1 }], [9, { ...item, id: 9 }]])
+    const list = vi.spyOn(questionBankApi, 'listQuestions').mockImplementation(async (filters = {}) => {
+      const ids = filters.questionIds ?? []
+      return {
+        items: ids.map(id => itemsById.get(id)!).filter(Boolean),
+        total: ids.length,
+        page: filters.page ?? 1,
+        page_size: filters.pageSize ?? 100,
+        total_pages: 1,
+      }
+    })
+    const app = createApp({ render: () => h(ChapterExamProfile) })
+    app.use(pinia).use(router).mount(host)
+    mounted.push(app)
+    // 全章典型题一次性按本章题号拉取，右栏显示合并题单。
+    await vi.waitFor(() => expect(
+      list.mock.calls.some(call => JSON.stringify(call[0]?.questionIds) === '[1,9]'),
+    ).toBe(true))
+    await vi.waitFor(() => expect(bank.questions.map(row => row.id)).toEqual([1, 9]))
+    expect(host.textContent).toContain('第二章 实数 · 全章典型题')
+    const calls = list.mock.calls.length
+    // 滚动定位到 2.2 块：台账换成该节缓存子集，不再请求列表接口。
+    const io = MockIntersectionObserver.instances[MockIntersectionObserver.instances.length - 1]!
+    io.fire(['sec_TEST_22'])
+    await vi.waitFor(() => expect(router.currentRoute.value.query.section).toBe('sec_TEST_22'), { timeout: 2000 })
+    await vi.waitFor(() => expect(bank.questions.map(row => row.id)).toEqual([9]))
+    expect(list.mock.calls.length).toBe(calls)
+    expect(host.textContent).toContain('2.2 平方根与立方根 · 典型题 · 共 1 题')
+    io.fire(['overview'])
+    await vi.waitFor(() => expect(bank.questions.map(row => row.id)).toEqual([1, 9]))
+    expect(list.mock.calls.length).toBe(calls)
   })
 
   it('browses questions across skills by tag dimension, scope and value', async () => {

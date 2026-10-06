@@ -36,12 +36,6 @@ const stageInfo = computed(
   () => Object.fromEntries(props.stages.map(row => [row.stage, row])) as Record<ChapterExamStage, ChapterExamStageStats>,
 )
 
-function coverageText(stage: ChapterExamStage): string {
-  const cell = props.section.coverage[stage]
-  const percent = cell.percent === null ? '—' : `${cell.percent}%`
-  return `${cell.groups}/${cell.of}${stageInfo.value[stage]?.unit ?? '份'}（${percent}）`
-}
-
 function stageLabel(stage: ChapterExamStage): string {
   return stageInfo.value[stage]?.label ?? stage
 }
@@ -110,14 +104,6 @@ function isWeakPick(skill: ChapterExamSkillRow): boolean {
 </script>
 
 <template>
-  <section class="cep-block" aria-labelledby="cep-coverage-line">
-    <div id="cep-coverage-line" class="cep-coverage">
-      <span>出卷率：期中 <b>{{ coverageText('midterm') }}</b></span>
-      <span>期末 <b>{{ coverageText('final') }}</b></span>
-      <span>本节主考 <b>{{ section.main_count }}</b> 题</span>
-    </div>
-  </section>
-
   <section class="cep-block" aria-labelledby="cep-heat-title">
     <h3 id="cep-heat-title" class="cep-block-title">考法热力 · {{ stageTitle }}</h3>
     <div class="app-heat-table-wrap">
@@ -151,7 +137,7 @@ function isWeakPick(skill: ChapterExamSkillRow): boolean {
             <button
               v-if="cellIds(skill, col.key).length"
               type="button"
-              class="cep-cell app-heat-chip"
+              class="cep-cell"
               @click="openCell(skill, col)"
             >{{ cellIds(skill, col.key).length }}</button>
           </td>
@@ -201,7 +187,7 @@ function isWeakPick(skill: ChapterExamSkillRow): boolean {
               <button
                 v-if="skill.positions[posStage]?.[bucket]?.length"
                 type="button"
-                class="cep-cell app-heat-chip"
+                class="cep-cell"
                 @click="openPosition(skill, posStage, bucket)"
               >{{ skill.positions[posStage][bucket].length }}</button>
             </td>

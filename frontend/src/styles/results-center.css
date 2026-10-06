@@ -159,8 +159,6 @@
 
 .results-matrix {
   width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
   color: var(--foreground);
   font-size: var(--font-size-dense);
 }
@@ -357,8 +355,6 @@
 .results-matrix td {
   height: 66px;
   padding: var(--space-2);
-  border-block-end: var(--border-width) solid var(--border);
-  background: var(--card);
   text-align: center;
   vertical-align: middle;
 }
@@ -369,8 +365,6 @@
   inset-block-start: 0;
   min-width: 102px;
   height: 54px;
-  background: var(--color-bg-subtle);
-  color: var(--color-text-secondary);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
 }
@@ -382,7 +376,7 @@
 
 .results-matrix thead th > span {
   margin-top: 2px;
-  color: var(--muted-foreground);
+  color: rgb(255 255 255 / 0.78);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-regular);
 }
@@ -395,14 +389,12 @@
   min-width: 180px;
   max-width: 180px;
   background: var(--card);
-  box-shadow: 1px 0 0 var(--border);
   text-align: start;
 }
 
 .results-matrix thead .results-matrix__identity,
 .results-matrix thead .results-matrix__total {
   z-index: 6;
-  background: var(--muted);
 }
 
 .results-matrix .results-matrix__total {
@@ -413,7 +405,6 @@
   min-width: 140px;
   max-width: 140px;
   background: var(--card);
-  box-shadow: 1px 0 0 var(--border);
   text-align: start;
 }
 
@@ -438,16 +429,17 @@
 }
 
 .results-matrix__sort:hover {
-  color: var(--primary);
+  color: inherit;
+  text-decoration: underline;
 }
 
 .results-matrix__sort:focus-visible {
-  outline: 2px solid var(--primary);
+  outline: 2px solid #fff;
   outline-offset: 2px;
 }
 
 .results-matrix__sort > i {
-  color: var(--muted-foreground);
+  color: rgb(255 255 255 / 0.78);
   font-size: var(--font-size-caption);
   font-style: normal;
 }
