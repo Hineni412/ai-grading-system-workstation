@@ -915,7 +915,7 @@ function assetCountFor(question: ConfigQuestionPreview): number {
     </div>
 
     <Sheet
-      :open="expandedAnswer !== undefined"
+      :open="expandedAnswer !== null"
       @update:open="(value: boolean) => { if (!value) closeFullAnswer() }"
     >
       <SheetContent

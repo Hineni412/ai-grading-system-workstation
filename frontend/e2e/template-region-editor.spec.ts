@@ -125,8 +125,8 @@ test('keeps confirmed regions available when the snapshot needs a retry', async 
   await page.locator('.mapping-select').selectOption('Q1')
   await expect(page.getByText('草稿已保存', { exact: true })).toBeVisible()
 
-  page.once('dialog', (dialog) => dialog.accept())
   await page.getByRole('button', { name: '完成标定' }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '保存', exact: true }).click()
   await expect(page.getByRole('button', { name: '重试生成确认快照' })).toBeVisible()
   await expect(page.locator('[data-region-uuid]')).toHaveCount(1)
 
