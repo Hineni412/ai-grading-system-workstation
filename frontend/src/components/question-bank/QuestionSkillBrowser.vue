@@ -230,7 +230,7 @@ onBeforeUnmount(() => {
 <template>
   <StatePanel v-if="!scope.selectedVolumeId" kind="empty" title="请先选择教学学期" description="在左侧栏“当前考试”中选择教学学期。" />
   <StatePanel v-else-if="loading && !index" kind="loading" title="正在读取技能与题目…" />
-  <StatePanel v-else-if="error && !index" kind="error" :title="error" retry-label="重新读取" @retry="emit('retry')" />
+  <StatePanel v-else-if="error && !index" kind="error" :title="error" retry-label="重新加载" @retry="emit('retry')" />
   <div v-else ref="layout" class="qb-skill-layout" :class="{ 'is-reading': bank.selectedQuestionId, 'is-skill-narrow': bank.selectedQuestionId && !skillRailOpen, 'is-unlinked': unlinked }">
     <aside class="qb-skill-pane qb-browse-pane">
       <div v-if="bank.selectedQuestionId" class="qb-skill-rail"><AppIconButton class="qb-rail-toggle" :label="skillRailOpen ? '收窄技能列表' : '展开技能列表'" icon="book-open" variant="secondary" :aria-expanded="skillRailOpen" @click="skillRailOpen = !skillRailOpen" /><span v-if="!skillRailOpen">{{ mode === 'tag' ? '标签' : switcherLabel }}</span><button v-if="!skillRailOpen" class="qb-rail-unlinked" :aria-label="`未挂技能 · ${unlinkedCount} 题`" title="未挂技能" @click="router.replace({ query: { tab: 'skill', skill: 'unlinked' } })">⚠<small>{{ unlinkedCount }}</small></button></div>

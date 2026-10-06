@@ -91,7 +91,7 @@ function onUpdateOpen(open: boolean): void {
         kind="error"
         title="题目暂时无法读取"
         description="草稿内容不受影响。"
-        retry-label="重试"
+        retry-label="重新加载"
         @retry="retry"
       />
       <template v-else-if="detail">

@@ -1083,7 +1083,7 @@ onBeforeUnmount(() => {
           kind="error"
           title="题目暂时无法读取"
           description="候选词草稿不受影响。"
-          retry-label="重新读取"
+          retry-label="重新加载"
           @retry="retryQuestionPreview"
         />
         <template v-else-if="previewQuestion">

@@ -9,6 +9,7 @@ import { opsApi, storageApi, type StorageOverview, type StorageSession, type Ses
 import { ApiError } from '../../api/errors'
 import { TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import { useOpsStore } from '../../stores/ops'
+import { formatBytes } from '../../lib/format'
 import { useJobStore } from '../../stores/jobs'
 
 const ops = useOpsStore()
@@ -48,7 +49,9 @@ const dialogTitle = computed(() => {
   return dialog.value === 'release' ? `释放${name}的扫描文件？` : dialog.value === 'clear' ? `清除${name}的学生原卷` : dialog.value === 'legacy' ? '清理旧批注图？' : '恢复所选备份'
 })
 const freedEstimate = computed(() => targets.value.reduce((sum, t) => sum + (dialog.value === 'release' ? t.snapshot.release_bytes : t.snapshot.clear_bytes), 0))
-function bytes(value: number) { if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)} GB`; if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MB`; if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`; return `${value} B` }
+const canSubmitDialog = computed(() => !busy.value && !ops.submitting && !dialogError.value
+  && (dialog.value !== 'clear' || phrase.value === '确认清除')
+  && (dialog.value !== 'restore' || phrase.value === '确认恢复'))
 function time(value: string | null | undefined) { return value ? value.replace('T', ' ').replace(/\.\d+.*$/, '').slice(0, 16) : '暂无' }
 function message(reason: unknown) { return reason instanceof ApiError ? reason.message : reason instanceof Error ? reason.message : '操作暂时无法完成' }
 async function refreshStorage() {
@@ -136,10 +139,10 @@ async function submitDialog() {
         } catch (reason) { throw new Error(`${target.row.name}：${message(reason)}`) }
       }
     }
-    notice.value = `已腾出 ${bytes(freed)}。${notice.value}`
+    notice.value = `已腾出 ${formatBytes(freed)}。${notice.value}`
     dialog.value = null; selected.value = []
     await refreshStorage()
-  } catch (reason) { dialogError.value = `${message(reason)}${freed ? ` 已腾出 ${bytes(freed)}。` : ''}请刷新后查看状态；不会自动重发。` }
+  } catch (reason) { dialogError.value = `${message(reason)}${freed ? ` 已腾出 ${formatBytes(freed)}。` : ''}请刷新后查看状态；不会自动重发。` }
   finally { busy.value = false; progress.value = '' }
 }
 async function downloadResult() {
@@ -167,23 +170,23 @@ onBeforeUnmount(() => controller.abort())
         <p v-if="storage?.unreadable_count" class="settings-note">有 {{ storage.unreadable_count }} 处文件暂时无法读取，空间统计未包含这些文件。</p>
         <p v-if="!storage" class="settings-note">{{ loading ? '正在统计空间…' : '空间占用暂时无法读取' }}</p>
         <template v-else>
-          <p class="settings-space-total">本机数据共 {{ bytes(storage.total_bytes) }}</p>
+          <p class="settings-space-total">本机数据共 {{ formatBytes(storage.total_bytes) }}</p>
           <div class="settings-space-bar" aria-hidden="true"><i v-for="(category, index) in storage.categories" :key="category.key" :style="{ width: `${storage.total_bytes ? category.bytes / storage.total_bytes * 100 : 0}%`, background: colors[index] }" /></div>
-          <table class="settings-space-legend"><tbody><tr v-for="(category, index) in storage.categories" :key="category.key"><td><i :style="{ background: colors[index] }" />{{ category.label }}</td><td>{{ bytes(category.bytes) }}</td></tr></tbody></table>
-          <div v-if="storage.legacy_annotations.bytes" class="settings-inline settings-legacy"><span class="settings-note">旧批注图 {{ bytes(storage.legacy_annotations.bytes) }} · 可随时重新生成</span><AppButton variant="ghost" :disabled="busy" @click="dialog = 'legacy'">清理</AppButton></div>
+          <table class="settings-space-legend"><tbody><tr v-for="(category, index) in storage.categories" :key="category.key"><td><i :style="{ background: colors[index] }" />{{ category.label }}</td><td>{{ formatBytes(category.bytes) }}</td></tr></tbody></table>
+          <div v-if="storage.legacy_annotations.bytes" class="settings-inline settings-legacy"><span class="settings-note">旧批注图 {{ formatBytes(storage.legacy_annotations.bytes) }} · 可随时重新生成</span><AppButton variant="ghost" :disabled="busy" @click="dialog = 'legacy'">清理</AppButton></div>
         </template>
       </div>
     </section>
     <section class="settings-panel">
       <header class="settings-panel__heading"><h2>考试原卷</h2></header>
       <div class="settings-table-note">清除前建议先备份。<AppButton variant="ghost" size="small" @click="backupBlock?.scrollIntoView({ behavior: 'smooth', block: 'center' })">立即备份</AppButton></div>
-      <div v-if="selectedRows.length" class="settings-selection-bar"><span>已选 {{ selectedRows.length }} 场 · 可腾出 {{ bytes(selectedRows.reduce((sum, row) => sum + row.clear_bytes, 0)) }}</span><div><AppButton variant="secondary" :disabled="!canReleaseBatch || busy" @click="beginCleanup('release', selectedRows)">释放扫描文件</AppButton><AppButton variant="danger" class="settings-danger-outline" :disabled="!canClearBatch || busy" @click="beginCleanup('clear', selectedRows)">清除原卷</AppButton></div></div>
+      <div v-if="selectedRows.length" class="settings-selection-bar"><span>已选 {{ selectedRows.length }} 场 · 可腾出 {{ formatBytes(selectedRows.reduce((sum, row) => sum + row.clear_bytes, 0)) }}</span><div><AppButton variant="secondary" :disabled="!canReleaseBatch || busy" @click="beginCleanup('release', selectedRows)">释放扫描文件</AppButton><AppButton variant="danger" class="settings-danger-outline" :disabled="!canClearBatch || busy" @click="beginCleanup('clear', selectedRows)">清除原卷</AppButton></div></div>
       <div class="settings-table-scroll"><table class="app-table settings-originals-table">
         <thead><tr><th><input type="checkbox" aria-label="全选可清理的考试" :checked="selectableRows.length > 0 && selected.length === selectableRows.length" :disabled="busy || selectableRows.length === 0" @change="toggleAll"></th><th>考试</th><th>状态</th><th class="is-num">扫描文件</th><th class="is-num">页面与批注图</th><th>原卷</th><th>操作</th></tr></thead>
         <tbody><tr v-for="row in storage?.sessions" :key="row.session_id">
           <td><input v-model="selected" type="checkbox" :value="row.session_id" :aria-label="`选择 ${row.name}`" :disabled="busy || !(row.can_release_scans || row.can_clear)"></td>
           <td><strong>{{ row.name }}</strong><small>{{ time(row.created_at).slice(0, 10) }}</small></td><td><StatusBadge :label="row.status_label" :tone="row.status_label === '已完成' ? 'success' : 'neutral'" /></td>
-          <td class="settings-num is-num">{{ row.scan_bytes ? bytes(row.scan_bytes) : '—' }}</td><td class="settings-num is-num">{{ row.page_bytes ? bytes(row.page_bytes) : '—' }}</td><td><StatusBadge :tone="row.originals_state === 'clearing' ? 'warning' : row.originals_state === 'complete' ? 'success' : 'neutral'" :label="stateLabels[row.originals_state]" /></td>
+          <td class="settings-num is-num">{{ row.scan_bytes ? formatBytes(row.scan_bytes) : '—' }}</td><td class="settings-num is-num">{{ row.page_bytes ? formatBytes(row.page_bytes) : '—' }}</td><td><StatusBadge :tone="row.originals_state === 'clearing' ? 'warning' : row.originals_state === 'complete' ? 'success' : 'neutral'" :label="stateLabels[row.originals_state]" /></td>
           <td><div class="settings-row-actions"><AppButton v-if="row.scan_bytes > 0 && row.originals_state !== 'cleared' && row.originals_state !== 'clearing'" variant="secondary" :disabled="!row.can_release_scans || busy" @click="beginCleanup('release', [row])">释放扫描文件</AppButton><AppButton v-if="row.originals_state !== 'cleared'" variant="danger" class="settings-danger-outline" :disabled="!row.can_clear || busy" @click="beginCleanup('clear', [row])">{{ row.originals_state === 'clearing' ? '继续清理' : '清除原卷' }}</AppButton></div><small v-if="row.blocked_reason">{{ row.blocked_reason }}</small></td>
         </tr></tbody>
       </table></div>
@@ -192,7 +195,7 @@ onBeforeUnmount(() => controller.abort())
     <section ref="backupBlock" class="settings-panel">
       <header class="settings-panel__heading"><h2>备份</h2></header>
       <div class="settings-panel__body settings-inline">
-        <span>{{ backupSucceeded ? `备份完成 · ${bytes(latest?.size_bytes ?? 0)}` : `最近备份：${time(latest?.created_at)}${latest ? ` · ${bytes(latest.size_bytes)}` : ''}` }}</span>
+        <span>{{ backupSucceeded ? `备份完成 · ${formatBytes(latest?.size_bytes ?? 0)}` : `最近备份：${time(latest?.created_at)}${latest ? ` · ${formatBytes(latest.size_bytes)}` : ''}` }}</span>
         <AppButton variant="primary" :disabled="ops.hasBlockingOperation || busy || ops.resultUnknown" @click="backup">立即备份</AppButton>
         <template v-if="backupRunning"><progress class="settings-progress" :value="ops.activeJob?.progress ?? undefined" max="1" /><span class="settings-note">{{ ops.activeJob?.detail || '正在准备…' }}</span></template>
         <AppButton v-if="backupSucceeded" variant="secondary" @click="downloadResult">下载</AppButton>
@@ -204,27 +207,27 @@ onBeforeUnmount(() => controller.abort())
     <section class="settings-panel">
       <header class="settings-panel__heading"><h2>恢复</h2><AppButton variant="danger" class="settings-danger-outline" data-testid="preflight-restore" :disabled="!selectedBackup || ops.hasBlockingOperation || ops.resultUnknown" @click="beginRestore">恢复所选备份</AppButton></header>
       <table class="app-table settings-backups-table"><thead><tr><th></th><th>时间</th><th>原因</th><th class="is-num">大小</th></tr></thead><tbody>
-        <tr v-for="item in zipBackups" :key="item.filename"><td><input v-model="selectedBackup" type="radio" name="restore-backup" :value="item.filename" :aria-label="`选择 ${time(item.created_at)} 的备份`"></td><td>{{ time(item.created_at) }}</td><td>{{ reasons[item.reason] ?? '未记录' }}</td><td class="is-num">{{ bytes(item.size_bytes) }}</td></tr>
+        <tr v-for="item in zipBackups" :key="item.filename"><td><input v-model="selectedBackup" type="radio" name="restore-backup" :value="item.filename" :aria-label="`选择 ${time(item.created_at)} 的备份`"></td><td>{{ time(item.created_at) }}</td><td>{{ reasons[item.reason] ?? '未记录' }}</td><td class="is-num">{{ formatBytes(item.size_bytes) }}</td></tr>
       </tbody></table>
       <FeedbackBanner v-if="ops.backupsError" role="alert" tone="error" :description="ops.backupsError.message"><AppButton variant="ghost" size="small" @click="ops.refreshBackups(opsApi)">刷新</AppButton></FeedbackBanner><StatePanel v-else-if="!zipBackups.length" kind="empty" compact title="当前没有可恢复的备份" />
     </section>
     <AppDialog :open="dialog !== null" :title="dialogTitle" class="settings-ops-dialog" :dismissible="!(busy || ops.submitting)" @update:open="closeDialog">
         <p v-if="dialog === 'legacy'">清理后，查看批注卷时会重新生成。</p>
-        <p v-if="dialog === 'release'">可腾出 {{ bytes(freedEstimate) }}。分数、查看原卷、AI 继续批改都不受影响；之后不能再重新扫描归卷。</p>
+        <p v-if="dialog === 'release'">可腾出 {{ formatBytes(freedEstimate) }}。分数、查看原卷、AI 继续批改都不受影响；之后不能再重新扫描归卷。</p>
         <template v-if="dialog === 'clear'">
           <div class="settings-keep-columns"><div><strong>会保留</strong><ul><li v-for="item in ['分数和排名', '每题得分与扣分原因', '识别出的作答内容', '成绩报告', '掌握度和训练记录', '老师改分']" :key="item">{{ item }}</li></ul></div><div><strong>之后无法</strong><ul><li v-for="item in ['查看原卷和批注图', 'AI 重新批改', '重新扫描归卷', '导出批注原卷', '个人报告里的作答截图']" :key="item">{{ item }}</li></ul></div></div>
-          <p>可腾出 {{ bytes(freedEstimate) }}</p>
+          <p>可腾出 {{ formatBytes(freedEstimate) }}</p>
           <div v-for="target in targets" :key="target.row.session_id" class="settings-backup-hint" :class="{ 'is-covered': target.snapshot.backup_covers_originals }">
             <span>{{ targets.length > 1 ? `${target.row.name} · ` : '' }}{{ target.snapshot.latest_backup_at ? `最近一次备份：${time(target.snapshot.latest_backup_at)}，${target.snapshot.backup_covers_originals ? '包含这场考试的原卷。' : '早于这场考试的批改或扫描文件释放，不能确认备份里包含这些原卷。'}` : '尚无可用备份，建议先备份。' }}</span>
             <AppButton v-if="!target.snapshot.backup_covers_originals" variant="secondary" :disabled="ops.hasBlockingOperation || busy || ops.resultUnknown" @click="backup">先备份</AppButton>
           </div>
         </template>
-        <template v-if="dialog === 'restore'"><p>用这份备份覆盖当前同名数据。重启应用后才生效，重启前可以撤销。</p><p class="settings-note">{{ ops.preflight?.summary.file_count ?? '—' }} 个文件 · {{ bytes(ops.preflight?.summary.total_expanded_bytes ?? ops.preflight?.summary.total_size_bytes ?? 0) }}</p></template>
-        <label v-if="dialog === 'clear' || dialog === 'restore'" class="settings-confirm-line"><span>输入「{{ dialog === 'clear' ? '确认清除' : '确认恢复' }}」继续</span><input v-model="phrase" class="app-input" data-testid="confirmation-phrase" autocomplete="off" :aria-label="dialog === 'clear' ? '输入确认清除' : '输入确认恢复'" :disabled="busy || ops.submitting"></label>
+        <template v-if="dialog === 'restore'"><p>用这份备份覆盖当前同名数据。重启应用后才生效，重启前可以撤销。</p><p class="settings-note">{{ ops.preflight?.summary.file_count ?? '—' }} 个文件 · {{ formatBytes(ops.preflight?.summary.total_expanded_bytes ?? ops.preflight?.summary.total_size_bytes ?? 0) }}</p></template>
+        <label v-if="dialog === 'clear' || dialog === 'restore'" class="settings-confirm-line"><span>输入「{{ dialog === 'clear' ? '确认清除' : '确认恢复' }}」继续</span><input v-model="phrase" class="app-input" data-testid="confirmation-phrase" autocomplete="off" :aria-label="dialog === 'clear' ? '输入确认清除' : '输入确认恢复'" :disabled="busy || ops.submitting" @keydown.enter.prevent="canSubmitDialog && submitDialog()"></label>
         <p v-if="busy" class="settings-inline" role="status"><progress class="settings-progress" />{{ progress || '正在清理…' }}</p>
         <FeedbackBanner v-if="dialogError" role="alert" tone="error" :description="dialogError"><AppButton variant="ghost" size="small" :disabled="busy" @click="refreshCleanup">刷新</AppButton></FeedbackBanner>
         <FeedbackBanner v-if="ops.actionError && dialog === 'clear'" role="alert" tone="error" :description="ops.actionError.message" />
-        <template #footer><AppButton variant="secondary" :disabled="busy || ops.submitting" @click="closeDialog()">取消</AppButton><AppButton :variant="dialog === 'clear' || dialog === 'restore' ? 'danger' : 'primary'" data-testid="confirm-operation" :disabled="busy || ops.submitting || !!dialogError || (dialog === 'clear' && phrase !== '确认清除') || (dialog === 'restore' && phrase !== '确认恢复')" @click="submitDialog">{{ dialog === 'release' ? '释放' : dialog === 'clear' ? '清除原卷' : dialog === 'legacy' ? '清理' : '恢复' }}</AppButton></template>
+        <template #footer><AppButton variant="secondary" :disabled="busy || ops.submitting" @click="closeDialog()">取消</AppButton><AppButton :variant="dialog === 'clear' || dialog === 'restore' ? 'danger' : 'primary'" data-testid="confirm-operation" :disabled="!canSubmitDialog" @click="submitDialog">{{ dialog === 'release' ? '释放' : dialog === 'clear' ? '清除原卷' : dialog === 'legacy' ? '清理' : '恢复' }}</AppButton></template>
     </AppDialog>
   </section>
 </template>

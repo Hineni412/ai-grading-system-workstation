@@ -110,7 +110,7 @@ onBeforeUnmount(() => {
         </div>
 
         <StatePanel v-if="loadState === 'loading'" kind="loading" title="正在读取需要核对的判定点…" />
-        <StatePanel v-else-if="loadState === 'error'" kind="error" :title="message || '判定点暂时无法读取'" retry-label="重新读取" @retry="load" />
+        <StatePanel v-else-if="loadState === 'error'" kind="error" :title="message || '判定点暂时无法读取'" retry-label="重新加载" @retry="load" />
         <StatePanel v-else-if="loadState === 'empty'" kind="empty" title="当前没有需要核对的判定点。" />
         <ul v-else class="criteria-review__list">
           <li v-for="question in items" :key="question.id">

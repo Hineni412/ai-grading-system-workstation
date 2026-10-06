@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, ref, toRaw } from 'vue'
 import { defineStore } from 'pinia'
 
 import {
@@ -97,7 +97,7 @@ function safeMessage(): string {
 }
 
 function copyDetail(value: QuestionBankDetail): QuestionBankDetail {
-  return JSON.parse(JSON.stringify(value)) as QuestionBankDetail
+  return structuredClone(toRaw(value))
 }
 
 export const useQuestionBankStore = defineStore('question-bank', () => {

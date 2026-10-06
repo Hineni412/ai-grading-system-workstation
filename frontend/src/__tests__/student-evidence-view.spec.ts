@@ -283,7 +283,7 @@ describe('student evidence view original question panel', () => {
     expect(host.textContent).toContain('1 人答错')
 
     ;[...document.querySelectorAll<HTMLButtonElement>('.question-panel button')]
-      .find((button) => button.textContent?.trim() === '重试')!
+      .find((button) => button.textContent?.trim() === '重新加载')!
       .click()
     await vi.waitFor(() => expect(document.body.textContent).toContain('利用边角关系证明两个三角形全等'))
 

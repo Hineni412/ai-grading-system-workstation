@@ -9,6 +9,7 @@ import {
   watch,
 } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useDebounceFn } from '@vueuse/core'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import AppDialog from '../design-system/AppDialog.vue'
@@ -76,18 +77,12 @@ function paperCategory(paper: QuestionBankPaper) {
 }
 // 搜索输入防抖：逐键全量筛选 + 分组重算在试卷多时明显卡顿。
 const debouncedKeyword = ref('')
-let keywordDebounceTimer: ReturnType<typeof setTimeout> | null = null
+const flushDebouncedKeyword = useDebounceFn((value: string) => {
+  debouncedKeyword.value = value
+}, 300)
 
 watch(keyword, (value) => {
-  if (keywordDebounceTimer !== null) clearTimeout(keywordDebounceTimer)
-  keywordDebounceTimer = setTimeout(() => {
-    keywordDebounceTimer = null
-    debouncedKeyword.value = value
-  }, 300)
-})
-
-onScopeDispose(() => {
-  if (keywordDebounceTimer !== null) clearTimeout(keywordDebounceTimer)
+  void flushDebouncedKeyword(value)
 })
 const year = ref('')
 const examType = ref('')
@@ -1158,7 +1153,7 @@ async function confirmPermanentDelete(): Promise<void> {
       kind="error"
       title="试卷库暂时无法读取。"
      
-      retry-label="重新读取"
+      retry-label="重新加载"
       @retry="store.loadPapers()"
     />
     <StatePanel

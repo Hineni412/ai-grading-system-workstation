@@ -459,7 +459,7 @@ const narrowRail = computed(() => Boolean(bank.selectedQuestionId) && !railOpen.
     v-else-if="loadState === 'error' && !profile"
     kind="error"
     :title="errorMessage"
-    retry-label="重新读取"
+    retry-label="重新加载"
     @retry="loadProfile"
   />
   <div

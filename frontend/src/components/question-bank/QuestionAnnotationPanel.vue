@@ -292,6 +292,17 @@ const coreTagStatus = computed(() => [
   },
 ])
 
+const tagKeys = new WeakMap<QuestionBankTag, number>()
+let nextTagKey = 0
+function tagKey(tag: QuestionBankTag): number {
+  let key = tagKeys.get(tag)
+  if (key === undefined) {
+    key = ++nextTagKey
+    tagKeys.set(tag, key)
+  }
+  return key
+}
+
 const tagGroups = computed(() => editableTagTypes
   .map((type) => ({
     type,
@@ -529,7 +540,7 @@ async function save(): Promise<void> {
                 <div class="qb-tag-group__items">
                   <div
                     v-for="{ tag, index } in group.items"
-                    :key="index"
+                    :key="tagKey(tag)"
                     class="qb-tag-chip"
                   >
                     <span
