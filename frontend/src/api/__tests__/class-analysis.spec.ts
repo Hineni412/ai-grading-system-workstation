@@ -121,14 +121,14 @@ describe('class analysis API contract', () => {
       manifestations: [{ description: '未列关系式', source_question_id: null, evidence }] }
     const payload = { ...analysisPayload,
       cause_analysis: { status: 'partial', pending_questions: 1, total_questions: 2,
-        failed_questions: 0, pre_step_questions: 1, stale: false,
-        generated_at: '2026-09-09T10:00:00', origin: 'model' },
+        failed_questions: 0, question_states: { current: 1, stale: 0, old_prompt: 1, failed: 0 },
+        stale: false, generated_at: '2026-09-09T10:00:00', origin: 'model' },
       data: { ...analysisPayload.data, questions: [{
         ...analysisPayload.data.questions[0], causes: [cause], causes_grouped: true,
         causes_by_step: true, causes_legacy: false,
       }] } }
     const parsed = decodeClassAnalysisResponse(payload)
-    expect(parsed.cause_analysis?.pre_step_questions).toBe(1)
+    expect(parsed.cause_analysis?.question_states.old_prompt).toBe(1)
     const question = parsed.data!.questions[0]!
     expect(question.causes_by_step).toBe(true)
     expect(question.causes![0]!.step_ids).toEqual(['S2'])

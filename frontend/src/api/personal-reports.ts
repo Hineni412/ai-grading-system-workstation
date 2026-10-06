@@ -2,7 +2,7 @@ import { apiClient } from './client'
 import { decodeJobResponse } from './jobs'
 import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
 
-export type PersonalReportStatus = 'current' | 'stale' | 'missing' | 'unavailable'
+export type PersonalReportStatus = 'current' | 'stale' | 'old_prompt' | 'missing' | 'unavailable'
 export interface PersonalReportState {
   student_id: number
   status: PersonalReportStatus
@@ -20,10 +20,10 @@ export interface PersonalReportExam {
   reason: string | null
 }
 export const reportStatusText: Record<PersonalReportStatus, string> = {
-  current: '已生成', stale: '需重新生成', missing: '未生成', unavailable: '不可生成',
+  current: '已生成', stale: '需重新生成', old_prompt: '已生成', missing: '未生成', unavailable: '不可生成',
 }
 function positive(value: unknown): value is number { return Number.isSafeInteger(value) && Number(value) > 0 }
-function status(value: unknown): value is PersonalReportStatus { return ['current', 'stale', 'missing', 'unavailable'].includes(String(value)) }
+function status(value: unknown): value is PersonalReportStatus { return ['current', 'stale', 'old_prompt', 'missing', 'unavailable'].includes(String(value)) }
 function decodeState(value: unknown): PersonalReportState {
   if (!isRecord(value) || !positive(value.student_id) || !status(value.status)
     || !isNullableString(value.generated_at) || !isNullableString(value.reason)) throw new Error('Invalid personal report state')

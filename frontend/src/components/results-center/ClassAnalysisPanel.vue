@@ -85,9 +85,9 @@ const causeStatusText = computed(() => {
   const state = causeAnalysis.value
   if (generating.value) return 'AI 整理中…'
   const organizeTip = '复核完成后自动整理，或点页面顶部「AI 整理」。'
-  if (state?.legacy_questions) return `${state.legacy_questions} 题保留既有归并；${organizeTip}更新后将结合真实作答分别整理错因、过程缺项和待核对事项。`
-  if (state?.outdated_questions) return `${state.outdated_questions} 题为旧版整理，暂无错误大类；${organizeTip}整理后自动升级并补充大类。`
-  if (state?.pre_step_questions) return `${state.pre_step_questions} 题为按步骤整理前的结果；「AI 整理」后按扣分步骤逐条整理。`
+  const questionStates = state?.question_states
+  if (questionStates?.stale) return `${questionStates.stale} 题作答或批语已变化，显示上次整理结果；${organizeTip}`
+  if (questionStates?.old_prompt) return `${questionStates.old_prompt} 题用旧版提示词整理，可按题重新整理。`
   if (!state || state.status === 'not_generated') return state?.failed_questions
     ? `错因整理未完成，保留原始理由；${organizeTip}`
     : state?.stale ? `作答、批语或题目依据已变化；${organizeTip}` : `当前按原始表述合并；${organizeTip}整理后可结合真实作答。`
@@ -693,7 +693,8 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
                         {{ expandedCauses.has(section.key) ? '收起错因' : `展开其余 ${section.causes.length - 5} 条错因` }} · 共 {{ section.causes.length }} 条
                       </AppButton>
                     </details>
-                    <span v-if="selectedQuestion.causes_outdated" class="class-analysis__note" data-testid="causes-outdated">旧版整理 · 待升级（暂无错误大类）</span>
+                    <span v-if="selectedQuestion.state === 'stale'" class="class-analysis__note" data-testid="cause-state">作答或批语已变化 · 显示上次整理结果</span>
+                    <span v-else-if="selectedQuestion.state === 'old_prompt'" class="class-analysis__note" data-testid="cause-state">用旧版提示词整理 · 可按题重新整理</span>
                     <span v-if="!selectedQuestion.causeSections.length" class="class-analysis__note">{{ selectedQuestion.records.length ? (selectedQuestion.causes_grouped ? '没有可确认的共同错因，见下方原始证据' : '未记录具体错因') : '—' }}</span>
                     <details
                       v-if="!selectedQuestion.structuredCauses && selectedQuestion.cause_review?.uncertain.length"

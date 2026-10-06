@@ -77,16 +77,23 @@ export interface ClassCause {
   manifestations?: { description: string; source_question_id: string | null; evidence: ClassCauseEvidence[] }[]
 }
 
+export const CAUSE_RESULT_STATES = ['current', 'stale', 'old_prompt', 'missing'] as const
+export type CauseResultState = (typeof CAUSE_RESULT_STATES)[number]
+
+export interface ClassCauseQuestionStates {
+  current: number
+  stale: number
+  old_prompt: number
+  failed: number
+}
+
 export interface ClassCauseAnalysis {
   status: 'ready' | 'partial' | 'not_generated'
+  /** stale + missing 题数：待整理；old_prompt 不计入待整理。 */
   pending_questions: number
   total_questions: number
   failed_questions: number
-  legacy_questions?: number
-  /** v2 旧版整理结果仍在展示的题目数（无错误大类，建议重新整理）。 */
-  outdated_questions?: number
-  /** 按步骤拆分前整理的题目数（兼容展示，手动整理后升级为按步骤结果）。 */
-  pre_step_questions?: number
+  question_states: ClassCauseQuestionStates
   stale: boolean
   generated_at: string | null
   origin: string | null
@@ -102,9 +109,9 @@ export interface ClassAnalysisQuestion {
   causes?: ClassCause[]
   causes_grouped?: boolean
   causes_legacy?: boolean
-  /** v2 旧版结果仍在展示：无错误大类，重新整理后自动升级。 */
-  causes_outdated?: boolean
-  /** false=按步骤拆分前的兼容结果；手动「整理错因」后按扣分步骤逐条整理。 */
+  /** 该题已存整理结果的状态；missing/失败的题没有此字段。 */
+  state?: CauseResultState
+  /** false=按步骤拆分前的兼容结果，证据不按扣分步骤分组。 */
   causes_by_step?: boolean
   /** 已关联题库的题目 id；未关联为 null/缺省。 */
   bank_question_id?: number | null
@@ -194,6 +201,8 @@ export interface ClassAnalysisResponse {
   narrative_failed: boolean
   generated_at: string | null
   stale: boolean
+  /** 所选班级叙述条目的结果状态；summary 视图或未选班为 undefined。 */
+  narrative_state?: CauseResultState | null
   active_job_id: number | null
   class_names?: string[]
   selected_class?: string | null
@@ -298,12 +307,13 @@ function decodeCause(value: unknown): ClassCause {
 
 function decodeCauseAnalysis(value: unknown): ClassCauseAnalysis | null {
   if (value == null) return null
+  const states = isRecord(value) && isRecord(value.question_states) ? value.question_states : null
   if (!isRecord(value) || !['ready', 'partial', 'not_generated'].includes(String(value.status))
     || !isNonnegativeInteger(value.pending_questions) || !isNonnegativeInteger(value.total_questions)
     || !isNonnegativeInteger(value.failed_questions) || typeof value.stale !== 'boolean'
-    || !(value.legacy_questions === undefined || isNonnegativeInteger(value.legacy_questions))
-    || !(value.outdated_questions === undefined || isNonnegativeInteger(value.outdated_questions))
-    || !(value.pre_step_questions === undefined || isNonnegativeInteger(value.pre_step_questions))
+    || states === null
+    || !isNonnegativeInteger(states.current) || !isNonnegativeInteger(states.stale)
+    || !isNonnegativeInteger(states.old_prompt) || !isNonnegativeInteger(states.failed)
     || !isNullableString(value.generated_at) || !isNullableString(value.origin)) {
     throw new Error('Invalid class cause analysis')
   }
@@ -322,7 +332,7 @@ function decodeQuestion(value: unknown): ClassAnalysisQuestion {
     || !Array.isArray(value.records)
     || !(value.causes_grouped === undefined || typeof value.causes_grouped === 'boolean')
     || !(value.causes_legacy === undefined || typeof value.causes_legacy === 'boolean')
-    || !(value.causes_outdated === undefined || typeof value.causes_outdated === 'boolean')
+    || !(value.state === undefined || CAUSE_RESULT_STATES.some((s) => s === value.state))
     || !(value.causes_by_step === undefined || typeof value.causes_by_step === 'boolean')
     || !(value.cause_review === undefined || isRecord(value.cause_review))
     || !(value.bank_question_id === undefined || value.bank_question_id === null || isNonnegativeInteger(value.bank_question_id))
@@ -346,7 +356,7 @@ function decodeQuestion(value: unknown): ClassAnalysisQuestion {
     ...(Array.isArray(value.causes) ? { causes: value.causes.map(decodeCause) } : {}),
     ...(typeof value.causes_grouped === 'boolean' ? { causes_grouped: value.causes_grouped } : {}),
     ...(typeof value.causes_legacy === 'boolean' ? { causes_legacy: value.causes_legacy } : {}),
-    ...(typeof value.causes_outdated === 'boolean' ? { causes_outdated: value.causes_outdated } : {}),
+    ...(value.state === undefined ? {} : { state: value.state as CauseResultState }),
     ...(typeof value.causes_by_step === 'boolean' ? { causes_by_step: value.causes_by_step } : {}),
     ...(value.bank_question_id === undefined ? {} : { bank_question_id: value.bank_question_id }),
     cause_category_counts: Array.isArray(value.cause_category_counts)
@@ -528,6 +538,8 @@ export function decodeClassAnalysisResponse(value: unknown): ClassAnalysisRespon
     || decodeActiveJobId(value.active_job_id) === undefined
     || !(value.class_names === undefined || (Array.isArray(value.class_names) && value.class_names.every((item) => typeof item === 'string')))
     || !(value.selected_class === undefined || isNullableString(value.selected_class))
+    || !(value.narrative_state === undefined || value.narrative_state === null
+      || CAUSE_RESULT_STATES.some((s) => s === value.narrative_state))
   ) {
     throw new Error('Invalid class analysis response')
   }
@@ -540,6 +552,8 @@ export function decodeClassAnalysisResponse(value: unknown): ClassAnalysisRespon
     narrative_failed: value.narrative_failed,
     generated_at: value.generated_at,
     stale: value.stale,
+    ...(value.narrative_state !== undefined
+      ? { narrative_state: value.narrative_state as CauseResultState | null } : {}),
     active_job_id: decodeActiveJobId(value.active_job_id) ?? null,
     ...(value.cause_analysis === undefined ? {} : { cause_analysis: decodeCauseAnalysis(value.cause_analysis) }),
     ...(Array.isArray(value.class_names) ? { class_names: value.class_names as string[] } : {}),

@@ -36,7 +36,7 @@ const ready = ref(false)
 const student = computed(() => props.students.find(s => s.student_id === currentStudentId.value))
 const position = computed(() => props.students.findIndex(s => s.student_id === currentStudentId.value))
 const exam = computed(() => exams.value.find(e => e.session_id === reportSession.value))
-const canRead = computed(() => exam.value && ['current', 'stale', 'missing'].includes(exam.value.status))
+const canRead = computed(() => exam.value && ['current', 'stale', 'old_prompt', 'missing'].includes(exam.value.status))
 const effectiveDataOnly = computed(() => dataOnly.value || exam.value?.status === 'missing')
 const src = computed(() => student.value && canRead.value ? personalReportsApi.htmlUrl(reportSession.value,
   student.value.student_id, effectiveDataOnly.value, reportSession.value === props.sessionId, exam.value?.generated_at ?? '') : '')
@@ -53,7 +53,7 @@ async function load() {
     const value = await personalReportsApi.exams(currentStudentId.value, props.volumeId, next.signal)
     if (!next.signal.aborted) {
       exams.value = value
-      if (['current', 'stale'].includes(exam.value?.status ?? '')) dataOnly.value = false
+      if (['current', 'stale', 'old_prompt'].includes(exam.value?.status ?? '')) dataOnly.value = false
     }
   } catch { if (!next.signal.aborted) error.value = '本学期报告暂时无法读取，请重试。' }
   finally { if (controller === next) loading.value = false }
@@ -134,7 +134,7 @@ onBeforeUnmount(() => {
         <AppButton :disabled="position <= 0" variant="ghost" size="small" @click="move(-1)">← 上一位</AppButton>
         <AppButton :disabled="position >= students.length - 1" variant="ghost" size="small" @click="move(1)">下一位 →</AppButton>
         <div class="personal-reader__actions">
-          <AppButton :disabled="!exam || !['current', 'stale'].includes(exam.status)" variant="ghost" size="small" @click="exportHtml">导出本场 HTML</AppButton>
+          <AppButton :disabled="!exam || !['current', 'stale', 'old_prompt'].includes(exam.status)" variant="ghost" size="small" @click="exportHtml">导出本场 HTML</AppButton>
           <AppButton :disabled="!ready || !canRead" variant="ghost" size="small" @click="iframe?.contentWindow?.print()">打印</AppButton>
         </div>
       </header>

@@ -210,7 +210,8 @@ afterEach(() => {
 describe('class analysis panel', () => {
   it('separates saved mathematical causes from process, state and review, and shows answer evidence after reentry', async () => {
     const result = makeAnalysis({ cause_analysis: { status: 'ready', pending_questions: 0, total_questions: 2,
-      failed_questions: 0, legacy_questions: 0, stale: false, generated_at: '2026-09-09T10:00:00', origin: 'assistant' } })
+      failed_questions: 0, question_states: { current: 2, stale: 0, old_prompt: 0, failed: 0 },
+      stale: false, generated_at: '2026-09-09T10:00:00', origin: 'assistant' } })
     const question = result.data!.questions[0]!
     question.records[0]!.student_id = 31
     const evidence = [{ text: '绳长求和有误', student_ids: [31], student_answer: '10+6=16',
@@ -261,9 +262,9 @@ describe('class analysis panel', () => {
     await vi.waitFor(() => expect(reopened.host.textContent).toContain('用水平边替换竖直绳段'))
   })
 
-  it('shows top-level cause categories and marks outdated v2 results for upgrade', async () => {
+  it('shows top-level cause categories and marks old-prompt results for per-question refresh', async () => {
     const result = makeAnalysis({ cause_analysis: { status: 'partial', pending_questions: 1,
-      total_questions: 2, failed_questions: 0, outdated_questions: 1,
+      total_questions: 2, failed_questions: 0, question_states: { current: 1, stale: 0, old_prompt: 1, failed: 0 },
       stale: false, generated_at: '2026-09-09T10:00:00', origin: 'model' } })
     const question = result.data!.questions[0]!
     question.causes_grouped = true
@@ -282,36 +283,37 @@ describe('class analysis panel', () => {
     expect(host.querySelector('[data-kind="error"] > summary')!.textContent).toContain('审题与条件 1')
     expect(host.querySelector('[data-testid="cause-category-chips"]')).toBeNull()
     expect(host.querySelector('[data-kind="process"]')!.textContent).toContain('过程与依据')
-    expect(host.textContent).toContain('1 题为旧版整理，暂无错误大类')
+    expect(host.textContent).toContain('1 题用旧版提示词整理，可按题重新整理')
     mounted.pop()!.unmount()
     host.remove()
 
-    // v2 旧版结果：仍按 kind 展示但没有大类，题级出现「待升级」标记。
+    // 题级 old_prompt 标记：仍按 kind 展示，提示按题重新整理。
     const legacy = makeAnalysis({ cause_analysis: { status: 'partial', pending_questions: 1,
-      total_questions: 2, failed_questions: 0, outdated_questions: 1,
+      total_questions: 2, failed_questions: 0, question_states: { current: 1, stale: 0, old_prompt: 1, failed: 0 },
       stale: false, generated_at: '2026-09-01T10:00:00', origin: 'model' } })
     const legacyQuestion = legacy.data!.questions[0]!
     legacyQuestion.causes_grouped = true
-    legacyQuestion.causes_outdated = true
+    legacyQuestion.state = 'old_prompt'
     legacyQuestion.causes = [
       { kind: 'error', reason: '旧版归并的错因', count: 1,
         evidence: [{ text: '旧证据', student_ids: [31] }] },
     ]
     apiMock.getClassAnalysis.mockResolvedValue(legacy)
     const second = await mountPanel()
-    await vi.waitFor(() => expect(second.host.querySelector('[data-testid="causes-outdated"]')).not.toBeNull())
-    expect(second.host.querySelector('[data-testid="causes-outdated"]')!.textContent).toContain('待升级')
+    await vi.waitFor(() => expect(second.host.querySelector('[data-testid="cause-state"]')).not.toBeNull())
+    expect(second.host.querySelector('[data-testid="cause-state"]')!.textContent).toContain('用旧版提示词整理')
     expect(second.host.querySelector('[data-kind="error"]')!.textContent).toContain('旧版归并的错因')
     expect(second.host.querySelector('[data-testid="cause-category"]')).toBeNull()
   })
 
-  it('shows the pre-step notice for results saved before step-level grouping', async () => {
+  it('shows the stale notice for results generated from changed inputs', async () => {
     const result = makeAnalysis({ cause_analysis: { status: 'partial', pending_questions: 1,
-      total_questions: 2, failed_questions: 0, pre_step_questions: 1,
-      stale: false, generated_at: '2026-09-09T10:00:00', origin: 'model' } })
+      total_questions: 2, failed_questions: 0, question_states: { current: 1, stale: 1, old_prompt: 0, failed: 0 },
+      stale: true, generated_at: '2026-09-09T10:00:00', origin: 'model' } })
     const question = result.data!.questions[0]!
     question.causes_grouped = true
     question.causes_by_step = false
+    question.state = 'stale'
     question.causes = [
       { kind: 'error', category: '概念理解', reason: '按步骤整理前的错因', count: 1,
         evidence: [{ text: '旧证据', student_ids: [31] }] },
@@ -322,14 +324,17 @@ describe('class analysis panel', () => {
       host.querySelector('[data-testid="cause-analysis-status"]'),
     ).not.toBeNull())
     expect(host.querySelector('[data-testid="cause-analysis-status"]')!.textContent)
-      .toContain('1 题为按步骤整理前的结果')
-    // 旧结果照常展示，不误报为按步骤整理的产出。
+      .toContain('1 题作答或批语已变化，显示上次整理结果')
+    // 过期结果照常按生成时的证据展示。
     expect(host.querySelector('[data-kind="error"]')!.textContent).toContain('按步骤整理前的错因')
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="cause-state"]')).not.toBeNull())
+    expect(host.querySelector('[data-testid="cause-state"]')!.textContent).toContain('作答或批语已变化')
   })
 
   it('opens source evidence on demand without any generation entry', async () => {
     const result = makeAnalysis({ cause_analysis: { status: 'partial', pending_questions: 1, total_questions: 2,
-      failed_questions: 0, stale: false, generated_at: null, origin: 'assistant' } })
+      failed_questions: 0, question_states: { current: 1, stale: 0, old_prompt: 0, failed: 0 },
+      stale: false, generated_at: null, origin: 'assistant' } })
     const question = result.data!.questions[0]!
     question.records[0]!.student_id = 31
     question.causes_grouped = true
@@ -554,7 +559,8 @@ describe('class analysis panel', () => {
   it('points to the unified pipeline instead of offering a local generate action', async () => {
     apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
       cause_analysis: { status: 'partial', pending_questions: 1, total_questions: 2,
-        failed_questions: 0, stale: false, generated_at: null, origin: 'assistant' },
+        failed_questions: 0, question_states: { current: 1, stale: 0, old_prompt: 0, failed: 0 },
+        stale: false, generated_at: null, origin: 'assistant' },
     }))
     const { host } = await mountPanel()
     await vi.waitFor(() => expect(host.textContent).toContain('满分'))
@@ -568,7 +574,8 @@ describe('class analysis panel', () => {
   it('edits a cause name and category via the optional 修改 dialog', async () => {
     apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
       cause_analysis: { status: 'ready', pending_questions: 0, total_questions: 1,
-        failed_questions: 0, stale: false, generated_at: '2026-08-30T10:00:00Z', origin: 'assistant' },
+        failed_questions: 0, question_states: { current: 1, stale: 0, old_prompt: 0, failed: 0 },
+        stale: false, generated_at: '2026-08-30T10:00:00Z', origin: 'assistant' },
       data: {
         ...makeAnalysis().data!,
         questions: [{

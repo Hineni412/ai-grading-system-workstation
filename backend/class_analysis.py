@@ -642,7 +642,7 @@ def apply_cause_results(
 
     每题状态由 resolve_result_state 判定：current / stale / old_prompt /
     missing；stale 与 old_prompt 的已存结果继续按生成时的 input 证据投影
-    （条目标记 cause_state），missing 或整理失败的题只显示原始理由。
+    （条目标记 state），missing 或整理失败的题只显示原始理由。
     传入 session_id + 题库路径时，额外标注每题题库关联。
     """
     from backend.error_causes import CAUSE_CATEGORIES
@@ -759,9 +759,8 @@ def apply_cause_results(
             "uncertain": details(saved["result"].get("uncertain_ids") or []),
         }
         question["causes_grouped"] = True
-        question["cause_state"] = question_state
+        question["state"] = question_state
         question["causes_legacy"] = stored_version == "class_error_causes_v1"
-        question["causes_outdated"] = stored_version == "class_error_causes_v2"
         question["causes_by_step"] = stored_version == prompt_version("causes")
     total = len(sources)
     displayable = counts["current"] + counts["stale"] + counts["old_prompt"]
@@ -769,14 +768,13 @@ def apply_cause_results(
                        "partial" if displayable or counts["failed"] else "not_generated"),
             "pending_questions": total - counts["current"] - counts["old_prompt"],
             "total_questions": total,
-            "current_questions": counts["current"],
-            "stale_questions": counts["stale"],
-            "old_prompt_questions": counts["old_prompt"],
-            "missing_questions": counts["missing"],
+            "question_states": {
+                "current": counts["current"],
+                "stale": counts["stale"],
+                "old_prompt": counts["old_prompt"],
+                "failed": counts["failed"],
+            },
             "failed_questions": counts["failed"],
-            "legacy_questions": counts["old_prompt"],
-            "outdated_questions": 0,
-            "pre_step_questions": counts["old_prompt"],
             "stale": counts["stale"] > 0,
             "generated_at": max(times, default="") or None,
             "origin": "assistant" if origins == {"assistant"} else "model" if origins else None}

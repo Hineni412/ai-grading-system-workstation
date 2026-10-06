@@ -1546,7 +1546,8 @@ def test_step_aware_error_records_and_counts(tmp_path: Path) -> None:
     page = build_class_page_data(data, compact=True)
     status = apply_cause_results(page, data, build_cause_inputs(data), state)
     q2 = next(q for q in page["questions"] if q["question_id"] == "Q2")
-    assert status["pending_questions"] == 1 and status["pre_step_questions"] == 0
+    assert status["pending_questions"] == 1
+    assert status["question_states"]["old_prompt"] == 0
     assert q2["causes_by_step"] is True
     assert {
         (cause["reason"], tuple(cause["step_ids"])) for cause in q2["causes"]
@@ -1612,13 +1613,13 @@ def test_old_prompt_v3_results_display_then_regenerate_stale(tmp_path: Path) -> 
     page = build_class_page_data(data, compact=True)
     status = apply_cause_results(page, data, sources, store.load(sid))
     assert status["status"] == "partial"
-    assert status["old_prompt_questions"] == 1
-    assert status["stale_questions"] == 1
+    assert status["question_states"]["old_prompt"] == 1
+    assert status["question_states"]["stale"] == 1
     by_id = {q["question_id"]: q for q in page["questions"]}
-    assert by_id["Q1"]["cause_state"] == "old_prompt"
+    assert by_id["Q1"]["state"] == "old_prompt"
     assert by_id["Q1"]["causes_by_step"] is False
     assert by_id["Q1"]["causes"]  # old_prompt 结果照常显示
-    assert by_id["Q2"]["cause_state"] == "stale"
+    assert by_id["Q2"]["state"] == "stale"
     assert by_id["Q2"]["causes"]
     lisi = next(s for s in data.students if s.student_name == "李四")
     mapped = student_error_map(store.load(sid), lisi, sources, data)
@@ -1743,9 +1744,9 @@ def test_pre_step_source_dedupes_evidence_collapsed_by_step_split(
     status = apply_cause_results(page, data, [source], store.load(sid))
     # 输入口径已变（v3 合并证据 vs v4 分步证据）→ stale；stale 结果仍按
     # 生成时的证据投影展示。
-    assert status["stale_questions"] == 1
+    assert status["question_states"]["stale"] == 1
     q2 = next(q for q in page["questions"] if q["question_id"] == "Q2")
-    assert q2["cause_state"] == "stale" and q2["causes"]
+    assert q2["state"] == "stale" and q2["causes"]
 
     state = store.load(sid)
     for name in ("张三", "李四"):

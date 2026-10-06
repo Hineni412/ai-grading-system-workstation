@@ -1220,6 +1220,21 @@ onMounted(() => {
               >重试</AppButton>
             </template>
             <strong v-else-if="narrativeGenerating" class="overview__tile-num">AI 整理中…</strong>
+            <template v-else-if="narrative?.narrative && narrative.narrative_state === 'old_prompt'">
+              <ul class="overview__tile-findings">
+                <li
+                  v-for="finding in narrativeFindings"
+                  :key="finding.title"
+                  :title="finding.title"
+                >{{ finding.title }}</li>
+              </ul>
+              <span class="overview__tile-sub">用旧版提示词生成</span>
+              <AppButton
+                variant="ghost"
+                class="overview__tile-action"
+                @click="openReport"
+              >查看完整报告</AppButton>
+            </template>
             <template v-else-if="narrative?.narrative && !narrative.stale">
               <ul class="overview__tile-findings">
                 <li
@@ -1235,7 +1250,7 @@ onMounted(() => {
               >查看完整报告</AppButton>
             </template>
             <template v-else-if="narrative?.stale">
-              <span class="overview__tile-sub">成绩已变化，点页面顶部「AI 整理」更新</span>
+              <span class="overview__tile-sub">成绩或错因已变化，显示上次生成；点页面顶部「AI 整理」更新</span>
               <AppButton
                 variant="ghost"
                 class="overview__tile-action"

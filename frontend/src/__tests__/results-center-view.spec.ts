@@ -151,12 +151,13 @@ function reviewItems(qid: string): ResolvedReviewItem[] {
     })))
 }
 
-async function mountView(tab: string | null = 'details', analysis?: ClassAnalysisResponse, open = '') {
+async function mountView(tab: string | null = 'details', analysis?: ClassAnalysisResponse, open = '',
+    statuses?: [string, number][]) {
   localStorage.clear()
   pipelineMock.getStatus.mockClear()
   pipelineMock.start.mockClear()
   jobsMock.getJob.mockClear().mockImplementation(jobsMock.defaultJob)
-  personalMock.states.mockResolvedValue([['current', 1], ['stale', 2], ['missing', 3], ['unavailable', 4]].map(([status, id]) => ({student_id: id, status, generated_at: '2026-10-03', reason: status === 'unavailable' ? '缺考' : null})))
+  personalMock.states.mockResolvedValue((statuses ?? [['current', 1], ['stale', 2], ['missing', 3], ['unavailable', 4]]).map(([status, id]) => ({student_id: id, status, generated_at: '2026-10-03', reason: status === 'unavailable' ? '缺考' : null})))
   personalMock.exams.mockImplementation(async (id: number) => [{session_id: 7, session_name: '合成成绩验证', graded_at: '2026-10-03', score: 8, max_score: 10,
     status: id === 1 ? 'current' : id === 2 ? 'stale' : id === 3 ? 'missing' : 'unavailable', generated_at: '2026-10-03', reason: id === 4 ? '缺考' : null}])
   vi.mocked(fetchResultsCenter).mockReset().mockResolvedValue(fixture())
@@ -395,7 +396,7 @@ describe('results center class filtering and return position', () => {
       narrative: { key_findings: [{ title: '合成观察', detail: '旧叙述', severity: 'info' }],
         common_issues: [], student_notes: [], grouping_advice: '' },
     })
-    await vi.waitFor(() => expect(host.textContent).toContain('成绩已变化，点页面顶部「AI 整理」更新'))
+    await vi.waitFor(() => expect(host.textContent).toContain('成绩或错因已变化，显示上次生成；点页面顶部「AI 整理」更新'))
     expect(host.textContent).toContain('查看报告')
     expect(host.textContent).not.toContain('去 AI 整理')
   })
@@ -782,6 +783,17 @@ describe('personal report reading and review return', () => {
     expect(host.querySelector('.personal-report-highlight')?.textContent).toContain('合成乙')
   })
 
+  it('shows old_prompt reports as generated and excludes them from the needs-generation count', async () => {
+    const { host } = await mountView('details', undefined, '', [['old_prompt', 1], ['stale', 2], ['missing', 3], ['unavailable', 4]])
+    await vi.waitFor(() => expect(host.querySelector('.personal-report-status--old_prompt')).not.toBeNull())
+    const icon = host.querySelector<HTMLButtonElement>('.personal-report-status--old_prompt')!
+    expect(icon.textContent).toBe('✓')
+    expect(icon.getAttribute('aria-label')).toContain('用旧版提示词生成')
+    // 「报告未生成或需重新生成」只计 missing + stale。
+    expect(host.textContent).toContain('报告未生成或需重新生成（2）')
+    host.querySelectorAll<HTMLTableRowElement>('.results-matrix tbody tr')[0]!.querySelector<HTMLButtonElement>('th > button')!.click()
+    await vi.waitFor(() => expect(document.querySelector('.personal-report-drawer')?.textContent).toContain('用旧版提示词生成'))
+  })
   it('filters missing and stale reports within the class and follows the matrix order', async () => {
     const { host } = await mountView()
     await vi.waitFor(() => expect(host.textContent).toContain('报告未生成或需重新生成（2）'))

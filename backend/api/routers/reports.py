@@ -484,6 +484,9 @@ def get_class_analysis(
         entry_state = resolve_result_state(selected, digest, "class_report")["status"]
     # 输入已变化 → 提示「成绩已更新，可重新生成」；旧结果（stale/old_prompt）仍展示。
     stale = view != "summary" and entry_state == "stale"
+    narrative_state = (
+        entry_state if view != "summary" and selected_class is not None else None
+    )
     narrative = None
     narrative_failed = False
     if state is not None and view != "summary":
@@ -516,6 +519,7 @@ def get_class_analysis(
             (str(state.get("generated_at") or "") or None) if state else None
         ),
         stale=stale,
+        narrative_state=narrative_state,
         active_job_id=active_job_id,
         class_names=class_names,
         selected_class=selected_class,

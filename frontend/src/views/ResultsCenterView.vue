@@ -227,7 +227,7 @@ let personalController: AbortController | null = null
 function reportState(student: ResultsCenterStudent) { return personalStates.value.find(s => s.student_id === student.student_id) }
 function reportLabel(student: ResultsCenterStudent) {
   const state = reportState(student)
-  return `查看${student.student_name}的个人报告（${state ? reportStatusText[state.status] : '状态读取中'}）`
+  return `查看${student.student_name}的个人报告（${state ? (state.status === 'old_prompt' ? '用旧版提示词生成' : reportStatusText[state.status]) : '状态读取中'}）`
 }
 const reportsNeedGeneration = computed(() => studentsInClass.value.filter(s => ['missing', 'stale'].includes(reportState(s)?.status ?? '')).length)
 async function refreshPersonalStates() {
@@ -1107,7 +1107,7 @@ function closeStudentDrawer(restoreFocus = true): void {
                     <button v-if="reportState(student) && reportState(student)?.status !== 'unavailable'"
                       type="button" :class="['personal-report-status', `personal-report-status--${reportState(student)?.status}`]"
                       :aria-label="reportLabel(student)" :title="reportLabel(student)" @click="openPersonalReport(student)">
-                      {{ reportState(student)?.status === 'current' ? '✓' : reportState(student)?.status === 'stale' ? '↻' : '○' }}
+                      {{ reportState(student)?.status === 'current' || reportState(student)?.status === 'old_prompt' ? '✓' : reportState(student)?.status === 'stale' ? '↻' : '○' }}
                     </button>
                     <span v-else-if="reportState(student)?.status === 'unavailable'" class="personal-report-unavailable" :title="reportState(student)?.reason ?? ''">{{ reportState(student)?.reason === '缺考' ? '缺考' : '不可生成' }}</span>
                   </th>
@@ -1194,6 +1194,7 @@ function closeStudentDrawer(restoreFocus = true): void {
         <div class="personal-report-drawer">
           <b>个人报告</b>
           <template v-if="reportState(selectedStudent)?.status === 'current'"><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent)">查看个人报告 ›</AppButton></template>
+          <template v-else-if="reportState(selectedStudent)?.status === 'old_prompt'"><p>用旧版提示词生成。</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent)">查看个人报告 ›</AppButton></template>
           <template v-else-if="reportState(selectedStudent)?.status === 'stale'"><p>成绩已变化，显示上次生成的 AI 分析。</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent)">查看个人报告（上次生成） ›</AppButton></template>
           <template v-else-if="reportState(selectedStudent)?.status === 'missing'"><p>本场报告未生成</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent, true)">查看报告（数据版） ›</AppButton></template>
           <p v-else>{{ reportState(selectedStudent)?.reason ?? '正在读取报告状态…' }}</p>
@@ -1232,7 +1233,7 @@ function closeStudentDrawer(restoreFocus = true): void {
 <style scoped>
 .personal-report-status{display:inline-flex!important;width:26px!important;min-width:26px;height:26px;align-items:center;justify-content:center;vertical-align:top;margin-left:6px;border-radius:5px!important;font-size:var(--font-size-body)!important;padding:0!important}
 .results-matrix tbody .results-matrix__identity > button:not(.personal-report-status){display:inline-grid;width:calc(100% - 32px);vertical-align:top}
-.personal-report-status--current{color:#368260!important;background:#edf7ef!important}.personal-report-status--stale{color:#aa7b22!important;background:#fff3d8!important}.personal-report-status--missing{color:#87929c!important;background:#f2f4f6!important}
+.personal-report-status--current,.personal-report-status--old_prompt{color:#368260!important;background:#edf7ef!important}.personal-report-status--stale{color:#aa7b22!important;background:#fff3d8!important}.personal-report-status--missing{color:#87929c!important;background:#f2f4f6!important}
 .personal-report-unavailable{font-size:var(--font-size-caption);color:#84919e;margin-left:4px}.personal-report-help{color:#7b8b98;font-size:var(--font-size-caption);margin:5px 20px 12px}.personal-report-highlight{outline:2px solid #6c9bb3;outline-offset:-2px}.personal-report-drawer{padding:16px 0;margin-top:12px;border-top:1px solid #e0e7ed}.personal-report-drawer b{display:block;font-size:var(--font-size-body)}.personal-report-drawer p{color:#778490;font-size:var(--font-size-caption);margin:8px 0}
 
 .results-drawer__cmp {

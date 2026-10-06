@@ -108,6 +108,7 @@ class ClassAnalysisResponse(BaseModel):
     narrative_failed: bool
     generated_at: str | None
     stale: bool
+    narrative_state: Literal["current", "stale", "old_prompt", "missing"] | None = None
     active_job_id: int | None
     class_names: list[str] = Field(default_factory=list)
     selected_class: str | None = None

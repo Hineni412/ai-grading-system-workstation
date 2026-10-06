@@ -94,7 +94,7 @@ JobManager 在应用进程内用线程池执行任务，阅卷与扫描流程使
 | 领域 | 入口 |
 |---|---|
 | 当前知识标准 | `question_bank/taxonomy/curriculum_catalog.py` |
-| 个人报告在线读取与批量导出 | `backend/personal_reports.py` 负责本人输入修订、叙述索引、状态与只读渲染；`backend/jobs/personal_report_bundle.py` 只读叙述后暂存、打包并发布下载副本，下载成功后删除。在线与离线共用 `backend/reporting/analysis_report_exporter.py` 的个人报告渲染器，在线作答图从受控原卷裁切返回，不保存副本 |
+| 个人报告在线读取与批量导出 | `backend/personal_reports.py` 负责输入指纹、结果状态与只读渲染，叙述按学生保存于 `user_data/reports/.personal_reports/session_<场次>/<学生>.json`；`backend/jobs/personal_report_bundle.py` 只读叙述后暂存、打包并发布下载副本，下载成功后删除。在线与离线共用 `backend/reporting/analysis_report_exporter.py` 的个人报告渲染器，在线作答图从受控原卷裁切返回，不保存副本 |
 | 知识发布加载 | `question_bank/knowledge_graph_release/loader.py` |
 | 技能缺口与候选 | `question_bank/services/skill_gaps.py`（缺口投影）、`question_bank/services/skill_candidates.py`（运行、候选与已批准待发布状态，伴随文件 `<stem>.skill_candidates<suffix>`）；后台任务类型 `skill_candidate`，写入经 `link_points_to_skill`；技能候选写入与 AI 补挂技能任务共用 `carry_forward_effective_links`，当判定点版本仍读旧发布组时先结转其他点链接再写新链接 |
 | 掌握度 | `question_bank/mastery/current.py`（唯一入口）、`question_bank/mastery/model.py`（拟合与区间）；集成层 `DiagnosisProfileService.semester_mastery` 提供全年级结果 |
