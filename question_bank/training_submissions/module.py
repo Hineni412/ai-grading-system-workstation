@@ -17,6 +17,7 @@ import fitz
 import numpy as np
 from PIL import Image, UnidentifiedImageError
 
+from question_bank.canonical_hash import canonical_hash
 from question_bank.database.schema import connect, initialize_database
 from question_bank.personalized_papers import (
     PaperInvalid,
@@ -1401,14 +1402,7 @@ def _has_file_signature(content: bytes, media_type: str) -> bool:
     return False
 
 
-def _payload_hash(value: Mapping[str, Any]) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+_payload_hash = canonical_hash
 
 
 def _identifier(value: object) -> str:

@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from question_bank.atomic_files import replace_with_retry
+from question_bank.atomic_files import write_json_atomic
 
 import copy
 import hashlib
 import json
-import os
 import re
-import tempfile
 import threading
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -992,20 +990,4 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
 
 
 
-def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=str(path.parent),
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        replace_with_retry(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+_write_json_atomic = write_json_atomic

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from question_bank.canonical_hash import (
+    canonical_hash as _hash_payload,
+    canonical_json as _canonical_json,
+)
 from question_bank.database.schema import connect
 from question_bank.knowledge_graph_release.contracts import stable_record_hash
 from question_bank.knowledge_graph_release.repository import active_release_id
@@ -878,13 +881,6 @@ def _mapping_event(
     )
 
 
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
 
 
 def _model_evidence_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -991,10 +987,6 @@ def _append_unique(target: list[str], values: Sequence[str]) -> None:
         if value and value not in seen:
             seen.add(value)
             target.append(value)
-
-
-def _hash_payload(value: Mapping[str, Any]) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
 __all__ = [

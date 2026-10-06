@@ -8,6 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from question_bank.canonical_hash import (
+    canonical_hash as _hash_payload,
+    canonical_json as _canonical_json,
+)
 from question_bank.database.schema import connect
 from question_bank.training_criteria.analysis import (
     QuestionAnalysisInput,
@@ -1392,21 +1396,8 @@ def _json_strings(value: object) -> list[str]:
     return [str(item) for item in loaded if str(item).strip()]
 
 
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _hash_payload(value: object) -> str:
-    return _sha256(_canonical_json(value))
 
 
 __all__ = [

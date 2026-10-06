@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import PurePosixPath
 from typing import Any
+
+from question_bank.canonical_hash import canonical_hash
 
 _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -67,16 +68,6 @@ class ExportState(str, Enum):
 
 def sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(bytes(content)).hexdigest()
-
-
-def canonical_hash(payload: Mapping[str, Any]) -> str:
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return sha256_bytes(encoded)
 
 
 def _safe_id(value: str, field_name: str) -> str:

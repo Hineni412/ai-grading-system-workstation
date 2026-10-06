@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
 import shutil
 import sqlite3
@@ -27,7 +26,7 @@ from .jobs import create_safety_backup
 from .journal import OpsJournalInvalid, OpsOperationJournal, OpsOperationManifest
 from .lock import OpsLockBusy, OpsOperationLock
 from .plan_store import OpsPlanStore
-from .write_service import OpsWriteService
+from .write_service import OpsWriteService, _file_sha256
 
 
 class _QuietLogger:
@@ -492,14 +491,6 @@ def _reject_link(path: Path) -> None:
         return
     if attributes & 0x400:
         raise ValueError("reparse points are not allowed")
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _replace_with_retry(source: Path, target: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from question_bank.atomic_files import replace_with_retry
+from question_bank.canonical_hash import canonical_hash, canonical_json
 
 import hashlib
 import hmac
@@ -58,6 +59,7 @@ from .rendering import (
     render_review_docx,
     stamp_frozen_pdf,
 )
+from .rendering import _file_sha256
 
 BUDGET_VERSION = "whole-paper-context-budget-v1"
 SUPPORTED_CONTEXT_WINDOWS = frozenset({32_768, 65_536, 128_000})
@@ -2666,14 +2668,6 @@ def _atomic_publish(source: Path, destination: Path) -> None:
     replace_with_retry(source, destination)
 
 
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _instance_lock(identifier: str) -> threading.Lock:
     with _LOCKS_GUARD:
         return _LOCKS.setdefault(identifier, threading.Lock())
@@ -2718,17 +2712,8 @@ def _safe_filename(value: object) -> str:
     return (cleaned or "学生")[:80]
 
 
-def _hash_payload(value: object) -> str:
-    return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
-
-
-def _json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+_hash_payload = canonical_hash
+_json = canonical_json
 
 
 def _mapping(value: object) -> dict[str, Any]:

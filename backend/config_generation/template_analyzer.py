@@ -9,7 +9,7 @@ from typing import Any
 from PIL import Image
 
 from backend.llm.llm_client import LLMClient, _compress_image_for_api
-from backend.config_generation.score_policy import MAX_QUESTION_SCORE, enforce_integer_scores_by_type
+from backend.config_generation.score_policy import MAX_QUESTION_SCORE, _safe_float, enforce_integer_scores_by_type
 
 
 def analyze_template_package(
@@ -809,13 +809,6 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return [str(value).strip()] if str(value).strip() else []
-
-
-def _safe_float(value: Any, default: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
 
 
 def _image_blob_and_size(path: Path) -> tuple[bytes, tuple[int, int]]:

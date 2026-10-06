@@ -15,6 +15,7 @@ from backend.question_id_contract import (
 from backend.config_generation.score_policy import (
     MAX_QUESTION_SCORE,
     OBJECTIVE_TYPES,
+    _safe_float,
     _integerize_deductions,
     _integerize_steps,
     _normalize_type,
@@ -1769,12 +1770,6 @@ def _force_part_total(question: dict[str, Any]) -> None:
     if abs(diff) > 0.01 and isinstance(parts[-1], dict):
         parts[-1]["part_score"] = round(_safe_float(parts[-1].get("part_score"), 0.0) + diff, 2)
         _force_step_total(parts[-1])
-
-def _safe_float(value: Any, default: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
 
 def _string_list(value: Any) -> list[str]:
     if value is None:

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
+
+from question_bank.canonical_hash import canonical_hash
 
 FineTermRole = Literal["direct", "supporting_prerequisite"]
 CoreResolutionStatus = Literal["resolved", "ambiguous", "unmapped"]
@@ -753,14 +753,7 @@ def _reject_score_fields(value: object, *, path: str = "root") -> None:
             _reject_score_fields(child, path=f"{path}[{index}]")
 
 
-def _hash_payload(payload: Mapping[str, Any]) -> str:
-    serialized = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+_hash_payload = canonical_hash
 
 
 __all__ = [

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 import sqlite3
 import zipfile
 from dataclasses import dataclass
@@ -408,3 +410,25 @@ def test_edit_after_review_invalidates_confirmation_and_old_revision(
                 ),
             )
         )
+
+
+def test_canonical_hash_matches_legacy_serialization() -> None:
+    from question_bank.canonical_hash import canonical_hash, canonical_json
+
+    payload = {
+        "题干": "已知 ∫x dx，求常数项",
+        "items": [1, 2.5, {"嵌套": ("a", "b"), "分数": 0.5}],
+        "count": 3,
+    }
+    legacy = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert canonical_hash(payload) == legacy
+    assert canonical_json(payload) == json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
