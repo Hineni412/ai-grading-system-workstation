@@ -38,6 +38,7 @@ from question_bank.training_criteria import (
     solution_evidence_source_content_hash,
 )
 
+from .cancellation_gateway import CancellationAwareGateway
 from .execution_locks import keyed_execution_locks
 from .manager import JobContext
 
@@ -548,26 +549,6 @@ def _run_distinct_tagging_sync_job_locked(
     }
 
 
-class _CancellationAwareCombinedGateway:
-    def __init__(self, gateway: Any, context: JobContext) -> None:
-        self.gateway = gateway
-        self.context = context
-
-    @property
-    def max_parallel_requests(self) -> int:
-        value = getattr(self.gateway, "max_parallel_requests", 1)
-        try:
-            return max(1, int(value))
-        except (TypeError, ValueError):
-            return 1
-
-    def analyze(self, *args: Any, **kwargs: Any) -> Any:
-        self.context.raise_if_cancelled()
-        response = self.gateway.analyze(*args, **kwargs)
-        self.context.raise_if_cancelled()
-        return response
-
-
 def _run_unified_tagging_analysis(
     *,
     context: JobContext,
@@ -637,7 +618,7 @@ def _run_unified_tagging_analysis(
         }
     context.report(0.1, "tagging_sync", "combined-v3")
     protocol_adapter = ai_service._protocol_adapter()
-    gateway = _CancellationAwareCombinedGateway(
+    gateway = CancellationAwareGateway(
         OpenAICombinedAnalysisGateway(
             protocol_adapter=protocol_adapter,
             model_name=ai_service.model,

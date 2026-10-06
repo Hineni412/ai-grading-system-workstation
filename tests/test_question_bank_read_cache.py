@@ -97,6 +97,41 @@ def _seed_skill_bank(tmp_path: Path, count: int = 6):
     return QuestionBankReadService(db, data_root=tmp_path), db, keys
 
 
+def test_list_questions_frequency_sort_uses_exam_frequency_shares(tmp_path, monkeypatch):
+    """frequency_desc 排序取读服务的章节考情考频（期中/期末卷组覆盖率），
+    无考频值的题排在最后；JSON 读连接不再触碰 question_frequency_cache。"""
+    db = tmp_path / "TEST-frequency-sort.db"
+    _seed_paper(db)
+    with sqlite3.connect(db) as conn:
+        conn.executemany(
+            "INSERT INTO questions(id,paper_id,question_number,question_text,"
+            "question_type,difficulty) VALUES(?,1,?,?,'解答题',3)",
+            [
+                (1, "1", "TEST-考频排序甲"),
+                (2, "2", "TEST-考频排序乙"),
+                (3, "3", "TEST-考频排序丙"),
+                (4, "4", "TEST-考频排序丁"),
+            ],
+        )
+    service = QuestionBankReadService(db, data_root=tmp_path)
+    calls: list[bool] = []
+
+    def fake_frequency() -> dict[int, tuple[float, float]]:
+        calls.append(True)
+        return {2: (0.9, 0.1), 1: (0.5, 0.4), 4: (0.2, 0.6)}
+
+    monkeypatch.setattr(service, "exam_frequency", fake_frequency)
+    page = service.list_questions(QuestionReadFilters(sort="frequency_desc"))
+    # 取 max(期中, 期末) 降序：0.9 / 0.6 / 0.5，无值的 3 号垫底。
+    assert [item["id"] for item in page.items] == [2, 4, 1, 3]
+    assert page.total == 4
+    assert calls == [True]
+    page_asc = service.list_questions(QuestionReadFilters(sort="frequency_asc"))
+    assert calls == [True, True]
+    # 升序按同一 max 指标：0.5 / 0.6 / 0.9，无值的 3 号仍垫底。
+    assert [item["id"] for item in page_asc.items] == [1, 4, 2, 3]
+
+
 def test_session_unlinked_count_reuses_skill_index_for_confirmed_live_questions(tmp_path):
     from question_bank.database.schema import connect
     service, db, _keys = _seed_skill_bank(tmp_path)

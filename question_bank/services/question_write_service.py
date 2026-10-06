@@ -284,14 +284,12 @@ class QuestionImportResource:
 
 
 class _TagAnalysisWriteBatch:
-    """One prepared tag-write run with one deferred frequency refresh."""
+    """One prepared tag-write run sharing a current-knowledge resolver."""
 
     def __init__(self, service: QuestionBankWriteService) -> None:
         self._service = service
         self._resolver: CurrentKnowledgeResolver | None = None
         self._prepare_error: Exception | None = None
-        self._successful_question_ids: set[int] = set()
-        self._success_lock = threading.Lock()
         self._entered = False
 
     def __enter__(self) -> _TagAnalysisWriteBatch:
@@ -319,24 +317,6 @@ class _TagAnalysisWriteBatch:
             if self._service._active_tag_analysis_batch is self:
                 self._service._active_tag_analysis_batch = None
             self._entered = False
-        with self._success_lock:
-            successful_ids = tuple(sorted(self._successful_question_ids))
-        resolver = self._resolver
-        if successful_ids and resolver is not None:
-            try:
-                self._service._refresh_tag_analysis_frequencies(
-                    successful_ids,
-                    resolver=resolver,
-                )
-            except Exception as refresh_error:
-                if exc is None:
-                    raise
-                add_note = getattr(exc, "add_note", None)
-                if callable(add_note):
-                    add_note(
-                        "tag frequency refresh also failed: "
-                        f"{type(refresh_error).__name__}"
-                    )
         return False
 
     def save_tag_analysis(
@@ -367,9 +347,6 @@ class _TagAnalysisWriteBatch:
             taxonomy_governance=taxonomy_governance,
             resolver=resolver,
         )
-        if saved:
-            with self._success_lock:
-                self._successful_question_ids.add(int(question_id))
         return saved
 
 
@@ -484,14 +461,6 @@ class QuestionBankWriteService:
         )
         if not saved:
             return False
-        from question_bank.services.question_frequency_service import (
-            QuestionFrequencyService,
-        )
-
-        QuestionFrequencyService(
-            self.db_path,
-            current_knowledge=resolver,
-        ).invalidate_frequency_cache_for_question(int(question_id))
         return True
 
     def _save_tag_analysis_with_resolver(
@@ -661,23 +630,6 @@ class QuestionBankWriteService:
                     model_name=_clean_optional(model_name),
                 )
         return True
-
-    def _refresh_tag_analysis_frequencies(
-        self,
-        question_ids: tuple[int, ...],
-        *,
-        resolver: CurrentKnowledgeResolver,
-    ) -> None:
-        from question_bank.services.question_frequency_service import (
-            QuestionFrequencyService,
-        )
-
-        with connect(self.db_path) as connection:
-            QuestionFrequencyService(
-                self.db_path,
-                external_connection=connection,
-                current_knowledge=resolver,
-            ).invalidate_frequency_cache_for_questions(question_ids)
 
     def apply_question_type_suggestion(
         self,
@@ -1247,16 +1199,6 @@ class QuestionBankWriteService:
             updated_revision = question_revision(conn, question_id)
             assert updated_revision is not None
 
-        try:
-            from question_bank.services.question_frequency_service import (
-                QuestionFrequencyService,
-            )
-
-            QuestionFrequencyService(self.db_path).invalidate_frequency_cache_for_question(
-                question_id
-            )
-        except Exception:
-            pass
         return QuestionWriteResult(
             question_id=question_id,
             revision=updated_revision,
@@ -1316,16 +1258,6 @@ class QuestionBankWriteService:
             assert updated_revision is not None
             updated_tags = _load_current_tags(conn, question_id)
 
-        try:
-            from question_bank.services.question_frequency_service import (
-                QuestionFrequencyService,
-            )
-
-            QuestionFrequencyService(
-                self.db_path
-            ).invalidate_frequency_cache_for_question(question_id)
-        except Exception:
-            pass
         return QuestionWriteResult(
             question_id=question_id,
             revision=updated_revision,

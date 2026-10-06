@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from question_bank.services.chapter_exam_profile import build_chapter_exam_profile
+from question_bank.services.chapter_exam_profile import (
+    build_chapter_exam_profile,
+    build_exam_frequency,
+)
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume
 
 VOLUME_ID = "bnu24-math-g8-upper"
@@ -73,6 +76,7 @@ def profile_db(tmp_path: Path, question_bank_database):
         (12, 4, "6", "填空题", 3, TR),
         # 不计入
         (13, 5, "1", "选择题", 2, TZ),
+        (15, 5, "2", "选择题", None, "选择题：阶段练习里的缺难度题"),
         (14, 6, "1", "选择题", 2, TW),
     ]
     scope = [
@@ -91,6 +95,7 @@ def profile_db(tmp_path: Path, question_bank_database):
         (11, S21, [S21]),
         (12, S11, [S11]),
         (13, S21, [S21]),
+        (15, S21, [S21]),
         (14, S21, [S21]),
     ]
     with sqlite3.connect(db_path) as conn:
@@ -109,10 +114,6 @@ def profile_db(tmp_path: Path, question_bank_database):
             "direct_section_ids_json) VALUES (?, ?, ?)",
             [(qid, primary, json.dumps(direct)) for qid, primary, direct in scope],
         )
-        conn.execute(
-            "INSERT INTO question_frequency_cache (question_id, score_midterm, "
-            "score_final) VALUES (7, 5.0, 0.0)"
-        )
         conn.commit()
     return db_path
 
@@ -130,6 +131,9 @@ def _snapshot() -> dict:
         102: {"sk_b": [{"point_id": "b1"}]},
         104: {"sk_a": [{"point_id": "a1"}]},
         105: {"sk_a": [{"point_id": "a1"}]},
+        13: {"sk_a": [{"point_id": "a13"}]},   # 阶段练习的题也有技能链接
+        14: {"sk_a": [{"point_id": "a14"}]},   # 宿主卷已删，题本身未删
+        15: {"sk_b": [{"point_id": "b15"}]},   # 缺难度
     }
     return {
         "release": "rel-test",
@@ -137,13 +141,13 @@ def _snapshot() -> dict:
             "sk_a": _node("sk_a", "技能·区分有理数无理数", [S21]),
             "sk_b": _node("sk_b", "技能·平方根求法", [S22]),
         },
-        "volumes": {VOLUME_ID: {1, 2, 3, 7, 8, 9, 10, 11, 12, 13, 14, 101, 102, 103, 104, 105}},
+        "volumes": {VOLUME_ID: {1, 2, 3, 7, 8, 9, 10, 11, 12, 13, 14, 15, 101, 102, 103, 104, 105}},
         "members": {
             1: {1, 2, 3, 7},
             2: {101, 102, 103, 104, 105},
             3: {8, 9, 10, 11},
             4: {12},
-            5: {13},
+            5: {13, 15},
             6: {14},
         },
         "by_question": hits,
@@ -252,6 +256,65 @@ def test_typical_needs_two_questions_from_two_groups(profile_db):
     }
     assert skills["sk_a"]["typical"] == []
     assert skills["sk_b"]["typical"] == []
+
+
+def _frequency(db_path: Path) -> dict[int, tuple[float, float]]:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        return build_exam_frequency(
+            conn, _snapshot(), curriculum_volume(volume_id=VOLUME_ID)
+        )
+    finally:
+        conn.close()
+
+
+def test_exam_frequency_coverage_and_exclusions(profile_db):
+    """考频＝同技能同档计入题覆盖的卷组 ÷ 卷组数，自有卷组分子分母同除。
+
+    本夹具：期中 A/B 同源合并为 1 个卷组，期末 A、B 各 1 组。"""
+    freq = _frequency(profile_db)
+    # 期中只有一个卷组且是 q1 自有组 → 剔除后无剩余组。
+    assert freq[1] == (0.0, 0.0)
+    assert freq[105] == (0.0, 0.0)
+    # q2（sk_b 中档，期中组）：期末两个组中有一组（q8 所在）覆盖同技能同档。
+    assert freq[2] == (0.0, 0.5)
+    # q8（sk_b 中档，期末A组）：期中组覆盖 → 1/1；期末剔除自有组后无覆盖 → 0/1。
+    assert freq[8] == (1.0, 0.0)
+    # 同技能不同档不计：q9（sk_a 中档）期中只有基础/难档同技能题 → 0。
+    assert freq[9] == (0.0, 0.0)
+    assert freq[10] == (0.0, 0.0)
+    assert freq[11] == (0.0, 0.0)
+    # 同源合并组内被去重的 101/102/104 也按同一口径取值（自有组仍被剔除）。
+    assert freq[101] == (0.0, 0.0)
+    assert freq[102] == (0.0, 0.5)
+    assert freq[104] == (0.0, 0.0)
+    # 阶段练习的题没有自有卷组可剔除 → 期中 1/1。
+    assert freq[13] == (1.0, 0.0)
+    # 宿主卷已删但题未删，同样按无自有组计。
+    assert freq[14] == (1.0, 0.0)
+
+
+def test_exam_frequency_missing_skill_or_difficulty(profile_db):
+    """无技能链接或无难度档的题不出现；正式卷内未链接题也不出现。"""
+    freq = _frequency(profile_db)
+    assert set(freq) == {1, 2, 7, 8, 9, 10, 11, 13, 14, 101, 102, 104, 105}
+    assert 3 not in freq and 12 not in freq     # 计入题但无技能链接
+    assert 103 not in freq                       # 去重副本且无技能链接
+    assert 15 not in freq                        # 阶段练习且缺难度
+    # 无期中/期末卷的本册返回空表。
+    empty_snapshot = _snapshot()
+    empty_snapshot["volumes"] = {VOLUME_ID: set()}
+    conn = sqlite3.connect(profile_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        with conn:
+            conn.execute("UPDATE papers SET exam_type = '阶段练习'")
+        other_volume = curriculum_volume(volume_id=VOLUME_ID)
+        freq_empty = build_exam_frequency(conn, empty_snapshot, other_volume)
+    finally:
+        conn.close()
+    assert freq_empty == {}
 
 
 # ---- 典型题选取：按教师报告口径的专用数据 ----

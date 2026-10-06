@@ -327,12 +327,25 @@ def _section_typical(
     }
 
 
-def build_chapter_exam_profile(
+def _primary_skill_key(
+    hits: dict[str, int],
+    section: str,
+    skill_sections: dict[str, list[str]],
+) -> str | None:
+    """主要技能：优先锚定到该题所属小节的技能，判定点最多者，同数取键小者。"""
+    if not hits:
+        return None
+    own = [key for key in hits if section in skill_sections.get(key, [])]
+    pool = own or list(hits)
+    return sorted(pool, key=lambda key: (-hits[key], key))[0]
+
+
+def _prepare(
     conn: sqlite3.Connection,
     snapshot: dict[str, Any],
     volume: dict[str, Any],
 ) -> dict[str, Any]:
-    """按本册期中/期末卷统计章节出卷情况；snapshot 为读服务的技能快照。"""
+    """期中/期末卷范围、同源卷组、逐题归属与主要技能归一——章节考情与考频共用。"""
     volume_id = str(volume["id"])
     stage_key = {"期中": "midterm", "期末": "final"}
     # 小节归属映射与带章序号的小节名（不改动目录对象本身）。
@@ -500,12 +513,11 @@ def build_chapter_exam_profile(
     # 主要技能：优先锚定到该题所属小节的技能，判定点最多者，同数取键小者。
     for rec in recs.values():
         hits = rec["skill_hits"]
-        if not hits:
+        own = [key for key in hits if rec["section"] in skill_sections.get(key, [])]
+        best = _primary_skill_key(hits, rec["section"], skill_sections)
+        if best is None:
             rec["skill_key"], rec["skill_own"] = UNLINKED, True
             continue
-        own = [key for key in hits if rec["section"] in skill_sections.get(key, [])]
-        pool = own or list(hits)
-        best = sorted(pool, key=lambda key: (-hits[key], key))[0]
         rec["skill_key"] = best
         rec["skill_own"] = bool(own)
         node = nodes.get(best)
@@ -527,6 +539,43 @@ def build_chapter_exam_profile(
                 else "份")
         for stage, _label in STAGES
     }
+    return {
+        "volume_id": volume_id,
+        "volume_qids": volume_qids,
+        "papers": papers,
+        "groups": groups,
+        "group_of": group_of,
+        "counted": counted,
+        "nodes": nodes,
+        "skill_sections": skill_sections,
+        "by_question": by_question,
+        "point_counts": point_counts,
+        "tpl_sets": tpl_sets,
+        "recs": recs,
+        "stage_groups": stage_groups,
+        "unit": unit,
+        "section_label": section_label,
+    }
+
+
+def build_chapter_exam_profile(
+    conn: sqlite3.Connection,
+    snapshot: dict[str, Any],
+    volume: dict[str, Any],
+) -> dict[str, Any]:
+    """按本册期中/期末卷统计章节出卷情况；snapshot 为读服务的技能快照。"""
+    prep = _prepare(conn, snapshot, volume)
+    volume_id = prep["volume_id"]
+    section_label = prep["section_label"]
+    papers = prep["papers"]
+    tpl_sets = prep["tpl_sets"]
+    groups = prep["groups"]
+    nodes = prep["nodes"]
+    skill_sections = prep["skill_sections"]
+    point_counts = prep["point_counts"]
+    recs = prep["recs"]
+    stage_groups = prep["stage_groups"]
+    unit = prep["unit"]
 
     chapters_out: list[dict[str, Any]] = []
     for chapter in volume["chapters"]:
@@ -666,3 +715,94 @@ def build_chapter_exam_profile(
         "merged_groups": merged,
         "chapters": chapters_out,
     }
+
+
+def build_exam_frequency(
+    conn: sqlite3.Connection,
+    snapshot: dict[str, Any],
+    volume: dict[str, Any],
+) -> dict[int, tuple[float, float]]:
+    """每题考频：(期中同源卷组覆盖率, 期末同源卷组覆盖率)，与章节考情同一口径。
+
+    某阶段覆盖率＝含有同主要技能同难度档计入题的该阶段卷组数 ÷ 该阶段卷组数；
+    题自身所属卷组在分子分母中同时剔除，不在正式卷中的题（如阶段练习）
+    没有可剔除的自有卷组；无主要技能或无难度档的题不出现。"""
+    prep = _prepare(conn, snapshot, volume)
+    stage_groups = {
+        stage: set(prep["stage_groups"][stage]) for stage, _label in STAGES
+    }
+    if not any(stage_groups.values()):
+        return {}
+    recs = prep["recs"]
+    group_of = prep["group_of"]
+    skill_sections = prep["skill_sections"]
+    by_question = prep["by_question"]
+
+    cell_groups: dict[str, dict[tuple[str, str], set[int]]] = {
+        stage: defaultdict(set) for stage, _label in STAGES
+    }
+    for rec in recs.values():
+        if rec["skill_key"] != UNLINKED and rec["tier"] is not None:
+            cell_groups[rec["stage"]][(rec["skill_key"], rec["tier"])].add(
+                rec["group"]
+            )
+
+    def shares(skill_key: str, tier: str,
+               own_group: int | None) -> tuple[float, float]:
+        own = {own_group} if own_group is not None else set()
+        out = []
+        for stage, _label in STAGES:
+            pool = stage_groups[stage] - own
+            covered = cell_groups[stage].get((skill_key, tier), set()) - own
+            out.append(len(covered) / len(pool) if pool else 0.0)
+        return (out[0], out[1])
+
+    results: dict[int, tuple[float, float]] = {}
+    for rec in recs.values():
+        if rec["skill_key"] == UNLINKED or rec["tier"] is None:
+            continue
+        results[rec["id"]] = shares(rec["skill_key"], rec["tier"], rec["group"])
+
+    # 计入题之外的本册题（同组去重丢弃者、阶段练习等）也按同一口径取值。
+    extras = sorted(prep["volume_qids"] - prep["counted"])
+    if not extras:
+        return results
+    marks = _placeholders(extras)
+    extra_rows = {
+        int(row["id"]): dict(row)
+        for row in conn.execute(
+            "SELECT id, paper_id, difficulty FROM questions "
+            f"WHERE id IN ({marks}) AND is_deleted = 0",
+            extras,
+        )
+    }
+    if not extra_rows:
+        return results
+    extra_list = sorted(extra_rows)
+    extra_section = {
+        int(row["question_id"]): str(row["primary_section_id"] or "")
+        for row in conn.execute(
+            "SELECT question_id, primary_section_id FROM question_scope_summary "
+            f"WHERE question_id IN ({_placeholders(extra_list)})",
+            extra_list,
+        )
+    }
+    for qid, row in extra_rows.items():
+        hits = {
+            key: len(value)
+            for key, value in by_question.get(qid, {}).items()
+        }
+        try:
+            difficulty = float(row["difficulty"])
+        except (TypeError, ValueError):
+            continue
+        tier = _tier_of(difficulty)
+        if tier is None:
+            continue
+        best = _primary_skill_key(
+            hits, extra_section.get(qid, ""), skill_sections
+        )
+        if best is None:
+            continue
+        results[qid] = shares(best, tier, group_of.get(int(row["paper_id"])))
+    return results

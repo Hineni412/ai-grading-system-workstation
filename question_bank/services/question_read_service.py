@@ -1451,6 +1451,34 @@ class QuestionBankReadService:
             _read_result_cache_put(key, result)
         return result
 
+    def exam_frequency(self) -> dict[int, tuple[float, float]]:
+        """每题考频：(期中同源卷组覆盖率, 期末同源卷组覆盖率)，章节考情口径。"""
+        from question_bank.services.chapter_exam_profile import (
+            build_exam_frequency,
+        )
+        from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
+
+        # An active read scope pins the source generation; reuse it so
+        # frequency-sorted list requests share one computed map.
+        active = _ACTIVE_READ_SCOPE.get()
+        generation = (
+            active.generation
+            if active is not None
+            else _source_generation_token(self.db_path)
+        )
+        key = ("exam_frequency", generation, self._cache_data_root)
+        cached = _read_result_cache_get(key) if generation is not None else _CACHE_MISS
+        if cached is not _CACHE_MISS:
+            return cached  # type: ignore[return-value]
+        result: dict[int, tuple[float, float]] = {}
+        with _read_connection(self.db_path) as conn:
+            for volume in load_curriculum_catalog()["volumes"]:
+                snapshot = self._skill_snapshot(volume_id=str(volume["id"]))
+                result.update(build_exam_frequency(conn, snapshot, volume))
+        if generation is not None and generation == _source_generation_token(self.db_path):
+            _read_result_cache_put(key, result)
+        return result
+
     def standard_summary(self) -> dict[str, Any]:
         """Maintenance metadata, using the same current evidence and links as training."""
         from question_bank.solution_evidence.knowledge_links import load_point_links
@@ -1859,9 +1887,26 @@ class QuestionBankReadService:
         )
 
         list_joins = list(joins)
+        list_params = list(params)
         if filters.sort in _FREQUENCY_SORTS:
+            frequency = self.exam_frequency()
             list_joins.append(
-                "LEFT JOIN question_frequency_cache qfc ON qfc.question_id = q.id"
+                "LEFT JOIN ("
+                "SELECT CAST(json_extract(value, '$[0]') AS INTEGER) AS question_id, "
+                "json_extract(value, '$[1]') AS score_midterm, "
+                "json_extract(value, '$[2]') AS score_final, "
+                "0.0 AS score_zhongkao "
+                "FROM json_each(?)"
+                ") qfc ON qfc.question_id = q.id"
+            )
+            # The join marker sits after earlier JOIN ?s and before the WHERE ?s;
+            # insert the JSON payload at that textual position.
+            join_markers = sum(sql.count("?") for sql in joins)
+            list_params.insert(
+                join_markers,
+                json.dumps(
+                    [[qid, mid, final] for qid, (mid, final) in sorted(frequency.items())]
+                ),
             )
         # A reused question displays the importing paper's own number.
         number_select = (
@@ -1920,7 +1965,7 @@ class QuestionBankReadService:
             page_rows = conn.execute(
                 " ".join([f"SELECT DISTINCT q.id, {number_select} FROM questions q",
                           *list_joins, where_sql, f"ORDER BY {order_clause}", "LIMIT ? OFFSET ?"]),
-                [*params, filters.page_size, offset],
+                [*list_params, filters.page_size, offset],
             ).fetchall()
             page_ids = list(dict.fromkeys(int(row["id"]) for row in page_rows))
             full_rows = conn.execute(

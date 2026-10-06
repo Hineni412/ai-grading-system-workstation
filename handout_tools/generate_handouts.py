@@ -3,8 +3,8 @@
 只读访问题库数据库与 rich_content 快照，按"章节 → 小节 → 题型"组织题目，
 生成 A/B/C 三卷、教师版与学生版 docx。本模块不写题库，不调用模型。
 
-组卷策略（难度取题库 difficulty 1-9 档，考频取 question_frequency_cache 的
-贝叶斯加权分；小节按授课顺序、节内题型按期中出现卷数排序，各小节轮流出题
+组卷策略（难度取题库 difficulty 1-9 档，考频取章节考情口径的期中/期末
+同源卷组覆盖率；小节按授课顺序、节内题型按期中出现卷数排序，各小节轮流出题
 保证章内前后都有覆盖）：
   A卷 典型卷   难度 2-5 为主，每题型取考频最高题，高频题型补第二题，
                高频且稍难（难度6）的题最多 3 道；
@@ -129,6 +129,11 @@ def _parse_school_year(title: str) -> tuple[str, str]:
 
 def load_chapter(db_path: Path, chapter_id: str) -> list[Section]:
     volume_prefix = f"bnu24-math-g8-upper-{chapter_id}-"
+    from question_bank.services.question_read_service import QuestionBankReadService
+
+    frequency = QuestionBankReadService(
+        db_path, data_root=project_data_root()
+    ).exam_frequency()
     conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
@@ -136,14 +141,13 @@ def load_chapter(db_path: Path, chapter_id: str) -> list[Section]:
     rows = cur.execute(
         """
         SELECT q.id, q.paper_id, q.question_number, q.question_type, q.question_text,
-               q.difficulty, p.title, p.exam_type, f.score_midterm, f.score_final,
+               q.difficulty, p.title, p.exam_type,
                sec.tag_value AS section_id
         FROM questions q
         JOIN papers p ON p.id = q.paper_id AND p.deleted_at IS NULL
         JOIN question_tags sec ON sec.question_id = q.id
           AND sec.tag_type = 'curriculum_section'
           AND sec.tag_value LIKE ?
-        LEFT JOIN question_frequency_cache f ON f.question_id = q.id
         WHERE q.is_deleted = 0
         GROUP BY q.id
         """,
@@ -232,6 +236,7 @@ def load_chapter(db_path: Path, chapter_id: str) -> list[Section]:
         school, year_pair = _parse_school_year(str(row["title"]))
         text = str(row["question_text"] or "")
         score_match = _SCORE_PREFIX.search(text.split("\n")[0])
+        midterm_freq, final_freq = frequency.get(qid, (0.0, 0.0))
         question = Question(
             id=qid,
             paper_id=int(row["paper_id"]),
@@ -240,8 +245,8 @@ def load_chapter(db_path: Path, chapter_id: str) -> list[Section]:
             text=text,
             difficulty=int(row["difficulty"] or 0),
             score=int(score_match.group(1)) if score_match else None,
-            midterm_freq=float(row["score_midterm"] or 0.0),
-            final_freq=float(row["score_final"] or 0.0),
+            midterm_freq=float(midterm_freq),
+            final_freq=float(final_freq),
             school=school,
             year_pair=year_pair,
             exam_type=str(row["exam_type"] or ""),

@@ -23,7 +23,6 @@ from question_bank.services.question_read_service import (
     QuestionBankReadService,
     QuestionReadFilters,
 )
-from question_bank.services.question_frequency_service import QuestionFrequencyService
 from tests.question_bank_support import QuestionBankTestStore
 from question_bank.solution_evidence import SolutionEvidenceRepository
 from question_bank.taxonomy.governance import TaxonomyGovernance
@@ -237,31 +236,16 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
     context, _store = _context(tmp_path, {"question_ids": requested_ids})
     gateway_calls: list[tuple[str, tuple[int, ...]]] = []
     initialize_calls: list[Path] = []
-    refresh_calls: list[tuple[int, ...]] = []
     original_initialize = question_write_module.initialize_database
-    original_refresh = QuestionFrequencyService.invalidate_frequency_cache_for_questions
 
     def tracking_initialize(path: Path) -> None:
         initialize_calls.append(Path(path))
         original_initialize(path)
 
-    def tracking_refresh(
-        self: QuestionFrequencyService,
-        question_ids,
-    ) -> None:
-        captured = tuple(int(item) for item in question_ids)
-        refresh_calls.append(captured)
-        original_refresh(self, captured)
-
     monkeypatch.setattr(
         question_write_module,
         "initialize_database",
         tracking_initialize,
-    )
-    monkeypatch.setattr(
-        QuestionFrequencyService,
-        "invalidate_frequency_cache_for_questions",
-        tracking_refresh,
     )
 
     class FakeCombinedGateway:
@@ -373,7 +357,6 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
 
     assert gateway_calls == [("both", (question_id,))]
     assert initialize_calls == [db_path]
-    assert refresh_calls == [(question_id,)]
     assert result["outcome"] == "complete"
     assert result["analysis_contract"] == "combined-v3"
     assert result["evidence_succeeded_question_ids"] == requested_ids

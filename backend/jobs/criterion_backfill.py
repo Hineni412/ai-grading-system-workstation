@@ -31,24 +31,8 @@ from question_bank.training_criteria import (
     usable_training_criterion,
 )
 
+from .cancellation_gateway import CancellationAwareGateway
 from .manager import JobCancellationRequested, JobContext
-
-
-class _CancellationAwareGateway:
-    def __init__(self, gateway: Any, context: JobContext) -> None:
-        self.gateway = gateway
-        self.context = context
-
-    @property
-    def max_parallel_requests(self) -> int:
-        try:
-            return max(1, int(getattr(self.gateway, "max_parallel_requests", 1)))
-        except (TypeError, ValueError):
-            return 1
-
-    def analyze(self, *args, **kwargs):
-        self.context.raise_if_cancelled()
-        return self.gateway.analyze(*args, **kwargs)
 
 
 def run_criterion_backfill_job(
@@ -159,7 +143,7 @@ def run_criterion_backfill_job(
         try:
             assert tagging_service is not None
             protocol_adapter = tagging_service._protocol_adapter()
-            gateway = _CancellationAwareGateway(
+            gateway = CancellationAwareGateway(
                 OpenAICombinedAnalysisGateway(
                     protocol_adapter=protocol_adapter,
                     model_name=tagging_service.model,
