@@ -222,46 +222,65 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
 
   async function load(id: number): Promise<void> {
     const current = ++generation
+    // 同一场考试且已有完整数据时按「静默重查」处理：界面保留旧数据直到新结果到位。
+    const revalidate = sessionId.value === id
+      && workspace.value !== null
+      && loadState.value === 'ready'
     sessionId.value = id
-    workspace.value = null
-    preflight.value = null
-    decisionConflicts.value = []
-    students.value = []
-    activeJobId.value = null
-    preflightJobId.value = null
-    resetPlanSelection()
     workspaceRefreshQueued = false
     busyAction.value = ''
     errorMessage.value = ''
-    loadState.value = 'loading'
+    if (!revalidate) {
+      workspace.value = null
+      preflight.value = null
+      decisionConflicts.value = []
+      students.value = []
+      activeJobId.value = null
+      preflightJobId.value = null
+      resetPlanSelection()
+      loadState.value = 'loading'
+    }
     try {
+      let jobsReady: Promise<void> = Promise.resolve()
       if (!jobsInitialized) {
         jobsInitialized = true
-        await jobStore.initialize()
+        jobsReady = jobStore.initialize()
       }
-      const [next, studentList] = await Promise.all([
+      const [, next, studentList, preflightResult] = await Promise.all([
+        jobsReady,
         fetchGradingWorkspace(id),
         fetchScanStudentOptions(id).catch(() => []),
+        (async (): Promise<{ value: ScanPreflight | null; error: unknown }> => {
+          try {
+            return { value: await fetchPreflight(id) ?? null, error: null }
+          } catch (error) {
+            return { value: null, error }
+          }
+        })(),
       ])
       if (!isCurrent(id, current)) return
+      // 静默重查在新结果到手后才清瞬时状态，避免中途把已展示内容清空。
+      if (revalidate) {
+        decisionConflicts.value = []
+        activeJobId.value = null
+        preflightJobId.value = null
+        resetPlanSelection()
+      }
       applyWorkspaceSnapshot(next)
       students.value = studentList
-      loadState.value = 'ready'
-      if (next.upload_batch.state === 'frozen') {
-        try {
-          const result = await fetchPreflight(id)
-          if (isCurrent(id, current)) preflight.value = result
-        } catch (error) {
-          // A frozen batch can still be waiting for its first successful
-          // preflight (404); anything else is a real load/decode failure and
-          // must be visible instead of silently disabling the grade/review rail.
-          if (isCurrent(id, current)
-            && !(error instanceof ApiError && error.code === 'scan_preflight_not_found')) {
-            errorMessage.value = safeMessage(error)
-          }
-        }
+      preflight.value = next.upload_batch.state === 'frozen'
+        ? preflightResult.value
+        : null
+      // A frozen batch can still be waiting for its first successful
+      // preflight (404); anything else is a real load/decode failure and
+      // must be visible instead of silently disabling the grade/review rail.
+      if (next.upload_batch.state === 'frozen'
+        && preflightResult.error !== null
+        && !(preflightResult.error instanceof ApiError
+          && preflightResult.error.code === 'scan_preflight_not_found')) {
+        errorMessage.value = safeMessage(preflightResult.error)
       }
-      if (!isCurrent(id, current)) return
+      loadState.value = 'ready'
       const jobs = Object.values(jobStore.jobs).sort((left, right) => right.id - left.id)
       const gradingJob = jobs.find((job) => job.job_type === 'grading_run'
         && Number(job.payload.session_id) === id && !['succeeded', 'failed', 'cancelled'].includes(job.status))
@@ -273,6 +292,12 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
       }
     } catch (error) {
       if (!isCurrent(id, current)) return
+      // 静默重查失败只提示错误，已展示的工作区数据保持可用。
+      if (revalidate) {
+        loadState.value = 'ready'
+        errorMessage.value = safeMessage(error)
+        return
+      }
       loadState.value = 'error'
       errorMessage.value = safeMessage(error)
     }

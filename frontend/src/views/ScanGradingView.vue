@@ -1,12 +1,16 @@
+<script lang="ts">
+import type { ReviewQuestionSummary } from '../api/review'
+
+// 复核题摘要按考试保留在同次会话里：重进页面先展示上次结果，后台再刷新。
+const interventionSummaryCache = new Map<number, ReviewQuestionSummary[]>()
+</script>
+
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { TERMINAL_JOB_STATUSES } from '../api/jobs'
-import {
-  fetchReviewQuestions,
-  type ReviewQuestionSummary,
-} from '../api/review'
+import { fetchReviewQuestions } from '../api/review'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import StepProgress, { type StepProgressStep } from '../components/design-system/StepProgress.vue'
@@ -32,6 +36,24 @@ const sessionId = computed(() => Number(route.params.sessionId))
 const gradingSubmissionPending = ref(false)
 const interventionQuestions = ref<ReviewQuestionSummary[]>([])
 const interventionState = ref<InterventionState>('idle')
+// 工作区恢复超过 400ms 才显示横幅，常规重进不再闪提示。
+const showRestoreBanner = ref(false)
+let restoreBannerTimer: ReturnType<typeof setTimeout> | undefined
+watch(() => store.loadState, (state) => {
+  if (restoreBannerTimer !== undefined) {
+    clearTimeout(restoreBannerTimer)
+    restoreBannerTimer = undefined
+  }
+  showRestoreBanner.value = false
+  if (state === 'loading') {
+    restoreBannerTimer = setTimeout(() => {
+      showRestoreBanner.value = true
+    }, 400)
+  }
+})
+onBeforeUnmount(() => {
+  if (restoreBannerTimer !== undefined) clearTimeout(restoreBannerTimer)
+})
 // 答卷核对与原卷查看器的状态；组件卸载（切换阶段）时保留，换场次时由它自己重置。
 const preflight = useScanPreflight(sessionId)
 const gradingStarting = computed(() => !store.gradingRun && (
@@ -113,25 +135,27 @@ function selectStage(id: string): void {
 }
 
 async function loadInterventionSummary(id: number): Promise<void> {
-  interventionState.value = 'loading'
+  if (interventionState.value !== 'ready') interventionState.value = 'loading'
   try {
     const questions = await fetchReviewQuestions(id, { scope: 'all' })
     if (sessionId.value !== id) return
     interventionQuestions.value = questions
     interventionState.value = 'ready'
+    interventionSummaryCache.set(id, questions)
   } catch {
     if (sessionId.value !== id) return
-    interventionState.value = 'error'
+    if (interventionState.value !== 'ready') interventionState.value = 'error'
   }
 }
 
 async function loadRoute(): Promise<void> {
   const id = sessionId.value
   if (!Number.isSafeInteger(id) || id <= 0) return
-  interventionQuestions.value = []
-  interventionState.value = 'idle'
+  const cached = interventionSummaryCache.get(id)
+  interventionQuestions.value = cached ?? []
+  interventionState.value = cached ? 'ready' : 'idle'
+  void loadInterventionSummary(id)
   await store.load(id)
-  if (sessionId.value === id && store.preflight) void loadInterventionSummary(id)
 }
 
 onMounted(() => {
@@ -194,7 +218,7 @@ watch(
     </PageHeader>
 
     <div class="scan-grading__body">
-      <main class="scan-grading__main"><FeedbackBanner v-if="store.errorMessage" role="alert" tone="info" :description="store.errorMessage" /><FeedbackBanner v-if="store.loadState === 'loading'" role="status" tone="info" description="正在恢复本次批改工作区…" />
+      <main class="scan-grading__main"><FeedbackBanner v-if="store.errorMessage" role="alert" tone="info" :description="store.errorMessage" /><FeedbackBanner v-if="showRestoreBanner" role="status" tone="info" description="正在恢复本次批改工作区…" />
 
     <Transition v-if="store.workspace" :name="stageTransition" mode="out-in">
       <ScanPreflightStage

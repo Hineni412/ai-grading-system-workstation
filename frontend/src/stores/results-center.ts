@@ -112,7 +112,13 @@ export const useResultsCenterStore = defineStore('results-center', () => {
       if (loaded.session_id !== nextSessionId) {
         throw new Error('Results center scope mismatch')
       }
-      results.value = loaded
+      // 内容一致的刷新沿用旧对象，下游按对象身份区分「数据变了」与「只是重查」。
+      if (
+        results.value === null
+        || JSON.stringify(results.value) !== JSON.stringify(loaded)
+      ) {
+        results.value = loaded
+      }
       state.value = loaded.students.length === 0 ? 'empty' : 'ready'
       updatedAt.value = new Date().toISOString()
     } catch (error) {

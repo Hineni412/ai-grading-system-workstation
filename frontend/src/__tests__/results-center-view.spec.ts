@@ -247,7 +247,18 @@ describe('results center class filtering and return position', () => {
     await nextTick()
     expect(fetchReviewItems).toHaveBeenCalledTimes(2) // Q1 + 上面 d 到卡 2 时读的 Q2
     expect(fetchReviewRubric).toHaveBeenCalledTimes(4) // 本次翻分读 Q1 卡内依据
+    // 内容相同的成绩刷新沿用旧对象：看卷读取不失效、班级分析不重取
+    const analysisCalls = classAnalysisMock.getClassAnalysis.mock.calls.length
     vi.mocked(fetchResultsCenter).mockResolvedValue(fixture())
+    await useResultsCenterStore().load(7)
+    await nextTick()
+    expect(fetchReviewItems).toHaveBeenCalledTimes(2)
+    expect(classAnalysisMock.getClassAnalysis).toHaveBeenCalledTimes(analysisCalls)
+    // 内容变化的刷新按原逻辑失效并重取
+    const changed = fixture()
+    changed.students[0]!.items[0]!.score_awarded = 2
+    changed.students[0]!.current_score = 7
+    vi.mocked(fetchResultsCenter).mockResolvedValue(changed)
     await useResultsCenterStore().load(7)
     await vi.waitFor(() => expect(fetchReviewItems).toHaveBeenCalledTimes(3))
     expect(document.querySelector('.wtc__score')).toBeNull()
@@ -258,6 +269,34 @@ describe('results center class filtering and return position', () => {
     await open()
     await vi.waitFor(() => expect(document.querySelector('.wtc__img')).not.toBeNull())
     expect(fetchReviewItems).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps 看卷 10 分钟 enabled while a changed refresh revalidates the analysis', async () => {
+    const analysis: ClassAnalysisResponse = {
+      status: 'ready', auto_generate: true, small_sample: true, data: null,
+      cause_analysis: null, generated_at: null, stale: false, active_job_id: null,
+      narrative_failed: false, class_names: ['一班', '二班'], selected_class: null,
+      narrative: { key_findings: [], common_issues: [], student_notes: [], grouping_advice: '' },
+    }
+    const { host } = await mountView('overview', analysis)
+    const button = () => [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((el) => el.textContent === '看卷 10 分钟')!
+    await vi.waitFor(() => expect(button().disabled).toBe(false))
+    let resolveAnalysis!: (value: ClassAnalysisResponse) => void
+    classAnalysisMock.getClassAnalysis.mockReset()
+      .mockImplementation(() => new Promise<ClassAnalysisResponse>((resolve) => {
+        resolveAnalysis = resolve
+      }))
+    const changed = fixture()
+    changed.students[0]!.items[0]!.score_awarded = 2
+    changed.students[0]!.current_score = 7
+    vi.mocked(fetchResultsCenter).mockResolvedValue(changed)
+    await useResultsCenterStore().load(7)
+    await vi.waitFor(() => expect(classAnalysisMock.getClassAnalysis).toHaveBeenCalled())
+    await nextTick()
+    expect(button().disabled).toBe(false)
+    resolveAnalysis(analysis)
+    await vi.waitFor(() => expect(button().disabled).toBe(false))
   })
 
   it('keeps the selected student when an earlier slow detail read finishes later', async () => {
@@ -473,6 +512,23 @@ describe('results center class filtering and return position', () => {
       student: '2',
       entry: 'results',
     })
+
+    // 重进总览先按缓存展示「报告提示」磁贴：请求返回前磁贴已就位。
+    app?.unmount()
+    app = null
+    document.body.innerHTML = ''
+    let resolveNotes!: (value: import('../api/exports').AnalysisReviewNotes) => void
+    exportsMock.getAnalysisReviewNotes.mockImplementation(
+      () => new Promise((resolve) => { resolveNotes = resolve }),
+    )
+    const second = await mountView('overview')
+    expect(
+      [...second.host.querySelectorAll('.overview__tile')]
+        .some((el) => el.textContent?.includes('报告提示')),
+    ).toBe(true)
+    expect(second.host.textContent).toContain('1 条待核对')
+    resolveNotes({ session_id: 7, generated_at: null, items: [] })
+    await vi.waitFor(() => expect(second.host.textContent).not.toContain('条待核对'))
   })
 
   it('runs the unified AI pipeline from the header after confirming the preflight', async () => {

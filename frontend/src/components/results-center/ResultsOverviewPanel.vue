@@ -1,3 +1,10 @@
+<script lang="ts">
+import type { AnalysisReviewNoteItem } from '../../api/exports'
+
+// 报告提示按考试保留最近一次清单：同次会话内重进总览先展示缓存，再静默刷新。
+const reviewNotesCache = new Map<number, AnalysisReviewNoteItem[]>()
+</script>
+
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -7,10 +14,7 @@ import {
   type ClassAnalysisResponse,
 } from '../../api/class-analysis'
 import type { ResultsCenterResponse } from '../../api/results-center'
-import {
-  exportsApi,
-  type AnalysisReviewNoteItem,
-} from '../../api/exports'
+import { exportsApi } from '../../api/exports'
 import { jobApi, TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import { useJobStore } from '../../stores/jobs'
 import { useSessionStore } from '../../stores/session'
@@ -88,6 +92,7 @@ const narrativeState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const narrativeCache = new Map<string, ClassAnalysisResponse>()
 
 let loadGeneration = 0
+let shownAnalysisKey: string | null = null
 let scopeController: AbortController | null = null
 let mergedController: AbortController | null = null
 let narrativeController: AbortController | null = null
@@ -102,6 +107,8 @@ async function loadReviewNotes(sessionId: number): Promise<void> {
   notesController?.abort()
   const controller = new AbortController()
   notesController = controller
+  const cached = reviewNotesCache.get(sessionId)
+  if (cached) reviewNotes.value = cached
   try {
     const result = await exportsApi.getAnalysisReviewNotes(
       sessionId,
@@ -109,9 +116,10 @@ async function loadReviewNotes(sessionId: number): Promise<void> {
     )
     if (controller.signal.aborted || props.sessionId !== sessionId) return
     reviewNotes.value = result.items
+    reviewNotesCache.set(sessionId, result.items)
   } catch {
     if (!controller.signal.aborted && props.sessionId === sessionId) {
-      reviewNotes.value = []
+      reviewNotes.value = cached ?? []
     }
   }
 }
@@ -159,17 +167,25 @@ async function loadScope(
 ): Promise<void> {
   // '' 的 class_name 在后端表示合并全部班级；范围 null 与未分班都落到同一请求。
   const apiScope = scopeKey ?? ''
+  const analysisKey = `${sessionId}::${apiScope}`
   const generation = ++loadGeneration
   scopeController?.abort()
   const cached = cachedClassAnalysis(sessionId, apiScope)
   if (cached) {
     analysis.value = cached
     analysisState.value = 'ready'
+    shownAnalysisKey = analysisKey
     if (apiScope === '') mergedAnalysis.value = cached
     return
   }
-  analysis.value = null
-  analysisState.value = 'loading'
+  // 缓存失效但旧数据仍展示同一范围时保留旧数据，等新结果回来再替换。
+  const keepStale = shownAnalysisKey === analysisKey
+    && analysisState.value === 'ready'
+  if (!keepStale) {
+    analysis.value = null
+    analysisState.value = 'loading'
+    shownAnalysisKey = null
+  }
   const controller = new AbortController()
   scopeController = controller
   try {
@@ -184,9 +200,11 @@ async function loadScope(
     if (includeNarrative) narrativeCache.set(`${sessionId}::${apiScope}`, result)
     analysis.value = result
     analysisState.value = 'ready'
+    shownAnalysisKey = analysisKey
     if (apiScope === '') mergedAnalysis.value = result
   } catch {
     if (generation !== loadGeneration || props.sessionId !== sessionId) return
+    if (keepStale) return
     analysisState.value = 'error'
   }
 }

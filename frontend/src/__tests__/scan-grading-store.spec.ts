@@ -122,6 +122,45 @@ describe('scan grading store isolation and recovery', () => {
     expect(store.errorMessage).toContain('本次选择尚未保存')
   })
 
+  it('fetches workspace and preflight in parallel and revalidates without blanking', async () => {
+    let resolveFirst!: (value: api.GradingWorkspace) => void
+    vi.mocked(api.fetchGradingWorkspace)
+      .mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve }))
+    const preflight = { revision: 2, summary: {}, groups: [], issues: [],
+      absent_students: [], warnings: [], decisions: [], pending_issue_count: 0 }
+    vi.mocked(api.fetchPreflight).mockResolvedValueOnce(preflight)
+    const store = useScanGradingStore()
+    const first = store.load(1)
+    // 预检与工作区并行发起：工作区未返回时预检已在进行
+    expect(api.fetchPreflight).toHaveBeenCalledTimes(1)
+    const frozen = workspace(1, 'frozen')
+    resolveFirst(frozen)
+    await first
+    expect(store.loadState).toBe('ready')
+    const shownWorkspace = store.workspace
+    const shownPreflight = store.preflight
+    expect(shownWorkspace).toStrictEqual(frozen)
+    expect(shownPreflight).toStrictEqual(preflight)
+
+    const changed = workspace(1, 'frozen')
+    changed.upload_batch.revision = 5
+    let resolveSecond!: (value: api.GradingWorkspace) => void
+    vi.mocked(api.fetchGradingWorkspace)
+      .mockReturnValueOnce(new Promise((resolve) => { resolveSecond = resolve }))
+    vi.mocked(api.fetchPreflight).mockResolvedValueOnce({ ...preflight, revision: 3 })
+    const second = store.load(1)
+    await Promise.resolve()
+    // 重查期间旧工作区与预检结果保持展示，loadState 不回到 loading
+    expect(store.loadState).toBe('ready')
+    expect(store.workspace).toBe(shownWorkspace)
+    expect(store.preflight).toBe(shownPreflight)
+    resolveSecond(changed)
+    await second
+    expect(store.workspace).toStrictEqual(changed)
+    expect(store.uploadBatch?.revision).toBe(5)
+    expect(store.preflight?.revision).toBe(3)
+  })
+
   it('stays silent only for a real missing preflight, not for load failures', async () => {
     vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(workspace(1, 'frozen'))
     vi.mocked(api.fetchPreflight).mockRejectedValue(new ApiError({ kind: 'not_found', status: 404,

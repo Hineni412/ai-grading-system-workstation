@@ -401,10 +401,10 @@ watch(
 
 // 成绩刷新后班级分析摘要即过期，总览与诊断会在下次读取时重取。
 watch(
-  () => resultsStore.updatedAt,
-  () => {
+  () => resultsStore.results,
+  (value) => {
     const sessionId = sessionStore.selectedSessionId
-    if (sessionId !== null) invalidateClassAnalysis(sessionId)
+    if (value !== null && sessionId !== null) invalidateClassAnalysis(sessionId)
   },
 )
 

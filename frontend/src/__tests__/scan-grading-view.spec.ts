@@ -292,7 +292,7 @@ describe('scan grading workspace', () => {
       await Promise.resolve(); await nextTick()
     }
 
-    expect(host.querySelector('[data-grading-starting]')).toBeNull()
+    await vi.waitFor(() => expect(host.querySelector('[data-grading-starting]')).toBeNull())
     expect(host.textContent).toContain('批改任务未能建立运行记录，可以重新提交')
     await openStage(host, 'grade')
     const retryConfirmation = host.querySelector<HTMLInputElement>('[data-confirm-pending]')!
