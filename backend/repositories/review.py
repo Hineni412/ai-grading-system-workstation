@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.repositories.base import RepositorySession, RepositorySessionProvider
-from backend.repositories.results import _safe_json_loads
+from backend.repositories.results import safe_json_loads
 from backend.question_id_contract import question_id_coordinates
 
 
@@ -624,7 +624,7 @@ class ReviewRepository:
                 stored = self.session.connection.execute(
                     "SELECT raw_json FROM session_results WHERE id = ?", (result_id,),
                 ).fetchone()
-                raw = _safe_json_loads(stored["raw_json"])
+                raw = safe_json_loads(stored["raw_json"])
                 payloads[result_id] = raw if isinstance(raw, dict) else {}
             reviews = payloads[result_id].setdefault("teacher_reviews", {})
             qid = item["detail_question_id"]
@@ -932,7 +932,7 @@ class ReviewRepository:
         ).fetchall()
         # Fetch the paper-level payload once per result, not once per question.
         parsed_raw_json = {
-            int(row["id"]): _safe_json_loads(row["raw_json"])
+            int(row["id"]): safe_json_loads(row["raw_json"])
             for row in self.session.connection.execute(
                 "SELECT id, raw_json FROM session_results WHERE session_id = ?",
                 (int(session_id),),

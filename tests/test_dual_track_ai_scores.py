@@ -7,8 +7,6 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from backend.domain_models import GradingResult, QuestionGradingDetail
 from backend.repositories.db_manager import DBManager
 from backend.repositories.grading_database import open_grading_repositories
@@ -201,3 +199,85 @@ def test_hybrid_run_grades_locked_questions_and_teacher_score_wins(
     assert details["Q1"]["ai_score_awarded"] == 4.0
     assert details["Q2"]["score_awarded"] == 3.0
     assert details["Q2"]["ai_score_awarded"] == 3.0
+
+
+def test_locked_question_without_detail_row_is_inserted(tmp_path: Path) -> None:
+    db = open_grading_repositories(tmp_path / "lock-missing.db")
+    db.initialize()
+    session_id = db.sessions.create_grading_session(
+        "锁题补行", "rubric.json", "answer_key.json"
+    )
+    with sqlite3.connect(db.db_path) as conn:
+        student_id = int(
+            conn.execute(
+                "INSERT INTO students (student_code, name) VALUES ('003', 'Cara')"
+            ).lastrowid
+        )
+        paper_id = int(
+            conn.execute(
+                """
+                INSERT INTO exam_papers (
+                    session_id, front_image, back_image, ocr_name, student_id,
+                    match_status, processing_status
+                ) VALUES (?, 'f.jpg', 'b.jpg', 'Cara', ?, 'matched', 'graded')
+                """,
+                (session_id, student_id),
+            ).lastrowid
+        )
+        conn.commit()
+
+    result_id = db.results.save_session_result(
+        session_id,
+        student_id,
+        paper_id,
+        GradingResult(
+            student_name="Cara",
+            total_score=5.0,
+            student_score=3.0,
+            needs_human_review=False,
+            grading_details=[
+                QuestionGradingDetail(question_id="Q1", score_awarded=3.0, deduction_reason="")
+            ],
+            raw_json={"Q1": {"score": 3.0}},
+        ),
+        scan_batch_id="batch-lock",
+    )
+    db.reviews.confirm_teacher_score_locks(
+        session_id,
+        "batch-lock",
+        [
+            {
+                "student_id": student_id,
+                "question_id": "Q9",
+                "score_awarded": 4.0,
+                "max_score": 5.0,
+                "deduction_reason": "教师认定",
+                "source_target_type": "exam_paper",
+                "source_target_id": paper_id,
+                "expected_revision": 0,
+            }
+        ],
+    )
+    # 模拟不完整 AI 结果留下的缺口：锁题没有对应明细行。
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute(
+            "DELETE FROM session_details WHERE result_id = ? AND question_id = 'Q9'",
+            (result_id,),
+        )
+        conn.commit()
+
+    db.results.replace_result_details_atomic(
+        result_id,
+        ["Q1"],
+        [QuestionGradingDetail(question_id="Q1", score_awarded=2.0, deduction_reason="")],
+        student_score=6.0,
+        needs_human_review=False,
+        raw_json={"Q1": {"score": 2.0}},
+        scan_batch_id="batch-lock",
+    )
+
+    details = _detail_by_question(db, result_id)
+    assert details["Q9"]["score_awarded"] == 4.0
+    assert details["Q9"]["error_summary"] == "teacher_score_locked"
+    assert details["Q9"]["error_category"] == "教师已确认"
+    assert details["Q1"]["score_awarded"] == 2.0

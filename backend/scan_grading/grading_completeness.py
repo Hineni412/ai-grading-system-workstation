@@ -48,8 +48,8 @@ class _ExpectedQuestion:
 
 def merge_detail_metadata(previous: Any, incoming: Any, replaced_question_ids: list[str]) -> dict:
     """Replace evidence only for retried questions, retaining all other evidence."""
-    old = _safe_json_loads(previous)
-    new = _safe_json_loads(incoming)
+    old = safe_json_loads(previous)
+    new = safe_json_loads(incoming)
     result = dict(new) if isinstance(new, dict) else {}
     old_map = old.get("detail_metadata") if isinstance(old, dict) else None
     new_map = result.get("detail_metadata")
@@ -194,7 +194,7 @@ def resolve_grading_completeness(
     if completeness is not None:
         return completeness
 
-    parsed = _safe_json_loads(raw_json)
+    parsed = safe_json_loads(raw_json)
     if isinstance(parsed, dict):
         completeness = _normalized_completeness_dict(
             parsed.get("grading_completeness")
@@ -251,7 +251,7 @@ def _expected_questions(rubric: dict) -> list[_ExpectedQuestion]:
     return result
 
 
-def _safe_json_loads(value: Any) -> Any:
+def safe_json_loads(value: Any) -> Any:
     if value is None or isinstance(value, (dict, list)):
         return value
     if isinstance(value, str):

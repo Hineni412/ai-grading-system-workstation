@@ -18,6 +18,7 @@ from backend.repositories.papers import (
     sanitize_incomplete_failure_summary,
 )
 from backend.scan_grading.grading_completeness import (
+    safe_json_loads,
     audit_grading_details,
     details_require_review,
     merge_detail_metadata,
@@ -98,7 +99,7 @@ class ResultRepository:
         ).fetchall()
         raw_json.pop("teacher_reviews", None)
         for old_row in old_rows:
-            old_payload = _safe_json_loads(old_row["raw_json"])
+            old_payload = safe_json_loads(old_row["raw_json"])
             reviews = old_payload.get("teacher_reviews", {}) if isinstance(old_payload, dict) else {}
             if not isinstance(reviews, dict):
                 continue
@@ -288,7 +289,7 @@ class ResultRepository:
         ).fetchall()
         results = [dict(row) for row in rows]
         for item in results:
-            item["raw_json"] = _safe_json_loads(item.get("raw_json"))
+            item["raw_json"] = safe_json_loads(item.get("raw_json"))
         return results
 
     def get_result_details(self, result_id: int) -> list[dict[str, Any]]:
@@ -756,54 +757,46 @@ class ResultRepository:
         # this run is still recorded in ai_score_awarded.
         for lock in locked_rows:
             question_id = str(lock["question_id"])
-            existing = self.session.connection.execute(
-                """
-                SELECT id
-                FROM session_details
-                WHERE result_id = ? AND question_id = ?
-                ORDER BY id
-                """,
-                (result_id, question_id),
-            ).fetchall()
-            if existing:
-                ai_score = locked_replacement_ai_scores.get(question_id)
-                for row in existing:
-                    if ai_score is not None:
-                        self.session.connection.execute(
-                            """
-                            UPDATE session_details
-                            SET score_awarded = ?,
-                                deduction_reason = ?,
-                                error_category = '教师已确认',
-                                error_summary = 'teacher_score_locked',
-                                ai_score_awarded = ?
-                            WHERE id = ?
-                            """,
-                            (
-                                float(lock["score_awarded"]),
-                                lock["deduction_reason"]
-                                or "教师人工批改已确认",
-                                ai_score,
-                                int(row["id"]),
-                            ),
-                        )
-                        continue
-                    self.session.connection.execute(
-                        """
-                        UPDATE session_details
-                        SET score_awarded = ?,
-                            deduction_reason = ?,
-                            error_category = '教师已确认',
-                            error_summary = 'teacher_score_locked'
-                        WHERE id = ?
-                        """,
-                        (
-                            float(lock["score_awarded"]),
-                            lock["deduction_reason"]
-                            or "教师人工批改已确认",
-                            int(row["id"]),
-                        ),
-                    )
+            ai_score = locked_replacement_ai_scores.get(question_id)
+            if ai_score is not None:
+                cursor = self.session.connection.execute(
+                    """
+                    UPDATE session_details
+                    SET score_awarded = ?,
+                        deduction_reason = ?,
+                        error_category = '教师已确认',
+                        error_summary = 'teacher_score_locked',
+                        ai_score_awarded = ?
+                    WHERE result_id = ? AND question_id = ?
+                    """,
+                    (
+                        float(lock["score_awarded"]),
+                        lock["deduction_reason"]
+                        or "教师人工批改已确认",
+                        ai_score,
+                        result_id,
+                        question_id,
+                    ),
+                )
+            else:
+                cursor = self.session.connection.execute(
+                    """
+                    UPDATE session_details
+                    SET score_awarded = ?,
+                        deduction_reason = ?,
+                        error_category = '教师已确认',
+                        error_summary = 'teacher_score_locked'
+                    WHERE result_id = ? AND question_id = ?
+                    """,
+                    (
+                        float(lock["score_awarded"]),
+                        lock["deduction_reason"]
+                        or "教师人工批改已确认",
+                        result_id,
+                        question_id,
+                    ),
+                )
+            if cursor.rowcount:
                 continue
             self._insert_detail(
                 result_id,
@@ -849,7 +842,7 @@ class ResultRepository:
         persisted_raw_json = merge_detail_metadata(owner["raw_json"], raw_json,
             [*question_ids, *(str(d.question_id) for d in replacement_details)])
         persisted_raw_json.pop("teacher_reviews", None)
-        old_payload = _safe_json_loads(owner["raw_json"])
+        old_payload = safe_json_loads(owner["raw_json"])
         if isinstance(old_payload, dict) and isinstance(old_payload.get("teacher_reviews"), dict):
             persisted_raw_json["teacher_reviews"] = old_payload["teacher_reviews"]
         if scan_batch_id and locked_rows:
@@ -895,7 +888,7 @@ class ResultRepository:
         ).fetchone()
         if row is None:
             return
-        loaded = _safe_json_loads(row["raw_json"])
+        loaded = safe_json_loads(row["raw_json"])
         raw_json = loaded if isinstance(loaded, dict) else {}
         attempts = raw_json.get("grading_retry_attempts")
         if not isinstance(attempts, list):
@@ -962,7 +955,7 @@ class ResultRepository:
             return None
         item = dict(row)
         item["needs_human_review"] = bool(item["needs_human_review"])
-        loaded = _safe_json_loads(item.get("raw_json"))
+        loaded = safe_json_loads(item.get("raw_json"))
         item["raw_json"] = loaded if isinstance(loaded, dict) else {}
         item["details"] = self.get_result_details(int(item["result_id"]))
         return item
@@ -1182,7 +1175,7 @@ class ResultRepositoryGateway:
 
         items: list[dict[str, Any]] = []
         for row in result_rows:
-            parsed_raw_json = _safe_json_loads(row["raw_json"])
+            parsed_raw_json = safe_json_loads(row["raw_json"])
             completeness = resolve_grading_completeness(
                 parsed_raw_json,
                 rubric=rubric,
@@ -1671,17 +1664,6 @@ class ResultRepositoryGateway:
         return resolve_stored_file_path(path_value, data_root=data_root)
 
 
-def _safe_json_loads(value: Any) -> Any:
-    if value is None or isinstance(value, (dict, list)):
-        return value
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError:
-            return value
-    return value
-
-
 def _detail_knowledge_ids(detail: Any) -> list[str]:
     raw_values = getattr(detail, "knowledge_ids", None)
     values: list[Any] = []
@@ -1690,7 +1672,7 @@ def _detail_knowledge_ids(detail: Any) -> list[str]:
     elif isinstance(raw_values, tuple):
         values.extend(raw_values)
     elif isinstance(raw_values, str) and raw_values.strip():
-        parsed = _safe_json_loads(raw_values)
+        parsed = safe_json_loads(raw_values)
         if isinstance(parsed, list):
             values.extend(parsed)
         else:
@@ -1774,7 +1756,7 @@ def _detail_row_with_knowledge_ids(
 def _knowledge_ids_from_row(row: dict[str, Any]) -> list[str]:
     raw_values = row.get("knowledge_ids")
     if isinstance(raw_values, str):
-        parsed = _safe_json_loads(raw_values)
+        parsed = safe_json_loads(raw_values)
         raw_values = parsed if isinstance(parsed, list) else []
     normalized: list[str] = []
     for value in raw_values if isinstance(raw_values, (list, tuple)) else []:
@@ -1788,7 +1770,7 @@ def _knowledge_ids_from_row(row: dict[str, Any]) -> list[str]:
 
 
 def _grading_retry_attempts(raw_json: Any) -> list[dict[str, Any]]:
-    parsed = _safe_json_loads(raw_json)
+    parsed = safe_json_loads(raw_json)
     attempts = parsed.get("grading_retry_attempts") if isinstance(parsed, dict) else None
     if not isinstance(attempts, list):
         return []
@@ -1806,7 +1788,7 @@ def _last_incomplete_failure_reason(raw_json: Any, *, fallback_error: Any, compl
                 raw_reason = value
                 break
 
-    parsed = _safe_json_loads(raw_json)
+    parsed = safe_json_loads(raw_json)
     if not raw_reason and isinstance(parsed, dict):
         legacy = parsed.get("hybrid_batch_fallback")
         if isinstance(legacy, dict):
@@ -1884,7 +1866,7 @@ def _normalize_knowledge_ids(raw: Any, fallback: Any = None) -> list[str]:
     if isinstance(raw, list):
         values.extend(raw)
     elif isinstance(raw, str) and raw.strip():
-        parsed = _safe_json_loads(raw)
+        parsed = safe_json_loads(raw)
         if isinstance(parsed, list):
             values.extend(parsed)
         else:
