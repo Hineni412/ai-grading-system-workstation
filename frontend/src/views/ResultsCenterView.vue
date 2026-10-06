@@ -23,6 +23,7 @@ import { unexpectedLosses } from '../components/results-center/paper-walkthrough
 import {
   classRanksOf,
   defaultComparison,
+  formatScore,
   isCompleteStudent,
   rankChanges,
 } from '../components/results-center/results-overview'
@@ -501,12 +502,7 @@ function refresh(): void {
   if (sessionId !== null) void resultsStore.load(sessionId)
 }
 
-function formatScore(value: number | null): string {
-  if (value === null) return '—'
-  return Number.isInteger(value)
-    ? String(value)
-    : value.toFixed(1).replace(/\.0$/, '')
-}
+
 
 function formatUpdatedAt(iso: string): string {
   const date = new Date(iso)

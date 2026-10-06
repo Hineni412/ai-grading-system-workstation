@@ -11,6 +11,7 @@ import {
   type AiDiagnosticOutcome,
   type AiDiagnosticSummary,
 } from '../../api/ai-diagnostics'
+import { formatBytes } from '../../lib/format'
 import '../../styles/model-profiles.css'
 
 type DiagnosticTab = 'request' | 'attachments' | 'response' | 'parsed' | 'error'
@@ -88,12 +89,6 @@ function formatDiagnosticTime(value: string): string {
 function formatDuration(milliseconds: number): string {
   if (milliseconds < 1_000) return `${milliseconds} 毫秒`
   return `${(milliseconds / 1_000).toFixed(milliseconds < 10_000 ? 1 : 0)} 秒`
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1_024) return `${bytes} B`
-  if (bytes < 1_048_576) return `${(bytes / 1_024).toFixed(1)} KB`
-  return `${(bytes / 1_048_576).toFixed(1)} MB`
 }
 
 function formatDiagnosticJson(value: unknown): string {

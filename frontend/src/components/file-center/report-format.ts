@@ -4,6 +4,7 @@ import type {
   ReportType,
 } from '../../api/exports'
 import type { JobResponse, JobStatus } from '../../api/jobs'
+import { formatTime as formatTimeValue } from '../../lib/format'
 
 export type ReportDisplayStatus = ReportFileStatus | 'stale'
 
@@ -71,8 +72,7 @@ export function statusTone(status: JobStatus | ReportDisplayStatus): string {
 }
 
 export function formatTime(value: string | null): string {
-  if (!value) return '时间未记录'
-  return value.replace('T', ' ').replace('Z', '').slice(0, 19)
+  return formatTimeValue(value) || '时间未记录'
 }
 
 export function formatShortTime(value: string | null): string {

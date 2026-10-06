@@ -4,6 +4,7 @@ import type {
   ResultsCenterStudent,
 } from '../../api/results-center'
 import type { SessionSummary } from '../../api/sessions'
+import { formatScore } from '../../lib/format'
 
 export type OverviewBandId = 'excellent' | 'good' | 'pass' | 'watch' | 'low'
 
@@ -246,12 +247,7 @@ export function topCauseOf(question: ClassAnalysisQuestion): TopCause {
   }
 }
 
-export function formatScore(value: number | null): string {
-  if (value === null) return '—'
-  return Number.isInteger(value)
-    ? String(value)
-    : value.toFixed(1).replace(/\.0$/, '')
-}
+export { formatScore }
 
 export function formatRate(value: number | null): string {
   return value === null ? '—' : `${Math.round(value * 100)}%`

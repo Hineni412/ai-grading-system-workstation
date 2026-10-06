@@ -21,6 +21,7 @@ import {
   reportTypeLabel,
 } from '../components/file-center/report-format'
 import { useConfirm } from '../composables/useConfirm'
+import { formatBytes } from '../lib/format'
 import { useFileCenterStore } from '../stores/file-center'
 import { useJobStore } from '../stores/jobs'
 import { useResultsCenterStore } from '../stores/results-center'
@@ -405,7 +406,7 @@ async function deleteReport(job: ReportHistoryJob): Promise<void> {
   try {
     const result = await fileCenter.deleteReport(job.id)
     actionMessage.value = result.deleted
-      ? `已删除：${reportFilename(job)}，释放约 ${(result.freed_bytes / 1024 / 1024).toFixed(1)} MB。`
+      ? `已删除：${reportFilename(job)}，释放约 ${formatBytes(result.freed_bytes)}。`
       : '这份报告此前已删除。'
   } catch {
     actionError.value = '这份报告暂时无法删除，请刷新登记簿后再试。'

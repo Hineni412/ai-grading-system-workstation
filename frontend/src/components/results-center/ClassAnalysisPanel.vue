@@ -14,6 +14,7 @@ import {
 import type { ResultsCenterStudent } from '../../api/results-center'
 import { ApiError } from '../../api/errors'
 import { jobApi, TERMINAL_JOB_STATUSES } from '../../api/jobs'
+import { formatPercent, formatScore } from '../../lib/format'
 import { useJobStore } from '../../stores/jobs'
 import { useResultsCenterStore } from '../../stores/results-center'
 import AppButton from '../design-system/AppButton.vue'
@@ -346,12 +347,6 @@ async function ensureTracked(id: number | null): Promise<void> {
   }
 }
 
-function formatScore(value: number | null): string {
-  if (value === null) return '—'
-  return Number.isInteger(value)
-    ? String(value)
-    : String(Number(value.toFixed(2)))
-}
 
 function causeStudents(question: ClassAnalysisQuestion, ids: number[]): string {
   return question.records.filter((record) => record.student_id !== undefined && ids.includes(record.student_id))
@@ -444,10 +439,7 @@ function syncDetailOpen(event: Event, key: string): void {
   openDetails.value = next
 }
 
-function formatPercent(value: number): string {
-  const percent = value <= 1 ? value * 100 : value
-  return `${Math.round(percent)}%`
-}
+
 
 function formatShortDate(value: string): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value)

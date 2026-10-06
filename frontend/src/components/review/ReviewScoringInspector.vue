@@ -19,6 +19,7 @@ import {
 } from '../../stores/review-drafts'
 import { useReviewQueueStore } from '../../stores/review-queue'
 import { displayErrorCategory, translateGradingReason } from '../../utils/grading-reasons'
+import { formatPercent, formatScore } from '../../lib/format'
 import {
   cachedReviewRubric,
   hasReviewRubric,
@@ -192,13 +193,9 @@ function stringList(value: unknown): string[] {
   })
 }
 
-function formatScore(value: number | null): string {
-  return value !== null && Number.isFinite(value) ? String(value) : '—'
-}
-
 function formatConfidence(value: number | null): string {
   if (value === null) return '未提供'
-  return value <= 1 ? `${Math.round(value * 100)}%` : `${Math.round(value)}%`
+  return formatPercent(value)
 }
 
 

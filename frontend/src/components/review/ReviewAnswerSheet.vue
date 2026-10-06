@@ -4,6 +4,7 @@ import { computed, ref, watch } from 'vue'
 import { resolveReviewItem, type ReviewItemLike, type ReviewRubricSection } from '../../api/review'
 import { reviewDraftKey, reviewDraftIssue, scoreIssue, stepNumber, stepNeedsReview, aiStepFor, useReviewDraftStore } from '../../stores/review-drafts'
 import { displayErrorCategory, translateGradingReason } from '../../utils/grading-reasons'
+import { formatPercent, formatScore } from '../../lib/format'
 import AppButton from '../design-system/AppButton.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
 import ReviewImageDialog from './ReviewImageDialog.vue'
@@ -66,13 +67,9 @@ const aiScore = computed(() => typeof reviewItem.value.metadata.ai_score_awarded
   ? reviewItem.value.metadata.ai_score_awarded : reviewItem.value.score_source === 'ai' ? reviewItem.value.score_awarded : null)
 const aiReason = computed(() => [...new Set([deductionReason.value, riskReason.value].filter(Boolean))].join('；'))
 
-function formatScore(value: number | null): string {
-  return value !== null && Number.isFinite(value) ? String(value) : '—'
-}
-
 function formatConfidence(value: number | null): string {
   if (value === null) return 'AI 置信度未提供'
-  return `置信度 ${Math.round(value <= 1 ? value * 100 : value)}%`
+  return `置信度 ${formatPercent(value)}`
 }
 
 function updateScore(event: Event): void {

@@ -11,6 +11,7 @@ import {
   modelProfilesApi,
   type ModelTaskBinding,
 } from '../api/model-profiles'
+import { formatTime } from '../lib/format'
 import BackButton from '../components/design-system/BackButton.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
@@ -194,10 +195,7 @@ function backToResults(): void {
   })
 }
 
-function formatTime(value: string | null): string {
-  if (!value) return ''
-  return value.replace('T', ' ').replace('Z', '').slice(0, 19)
-}
+
 
 onBeforeUnmount(() => {
   loadGeneration += 1

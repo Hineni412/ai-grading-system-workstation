@@ -7,6 +7,7 @@ import type {
 } from '../../api/scan-grading'
 import { useScanGradingStore } from '../../stores/scan-grading'
 import { useConfirm } from '../../composables/useConfirm'
+import { formatBytes } from '../../lib/format'
 
 export interface AssignedPaper {
   targetType: 'group' | 'issue'
@@ -67,11 +68,7 @@ const MATCH_METHOD_LABELS: Record<string, string> = {
 
 export const PREFLIGHT_TRACK = ['转换页面', '识别姓名与班级', '名单比对', '整理答卷'] as const
 
-export function formatBytes(bytes: number): string {
-  const kb = bytes / 1024
-  if (kb < 1024) return `${Math.ceil(kb)} KB`
-  return `${(kb / 1024).toFixed(1)} MB`
-}
+export { formatBytes }
 
 export type ScanPreflightController = ReturnType<typeof useScanPreflight>
 

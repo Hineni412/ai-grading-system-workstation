@@ -2,6 +2,7 @@ import type {
   TrainingOverviewNode,
   TrainingOverviewStudent,
 } from '../../api/training'
+import { formatPercent } from '../../lib/format'
 
 export type MasteryTier = 'weak' | 'unsteady' | 'stable' | 'insufficient'
 
@@ -66,10 +67,7 @@ export function shortNodeName(node: Pick<TrainingOverviewNode, 'display_name' | 
   return node.kind === 'skill' ? leaf.replace(/^技能[·：:]/, '') : leaf
 }
 
-export function formatPercent(value: number | null | undefined): string {
-  if (value === null || value === undefined) return '—'
-  return `${Math.round(value * 100)}%`
-}
+export { formatPercent }
 
 // 最需关注：明显薄弱人数 → 还不稳人数 → 群体掌握度 → 有证据人数。
 export function compareFocusNodes(left: TrainingOverviewNode, right: TrainingOverviewNode): number {

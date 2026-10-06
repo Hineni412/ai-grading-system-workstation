@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { fetchGraphEvidence, type GraphEvidenceItem, type GraphQueryInput } from '../api/graph'
+import { formatScore } from '../lib/format'
 import {
   knowledgeLeafLabel,
   questionBankApi,
@@ -112,10 +113,6 @@ function formatDate(value: string | null): string {
   if (!value) return '—'
   const parsed = new Date(value)
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString('zh-CN')
-}
-
-function formatScore(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1)
 }
 
 function sessionDate(session: StudentExamResultSession): string {
@@ -620,7 +617,7 @@ onBeforeUnmount(() => {
             kind="error"
             title="题库原题暂时无法读取"
             description="作答证据不受影响。"
-            retry-label="重试"
+            retry-label="重新加载"
             @retry="retryQuestionPanel"
           />
           <template v-else-if="questionPanelDetail">
