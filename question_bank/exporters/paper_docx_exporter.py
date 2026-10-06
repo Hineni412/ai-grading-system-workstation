@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import re
 from collections.abc import Mapping
 from datetime import datetime
@@ -11,6 +12,8 @@ from typing import Any
 from docx import Document
 from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 from PIL import Image
 
@@ -24,6 +27,7 @@ from question_bank.document_pipeline.legacy_exports import (
 from question_bank.document_pipeline.word_renderer import (
     SharedWordQuestionRenderer,
     WordStyleProfile,
+    _append_to_document_body,
     add_answer_space,
     add_floating_picture,
     answer_space_lines,
@@ -96,6 +100,7 @@ def _render_question_body(
         run = document.add_paragraph().add_run(note)
         run.font.size = Pt(9)
         run.font.color.rgb = RGBColor.from_string('666666')
+    body_start = _body_content_size(document)
     inline_prefix = _question_prefix(index)
     question_paragraph_start = len(document.paragraphs)
     minimum_lines = answer_space_lines(
@@ -160,6 +165,7 @@ def _render_question_body(
     else:
         for _ in range(trailing_blank):
             document.add_paragraph("")
+    _reserve_floating_picture_space(document, body_start, style=style_profile)
 
 
 def _render_answer_body(
@@ -174,6 +180,7 @@ def _render_answer_body(
     trailing_blank: int = 1,
 ) -> None:
     """渲染单个题目的答案正文。"""
+    body_start = _body_content_size(document)
     inline_prefix = _question_prefix(index)
     metadata = metadata_by_id[int(question["id"])]
     rich_content = metadata.rich_content
@@ -209,6 +216,158 @@ def _render_answer_body(
         _add_images(document, missing_images)
     for _ in range(trailing_blank):
         document.add_paragraph("")
+    _reserve_floating_picture_space(
+        document,
+        body_start,
+        style=WordStyleProfile.from_export_config(config),
+    )
+
+
+def _body_content_size(document: Document) -> int:
+    body = document.element.body
+    count = len(body)
+    if count and body[-1].tag == qn("w:sectPr"):
+        count -= 1
+    return count
+
+
+def _xml_int(value: object) -> int:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _text_width_units(element) -> float:
+    units = 0.0
+    for node in element.iter():
+        if node.tag not in (qn("w:t"), qn("m:t")) or not node.text:
+            continue
+        for char in node.text:
+            code = ord(char)
+            units += 1.0 if code >= 0x2E80 or 0xFF00 <= code <= 0xFFEF else 0.55
+    return units
+
+
+def _estimate_paragraph_height_pt(
+    element, *, style: WordStyleProfile, width_pt: float
+) -> float:
+    text_width = _text_width_units(element) * style.body_size_pt
+    lines = max(1, math.ceil(text_width / max(width_pt, 1.0)))
+    height = lines * style.body_size_pt * style.line_spacing * 1.2
+    for inline in element.iter(qn("wp:inline")):
+        extent = inline.find(qn("wp:extent"))
+        height = max(
+            height,
+            _xml_int(extent.get("cy") if extent is not None else 0) / 12700,
+        )
+    properties = element.find(qn("w:pPr"))
+    spacing = properties.find(qn("w:spacing")) if properties is not None else None
+    if spacing is not None:
+        height += sum(
+            _xml_int(spacing.get(qn(attr))) / 20
+            for attr in ("w:before", "w:after")
+        )
+    return height
+
+
+def _estimate_table_height_pt(
+    element, *, style: WordStyleProfile, width_pt: float
+) -> float:
+    total = 0.0
+    for row in element.findall(qn("w:tr")):
+        row_height = 0.0
+        row_properties = row.find(qn("w:trPr"))
+        specified = (
+            row_properties.find(qn("w:trHeight"))
+            if row_properties is not None
+            else None
+        )
+        if specified is not None:
+            row_height = _xml_int(specified.get(qn("w:val"))) / 20
+        cells = row.findall(qn("w:tc"))
+        fallback_width = width_pt / max(len(cells), 1)
+        cell_height = 0.0
+        for cell in cells:
+            cell_properties = cell.find(qn("w:tcPr"))
+            cell_width_element = (
+                cell_properties.find(qn("w:tcW"))
+                if cell_properties is not None
+                else None
+            )
+            cell_width = fallback_width
+            if cell_width_element is not None and cell_width_element.get(
+                qn("w:type"), "dxa"
+            ) == "dxa":
+                cell_width = _xml_int(cell_width_element.get(qn("w:w"))) / 20 or cell_width
+            cell_height = max(
+                cell_height,
+                sum(
+                    _estimate_paragraph_height_pt(
+                        paragraph, style=style, width_pt=cell_width
+                    )
+                    for paragraph in cell.findall(qn("w:p"))
+                ),
+            )
+        total += max(row_height, cell_height)
+    return total
+
+
+_ANCHOR_PARAGRAPH_RELATIVE = {"paragraph", "line"}
+
+
+def _reserve_floating_picture_space(
+    document: Document,
+    body_start: int,
+    *,
+    style: WordStyleProfile,
+) -> None:
+    """浮动图底边超出题面高度时补一段精确行高的空段，防止下一题与图重叠。"""
+    content_width_pt = style.content_width_dxa / 20
+    content_height = 0.0
+    image_bottom = 0.0
+    for element in list(document.element.body)[body_start:]:
+        if element.tag == qn("w:sectPr"):
+            continue
+        for anchor in element.iter(qn("wp:anchor")):
+            position_v = anchor.find(qn("wp:positionV"))
+            relative_from = (
+                position_v.get("relativeFrom") if position_v is not None else None
+            )
+            if relative_from not in _ANCHOR_PARAGRAPH_RELATIVE:
+                continue
+            anchor.set("allowOverlap", "0")
+            offset_emu = 0
+            if position_v is not None:
+                pos_offset = position_v.find(qn("wp:posOffset"))
+                if pos_offset is not None:
+                    offset_emu = _xml_int(pos_offset.text)
+            extent = anchor.find(qn("wp:extent"))
+            extent_cy = _xml_int(extent.get("cy") if extent is not None else 0)
+            image_bottom = max(
+                image_bottom, content_height + (offset_emu + extent_cy) / 12700
+            )
+        if element.tag == qn("w:p"):
+            content_height += _estimate_paragraph_height_pt(
+                element, style=style, width_pt=content_width_pt
+            )
+        elif element.tag == qn("w:tbl"):
+            content_height += _estimate_table_height_pt(
+                element, style=style, width_pt=content_width_pt
+            )
+    deficit = image_bottom - content_height + 2
+    if image_bottom <= 0 or deficit <= 2:
+        return
+    spacer = OxmlElement("w:p")
+    properties = OxmlElement("w:pPr")
+    spacing = OxmlElement("w:spacing")
+    spacing.set(qn("w:before"), "0")
+    spacing.set(qn("w:after"), "0")
+    spacing.set(qn("w:line"), str(round(deficit * 20)))
+    spacing.set(qn("w:lineRule"), "exact")
+    properties.append(spacing)
+    spacer.append(properties)
+    _append_to_document_body(document, spacer)
 
 
 def _add_choice_answer_table(document: Document, choice_questions: list[tuple[int, dict[str, Any]]]) -> None:

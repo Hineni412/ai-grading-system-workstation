@@ -560,6 +560,172 @@ def test_word_export_compact_book_preserves_math_images_and_final_answers(
         assert any(name.startswith("word/media/") for name in archive.namelist())
 
 
+def test_word_export_reserves_space_below_floating_question_images(tmp_path: Path):
+    from docx import Document
+    from docx.oxml.ns import qn
+    from PIL import Image
+
+    from question_bank.document_pipeline.word_renderer import add_floating_picture
+    from question_bank.exporters.paper_docx_exporter import export_question_paper_docx
+    from question_bank.services.rich_content_service import save_question_rich_content
+
+    root = tmp_path / "data"
+    db_path = root / "databases" / "question_bank.db"
+    bank = QuestionBankTestStore(db_path)
+    image = root / "question_bank" / "assets" / "TEST-tall.png"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (200, 320), "white").save(image)
+    marker = "[[IMAGE:question_bank/assets/TEST-tall.png]]"
+
+    def anchored_paragraphs(document):
+        return [
+            element
+            for element in document.element.body
+            if any(True for _ in element.iter(qn("wp:anchor")))
+        ]
+
+    def exact_spacers(document):
+        return [
+            element
+            for element in document.element.body
+            if element.tag == qn("w:p")
+            and (
+                element.find(qn("w:pPr")) is not None
+                and element.find(qn("w:pPr")).find(qn("w:spacing")) is not None
+                and element.find(qn("w:pPr")).find(qn("w:spacing")).get(
+                    qn("w:lineRule")
+                )
+                == "exact"
+            )
+        ]
+
+    def paragraph_text(element):
+        return "".join(
+            node.text or "" for node in element.iter() if node.tag == qn("w:t")
+        )
+
+    short_stem = "测试填空题干，观察右侧图形完成填空。" * 3
+    first = bank.add_question(
+        QuestionCreate(
+            question_number="1",
+            question_type="填空题",
+            question_text=f"（5分）{short_stem}第一题{marker}",
+            answer_text="测试答案一",
+        )
+    )
+    second = bank.add_question(
+        QuestionCreate(
+            question_number="2",
+            question_type="填空题",
+            question_text=f"（5分）{short_stem}第二题{marker}",
+            answer_text="测试答案二",
+        )
+    )
+    output = export_question_paper_docx(
+        db_path,
+        [first, second],
+        root / "exports",
+        title="TEST 浮动图留白",
+        include_answer=False,
+        include_answer_space=False,
+        include_student_fields=False,
+    )
+    document = Document(output)
+    children = list(document.element.body)
+    assert len(anchored_paragraphs(document)) == 2
+    for anchor in document.element.body.iter(qn("wp:anchor")):
+        assert anchor.get("allowOverlap") == "0"
+    anchor_index = next(
+        index
+        for index, element in enumerate(children)
+        if any(True for _ in element.iter(qn("wp:anchor")))
+    )
+    extent = children[anchor_index].find(".//" + qn("wp:extent"))
+    extent_twips = int(extent.get("cy")) / 12700 * 20
+    spacer = children[anchor_index + 1]
+    spacing = spacer.find(qn("w:pPr")).find(qn("w:spacing"))
+    assert spacing is not None and spacing.get(qn("w:lineRule")) == "exact"
+    assert 0 < int(spacing.get(qn("w:line"))) < extent_twips
+    assert "第二题" in paragraph_text(children[anchor_index + 2])
+
+    # 题干够长、估算高度已盖过浮动图底边时不补留白。
+    long_stem = "长题干填充内容，用于把段落估算高度撑过浮动图底边。" * 30
+    third = bank.add_question(
+        QuestionCreate(
+            question_number="3",
+            question_type="填空题",
+            question_text=f"（5分）{long_stem}第三题{marker}",
+            answer_text="测试答案三",
+        )
+    )
+    tall_output = export_question_paper_docx(
+        db_path,
+        [third, second],
+        root / "exports-long",
+        title="TEST 浮动图不补留白",
+        include_answer=False,
+        include_answer_space=False,
+        include_student_fields=False,
+    )
+    tall_document = Document(tall_output)
+    tall_children = list(tall_document.element.body)
+    assert len(anchored_paragraphs(tall_document)) == 2
+    long_index = next(
+        index
+        for index, element in enumerate(tall_children)
+        if "第三题" in paragraph_text(element)
+    )
+    assert "第二题" in paragraph_text(tall_children[long_index + 1])
+    assert len(exact_spacers(tall_document)) == 1
+
+    # 富文本题块保留的源 wp:anchor 同样兜底：改写 allowOverlap 并补留白。
+    rich_source = Document()
+    rich_paragraph = rich_source.add_paragraph("富文本题干短行，配图。")
+    assert add_floating_picture(rich_paragraph, image, width_inches=1.0)
+    rich_anchor = rich_paragraph._p.findall(".//" + qn("wp:anchor"))[0]
+    rich_anchor.set("allowOverlap", "1")
+    position_v = rich_anchor.find(qn("wp:positionV"))
+    position_v.find(qn("wp:posOffset")).text = "78105"
+    embed_id = rich_paragraph._p.findall(".//" + qn("a:blip"))[0].get(qn("r:embed"))
+    fourth = bank.add_question(
+        QuestionCreate(
+            question_number="4",
+            question_type="填空题",
+            question_text="（5分）富文本浮动图题干",
+            answer_text="测试答案四",
+        )
+    )
+    save_question_rich_content(
+        fourth,
+        question_blocks=[
+            {
+                "xml": rich_paragraph._p.xml,
+                "image_relationships": {
+                    embed_id: "question_bank/assets/TEST-tall.png"
+                },
+            }
+        ],
+        root=root / "question_bank" / "rich_content",
+    )
+    rich_output = export_question_paper_docx(
+        db_path,
+        [fourth],
+        root / "exports-rich",
+        title="TEST 富文本浮动图",
+        include_answer=False,
+        include_answer_space=False,
+        include_student_fields=False,
+    )
+    rich_document = Document(rich_output)
+    rich_anchors = list(rich_document.element.body.iter(qn("wp:anchor")))
+    assert len(rich_anchors) == 1
+    assert rich_anchors[0].get("allowOverlap") == "0"
+    rich_spacers = exact_spacers(rich_document)
+    assert len(rich_spacers) == 1
+    rich_spacing = rich_spacers[0].find(qn("w:pPr")).find(qn("w:spacing"))
+    assert 0 < int(rich_spacing.get(qn("w:line")))
+
+
 @pytest.mark.parametrize("export_format", ["markdown", "pdf"])
 def test_assembly_export_cancel_after_generation_does_not_publish_or_clear_draft(
     tmp_path: Path,
