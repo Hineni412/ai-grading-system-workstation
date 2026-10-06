@@ -4,6 +4,7 @@ import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import AppButton from '../components/design-system/AppButton.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
+import { Sparkles } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import { useAssemblyStore } from '../stores/assembly'
@@ -63,7 +64,19 @@ const library = ref<InstanceType<typeof PaperLibrary> | null>(null)
 const repairOpen = ref(false)
 const repairKind = ref<QuestionRepairKind>('all')
 function openRepair(kind: QuestionRepairKind = 'all') { repairKind.value = kind; repairOpen.value = true }
-watch(() => scope.selectedVolumeId, () => { repairOpen.value = false })
+const repairPreview = computed(() =>
+  scope.selectedVolumeId ? bank.repairPreviews.get(`${scope.selectedVolumeId}:all`) ?? null : null)
+function prefetchRepairPreview() {
+  if (!scope.selectedVolumeId) return
+  void bank.loadRepairPreview(scope.selectedVolumeId, 'all').catch(() => {})
+}
+watch(() => scope.selectedVolumeId, () => { repairOpen.value = false; prefetchRepairPreview() }, { immediate: true })
+function afterRepairRefresh() {
+  bank.invalidateRepairPreviews(scope.selectedVolumeId || undefined)
+  void bank.loadPapers()
+  void loadIndex()
+  prefetchRepairPreview()
+}
 async function loadIndex() {
   indexController?.abort()
   if (!scope.selectedVolumeId) { index.value = null; return }
@@ -206,7 +219,7 @@ async function openCandidateQuestion(ref: { questionId: number; paperId: number 
 
 <template>
   <section class="question-bank">
-    <PageHeader title="题库管理"><template #meta>{{ scope.selectedVolume?.label || '请选择教学学期' }} · {{ index?.question_count ?? 0 }} 题 · {{ skillCount }} 项技能</template><template #navigation><nav class="page-tabs" aria-label="题库视图"><button v-for="item in VIEW_TABS" :key="item.key" type="button" :class="{ 'is-active': tab === item.key }" :aria-current="tab === item.key ? 'page' : undefined" @click="setTab(item.key)">{{ item.label }}</button></nav></template><template #actions><AppButton variant="secondary" @click="showBasket = true">试卷篮 · {{ assembly.selectedQuestionCount }}</AppButton><AppButton :disabled="!scope.selectedVolumeId" variant="secondary" @click="openRepair()">AI 补齐缺失</AppButton><div id="qb-library-actions" /></template></PageHeader>
+    <PageHeader title="题库管理"><template #meta>{{ scope.selectedVolume?.label || '请选择教学学期' }} · {{ index?.question_count ?? 0 }} 题 · {{ skillCount }} 项技能</template><template #navigation><nav class="page-tabs" aria-label="题库视图"><button v-for="item in VIEW_TABS" :key="item.key" type="button" :class="{ 'is-active': tab === item.key }" :aria-current="tab === item.key ? 'page' : undefined" @click="setTab(item.key)">{{ item.label }}</button></nav></template><template #actions><AppButton variant="secondary" @click="showBasket = true">试卷篮 · {{ assembly.selectedQuestionCount }}</AppButton><AppButton :disabled="!scope.selectedVolumeId" variant="secondary" :title="repairPreview?.question_count ? `${repairPreview.question_count} 道题有缺失或需刷新` : undefined" @click="openRepair()"><template #leading><Sparkles :size="14" :stroke-width="2" aria-hidden="true" /></template>AI 补齐{{ repairPreview?.question_count ? ` · ${repairPreview.question_count}` : '' }}</AppButton><div id="qb-library-actions" /></template></PageHeader>
     <div class="qb-workspace">
     <FeedbackBanner v-if="bank.lastDeleted" role="status" tone="warning" :description="bank.writeMessage" action-label="立即恢复" @action="bank.restoreLastDeleted()" />
     <QuestionSkillBrowser v-if="tab === 'skill'" :index="index" :loading="indexLoading" :error="indexError" @retry="loadIndex" @skill="openSkill" @repair="openRepair('skills')" />
@@ -218,7 +231,7 @@ async function openCandidateQuestion(ref: { questionId: number; paperId: number 
     <QuestionBankTodo v-if="tab === 'todo'" :index="index" :pending-count="taxonomyReview.pendingCount" @question="openCriteriaQuestion" @open-question="openCandidateQuestion" @skill="openSkill" @criteria="openCriteriaReview" @taxonomy="openTaxonomyReview" @repair="openRepair" />
     </div>
     <QuestionBasketDrawer v-model:open="showBasket" />
-    <QuestionRepairDialog :open="repairOpen" :volume-id="scope.selectedVolumeId || ''" :volume-label="scope.selectedVolume?.label || ''" :kind="repairKind" @close="repairOpen = false" @refreshed="bank.loadPapers(); loadIndex()" />
+    <QuestionRepairDialog :open="repairOpen" :volume-id="scope.selectedVolumeId || ''" :volume-label="scope.selectedVolume?.label || ''" :kind="repairKind" @close="repairOpen = false" @refreshed="afterRepairRefresh" />
     <AppDialog :open="showImport" title="上传试卷与任务" class="qb-import-dialog" @update:open="(value: boolean) => { showImport = value }">
       <QuestionImportJobs
         :pending-taxonomy-count="taxonomyReview.pendingCount"

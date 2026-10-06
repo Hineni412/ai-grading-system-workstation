@@ -8,15 +8,61 @@ from pathlib import Path
 from typing import Any, Callable
 
 from question_bank.database.schema import connect
-from question_bank.services.question_read_service import QuestionBankReadService
+from question_bank.services.question_read_service import (
+    QuestionBankReadService,
+    _ACTIVE_READ_SCOPE,
+    _CACHE_MISS,
+    _read_result_cache_get,
+    _read_result_cache_put,
+    _source_generation_token,
+    _taxonomy_generation_token,
+)
 from question_bank.solution_evidence.part_assessments import load_profiles
+from question_bank.taxonomy.governance import get_taxonomy_governance
 from question_bank.training_criteria import QuestionAnalysisInputLoader
 
 from .manager import JobContext
 from .tagging_sync import _load_analysis_gaps, _load_tag_source_currentness, _load_tagging_candidates
 
 
+def _skill_candidate_state_token() -> tuple[object, ...]:
+    base = get_taxonomy_governance().state_path.resolve(strict=False)
+    path = base.with_name(f"{base.stem}.skill_candidates{base.suffix or '.json'}")
+    try:
+        info = path.stat()
+    except (FileNotFoundError, OSError):
+        return (str(path), None)
+    return (str(path), int(info.st_size), int(info.st_mtime_ns))
+
+
 def repair_preview(service: QuestionBankReadService, volume_id: str, kind: str,
+                   question_ids: list[int] | None = None) -> dict[str, Any]:
+    if kind not in {'skills', 'analysis', 'all'}:
+        raise ValueError('请选择有效的补齐范围')
+    # Whole-volume previews are read-only and expensive; reuse them until any
+    # question-bank, taxonomy or skill-candidate write shifts a generation
+    # token. Subset previews (job runs) stay uncached.
+    generation = (
+        None
+        if question_ids is not None or _ACTIVE_READ_SCOPE.get() is not None
+        else _source_generation_token(service.db_path)
+    )
+    if generation is None:
+        return _compute_repair_preview(service, volume_id, kind, question_ids)
+    key = ('repair_preview', generation, service._cache_data_root,
+           _taxonomy_generation_token(), _skill_candidate_state_token(),
+           volume_id, kind)
+    cached = _read_result_cache_get(key)
+    if cached is not _CACHE_MISS:
+        return cached  # type: ignore[return-value]
+    result = _compute_repair_preview(service, volume_id, kind, question_ids)
+    # Re-check the token: a write that landed mid-scan must not be masked.
+    if generation == _source_generation_token(service.db_path):
+        _read_result_cache_put(key, result)
+    return result
+
+
+def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, kind: str,
                    question_ids: list[int] | None = None) -> dict[str, Any]:
     if kind not in {'skills', 'analysis', 'all'}:
         raise ValueError('请选择有效的补齐范围')

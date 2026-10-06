@@ -466,7 +466,8 @@ _RICH_CONTENT_VERSION = 3
 _CURRENT_PREVIEW_ORDER_SQL = "updated_at DESC, id DESC"
 _READ_RESULT_CACHE_LIMIT = 48
 _BROWSE_CACHE_LIMITS = {"skill_snapshot": 2, "skill_inventory": 2, "skill_page": 4,
-                        "skill_index": 4, "skill_questions": 8, "facets": 4, "papers": 2}
+                        "skill_index": 4, "skill_questions": 8, "facets": 4, "papers": 2,
+                        "repair_preview": 6}
 _READ_RESULT_CACHE_LOCK = threading.Lock()
 _SKILL_SNAPSHOT_LOCK = threading.Lock()
 _SKILL_LOCAL_CACHE_MAX_BYTES = 16 * 1024 * 1024

@@ -35,6 +35,7 @@ from question_bank.training_criteria import (
     QuestionAnalysisWorkItem,
     TrainingCriterionModule,
     combined_analysis_retry_budget,
+    legacy_tag_source_content_hash,
     solution_evidence_source_content_hash,
 )
 
@@ -1137,20 +1138,25 @@ def _load_tag_source_currentness(
 
     The fingerprint covers question content only (text, answer, type, images,
     volume). Taxonomy/vocabulary state is deliberately excluded: a vocabulary
-    revision bump must not invalidate already-saved tags.
+    revision bump must not invalidate already-saved tags. New runs store that
+    hash directly; legacy runs mixed model-written tags into the fingerprint,
+    so a stored-hash mismatch alone is not proof the question changed.
+
+    A record is current iff its stored hash equals the input's content hash
+    or the reproduced legacy fingerprint. Otherwise a proposed/approved
+    solution-evidence version covering the current content (question text,
+    answer, type, images, rich blocks) and recorded no later than the tag
+    item's last update still proves the question had not changed.
 
     Rows without combined-analysis history are legacy-compatible: their tag
     presence remains authoritative. Once a question has a versioned tag run,
     however, an older source hash must not make the current question complete.
     """
 
-    current_by_id = {
-        int(item.question_id): str(item.source_content_hash)
-        for item in current_inputs
-    }
-    if not current_by_id:
+    inputs_by_id = {int(item.question_id): item for item in current_inputs}
+    if not inputs_by_id:
         return {}
-    question_ids = tuple(current_by_id)
+    question_ids = tuple(inputs_by_id)
     placeholders = ",".join("?" for _ in question_ids)
     with connect(db_path) as conn:
         table = conn.execute(
@@ -1163,25 +1169,79 @@ def _load_tag_source_currentness(
             return {}
         rows = conn.execute(
             f"""
-            SELECT question_id, source_content_hash
-            FROM question_analysis_items
-            WHERE question_id IN ({placeholders})
-              AND tag_status = 'succeeded'
-            ORDER BY rowid DESC
+            SELECT i.question_id, i.source_content_hash,
+                   COALESCE(i.updated_at, i.created_at) AS item_updated_at
+            FROM question_analysis_items i
+            WHERE i.question_id IN ({placeholders})
+              AND i.tag_status = 'succeeded'
+            ORDER BY i.rowid DESC
             """,
             question_ids,
         ).fetchall()
-    latest_hashes: dict[int, str] = {}
+    latest: dict[int, tuple[str, str]] = {}
     for row in rows:
-        latest_hashes.setdefault(
+        latest.setdefault(
             int(row["question_id"]),
-            str(row["source_content_hash"]),
+            (
+                str(row["source_content_hash"]),
+                str(row["item_updated_at"] or ""),
+            ),
         )
-    return {
-        question_id: latest_hashes[question_id] == current_hash
-        for question_id, current_hash in current_by_id.items()
-        if question_id in latest_hashes
-    }
+    # Only records that match neither hash form need the evidence witness:
+    # a current-content evidence version recorded no later than the tag run
+    # proves the mismatch came from embedded model-written tags, not from
+    # changed question content.
+    witness_ids = [
+        question_id
+        for question_id, (stored, _updated) in latest.items()
+        if stored
+        not in {
+            str(inputs_by_id[question_id].source_content_hash),
+            legacy_tag_source_content_hash(inputs_by_id[question_id]),
+        }
+    ]
+    evidence_witnesses: dict[int, list[tuple[str, str]]] = {}
+    if witness_ids:
+        witness_placeholders = ",".join("?" for _ in witness_ids)
+        with connect(db_path) as conn:
+            witness_rows = conn.execute(
+                f"""
+                SELECT question_id, source_content_hash, created_at
+                FROM question_solution_evidence_versions
+                WHERE question_id IN ({witness_placeholders})
+                  AND status IN ('proposed', 'approved')
+                """,
+                witness_ids,
+            ).fetchall()
+        for row in witness_rows:
+            evidence_witnesses.setdefault(
+                int(row["question_id"]), []
+            ).append(
+                (
+                    str(row["source_content_hash"]),
+                    str(row["created_at"] or ""),
+                )
+            )
+    result: dict[int, bool] = {}
+    for question_id, item in inputs_by_id.items():
+        record = latest.get(question_id)
+        if record is None:
+            continue
+        stored, item_updated_at = record
+        if stored in {
+            str(item.source_content_hash),
+            legacy_tag_source_content_hash(item),
+        }:
+            result[question_id] = True
+            continue
+        evidence_hash = solution_evidence_source_content_hash(item)
+        result[question_id] = any(
+            hash_value == evidence_hash and created_at <= item_updated_at
+            for hash_value, created_at in evidence_witnesses.get(
+                question_id, ()
+            )
+        )
+    return result
 
 
 def _load_analysis_gaps(

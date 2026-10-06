@@ -293,10 +293,12 @@ class QuestionAnalysisInput:
         # 标签整体过期。需要按新词表刷新时，用显式的"重新打标签"提交。
         # evidence_parts 是判定点保存后的派生状态而非题目内容：纳入会让
         # 每次保存判定点后全题被视为"题变了"而反复重打。
+        # existing_tags/existing_tags_by_dimension 是模型写入的标签而非题目内容。
         context = {
             key: value
             for key, value in self.tagging_context.to_dict().items()
-            if key != "evidence_parts"
+            if key
+            not in {"evidence_parts", "existing_tags", "existing_tags_by_dimension"}
         }
         return _hash_payload(
             {
@@ -2605,6 +2607,48 @@ def training_criterion_source_reference(
         "combined-analysis:"
         f"{int(question_id)}:{draft.source_content_hash}:"
         f"{_hash_payload(draft.to_dict())}"
+    )
+
+
+def legacy_tag_source_content_hash(question: QuestionAnalysisInput) -> str:
+    """Reproduce the pre-v3 tag fingerprint payload for legacy comparison only.
+
+    Before ``combined-v3`` the stored hash still mixed the model-written
+    ``existing_tags``/``existing_tags_by_dimension`` context keys into the
+    question fingerprint, so a retag that rewrote ``special_type``
+    invalidated its own record.  Only ``evidence_parts`` was excluded then;
+    keep this reproduction byte-identical so rows written by older runs can
+    be recognised instead of being reported as stale.
+    """
+
+    context = {
+        key: value
+        for key, value in question.tagging_context.to_dict().items()
+        if key != "evidence_parts"
+    }
+    return _hash_payload(
+        {
+            "question_id": question.question_id,
+            "tagging_context": context,
+            "question_type_confirmed": question.question_type_confirmed,
+            **(
+                {"semantic_source": "images"}
+                if question.semantic_source == "images"
+                else {}
+            ),
+            "explicit_part_labels": list(question.explicit_part_labels),
+            "rich_question_blocks": question.rich_question_blocks,
+            "rich_answer_blocks": question.rich_answer_blocks,
+            "image_hashes": [
+                {
+                    "role": image.role,
+                    "mime_type": image.mime_type,
+                    "sha256": image.sha256,
+                }
+                for image in question.images
+            ],
+            "reference_solution": question.reference_solution,
+        }
     )
 
 

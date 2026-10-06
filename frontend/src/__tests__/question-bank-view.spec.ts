@@ -1061,9 +1061,57 @@ describe('question bank workspace', () => {
     await vi.waitFor(() => expect(host.querySelector('.qb-todo-group article')?.textContent).toContain('第1题匿名期末试卷'))
     expect(load).toHaveBeenCalledWith(expect.objectContaining({ criteriaNeedsReview: true }), expect.anything())
     expect(load).toHaveBeenCalledWith(expect.objectContaining({ skillUnlinked: true }), expect.anything())
-    expect(load).toHaveBeenCalledWith(expect.objectContaining({ analysisStatus: 'incomplete' }), expect.anything())
+    expect(load).not.toHaveBeenCalledWith(expect.objectContaining({ analysisStatus: 'incomplete' }), expect.anything())
     const action = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '去处理 →')!
     action.click(); expect(open).toHaveBeenCalledWith(item)
+  })
+
+  it('drives the analysis todo card from the same cached preview as the AI 补齐 dialog', async () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const pinia = createPinia(); useCurriculumScopeStore(pinia).selectedVolumeId = 'bnu24-math-g8-upper'
+    vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, total_pages: 0 })
+    const preview = { curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'all' as const,
+      fingerprint: 'a'.repeat(64), scanned_count: 3, question_count: 3, repairable_count: 3, model_calls: 0,
+      counts: { tags: 1, evidence: 1, criteria: 1, skills: 2 }, items: [
+        { id: 21, question_number: '3', paper_title: 'TEST-缺标签卷', missing: ['tags' as const, 'evidence' as const], blocked_reason: '', revision: 'b'.repeat(64) },
+        { id: 22, question_number: '4', paper_title: 'TEST-缺判定点卷', missing: ['criteria' as const, 'skills' as const], blocked_reason: '', revision: 'c'.repeat(64) },
+        { id: 23, question_number: '5', paper_title: 'TEST-只缺技能卷', missing: ['skills' as const], blocked_reason: '', revision: 'd'.repeat(64) },
+      ] }
+    vi.spyOn(questionBankApi, 'repairPreview').mockResolvedValue(preview)
+    const openQuestion = vi.fn()
+    const repair = vi.fn()
+    const app = createApp({ render: () => h(QuestionBankTodo, { index: null, pendingCount: 0, onOpenQuestion: openQuestion, onRepair: repair }) })
+    app.use(pinia).mount(host); mounted.push(app)
+    const analysisCard = () => [...host.querySelectorAll<HTMLElement>('.qb-todo-group')].find(el => el.querySelector('h2')?.textContent === '分析未完成')!
+    await vi.waitFor(() => expect(analysisCard().querySelector('.qb-todo-count')?.textContent).toBe('2'))
+    const articles = [...analysisCard().querySelectorAll('article')].map(el => el.textContent)
+    expect(articles).toHaveLength(2)
+    expect(articles[0]).toContain('第3题')
+    expect(articles[0]).toContain('TEST-缺标签卷')
+    expect(articles[0]).toContain('缺：题目标签、解题证据')
+    expect(articles[1]).toContain('缺：判定点')
+    expect(articles[1]).not.toContain('技能关联')
+    const action = [...analysisCard().querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '去处理 →')!
+    action.click(); expect(openQuestion).toHaveBeenCalledWith({ questionId: 21, paperId: null })
+    const repairButton = [...analysisCard().querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'AI 补齐分析')!
+    repairButton.click(); expect(repair).toHaveBeenCalledWith('analysis')
+  })
+
+  it('shows the analysis todo card empty state when no question misses analysis parts', async () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const pinia = createPinia(); useCurriculumScopeStore(pinia).selectedVolumeId = 'bnu24-math-g8-upper'
+    vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, total_pages: 0 })
+    vi.spyOn(questionBankApi, 'repairPreview').mockResolvedValue({ curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'all' as const,
+      fingerprint: 'a'.repeat(64), scanned_count: 1, question_count: 1, repairable_count: 1, model_calls: 0,
+      counts: { tags: 0, evidence: 0, criteria: 0, skills: 1 }, items: [
+        { id: 23, question_number: '5', paper_title: 'TEST-只缺技能卷', missing: ['skills' as const], blocked_reason: '', revision: 'd'.repeat(64) },
+      ] })
+    const app = createApp({ render: () => h(QuestionBankTodo, { index: null, pendingCount: 0 }) })
+    app.use(pinia).mount(host); mounted.push(app)
+    const analysisCard = () => [...host.querySelectorAll<HTMLElement>('.qb-todo-group')].find(el => el.querySelector('h2')?.textContent === '分析未完成')!
+    await vi.waitFor(() => expect(analysisCard().querySelector('.qb-todo-count')?.textContent).toBe('0'))
+    expect(analysisCard().textContent).toContain('当前学期没有这类待处理题目。')
+    expect(analysisCard().querySelectorAll('article')).toHaveLength(0)
   })
 
   it('uses the shared basket draft and preserves it when a removal is rejected', async () => {

@@ -817,6 +817,150 @@ def test_repair_preview_lists_each_missing_product_without_model_calls(tmp_path)
         repair_preview(service, 'bnu24-math-g8-upper', 'skills', [6])
 
 
+def _seed_tagged_question(db):
+    """Give question 1 a complete tag set and pin its evidence created_at
+    before the tag-item timestamps used by the currentness tests."""
+    from question_bank.database.schema import connect
+    with connect(db) as conn:
+        conn.executemany(
+            "INSERT INTO question_tags(question_id,tag_type,tag_value) VALUES(1,?,?)",
+            [('ability', 'TEST-能力'), ('knowledge_point', 'TEST-知识点'),
+             ('exam_scope', 'TEST-范围'), ('special_type', 'TEST-旧类型')],
+        )
+        conn.execute(
+            "UPDATE question_solution_evidence_versions "
+            "SET created_at='2026-01-01 00:00:00' WHERE question_id=1"
+        )
+
+
+def _insert_tag_run(db, stored_hash, *, contract,
+                    item_updated_at='2026-01-02 00:00:00'):
+    """Record one succeeded tag item for question 1 under ``contract``."""
+    from question_bank.database.schema import connect
+    operation_id = f'TEST-op-{contract}'
+    with connect(db) as conn:
+        conn.execute(
+            "INSERT INTO question_analysis_operations "
+            "(operation_id,input_fingerprint,contract_version,"
+            "requested_projection,status) VALUES(?,?,?,'both','succeeded')",
+            (operation_id, 'a' * 64, contract),
+        )
+        conn.execute(
+            "INSERT INTO question_analysis_items "
+            "(operation_id,question_id,source_content_hash,tag_status,"
+            "criteria_status,updated_at) VALUES(?,1,?,'succeeded','succeeded',?)",
+            (operation_id, stored_hash, item_updated_at),
+        )
+
+
+def test_tag_source_currentness_tolerates_legacy_fingerprint_tag_writes(tmp_path):
+    """combined-v2/tag-only-v1 rows mixed model-written special_type into the
+    stored hash; a retag must not invalidate its own record."""
+    from backend.jobs.question_bank_repair import repair_preview
+    from backend.jobs.tagging_sync import _load_tag_source_currentness
+    from question_bank.database.schema import connect
+    from question_bank.training_criteria import (
+        QuestionAnalysisInputLoader,
+        legacy_tag_source_content_hash,
+    )
+
+    service, db, _ = _seed_skill_bank(tmp_path)
+    loader = QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path)
+
+    def load_input():
+        return loader.load([1], curriculum_volume_id='bnu24-math-g8-upper')[0]
+
+    # Legacy contract: the stored hash was taken before a retag rewrote
+    # special_type; the matching evidence version predates the tag item.
+    _seed_tagged_question(db)
+    before = load_input()
+    legacy_hash = legacy_tag_source_content_hash(before)
+    _insert_tag_run(db, legacy_hash, contract='combined-v2')
+    with connect(db) as conn:
+        conn.execute(
+            "UPDATE question_tags SET tag_value='TEST-新类型' "
+            "WHERE question_id=1 AND tag_type='special_type'"
+        )
+    current = load_input()
+    assert legacy_tag_source_content_hash(current) != legacy_hash
+    assert str(current.source_content_hash) != legacy_hash
+    assert _load_tag_source_currentness(db, current_inputs=[current]) == {1: True}
+    item = next(i for i in repair_preview(service, 'bnu24-math-g8-upper', 'all')['items'] if i['id'] == 1)
+    assert 'tags' not in item['missing']
+
+    # Legacy contract + content change: the evidence witness no longer
+    # matches, so the stale tag run must be reported again.
+    with connect(db) as conn:
+        conn.execute("UPDATE questions SET question_text='TEST-题面已变' WHERE id=1")
+    changed = load_input()
+    assert _load_tag_source_currentness(db, current_inputs=[changed]) == {1: False}
+    item = next(i for i in repair_preview(service, 'bnu24-math-g8-upper', 'all')['items'] if i['id'] == 1)
+    assert 'tags' in item['missing']
+
+
+def test_tag_source_currentness_new_hash_ignores_model_tag_writes(tmp_path):
+    from backend.jobs.question_bank_repair import repair_preview
+    from backend.jobs.tagging_sync import _load_tag_source_currentness
+    from question_bank.database.schema import connect
+    from question_bank.training_criteria import QuestionAnalysisInputLoader
+
+    service, db, _ = _seed_skill_bank(tmp_path)
+    loader = QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path)
+
+    def load_input():
+        return loader.load([1], curriculum_volume_id='bnu24-math-g8-upper')[0]
+
+    # Records written after the fix store the tag-free content hash;
+    # rewriting special_type afterwards changes neither hash nor currentness.
+    _seed_tagged_question(db)
+    _insert_tag_run(db, str(load_input().source_content_hash),
+                    contract='combined-v2')
+    with connect(db) as conn:
+        conn.execute(
+            "UPDATE question_tags SET tag_value='TEST-新类型' "
+            "WHERE question_id=1 AND tag_type='special_type'"
+        )
+    assert _load_tag_source_currentness(db, current_inputs=[load_input()]) == {1: True}
+
+    # Content change: the stored hash matches neither form and the saved
+    # evidence hash covers the old text, so the stale run is reported again.
+    with connect(db) as conn:
+        conn.execute("UPDATE questions SET question_text='TEST-题面再变' WHERE id=1")
+    assert _load_tag_source_currentness(db, current_inputs=[load_input()]) == {1: False}
+    item = next(i for i in repair_preview(service, 'bnu24-math-g8-upper', 'all')['items'] if i['id'] == 1)
+    assert 'tags' in item['missing']
+
+
+def test_repair_preview_whole_volume_result_is_cached_until_a_write(tmp_path, monkeypatch):
+    from backend.jobs import question_bank_repair as repair
+    from question_bank.database.schema import connect
+
+    service, db, _ = _seed_skill_bank(tmp_path)
+    calls = []
+    original = repair._load_analysis_gaps
+
+    def tracked(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(repair, '_load_analysis_gaps', tracked)
+    first = repair.repair_preview(service, 'bnu24-math-g8-upper', 'all')
+    second = repair.repair_preview(service, 'bnu24-math-g8-upper', 'all')
+    assert len(calls) == 1 and second == first
+    # The returned copy must not alias the cached payload.
+    second['items'].clear()
+    second['counts']['skills'] = 999
+    third = repair.repair_preview(service, 'bnu24-math-g8-upper', 'all')
+    assert len(calls) == 1 and third == first
+    # An explicit subset bypasses the whole-volume cache.
+    repair.repair_preview(service, 'bnu24-math-g8-upper', 'all', [3, 4])
+    assert len(calls) == 2
+    with connect(db) as conn:
+        conn.execute("UPDATE questions SET answer_text='TEST-新答案' WHERE id=4")
+    fourth = repair.repair_preview(service, 'bnu24-math-g8-upper', 'all')
+    assert len(calls) == 3 and fourth['fingerprint'] != first['fingerprint']
+
+
 @pytest.mark.parametrize('analysis_fails', [False, True])
 @pytest.mark.parametrize('kind', ['skills', 'analysis', 'all'])
 def test_one_click_repair_routes_only_previewed_gaps_and_stops_failed_dependencies(tmp_path, monkeypatch, analysis_fails, kind):

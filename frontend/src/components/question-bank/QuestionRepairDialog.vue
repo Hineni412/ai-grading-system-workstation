@@ -5,13 +5,17 @@ import AppDialog from '../design-system/AppDialog.vue'
 import { questionBankApi, type QuestionRepairKind, type QuestionRepairPart, type QuestionRepairPreview } from '../../api/question-bank'
 import { ApiError, isAmbiguousWriteError } from '../../api/errors'
 import { useJobStore } from '../../stores/jobs'
+import { useQuestionBankStore } from '../../stores/question-bank'
 import { TERMINAL_JOB_STATUSES } from '../../api/jobs'
 
 const props = defineProps<{ open: boolean; volumeId: string; volumeLabel: string; kind: QuestionRepairKind }>()
 const emit = defineEmits<{ close: []; refreshed: [] }>()
 const jobs = useJobStore()
+const bank = useQuestionBankStore()
 const preview = ref<QuestionRepairPreview | null>(null)
 const state = ref<'loading' | 'ready' | 'error' | 'submitting' | 'ambiguous' | 'running'>('loading')
+const revalidating = ref(false)
+const refreshFailed = ref(false)
 const message = ref('')
 const activeJobId = ref<number | null>(null)
 const job = computed(() => activeJobId.value ? jobs.jobs[activeJobId.value] : undefined)
@@ -26,12 +30,35 @@ async function load() {
   controller?.abort()
   const requestController = new AbortController()
   controller = requestController
-  state.value = 'loading'; message.value = ''; preview.value = null
+  message.value = ''
+  refreshFailed.value = false
+  revalidating.value = false
+  const cached = bank.repairPreviews.get(`${props.volumeId}:${props.kind}`) ?? null
+  if (cached) {
+    // 已有缓存先显示清单，后台核对最新状态，核对完成前不允许确认提交。
+    preview.value = cached
+    state.value = 'ready'
+    revalidating.value = true
+  } else {
+    preview.value = null
+    state.value = 'loading'
+  }
   try {
-    const value = await questionBankApi.repairPreview(props.volumeId, props.kind, requestController.signal)
+    const value = await bank.loadRepairPreview(props.volumeId, props.kind, requestController.signal)
     if (requestController.signal.aborted) return
     preview.value = value; state.value = 'ready'
-  } catch { if (!requestController.signal.aborted) { state.value = 'error'; message.value = '缺失清单暂时无法读取，请重试。' } }
+    revalidating.value = false
+  } catch {
+    if (requestController.signal.aborted) return
+    revalidating.value = false
+    if (preview.value) {
+      refreshFailed.value = true
+      message.value = '无法核对最新状态，请重试。'
+    } else {
+      state.value = 'error'
+      message.value = '缺失清单暂时无法读取，请重试。'
+    }
+  }
 }
 watch(() => props.open, open => {
   if (!open) { controller?.abort(); return }
@@ -70,7 +97,10 @@ async function start() {
   }
 }
 watch(() => job.value?.status, (status, previous) => {
-  if (status && TERMINAL_JOB_STATUSES.has(status) && status !== previous) emit('refreshed')
+  if (status && TERMINAL_JOB_STATUSES.has(status) && status !== previous) {
+    bank.invalidateRepairPreviews(props.volumeId)
+    emit('refreshed')
+  }
 })
 function restoreFocus(event: Event) { event.preventDefault(); returnTarget?.focus({ preventScroll: true }) }
 onBeforeUnmount(() => controller?.abort())
@@ -96,16 +126,17 @@ onBeforeUnmount(() => controller?.abort())
           <AppButton v-if="TERMINAL_JOB_STATUSES.has(job.status)" variant="secondary" @click="activeJobId = null; load()">重新查看剩余缺失</AppButton>
         </template>
         <template v-else-if="preview">
+          <p v-if="revalidating" class="qb-repair-check" role="status">正在核对最新状态…</p>
           <p class="qb-repair-summary">发现 <strong>{{ preview.question_count }}</strong> 道缺失题；本次可处理 <strong>{{ targetIds.length }}</strong> 道。</p>
           <p v-if="preview.repairable_count > 500">每次最多处理 500 道，剩余题目可在本次结束后继续补齐。</p>
           <div class="qb-repair-steps"><div v-for="part in (['tags', 'evidence', 'criteria', 'skills'] as const)" :key="part"><strong>{{ labels[part] }} · {{ preview.counts[part] }} 题缺失</strong><span>{{ part === 'tags' ? '只为缺失或过期标签的题补标签' : part === 'evidence' || part === 'criteria' ? '进入判定点分析流程，保留已有可用结果' : '已有判定点直接补关联；缺判定点先补齐再关联' }}</span></div></div>
           <details class="qb-repair-list" open><summary>查看逐题清单 · {{ preview.items.length }} 题</summary><table class="app-table app-table--sticky"><thead><tr><th>题目</th><th>缺失部分</th><th>本次处理</th></tr></thead><tbody><tr v-for="item in preview.items" :key="item.id"><td><strong>第 {{ item.question_number }} 题</strong><small>{{ item.paper_title }}</small></td><td>{{ item.missing.map(part => labels[part]).join('、') }}</td><td>{{ item.blocked_reason || (targetIds.includes(item.id) ? '只补左侧所列部分' : '下一批处理') }}</td></tr></tbody></table></details>
           <p class="qb-repair-cost">确认后将使用配置的 AI 模型，按服务商计费，金额取决于题目长度和模型。已有完整题不提交；失败或结果不确定时不自动追加请求。</p>
         </template>
-        <AppButton v-if="state === 'error'" variant="secondary" @click="load">重新统计</AppButton>
+        <AppButton v-if="state === 'error' || refreshFailed" variant="secondary" @click="load">重新统计</AppButton>
         <template v-if="state === 'submitting' || state === 'ambiguous' || state === 'ready'" #footer>
           <AppButton variant="secondary" @click="emit('close')">取消</AppButton>
-          <AppButton variant="primary" :disabled="!targetIds.length || state === 'submitting'" @click="start">{{ state === 'ambiguous' ? '找回本次任务' : state === 'submitting' ? '正在提交…' : `确认补齐 ${targetIds.length} 题` }}</AppButton>
+          <AppButton variant="primary" :disabled="revalidating || refreshFailed || !targetIds.length || state === 'submitting'" @click="start">{{ state === 'ambiguous' ? '找回本次任务' : state === 'submitting' ? '正在提交…' : `确认补齐 ${targetIds.length} 题` }}</AppButton>
         </template>
   </AppDialog>
 </template>

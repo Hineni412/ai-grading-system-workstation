@@ -2493,6 +2493,7 @@
 .qb-repair-list summary { cursor: pointer; padding: 10px 12px; font-size: var(--font-size-dense); }
 .qb-repair-list td:first-child { max-width: 280px; }
 .qb-repair-list small { display: block; }
+.qb-repair-check { color: var(--color-text-secondary); }
 .qb-repair-cost { color: var(--color-warning); }
 .qb-repair-results { max-height: 45vh; overflow: auto; padding-left: 20px; font-size: var(--font-size-dense); line-height: 1.8; }
 .qb-repair-dialog progress { width: 100%; accent-color: var(--color-accent); }

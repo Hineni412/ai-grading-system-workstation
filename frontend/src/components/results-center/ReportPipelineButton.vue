@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { Sparkles } from '@lucide/vue'
 import { classAnalysisApi } from '../../api/class-analysis'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 import { reportPipelineApi, type ReportPipelineStatus } from '../../api/report-pipeline'
@@ -8,6 +9,7 @@ import AppButton from '../design-system/AppButton.vue'
 import AppDialog from '../design-system/AppDialog.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import { formatTokenCount } from '../file-center/report-format'
+import { cachedPipelineStatus, invalidatePipelineStatus, requestPipelineStatus } from './pipeline-status-cache'
 
 const props = defineProps<{
   sessionId: number
@@ -17,6 +19,7 @@ const props = defineProps<{
 const jobs = useJobStore()
 const open = ref(false)
 const loading = ref(false)
+const revalidating = ref(false)
 const submitting = ref(false)
 const status = ref<ReportPipelineStatus | null>(null)
 const error = ref('')
@@ -39,27 +42,57 @@ const totalTokens = computed(() => (
   + (status.value?.personal_reports.estimated_tokens ?? 0)
 ))
 
+const badgeCount = computed(() => {
+  const value = status.value
+  if (!value || !value.configured || value.complete) return 0
+  return value.causes.call_count + value.class_reports.pending + value.personal_reports.call_count
+})
+
+// 预取：挂载、切换考试或整理任务进入终态后，先备好缓存，弹窗打开即显示。
+async function prefetchStatus(sessionId: number): Promise<void> {
+  try {
+    const value = await requestPipelineStatus(sessionId)
+    if (props.sessionId === sessionId) status.value = value
+  } catch { /* 预取失败不打扰用户，打开弹窗时再提示 */ }
+}
+
+watch(() => props.sessionId, (sessionId) => {
+  status.value = cachedPipelineStatus(sessionId)
+  void prefetchStatus(sessionId)
+}, { immediate: true })
+
+watch(() => props.activeJob?.status, (value, previous) => {
+  if (value && TERMINAL_JOB_STATUSES.has(value) && value !== previous) {
+    invalidatePipelineStatus(props.sessionId)
+    void prefetchStatus(props.sessionId)
+  }
+})
+
 async function openDialog() {
   open.value = true
-  loading.value = true
   error.value = ''
-  status.value = null
+  const cached = cachedPipelineStatus(props.sessionId) ?? status.value
+  status.value = cached
+  loading.value = !cached
+  revalidating.value = !!cached
   controller?.abort()
   controller = new AbortController()
   try {
-    const value = await reportPipelineApi.getStatus(props.sessionId, controller.signal)
+    const value = await requestPipelineStatus(props.sessionId)
     if (!controller.signal.aborted) status.value = value
   } catch {
     if (!controller.signal.aborted) error.value = 'AI 整理状态暂时无法读取，请重试。'
   } finally {
-    if (controller === null || !controller.signal.aborted) loading.value = false
+    if (controller === null || !controller.signal.aborted) {
+      loading.value = false
+      revalidating.value = false
+    }
   }
 }
 
 function close() {
   if (submitting.value) return
   open.value = false
-  status.value = null
   error.value = ''
 }
 
@@ -98,11 +131,15 @@ onBeforeUnmount(() => controller?.abort())
 
 <template>
   <AppButton
-    variant="primary"
+    variant="secondary"
     data-testid="report-pipeline-open"
+    :title="badgeCount > 0 ? `预计调用模型 ${badgeCount} 次` : undefined"
     @click="openDialog"
   >
-    {{ running ? 'AI 整理中…' : 'AI 整理' }}
+    <template #leading>
+      <Sparkles :size="14" :stroke-width="2" aria-hidden="true" />
+    </template>
+    {{ running ? 'AI 整理中…' : 'AI 整理' }}{{ badgeCount > 0 ? ` · ${badgeCount}` : '' }}
   </AppButton>
   <AppDialog
     v-if="open"
@@ -118,6 +155,7 @@ onBeforeUnmount(() => controller?.abort())
       <p v-else-if="error && !status" class="file-center__warning" role="alert">{{ error }}</p>
 
       <template v-else-if="status">
+        <p v-if="revalidating" role="status" data-testid="pipeline-revalidating">正在核对最新状态…</p>
         <p
           v-if="!status.configured"
           class="file-center__warning"
@@ -200,6 +238,7 @@ onBeforeUnmount(() => controller?.abort())
             data-testid="pipeline-confirm"
             :disabled="
               loading
+              || revalidating
               || submitting
               || pipelineActive
               || status?.configured !== true

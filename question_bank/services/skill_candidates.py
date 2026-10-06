@@ -402,10 +402,18 @@ class SkillCandidateService:
                 i["status"] == "unlocated" for i in classified
             ),
         }
+        gap_question_count = len(
+            {
+                int(i["question_id"])
+                for i in classified
+                if i["status"] in {"ready", "pending_review"}
+            }
+        )
         return {
             "curriculum_volume_id": curriculum_volume_id,
             "graph_release_id": snapshot["release"],
             "counts": counts,
+            "gap_question_count": gap_question_count,
             "pending_suggestion_count": pending_suggestions,
             "approved_unpublished_skill_count": approved_unpublished,
             "active_run": active_run,

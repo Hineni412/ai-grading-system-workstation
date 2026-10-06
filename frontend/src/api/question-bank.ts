@@ -2208,6 +2208,7 @@ export interface SkillCandidateSummary {
   curriculum_volume_id: string
   graph_release_id: string | null
   counts: SkillGapCounts
+  gap_question_count: number
   pending_suggestion_count: number
   approved_unpublished_skill_count: number
   active_run: { run_id: string; status: string } | null
@@ -2353,6 +2354,7 @@ function decodeSkillCandidateRun(value: unknown): SkillCandidateRunInfo {
 function decodeSkillCandidateSummary(value: unknown): SkillCandidateSummary {
   if (!isRecord(value) || typeof value.curriculum_volume_id !== 'string'
     || !isNullableString(value.graph_release_id) || !isGapCounts(value.counts)
+    || !isNonnegativeInteger(value.gap_question_count)
     || !isNonnegativeInteger(value.pending_suggestion_count)
     || !isNonnegativeInteger(value.approved_unpublished_skill_count)
     || !isNonnegativeInteger(value.revision) || value.model_calls !== 0

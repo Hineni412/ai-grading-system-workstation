@@ -40,6 +40,7 @@ const candidateSummary = (overrides: Partial<SkillCandidateSummary> = {}): Skill
   curriculum_volume_id: VOLUME,
   graph_release_id: 'kgr_1',
   counts,
+  gap_question_count: 3,
   pending_suggestion_count: 2,
   approved_unpublished_skill_count: 0,
   active_run: null,

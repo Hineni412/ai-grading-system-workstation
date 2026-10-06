@@ -13,6 +13,8 @@ import {
   type QuestionBankPaperMetadataResult,
   type QuestionBankTag,
   type QuestionBankWriteResult,
+  type QuestionRepairKind,
+  type QuestionRepairPreview,
 } from '../api/question-bank'
 import { ApiError } from '../api/errors'
 import type { PaperQuestionRef } from '../components/question-bank/paper-analysis-status'
@@ -133,6 +135,74 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     question: QuestionBankDetail
     revision: string
   } | null>(null)
+
+  // 缺失清单的读取缓存放 store 层：待处理卡片和补齐弹窗共用同一份结果，
+  // 弹窗打开时先显示缓存、后台再核对最新数据。
+  const repairPreviews = ref(new Map<string, QuestionRepairPreview>())
+  const repairPreviewRequests = new Map<string, Promise<QuestionRepairPreview>>()
+  const repairPreviewLoading = ref(new Set<string>())
+
+  function repairPreviewKey(volumeId: string, kind: QuestionRepairKind): string {
+    return `${volumeId}:${kind}`
+  }
+
+  function loadRepairPreview(
+    volumeId: string,
+    kind: QuestionRepairKind,
+    signal?: AbortSignal,
+  ): Promise<QuestionRepairPreview> {
+    const key = repairPreviewKey(volumeId, kind)
+    let request = repairPreviewRequests.get(key)
+    if (!request) {
+      // 发起方的中止信号直接传给请求；加入在途请求的中止只结束自己的等待。
+      const created = questionBankApi.repairPreview(volumeId, kind, signal)
+        .then(value => {
+          if (!signal?.aborted) repairPreviews.value.set(key, value)
+          return value
+        })
+        .finally(() => {
+          if (repairPreviewRequests.get(key) === created) {
+            repairPreviewRequests.delete(key)
+            repairPreviewLoading.value.delete(key)
+          }
+        })
+      request = created
+      repairPreviewRequests.set(key, request)
+      repairPreviewLoading.value.add(key)
+      if (signal) {
+        signal.addEventListener('abort', () => {
+          if (repairPreviewRequests.get(key) === request) {
+            repairPreviewRequests.delete(key)
+            repairPreviewLoading.value.delete(key)
+          }
+        }, { once: true })
+      }
+      return request
+    }
+    if (!signal) return request
+    return new Promise<QuestionRepairPreview>((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new DOMException('Aborted', 'AbortError'))
+        return
+      }
+      const onAbort = () => reject(new DOMException('Aborted', 'AbortError'))
+      signal.addEventListener('abort', onAbort, { once: true })
+      request.then(
+        value => { signal.removeEventListener('abort', onAbort); resolve(value) },
+        error => { signal.removeEventListener('abort', onAbort); reject(error) },
+      )
+    })
+  }
+
+  function invalidateRepairPreviews(volumeId?: string): void {
+    if (!volumeId) {
+      repairPreviews.value.clear()
+      return
+    }
+    for (const key of [...repairPreviews.value.keys()]) {
+      if (key.startsWith(`${volumeId}:`)) repairPreviews.value.delete(key)
+    }
+  }
 
   let listGeneration = 0
   let listController: AbortController | null = null
@@ -481,6 +551,10 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     writeState,
     writeMessage,
     lastDeleted,
+    repairPreviews,
+    repairPreviewLoading,
+    loadRepairPreview,
+    invalidateRepairPreviews,
     loadPapers,
     resetPaperWriteStatus,
     updatePaperMetadata,

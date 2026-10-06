@@ -1000,6 +1000,8 @@ def test_api_skill_candidate_flow_and_job_idempotency(tmp_path: Path) -> None:
         )
         assert summary_response.status_code == 200
         assert summary_response.json()["pending_suggestion_count"] == 2
+        # 3 个待整理判定点分布在 2 道题上。
+        assert summary_response.json()["gap_question_count"] == 2
 
         revision = int(listing_response.json()["revision"])
         review = client.post(
