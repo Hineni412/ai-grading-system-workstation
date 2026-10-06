@@ -1,6 +1,12 @@
 import { apiClient } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
-import { assertNoPathLikeKeys, isRecord } from './validation'
+import {
+  assertNoPathLikeKeys,
+  isFiniteNumber,
+  isInteger,
+  isRecord,
+  isStringArray,
+} from './validation'
 
 export type TrainingStudentScopeMode = 'all' | 'student' | 'selected' | 'class'
 export type TrainingExamScopeMode = 'current' | 'manual' | 'cross_exam' | 'semester'
@@ -629,14 +635,6 @@ export interface TrainingOverview {
   summary: TrainingOverviewSummary
 }
 
-function isInteger(value: unknown, minimum = 0): value is number {
-  return Number.isSafeInteger(value) && Number(value) >= minimum
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value)
-}
-
 function isRate(value: unknown): boolean {
   return isFiniteNumber(value) && value >= 0 && value <= 1
 }
@@ -647,10 +645,6 @@ function isNullablePercentage(value: unknown): boolean {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && Boolean(value.trim())
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
 
 function isPositiveIntegerArray(value: unknown): value is number[] {

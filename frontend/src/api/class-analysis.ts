@@ -1,5 +1,11 @@
 import { apiClient } from './client'
-import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
+import {
+  assertNoPathLikeKeys,
+  isFiniteNumber,
+  isNonnegativeInteger,
+  isNullableString,
+  isRecord,
+} from './validation'
 import type { QuestionBankRichContent } from './question-bank'
 import { isConfigRichContent } from './config-workspace'
 
@@ -198,13 +204,7 @@ export interface ClassAnalysisSettings {
   auto_generate: boolean
 }
 
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value)
-}
 
-function isNonNegativeCount(value: unknown): value is number {
-  return Number.isSafeInteger(value) && Number(value) >= 0
-}
 
 function decodeRecord(value: unknown): ClassAnalysisRecord {
   if (
@@ -252,7 +252,7 @@ function decodeCauseEvidence(value: unknown): ClassCauseEvidence[] {
   const strings = (items: unknown) => Array.isArray(items) && items.every((item) => typeof item === 'string')
   if (!Array.isArray(value) || !value.every((item) => (
     isRecord(item) && typeof item.text === 'string'
-    && Array.isArray(item.student_ids) && item.student_ids.every(isNonNegativeCount)
+    && Array.isArray(item.student_ids) && item.student_ids.every(isNonnegativeInteger)
     && (item.student_answer === undefined || typeof item.student_answer === 'string')
     && (item.evidence_steps === undefined || strings(item.evidence_steps))
     && (item.missing_steps === undefined || strings(item.missing_steps))
@@ -266,7 +266,7 @@ function decodeCauseEvidence(value: unknown): ClassCauseEvidence[] {
 }
 
 function decodeCause(value: unknown): ClassCause {
-  if (!isRecord(value) || typeof value.reason !== 'string' || !isNonNegativeCount(value.count)
+  if (!isRecord(value) || typeof value.reason !== 'string' || !isNonnegativeInteger(value.count)
     || !(value.kind === undefined || CLASS_CAUSE_KINDS.some((kind) => kind === value.kind))
     || !(value.category === undefined || CAUSE_CATEGORIES.some((category) => category === value.category))
     || !(value.step_id === undefined || isNullableString(value.step_id))
@@ -299,11 +299,11 @@ function decodeCause(value: unknown): ClassCause {
 function decodeCauseAnalysis(value: unknown): ClassCauseAnalysis | null {
   if (value == null) return null
   if (!isRecord(value) || !['ready', 'partial', 'not_generated'].includes(String(value.status))
-    || !isNonNegativeCount(value.pending_questions) || !isNonNegativeCount(value.total_questions)
-    || !isNonNegativeCount(value.failed_questions) || typeof value.stale !== 'boolean'
-    || !(value.legacy_questions === undefined || isNonNegativeCount(value.legacy_questions))
-    || !(value.outdated_questions === undefined || isNonNegativeCount(value.outdated_questions))
-    || !(value.pre_step_questions === undefined || isNonNegativeCount(value.pre_step_questions))
+    || !isNonnegativeInteger(value.pending_questions) || !isNonnegativeInteger(value.total_questions)
+    || !isNonnegativeInteger(value.failed_questions) || typeof value.stale !== 'boolean'
+    || !(value.legacy_questions === undefined || isNonnegativeInteger(value.legacy_questions))
+    || !(value.outdated_questions === undefined || isNonnegativeInteger(value.outdated_questions))
+    || !(value.pre_step_questions === undefined || isNonnegativeInteger(value.pre_step_questions))
     || !isNullableString(value.generated_at) || !isNullableString(value.origin)) {
     throw new Error('Invalid class cause analysis')
   }
@@ -325,13 +325,13 @@ function decodeQuestion(value: unknown): ClassAnalysisQuestion {
     || !(value.causes_outdated === undefined || typeof value.causes_outdated === 'boolean')
     || !(value.causes_by_step === undefined || typeof value.causes_by_step === 'boolean')
     || !(value.cause_review === undefined || isRecord(value.cause_review))
-    || !(value.bank_question_id === undefined || value.bank_question_id === null || isNonNegativeCount(value.bank_question_id))
+    || !(value.bank_question_id === undefined || value.bank_question_id === null || isNonnegativeInteger(value.bank_question_id))
     || !(value.cause_category_counts === undefined || (Array.isArray(value.cause_category_counts)
       && value.cause_category_counts.every((item) => (
-        isRecord(item) && typeof item.category === 'string' && isNonNegativeCount(item.count)
+        isRecord(item) && typeof item.category === 'string' && isNonnegativeInteger(item.count)
       ))))
     || !(value.causes === undefined || (Array.isArray(value.causes) && value.causes.every((cause) => (
-      isRecord(cause) && typeof cause.reason === 'string' && isNonNegativeCount(cause.count)
+      isRecord(cause) && typeof cause.reason === 'string' && isNonnegativeInteger(cause.count)
     ))))
   ) {
     throw new Error('Invalid class analysis question')
@@ -382,7 +382,7 @@ function decodeStudent(value: unknown): ClassAnalysisStudent {
     || typeof value.student_name !== 'string'
     || !isNullableString(value.student_code)
     || !isFiniteNumber(value.total_score)
-    || !(isNonNegativeCount(value.rank) || value.rank === null)
+    || !(isNonnegativeInteger(value.rank) || value.rank === null)
     || typeof value.needs_review !== 'boolean'
     || !Array.isArray(value.lost)
   ) {
@@ -407,7 +407,7 @@ function decodeScoreDistribution(value: unknown): ClassScoreDistribution {
     || !isFiniteNumber(value.min)
     || !isFiniteNumber(value.pass_rate)
     || !isRecord(value.bands)
-    || !Object.values(value.bands).every(isNonNegativeCount)
+    || !Object.values(value.bands).every(isNonnegativeInteger)
   ) {
     throw new Error('Invalid class score distribution')
   }
@@ -429,7 +429,7 @@ function decodeData(value: unknown): ClassAnalysisData {
     || !isNullableString(value.exam.subject)
     || !isFiniteNumber(value.exam.full_score)
     || !isNullableString(value.exam.graded_at)
-    || !isNonNegativeCount(value.present)
+    || !isNonnegativeInteger(value.present)
     || !Array.isArray(value.roster_absent)
     || !value.roster_absent.every((name) => typeof name === 'string')
     || !Array.isArray(value.questions)

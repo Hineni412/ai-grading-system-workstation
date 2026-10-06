@@ -1,6 +1,14 @@
 import { apiClient } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
-import { isNullableString, isRecord } from './validation'
+import {
+  hasExactKeys,
+  isFiniteNumber,
+  isInteger,
+  isNullableString,
+  isRecord,
+  isRevision,
+  isStringArray,
+} from './validation'
 
 export interface WrongQuestionMissingItem {
   student_id: number
@@ -72,12 +80,7 @@ interface StudentListResponse {
   total: number
 }
 
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const actual = Object.keys(value)
-  return actual.length === keys.length && keys.every(
-    (key) => Object.prototype.hasOwnProperty.call(value, key),
-  )
-}
+
 
 function isStudentSummary(value: unknown): value is StudentSummary {
   return (
@@ -163,10 +166,6 @@ export interface StudentExamResultsQuery {
   page?: number
   pageSize?: number
   curriculumVolumeId?: string
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value)
 }
 
 function isNullableNumber(value: unknown): value is number | null {
@@ -356,17 +355,7 @@ export interface StudentWorkspaceQuery {
   page_size?: number
 }
 
-function isInteger(value: unknown, minimum = 0): value is number {
-  return Number.isSafeInteger(value) && Number(value) >= minimum
-}
 
-function isRevision(value: unknown): value is string {
-  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string')
-}
 
 function isStudentImportMapping(value: unknown): value is StudentImportMapping {
   return (

@@ -1,5 +1,12 @@
 import { apiClient } from './client'
-import { isNullableString, isRecord } from './validation'
+import {
+  hasExactKeys,
+  isFiniteNumber,
+  isNonnegativeInteger,
+  isNullableString,
+  isRecord,
+  isStringArray,
+} from './validation'
 
 export type ReviewScope =
   | 'teacher_pending'
@@ -153,8 +160,6 @@ export interface ReviewConfirmResponse {
   annotation_outcomes: ReviewAnnotationOutcome[]
 }
 
-const isNonnegativeInteger = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0
-const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
 const isApiUrl = (value: unknown): value is string => typeof value === 'string' && /^\/api\//.test(value)
 const isNullableApiUrl = (value: unknown): value is string | null => value === null || isApiUrl(value)
 const isNullablePositiveInteger = (value: unknown): value is number | null =>
@@ -289,21 +294,8 @@ const RUBRIC_POINT_KEYS = [
   'final_answer_rule',
 ] as const
 
-function hasExactKeys(
-  value: Record<string, unknown>,
-  expected: readonly string[],
-): boolean {
-  const actual = Object.keys(value)
-  return actual.length === expected.length
-    && actual.every((key) => expected.includes(key))
-}
-
 function isNonblankString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === 'string')
 }
 
 function isNullableNonnegativeNumber(value: unknown): value is number | null {

@@ -1,7 +1,14 @@
 import { apiClient } from './client'
 import { JOB_STATUSES, type JobStatus } from './jobs'
 import { isSessionSummary, type SessionSummary } from './sessions'
-import { isNullableString, isRecord } from './validation'
+import {
+  hasExactKeys,
+  isFiniteNumber,
+  isNonnegativeInteger,
+  isNullableString,
+  isPositiveInteger,
+  isRecord,
+} from './validation'
 
 export interface SessionProgress {
   total_papers: number
@@ -68,24 +75,7 @@ export interface SessionAnomalyResponse {
   total_pages: number
 }
 
-function isNonNegativeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && Number(value) >= 0
-}
 
-function isPositiveInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && Number(value) > 0
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value)
-}
-
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const actual = Object.keys(value)
-  return actual.length === keys.length && keys.every(
-    (key) => Object.prototype.hasOwnProperty.call(value, key),
-  )
-}
 
 function isStrictSessionSummary(value: unknown): value is SessionSummary {
   return (
@@ -106,15 +96,15 @@ function isSessionProgress(value: unknown): value is SessionProgress {
       'failed_papers', 'grading_papers', 'needs_human_review', 'absent_students',
       'scan_issue_students', 'progress_percent',
     ]) &&
-    isNonNegativeInteger(value.total_papers) &&
-    isNonNegativeInteger(value.matched_papers) &&
-    isNonNegativeInteger(value.unmatched_papers) &&
-    isNonNegativeInteger(value.graded_papers) &&
-    isNonNegativeInteger(value.failed_papers) &&
-    isNonNegativeInteger(value.grading_papers) &&
-    isNonNegativeInteger(value.needs_human_review) &&
-    isNonNegativeInteger(value.absent_students) &&
-    isNonNegativeInteger(value.scan_issue_students) &&
+    isNonnegativeInteger(value.total_papers) &&
+    isNonnegativeInteger(value.matched_papers) &&
+    isNonnegativeInteger(value.unmatched_papers) &&
+    isNonnegativeInteger(value.graded_papers) &&
+    isNonnegativeInteger(value.failed_papers) &&
+    isNonnegativeInteger(value.grading_papers) &&
+    isNonnegativeInteger(value.needs_human_review) &&
+    isNonnegativeInteger(value.absent_students) &&
+    isNonnegativeInteger(value.scan_issue_students) &&
     isFiniteNumber(value.progress_percent) &&
     value.progress_percent >= 0 &&
     value.progress_percent <= 100
@@ -161,7 +151,7 @@ function isNullableSummary(value: unknown, keys: string[]): boolean {
   return (
     isRecord(value) &&
     hasExactKeys(value, keys) &&
-    keys.every((key) => isNonNegativeInteger(value[key]))
+    keys.every((key) => isNonnegativeInteger(value[key]))
   )
 }
 
@@ -215,7 +205,7 @@ function isSessionAnomaly(value: unknown): value is SessionAnomaly {
 }
 
 function isValidPage(itemsLength: number, total: unknown, page: unknown, pageSize: unknown, totalPages: unknown): boolean {
-  if (!isNonNegativeInteger(total) || !isPositiveInteger(page) || !isPositiveInteger(pageSize) || !isNonNegativeInteger(totalPages)) return false
+  if (!isNonnegativeInteger(total) || !isPositiveInteger(page) || !isPositiveInteger(pageSize) || !isNonnegativeInteger(totalPages)) return false
   const expectedPages = Math.ceil(total / pageSize)
   if (totalPages !== expectedPages || itemsLength > pageSize) return false
   const expectedItems = Math.max(0, Math.min(pageSize, total - (page - 1) * pageSize))

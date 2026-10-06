@@ -1,5 +1,11 @@
 import { apiClient } from './client'
-import { isNullableString, isRecord } from './validation'
+import {
+  hasExactKeys,
+  isNonnegativeInteger,
+  isNullableString,
+  isPositiveInteger,
+  isRecord,
+} from './validation'
 
 export type ResultsScoreStatus =
   | 'ungraded'
@@ -133,24 +139,6 @@ const STUDENT_KEYS = [
   'status',
   'items',
 ] as const
-
-function hasExactKeys(
-  value: Record<string, unknown>,
-  expected: readonly string[],
-): boolean {
-  const actual = Object.keys(value)
-  return actual.length === expected.length && expected.every(
-    (key) => Object.prototype.hasOwnProperty.call(value, key),
-  )
-}
-
-function isNonnegativeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && Number(value) >= 0
-}
-
-function isPositiveInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && Number(value) > 0
-}
 
 function isNonnegativeNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0

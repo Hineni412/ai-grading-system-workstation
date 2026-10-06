@@ -1,6 +1,6 @@
 import { apiClient } from './client'
 import { JOB_STATUSES, decodeJobResponse, type JobResponse, type JobStatus } from './jobs'
-import { assertNoPathLikeKeys, isRecord } from './validation'
+import { assertNoPathLikeKeys, hasExactKeys, isRecord } from './validation'
 
 export type UploadBatchState = 'draft' | 'frozen'
 export type GradingMode = 'ai' | 'manual' | 'full_paper' | 'hybrid_batch'
@@ -157,11 +157,7 @@ function finiteInteger(value: unknown, minimum = 0): value is number {
   return Number.isSafeInteger(value) && Number(value) >= minimum
 }
 
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const expected = [...keys].sort()
-  const actual = Object.keys(value).sort()
-  return actual.length === expected.length && actual.every((key, index) => key === expected[index])
-}
+
 
 function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const allowed = new Set(keys)

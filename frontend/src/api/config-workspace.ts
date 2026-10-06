@@ -1,7 +1,15 @@
 import { apiClient } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
 import type { QuestionBankRichContent } from './question-bank'
-import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
+import {
+  assertNoPathLikeKeys,
+  hasExactKeys,
+  isFiniteNumber,
+  isNullableString,
+  isPositiveInteger,
+  isRecord,
+  isStringArray,
+} from './validation'
 
 export const QUESTION_TYPES = [
   'choice', 'fill_blank', 'calculation', 'proof', 'comprehensive',
@@ -232,23 +240,6 @@ export interface ConfigEditorSaveResponse extends ConfigEditorResponse {
   }
 }
 
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const expected = [...keys].sort()
-  const actual = Object.keys(value).sort()
-  return actual.length === expected.length && actual.every((key, index) => key === expected[index])
-}
-
-function isPositiveInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && Number(value) > 0
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value)
-}
-
-function isStringList(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string')
-}
 
 function isControlledConfigAssetUrl(value: string): boolean {
   return /^\/api\/sessions\/[1-9]\d*\/config\/sources\/[0-9a-f]{32}\/questions\/[A-Za-z0-9_-]{1,100}\/assets\/(?:question|answer)(?:\/\d+)?$/.test(value)
@@ -271,7 +262,7 @@ function isRichBlock(value: unknown): boolean {
     || !Array.isArray(value.segments) || !value.segments.every(isRichSegment)
     || !Array.isArray(value.rows) || !Array.isArray(value.asset_indexes)
     || !value.asset_indexes.every((item) => Number.isSafeInteger(item) && Number(item) >= 0)
-    || !isStringList(value.asset_urls)
+    || !isStringArray(value.asset_urls)
     || !value.asset_urls.every(isControlledConfigAssetUrl)) return false
   return value.rows.every((row) => isRecord(row) && hasExactKeys(row, ['cells'])
     && Array.isArray(row.cells) && row.cells.every((cell) => isRecord(cell)
@@ -351,7 +342,7 @@ function isSourceAsset(value: unknown): value is ConfigSourceAsset {
     && ['automatic', 'uncertain'].includes(String(value.assignment_state))
     && (value.question_id === null || typeof value.question_id === 'string')
     && ['question', 'answer'].includes(String(value.asset_kind))
-    && isStringList(value.candidate_question_ids)
+    && isStringArray(value.candidate_question_ids)
 }
 
 function decodeConfigSource(value: unknown): ConfigSource {
@@ -392,12 +383,12 @@ function isEditorRow(value: unknown): value is ConfigEditorRow {
     && isFiniteNumber(value.score)
     && (value.answer_only_max_score === null || isFiniteNumber(value.answer_only_max_score))
     && (value.require_final_answer === null || typeof value.require_final_answer === 'boolean')
-    && isStringList(value.accepted_answers) && isStringList(value.required_elements)
-    && isStringList(value.deduction_rules)
-    && isStringList(value.part_deduction_rules)
+    && isStringArray(value.accepted_answers) && isStringArray(value.required_elements)
+    && isStringArray(value.deduction_rules)
+    && isStringArray(value.part_deduction_rules)
     && (value.response_mode === undefined || typeof value.response_mode === 'string')
     && (value.allow_alternative_methods === undefined || typeof value.allow_alternative_methods === 'boolean')
-    && (value.equivalent_rules === undefined || isStringList(value.equivalent_rules))
+    && (value.equivalent_rules === undefined || isStringArray(value.equivalent_rules))
 }
 
 function isEditorIssue(value: unknown): value is ConfigEditorIssue {

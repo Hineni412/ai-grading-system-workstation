@@ -1,6 +1,12 @@
 import { apiClient } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
-import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
+import {
+  assertNoPathLikeKeys,
+  isNullableString,
+  isPositiveInteger,
+  isRecord,
+  isStringArray,
+} from './validation'
 
 export type CriterionVersionStatus =
   | 'proposed'
@@ -122,13 +128,7 @@ const CRITERION_SCHEMAS = new Set([
   'judgment-points-v1',
 ])
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string')
-}
 
-function isPositiveInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && Number(value) > 0
-}
 
 function decodePoint(value: unknown): TrainingCriterionPoint {
   if (

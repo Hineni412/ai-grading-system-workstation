@@ -1,5 +1,11 @@
 import { apiClient } from './client'
-import { isNullableString, isRecord } from './validation'
+import {
+  hasExactKeys,
+  isFiniteNumber,
+  isInteger,
+  isNullableString,
+  isRecord,
+} from './validation'
 
 export type MetricStatus = 'ready' | 'missing_max_score' | 'no_attempts'
 
@@ -61,30 +67,15 @@ interface StudentAnalysisExpectation {
   className: string | null
 }
 
-function isInteger(value: unknown, positive = false): value is number {
-  return Number.isSafeInteger(value) && Number(value) >= (positive ? 1 : 0)
-}
-
-function isNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value)
-}
-
 function isNullableNumber(value: unknown): value is number | null {
-  return value === null || isNumber(value)
-}
-
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const actual = Object.keys(value)
-  return actual.length === keys.length && keys.every(
-    (key) => Object.prototype.hasOwnProperty.call(value, key),
-  )
+  return value === null || isFiniteNumber(value)
 }
 
 function isAnalysisScope(value: unknown): value is AnalysisScope {
   return (
     isRecord(value) &&
     hasExactKeys(value, ['session_id', 'class_name', 'question_id']) &&
-    isInteger(value.session_id, true) &&
+    isInteger(value.session_id, 1) &&
     isNullableString(value.class_name) &&
     isNullableString(value.question_id)
   )
@@ -121,15 +112,15 @@ function isStudentItem(value: unknown): value is StudentAnalysisItem {
       'class_name', 'question_id', 'score_awarded', 'max_score', 'deduction_amount',
       'deduction_reason', 'needs_review', 'evidence_url',
     ]) &&
-    isInteger(value.result_id, true) &&
-    isInteger(value.detail_id, true) &&
-    isInteger(value.student_id, true) &&
+    isInteger(value.result_id, 1) &&
+    isInteger(value.detail_id, 1) &&
+    isInteger(value.student_id, 1) &&
     isNullableString(value.student_code) &&
     typeof value.student_name === 'string' &&
     typeof value.class_name === 'string' &&
     typeof value.question_id === 'string' &&
     value.question_id.length > 0 &&
-    isNumber(value.score_awarded) &&
+    isFiniteNumber(value.score_awarded) &&
     isNullableNumber(value.max_score) &&
     (value.max_score === null || value.max_score >= 0) &&
     isNullableNumber(value.deduction_amount) &&
@@ -141,7 +132,7 @@ function isStudentItem(value: unknown): value is StudentAnalysisItem {
 }
 
 function isValidPage(itemsLength: number, value: Record<string, unknown>): boolean {
-  if (!isInteger(value.total) || !isInteger(value.page, true) || !isInteger(value.page_size, true) || !isInteger(value.total_pages)) return false
+  if (!isInteger(value.total) || !isInteger(value.page, 1) || !isInteger(value.page_size, 1) || !isInteger(value.total_pages)) return false
   const expectedPages = Math.ceil(value.total / value.page_size)
   if (value.total_pages !== expectedPages || itemsLength > value.page_size) return false
   return itemsLength === Math.max(0, Math.min(value.page_size, value.total - (value.page - 1) * value.page_size))
@@ -204,7 +195,7 @@ export function decodeStudentAnalysisResponse(
 }
 
 function requireSessionId(sessionId: number): number {
-  if (!isInteger(sessionId, true)) throw new Error('Invalid session id')
+  if (!isInteger(sessionId, 1)) throw new Error('Invalid session id')
   return sessionId
 }
 
@@ -216,7 +207,7 @@ export function fetchQuestionAnalysis(
 ): Promise<QuestionAnalysisResponse> {
   const query = new URLSearchParams()
   if (className !== null) query.set('class_name', className)
-  query.set('page', String(isInteger(page, true) ? page : 1))
+  query.set('page', String(isInteger(page, 1) ? page : 1))
   query.set('page_size', '100')
   return apiClient.request(
     `/api/sessions/${requireSessionId(sessionId)}/analysis/questions?${query.toString()}`,
@@ -243,7 +234,7 @@ export function fetchStudentAnalysis(
   const normalizedClassName = className === null ? null : className.trim()
   const query = new URLSearchParams()
   if (className !== null) query.set('class_name', className)
-  query.set('page', String(isInteger(page, true) ? page : 1))
+  query.set('page', String(isInteger(page, 1) ? page : 1))
   query.set('page_size', '100')
   return apiClient.request(
     `/api/sessions/${requireSessionId(sessionId)}/analysis/questions/${encodeURIComponent(questionId)}/students?${query.toString()}`,

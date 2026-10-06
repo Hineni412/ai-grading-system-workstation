@@ -6,7 +6,13 @@ import {
   type GraphQueryInput,
   type GraphScope,
 } from './graph-query'
-import { isRecord } from './validation'
+import {
+  hasExactKeys,
+  isFiniteNumber,
+  isInteger,
+  isRecord,
+  isStringArray,
+} from './validation'
 
 export {
   graphQueryForClass,
@@ -147,27 +153,8 @@ export interface GraphEvidenceResponse {
   total_pages: number
 }
 
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const actual = Object.keys(value)
-  return actual.length === keys.length && keys.every(
-    (key) => Object.prototype.hasOwnProperty.call(value, key),
-  )
-}
-
-function isInteger(value: unknown, positive = false): value is number {
-  return Number.isSafeInteger(value) && Number(value) >= (positive ? 1 : 0)
-}
-
-function isNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value)
-}
-
 function isRate(value: unknown): value is number {
-  return isNumber(value) && value >= 0 && value <= 1
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+  return isFiniteNumber(value) && value >= 0 && value <= 1
 }
 
 function isStringMap(value: unknown): value is Record<string, string> {
@@ -214,11 +201,11 @@ function isExamScope(value: unknown): value is GraphExamScope {
     && (value.mode === 'current' || value.mode === 'manual' || value.mode === 'cross_exam' || value.mode === 'semester')
     && (value.mode !== 'semester' || typeof value.curriculum_volume_id === 'string')
     && Array.isArray(value.session_ids)
-    && value.session_ids.every((id) => isInteger(id, true))
+    && value.session_ids.every((id) => isInteger(id, 1))
     && Array.isArray(value.sessions)
     && value.sessions.every((session) => isRecord(session)
       && hasExactKeys(session, ['session_id', 'session_name'])
-      && isInteger(session.session_id, true)
+      && isInteger(session.session_id, 1)
       && typeof session.session_name === 'string')
 }
 
@@ -244,7 +231,7 @@ function isMastery(value: unknown): value is GraphMastery {
     || !['available', 'missing', 'unavailable'].includes(String(value.status))
     || !isInteger(value.evidence_count)
     || (value.contributing_student_count !== undefined && !isInteger(value.contributing_student_count))
-    || (value.effective_weight !== undefined && (!isNumber(value.effective_weight) || value.effective_weight < 0))
+    || (value.effective_weight !== undefined && (!isFiniteNumber(value.effective_weight) || value.effective_weight < 0))
     || (value.exam_evidence_count !== undefined && !isInteger(value.exam_evidence_count))
     || (value.training_evidence_count !== undefined && !isInteger(value.training_evidence_count))
     || (value.parameter_version !== null && !isSha256(value.parameter_version))
@@ -313,7 +300,7 @@ function isCurrentStandard(value: unknown): value is CurrentGraphStandard {
     && hasExactKeys(value, ['release_id', 'content_hash', 'taxonomy_revision'])
     && typeof value.release_id === 'string' && value.release_id.trim().length > 0
     && isSha256(value.content_hash)
-    && isInteger(value.taxonomy_revision, true)
+    && isInteger(value.taxonomy_revision, 1)
 }
 
 function isCounts(value: unknown): value is Record<string, number> {
@@ -383,24 +370,24 @@ export function decodeGraphResponse(value: unknown, expected?: GraphQueryInput):
 
 function isEvidenceItem(value: unknown): value is GraphEvidenceItem {
   return isRecord(value)
-    && isInteger(value.student_id, true)
+    && isInteger(value.student_id, 1)
     && typeof value.student_code === 'string'
     && typeof value.student_name === 'string'
     && typeof value.class_id === 'string'
     && isStableKey(value.stable_key)
     && typeof value.knowledge_key === 'string'
     && typeof value.knowledge_label === 'string'
-    && isInteger(value.session_id, true)
+    && isInteger(value.session_id, 1)
     && typeof value.session_name === 'string'
     && typeof value.question_id === 'string'
-    && isInteger(value.bank_question_id, true)
-    && isNumber(value.score_awarded)
-    && isNumber(value.full_score)
+    && isInteger(value.bank_question_id, 1)
+    && isFiniteNumber(value.score_awarded)
+    && isFiniteNumber(value.full_score)
     && (value.score_rate === null || isRate(value.score_rate))
     && (value.source_kind === undefined
       || value.source_kind === 'current_exam'
       || value.source_kind === 'historical_exam')
-    && (value.detail_id === undefined || value.detail_id === null || isInteger(value.detail_id, true))
+    && (value.detail_id === undefined || value.detail_id === null || isInteger(value.detail_id, 1))
     && (value.deduction_reason === undefined || typeof value.deduction_reason === 'string')
     && (value.evidence_url === undefined || value.evidence_url === null
       || (typeof value.evidence_url === 'string' && value.evidence_url.startsWith('/api/')))
@@ -429,9 +416,9 @@ export function decodeGraphEvidenceResponse(
     || typeof value.display_name !== 'string'
     || !Array.isArray(value.items) || !value.items.every(isEvidenceItem)
     || !isInteger(value.total)
-    || !isInteger(value.page, true)
-    || !isInteger(value.page_size, true)
-    || !isInteger(value.total_pages, true)) throw new Error('Invalid knowledge graph evidence')
+    || !isInteger(value.page, 1)
+    || !isInteger(value.page_size, 1)
+    || !isInteger(value.total_pages, 1)) throw new Error('Invalid knowledge graph evidence')
   const response = value as unknown as GraphEvidenceResponse
   if (response.stable_key !== expected.stableKey
     || response.page !== expected.page

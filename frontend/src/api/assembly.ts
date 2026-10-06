@@ -5,7 +5,15 @@ import {
   type QuestionBankRichContent,
   type QuestionBankTag,
 } from './question-bank'
-import { isRecord } from './validation'
+import {
+  hasExactKeys,
+  isNonnegativeInteger,
+  isPositiveInteger,
+  isRecord,
+  isRevision,
+  isStringArray,
+  normalizedQuestionIds,
+} from './validation'
 
 export type AssemblyLayoutMode = 'sequential' | 'grouped_by_type' | 'sections'
 export type AssemblyPreviewMode = 'student' | 'teacher'
@@ -131,8 +139,8 @@ export interface AssemblyExam {
   average_score: number; questions: AssemblyExamQuestion[]
 }
 export interface AssemblyExamResult { student_count: number; exams: AssemblyExam[] }
-const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && Number(v) >= 0
-const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every(s => typeof s === 'string')
+const isCount = isNonnegativeInteger
+const isStrings = isStringArray
 const isRate = (v: unknown) => v === null || (typeof v === 'number' && v >= 0 && v <= 1)
 function isExamQuestion(v: unknown): v is AssemblyExamQuestion {
   return isRecord(v) && typeof v.key === 'string' && isPositiveInteger(v.session_id) && typeof v.question_id === 'string'
@@ -207,23 +215,7 @@ export function decodeAssemblyAssistant(value: unknown): AssemblyAssistantResult
   return value as unknown as AssemblyAssistantResult
 }
 
-const REVISION = /^[0-9a-f]{64}$/
 const SECTION_ID = /^[A-Za-z0-9_.:-]{1,64}$/
-
-function isPositiveInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && Number(value) > 0
-}
-
-function isRevision(value: unknown): value is string {
-  return typeof value === 'string' && REVISION.test(value)
-}
-
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const actual = Object.keys(value)
-  return actual.length === keys.length && keys.every(
-    (key) => Object.prototype.hasOwnProperty.call(value, key),
-  )
-}
 
 function isQuestionIdList(value: unknown): value is number[] {
   return Array.isArray(value) && value.length <= 500 && value.every(isPositiveInteger)
@@ -433,20 +425,6 @@ export function fetchAssemblyQuickDraft(body: AssemblyAssistantRequest & { quest
   return apiClient.request('/api/question-assembly/assistant/quick-draft', { method: 'POST', body, timeoutMs: 120_000,
     decode: value => { if (!isRecord(value) || !Array.isArray(value.additions) || !value.additions.every(a=>isRecord(a)&&isPositiveInteger(a.question_id)&&isExamQuestion(a.source)) || !isQuestionIdList(value.question_ids) || !isRecord(value.skipped) || !Object.values(value.skipped).every(isCount)) throw new Error('Invalid quick draft'); return value as unknown as { question_ids: number[]; additions: Array<{ question_id: number; source: AssemblyExamQuestion }>; skipped: Record<string, number> } },
   })
-}
-
-function normalizedQuestionIds(values: readonly number[]): number[] {
-  const result: number[] = []
-  const seen = new Set<number>()
-  for (const value of values) {
-    if (!isPositiveInteger(value)) throw new Error('Invalid question ids')
-    if (!seen.has(value)) {
-      seen.add(value)
-      result.push(value)
-    }
-  }
-  if (result.length === 0 || result.length > 500) throw new Error('Invalid question ids')
-  return result
 }
 
 export function fetchAssemblyCandidates(body: AssemblyAssistantRequest, signal?: AbortSignal): Promise<AssemblyAssistantResult> {

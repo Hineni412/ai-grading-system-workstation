@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import { isRecord } from './validation'
+import { hasExactKeys, isRecord } from './validation'
 
 export const MODEL_PROFILE_LIMITS = {
   name: 80,
@@ -120,14 +120,7 @@ const PROFILE_KEYS = [
   'request_timeout_seconds',
 ] as const
 
-function hasExactKeys(
-  value: Record<string, unknown>,
-  expected: readonly string[],
-): boolean {
-  const actual = Object.keys(value)
-  return actual.length === expected.length
-    && expected.every((key) => Object.prototype.hasOwnProperty.call(value, key))
-}
+
 
 function normalizeKeyName(key: string): string {
   return key

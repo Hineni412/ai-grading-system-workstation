@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import { isRecord } from './validation'
+import { hasExactKeys, isRecord } from './validation'
 
 export type AiDiagnosticOutcome = 'pending' | 'success' | 'failure'
 
@@ -99,15 +99,6 @@ const DETAIL_KEYS = [
   'validation_issue_codes',
   'error',
 ] as const
-
-function hasExactKeys(
-  value: Record<string, unknown>,
-  expected: readonly string[],
-): boolean {
-  const actual = Object.keys(value)
-  return actual.length === expected.length
-    && expected.every((key) => Object.prototype.hasOwnProperty.call(value, key))
-}
 
 function isNonnegativeInteger(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 0

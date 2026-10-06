@@ -134,10 +134,7 @@ function projectRenameResponse(value: unknown): SessionSummary {
   return summary
 }
 
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const actual = Object.keys(value).sort()
-  return actual.length === keys.length && actual.every((key, index) => key === [...keys].sort()[index])
-}
+
 
 function isSessionListResponse(value: unknown): value is SessionListResponse {
   if (!isRecord(value)) return false
@@ -150,9 +147,7 @@ function isSessionListResponse(value: unknown): value is SessionListResponse {
   )
 }
 
-function isRevision(value: unknown): value is string {
-  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
-}
+
 
 function isCountRecord(value: unknown): value is Record<string, number> {
   return isRecord(value) && Object.values(value).every((item) => (
@@ -395,4 +390,4 @@ export async function permanentlyDeleteSession(
   })
 }
 import { apiClient } from './client'
-import { isNullableString, isRecord } from './validation'
+import { hasExactKeys, isNullableString, isRecord, isRevision } from './validation'

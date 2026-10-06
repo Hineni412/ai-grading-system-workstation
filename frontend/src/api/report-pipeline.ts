@@ -1,6 +1,11 @@
 import { apiClient } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
-import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
+import {
+  assertNoPathLikeKeys,
+  isNonnegativeInteger,
+  isNullableString,
+  isRecord,
+} from './validation'
 
 export interface ReportPipelineCausesStatus {
   pending_questions: number
@@ -35,10 +40,6 @@ export interface ReportPipelineStatus {
   complete: boolean
 }
 
-function isNonNegativeCount(value: unknown): value is number {
-  return Number.isSafeInteger(value) && Number(value) >= 0
-}
-
 function decodeActiveJobId(value: unknown): number | null {
   if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value
   if (typeof value === 'string' && /^\d+$/.test(value)) {
@@ -56,21 +57,21 @@ function decodeStatus(value: unknown): ReportPipelineStatus {
     || typeof value.configured !== 'boolean'
     || !isNullableString(value.service_name)
     || !isNullableString(value.model_name)
-    || !isNonNegativeCount(value.review_pending)
+    || !isNonnegativeInteger(value.review_pending)
     || !isRecord(value.causes)
-    || !isNonNegativeCount(value.causes.pending_questions)
-    || !isNonNegativeCount(value.causes.total_questions)
-    || !isNonNegativeCount(value.causes.call_count)
-    || !isNonNegativeCount(value.causes.estimated_tokens)
+    || !isNonnegativeInteger(value.causes.pending_questions)
+    || !isNonnegativeInteger(value.causes.total_questions)
+    || !isNonnegativeInteger(value.causes.call_count)
+    || !isNonnegativeInteger(value.causes.estimated_tokens)
     || !isRecord(value.class_reports)
-    || !isNonNegativeCount(value.class_reports.pending)
-    || !isNonNegativeCount(value.class_reports.total)
+    || !isNonnegativeInteger(value.class_reports.pending)
+    || !isNonnegativeInteger(value.class_reports.total)
     || !isRecord(value.personal_reports)
-    || !isNonNegativeCount(value.personal_reports.pending)
-    || !isNonNegativeCount(value.personal_reports.total)
-    || !isNonNegativeCount(value.personal_reports.call_count)
-    || !isNonNegativeCount(value.personal_reports.cache_hits)
-    || !isNonNegativeCount(value.personal_reports.estimated_tokens)
+    || !isNonnegativeInteger(value.personal_reports.pending)
+    || !isNonnegativeInteger(value.personal_reports.total)
+    || !isNonnegativeInteger(value.personal_reports.call_count)
+    || !isNonnegativeInteger(value.personal_reports.cache_hits)
+    || !isNonnegativeInteger(value.personal_reports.estimated_tokens)
     || typeof value.complete !== 'boolean'
   ) {
     throw new Error('Invalid report pipeline status')
