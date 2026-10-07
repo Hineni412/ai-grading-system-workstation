@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="generator" content="Answer me with HTML 0.4.11">
-<title>题型改版：实施进度与启用方案</title>
+<title>题型改版：v9 已正式启用</title>
 <style>
 html[data-theme="blueprint"], html[data-theme="blueprint"][data-mode="light"] {
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -533,15 +533,15 @@ html[data-theme="paper"] .am-md table { font-family: var(--font-sans); }
 <button class="am-btn" type="button" data-am="copy" data-done="已复制 ✓">复制源稿</button>
 </div>
 <main class="am-sheet">
-<header class="am-head"><h1>题型改版：实施进度与启用方案</h1><p class="am-sub">2026-10-07 · 页面已验收 · 真实题库仍为 v8</p></header>
+<header class="am-head"><h1>题型改版：v9 已正式启用</h1><p class="am-sub">2026-10-07 · 57 道失效题全部恢复 · 真实应用已启用 v9</p></header>
 <div class="am-frame">
 <div class="am-ruler am-ruler--top" aria-hidden="true"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span></div><div class="am-ruler am-ruler--bottom" aria-hidden="true"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span></div><div class="am-ruler am-ruler--left" aria-hidden="true"><span>A</span><span>B</span><span>C</span><span>D</span></div><div class="am-ruler am-ruler--right" aria-hidden="true"><span>A</span><span>B</span><span>C</span><span>D</span></div>
 <div class="am-grid" style="--cols: 2">
 <section class="am-panel am-span-wide" id="panel-A" style="grid-column: span 2" data-span="2">
 <header class="am-panel-head"><span class="am-panel-id">A</span><h2>现在做到哪里</h2></header>
-<div class="am-panel-body"><div class="am-callout am-callout--ok" role="note"><div class="am-callout-title">代码和验证已补齐，下一步是受控启用</div><div class="am-callout-body am-md"><p>你已验收页面，也已确认报告和小节分散规则。
-本轮补齐新题标注、推荐参照和其他教材册兼容。单学生范围也使用完整班级基准。
-真实题库仍为 v8，新题型规则尚未正式生效。</p>
+<div class="am-panel-body"><div class="am-callout am-callout--ok" role="note"><div class="am-callout-title">v9 已在真实题库启用，应用已启动</div><div class="am-callout-body am-md"><p>57 道失效题已全部恢复，来源与小问难度校验通过。
+1292 道已标题型题全部纳入，正式页面已同步。
+本次没有调用应用中的付费模型接口。</p>
 </div></div>
 <div class="am-md"><div class="am-table-wrap"><table>
 <thead>
@@ -553,27 +553,33 @@ html[data-theme="paper"] .am-md table { font-family: var(--font-sans); }
 </thead>
 <tbody><tr>
 <td>日常真实题库</td>
-<td>v8，尚未写入题型</td>
-<td>日常流程仍按原规则运行</td>
+<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>v9，修订 11</span></td>
+<td>八上按题型诊断与配题</td>
 </tr>
 <tr>
 <td>八上改版</td>
 <td>7 章、100 个题型</td>
-<td>启用后按题型诊断与配题</td>
+<td>新建训练使用题型规则</td>
 </tr>
 <tr>
-<td>七年级等其他册</td>
+<td>学情代表题</td>
+<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>新规则生效</span></td>
+<td>按所选范围的题型得分率选考试题</td>
+</tr>
+<tr>
+<td>其他教材册</td>
 <td>保留技能规则</td>
-<td>不因八上切换而丢失技能薄弱点</td>
+<td>按当前教材册判断训练目标</td>
 </tr>
 <tr>
-<td>本轮改动</td>
-<td>已整理在本地 main</td>
-<td>与扫描阅卷的其他改动分开保存</td>
+<td>原应用</td>
+<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>8035 端口健康</span></td>
+<td>可直接使用正式页面</td>
 </tr>
 </tbody></table></div>
 <p>本批是北师大 2024 版八年级上册。
-标注范围为 1297 道题，真实库非删除题共 1334 道。</p>
+标注范围为 1297 道题，真实库非删除题共 1334 道。
+普通考试分数、排名、教师最终分锁与冻结卷保持。</p>
 </div></div>
 </section>
 <section class="am-panel" id="panel-B">
@@ -618,8 +624,8 @@ html[data-theme="paper"] .am-md table { font-family: var(--font-sans); }
 </tr>
 <tr>
 <td>启用工具与文档</td>
-<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>已准备</span></td>
-<td>来源校验、备份、预演与失败回退</td>
+<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>已执行</span></td>
+<td>已完成备份、预演、正式切换与回读</td>
 </tr>
 </tbody></table></div>
 <p>主题型表示整题的核心任务，用于掌握度。
@@ -733,7 +739,8 @@ html[data-theme="paper"] .am-md table { font-family: var(--font-sans); }
 <td>2 班、91 名学生、3 次考试；使用各自完整班级基准</td>
 </tr>
 </tbody></table></div>
-<p>本轮在内存读取中排除 57 道失效题的题型关联。
+<p>此前模拟在内存读取中排除 57 道失效题的题型关联。
+该模拟未包含本次恢复的 57 道题。
 单独第 1 章、第 2 章与合并范围均通过小组保留规则。
 没有成员低于个人卷主要补弱需要的四分之三。
 技能与题型的目标数不同，不能直接比较两种覆盖率。</p>
@@ -744,88 +751,104 @@ html[data-theme="paper"] .am-md table { font-family: var(--font-sans); }
 </div></div>
 </section>
 <section class="am-panel am-span-wide" id="panel-F" style="grid-column: span 2">
-<header class="am-panel-head"><span class="am-panel-id">F</span><h2>先启用哪些题</h2></header>
+<header class="am-panel-head"><span class="am-panel-id">F</span><h2>失效题怎样处理</h2></header>
 <div class="am-panel-body"><div class="am-md"><div class="am-table-wrap"><table>
 <thead>
 <tr>
-<th>当前只读核算</th>
+<th>核读与保存</th>
+<th>数量与结果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>核实原判定逻辑可复用</td>
+<td>5 道；保存当前来源的新版本</td>
+</tr>
+<tr>
+<td>修正训练判定点</td>
+<td>52 道；纠正不合理过程要求及依赖</td>
+</tr>
+<tr>
+<td>逐小问难度</td>
+<td>57 道、170 个小问；重新核读依据</td>
+</tr>
+<tr>
+<td>题干歧义</td>
+<td>2 道；按你的确认修正文案后重新核读</td>
+</tr>
+<tr>
+<td>当前来源与难度</td>
+<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>57 道全部通过</span></td>
+</tr>
+</tbody></table></div>
+<p>题 238 补明第（3）问允许选取线段起始位置。
+题 1400 统一第（4）问题干与答案区复述的点名。
+原图、正确的解答结果和其他小问保持。</p>
+<p>先在副本预演 55 道，再保存真实库。
+另 2 道单独预演，写后核对与预演资料相同。
+新版本来自重新核读，没有直接放行旧失效依据。
+原题资料、旧依据版本和备份均保留。</p>
+</div></div>
+</section>
+<section class="am-panel am-span-wide" id="panel-G" style="grid-column: span 2" data-span="2">
+<header class="am-panel-head"><span class="am-panel-id">G</span><h2>启用范围与下一步</h2></header>
+<div class="am-panel-body"><div class="am-md"><div class="am-table-wrap"><table>
+<thead>
+<tr>
+<th>真实启用结果</th>
 <th>数量与处理</th>
 </tr>
 </thead>
 <tbody><tr>
 <td>来源通过的已标题型题</td>
-<td>1235 道；拟新增 3711 条判定点题型链接</td>
+<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>1292 道全部纳入</span></td>
 </tr>
 <tr>
-<td>来源失效的已标题型题</td>
-<td>57 道；继续待处理，不新增题型</td>
+<td>判定点题型关联</td>
+<td>4366 条；整题主题型关联到各判定点</td>
 </tr>
 <tr>
-<td>标注为无对应题型</td>
+<td>次题型标签</td>
+<td>54 个；用于找相关候选</td>
+</tr>
+<tr>
+<td>无对应题型</td>
 <td>5 道；保留未归类状态</td>
 </tr>
 <tr>
 <td>本次标注范围外</td>
-<td>37 道；不新增题型</td>
-</tr>
-<tr>
-<td>来源通过题的次题型</td>
-<td>拟写入 47 个标签</td>
+<td>37 道；未新增题型</td>
 </tr>
 </tbody></table></div>
-<p>57 道的失效预存于本次改版前，具体原因尚未查明。
-v8 与 v9 使用同一真实资料根时，来源结果相同。
-启用工具会再次核对来源，并跳过失效题。
-这项操作不调用模型，也不产生新增模型费用。</p>
-<p>有效标签中有 3 道低置信度，仍待人工抽查。
-边界分别为购物差值计算、新定义不等式、平行线辅助求面积。
-这些标签目前是暂定分类，不能写成已人工确认。</p>
-</div></div>
-</section>
-<section class="am-panel am-span-wide" id="panel-G" style="grid-column: span 2" data-span="2">
-<header class="am-panel-head"><span class="am-panel-id">G</span><h2>下一步怎样启用</h2></header>
-<div class="am-panel-body"><div class="am-md"><div class="am-table-wrap"><table>
+<div class="am-table-wrap"><table>
 <thead>
 <tr>
-<th>顺序</th>
-<th>操作</th>
-<th>对真实数据的影响</th>
+<th>接下来</th>
+<th>目的与边界</th>
 </tr>
 </thead>
 <tbody><tr>
-<td>1</td>
-<td>获得本次启用授权，明确边界标签处理</td>
-<td>此前不写真实库</td>
+<td>使用真实页面观察推荐</td>
+<td>看题型、难度和题面是否适合学生</td>
 </tr>
 <tr>
-<td>2</td>
-<td>确认无真实批改或共用任务，停止应用并备份</td>
-<td>保留原题库备份</td>
+<td>抽查 3 道低置信度标签</td>
+<td>当前是暂定分类，尚未经你专项确认</td>
 </tr>
 <tr>
-<td>3</td>
-<td>预演通过后启用 v9，仅写来源通过范围</td>
-<td>八上新诊断与训练开始按题型</td>
+<td>累积考试与训练结果</td>
+<td>分别验证薄弱点精准度和练后收益</td>
 </tr>
 <tr>
-<td>4</td>
-<td>核对标准、链接、来源、缓存并同步页面</td>
-<td>重启后检查入口与代表题</td>
-</tr>
-<tr>
-<td>5</td>
-<td>用新增考试与训练结果回看效果</td>
-<td>分别评价题型精准度、难度和训练收益</td>
+<td>验证新导入题的模型标注</td>
+<td>若调用应用中的真实模型，须另行授权</td>
 </tr>
 </tbody></table></div>
-<p>精确目标：项目原处 <code>user_data/databases/question_bank.db</code>。
-备份目录：项目原处 <code>user_data/backups/question_type_v9/</code>。
-每次备份名称包含时间，不覆盖已有备份。</p>
-<p>预演失败时，真实库不切换，备份保留。
-链接事务失败时，活动标准回退原 v8。
-写后核对异常时，停止后续并说明实际状态。
-恢复覆盖需要另行说明目标并取得授权。
-已冻结训练卷保留原标准，普通考试分数规则不变。</p>
+<p>3 道暂定分类涉及购物差值、新定义不等式、平行线辅助求面积。
+本次不需要你再次执行启用操作。</p>
+<p>数据库备份留在原处 <code>user_data/backups/question_type_v9/</code>。
+修复前、启用前和两题题干修改前均有备份。
+两份原富文本也已备份。
+恢复覆盖须另行说明具体目标并获得授权。</p>
 </div></div>
 </section>
 <section class="am-panel am-span-wide" id="panel-H" style="grid-column: span 2">
@@ -833,64 +856,62 @@ v8 与 v9 使用同一真实资料根时，来源结果相同。
 <div class="am-panel-body"><div class="am-md"><div class="am-table-wrap"><table>
 <thead>
 <tr>
-<th>验证范围</th>
-<th>已取得的证据</th>
+<th>本次真实操作核对</th>
+<th>结果</th>
 </tr>
 </thead>
 <tbody><tr>
-<td>新导入与同步、证据恢复</td>
-<td>66 项相关回归通过</td>
+<td>活动标准与接口</td>
+<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>v9，修订 11；应用健康</span></td>
 </tr>
 <tr>
-<td>报告、打印、改分与分数比较</td>
-<td>43 项相关回归通过</td>
+<td>正式前端</td>
+<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>与已验证的本任务构建一致</span></td>
 </tr>
 <tr>
-<td>混合教材册学情与报告边界</td>
-<td>23 项精准用例通过</td>
+<td>57 道来源与小问难度</td>
+<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>真实回读全部通过</span></td>
 </tr>
 <tr>
-<td>完整班级基准、缓存与快照恢复</td>
-<td>14 项通过</td>
+<td>两题题干及富文本</td>
+<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>与隔离预演的来源一致</span></td>
 </tr>
 <tr>
-<td>组卷助手</td>
-<td>19 项全模块用例通过</td>
+<td>其他原题字段、旧依据版本</td>
+<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>保持</span></td>
 </tr>
 <tr>
-<td>启用、来源阻断及显式跳过</td>
-<td>17 项题型用例通过</td>
+<td>考试记录与冻结卷</td>
+<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>启用及启动后核对保持</span></td>
 </tr>
 <tr>
-<td>标准文件往返</td>
-<td>修订 3–11，共 9 项通过</td>
+<td>数据库完整性和引用</td>
+<td><span class="am-status am-status--ok"><span class="am-status-icon" aria-hidden="true">✓</span>通过</span></td>
 </tr>
 <tr>
-<td>推荐回归</td>
-<td>114 项通过；原有 2 个用例的配题补充断言通过</td>
-</tr>
-<tr>
-<td>前端</td>
-<td>类型检查、隔离生产构建、包大小检查通过</td>
+<td>应用模型接口请求</td>
+<td>0 次</td>
 </tr>
 </tbody></table></div>
-<p>各测试组有重叠，不合计为全项目测试数。
-隔离测试使用合成数据与模型替身。
-本轮没有写真实库，也没有调用真实模型。</p>
-<p><strong>验证：</strong> 页面已人工验收；来源只读核对已完成。
-真实启用、新题模型效果和学生训练收益仍未验证。</p>
-<p><strong>测试：</strong> 扩展现有模块测试；未新增测试文件。</p>
-<p><strong>文档：</strong> 更新产品、术语、架构、测试入口和维护工具说明。
-<a href="question-type-redesign-plan-20261006.md">方案</a>与<a href="question-type-redesign-handoff-20261007.md">交接</a>记录范围和待办。</p>
+<p>既有推荐回归 114 项通过，完整班级基准回归 14 项通过。
+报告相关回归 43 项、新导入与同步相关回归 66 项通过。
+其他册精准用例、组卷、启用工具与前端检查均已通过。
+各测试组有重叠，不合计为全项目测试数。</p>
+<p><strong>验证：</strong> 真实启用、保存回读与正式接口检查通过。
+新题真实模型效果、学生实际训练收益仍未验证。</p>
+<p><strong>测试：</strong> 复用既有回归；完成 55 道及另 2 道的副本写入预演。
+本次未新增程序测试文件。</p>
+<p><strong>文档：</strong> 更新本页、<a href="question-type-redesign-plan-20261006.md">方案</a>与<a href="question-type-redesign-handoff-20261007.md">交接</a>。
+产品规则已在前次实现中更新，本次数据操作未改变产品规则。</p>
 </div></div>
 </section>
 </div>
 </div>
 </main>
-<footer class="am-colophon">Generated by Answer me with HTML 0.4.11 · 2026-10-07 20:26</footer>
+<footer class="am-colophon">Generated by Answer me with HTML 0.4.11 · 2026-10-07 21:58</footer>
 <textarea id="am-source" hidden readonly aria-hidden="true">---
-title: 题型改版：实施进度与启用方案
-subtitle: 2026-10-07 · 页面已验收 · 真实题库仍为 v8
+title: 题型改版：v9 已正式启用
+subtitle: 2026-10-07 · 57 道失效题全部恢复 · 真实应用已启用 v9
 lang: zh
 template: sheet
 theme: shadcn
@@ -899,21 +920,23 @@ cols: 2
 ---
 
 ## A 现在做到哪里 {span=2}
-```callout ok 代码和验证已补齐，下一步是受控启用
-你已验收页面，也已确认报告和小节分散规则。
-本轮补齐新题标注、推荐参照和其他教材册兼容。单学生范围也使用完整班级基准。
-真实题库仍为 v8，新题型规则尚未正式生效。
+```callout ok v9 已在真实题库启用，应用已启动
+57 道失效题已全部恢复，来源与小问难度校验通过。
+1292 道已标题型题全部纳入，正式页面已同步。
+本次没有调用应用中的付费模型接口。
 ```
 
 | 对象 | 当前状态 | 使用影响 |
 |---|---|---|
-| 日常真实题库 | v8，尚未写入题型 | 日常流程仍按原规则运行 |
-| 八上改版 | 7 章、100 个题型 | 启用后按题型诊断与配题 |
-| 七年级等其他册 | 保留技能规则 | 不因八上切换而丢失技能薄弱点 |
-| 本轮改动 | 已整理在本地 main | 与扫描阅卷的其他改动分开保存 |
+| 日常真实题库 | ok v9，修订 11 | 八上按题型诊断与配题 |
+| 八上改版 | 7 章、100 个题型 | 新建训练使用题型规则 |
+| 学情代表题 | ok 新规则生效 | 按所选范围的题型得分率选考试题 |
+| 其他教材册 | 保留技能规则 | 按当前教材册判断训练目标 |
+| 原应用 | ok 8035 端口健康 | 可直接使用正式页面 |
 
 本批是北师大 2024 版八年级上册。
 标注范围为 1297 道题，真实库非删除题共 1334 道。
+普通考试分数、排名、教师最终分锁与冻结卷保持。
 
 ## B 已完成的内容
 
@@ -925,7 +948,7 @@ cols: 2
 | 个性化与小组规则 | ok 已实现并验证 | 参照原题、候选分层、个人需要保留 |
 | 普通考试报告 | ok 已确认并补测 | 八上显示题型；分数、排名、教师锁不变 |
 | 其他教材册 | ok 已修复并补测 | 学情、推荐、组卷与报告按当前册判断 |
-| 启用工具与文档 | ok 已准备 | 来源校验、备份、预演与失败回退 |
+| 启用工具与文档 | ok 已执行 | 已完成备份、预演、正式切换与回读 |
 
 主题型表示整题的核心任务，用于掌握度。
 次题型表示附带任务，用于找相关候选。
@@ -983,7 +1006,8 @@ cols: 2
 | 第二轮挑题盲评 | 8 人中，新规则获选 6 人，旧题型规则 2 人 | 支持这些样本的挑题规则 |
 | 本轮有效范围模拟 | 第 1、2 章合并：12 组、54 人；最低保留 75% | 2 班、91 名学生、3 次考试；使用各自完整班级基准 |
 
-本轮在内存读取中排除 57 道失效题的题型关联。
+此前模拟在内存读取中排除 57 道失效题的题型关联。
+该模拟未包含本次恢复的 57 道题。
 单独第 1 章、第 2 章与合并范围均通过小组保留规则。
 没有成员低于个人卷主要补弱需要的四分之三。
 技能与题型的目标数不同，不能直接比较两种覆盖率。
@@ -993,70 +1017,78 @@ cols: 2
 配题更贴近薄弱点，不等于学生练后已经提高。
 学生实际训练收益与新题模型标注效果仍未验证。
 
-## F 先启用哪些题
+## F 失效题怎样处理
 
-| 当前只读核算 | 数量与处理 |
+| 核读与保存 | 数量与结果 |
 |---|---|
-| 来源通过的已标题型题 | 1235 道；拟新增 3711 条判定点题型链接 |
-| 来源失效的已标题型题 | 57 道；继续待处理，不新增题型 |
-| 标注为无对应题型 | 5 道；保留未归类状态 |
-| 本次标注范围外 | 37 道；不新增题型 |
-| 来源通过题的次题型 | 拟写入 47 个标签 |
+| 核实原判定逻辑可复用 | 5 道；保存当前来源的新版本 |
+| 修正训练判定点 | 52 道；纠正不合理过程要求及依赖 |
+| 逐小问难度 | 57 道、170 个小问；重新核读依据 |
+| 题干歧义 | 2 道；按你的确认修正文案后重新核读 |
+| 当前来源与难度 | ok 57 道全部通过 |
 
-57 道的失效预存于本次改版前，具体原因尚未查明。
-v8 与 v9 使用同一真实资料根时，来源结果相同。
-启用工具会再次核对来源，并跳过失效题。
-这项操作不调用模型，也不产生新增模型费用。
+题 238 补明第（3）问允许选取线段起始位置。
+题 1400 统一第（4）问题干与答案区复述的点名。
+原图、正确的解答结果和其他小问保持。
 
-有效标签中有 3 道低置信度，仍待人工抽查。
-边界分别为购物差值计算、新定义不等式、平行线辅助求面积。
-这些标签目前是暂定分类，不能写成已人工确认。
+先在副本预演 55 道，再保存真实库。
+另 2 道单独预演，写后核对与预演资料相同。
+新版本来自重新核读，没有直接放行旧失效依据。
+原题资料、旧依据版本和备份均保留。
 
-## G 下一步怎样启用 {span=2}
+## G 启用范围与下一步 {span=2}
 
-| 顺序 | 操作 | 对真实数据的影响 |
-|---|---|---|
-| 1 | 获得本次启用授权，明确边界标签处理 | 此前不写真实库 |
-| 2 | 确认无真实批改或共用任务，停止应用并备份 | 保留原题库备份 |
-| 3 | 预演通过后启用 v9，仅写来源通过范围 | 八上新诊断与训练开始按题型 |
-| 4 | 核对标准、链接、来源、缓存并同步页面 | 重启后检查入口与代表题 |
-| 5 | 用新增考试与训练结果回看效果 | 分别评价题型精准度、难度和训练收益 |
+| 真实启用结果 | 数量与处理 |
+|---|---|
+| 来源通过的已标题型题 | ok 1292 道全部纳入 |
+| 判定点题型关联 | 4366 条；整题主题型关联到各判定点 |
+| 次题型标签 | 54 个；用于找相关候选 |
+| 无对应题型 | 5 道；保留未归类状态 |
+| 本次标注范围外 | 37 道；未新增题型 |
 
-精确目标：项目原处 `user_data/databases/question_bank.db`。
-备份目录：项目原处 `user_data/backups/question_type_v9/`。
-每次备份名称包含时间，不覆盖已有备份。
+| 接下来 | 目的与边界 |
+|---|---|
+| 使用真实页面观察推荐 | 看题型、难度和题面是否适合学生 |
+| 抽查 3 道低置信度标签 | 当前是暂定分类，尚未经你专项确认 |
+| 累积考试与训练结果 | 分别验证薄弱点精准度和练后收益 |
+| 验证新导入题的模型标注 | 若调用应用中的真实模型，须另行授权 |
 
-预演失败时，真实库不切换，备份保留。
-链接事务失败时，活动标准回退原 v8。
-写后核对异常时，停止后续并说明实际状态。
-恢复覆盖需要另行说明目标并取得授权。
-已冻结训练卷保留原标准，普通考试分数规则不变。
+3 道暂定分类涉及购物差值、新定义不等式、平行线辅助求面积。
+本次不需要你再次执行启用操作。
+
+数据库备份留在原处 `user_data/backups/question_type_v9/`。
+修复前、启用前和两题题干修改前均有备份。
+两份原富文本也已备份。
+恢复覆盖须另行说明具体目标并获得授权。
 
 ## H 验证、测试与文档
 
-| 验证范围 | 已取得的证据 |
+| 本次真实操作核对 | 结果 |
 |---|---|
-| 新导入与同步、证据恢复 | 66 项相关回归通过 |
-| 报告、打印、改分与分数比较 | 43 项相关回归通过 |
-| 混合教材册学情与报告边界 | 23 项精准用例通过 |
-| 完整班级基准、缓存与快照恢复 | 14 项通过 |
-| 组卷助手 | 19 项全模块用例通过 |
-| 启用、来源阻断及显式跳过 | 17 项题型用例通过 |
-| 标准文件往返 | 修订 3–11，共 9 项通过 |
-| 推荐回归 | 114 项通过；原有 2 个用例的配题补充断言通过 |
-| 前端 | 类型检查、隔离生产构建、包大小检查通过 |
+| 活动标准与接口 | ok v9，修订 11；应用健康 |
+| 正式前端 | ok 与已验证的本任务构建一致 |
+| 57 道来源与小问难度 | ok 真实回读全部通过 |
+| 两题题干及富文本 | ok 与隔离预演的来源一致 |
+| 其他原题字段、旧依据版本 | ok 保持 |
+| 考试记录与冻结卷 | ok 启用及启动后核对保持 |
+| 数据库完整性和引用 | ok 通过 |
+| 应用模型接口请求 | 0 次 |
 
+既有推荐回归 114 项通过，完整班级基准回归 14 项通过。
+报告相关回归 43 项、新导入与同步相关回归 66 项通过。
+其他册精准用例、组卷、启用工具与前端检查均已通过。
 各测试组有重叠，不合计为全项目测试数。
-隔离测试使用合成数据与模型替身。
-本轮没有写真实库，也没有调用真实模型。
 
-**验证：** 页面已人工验收；来源只读核对已完成。
-真实启用、新题模型效果和学生训练收益仍未验证。
+**验证：** 真实启用、保存回读与正式接口检查通过。
+新题真实模型效果、学生实际训练收益仍未验证。
 
-**测试：** 扩展现有模块测试；未新增测试文件。
+**测试：** 复用既有回归；完成 55 道及另 2 道的副本写入预演。
+本次未新增程序测试文件。
 
-**文档：** 更新产品、术语、架构、测试入口和维护工具说明。
-[方案](question-type-redesign-plan-20261006.md)与[交接](question-type-redesign-handoff-20261007.md)记录范围和待办。</textarea>
+**文档：** 更新本页、[方案](question-type-redesign-plan-20261006.md)与[交接](question-type-redesign-handoff-20261007.md)。
+产品规则已在前次实现中更新，本次数据操作未改变产品规则。
+
+</textarea>
 <script>
 (() => {
   const root = document.documentElement;

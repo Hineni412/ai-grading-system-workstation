@@ -13,6 +13,6 @@
 | 排版 | [排版调查](question-bank-latex-layout-evaluation-20261002.md)、[一手来源](latex-question-bank-primary-sources-20261002.md) | 已有合成实排依据，以及高中、断网新工作机和纸面验收的限制 |
 | 相似题向量 | [实验](vector-similarity-experiment-20261001.md) | 只读实验依据；正式持久化、增量更新和模型接入尚未实现 |
 | 外观审查 | [历史组件审查](frontend-component-audit-20261001.html) | 保留视觉比较材料；历史快照与旧数量不代表当前状态 |
-| 题型改版 | [方案](question-type-redesign-plan-20261006.md)、[交接](question-type-redesign-handoff-20261007.md)、[进度网页](question-type-redesign-status-20261007.html) | 八上按题型诊断与配题；页面已人工验收，新导入、报告和权威文档已补齐。先启用来源通过范围已获方案同意；真实启用仍待本次数据操作授权，57 道预存失效题继续待处理 |
+| 题型改版 | [方案](question-type-redesign-plan-20261006.md)、[交接](question-type-redesign-handoff-20261007.md)、[进度网页](question-type-redesign-status-20261007.html) | 八上按题型诊断与配题；页面已人工验收，新导入、报告和权威文档已补齐。真实 v9 已获授权并启用；57 道预存失效题全部恢复，2 道歧义文字按用户确认修正。1292 道已标题型题均纳入；3 道低置信度题型抽查及实际训练收益仍待验证 |
 
 已被正式页面与权威文档取代的实施方案、验收流水和原型不继续占用当前目录。需要回看时，在 Git 历史中定位原文件；实际操作入口从 [项目 README](../../README.md) 查找。
