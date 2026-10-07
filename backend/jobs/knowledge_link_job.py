@@ -27,6 +27,7 @@ from question_bank.solution_evidence.knowledge_links import (
 )
 from question_bank.solution_evidence.part_assessments import load_profiles
 from question_bank.taxonomy.governance import TaxonomyGovernance
+from question_bank.training_criteria.adapters import QuestionAnalysisInputLoader
 
 from .manager import JobContext
 from .execution_locks import keyed_execution_locks
@@ -159,17 +160,9 @@ def _run_knowledge_link_job(
     with connect(db_path) as connection:
         rows = connection.execute(
             """
-            SELECT v.evidence_version_id, v.question_id, v.evidence_json
+            SELECT DISTINCT v.question_id
             FROM question_solution_evidence_versions v
             JOIN questions q ON q.id = v.question_id AND q.is_deleted = 0
-            JOIN (
-                SELECT question_id, MAX(created_at) AS max_created
-                FROM question_solution_evidence_versions
-                WHERE status IN ('proposed', 'approved')
-                GROUP BY question_id
-            ) m
-              ON m.question_id = v.question_id
-             AND m.max_created = v.created_at
             WHERE v.status IN ('proposed', 'approved')
               AND (:question_ids IS NULL OR v.question_id IN (
                   SELECT value FROM json_each(:question_ids)))
@@ -177,22 +170,30 @@ def _run_knowledge_link_job(
             {'question_ids': json.dumps(question_ids) if question_ids is not None else None},
         ).fetchall()
 
-    versions = [
-        {
-            "evidence_version_id": str(row["evidence_version_id"]),
-            "question_id": int(row["question_id"]),
-            "evidence": json.loads(str(row["evidence_json"])),
-        }
-        for row in rows
-    ]
-    if mode == 'missing_skills':
-        with connect(db_path) as connection:
-            profiles = load_profiles(db_path, question_ids, connection=connection, data_root=data_root)
-            protected = {str(row[0]) for row in connection.execute(
-                "SELECT DISTINCT evidence_version_id FROM evidence_point_knowledge_links WHERE source_kind='teacher'")}
-        versions = [{'question_id': qid, 'evidence_version_id': profile['evidence_version_id'],
-                     'evidence': profile['evidence']} for qid, profile in profiles.items()
-                    if profile.get('available') and profile['evidence_version_id'] not in protected]
+    ids = question_ids if question_ids is not None else [int(row["question_id"]) for row in rows]
+    loader = QuestionAnalysisInputLoader(db_path=db_path, data_root=Path(data_root))
+    load_failures: dict[int, str] = {}
+    inputs = {
+        int(question.question_id): question
+        for question in loader.load(
+            ids,
+            load_failures=load_failures,
+        )
+    }
+    with connect(db_path) as connection:
+        profiles = load_profiles(db_path, ids, connection=connection,
+            data_root=data_root, question_inputs=inputs)
+        protected = {str(row[0]) for row in connection.execute(
+            "SELECT DISTINCT evidence_version_id FROM evidence_point_knowledge_links WHERE source_kind='teacher'")
+        } if mode == 'missing_skills' else set()
+    for qid, profile in profiles.items():
+        if not profile.get('available'):
+            reason = str(profile.get('reason') or 'evidence_unavailable')
+            if mode != 'missing_skills' or reason != 'part_assessment_source_changed':
+                load_failures.setdefault(qid, reason)
+    versions = [{'question_id': qid, 'evidence_version_id': profile['evidence_version_id'],
+                 'evidence': profile['evidence']} for qid, profile in profiles.items()
+                if profile.get('available') and profile['evidence_version_id'] not in protected]
     if question_ids is not None:
         order = {int(qid): index for index, qid in enumerate(question_ids)}
         versions.sort(key=lambda item: order.get(item["question_id"], len(order)))
@@ -250,21 +251,23 @@ def _run_knowledge_link_job(
     summary: dict[str, object] = {
         "mode": mode,
         "graph_release_id": release_id,
-        "questions_total": len(versions),
-        "questions_pending": len(work_items),
+        "questions_total": len(versions) + len(load_failures),
+        "questions_pending": len(work_items) + len(load_failures),
         "questions_linked": 0,
-        "questions_failed": 0,
+        "questions_failed": len(load_failures),
         "links_written": 0,
         "links_carried_forward": 0,
         "unresolved_links": [],
         "dropped_links": [],
         "downgraded_links": [],
         "vocabulary_gap_points": [],
-        "audit": [],
+        "audit": [{'question_id': qid, 'action': 'input_failed', 'reason_code': code}
+                  for qid, code in load_failures.items()],
     }
     if not work_items:
         summary["report"] = _report(db_path, release_id)
-        context.report(1.0, "knowledge_link", "nothing pending")
+        context.report(1.0, "knowledge_link",
+            f"读取失败 {len(load_failures)} 题" if load_failures else "nothing pending")
         return summary
 
     # Candidate contracts: linkable = non-retrieval_only knowledge terms.
@@ -272,18 +275,6 @@ def _run_knowledge_link_job(
     from question_bank.taxonomy.curriculum_catalog import (
         infer_curriculum_volume_from_text,
     )
-    from question_bank.training_criteria.adapters import (
-        QuestionAnalysisInputLoader,
-    )
-
-    loader = QuestionAnalysisInputLoader(db_path=db_path, data_root=Path(data_root))
-    inputs = {
-        int(question.question_id): question
-        for question in loader.load(
-            tuple(item["question_id"] for item in work_items)
-        )
-    }
-
     def _context(question: Any) -> dict[str, Any]:
         context = _taxonomy_context(question.tagging_context)
         if not context.get("curriculum_volume_id"):
@@ -757,7 +748,8 @@ def _run_knowledge_link_job(
         )
 
     summary["report"] = _report(db_path, release_id)
-    context.report(1.0, "knowledge_link", "done")
+    context.report(1.0, "knowledge_link",
+        f"关联 {summary['questions_linked']} 题，失败 {summary['questions_failed']} 题")
     return summary
 
 

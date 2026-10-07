@@ -677,7 +677,8 @@ def test_empty_wal_read_version_noise_keeps_cache_and_real_commits_refresh(tmp_p
         writer.close()
 
 
-def test_skill_repair_only_fills_requested_current_points_and_keeps_teacher_links(tmp_path):
+@pytest.mark.parametrize('damaged_question', [False, True])
+def test_skill_repair_only_fills_requested_current_points_and_keeps_teacher_links(tmp_path, damaged_question):
     from backend.jobs.knowledge_link_job import run_knowledge_link_job
     from backend.jobs.manager import JobContext
     from backend.jobs.store import JobStore
@@ -689,6 +690,10 @@ def test_skill_repair_only_fills_requested_current_points_and_keeps_teacher_link
         conn.execute("INSERT INTO evidence_point_knowledge_links(evidence_version_id,question_id,part_id,evidence_point_id,graph_release_id,role,term_id,stable_key,resolution_status,source_kind) VALUES(?,4,'part-1','p1',?,'direct','kp_bnu24_math_g8_upper_1_1','kp_bnu24_math_g8_upper_1_1','resolved','link_job')", (f'{4:064x}', release))
         before = [tuple(row) for row in conn.execute('SELECT * FROM evidence_point_knowledge_links WHERE question_id=1')]
     store = JobStore(tmp_path / 'TEST-repair-jobs.db')
+    if damaged_question:
+        sidecar = tmp_path / 'question_bank/rich_content/question_5.json'
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text('{TEST-corrupt', encoding='utf-8')
     calls = []
     def gateway(request):
         calls.append(request)
@@ -698,7 +703,11 @@ def test_skill_repair_only_fills_requested_current_points_and_keeps_teacher_link
         record = store.create_job('knowledge_link', {'mode': 'missing_skills', 'question_ids': ids})
         return run_knowledge_link_job(context=JobContext(record.id, record.job_type, record.payload, store),
                                      question_bank_db_path=db, data_root=tmp_path, link_gateway=gateway)
-    run([1, 3, 4, 5])
+    first = run([1, 3, 4, 5])
+    assert first['questions_failed'] == int(damaged_question)
+    if damaged_question:
+        assert first['audit'][0] == {'question_id': 5, 'action': 'input_failed',
+            'reason_code': 'rich_content_invalid_json'}
     assert [[q['question_id'] for q in request['questions']] for request in calls] == [[4]]
     assert service.skill_index('bnu24-math-g8-upper')['unlinked']['no_skill_link'] == 0
     with connect(db) as conn:
@@ -707,6 +716,11 @@ def test_skill_repair_only_fills_requested_current_points_and_keeps_teacher_link
         conn.execute("INSERT INTO evidence_point_knowledge_links(evidence_version_id,question_id,part_id,evidence_point_id,graph_release_id,role,term_id,stable_key,resolution_status,source_kind) VALUES(?,4,'part-1','p1',?,'direct','kp_bnu24_math_g8_upper_1_1','kp_bnu24_math_g8_upper_1_1','resolved','teacher')", (f'{4:064x}', release))
     run([4])
     assert len(calls) == 1
+    if damaged_question:
+        last = run([5])
+        assert last['questions_failed'] == 1
+        assert last['questions_linked'] == 0
+        assert len(calls) == 1
 
 
 def test_skill_repair_does_not_save_a_response_after_the_source_changes(tmp_path):
@@ -784,37 +798,111 @@ def test_skill_repair_carries_forward_points_left_in_older_release(tmp_path):
     _assert_carried_links(db, tmp_path, release, version, section, keys)
 
 
-def test_missing_only_repair_carries_forward_points_left_in_older_release(tmp_path):
+@pytest.mark.parametrize('damage', [None, 'rich', 'evidence', 'stale'])
+def test_missing_only_repair_carries_forward_points_left_in_older_release(tmp_path, damage):
     from backend.jobs.knowledge_link_job import run_knowledge_link_job
     from backend.jobs.manager import JobContext
     from backend.jobs.store import JobStore
     service, db, keys = _seed_skill_bank(tmp_path)
     release, version, section = _seed_old_release_links(db, service)
+    from question_bank.database.schema import connect
+    with connect(db) as conn:
+        conn.execute("UPDATE question_solution_evidence_versions SET status='proposed' WHERE evidence_version_id=?", (version,))
+        conn.execute("""INSERT INTO question_solution_evidence_versions(
+            evidence_version_id,question_id,source_content_hash,schema_version,content_hash,evidence_json,status,
+            source_kind,source_reference,created_by,graph_release_id,created_at)
+            SELECT ?,question_id,?,schema_version,content_hash,evidence_json,'approved',
+            source_kind,'TEST-stale-approved',created_by,graph_release_id,created_at
+            FROM question_solution_evidence_versions WHERE evidence_version_id=?""",
+            ('d' * 64, 'f' * 64, version))
+    from question_bank.training_criteria.adapters import QuestionAnalysisInputLoader
+    from question_bank.solution_evidence.repository import SolutionEvidenceRepository
+    question = QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path).load([4])[0]
+    assert SolutionEvidenceRepository(db).latest(4,
+        current_source_content_hash=question.source_content_hash)['evidence_version_id'] == version
     store = JobStore(tmp_path / 'TEST-repair-jobs.db')
-    record = store.create_job('knowledge_link', {'mode': 'missing_only', 'question_ids': [4]})
+    ids = [1, 4] if damage else [4]
+    if damage == 'rich':
+        sidecar = tmp_path / 'question_bank/rich_content/question_1.json'
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text('{TEST-corrupt', encoding='utf-8')
+    elif damage:
+        from question_bank.database.schema import connect
+        with connect(db) as conn:
+            if damage == 'evidence':
+                conn.execute('UPDATE question_solution_evidence_versions SET evidence_json=? WHERE question_id=1',
+                             ('{"parts":[1]}',))
+            else:
+                conn.execute("UPDATE questions SET answer_text='TEST-changed-answer' WHERE id=1")
+    record = store.create_job('knowledge_link', {'mode': 'missing_only', 'question_ids': ids})
+    calls = []
+    def gateway(request):
+        calls.append([item['question_id'] for item in request['questions']])
+        return {4: [
+            {'evidence_point_id': 'p1', 'links': [{'fine_term_id': keys[0], 'role': 'direct'}]},
+            {'evidence_point_id': 'p2', 'links': []}]}
     summary = run_knowledge_link_job(
         context=JobContext(record.id, record.job_type, record.payload, store),
-        question_bank_db_path=db, data_root=tmp_path,
-        link_gateway=lambda request: {4: [
-            {'evidence_point_id': 'p1', 'links': [{'fine_term_id': keys[0], 'role': 'direct'}]},
-            {'evidence_point_id': 'p2', 'links': []}]})
+        question_bank_db_path=db, data_root=tmp_path, link_gateway=gateway)
+    assert calls == [[4]]
+    assert summary['questions_failed'] == int(bool(damage))
+    if damage:
+        assert summary['questions_total'] == summary['questions_pending'] == 2
+        assert summary['questions_linked'] == 1
+        assert summary['audit'][0] == {'question_id': 1, 'action': 'input_failed',
+            'reason_code': {'rich': 'rich_content_invalid_json', 'evidence': 'evidence_unreadable',
+                            'stale': 'part_assessment_source_changed'}[damage]}
     assert summary['links_carried_forward'] >= 1
     _assert_carried_links(db, tmp_path, release, version, section, keys)
 
 
-def test_repair_preview_lists_each_missing_product_without_model_calls(tmp_path):
+@pytest.mark.parametrize('damaged_question', [False, True])
+def test_repair_preview_lists_each_missing_product_without_model_calls(tmp_path, damaged_question):
     from backend.jobs.question_bank_repair import repair_preview
     service, db, _ = _seed_skill_bank(tmp_path)
+    if damaged_question:
+        sidecar = tmp_path / 'question_bank/rich_content/question_4.json'
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text('{TEST-corrupt', encoding='utf-8')
     preview = repair_preview(service, 'bnu24-math-g8-upper', 'skills')
     assert [item['id'] for item in preview['items']] == [3, 4, 5]
     assert preview['model_calls'] == 0
     assert preview['counts']['skills'] == 3
-    assert preview['counts']['evidence'] == 2
-    assert 'evidence' not in preview['items'][1]['missing']
+    assert preview['counts']['evidence'] == (3 if damaged_question else 2)
+    if damaged_question:
+        assert 'evidence' in preview['items'][1]['missing']
+        assert preview['items'][1]['blocked_reason_code'] == 'rich_content_invalid_json'
+        assert '文件损坏' in preview['items'][1]['blocked_reason']
+        assert preview['repairable_count'] == 2
+    else:
+        assert 'evidence' not in preview['items'][1]['missing']
     assert len(preview['fingerprint']) == 64
     assert repair_preview(service, 'bnu24-math-g8-upper', 'skills')['fingerprint'] == preview['fingerprint']
     with pytest.raises(ValueError, match='当前教学学期'):
         repair_preview(service, 'bnu24-math-g8-upper', 'skills', [6])
+    if damaged_question:
+        from backend.jobs.manager import JobContext
+        from backend.jobs.store import JobStore
+        from backend.jobs.question_bank_repair import run_question_bank_repair_job
+        store = JobStore(tmp_path / 'TEST-damaged-repair.db')
+        record = store.create_job('question_bank_repair', {
+            'question_ids': [item['id'] for item in preview['items']], 'kind': 'all',
+            'curriculum_volume_id': 'bnu24-math-g8-upper',
+            'revisions': {str(item['id']): item['revision'] for item in preview['items']},
+        })
+        calls = []
+        def tagging(**kwargs):
+            calls.append(kwargs['context'].payload['question_ids'])
+        def no_links(**kwargs):
+            pytest.fail('unreadable or incomplete evidence must not request skill links')
+        result = run_question_bank_repair_job(
+            context=JobContext(record.id, record.job_type, record.payload, store),
+            question_bank_db_path=db, data_root=tmp_path, tagging_runner=tagging,
+            link_runner=no_links, ai_service_factory=lambda: None, link_gateway_factory=lambda: None)
+        assert calls == [[3, 5]]
+        assert result['requested_count'] == 3
+        assert result['completed_count'] == 0
+        assert '文件损坏' in next(item for item in result['remaining'] if item['id'] == 4)['reason']
 
 
 def _seed_tagged_question(db):
@@ -898,11 +986,13 @@ def test_tag_source_currentness_tolerates_legacy_fingerprint_tag_writes(tmp_path
     assert 'tags' in item['missing']
 
 
-def test_tag_source_currentness_new_hash_ignores_model_tag_writes(tmp_path):
+@pytest.mark.parametrize('stored_hash_kind', ['current', 'legacy_without_tags'])
+def test_tag_source_currentness_new_hash_ignores_model_tag_writes(tmp_path, stored_hash_kind):
     from backend.jobs.question_bank_repair import repair_preview
     from backend.jobs.tagging_sync import _load_tag_source_currentness
     from question_bank.database.schema import connect
     from question_bank.training_criteria import QuestionAnalysisInputLoader
+    from question_bank.training_criteria.analysis import _legacy_tag_source_content_hash
 
     service, db, _ = _seed_skill_bank(tmp_path)
     loader = QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path)
@@ -910,25 +1000,101 @@ def test_tag_source_currentness_new_hash_ignores_model_tag_writes(tmp_path):
     def load_input():
         return loader.load([1], curriculum_volume_id='bnu24-math-g8-upper')[0]
 
-    # Records written after the fix store the tag-free content hash;
-    # rewriting special_type afterwards changes neither hash nor currentness.
     _seed_tagged_question(db)
-    _insert_tag_run(db, str(load_input().source_content_hash),
+    question = load_input()
+    stored_hash = (question.source_content_hash if stored_hash_kind == 'current' else
+        _legacy_tag_source_content_hash(question, include_tags=False))
+    _insert_tag_run(db, str(stored_hash),
                     contract='combined-v2')
     with connect(db) as conn:
+        conn.execute('UPDATE question_solution_evidence_versions SET source_content_hash=? WHERE question_id=1',
+            ('0' * 64,))
         conn.execute(
             "UPDATE question_tags SET tag_value='TEST-新类型' "
             "WHERE question_id=1 AND tag_type='special_type'"
         )
     assert _load_tag_source_currentness(db, current_inputs=[load_input()]) == {1: True}
 
-    # Content change: the stored hash matches neither form and the saved
-    # evidence hash covers the old text, so the stale run is reported again.
     with connect(db) as conn:
         conn.execute("UPDATE questions SET question_text='TEST-题面再变' WHERE id=1")
     assert _load_tag_source_currentness(db, current_inputs=[load_input()]) == {1: False}
     item = next(i for i in repair_preview(service, 'bnu24-math-g8-upper', 'all')['items'] if i['id'] == 1)
     assert 'tags' in item['missing']
+
+
+@pytest.mark.parametrize("question_count", [3, 9])
+def test_analysis_loader_isolates_damaged_content_and_keeps_legacy_images(tmp_path, question_count):
+    from base64 import b64decode
+    from docx import Document
+    from question_bank.database.schema import connect
+    from question_bank.services.rich_content_service import RichContentReadError
+    from question_bank.training_criteria import QuestionAnalysisInputLoader
+
+    _, db, _ = _seed_skill_bank(tmp_path, count=question_count)
+    figure = tmp_path / 'question_bank/extracted_images/TEST-legacy.png'
+    figure.parent.mkdir(parents=True)
+    figure.write_bytes(b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6rCEAAAAASUVORK5CYII='))
+    xml = Document().add_paragraph('TEST-历史公式正文')._p.xml
+    rich_root = tmp_path / 'question_bank/rich_content'
+    rich_root.mkdir(parents=True)
+    payload = {'version': 'legacy', 'question_id': 1, 'question_blocks': [{
+        'text': 'TEST-历史公式正文', 'xml': xml,
+        'image_relationships': {'rId1': str(figure)},
+    }], 'answer_blocks': []}
+    sidecar = rich_root / 'question_1.json'
+    sidecar.write_text(json.dumps(payload), encoding='utf-8')
+    original = sidecar.read_bytes()
+    (rich_root / 'question_2.json').write_text('{TEST-corrupt', encoding='utf-8')
+    with connect(db) as connection:
+        connection.execute("UPDATE questions SET question_text='' WHERE id=3")
+
+    loader = QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path)
+    requested = tuple(reversed(range(1, question_count + 1)))
+    failures = {}
+    actual = loader.load(requested, load_failures=failures)
+    assert [item.question_id for item in actual] == [qid for qid in requested if qid not in (2, 3)]
+    assert failures == {2: 'rich_content_invalid_json', 3: 'question_text_unavailable'}
+    legacy = next(item for item in actual if item.question_id == 1)
+    assert legacy.rich_question_blocks == ({'text': 'TEST-历史公式正文'},)
+    assert legacy.word_question_blocks[0]['xml'] == xml.strip()
+    assert legacy.images[0].content == figure.read_bytes()
+    assert legacy.word_question_blocks[0]['image_relationships'] == {
+        'rId1': f'sha256:{legacy.images[0].sha256}',
+    }
+    assert sidecar.read_bytes() == original
+    with pytest.raises(RichContentReadError):
+        loader.load((1, 2))
+    missing_failures = {}
+    assert loader.load((99,), load_failures=missing_failures) == ()
+    assert missing_failures == {99: 'question_not_found'}
+    with pytest.raises(KeyError):
+        loader.load((99,))
+
+
+def test_analysis_loader_uses_external_read_transaction_for_evidence(tmp_path, monkeypatch):
+    from question_bank.solution_evidence import repository
+    from question_bank.training_criteria import QuestionAnalysisInputLoader
+
+    _, db, _ = _seed_skill_bank(tmp_path, count=2)
+
+    def disallow_implicit_connection(*args, **kwargs):
+        pytest.fail('TEST evidence reader opened a separate writable connection')
+
+    monkeypatch.setattr(repository, 'connect', disallow_implicit_connection)
+    connection = sqlite3.connect(f'{db.as_uri()}?mode=ro', uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute('BEGIN')
+        loaded = QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path,
+            external_connection=connection).load((1, 2))
+        assert loaded[0].tagging_context.evidence_parts == ({
+            'part_id': 'part-1', 'part_label': '', 'evidence_point_ids': ['p1', 'p2'],
+        },)
+        assert connection.in_transaction
+        with pytest.raises(sqlite3.OperationalError, match='readonly'):
+            connection.execute("UPDATE questions SET question_text='TEST' WHERE id=1")
+    finally:
+        connection.close()
 
 
 def test_repair_preview_whole_volume_result_is_cached_until_a_write(tmp_path, monkeypatch):
@@ -1158,9 +1324,9 @@ def _spy_current_inputs(monkeypatch):
     loaded: list[int] = []
     original = part_assessments.current_inputs
 
-    def spy(db_path, ids, connection, *, data_root=None):
+    def spy(db_path, ids, connection, *, data_root=None, load_failures=None):
         loaded.extend(int(value) for value in ids)
-        return original(db_path, ids, connection, data_root=data_root)
+        return original(db_path, ids, connection, data_root=data_root, load_failures=load_failures)
 
     monkeypatch.setattr(part_assessments, 'current_inputs', spy)
     return loaded

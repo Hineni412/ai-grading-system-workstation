@@ -46,6 +46,22 @@ def test_schema_gate_rejects_unknown_future_migration(tmp_path: Path) -> None:
         ensure_schema_current("grading", database, migrations_dir=migrations)
 
 
+@pytest.mark.parametrize("target", ["grading", "question_bank"])
+def test_current_schema_contract_does_not_replace_migration_checksum_validation(
+    tmp_path: Path,
+    target: str,
+) -> None:
+    database = tmp_path / f"{target}.db"
+    ensure_schema_current(target, database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE schema_migrations SET checksum = 'changed' WHERE id = "
+            "(SELECT MIN(id) FROM schema_migrations)"
+        )
+    with pytest.raises(SchemaVersionError, match="checksum does not match"):
+        ensure_schema_current(target, database)
+
+
 def test_failed_migration_rolls_back_its_partial_schema(tmp_path: Path) -> None:
     database = tmp_path / "grading.db"
     migrations = tmp_path / "migrations"
@@ -153,3 +169,34 @@ def test_application_startup_reports_pending_existing_database_without_applying_
 
     assert grading_db.read_bytes() == before
     assert not paths.backups_dir.exists()
+
+
+@pytest.mark.parametrize("target", ["grading", "question_bank"])
+def test_historical_database_requires_conversion_manifest_and_keeps_its_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+) -> None:
+    from backend import schema_migrations
+
+    source = sorted((PROJECT_ROOT / "migrations" / target).glob("*.sql"))
+    legacy = tmp_path / "TEST-legacy-sql"
+    legacy.mkdir()
+    for file in source[:-1]:
+        shutil.copy2(file, legacy / file.name)
+    database = tmp_path / "TEST-legacy.db"
+    ensure_schema_current(target, database, migrations_dir=legacy)
+    before = database.read_bytes()
+    manifest_root = tmp_path / "TEST-current-sql"
+    shutil.copytree(PROJECT_ROOT / "migrations" / target, manifest_root / target)
+    monkeypatch.setattr(schema_migrations, "_DEFAULT_MIGRATIONS_ROOT", manifest_root)
+    removed = tmp_path / "TEST-sql-removed"
+    shutil.move(str(manifest_root), str(removed))
+    with pytest.raises(SchemaVersionError, match="migration manifest is empty"):
+        ensure_schema_current(target, database, allow_existing_migrations=False)
+    assert database.read_bytes() == before
+    shutil.move(str(removed), str(manifest_root))
+    with pytest.raises(schema_migrations.SchemaMigrationRequired) as required:
+        ensure_schema_current(target, database, allow_existing_migrations=False)
+    assert required.value.pending == (source[-1].stem,)
+    assert database.read_bytes() == before

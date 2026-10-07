@@ -41,9 +41,11 @@
 | `user_data/exams/session_N/originals_receipt.json` | 原卷完整、扫描文件已释放、清理中或已清除状态及已释放空间；无回执表示完整 |
 | `user_data/cache/annotated_pages/session_N/` | 复核用时生成的批注页；数据库路径引用可失效，由阅卷媒体服务重新生成 |
 
-SQLite 结构由 `migrations/` 管理；空库初始化和已有库迁移有不同入口，见打包与更新文档。API 文件引用通过模块受控根目录解析，数据库保存业务标识或相对引用。
+SQLite 当前结构由 `backend/current_schema/` 定义，包含当前 DDL、稳定初始记录及迁移身份。空库在事务内直接建立当前结构，核对实际签名后登记成功；完整当前库只核对当前定义、实际结构和迁移记录，不读取历史 SQL。旧库升级仍严格使用 `migrations/` 的历史清单。程序更新复用现有 `backend.ops` 的预演、备份、日志和待执行操作，不另建迁移协调路径，具体入口见打包与更新文档。API 文件引用通过模块受控根目录解析，数据库保存业务标识或相对引用。
 
 跨数据库没有原子事务。已有跨库流程用稳定身份、修订、快照、操作令牌和回执对账；不能把一个数据库提交成功等同于整个业务成功。训练证据先写来源 outbox，再投影到掌握度。
+
+当前题目内容摘要集中在 `question_bank/training_criteria/analysis.py`，既有富文本读取入口解释受支持的结构。`solution_evidence/part_assessments.py` 选择仍匹配题面的解题证据，`training_criteria/versioning.py` 在读取时转换训练判定点并保留教师覆盖。完整模型结果不重复写相同的训练正文；教师确认、编辑与历史兼容仍使用既有记录。题库资料状态和推荐复用上述只读能力，损坏输入按题隔离；`personalized_papers` 继续冻结实际采用的正文、判定点和来源，读取不改写冻结卷或真实旧数据。
 
 题型身份和训练目标判断集中在 `question_bank/question_types.py`，题型节点及词表由现有知识发布加载器读取。历史考试经 `integration/question_tag_projection_service.py` 的已确认考试题库关联，补充该题库题当前主题型；`integration/diagnosis_profile_service.py` 只读投影用于学情与推荐，不改考试评分、冻结步骤或技能链接。题型没有考试分值，次题型不进入掌握度。未确认的考试题库关联不推断题型；冻结训练卷继续使用其原标准与快照。
 

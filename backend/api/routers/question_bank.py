@@ -2796,6 +2796,7 @@ def get_question_solution_evidence(
             "Question not found",
             {"question_id": int(question_id)},
         )
+    current_question = None
     try:
         current_question = QuestionAnalysisInputLoader(
             db_path=question_bank_db_path,
@@ -2804,16 +2805,21 @@ def get_question_solution_evidence(
         current_source_hash = solution_evidence_source_content_hash(
             current_question
         )
+        from question_bank.training_criteria.analysis import compatible_source_content_hashes
+        source_hashes = compatible_source_content_hashes(current_question, kind="solution_evidence")
     except (KeyError, OSError, TypeError, ValueError):
         # If the current content cannot be reconstructed safely, an old
         # evidence body must never be presented as current.
         current_source_hash = "current-content-unavailable"
+        source_hashes = ()
     latest = SolutionEvidenceRepository(question_bank_db_path).latest(
         question_id,
         current_source_content_hash=current_source_hash,
+        compatible_source_hashes=source_hashes,
     )
     from question_bank.solution_evidence.part_assessments import load_profiles
-    profile = load_profiles(question_bank_db_path, [question_id]).get(question_id)
+    profile = load_profiles(question_bank_db_path, [question_id], data_root=data_root,
+        question_inputs={question_id: current_question} if current_question is not None else None).get(question_id)
     if profile and profile["available"]:
         return QuestionSolutionEvidenceResponse(
             question_id=int(question_id), available=True,

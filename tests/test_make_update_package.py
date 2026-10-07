@@ -35,6 +35,10 @@ def _build_fake_source(source: Path) -> None:
     (source / "backend" / "api" / "app.py").write_text(
         "APP_READY = True\n", encoding="utf-8"
     )
+    (source / "backend" / "current_schema").mkdir()
+    for name in ("grading", "question_bank"):
+        (source / "backend" / "current_schema" / f"{name}.json").write_text(
+            '{"TEST": "current structure"}', encoding="utf-8")
     for relative in (
         'backend/scan_grading/scanner.py',
         'backend/answer_regions/answer_region_models.py',
@@ -94,6 +98,9 @@ def test_make_update_package_is_consumable_by_apply_update_dry_run(
     assert result["new_version"] == "v9.9"
     assert result["files_updated"] > 0
     assert result["error"] is None
+    for name in ("grading", "question_bank"):
+        assert (update_dir / "app" / "backend" / "current_schema" / f"{name}.json").read_text(
+            encoding="utf-8") == '{"TEST": "current structure"}'
     for relative in (
         'backend/scan_grading/scanner.py',
         'backend/answer_regions/answer_region_models.py',

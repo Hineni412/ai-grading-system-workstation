@@ -20,15 +20,18 @@
 
 - 已部署机器的版本升级使用增量更新包,不用新完整包覆盖安装目录。
 - 开发机上用 `update_tools/make_update.py` 生成更新包:内容为 `update_manifest.json`、`app/`(代码、`frontend/dist`、`VERSION`、启动器与 `runtime/tectonic`)、全量 `migrations/` 与全量 `update_tools/`。生成规则与完整安装包同源,只产出文件夹。更新包绝不包含 `user_data`。
-- 目标机上用 `update_tools/apply_update.py <更新包目录>` 应用更新:先备份 `user_data`(zip,不含 API 密钥)与将被覆盖的代码(`app_backup_v<旧版本>/`),再覆盖代码、`migrations/` 与 `update_tools/`,最后执行核心库迁移。支持 `--dry-run` 与 `--rollback`,过程写入 `logs/backup.log`。
+- 目标机上用 `update_tools/apply_update.py <更新包目录>` 应用更新：先备份 `user_data`（zip，不含 API 密钥）与将被覆盖的代码（`app_backup_v<旧版本>/`，包含 `migrations/` 和 `update_tools/`），再覆盖代码。随后调用目标版本的 `backend.ops.offline`，复用应用维护的预演、迁移前备份、操作日志、锁和待执行操作；没有待迁移时不写业务库。支持 `--dry-run` 与 `--rollback`，更新摘要写入 `logs/backup.log`。
 - 代码覆盖阶段不携带或覆盖 user_data；随后核心库迁移会写入数据库。
 - `update_tools/backup_data.py`、`update_tools/backup_core.py`、`update_tools/list_backups.py` 提供独立的数据备份与查询。
 
 ## 数据库 schema 迁移
 
-- 迁移清单在 `migrations/<目标>/`,覆盖 grading、question_bank 两个库。已应用迁移记录在各库的 `schema_migrations` 表(含校验和与成功标记),不会重放;重复加列等幂等语句可安全跳过。
-- 题库迁移 `046_add_authoring_practice.sql` 建立的 authoring_works、authoring_work_versions、authoring_reviews、authoring_assets 四张表已无功能使用，保留在迁移清单中，以保持已有库的迁移记录与空库初始化一致。
+- 当前定义在 `backend/current_schema/{grading,question_bank}.json`，包括 DDL、稳定初始记录、结构签名和固定迁移身份。`tools/generate_schema_baseline.py` 从合成库重建定义，`--check` 核对定义与历史迁移结果一致；发布前必须一起携带定义文件。
+- 空库在事务内直接建立当前结构，确认仍为空后才写入；实际签名核对成功后登记迁移记录。完整当前库核对当前定义、实际结构与记录，不读取历史 SQL。旧库前缀、未知或失败记录仍走严格历史清单，不重新盖成功标记。
+- 历史升级清单在 `migrations/<目标>/`，覆盖 grading、question_bank 两个库。已应用记录在各库的 `schema_migrations` 表，包含校验和与成功标记；校验通过的迁移不重放。旧 SQL 不能因当前库已采用基线而删除，支持的历史起点仍需逐一验证。
+- 题库迁移 `046_add_authoring_practice.sql` 建立的 authoring_works、authoring_work_versions、authoring_reviews、authoring_assets 四张表已无功能使用。当前定义和历史清单均保留这些表；物理删表需单独授权和迁移，不随普通读取发生。
 - 核心库(grading、question_bank)启动时执行 schema 闸门:已有库存在待迁移时,普通启动拒绝修改数据并停止,要求通过受保护维护入口确认迁移;受保护操作经操作日志与锁,在下次启动由 `backend.ops.offline --apply-pending` 应用。空白库按当前 schema 直接初始化。
+- 迁移失败时由既有维护流程恢复两份核心库并记录失败，不能只把成功的一个库留在新版本。手工更新回退同时恢复配对的数据与代码备份；代码备份也恢复历史迁移和更新工具，避免代码与结构不一致。
 
 ## 当前未覆盖范围
 

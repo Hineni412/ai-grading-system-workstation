@@ -101,13 +101,13 @@ def test_current_mastery_filters_after_fitting_and_counts_activity_trends(tmp_pa
 
 def _insert_feature_rows(conn, question_id, parts, *, fingerprint=None):
     """Write active formula difficulty rows: [(part_id, difficulty), ...]."""
-    from question_bank.services.standard_difficulty import question_content_fingerprint
+    from question_bank.services.standard_difficulty import _legacy_question_content_fingerprint
 
     if fingerprint is None:
         row = conn.execute(
             "SELECT * FROM questions WHERE id=?", (int(question_id),)
         ).fetchone()
-        fingerprint = question_content_fingerprint(dict(row))
+        fingerprint = _legacy_question_content_fingerprint(dict(row))
     for part_id, difficulty in parts:
         conn.execute(
             """INSERT INTO question_part_difficulty_features
@@ -260,17 +260,17 @@ def test_refined_recommendation_freezes_current_criteria_and_returns_part_eviden
 
     path, root, question, evidence, profile, old_version = refined_training_source
     criteria = TrainingCriterionModule(path)
-    assert criteria.read(question)["state"] == "part_evidence_changed"
-    assert usable_training_criterion(criteria.read(question)) is None
+    assert criteria.read(question)["state"] == "available"
+    assert usable_training_criterion(criteria.read(question))["version_id"] != old_version
     with connect(path) as conn:
         assert (
             conn.execute("SELECT COUNT(*) FROM training_criterion_versions").fetchone()[
                 0
             ]
-            == 1
+            == 0
         )
     module = PersonalizedRecommendationModule(db_path=path, data_root=root)
-    candidates, _, version = module._source_snapshot(prepare_refinements=True)
+    candidates, _, version = module._source_snapshot()
     assert len(candidates) == 1
     candidate = candidates[0]
     assert candidate["difficulty"] == 8  # Previously the whole question was tagged 2.
@@ -284,7 +284,8 @@ def test_refined_recommendation_freezes_current_criteria_and_returns_part_eviden
         == "旧的判定目标"
     )
     assert module._source_snapshot()[2] == version
-    assert module._source_snapshot(prepare_refinements=True)[2] == version
+    with connect(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM training_criterion_versions").fetchone()[0] == 0
     eligible = module._eligible_candidates(
         candidates,
         stage="direct",

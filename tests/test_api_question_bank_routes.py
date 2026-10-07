@@ -199,13 +199,43 @@ def test_public_stems_hide_source_scores_without_changing_storage_or_analysis(qu
     assert (db_path.read_bytes(), path.read_bytes()) == before
 
 
-@pytest.mark.parametrize("changed_content", ["stem", "answer", "media"])
+@pytest.mark.parametrize("changed_content", ["stem", "answer", "media", "rich_body", "media_body"])
 def test_solution_evidence_route_returns_latest_point_level_union(
     question_bank_fixture,
     changed_content: str,
+    monkeypatch,
 ) -> None:
     service, db_path, _ = question_bank_fixture
     data_root = db_path.parent / "data"
+    from question_bank.services.rich_content_service import save_question_rich_content
+    from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+
+    volume = curriculum_volume(volume_id="bnu24-math-g8-upper")
+    service = QuestionBankReadService(db_path, data_root=data_root)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE papers SET grade=?,semester=?,textbook_version=? WHERE id=2",
+                     (volume['grade'], volume['semester'], volume['textbook_version']))
+        conn.execute("UPDATE questions SET question_type='解答题',difficulty='3',is_deleted=0")
+        conn.execute("INSERT INTO questions(id,paper_id,question_number,question_text,question_type,difficulty) "
+                     "VALUES(3,2,'3','TEST-missing-analysis','解答题','3')")
+        conn.executemany("INSERT INTO question_tags(question_id,tag_type,tag_value) VALUES(?,?,?)", [
+            (qid, tag_type, value) for qid in (1, 2, 3)
+            for tag_type, value in (("ability", "运算求解"), ("exam_scope", "八年级上册"))
+        ])
+        conn.executemany("INSERT INTO question_tags(question_id,tag_type,tag_value) VALUES(?,'knowledge_point','一次函数')",
+                         [(2,), (3,)])
+        conn.executemany("INSERT INTO grading_question_links "
+            "(grading_session_id,source_question_id,bank_question_id,link_method,status) "
+            "VALUES ('7',?,?, 'TEST', 'confirmed')", [(str(qid), qid) for qid in (1, 2, 3)])
+        if changed_content == "media_body":
+            image = data_root / 'question_bank/extracted_images/TEST-source.png'
+            image.parent.mkdir(parents=True)
+            image.write_bytes(b'TEST-original-image-content')
+            conn.execute("UPDATE questions SET has_images=1,image_paths=? WHERE id=1",
+                         (json.dumps(['question_bank/extracted_images/TEST-source.png']),))
+    if changed_content == "rich_body":
+        save_question_rich_content(1, question_blocks=[{'text': 'TEST-original-rich-content'}],
+                                   root=data_root / 'question_bank/rich_content')
     client = _question_bank_client(
         service,
         question_bank_db_path=db_path,
@@ -311,11 +341,51 @@ def test_solution_evidence_route_returns_latest_point_level_union(
     assert union["resolved_core_node_ids"] == ["kp_equation"]
     assert union["unmapped_fine_term_ids"] == ["fine-support"]
 
+    second_input = QuestionAnalysisInputLoader(db_path=db_path, data_root=data_root).load((2,))[0]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute("""INSERT INTO question_solution_evidence_versions
+            (evidence_version_id,question_id,source_content_hash,schema_version,content_hash,
+             evidence_json,status,source_kind,source_reference,created_by)
+            VALUES (?,2,?,'question-solution-evidence-v2',?,'{','proposed','combined_model','TEST','TEST')""",
+            ('f' * 64, solution_evidence_source_content_hash(second_input), 'e' * 64))
+        assert conn.execute("SELECT COUNT(*) FROM training_criterion_heads").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM training_criterion_versions").fetchone()[0] == 0
+    before_read = db_path.read_bytes()
+    complete = client.get('/api/question-bank/questions?analysis_status=complete').json()
+    assert [item['id'] for item in complete['items']] == [1]
+    assert client.get('/api/question-bank/question-refs?analysis_status=complete').json()['total'] == 1
+    incomplete = client.get('/api/question-bank/questions?analysis_status=incomplete').json()
+    assert {item['id'] for item in incomplete['items']} == {2, 3}
+    needs_review = client.get('/api/question-bank/questions?criteria_needs_review=true').json()
+    assert [item['id'] for item in needs_review['items']] == [2]
+    paper = next(item for item in client.get('/api/question-bank/papers').json()['items'] if item['id'] == 2)
+    assert paper['question_count'] == 3
+    assert paper['evidence_question_count'] == paper['criteria_question_count'] == paper['complete_analysis_count'] == 1
+    assert paper['criteria_needs_review_count'] == 1
+    plain = client.get('/api/question-bank/questions').json()
+    assert next(item for item in plain['items'] if item['id'] == 1)['criteria_needs_review'] is False
+    assert client.get('/api/question-bank/facets?analysis_status=complete').json()['question_types'] == [
+        {'value': '解答题', 'count': 1}]
+    assert client.get('/api/question-bank/skill-index?curriculum_volume_id=bnu24-math-g8-upper').json()[
+        'unlinked']['no_usable_evidence'] == 2
+    assert 1 in service._skill_snapshot()['evidence_versions']
+    if changed_content in {'rich_body', 'media_body'}:
+        other_root = db_path.parent / 'TEST-other-data-root'
+        other_service = QuestionBankReadService(db_path, data_root=other_root)
+        other_paper = next(item for item in other_service.list_papers() if item['id'] == 2)
+        assert other_paper['evidence_question_count'] == other_paper['criteria_question_count'] == 0
+        assert next(item for item in service.list_papers() if item['id'] == 2)['complete_analysis_count'] == 1
+    # Browser and repair planning agree on actual usable material without writes.
+    status = service.session_analysis_status(7)
+    assert status['evidence_count'] == status['criteria_count'] == status['complete_count'] == 1
+    assert status['incomplete_question_ids'] == [2, 3]
+    assert db_path.read_bytes() == before_read
+
     from question_bank.services import standard_difficulty
 
+    difficulty_input = QuestionAnalysisInputLoader(db_path=db_path, data_root=data_root).load((1,))[0]
     with sqlite3.connect(db_path) as conn:
-        question_row = conn.execute("SELECT * FROM questions WHERE id = 1").fetchone()
-        columns = [item[1] for item in conn.execute("PRAGMA table_info(questions)")]
         conn.execute(
             """
             INSERT INTO question_part_difficulty_features (
@@ -326,16 +396,25 @@ def test_solution_evidence_route_returns_latest_point_level_union(
             """,
             (
                 standard_difficulty.question_content_fingerprint(
-                    dict(zip(columns, question_row))
+                    difficulty_input
                 ),
             ),
         )
     supplemented = client.get("/api/question-bank/questions/1/solution-evidence").json()
+    assert supplemented['available'], supplemented
     assert supplemented["part_assessments"][0]["difficulty"] == 3
     assert supplemented["part_assessments"][0]["source"] == "formula"
     assert isinstance(supplemented["assessment_revision"], str)
     assert supplemented["assessment_revision"]
 
+    # Warm every read after the last database write, then change only the files.
+    client.get('/api/question-bank/questions?analysis_status=complete')
+    client.get('/api/question-bank/question-refs?analysis_status=complete')
+    client.get('/api/question-bank/questions')
+    client.get('/api/question-bank/papers')
+    client.get('/api/question-bank/facets?analysis_status=complete')
+    client.get('/api/question-bank/skill-index?curriculum_volume_id=bnu24-math-g8-upper')
+    unchanged_database = db_path.read_bytes()
     with sqlite3.connect(db_path) as conn:
         if changed_content == "stem":
             conn.execute(
@@ -345,7 +424,7 @@ def test_solution_evidence_route_returns_latest_point_level_union(
             conn.execute(
                 "UPDATE questions SET answer_text = 'Changed answer' WHERE id = 1"
             )
-        else:
+        elif changed_content == "media":
             image = data_root / "question_bank" / "extracted_images" / "changed.png"
             image.parent.mkdir(parents=True, exist_ok=True)
             image.write_bytes(b"synthetic changed image")
@@ -357,7 +436,14 @@ def test_solution_evidence_route_returns_latest_point_level_union(
                 """,
                 (json.dumps(["question_bank/extracted_images/changed.png"]),),
             )
+        elif changed_content == "rich_body":
+            save_question_rich_content(1, question_blocks=[{'text': 'TEST-changed-rich-content-plus-new-requirement'}],
+                                       root=data_root / 'question_bank/rich_content')
+        else:
+            image.write_bytes(b'TEST-changed-image-content-plus-new-requirement')
         conn.commit()
+    if changed_content in {'rich_body', 'media_body'}:
+        assert db_path.read_bytes() == unchanged_database
 
     stale = client.get("/api/question-bank/questions/1/solution-evidence")
     assert stale.status_code == 200
@@ -370,6 +456,42 @@ def test_solution_evidence_route_returns_latest_point_level_union(
         "part_assessments": [],
         "assessment_revision": None,
     }
+    assert client.get('/api/question-bank/questions?analysis_status=complete').json()['total'] == 0
+    needs_review = client.get('/api/question-bank/questions?criteria_needs_review=true').json()
+    assert {item['id'] for item in needs_review['items']} == {1, 2}
+    paper = next(item for item in client.get('/api/question-bank/papers').json()['items'] if item['id'] == 2)
+    assert paper['evidence_question_count'] == paper['criteria_question_count'] == paper['complete_analysis_count'] == 0
+    assert paper['criteria_needs_review_count'] == 2
+    assert client.get('/api/question-bank/question-refs?analysis_status=complete').json()['total'] == 0
+    plain = client.get('/api/question-bank/questions').json()
+    assert next(item for item in plain['items'] if item['id'] == 1)['criteria_needs_review'] is True
+    assert client.get('/api/question-bank/facets?analysis_status=complete').json()['question_types'] == []
+    assert client.get('/api/question-bank/skill-index?curriculum_volume_id=bnu24-math-g8-upper').json()[
+        'unlinked']['no_usable_evidence'] == 3
+    assert 1 in service._skill_snapshot()['no_usable']
+    assert client.get('/api/question-bank/questions?analysis_status=complete').json()['total'] == 0
+    assert next(item for item in service.list_papers() if item['id'] == 2)['complete_analysis_count'] == 0
+    if changed_content in {'rich_body', 'media_body'}:
+        from question_bank.services import question_read_service as read_module
+
+        monkeypatch.setattr(read_module, '_skill_asset_manifest', lambda _root: None)
+        if changed_content == 'rich_body':
+            save_question_rich_content(1, question_blocks=[{'text': 'TEST-original-rich-content'}],
+                                       root=data_root / 'question_bank/rich_content')
+        else:
+            image.write_bytes(b'TEST-original-image-content')
+        assert client.get('/api/question-bank/questions?analysis_status=complete').json()['total'] == 1
+        assert client.get('/api/question-bank/question-refs?analysis_status=complete').json()['total'] == 1
+        assert next(item for item in service.list_papers() if item['id'] == 2)['complete_analysis_count'] == 1
+        if changed_content == 'rich_body':
+            save_question_rich_content(1, question_blocks=[{'text': 'TEST-changed-rich-content-again'}],
+                                       root=data_root / 'question_bank/rich_content')
+        else:
+            image.write_bytes(b'TEST-changed-image-content-again')
+        assert client.get('/api/question-bank/questions?analysis_status=complete').json()['total'] == 0
+        assert client.get('/api/question-bank/question-refs?analysis_status=complete').json()['total'] == 0
+        assert next(item for item in service.list_papers() if item['id'] == 2)['complete_analysis_count'] == 0
+        assert db_path.read_bytes() == unchanged_database
 
 
 def _question_bank_client(

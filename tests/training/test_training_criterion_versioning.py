@@ -224,3 +224,87 @@ def test_content_change_blocks_freeze_without_stale_marking_on_read(
         reason="内容变化后重新生成",
     )
     assert module.get_version(version_id)["status"] == "stale"
+
+
+def _current_evidence(database: Path):
+    from question_bank.training_criteria.adapters import QuestionAnalysisInputLoader
+    from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
+    from question_bank.solution_evidence.repository import SolutionEvidenceRepository
+    from tests.training.test_solution_evidence_semantics import _evidence_payload, Resolver
+
+    question = QuestionAnalysisInputLoader(db_path=database, data_root=database.parent).load((1,))[0]
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        _evidence_payload(1), question_id=1,
+        source_content_hash=question.criterion_source_content_hash, resolver=Resolver(),
+    )
+    identifier = SolutionEvidenceRepository(database).save(
+        evidence, source_kind="combined_model", source_reference="TEST-current-evidence", created_by="TEST-model",
+    )
+    return question, evidence, identifier
+
+
+def test_current_evidence_trains_without_a_parallel_model_version(tmp_path):
+    from question_bank.training_criteria.analysis import training_criteria_from_solution_evidence
+    from question_bank.solution_evidence.part_assessments import reading
+
+    database = tmp_path / "TEST-current.db"
+    _seed(database, 1)
+    question, evidence, identifier = _current_evidence(database)
+    module = TrainingCriterionModule(database)
+    workspace = module.read(question)
+    assert workspace["available"] is True
+    assert workspace["current_version"]["version_id"] == identifier
+    assert module.freeze((question,))[0]["criteria"]["points"][0]["target"] == "正确移项"
+    module.propose(
+        question=question, draft=training_criteria_from_solution_evidence(evidence, question=question),
+        source_kind="combined_model", source_reference="TEST-model-publication", actor_ref="TEST-model", reason="TEST",
+    )
+    with reading(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM training_criterion_versions").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM training_criterion_heads").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM question_solution_evidence_versions").fetchone()[0] == 1
+
+
+def test_teacher_can_confirm_current_evidence_and_later_models_preserve_decision(tmp_path):
+    from dataclasses import replace
+    from question_bank.solution_evidence.repository import SolutionEvidenceRepository
+
+    database = tmp_path / "TEST-teacher.db"
+    _seed(database, 1)
+    question, evidence, identifier = _current_evidence(database)
+    module = TrainingCriterionModule(database)
+    current = module.read(question)
+    frozen = module.freeze((question,))[0]
+    approved = module.review(
+        CriterionReviewCommand(1, identifier, current["revision"], "approve", "TEST-teacher", "TEST-confirm"),
+        question=question,
+    )
+    assert approved["approved_version"]["version_id"] == identifier
+    first = evidence.parts[0]
+    changed = replace(evidence, parts=(replace(first, evidence_points=(
+        replace(first.evidence_points[0], target="模型后续建议"),)),))
+    SolutionEvidenceRepository(database).save(
+        changed, source_kind="combined_model", source_reference="TEST-later-model", created_by="TEST-model",
+    )
+    assert module.freeze((question,))[0]["criteria"]["points"][0]["target"] == "正确移项"
+    assert frozen["criteria"]["points"][0]["target"] == "正确移项"
+
+
+def test_teacher_edits_from_current_evidence_without_losing_frozen_parent(tmp_path):
+    import copy
+
+    database = tmp_path / "TEST-edit.db"
+    _seed(database, 1)
+    question, _, identifier = _current_evidence(database)
+    module = TrainingCriterionModule(database)
+    current = module.read(question)
+    payload = copy.deepcopy(current["current_version"]["criteria"])
+    payload["points"][0]["target"] = "教师修改的判定要求"
+    edited = module.edit(
+        question=question, criteria=payload, expected_revision=current["revision"],
+        parent_version_id=identifier, request_token="a" * 32, actor_ref="TEST-teacher", reason="TEST-edit",
+    )
+    assert edited["current_version"]["criteria"]["points"][0]["target"] == "教师修改的判定要求"
+    assert module.read(question)["available"] is True
+    assert module.freeze((question,))[0]["criteria"]["points"][0]["target"] == "教师修改的判定要求"
+    assert module.get_version(identifier)["criteria"]["points"][0]["target"] == "正确移项"

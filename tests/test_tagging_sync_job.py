@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -124,8 +125,17 @@ def _context(tmp_path: Path, payload: dict[str, object]) -> tuple[JobContext, Jo
 
 
 def _seed_current_projection_rows(db_path: Path, question) -> None:
+    from tests.training.test_solution_evidence_semantics import Resolver, _evidence_payload
+    from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
+    from question_bank.training_criteria.analysis import training_criteria_from_solution_evidence
+
     evidence_hash = solution_evidence_source_content_hash(question)
     criterion_hash = question.criterion_source_content_hash
+    evidence = QuestionSolutionEvidence.from_model_dict(_evidence_payload(question.question_id),
+        question_id=question.question_id, source_content_hash=evidence_hash, resolver=Resolver())
+    evidence_json = json.dumps(evidence.to_dict(), ensure_ascii=False)
+    criteria_json = json.dumps(training_criteria_from_solution_evidence(evidence, question=question).to_dict(),
+                               ensure_ascii=False)
     evidence_version_id = hashlib.sha256(
         f"evidence:{question.question_id}:{evidence_hash}".encode()
     ).hexdigest()
@@ -139,14 +149,15 @@ def _seed_current_projection_rows(db_path: Path, question) -> None:
                 evidence_version_id, question_id, source_content_hash,
                 schema_version, content_hash, evidence_json, status,
                 source_kind, source_reference, created_by
-            ) VALUES (?, ?, ?, 'question-solution-evidence-v1', ?, '{}',
+            ) VALUES (?, ?, ?, 'question-solution-evidence-v1', ?, ?,
                       'proposed', 'combined_model', ?, 'model:fake')
             """,
             (
                 evidence_version_id,
                 question.question_id,
                 evidence_hash,
-                hashlib.sha256(b"{}").hexdigest(),
+                hashlib.sha256(evidence_json.encode()).hexdigest(),
+                evidence_json,
                 f"test:{evidence_version_id}",
             ),
         )
@@ -158,7 +169,7 @@ def _seed_current_projection_rows(db_path: Path, question) -> None:
                 source_reference, criteria_json, criteria_hash,
                 quality_status, quality_codes_json, created_by
             ) VALUES (?, ?, 1, NULL, ?, 'training-criteria-draft-v1',
-                      'proposed', 'combined_model', ?, '{}', ?,
+                      'proposed', 'combined_model', ?, ?, ?,
                       'passed', '[]', 'model:fake')
             """,
             (
@@ -166,7 +177,8 @@ def _seed_current_projection_rows(db_path: Path, question) -> None:
                 question.question_id,
                 criterion_hash,
                 f"test:{criterion_version_id}",
-                hashlib.sha256(b"{}").hexdigest(),
+                criteria_json,
+                hashlib.sha256(criteria_json.encode()).hexdigest(),
             ),
         )
         connection.execute(
@@ -206,9 +218,11 @@ def _mark_criterion_stale(db_path: Path, question_id: int) -> None:
 
 
 @pytest.mark.parametrize("duplicate", [False, True])
+@pytest.mark.parametrize("damaged_content", [False, True])
 def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
     tmp_path: Path,
     duplicate: bool,
+    damaged_content: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "qb.db"
@@ -233,6 +247,16 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
             )
         )
         requested_ids.append(duplicate_id)
+    expected_ids = list(requested_ids)
+    if damaged_content:
+        damaged_id = QuestionBankTestStore(db_path).add_question(
+            QuestionCreate(question_number='99', question_text='计算整式运算并化简。',
+                answer_text='合并同类项后写出化简结果。', question_type='解答题')
+        )
+        requested_ids.extend([damaged_id, 999])
+        sidecar = data_root / f'question_bank/rich_content/question_{damaged_id}.json'
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text('{TEST-corrupt', encoding='utf-8')
     context, _store = _context(tmp_path, {"question_ids": requested_ids})
     gateway_calls: list[tuple[str, tuple[int, ...]]] = []
     initialize_calls: list[Path] = []
@@ -357,11 +381,21 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
 
     assert gateway_calls == [("both", (question_id,))]
     assert initialize_calls == [db_path]
-    assert result["outcome"] == "complete"
+    assert result["outcome"] == ("partial" if damaged_content else "complete"), repr(result['failures'])
     assert result["analysis_contract"] == "combined-v3"
-    assert result["evidence_succeeded_question_ids"] == requested_ids
-    assert result["successful_question_ids"] == requested_ids
-    assert result["criteria_succeeded_question_ids"] == requested_ids
+    assert result["evidence_succeeded_question_ids"] == expected_ids
+    assert result["successful_question_ids"] == expected_ids
+    assert result["criteria_succeeded_question_ids"] == expected_ids, repr(result['failures'])
+    if damaged_content:
+        assert result['failed_question_ids'] == [damaged_id, 999]
+        assert result['failed_count'] == 2
+        failure = next(item for item in result['failures'] if item['question_id'] == damaged_id)
+        assert failure['reason_code'] == 'rich_content_invalid_json'
+        assert '文件损坏' in failure['message']
+        missing = next(item for item in result['failures'] if item['question_id'] == 999)
+        assert missing['reason_code'] == 'question_not_found'
+        assert SolutionEvidenceRepository(db_path).latest(damaged_id) is None
+        assert QuestionBankTestStore(db_path).get_question(damaged_id)['tags'] == []
     assert QuestionBankTestStore(db_path).get_question(question_id)["tags"]
     stored = SolutionEvidenceRepository(db_path).latest(question_id)
     assert stored is not None
@@ -383,7 +417,7 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
         assert duplicate_evidence is not None
         assert duplicate_evidence["evidence"]["question_id"] == duplicate_id
         assert duplicate_evidence["evidence"]["parts"] == stored["evidence"]["parts"]
-        second_context, _ = _context(tmp_path, {"question_ids": requested_ids})
+        second_context, _ = _context(tmp_path, {"question_ids": expected_ids})
 
         def no_factory():
             raise AssertionError("complete duplicate must not request a model")
@@ -396,160 +430,50 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
             taxonomy_governance=governance,
         )
         assert second["outcome"] == "complete"
-        assert second["successful_question_ids"] == requested_ids
+        assert second["successful_question_ids"] == expected_ids
 
     if not duplicate:
-        # The new repair path publishes missing criteria without replacing saved evidence or tags.
         previous_id = stored['evidence_version_id']
         previous_tags = QuestionBankTestStore(db_path).get_question(question_id)['tags']
         with connect(db_path) as conn:
-            conn.execute("UPDATE training_criterion_versions SET source_content_hash=?,source_reference='TEST-old-source' WHERE question_id=?", ('0' * 64, question_id))
-        repair_context, _ = _context(tmp_path, {'question_ids': requested_ids, 'repair_missing_only': True})
+            assert conn.execute('SELECT COUNT(*) FROM training_criterion_versions WHERE question_id=?',
+                (question_id,)).fetchone()[0] == 0
+        def no_factory():
+            raise AssertionError('current evidence must not request another model for training criteria')
+        repair_context, _ = _context(tmp_path, {'question_ids': expected_ids, 'repair_missing_only': True})
         repaired = run_tagging_sync_job(context=repair_context, question_bank_db_path=db_path,
-            data_root=data_root, ai_service_factory=lambda: service, taxonomy_governance=governance)
-        assert gateway_calls[-1] == ('training_criteria', (question_id,))
+            data_root=data_root, ai_service_factory=no_factory, taxonomy_governance=governance)
+        assert gateway_calls == [('both', (question_id,))]
         assert repaired['outcome'] == 'complete', repr(repaired.get('failures'))
         assert SolutionEvidenceRepository(db_path).latest(question_id)['evidence_version_id'] == previous_id
         assert QuestionBankTestStore(db_path).get_question(question_id)['tags'] == previous_tags
 
 
-def test_fill_reanalyzes_stale_criteria_without_retagging_complete_neighbors(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """补齐 must resend only leftover questions, not the rest of the paper.
-
-    Tags plus current evidence with a stale training criterion used to take a
-    local-only republish path. That path never called the model, so retrying
-    补齐 finished in seconds with no send record and the same leftover question.
-    """
-
+def test_fill_reuses_current_evidence_when_legacy_criteria_head_is_stale(tmp_path: Path) -> None:
     db_path = tmp_path / "qb.db"
     data_root = tmp_path / "data"
     question_ids = _seed(db_path, 3)
-    complete_ids = question_ids[:2]
-    leftover_id = question_ids[2]
-    loaded = QuestionAnalysisInputLoader(
-        db_path=db_path,
-        data_root=data_root,
-    ).load(
-        question_ids,
-        curriculum_volume_id="bnu24-math-g7-lower",
-    )
+    loaded = QuestionAnalysisInputLoader(db_path=db_path, data_root=data_root).load(
+        question_ids, curriculum_volume_id="bnu24-math-g7-lower")
     bank = QuestionBankTestStore(db_path)
     for question in loaded:
-        assert bank.save_tag_analysis(
-            question.question_id,
-            _analysis(),
-            model_name="existing",
-        )
+        assert bank.save_tag_analysis(question.question_id, _analysis(), model_name="existing")
         _seed_current_projection_rows(db_path, question)
-    _mark_criterion_stale(db_path, leftover_id)
+    _mark_criterion_stale(db_path, question_ids[-1])
+    with connect(db_path) as connection:
+        before = [tuple(row) for row in connection.execute("SELECT * FROM training_criterion_versions")]
 
-    analyzed: list[tuple[int, bool, bool, bool]] = []
+    def no_model():
+        raise AssertionError("Current evidence must not require a model to repair an old parallel head")
 
-    class RecordingCombinedModule:
-        def __init__(self, **_kwargs) -> None:
-            pass
-
-        def analyze_work_items(self, *, work_items, **_kwargs):
-            for item in work_items:
-                analyzed.append(
-                    (
-                        item.question.question_id,
-                        bool(item.analyze_tag),
-                        bool(item.analyze_solution_evidence),
-                        bool(item.publish_saved_criterion),
-                    )
-                )
-                current_hash = item.question.criterion_source_content_hash
-                with connect(db_path) as connection:
-                    connection.execute(
-                        """
-                        UPDATE training_criterion_versions
-                        SET status = 'proposed',
-                            source_content_hash = ?
-                        WHERE question_id = ?
-                        """,
-                        (current_hash, item.question.question_id),
-                    )
-                    connection.execute(
-                        """
-                        UPDATE training_criterion_heads
-                        SET current_source_hash = ?
-                        WHERE question_id = ?
-                        """,
-                        (current_hash, item.question.question_id),
-                    )
-            return {
-                "items": [
-                    {
-                        "question_id": item.question.question_id,
-                        "tag_status": "not_requested",
-                        "tag_error_category": "",
-                        "criteria_status": "succeeded",
-                        "criteria_error_category": "",
-                    }
-                    for item in work_items
-                ],
-                "criterion_audit": {
-                    "items": [
-                        {
-                            "question_id": item.question.question_id,
-                            "status": "succeeded",
-                        }
-                        for item in work_items
-                    ]
-                },
-                "projection_audit": {
-                    "retrieval_misses": [],
-                    "proposals": [],
-                    "secondary_matches": [],
-                    "retrieval_miss_question_ids": [],
-                    "proposal_question_ids": [],
-                },
-                "question_projection_audits": {},
-            }
-
-    monkeypatch.setattr(
-        tagging_sync_module,
-        "CombinedQuestionAnalysisModule",
-        RecordingCombinedModule,
-    )
-    governance = TaxonomyGovernance(
-        catalog_path=LEGACY_CATALOG_PATH,
-        state_path=tmp_path / "taxonomy-state.json",
-        knowledge_graph_db_path=tmp_path / "governance-stale-fill-kg.db",
-    )
-    ai_service = AITaggingService(
-        env={
-            "QUESTION_BANK_TAGGING_API_KEY": "synthetic-key",
-            "QUESTION_BANK_TAGGING_MODEL": "synthetic-combined",
-        },
-        protocol_adapter=object(),
-        taxonomy_governance=governance,
-    )
-    context, _store = _context(
-        tmp_path,
-        {
-            "question_ids": question_ids,
-            "curriculum_volume_id": "bnu24-math-g7-lower",
-        },
-    )
-
-    result = run_tagging_sync_job(
-        context=context,
-        question_bank_db_path=db_path,
-        data_root=data_root,
-        ai_service_factory=lambda: ai_service,
-        taxonomy_governance=governance,
-    )
-
-    assert analyzed == [(leftover_id, False, True, False)]
+    context, _ = _context(tmp_path, {"question_ids": question_ids,
+        "curriculum_volume_id": "bnu24-math-g7-lower"})
+    result = run_tagging_sync_job(context=context, question_bank_db_path=db_path, data_root=data_root,
+        ai_service_factory=no_model)
     assert result["outcome"] == "complete"
-    assert result["tagged_count"] == 0
-    assert result["failed_question_ids"] == []
-    assert set(complete_ids).isdisjoint({item[0] for item in analyzed})
+    assert result["tagged_count"] == 0 and result["failed_question_ids"] == []
+    with connect(db_path) as connection:
+        assert [tuple(row) for row in connection.execute("SELECT * FROM training_criterion_versions")] == before
 
 
 def test_unified_evidence_retry_preserves_existing_successful_tags(

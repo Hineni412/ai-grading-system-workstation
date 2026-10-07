@@ -1,0 +1,2074 @@
+{
+  "creation_statements": [
+    "CREATE TABLE annotated_results (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    session_id INTEGER NOT NULL,\n                    result_id INTEGER NOT NULL UNIQUE,\n                    annotated_front_path TEXT,\n                    annotated_back_path TEXT,\n                    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n                    FOREIGN KEY(session_id) REFERENCES grading_sessions(id),\n                    FOREIGN KEY(result_id) REFERENCES session_results(id)\n                )",
+    "CREATE TABLE \"answer_regions\" (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    region_uuid TEXT,\n    session_id INTEGER NOT NULL,\n    template_id INTEGER NOT NULL,\n    page TEXT NOT NULL,\n    region_order INTEGER NOT NULL,\n    x INTEGER NOT NULL,\n    y INTEGER NOT NULL,\n    w INTEGER NOT NULL,\n    h INTEGER NOT NULL,\n    detected_question_id TEXT,\n    mapped_question_id TEXT,\n    confidence REAL NOT NULL DEFAULT 0,\n    is_confirmed INTEGER NOT NULL DEFAULT 0,\n    mapping_status TEXT NOT NULL DEFAULT 'unbound'\n        CHECK (mapping_status IN ('unbound', 'auto', 'manual')),\n    multi_region_confirmed INTEGER NOT NULL DEFAULT 0,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    FOREIGN KEY(session_id) REFERENCES grading_sessions(id),\n    FOREIGN KEY(template_id) REFERENCES session_templates(id)\n)",
+    "CREATE TABLE app_settings (\n                    setting_key TEXT PRIMARY KEY,\n                    setting_value TEXT NOT NULL,\n                    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))\n                )",
+    "CREATE TABLE \"exam_papers\" (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    session_id INTEGER NOT NULL,\n    front_image TEXT NOT NULL,\n    back_image TEXT NOT NULL,\n    ocr_name TEXT,\n    student_id INTEGER,\n    match_status TEXT NOT NULL\n        CHECK (match_status IN ('matched', 'unmatched', 'student_deleted')),\n    processing_status TEXT NOT NULL DEFAULT 'pending'\n        CHECK (\n            processing_status IN (\n                'pending', 'grading', 'graded', 'failed', 'skipped'\n            )\n        ),\n    error_message TEXT,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    FOREIGN KEY(session_id) REFERENCES grading_sessions(id),\n    FOREIGN KEY(student_id) REFERENCES students(id)\n)",
+    "CREATE TABLE grading_run_items (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    run_id INTEGER NOT NULL,\n    paper_id INTEGER,\n    student_id INTEGER NOT NULL,\n    source_label TEXT NOT NULL,\n    paper_fingerprint TEXT NOT NULL,\n    config_fingerprint TEXT NOT NULL,\n    status TEXT NOT NULL CHECK (\n        status IN (\n            'pending','grading','graded','failed',\n            'skipped_existing','skipped_duplicate','conflict'\n        )\n    ),\n    disposition_reason TEXT,\n    result_id INTEGER,\n    attempt_count INTEGER NOT NULL DEFAULT 0,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    UNIQUE(run_id, source_label),\n    FOREIGN KEY(run_id) REFERENCES grading_runs(id),\n    FOREIGN KEY(paper_id) REFERENCES exam_papers(id),\n    FOREIGN KEY(student_id) REFERENCES students(id),\n    FOREIGN KEY(result_id) REFERENCES session_results(id)\n)",
+    "CREATE TABLE grading_runs (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    run_token TEXT NOT NULL UNIQUE,\n    session_id INTEGER NOT NULL,\n    config_fingerprint TEXT NOT NULL,\n    grading_mode TEXT NOT NULL,\n    state TEXT NOT NULL CHECK (\n        state IN ('running','pause_requested','paused','completed','failed')\n    ),\n    started_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    finished_at TEXT,\n    FOREIGN KEY(session_id) REFERENCES grading_sessions(id)\n)",
+    "CREATE TABLE \"grading_sessions\" (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    session_name TEXT NOT NULL,\n    rubric_path TEXT NOT NULL,\n    answer_key_path TEXT NOT NULL,\n    status TEXT NOT NULL DEFAULT 'created'\n        CHECK (status IN ('created', 'running', 'completed', 'failed')),\n    is_deleted INTEGER NOT NULL DEFAULT 0,\n    deleted_at TEXT,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    template_config_path TEXT,\n    source_paper_path TEXT,\n    source_paper_sha256 TEXT,\n    question_bank_sync_state TEXT NOT NULL DEFAULT 'not_started',\n    question_bank_sync_details_json TEXT NOT NULL DEFAULT '{}',\n    question_bank_sync_error TEXT,\n    question_bank_sync_updated_at TEXT\n, curriculum_volume_id TEXT\nCHECK (\n    curriculum_volume_id IS NULL\n    OR (\n        LENGTH(TRIM(curriculum_volume_id)) BETWEEN 1 AND 80\n        AND curriculum_volume_id NOT GLOB '*[^A-Za-z0-9_-]*'\n    )\n))",
+    "CREATE TABLE jobs (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    job_type TEXT NOT NULL,\n    payload_json TEXT NOT NULL DEFAULT '{}',\n    result_json TEXT NOT NULL DEFAULT '{}',\n    status TEXT NOT NULL CHECK (\n        status IN ('queued','running','paused','succeeded','failed','cancelled')\n    ),\n    progress REAL NOT NULL DEFAULT 0,\n    stage TEXT NOT NULL DEFAULT 'queued',\n    detail TEXT NOT NULL DEFAULT '',\n    error TEXT,\n    cancel_requested INTEGER NOT NULL DEFAULT 0,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    started_at TEXT,\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    finished_at TEXT\n)",
+    "CREATE TABLE schema_migrations (\n            id          INTEGER PRIMARY KEY AUTOINCREMENT,\n            migration_name TEXT NOT NULL UNIQUE,\n            applied_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n            checksum    TEXT,\n            success     INTEGER NOT NULL DEFAULT 1\n        )",
+    "CREATE TABLE session_attendance (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    session_id INTEGER NOT NULL,\n                    student_id INTEGER NOT NULL,\n                    attendance_status TEXT NOT NULL,\n                    source_reason TEXT,\n                    matched_paper_id INTEGER,\n                    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n                    UNIQUE(session_id, student_id),\n                    FOREIGN KEY(session_id) REFERENCES grading_sessions(id),\n                    FOREIGN KEY(student_id) REFERENCES students(id),\n                    FOREIGN KEY(matched_paper_id) REFERENCES exam_papers(id)\n                )",
+    "CREATE TABLE \"session_details\" (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    result_id INTEGER NOT NULL,\n    question_id TEXT NOT NULL,\n    score_awarded REAL NOT NULL,\n    deduction_reason TEXT,\n    knowledge_ids TEXT NOT NULL\n        CHECK (\n            json_valid(knowledge_ids)\n            AND json_type(knowledge_ids) = 'array'\n            AND json_array_length(knowledge_ids) > 0\n            AND json_type(knowledge_ids, '$[0]') = 'text'\n            AND TRIM(json_extract(knowledge_ids, '$[0]')) <> ''\n        ),\n    error_category TEXT,\n    error_summary TEXT,\n    confidence_score REAL,\n    secondary_errors_json TEXT NOT NULL DEFAULT '[]', ai_score_awarded REAL\nCHECK (\n    ai_score_awarded IS NULL\n    OR (\n        typeof(ai_score_awarded) IN ('integer', 'real')\n        AND ai_score_awarded >= 0\n    )\n),\n    FOREIGN KEY(result_id) REFERENCES session_results(id)\n)",
+    "CREATE TABLE session_results (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    session_id INTEGER NOT NULL,\n                    student_id INTEGER NOT NULL,\n                    paper_id INTEGER NOT NULL,\n                    total_score REAL NOT NULL,\n                    student_score REAL NOT NULL,\n                    needs_human_review INTEGER NOT NULL,\n                    raw_json TEXT NOT NULL,\n                    graded_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), ai_student_score REAL\nCHECK (\n    ai_student_score IS NULL\n    OR (\n        typeof(ai_student_score) IN ('integer', 'real')\n        AND ai_student_score >= 0\n    )\n),\n                    FOREIGN KEY(session_id) REFERENCES grading_sessions(id),\n                    FOREIGN KEY(student_id) REFERENCES students(id),\n                    FOREIGN KEY(paper_id) REFERENCES exam_papers(id)\n                )",
+    "CREATE TABLE session_templates (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    session_id INTEGER NOT NULL UNIQUE,\n                    front_template_path TEXT NOT NULL,\n                    back_template_path TEXT NOT NULL,\n                    ai_analysis_path TEXT,\n                    template_config_path TEXT,\n                    regions_path TEXT,\n                    is_confirmed INTEGER NOT NULL DEFAULT 0,\n                    regions_snapshot_pending INTEGER NOT NULL DEFAULT 0,\n                    regions_snapshot_token TEXT,\n                    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n                    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n                    FOREIGN KEY(session_id) REFERENCES grading_sessions(id)\n                )",
+    "CREATE TABLE students (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    student_code TEXT NOT NULL UNIQUE,\n                    name TEXT NOT NULL,\n                    class_name TEXT,\n                    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))\n                )",
+    "CREATE TABLE teacher_score_locks (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    session_id INTEGER NOT NULL,\n    scan_batch_id TEXT NOT NULL\n        CHECK (TRIM(scan_batch_id) <> ''),\n    student_id INTEGER NOT NULL,\n    question_id TEXT NOT NULL\n        CHECK (TRIM(question_id) <> ''),\n    score_awarded REAL NOT NULL\n        CHECK (\n            typeof(score_awarded) IN ('integer', 'real')\n            AND score_awarded >= 0\n            AND score_awarded <= max_score\n        ),\n    max_score REAL NOT NULL\n        CHECK (\n            typeof(max_score) IN ('integer', 'real')\n            AND max_score > 0\n        ),\n    deduction_reason TEXT,\n    source_target_type TEXT NOT NULL\n        CHECK (TRIM(source_target_type) <> ''),\n    source_target_id INTEGER NOT NULL\n        CHECK (\n            typeof(source_target_id) = 'integer'\n            AND source_target_id > 0\n        ),\n    revision INTEGER NOT NULL DEFAULT 1\n        CHECK (\n            typeof(revision) = 'integer'\n            AND revision >= 1\n        ),\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    UNIQUE(session_id, scan_batch_id, student_id, question_id),\n    FOREIGN KEY(session_id) REFERENCES grading_sessions(id),\n    FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE\n)",
+    "CREATE TABLE workspace_ai_handoffs (\n    handoff_id TEXT PRIMARY KEY CHECK (TRIM(handoff_id) <> ''),\n    task_id TEXT NOT NULL REFERENCES workspace_ai_tasks(task_id) ON DELETE CASCADE,\n    work_item_id TEXT NOT NULL CHECK (TRIM(work_item_id) <> ''),\n    module TEXT NOT NULL CHECK (module IN ('teaching_prep', 'class_teacher')),\n    intent TEXT NOT NULL CHECK (intent IN ('create', 'append', 'follow_up', 'plan', 'review')),\n    handling_mode TEXT NOT NULL CHECK (handling_mode IN ('record', 'plan_calendar', 'sop')),\n    destination_key TEXT NOT NULL CHECK (TRIM(destination_key) <> ''),\n    subject_refs_json TEXT NOT NULL DEFAULT '[]',\n    draft_ref_id TEXT NOT NULL CHECK (TRIM(draft_ref_id) <> ''),\n    draft_revision TEXT NOT NULL CHECK (TRIM(draft_revision) <> ''),\n    adoption_state TEXT NOT NULL DEFAULT 'pending'\n        CHECK (adoption_state IN (\n            'pending', 'opened', 'adoption_started', 'adopted',\n            'discarded', 'stale'\n        )),\n    prefill_keys_json TEXT NOT NULL DEFAULT '[]',\n    missing_fields_json TEXT NOT NULL DEFAULT '[]',\n    source_turn_id TEXT,\n    return_destination_key TEXT NOT NULL,\n    return_focus_ref TEXT,\n    expires_on_source_change INTEGER NOT NULL DEFAULT 1\n        CHECK (expires_on_source_change IN (0, 1)),\n    adoption_id TEXT UNIQUE,\n    target_revision TEXT,\n    adopted_object_ref TEXT,\n    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    UNIQUE(task_id, work_item_id)\n)",
+    "CREATE TABLE workspace_ai_tasks (\n    task_id TEXT PRIMARY KEY CHECK (TRIM(task_id) <> ''),\n    operation_id TEXT NOT NULL UNIQUE CHECK (TRIM(operation_id) <> ''),\n    module TEXT NOT NULL CHECK (module IN ('teaching_prep', 'class_teacher')),\n    task_kind TEXT NOT NULL CHECK (TRIM(task_kind) <> ''),\n    source_kind TEXT NOT NULL CHECK (TRIM(source_kind) <> ''),\n    source_ref_id TEXT NOT NULL CHECK (TRIM(source_ref_id) <> ''),\n    source_revision TEXT NOT NULL CHECK (TRIM(source_revision) <> ''),\n    context_refs_json TEXT NOT NULL DEFAULT '[]',\n    prompt_contract_version TEXT NOT NULL CHECK (TRIM(prompt_contract_version) <> ''),\n    request_fingerprint TEXT NOT NULL CHECK (LENGTH(request_fingerprint) = 64),\n    model_destination_fingerprint TEXT NOT NULL\n        CHECK (LENGTH(model_destination_fingerprint) = 64),\n    return_target TEXT NOT NULL CHECK (TRIM(return_target) <> ''),\n    status TEXT NOT NULL DEFAULT 'prepared'\n        CHECK (status IN (\n            'prepared', 'queued', 'running', 'needs_input', 'proposal_ready',\n            'failed_before_dispatch', 'failed', 'result_unknown',\n            'invalid_result', 'cancelled_before_dispatch', 'discarded'\n        )),\n    phase TEXT NOT NULL DEFAULT 'prepared'\n        CHECK (phase IN (\n            'prepared', 'queued', 'claimed', 'send_attempt_reserved',\n            'validating', 'handoff_ready', 'finished'\n        )),\n    progress REAL NOT NULL DEFAULT 0 CHECK (progress >= 0 AND progress <= 1),\n    send_attempt_count INTEGER NOT NULL DEFAULT 0\n        CHECK (send_attempt_count IN (0, 1)),\n    dispatch_evidence TEXT NOT NULL DEFAULT 'not_started'\n        CHECK (dispatch_evidence IN (\n            'not_started', 'may_have_started', 'response_persisted'\n        )),\n    cancel_requested INTEGER NOT NULL DEFAULT 0\n        CHECK (cancel_requested IN (0, 1)),\n    proposal_ref_id TEXT,\n    proposal_revision TEXT,\n    job_id INTEGER UNIQUE REFERENCES jobs(id),\n    error_code TEXT,\n    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    finished_at TEXT\n)",
+    "INSERT INTO sqlite_sequence (name, seq) VALUES ('answer_regions', 0)",
+    "INSERT INTO sqlite_sequence (name, seq) VALUES ('exam_papers', 0)",
+    "INSERT INTO sqlite_sequence (name, seq) VALUES ('grading_sessions', 0)",
+    "INSERT INTO sqlite_sequence (name, seq) VALUES ('session_details', 0)",
+    "CREATE TRIGGER answer_regions_region_uuid_required_insert\nBEFORE INSERT ON answer_regions\nWHEN NEW.region_uuid IS NULL OR TRIM(NEW.region_uuid) = ''\nBEGIN\n    SELECT RAISE(ABORT, 'answer_regions.region_uuid must be nonblank');\nEND",
+    "CREATE TRIGGER answer_regions_region_uuid_required_update\nBEFORE UPDATE OF region_uuid ON answer_regions\nWHEN NEW.region_uuid IS NULL OR TRIM(NEW.region_uuid) = ''\nBEGIN\n    SELECT RAISE(ABORT, 'answer_regions.region_uuid must be nonblank');\nEND",
+    "CREATE UNIQUE INDEX idx_answer_regions_region_uuid_unique\nON answer_regions(region_uuid)",
+    "CREATE INDEX idx_exam_papers_session_status\nON exam_papers(session_id, processing_status)",
+    "CREATE INDEX idx_exam_papers_student\nON exam_papers(student_id)",
+    "CREATE INDEX idx_grading_run_items_identity\nON grading_run_items(student_id, paper_fingerprint, config_fingerprint, status)",
+    "CREATE INDEX idx_grading_runs_session_state\nON grading_runs(session_id, state, id)",
+    "CREATE INDEX idx_grading_sessions_active\nON grading_sessions(is_deleted, status, updated_at)",
+    "CREATE INDEX idx_grading_sessions_curriculum_volume\nON grading_sessions(curriculum_volume_id, is_deleted, updated_at DESC)",
+    "CREATE INDEX idx_jobs_status_created\nON jobs(status, created_at, id)",
+    "CREATE INDEX idx_jobs_type_created\nON jobs(job_type, created_at, id)",
+    "CREATE INDEX idx_session_attendance_session_status ON session_attendance(session_id, attendance_status)",
+    "CREATE INDEX idx_session_details_question\nON session_details(question_id)",
+    "CREATE INDEX idx_session_details_result\nON session_details(result_id)",
+    "CREATE INDEX idx_session_results_paper ON session_results(paper_id)",
+    "CREATE INDEX idx_session_results_session_student ON session_results(session_id, student_id)",
+    "CREATE INDEX idx_students_class_name ON students(class_name)",
+    "CREATE INDEX idx_teacher_score_locks_session_batch_student\nON teacher_score_locks(session_id, scan_batch_id, student_id)",
+    "CREATE INDEX idx_teacher_score_locks_source_target\nON teacher_score_locks(source_target_type, source_target_id)",
+    "CREATE INDEX idx_workspace_ai_handoffs_task\nON workspace_ai_handoffs(task_id, created_at)",
+    "CREATE INDEX idx_workspace_ai_tasks_source\nON workspace_ai_tasks(module, source_kind, source_ref_id, updated_at DESC)",
+    "CREATE INDEX idx_workspace_ai_tasks_status\nON workspace_ai_tasks(status, updated_at DESC)",
+    "CREATE TRIGGER session_details_knowledge_ids_valid_insert\nBEFORE INSERT ON session_details\nWHEN EXISTS (\n    SELECT 1\n    FROM json_each(NEW.knowledge_ids)\n    WHERE type <> 'text' OR TRIM(CAST(value AS TEXT)) = ''\n)\nBEGIN\n    SELECT RAISE(ABORT, 'session_details.knowledge_ids items must be nonblank text');\nEND",
+    "CREATE TRIGGER session_details_knowledge_ids_valid_update\nBEFORE UPDATE OF knowledge_ids ON session_details\nWHEN EXISTS (\n    SELECT 1\n    FROM json_each(NEW.knowledge_ids)\n    WHERE type <> 'text' OR TRIM(CAST(value AS TEXT)) = ''\n)\nBEGIN\n    SELECT RAISE(ABORT, 'session_details.knowledge_ids items must be nonblank text');\nEND",
+    "CREATE TRIGGER trg_grading_sessions_unique_name_insert\nBEFORE INSERT ON grading_sessions\nFOR EACH ROW\nWHEN EXISTS (\n    SELECT 1 FROM grading_sessions\n    WHERE lower(trim(session_name)) = lower(trim(NEW.session_name))\n)\nBEGIN\n    SELECT RAISE(ABORT, 'session_name_conflict');\nEND",
+    "CREATE TRIGGER trg_grading_sessions_unique_name_update\nBEFORE UPDATE OF session_name ON grading_sessions\nFOR EACH ROW\nWHEN EXISTS (\n    SELECT 1 FROM grading_sessions\n    WHERE id <> OLD.id\n      AND lower(trim(session_name)) = lower(trim(NEW.session_name))\n)\nBEGIN\n    SELECT RAISE(ABORT, 'session_name_conflict');\nEND"
+  ],
+  "migration_checksums": [
+    [
+      "000_baseline_schema",
+      "7fc86c1b78c1a0a9d5134f8fcc8ccaa7"
+    ],
+    [
+      "001_init_migration_tracking",
+      "b28236d49d8d98efb9083982f43d432a"
+    ],
+    [
+      "002_add_grading_run_ledger",
+      "9c3f0d6e8227ffa79fa3355a32878f6f"
+    ],
+    [
+      "003_add_jobs",
+      "ca11db957bcadce05e8020652f578248"
+    ],
+    [
+      "004_add_jobs_result_json",
+      "9198106a53db8379b9d7014e2cb29b68"
+    ],
+    [
+      "005_add_status_constraints",
+      "c479b76ccab893c5ac98356e3d939f89"
+    ],
+    [
+      "006_knowledge_ids_primary",
+      "958b131963cbb20dc4f35d8cc749025a"
+    ],
+    [
+      "007_drop_legacy_knowledge_id",
+      "28763a7fed5d7edc84176251173babb6"
+    ],
+    [
+      "008_drop_legacy_cli_tables",
+      "f191fa127f0276a8ae880574c730ad63"
+    ],
+    [
+      "009_add_teacher_score_locks",
+      "4801f83046d225fcf2269f5d1b21ffba"
+    ],
+    [
+      "010_workspace_ai_tasks",
+      "cb0a367c7d95eab65c124f326e0122ad"
+    ],
+    [
+      "011_add_session_curriculum_volume",
+      "86fd6ce297c6d1b7646e702fb217894a"
+    ],
+    [
+      "012_exclusive_session_names",
+      "41eb2e9bfbcb7b375dd75dad44d893fe"
+    ],
+    [
+      "013_dual_track_ai_scores",
+      "bcb218d22f3b86bac28a606be8852a4e"
+    ]
+  ],
+  "schema": {
+    "indexes_and_triggers": [
+      [
+        "index",
+        "idx_answer_regions_region_uuid_unique",
+        "create unique index idx_answer_regions_region_uuid_unique on answer_regions(region_uuid)"
+      ],
+      [
+        "index",
+        "idx_exam_papers_session_status",
+        "create index idx_exam_papers_session_status on exam_papers(session_id, processing_status)"
+      ],
+      [
+        "index",
+        "idx_exam_papers_student",
+        "create index idx_exam_papers_student on exam_papers(student_id)"
+      ],
+      [
+        "index",
+        "idx_grading_run_items_identity",
+        "create index idx_grading_run_items_identity on grading_run_items(student_id, paper_fingerprint, config_fingerprint, status)"
+      ],
+      [
+        "index",
+        "idx_grading_runs_session_state",
+        "create index idx_grading_runs_session_state on grading_runs(session_id, state, id)"
+      ],
+      [
+        "index",
+        "idx_grading_sessions_active",
+        "create index idx_grading_sessions_active on grading_sessions(is_deleted, status, updated_at)"
+      ],
+      [
+        "index",
+        "idx_grading_sessions_curriculum_volume",
+        "create index idx_grading_sessions_curriculum_volume on grading_sessions(curriculum_volume_id, is_deleted, updated_at desc)"
+      ],
+      [
+        "index",
+        "idx_jobs_status_created",
+        "create index idx_jobs_status_created on jobs(status, created_at, id)"
+      ],
+      [
+        "index",
+        "idx_jobs_type_created",
+        "create index idx_jobs_type_created on jobs(job_type, created_at, id)"
+      ],
+      [
+        "index",
+        "idx_session_attendance_session_status",
+        "create index idx_session_attendance_session_status on session_attendance(session_id, attendance_status)"
+      ],
+      [
+        "index",
+        "idx_session_details_question",
+        "create index idx_session_details_question on session_details(question_id)"
+      ],
+      [
+        "index",
+        "idx_session_details_result",
+        "create index idx_session_details_result on session_details(result_id)"
+      ],
+      [
+        "index",
+        "idx_session_results_paper",
+        "create index idx_session_results_paper on session_results(paper_id)"
+      ],
+      [
+        "index",
+        "idx_session_results_session_student",
+        "create index idx_session_results_session_student on session_results(session_id, student_id)"
+      ],
+      [
+        "index",
+        "idx_students_class_name",
+        "create index idx_students_class_name on students(class_name)"
+      ],
+      [
+        "index",
+        "idx_teacher_score_locks_session_batch_student",
+        "create index idx_teacher_score_locks_session_batch_student on teacher_score_locks(session_id, scan_batch_id, student_id)"
+      ],
+      [
+        "index",
+        "idx_teacher_score_locks_source_target",
+        "create index idx_teacher_score_locks_source_target on teacher_score_locks(source_target_type, source_target_id)"
+      ],
+      [
+        "index",
+        "idx_workspace_ai_handoffs_task",
+        "create index idx_workspace_ai_handoffs_task on workspace_ai_handoffs(task_id, created_at)"
+      ],
+      [
+        "index",
+        "idx_workspace_ai_tasks_source",
+        "create index idx_workspace_ai_tasks_source on workspace_ai_tasks(module, source_kind, source_ref_id, updated_at desc)"
+      ],
+      [
+        "index",
+        "idx_workspace_ai_tasks_status",
+        "create index idx_workspace_ai_tasks_status on workspace_ai_tasks(status, updated_at desc)"
+      ],
+      [
+        "trigger",
+        "answer_regions_region_uuid_required_insert",
+        "create trigger answer_regions_region_uuid_required_insert before insert on answer_regions when new.region_uuid is null or trim(new.region_uuid) = '' begin select raise(abort, 'answer_regions.region_uuid must be nonblank'); end"
+      ],
+      [
+        "trigger",
+        "answer_regions_region_uuid_required_update",
+        "create trigger answer_regions_region_uuid_required_update before update of region_uuid on answer_regions when new.region_uuid is null or trim(new.region_uuid) = '' begin select raise(abort, 'answer_regions.region_uuid must be nonblank'); end"
+      ],
+      [
+        "trigger",
+        "session_details_knowledge_ids_valid_insert",
+        "create trigger session_details_knowledge_ids_valid_insert before insert on session_details when exists ( select 1 from json_each(new.knowledge_ids) where type <> 'text' or trim(cast(value as text)) = '' ) begin select raise(abort, 'session_details.knowledge_ids items must be nonblank text'); end"
+      ],
+      [
+        "trigger",
+        "session_details_knowledge_ids_valid_update",
+        "create trigger session_details_knowledge_ids_valid_update before update of knowledge_ids on session_details when exists ( select 1 from json_each(new.knowledge_ids) where type <> 'text' or trim(cast(value as text)) = '' ) begin select raise(abort, 'session_details.knowledge_ids items must be nonblank text'); end"
+      ],
+      [
+        "trigger",
+        "trg_grading_sessions_unique_name_insert",
+        "create trigger trg_grading_sessions_unique_name_insert before insert on grading_sessions for each row when exists ( select 1 from grading_sessions where lower(trim(session_name)) = lower(trim(new.session_name)) ) begin select raise(abort, 'session_name_conflict'); end"
+      ],
+      [
+        "trigger",
+        "trg_grading_sessions_unique_name_update",
+        "create trigger trg_grading_sessions_unique_name_update before update of session_name on grading_sessions for each row when exists ( select 1 from grading_sessions where id <> old.id and lower(trim(session_name)) = lower(trim(new.session_name)) ) begin select raise(abort, 'session_name_conflict'); end"
+      ]
+    ],
+    "tables": {
+      "annotated_results": {
+        "checks": [],
+        "columns": {
+          "annotated_back_path": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "annotated_front_path": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "id": [
+            "integer",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "result_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "session_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "updated_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [
+          [
+            "grading_sessions",
+            "session_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ],
+          [
+            "session_results",
+            "result_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ]
+        ],
+        "unique_constraints": [
+          [
+            [
+              "result_id"
+            ],
+            0
+          ]
+        ]
+      },
+      "answer_regions": {
+        "checks": [
+          "mapping_status in ('unbound', 'auto', 'manual')"
+        ],
+        "columns": {
+          "confidence": [
+            "real",
+            1,
+            "0",
+            0,
+            0
+          ],
+          "created_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ],
+          "detected_question_id": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "h": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "id": [
+            "integer",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "is_confirmed": [
+            "integer",
+            1,
+            "0",
+            0,
+            0
+          ],
+          "mapped_question_id": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "mapping_status": [
+            "text",
+            1,
+            "'unbound'",
+            0,
+            0
+          ],
+          "multi_region_confirmed": [
+            "integer",
+            1,
+            "0",
+            0,
+            0
+          ],
+          "page": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "region_order": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "region_uuid": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "session_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "template_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "updated_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ],
+          "w": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "x": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "y": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [
+          [
+            "grading_sessions",
+            "session_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ],
+          [
+            "session_templates",
+            "template_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ]
+        ],
+        "unique_constraints": [
+          [
+            [
+              "region_uuid"
+            ],
+            0
+          ]
+        ]
+      },
+      "app_settings": {
+        "checks": [],
+        "columns": {
+          "setting_key": [
+            "text",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "setting_value": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "updated_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [],
+        "unique_constraints": [
+          [
+            [
+              "setting_key"
+            ],
+            0
+          ]
+        ]
+      },
+      "exam_papers": {
+        "checks": [
+          "match_status in ('matched', 'unmatched', 'student_deleted')",
+          "processing_status in ( 'pending', 'grading', 'graded', 'failed', 'skipped' )"
+        ],
+        "columns": {
+          "back_image": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "created_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ],
+          "error_message": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "front_image": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "id": [
+            "integer",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "match_status": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "ocr_name": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "processing_status": [
+            "text",
+            1,
+            "'pending'",
+            0,
+            0
+          ],
+          "session_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "student_id": [
+            "integer",
+            0,
+            "none",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [
+          [
+            "grading_sessions",
+            "session_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ],
+          [
+            "students",
+            "student_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ]
+        ],
+        "unique_constraints": []
+      },
+      "grading_run_items": {
+        "checks": [
+          "status in ( 'pending','grading','graded','failed', 'skipped_existing','skipped_duplicate','conflict' )"
+        ],
+        "columns": {
+          "attempt_count": [
+            "integer",
+            1,
+            "0",
+            0,
+            0
+          ],
+          "config_fingerprint": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "created_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ],
+          "disposition_reason": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "id": [
+            "integer",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "paper_fingerprint": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "paper_id": [
+            "integer",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "result_id": [
+            "integer",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "run_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "source_label": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "status": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "student_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "updated_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [
+          [
+            "exam_papers",
+            "paper_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ],
+          [
+            "grading_runs",
+            "run_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ],
+          [
+            "session_results",
+            "result_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ],
+          [
+            "students",
+            "student_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ]
+        ],
+        "unique_constraints": [
+          [
+            [
+              "run_id",
+              "source_label"
+            ],
+            0
+          ]
+        ]
+      },
+      "grading_runs": {
+        "checks": [
+          "state in ('running','pause_requested','paused','completed','failed')"
+        ],
+        "columns": {
+          "config_fingerprint": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "finished_at": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "grading_mode": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "id": [
+            "integer",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "run_token": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "session_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "started_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ],
+          "state": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "updated_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [
+          [
+            "grading_sessions",
+            "session_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ]
+        ],
+        "unique_constraints": [
+          [
+            [
+              "run_token"
+            ],
+            0
+          ]
+        ]
+      },
+      "grading_sessions": {
+        "checks": [
+          "curriculum_volume_id is null or ( length(trim(curriculum_volume_id)) between 1 and 80 and curriculum_volume_id not glob '*[^a-za-z0-9_-]*' )",
+          "status in ('created', 'running', 'completed', 'failed')"
+        ],
+        "columns": {
+          "answer_key_path": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "created_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ],
+          "curriculum_volume_id": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "deleted_at": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "id": [
+            "integer",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "is_deleted": [
+            "integer",
+            1,
+            "0",
+            0,
+            0
+          ],
+          "question_bank_sync_details_json": [
+            "text",
+            1,
+            "'{}'",
+            0,
+            0
+          ],
+          "question_bank_sync_error": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "question_bank_sync_state": [
+            "text",
+            1,
+            "'not_started'",
+            0,
+            0
+          ],
+          "question_bank_sync_updated_at": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "rubric_path": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "session_name": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "source_paper_path": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "source_paper_sha256": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "status": [
+            "text",
+            1,
+            "'created'",
+            0,
+            0
+          ],
+          "template_config_path": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "updated_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [],
+        "unique_constraints": []
+      },
+      "jobs": {
+        "checks": [
+          "status in ('queued','running','paused','succeeded','failed','cancelled')"
+        ],
+        "columns": {
+          "cancel_requested": [
+            "integer",
+            1,
+            "0",
+            0,
+            0
+          ],
+          "created_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ],
+          "detail": [
+            "text",
+            1,
+            "''",
+            0,
+            0
+          ],
+          "error": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "finished_at": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "id": [
+            "integer",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "job_type": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "payload_json": [
+            "text",
+            1,
+            "'{}'",
+            0,
+            0
+          ],
+          "progress": [
+            "real",
+            1,
+            "0",
+            0,
+            0
+          ],
+          "result_json": [
+            "text",
+            1,
+            "'{}'",
+            0,
+            0
+          ],
+          "stage": [
+            "text",
+            1,
+            "'queued'",
+            0,
+            0
+          ],
+          "started_at": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "status": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "updated_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [],
+        "unique_constraints": []
+      },
+      "session_attendance": {
+        "checks": [],
+        "columns": {
+          "attendance_status": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "created_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ],
+          "id": [
+            "integer",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "matched_paper_id": [
+            "integer",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "session_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "source_reason": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "student_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [
+          [
+            "exam_papers",
+            "matched_paper_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ],
+          [
+            "grading_sessions",
+            "session_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ],
+          [
+            "students",
+            "student_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ]
+        ],
+        "unique_constraints": [
+          [
+            [
+              "session_id",
+              "student_id"
+            ],
+            0
+          ]
+        ]
+      },
+      "session_details": {
+        "checks": [
+          "ai_score_awarded is null or ( typeof(ai_score_awarded) in ('integer', 'real') and ai_score_awarded >= 0 )",
+          "json_valid(knowledge_ids) and json_type(knowledge_ids) = 'array' and json_array_length(knowledge_ids) > 0 and json_type(knowledge_ids, '$[0]') = 'text' and trim(json_extract(knowledge_ids, '$[0]')) <> ''"
+        ],
+        "columns": {
+          "ai_score_awarded": [
+            "real",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "confidence_score": [
+            "real",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "deduction_reason": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "error_category": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "error_summary": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "id": [
+            "integer",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "knowledge_ids": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "question_id": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "result_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "score_awarded": [
+            "real",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "secondary_errors_json": [
+            "text",
+            1,
+            "'[]'",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [
+          [
+            "session_results",
+            "result_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ]
+        ],
+        "unique_constraints": []
+      },
+      "session_results": {
+        "checks": [
+          "ai_student_score is null or ( typeof(ai_student_score) in ('integer', 'real') and ai_student_score >= 0 )"
+        ],
+        "columns": {
+          "ai_student_score": [
+            "real",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "graded_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ],
+          "id": [
+            "integer",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "needs_human_review": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "paper_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "raw_json": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "session_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "student_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "student_score": [
+            "real",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "total_score": [
+            "real",
+            1,
+            "none",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [
+          [
+            "exam_papers",
+            "paper_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ],
+          [
+            "grading_sessions",
+            "session_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ],
+          [
+            "students",
+            "student_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ]
+        ],
+        "unique_constraints": []
+      },
+      "session_templates": {
+        "checks": [],
+        "columns": {
+          "ai_analysis_path": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "back_template_path": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "created_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ],
+          "front_template_path": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "id": [
+            "integer",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "is_confirmed": [
+            "integer",
+            1,
+            "0",
+            0,
+            0
+          ],
+          "regions_path": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "regions_snapshot_pending": [
+            "integer",
+            1,
+            "0",
+            0,
+            0
+          ],
+          "regions_snapshot_token": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "session_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "template_config_path": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "updated_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [
+          [
+            "grading_sessions",
+            "session_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ]
+        ],
+        "unique_constraints": [
+          [
+            [
+              "session_id"
+            ],
+            0
+          ]
+        ]
+      },
+      "students": {
+        "checks": [],
+        "columns": {
+          "class_name": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "created_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ],
+          "id": [
+            "integer",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "name": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "student_code": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [],
+        "unique_constraints": [
+          [
+            [
+              "student_code"
+            ],
+            0
+          ]
+        ]
+      },
+      "teacher_score_locks": {
+        "checks": [
+          "trim(question_id) <> ''",
+          "trim(scan_batch_id) <> ''",
+          "trim(source_target_type) <> ''",
+          "typeof(max_score) in ('integer', 'real') and max_score > 0",
+          "typeof(revision) = 'integer' and revision >= 1",
+          "typeof(score_awarded) in ('integer', 'real') and score_awarded >= 0 and score_awarded <= max_score",
+          "typeof(source_target_id) = 'integer' and source_target_id > 0"
+        ],
+        "columns": {
+          "created_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ],
+          "deduction_reason": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "id": [
+            "integer",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "max_score": [
+            "real",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "question_id": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "revision": [
+            "integer",
+            1,
+            "1",
+            0,
+            0
+          ],
+          "scan_batch_id": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "score_awarded": [
+            "real",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "session_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "source_target_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "source_target_type": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "student_id": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "updated_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [
+          [
+            "grading_sessions",
+            "session_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ],
+          [
+            "students",
+            "student_id",
+            "id",
+            "NO ACTION",
+            "CASCADE"
+          ]
+        ],
+        "unique_constraints": [
+          [
+            [
+              "session_id",
+              "scan_batch_id",
+              "student_id",
+              "question_id"
+            ],
+            0
+          ]
+        ]
+      },
+      "workspace_ai_handoffs": {
+        "checks": [
+          "adoption_state in ( 'pending', 'opened', 'adoption_started', 'adopted', 'discarded', 'stale' )",
+          "expires_on_source_change in (0, 1)",
+          "handling_mode in ('record', 'plan_calendar', 'sop')",
+          "intent in ('create', 'append', 'follow_up', 'plan', 'review')",
+          "module in ('teaching_prep', 'class_teacher')",
+          "revision >= 1",
+          "trim(destination_key) <> ''",
+          "trim(draft_ref_id) <> ''",
+          "trim(draft_revision) <> ''",
+          "trim(handoff_id) <> ''",
+          "trim(work_item_id) <> ''"
+        ],
+        "columns": {
+          "adopted_object_ref": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "adoption_id": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "adoption_state": [
+            "text",
+            1,
+            "'pending'",
+            0,
+            0
+          ],
+          "created_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ],
+          "destination_key": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "draft_ref_id": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "draft_revision": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "expires_on_source_change": [
+            "integer",
+            1,
+            "1",
+            0,
+            0
+          ],
+          "handling_mode": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "handoff_id": [
+            "text",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "intent": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "missing_fields_json": [
+            "text",
+            1,
+            "'[]'",
+            0,
+            0
+          ],
+          "module": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "prefill_keys_json": [
+            "text",
+            1,
+            "'[]'",
+            0,
+            0
+          ],
+          "return_destination_key": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "return_focus_ref": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "revision": [
+            "integer",
+            1,
+            "1",
+            0,
+            0
+          ],
+          "source_turn_id": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "subject_refs_json": [
+            "text",
+            1,
+            "'[]'",
+            0,
+            0
+          ],
+          "target_revision": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "task_id": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "updated_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ],
+          "work_item_id": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [
+          [
+            "workspace_ai_tasks",
+            "task_id",
+            "task_id",
+            "NO ACTION",
+            "CASCADE"
+          ]
+        ],
+        "unique_constraints": [
+          [
+            [
+              "adoption_id"
+            ],
+            0
+          ],
+          [
+            [
+              "handoff_id"
+            ],
+            0
+          ],
+          [
+            [
+              "task_id",
+              "work_item_id"
+            ],
+            0
+          ]
+        ]
+      },
+      "workspace_ai_tasks": {
+        "checks": [
+          "cancel_requested in (0, 1)",
+          "dispatch_evidence in ( 'not_started', 'may_have_started', 'response_persisted' )",
+          "length(model_destination_fingerprint) = 64",
+          "length(request_fingerprint) = 64",
+          "module in ('teaching_prep', 'class_teacher')",
+          "phase in ( 'prepared', 'queued', 'claimed', 'send_attempt_reserved', 'validating', 'handoff_ready', 'finished' )",
+          "progress >= 0 and progress <= 1",
+          "revision >= 1",
+          "send_attempt_count in (0, 1)",
+          "status in ( 'prepared', 'queued', 'running', 'needs_input', 'proposal_ready', 'failed_before_dispatch', 'failed', 'result_unknown', 'invalid_result', 'cancelled_before_dispatch', 'discarded' )",
+          "trim(operation_id) <> ''",
+          "trim(prompt_contract_version) <> ''",
+          "trim(return_target) <> ''",
+          "trim(source_kind) <> ''",
+          "trim(source_ref_id) <> ''",
+          "trim(source_revision) <> ''",
+          "trim(task_id) <> ''",
+          "trim(task_kind) <> ''"
+        ],
+        "columns": {
+          "cancel_requested": [
+            "integer",
+            1,
+            "0",
+            0,
+            0
+          ],
+          "context_refs_json": [
+            "text",
+            1,
+            "'[]'",
+            0,
+            0
+          ],
+          "created_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ],
+          "dispatch_evidence": [
+            "text",
+            1,
+            "'not_started'",
+            0,
+            0
+          ],
+          "error_code": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "finished_at": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "job_id": [
+            "integer",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "model_destination_fingerprint": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "module": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "operation_id": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "phase": [
+            "text",
+            1,
+            "'prepared'",
+            0,
+            0
+          ],
+          "progress": [
+            "real",
+            1,
+            "0",
+            0,
+            0
+          ],
+          "prompt_contract_version": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "proposal_ref_id": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "proposal_revision": [
+            "text",
+            0,
+            "none",
+            0,
+            0
+          ],
+          "request_fingerprint": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "return_target": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "revision": [
+            "integer",
+            1,
+            "1",
+            0,
+            0
+          ],
+          "send_attempt_count": [
+            "integer",
+            1,
+            "0",
+            0,
+            0
+          ],
+          "source_kind": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "source_ref_id": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "source_revision": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "status": [
+            "text",
+            1,
+            "'prepared'",
+            0,
+            0
+          ],
+          "task_id": [
+            "text",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "task_kind": [
+            "text",
+            1,
+            "none",
+            0,
+            0
+          ],
+          "updated_at": [
+            "text",
+            1,
+            "datetime('now','localtime')",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [
+          [
+            "jobs",
+            "job_id",
+            "id",
+            "NO ACTION",
+            "NO ACTION"
+          ]
+        ],
+        "unique_constraints": [
+          [
+            [
+              "job_id"
+            ],
+            0
+          ],
+          [
+            [
+              "operation_id"
+            ],
+            0
+          ],
+          [
+            [
+              "task_id"
+            ],
+            0
+          ]
+        ]
+      }
+    }
+  }
+}

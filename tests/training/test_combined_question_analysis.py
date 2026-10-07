@@ -101,6 +101,97 @@ def test_v8_import_prompt_and_source_hash_remain_compatible() -> None:
     assert normalize_question_type_result(old, raw) == raw
 
 
+def test_question_content_identity_is_shared_and_excludes_storage_and_layout() -> None:
+    from question_bank.training_criteria.analysis import solution_evidence_source_content_hash
+    from question_bank.services.standard_difficulty import question_content_fingerprint
+
+    image = QuestionAnalysisImage(role="question", mime_type="image/png", content=b"TEST-image")
+    original = replace(_question(1, has_images=True, images=(image,)),
+        tagging_context=replace(_question(1).tagging_context,
+            question_text="给定 $x \\text{a b}$ [[IMAGE:old/image.png]]", has_images=True),
+        rich_question_blocks=({"text": "补充作答要求", "style": "old", "version": 2},),
+        reference_solution={"text": "用等式性质求解", "source_segments": [], "rich_blocks": [],
+                            "trust_level": "source_extracted", "source_kind": "answer"})
+    moved = replace(original, question_id=2, taxonomy_contract={},
+        question_type_confirmed=True,
+        tagging_context=replace(original.tagging_context,
+            question_text="给定 $x \\text{a b}$ [[IMAGE:new/image.png]]", question_number="99",
+            curriculum_volume_id="TEST-other-volume", grade="TEST-grade",
+            existing_tags=["TEST-tag"], evidence_parts=[{"part_id": "TEST-derived"}]),
+        rich_question_blocks=({"text": "补充作答要求", "style": "new", "version": 3,
+                               "image_relationships": {"rId1": "new/image.png"}},))
+    identity = original.source_content_hash
+    assert moved.source_content_hash == identity
+    assert original.criterion_source_content_hash == identity
+    assert solution_evidence_source_content_hash(original) == identity
+    assert question_content_fingerprint(original) == identity
+    assert replace(original, reference_solution={**original.reference_solution,
+        "trust_level": "teacher_confirmed", "source_kind": "teacher"}).source_content_hash == identity
+    second_image = QuestionAnalysisImage(role="question", mime_type="image/png", content=b"TEST-second")
+    ordered = replace(original, images=(image, second_image))
+    assert replace(ordered, images=(second_image, image)).source_content_hash != ordered.source_content_hash
+    for changed in (
+        replace(original, tagging_context=replace(original.tagging_context, answer_text="x=2")),
+        replace(original, tagging_context=replace(original.tagging_context, question_type="填空题")),
+        replace(original, tagging_context=replace(original.tagging_context,
+            question_text="给定 $x \\text{ab}$ [[IMAGE:old/image.png]]")),
+        replace(original, images=(QuestionAnalysisImage(role="question", mime_type="image/png",
+                                                        content=b"TEST-changed-image"),)),
+        replace(original, rich_question_blocks=({"text": "补充不同作答要求"},)),
+        replace(original, reference_solution={**original.reference_solution, "text": "改用不同依据"}),
+    ):
+        assert changed.source_content_hash != identity
+
+
+def test_content_identity_preserves_word_formulas_and_table_semantics() -> None:
+    xml = ('<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+           'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
+           '<w:pPr><w:jc w:val="left"/></w:pPr><m:oMath><m:r><w:rPr><w:b/></w:rPr>'
+           '<m:t>x + 1</m:t></m:r></m:oMath></w:p>')
+    original = replace(_question(1), word_question_blocks=({"text": "相同提取文字", "xml": xml},))
+    layout = replace(original, word_question_blocks=({"text": "相同提取文字",
+        "xml": xml.replace('w:val="left"', 'w:val="center"').replace("<w:b/>", "<w:i/>"),},))
+    changed = replace(original, word_question_blocks=({"text": "相同提取文字",
+        "xml": xml.replace("x + 1", "x + 2"),},))
+    assert layout.source_content_hash == original.source_content_hash
+    assert changed.source_content_hash != original.source_content_hash
+    native = ('<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+              '<w:r><w:t>原文字</w:t></w:r></w:p>')
+    original = replace(original, word_question_blocks=({"text": "原文字", "xml": native},))
+    changed = replace(original, word_question_blocks=({"text": "原文字",
+        "xml": native.replace("原文字", "修改后文字"),},))
+    assert changed.source_content_hash != original.source_content_hash
+    table = ('<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+             '<w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>'
+             '<w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>')
+    original = replace(original, word_question_blocks=({"text": "相同提取文字", "xml": table},))
+    changed = replace(original, word_question_blocks=({"text": "相同提取文字",
+        "xml": table.replace("<w:t>A</w:t>", "<w:t>C</w:t>"),},))
+    assert changed.source_content_hash != original.source_content_hash
+
+
+def test_supported_stored_source_hashes_are_accepted_only_for_unchanged_content() -> None:
+    from question_bank.training_criteria.analysis import source_content_hash_matches
+
+    question = _question(1)
+    stored = {
+        "tag": ("076ad0923f0cece31309d7eea41d35f876e2e67b2ae429875ea0e2d5550bd365",
+                "8448295e74be2c25cf76efddcf9c7af995f128a6657daa6a12cff49596e6bfee"),
+        "training_criteria": ("c5bd16ebc5eb137f2de671d3555677a4588f830b841922c14d99099015a09f56",),
+        "solution_evidence": ("e5f583c371a720969f6e0d5544c77742cca4cbade66910264667556c31eaefd6",),
+    }
+    changed = replace(question, tagging_context=replace(question.tagging_context, answer_text="x=2"))
+    for kind, hashes in stored.items():
+        assert source_content_hash_matches(question, question.source_content_hash, kind=kind)
+        for fingerprint in hashes:
+            assert source_content_hash_matches(question, fingerprint, kind=kind)
+            assert source_content_hash_matches(
+                replace(question, question_type_confirmed=not question.question_type_confirmed),
+                fingerprint, kind=kind,
+            )
+            assert not source_content_hash_matches(changed, fingerprint, kind=kind)
+
+
 @pytest.mark.parametrize("changes", [
     {"primary_type_id": "kp_bnu24_math_g8_upper_1_2_t06"},
     {"primary_type_id": "模型新造题型"},

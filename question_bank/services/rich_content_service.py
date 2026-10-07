@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 from pathlib import Path
 
 from docx.oxml import parse_xml
 from docx.oxml.ns import qn
+from lxml.etree import XMLSyntaxError
 
 from question_bank.database.paths import project_data_root
 from question_bank.services.file_cache import cached_parsed_file, file_is_file
 
-LOGGER = logging.getLogger(__name__)
 RICH_CONTENT_VERSION = 3
 _QUESTION_SECTION_HEADING = re.compile(
     r"^\s*(?:[一二三四五六七八九十]+|\d+)\s*[、.．]\s*"
@@ -165,30 +164,86 @@ def save_question_rich_content(
     return output_path
 
 
-def _parse_rich_content(path: Path) -> dict[str, object] | None:
+class RichContentReadError(ValueError):
+    """An existing sidecar cannot supply the supported content structure."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def _parse_rich_content(path: Path) -> dict[str, object]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        LOGGER.exception("Unable to load rich question content sidecar %s", path)
-        return None
-    if not isinstance(payload, dict):
-        return None
-    if int(payload.get("version") or 0) != RICH_CONTENT_VERSION:
-        return None
-    question_blocks = payload.get("question_blocks")
-    if isinstance(question_blocks, list):
-        payload["question_blocks"] = clean_question_blocks(
-            [item for item in question_blocks if isinstance(item, dict)]
-        )
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except OSError as exc:
+        raise RichContentReadError("rich_content_unreadable") from exc
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise RichContentReadError("rich_content_invalid_json") from exc
+    if not isinstance(payload, dict) or not any(
+        key in payload for key in ("question_blocks", "answer_blocks")
+    ):
+        raise RichContentReadError("rich_content_unknown_structure")
+    for key in ("question_blocks", "answer_blocks"):
+        blocks = payload.get(key, [])
+        if not isinstance(blocks, list):
+            raise RichContentReadError("rich_content_invalid_blocks")
+        normalized: list[dict[str, object]] = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                raise RichContentReadError("rich_content_invalid_blocks")
+            text = block.get("text", "")
+            xml = block.get("xml", "")
+            relationships = block.get("image_relationships", {})
+            if (
+                not isinstance(text, str)
+                or not isinstance(xml, str)
+                or not isinstance(relationships, dict)
+                or any(
+                    not isinstance(name, str) or not isinstance(source, str)
+                    for name, source in relationships.items()
+                )
+                or not any(name in block for name in ("text", "xml", "image_relationships"))
+            ):
+                raise RichContentReadError("rich_content_invalid_blocks")
+            if xml.strip():
+                try:
+                    element = parse_xml(xml.encode("utf-8"))
+                except (XMLSyntaxError, UnicodeError) as exc:
+                    raise RichContentReadError("rich_content_invalid_xml") from exc
+                if element.tag not in {qn("w:p"), qn("w:tbl")}:
+                    raise RichContentReadError("rich_content_unknown_structure")
+            normalized.append({**block, "text": text})
+        payload[key] = clean_question_blocks(normalized) if key == "question_blocks" else normalized
     return payload
 
 
-def load_question_rich_content(question_id: int, root: str | Path | None = None) -> dict[str, object] | None:
+def load_question_rich_content(
+    question_id: int,
+    root: str | Path | None = None,
+    *,
+    strict: bool = False,
+) -> dict[str, object] | None:
     path = rich_content_path(question_id, root)
-    if not file_is_file(path):
+    try:
+        if not file_is_file(path):
+            return None
+        # Format metadata does not decide whether the supported blocks can be read.
+        payload = cached_parsed_file(path, _parse_rich_content)
+        stored_id = payload.get("question_id")
+        if stored_id is not None and (
+            isinstance(stored_id, bool)
+            or str(stored_id) != str(int(question_id))
+        ):
+            raise RichContentReadError("rich_content_question_mismatch")
+        return payload
+    except OSError as exc:
+        if strict:
+            raise RichContentReadError("rich_content_unreadable") from exc
         return None
-    # Callers treat the payload as read-only, so the parsed value can be shared.
-    return cached_parsed_file(path, _parse_rich_content)
+    except RichContentReadError:
+        if strict:
+            raise
+        return None
 
 
 def is_question_rich_content_current(question_id: int, root: str | Path | None = None) -> bool:
@@ -196,6 +251,7 @@ def is_question_rich_content_current(question_id: int, root: str | Path | None =
 
 
 __all__ = [
+    "RichContentReadError",
     "clean_question_blocks",
     "is_question_rich_content_current",
     "load_question_rich_content",

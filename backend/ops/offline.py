@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sqlite3
@@ -9,6 +10,7 @@ import time
 import zipfile
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from path_manager import get_path_manager
@@ -22,7 +24,7 @@ from .database_validation import (
     validate_live_databases,
     validate_staged_databases,
 )
-from .jobs import create_safety_backup
+from .jobs import create_safety_backup, run_ops_migration_prepare_job
 from .journal import OpsJournalInvalid, OpsOperationJournal, OpsOperationManifest
 from .lock import OpsLockBusy, OpsOperationLock
 from .plan_store import OpsPlanStore
@@ -35,6 +37,35 @@ class _QuietLogger:
 
     def error(self, *_args: Any, **_kwargs: Any) -> None:
         return None
+
+
+def apply_confirmed_migrations(*, paths: Any) -> dict[str, object]:
+    """Apply an explicitly requested offline update through protected maintenance."""
+    journal = OpsOperationJournal(Path(paths.ops_state_dir))
+    if journal.pending_exists():
+        raise OpsLockBusy("another protected operation is pending")
+    service = OpsWriteService(paths, plan_store=OpsPlanStore())
+    preflight = service.preflight(SimpleNamespace(operation="migration", target="all"))
+    pending = int(preflight["summary"]["pending_migrations"])
+    if pending == 0:
+        return {"status": "current", "migrations_applied": 0}
+    plan = service.consume_plan(str(preflight["confirmation_token"]))
+    payload = service.build_job_payload(plan)
+    context = SimpleNamespace(
+        payload=payload,
+        raise_if_cancelled=lambda: None,
+        report=lambda *_args: None,
+    )
+    run_ops_migration_prepare_job(context=context, paths=paths)
+    apply_pending_operation(paths=paths)
+    record = journal.load_public(str(payload["operation_id"]))
+    return {
+        "status": record["status"],
+        "result_code": record["result_code"],
+        "operation_id": payload["operation_id"],
+        "backup_path": str(Path(paths.backups_dir) / str(record["recovery"]["backup_filename"])),
+        "migrations_applied": pending if record["status"] == "applied" else 0,
+    }
 
 
 def apply_pending_operation(*, paths: Any) -> int:
@@ -507,9 +538,15 @@ def _replace_with_retry(source: Path, target: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Apply a prepared protected operation")
-    parser.add_argument("--apply-pending", action="store_true", required=True)
-    parser.parse_args(argv)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--apply-pending", action="store_true")
+    action.add_argument("--apply-confirmed-migrations", action="store_true")
+    args = parser.parse_args(argv)
     try:
+        if args.apply_confirmed_migrations:
+            result = apply_confirmed_migrations(paths=get_path_manager())
+            print(json.dumps(result, ensure_ascii=True))
+            return 0 if result["status"] in {"current", "applied"} else 2
         return apply_pending_operation(paths=get_path_manager())
     except Exception:
         return 2
@@ -519,4 +556,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["apply_pending_operation", "main"]
+__all__ = ["apply_confirmed_migrations", "apply_pending_operation", "main"]

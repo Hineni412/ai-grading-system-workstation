@@ -7,6 +7,8 @@
 - 文档和设置：检查内容、格式与引用；项目文档检查入口为 `tools/check_documentation.py`，不因此启动业务应用或执行完整业务测试。
 - 文案与布局：检查相关页面、显示效果和受影响操作，不默认新写自动测试。
 - 功能修复：重现并重走原操作，选择能覆盖实际故障的现有测试；需要回归保护时优先扩展现有测试，新增顺序见 `AGENTS.md` 收尾一节。
+- 题库格式与当前依据：复用 `tests/test_question_bank_importer.py`、`tests/test_question_bank_read_cache.py`、`tests/test_api_question_bank_routes.py` 和联合分析、判定版本、个性化推荐、训练卷的现有测试。核对旧格式实际入口、Word 公式与表格、正文和图片文件变化、不同资料目录、逐题失败隔离、同时间多版本选择、教师确认及编辑保护、读取不新增并行模型正文、已发卷快照和新进程缓存恢复。兼容旧摘要必须同时覆盖正文真正改变后拒绝复用。
+- 数据库当前结构与升级协调：复用 `tests/test_schema_baseline.py`、`tests/test_migration_tooling.py`、`tests/test_p3_11_schema_version_gate.py`、`tests/test_make_update_package.py`、`tests/test_ops_jobs.py` 和 `tests/test_ops_offline.py`。检查空库直接初始化、当前库不读历史 SQL、历史前缀仍严格校验、异常记录不盖成功标记、两库失败恢复及代码回退范围；用 `tools/generate_schema_baseline.py --check` 核对生成定义。合成回归不代替实际旧机升级和完整安装包验收。
 - 评分、组卷、推荐、保存与性能：对照独立的预期结果；涉及保存时检查重新进入，性能变化比较同等输入的前后测量。
 - 后端读取性能：`test_request_read_connections` 覆盖捕获期间两库提交、有限重试与资源关闭；`test_api_training_routes` 覆盖任务元数据不使学情失效、有关输入刷新和解析缓存容量。`test_assembly_assistant` 核对每题资料请求内复用及来源变化不发布起草；`test_analysis_report` 核对修订输入共用、单人读取范围及跨考试并发。推荐原有小组采用用例同时核对固定成员读取和保存都不重新自动分组。
 - 代理决定测试位置；用户确认业务预期，不必确认内部接口。已授权实现范围内，隔离本地测试可执行、修复并复跑受影响项。

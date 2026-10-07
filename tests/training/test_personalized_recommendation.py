@@ -2890,6 +2890,8 @@ def test_recent_originals_follow_purpose_in_generation_preview_and_edit(direct_m
 
     # A later marked activity cannot change either stored exclusion snapshot.
     _record_legacy_training(direct_module, (1001,), name="SYN-LATER", occurred_at="2026-07-31")
+    with connect(direct_module.db_path) as conn:
+        conn.execute("UPDATE questions SET updated_at='2099-01-01 00:00:00'")
     for purpose, request in requests.items():
         assert direct_module._request_recent(request, ("A", "B")) == {
             sid: set(ids) for sid, ids in request["recent_question_ids"].items()}

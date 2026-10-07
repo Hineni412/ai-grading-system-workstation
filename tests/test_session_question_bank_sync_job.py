@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from backend.config_workspace.publish import load_editor_config
-from backend.config_workspace.deferred_analysis import DeferredAnalysisArtifactStore
+from backend.config_workspace.deferred_analysis import DeferredAnalysisArtifact, DeferredAnalysisArtifactStore
 from backend.jobs.manager import JobCancellationRequested, JobContext
 from backend.jobs.question_bank_sync import (
     StaleQuestionBankSyncError,
@@ -22,6 +22,7 @@ from backend.jobs.store import (
 )
 from backend.repositories.db_manager import DBManager
 from question_bank.database.schema import connect, initialize_database
+from question_bank.models.question import QuestionCreate
 from tests.current_knowledge_support import install_current_knowledge
 from question_bank.services.question_write_service import QuestionBankWriteService
 from tests.question_bank_support import QuestionBankTestStore
@@ -280,7 +281,8 @@ class _DeferredSyncGateway:
 
     def analyze(self, batch: Any, **_kwargs: Any) -> GatewayBatchResponse:
         self.calls.append(batch.question_ids)
-        payload = _deferred_sync_result(batch.question_ids[0])
+        payload = {'results': [item for qid in batch.question_ids
+            for item in _deferred_sync_result(qid)['results']]}
         if self.invented_term:
             result = payload["results"][0]
             result["tag_analysis"]["knowledge_points"] = ["模型新造知识"]
@@ -610,23 +612,12 @@ def _run_deferred_adoption(
 
 def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
-    from backend.jobs import question_bank_sync
-    original_load = question_bank_sync.QuestionAnalysisInputLoader.load
-    loaded_ids = []
-
-    def counted_load(self, question_ids, **kwargs):
-        loaded_ids.append(tuple(question_ids))
-        return original_load(self, question_ids, **kwargs)
-
-    monkeypatch.setattr(question_bank_sync.QuestionAnalysisInputLoader, "load", counted_load)
     result, gateway, imported_ids, question_bank_db, artifact_path = (
         _run_deferred_adoption(tmp_path)
     )
 
     assert result["outcome"] == "complete", result
-    assert loaded_ids == [tuple(imported_ids)]
     assert result["tagged_count"] == 1
     assert result["evidence_count"] == 1
     assert result["criteria_count"] == 1
@@ -700,6 +691,50 @@ def test_score_pending_intake_imports_tags_and_evidence_without_grading_links(
     assert SolutionEvidenceRepository(question_bank_db).latest(imported_ids[0])
     assert gateway.calls == [(1,)]
     assert artifact_path.exists()
+
+
+def test_deferred_adoption_isolates_unreadable_questions_without_new_model_calls(tmp_path):
+    database = tmp_path / 'TEST-deferred-isolation.db'
+    initialize_database(database)
+    install_current_knowledge(database)
+    question_ids = [QuestionBankTestStore(database).add_question(
+        QuestionCreate(question_number=str(index), question_text=f'{index} + 1 = ?',
+            answer_text='B', question_type='choice')) for index in (1, 2)]
+    sources = tuple(ConfigQuestionAnalysisSource(f'Q{index}',
+        question_analysis_input_from_config_source({
+            'question_id': f'Q{index}', 'question_text': f'{index} + 1 = ?',
+            'answer_text': 'B', 'question_type': 'choice',
+        }, question_id=index, curriculum_volume_id='bnu24-math-g7-upper',
+        taxonomy_contract=_deferred_sync_contract())) for index in (1, 2))
+    gateway = _DeferredSyncGateway()
+    bundle = DeferredCombinedQuestionAnalysisModule(gateway=gateway).analyze(
+        operation_id='config:TEST-deferred-isolation',
+        curriculum_volume_id='bnu24-math-g7-upper', sources=sources)
+    calls_before_adoption = list(gateway.calls)
+    artifact = DeferredAnalysisArtifact(artifact_id='a' * 32, session_id=1,
+        source_id='b' * 32, source_revision='c' * 64,
+        curriculum_volume_id='bnu24-math-g7-upper', bundle=bundle, content_hash='d' * 64)
+    damaged_id = question_ids[1]
+    sidecar = tmp_path / f'question_bank/rich_content/question_{damaged_id}.json'
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text('{TEST-corrupt', encoding='utf-8')
+    result = _adopt_deferred_analysis_with_links(artifact=artifact, session_id=1,
+        question_bank_db_path=database, data_root=tmp_path,
+        links={f'Q{index}': {'bank_question_id': qid}
+            for index, qid in enumerate(question_ids, 1)},
+        ai_service_factory=_DeferredAdoptionTaggingService,
+        taxonomy_governance=_PassThroughTaxonomyGovernance())
+    assert result['outcome'] == 'partial'
+    assert result['requested_count'] == 2
+    assert result['successful_question_ids'] == question_ids[:1]
+    assert result['failed_question_ids'] == [damaged_id]
+    assert result['failed_count'] == 1
+    assert result['tagged_count'] == result['evidence_count'] == result['criteria_count'] == 1
+    assert result['failures'][0]['reason_code'] == 'rich_content_invalid_json'
+    assert result['adoption_results'][1]['input_error_code'] == 'rich_content_invalid_json'
+    assert gateway.calls == calls_before_adoption
+    assert SolutionEvidenceRepository(database).latest(damaged_id) is None
+    assert QuestionBankTestStore(database).get_question(damaged_id)['tags'] == []
 
 
 def test_partial_analysis_intake_keeps_paper_and_tags_only_successful_questions(

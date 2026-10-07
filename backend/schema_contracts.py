@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -120,50 +122,116 @@ def _check_expressions(create_sql: str) -> tuple[str, ...]:
     return tuple(sorted(checks))
 
 
-def _schema_objects(db_path: Path) -> dict[tuple[str, str], str]:
-    with closing(sqlite3.connect(db_path)) as connection:
-        rows = connection.execute(
-            "SELECT type, name, sql FROM sqlite_master "
-            "WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' "
-            "AND name != 'schema_migrations' AND type IN ('index', 'trigger')"
-        ).fetchall()
+def _schema_objects(connection: sqlite3.Connection) -> dict[tuple[str, str], str]:
+    rows = connection.execute(
+        "SELECT type, name, sql FROM sqlite_master "
+        "WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' "
+        "AND name != 'schema_migrations' AND type IN ('index', 'trigger')"
+    ).fetchall()
     return {
         (str(type_), str(name)): _normalized_sql(sql)
         for type_, name, sql in rows
     }
 
 
-def schema_signature(db_path: Path) -> dict[str, object]:
-    with closing(sqlite3.connect(db_path)) as connection:
-        tables: dict[str, object] = {}
-        for table_name in _table_names(connection):
-            create_row = connection.execute(
-                "SELECT sql FROM sqlite_master "
-                "WHERE type = 'table' AND name = ?",
-                (table_name,),
-            ).fetchone()
-            tables[table_name] = {
-                "columns": _column_snapshot(connection, table_name),
-                "foreign_keys": _foreign_key_snapshot(
-                    connection,
-                    table_name,
-                ),
-                "unique_constraints": _unique_constraint_snapshot(
-                    connection,
-                    table_name,
-                ),
-                "checks": _check_expressions(
-                    str(create_row[0] if create_row else "")
-                ),
-            }
+def _schema_signature(connection: sqlite3.Connection) -> dict[str, object]:
+    tables: dict[str, object] = {}
+    for table_name in _table_names(connection):
+        create_row = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        tables[table_name] = {
+            "columns": _column_snapshot(connection, table_name),
+            "foreign_keys": _foreign_key_snapshot(connection, table_name),
+            "unique_constraints": _unique_constraint_snapshot(connection, table_name),
+            "checks": _check_expressions(str(create_row[0] if create_row else "")),
+        }
     return {
         "tables": tables,
-        "indexes_and_triggers": _schema_objects(db_path),
+        "indexes_and_triggers": _schema_objects(connection),
     }
+
+
+def schema_signature(db_path: Path) -> dict[str, object]:
+    with closing(sqlite3.connect(db_path)) as connection:
+        return _schema_signature(connection)
 
 
 def schemas_equivalent(left_db: Path, right_db: Path) -> bool:
     return schema_signature(left_db) == schema_signature(right_db)
 
 
-__all__ = ["schema_signature", "schemas_equivalent"]
+def schema_signature_document(
+    db_path: Path,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, object]:
+    signature = _schema_signature(connection) if connection is not None else schema_signature(db_path)
+    tables = {
+        name: {
+            "columns": {column: list(values) for column, values in table["columns"].items()},
+            "foreign_keys": sorted(list(values) for values in table["foreign_keys"]),
+            "unique_constraints": sorted(
+                [list(columns), partial] for columns, partial in table["unique_constraints"]
+            ),
+            "checks": list(table["checks"]),
+        }
+        for name, table in signature["tables"].items()
+    }
+    return {
+        "tables": tables,
+        "indexes_and_triggers": [
+            [kind, name, sql]
+            for (kind, name), sql in sorted(signature["indexes_and_triggers"].items())
+        ],
+    }
+
+
+def current_schema_contract_path(target: str) -> Path:
+    if target not in {"grading", "question_bank"}:
+        raise ValueError("unsupported database target")
+    return Path(__file__).resolve().parent / "current_schema" / f"{target}.json"
+
+
+@dataclass(frozen=True)
+class CurrentSchemaContract:
+    migration_checksums: tuple[tuple[str, str], ...]
+    signature: dict[str, object]
+    creation_statements: tuple[str, ...]
+
+
+def load_current_schema_contract(target: str) -> CurrentSchemaContract | None:
+    if target not in {"grading", "question_bank"}:
+        return None
+    contract = json.loads(current_schema_contract_path(target).read_text(encoding="utf-8"))
+    if not isinstance(contract, dict) or not isinstance(contract.get("schema"), dict):
+        raise ValueError("current schema contract is invalid")
+    recorded = contract.get("migration_checksums")
+    statements = contract.get("creation_statements")
+    if not isinstance(recorded, list) or not recorded or any(
+        not isinstance(item, list) or len(item) != 2
+        or any(not isinstance(value, str) or not value for value in item)
+        for item in recorded
+    ):
+        raise ValueError("current schema migration metadata is invalid")
+    if not isinstance(statements, list) or not statements or any(
+        not isinstance(item, str) or not item.strip() for item in statements
+    ):
+        raise ValueError("current schema creation statements are invalid")
+    migrations = tuple((item[0], item[1]) for item in recorded)
+    names = tuple(item[0] for item in migrations)
+    if names != tuple(sorted(set(names))):
+        raise ValueError("current schema migration metadata has a gap or duplicate")
+    return CurrentSchemaContract(migrations, contract["schema"], tuple(statements))
+
+
+__all__ = [
+    "current_schema_contract_path",
+    "CurrentSchemaContract",
+    "load_current_schema_contract",
+    "schema_signature",
+    "schema_signature_document",
+    "schemas_equivalent",
+]

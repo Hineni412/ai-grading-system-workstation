@@ -821,7 +821,9 @@ def reusable_analysis(
     if not latest or str(latest.get("status")) not in _USABLE_STATUSES:
         return None
     canonical = QuestionAnalysisInputLoader(db_path=database, data_root=Path(data_root)).load((int(bank_question_id),))
-    if not canonical or str(latest.get("source_content_hash") or "") != solution_evidence_source_content_hash(canonical[0]):
+    from question_bank.training_criteria.analysis import source_content_hash_matches
+    if not canonical or not source_content_hash_matches(
+            canonical[0], str(latest.get("source_content_hash") or ""), kind="solution_evidence"):
         return None
     if answers_conflict(canonical[0].tagging_context.answer_text,
                         target_question.tagging_context.answer_text, data_root=Path(data_root)):
@@ -1027,7 +1029,7 @@ def copy_duplicate_analysis(
                             for row in feature_rows
                         ],
                         content_fingerprint=standard_difficulty.question_content_fingerprint(
-                            dict(target_row)
+                            target_input
                         ),
                         model_name=str(feature_rows[0]["model_name"] or "") or None,
                     )
@@ -1060,7 +1062,9 @@ def _copy_evidence(
 ) -> bool:
     repository = SolutionEvidenceRepository(db_path)
     target_latest = repository.latest(int(target_input.question_id))
-    if target_latest and target_latest.get("status") in _USABLE_STATUSES and target_latest.get("source_content_hash") == solution_evidence_source_content_hash(target_input):
+    from question_bank.training_criteria.analysis import source_content_hash_matches
+    if target_latest and target_latest.get("status") in _USABLE_STATUSES and source_content_hash_matches(
+            target_input, str(target_latest.get("source_content_hash") or ""), kind="solution_evidence"):
         return True
     latest = repository.latest(int(source_input.question_id))
     if not latest or str(latest.get("status")) not in _USABLE_STATUSES:
@@ -1071,7 +1075,7 @@ def _copy_evidence(
     # Only reuse evidence that still matches the source question's current
     # content; a stale analysis must not leak onto the new question.
     source_hash = solution_evidence_source_content_hash(source_input)
-    if str(latest.get("source_content_hash") or "") != source_hash:
+    if not source_content_hash_matches(source_input, str(latest.get("source_content_hash") or ""), kind="solution_evidence"):
         return False
     clean = _model_evidence_payload(payload)
     model_payload = {
@@ -1104,7 +1108,9 @@ def _copy_criteria(
         current = conn.execute("""SELECT v.status,v.source_content_hash,v.quality_status FROM training_criterion_heads h
             JOIN training_criterion_versions v ON v.version_id=h.current_version_id WHERE h.question_id=?""",
             (int(target_input.question_id),)).fetchone()
-    if current and current["status"] in _USABLE_STATUSES and current["quality_status"] == "passed" and current["source_content_hash"] == target_input.criterion_source_content_hash:
+    from question_bank.training_criteria.analysis import source_content_hash_matches
+    if current and current["status"] in _USABLE_STATUSES and current["quality_status"] == "passed" and source_content_hash_matches(
+            target_input, str(current["source_content_hash"]), kind="training_criteria"):
         return True
     with connect(db_path) as conn:
         row = conn.execute(

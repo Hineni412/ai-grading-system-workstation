@@ -22,7 +22,7 @@ from question_bank.taxonomy.governance import get_taxonomy_governance
 from question_bank.training_criteria import QuestionAnalysisInputLoader
 
 from .manager import JobContext
-from .tagging_sync import _load_analysis_gaps, _load_tag_source_currentness, _load_tagging_candidates
+from .tagging_sync import _failure, _load_analysis_gaps, _load_tag_source_currentness, _load_tagging_candidates
 
 
 def _skill_candidate_state_token() -> tuple[object, ...]:
@@ -83,15 +83,9 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
     if not ids:
         return _preview(volume_id, kind, [], [])
     loader = QuestionAnalysisInputLoader(db_path=db, data_root=root)
-    try:
-        inputs = {q.question_id: q for q in loader.load(ids, curriculum_volume_id=volume_id)}
-    except (KeyError, OSError, TypeError, ValueError):
-        inputs = {}
-        for qid in ids:
-            try:
-                inputs[qid] = loader.load([qid], curriculum_volume_id=volume_id)[0]
-            except (KeyError, OSError, TypeError, ValueError):
-                pass
+    load_failures: dict[int, str] = {}
+    inputs = {q.question_id: q for q in loader.load(ids,
+        curriculum_volume_id=volume_id, load_failures=load_failures)}
     gaps = _load_analysis_gaps(db, ids, current_inputs=inputs, data_root=root,
                                curriculum_volume_id=volume_id)
     _, tag_complete, _ = _load_tagging_candidates(db, ids, curriculum_volume_id=volume_id, require_difficulty=True)
@@ -123,7 +117,9 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
             continue
         row = rows[qid]
         blocked = ''
-        if qid not in inputs or not inputs[qid].has_required_images:
+        if qid in load_failures:
+            blocked = str(_failure(qid, 'validation', reason_code=load_failures[qid])['message'])
+        elif qid not in inputs or not inputs[qid].has_required_images:
             blocked = '题目内容或图片无法读取，请先检查原题'
         elif not snapshot['release']:
             blocked = '当前技能标准不可用'
@@ -131,6 +127,8 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
             blocked = '教师已确认关联，请打开题目人工核对'
         item = {'id': qid, 'question_number': str(row['question_number']), 'paper_title': row['paper_title'],
                 'missing': missing, 'blocked_reason': blocked}
+        if qid in load_failures:
+            item['blocked_reason_code'] = load_failures[qid]
         # Internal revision has no question body and is never returned in job diagnostics.
         revision = [dict(row), heads.get(qid), profile.get('evidence_version_id'),
                     inputs[qid].source_content_hash if qid in inputs else '', snapshot['release']]

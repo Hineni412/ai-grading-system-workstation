@@ -5,7 +5,7 @@ import mimetypes
 import re
 import sqlite3
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from pathlib import Path
@@ -34,6 +34,7 @@ from question_bank.services.asset_path_service import (
 from question_bank.services.file_cache import batch_file_reads, cached_file_bytes, file_is_file
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.rich_content_service import (
+    RichContentReadError,
     load_question_rich_content,
 )
 from question_bank.solution_evidence.repository import (
@@ -505,6 +506,7 @@ class QuestionAnalysisInputLoader:
         *,
         taxonomy_contracts: Mapping[int, Mapping[str, Any]] | None = None,
         curriculum_volume_id: str | None = None,
+        load_failures: MutableMapping[int, str] | None = None,
     ) -> tuple[QuestionAnalysisInput, ...]:
         ids = tuple(dict.fromkeys(int(value) for value in question_ids))
         if not ids or any(value <= 0 for value in ids):
@@ -536,16 +538,15 @@ class QuestionAnalysisInputLoader:
                 """,
                 ids,
             ).fetchall()
+            evidence_parts_by_id = load_evidence_parts_for_tagging(
+                self.db_path, ids, connection=connection,
+            )
         special_types_by_id: dict[int, list[str]] = {}
         for tag_row in special_type_rows:
             bucket = special_types_by_id.setdefault(int(tag_row["question_id"]), [])
             tag_value = str(tag_row["tag_value"] or "").strip()
             if tag_value and tag_value not in bucket:
                 bucket.append(tag_value)
-        # 新口径的整题 part_features 必须用当前判定点版本的 part_id。
-        evidence_parts_by_id = load_evidence_parts_for_tagging(
-            self.db_path, ids
-        )
         by_id = {int(row["id"]): row for row in rows}
         # SQLite reads remain on the caller's thread, including when an
         # external transaction was supplied. Only immutable rows and local
@@ -557,6 +558,7 @@ class QuestionAnalysisInputLoader:
             rich = load_question_rich_content(
                 question_id,
                 root=self.data_root / "question_bank" / "rich_content",
+                strict=True,
             ) or {}
             question_blocks = _safe_blocks(rich.get("question_blocks"))
             answer_blocks = _safe_blocks(rich.get("answer_blocks"))
@@ -650,12 +652,40 @@ class QuestionAnalysisInputLoader:
                     (taxonomy_contracts or {}).get(question_id, {})
                 ),
             )
+        def try_load_one(question_id: int) -> QuestionAnalysisInput | tuple[int, str]:
+            if load_failures is not None:
+                row = by_id.get(question_id)
+                if row is None or bool(row["is_deleted"]):
+                    return question_id, "question_not_found"
+                if not str(row["question_text"] or "").strip():
+                    return question_id, "question_text_unavailable"
+            try:
+                question = load_one(question_id)
+                question.source_content_hash
+                return question
+            except RichContentReadError as exc:
+                if load_failures is None:
+                    raise
+                return question_id, exc.code
+            except ValueError:
+                if load_failures is None:
+                    raise
+                return question_id, "question_content_unreadable"
+
         with batch_file_reads(self.data_root):
             if len(ids) < 8:
-                return tuple(load_one(question_id) for question_id in ids)
-            context = copy_context()
-            with ThreadPoolExecutor(max_workers=4, thread_name_prefix="question-assets") as pool:
-                return tuple(pool.map(lambda qid: context.copy().run(load_one, qid), ids))
+                loaded = [try_load_one(question_id) for question_id in ids]
+            else:
+                context = copy_context()
+                with ThreadPoolExecutor(max_workers=4, thread_name_prefix="question-assets") as pool:
+                    loaded = list(pool.map(lambda qid: context.copy().run(try_load_one, qid), ids))
+        result: list[QuestionAnalysisInput] = []
+        for item in loaded:
+            if isinstance(item, QuestionAnalysisInput):
+                result.append(item)
+            elif load_failures is not None:
+                load_failures[item[0]] = item[1]
+        return tuple(result)
 
     def _images(
         self,

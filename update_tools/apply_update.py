@@ -7,12 +7,10 @@
 
 执行流程:
     1. 读取 update_manifest.json 验证更新包
-    2. 备份当前 user_data (zip)
-    3. 备份当前代码到 app_backup_v旧版本/
-    4. 从更新包 app/ 复制代码到项目根
-    5. 从更新包 migrations/ 复制到项目 migrations/
-    6. 执行 migrate_db.py 数据库迁移
-    7. 输出更新结果
+    2. 备份当前代码、迁移和更新工具
+    3. 从更新包复制代码、迁移和更新工具
+    4. 通过受控离线维护协调器执行数据库迁移
+    5. 输出更新结果
 
 安全规则:
     - 不覆盖 user_data/databases/
@@ -28,6 +26,7 @@ import argparse
 import json
 import logging
 import shutil
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -75,6 +74,31 @@ def _should_skip(rel_path: Path) -> bool:
     return False
 
 
+def _run_protected_migrations(target_dir: Path) -> dict:
+    interpreter = target_dir / "runtime" / "python" / "python.exe"
+    completed = subprocess.run(
+        [
+            str(interpreter if interpreter.is_file() else Path(sys.executable)),
+            "-m", "backend.ops.offline", "--apply-confirmed-migrations",
+        ],
+        cwd=target_dir,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        result = json.loads(completed.stdout.strip())
+    except ValueError as exc:
+        raise RuntimeError("受控迁移没有返回有效结果；数据库状态需核对") from exc
+    if not isinstance(result, dict) or result.get("status") not in {
+        "current", "applied", "rolled_back", "failed",
+    }:
+        raise RuntimeError("受控迁移结果无效；数据库状态需核对")
+    if completed.returncode != 0 and result["status"] in {"current", "applied"}:
+        raise RuntimeError("受控迁移执行异常；数据库状态需核对")
+    return result
+
+
 # ── 核心逻辑 ──────────────────────────────────────────
 
 def apply_update(
@@ -102,6 +126,7 @@ def apply_update(
         "data_backup_zip": None,
         "files_updated": 0,
         "migrations_applied": 0,
+        "migration_status": "not_started",
         "error": None,
     }
 
@@ -143,24 +168,9 @@ def apply_update(
     if dry_run:
         logger.info("[DRY-RUN] 模式，不会修改任何文件")
 
-    # ── 2. 备份当前数据 ──
-    if not dry_run:
-        logger.info("步骤 1/4: 备份当前数据...")
-        try:
-            sys.path.insert(0, str(target_dir / "update_tools"))
-            from backup_core import create_backup
-            bk_result = create_backup("before_update", include_api_keys=False)
-            if bk_result.get("error"):
-                logger.warning("数据备份失败(非致命): %s", bk_result["error"])
-            else:
-                result["data_backup_zip"] = bk_result.get("zip_path")
-                logger.info("数据备份完成: %s", result["data_backup_zip"])
-        except Exception as exc:
-            logger.warning("数据备份跳过: %s", exc)
-
     # ── 3. 备份当前代码 ──
     if not dry_run:
-        logger.info("步骤 2/4: 备份当前代码...")
+        logger.info("备份当前代码、迁移和更新工具...")
         backup_name = f"app_backup_v{result['old_version']}"
         code_backup = target_dir / backup_name
         # 如果已有同名备份，加时间戳
@@ -172,14 +182,16 @@ def apply_update(
         code_backup.mkdir(parents=True, exist_ok=True)
         result["code_backup_dir"] = str(code_backup)
 
-        # 复制当前代码文件到 backup
+        for directory in ("migrations", "update_tools"):
+            source = target_dir / directory
+            if source.is_dir():
+                shutil.copytree(source, code_backup / directory)
         for item in sorted(app_dir.rglob("*")):
             if not item.is_file():
                 continue
             rel = item.relative_to(app_dir)
             if _should_skip(rel):
                 continue
-            # 对应的当前文件
             current_file = target_dir / rel
             if current_file.exists():
                 dest = code_backup / rel
@@ -190,7 +202,7 @@ def apply_update(
 
     # ── 4. 复制新代码 ──
     if not dry_run:
-        logger.info("步骤 3/4: 复制新代码...")
+        logger.info("复制新代码...")
 
     files_updated = 0
     for item in sorted(app_dir.rglob("*")):
@@ -243,40 +255,31 @@ def apply_update(
 
     # ── 5. 执行数据库迁移 ──
     if not dry_run:
-        logger.info("步骤 4/4: 执行数据库迁移...")
+        logger.info("通过受控维护执行数据库迁移...")
         try:
-            # 重新加载模块以使用新代码
-            if "migrate_db" in sys.modules:
-                del sys.modules["migrate_db"]
-            sys.path.insert(0, str(target_dir / "update_tools"))
-            from migrate_db import run_migrations
-
-            migration_error = False
-            for target_name in ("grading", "question_bank"):
-                report = run_migrations(target_name)
-                applied = [r for r in report.results if r.status == "applied"]
-                if applied:
-                    result["migrations_applied"] += len(applied)
-                    logger.info("[%s] 成功执行 %d 个迁移", target_name, len(applied))
-                if report.error:
-                    logger.error("[%s] 迁移错误: %s", target_name, report.error)
-                    migration_error = True
-                    result["error"] = (
-                        f"数据库迁移失败 ({target_name}): {report.error}\n"
-                        f"代码已更新但迁移未完成。\n"
-                        f"代码备份: {result['code_backup_dir']}\n"
-                        f"数据备份: {result['data_backup_zip']}\n"
-                        f"请手动处理或回滚。"
-                    )
-                    break
-
-            if not migration_error:
+            migration = _run_protected_migrations(target_dir)
+            result["migration_status"] = migration["status"]
+            result["migrations_applied"] = int(migration.get("migrations_applied", 0))
+            result["data_backup_zip"] = migration.get("backup_path")
+            if migration["status"] == "rolled_back":
+                result["error"] = (
+                    "数据库迁移失败，受控维护已回退本次数据库变更。\n"
+                    f"代码已更新，可从此备份回滚: {result['code_backup_dir']}"
+                )
+            elif migration["status"] == "failed":
+                result["error"] = (
+                    "数据库迁移失败，自动回退未通过校验，请保持应用关闭。\n"
+                    f"操作编号: {migration.get('operation_id')}\n"
+                    f"代码备份: {result['code_backup_dir']}"
+                )
+            else:
                 logger.info("数据库迁移完成，共 %d 个", result["migrations_applied"])
         except Exception as exc:
             logger.error("数据库迁移异常: %s", exc)
+            result["migration_status"] = "unknown"
             result["error"] = (
                 f"数据库迁移异常: {exc}\n"
-                f"代码已更新但迁移未完成。\n"
+                f"受控维护保留了操作状态，请保持应用关闭并核对。\n"
                 f"代码备份: {result['code_backup_dir']}"
             )
     else:
@@ -324,12 +327,22 @@ def rollback(target_dir: Path, backup_name: str | None = None) -> dict:
     logger.info("开始回滚，从备份: %s", backup_dir.name)
     result["restored_from"] = str(backup_dir)
 
+    for directory in ("migrations", "update_tools"):
+        source = backup_dir / directory
+        if source.is_dir():
+            destination = target_dir / directory
+            if destination.exists():
+                shutil.rmtree(destination)
+            shutil.copytree(source, destination)
+
     # 复制备份文件回项目根
     count = 0
     for item in sorted(backup_dir.rglob("*")):
         if not item.is_file():
             continue
         rel = item.relative_to(backup_dir)
+        if rel.parts[0] in {"migrations", "update_tools"}:
+            continue
         dest = target_dir / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(item, dest)

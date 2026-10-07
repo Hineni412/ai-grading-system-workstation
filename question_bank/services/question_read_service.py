@@ -83,29 +83,6 @@ ANALYSIS_TAG_TYPES = (
     "exam_scope",
 )
 
-_CRITERIA_NEEDS_REVIEW_SQL = """
-EXISTS (
-    SELECT 1
-    FROM training_criterion_heads head
-    JOIN training_criterion_versions version
-      ON version.version_id = head.current_version_id
-    WHERE head.question_id = {qid}
-      AND NOT EXISTS (
-          SELECT 1 FROM training_criterion_versions approved
-          WHERE approved.version_id = head.approved_version_id
-            AND approved.status = 'approved'
-            AND approved.source_content_hash = head.current_source_hash
-      )
-      AND (
-            version.status IN ('rejected', 'stale')
-            OR (
-                version.status = 'proposed'
-                AND COALESCE(version.quality_status, '') <> 'passed'
-            )
-      )
-)
-"""
-
 _IMAGE_MARKER_PATTERN = re.compile(
     r"\[\[IMAGE:(?P<path>[^\]|]*?)(?:\|[^\]]*)?\]\]",
     re.DOTALL | re.IGNORECASE,
@@ -462,7 +439,6 @@ _RETIRED_PUBLIC_TAG_TYPES = {
 _PUBLIC_TAG_TYPES = tuple(
     sorted(ALLOWED_TAG_TYPES - _RETIRED_PUBLIC_TAG_TYPES)
 )
-_RICH_CONTENT_VERSION = 3
 _CURRENT_PREVIEW_ORDER_SQL = "updated_at DESC, id DESC"
 _READ_RESULT_CACHE_LIMIT = 48
 _BROWSE_CACHE_LIMITS = {"skill_snapshot": 2, "skill_inventory": 2, "skill_page": 4,
@@ -522,6 +498,9 @@ class _ActiveQuestionReadScope:
     duplicate_groups: dict[int, list[int]] = field(default_factory=dict)
     skill_snapshot: dict[str, Any] | None = None
     skill_inventory: dict[str, Any] | None = None
+    analysis_materials: dict[str, dict[int, dict[str, bool]]] = field(default_factory=dict)
+    asset_generations: dict[str, tuple[str | None, dict | None]] = field(default_factory=dict)
+    skill_snapshot_key: tuple | None = None
     generation: tuple[object, ...] | None = None
 
 
@@ -1191,6 +1170,69 @@ class QuestionBankReadService:
             else None
         )
 
+    def _asset_generation(self, *, refresh: bool = False) -> tuple[str | None, dict | None]:
+        """Reuse safe asset metadata within a request; unsafe reads disable caching."""
+        root = self._cache_data_root or str(self.db_path.parent.parent.resolve(strict=False))
+        scope = _ACTIVE_READ_SCOPE.get()
+        if not refresh and scope is not None and root in scope.asset_generations:
+            return scope.asset_generations[root]
+        manifest = _skill_asset_manifest(Path(root))
+        generation = (hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(",", ":"))
+                                    .encode("utf-8")).hexdigest() if manifest is not None else None)
+        result = generation, manifest
+        if not refresh and scope is not None:
+            scope.asset_generations[root] = result
+        return result
+
+    def _analysis_materials(
+        self, conn: sqlite3.Connection, question_ids: Iterable[int],
+    ) -> dict[int, dict[str, bool]]:
+        """Use the current evidence and criterion readers in this read snapshot."""
+        from question_bank.solution_evidence.part_assessments import current_inputs, load_profiles
+        from question_bank.training_criteria.versioning import TrainingCriterionModule
+
+        ids = list(dict.fromkeys(int(qid) for qid in question_ids if int(qid) > 0))
+        scope = _ACTIVE_READ_SCOPE.get()
+        key = self._cache_data_root or str(self.db_path.parent.parent)
+        known = scope.analysis_materials.setdefault(key, {}) if scope is not None else {}
+        missing = [qid for qid in ids if qid not in known]
+        for start in range(0, len(missing), 200):
+            batch = missing[start:start + 200]
+            marks = ",".join("?" for _ in batch)
+            saved_ids = [int(row[0]) for row in conn.execute(
+                f"SELECT question_id FROM question_solution_evidence_versions "
+                f"WHERE status IN ('proposed', 'approved') AND question_id IN ({marks}) "
+                f"UNION SELECT question_id FROM training_criterion_versions WHERE question_id IN ({marks})",
+                [*batch, *batch])]
+            failures: dict[int, str] = {}
+            inputs = current_inputs(self.db_path, saved_ids, conn, data_root=self.data_root,
+                                    load_failures=failures) if saved_ids else {}
+            profiles = load_profiles(self.db_path, saved_ids, connection=conn,
+                                     data_root=self.data_root, question_inputs=inputs)
+            module = TrainingCriterionModule(self.db_path, data_root=self.data_root)
+            workspaces = module.read_many(
+                list(inputs.values()), connection=conn, profiles=profiles)
+            for qid in failures:
+                workspaces[qid] = dict(module._workspace_query(conn, qid), available=False)
+            for qid in batch:
+                profile = profiles.get(qid)
+                workspace = workspaces.get(qid, {})
+                available = bool(workspace.get("available"))
+                known[qid] = {
+                    "evidence_ready": bool(profile and profile.get("available")),
+                    "criteria_ready": available,
+                    "criteria_needs_review": not available and bool(
+                        profile or workspace.get("current_version") or workspace.get("approved_version")
+                        or workspace.get("read_failure")),
+                }
+        return {qid: known[qid] for qid in ids}
+
+    def _criteria_needs_review_ids(
+        self, conn: sqlite3.Connection, question_ids: Iterable[int],
+    ) -> set[int]:
+        return {qid for qid, material in self._analysis_materials(conn, question_ids).items()
+                if material["criteria_needs_review"]}
+
     @property
     def current_knowledge(self) -> CurrentKnowledgeResolver | None:
         active = _ACTIVE_READ_SCOPE.get()
@@ -1222,14 +1264,16 @@ class QuestionBankReadService:
         from question_bank.services.question_skill_index import build_skill_snapshot, load_skill_inventory
 
         active = _ACTIVE_READ_SCOPE.get()
-        if active is not None and active.skill_snapshot is not None:
-            return active.skill_snapshot
         generation = active.generation if active is not None else _source_generation_token(self.db_path)
-        key = ("skill_snapshot", generation, self._cache_data_root)
-        cached = _read_result_cache_get(key, shared=True) if generation is not None and generation == _source_generation_token(self.db_path) else _CACHE_MISS
+        asset_generation, asset_manifest = self._asset_generation()
+        key = ("skill_snapshot", generation, self._cache_data_root, asset_generation)
+        if active is not None and active.skill_snapshot is not None and active.skill_snapshot_key == key:
+            return active.skill_snapshot
+        cached = _read_result_cache_get(key, shared=True) if generation is not None and asset_generation is not None and generation == _source_generation_token(self.db_path) else _CACHE_MISS
         if cached is not _CACHE_MISS:
             if active is not None:
                 active.skill_snapshot = cached
+                active.skill_snapshot_key = key
             return cached
         with _read_connection(self.db_path) as conn:
             scope = _ACTIVE_READ_SCOPE.get()
@@ -1250,14 +1294,14 @@ class QuestionBankReadService:
             ids = None if full else tuple(sorted(selected))
             if not full:
                 key = ("skill_snapshot" if volume_id is not None else "skill_page",
-                       generation, self._cache_data_root, ids)
-                cached = _read_result_cache_get(key, shared=True) if generation is not None else _CACHE_MISS
+                       generation, self._cache_data_root, asset_generation, ids)
+                cached = _read_result_cache_get(key, shared=True) if generation is not None and asset_generation is not None else _CACHE_MISS
                 if cached is not _CACHE_MISS:
                     return cached
             # The full projection is already shared in memory. Persist only
             # that existing projection, with its exact source dependencies.
-            manifest = (_skill_asset_manifest(Path(self._cache_data_root))
-                        if full and self.persist_skill_snapshots and self._cache_data_root and generation is not None else None)
+            manifest = (asset_manifest if asset_generation is not None
+                        and full and self.persist_skill_snapshots and self._cache_data_root and generation is not None else None)
             snapshot = self._read_local_skill_snapshot(generation, inventory, manifest, connection=conn) if manifest is not None else None
             if snapshot is None:
                 from question_bank.services.file_cache import capture_file_reads
@@ -1298,7 +1342,10 @@ class QuestionBankReadService:
                         _SKILL_SOURCE_MEMO.pop(self._cache_data_root, None)
             if scope is not None and full:
                 scope.skill_snapshot = snapshot
-        if generation is not None and generation == _source_generation_token(self.db_path):
+                scope.skill_snapshot_key = key
+        if (generation is not None and asset_generation is not None
+                and generation == _source_generation_token(self.db_path)
+                and asset_generation == self._asset_generation(refresh=True)[0]):
             _read_result_cache_put(key, snapshot)
         return snapshot
 
@@ -1422,15 +1469,18 @@ class QuestionBankReadService:
         from question_bank.services.question_skill_index import skill_index
 
         generation = None if _ACTIVE_READ_SCOPE.get() is not None else _source_generation_token(self.db_path)
-        key = ("skill_index", generation, self._cache_data_root, curriculum_volume_id)
-        cached = _read_result_cache_get(key) if generation is not None else _CACHE_MISS
+        asset_generation, _manifest = self._asset_generation()
+        key = ("skill_index", generation, self._cache_data_root, asset_generation, curriculum_volume_id)
+        cached = _read_result_cache_get(key) if generation is not None and asset_generation is not None else _CACHE_MISS
         if cached is not _CACHE_MISS:
             return cached
         with _read_connection(self.db_path) as conn:
             snapshot = self._skill_snapshot(volume_id=curriculum_volume_id)
-            review_ids = _load_criteria_needs_review_ids(conn, list(snapshot["questions"]))
+            review_ids = self._criteria_needs_review_ids(conn, list(snapshot["questions"]))
         result = skill_index(snapshot, curriculum_volume_id, review_ids)
-        if generation is not None and generation == _source_generation_token(self.db_path):
+        if (generation is not None and asset_generation is not None
+                and generation == _source_generation_token(self.db_path)
+                and asset_generation == self._asset_generation(refresh=True)[0]):
             _read_result_cache_put(key, result)
         return result
 
@@ -1445,14 +1495,17 @@ class QuestionBankReadService:
         if volume is None:
             raise ValueError("请选择有效的教学学期")
         generation = None if _ACTIVE_READ_SCOPE.get() is not None else _source_generation_token(self.db_path)
-        key = ("chapter_exam_profile", generation, self._cache_data_root, curriculum_volume_id)
-        cached = _read_result_cache_get(key) if generation is not None else _CACHE_MISS
+        asset_generation, _manifest = self._asset_generation()
+        key = ("chapter_exam_profile", generation, self._cache_data_root, asset_generation, curriculum_volume_id)
+        cached = _read_result_cache_get(key) if generation is not None and asset_generation is not None else _CACHE_MISS
         if cached is not _CACHE_MISS:
             return cached
         with _read_connection(self.db_path) as conn:
             snapshot = self._skill_snapshot(volume_id=curriculum_volume_id)
             result = build_chapter_exam_profile(conn, snapshot, volume)
-        if generation is not None and generation == _source_generation_token(self.db_path):
+        if (generation is not None and asset_generation is not None
+                and generation == _source_generation_token(self.db_path)
+                and asset_generation == self._asset_generation(refresh=True)[0]):
             _read_result_cache_put(key, result)
         return result
 
@@ -1471,8 +1524,9 @@ class QuestionBankReadService:
             if active is not None
             else _source_generation_token(self.db_path)
         )
-        key = ("exam_frequency", generation, self._cache_data_root)
-        cached = _read_result_cache_get(key) if generation is not None else _CACHE_MISS
+        asset_generation, _manifest = self._asset_generation()
+        key = ("exam_frequency", generation, self._cache_data_root, asset_generation)
+        cached = _read_result_cache_get(key) if generation is not None and asset_generation is not None else _CACHE_MISS
         if cached is not _CACHE_MISS:
             return cached  # type: ignore[return-value]
         result: dict[int, tuple[float, float]] = {}
@@ -1480,7 +1534,9 @@ class QuestionBankReadService:
             for volume in load_curriculum_catalog()["volumes"]:
                 snapshot = self._skill_snapshot(volume_id=str(volume["id"]))
                 result.update(build_exam_frequency(conn, snapshot, volume))
-        if generation is not None and generation == _source_generation_token(self.db_path):
+        if (generation is not None and asset_generation is not None
+                and generation == _source_generation_token(self.db_path)
+                and asset_generation == self._asset_generation(refresh=True)[0]):
             _read_result_cache_put(key, result)
         return result
 
@@ -1581,8 +1637,9 @@ class QuestionBankReadService:
             if _ACTIVE_READ_SCOPE.get() is not None
             else _source_generation_token(self.db_path)
         )
-        key = ("papers", generation, bool(deleted))
-        if generation is not None:
+        asset_generation, _manifest = self._asset_generation()
+        key = ("papers", generation, self._cache_data_root, asset_generation, bool(deleted))
+        if generation is not None and asset_generation is not None:
             cached = _read_result_cache_get(key)
             if cached is not _CACHE_MISS:
                 return cached  # type: ignore[return-value]
@@ -1593,7 +1650,9 @@ class QuestionBankReadService:
             item["skill_unlinked_question_count"] = (
                 len(snapshot["members"].get(item["id"], set()) & snapshot["unlinked"]) if snapshot else 0
             )
-        if generation is not None and generation == _source_generation_token(self.db_path):
+        if (generation is not None and asset_generation is not None
+                and generation == _source_generation_token(self.db_path)
+                and asset_generation == self._asset_generation(refresh=True)[0]):
             _read_result_cache_put(key, items)
         return items
 
@@ -1625,9 +1684,22 @@ class QuestionBankReadService:
             else "p.created_at DESC, p.id DESC"
         )
         with _read_connection(self.db_path) as conn:
+            material_ids = [int(row[0]) for row in conn.execute(
+                "SELECT id FROM questions WHERE COALESCE(is_deleted, 0) = 0")]
+            materials = self._analysis_materials(conn, material_ids) if not deleted else {}
+            material_json = json.dumps([
+                dict(question_id=qid, **material) for qid, material in materials.items()
+            ])
             rows = conn.execute(
                 f"""
-                WITH tag_summary AS (
+                WITH material_state AS (
+                    SELECT
+                        CAST(json_extract(value, '$.question_id') AS INTEGER) AS question_id,
+                        json_extract(value, '$.evidence_ready') AS evidence_ready,
+                        json_extract(value, '$.criteria_ready') AS criteria_ready,
+                        json_extract(value, '$.criteria_needs_review') AS criteria_needs_review
+                    FROM json_each(?)
+                ), tag_summary AS (
                     SELECT
                         question_id,
                         1 AS has_analysis_tag,
@@ -1694,29 +1766,17 @@ class QuestionBankReadService:
                     END) AS tagged_question_count,
                     COUNT(CASE
                         WHEN {visible_question_sql}
-                         AND EXISTS (
-                            SELECT 1
-                            FROM question_solution_evidence_versions evidence
-                            WHERE evidence.question_id = q.id
-                              AND evidence.status IN ('proposed', 'approved')
-                         )
+                         AND material.evidence_ready = 1
                         THEN 1
                     END) AS evidence_question_count,
                     COUNT(CASE
                         WHEN {visible_question_sql}
-                         AND EXISTS (
-                            SELECT 1
-                            FROM training_criterion_heads head
-                            JOIN training_criterion_versions version
-                              ON version.version_id = head.current_version_id
-                            WHERE head.question_id = q.id
-                              AND version.status IN ('proposed', 'approved')
-                         )
+                         AND material.criteria_ready = 1
                         THEN 1
                     END) AS criteria_question_count,
                     COUNT(CASE
                         WHEN {visible_question_sql}
-                         AND {_CRITERIA_NEEDS_REVIEW_SQL.format(qid="q.id")}
+                         AND material.criteria_needs_review = 1
                         THEN 1
                     END) AS criteria_needs_review_count,
                     COUNT(CASE
@@ -1730,20 +1790,8 @@ class QuestionBankReadService:
                             OR ts.derived_pending = 1
                          )
                          AND CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
-                         AND EXISTS (
-                            SELECT 1
-                            FROM question_solution_evidence_versions evidence
-                            WHERE evidence.question_id = q.id
-                              AND evidence.status IN ('proposed', 'approved')
-                         )
-                         AND EXISTS (
-                            SELECT 1
-                            FROM training_criterion_heads head
-                            JOIN training_criterion_versions version
-                              ON version.version_id = head.current_version_id
-                            WHERE head.question_id = q.id
-                              AND version.status IN ('proposed', 'approved')
-                         )
+                         AND material.evidence_ready = 1
+                         AND material.criteria_ready = 1
                         THEN 1
                     END) AS complete_analysis_count
                 FROM papers p
@@ -1758,11 +1806,12 @@ class QuestionBankReadService:
                     JOIN questions ON questions.id = occ.question_id
                 ) q ON q._member_paper_id = p.id
                 LEFT JOIN tag_summary ts ON ts.question_id = q.id
+                LEFT JOIN material_state material ON material.question_id = q.id
                 WHERE {paper_state_sql}
                 GROUP BY p.id
                 ORDER BY {order_sql}
                 """,
-                paper_tag_types,
+                [material_json, *paper_tag_types],
             ).fetchall()
         items: list[dict[str, Any]] = []
         for row in rows:
@@ -1785,14 +1834,17 @@ class QuestionBankReadService:
             if _ACTIVE_READ_SCOPE.get() is not None
             else _source_generation_token(self.db_path)
         )
-        key = ("questions", generation, self._cache_data_root, filters)
-        if generation is not None:
+        asset_generation, _manifest = self._asset_generation()
+        key = ("questions", generation, self._cache_data_root, asset_generation, filters)
+        if generation is not None and asset_generation is not None:
             cached = _read_result_cache_get(key)
             if cached is not _CACHE_MISS:
                 return cached  # type: ignore[return-value]
         with _read_connection(self.db_path):
             result = self._list_questions(filters)
-        if generation is not None and generation == _source_generation_token(self.db_path):
+        if (generation is not None and asset_generation is not None
+                and generation == _source_generation_token(self.db_path)
+                and asset_generation == self._asset_generation(refresh=True)[0]):
             _read_result_cache_put(key, result)
         return result
 
@@ -1815,21 +1867,7 @@ class QuestionBankReadService:
                                   AND qt.tag_type = 'ability'
                                   AND COALESCE(qt.tag_value, '') <> '')
                         AND ({_OWNERSHIP_READY_SQL})
-                    ) AS tags_ready,
-                    EXISTS (
-                        SELECT 1
-                        FROM question_solution_evidence_versions evidence
-                        WHERE evidence.question_id = q.id
-                          AND evidence.status IN ('proposed', 'approved')
-                    ) AS evidence_ready,
-                    EXISTS (
-                        SELECT 1
-                        FROM training_criterion_heads head
-                        JOIN training_criterion_versions version
-                          ON version.version_id = head.current_version_id
-                        WHERE head.question_id = q.id
-                          AND version.status IN ('proposed', 'approved')
-                    ) AS criteria_ready
+                    ) AS tags_ready
                 FROM grading_question_links link
                 JOIN questions q ON q.id = link.bank_question_id
                 WHERE link.grading_session_id = ?
@@ -1839,8 +1877,9 @@ class QuestionBankReadService:
                 """,
                 [str(int(grading_session_id))],
             ).fetchall()
-        items = [dict(row) for row in rows]
-        snapshot = self._skill_snapshot(question_ids=tuple(int(item["id"]) for item in items)) if items else None
+            materials = self._analysis_materials(conn, [int(row["id"]) for row in rows])
+            items = [dict(row, **materials[int(row["id"])]) for row in rows]
+            snapshot = self._skill_snapshot(question_ids=tuple(int(item["id"]) for item in items)) if items else None
         incomplete = [
             item
             for item in items
@@ -1870,6 +1909,30 @@ class QuestionBankReadService:
 
     def _read_filter_parts(self, filters: QuestionReadFilters, *, taxonomy_expansions: dict[str, tuple[str, ...]] | None = None):
         joins, where, params = _question_filter_parts(filters, current_knowledge=self.current_knowledge, taxonomy_expansions=taxonomy_expansions)
+        if filters.analysis_status in {"complete", "incomplete"} or filters.criteria_needs_review:
+            with _read_connection(self.db_path) as conn:
+                candidates = conn.execute(" ".join([
+                    f"SELECT DISTINCT q.id, (CAST(q.difficulty AS REAL) BETWEEN 1 AND 10 "
+                    "AND EXISTS (SELECT 1 FROM question_tags qt WHERE qt.question_id = q.id "
+                    "AND qt.tag_type = 'ability' AND COALESCE(qt.tag_value, '') <> '') "
+                    f"AND ({_OWNERSHIP_READY_SQL})) AS tags_ready FROM questions q",
+                    *joins, "WHERE " + " AND ".join(where),
+                ]), params).fetchall()
+                materials = self._analysis_materials(conn, [int(row["id"]) for row in candidates])
+            selected = []
+            for row in candidates:
+                qid = int(row["id"])
+                material = materials[qid]
+                complete = bool(row["tags_ready"] and material["evidence_ready"] and material["criteria_ready"])
+                if filters.analysis_status == "complete" and not complete:
+                    continue
+                if filters.analysis_status == "incomplete" and complete:
+                    continue
+                if filters.criteria_needs_review and not material["criteria_needs_review"]:
+                    continue
+                selected.append(qid)
+            where.append("q.id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))")
+            params.append(json.dumps(selected))
         if filters.skill_keys or filters.skill_unlinked:
             snapshot = self._skill_snapshot()
             ids = set(snapshot["questions"])
@@ -2032,7 +2095,7 @@ class QuestionBankReadService:
                 current_knowledge=self.current_knowledge,
             )
             revisions = question_revisions(conn, [int(row["id"]) for row in rows])
-            review_ids = _load_criteria_needs_review_ids(
+            review_ids = self._criteria_needs_review_ids(
                 conn,
                 [int(row["id"]) for row in rows],
             )
@@ -2082,14 +2145,17 @@ class QuestionBankReadService:
         # Governed tag expansion needs the same active read context as the
         # full question query, even when the caller only requests identities.
         generation = _source_generation_token(self.db_path) if not filters.collapse_duplicates and _ACTIVE_READ_SCOPE.get() is None else None
-        key = ("question_refs", generation, self._cache_data_root, _taxonomy_generation_token(), filters)
-        if generation is not None:
+        asset_generation, _manifest = self._asset_generation()
+        key = ("question_refs", generation, self._cache_data_root, asset_generation, _taxonomy_generation_token(), filters)
+        if generation is not None and asset_generation is not None:
             cached = _read_result_cache_get(key)
             if cached is not _CACHE_MISS:
                 return cached  # type: ignore[return-value]
         with _read_connection(self.db_path):
             result = self._list_question_refs(filters)
-        if generation is not None and generation == _source_generation_token(self.db_path):
+        if (generation is not None and asset_generation is not None
+                and generation == _source_generation_token(self.db_path)
+                and asset_generation == self._asset_generation(refresh=True)[0]):
             _read_result_cache_put(key, result)
         return result
 
@@ -2166,14 +2232,17 @@ class QuestionBankReadService:
             if _ACTIVE_READ_SCOPE.get() is not None
             else _source_generation_token(self.db_path)
         )
-        key = ("facets", generation, _taxonomy_generation_token(), filters)
-        if generation is not None:
+        asset_generation, _manifest = self._asset_generation()
+        key = ("facets", generation, self._cache_data_root, asset_generation, _taxonomy_generation_token(), filters)
+        if generation is not None and asset_generation is not None:
             cached = _read_result_cache_get(key)
             if cached is not _CACHE_MISS:
                 return cached  # type: ignore[return-value]
         with _read_connection(self.db_path):
             result = self._list_facets(filters)
-        if generation is not None and generation == _source_generation_token(self.db_path):
+        if (generation is not None and asset_generation is not None
+                and generation == _source_generation_token(self.db_path)
+                and asset_generation == self._asset_generation(refresh=True)[0]):
             _read_result_cache_put(key, result)
         return result
 
@@ -2408,22 +2477,26 @@ class QuestionBankReadService:
             except (AttributeError, OSError):
                 # 治理替身在测试中没有状态文件；无法计算代际时不缓存。
                 generation = None
+        asset_generation, _manifest = self._asset_generation()
         key = (
             "similar_questions",
             generation,
             self._cache_data_root,
+            asset_generation,
             taxonomy_token,
             int(question_id),
             int(limit),
         )
-        if generation is not None:
+        if generation is not None and asset_generation is not None:
             cached = _read_result_cache_get(key)
             if cached is not _CACHE_MISS:
                 return cached  # type: ignore[return-value]
         result = self._find_similar_questions(question_id, limit=limit)
         if (
             generation is not None
+            and asset_generation is not None
             and generation == _source_generation_token(self.db_path)
+            and asset_generation == self._asset_generation(refresh=True)[0]
             and taxonomy_token == _taxonomy_generation_token()
         ):
             _read_result_cache_put(key, result)
@@ -2444,7 +2517,8 @@ class QuestionBankReadService:
             )
             if (cache_key is not None
                     and cache_key[0] == _source_generation_token(self.db_path)
-                    and cache_key[2] == _taxonomy_generation_token()):
+                    and cache_key[2] == _taxonomy_generation_token()
+                    and cache_key[3] == self._asset_generation(refresh=True)[0]):
                 _SIMILAR_INDEX_CACHE[cache_key] = index
                 _SIMILAR_INDEX_CACHE.move_to_end(cache_key)
                 while len(_SIMILAR_INDEX_CACHE) > 2:
@@ -2461,8 +2535,9 @@ class QuestionBankReadService:
         if _ACTIVE_READ_SCOPE.get() is None:
             try:
                 generation = _source_generation_token(self.db_path)
-                if generation is not None:
-                    cache_key = (generation, self._cache_data_root, _taxonomy_generation_token())
+                asset_generation, _manifest = self._asset_generation()
+                if generation is not None and asset_generation is not None:
+                    cache_key = (generation, self._cache_data_root, _taxonomy_generation_token(), asset_generation)
             except (AttributeError, OSError):
                 pass
         with _read_connection(self.db_path) as conn:
@@ -2518,7 +2593,7 @@ class QuestionBankReadService:
             )
             target_tags = display_tags.get(int(question_id), [])
             revisions = question_revisions(conn, selected_ids)
-            review_ids = _load_criteria_needs_review_ids(conn, selected_ids)
+            review_ids = self._criteria_needs_review_ids(conn, selected_ids)
 
         items: list[dict[str, Any]] = []
         target_input = index.questions[index.positions[int(question_id)]]
@@ -2593,7 +2668,7 @@ class QuestionBankReadService:
             )
             previews = _load_question_previews(conn, int(question_id))
             revision = question_revision(conn, int(question_id))
-            review_ids = _load_criteria_needs_review_ids(conn, [int(question_id)])
+            review_ids = self._criteria_needs_review_ids(conn, [int(question_id)])
             from question_bank.services.error_pattern_service import (
                 list_patterns,
                 pattern_skill_index,
@@ -2874,7 +2949,7 @@ class QuestionBankReadService:
                 current_knowledge=self.current_knowledge,
             )
             revisions = question_revisions(conn, list(rows_by_id))
-            review_ids = _load_criteria_needs_review_ids(conn, list(rows_by_id))
+            review_ids = self._criteria_needs_review_ids(conn, list(rows_by_id))
 
         items: list[dict[str, Any]] = []
         for question_id in ordered_ids:
@@ -3064,26 +3139,12 @@ class QuestionBankReadService:
             cached = _rich_content_cache_get(cache_key)
             if cached is not None:
                 return cached
-            payload = json.loads(sidecar.read_text(encoding="utf-8"))
+            from question_bank.services.rich_content_service import load_question_rich_content
+            payload = load_question_rich_content(question_id, rich_root)
         except (OSError, ValueError, json.JSONDecodeError):
             return None
         if not isinstance(payload, dict):
             return None
-        if type(payload.get("version")) is not int:
-            return None
-        if payload["version"] != _RICH_CONTENT_VERSION:
-            return None
-        if type(payload.get("question_id")) is not int:
-            return None
-        if payload["question_id"] != int(question_id):
-            return None
-        if not _valid_rich_block_list(payload.get("question_blocks")):
-            return None
-        if not _valid_rich_block_list(payload.get("answer_blocks")):
-            return None
-        payload["question_blocks"] = clean_question_blocks(
-            payload["question_blocks"]
-        )
         _rich_content_cache_put(cache_key, payload)
         return payload
 
@@ -3425,38 +3486,6 @@ def _question_filter_parts(
     )
     if requested_knowledge and not expanded_knowledge:
         where.append("1 = 0")
-    if filters.analysis_status in {"complete", "incomplete"}:
-        complete_sql = f"""
-            (
-                CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
-                AND EXISTS (SELECT 1 FROM question_tags qt
-                            WHERE qt.question_id = q.id
-                              AND qt.tag_type = 'ability'
-                              AND COALESCE(qt.tag_value, '') <> '')
-                AND ({_OWNERSHIP_READY_SQL})
-                AND EXISTS (
-                    SELECT 1
-                    FROM question_solution_evidence_versions evidence
-                    WHERE evidence.question_id = q.id
-                      AND evidence.status IN ('proposed', 'approved')
-                )
-                AND EXISTS (
-                    SELECT 1
-                    FROM training_criterion_heads head
-                    JOIN training_criterion_versions version
-                      ON version.version_id = head.current_version_id
-                    WHERE head.question_id = q.id
-                      AND version.status IN ('proposed', 'approved')
-                )
-            )
-        """
-        where.append(
-            complete_sql
-            if filters.analysis_status == "complete"
-            else f"NOT {complete_sql}"
-        )
-    if filters.criteria_needs_review:
-        where.append(_CRITERIA_NEEDS_REVIEW_SQL.format(qid="q.id"))
     error_pattern_categories = list(
         dict.fromkeys(
             item
@@ -4113,24 +4142,6 @@ def _question_skill_options(
     return options
 
 
-def _load_criteria_needs_review_ids(
-    conn: sqlite3.Connection,
-    question_ids: Iterable[int],
-) -> set[int]:
-    clean_ids = [int(question_id) for question_id in question_ids if int(question_id) > 0]
-    if not clean_ids:
-        return set()
-    placeholders = ", ".join("?" for _ in clean_ids)
-    rows = conn.execute(
-        f"""
-        SELECT q.id AS question_id FROM questions q
-        WHERE q.id IN ({placeholders})
-          AND {_CRITERIA_NEEDS_REVIEW_SQL.format(qid="q.id")}
-        """,
-        clean_ids,
-    ).fetchall()
-    return {int(row["question_id"]) for row in rows}
-
 
 def _public_question_item(
     row: sqlite3.Row,
@@ -4202,23 +4213,6 @@ def _question_asset_paths(image_paths_json: Any, *text_values: str) -> list[str]
 
 def _strip_image_markers(value: str) -> str:
     return _IMAGE_MARKER_PATTERN.sub("", value)
-
-
-def _valid_rich_block_list(value: Any) -> bool:
-    if not isinstance(value, list):
-        return False
-    for block in value:
-        if not isinstance(block, dict) or not isinstance(block.get("text"), str):
-            return False
-        relationships = block.get("image_relationships", {})
-        if not isinstance(relationships, dict):
-            return False
-        if any(
-            not isinstance(key, str) or not isinstance(path, str)
-            for key, path in relationships.items()
-        ):
-            return False
-    return True
 
 
 def _rich_blocks(

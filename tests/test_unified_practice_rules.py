@@ -361,7 +361,12 @@ def test_content_cached_matching_follows_parts_and_knowledge_location():
 
 
 def test_difficulty_features_use_current_content_and_affect_preference():
-    from question_bank.services.standard_difficulty import question_content_fingerprint
+    from question_bank.services.standard_difficulty import (
+        compatible_difficulty_content_hashes, difficulty_source_content_hash_matches,
+        load_assessment, question_content_fingerprint,
+    )
+    from question_bank.models.tag_schema import TaggingContext
+    from question_bank.training_criteria import QuestionAnalysisInput
     question = {"question_text": "合成条件", "answer_text": "合成解析", "question_type": "选择题"}
     row = {"source_content_hash": question_content_fingerprint(question), "part_id": "part1",
            "features_json": json.dumps({"solo": 2, "reasoning": 1, "trap": 2})}
@@ -371,6 +376,27 @@ def test_difficulty_features_use_current_content_and_affect_preference():
     source = {"difficulty_features": features}
     plain = {"stable_keys": [BNU_TARGET]}
     assert _direct_preference({**plain, "difficulty_features": features}, BNU_TARGET, source) > _direct_preference(plain, BNU_TARGET, source)
+    input_obj = QuestionAnalysisInput(question_id=1, tagging_context=TaggingContext(**question))
+    assert question_content_fingerprint(question) == input_obj.source_content_hash
+    legacy = "4a464d806ef4c1419fb655187a9245f6df3516f52b3b5725c8f59ee7ca5cb9f6"
+    assert difficulty_source_content_hash_matches(question, legacy, analysis_input=input_obj)
+    assert not difficulty_source_content_hash_matches({**question, "answer_text": "已修改解析"}, legacy)
+    with sqlite3.connect(":memory:") as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute('''CREATE TABLE question_part_difficulty_features (
+            id INTEGER PRIMARY KEY, question_id, part_id, features_json,
+            formula_difficulty, formula_version, source_content_hash, model_name, created_at, is_active)''')
+        connection.execute("INSERT INTO question_part_difficulty_features VALUES(1,1,'part1',?,4.0,'std-difficulty-v1',?,'TEST','TEST',1)",
+                           (row["features_json"], legacy))
+        compatible = compatible_difficulty_content_hashes(question, analysis_input=input_obj)
+        assessment = load_assessment("TEST-unused.db", 1, connection=connection,
+            current_fingerprint=input_obj.source_content_hash, compatible_fingerprints=compatible)
+        assert assessment["needs_reevaluation"] is False
+        assert assessment["question_formula"] == 4.0
+        connection.execute("INSERT INTO question_part_difficulty_features SELECT 2,question_id,'part2',features_json,formula_difficulty,formula_version,?,model_name,created_at,is_active FROM question_part_difficulty_features WHERE id=1", ("0" * 64,))
+        assessment = load_assessment("TEST-unused.db", 1, connection=connection,
+            current_fingerprint=input_obj.source_content_hash, compatible_fingerprints=compatible)
+        assert assessment["needs_reevaluation"] is True
 
 
 def test_grouping_uses_skill_history_instead_of_overall_score_gap():

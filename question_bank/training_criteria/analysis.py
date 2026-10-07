@@ -8,6 +8,7 @@ import logging
 import math
 import re
 import threading
+import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -291,66 +292,11 @@ class QuestionAnalysisInput:
 
     @property
     def source_content_hash(self) -> str:
-        # 题目指纹只描述"这道题现在的样子"：题干、答案、题型、配图与册别。
-        # 词表/知识标准状态绝不进入指纹——它是逐题的"题变了才重做"开关，
-        # 词表版本是全局的；一旦嵌入，教师确认一个新词就会让全库已保存的
-        # 标签整体过期。需要按新词表刷新时，用显式的"重新打标签"提交。
-        # evidence_parts 是判定点保存后的派生状态而非题目内容：纳入会让
-        # 每次保存判定点后全题被视为"题变了"而反复重打。
-        # existing_tags/existing_tags_by_dimension 是模型写入的标签而非题目内容。
-        context = {
-            key: value
-            for key, value in self.tagging_context.to_dict().items()
-            if key
-            not in {"evidence_parts", "existing_tags", "existing_tags_by_dimension"}
-        }
-        return _hash_payload(
-            {
-                "question_id": self.question_id,
-                "tagging_context": context,
-                "question_type_confirmed": self.question_type_confirmed,
-                **({"semantic_source": "images"} if self.semantic_source == "images" else {}),
-                "explicit_part_labels": list(self.explicit_part_labels),
-                "rich_question_blocks": self.rich_question_blocks,
-                "rich_answer_blocks": self.rich_answer_blocks,
-                "image_hashes": [
-                    {
-                        "role": image.role,
-                        "mime_type": image.mime_type,
-                        "sha256": image.sha256,
-                    }
-                    for image in self.images
-                ],
-                "reference_solution": self.reference_solution,
-            }
-        )
+        return question_content_hash(self)
 
     @property
     def criterion_source_content_hash(self) -> str:
-        context = self.tagging_context
-        return _hash_payload(
-            {
-                "question_id": self.question_id,
-                "question_text": context.question_text,
-                "answer_text": context.answer_text,
-                "question_type": context.question_type,
-                "question_type_confirmed": self.question_type_confirmed,
-                **({"semantic_source": "images"} if self.semantic_source == "images" else {}),
-                "explicit_part_labels": list(self.explicit_part_labels),
-                "has_images": context.has_images,
-                "rich_question_blocks": self.rich_question_blocks,
-                "rich_answer_blocks": self.rich_answer_blocks,
-                "reference_solution": self.reference_solution,
-                "image_hashes": [
-                    {
-                        "role": image.role,
-                        "mime_type": image.mime_type,
-                        "sha256": image.sha256,
-                    }
-                    for image in self.images
-                ],
-            }
-        )
+        return question_content_hash(self)
 
     @property
     def explicit_part_labels(self) -> tuple[str, ...]:
@@ -2626,21 +2572,170 @@ def training_criterion_source_reference(
     )
 
 
-def legacy_tag_source_content_hash(question: QuestionAnalysisInput) -> str:
-    """Reproduce the pre-v3 tag fingerprint payload for legacy comparison only.
+def _content_text(value: object) -> str:
+    # Asset bodies are hashed separately. Removing this controlled path token
+    # must not change mathematical text or whitespace inside a formula.
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    return re.sub(r"\[\[IMAGE:[^\]]+\]\]", "", text, flags=re.I).strip()
 
-    Before ``combined-v3`` the stored hash still mixed the model-written
-    ``existing_tags``/``existing_tags_by_dimension`` context keys into the
-    question fingerprint, so a retag that rewrote ``special_type``
-    invalidated its own record.  Only ``evidence_parts`` was excluded then;
-    keep this reproduction byte-identical so rows written by older runs can
-    be recognised instead of being reported as stale.
+
+_WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_MATH_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+
+
+def _math_content(node: ET.Element) -> Any:
+    if not node.tag.startswith(f"{{{_MATH_NS}}}"):
+        return None
+    if node.tag == f"{{{_MATH_NS}}}ctrlPr":
+        return None
+    return {
+        "type": node.tag.rsplit("}", 1)[-1],
+        "attributes": {
+            key.rsplit("}", 1)[-1]: value
+            for key, value in sorted(node.attrib.items())
+            if key.startswith(f"{{{_MATH_NS}}}")
+        },
+        "text": (node.text or "") if node.tag == f"{{{_MATH_NS}}}t" else "",
+        "children": [
+            content for child in node
+            if (content := _math_content(child)) is not None
+        ],
+    }
+
+
+def _word_content(xml: str, plain_text: str) -> list[Any]:
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError as exc:
+        raise ValueError("题目 Word 内容损坏，不能核对公式内容") from exc
+    result: list[Any] = []
+    word_text: list[str] = []
+    for node in root.iter():
+        if node.tag == f"{{{_WORD_NS}}}t":
+            word_text.append(node.text or "")
+        elif node.tag == f"{{{_WORD_NS}}}tab":
+            word_text.append("\t")
+        elif node.tag == f"{{{_WORD_NS}}}br":
+            word_text.append("\n")
+        elif node.tag == f"{{{_MATH_NS}}}oMath":
+            result.append({"math": _math_content(node)})
+        elif node.tag == f"{{{_WORD_NS}}}tbl":
+            result.append({"table": [
+                [
+                    _content_text("".join(
+                        item.text or "" for item in cell.iter()
+                        if item.tag in {f"{{{_WORD_NS}}}t", f"{{{_MATH_NS}}}t"}
+                    ))
+                    for cell in row.findall(f"{{{_WORD_NS}}}tc")
+                ]
+                for row in node.findall(f"{{{_WORD_NS}}}tr")
+            ]})
+        elif node.tag == f"{{{_WORD_NS}}}r":
+            position = node.find(f"{{{_WORD_NS}}}rPr/{{{_WORD_NS}}}vertAlign")
+            if position is not None:
+                value = position.get(f"{{{_WORD_NS}}}val")
+                if value in {"subscript", "superscript"}:
+                    result.append({"position": value, "text": "".join(
+                        item.text or "" for item in node.iter(f"{{{_WORD_NS}}}t")
+                    )})
+    native_text = _content_text("".join(word_text))
+    if native_text and native_text != plain_text:
+        result.append({"word_text": native_text})
+    return result
+
+
+def _block_content(
+    blocks: Sequence[Mapping[str, Any]], plain_text: str,
+) -> dict[str, Any]:
+    texts: list[str] = []
+    structures: list[Any] = []
+    for block in blocks:
+        text = _content_text(block.get("text"))
+        if text:
+            texts.append(text)
+        xml = str(block.get("xml") or "").strip()
+        if xml:
+            structures.extend(_word_content(xml, text))
+    content: dict[str, Any] = {}
+    block_text = "\n".join(texts)
+    if block_text and block_text != plain_text:
+        content["text"] = block_text
+    if structures:
+        content["structures"] = structures
+    return content
+
+
+def question_content_hash(
+    question: QuestionAnalysisInput | Mapping[str, Any],
+) -> str:
+    """Hash question meaning, excluding storage, taxonomy and layout state.
+
+    A row mapping can describe text-only content. For image or Word content,
+    callers must supply loaded images and blocks to check the complete body.
     """
+    if isinstance(question, QuestionAnalysisInput):
+        source: Mapping[str, Any] = {
+            "question_text": question.tagging_context.question_text,
+            "answer_text": question.tagging_context.answer_text,
+            "question_type": question.tagging_context.question_type,
+            "has_images": question.tagging_context.has_images,
+            "semantic_source": question.semantic_source,
+            "question_blocks": question.word_question_blocks or question.rich_question_blocks,
+            "answer_blocks": question.word_answer_blocks or question.rich_answer_blocks,
+            "images": question.images,
+            "reference_solution": question.reference_solution,
+        }
+    else:
+        source = question
+    question_text = _content_text(source.get("question_text"))
+    answer_text = _content_text(source.get("answer_text"))
+    images = []
+    for image in source.get("images") or source.get("image_hashes") or ():
+        if isinstance(image, QuestionAnalysisImage):
+            images.append({"role": image.role, "sha256": image.sha256})
+        else:
+            images.append({"role": image["role"], "sha256": image["sha256"]})
+    reference = source.get("reference_solution") or {}
+    reference_text = _content_text(reference.get("text"))
+    reference_blocks = _block_content(reference.get("rich_blocks") or (), reference_text)
+    payload: dict[str, Any] = {
+        "question_text": question_text,
+        "answer_text": answer_text,
+        "question_type": _content_text(source.get("question_type")),
+        "question_content": _block_content(
+            source.get("word_question_blocks") or source.get("rich_question_blocks")
+            or source.get("question_blocks") or (), question_text,
+        ),
+        "answer_content": _block_content(
+            source.get("word_answer_blocks") or source.get("rich_answer_blocks")
+            or source.get("answer_blocks") or (), answer_text,
+        ),
+        "images": images,
+    }
+    if source.get("has_images") and not images:
+        payload["unresolved_images"] = True
+    if source.get("semantic_source") == "images":
+        payload["semantic_source"] = "images"
+    if reference_text or reference_blocks:
+        payload["reference_solution"] = {"text": reference_text, **reference_blocks}
+    return _hash_payload(payload)
+
+
+def legacy_tag_source_content_hash(question: QuestionAnalysisInput) -> str:
+    """Reproduce the stored tag hash that included model-written tags."""
+    return _legacy_tag_source_content_hash(question, include_tags=True)
+
+
+def _legacy_tag_source_content_hash(
+    question: QuestionAnalysisInput, *, include_tags: bool,
+) -> str:
 
     context = {
         key: value
         for key, value in question.tagging_context.to_dict().items()
-        if key != "evidence_parts"
+        if key not in ({"evidence_parts"} if include_tags else {
+            "evidence_parts", "existing_tags", "existing_tags_by_dimension",
+        })
     }
     return _hash_payload(
         {
@@ -2668,11 +2763,9 @@ def legacy_tag_source_content_hash(question: QuestionAnalysisInput) -> str:
     )
 
 
-def solution_evidence_source_content_hash(
+def _legacy_solution_evidence_source_content_hash(
     question: QuestionAnalysisInput,
 ) -> str:
-    """Hash portable question content without a database-local question id."""
-
     context = question.tagging_context
     return _hash_payload(
         {
@@ -2692,6 +2785,58 @@ def solution_evidence_source_content_hash(
             ],
         }
     )
+
+
+def _legacy_criterion_source_content_hash(question: QuestionAnalysisInput) -> str:
+    context = question.tagging_context
+    return _hash_payload({
+        "question_id": question.question_id,
+        "question_text": context.question_text,
+        "answer_text": context.answer_text,
+        "question_type": context.question_type,
+        "question_type_confirmed": question.question_type_confirmed,
+        **({"semantic_source": "images"} if question.semantic_source == "images" else {}),
+        "explicit_part_labels": list(question.explicit_part_labels),
+        "has_images": context.has_images,
+        "rich_question_blocks": question.rich_question_blocks,
+        "rich_answer_blocks": question.rich_answer_blocks,
+        "reference_solution": question.reference_solution,
+        "image_hashes": [{"role": image.role, "mime_type": image.mime_type,
+                          "sha256": image.sha256} for image in question.images],
+    })
+
+
+def compatible_source_content_hashes(
+    question: QuestionAnalysisInput,
+    *,
+    kind: Literal["tag", "training_criteria", "solution_evidence"],
+) -> frozenset[str]:
+    """Recognise supported stored source hashes at the read boundary only."""
+    current = question_content_hash(question)
+    if kind in {"tag", "training_criteria"}:
+        hashes = {current}
+        for confirmed in (False, True):
+            source = dataclass_replace(question, question_type_confirmed=confirmed)
+            if kind == "tag":
+                hashes.update((_legacy_tag_source_content_hash(source, include_tags=False),
+                               legacy_tag_source_content_hash(source)))
+            else:
+                hashes.add(_legacy_criterion_source_content_hash(source))
+        return frozenset(hashes)
+    if kind == "solution_evidence":
+        return frozenset((current, _legacy_solution_evidence_source_content_hash(question)))
+    raise ValueError("source content hash kind is invalid")
+
+
+def source_content_hash_matches(
+    question: QuestionAnalysisInput, stored_hash: str, *,
+    kind: Literal["tag", "training_criteria", "solution_evidence"],
+) -> bool:
+    return stored_hash in compatible_source_content_hashes(question, kind=kind)
+
+
+def solution_evidence_source_content_hash(question: QuestionAnalysisInput) -> str:
+    return question_content_hash(question)
 
 
 def rubric_skeleton_from_solution_evidence(
@@ -4089,6 +4234,9 @@ __all__ = [
     "answer_key_skeleton_from_solution_evidence",
     "grading_config_skeleton_from_solution_evidence",
     "rubric_skeleton_from_solution_evidence",
+    "question_content_hash",
+    "compatible_source_content_hashes",
+    "source_content_hash_matches",
     "solution_evidence_source_content_hash",
     "training_criteria_from_solution_evidence",
     "training_criterion_source_reference",

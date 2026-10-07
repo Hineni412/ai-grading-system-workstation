@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import fitz
+import pytest
 from docx import Document
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
@@ -18,6 +20,7 @@ from question_bank.importers.batch_importer import (
 from question_bank.database.schema import connect
 from question_bank.importers.types import ExtractedDocument
 from question_bank.services.rich_content_service import (
+    RichContentReadError,
     load_question_rich_content,
 )
 
@@ -34,6 +37,67 @@ def test_word_picture_alone_does_not_require_teacher_review(tmp_path):
     extracted = import_docx(file, asset_root=tmp_path / "assets")
     assert extracted.has_images and extracted.image_paths
     assert not extracted.needs_image_review
+
+
+@pytest.mark.parametrize("version", [1, 2, 3, "2", "legacy", None, {"label": "legacy"}])
+def test_rich_content_reads_supported_blocks_without_version_rewrites(tmp_path, version):
+    document = Document()
+    paragraph = document.add_paragraph("TEST-计算 x")
+    paragraph.add_run("2").font.superscript = True
+    block = {
+        "text": "TEST-计算 x2。[[IMAGE:TEST-figure.png]]",
+        "xml": paragraph._p.xml,
+        "image_relationships": {"rId9": "TEST-figure.png"},
+    }
+    if version == 2:
+        block["xml"] = '<?xml version="1.0" encoding="UTF-8"?>' + block["xml"]
+    payload = {
+        "version": version,
+        "question_id": 1,
+        "question_blocks": [{"text": "一、选择题"}, block],
+        "answer_blocks": [{"text": "TEST-参考答案", "xml": "", "image_relationships": {}}],
+    }
+    sidecar = tmp_path / "question_1.json"
+    sidecar.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8-sig" if version == 1 else "utf-8")
+    original = sidecar.read_bytes()
+    result = load_question_rich_content(1, root=tmp_path, strict=True)
+    assert result is not None
+    assert result["question_blocks"] == [block]
+    assert result["answer_blocks"] == payload["answer_blocks"]
+    assert result["version"] == version
+    assert sidecar.read_bytes() == original
+
+
+@pytest.mark.parametrize("body,code", [
+    ("{TEST", "rich_content_invalid_json"),
+    (json.dumps({"version": 3, "paragraphs": ["TEST-unknown"]}), "rich_content_unknown_structure"),
+    (json.dumps({"question_blocks": [{"text": 123}]}), "rich_content_invalid_blocks"),
+    (json.dumps({"question_blocks": [{"text": "TEST", "xml": "<w:p>"}]}), "rich_content_invalid_xml"),
+    (json.dumps({"question_blocks": [{"text": "TEST", "xml": "<future>TEST</future>"}]}), "rich_content_unknown_structure"),
+    (json.dumps({"question_blocks": [{"text": "TEST", "image_relationships": []}]}), "rich_content_invalid_blocks"),
+    (json.dumps({"question_id": 2, "question_blocks": [{"text": "TEST"}]}), "rich_content_question_mismatch"),
+])
+def test_rich_content_distinguishes_damaged_sidecar_from_absent_file(tmp_path, body, code):
+    assert load_question_rich_content(1, root=tmp_path, strict=True) is None
+    sidecar = tmp_path / "question_1.json"
+    sidecar.write_text(body, encoding="utf-8")
+    assert load_question_rich_content(1, root=tmp_path) is None
+    with pytest.raises(RichContentReadError) as error:
+        load_question_rich_content(1, root=tmp_path, strict=True)
+    assert error.value.code == code
+
+
+def test_rich_content_reports_unreadable_file_without_exposing_source(tmp_path, monkeypatch):
+    from question_bank.services import rich_content_service
+
+    def unreadable(path):
+        raise PermissionError('TEST-controlled-file-error')
+
+    monkeypatch.setattr(rich_content_service, 'file_is_file', unreadable)
+    assert load_question_rich_content(1, root=tmp_path) is None
+    with pytest.raises(RichContentReadError) as error:
+        load_question_rich_content(1, root=tmp_path, strict=True)
+    assert str(error.value) == 'rich_content_unreadable'
 
 
 def _extracted_with_floating_image(tmp_path: Path) -> ExtractedDocument:

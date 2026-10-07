@@ -780,12 +780,12 @@ def _fixed_target_matches(key: str, source_input: tuple, candidate_input: tuple,
                                            candidate_secondary=candidate_secondary)))
 
 
-def _valid_difficulty_features(question: Mapping[str, Any], rows: Sequence[Any]) -> list[dict[str, Any]]:
+def _valid_difficulty_features(question: Mapping[str, Any], rows: Sequence[Any], *, analysis_input=None) -> list[dict[str, Any]]:
     from question_bank.models.tag_schema import PART_FEATURE_ORDER
-    fingerprint = standard_difficulty.question_content_fingerprint(question)
     result = []
     for row in rows:
-        if row["source_content_hash"] != fingerprint:
+        if not standard_difficulty.difficulty_source_content_hash_matches(
+                question, str(row["source_content_hash"]), analysis_input=analysis_input):
             continue
         payload = json.loads(row["features_json"])
         result.append({"part_id": row["part_id"],
@@ -2223,7 +2223,6 @@ class PersonalizedRecommendationModule:
         snapshot = self._source_snapshot(
             question_ids=assembly_snapshot['question_ids'] if assembly_snapshot is not None else (),
             excluded_question_ids=excluded,
-            prepare_refinements=True,
             knowledge_keys=candidate_scope,
             candidate_config=config,
         )
@@ -2368,7 +2367,6 @@ class PersonalizedRecommendationModule:
             _SOURCE_SNAPSHOT_CACHE.put(
                 self._source_snapshot_cache_key(
                     question_ids=assembly_snapshot['question_ids'] if assembly_snapshot is not None else (),
-                    prepare_refinements=True,
                     excluded_question_ids=excluded,
                     knowledge_keys=candidate_scope,
                     candidate_config=config,
@@ -2692,7 +2690,7 @@ class PersonalizedRecommendationModule:
             )
             evidence_repository = SolutionEvidenceRepository(self.db_path)
             source_inputs = {item.question_id: item for item in QuestionAnalysisInputLoader(
-                db_path=self.db_path, data_root=self.data_root).load([int(row["id"]) for row in rows])}
+                db_path=self.db_path, data_root=self.data_root).load([int(row["id"]) for row in rows], load_failures={})}
 
             for row in rows:
                 qid = int(row["id"])
@@ -2708,7 +2706,9 @@ class PersonalizedRecommendationModule:
                 if not source_parts:
                     latest = evidence_repository.latest(qid)
                     current_input = source_inputs.get(qid)
-                    if latest and current_input and latest.get("status") in {"proposed", "approved"} and latest.get("source_content_hash") == solution_evidence_source_content_hash(current_input):
+                    from question_bank.training_criteria.analysis import source_content_hash_matches
+                    if latest and current_input and latest.get("status") in {"proposed", "approved"} and source_content_hash_matches(
+                            current_input, str(latest.get("source_content_hash") or ""), kind="solution_evidence"):
                         source_parts = (latest.get("evidence") or {}).get("parts", [])
                         source_version_id = str(latest.get("evidence_version_id") or source_version_id)
                 result[qid] = {**result.get(qid, {}), "question_difficulty": _difficulty(row["difficulty"]), "direct_keys": keys,
@@ -2717,7 +2717,7 @@ class PersonalizedRecommendationModule:
                                "practice_tags": values,
                                "question_text": str(row["question_text"] or ""),
                                "secondary_type_keys": sorted(k for k in values.get("secondary_type", ()) if is_type_key(k)),
-                               "difficulty_features": _valid_difficulty_features(dict(row), [f for f in features if f["question_id"] == qid]),
+                               "difficulty_features": _valid_difficulty_features(dict(row), [f for f in features if f["question_id"] == qid], analysis_input=source_inputs.get(qid)),
                                "parts": source_parts,
                                "evidence_version_id": source_version_id}
         # Frozen exam sources keep their frozen links, but the bank question's
@@ -3439,7 +3439,6 @@ class PersonalizedRecommendationModule:
     def _source_snapshot_cache_key(
         self,
         *,
-        prepare_refinements: bool,
         excluded_question_ids: set[int] | None,
         knowledge_keys: Sequence[str],
         candidate_config: PersonalizedRecommendationConfig | None,
@@ -3451,7 +3450,6 @@ class PersonalizedRecommendationModule:
             str(Path(self.data_root).resolve(strict=False)),
             str(self.current_knowledge.release_id),
             f"commits:{commit_generation(self.db_path)}",
-            bool(prepare_refinements),
             tuple(sorted(int(qid) for qid in (excluded_question_ids or ()))),
             tuple(sorted(str(item) for item in knowledge_keys)),
             tuple(sorted(set(question_ids))),
@@ -3471,7 +3469,6 @@ class PersonalizedRecommendationModule:
         self,
         *,
         excluded_question_ids: set[int] | None = None,
-        prepare_refinements: bool = False,
         knowledge_keys: Sequence[str] = (),
         candidate_config: PersonalizedRecommendationConfig | None = None,
         question_ids: Sequence[int] = (),
@@ -3481,7 +3478,6 @@ class PersonalizedRecommendationModule:
         str,
     ]:
         key = self._source_snapshot_cache_key(
-            prepare_refinements=prepare_refinements,
             excluded_question_ids=excluded_question_ids,
             knowledge_keys=knowledge_keys,
             candidate_config=candidate_config,
@@ -3491,7 +3487,6 @@ class PersonalizedRecommendationModule:
         def compute() -> tuple:
             return self._source_snapshot_uncached(
                 excluded_question_ids=excluded_question_ids,
-                prepare_refinements=prepare_refinements,
                 knowledge_keys=knowledge_keys,
                 candidate_config=candidate_config,
                 question_ids=question_ids,
@@ -3506,7 +3501,6 @@ class PersonalizedRecommendationModule:
         self,
         *,
         excluded_question_ids: set[int] | None = None,
-        prepare_refinements: bool = False,
         knowledge_keys: Sequence[str] = (),
         candidate_config: PersonalizedRecommendationConfig | None = None,
         question_ids: Sequence[int] = (),
@@ -3698,7 +3692,7 @@ class PersonalizedRecommendationModule:
             # retained inputs still receive the original live source checks.
             # Keep rows in the source-version payload even when their assets
             # need not be opened, preserving old draft/source fingerprints.
-            if candidate_config is None or prepare_refinements or not pool_keys:
+            if candidate_config is None or not pool_keys:
                 return True
             qid = int(row["id"])
             profile = profiles.get(qid, {})
@@ -3751,16 +3745,8 @@ class PersonalizedRecommendationModule:
         # Bound image memory and isolate bad sources as in the single reader.
         for start in range(0, len(candidate_ids), 64):
             ids = candidate_ids[start:start + 64]
-            try:
-                questions = loader.load(ids)
-            except (KeyError, OSError, ValueError):
-                recovered = []
-                for question_id in ids:
-                    try:
-                        recovered.extend(loader.load((question_id,)))
-                    except (KeyError, OSError, ValueError):
-                        continue
-                questions = tuple(recovered)
+            load_failures: dict[int, str] = {}
+            questions = loader.load(ids, load_failures=load_failures)
             if pool_keys:
                 # Reuse this batch's image bodies for the live source check.
                 # Stored identities above only narrowed the read, not eligibility.
@@ -3773,14 +3759,6 @@ class PersonalizedRecommendationModule:
                     self.current_knowledge.release_id,
                 ))
             try:
-                if prepare_refinements:
-                    for question in questions:
-                        profile = profiles.get(question.question_id)
-                        if profile:
-                            try:
-                                criteria.prepare_part_refinement(question, profile)
-                            except (KeyError, OSError, ValueError):
-                                continue
                 workspaces = criteria.read_many(questions)
             except (KeyError, OSError, ValueError):
                 workspaces = {}
@@ -3879,7 +3857,7 @@ class PersonalizedRecommendationModule:
                         "practice_tags": skill_tags,
                         "secondary_type_keys": sorted(
                             str(v) for v in skill_tags.get("secondary_type", ()) if is_type_key(v)),
-                        "difficulty_features": _valid_difficulty_features(dict(row), feature_by_question.get(question_id, [])),
+                        "difficulty_features": _valid_difficulty_features(dict(row), feature_by_question.get(question_id, []), analysis_input=question),
                         "error_patterns": preferred_active_patterns(patterns.get(question_id, [])),
                         "question_text": str(row["question_text"] or ""),
                         "solution_template": _practice_template(re.split(r"【解答】", str(row["answer_text"] or ""))[-1].split("【点评】")[0])
@@ -3920,7 +3898,7 @@ class PersonalizedRecommendationModule:
                         "criterion_point_count": (
                             len(points) if isinstance(points, list) else 0
                         ),
-                        "question_revision": str(row["updated_at"] or ""),
+                        "question_revision": question.source_content_hash,
                         "source_tag_keys": source_tag_keys.get(question_id, []),
                     }
                 )
@@ -3950,7 +3928,8 @@ class PersonalizedRecommendationModule:
             {
                 "engine_version": ENGINE_VERSION,
                 "candidates": normalized_candidates,
-                "source_questions": [dict(row) for row in rows],
+                "source_questions": [{key: value for key, value in dict(row).items()
+                                      if key != "updated_at"} for row in rows],
                 "relations": relations,
                 "current_mastery": self._current_mastery_version(),
             }

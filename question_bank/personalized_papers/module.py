@@ -1621,17 +1621,17 @@ class PersonalizedPaperModule:
                 recommendation["criterion_version_id"]
             )
             try:
-                version = criteria.get_version(expected_version)
                 workspace = criteria.read(question)
             except (CriterionVersionNotFound, KeyError, ValueError) as exc:
                 raise PaperSourceChanged(
                     "a recommended criterion version is unavailable"
                 ) from exc
             approved = usable_training_criterion(workspace)
+            version = approved
             if (
                 approved is None
                 or str(approved["version_id"]) != expected_version
-                or str(version["source_content_hash"]) not in {
+                or str(approved["source_content_hash"]) not in {
                     question.criterion_source_content_hash,
                     *workspace.get("compatible_source_hashes", ()),
                 }

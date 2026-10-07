@@ -192,20 +192,25 @@ def test_step_organized_result_syncs_rows_per_evidence_point(tmp_path):
 
 
 def test_failed_new_draft_does_not_reopen_review_when_teacher_version_still_matches(tmp_path):
+    from question_bank.training_criteria import QuestionAnalysisInputLoader
+
     path, qid = _choice_question(tmp_path)
+    current_hash = QuestionAnalysisInputLoader(db_path=path, data_root=tmp_path).load([qid])[0].criterion_source_content_hash
+    criteria_json = json.dumps({"points": [{"point_id": "TEST-answer", "target": "选择正确答案",
+        "observable_evidence": "选择B", "equivalent_rules": [], "counterexamples": []}]})
     with connect(path) as conn:
         for vid, status, quality in (("a"*64, "approved", "passed"), ("b"*64, "proposed", "failed")):
             conn.execute("""INSERT INTO training_criterion_versions
                 (version_id,question_id,version_number,source_content_hash,schema_version,status,
                  source_kind,source_reference,criteria_json,criteria_hash,quality_status,created_by)
-                VALUES(?,?,? ,?,'judgment-points-v1',?,'teacher_manual',?,'{}',?,?,'synthetic')""",
-                (vid, qid, 1 if status == "approved" else 2, "c"*64, status, vid, "d"*64, quality))
+                VALUES(?,?,? ,?,'judgment-points-v1',?,'teacher_manual',?,?,?,?,'synthetic')""",
+                (vid, qid, 1 if status == "approved" else 2, current_hash, status, vid, criteria_json, "d"*64, quality))
         conn.execute("INSERT INTO training_criterion_heads(question_id,current_version_id,approved_version_id,current_source_hash) VALUES(?,?,?,?)",
-                     (qid, "b"*64, "a"*64, "c"*64))
+                     (qid, "b"*64, "a"*64, current_hash))
     reader = QuestionBankReadService(path)
     assert reader.get_question(qid)["criteria_needs_review"] is False
     with connect(path) as conn:
-        conn.execute("UPDATE training_criterion_heads SET current_source_hash=? WHERE question_id=?", ("e"*64, qid))
+        conn.execute("UPDATE questions SET question_text='TEST-题目正文已改变' WHERE id=?", (qid,))
     assert reader.get_question(qid)["criteria_needs_review"] is True
 
 

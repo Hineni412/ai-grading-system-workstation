@@ -40,7 +40,7 @@ from question_bank.training_criteria.adapters import (
 
 from .manager import JobCancellationRequested, JobContext
 from .question_import import run_question_import_job
-from .tagging_sync import run_tagging_sync_job
+from .tagging_sync import _failure, run_tagging_sync_job
 
 QuestionImportRunner = Callable[..., dict[str, object]]
 TaggingSyncRunner = Callable[..., dict[str, object]]
@@ -692,6 +692,7 @@ def _result(
         "failed_count": failed_count,
         "successful_question_ids": successful_ids,
         "failed_question_ids": failed_ids,
+        "failures": list(tagging_result.get('failures') or []),
         "unresolved_question_ids": unresolved,
         "review_count": review_count,
         "proposal_ids": proposal_ids,
@@ -870,6 +871,10 @@ def _merge_tag_retry_result(
             int(current.get("linked_count") or 0),
         ),
         "failed_count": failed_count,
+        "failures": [
+            item for item in previous.get('failures', [])
+            if isinstance(item, dict) and item.get('question_id') not in retried
+        ] + list(current.get('failures') or []),
         "successful_question_ids": successful_ids,
         "failed_question_ids": failed_ids,
         "unresolved_question_ids": unresolved,
@@ -1000,9 +1005,11 @@ def _adopt_deferred_analysis_with_links(
         for item, link in linked_items
         if isinstance(link, dict) and item.reused_from_question_id is None
     })
+    load_failures: dict[int, str] = {}
     provisional = loader.load(
         adoption_ids,
         curriculum_volume_id=artifact.curriculum_volume_id,
+        load_failures=load_failures,
     ) if adoption_ids else ()
     contracts = ai_service.taxonomy_contracts(
         {item.question_id: item.tagging_context for item in provisional}
@@ -1066,7 +1073,19 @@ def _adopt_deferred_analysis_with_links(
             continue
         question = questions.get(bank_question_id)
         if question is None:
-            missing_links += 1
+            reason_code = load_failures[bank_question_id]
+            adoption_results.append({
+                'question_id': bank_question_id,
+                'source_question_ref': item.source_question_ref,
+                'tag_status': 'failed',
+                'tag_error_category': 'validation',
+                'evidence_status': 'failed',
+                'evidence_error_category': 'validation',
+                'criteria_status': 'failed',
+                'criteria_error_category': 'validation',
+                'input_error_code': reason_code,
+                'message': _failure(bank_question_id, 'validation', reason_code=reason_code)['message'],
+            })
             continue
         adoption_results.append(
             writer.adopt_linked(
@@ -1221,6 +1240,10 @@ def _adopt_deferred_analysis_with_links(
         "retryable": failed_count > 0 or bool(taxonomy_retry_ids),
         "mapping_baseline": baseline_result,
         "adoption_results": adoption_results,
+        "failures": [
+            _failure(int(item['question_id']), 'validation', reason_code=str(item['input_error_code']))
+            for item in adoption_results if item.get('input_error_code')
+        ],
     }
 
 

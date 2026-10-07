@@ -10,7 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from backend.schema_contracts import schema_signature
+from backend.schema_contracts import (
+    CurrentSchemaContract,
+    current_schema_contract_path,
+    load_current_schema_contract,
+    schema_signature_document,
+)
 from update_tools.migrate_db import MigrationFile, run_migrations
 
 
@@ -61,6 +66,7 @@ _SCHEMA_INSPECT_CACHE: dict[tuple[object, ...], SchemaGateResult] = {}
 _SCHEMA_INSPECT_LOCK = threading.Lock()
 _SCHEMA_INSPECT_CACHE_LIMIT = 32
 _FULL_CHECK_DONE: set[tuple[str, int, int]] = set()
+_DEFAULT_MIGRATIONS_ROOT = Path(__file__).resolve().parents[1] / "migrations"
 
 
 def _manifest_files(migration_root: Path) -> tuple[Path, ...]:
@@ -120,7 +126,7 @@ def _expected_schema_signature(
             else:
                 with closing(sqlite3.connect(reference_db)):
                     pass
-            signature = schema_signature(reference_db)
+            signature = schema_signature_document(reference_db)
         _SCHEMA_SIGNATURE_CACHE[cache_key] = signature
         return signature
 
@@ -142,6 +148,49 @@ def _database_is_blank(database: Path) -> bool:
     return row is None
 
 
+def _current_contract(target: str) -> CurrentSchemaContract | None:
+    try:
+        return load_current_schema_contract(target)
+    except (OSError, ValueError, TypeError) as exc:
+        raise SchemaVersionError("current schema contract cannot be read safely") from exc
+
+
+def _recorded_checksums(rows: tuple[object, ...] | list[Any]) -> tuple[tuple[str, str], ...]:
+    return tuple((str(row[0]), str(row[1] or "").strip()) for row in rows)
+
+
+def _create_current_database(
+    target: str,
+    database: Path,
+    contract: CurrentSchemaContract,
+) -> SchemaGateResult:
+    database.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            if connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
+            ).fetchone():
+                raise SchemaVersionError("current schema initialization requires a blank database")
+            for statement in contract.creation_statements:
+                connection.execute(statement)
+            if schema_signature_document(database, connection=connection) != contract.signature:
+                raise SchemaVersionError("current schema creation does not match its contract")
+            connection.executemany(
+                "INSERT INTO schema_migrations (migration_name, checksum, success) VALUES (?, ?, 1)",
+                contract.migration_checksums,
+            )
+            if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+                raise SchemaVersionError("database integrity check failed")
+            if connection.execute("PRAGMA foreign_key_check").fetchall():
+                raise SchemaVersionError("database foreign key check failed")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return inspect_schema_version(target, database)
+
+
 def inspect_schema_version(
     target: str,
     db_path: Path,
@@ -150,26 +199,25 @@ def inspect_schema_version(
 ) -> SchemaGateResult:
     """Validate one existing database without changing it.
 
-    The recorded successful migrations must be an exact checksum-matching prefix
-    of the local manifest, and the live schema must exactly match that prefix.
+    Complete databases match the current contract. Historical databases must
+    match an exact checksum-verified prefix of the conversion SQL manifest.
     """
 
     migration_root = (
         Path(migrations_dir)
         if migrations_dir is not None
-        else Path(__file__).resolve().parents[1] / "migrations" / target
+        else _DEFAULT_MIGRATIONS_ROOT / target
     )
     database = Path(db_path)
     if not database.is_file() or database.is_symlink():
         raise SchemaVersionError("database candidate is missing")
-    memo_key = _inspect_memo_key(target, database, migration_root)
+    contract = _current_contract(target)
+    memo_key = _inspect_memo_key(target, database, migration_root, contract=contract)
     if memo_key is not None:
         with _SCHEMA_INSPECT_LOCK:
             cached = _SCHEMA_INSPECT_CACHE.get(memo_key)
         if cached is not None:
             return cached
-    files = _manifest_files(migration_root)
-    migrations = tuple(MigrationFile.from_path(path) for path in files)
     identity = _database_file_identity(database)
     full_check = True
     if identity is not None:
@@ -179,7 +227,7 @@ def inspect_schema_version(
         target,
         database,
         migration_root=migration_root,
-        migrations=migrations,
+        contract=contract,
         full_check=full_check,
     )
     with _SCHEMA_INSPECT_LOCK:
@@ -204,6 +252,8 @@ def _inspect_memo_key(
     target: str,
     database: Path,
     migration_root: Path,
+    *,
+    contract: CurrentSchemaContract | None,
 ) -> tuple[object, ...] | None:
     uri = database.resolve().as_uri() + "?mode=ro"
     try:
@@ -221,7 +271,7 @@ def _inspect_memo_key(
                 history = tuple(
                     connection.execute(
                         "SELECT migration_name, checksum, success "
-                        "FROM schema_migrations ORDER BY migration_name"
+                        "FROM schema_migrations ORDER BY id"
                     ).fetchall()
                 )
     except (sqlite3.DatabaseError, OSError, TypeError, ValueError):
@@ -230,17 +280,28 @@ def _inspect_memo_key(
     if identity is None:
         return None
     try:
-        manifest_stamp = tuple(
-            (path.name, path.stat().st_size, path.stat().st_mtime_ns)
-            for path in sorted(migration_root.glob("*.sql"))
+        current = contract is not None and _recorded_checksums(history) == contract.migration_checksums
+        manifest_stamp = None if current else (
+            str(migration_root.resolve()),
+            tuple(
+                (path.name, path.stat().st_size, path.stat().st_mtime_ns)
+                for path in sorted(migration_root.glob("*.sql"))
+            ),
         )
+        contract_stamp = None
+        if target in {"grading", "question_bank"}:
+            contract_path = current_schema_contract_path(target)
+            contract_stamp = (
+                contract_path.stat().st_size,
+                contract_path.stat().st_mtime_ns,
+            )
     except OSError:
         return None
     return (
         target,
         str(database.resolve()),
-        str(migration_root.resolve()),
         manifest_stamp,
+        contract_stamp,
         schema_version,
         history,
         identity,
@@ -252,7 +313,7 @@ def _inspect_schema_version_uncached(
     database: Path,
     *,
     migration_root: Path,
-    migrations: tuple[MigrationFile, ...],
+    contract: CurrentSchemaContract | None,
     full_check: bool,
 ) -> SchemaGateResult:
     uri = database.resolve().as_uri() + "?mode=ro"
@@ -289,6 +350,18 @@ def _inspect_schema_version_uncached(
     if has_failed_record:
         raise SchemaVersionError("database migration history contains a failure")
     applied = tuple(str(row[0]) for row in rows)
+    if contract is not None and applied == tuple(item[0] for item in contract.migration_checksums):
+        for row, (name, checksum) in zip(rows, contract.migration_checksums):
+            if str(row[1] or "").strip() != checksum:
+                raise SchemaVersionError(f"recorded migration checksum does not match: {name}")
+        try:
+            actual = schema_signature_document(database)
+        except (sqlite3.DatabaseError, OSError) as exc:
+            raise SchemaVersionError("database schema cannot be inspected") from exc
+        if actual != contract.signature:
+            raise SchemaVersionError("database schema differs from the current schema contract")
+        return SchemaGateResult(target, applied[-1], applied)
+    migrations = tuple(MigrationFile.from_path(path) for path in _manifest_files(migration_root))
     expected_names = tuple(migration.name for migration in migrations[: len(rows)])
     if len(rows) > len(migrations) or applied != expected_names:
         known_names = {migration.name for migration in migrations}
@@ -304,7 +377,7 @@ def _inspect_schema_version_uncached(
                 f"recorded migration checksum does not match: {migration.name}"
             )
     try:
-        actual_signature = schema_signature(database)
+        actual_signature = schema_signature_document(database)
     except (sqlite3.DatabaseError, OSError) as exc:
         raise SchemaVersionError("database schema cannot be inspected") from exc
     expected_signature = _expected_schema_signature(
@@ -337,7 +410,7 @@ def ensure_schema_current(
     migration_root = (
         Path(migrations_dir)
         if migrations_dir is not None
-        else Path(__file__).resolve().parents[1] / "migrations" / target
+        else _DEFAULT_MIGRATIONS_ROOT / target
     )
     database = Path(db_path)
     effective_backup_dir = (
@@ -350,6 +423,10 @@ def ensure_schema_current(
         )
     )
     blank = _database_is_blank(database)
+    if blank and migration_root.resolve() == (_DEFAULT_MIGRATIONS_ROOT / target).resolve():
+        contract = _current_contract(target)
+        if contract is not None:
+            return _create_current_database(target, database, contract)
     if not blank:
         inspected = inspect_schema_version(
             target,

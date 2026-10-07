@@ -630,6 +630,8 @@ class TrainingCriterionWorkspaceResponse(_QuestionBankModel):
     available: bool
     revision: int = Field(ge=0)
     current_source_hash: str
+    compatible_source_hashes: list[str] = Field(default_factory=list, exclude=True)
+    read_failure: str | None = Field(default=None, exclude=True)
     current_version: TrainingCriterionVersionResponse | None = None
     approved_version: TrainingCriterionVersionResponse | None = None
     versions: list[TrainingCriterionVersionResponse]
@@ -654,7 +656,7 @@ class TrainingCriterionDraftWriteRequest(_QuestionBankModel):
 
 class TrainingCriterionReviewRequest(_QuestionBankModel):
     version_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    expected_revision: int = Field(ge=1)
+    expected_revision: int = Field(ge=0)
     action: Literal["approve", "reject"]
     reason: str = Field(min_length=1, max_length=500)
 

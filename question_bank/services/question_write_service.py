@@ -619,13 +619,18 @@ class QuestionBankWriteService:
             # 标准难度：独立表存储特征与公式版本。
             if part_records:
                 from question_bank.services import standard_difficulty
+                from question_bank.training_criteria.adapters import QuestionAnalysisInputLoader
+
+                content_input = QuestionAnalysisInputLoader(
+                    db_path=self.db_path, data_root=self.data_root, external_connection=conn,
+                ).load((int(question_id),))[0]
 
                 standard_difficulty.save_assessment(
                     conn,
                     question_id=int(question_id),
                     part_features=analysis.part_features,
                     content_fingerprint=standard_difficulty.question_content_fingerprint(
-                        dict(question)
+                        content_input
                     ),
                     model_name=_clean_optional(model_name),
                 )

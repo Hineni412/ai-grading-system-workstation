@@ -25,6 +25,7 @@ class SourceHash:
     input_key: str                      # source_input_key(question row)
     current: str                        # solution_evidence_source_content_hash(input)
     legacy: tuple[tuple[str, str], ...]  # (legacy essay type, hash); only for 解答题, else ()
+    compatible: tuple[str, ...] = ()
 
 
 def source_input_key(row: Mapping[str, Any]) -> str:
@@ -39,28 +40,33 @@ def source_input_key(row: Mapping[str, Any]) -> str:
 
 def _input_source_hashes(question: Any, input_key: str = "") -> SourceHash:
     from question_bank.training_criteria.analysis import (
+        compatible_source_content_hashes,
         solution_evidence_source_content_hash,
     )
     context = question.tagging_context
     legacy = ()
     if context.question_type == "解答题":
         legacy = tuple(
-            (kind, solution_evidence_source_content_hash(
-                replace(question, tagging_context=replace(context, question_type=kind))))
+            (kind, hashed)
             for kind in LEGACY_ESSAY_TYPES
+            for hashed in compatible_source_content_hashes(
+                replace(question, tagging_context=replace(context, question_type=kind)),
+                kind="solution_evidence",
+            )
         )
     return SourceHash(
         input_key=input_key,
         current=solution_evidence_source_content_hash(question),
         legacy=legacy,
+        compatible=tuple(compatible_source_content_hashes(question, kind="solution_evidence")),
     )
 
 
 def alias_from_hashes(entry: SourceHash, expected: str) -> str | None:
     """The ``source_alias`` result computed from a stored ``SourceHash``."""
-    if entry.current == expected:
+    if entry.current == expected or expected in entry.compatible:
         return ""
-    matches = [kind for kind, hashed in entry.legacy if hashed == expected]
+    matches = list(dict.fromkeys(kind for kind, hashed in entry.legacy if hashed == expected))
     return matches[0] if len(matches) == 1 else None
 
 
@@ -84,12 +90,15 @@ def source_alias(question: Any, expected: str) -> str | None:
 
 
 def current_inputs(db_path: Path, ids: Sequence[int], connection: sqlite3.Connection, *,
-                   data_root: Path | None = None) -> dict[int, Any]:
+                   data_root: Path | None = None,
+                   load_failures: MutableMapping[int, str] | None = None) -> dict[int, Any]:
+    if not ids:
+        return {}
     from question_bank.training_criteria.adapters import QuestionAnalysisInputLoader
     root = Path(data_root) if data_root is not None else Path(db_path).parent.parent
     return {q.question_id: q for q in QuestionAnalysisInputLoader(
         db_path=db_path, data_root=root, external_connection=connection,
-    ).load(ids)}
+    ).load(ids, load_failures=load_failures)}
 
 
 def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Connection | None = None,
@@ -117,24 +126,23 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
             for row in conn.execute(
                 f"""SELECT v.question_id, v.evidence_version_id, v.evidence_json,
                            v.source_content_hash AS evidence_source_hash,
-                           v.status AS evidence_status, v.graph_release_id
+                           v.status AS evidence_status, v.graph_release_id,
+                           v.source_kind, v.source_reference, v.created_by,
+                           v.created_at, v.updated_at, v.decision_by,
+                           v.decision_note, v.decided_at
                     FROM question_solution_evidence_versions v
                     JOIN questions q ON q.id = v.question_id AND q.is_deleted = 0
-                    JOIN (
-                        SELECT question_id, MAX(created_at) AS max_created
-                        FROM question_solution_evidence_versions
-                        WHERE status IN ('proposed', 'approved')
-                        GROUP BY question_id
-                    ) m ON m.question_id = v.question_id AND m.max_created = v.created_at
                     WHERE v.status IN ('proposed', 'approved')
                       AND v.question_id IN ({marks})
-                    ORDER BY v.rowid""", list(ids),
+                    ORDER BY v.status = 'approved', v.created_at, v.rowid""", list(ids),
             ).fetchall()
         ]
         seen: set[int] = set()
+        candidates: dict[int, list[Any]] = {}
         deduped: list[Any] = []
         for row in reversed(rows):
             question_id = int(row["question_id"])
+            candidates.setdefault(question_id, []).append(row)
             if question_id in seen:
                 continue
             seen.add(question_id)
@@ -151,6 +159,7 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
                 features.setdefault(int(row["question_id"]), {})[str(row["part_id"])] = row
         result = {}
         inputs = {}
+        load_failures: dict[int, str] = {}
         question_rows: dict[int, Any] = {}
         if rows and verify_source:
             question_rows = {
@@ -163,28 +172,31 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
                 # A caller that already loaded this batch can reuse its exact
                 # question inputs. Source comparison still runs for every profile.
                 inputs = question_inputs
-            elif source_hashes is not None:
-                # Reuse stored content checks: only rows whose hashed fields
-                # changed (or which have no entry) read their files again.
-                stale = [
-                    question_id
-                    for profile_row in rows
-                    if (question_id := int(profile_row["question_id"])) not in question_rows
-                    or (source_hashes.get(question_id) is None
-                        or source_hashes[question_id].input_key != source_input_key(question_rows[question_id]))
-                ]
-                if stale:
-                    for question_id, question in current_inputs(
-                            db_path, stale, conn, data_root=data_root).items():
-                        row = question_rows.get(question_id)
-                        source_hashes[question_id] = _input_source_hashes(
-                            question, source_input_key(row) if row is not None else "")
             else:
+                # The read service supplies these entries only while its asset
+                # manifest, file dependencies and calculation version match.
+                missing_ids = [int(row["question_id"]) for row in rows
+                    if source_hashes is None or (entry := source_hashes.get(int(row["question_id"]))) is None
+                    or entry.input_key != source_input_key(question_rows[int(row["question_id"])])]
                 inputs = current_inputs(
-                    db_path, [int(r["question_id"]) for r in rows], conn, data_root=data_root)
-        from question_bank.services.standard_difficulty import (
-            question_content_fingerprint,
-        )
+                    db_path, missing_ids, conn,
+                    data_root=data_root, load_failures=load_failures)
+            if source_hashes is not None:
+                for question_id, question in inputs.items():
+                    row = question_rows.get(question_id)
+                    source_hashes[question_id] = _input_source_hashes(
+                        question, source_input_key(row) if row is not None else "")
+            selected = []
+            for row in rows:
+                question_id = int(row["question_id"])
+                question = inputs.get(question_id)
+                entry = (source_hashes.get(question_id) if source_hashes is not None
+                         else _input_source_hashes(question) if question is not None else None)
+                if entry is not None and question_id not in load_failures:
+                    row = next((candidate for candidate in candidates[question_id]
+                        if alias_from_hashes(entry, str(candidate["evidence_source_hash"])) is not None), row)
+                selected.append(row)
+            rows = selected
         from question_bank.solution_evidence.repository import (
             _classification_from_evidence_payload,
         )
@@ -193,13 +205,31 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
         )
         for row in rows:
             question_id = int(row["question_id"])
-            evidence = json.loads(row["evidence_json"])
-            # Match the decorated payload readers get from repository.latest().
-            evidence["whole_question_classification"] = (
-                _classification_from_evidence_payload(evidence)
-            )
+            if (verify_source and question_id not in inputs
+                    and (source_hashes is None or question_id not in source_hashes)
+                    or question_id in load_failures):
+                result[question_id] = {"question_id": question_id,
+                    "evidence_version_id": str(row["evidence_version_id"]),
+                    "available": False, "reason": load_failures.get(question_id, "question_content_unavailable"),
+                    "evidence": {}, "parts": [], "revision": ""}
+                continue
+            try:
+                evidence = json.loads(row["evidence_json"])
+                if (not isinstance(evidence, dict) or not isinstance(evidence.get("parts"), list)
+                        or not evidence["parts"] or any(
+                            not isinstance(part, dict)
+                            or not isinstance(part.get("evidence_points", []), list)
+                            or any(not isinstance(point, dict) for point in part.get("evidence_points", []))
+                            for part in evidence["parts"])):
+                    raise ValueError("evidence structure is unreadable")
+                evidence["whole_question_classification"] = _classification_from_evidence_payload(evidence)
+            except (AttributeError, TypeError, ValueError):
+                result[question_id] = {"question_id": question_id,
+                    "evidence_version_id": str(row["evidence_version_id"]),
+                    "available": False, "reason": "evidence_unreadable",
+                    "evidence": {}, "parts": [], "revision": ""}
+                continue
             evidence_source_hash = str(row["evidence_source_hash"])
-            fingerprint = ""
             alias = ""
             if verify_source:
                 if source_hashes is not None and question_inputs is None:
@@ -209,12 +239,7 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
                 else:
                     question = inputs[question_id]
                     current_hash = solution_evidence_source_content_hash(question)
-                    alias = "" if current_hash == evidence_source_hash else source_alias(question, evidence_source_hash)
-                question_row = question_rows.get(question_id)
-                fingerprint = (
-                    question_content_fingerprint(question_row)
-                    if question_row is not None else ""
-                )
+                    alias = source_alias(question, evidence_source_hash)
             else:
                 current_hash = evidence_source_hash
             parts = []
@@ -224,11 +249,18 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
                 formula_version = ""
                 difficulty = None
                 if feature is not None:
-                    stale = (
-                        verify_source
-                        and fingerprint
-                        and str(feature["source_content_hash"]) != fingerprint
+                    from question_bank.services.standard_difficulty import (
+                        _legacy_question_content_fingerprint, difficulty_source_content_hash_matches,
                     )
+                    if verify_source and source_hashes is not None and question_inputs is None:
+                        stale = str(feature["source_content_hash"]) not in {
+                            current_hash, _legacy_question_content_fingerprint(question_rows[question_id]),
+                        }
+                    else:
+                        stale = verify_source and not difficulty_source_content_hash_matches(
+                            question_rows[question_id], str(feature["source_content_hash"]),
+                            analysis_input=inputs.get(question_id),
+                        )
                     if not stale:
                         difficulty = feature["formula_difficulty"]
                     try:
@@ -260,6 +292,8 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
                 "reason": None if available else "part_assessment_source_changed",
                 "revision": revision,
                 "parts": parts,
+                **{key: row[key] for key in ("source_kind", "source_reference", "created_by",
+                    "created_at", "updated_at", "decision_by", "decision_note", "decided_at")},
             }
         return result
 

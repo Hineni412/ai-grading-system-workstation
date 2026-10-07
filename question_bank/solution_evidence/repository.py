@@ -458,22 +458,27 @@ class SolutionEvidenceRepository:
         question_id: int,
         *,
         current_source_content_hash: str | None = None,
+        compatible_source_hashes: Sequence[str] = (),
     ) -> dict[str, Any] | None:
-        with connect(self.db_path) as connection:
-            row = connection.execute(
+        from question_bank.solution_evidence.part_assessments import reading
+        with reading(self.db_path) as connection:
+            rows = connection.execute(
                 """
                 SELECT * FROM question_solution_evidence_versions
                 WHERE question_id = ?
-                ORDER BY created_at DESC, evidence_version_id DESC
-                LIMIT 1
+                ORDER BY status = 'approved' DESC, created_at DESC, rowid DESC
                 """,
                 (int(question_id),),
-            ).fetchone()
-        if row is None:
+            ).fetchall()
+        if not rows:
             return None
         current_hash = str(current_source_content_hash or "").strip().casefold()
+        compatible = {current_hash, *compatible_source_hashes}
+        row = next((item for item in rows if current_hash
+                    and item["status"] in {"proposed", "approved"}
+                    and str(item["source_content_hash"]) in compatible), rows[0])
         stored_hash = str(row["source_content_hash"])
-        if current_hash and current_hash != stored_hash:
+        if current_hash and stored_hash not in compatible:
             return {
                 "evidence_version_id": str(row["evidence_version_id"]),
                 "question_id": int(row["question_id"]),
@@ -512,9 +517,18 @@ class SolutionEvidenceRepository:
         passing the payload back through the strict model contract.
         """
 
+        compatible: frozenset[str] = frozenset()
+        from question_bank.solution_evidence.part_assessments import current_inputs, reading
+        from question_bank.training_criteria.analysis import compatible_source_content_hashes
+        with reading(self.db_path) as connection:
+            inputs = current_inputs(self.db_path, [int(question_id)], connection, load_failures={})
+        current = inputs.get(int(question_id))
+        if current is not None and current.criterion_source_content_hash == source_content_hash:
+            compatible = compatible_source_content_hashes(current, kind="solution_evidence")
         latest = self.latest(
             question_id,
             current_source_content_hash=source_content_hash,
+            compatible_source_hashes=compatible,
         )
         if not isinstance(latest, dict) or latest.get("status") not in {
             "proposed",

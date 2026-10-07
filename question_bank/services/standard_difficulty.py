@@ -18,12 +18,15 @@ import hashlib
 import json
 import math
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from question_bank.database.schema import connect
 from question_bank.models.tag_schema import PART_FEATURE_ORDER
+
+if TYPE_CHECKING:
+    from question_bank.training_criteria.analysis import QuestionAnalysisInput
 
 STANDARD_DIFFICULTY_FORMULA_VERSION = "std-difficulty-v1"
 
@@ -143,8 +146,14 @@ def summarize_parts(
     )
 
 
-def question_content_fingerprint(question: Mapping[str, Any]) -> str:
-    """题目参与难度判定的内容指纹；内容变化即触发"需重评"。"""
+def question_content_fingerprint(question: QuestionAnalysisInput | Mapping[str, Any]) -> str:
+    """复用题目内容身份；完整素材应使用 QuestionAnalysisInput。"""
+    from question_bank.training_criteria.analysis import question_content_hash
+
+    return question_content_hash(question)
+
+
+def _legacy_question_content_fingerprint(question: Mapping[str, Any]) -> str:
 
     payload: dict[str, Any] = {}
     for field_name in _FINGERPRINT_FIELDS:
@@ -165,6 +174,24 @@ def question_content_fingerprint(question: Mapping[str, Any]) -> str:
         payload[field_name] = value
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def compatible_difficulty_content_hashes(
+    question: Mapping[str, Any], *, analysis_input: QuestionAnalysisInput | None = None,
+) -> frozenset[str]:
+    """在读取边界识别旧难度摘要，不改写旧记录的来源。"""
+    current = question_content_fingerprint(
+        analysis_input if analysis_input is not None else question
+    )
+    return frozenset((current, _legacy_question_content_fingerprint(question)))
+
+
+def difficulty_source_content_hash_matches(
+    question: Mapping[str, Any], stored_hash: str, *, analysis_input: QuestionAnalysisInput | None = None,
+) -> bool:
+    return stored_hash in compatible_difficulty_content_hashes(
+        question, analysis_input=analysis_input,
+    )
 
 
 def table_exists(conn: sqlite3.Connection) -> bool:
@@ -233,23 +260,25 @@ def load_assessment(
     question_id: int,
     *,
     current_fingerprint: str | None = None,
+    compatible_fingerprints: Collection[str] = (),
     connection: sqlite3.Connection | None = None,
 ) -> dict[str, Any] | None:
     """读取当前有效的逐小问特征；题目内容已变化时附带 needs_reevaluation。"""
 
     if connection is not None:
-        return _load_active(connection, int(question_id), current_fingerprint)
+        return _load_active(connection, int(question_id), current_fingerprint, compatible_fingerprints)
     database = Path(db_path)
     if not database.is_file():
         return None
     with connect(database) as conn:
-        return _load_active(conn, int(question_id), current_fingerprint)
+        return _load_active(conn, int(question_id), current_fingerprint, compatible_fingerprints)
 
 
 def _load_active(
     conn: sqlite3.Connection,
     question_id: int,
     current_fingerprint: str | None,
+    compatible_fingerprints: Collection[str],
 ) -> dict[str, Any] | None:
     if not table_exists(conn):
         return None
@@ -266,7 +295,7 @@ def _load_active(
     if not rows:
         return None
     parts: list[dict[str, Any]] = []
-    stored_fingerprint = ""
+    stored_fingerprints: set[str] = set()
     formula_version = ""
     model_name = ""
     created_at = ""
@@ -291,7 +320,7 @@ def _load_active(
                 "evidence": str(payload.get("evidence") or ""),
             }
         )
-        stored_fingerprint = str(row["source_content_hash"] or "")
+        stored_fingerprints.add(str(row["source_content_hash"] or ""))
         formula_version = str(row["formula_version"] or "")
         model_name = str(row["model_name"] or "")
         created_at = str(row["created_at"] or "")
@@ -303,8 +332,9 @@ def _load_active(
         "model_name": model_name,
         "created_at": created_at,
     }
+    accepted = {current_fingerprint, *compatible_fingerprints}
     result["needs_reevaluation"] = bool(
-        current_fingerprint and stored_fingerprint != current_fingerprint
+        current_fingerprint and not stored_fingerprints.issubset(accepted)
     )
     return result
 
@@ -312,6 +342,8 @@ def _load_active(
 __all__ = [
     "STANDARD_DIFFICULTY_FORMULA_VERSION",
     "build_part_records",
+    "compatible_difficulty_content_hashes",
+    "difficulty_source_content_hash_matches",
     "feature_raw",
     "formula_score",
     "load_assessment",
