@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import UTC, datetime
 from question_bank.mastery.model import week_of
 import os
@@ -38,6 +39,7 @@ from question_bank.mastery.current import (
     CURRENT_MASTERY_PARAMETERS,
     aggregate_current_mastery,
 )
+from question_bank.question_types import is_training_target, is_type_key, type_keys_active
 
 GENERIC_ERROR_REASONS = {
     "未作答",
@@ -495,6 +497,11 @@ class DiagnosisProfileService:
         )
         warnings = list(resolved.warnings)
         sessions = list(resolved.sessions)
+        profile_volume = str(exam_scope.get("curriculum_volume_id") or "").strip()
+        if not profile_volume:
+            session_volumes = {str(item.get("curriculum_volume_id") or "").strip() for item in sessions}
+            if len(session_volumes) == 1:
+                profile_volume = next(iter(session_volumes))
         students = list(resolved.students)
         session_ids = [int(item["id"]) for item in sessions]
         student_ids = [str(item["id"]) for item in students]
@@ -841,6 +848,8 @@ class DiagnosisProfileService:
             "unmapped_terms": [],
             "warnings": _unique(warnings),
             "diagnosis_identity": "question_tag",
+            # An unconverted volume keeps its existing skill presentation.
+            "target_kind": "type" if profile_volume and type_keys_active(hierarchy_resolver, profile_volume) else "skill",
             # Internal read-only contract. The API excludes root underscore
             # fields; source point text is not added to public references.
             "_exam_source_metadata": {
@@ -849,7 +858,80 @@ class DiagnosisProfileService:
                 for session_id, projection in projection_by_session.items()
             },
         }
+        if include_source_details and result["target_kind"] == "type":
+            result["_type_class_question_totals"] = self._type_class_question_totals(
+                student_profiles, evidence_rows,
+            )
         return result, dict(aggregated_mastery)
+
+    def _type_class_question_totals(
+        self, profiles: list[dict[str, Any]], evidence_rows: list[dict[str, Any]],
+    ) -> dict[str, dict[str, dict[str, dict[str, float | int]]]]:
+        """Final-score totals for each target student's complete class.
+
+        Only the exam items actually referenced by the selected type targets
+        are included. Reuse selected students' rows; read missing classmates
+        through the existing grading repository, without expanding targets.
+        This measures scored exam items, not precise mastery observations.
+        """
+        needed: dict[str, set[tuple[int, str]]] = defaultdict(set)
+        for student in profiles:
+            class_id = str(student.get("class_id") or "")
+            if not class_id.strip():
+                continue
+            for point in student.get("weak_points") or ():
+                if not is_type_key(point.get("knowledge_key")):
+                    continue
+                for ref in point.get("source_question_refs") or ():
+                    if not isinstance(ref, Mapping) or ref.get("source_kind") == "training":
+                        continue
+                    session_id = _safe_int(ref.get("session_id"))
+                    question_id = str(ref.get("question_id") or "")
+                    if session_id > 0 and question_id:
+                        needed[class_id].add((session_id, question_id))
+        if not needed:
+            return {}
+        selected = {str(student["student_id"]) for student in profiles}
+        extra_students = tuple(str(student["id"]) for student in self.db.students.list_students()
+            if str(student.get("class_name") or "") in needed and str(student["id"]) not in selected)
+        rows = evidence_rows
+        if extra_students:
+            rows = [*rows, *self.db.results.get_active_assessment_evidence(
+                student_ids=extra_students,
+                session_ids=tuple(sorted({session for pairs in needed.values() for session, _ in pairs})),
+            )]
+        totals: dict[str, dict[str, dict[str, dict[str, float | int]]]] = {}
+        seen: set[tuple[str, int, str]] = set()
+        for row in rows:
+            class_id = str(row.get("class_name") or "")
+            session_id, question_id = _safe_int(row.get("session_id")), str(row.get("question_id") or "")
+            if (session_id, question_id) not in needed.get(class_id, ()):
+                continue
+            state = row.get("assessment_state") or {}
+            if row.get("teacher_final_revision") is None and (
+                state.get("need_review") is True or state.get("answer_discarded_by_smudge") is True
+            ):
+                continue
+            full_value = row.get("teacher_final_max_score")
+            if full_value is None:
+                full_value = row.get("full_score")
+            try:
+                score, full = float(row.get("score_awarded")), float(full_value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(score) or not math.isfinite(full) or full <= 0:
+                continue
+            identity = (str(row.get("student_id")), session_id, question_id)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            bucket = totals.setdefault(class_id, {}).setdefault(str(session_id), {}).setdefault(
+                question_id, {"score_sum": 0.0, "full_score_sum": 0.0, "evidence_student_count": 0},
+            )
+            bucket["score_sum"] += min(max(score, 0.0), full)
+            bucket["full_score_sum"] += full
+            bucket["evidence_student_count"] += 1
+        return totals
 
     def graded_activities(self, student_ids: Iterable[str]) -> list[dict[str, Any]]:
         """Read actual participation independently of tag coverage or score loss."""
@@ -1166,7 +1248,12 @@ class DiagnosisProfileService:
         sessions = [s for s in self.db.sessions.list_grading_sessions()
                     if not s.get("is_deleted") and s.get("curriculum_volume_id") == volume_id]
         if not students or not sessions:
-            return {"student_count": len(students), "exams": []}
+            try:
+                resolver = CurrentKnowledgeResolver.from_active_database(self.question_bank_db_path)
+            except (CurrentKnowledgeUnavailable, OSError, sqlite3.Error, TypeError, ValueError):
+                resolver = None
+            return {"student_count": len(students), "exams": [],
+                    "target_kind": "type" if type_keys_active(resolver, volume_id) else "skill"}
         ids = [int(s["id"]) for s in sessions]
         projections = self._tag_projections(ids)
         causes = self._error_cause_index(ids)
@@ -1240,7 +1327,7 @@ class DiagnosisProfileService:
                     rate_sum += class_rate_sum
                 projected = projection.get(qid)
                 keys = list(projected.tags.get("knowledge_point", ())) if projected else []
-                keys = [key for key in keys if key.startswith("sk_")]
+                keys = [key for key in keys if is_training_target(key, resolver, volume_id)]
                 questions.append({"key": f"{sid}:{qid}", "session_id": sid, "question_id": qid,
                     "question_type": {"choice": "选择题", "fill_blank": "填空题", "multi_choice": "多选题"}.get(question.get("question_type"), "解答题"),
                     "full_score": max(float(r.get("full_score") or 0) for r in scored.values()),
@@ -1259,7 +1346,8 @@ class DiagnosisProfileService:
                 exams.append({"session_id": sid, "title": session.get("session_name") or session.get("exam_name") or session.get("name") or session.get("title") or f"考试 {sid}",
                     "date": str(session.get("created_at") or ""), "class_ids": sorted({students[s].get("class_name") for s in participants}),
                     "student_count": len(participants), "average_score": round(sum(totals.values()) / len(participants), 2), "questions": questions})
-        return {"student_count": len(students), "exams": exams}
+        return {"student_count": len(students), "exams": exams,
+                "target_kind": "type" if type_keys_active(resolver, volume_id) else "skill"}
 
     def _error_cause_index(
         self,

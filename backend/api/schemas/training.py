@@ -574,6 +574,7 @@ class TrainingDiagnosisResponse(_TrainingModel):
     unmapped_terms: list[str]
     warnings: list[str]
     diagnosis_identity: Literal["question_tag"]
+    target_kind: Literal["skill", "type"] = "skill"
     grouping: dict[str, Any] | None = None
 
 
@@ -597,6 +598,16 @@ class TrainingOverviewNodeStudent(_TrainingModel):
     mastery: float
 
 
+class TrainingOverviewExamQuestion(_TrainingModel):
+    session_name: str = ""
+    question_label: str = ""
+    class_rate: float | None = None
+
+
+class TrainingOverviewTypicalQuestion(TrainingOverviewExamQuestion):
+    bank_question_id: int = Field(ge=0)
+
+
 class TrainingOverviewNode(_TrainingModel):
     definition: str = ""
     in_volume: bool = True
@@ -604,7 +615,7 @@ class TrainingOverviewNode(_TrainingModel):
     group_interval_high: float | None = None
     knowledge_key: str
     display_name: str
-    kind: Literal["chapter", "section", "topic", "skill"]
+    kind: Literal["chapter", "section", "topic", "skill", "type"]
     chapter_key: str
     section_key: str
     group_mastery: float | None = None
@@ -612,6 +623,8 @@ class TrainingOverviewNode(_TrainingModel):
     evidence_student_count: int = Field(ge=0)
     distribution: TrainingOverviewDistribution
     students: list[TrainingOverviewNodeStudent]
+    typical_question: TrainingOverviewTypicalQuestion | None = None
+    other_questions: list[TrainingOverviewExamQuestion] = Field(default_factory=list)
 
 
 class TrainingOverviewTierCounts(_TrainingModel):
@@ -631,6 +644,7 @@ class TrainingOverviewStudent(_TrainingModel):
     score_rate_source: Literal["current_exam", "historical_fallback", "none"] = "none"
     topics: TrainingOverviewTierCounts
     skills: TrainingOverviewTierCounts
+    types: TrainingOverviewTierCounts | None = None
 
 
 class TrainingOverviewSummary(_TrainingModel):
@@ -642,6 +656,8 @@ class TrainingOverviewSummary(_TrainingModel):
     skill_count: int = Field(ge=0)
     weak_topic_count: int = Field(ge=0)
     weak_skill_count: int = Field(ge=0)
+    type_count: int = Field(default=0, ge=0)
+    weak_type_count: int = Field(default=0, ge=0)
 
 
 class TrainingOverviewAssociation(_TrainingModel):
@@ -654,6 +670,7 @@ class TrainingOverviewAssociation(_TrainingModel):
 
 class TrainingOverviewResponse(_TrainingModel):
     associations: list[TrainingOverviewAssociation] = Field(default_factory=list)
+    target_kind: Literal["skill", "type"] = "skill"
     scope: TrainingNormalizedScope
     exam_scope: TrainingNormalizedExamScope
     warnings: list[str]

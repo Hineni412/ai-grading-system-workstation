@@ -532,7 +532,7 @@ export interface TrainingDiagnosis {
     knowledge_point: string
     parent_knowledge_key?: string | null
     parent_knowledge_point?: string | null
-    node_kind?: 'chapter' | 'section' | 'topic' | 'skill'
+    node_kind?: 'chapter' | 'section' | 'topic' | 'skill' | 'type'
   }>
   knowledge_associations?: Array<{
     topic_key: string
@@ -551,6 +551,7 @@ export interface TrainingDiagnosis {
   unmapped_terms: string[]
   warnings: string[]
   diagnosis_identity: 'question_tag'
+  target_kind?: OverviewTargetKind
 }
 
 export interface TrainingOverviewRequest {
@@ -559,13 +560,24 @@ export interface TrainingOverviewRequest {
   include_student_detail?: boolean
 }
 
-export type OverviewNodeKind = 'chapter' | 'section' | 'topic' | 'skill'
+export type OverviewNodeKind = 'chapter' | 'section' | 'topic' | 'skill' | 'type'
+export type OverviewTargetKind = 'skill' | 'type'
 
 export interface TrainingOverviewDistribution {
   weak: number
   unsteady: number
   stable: number
   insufficient: number
+}
+
+export interface TrainingOverviewExamQuestion {
+  session_name: string
+  question_label: string
+  class_rate: number | null
+}
+
+export interface TrainingOverviewTypicalQuestion extends TrainingOverviewExamQuestion {
+  bank_question_id: number
 }
 
 export interface TrainingOverviewNode {
@@ -583,6 +595,8 @@ export interface TrainingOverviewNode {
   evidence_student_count: number
   distribution: TrainingOverviewDistribution
   students: Array<{ student_id: string; mastery: number; tier?: string; interval_low?: number | null; interval_high?: number | null; observation_count?: number; full_correct_count?: number; recent_trend?: string | null }>
+  typical_question?: TrainingOverviewTypicalQuestion | null
+  other_questions?: TrainingOverviewExamQuestion[]
 }
 
 export interface TrainingOverviewTierCounts {
@@ -602,6 +616,7 @@ export interface TrainingOverviewStudent {
   score_rate_source: 'current_exam' | 'historical_fallback' | 'none'
   topics: TrainingOverviewTierCounts
   skills: TrainingOverviewTierCounts
+  types?: TrainingOverviewTierCounts
 }
 
 export interface TrainingOverviewSummary {
@@ -613,6 +628,8 @@ export interface TrainingOverviewSummary {
   skill_count: number
   weak_topic_count: number
   weak_skill_count: number
+  type_count?: number
+  weak_type_count?: number
 }
 
 export interface TrainingOverviewAssociation {
@@ -625,6 +642,7 @@ export interface TrainingOverviewAssociation {
 
 export interface TrainingOverview {
   associations?: TrainingOverviewAssociation[]
+  target_kind?: OverviewTargetKind
   scope: TrainingDiagnosis['scope']
   exam_scope: TrainingDiagnosis['exam_scope'] & {
     curriculum_volume_id?: string | null
@@ -814,6 +832,7 @@ export function decodeTrainingDiagnosis(value: unknown): TrainingDiagnosis {
     || !isStringArray(value.suggested_terms)
     || !isStringArray(value.unmapped_terms)
     || !isStringArray(value.warnings)
+    || (value.target_kind !== undefined && value.target_kind !== 'skill' && value.target_kind !== 'type')
   ) {
     throw new Error('Invalid training diagnosis')
   }
@@ -833,7 +852,16 @@ function isOverviewDistribution(
 }
 
 function isOverviewNodeKind(value: unknown): value is OverviewNodeKind {
-  return value === 'chapter' || value === 'section' || value === 'topic' || value === 'skill'
+  return value === 'chapter' || value === 'section' || value === 'topic' || value === 'skill' || value === 'type'
+}
+
+function isOverviewExamQuestion(value: unknown): value is TrainingOverviewExamQuestion {
+  return (
+    isRecord(value)
+    && typeof value.session_name === 'string'
+    && typeof value.question_label === 'string'
+    && (value.class_rate === null || isFiniteNumber(value.class_rate))
+  )
 }
 
 function isOverviewNode(value: unknown): value is TrainingOverviewNode {
@@ -857,6 +885,9 @@ function isOverviewNode(value: unknown): value is TrainingOverviewNode {
       && typeof student.student_id === 'string'
       && isFiniteNumber(student.mastery)
     ))
+    && (value.typical_question === undefined || value.typical_question === null
+      || (isOverviewExamQuestion(value.typical_question) && isInteger((value.typical_question as TrainingOverviewTypicalQuestion).bank_question_id)))
+    && (value.other_questions === undefined || (Array.isArray(value.other_questions) && value.other_questions.every(isOverviewExamQuestion)))
   )
 }
 
@@ -887,6 +918,7 @@ function isOverviewStudent(value: unknown): value is TrainingOverviewStudent {
     )
     && isOverviewTierCounts(value.topics)
     && isOverviewTierCounts(value.skills)
+    && (value.types === undefined || value.types === null || isOverviewTierCounts(value.types))
   )
 }
 
@@ -901,6 +933,8 @@ function isOverviewSummary(value: unknown): value is TrainingOverviewSummary {
     && isInteger(value.skill_count)
     && isInteger(value.weak_topic_count)
     && isInteger(value.weak_skill_count)
+    && (value.type_count === undefined || isInteger(value.type_count))
+    && (value.weak_type_count === undefined || isInteger(value.weak_type_count))
   )
 }
 
@@ -916,6 +950,7 @@ export function decodeTrainingOverview(value: unknown): TrainingOverview {
     || !Array.isArray(value.students)
     || !value.students.every(isOverviewStudent)
     || !isOverviewSummary(value.summary)
+    || (value.target_kind !== undefined && value.target_kind !== 'skill' && value.target_kind !== 'type')
     || (value.associations !== undefined && (!Array.isArray(value.associations) || !value.associations.every(a =>
       isRecord(a) && isNonEmptyString(a.topic_key) && isNonEmptyString(a.skill_key)
       && isInteger(a.question_count) && isInteger(a.same_part_question_count)

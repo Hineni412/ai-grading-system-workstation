@@ -11,7 +11,7 @@ const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 const assembly = useAssemblyStore()
 const { confirm } = useConfirm()
-const ruleSummary = computed(() => paperRulesSummary(typeof assembly.draft.practice_rules === 'object' && assembly.draft.practice_rules ? assembly.draft.practice_rules : defaultPaperRules()))
+const ruleSummary = computed(() => paperRulesSummary(typeof assembly.draft.practice_rules === 'object' && assembly.draft.practice_rules ? assembly.draft.practice_rules : defaultPaperRules(), assembly.draft.assembly_context?.target_kind))
 const counts = computed(() => assembly.orderedQuestions.reduce((counts, question) => { if (/选择/.test(question.question_type || '')) counts.choice++; else if (question.question_type === '填空题') counts.fill++; else counts.essay++; return counts }, { choice: 0, fill: 0, essay: 0 }))
 watch(() => props.open, open => { if (open && assembly.loadState === 'idle') void assembly.load() })
 async function clear() {

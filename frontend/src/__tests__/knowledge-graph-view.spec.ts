@@ -11,6 +11,11 @@ import { heatLevel, overviewMetrics, relatedNodes, weakRate } from '../component
 import KnowledgeGraphView from '../views/KnowledgeGraphView.vue'
 vi.mock('../api/students', async importOriginal => ({ ...await importOriginal<typeof import('../api/students')>(), fetchStudents: vi.fn() }))
 vi.mock('../api/training', async importOriginal => ({ ...await importOriginal<typeof import('../api/training')>(), trainingApi: { overview: vi.fn() } }))
+vi.mock('../api/assembly', async importOriginal => ({ ...await importOriginal<typeof import('../api/assembly')>(),
+  assemblyApi: { resolveQuestions: vi.fn(async (ids: number[]) => ({ items: ids.map(id => ({ id, revision: 'r1', question_number: '3', question_type: '解答题',
+    question_text: `题库题 ${id} 的题干`, answer_text: null, difficulty: '3', paper_title: null, tags: [], asset_urls: [], score_value: null,
+    rich_content: { available: true, question_block_count: 1, answer_block_count: 0,
+      question_blocks: [{ kind: 'paragraph' as const, text: `题型典型题干 ${id}`, asset_urls: [] }], answer_blocks: [] } })), missing_question_ids: [] })) } }))
 function node(overrides: Partial<TrainingOverviewNode> = {}): TrainingOverviewNode {
   return { knowledge_key: 'topic', display_name: '册｜第一章｜第一节｜用勾股定理求边长', kind: 'topic',
     chapter_key: 'ch', section_key: 'sec', in_volume: true, definition: '直角三角形三边的关系。',
@@ -32,6 +37,25 @@ function fixture(): TrainingOverview {
     associations: [{ topic_key: 'topic', skill_key: 'skill', question_count: 12, same_part_question_count: 10, basis: 'same_part' },
       { topic_key: 'topic', skill_key: 'skill2', question_count: 3, same_part_question_count: 0, basis: 'question_cooccurrence' },
       { topic_key: 'old', skill_key: 'skill2', question_count: 1, same_part_question_count: 0, basis: 'question_cooccurrence' }] }
+}
+function typeFixture(): TrainingOverview {
+  const base = fixture()
+  const typeNode = (overrides: Partial<TrainingOverviewNode>): TrainingOverviewNode => node({
+    kind: 'type', ...overrides })
+  return { ...base, target_kind: 'type', associations: [],
+    summary: { ...base.summary, topic_count: 0, skill_count: 0, weak_topic_count: 0, weak_skill_count: 0,
+      type_count: 3, weak_type_count: 2 },
+    nodes: [node({ knowledge_key: 'ch', kind: 'chapter', display_name: '册｜第一章' }),
+      node({ knowledge_key: 'sec', kind: 'section', display_name: '册｜第一章｜第一节' }),
+      typeNode({ knowledge_key: 'type-weak', display_name: '册｜第一章｜第一节｜题型·构造直角求边',
+        definition: '构造直角三角形后用勾股定理求边。',
+        typical_question: { bank_question_id: 42, session_name: '第三周学情反馈', question_label: '8', class_rate: .35 },
+        other_questions: [{ session_name: '期中考试', question_label: '12', class_rate: .5 }] }),
+      typeNode({ knowledge_key: 'type-ok', display_name: '册｜第一章｜第一节｜题型·面积拼图推理',
+        distribution: { weak: 0, unsteady: 0, stable: 2, insufficient: 0 } }),
+      typeNode({ knowledge_key: 'type-hidden', display_name: '册｜第一章｜第一节｜题型·未考查的题型',
+        evidence_student_count: 0, distribution: { weak: 0, unsteady: 0, stable: 0, insufficient: 0 },
+        students: [] })] }
 }
 const mounted: App[] = []
 async function settle() { await nextTick(); await Promise.resolve(); await nextTick() }
@@ -102,6 +126,28 @@ describe('knowledge mastery map', () => {
     button(host, 'topic').dispatchEvent(new MouseEvent('mouseleave'))
     await settle(); expect(button(host, 'unrelated').classList.contains('is-dimmed')).toBe(false)
     expect(relatedNodes(fixture(), 'topic').map(r => r.node.knowledge_key)).toEqual(['skill', 'skill2'])
+  })
+  it('renders a single type column, hides unexamined types, and shows the typical question without students or links', async () => {
+    vi.mocked(trainingApi.overview).mockImplementation(async () => typeFixture())
+    const { host } = await mountView()
+    expect(host.querySelector('.mastery-map-column[data-kind="type"]')?.textContent).toContain('题型 · 考什么')
+    expect(host.querySelector('.mastery-map-column[data-kind="topic"]')).toBeNull()
+    expect(host.querySelector('.mastery-map-column[data-kind="skill"]')).toBeNull()
+    expect(button(host, 'type-hidden')).toBeNull()
+    expect(host.textContent).toContain('尚未考查的 1 个题型已隐藏')
+    expect(host.querySelector('.mastery-map-connections')).toBeNull()
+    const cell = button(host, 'type-weak'); cell.click()
+    await vi.waitFor(() => expect(host.querySelector('.mastery-map-drawer')).not.toBeNull()); await settle()
+    const drawer = host.querySelector('.mastery-map-drawer')!
+    expect(drawer.textContent).toContain('题型')
+    expect(drawer.textContent).toContain('构造直角三角形后用勾股定理求边。')
+    expect(drawer.textContent).toContain('典型题：本班考过的这类题中得分率最低的一道 · 第三周学情反馈 第8题 · 本班得分率 35%')
+    expect(drawer.textContent).toContain('题型典型题干 42')
+    expect(drawer.textContent).toContain('本班还考过这类题：')
+    expect(drawer.textContent).toContain('期中考试 第12题 · 得分率 50%')
+    expect(drawer.textContent).toContain('给明显薄弱的 1 人出训练卷')
+    expect(drawer.textContent).not.toContain('相关知识点')
+    expect(drawer.querySelector('.student-tier-chips, [class*="tier-chip"]')).toBeNull()
   })
   it('retains cached results when moving from overview to map', async () => {
     const pinia = createPinia(); setActivePinia(pinia)

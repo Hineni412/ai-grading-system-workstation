@@ -190,3 +190,4 @@ class AssemblyAssistantResponse(_AssemblyModel):
     selected_target_keys: list[str]
     candidate_total: int
     candidates: list[AssemblyAssistantCandidate]
+    target_kind: Literal["skill", "type"] = "skill"

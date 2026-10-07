@@ -75,6 +75,50 @@ OTHER_SKILL = "sk_bnu24_math_g8_upper_3_3_202"
 TOPIC = "kp_bnu24_math_g8_upper_3_3_1"
 OTHER_TOPIC = "kp_bnu24_math_g8_upper_3_3_2"
 
+TYPE_KEY = "kp_bnu24_math_g8_upper_1_1_t05"
+TYPE_OTHER = "kp_bnu24_math_g8_upper_1_1_t07"
+TYPE_INDEX = {TYPE_KEY: {"kind": "type", "chapter": "chapter1", "section": "section1"}}
+
+
+def type_facet(*, types=(), section="section1", chapter="chapter1", part="p1"):
+    return {
+        "part_id": part,
+        "direct_keys": list(types),
+        "skill_keys": [],
+        "type_keys": list(types),
+        "topic_keys": [],
+        "section_keys": [section],
+        "chapter_keys": [chapter],
+    }
+
+
+def test_type_target_match_levels_and_similarity_threshold():
+    source = [type_facet(types=(TYPE_KEY,))]
+    same = match_target(TYPE_KEY, source, [type_facet(types=(TYPE_KEY,))], TYPE_INDEX)
+    assert same["match_level"] == 1 and same["match_label"] == "同题型"
+    related = match_target(TYPE_KEY, source, [type_facet(types=(TYPE_OTHER,))],
+                           TYPE_INDEX, candidate_secondary=(TYPE_KEY,))
+    assert related["match_level"] == 2 and related["match_label"] == "次题型相关"
+    reverse = match_target(TYPE_KEY, source, [type_facet(types=(TYPE_OTHER,))],
+                           TYPE_INDEX, source_secondary=(TYPE_OTHER,))
+    assert reverse["match_level"] == 2
+    other = type_facet(types=(TYPE_OTHER,))
+    near = match_target(TYPE_KEY, source, [other], TYPE_INDEX, similarity=0.6)
+    assert near["match_level"] == 3 and "相近题，不是同一题型" in near["match_label"]
+    supplement = match_target(TYPE_KEY, source, [other], TYPE_INDEX, similarity=0.599)
+    assert supplement["match_level"] == 4 and supplement["match_label"] == "同小节补充"
+    assert match_target(TYPE_KEY, source,
+                        [type_facet(types=(TYPE_OTHER,), section="elsewhere")],
+                        TYPE_INDEX, similarity=1.0) is None
+
+
+def test_skill_match_unchanged_with_type_mode_inputs():
+    source = [facet()]
+    base = match_target("sk_test", source, [facet()], INDEX)
+    again = match_target("sk_test", source, [facet()], INDEX, similarity=0.9,
+                         source_secondary=(TYPE_KEY,), candidate_secondary=("sk_test",))
+    assert base == again
+
 
 @pytest.fixture
 def current_link_module(tmp_path):

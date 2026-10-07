@@ -9,6 +9,7 @@ from typing import Any
 
 from backend.config_generation.contract import iter_effective_rubric_item_refs
 from question_bank.database.schema import connect, initialize_database
+from question_bank.question_types import question_type_key, type_keys_active
 from question_bank.services.source_question_link_service import (
     SourceQuestionLinkService,
 )
@@ -117,6 +118,7 @@ class QuestionTagProjectionService:
             snapshot.get("questions") if isinstance(snapshot, Mapping) else {}
         )
         resolver = self._knowledge_resolver()
+        types_active = type_keys_active(resolver)
 
         projected: list[ProjectedQuestionTags] = []
         for item_ref, parent_ref, _question, _item in item_refs:
@@ -138,6 +140,11 @@ class QuestionTagProjectionService:
                 missing_reason = "missing_knowledge_point"
             else:
                 missing_reason = ""
+            type_key = (
+                question_type_key(tags.get("knowledge_point", ()))
+                if types_active
+                else ""
+            )
             snapshot_question = (
                 snapshot_questions.get(parent_ref)
                 if bank_question_id is not None
@@ -147,6 +154,12 @@ class QuestionTagProjectionService:
                 isinstance(snapshot_question, Mapping)
                 and snapshot_question.get("usable")
             ):
+                if type_key:
+                    # 题型是整题属性：题库当前题型覆盖快照中冻结的 direct 链接，
+                    # 技能链接仍留在题库供展示。
+                    snapshot_question = _type_overlaid_question(
+                        snapshot_question, type_key
+                    )
                 covered_ids, item_steps = _covered_point_ids(_item)
                 evidence_points = {
                     str(point.get("evidence_point_id")): point
@@ -215,9 +228,13 @@ class QuestionTagProjectionService:
                 }
             elif bank_question_id is not None and questions.get(bank_question_id):
                 # 无快照的旧会话兜底：整题 knowledge_point 标签上溯到节键。
-                fallback = self._section_fallback_keys(
-                    tags.get("knowledge_point", ()),
-                    resolver,
+                fallback = (
+                    (type_key,)
+                    if type_key
+                    else self._section_fallback_keys(
+                        tags.get("knowledge_point", ()),
+                        resolver,
+                    )
                 )
                 if fallback:
                     tags = {**tags, "knowledge_point": fallback}
@@ -376,6 +393,48 @@ class QuestionTagProjectionService:
                 if isinstance(payload, Mapping) else "",
             }
         return result
+
+
+def _type_overlaid_question(
+    snapshot_question: Mapping[str, Any],
+    type_key: str,
+) -> dict[str, Any]:
+    """Snapshot-question copy whose every evidence point has ``type_key`` as
+    its sole ``direct`` link; non-direct links are kept unchanged."""
+    evidence = snapshot_question.get("evidence") or {}
+    links = snapshot_question.get("links") or {}
+    ordered_ids = [
+        str(pid)
+        for pid in dict.fromkeys(
+            [
+                point.get("evidence_point_id")
+                for part in evidence.get("parts", ())
+                for point in part.get("evidence_points", ())
+            ]
+            + list(links)
+        )
+        if str(pid or "")
+    ]
+    overlaid: dict[str, list[Mapping[str, Any]]] = {}
+    for pid in ordered_ids:
+        kept = [
+            dict(link)
+            for link in links.get(pid, ()) or ()
+            if isinstance(link, Mapping)
+            and str(link.get("role") or "") != "direct"
+        ]
+        kept.append(
+            {
+                "stable_key": type_key,
+                "term_id": type_key,
+                "role": "direct",
+                "resolution_status": "resolved",
+                "weight": 1.0,
+                "source_kind": "question_type_overlay",
+            }
+        )
+        overlaid[pid] = kept
+    return {**snapshot_question, "links": overlaid}
 
 
 def _covered_point_ids(

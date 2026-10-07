@@ -4,7 +4,10 @@ import { shortNodeName } from './model'
 // Display thresholds only. Backend tiers are never inferred from these rates.
 export const WEAK_HEAT_THRESHOLDS = [0, .1, .2, .3, .4] as const
 export const WEAK_HEAT_LABELS = ['0', '≤10%', '≤20%', '≤30%', '≤40%', '>40%'] as const
-export const isItem = (node: TrainingOverviewNode) => node.kind === 'topic' || node.kind === 'skill'
+export const isItem = (node: TrainingOverviewNode) => node.kind === 'topic' || node.kind === 'skill' || node.kind === 'type'
+export const isTypeMode = (data: Pick<TrainingOverview, 'target_kind'>) => data.target_kind === 'type'
+export const itemWeakCount = (student: TrainingOverview['students'][number]) =>
+  student.types ? student.types.weak : student.topics.weak + student.skills.weak
 export const volumeItems = (nodes: TrainingOverviewNode[]) => nodes.filter(node => node.in_volume !== false && isItem(node))
 export function weakRate(node: TrainingOverviewNode): number | null {
   return node.evidence_student_count > 0 ? node.distribution.weak / node.evidence_student_count : null
@@ -20,7 +23,7 @@ export function overviewMetrics(data: TrainingOverview) {
   return { ...data.summary, total: items.length,
     evidence: items.filter(node => node.evidence_student_count > 0).length,
     weak: items.filter(node => node.distribution.weak > 0).length,
-    weakStudents: data.students.filter(s => s.topics.weak + s.skills.weak > 0).length }
+    weakStudents: data.students.filter(s => itemWeakCount(s) > 0).length }
 }
 export function chapterMetrics(nodes: TrainingOverviewNode[]) {
   return nodes.filter(node => node.kind === 'chapter' && node.in_volume !== false).map(chapter => {
@@ -44,6 +47,10 @@ export function relatedNodes(data: TrainingOverview, key: string) {
       || b.association.question_count - a.association.question_count || a.node.knowledge_key.localeCompare(b.node.knowledge_key))
 }
 export function studentDistribution(student: TrainingOverview['students'][number]): TrainingOverviewDistribution {
+  if (student.types) {
+    const { weak, unsteady, stable, insufficient } = student.types
+    return { weak, unsteady, stable, insufficient }
+  }
   const a = student.topics, b = student.skills
   return { weak: a.weak + b.weak, unsteady: a.unsteady + b.unsteady,
     stable: a.stable + b.stable, insufficient: a.insufficient + b.insufficient }

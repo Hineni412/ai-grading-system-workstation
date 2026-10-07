@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import json
 import logging
@@ -31,6 +32,7 @@ from question_bank.parsers.type_detector import (
     QUESTION_TYPES,
     subq_mark_labels,
 )
+from question_bank.question_types import is_type_key
 from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
 from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
 
@@ -203,7 +205,9 @@ class QuestionAnalysisInput:
             "taxonomy_contract",
             QuestionTaxonomySnapshot.capture(
                 self.question_id,
-                self.taxonomy_contract,
+                _question_type_candidate_contract(QuestionTaxonomySnapshot.capture(
+                    self.question_id, self.taxonomy_contract,
+                )),
             ),
         )
         reference_solution = dict(self.reference_solution)
@@ -1729,6 +1733,9 @@ class CombinedQuestionAnalysisModule:
             )
             return "响应缺少 tag_analysis 对象。"
         try:
+            if isinstance(raw.get("solution_evidence"), Mapping):
+                raw = normalize_question_type_result(question, raw)
+                payload = raw["tag_analysis"]
             tag_question = question
             evidence_payload = raw.get("solution_evidence")
             if isinstance(evidence_payload, Mapping) and isinstance(evidence_payload.get("parts"), list):
@@ -1846,6 +1853,8 @@ class CombinedQuestionAnalysisModule:
             )
         try:
             if isinstance(evidence_payload, Mapping):
+                raw = normalize_question_type_result(question, raw)
+                evidence_payload = raw["solution_evidence"]
                 if self.evidence_writer is None:
                     raise ProjectionValidationError(
                         "solution evidence writer is unavailable"
@@ -1865,6 +1874,11 @@ class CombinedQuestionAnalysisModule:
                     objective_response_shape=effective_shape,
                     question_type_group=effective_group,
                 )
+                if question.taxonomy_contract.get("question_type_mode") is True:
+                    self.tag_writer.write_question_type_labels(
+                        question, raw["question_type_labels"],
+                        model_name=model_name, operation_id=operation_id,
+                    )
             else:
                 assert isinstance(legacy_payload, Mapping)
                 draft = TrainingCriteriaDraft.from_model_dict(
@@ -1915,6 +1929,8 @@ class CombinedQuestionAnalysisModule:
                 criterion_audit
             )
         payload = draft.to_dict()
+        if question.taxonomy_contract.get("question_type_mode") is True:
+            payload["question_type_labels"] = raw["question_type_labels"]
         type_audit = self._apply_question_type_suggestion(
             operation_id,
             question,
@@ -2835,6 +2851,182 @@ def _ordered_unique_strings(values: Iterable[object]) -> list[str]:
     return result
 
 
+def _question_type_candidate_contract(
+    contract: QuestionTaxonomySnapshot | Mapping[str, Any],
+) -> QuestionTaxonomySnapshot | Mapping[str, Any]:
+    """Extend the captured import vocabulary using its pinned release only."""
+    if contract.get("question_type_mode") is True:
+        return contract
+    release_id = str(contract.get("knowledge_graph_release_id") or "")
+    if not release_id:
+        return contract
+    from question_bank.knowledge_graph_release.loader import (
+        load_release_for_taxonomy_revision,
+    )
+
+    try:
+        release = load_release_for_taxonomy_revision(int(
+            contract.get("knowledge_catalog_revision")
+            or contract.get("taxonomy_revision") or 0
+        ))
+    except ValueError:
+        return contract
+    if release.release_id != release_id:
+        return contract
+    type_nodes = [
+        node for node in release.payload.get("core_nodes", [])
+        if is_type_key(node.get("stable_key")) and node.get("status") == "active"
+    ]
+    if not type_nodes:
+        return contract
+    volume = contract.get("curriculum_volume") or {}
+    section_ids = {
+        str(section.get("knowledge_id") or section.get("id") or "")
+        for section in volume.get("sections", [])
+    }
+    candidates = dict(contract.get("candidates") or {})
+    knowledge = [dict(item) for item in candidates.get("knowledge", [])]
+    if not section_ids:
+        section_ids = {str(item.get("parent_id") or "") for item in knowledge}
+        section_ids.update(
+            str(item.get("id") or "") for item in knowledge if item.get("level") == 2
+        )
+    parent_of = {
+        str(edge.get("source_key")): str(edge.get("target_key"))
+        for edge in release.payload.get("relations", [])
+        if edge.get("relation_type") == "parent"
+    }
+    selected = [
+        node for node in type_nodes if parent_of.get(node["stable_key"]) in section_ids
+    ]
+    if not selected:
+        return contract
+    # Old leaves remain retrieval hints; skills and prerequisite sections keep
+    # their established evidence semantics.
+    knowledge = [item for item in knowledge if not is_type_key(item.get("id"))]
+    for node in selected:
+        knowledge.append({
+            "id": node["stable_key"],
+            "name": node["display_name"],
+            "usage": "mapped",
+            "parent_id": parent_of[node["stable_key"]],
+            **{key: str(node.get(key) or "") for key in (
+                "definition", "include_scope", "exclude_scope", "observable_evidence",
+            )},
+        })
+    candidates["knowledge"] = knowledge
+    result = dict(contract)
+    result.update(question_type_mode=True, candidates=candidates)
+    allowed = dict(result.get("allowed_term_ids") or {})
+    allowed["knowledge"] = [item["id"] for item in knowledge]
+    result["allowed_term_ids"] = allowed
+    result["candidate_fingerprint"] = _hash_payload({
+        "release_id": release_id, "allowed_term_ids": allowed,
+    })
+    return result
+
+
+def validate_question_type_labels(
+    labels: object,
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Check labels against the same question-bound vocabulary as evidence."""
+    if not isinstance(labels, Mapping) or set(labels) != {
+        "primary_type_id", "secondary_type_ids", "proposed_type_name", "reason",
+    }:
+        raise ProjectionValidationError("question_type_labels fields are invalid")
+    primary = labels["primary_type_id"]
+    secondary = labels["secondary_type_ids"]
+    proposed = labels["proposed_type_name"]
+    reason = labels["reason"]
+    if not all(isinstance(value, str) for value in (primary, proposed, reason)):
+        raise ProjectionValidationError("question type label text is invalid")
+    candidates = {
+        item["id"]: item
+        for item in contract.get("candidates", {}).get("knowledge", [])
+        if is_type_key(item.get("id"))
+        and item.get("usage") not in {"retrieval_only", "do_not_use_as_knowledge"}
+    }
+    if not isinstance(secondary, list) or len(secondary) > 2 or any(
+        not isinstance(value, str) or value not in candidates for value in secondary
+    ) or len(set(secondary)) != len(secondary) or primary in secondary:
+        raise ProjectionValidationError(
+            "secondary question types are invalid or outside candidate vocabulary"
+        )
+    if primary:
+        if primary not in candidates or proposed.strip():
+            raise ProjectionValidationError("primary question type is outside candidate vocabulary")
+    elif not proposed.strip() or not reason.strip() or secondary:
+        raise ProjectionValidationError(
+            "unmatched question type requires a new-term review proposal"
+        )
+    return dict(labels)
+
+
+def normalize_question_type_result(
+    question: QuestionAnalysisInput,
+    raw: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate whole-question labels before writing either projection."""
+    result = copy.deepcopy(dict(raw))
+    if question.taxonomy_contract.get("question_type_mode") is not True:
+        return result
+    labels = validate_question_type_labels(
+        result.get("question_type_labels"), question.taxonomy_contract,
+    )
+    primary = labels["primary_type_id"]
+    proposed = labels["proposed_type_name"]
+    reason = labels["reason"]
+    candidates = {
+        item["id"]: item
+        for item in question.taxonomy_contract.get("candidates", {}).get("knowledge", [])
+    }
+    if not primary:
+        tag = result.setdefault("tag_analysis", {"proposed_tags": []})
+        if not isinstance(tag, dict):
+            raise ProjectionValidationError("tag_analysis must be an object")
+        tag["proposed_tags"] = [*tag.get("proposed_tags", []), {
+            "dimension": "knowledge", "name": proposed.strip(),
+            "definition": reason.strip(), "reason": reason.strip(),
+            "nearest_id": "", "why_not_reuse": reason.strip(),
+        }]
+    evidence = result.get("solution_evidence")
+    if isinstance(evidence, dict):
+        parts = evidence.get("parts")
+        if not isinstance(parts, list):
+            raise ProjectionValidationError("solution evidence parts must be an array")
+        for part in parts:
+            if not isinstance(part, dict) or not isinstance(part.get("evidence_points"), list):
+                raise ProjectionValidationError("solution evidence part is invalid")
+            for point in part["evidence_points"]:
+                if not isinstance(point, dict):
+                    raise ProjectionValidationError("solution evidence point is invalid")
+                links = point.get("fine_term_links", [])
+                if not isinstance(links, list):
+                    raise ProjectionValidationError("fine_term_links must be an array")
+                for link in links:
+                    if not isinstance(link, Mapping):
+                        raise ProjectionValidationError("fine term link must be an object")
+                    if is_type_key(link.get("fine_term_id")) and (
+                        link.get("fine_term_id") != primary
+                        or link.get("fine_term_name") != candidates[primary]["name"]
+                        or link.get("role") != "direct"
+                    ):
+                        raise ProjectionValidationError(
+                            "evidence type link conflicts with the whole-question primary type"
+                        )
+                point["fine_term_links"] = [
+                    link for link in links if not is_type_key(link.get("fine_term_id"))
+                ]
+                if primary:
+                    point["fine_term_links"].append({
+                        "fine_term_id": primary,
+                        "fine_term_name": candidates[primary]["name"],
+                        "role": "direct",
+                    })
+    return result
+
+
 def _candidate_ids_from_contract(
     contract: Mapping[str, Any],
     dimension: str,
@@ -2883,6 +3075,7 @@ def controlled_term_ids_from_questions(
         dimension: [] for dimension in _CONTROLLED_DIMENSIONS
     }
     buckets["curriculum_sections"] = []
+    buckets["question_types"] = []
     seen = {key: set() for key in buckets}
     for question in questions:
         contract = question.taxonomy_contract
@@ -2899,6 +3092,11 @@ def controlled_term_ids_from_questions(
                 continue
             seen["curriculum_sections"].add(item_id)
             buckets["curriculum_sections"].append(item_id)
+        if contract.get("question_type_mode") is True:
+            for item_id in _candidate_ids_from_contract(contract, "knowledge"):
+                if is_type_key(item_id) and item_id not in seen["question_types"]:
+                    seen["question_types"].add(item_id)
+                    buckets["question_types"].append(item_id)
     return {key: tuple(values) for key, values in buckets.items()}
 
 
@@ -2990,6 +3188,18 @@ def combined_response_format(
             knowledge_ids=ids.get("knowledge") or (),
             defs=defs,
         )
+        if ids.get("question_types"):
+            item_properties["question_type_labels"] = {
+                "type": "object",
+                "properties": {
+                    "primary_type_id": _enum_string_schema(ids["question_types"], include_empty=True),
+                    "secondary_type_ids": {**_enum_array_schema(ids["question_types"]), "maxItems": 2},
+                    "proposed_type_name": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["primary_type_id", "secondary_type_ids", "proposed_type_name", "reason"],
+                "additionalProperties": False,
+            }
     schema: dict[str, Any] = {"type": "object"}
     if defs:
         schema["$defs"] = defs
@@ -3013,9 +3223,9 @@ def combined_response_format(
     return {
         "type": "json_schema",
         "name": (
-            "question_bank_combined_analysis_v3"
+            ("question_bank_combined_analysis_v4" if "question_type_labels" in item_properties else "question_bank_combined_analysis_v3")
             if projection == "both"
-            else f"question_bank_{projection}_projection_v3"
+            else f"question_bank_{projection}_projection_v{'4' if 'question_type_labels' in item_properties else '3'}"
         ),
         "strict": True,
         "schema": schema,

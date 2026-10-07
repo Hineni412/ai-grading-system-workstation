@@ -248,6 +248,89 @@ def _make_generator(db, out_dir: Path, reports_dir: Path, llm_client) -> "object
     )
 
 
+def _seed_report_knowledge(
+    analysis_db, question_bank_database, *, type_mode: bool, link_second: bool = True,
+    volume_id: str = "bnu24-math-g8-upper", standard_revision: int | None = None,
+) -> SimpleNamespace:
+    """Synthetic bank links and frozen evidence for the v8/v9 report boundary."""
+    from question_bank.database.schema import connect
+    from question_bank.knowledge_graph_release import bootstrap_release
+    from question_bank.knowledge_graph_release.contracts import KnowledgeGraphRelease
+    from question_bank.knowledge_graph_release.loader import load_release_for_taxonomy_revision
+    from question_bank.services.source_question_link_service import SourceQuestionLinkService
+    from question_bank.solution_evidence.evidence_snapshot import freeze_session_evidence_snapshot
+
+    db, session, root = analysis_db
+    path = root / "databases" / "question_bank.db"
+    question_bank_database(path)
+    type_key = "kp_bnu24_math_g8_upper_1_1_t01"
+    section = "kp_bnu24_math_g7_upper_3_3" if volume_id == "bnu24-math-g7-upper" else "kp_bnu24_math_g8_upper_1_1"
+    skill_key = "sk_" + section[3:] + "_101"
+    topic_key = section + "_1"
+    names = {type_key: "题型·合成题型", "kp_bnu24_math_g8_upper_1_1_t02": "题型·合成题型",
+             skill_key: "技能·合成技能", topic_key: "合成知识点"}
+    payload = load_release_for_taxonomy_revision(standard_revision or (11 if type_mode else 10)).to_dict()
+    payload.pop("content_hash", None)
+    payload["release_id"] += "-synthetic-report"
+    for node in payload["core_nodes"]:
+        if node["stable_key"] in names:
+            node["display_name"] = names[node["stable_key"]]
+    release = KnowledgeGraphRelease.from_mapping(payload)
+    bootstrap_release(path, release, actor_ref="test-suite", source_reference="synthetic-report",
+                      reason="verify v8 and v9 exam reports")
+    rubric_path = root / "config" / "uploaded" / "rubric.json"
+    rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    # A legacy rubric label must not override confirmed current bank identities.
+    rubric["questions"][0]["knowledge_points"] = [{"knowledge_id": "UNKNOWN", "name": "旧评分知识点"}]
+    for question in rubric["questions"]:
+        question["steps"] = [{"step_id": "S1", "step_score": question["max_score"],
+                              "evidence_point_ids": ["p1"]}]
+    rubric_path.write_text(json.dumps(rubric, ensure_ascii=False), encoding="utf-8")
+    with sqlite3.connect(db.db_path) as connection:
+        connection.execute("UPDATE grading_sessions SET curriculum_volume_id=? WHERE id=?", (volume_id, session))
+    with connect(path) as connection:
+        for number, question in enumerate(rubric["questions"], 1):
+            version = f"{number:064x}"
+            connection.execute(
+                "INSERT INTO questions(id,question_number,question_type,question_text,answer_text) VALUES(?,?,?,?,?)",
+                (number, str(number), question["question_type"], f"TEST-报告合成题 {number}", "合成答案"),
+            )
+            tags = [skill_key, topic_key, *([type_key] if type_mode else [])]
+            connection.executemany(
+                "INSERT INTO question_tags(question_id,tag_type,tag_value,confidence,source) VALUES(?,'knowledge_point',?,1,'taxonomy')",
+                [(number, key) for key in tags],
+            )
+            if type_mode:
+                connection.execute(
+                    "INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(?,'secondary_type',?,'taxonomy')",
+                    (number, "kp_bnu24_math_g8_upper_1_1_t02"),
+                )
+            evidence = {"parts": [{"part_id": question["question_id"], "response_mode": "process",
+                "evidence_points": [{"evidence_point_id": "p1", "target": "合成判定点"}]}]}
+            connection.execute(
+                """INSERT INTO question_solution_evidence_versions(
+                    evidence_version_id,question_id,source_content_hash,schema_version,content_hash,
+                    evidence_json,status,source_kind,source_reference,created_by,graph_release_id
+                ) VALUES(?,?,?,'question-solution-evidence-v2',?,?,'approved','backfill','synthetic','test',?)""",
+                (version, number, "a" * 64, "b" * 64, json.dumps(evidence, ensure_ascii=False), release.release_id),
+            )
+            connection.executemany(
+                """INSERT INTO evidence_point_knowledge_links(
+                    evidence_version_id,question_id,part_id,evidence_point_id,graph_release_id,
+                    role,term_id,stable_key,resolution_status,weight,source_kind,source_reference
+                ) VALUES(?,?,?,'p1',?,'direct',?,?,'resolved',1,'link_job','synthetic')""",
+                [(version, number, question["question_id"], release.release_id, key, key)
+                 for key in (skill_key, topic_key)],
+            )
+    links = SourceQuestionLinkService(path)
+    for number in (1, 2) if link_second else (1,):
+        links.confirm_link(grading_session_id=session, source_question_id=f"Q{number}",
+                           bank_question_id=number, link_method="synthetic")
+    freeze_session_evidence_snapshot(path, grading_session_id=session,
+        upload_config_dir=rubric_path.parent, data_root=root)
+    return SimpleNamespace(path=path, type_key=type_key, skill_key=skill_key, topic_key=topic_key)
+
+
 def test_llm_failure_degrades_to_data_only_report(analysis_db, tmp_path: Path) -> None:
     from backend.llm.llm_client import LLMResponseFormatError
 
@@ -412,6 +495,155 @@ def _score_state(db_path: Path) -> list[list[tuple]]:
                 "SELECT * FROM teacher_score_locks ORDER BY id",
             )
         ]
+
+
+@pytest.mark.parametrize("type_mode,volume_id,standard_revision", [
+    (False, "bnu24-math-g8-upper", 10), (True, "bnu24-math-g8-upper", 11),
+    (False, "bnu24-math-g7-upper", 11),
+], ids=["v8", "v9-typed", "v9-unconverted"])
+@pytest.mark.parametrize("link_second", [False, True], ids=["unlinked", "same-target"])
+def test_report_target_buckets_keep_final_scores_and_ranks(
+    analysis_db, question_bank_database, type_mode, volume_id, standard_revision, link_second,
+):
+    from openpyxl import load_workbook
+    from backend.reporting.report import ReportGenerator
+    from backend.session_analysis import assemble_session_analysis, enrich_personal_knowledge
+    from backend.reporting.analysis_report_exporter import build_personal_payload, _render_personal_html
+    from bs4 import BeautifulSoup
+
+    db, session, root = analysis_db
+    bank = _seed_report_knowledge(analysis_db, question_bank_database,
+                                 type_mode=type_mode, link_second=link_second,
+                                 volume_id=volume_id, standard_revision=standard_revision)
+    with sqlite3.connect(db.db_path) as connection:
+        student_id, detail_id = connection.execute(
+            """SELECT result.student_id,detail.id FROM session_details detail
+               JOIN session_results result ON result.id=detail.result_id
+               WHERE result.session_id=? AND detail.question_id='Q1' ORDER BY detail.id LIMIT 1""", (session,),
+        ).fetchone()
+    # Use the application's confirmation path so detail, total, and lock agree.
+    db.reviews.confirm_teacher_score_lock(session_id=session, scan_batch_id="TEST-report-types",
+        student_id=student_id, question_id="Q1", score_awarded=10, max_score=60,
+        deduction_reason="教师确认", source_target_type="session_detail", source_target_id=detail_id,
+        expected_revision=0)
+    before = _score_state(db.db_path)
+    data = assemble_session_analysis(db, session, data_root=root)
+    enrich_personal_knowledge(db, data, root)
+    assert [(student.student_code, student.student_score, student.rank) for student in data.students] == [
+        ("002", 50, 1), ("001", 40, 2),
+    ]
+    locked_student = next(student for student in data.students if student.student_id == student_id)
+    locked = next(record for record in locked_student.records if record.question_id == "Q1")
+    assert (locked.score, locked.max_score, locked.teacher_confirmed) == (10, 60, True)
+    payload = build_personal_payload(data, locked_student)
+    assert (payload["student"]["total_score"], payload["student"]["class_stats"]["rank"]) == (40, 2)
+    question = next(question for question in payload["questions"] if question["question_id"] == "Q1")
+    assert (question["score"], question["max_score"], question["grading_record"]["teacher_confirmed"]) == (10, 60, True)
+    report = BeautifulSoup(_render_personal_html(data, locked_student, None, {}), "html.parser")
+    assert report.select_one(".score-line .big").get_text() == "40"
+    assert report.select_one(".stat3 .cell .v").get_text() == "2/2"
+    assert data.knowledge_structure["target_kind"] == ("type" if type_mode else "skill")
+    keys = {entry["stable_key"] for entry in data.knowledge_backfill["Q1"]}
+    assert keys == ({bank.type_key} if type_mode else {bank.topic_key, bank.skill_key})
+    if volume_id == "bnu24-math-g7-upper":
+        from integration.diagnosis_profile_service import DiagnosisProfileService
+        service = DiagnosisProfileService(db.db_path, bank.path, data_root=root)
+        profile = service.build_profiles(scope={"mode": "all"},
+            exam_scope={"mode": "semester", "curriculum_volume_id": volume_id})
+        assert profile["target_kind"] == "skill"
+        assert any(point["knowledge_key"] == bank.skill_key and point["evidence_count"] > 0
+                   for student in profile["students"] for point in student["weak_points"])
+        current = service.build_profiles(scope={"mode": "all"},
+            exam_scope={"mode": "current", "session_ids": [session]})
+        assert current["target_kind"] == "skill"
+        exams = service.assembly_exam_questions(class_ids=["1 班"], volume_id=volume_id)
+        assert exams["target_kind"] == "skill"
+        assert any(bank.skill_key in item["skill_keys"]
+                   for exam in exams["exams"] for item in exam["questions"])
+        empty = service.assembly_exam_questions(class_ids=["TEST-empty-class"], volume_id=volume_id)
+        assert empty == {"student_count": 0, "exams": [], "target_kind": "skill"}
+
+    generator = ReportGenerator(db, root / "out")
+    workbook = load_workbook(generator.export_session(session))
+    try:
+        label = "题型" if type_mode else "知识点"
+        assert f"{label}分析" in workbook.sheetnames
+        assert f"{'知识点' if type_mode else '题型'}分析" not in workbook.sheetnames
+
+        def table(sheet):
+            rows = list(sheet.iter_rows(values_only=True))
+            header_index = next(index for index, row in enumerate(rows) if row[:2] == ("班级", label))
+            header = rows[header_index]
+            return [dict(zip(header, row, strict=True)) for row in rows[header_index + 1:]], rows
+
+        buckets, raw_rows = table(workbook[f"{label}分析"])
+        unlinked_label = f"未命名{label}" if type_mode else "旧评分知识点"
+        named = [row for row in buckets if row[label] != unlinked_label]
+        assert {row[label] for row in named} == ({"合成题型"} if type_mode else {"合成知识点", "技能·合成技能"})
+        for row in named:
+            assert (row["累计得分"], row["累计满分"], row["失分人数"]) == (
+                (90, 200, 2) if link_second else (40, 120, 2)
+            )
+            assert row["涉及题目"] == ("Q1、Q2" if link_second else "Q1")
+            assert row["得分率"] == (0.45 if link_second else 0.3333)
+        unknown = [row for row in buckets if row[label] == unlinked_label]
+        if link_second:
+            assert unknown == []
+        else:
+            assert len(unknown) == 1
+            assert (unknown[0]["涉及题目"], unknown[0]["累计得分"], unknown[0]["累计满分"]) == ("Q2", 50, 80)
+            assert unknown[0]["得分率"] == 0.625
+            if type_mode:
+                assert f"单元测试 · {label}分析" in raw_rows[0]
+                assert f"未命名{label}" in str(raw_rows[1])
+            else:
+                # v8 keeps the historical rubric label when the bank has no link.
+                assert raw_rows[0][:2] == ("班级", "知识点")
+
+        detail_rows = list(workbook["成绩与小题明细"].iter_rows(values_only=True))
+        details = [dict(zip(detail_rows[0], row, strict=True)) for row in detail_rows[1:]]
+        assert [(row["学号"], row["总分"], row["班级排名"]) for row in details] == [
+            ("002", 50, 1), ("001", 40, 2),
+        ]
+    finally:
+        workbook.close()
+    assert _score_state(db.db_path) == before
+
+
+def test_report_keeps_same_named_types_separate_by_current_identity(
+    analysis_db, question_bank_database,
+):
+    from openpyxl import load_workbook
+    from backend.reporting.analysis_report_exporter import _class_knowledge_view
+    from backend.reporting.report import ReportGenerator
+    from backend.session_analysis import assemble_session_analysis, enrich_personal_knowledge
+
+    db, session, root = analysis_db
+    bank = _seed_report_knowledge(analysis_db, question_bank_database, type_mode=True)
+    second_type = "kp_bnu24_math_g8_upper_1_1_t02"
+    with sqlite3.connect(bank.path) as connection:
+        connection.execute(
+            "UPDATE question_tags SET tag_value=? WHERE question_id=2 AND tag_type='knowledge_point' AND tag_value=?",
+            (second_type, bank.type_key),
+        )
+    before = _score_state(db.db_path)
+    data = assemble_session_analysis(db, session, data_root=root)
+    enrich_personal_knowledge(db, data, root)
+    nodes = _class_knowledge_view(data)["nodes"]
+    assert {node["key"] for node in nodes} == {bank.type_key, second_type}
+    assert [node["label"] for node in nodes] == ["合成题型", "合成题型"]
+    assert sorted((node["score"], node["full"]) for node in nodes) == [(50, 80), (90, 120)]
+    workbook = load_workbook(ReportGenerator(db, root / "out").export_session(session))
+    try:
+        rows = list(workbook["题型分析"].iter_rows(values_only=True))
+        assert rows[0][:2] == ("班级", "题型")
+        assert [(row[1], row[2], row[3], row[4], row[5]) for row in rows[1:]] == [
+            ("合成题型", "Q2", 50, 80, 0.625), ("合成题型", "Q1", 90, 120, 0.75),
+        ]
+    finally:
+        workbook.close()
+    assert [(student.student_score, student.rank) for student in data.students] == [(90, 1), (50, 2)]
+    assert _score_state(db.db_path) == before
 
 
 @pytest.mark.parametrize("manual_only", [True, False])

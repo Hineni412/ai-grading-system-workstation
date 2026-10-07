@@ -162,3 +162,29 @@ def _tag(connection, qid: int, tag_type: str, value: str) -> None:
         " VALUES(?, ?, ?, 'derived')",
         (qid, tag_type, value),
     )
+
+
+def test_resolve_anchor_keys_climbs_type_parent_relations(tmp_path: Path) -> None:
+    """题型键（kp_*_tNN，不在内置课程目录中）通过发布 parent 关系上溯小节。"""
+    from question_bank.solution_evidence.knowledge_links import (
+        resolve_anchor_keys,
+    )
+
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    release_id = install_current_knowledge(db_path, taxonomy_revision=11)
+    type_key = "kp_bnu24_math_g8_upper_1_1_t01"
+    with connect(db_path) as connection:
+        anchors = resolve_anchor_keys(
+            connection, [type_key], preferred_release_id=release_id
+        )
+        # Ordinary curriculum keys and sk_ keys keep their existing routes.
+        leaf = resolve_anchor_keys(
+            connection,
+            ["kp_bnu24_math_g8_upper_1_1_1", "sk_bnu24_math_g8_upper_1_1_101"],
+            preferred_release_id=release_id,
+        )
+    assert anchors["sections"] == ["kp_bnu24_math_g8_upper_1_1"]
+    assert anchors["chapters"] == ["kp_bnu24_math_g8_upper_1"]
+    assert leaf["sections"] == ["kp_bnu24_math_g8_upper_1_1"]
+    assert leaf["chapters"] == ["kp_bnu24_math_g8_upper_1"]

@@ -452,3 +452,93 @@ def test_mastery_uses_each_point_instead_of_exam_score_allocation():
     assert [item["y"] for item in observations] == [1, 0]
     assert [item["item"] for item in observations] == [(1, "Q1", "p1"), (1, "Q1", "p2")]
     assert all(item["links"] == {_SKILL_KEY: 1} for item in observations)
+
+
+_TYPE_KEY = "kp_bnu24_math_g8_upper_1_1_t01"
+
+
+def _tag_type_key(db_path: Path, question_id: int = 1) -> None:
+    """题库整题题型标签：发布 11 的 refresh 会写入该 knowledge_point 行。"""
+    with connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO question_tags(question_id,tag_type,tag_value,"
+            "confidence,source) VALUES(?, 'knowledge_point', ?, 1.0, 'taxonomy')",
+            (question_id, _TYPE_KEY),
+        )
+
+
+def test_question_type_overlay_rekeys_frozen_direct_links(tmp_path: Path) -> None:
+    """题型发布激活后，可用快照的 direct 链接整题覆盖为题库当前题型。"""
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    release_id = install_current_knowledge(db_path, taxonomy_revision=11)
+    _seed_bank_question(
+        db_path,
+        release_id,
+        points=[_point("p1"), _point("p2")],
+        links=[
+            ("p1", "direct", _SKILL_KEY, "resolved"),
+            ("p1", "supporting_prerequisite", _LEAF_KEY, "resolved"),
+            ("p2", "direct", _LEAF_KEY, "resolved"),
+        ],
+    )
+    _tag_type_key(db_path)
+    _confirm_link(db_path)
+    _freeze(tmp_path, db_path)
+
+    (item,) = _projection_service(tmp_path, db_path).project_session(
+        grading_session_id=_SESSION,
+        rubric=_rubric([_step("S1", ["p1", "p2"], step_score=6)]),
+    ).items
+
+    assert item.tags["knowledge_point"] == (_TYPE_KEY,)
+    assert item.step_targets == {"S1": (_TYPE_KEY,)}
+    for pid in ("p1", "p2"):
+        direct = [
+            link for link in item.point_links[pid] if link["role"] == "direct"
+        ]
+        assert [(link["stable_key"], link["weight"]) for link in direct] == [
+            (_TYPE_KEY, 1.0)
+        ]
+    supporting = [
+        link
+        for link in item.point_links["p1"]
+        if link["role"] == "supporting_prerequisite"
+    ]
+    assert [link["stable_key"] for link in supporting] == [_LEAF_KEY]
+    assert list(item.source_practice_metadata["direct_keys"]) == [_TYPE_KEY]
+
+    # 无快照兜底路径：有题型键时用题型键代替小节上溯。
+    _confirm_link(db_path, session_id=8)
+    (legacy,) = _projection_service(tmp_path, db_path).project_session(
+        grading_session_id=8,
+        rubric=_rubric([_step("S1", ["p1", "p2"], step_score=6)]),
+    ).items
+    assert legacy.tags["knowledge_point"] == (_TYPE_KEY,)
+    assert legacy.assessment["reason"] == "legacy_section_fallback"
+
+
+def test_question_type_overlay_disabled_without_type_nodes(tmp_path: Path) -> None:
+    """无题型节点的发布（v8 口径）输出与既有行为完全一致。"""
+    db_path, release_id = _setup(tmp_path)
+    _seed_bank_question(
+        db_path,
+        release_id,
+        points=[_point("p1")],
+        links=[("p1", "direct", _SKILL_KEY, "resolved")],
+    )
+    _tag_type_key(db_path)
+    _confirm_link(db_path)
+    _freeze(tmp_path, db_path)
+
+    (item,) = _projection_service(tmp_path, db_path).project_session(
+        grading_session_id=_SESSION,
+        rubric=_rubric([_step("S1", ["p1"])]),
+    ).items
+
+    assert item.tags["knowledge_point"] == (_SKILL_KEY,)
+    assert item.step_targets == {"S1": (_SKILL_KEY,)}
+    direct = [
+        link for link in item.point_links["p1"] if link["role"] == "direct"
+    ]
+    assert [link["stable_key"] for link in direct] == [_SKILL_KEY]

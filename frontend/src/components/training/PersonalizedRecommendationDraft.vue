@@ -123,6 +123,8 @@ watch([workspaceSteps, viewStep, () => draft.value?.revision], () => {
 const paperCancelBusy = ref(false)
 let paperBatchPollGeneration = 0
 
+const typeMode = computed(() => props.diagnosis?.target_kind === 'type')
+const targetLabel = computed(() => (typeMode.value ? '题型' : '技能'))
 const targetOptions = computed(() => {
   const options = new Map<string, string>()
   for (const weak of (props.diagnosis?.students ?? []).flatMap((student) => student.weak_points)) {
@@ -909,7 +911,7 @@ async function editItem(
     <header v-if="!externalSetup"><h3 id="personalized-draft-title">{{ effectivePaperMode === 'shared' ? '多人同题草稿' : '一人一卷草稿' }}</h3></header>
     <details v-if="!externalSetup" class="personalized-settings" :open="!draft"><summary>训练设置</summary><section>
       <label class="personalized-edit-reason">难度上限<input v-model.number="difficultyMax" class="app-input" type="number" min="1" max="10"></label>
-      <fieldset v-if="targetOptions.length && targetKeys === undefined" class="personalized-targets"><legend>本次训练目标</legend><label v-for="target in targetOptions" :key="target.key"><input v-model="selectedTargets" type="checkbox" :value="target.key">{{ target.label }}</label><p v-if="!selectedTargets.length">请勾选至少一个知识点。</p></fieldset>
+      <fieldset v-if="targetOptions.length && targetKeys === undefined" class="personalized-targets"><legend>本次训练目标</legend><label v-for="target in targetOptions" :key="target.key"><input v-model="selectedTargets" type="checkbox" :value="target.key">{{ target.label }}</label><p v-if="!selectedTargets.length">请勾选至少一个{{ typeMode ? '题型' : '知识点' }}。</p></fieldset>
       <fieldset v-else-if="targetOptions.length" class="personalized-targets"><legend>已选目标</legend><span v-for="target in selectedTargetLabels" :key="target">{{ knowledgeLeafLabel(target) }}</span><p v-if="!selectedTargets.length">请在知识结构中选择目标。</p></fieldset>
       <p v-else class="training-empty is-compact">当前范围暂无可用掌握证据。</p>
       <AppButton variant="primary" data-testid="generate-personalized-draft" :disabled="!canGenerate" @click="generate">{{ state === 'loading' ? '正在生成并核对…' : pendingRequestToken ? '核对生成结果' : '生成个性化草稿' }}</AppButton>
@@ -921,7 +923,7 @@ async function editItem(
       <section v-show="viewStep === 'review'" class="draft-review">
         <div class="personalized-draft-toolbar">
           <strong>{{ effectivePaperMode === 'shared' ? `共同试题 · ${draft.students.length} 人` : `${draft.students.length} 份个人草稿` }}</strong>
-          <details class="draft-data-notes"><summary>选题设置</summary><p>每卷 {{ draft.config.question_count ?? questionCount }} 题 · 难度 ≤ {{ draft.config.difficulty_max ?? difficultyMax }} 级 · 同技能 ≤ {{ draft.config.max_questions_per_skill ?? maxQuestionsPerSkill ?? 1 }} 道 · 解答题 ≤ {{ draft.config.max_written_questions ?? maxWrittenQuestions ?? 2 }} 道 · 排除最近 {{ draft.config.recent_activity_count ?? recentActivityCount ?? 3 }} 次原题</p></details>
+          <details class="draft-data-notes"><summary>选题设置</summary><p>每卷 {{ draft.config.question_count ?? questionCount }} 题 · 难度 ≤ {{ draft.config.difficulty_max ?? difficultyMax }} 级 · 同{{ targetLabel }} ≤ {{ draft.config.max_questions_per_skill ?? maxQuestionsPerSkill ?? 1 }} 道 · 解答题 ≤ {{ draft.config.max_written_questions ?? maxWrittenQuestions ?? 2 }} 道 · 排除最近 {{ draft.config.recent_activity_count ?? recentActivityCount ?? 3 }} 次原题</p></details>
           <details v-if="draft.warnings.length" class="draft-data-notes"><summary>数据说明（{{ draft.warnings.length }}）</summary><ul><li v-for="warning in draft.warnings" :key="warning">{{ warning }}</li></ul></details>
           <template v-if="canDiscardDraft"><AppButton v-if="!confirmDiscard" variant="ghost" data-testid="discard-paper-draft" @click="confirmDiscard = true">放弃草稿</AppButton><template v-else><span>放弃后不再自动恢复，出卷设置保留。</span><AppButton variant="secondary" data-testid="confirm-discard-paper-draft" @click="discardDraft">确认放弃</AppButton><AppButton variant="ghost" @click="confirmDiscard = false">取消</AppButton></template></template>
           <AppButton variant="primary" :disabled="!eligiblePaperCount || Boolean(paperBusy)" @click="viewStep = 'print'">{{ isHandout ? '去导出讲义' : hasPrintablePapers ? '查看打印试卷' : '审核完成，去出卷' }}</AppButton>
@@ -938,7 +940,7 @@ async function editItem(
               <template v-for="(item, index) in student.items" :key="item.item_id">
               <li v-if="isHandout && item.knowledge_section && (index === 0 || student.items[index - 1]?.knowledge_section?.title !== item.knowledge_section.title)" class="personalized-section-heading">{{ item.knowledge_section.title }}</li>
               <li class="personalized-match">
-                <p v-if="isHandout && item.primary_skill_name" class="personalized-skill-note">技能：{{ item.primary_skill_name }}</p>
+                <p v-if="isHandout && item.primary_skill_name" class="personalized-skill-note">{{ targetLabel }}：{{ item.primary_skill_name }}</p>
                 <div class="personalized-match__head"><strong>第 {{ item.item_order }} 题</strong><span class="personalized-stage-badge" :class="`is-${item.stage}`">{{ itemLabel(item) }}</span><span>{{ knowledgeLeafLabel(item.matched_name) }}</span><span class="personalized-match__difficulty">难度 {{ item.difficulty }} · {{ item.criterion_point_count }} 个判定点</span></div>
                 <p class="personalized-match__stem">{{ item.question_text || '旧草稿未包含题干，请预览原题。' }}</p>
                 <div class="personalized-item-actions">

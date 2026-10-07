@@ -479,6 +479,20 @@ describe('training recommendations view', () => {
     expect(trainingApiMock.getPersonalizedDraft).not.toHaveBeenCalled()
   })
 
+  it('switches paper-settings wording to 题型 when the diagnosis targets question types', async () => {
+    trainingApiMock.diagnose.mockResolvedValue({
+      ...diagnosis,
+      target_kind: 'type',
+      knowledge_catalog: diagnosis.knowledge_catalog.map(entry => entry.node_kind === 'skill'
+        ? { ...entry, node_kind: 'type' as const } : entry),
+    })
+    const { host } = await mountView('/training?mode=student')
+    await vi.waitFor(() => expect(host.querySelector('[aria-label="每卷题数"]')).not.toBeNull())
+    expect(host.querySelector('[aria-label="同一题型最多"]')).not.toBeNull()
+    expect(host.querySelector('[aria-label="同一技能最多"]')).toBeNull()
+    expect(host.querySelector('.paper-settings-more')?.textContent).not.toContain('技能')
+  })
+
   it('restores selections and the draft after leaving the page and returning', async () => {
     trainingApiMock.getPersonalizedDraft.mockResolvedValue(paperDraft)
     const first = await mountView('/training?mode=student')

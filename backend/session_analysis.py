@@ -1201,10 +1201,11 @@ def enrich_personal_knowledge(
         CurrentKnowledgeResolver,
         CurrentKnowledgeUnavailable,
     )
+    from question_bank.question_types import is_training_target, is_type_key, type_keys_active
     from question_bank.solution_evidence.part_assessments import reading
     root = data_root or infer_data_root(repositories.db_path)
     path = root / 'databases' / 'question_bank.db'
-    snapshot = {'as_of': datetime.now().strftime('%Y-%m-%d %H:%M'), 'catalog': [], 'associations': [],
+    snapshot = {'as_of': datetime.now().strftime('%Y-%m-%d %H:%M'), 'catalog': [], 'associations': [], 'target_kind': 'skill',
                 'note': '当前掌握度暂不可用；保留本卷考查范围与得分，不以得分率代替掌握度。'}
     data.knowledge_structure = snapshot
     selected = [student for student in data.students if student_ids is None or student.student_id in student_ids]
@@ -1214,9 +1215,6 @@ def enrich_personal_knowledge(
         return
     session = repositories.sessions.get_grading_session(data.session_id) or {}
     volume = str(session.get('curriculum_volume_id') or '').strip()
-    if not volume:
-        snapshot['note'] = '这场考试尚未关联教学学期，暂不展示当前掌握度；下方保留本卷考查范围与得分。'
-        return
     try:
         resolver = CurrentKnowledgeResolver.from_active_database(path)
         # Exact current identities only; never join two nodes by a short label.
@@ -1225,6 +1223,14 @@ def enrich_personal_knowledge(
                 identities = resolver.resolve(entry.get('stable_key') or entry.get('path') or '')
                 if len(identities) == 1:
                     entry['stable_key'] = identities[0].stable_key
+        type_mode = type_keys_active(resolver, volume) if volume else any(
+            is_type_key(entry.get('stable_key')) and is_training_target(entry.get('stable_key'), resolver)
+            for entries in data.knowledge_backfill.values() for entry in entries
+        )
+        snapshot['target_kind'] = 'type' if type_mode else 'skill'
+        if not volume:
+            snapshot['note'] = '这场考试尚未关联教学学期，暂不展示当前掌握度；下方保留本卷考查范围与得分。'
+            return
         with reading(path) as connection:
             service = DiagnosisProfileService(repositories.db_path, path, grading_db=repositories,
                                               question_bank_connection=connection, data_root=root)
@@ -1233,7 +1239,8 @@ def enrich_personal_knowledge(
                 exam_scope={'mode': 'semester', 'curriculum_volume_id': volume},
             )
         snapshot.update(catalog=profile.get('knowledge_catalog') or [],
-                        associations=profile.get('knowledge_associations') or [])
+                        associations=profile.get('knowledge_associations') or [],
+                        target_kind=profile.get('target_kind') or snapshot['target_kind'])
         profiles = {str(item['student_id']): item for item in profile.get('students', [])}
         for student in selected:
             student.knowledge_mastery = {
@@ -1244,7 +1251,11 @@ def enrich_personal_knowledge(
                 if 'effective_weight' in item and 'direct_evidence_count' in item
             }
         if snapshot['catalog']:
-            snapshot['note'] = '仅展开本卷涉及的知识与技能。当前掌握度综合本学期考试、训练、题目难度与时间；本次考试得分单独列出。'
+            snapshot['note'] = (
+                '仅展开本卷涉及的题型。当前掌握度综合本学期考试、训练、题目难度与时间；本次考试得分单独列出。'
+                if snapshot.get('target_kind') == 'type'
+                else '仅展开本卷涉及的知识与技能。当前掌握度综合本学期考试、训练、题目难度与时间；本次考试得分单独列出。'
+            )
     except (CurrentKnowledgeUnavailable, OSError, sqlite3.Error, ValueError, TypeError):
         # A missing graph must never prevent delivery of the scored report.
         return

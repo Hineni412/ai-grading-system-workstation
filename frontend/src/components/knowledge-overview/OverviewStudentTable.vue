@@ -14,6 +14,11 @@ const router = useRouter()
 const search = ref('')
 const sortKey = ref<'default' | 'score_rate' | 'weak'>('default')
 const sortAsc = ref(false)
+// Typed payloads carry per-student type tier counts; the table then lists
+// one "题型" column instead of the knowledge-point and skill columns.
+const typeMode = computed(() => props.students.some(student => student.types))
+const weakCount = (student: TrainingOverviewStudent) =>
+  student.types ? student.types.weak : student.topics.weak + student.skills.weak
 
 const filtered = computed(() => {
   const needle = search.value.trim().toLowerCase()
@@ -32,8 +37,7 @@ const filtered = computed(() => {
   }
   if (sortKey.value === 'weak') {
     return list.sort((left, right) => {
-      const delta = (left.topics.weak + left.skills.weak)
-        - (right.topics.weak + right.skills.weak)
+      const delta = weakCount(left) - weakCount(right)
       return (sortAsc.value ? delta : -delta) || left.student_code.localeCompare(right.student_code, 'zh')
     })
   }
@@ -78,8 +82,9 @@ function openStudent(student: TrainingOverviewStudent): void {
                 考试得分率{{ sortKey === 'score_rate' ? (sortAsc ? ' ↑' : ' ↓') : '' }}
               </button>
             </th>
-            <th scope="col">知识点</th>
-            <th scope="col">技能</th>
+            <th v-if="typeMode" scope="col">题型</th>
+            <template v-else><th scope="col">知识点</th>
+            <th scope="col">技能</th></template>
             <th scope="col" class="is-num">
               <button type="button" class="overview-sort" @click="toggleSort('weak')">
                 明显薄弱{{ sortKey === 'weak' ? (sortAsc ? ' ↑' : ' ↓') : '' }}
@@ -98,7 +103,15 @@ function openStudent(student: TrainingOverviewStudent): void {
             <td>{{ student.student_name }}（{{ student.student_code || '—' }}）</td>
             <td>{{ student.class_id || '—' }}</td>
             <td class="is-num">{{ student.score_rate === null ? '—' : formatPercent(student.score_rate) }}</td>
-            <td>
+            <template v-if="typeMode"><td>
+              <span v-if="!student.types || student.types.evidence === 0" class="overview-tier-insufficient">证据不足</span>
+              <span v-else class="overview-tier-counts">
+                <i class="is-weak">{{ student.types.weak }}</i>
+                <i class="is-unsteady">{{ student.types.unsteady }}</i>
+                <i class="is-stable">{{ student.types.stable }}</i><i class="is-insufficient">{{ student.types.insufficient }}</i>
+              </span>
+            </td></template>
+            <template v-else><td>
               <span v-if="student.topics.evidence === 0" class="overview-tier-insufficient">证据不足</span>
               <span v-else class="overview-tier-counts">
                 <i class="is-weak">{{ student.topics.weak }}</i>
@@ -113,8 +126,8 @@ function openStudent(student: TrainingOverviewStudent): void {
                 <i class="is-unsteady">{{ student.skills.unsteady }}</i>
                 <i class="is-stable">{{ student.skills.stable }}</i><i class="is-insufficient">{{ student.skills.insufficient }}</i>
               </span>
-            </td>
-            <td class="is-num">{{ student.topics.weak + student.skills.weak }}</td>
+            </td></template>
+            <td class="is-num">{{ weakCount(student) }}</td>
           </tr>
         </tbody>
       </table>

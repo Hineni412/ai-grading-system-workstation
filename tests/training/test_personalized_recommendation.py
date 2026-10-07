@@ -1801,7 +1801,8 @@ def _selection_candidate(qid, text, key=BNU_TARGET, difficulty=5, **extra):
 
 
 def _selection_draft(
-    monkeypatch, candidates, diagnosis=None, shared=False, question_count=10, **settings
+    monkeypatch, candidates, diagnosis=None, shared=False, question_count=10,
+    taxonomy_revision=7, scope_keys=(BNU_CHAPTER4,), **settings
 ):
     module = object.__new__(PersonalizedRecommendationModule)
     from question_bank.current_knowledge import CurrentKnowledgeResolver
@@ -1810,7 +1811,7 @@ def _selection_draft(
         load_taxonomy_catalog_for_release,
     )
 
-    release = load_release_for_taxonomy_revision(7)
+    release = load_release_for_taxonomy_revision(taxonomy_revision)
     module.current_knowledge = CurrentKnowledgeResolver(
         release, load_taxonomy_catalog_for_release(release)
     )
@@ -1832,7 +1833,7 @@ def _selection_draft(
         config=PersonalizedRecommendationConfig(
             question_count=question_count,
             paper_mode="shared" if shared else "individual",
-            scope_keys=(BNU_CHAPTER4,),
+            scope_keys=scope_keys,
             **settings,
         ),
         candidates=tuple(candidates),
@@ -1893,6 +1894,29 @@ def test_personal_remediation_keeps_shortage_and_does_not_fill_correct_targets(m
                 {"full_score": 5, "score_awarded": score, "assessment": {"granularity": granularity}}]}})
     assert not _loss_refs({"source_question_refs": [{"full_score": 5, "score_awarded": None}]})
     assert _unmeasured_entry(observed)
+
+
+@pytest.mark.parametrize("volume_id", ["", "bnu24-math-g7-upper", "bnu24-math-g7-lower"])
+def test_v9_keeps_non_type_volume_skill_recommendations(monkeypatch, volume_id):
+    key, chapter = BNU_TARGET, BNU_CHAPTER4
+    if volume_id == "bnu24-math-g7-upper":
+        from question_bank.current_knowledge import CurrentKnowledgeResolver
+        from question_bank.knowledge_graph_release.loader import load_taxonomy_catalog_for_release
+        from question_bank.recommendation.target_matching import target_index
+        release = load_release_for_taxonomy_revision(7)
+        resolver = CurrentKnowledgeResolver(release, load_taxonomy_catalog_for_release(release))
+        key = next(node.stable_key for node in resolver.nodes if node.stable_key.startswith("sk_bnu24_math_g7_upper_"))
+        chapter = target_index(resolver)[key]["chapter"]
+    candidates = [_selection_candidate(1, "合成未转换教材册目标题", key)]
+    diagnosis = _direct_diagnosis((("A", .8, 900, key),))
+    settings = {"remediation_only": True, "scope_keys": (chapter,), "curriculum_volume_id": volume_id}
+    before = _selection_draft(monkeypatch, candidates, diagnosis, taxonomy_revision=7, **settings)
+    after = _selection_draft(monkeypatch, candidates, diagnosis, taxonomy_revision=11, **settings)
+    assert [item["question_id"] for item in after["students"][0]["items"]] == [
+        item["question_id"] for item in before["students"][0]["items"]]
+    assert after["students"][0]["items"]
+    assert all("题型" not in warning for warning in after["students"][0]["warnings"])
+    assert all("need_stats" not in target for target in after["students"][0]["targets"])
 
 
 @pytest.mark.parametrize("blocker", [None, "written", "similar"])
@@ -2488,7 +2512,7 @@ def _group_need(aim, *keys):
             for key in keys}
 
 
-def test_quality_grouping_uses_shared_paper_coverage():
+def test_quality_grouping_uses_shared_paper_coverage(monkeypatch):
     from question_bank.recommendation.personalized import _quality_group_members
     config = PersonalizedRecommendationConfig(question_count=8, max_questions_per_skill=8,
                                               max_written_questions=8, recent_activity_count=0)
@@ -2539,6 +2563,62 @@ def test_quality_grouping_uses_shared_paper_coverage():
                       "I": [_group_entry("I", qid, key) for qid in range(1, 9) for key in right]}
         assert _quality_group_members(needs={"H": left, "I": right}, pools=pair_pools,
                                       recent={}, config=config) == []
+
+    # Controlled selection outputs: a true individual paper covers four lost
+    # targets, while the common paper covers two. v9 must refuse this pair.
+    # v8 retains its existing one-member shared baseline.
+    import question_bank.recommendation.personalized as engine
+    for targets, expected in (
+        (tuple(f"kp_bnu24_math_g8_upper_1_1_t{i:02d}" for i in range(1, 5)), []),
+        (("sk_1", "sk_2", "sk_3", "sk_4"), [("A", "B")]),
+    ):
+        pair_needs = {sid: _group_need(3., *targets) for sid in ("A", "B")}
+        pair_pools = {sid: [_group_entry(sid, qid, targets[(qid - 1) % 4])
+                           for qid in range(1, 13)] for sid in ("A", "B")}
+
+        def controlled_selection(entries, count, settings, **kwargs):
+            rows = {}
+            for entry in entries:
+                if settings.paper_mode == "individual" or entry["key"] in targets[:2]:
+                    rows.setdefault(entry["candidate"]["question_id"], []).append(entry)
+            return [(group[0], group) for group in list(rows.values())[:count]]
+
+        with monkeypatch.context() as selection:
+            selection.setattr(engine, "_choose_practice_entries", controlled_selection)
+            assert _quality_group_members(needs=pair_needs, pools=pair_pools,
+                                          recent={}, config=config) == expected
+
+
+def test_type_group_preview_rechecks_actual_paper_against_individual_coverage(monkeypatch):
+    from question_bank.current_knowledge import CurrentKnowledgeResolver
+    from question_bank.knowledge_graph_release.loader import load_taxonomy_catalog_for_release
+
+    keys = tuple(f"kp_bnu24_math_g8_upper_1_1_t{i:02d}" for i in range(1, 5))
+    release = load_release_for_taxonomy_revision(11)
+    module = object.__new__(PersonalizedRecommendationModule)
+    module.current_knowledge = CurrentKnowledgeResolver(release, load_taxonomy_catalog_for_release(release))
+    module.clock = lambda: NOW
+    profiles = [{"student_id": sid, "student_code": "", "student_name": f"合成学生{sid}",
+                 "class_id": "TEST", "weak_points": []} for sid in ("A", "B")]
+    needs = {sid: {key: {"knowledge_point": key, "evidence_count": 2, "mastery": .1,
+                        "difficulty_plan": {"minimum": 2, "maximum": 4, "aim": 3}}
+                   for key in keys} for sid in ("A", "B")}
+    pools = {sid: [_group_entry(sid, qid, keys[(qid - 1) % 2]) for qid in range(1, 9)]
+             for sid in ("A", "B")}
+    for entries in pools.values():
+        for entry in entries:
+            entry["target"]["target_difficulty"] = 3
+    monkeypatch.setattr(module, "evaluate_candidates", lambda **kwargs: {
+        "pools": pools, "warnings": {sid: [] for sid in ("A", "B")}})
+    summary = module._chapter_group_summary(
+        diagnosis={"students": profiles}, members=("A", "B"), targets=keys, needs=needs,
+        config=PersonalizedRecommendationConfig(paper_mode="shared", scope_keys=("kp_bnu24_math_g8_upper_1",),
+            question_count=8, max_questions_per_skill=8), candidates=(), relations=(),
+        recent={}, excluded=set(), source_version="TEST", metadata={}, mastery={},
+        personal_coverage={sid: set(keys) for sid in ("A", "B")})
+    assert summary["available_question_count"] == 8
+    assert not summary["ready"]
+    assert any("四分之三" in issue for issue in summary["issues"])
 
 
 def test_no_source_direct_match_is_level_two_same_skill_label(direct_module):
@@ -3294,3 +3374,248 @@ def test_endpoint_question_display_reads_only_paired_stems_without_exporting_ans
         server.shutdown()
         server.server_close()
         worker.join(timeout=2)
+
+
+def test_type_need_stats_reason_reports_stable_loss():
+    from question_bank.recommendation.personalized import (
+        _practice_reason_summary, _type_class_totals, _type_need_stats)
+
+    TYPE = "kp_bnu24_math_g8_upper_1_1_t05"
+
+    def ref(session, question, score, full=5):
+        return {"session_id": session, "question_id": question,
+                "score_awarded": score, "full_score": full,
+                "source_kind": "current_exam",
+                "assessment": {"eligible": True, "evidence_weight": 1,
+                               "granularity": "part"}}
+
+    target = {"knowledge_key": TYPE,
+              "source_question_refs": [ref(1, "Q1", 0), ref(1, "Q2", 1), ref(2, "Q1", 5)]}
+    diagnosis = {"students": [
+        {"student_id": "A", "weak_points": [target]},
+        {"student_id": "B", "weak_points": [{"knowledge_key": "kp_other_t01",
+            "source_question_refs": [ref(1, "Q1", 4), ref(1, "Q2", 3), ref(2, "Q1", 5)]}]},
+    ]}
+    stats = _type_need_stats(target, _type_class_totals(diagnosis))
+    assert stats["stable"] and stats["attempted"] == 3 and stats["lost"] == 2
+    assert stats["rate"] == pytest.approx(0.4) and stats["class_rate"] == pytest.approx(0.6)
+    # The same exam question projected under several targets counts once.
+    diagnosis["students"][0]["weak_points"].append(deepcopy(target))
+    assert _type_need_stats(target, _type_class_totals(diagnosis)) == stats
+    for scores, expected in (([0], False), ([0, 0], True), ([0, 5], False),
+                             ([2, 4], False), ([2, 3], True)):
+        measured = {"source_question_refs": [ref(1, f"Q{i}", score)
+                                             for i, score in enumerate(scores)]}
+        assert _type_need_stats(measured, {})["stable"] is expected
+    weighted = {"source_question_refs": [ref(1, "Q1", 0, 1), ref(1, "Q2", 9, 9)]}
+    weighted_stats = _type_need_stats(weighted, {})
+    assert weighted_stats["rate"] == pytest.approx(.9)
+    assert not weighted_stats["stable"]
+    excluded = [
+        {**ref(3, "Q1", 0), "source_kind": "training"},
+        {**ref(3, "Q2", 0), "assessment": {"eligible": False}},
+        {**ref(3, "Q3", 0), "assessment": {"granularity": "whole"}},
+        {**ref(3, "Q4", 0), "assessment": {"evidence_weight": .5}},
+    ]
+    deduped = {**target, "source_question_refs": [*target["source_question_refs"],
+        deepcopy(target["source_question_refs"][0]), *excluded]}
+    assert _type_need_stats(deduped, _type_class_totals(diagnosis)) == stats
+    entry = {"student_id": "A", "key": TYPE, "matched_key": TYPE,
+             "selection_kind": "direct", "match_label": "同题型", "match_level": 1,
+             "practice_purpose": "remediation",
+             "candidate": {"stable_names": {TYPE: "八年级上册｜第一章｜题型·数轴定位"},
+                           "difficulty": 2.0},
+             "target": {"stable_key": TYPE, "tier": "weak", "need_stats": stats}}
+    reason = _practice_reason_summary([entry])
+    assert "补弱·题型·数轴定位" in reason
+    assert "稳定失分：考3错2" in reason
+    assert "本人 40%" in reason and "选中群体 60%" in reason
+    # A one-student diagnosis still compares against its complete own class.
+    from question_bank.recommendation.personalized import _normalize_diagnosis
+    selected = {"students": [{**diagnosis["students"][0], "class_id": "TEST甲班"}],
+                "_type_class_question_totals": {
+                    "TEST甲班": {"1": {
+                        "Q1": {"score_sum": 40, "full_score_sum": 50},
+                        "Q2": {"score_sum": 30, "full_score_sum": 50}},
+                        "2": {"Q1": {"score_sum": 50, "full_score_sum": 50}}},
+                    "TEST乙班": {"1": {
+                        "Q1": {"score_sum": 5, "full_score_sum": 50},
+                        "Q2": {"score_sum": 45, "full_score_sum": 50}}}}}
+    normalized = _normalize_diagnosis(selected)
+    own_totals = _type_class_totals(normalized, "TEST甲班")
+    own_stats = _type_need_stats(target, own_totals, comparison_scope="full_class")
+    assert own_stats["rate"] == stats["rate"]
+    assert own_stats["class_rate"] == pytest.approx(.8)
+    assert own_stats["reference_exam_key"] == ["1", "Q1"]
+    other_stats = _type_need_stats(target, _type_class_totals(normalized, "TEST乙班"),
+                                 comparison_scope="full_class")
+    assert other_stats["reference_exam_key"] == ["1", "Q2"]
+    assert other_stats["class_rate"] is None  # Missing one of the same exam items.
+    class_entry = {**entry, "target": {**entry["target"], "need_stats": own_stats}}
+    assert "全班 80%" in _practice_reason_summary([class_entry])
+    selected["_type_class_question_totals"]["TEST甲班"]["1"]["Q2"]["score_sum"] = 45
+    assert _type_class_totals(normalized, "TEST甲班") == own_totals
+    refreshed = _normalize_diagnosis(selected)
+    refreshed_stats = _type_need_stats(target, _type_class_totals(refreshed, "TEST甲班"),
+                                       comparison_scope="full_class")
+    assert refreshed_stats["reference_exam_key"] == ["1", "Q2"]
+    assert _type_class_totals({**normalized, "_type_class_question_totals": {}}, "TEST甲班") == {}
+    assert _type_need_stats(target, {}, comparison_scope="full_class")["class_rate"] is None
+    from question_bank.recommendation.personalized import _type_need_priority
+    assert _type_need_priority({"stable": True, "gap": -.1}) > _type_need_priority({"stable": True, "gap": -.2})
+    assert _type_need_priority({"stable": True, "gap": -.6}) > _type_need_priority({"stable": False, "gap": 1})
+
+
+def test_type_remediation_uses_one_exam_anchor_and_two_difficulty_bands(monkeypatch):
+    from dataclasses import replace
+    from question_bank.current_knowledge import CurrentKnowledgeResolver
+    from question_bank.knowledge_graph_release.loader import load_taxonomy_catalog_for_release
+    from question_bank.recommendation import personalized as engine
+
+    key = "kp_bnu24_math_g8_upper_1_1_t01"
+    release = load_release_for_taxonomy_revision(11)
+    module = object.__new__(PersonalizedRecommendationModule)
+    module.current_knowledge = CurrentKnowledgeResolver(release, load_taxonomy_catalog_for_release(release))
+    monkeypatch.setattr(module, "_source_practice_metadata", lambda _: {})
+    facet = {"part_id": "p", "direct_keys": [key], "type_keys": [key],
+             "section_keys": ["kp_bnu24_math_g8_upper_1_1"], "chapter_keys": ["kp_bnu24_math_g8_upper_1"]}
+
+    def ref(qid, score, difficulty, text):
+        return {"session_id": 1, "question_id": qid, "score_awarded": score, "full_score": 5,
+                "source_kind": "current_exam", "question_difficulty": difficulty,
+                "question_text": text, "direct_keys": [key], "target_facets": [facet],
+                "assessment": {"eligible": True, "evidence_weight": 1, "granularity": "part"}}
+
+    points = {sid: {"knowledge_key": key, "stable_key": key, "value": .1,
+                    "logit_mean": -9, "difficulty_slope": 1, "evidence_count": 2,
+                    "source_question_refs": [ref("Q1", 0 if sid == "A" else 5, 6, "合成参照甲"),
+                                             ref("Q2", 3 if sid == "A" else 1, 3, "合成参照乙")]}
+              for sid in ("A", "B", "C")}
+    diagnosis = {"exam_scope": {"mode": "current", "session_ids": [1]},
+                 "students": [{"student_id": sid, "student_name": f"合成学生{sid}",
+                               "class_id": "TEST", "score_rate": .1, "weak_points": [point]}
+                              for sid, point in points.items()]}
+    candidates = (
+        _selection_candidate(1, "合成全等角度关系", key, difficulty=5, target_facets=[facet]),
+        _selection_candidate(2, "合成正比例函数图象", key, difficulty=6, target_facets=[facet]),
+        _selection_candidate(3, "合成数轴无理数定位", key, difficulty=4, target_facets=[facet]),
+        _selection_candidate(4, "合成圆弧统计中位数", key, difficulty=3, target_facets=[facet]),
+    )
+    similarities = {c["question_text"]: value for c, value in zip(candidates, (.8, .1, 1., 1.))}
+    monkeypatch.setattr(engine, "_stem_similarity",
+                        lambda source, text: similarities.get(text, .5) if source == "合成参照甲" else 1.)
+    config = PersonalizedRecommendationConfig(purpose="handout", question_count=4, remediation_only=True,
+        scope_keys=("kp_bnu24_math_g8_upper_1",), curriculum_volume_id="bnu24-math-g8-upper")
+
+    def evaluate(pool=candidates, observed=points):
+        result = module.evaluate_candidates(diagnosis=diagnosis, config=config, candidates=pool,
+            mastery={(sid, key): point for sid, point in observed.items()}, source_metadata={},
+            recent={}, excluded=set())["pools"]["A"]
+        return [e for e in result if e["key"] == key and engine._is_core(e)]
+
+    entries = evaluate()
+    assert all(e["target"]["difficulty_plan"].get("reference_difficulty") == 6 for e in entries)
+    assert {e["candidate"]["question_id"] for e in entries} == {1, 2, 3}
+    chosen = engine._choose_practice_entries(entries, 1, config)[0][0]
+    assert chosen["candidate"]["question_id"] == 1  # Similarity wins over zero difficulty gap.
+    assert chosen["target"]["source_question_refs"][0]["question_id"] == "Q1"
+    assert chosen["target"]["difficulty_plan"]["reference_class_rate"] == pytest.approx(2 / 3)
+    assert chosen["target"]["target_difficulty"] == 6  # Model and overall marks do not lower it.
+    with_patterns = deepcopy(entries[:2])
+    with_patterns[0]["candidate"]["similarity_profile"]["tags"] = [{"tag_type": "method", "tag_value": "TEST同方法"}]
+    filler = deepcopy(with_patterns[0])
+    other_key = "kp_bnu24_math_g8_upper_1_1_t02"
+    filler.update(key=other_key, matched_key=other_key)
+    filler["candidate"].update(question_id=15, question_text="合成概率与中位数", stable_keys=[other_key], required_keys=[other_key])
+    filler["target"].update(stable_key=other_key, need_stats={"stable": True, "gap": 1})
+    patterned = engine._choose_practice_entries([filler, *with_patterns], 2, config)
+    assert [e["candidate"]["question_id"] for e, _ in patterned] == [15, 1]
+    wider = engine._choose_practice_entries(evaluate(candidates[2:]), 1, config)[0][0]
+    assert wider["candidate"]["question_id"] == 3 and wider["reference_radius"] == 2
+    assert "上下 1 级内可入卷候选不足" in engine._practice_reason_summary([wider])
+    assert evaluate(candidates[3:]) == []  # More than two levels away is rejected.
+    two = replace(config, max_questions_per_skill=2)
+    assert {e["candidate"]["question_id"] for e, _ in engine._choose_practice_entries(entries, 2, two)} == {1, 2}
+    near_and_wide = evaluate((candidates[0], candidates[2]))
+    assert [e["reference_radius"] for e, _ in engine._choose_practice_entries(near_and_wide, 2, two)] == [1, 2]
+    unknown_reference = deepcopy(points)
+    unknown_reference["A"]["source_question_refs"][0]["question_difficulty"] = None
+    assert evaluate(candidates, unknown_reference) == []
+
+    # Correct-only and unmeasured targets keep the existing plan and purpose.
+    for purpose, refs in (("consolidation", [{**r, "score_awarded": 5} for r in points["A"]["source_question_refs"]]),
+                          ("new", [])):
+        observed = {**points, "A": {**points["A"], "source_question_refs": refs}}
+        rows = evaluate((_selection_candidate(9, "合成面积测量任务", key, difficulty=2, target_facets=[facet]),), observed)
+        assert rows and rows[0]["practice_purpose"] == purpose
+        assert "reference_radius" not in rows[0]
+
+    # The public selection remains one student; its unselected classmates'
+    # full-class scores choose Q2 instead of the selected student's Q1.
+    diagnosis["students"] = diagnosis["students"][:1]
+    diagnosis["_type_class_question_totals"] = {"TEST": {"1": {
+        "Q1": {"score_sum": 5, "full_score_sum": 50},
+        "Q2": {"score_sum": 45, "full_score_sum": 50}}}}
+    full_class_entries = evaluate()
+    assert {e["student_id"] for e in full_class_entries} == {"A"}
+    anchored = engine._choose_practice_entries(full_class_entries, 1, config)[0][0]
+    assert anchored["target"]["source_question_refs"][0]["question_id"] == "Q2"
+    assert anchored["target"]["target_difficulty"] == 3
+    assert anchored["candidate"]["question_id"] == 4
+    assert "全班在参照题上的加权得分率 90%" in engine._practice_reason_summary([anchored])
+
+
+@pytest.mark.parametrize("paper_mode", [None, "individual", "shared"])
+def test_type_section_spread_prefers_other_sections_and_allows_top_up(paper_mode):
+    """Spread is a preference in both paper modes, never a shortage-producing cap."""
+    from dataclasses import replace
+    from question_bank.recommendation.personalized import _choose_practice_entries
+
+    def entry(qid, key, section, *, stable=True, gap=.5, mastery=None):
+        return {"candidate": {"question_id": qid, "stable_keys": [key],
+                              "question_type": "选择题"},
+                "student_id": "A", "key": key, "matched_key": key,
+                "selection_kind": "direct", "practice_purpose": "remediation",
+                "match_level": 1, "distance": 0, "preference": 0,
+                "target_section": section,
+                "target": {"stable_key": key, "value": mastery,
+                           "need_stats": {"stable": stable, "gap": gap,
+                                          "points_lost": 5}}}
+
+    s1 = ["kp_bnu24_math_g8_upper_1_1_t01", "kp_bnu24_math_g8_upper_1_1_t02",
+          "kp_bnu24_math_g8_upper_1_1_t03", "kp_bnu24_math_g8_upper_1_1_t04"]
+    s2 = "kp_bnu24_math_g8_upper_1_2_t01"
+    entries = [entry(i, key, "s1") for i, key in enumerate(s1, 1)]
+    entries.append(entry(5, s2, "s2", stable=False, gap=.1))
+    config = (PersonalizedRecommendationConfig(
+        paper_mode=paper_mode, remediation_only=True, purpose="handout", question_count=5,
+        scope_keys=("kp_bnu24_math_g8_upper_1",),
+        max_consolidation_questions=0, max_unmeasured_questions=0)
+        if paper_mode else None)
+    chosen = _choose_practice_entries(entries, 3, config)
+    # The third pick would put s1 at 3/3, past the 2/3 share, so the
+    # lower-priority s2 need wins; rank alone would take all three s1 needs.
+    assert sorted(e["key"] for e, _ in chosen) == sorted([s1[0], s1[1], s2])
+
+    # Two unused s1 candidates also exercise the optimizer's two-question
+    # exchange: neither a single nor a double exchange may undo this spread.
+    # With no other-section candidate, all four distinct types are usable.
+    same_section = _choose_practice_entries(entries[:4], 4, config)
+    assert [e["key"] for e, _ in same_section] == s1
+    # Once the other section is exhausted, fill the remaining requested slot.
+    topped_up = _choose_practice_entries(entries, 5, config)
+    assert len(topped_up) == 5
+    assert {e["key"] for e, _ in topped_up} == {*s1, s2}
+    if config is not None:
+        unavailable_other_section = deepcopy(entries)
+        unavailable_other_section[-1]["candidate"]["question_type"] = "解答题"
+        remaining = _choose_practice_entries(unavailable_other_section, 3,
+                                            replace(config, max_written_questions=0))
+        assert [e["key"] for e, _ in remaining] == s1[:3]
+
+    skill_entries = [entry(1, "sk_a", "s1", mastery=0),
+                     entry(2, "sk_b", "s1", mastery=0),
+                     entry(3, "sk_c", "s1", mastery=0),
+                     entry(4, "sk_d", "s2", mastery=.9)]
+    chosen_skills = _choose_practice_entries(skill_entries, 3, config)
+    assert [e["key"] for e, _ in chosen_skills] == ["sk_a", "sk_b", "sk_c"]

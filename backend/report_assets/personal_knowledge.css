@@ -23,7 +23,8 @@
 .kn-board { position:relative; display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); column-gap:66px; align-items:start; }
 .kn-column { position:relative; z-index:1; min-width:0; }
 .kn-column h4 { display:flex; justify-content:space-between; align-items:center; margin:14px 0 10px; font-size:12px; color:var(--kn-blue); }
-.kn-skills h4 { color:var(--kn-teal); }
+.kn-skills h4,.kn-types h4 { color:var(--kn-teal); }
+.kn-board.is-types { grid-template-columns:minmax(0,1fr); }
 .kn-column h4 span { color:#7b8798; font-size:11px; font-weight:400; }
 .kn-node { display:block; width:100%; margin:0 0 8px; padding:10px 12px; border:1px solid #dce4ed; border-left:3px solid var(--kn-status); border-radius:5px; background:#fff; text-align:left; color:inherit; font:inherit; cursor:pointer; transition:border-color .12s,background .12s,opacity .12s; }
 .kn-node-top { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }

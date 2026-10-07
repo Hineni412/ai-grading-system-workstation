@@ -219,11 +219,16 @@ class ReportGenerator:
             snapshot.locks,
             score_map,
         )
+        type_names = self._type_bucket_names(
+            (snapshot.session or {}).get("curriculum_volume_id"), snapshot.knowledge_backfill,
+        )
+        knowledge_item_label = "题型" if type_names is not None else "知识点"
         knowledge_summary = self._build_session_knowledge_summary_by_class(
             eligible_details,
             score_map,
             knowledge_label_map,
             snapshot.knowledge_backfill,
+            type_names=type_names,
         )
         exceptions = self._build_exception_sheet(
             df_results,
@@ -237,9 +242,9 @@ class ReportGenerator:
             "not_counted": max(0, expected_count - len(eligible_results)),
         }
         knowledge_note = (
-            "标注“未命名知识点”的题目在题库中未能可靠匹配知识点标签，暂不能细分。"
+            f"标注“未命名{knowledge_item_label}”的题目在题库中未能可靠匹配{knowledge_item_label}标签，暂不能细分。"
             if not knowledge_summary.empty
-            and (knowledge_summary["知识点"] == "未命名知识点").any()
+            and (knowledge_summary[knowledge_item_label] == f"未命名{knowledge_item_label}").any()
             else None
         )
 
@@ -289,12 +294,12 @@ class ReportGenerator:
             landscape=True,
         )
         self._write_dataframe_sheet(
-            workbook.create_sheet("知识点分析"),
+            workbook.create_sheet(f"{knowledge_item_label}分析"),
             knowledge_summary,
             freeze_cell="C3" if knowledge_note else "C2",
             landscape=True,
             top_notes=(
-                [f"{session_name} · 知识点分析", knowledge_note]
+                [f"{session_name} · {knowledge_item_label}分析", knowledge_note]
                 if knowledge_note
                 else None
             ),
@@ -1485,14 +1490,52 @@ class ReportGenerator:
         candidate = data_root / "databases" / "question_bank.db"
         return candidate if candidate.is_file() else None
 
+    def _type_bucket_names(
+        self, volume_id: object = "", knowledge_backfill: dict[str, list[dict[str, str]]] | None = None,
+    ) -> dict[str, str] | None:
+        """Type-key → display name map, or ``None`` outside type mode.
+
+        The knowledge summary sheet lists question types instead of skill or
+        topic tags only when the report's volume publishes type nodes.
+        An unbound exam can use its own confirmed type identities.
+        """
+        from question_bank.current_knowledge import (
+            CurrentKnowledgeResolver,
+            CurrentKnowledgeUnavailable,
+        )
+        from question_bank.question_types import is_type_key, type_keys_active
+
+        path = self._question_bank_db_path()
+        if path is None:
+            return None
+        try:
+            resolver = CurrentKnowledgeResolver.from_active_database(path)
+        except (CurrentKnowledgeUnavailable, OSError, TypeError, ValueError):
+            return None
+        selected = str(volume_id or "").strip()
+        if not type_keys_active(resolver, selected):
+            return None
+        if not selected and not any(
+            is_type_key(entry.get("stable_key"))
+            for entries in (knowledge_backfill or {}).values() for entry in entries
+        ):
+            return None
+        return {
+            str(node.stable_key): re.sub(r"^题型[·・：:]\s*", "", str(node.display_name))
+            for node in resolver.nodes
+            if is_type_key(getattr(node, "stable_key", ""))
+        }
+
     def _build_session_knowledge_summary_by_class(
         self,
         df_details: pd.DataFrame,
         score_map: dict[str, float],
         knowledge_label_map: dict[str, str],
         knowledge_backfill: dict[str, list[dict[str, str]]] | None = None,
+        type_names: dict[str, str] | None = None,
     ) -> pd.DataFrame:
-        columns = ["班级", "知识点", "涉及题目", "累计得分", "累计满分", "得分率", "失分人数"]
+        item_label = "题型" if type_names is not None else "知识点"
+        columns = ["班级", item_label, "涉及题目", "累计得分", "累计满分", "得分率", "失分人数"]
         if df_details.empty:
             return pd.DataFrame(columns=columns)
 
@@ -1514,6 +1557,7 @@ class ReportGenerator:
                 item,
                 knowledge_label_map,
                 knowledge_backfill,
+                type_names=type_names,
             ):
                 key = (class_name, bucket_key)
                 bucket = buckets.setdefault(
@@ -1541,7 +1585,7 @@ class ReportGenerator:
             rows.append(
                 {
                     "班级": class_name,
-                    "知识点": str(bucket.get("label") or "未命名知识点"),
+                    item_label: str(bucket.get("label") or f"未命名{item_label}"),
                     "涉及题目": "、".join(natural_question_order([str(q) for q in questions])),
                     "累计得分": round(score_sum, 2),
                     "累计满分": round(full_sum, 2),
@@ -1553,7 +1597,7 @@ class ReportGenerator:
             key=lambda row: (
                 _class_sort_key(row["班级"]),
                 float(row["得分率"] or 0),
-                str(row["知识点"] or ""),
+                str(row[item_label] or ""),
             )
         )
         return pd.DataFrame(rows, columns=columns)
@@ -1899,6 +1943,7 @@ def _knowledge_bucket_labels(
     item: dict,
     knowledge_label_map: dict[str, str],
     knowledge_backfill: dict[str, list[dict[str, str]]] | None = None,
+    type_names: dict[str, str] | None = None,
 ) -> list[tuple[str, str]]:
     """Return (bucket_key, display_label) pairs for one detail record.
 
@@ -1909,7 +1954,12 @@ def _knowledge_bucket_labels(
     path (so same-named leaves in different chapters stay separate) while
     displaying the leaf label.  Part-level ids such as ``Q10(P1)`` fall back
     to their parent question ``Q10`` for the backfill lookup.
+
+    ``type_names`` is the active release's type-key display map; when given,
+    only question-type entries bucket (one row per type).
     """
+    from question_bank.question_types import is_type_key
+
     labels: list[str] = []
     for kid in _knowledge_ids_from_detail(item):
         label = _clean_knowledge_label(kid, knowledge_label_map.get(kid, ""))
@@ -1919,7 +1969,7 @@ def _knowledge_bucket_labels(
     qid = str(item.get("question_id") or "").strip()
     refined_entries = backfill_map.get(qid, backfill_map.get(_parent_question_id(qid)))
     refined = refined_entries == [] or any("stable_key" in entry for entry in refined_entries or [])
-    if labels and not refined:
+    if labels and not refined and type_names is None:
         return [(label, label) for label in labels]
 
     entries = backfill_map.get(qid)
@@ -1927,16 +1977,24 @@ def _knowledge_bucket_labels(
         parent = _parent_question_id(qid)
         if parent and parent != qid:
             entries = backfill_map.get(parent)
+    unknown = "未命名题型" if type_names is not None else "未命名知识点"
     pairs: list[tuple[str, str]] = []
     seen: set[str] = set()
     for entry in entries or []:
+        if type_names is not None:
+            key = str(entry.get("stable_key") or entry.get("path") or "").strip()
+            if not is_type_key(key) or key in seen:
+                continue
+            seen.add(key)
+            pairs.append((key, type_names.get(key) or str(entry.get("label") or key) or unknown))
+            continue
         path = str(entry.get("path") or "").strip()
         if not path or path in seen:
             continue
         seen.add(path)
-        label = str(entry.get("label") or "").strip() or "未命名知识点"
+        label = str(entry.get("label") or "").strip() or unknown
         pairs.append((path, label))
-    return pairs or [("未命名知识点", "未命名知识点")]
+    return pairs or [(unknown, unknown)]
 
 
 def _loss_entry_label(item: dict) -> str:

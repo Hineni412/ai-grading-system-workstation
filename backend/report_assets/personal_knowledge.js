@@ -52,7 +52,8 @@
       inspector.append(element('p', '点选上方节点，查看相关题目与证据。'));
       draw(); return;
     }
-    inspector.append(element('h3', `${node.kind === 'skill' ? '技能点' : '知识点'} · ${node.label}`));
+    const kindLabel = ({skill:'技能点', type:'题型'})[node.kind] || '知识点';
+    inspector.append(element('h3', `${kindLabel} · ${node.label}`));
     if (data.mode === 'class') {
       inspector.append(element('p', node.mastery == null
         ? '全班该节点证据不足，暂不显示平均掌握度。'
@@ -82,7 +83,7 @@
     }
     inspector.append(questionList);
     inspector.append(element('p', node.step_questions.length
-      ? `本卷 ${node.step_questions.length} 个相关小问有步骤层面的证据。上面的本卷分数仍是小问整体分，不是该技能的独立分。`
+      ? `本卷 ${node.step_questions.length} 个相关小问有步骤层面的证据。上面的本卷分数仍是小问整体分，不是该${node.kind === 'type' ? '题型' : '技能'}的独立分。`
       : '本卷相关分数属于小问整体表现，不能据此断定每个步骤是否达成。', 'kn-caution'));
     if (edges.length) {
       inspector.append(element('p', '关联依据（来自已确认题库内容）：'));

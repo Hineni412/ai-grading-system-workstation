@@ -17,6 +17,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from question_bank.question_types import is_type_key
 from question_bank.solution_evidence.part_assessments import reading
 
 LINK_JOB_KIND = "link_job"
@@ -191,9 +192,11 @@ def resolve_anchor_keys(
 ) -> dict[str, list[str]]:
     """Climb each stable key to its curriculum section/chapter anchor.
 
-    ``sk_*`` keys resolve through graph-release ``parent`` relations; ``kp_*``
-    leaves/sections climb the bundled curriculum catalog.  Returns
-    ``{"sections": [...], "chapters": [...]}`` (ordered, deduplicated).
+    ``sk_*`` keys and question-type keys (``kp_*_tNN``, which are ``core``
+    nodes absent from the bundled curriculum catalog) resolve through
+    graph-release ``parent`` relations; other ``kp_*`` leaves/sections climb
+    the bundled curriculum catalog.  Returns ``{"sections": [...],
+    "chapters": [...]}`` (ordered, deduplicated).
     """
     from question_bank.taxonomy.curriculum_catalog import (
         curriculum_knowledge_ancestors,
@@ -205,7 +208,11 @@ def resolve_anchor_keys(
     ]
     skill_map = skill_parent_targets(
         conn,
-        [key for key in ordered if key.startswith("sk_")],
+        [
+            key
+            for key in ordered
+            if key.startswith("sk_") or is_type_key(key)
+        ],
         preferred_release_id,
     )
     sections: list[str] = []

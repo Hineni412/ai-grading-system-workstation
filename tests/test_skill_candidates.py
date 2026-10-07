@@ -1164,6 +1164,201 @@ def test_skill_release_dry_run_builds_release_with_parent_and_predecessor(
         ).fetchone()[0] == release
 
 
+def _test_type_activation_candidate(tmp_path: Path):
+    from tools import build_type_release as tool
+
+    _service, _read, db, old_release, _skills, versions = _seed_gap_bank(tmp_path)
+    base, vocabulary, bundled = tool.base_release(db)
+    types = [
+        {"type_id": f"T1-{number:02d}", "stable_key": f"{SECTION}_t{number:02d}",
+         "section_key": SECTION, "name": f"TEST-题型{number}",
+         "definition": "TEST-定义", "include": "TEST-纳入", "exclude": "TEST-排除",
+         "rationale": "TEST-理由", "anchors": []}
+        for number in (1, 2)
+    ]
+    payload, vocabulary, key_map = tool.build_type_release(
+        base, vocabulary, types, release_id="kgr_TEST_type_activation_v9",
+        taxonomy_revision=bundled.taxonomy_revision + 1,
+    )
+    labels = {1: {"primary_type": "T1-01", "secondary_types": ["T1-02"]},
+              2: {"primary_type": "NONE", "secondary_types": []}}
+    return tool, db, old_release, versions, payload, vocabulary, labels, key_map, types
+
+
+def test_type_activation_rehearses_and_preserves_pre_activation_backup(tmp_path):
+    tool, db, old, versions, payload, vocab, labels, keys, _types = _test_type_activation_candidate(tmp_path)
+    backup_dir = tmp_path / "TEST-backups"
+    result = tool.activate_type_release(db, backup_dir, payload, vocab, labels, keys)
+    assert result["rehearsal_passed"] and result["applied"]
+    assert result["integrity_ok"] and result["foreign_keys_ok"]
+    assert result["model_calls"] == 0
+    assert result["questions_with_type_link"] == 1
+    assert result["type_links_written"] == 3
+    assert result["secondary_tags_written"] == 1
+    with sqlite3.connect(backup_dir / result["backup_name"]) as conn:
+        assert conn.execute("SELECT release_id FROM knowledge_graph_releases WHERE status='active'").fetchone()[0] == old
+        assert conn.execute("SELECT COUNT(*) FROM question_tags WHERE tag_type='secondary_type'").fetchone()[0] == 0
+    with sqlite3.connect(db) as conn:
+        links = load_point_links(db, [versions[1]], payload["release_id"], connection=conn)
+        assert set(links[versions[1]]) == {"p1", "p2", "p3"}
+        for point in links[versions[1]].values():
+            assert sum(row.role == "direct" and row.stable_key == keys["T1-01"] for row in point) == 1
+            assert not any(row.stable_key == keys["T1-02"] for row in point)
+        assert conn.execute("SELECT tag_value FROM question_tags WHERE question_id=1 AND tag_type='secondary_type'").fetchone()[0] == keys["T1-02"]
+    assert not list(backup_dir.glob("TEST-type-release-*"))
+
+
+def test_type_activation_link_failure_returns_to_old_release(tmp_path, monkeypatch):
+    from question_bank.solution_evidence import knowledge_links
+
+    tool, db, old, _versions, payload, vocab, labels, keys, _types = _test_type_activation_candidate(tmp_path)
+    original = knowledge_links.replace_point_links
+
+    def fail_real_write(conn, **kwargs):
+        database = Path(conn.execute("PRAGMA database_list").fetchone()[2]).resolve()
+        if database == db.resolve():
+            raise RuntimeError("TEST-link-write-failed")
+        return original(conn, **kwargs)
+
+    monkeypatch.setattr(knowledge_links, "replace_point_links", fail_real_write)
+    backup_dir = tmp_path / "TEST-backups"
+    with pytest.raises(RuntimeError, match="TEST-link-write-failed"):
+        tool.activate_type_release(db, backup_dir, payload, vocab, labels, keys)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT release_id FROM knowledge_graph_releases WHERE status='active'").fetchone()[0] == old
+        assert conn.execute("SELECT COUNT(*) FROM evidence_point_knowledge_links WHERE graph_release_id=?", (payload["release_id"],)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM question_tags WHERE tag_type='secondary_type'").fetchone()[0] == 0
+    assert len(list(backup_dir.glob("*.db"))) == 1
+
+
+def test_type_activation_rejects_missing_version_during_rehearsal(tmp_path):
+    tool, db, old, _versions, payload, vocab, labels, keys, _types = _test_type_activation_candidate(tmp_path)
+    labels[999] = {"primary_type": "T1-01", "secondary_types": []}
+    with pytest.raises(ValueError, match="缺少当前有效判定资料"):
+        tool.activate_type_release(db, tmp_path / "TEST-backups", payload, vocab, labels, keys)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT release_id FROM knowledge_graph_releases WHERE status='active'").fetchone()[0] == old
+        assert conn.execute("SELECT COUNT(*) FROM evidence_point_knowledge_links WHERE graph_release_id=?", (payload["release_id"],)).fetchone()[0] == 0
+
+
+def test_type_activation_rejects_stale_source_before_creating_backup(tmp_path):
+    tool, db, old, _versions, payload, vocab, labels, keys, _types = _test_type_activation_candidate(tmp_path)
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE questions SET question_text='TEST-changed-source' WHERE id=1")
+    backup_dir = tmp_path / "TEST-backups"
+    with pytest.raises(ValueError, match="处理来源变化"):
+        tool.activate_type_release(db, backup_dir, payload, vocab, labels, keys)
+    assert not backup_dir.exists()
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT release_id FROM knowledge_graph_releases WHERE status='active'").fetchone()[0] == old
+        assert conn.execute("SELECT question_text FROM questions WHERE id=1").fetchone()[0] == "TEST-changed-source"
+
+
+def test_type_activation_can_preserve_invalid_sources_without_type_annotations(tmp_path):
+    from question_bank.solution_evidence.part_assessments import load_profiles
+
+    tool, db, old, versions, payload, vocab, labels, keys, _types = _test_type_activation_candidate(tmp_path)
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE questions SET question_text='TEST-stale-source' WHERE id=1")
+        before = conn.execute("SELECT evidence_json, source_content_hash FROM question_solution_evidence_versions WHERE evidence_version_id=?", (versions[1],)).fetchone()
+        old_links = load_point_links(db, [versions[1]], old, connection=conn)[versions[1]]
+    result = tool.activate_type_release(db, tmp_path / "TEST-backups", payload, vocab, labels, keys,
+                                        skip_unavailable=True)
+    assert result["skipped_unavailable_questions"] == 1
+    assert result["questions_with_type_link"] == result["type_links_written"] == 0
+    assert result["secondary_tags_written"] == 0
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT evidence_json, source_content_hash FROM question_solution_evidence_versions WHERE evidence_version_id=?", (versions[1],)).fetchone() == before
+        assert conn.execute("SELECT question_text FROM questions WHERE id=1").fetchone()[0] == "TEST-stale-source"
+        carried = load_point_links(db, [versions[1]], payload["release_id"], connection=conn)[versions[1]]
+        assert {pid: {(row.role, row.stable_key) for row in rows} for pid, rows in carried.items()} == {pid: {(row.role, row.stable_key) for row in rows} for pid, rows in old_links.items()}
+    assert not load_profiles(db, [1], verify_source=True, data_root=tmp_path)[1]["available"]
+
+
+def test_type_activation_selects_latest_version_when_timestamps_tie(tmp_path):
+    tool, db, old, versions, payload, vocab, labels, keys, _types = _test_type_activation_candidate(tmp_path)
+    # A lower hash sorted lexically would select the older row. Insertion order
+    # identifies the latest usable result, as in the shared profile reader.
+    latest = "0" * 64
+    evidence = json.dumps({"parts": [{"part_id": "part-1", "evidence_points": [{"evidence_point_id": "latest-point", "target": "TEST-current", "observable_evidence": "TEST-current"}]}]})
+    with sqlite3.connect(db) as conn:
+        conn.execute("""INSERT INTO question_solution_evidence_versions
+            (evidence_version_id,question_id,source_content_hash,schema_version,content_hash,evidence_json,
+             status,source_kind,source_reference,created_by,graph_release_id,created_at)
+            SELECT ?,question_id,source_content_hash,schema_version,?,?,status,source_kind,'TEST-newer-result',
+                   created_by,graph_release_id,created_at FROM question_solution_evidence_versions
+            WHERE evidence_version_id=?""", (latest, latest, evidence, versions[1]))
+    result = tool.activate_type_release(db, tmp_path / "TEST-backups", payload, vocab, labels, keys)
+    assert result["current_versions"][1] == latest
+    with sqlite3.connect(db) as conn:
+        links = load_point_links(db, [latest], payload["release_id"], connection=conn)[latest]
+        assert set(links) == {"latest-point"}
+        assert any(row.stable_key == keys["T1-01"] for row in links["latest-point"])
+
+
+def test_type_activation_refuses_source_changed_during_rehearsal(tmp_path, monkeypatch):
+    tool, db, old, _versions, payload, vocab, labels, keys, _types = _test_type_activation_candidate(tmp_path)
+    original = tool.apply_type_release
+
+    def concurrent_change(path, *args):
+        result = original(path, *args)
+        assert Path(path).resolve() != db.resolve()
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE questions SET question_text='TEST-concurrent-change' WHERE id=2")
+        return result
+
+    monkeypatch.setattr(tool, "apply_type_release", concurrent_change)
+    with pytest.raises(ValueError, match="预演期间题库已变化"):
+        tool.activate_type_release(db, tmp_path / "TEST-backups", payload, vocab, labels, keys)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT release_id FROM knowledge_graph_releases WHERE status='active'").fetchone()[0] == old
+        assert conn.execute("SELECT question_text FROM questions WHERE id=2").fetchone()[0] == "TEST-concurrent-change"
+
+
+@pytest.mark.parametrize("primary,secondary", [
+    ("", ""), ("T1-01", "T1-02;T1-03;T1-04"),
+    ("T1-01", "T1-02;T1-02"), ("T1-01", "T1-01"), ("NONE", "T1-02"),
+])
+def test_type_label_loader_rejects_invalid_primary_or_secondary(tmp_path, primary, secondary):
+    from tools import build_type_release as tool
+
+    (tmp_path / "labels_ch1_p01.tsv").write_text(
+        f"question_id\tprimary_type\tsecondary_types\n1\t{primary}\t{secondary}\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        tool.load_labels(tmp_path)
+
+
+@pytest.mark.parametrize("suffix", ["", "-wal", "-shm"])
+def test_type_database_copy_refuses_existing_target_files(tmp_path, suffix):
+    from tools import build_type_release as tool
+
+    target = tmp_path / "TEST-existing.db"
+    existing = Path(str(target) + suffix)
+    existing.write_bytes(b"TEST-existing-content")
+    with pytest.raises(ValueError, match="拒绝覆盖"):
+        tool.copy_database(tmp_path / "TEST-source.db", target)
+    assert existing.read_bytes() == b"TEST-existing-content"
+
+
+def test_type_activation_cli_requires_backup_and_registered_release(tmp_path, monkeypatch):
+    tool, db, old, _versions, _payload, _vocab, labels, _keys, types = _test_type_activation_candidate(tmp_path)
+    with pytest.raises(SystemExit):
+        tool.main(["--db", str(db), "--activate-and-carry-db", str(db)])
+    monkeypatch.setattr(tool, "load_type_vocabulary", lambda _path: types)
+    monkeypatch.setattr(tool, "load_labels", lambda _path: labels)
+
+    def missing(_revision):
+        raise FileNotFoundError("TEST-unregistered-release")
+
+    monkeypatch.setattr(tool, "registered_release", missing)
+    backup_dir = tmp_path / "TEST-backups"
+    with pytest.raises(FileNotFoundError, match="TEST-unregistered-release"):
+        tool.main(["--db", str(db), "--activate-and-carry-db", str(db), "--backup-dir", str(backup_dir)])
+    assert not backup_dir.exists()
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT release_id FROM knowledge_graph_releases WHERE status='active'").fetchone()[0] == old
+
+
 def test_skill_release_apply_on_copy_links_gap_and_preserves_others(
     tmp_path: Path,
 ) -> None:
@@ -1237,6 +1432,99 @@ def test_skill_release_activation_refuses_without_registered_mapping(
             ]
         )
     assert not list(backup_dir.glob("*.db")) if backup_dir.exists() else True
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT release_id FROM knowledge_graph_releases WHERE status='active'"
+        ).fetchone()[0] == release
+
+
+def test_type_release_builds_core_nodes_and_rejects_name_collision(
+    tmp_path: Path,
+) -> None:
+    from question_bank.knowledge_graph_release.contracts import KnowledgeGraphRelease
+    from question_bank.knowledge_graph_release.validation import validate_release
+    from tools import build_type_release as tool
+
+    _service, _read, db, release, _keys, _versions = _seed_gap_bank(tmp_path)
+    base_payload, base_vocab, bundled = tool.base_release(db)
+    vocab_dir = tmp_path / "vocab"
+    vocab_dir.mkdir()
+    header = (
+        "type_id\tname\tsection_key\tdefinition\tinclude\texclude\tanchors\t"
+        "source_leaves\treference_models\taction\tbasic_entry\test_count\t"
+        "rationale\n"
+    )
+    (vocab_dir / "vocab_ch1.tsv").write_text(
+        header
+        + f"T1-01\tTEST-题型甲\t{SECTION}\tTEST-定义甲\tTEST-纳入甲\t"
+        f"TEST-排除甲\tQ1;Q2\t{SECTION}_1\tK01\tnew\tno\t3\tTEST-理由甲\n"
+        + f"T1-02\tTEST-题型乙\t{SECTION}\tTEST-定义乙\tTEST-纳入乙\t"
+        f"TEST-排除乙\tQ3\t{SECTION}_2\tK02\tnew\tno\t2\tTEST-理由乙\n",
+        encoding="utf-8",
+    )
+    types = tool.load_type_vocabulary(vocab_dir)
+    payload, vocab, key_map = tool.build_type_release(
+        base_payload,
+        base_vocab,
+        types,
+        release_id="kgr_TEST_type_v9",
+        taxonomy_revision=int(bundled.taxonomy_revision) + 1,
+    )
+    assert key_map == {
+        "T1-01": f"{SECTION}_t01",
+        "T1-02": f"{SECTION}_t02",
+    }
+    for key in key_map.values():
+        assert re.fullmatch(r"kp_bnu24_math_g8_upper_1_1_t\d{2}", key)
+    report = validate_release(KnowledgeGraphRelease.from_mapping(payload), vocab)
+    assert report.valid, [f"{i.path}: {i.message}" for i in report.errors]
+    section_name = next(
+        n["display_name"]
+        for n in base_payload["core_nodes"]
+        if n["stable_key"] == SECTION
+    )
+    type_nodes = {
+        n["stable_key"]: n
+        for n in payload["core_nodes"]
+        if n["stable_key"] in set(key_map.values())
+    }
+    assert len(type_nodes) == 2
+    for key, node in type_nodes.items():
+        assert node["node_kind"] == "core"
+        assert node["status"] == "active"
+        assert node["display_name"].startswith(f"{section_name}｜题型·")
+        assert node["evidence_source_ids"] == ["question_type_vocab_2026_10"]
+        relation = next(
+            r
+            for r in payload["relations"]
+            if r["source_key"] == key and r["relation_type"] == "parent"
+        )
+        assert relation["target_key"] == SECTION
+        assert relation["strength"] == "required"
+        assert re.fullmatch(r"[0-9a-f]{64}", relation["relation_key"])
+    # Nothing retired: every base node survives with its status unchanged.
+    base_status = {
+        n["stable_key"]: n["status"] for n in base_payload["core_nodes"]
+    }
+    assert len(payload["core_nodes"]) == len(base_status) + 2
+    for node in payload["core_nodes"]:
+        if node["stable_key"] in base_status:
+            assert node["status"] == base_status[node["stable_key"]]
+    # Vocabulary gained one approved knowledge term per type.
+    new_terms = [t for t in vocab["terms"] if t["id"] in set(key_map.values())]
+    assert len(new_terms) == 2
+    assert vocab["revision"] == int(bundled.taxonomy_revision) + 1
+    # Name collision (same type name in the same section) fails loudly.
+    colliding = [dict(types[0]), dict(types[1], name=types[0]["name"])]
+    with pytest.raises(ValueError, match="collides"):
+        tool.build_type_release(
+            base_payload,
+            base_vocab,
+            colliding,
+            release_id="kgr_TEST_type_v9",
+            taxonomy_revision=int(bundled.taxonomy_revision) + 1,
+        )
+    # The source database is untouched: still on the old active release.
     with sqlite3.connect(db) as conn:
         assert conn.execute(
             "SELECT release_id FROM knowledge_graph_releases WHERE status='active'"

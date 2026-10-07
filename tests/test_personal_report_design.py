@@ -65,6 +65,9 @@ def test_graph_uses_current_mastery_separately_from_exam_scores(analysis_db):
     assert view["nodes"][0]["tier"] == "insufficient"
     assert view["nodes"][0]["interval_low"] == .45
     html = _knowledge_view_html(view)
+    assert view["target_kind"] == "skill"
+    assert "知识与技能掌握图" in html
+    assert 'kn-topics' in html and 'kn-skills' in html
     assert 'kn-node kn-missing" data-key="topic"' in html
     assert "明显薄弱" in html and "还不稳" in html
     assert "需巩固" not in html
@@ -81,6 +84,124 @@ def test_graph_uses_current_mastery_separately_from_exam_scores(analysis_db):
     student.knowledge_mastery["section_ref"] = {"mastery": .9, "tier": "stable", "interval_low": .8, "interval_high": .95}
     referenced = _personal_knowledge_view(data, student)
     assert referenced["nodes"][0]["parent_references"] == [{"label": "本节", "mastery": .9, "tier": "stable", "interval_low": .8, "interval_high": .95}]
+
+
+@pytest.mark.parametrize("semester_bound", [True, False], ids=["semester", "no-semester"])
+def test_mixed_release_keeps_unconverted_reports_in_skill_mode(
+    analysis_db, question_bank_database, semester_bound,
+):
+    import sqlite3
+    from openpyxl import load_workbook
+    from backend.reporting.analysis_report_exporter import (
+        _class_knowledge_view, _knowledge_view_html, _personal_knowledge_view, render_class_html,
+    )
+    from backend.reporting.report import ReportGenerator
+    from backend.session_analysis import assemble_session_analysis, enrich_personal_knowledge
+    from tests.test_analysis_report import _score_state, _seed_report_knowledge
+
+    db, session, root = analysis_db
+    bank = _seed_report_knowledge(analysis_db, question_bank_database, type_mode=False,
+                                 volume_id="bnu24-math-g7-upper", standard_revision=11)
+    if not semester_bound:
+        with sqlite3.connect(db.db_path) as connection:
+            connection.execute("UPDATE grading_sessions SET curriculum_volume_id=NULL WHERE id=?", (session,))
+    before = _score_state(db.db_path)
+    data = assemble_session_analysis(db, session, data_root=root)
+    enrich_personal_knowledge(db, data, root)
+    assert data.knowledge_structure["target_kind"] == "skill"
+    if not semester_bound:
+        assert "尚未关联教学学期" in data.knowledge_structure["note"]
+    for student in data.students:
+        view = _personal_knowledge_view(data, student)
+        assert view["target_kind"] == "skill"
+        assert {node["key"] for node in view["nodes"]} == {bank.topic_key, bank.skill_key}
+        assert {node["kind"] for node in view["nodes"]} == {"topic", "skill"}
+        assert "知识与技能掌握图" in _knowledge_view_html(view)
+        assert all(node["full"] == 100 and node["score"] == student.student_score for node in view["nodes"])
+        if not semester_bound:
+            assert all(node["mastery"] is None for node in view["nodes"])
+    assert _class_knowledge_view(data)["target_kind"] == "skill"
+    assert "班级知识与技能掌握图" in render_class_html(data, None)
+    workbook = load_workbook(ReportGenerator(db, root / "out").export_session(session))
+    try:
+        assert "知识点分析" in workbook.sheetnames and "题型分析" not in workbook.sheetnames
+    finally:
+        workbook.close()
+    assert _score_state(db.db_path) == before
+
+
+@pytest.mark.parametrize("semester_bound", [True, False], ids=["semester", "no-semester"])
+def test_type_reports_group_current_types_without_changing_exam_scores(
+    analysis_db, question_bank_database, semester_bound,
+):
+    import sqlite3
+    from bs4 import BeautifulSoup
+    from backend.reporting.analysis_report_exporter import (
+        _class_knowledge_view, _knowledge_view_html, _personal_exam_points, _personal_knowledge_view,
+        _render_personal_html, render_class_html,
+    )
+    from backend.session_analysis import assemble_session_analysis, enrich_personal_knowledge
+    from tests.test_analysis_report import _score_state, _seed_report_knowledge
+
+    db, session, root = analysis_db
+    bank = _seed_report_knowledge(analysis_db, question_bank_database, type_mode=True)
+    if not semester_bound:
+        with sqlite3.connect(db.db_path) as connection:
+            connection.execute("UPDATE grading_sessions SET curriculum_volume_id=NULL WHERE id=?", (session,))
+    before = _score_state(db.db_path)
+    data = assemble_session_analysis(db, session, data_root=root)
+    enrich_personal_knowledge(db, data, root)
+    assert data.knowledge_structure["target_kind"] == "type"
+    if not semester_bound:
+        assert "尚未关联教学学期" in data.knowledge_structure["note"]
+    assert [(student.student_score, student.rank) for student in data.students] == [(90, 1), (50, 2)]
+    for student in data.students:
+        view = _personal_knowledge_view(data, student)
+        assert view["target_kind"] == "type"
+        assert view["edges"] == []
+        (node,) = view["nodes"]
+        assert (node["key"], node["kind"], node["label"]) == (bank.type_key, "type", "合成题型")
+        assert (node["score"], node["full"]) == (student.student_score, 100)
+        assert [question["id"] for question in node["questions"]] == ["Q1", "Q2"]
+        if not semester_bound:
+            assert node["mastery"] is None
+        html = BeautifulSoup(_knowledge_view_html(view), "html.parser")
+        assert html.select_one(".kn-heading h2").get_text() == "题型掌握图"
+        assert len(html.select(".kn-types .kn-node")) == 1
+        assert html.select(".kn-topics, .kn-skills") == []
+        points = _personal_exam_points(view, student, {q.question_id: q for q in data.questions}, session)
+        assert [point["key"] for point in points] == [bank.type_key]
+        report = BeautifulSoup(_render_personal_html(data, student, None, {}), "html.parser")
+        assert "合成题型" in report.get_text()
+        assert "这个题型是否做对" in report.get_text()
+        assert "几个知识点" not in report.get_text()
+
+    class_view = _class_knowledge_view(data)
+    assert class_view["target_kind"] == "type"
+    (node,) = class_view["nodes"]
+    assert (node["score"], node["full"], class_view["student_count"]) == (140, 200, 2)
+    assert [(q["id"], q["score"], q["full"]) for q in node["questions"]] == [("Q1", 45, 60), ("Q2", 25, 40)]
+    if not semester_bound:
+        assert (node["mastery"], node["coverage"], node["missing_count"]) == (None, 0, 2)
+    html = BeautifulSoup(_knowledge_view_html(class_view), "html.parser")
+    assert html.select_one(".kn-heading h2").get_text() == "班级题型掌握图"
+    assert len(html.select(".kn-types .kn-node")) == 1
+    assert html.select(".kn-topics, .kn-skills") == []
+    report = BeautifulSoup(render_class_html(data, None), "html.parser")
+    assert report.select_one("#knowledge-map h2").get_text() == "班级题型掌握图"
+    # A missing bank link leaves scored questions available and no invented target.
+    data.knowledge_backfill = {}
+    empty = BeautifulSoup(render_class_html(data, None), "html.parser")
+    assert empty.select_one("#knowledge-map h2").get_text() == "班级题型掌握图"
+    assert "尚无可可靠匹配的题型标签" in empty.get_text()
+    assert "第1题" in empty.get_text() and "第2题" in empty.get_text()
+    if not semester_bound:
+        # With neither a volume nor confirmed targets, use legacy display;
+        # another volume's type nodes cannot establish this exam's scope.
+        enrich_personal_knowledge(db, data, root)
+        assert data.knowledge_structure["target_kind"] == "skill"
+        assert all(node["kind"] != "type" for node in _personal_knowledge_view(data, data.students[0])["nodes"])
+    assert _score_state(db.db_path) == before
 
 
 def test_exam_points_require_specific_evidence_for_losses(analysis_db):

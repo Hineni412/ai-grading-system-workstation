@@ -11,8 +11,10 @@ const open = defineModel<boolean>('open', { default: false })
 const emit = defineEmits<{ 'wrong-book': [studentId: string] }>()
 const points = computed(() => {
   const kinds = new Map((props.diagnosis.knowledge_catalog ?? []).map(node => [node.knowledge_key, node.node_kind]))
+  // Typed releases list question types here; legacy releases keep skills/topics.
+  const listed = props.diagnosis.target_kind === 'type' ? ['type'] : ['skill', 'topic']
   return [...new Map((props.student?.weak_points ?? []).filter(point => ['weak', 'unsteady'].includes(point.tier ?? '')
-    && ['skill', 'topic'].includes(kinds.get(point.knowledge_key) ?? '')).map(point => [point.knowledge_key, point])).values()]
+    && listed.includes(kinds.get(point.knowledge_key) ?? '')).map(point => [point.knowledge_key, point])).values()]
     .sort((a, b) => (a.mastery ?? 1) - (b.mastery ?? 1)).slice(0, 10)
 })
 </script>

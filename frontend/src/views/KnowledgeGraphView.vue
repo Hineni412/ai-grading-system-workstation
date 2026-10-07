@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { assemblyApi, type AssemblyQuestion } from '../api/assembly'
 import type { TrainingOverviewNode } from '../api/training'
 import AppIconButton from '../components/design-system/AppIconButton.vue'
 import AppButton from '../components/design-system/AppButton.vue'
@@ -12,6 +13,7 @@ import OverviewScopeBar from '../components/knowledge-overview/OverviewScopeBar.
 import OverviewMapRows from '../components/knowledge-overview/OverviewMapRows.vue'
 import OverviewTierBar from '../components/knowledge-overview/OverviewTierBar.vue'
 import StudentTierChips from '../components/knowledge-overview/StudentTierChips.vue'
+import QuestionContentRenderer from '../components/question-bank/QuestionContentRenderer.vue'
 import { formatPercent, shortNodeName } from '../components/knowledge-overview/model'
 import { WEAK_HEAT_LABELS, chapterMetrics, heatLevel, isItem, nodeLocation, overviewMetrics, relatedNodes } from '../components/knowledge-overview/metrics'
 import { saveEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
@@ -23,15 +25,22 @@ import '../styles/knowledge-graph.css'
 const route = useRoute(), router = useRouter()
 const curriculum = useCurriculumScopeStore(), store = useMasteryOverviewStore()
 const overview = computed(() => store.overview)
+// Typed releases present question types instead of the topic/skill columns.
+const typeMode = computed(() => overview.value?.target_kind === 'type')
 const metrics = computed(() => overview.value ? overviewMetrics(overview.value) : null)
-const filters = [{ key: 'all', label: '全部' }, { key: 'skill', label: '只看技能' }, { key: 'topic', label: '只看知识点' }, { key: 'weak', label: '只看有学生明显薄弱' }]
-const filter = computed(() => filters.some(f => f.key === route.query.filter) ? String(route.query.filter) : 'all')
+const filters = computed(() => typeMode.value
+  ? [{ key: 'all', label: '全部' }, { key: 'weak', label: '只看有学生明显薄弱' }]
+  : [{ key: 'all', label: '全部' }, { key: 'skill', label: '只看技能' }, { key: 'topic', label: '只看知识点' }, { key: 'weak', label: '只看有学生明显薄弱' }])
+const filter = computed(() => filters.value.some(f => f.key === route.query.filter) ? String(route.query.filter) : 'all')
 const selectedKey = computed(() => typeof route.query.focus === 'string' ? route.query.focus : '')
 const selected = computed(() => overview.value?.nodes.find(n => isItem(n) && n.knowledge_key === selectedKey.value) ?? null)
 const hoveredKey = ref('')
 const activeKey = computed(() => hoveredKey.value || selectedKey.value)
-const activeKeys = computed(() => new Set([activeKey.value, ...(overview.value ? relatedNodes(overview.value, activeKey.value).map(r => r.node.knowledge_key) : [])]))
-const related = computed(() => overview.value && selected.value ? relatedNodes(overview.value, selectedKey.value) : [])
+const activeKeys = computed(() => new Set([activeKey.value, ...(typeMode.value ? [] : (overview.value ? relatedNodes(overview.value, activeKey.value).map(r => r.node.knowledge_key) : []))]))
+const related = computed(() => !typeMode.value && overview.value && selected.value ? relatedNodes(overview.value, selectedKey.value) : [])
+const hiddenTypeCount = computed(() => typeMode.value
+  ? (overview.value?.nodes ?? []).filter(n => n.kind === 'type' && n.in_volume !== false && n.evidence_student_count === 0).length
+  : 0)
 const chapters = computed(() => chapterMetrics(overview.value?.nodes ?? []))
 const examined = computed(() => chapters.value.filter(c => c.evidence > 0))
 const unexamined = computed(() => chapters.value.filter(c => c.evidence === 0))
@@ -50,7 +59,10 @@ let originalCell: HTMLElement | null = null
 let observer: ResizeObserver | null = null
 let frame: number | null = null
 function visible(nodes: TrainingOverviewNode[]) {
-  return nodes.filter(n => filter.value === 'all' || (filter.value === 'weak' ? n.distribution.weak > 0 : n.kind === filter.value))
+  return nodes.filter(n => {
+    if (typeMode.value && n.kind === 'type' && n.evidence_student_count === 0) return false
+    return filter.value === 'all' || (filter.value === 'weak' ? n.distribution.weak > 0 : n.kind === filter.value)
+  })
 }
 function queryFor(focus = selectedKey.value, chosenFilter = filter.value) {
   return { ...(chosenFilter === 'all' ? {} : { filter: chosenFilter }), ...(focus ? { focus } : {}) }
@@ -107,7 +119,7 @@ function scheduleLines() {
 }
 function train(node: TrainingOverviewNode) {
   const student_ids = node.students.filter(s => s.tier === 'weak').map(s => s.student_id)
-  if (!student_ids.length || node.kind !== 'skill') return
+  if (!student_ids.length || (node.kind !== 'skill' && node.kind !== 'type')) return
   saveEvidenceScope(semesterEvidenceQuery({ mode: 'selected', student_ids }, curriculum.selectedVolumeId))
   presetFocusedTraining({ targetKeys: [node.knowledge_key], rangeKeys: node.section_key ? [node.section_key] : [] })
   void router.push({ name: 'training', query: { mode: 'student' } })
@@ -115,6 +127,17 @@ function train(node: TrainingOverviewNode) {
 function questions(node: TrainingOverviewNode) {
   void router.push({ name: 'student-evidence', params: { studentId: 'group' }, query: { mode: 'questions', knowledge: node.knowledge_key, klabel: node.display_name, from: 'overview' } })
 }
+const typicalQuestion = ref<AssemblyQuestion | null>(null)
+let typicalRequest = 0
+watch(() => selected.value?.typical_question?.bank_question_id, async (id) => {
+  const ticket = ++typicalRequest
+  typicalQuestion.value = null
+  if (!id) return
+  try {
+    const result = await assemblyApi.resolveQuestions([id])
+    if (ticket === typicalRequest) typicalQuestion.value = result.items.find(q => q.id === id) ?? null
+  } catch { /* The detail panel still works when the preview cannot load. */ }
+}, { immediate: true })
 watch([selected, filter, overview], async ([node], [previous]) => {
   await nextTick()
   if (node && node !== previous) drawer.value?.focus()
@@ -166,8 +189,9 @@ onBeforeUnmount(() => {
         <div class="app-segmented" role="group" aria-label="地图筛选"><button v-for="option in filters" :key="option.key" type="button" :aria-pressed="filter === option.key" :class="{ 'is-active': filter === option.key }" @click="router.replace({ name: 'knowledge-graph', query: queryFor(selectedKey, option.key) })">{{ option.label }}</button></div>
         <div class="mastery-map-legend" aria-label="热度图例"><span v-for="(label, index) in WEAK_HEAT_LABELS" :key="label"><i :class="`heat-${index}`" />{{ label }}</span><span><i class="heat--1" />无证据</span></div>
         <p>底色越深＝明显薄弱的学生占比越高（分母：有证据学生）；底部细条＝四档人数分布。</p>
-        <div class="mastery-tier-legend"><span class="is-weak">明显薄弱</span><span class="is-unsteady">还不稳</span><span class="is-stable">较稳定</span><span class="is-insufficient">证据不足</span><span>实线：同一小问 · 虚线：仅同题出现</span></div>
+        <div class="mastery-tier-legend"><span class="is-weak">明显薄弱</span><span class="is-unsteady">还不稳</span><span class="is-stable">较稳定</span><span class="is-insufficient">证据不足</span><span v-if="!typeMode">实线：同一小问 · 虚线：仅同题出现</span></div>
       </div>
+      <p v-if="typeMode && hiddenTypeCount" class="mastery-map-hidden-note">尚未考查的 {{ hiddenTypeCount }} 个题型已隐藏</p>
       <div class="mastery-map-layout" :class="{ 'has-drawer': selected }">
         <div ref="mapRoot" class="mastery-map-root" @toggle.capture="scheduleLines">
           <svg v-if="lines.length" class="mastery-map-connections" aria-hidden="true"><path v-for="line in lines" :key="line.key" :d="line.path" :class="{ 'is-dashed': line.dashed }" /></svg>
@@ -189,20 +213,27 @@ onBeforeUnmount(() => {
           </details>
         </div>
         <aside v-if="selected" ref="drawer" class="mastery-map-drawer fx-drawer-right" tabindex="-1" role="region" :aria-label="`${shortNodeName(selected)}详情`">
-          <header><div><span class="mastery-map-type">{{ selected.kind === 'skill' ? '技能' : '知识点' }}</span><h2>{{ shortNodeName(selected) }}</h2></div><AppIconButton label="关闭详情" @click="close" icon="close" /></header>
+          <header><div><span class="mastery-map-type">{{ selected.kind === 'skill' ? '技能' : selected.kind === 'type' ? '题型' : '知识点' }}</span><h2>{{ shortNodeName(selected) }}</h2></div><AppIconButton label="关闭详情" @click="close" icon="close" /></header>
           <p class="overview-location">属于 {{ nodeLocation(selected, overview.nodes) }}</p>
           <p v-if="selected.definition" class="mastery-map-definition">{{ selected.definition }}</p>
           <div class="mastery-map-mastery"><span>群体掌握度</span><strong>{{ formatPercent(selected.group_mastery) }}</strong><small>80% 群体区间 {{ formatPercent(selected.group_interval_low) }}–{{ formatPercent(selected.group_interval_high) }}</small></div>
           <OverviewTierBar :distribution="selected.distribution" show-counts /><p class="overview-location">有证据 {{ selected.evidence_student_count }} 人</p>
-          <StudentTierChips :node="selected" :students="overview.students" />
-          <section class="mastery-map-related"><h3>{{ selected.kind === 'skill' ? '相关知识点' : '相关技能' }}</h3>
+          <StudentTierChips v-if="!typeMode" :node="selected" :students="overview.students" />
+          <section v-if="typeMode && selected.typical_question" class="mastery-map-typical">
+            <p class="mastery-map-typical-lead">典型题：本班考过的这类题中得分率最低的一道 · {{ selected.typical_question.session_name }} 第{{ selected.typical_question.question_label }}题 · 本班得分率 {{ formatPercent(selected.typical_question.class_rate) }}</p>
+            <QuestionContentRenderer v-if="typicalQuestion" :blocks="typicalQuestion.rich_content?.question_blocks" :fallback="typicalQuestion.question_text" media-mode="detail" typeset-text />
+            <template v-if="selected.other_questions?.length"><p class="mastery-map-typical-lead">本班还考过这类题：</p>
+              <ul class="mastery-map-others"><li v-for="item in selected.other_questions" :key="`${item.session_name}|${item.question_label}`">{{ item.session_name }} 第{{ item.question_label }}题 · 得分率 {{ formatPercent(item.class_rate) }}</li></ul>
+            </template>
+          </section>
+          <section v-if="!typeMode" class="mastery-map-related"><h3>{{ selected.kind === 'skill' ? '相关知识点' : '相关技能' }}</h3>
             <StatePanel v-if="!related.length" kind="empty" compact title="题库暂无关联。" />
             <button v-for="item in related" :key="item.node.knowledge_key" type="button" @click="select(item.node)">
               <i :class="`heat-${heatLevel(item.node)}`" /><span><strong>{{ shortNodeName(item.node) }}</strong><small>明显薄弱 {{ item.node.distribution.weak }} 人 · {{ item.association.basis === 'same_part' ? `同一小问 ${item.association.same_part_question_count} 题` : `仅同题出现 ${item.association.question_count} 题（虚线）` }}</small></span>
             </button>
             <p>关联来自题库里同时考查两者的题目，不代表两者掌握度相同。</p>
           </section>
-          <div class="mastery-map-drawer-actions"><AppButton v-if="selected.kind === 'skill' && selected.distribution.weak > 0" variant="primary" @click="train(selected)">给明显薄弱的 {{ selected.distribution.weak }} 人出训练卷</AppButton><AppButton @click="questions(selected)">看错题</AppButton></div>
+          <div class="mastery-map-drawer-actions"><AppButton v-if="(selected.kind === 'skill' || selected.kind === 'type') && selected.distribution.weak > 0" variant="primary" @click="train(selected)">给明显薄弱的 {{ selected.distribution.weak }} 人出训练卷</AppButton><AppButton @click="questions(selected)">看错题</AppButton></div>
         </aside>
       </div>
       <details v-if="overview.warnings.length" class="overview-data-notes"><summary>数据说明（{{ overview.warnings.length }}）</summary><ul><li v-for="warning in overview.warnings" :key="warning">{{ warning }}</li></ul></details>

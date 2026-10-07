@@ -59,12 +59,13 @@ function pathParts(value: string): string[] {
 }
 
 // 目录标签是"册｜章｜小节｜细分点"全路径；章名取第二段，其余取末段，
-// 技能再剥掉"技能·/技能："前缀（与知识结构页一致）。
+// 技能/题型再剥掉"技能·/题型·"前缀（与知识结构页一致）。
 export function shortNodeName(node: Pick<TrainingOverviewNode, 'display_name' | 'kind'>): string {
   const parts = pathParts(node.display_name)
   if (node.kind === 'chapter' && parts.length >= 2) return parts[1] ?? node.display_name
   const leaf = parts.length ? parts[parts.length - 1]! : node.display_name
-  return node.kind === 'skill' ? leaf.replace(/^技能[·：:]/, '') : leaf
+  return node.kind === 'skill' ? leaf.replace(/^技能[·：:]/, '')
+    : node.kind === 'type' ? leaf.replace(/^题型[·：:]/, '') : leaf
 }
 
 export { formatPercent }
@@ -83,8 +84,10 @@ export function compareFocusNodes(left: TrainingOverviewNode, right: TrainingOve
 export function defaultStudentSort(
   students: readonly TrainingOverviewStudent[],
 ): TrainingOverviewStudent[] {
+  const weakCount = (student: TrainingOverviewStudent) =>
+    student.types ? student.types.weak : student.topics.weak + student.skills.weak
   return [...students].sort((left, right) => (
-    (right.topics.weak + right.skills.weak) - (left.topics.weak + left.skills.weak)
+    weakCount(right) - weakCount(left)
     || (left.score_rate ?? Number.POSITIVE_INFINITY) - (right.score_rate ?? Number.POSITIVE_INFINITY)
     || left.student_code.localeCompare(right.student_code, 'zh')
   ))

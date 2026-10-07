@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from dataclasses import replace
 from typing import Any, Mapping
 
 import httpx
@@ -26,6 +27,271 @@ from tests.current_knowledge_support import install_current_knowledge
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "p4_00_gold_set.json"
+
+
+def _type_question(*, revision: int = 11) -> QuestionAnalysisInput:
+    from question_bank.knowledge_graph_release.loader import load_release_for_taxonomy_revision
+
+    release = load_release_for_taxonomy_revision(revision)
+    contract = dict(_question(1).taxonomy_contract)
+    contract.update(
+        taxonomy_revision=revision, knowledge_catalog_revision=revision,
+        knowledge_graph_release_id=release.release_id,
+        curriculum_volume={"id": "bnu24-math-g8-upper", "sections": [
+            {"id": "kp_bnu24_math_g8_upper_1_1", "name": "探索勾股定理"},
+        ]},
+    )
+    return replace(_question(1), taxonomy_contract=contract, tagging_context=replace(
+        _question(1).tagging_context, question_type="解答题", curriculum_volume_id="bnu24-math-g8-upper",
+    ))
+
+
+def _type_labels(primary: str = "kp_bnu24_math_g8_upper_1_1_t03") -> dict[str, Any]:
+    return {"primary_type_id": primary, "secondary_type_ids": ["kp_bnu24_math_g8_upper_1_1_t01"],
+            "proposed_type_name": "", "reason": "按整题核心任务判定。"}
+
+
+def _type_result() -> dict[str, Any]:
+    from question_bank.training_criteria.adapters import _combined_evidence_examples
+
+    part = _combined_evidence_examples()["q11_process_positive"]
+    part.pop("why_correct")
+    return {
+        "question_id": 1, "tag_analysis": _tag_payload(), "question_type_labels": _type_labels(),
+        "solution_evidence": {"schema_version": "question-solution-evidence-v2", "question_id": 1,
+            "parts": [part], "auxiliary_rules": [], "rationale": "合成解题依据。", "confidence": 0.9},
+    }
+
+
+def test_v9_import_candidates_are_scoped_and_prompt_preserves_type_definitions() -> None:
+    from question_bank.training_criteria.adapters import _combined_prompt
+    from question_bank.training_criteria.analysis import (
+        PlannedAnalysisBatch, combined_response_format, controlled_term_ids_from_questions,
+    )
+    from question_bank.question_types import is_type_key
+
+    question = _type_question()
+    types = [item for item in question.taxonomy_contract["candidates"]["knowledge"] if is_type_key(item["id"])]
+    assert len(types) == 6
+    assert all(item["parent_id"] == "kp_bnu24_math_g8_upper_1_1" for item in types)
+    sent = json.loads(_combined_prompt(PlannedAnalysisBatch((question,), 1000, 1000), "both")[1]["content"][0]["text"])
+    assert sent["questions"][0]["candidate_contract"]["question_type_mode"] is True
+    assert types[0] in sent["questions"][0]["candidate_contract"]["candidates"]["knowledge"]
+    assert "最多 2 个" in sent["rules"]
+    assert sent["prompt_version"] == "combined-v4-question-types"
+    schema = combined_response_format(allowed_term_ids=controlled_term_ids_from_questions((question,)))
+    assert schema["name"] == "question_bank_combined_analysis_v4"
+    labels = schema["schema"]["properties"]["results"]["items"]["properties"]["question_type_labels"]
+    assert labels["properties"]["secondary_type_ids"]["maxItems"] == 2
+    assert "kp_bnu24_math_g8_upper_1_2_t06" not in labels["properties"]["primary_type_id"]["enum"]
+    with pytest.raises(ValueError, match="another question"):
+        replace(question, question_id=2)
+
+
+def test_v8_import_prompt_and_source_hash_remain_compatible() -> None:
+    from question_bank.training_criteria.analysis import combined_response_format, controlled_term_ids_from_questions, normalize_question_type_result, solution_evidence_source_content_hash
+
+    old = _type_question(revision=10)
+    current = replace(old, taxonomy_contract=_type_question().taxonomy_contract)
+    assert not old.taxonomy_contract.get("question_type_mode")
+    assert current.source_content_hash == old.source_content_hash
+    assert solution_evidence_source_content_hash(current) == solution_evidence_source_content_hash(old)
+    assert combined_response_format(allowed_term_ids=controlled_term_ids_from_questions((old,)))["name"].endswith("_v3")
+    raw = {"question_id": 1, "solution_evidence": {"parts": []}}
+    assert normalize_question_type_result(old, raw) == raw
+
+
+@pytest.mark.parametrize("changes", [
+    {"primary_type_id": "kp_bnu24_math_g8_upper_1_2_t06"},
+    {"primary_type_id": "模型新造题型"},
+    {"secondary_type_ids": ["kp_bnu24_math_g8_upper_1_2_t06"]},
+    {"secondary_type_ids": ["kp_bnu24_math_g8_upper_1_1_t01"] * 2},
+    {"secondary_type_ids": ["kp_bnu24_math_g8_upper_1_1_t01", "kp_bnu24_math_g8_upper_1_1_t02", "kp_bnu24_math_g8_upper_1_1_t04"]},
+    {"secondary_type_ids": ["kp_bnu24_math_g8_upper_1_1_t03"]},
+    {"primary_type_id": "", "secondary_type_ids": []},
+])
+def test_v9_import_rejects_invalid_primary_and_secondary_types(changes: dict[str, Any]) -> None:
+    from question_bank.training_criteria.analysis import ProjectionValidationError, normalize_question_type_result
+
+    raw = _type_result()
+    raw["question_type_labels"].update(changes)
+    with pytest.raises(ProjectionValidationError):
+        normalize_question_type_result(_type_question(), raw)
+
+
+def test_v9_import_primary_is_on_every_point_and_secondary_is_never_a_link() -> None:
+    from question_bank.training_criteria.analysis import ProjectionValidationError, normalize_question_type_result
+
+    question = _type_question()
+    raw = _type_result()
+    normalized = normalize_question_type_result(question, raw)
+    for point in normalized["solution_evidence"]["parts"][0]["evidence_points"]:
+        assert [link["fine_term_id"] for link in point["fine_term_links"]] == [raw["question_type_labels"]["primary_type_id"]]
+    secondary = next(item for item in question.taxonomy_contract["candidates"]["knowledge"] if item["id"].endswith("_t01"))
+    raw["solution_evidence"]["parts"][0]["evidence_points"][0]["fine_term_links"] = [{
+        "fine_term_id": secondary["id"], "fine_term_name": secondary["name"], "role": "direct",
+    }]
+    with pytest.raises(ProjectionValidationError):
+        normalize_question_type_result(question, raw)
+
+
+@pytest.mark.parametrize("secondary_count", [0, 1, 2, None])
+def test_v9_deferred_import_roundtrip_adoption_and_new_term_review(
+    tmp_path: Path, secondary_count: int | None,
+) -> None:
+    from types import SimpleNamespace
+    from question_bank.services.question_write_service import QuestionBankWriteService
+    from question_bank.current_knowledge import CurrentFineTermResolver
+    from question_bank.solution_evidence.repository import SolutionEvidenceRepository
+    from question_bank.taxonomy.governance import TaxonomyGovernance
+    from question_bank.training_criteria import (
+        ConfigQuestionAnalysisSource, DeferredCombinedAnalysisBundle,
+        DeferredCombinedProjectionWriter, DeferredCombinedQuestionAnalysisModule, QuestionAnalysisInputLoader,
+    )
+
+    database = tmp_path / "TEST-type-import.db"
+    _seed_questions(database, 1)
+    install_current_knowledge(database, taxonomy_revision=11)
+    governance = TaxonomyGovernance(state_path=tmp_path / "TEST-taxonomy.json", knowledge_graph_db_path=database)
+    loader = QuestionAnalysisInputLoader(db_path=database, data_root=tmp_path)
+    plain = loader.load((1,), curriculum_volume_id="bnu24-math-g8-upper")[0]
+    question = replace(plain, taxonomy_contract=governance.prompt_contract(plain.tagging_context))
+    raw = _type_result()
+    raw["tag_analysis"].update(taxonomy_revision=question.taxonomy_snapshot.taxonomy_revision, thought_tags=[])
+    raw["tag_analysis"]["ability_tags"] = [question.taxonomy_contract["candidates"]["ability"][0]["id"]]
+    if secondary_count is None:
+        raw["question_type_labels"].update(primary_type_id="", secondary_type_ids=[],
+            proposed_type_name="合成未收录的数学任务", reason="本题核心任务无法归入当前题型。")
+    else:
+        raw["question_type_labels"]["secondary_type_ids"] = [
+            "kp_bnu24_math_g8_upper_1_1_t01", "kp_bnu24_math_g8_upper_1_1_t02",
+        ][:secondary_count]
+    resolver = CurrentFineTermResolver.from_active_database(database)
+    gateway = QueueGateway([{"results": [raw]}])
+    bundle = DeferredCombinedQuestionAnalysisModule(gateway=gateway,
+        resolver=None if secondary_count == 1 else resolver, taxonomy_governance=governance).analyze(
+        operation_id="TEST-type-import", curriculum_volume_id="bnu24-math-g8-upper",
+        sources=(ConfigQuestionAnalysisSource("Q1", question),),
+    )
+    assert not bundle.failures
+    item = bundle.items[0]
+    assert item.to_dict()["schema_version"] == "deferred-combined-analysis-item-v8"
+    restored = DeferredCombinedAnalysisBundle.from_checkpoint_dict(bundle.to_checkpoint_dict(), resolver=None if secondary_count == 1 else resolver)
+    assert restored.items[0].question_type_labels == raw["question_type_labels"]
+    tag_writer = ExistingTagProjectionWriter(
+        write_service=QuestionBankWriteService(db_path=database, data_root=tmp_path),
+        tagging_service=SimpleNamespace(taxonomy_governance=governance),
+    )
+    evidence_repository = SolutionEvidenceRepository(database)
+    writer = DeferredCombinedProjectionWriter(tag_writer=tag_writer, mapping_repository=resolver,
+        evidence_repository=evidence_repository, taxonomy_governance=governance)
+    outcome = writer.write(restored.items[0], question=question, source_question_ref="Q1")
+    assert outcome["evidence_status"] == "succeeded"
+    current = evidence_repository.load_current(1, resolver=resolver, source_content_hash=item.source_content_hash)
+    assert current is not None
+    for part in current.parts:
+        for point in part.evidence_points:
+            assert [link.fine_term_id for link in point.fine_term_links] == (
+                [raw["question_type_labels"]["primary_type_id"]] if secondary_count is not None else []
+            )
+    with connect(database) as connection:
+        secondaries = connection.execute("SELECT tag_value, source FROM question_tags WHERE question_id=1 AND tag_type='secondary_type'").fetchall()
+    assert {(row["tag_value"], row["source"]) for row in secondaries} == {
+        (value, "taxonomy") for value in raw["question_type_labels"]["secondary_type_ids"]
+    }
+    from question_bank.question_types import is_type_key
+    with connect(database) as connection:
+        typed_tags = [row[0] for row in connection.execute("SELECT tag_value FROM question_tags WHERE question_id=1 AND tag_type='knowledge_point'") if is_type_key(row[0])]
+    assert typed_tags == ([raw["question_type_labels"]["primary_type_id"]] if secondary_count is not None else [])
+    if secondary_count is None:
+        assert bundle.taxonomy_review_source_refs == ("Q1",)
+        assert outcome["taxonomy_review_required"] is True
+        assert governance.list_proposals()["items"]
+        assert governance.resolve_term("knowledge", raw["question_type_labels"]["proposed_type_name"]) is None
+    else:
+        assert outcome["tag_status"] == "succeeded"
+        # Re-adoption is idempotent; changed source content is rejected before
+        # the tag writer or evidence repository receives a new write.
+        writer.write(restored.items[0], question=question, source_question_ref="Q1")
+        with connect(database) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM question_tags WHERE question_id=1 AND tag_type='secondary_type'").fetchone()[0] == secondary_count
+        changed = replace(question, tagging_context=replace(question.tagging_context, question_text="合成题面已变化"))
+        with pytest.raises(ValueError, match="source content changed"):
+            writer.write(restored.items[0], question=changed, source_question_ref="Q1")
+        assert evidence_repository.load_current(1, resolver=resolver, source_content_hash=item.source_content_hash).content_hash == current.content_hash
+        if secondary_count == 1:
+            from question_bank.training_criteria import ConfirmedQuestionAdoptionLink
+            from question_bank.training_criteria.analysis import solution_evidence_source_content_hash
+
+            with connect(database) as connection:
+                connection.execute("UPDATE questions SET question_text=? WHERE id=1", (changed.tagging_context.question_text,))
+            adopted = writer.adopt_linked(restored.items[0], question=changed,
+                link=ConfirmedQuestionAdoptionLink("Q1", 1, "TEST-explicit-link"))
+            assert adopted["evidence_status"] == "succeeded"
+            assert evidence_repository.load_current(1, resolver=resolver, source_content_hash=solution_evidence_source_content_hash(changed)) is not None
+    assert len(gateway.calls) == 1
+
+
+@pytest.mark.parametrize("matched", [True, False])
+def test_v9_bank_import_saves_both_projections_without_an_extra_model_step(tmp_path: Path, matched: bool) -> None:
+    from types import SimpleNamespace
+    from question_bank.services.question_write_service import QuestionBankWriteService
+    from question_bank.current_knowledge import CurrentFineTermResolver
+    from question_bank.solution_evidence.repository import SolutionEvidenceRepository, SolutionEvidenceProjectionWriter
+    from question_bank.taxonomy.governance import TaxonomyGovernance
+    from question_bank.training_criteria import QuestionAnalysisInputLoader
+    from question_bank.training_criteria.analysis import solution_evidence_source_content_hash
+
+    database = tmp_path / "TEST-direct-type-import.db"
+    _seed_questions(database, 1)
+    install_current_knowledge(database, taxonomy_revision=11)
+    governance = TaxonomyGovernance(state_path=tmp_path / "TEST-taxonomy.json", knowledge_graph_db_path=database)
+    question = QuestionAnalysisInputLoader(db_path=database, data_root=tmp_path).load((1,), curriculum_volume_id="bnu24-math-g8-upper")[0]
+    question = replace(question, taxonomy_contract=governance.prompt_contract(question.tagging_context))
+    raw = _type_result()
+    raw["tag_analysis"].update(taxonomy_revision=question.taxonomy_snapshot.taxonomy_revision, thought_tags=[])
+    raw["tag_analysis"]["ability_tags"] = [question.taxonomy_contract["candidates"]["ability"][0]["id"]]
+    if not matched:
+        raw["question_type_labels"].update(primary_type_id="", secondary_type_ids=[],
+            proposed_type_name="合成新数学任务", reason="核心任务无法归入现有题型。")
+    gateway = QueueGateway([{"results": [raw]}])
+    resolver = CurrentFineTermResolver.from_active_database(database)
+    evidence_repository = SolutionEvidenceRepository(database)
+    module = CombinedQuestionAnalysisModule(
+        repository=CombinedAnalysisRepository(database), gateway=gateway,
+        tag_writer=ExistingTagProjectionWriter(write_service=QuestionBankWriteService(db_path=database, data_root=tmp_path),
+            tagging_service=SimpleNamespace(taxonomy_governance=governance)),
+        evidence_writer=SolutionEvidenceProjectionWriter(mapping_repository=resolver, evidence_repository=evidence_repository, taxonomy_governance=governance),
+    )
+    summary = module.analyze(operation_id="TEST-bank-type-import", questions=(question,))
+    assert summary["status"] == "succeeded"
+    assert summary["items"][0]["training_criteria"]["question_type_labels"] == raw["question_type_labels"]
+    evidence = evidence_repository.load_current(1, resolver=resolver, source_content_hash=solution_evidence_source_content_hash(question))
+    assert evidence is not None
+    assert all([link.fine_term_id for link in point.fine_term_links] == ([raw["question_type_labels"]["primary_type_id"]] if matched else [])
+        for part in evidence.parts for point in part.evidence_points)
+    with connect(database) as connection:
+        secondary = [row[0] for row in connection.execute("SELECT tag_value FROM question_tags WHERE question_id=1 AND tag_type='secondary_type'")]
+    assert secondary == raw["question_type_labels"]["secondary_type_ids"]
+    if not matched:
+        assert governance.list_proposals()["items"]
+    module.analyze(operation_id="TEST-bank-type-import", questions=(question,))
+    assert len(gateway.calls) == 1
+    if matched:
+        with connect(database) as connection:
+            accepted_abilities = [row[0] for row in connection.execute("SELECT tag_value FROM question_tags WHERE question_id=1 AND tag_type='ability'")]
+        retry = _type_result()
+        retry.pop("tag_analysis")
+        retry["question_type_labels"].update(primary_type_id="", secondary_type_ids=[],
+            proposed_type_name="合成重试中新发现的数学任务", reason="重试时发现核心任务没有合适题型。")
+        gateway.responses.append({"results": [retry]})
+        retried = module.analyze(operation_id="TEST-type-criteria-only", questions=(question,), projection="training_criteria")
+        assert retried["status"] == "succeeded"
+        with connect(database) as connection:
+            assert [row[0] for row in connection.execute("SELECT tag_value FROM question_tags WHERE question_id=1 AND tag_type='ability'")] == accepted_abilities
+            assert connection.execute("SELECT COUNT(*) FROM question_tags WHERE question_id=1 AND tag_type='secondary_type'").fetchone()[0] == 0
+        assert governance.list_proposals()["items"]
+        assert len(gateway.calls) == 2
 
 
 @pytest.mark.parametrize(

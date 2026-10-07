@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from backend.llm.errors import classify_transport_error
 from question_bank.models.tag_schema import TagAnalysis
+from question_bank.question_types import is_type_key
 from question_bank.services.ai_tagging_service import converge_tag_analysis
 from question_bank.solution_evidence.contracts import (
     CoreResolution,
@@ -43,6 +44,8 @@ from question_bank.training_criteria.analysis import (
     stops_batch_scheduling,
     training_criteria_from_solution_evidence,
     training_criterion_source_reference,
+    normalize_question_type_result,
+    validate_question_type_labels,
 )
 
 _MAX_REJECTED_RESULT_CHARS = 50_000
@@ -181,6 +184,7 @@ class DeferredCombinedAnalysisItem:
     # question before any model call, so the item carries the canonical's
     # stored analysis. Adoption must not write it back onto the canonical.
     reused_from_question_id: int | None = None
+    question_type_labels: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         reference = str(self.source_question_ref or "").strip()
@@ -213,6 +217,15 @@ class DeferredCombinedAnalysisItem:
             self.solution_evidence,
             _candidate_contract(candidates),
         )
+        if self.question_type_labels is not None:
+            labels = validate_question_type_labels(self.question_type_labels, _candidate_contract(candidates))
+            primary = labels["primary_type_id"]
+            for part in self.solution_evidence.parts:
+                for point in part.evidence_points:
+                    typed = [link for link in point.fine_term_links if is_type_key(link.fine_term_id)]
+                    if [link.fine_term_id for link in typed] != ([primary] if primary else []) or any(link.role != "direct" for link in typed):
+                        raise ValueError("deferred primary type links do not match whole-question labels")
+            object.__setattr__(self, "question_type_labels", labels)
         audit = _normalize_taxonomy_audit(self.taxonomy_audit)
         assessment = str(self.reference_assessment or "").strip().casefold()
         if assessment not in {"consistent", "conflict", "insufficient"}:
@@ -423,6 +436,9 @@ class DeferredCombinedAnalysisItem:
             payload["reused_from_question_id"] = int(
                 self.reused_from_question_id
             )
+        if self.question_type_labels is not None:
+            payload["schema_version"] = "deferred-combined-analysis-item-v8"
+            payload["question_type_labels"] = dict(self.question_type_labels)
         return {**payload, "content_hash": _hash_payload(payload)}
 
     def to_checkpoint_dict(self) -> dict[str, Any]:
@@ -494,17 +510,17 @@ class DeferredCombinedAnalysisItem:
                 raise ValueError(
                     "deferred analysis item fields do not match the contract"
                 )
-        elif version == "deferred-combined-analysis-item-v7":
+        elif version in {"deferred-combined-analysis-item-v7", "deferred-combined-analysis-item-v8"}:
             v7_base = {
                 *common_keys,
                 "taxonomy_audit",
                 "reference_assessment",
                 "reference_assessment_reason",
-                "reused_from_question_id",
+                *( {"reused_from_question_id"} if version.endswith("-v7") else {"question_type_labels"} ),
             }
             submitted_keys = {str(key) for key in payload}
             if not v7_base.issubset(submitted_keys) or not submitted_keys.issubset(
-                v7_base | {"part_assessments", "question_type_suggestion"}
+                v7_base | {"part_assessments", "question_type_suggestion", "reused_from_question_id"}
             ):
                 raise ValueError(
                     "deferred analysis item fields do not match the contract"
@@ -537,7 +553,7 @@ class DeferredCombinedAnalysisItem:
         )
         taxonomy_audit = (
             _normalize_taxonomy_audit(payload.get("taxonomy_audit"))
-            if version in {"deferred-combined-analysis-item-v3", "deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5", "deferred-combined-analysis-item-v6", "deferred-combined-analysis-item-v7"}
+            if version in {"deferred-combined-analysis-item-v3", "deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5", "deferred-combined-analysis-item-v6", "deferred-combined-analysis-item-v7", "deferred-combined-analysis-item-v8"}
             else _legacy_taxonomy_audit(normalized_tag)
         )
         return cls(
@@ -559,12 +575,12 @@ class DeferredCombinedAnalysisItem:
             taxonomy_audit=taxonomy_audit,
             reference_assessment=(
                 str(payload.get("reference_assessment") or "insufficient")
-                if version in {"deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5", "deferred-combined-analysis-item-v6", "deferred-combined-analysis-item-v7"}
+                if version in {"deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5", "deferred-combined-analysis-item-v6", "deferred-combined-analysis-item-v7", "deferred-combined-analysis-item-v8"}
                 else "insufficient"
             ),
             reference_assessment_reason=(
                 str(payload.get("reference_assessment_reason") or "")
-                if version in {"deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5", "deferred-combined-analysis-item-v6", "deferred-combined-analysis-item-v7"}
+                if version in {"deferred-combined-analysis-item-v4", "deferred-combined-analysis-item-v5", "deferred-combined-analysis-item-v6", "deferred-combined-analysis-item-v7", "deferred-combined-analysis-item-v8"}
                 else ""
             ),
             model_name=str(payload.get("model_name") or ""),
@@ -573,9 +589,10 @@ class DeferredCombinedAnalysisItem:
                 if isinstance(payload.get("question_type_suggestion"), Mapping)
                 else None
             ),
+            question_type_labels=(dict(payload["question_type_labels"]) if version.endswith("-v8") else None),
             reused_from_question_id=(
                 int(payload["reused_from_question_id"])
-                if version == "deferred-combined-analysis-item-v7"
+                if "reused_from_question_id" in payload
                 else None
             ),
             operation_id=str(payload.get("operation_id") or ""),
@@ -1993,6 +2010,10 @@ class DeferredCombinedQuestionAnalysisModule:
                                 raise ValueError(
                                     "combined response solution_evidence is invalid"
                                 )
+                            validation_category = "question_type_labels"
+                            raw = normalize_question_type_result(question, {**dict(raw), "tag_analysis": raw_tag})
+                            raw_tag = raw["tag_analysis"]
+                            raw_evidence = raw["solution_evidence"]
                             source_hash = solution_evidence_source_content_hash(
                                 question
                             )
@@ -2028,6 +2049,17 @@ class DeferredCombinedQuestionAnalysisModule:
                                 model_name=response.model_name,
                                 operation_id=operation_id,
                             )
+                            if question.taxonomy_contract.get("question_type_mode") is True:
+                                snapshot_by_id = {item.fine_term_id: item for item in candidate_snapshot}
+                                for candidate in question.taxonomy_contract.get("candidates", {}).get("knowledge", []):
+                                    if is_type_key(candidate.get("id")):
+                                        snapshot_by_id[candidate["id"]] = DeferredKnowledgeCandidate(
+                                            candidate["id"], candidate["name"], usage=candidate.get("usage", ""),
+                                        )
+                                candidate_snapshot = tuple(snapshot_by_id.values())
+                                if not raw["question_type_labels"]["primary_type_id"]:
+                                    taxonomy_audit = {**taxonomy_audit, "status": "needs_review",
+                                        "proposals": _merge_taxonomy_proposals(taxonomy_audit["proposals"], raw_tag["proposed_tags"])}
                         except Exception as exc:
                             if isinstance(exc, _DeferredAnalysisValidationError):
                                 validation_category = exc.category
@@ -2065,6 +2097,7 @@ class DeferredCombinedQuestionAnalysisModule:
                                 reference_assessment=reference_assessment,
                                 reference_assessment_reason=reference_assessment_reason,
                                 question_type_suggestion=suggestion_audit,
+                                question_type_labels=(raw["question_type_labels"] if question.taxonomy_contract.get("question_type_mode") is True else None),
                                 model_name=response.model_name,
                                 operation_id=operation_id,
                             )
@@ -2234,6 +2267,8 @@ class DeferredCombinedProjectionWriter:
     ) -> dict[str, Any]:
         if str(source_question_ref or "").strip() != item.source_question_ref:
             raise ValueError("deferred analysis source reference does not match")
+        if item.question_type_labels is not None:
+            item.bind_evidence(question, resolver=self.mapping_repository)
         tag_status = "failed"
         evidence_status = "failed"
         tag_error = ""
@@ -2302,6 +2337,11 @@ class DeferredCombinedProjectionWriter:
             evidence_error = "evidence_validation"
         else:
             evidence_status = "succeeded"
+            if item.question_type_labels is not None:
+                self.tag_writer.write_question_type_labels(
+                    question, item.question_type_labels, model_name=item.model_name,
+                    operation_id=item.operation_id,
+                )
             criterion_audit = self._publish_criterion(
                 binding.evidence,
                 question=question,
@@ -2440,6 +2480,11 @@ class DeferredCombinedProjectionWriter:
             evidence_error = "evidence_validation"
         else:
             evidence_status = "succeeded"
+            if item.question_type_labels is not None:
+                self.tag_writer.write_question_type_labels(
+                    question, item.question_type_labels, model_name=item.model_name,
+                    operation_id=item.operation_id,
+                )
             criterion_audit = self._publish_criterion(
                 binding.evidence,
                 question=question,
@@ -2475,6 +2520,8 @@ class DeferredCombinedProjectionWriter:
         question: QuestionAnalysisInput,
         link: ConfirmedQuestionAdoptionLink | None = None,
     ) -> _DeferredEvidenceBinding:
+        if item.question_type_labels is not None:
+            validate_question_type_labels(item.question_type_labels, question.taxonomy_contract)
         if self.taxonomy_governance is None:
             if link is None:
                 return _DeferredEvidenceBinding(
@@ -2531,7 +2578,9 @@ class DeferredCombinedProjectionWriter:
                     if str(item.get("proposal_id") or item.get("id") or "")
                 )
             ),
-            review_required=bool(convergence.unresolved_links or missing_links),
+            review_required=bool(convergence.unresolved_links or missing_links or (
+                item.question_type_labels is not None and not item.question_type_labels["primary_type_id"]
+            )),
             retry_required=bool(
                 unresolved_reasons
                 & {

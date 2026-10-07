@@ -19,6 +19,8 @@ const selectedProgress = computed(() => chapters.value.find(chapter => chapter.i
 const selectedStudents = computed(() => props.studentIds === undefined ? props.diagnosis.students : props.diagnosis.students.filter(student => props.studentIds?.includes(student.student_id)))
 const statistics = computed(() => {
   const nodes = new Map((props.diagnosis.knowledge_catalog ?? []).map(node => [node.knowledge_key, node]))
+  // Typed releases count question types per section; legacy releases count skills/topics.
+  const listed = props.diagnosis.target_kind === 'type' ? ['type'] : ['skill', 'topic']
   const sections = new Set(chapters.value.flatMap(chapter => chapter.sections.map(section => section.knowledge_id)))
   const ancestry = new Map<string, string>()
   const sectionFor = (start: string) => {
@@ -37,7 +39,7 @@ const statistics = computed(() => {
       if (seen.has(point.knowledge_key)) continue
       seen.add(point.knowledge_key)
       const node = nodes.get(point.knowledge_key)
-      if (!['skill', 'topic'].includes(node?.node_kind ?? '') || !(point.observation_count || point.evidence_count || point.source_question_refs?.length)) continue
+      if (!listed.includes(node?.node_kind ?? '') || !(point.observation_count || point.evidence_count || point.source_question_refs?.length)) continue
       const key = sectionFor(point.knowledge_key)
       if (!key) continue
       const tier = point.tier ?? 'insufficient'

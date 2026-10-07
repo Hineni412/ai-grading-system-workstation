@@ -7,6 +7,10 @@ from dataclasses import replace
 from statistics import median
 from typing import Any
 
+from question_bank.question_types import (
+    is_training_target,
+    type_keys_active,
+)
 from question_bank.recommendation.personalized import (
     PersonalizedRecommendationConfig,
     PersonalizedRecommendationModule,
@@ -31,7 +35,7 @@ def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id
         chapters = [chapter for chapter in chapters if chapter['knowledge_id'] in scope_keys]
     if not chapters:
         raise ValueError("Chapter is outside teaching term")
-    # Knowledge topics only decide chapter/section scope; listed weaknesses are skills.
+    # Topics decide scope; the selected volume decides the training target kind.
     topics = {point["id"] for chapter in chapters for section in chapter["sections"] for point in section["knowledge_points"]}
     allowed = {str(edge["skill_key"]) for edge in diagnosis.get("knowledge_associations", ())
                if edge.get("topic_key") in topics and edge.get("same_part_question_count", 0) > 0}
@@ -40,12 +44,17 @@ def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id
         from question_bank.recommendation.target_matching import target_index
         allowed.update(key for key, node in target_index(resolver).items()
                        if node["kind"] == "skill" and node["section"] in sections)
+        if type_keys_active(resolver, volume_id):
+            allowed.update(key for key, node in target_index(resolver).items()
+                           if node["kind"] == "type" and node["section"] in sections)
     else:
         # The diagnosis already carries the active standard, including skills.
         allowed.update(str(node["knowledge_key"]) for node in diagnosis.get("knowledge_catalog", ())
                        if str(node.get("knowledge_key", "")).startswith("sk_")
                        and node.get("parent_knowledge_key") in sections)
-    allowed = {key for key in allowed if str(key).startswith("sk_")}
+    allowed = {key for key in allowed
+               if (is_training_target(key, resolver, volume_id) if resolver is not None
+                   else str(key).startswith("sk_"))}
     members: dict[str, dict[str, Mapping[str, Any]]] = defaultdict(dict)
     for student in diagnosis.get("students", []):
         for point in student.get("weak_points", []):
@@ -57,7 +66,8 @@ def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id
     # reinterpret missing student evidence as zero or recompute mastery here.
     for point in diagnosis.get("group_weak_points", []):
         key = point["knowledge_key"]
-        if not str(key).startswith("sk_"):
+        if not (is_training_target(key, resolver, volume_id) if resolver is not None
+                else str(key).startswith("sk_")):
             continue
         evidence = list(members.get(key, {}).values())
         weak = sum(item.get("tier") in {"weak", "unsteady"} for item in evidence)
@@ -110,7 +120,7 @@ def shortlist_candidates(
     weaknesses = class_weaknesses(diagnosis, volume_id=volume_id, chapter_id=chapter_id,
                                  resolver=resolver, scope_keys=config.scope_keys)
     by_key = {item["knowledge_key"]: item for item in weaknesses}
-    selected = [key for key in dict.fromkeys(target_keys) if str(key).startswith("sk_")] if target_keys is not None else [item["knowledge_key"] for item in weaknesses[:1]]
+    selected = [key for key in dict.fromkeys(target_keys) if is_training_target(key, resolver, volume_id)] if target_keys is not None else [item["knowledge_key"] for item in weaknesses[:1]]
     if any(not str(key).startswith("sk_") and resolver.node(str(key)) is None for key in target_keys or ()):
         raise ValueError("Selected target is no longer in the current class scope")
     if any(key not in by_key for key in selected):
@@ -121,7 +131,8 @@ def shortlist_candidates(
         "evidence_student_count": sum(any(p.get("mastery") is not None and p.get("evidence_count", 0) > 0 for p in student.get("weak_points", [])) for student in students),
         "exam_score_rate": round(sum(scores)/len(scores), 4) if scores else None,
         "exam_count": len(diagnosis.get("exam_scope", {}).get("session_ids", [])),
-        "weaknesses": weaknesses, "selected_target_keys": selected, "candidate_total": 0, "candidates": []}
+        "weaknesses": weaknesses, "selected_target_keys": selected, "candidate_total": 0, "candidates": [],
+        "target_kind": "type" if type_keys_active(resolver, volume_id) else "skill"}
     if not selected or not students:
         return output
     config = replace(config, paper_mode='shared', target_keys=tuple(selected))

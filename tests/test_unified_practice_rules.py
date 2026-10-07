@@ -568,3 +568,120 @@ def test_paper_limits_preserve_raw_decimal_and_allow_two_written_questions(direc
     candidates[1]["duplicate_identity"] = candidates[0]["duplicate_identity"] = "same"
     with pytest.raises(ValueError, match="相似"):
         direct_module.validate_paper_questions([1,2])
+
+
+TYPE_KEY = 'kp_bnu24_math_g8_upper_1_1_t05'
+TYPE_OTHER = 'kp_bnu24_math_g8_upper_1_1_t07'
+TYPE_THIRD = 'kp_bnu24_math_g8_upper_1_2_t03'
+
+
+def test_training_keys_and_quotas_count_type_then_skills():
+    from question_bank.question_types import training_keys
+    from question_bank.recommendation.personalized import (
+        _paper_skill_limit_exceeded, paper_task_duplicates)
+    assert training_keys([TYPE_KEY, 'sk_a']) == {TYPE_KEY}
+    assert training_keys(['sk_a', 'sk_b']) == {'sk_a', 'sk_b'}
+    typed = {'stable_keys': [TYPE_KEY, 'sk_a']}
+    # A typed candidate is capped by its type, never by its skills.
+    assert _paper_skill_limit_exceeded(typed, [{'stable_keys': [TYPE_KEY, 'sk_b']}])
+    assert not _paper_skill_limit_exceeded(typed, [{'stable_keys': ['sk_a', 'sk_b']}])
+    # Untyped questions still count by their skills (v8 behaviour).
+    assert _paper_skill_limit_exceeded({'stable_keys': ['sk_a']}, [{'stable_keys': ['sk_a']}])
+    text = '计算一个较长的综合表达式并写出结果'
+    base = {'question_id': 7, 'stable_keys': [TYPE_KEY], 'question_type': '填空题',
+            'question_text': text, 'solution_template': '', 'image_identity': (),
+            'target_facets': [], 'practice_observations_by_key': {}}
+    assert paper_task_duplicates(dict(base, question_id=8), [base]) == [7]
+    assert paper_task_duplicates(dict(base, question_id=9, stable_keys=[TYPE_OTHER]), [base]) == []
+
+
+def test_type_need_stats_and_priority_stable_then_gap():
+    from question_bank.recommendation.personalized import (
+        _task_priorities, _type_class_totals, _type_need_priority, _type_need_stats)
+
+    def ref(session, question, score, full=5, kind='current_exam'):
+        return {'session_id': session, 'question_id': question,
+                'score_awarded': score, 'full_score': full, 'source_kind': kind,
+                'assessment': {'eligible': True, 'evidence_weight': 1, 'granularity': 'part'}}
+
+    diagnosis = {'students': [
+        {'student_id': 'A', 'weak_points': [{'knowledge_key': TYPE_KEY,
+            'source_question_refs': [ref(1, 'Q1', 0), ref(1, 'Q2', 1), ref(2, 'Q1', 5)]}]},
+        {'student_id': 'B', 'weak_points': [{'knowledge_key': TYPE_OTHER,
+            'source_question_refs': [ref(1, 'Q1', 4), ref(1, 'Q2', 3), ref(2, 'Q1', 5)]}]},
+    ]}
+    totals = _type_class_totals(diagnosis)
+    stats = _type_need_stats(diagnosis['students'][0]['weak_points'][0], totals)
+    assert (stats['attempted'], stats['lost'], stats['stable']) == (3, 2, True)
+    assert stats['rate'] == pytest.approx(6 / 15)
+    assert stats['class_rate'] == pytest.approx(18 / 30)
+    assert stats['gap'] == pytest.approx(18 / 30 - 6 / 15)
+    assert stats['points_lost'] == pytest.approx(9)
+    # Same (session, question) dedupes; training rows do not count.
+    dup = {'source_question_refs': [ref(1, 'Q1', 0), ref(1, 'Q1', 0),
+                                    ref(1, 'Q3', 0, kind='training')]}
+    stats2 = _type_need_stats(dup, totals)
+    assert stats2['attempted'] == 1 and stats2['stable'] is False
+    assert _type_need_stats({'source_question_refs': []}, totals) is None
+    # Priority: stable first, then gap, then points lost; skills keep 1-mastery.
+    assert _type_need_priority(stats) > _type_need_priority({'stable': False, 'gap': .9, 'points_lost': 9})
+    assert _type_need_priority({'stable': False, 'gap': .5, 'points_lost': 8}) > (
+        _type_need_priority({'stable': False, 'gap': .5, 'points_lost': 3}))
+
+    def entry(key, stable, gap, lost):
+        return {'key': key, 'matched_key': key, 'student_id': 'A',
+                'selection_kind': 'direct', 'practice_purpose': 'remediation',
+                'candidate': {'question_id': 1, 'stable_keys': [key]},
+                'target': {'stable_key': key, 'value': .9,
+                           'need_stats': {'stable': stable, 'gap': gap, 'points_lost': lost}}}
+    priorities = _task_priorities({1: [entry(TYPE_KEY, False, .9, 9),
+                                       entry(TYPE_OTHER, True, 0, 2),
+                                       entry(TYPE_THIRD, False, .5, 8)]})
+    assert priorities[('A', TYPE_OTHER)] > priorities[('A', TYPE_KEY)] > priorities[('A', TYPE_THIRD)]
+    skill = {'key': 'sk_x', 'matched_key': 'sk_x', 'student_id': 'A',
+             'selection_kind': 'direct', 'practice_purpose': 'remediation',
+             'candidate': {'question_id': 2, 'stable_keys': ['sk_x']},
+             'target': {'stable_key': 'sk_x', 'value': .9,
+                        'need_stats': {'stable': True, 'gap': 5, 'points_lost': 9}}}
+    assert _task_priorities({2: [skill]})[('A', 'sk_x')] == pytest.approx(.1)
+
+
+def test_type_section_spread_prefers_two_thirds_share():
+    def entry(qid, key, section, distance=0):
+        return {'candidate': {'question_id': qid, 'stable_keys': [key], 'question_type': '选择题'},
+                'student_id': 'A', 'key': key, 'matched_key': key, 'selection_kind': 'direct',
+                'practice_purpose': 'remediation', 'match_level': 1,
+                'distance': distance, 'preference': 0, 'target_section': section,
+                'target': {'stable_key': key,
+                           'need_stats': {'stable': True, 'gap': .5, 'points_lost': 5}}}
+    t1, t2 = 'kp_bnu24_math_g8_upper_1_1_t01', 'kp_bnu24_math_g8_upper_1_1_t02'
+    t3 = 'kp_bnu24_math_g8_upper_1_2_t03'
+    t4, t5, t6 = ('kp_bnu24_math_g8_upper_1_1_t04', 'kp_bnu24_math_g8_upper_1_2_t05',
+                  'kp_bnu24_math_g8_upper_1_2_t06')
+    # Every group covers two needs; q3 loses on median distance and is picked
+    # last, when s1 already holds 2 of 2 remediation targets.
+    entries = [entry(1, t1, 's1'), entry(1, t5, 's2'),
+               entry(2, t2, 's1'), entry(2, t6, 's2'),
+               entry(3, t3, 's2', distance=1), entry(3, t4, 's1')]
+    chosen = _choose_practice_entries(entries, 3)
+    assert [e['key'] for e, _ in chosen] == [t1, t2, t3]
+    # Without the 2/3 spread preference the closer same-section entry (t4,
+    # distance 0) would win over t3 (distance 1).
+
+
+def test_fixed_target_matches_use_type_inputs_in_cache_key():
+    from question_bank.recommendation.personalized import (
+        _fixed_target_matches, _match_facets_input)
+    _fixed_target_matches.cache_clear()
+    sources = [{'part_id': 's1', 'direct_keys': [TYPE_KEY], 'type_keys': [TYPE_KEY]}]
+    candidates = [{'part_id': 'c1', 'type_keys': [],
+                   'section_keys': ['sec'], 'chapter_keys': ['ch']}]
+    src_in, cand_in = _match_facets_input(sources), _match_facets_input(candidates)
+    low = _fixed_target_matches(TYPE_KEY, src_in, cand_in, 'sec', 'ch', 0.4, (), ())
+    high = _fixed_target_matches(TYPE_KEY, src_in, cand_in, 'sec', 'ch', 0.8, (), ())
+    assert [json.loads(m)['match_level'] for m in low] == [4]
+    assert [json.loads(m)['match_level'] for m in high] == [3]
+    typed_cand = _match_facets_input([{'part_id': 'c1', 'type_keys': [TYPE_OTHER],
+                                       'section_keys': ['sec'], 'chapter_keys': ['ch']}])
+    related = _fixed_target_matches(TYPE_KEY, src_in, typed_cand, 'sec', 'ch', 0.0, (TYPE_OTHER,), ())
+    assert [json.loads(m)['match_level'] for m in related] == [2]

@@ -114,10 +114,11 @@ const trainingMode = computed<TrainingMode>(() => {
   if (route.query.mode === 'paper') return 'paper'
   return 'chapter'
 })
+const targetLabel = computed(() => (paperDiagnosis.value ?? training.diagnosis)?.target_kind === 'type' ? '题型' : '技能')
 const pageCopy = computed(() => ({
   chapter: {
     title: '按章节训练',
-    description: '选择学生范围和章／小节，按同技能作答所支持的适合难度与练习需要分组；核对名单后采用同卷训练。',
+    description: `选择学生范围和章／小节，按同${targetLabel.value}作答所支持的适合难度与练习需要分组；核对名单后采用同卷训练。`,
   },
   student: {
     title: '按学生训练',
@@ -532,7 +533,7 @@ onBeforeUnmount(() => studentsController?.abort())
           @edit="groupEditor = $event" @adopt="adoptGroup" />
         <PaperSettingsPanel :context="trainingMode === 'student' ? 'student' : 'group'" :student-ids="panelStudentIds"
           :volume-id="curriculumScope.selectedVolumeId ?? ''" :scope-keys="wrongBookScopeKeys" :valid="panelValid" :blocked-reason="blockedReason"
-          :generating="draftRequestState === 'loading'" v-model:purpose="purpose" v-model:paper-mode="paperMode"
+          :generating="draftRequestState === 'loading'" :target-kind="paperDiagnosis?.target_kind ?? training.diagnosis?.target_kind" v-model:purpose="purpose" v-model:paper-mode="paperMode"
           v-model:question-count="questionCount" v-model:difficulty-max="difficultyMax" v-model:max-questions-per-skill="maxQuestionsPerSkill"
           v-model:max-written-questions="maxWrittenQuestions" v-model:recent-activity-count="recentActivityCount"
           v-model:max-consolidation-questions="maxConsolidationQuestions" v-model:max-unmeasured-questions="maxUnmeasuredQuestions"
@@ -562,7 +563,7 @@ onBeforeUnmount(() => studentsController?.abort())
               <span v-else>{{ draftContext?.studentCount ?? paperStudentCount }} 名学生</span>
               <span>每卷 {{ draftContext?.questionCount ?? questionCount }} 题 · 难度 ≤ {{ draftContext?.difficultyMax ?? difficultyMax }} 级</span>
               <span>{{ (draftContext?.purpose ?? purpose) === 'handout' ? '讲义 · 只打印' : '训练卷 · 可回收' }}</span>
-              <details v-if="!draftContext" class="paper-settings-summary"><summary>选题细则</summary><p>同技能最多 {{ maxQuestionsPerSkill }} 道 · 解答题最多 {{ maxWrittenQuestions }} 道</p><p>{{ recentActivityCount === 0 ? '不排除近期原题' : purpose === 'handout' ? `排除最近 ${recentActivityCount} 次已批改考试原题 · 可复用历史训练题` : `排除最近 ${recentActivityCount} 次已批改考试与训练原题` }}</p></details>
+              <details v-if="!draftContext" class="paper-settings-summary"><summary>选题细则</summary><p>同{{ targetLabel }}最多 {{ maxQuestionsPerSkill }} 道 · 解答题最多 {{ maxWrittenQuestions }} 道</p><p>{{ recentActivityCount === 0 ? '不排除近期原题' : purpose === 'handout' ? `排除最近 ${recentActivityCount} 次已批改考试原题 · 可复用历史训练题` : `排除最近 ${recentActivityCount} 次已批改考试与训练原题` }}</p></details>
               <RouterLink class="paper-review-bar__back" :to="paperBackTarget">调整出卷设置</RouterLink>
               <AppButton v-if="workflowStage === 'diagnosis'" variant="primary" data-testid="generate-paper-draft" :disabled="!paperSettingsValid || draftRequestState === 'loading' || groupChecking" @click="generatePaperDraft">{{ groupChecking ? '正在核对小组…' : draftRequestState === 'loading' ? '正在生成并核对…' : draftNeedsCheck ? '核对生成结果' : `生成 ${expectedPaperCount} 份草稿` }}</AppButton>
             </div>

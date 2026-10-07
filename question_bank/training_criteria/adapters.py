@@ -231,6 +231,65 @@ class ExistingTagProjectionWriter:
             "operation_id": operation_id,
         }
 
+    def write_question_type_labels(
+        self,
+        question: QuestionAnalysisInput,
+        labels: Mapping[str, Any],
+        *,
+        model_name: str,
+        operation_id: str,
+    ) -> None:
+        """Persist validated secondary types on the existing question-tag seam."""
+        from question_bank.knowledge_graph_release.repository import active_release_id
+        from question_bank.training_criteria.analysis import validate_question_type_labels
+
+        if question.taxonomy_contract.get("question_type_mode") is not True:
+            return
+        validate_question_type_labels(labels, question.taxonomy_contract)
+        if active_release_id(self.write_service.db_path) != question.taxonomy_snapshot.knowledge_graph_release_id:
+            raise ValueError("question type release changed before tag persistence")
+        with self._audit_lock:
+            existing_proposals = list(self._audits.get((str(operation_id), question.question_id), {}).get("proposals", []))
+        proposal_already_written = any(
+            str(item.get("proposed_name") or item.get("name") or "").strip()
+            == str(labels["proposed_type_name"]).strip()
+            for item in existing_proposals
+        )
+        if not labels["primary_type_id"] and not proposal_already_written:
+            # A criteria-only retry retains the accepted tags, but still needs
+            # to land this new-word exception through the same governance flow.
+            reason = str(labels["reason"]).strip()
+            governed = self.tagging_service.taxonomy_governance.constrain(
+                {"proposed_tags": [{
+                    "dimension": "knowledge", "name": str(labels["proposed_type_name"]).strip(),
+                    "definition": reason, "reason": reason, "nearest_id": "", "why_not_reuse": reason,
+                }]},
+                context={
+                    "persist_proposals": True, "question_ref": str(question.question_id),
+                    "model": model_name, "request_token": f"combined-type:{operation_id}:{question.question_id}",
+                    "expected_revision": question.taxonomy_snapshot.taxonomy_revision,
+                    "allowed_term_ids": question.taxonomy_contract.get("allowed_term_ids", {}),
+                    "knowledge_catalog_revision": question.taxonomy_contract.get("knowledge_catalog_revision"),
+                },
+            )
+            with self._audit_lock:
+                key = (str(operation_id), question.question_id)
+                audit = self._audits.setdefault(key, {"retrieval_misses": [], "proposals": []})
+                audit["proposals"] = [*audit["proposals"], *governed.get("proposals", [])]
+        with connect(self.write_service.db_path) as connection:
+            if connection.execute("SELECT 1 FROM questions WHERE id=? AND is_deleted=0", (question.question_id,)).fetchone() is None:
+                raise KeyError(question.question_id)
+            connection.execute(
+                "DELETE FROM question_tags WHERE question_id=? AND tag_type='secondary_type' AND source='taxonomy'",
+                (question.question_id,),
+            )
+            connection.executemany(
+                """INSERT INTO question_tags (question_id, tag_type, tag_value, confidence, source, model_name)
+                   SELECT ?, 'secondary_type', ?, 1.0, 'taxonomy', ?
+                   WHERE NOT EXISTS (SELECT 1 FROM question_tags WHERE question_id=? AND tag_type='secondary_type' AND tag_value=?)""",
+                [(question.question_id, value, model_name, question.question_id, value) for value in labels["secondary_type_ids"]],
+            )
+
     def audit_summary(
         self,
         operation_id: str,
@@ -759,6 +818,7 @@ def _prompt_candidate_contract(
         "knowledge_graph_release_id",
         "allowed_dimensions",
         "rules",
+        "question_type_mode",
     ):
         if key in contract:
             compact[key] = contract[key]
@@ -769,6 +829,9 @@ def _prompt_candidate_contract(
                 {
                     "id": str(item.get("id") or ""),
                     "name": str(item.get("name") or ""),
+                    **({key: item[key] for key in (
+                        "usage", "parent_id", "definition", "include_scope", "exclude_scope", "observable_evidence",
+                    ) if key in item} if contract.get("question_type_mode") is True else {}),
                 }
                 for item in items
                 if isinstance(item, Mapping) and str(item.get("id") or "").strip()
@@ -947,6 +1010,19 @@ def _combined_prompt(
     )
     if include_evidence:
         instructions += evidence_instructions
+        if any(item.taxonomy_contract.get("question_type_mode") is True for item in batch.questions):
+            instructions += (
+                "候选目录 question_type_mode=true 的题采用题型规则：整道题恰好选 1 个主题型，"
+                "最多 2 个不重复次题型；按整题核心数学任务选择，不按背景或关键词选择。"
+                "返回 question_type_labels.primary_type_id、secondary_type_ids、proposed_type_name、reason。"
+                "主题型和次题型只取该题知识候选中 _tNN 结尾的 id，依据定义、纳入和排除范围判别。"
+                "主题型作为整题任务，必须以 direct 挂到每个 evidence point；它不受前述逐步骤必须知识规则限制。"
+                "次题型只放 secondary_type_ids，绝不挂到判定点，不参与掌握度。"
+                "技能和前置知识链接仍按逐步骤规则保留。无合适题型时 primary_type_id 为空，"
+                "secondary_type_ids 为空数组，proposed_type_name 与 reason 写明新词及现有题型不能复用的理由，"
+                "应用将转入现有新词例外待审，不自行创建题型。有主题型时 proposed_type_name 留空。"
+                "其余题沿用原知识与技能规则，不要求题型标签。"
+            )
     questions = []
     contracts: dict[str, dict[str, Any]] = {}
     contract_refs: dict[str, str] = {}
@@ -1003,6 +1079,8 @@ def _combined_prompt(
         "rules": instructions,
         "questions": questions,
     }
+    if include_evidence and any(item.taxonomy_contract.get("question_type_mode") is True for item in batch.questions):
+        task_payload["prompt_version"] = "combined-v4-question-types"
     if contracts:
         task_payload["candidate_contracts"] = contracts
     if include_evidence:

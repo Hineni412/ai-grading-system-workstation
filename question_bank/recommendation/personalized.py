@@ -27,6 +27,12 @@ from question_bank.mastery.current import (
     CurrentMasteryCalculator,
 )
 from question_bank.mastery.model import sigmoid
+from question_bank.question_types import (
+    is_training_target,
+    is_type_key,
+    training_keys,
+    type_keys_active,
+)
 from question_bank.recommendation.recommendation_engine import normalize_question_text, text_similarity
 from question_bank.recommendation.target_matching import (
     MATCH_LABELS,
@@ -216,7 +222,8 @@ def _include_published_skills(keys: frozenset[str], resolver: CurrentKnowledgeRe
         return keys
     return keys | frozenset(relation.source_key for relation in resolver.relations
                             if relation.relation_type == "parent"
-                            and relation.source_key.startswith("sk_")
+                            and (relation.source_key.startswith("sk_")
+                                 or is_type_key(relation.source_key))
                             and relation.target_key in keys)
 
 
@@ -684,7 +691,8 @@ def _direct_fit(candidate: Mapping[str, Any], key: str, ref: Mapping[str, Any]) 
 
 
 def _direct_preference(candidate: Mapping[str, Any], key: str, ref: Mapping[str, Any], *,
-                       tasks: Sequence[Mapping[str, Any]] | None = None) -> float:
+                       tasks: Sequence[Mapping[str, Any]] | None = None,
+                       similarity: float = 0.0) -> float:
     source_keys = set(ref.get("direct_keys") or [key])
     candidate_keys = set(candidate.get("stable_keys") or [])
     # Extra in-scope knowledge does not make a question less useful for the
@@ -709,14 +717,18 @@ def _direct_preference(candidate: Mapping[str, Any], key: str, ref: Mapping[str,
     candidate_features = [part.get("features", {}) for part in candidate.get("difficulty_features", [])]
     feature_fit = max((sum(left.get(k) == right.get(k) for k in left.keys() & right.keys()) / max(1, len(left.keys() | right.keys()))
                        for left in source_features for right in candidate_features if left and right), default=0.)
-    return 4 * overlap + affinity + .5 * type_fit + .5 * response_fit + 2 * cause_fit + feature_fit
+    # Type mode anchors on the student's lost question: the candidate whose
+    # stem pattern is closest wins within the same type (§3.5).
+    anchored = 3.0 * similarity if is_type_key(key) else 0.
+    return 4 * overlap + affinity + .5 * type_fit + .5 * response_fit + 2 * cause_fit + feature_fit + anchored
 
 
 @lru_cache(maxsize=65536)
-def _fixed_preference(candidate_input: str, key: str, source_input: str, task_input: str) -> float:
+def _fixed_preference(candidate_input: str, key: str, source_input: str, task_input: str,
+                      similarity: float = 0.0) -> float:
     """Content-only score; source versions and student state are checked outside."""
     return _direct_preference(json.loads(candidate_input), key, json.loads(source_input),
-                              tasks=json.loads(task_input))
+                              tasks=json.loads(task_input), similarity=similarity)
 
 
 def _preference_candidate_input(candidate: Mapping[str, Any]) -> str:
@@ -731,7 +743,8 @@ def _preference_candidate_input(candidate: Mapping[str, Any]) -> str:
     return _json(fields)
 
 
-_MATCH_FACET_FIELDS = ("direct_keys", "skill_keys", "topic_keys", "section_keys", "chapter_keys")
+_MATCH_FACET_FIELDS = ("direct_keys", "skill_keys", "type_keys", "topic_keys",
+                       "section_keys", "chapter_keys")
 
 
 def _match_facets_input(parts: Sequence[Mapping[str, Any]]) -> tuple:
@@ -739,15 +752,32 @@ def _match_facets_input(parts: Sequence[Mapping[str, Any]]) -> tuple:
                   *(tuple(part.get(field, ())) for field in _MATCH_FACET_FIELDS)) for part in parts)
 
 
+@lru_cache(maxsize=8192)
+def _stem_similarity(source_text: str, candidate_text: str) -> float:
+    """Dice similarity of template grams over two printed stems (§3.5 相近题)."""
+    if not source_text or not candidate_text:
+        return 0.0
+    # similar_question_ranker -> target_matching reaches this module, and
+    # chapter_exam_profile imports the ranker back; top-level imports cycle.
+    from question_bank.services.chapter_exam_profile import _template_grams
+    from question_bank.services.similar_question_ranker import dice
+    return dice(_template_grams(source_text), _template_grams(candidate_text))
+
+
 @lru_cache(maxsize=65536)
 def _fixed_target_matches(key: str, source_input: tuple, candidate_input: tuple,
-                          section: str, chapter: str) -> tuple[str, ...]:
+                          section: str, chapter: str, similarity: float = 0.0,
+                          source_secondary: tuple = (),
+                          candidate_secondary: tuple = ()) -> tuple[str, ...]:
     def unpack(parts):
         return [{"part_id": part[0], **dict(zip(_MATCH_FACET_FIELDS, part[1:]))} for part in parts]
     sources = unpack(source_input)
     index = {key: {"section": section, "chapter": chapter}}
     return tuple(_json(match) for part in unpack(candidate_input)
-                 if (match := match_target(key, sources, [part], index)))
+                 if (match := match_target(key, sources, [part], index,
+                                           similarity=similarity,
+                                           source_secondary=source_secondary,
+                                           candidate_secondary=candidate_secondary)))
 
 
 def _valid_difficulty_features(question: Mapping[str, Any], rows: Sequence[Any]) -> list[dict[str, Any]]:
@@ -798,7 +828,7 @@ def _practice_stem_literal(text: str) -> str:
 def _paper_skill_limit_exceeded(candidate: Mapping[str, Any], selected: Sequence[Mapping[str, Any]],
                                config: PersonalizedRecommendationConfig | None = None) -> set[str]:
     """Count whole questions by actual direct skills, independently of recommendation reasons."""
-    skills = {key for key in candidate.get("stable_keys", ()) if str(key).startswith("sk_")}
+    skills = training_keys(candidate.get("stable_keys", ()))
     return {key for key in skills
             if sum(key in other.get("stable_keys", ()) for other in selected) >= (config.max_questions_per_skill if config else 1)}
 
@@ -811,7 +841,7 @@ def _paper_quota_state(selected, pair_memo):
             identity = ("quota-facts", id(other))
             if identity not in pair_memo:
                 pair_memo[identity] = (other,
-                    {key for key in other.get("stable_keys", ()) if str(key).startswith("sk_")},
+                    training_keys(other.get("stable_keys", ())),
                     _is_written_question(other))
             skills, is_written = pair_memo[identity][1:]
             written += is_written
@@ -834,7 +864,7 @@ def _paper_diversity_allowed(candidate: Mapping[str, Any], selected: Sequence[Ma
         identity = ("quota-facts", id(question))
         if identity not in pair_memo:
             pair_memo[identity] = (question,
-                {key for key in question.get("stable_keys", ()) if str(key).startswith("sk_")},
+                training_keys(question.get("stable_keys", ())),
                 _is_written_question(question))
         return pair_memo[identity][1:]
     # Counts belong to the exact current paper, never a prior selection state.
@@ -880,7 +910,7 @@ def paper_task_duplicates(candidate: Mapping[str, Any], selected: Sequence[Mappi
         return []
     template = _practice_template(str(candidate.get("question_text") or ""))
     solution = str(candidate.get("solution_template") or "")
-    skills = {str(key) for key in candidate.get("stable_keys", ()) if str(key).startswith("sk_")}
+    skills = {str(key) for key in training_keys(candidate.get("stable_keys", ()))}
     if not skills:
         return []
     duplicates = []
@@ -889,7 +919,7 @@ def paper_task_duplicates(candidate: Mapping[str, Any], selected: Sequence[Mappi
             continue
         if candidate.get("image_identity", ()) != other.get("image_identity", ()):
             continue
-        if skills != {str(key) for key in other.get("stable_keys", ()) if str(key).startswith("sk_")}:
+        if skills != {str(key) for key in training_keys(other.get("stable_keys", ()))}:
             continue
         other_template = _practice_template(str(other.get("question_text") or ""))
         other_solution = str(other.get("solution_template") or "")
@@ -1014,13 +1044,25 @@ def _practice_reason_summary(entries: Sequence[Mapping[str, Any]]) -> str:
         else:
             label = "补弱" if purpose == "remediation" else "巩固"
             detail = (f"{count}次有效作答中{correct}次满分、{count-correct}次失分" if count else "已有作答依据，暂无可用的难度作答统计")
+            stats = entry.get("target", {}).get("need_stats") or {}
+            if purpose == "remediation" and stats.get("stable"):
+                class_txt = (f"{stats['class_rate']:.0%}"
+                             if stats.get("class_rate") is not None else "未知")
+                class_label = "全班" if stats.get("class_baseline_scope") == "full_class" else "选中群体"
+                detail = (f"稳定失分：考{stats['attempted']}错{stats['lost']}，"
+                          f"本人 {stats['rate']:.0%}，{class_label} {class_txt}；" + detail)
             if count == 1:
                 detail += "，证据较少"
             if purpose == "consolidation" and count >= 2 and correct == count:
                 detail += "，已多次答对，降低巩固优先级"
             mastery = _rate(entry.get("target", {}).get("value", entry.get("target", {}).get("mastery")))
-            if purpose == "remediation" and mastery is not None:
+            if purpose == "remediation" and mastery is not None and plan.get("reference_difficulty") is None:
                 detail += f"；当前掌握度{mastery:.0%}，掌握度提高后降低补弱优先级"
+            if plan.get("reference_difficulty") is not None:
+                detail += "；" + plan["basis"]
+                if plan.get("reference_class_rate") is not None:
+                    class_label = "全班" if plan.get("class_baseline_scope") == "full_class" else "选中群体"
+                    detail += f"；{class_label}在参照题上的加权得分率 {plan['reference_class_rate']:.0%}"
         if plan.get("logit_mean") is not None and plan.get("difficulty_slope"):
             candidate_difficulty = standard_difficulty.difficulty_level(entry["candidate"]["difficulty"])
             if candidate_difficulty is not None:
@@ -1045,7 +1087,9 @@ def _member_entries(
         if stored is not None and stored[0] is group:
             return stored[1]
     members: dict[str, dict[str, Any]] = {}
-    for entry in sorted(group, key=lambda e: (not _is_core(e), e.get("practice_purpose") != "remediation", e["distance"], e.get("match_level", 2), _need_id(e, memo))):
+    for entry in sorted(group, key=lambda e: (not _is_core(e), e.get("practice_purpose") != "remediation",
+        (e.get("match_level", 2), *_entry_fit_rank(e)) if e.get("reference_radius") is not None
+        else (e["distance"], e.get("match_level", 2)), _need_id(e, memo))):
         members.setdefault(entry["student_id"], entry)
     if memo is not None:
         memo[("members", id(group))] = (group, members)
@@ -1072,6 +1116,207 @@ def _task_need_ids(entry: Mapping[str, Any], memo: dict | None = None) -> frozen
     return frozenset({_loss_need_id(entry)})
 
 
+def _exam_ref_key(ref: Mapping[str, Any]) -> tuple[str, str]:
+    """The dedupe identity of one exam evidence ref: session + printed item."""
+    session = str(ref.get("session_id") or "")
+    question = str(ref.get("question_id") or ref.get("bank_question_id") or "")
+    return session, question
+
+
+def _exam_ref_score(ref: Mapping[str, Any]) -> tuple[float, float] | None:
+    try:
+        score, full = float(ref.get("score_awarded")), float(ref.get("full_score"))
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(score) and math.isfinite(full) and full > 0):
+        return None
+    return score, full
+
+
+def _type_class_totals(diagnosis: Mapping[str, Any], class_id: str = "") -> dict[tuple[str, str], list[float]]:
+    """Full-class totals supplied by integration; legacy inputs use selected peers.
+
+    The diagnosis carries each student's exam evidence under their measured
+    keys; dedupe per student so a ref listed under several keys counts once.
+    """
+    if "_type_class_question_totals" in diagnosis:
+        baselines = diagnosis.get("_type_class_question_totals")
+        sessions = baselines.get(class_id, {}) if isinstance(baselines, Mapping) else {}
+        totals = {}
+        for session, questions in sessions.items() if isinstance(sessions, Mapping) else ():
+            for question, row in questions.items() if isinstance(questions, Mapping) else ():
+                if not isinstance(row, Mapping):
+                    continue
+                values = _exam_ref_score({"score_awarded": row.get("score_sum"),
+                                          "full_score": row.get("full_score_sum")})
+                if values is not None:
+                    totals[(str(session), str(question))] = list(values)
+        # An explicit empty/partial baseline is unknown, never selected peers.
+        return totals
+    seen: set[tuple[str, str, str]] = set()
+    totals: dict[tuple[str, str], list[float]] = {}
+    for student in diagnosis.get("students", []):
+        sid = str(student.get("student_id") or "")
+        for point in student.get("weak_points", []):
+            for ref in point.get("source_question_refs", ()):
+                if not isinstance(ref, Mapping) or ref.get("source_kind") == "training":
+                    continue
+                assessment = ref.get("assessment") or {}
+                if (assessment.get("eligible") is False
+                        or float(assessment.get("evidence_weight", 1.0) or 0) < .999):
+                    continue
+                session, question = _exam_ref_key(ref)
+                if not session or not question:
+                    continue
+                identity = (sid, session, question)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                values = _exam_ref_score(ref)
+                if values is None:
+                    continue
+                bucket = totals.setdefault((session, question), [0.0, 0.0])
+                bucket[0] += values[0]
+                bucket[1] += values[1]
+    return totals
+
+
+def _type_need_stats(target: Mapping[str, Any],
+                     class_totals: Mapping[tuple[str, str], Sequence[float]], *,
+                     comparison_scope: str = "selected_group") -> dict[str, Any] | None:
+    """§3.6 type-level need evidence: weighted rate, class rate, stable loss."""
+    refs: dict[tuple[str, str], tuple[float, float]] = {}
+    for ref in _effective_target_refs(target):
+        if ref.get("source_kind") == "training":
+            continue
+        session, question = _exam_ref_key(ref)
+        if not session or not question:
+            continue
+        values = _exam_ref_score(ref)
+        if values is not None:
+            refs.setdefault((session, question), values)
+    if not refs:
+        return None
+    achieved = sum(score for score, _ in refs.values())
+    total = sum(full for _, full in refs.values())
+    rate = achieved / total if total > 0 else 0.0
+    class_achieved = sum(float(class_totals.get(pair, (0.0, 0.0))[0]) for pair in refs)
+    class_total = sum(float(class_totals.get(pair, (0.0, 0.0))[1]) for pair in refs)
+    class_rate = (class_achieved / class_total if class_total > 0
+                  and all(class_totals.get(pair, (0.0, 0.0))[1] > 0 for pair in refs) else None)
+    attempted = len(refs)
+    lost = sum(1 for score, full in refs.values() if score < full - 1e-9)
+    failed = [pair for pair, (score, full) in refs.items() if score < full - 1e-9]
+    def reference_rank(pair):
+        class_score, class_full = class_totals.get(pair, (0.0, 0.0))
+        class_rate = class_score / class_full if class_full > 0 else -1.0
+        score, full = refs[pair]
+        return (-class_rate, -(full - score), pair)
+    reference = min(failed, key=reference_rank) if failed else None
+    reference_class_rate = -reference_rank(reference)[0] if reference else None
+    return {
+        "rate": rate,
+        "class_rate": class_rate,
+        "gap": (class_rate - rate) if class_rate is not None else 0.0,
+        "stable": attempted >= 2 and lost >= 2 and rate < 0.6,
+        "attempted": attempted,
+        "lost": lost,
+        "points_lost": total - achieved,
+        "reference_exam_key": list(reference) if reference else None,
+        "reference_class_rate": reference_class_rate if reference_class_rate is not None and reference_class_rate >= 0 else None,
+        "class_baseline_scope": comparison_scope,
+    }
+
+
+def _type_need_priority(stats: Mapping[str, Any]) -> float:
+    """Stable loss first, then signed class gap, with points lost breaking ties."""
+    return ((3.0 if stats.get("stable") else 0.0) + 1.0
+            + float(stats.get("gap") or 0.0)
+            + min(float(stats.get("points_lost") or 0.0) * 1e-6, 1e-4))
+
+
+def _type_reference_loss(losses, stats):
+    preferred = tuple(stats.get("reference_exam_key") or ())
+    return next((ref for ref in losses if _exam_ref_key(ref) == preferred),
+                losses[0] if losses else None)
+
+
+def _type_reference_plan(ref, target, cap, radius):
+    difficulty = _difficulty(ref.get("question_difficulty") or
+                             (ref.get("assessment") or {}).get("part_difficulty")) if ref else None
+    if difficulty is None:
+        return None
+    stats = target.get("need_stats") or {}
+    basis = f"围绕本人失分参照题难度 {difficulty:g} 级，上下 {radius} 级"
+    if radius == 2:
+        basis += "；上下 1 级内可入卷候选不足时补充"
+    return {"level": "foundation" if difficulty < 3 else "developing" if difficulty < 6 else "secure",
+            "readiness": target.get("value", target.get("mastery")),
+            "basis": basis, "evidence_count": stats.get("attempted", len(_effective_target_refs(target))),
+            "correct_count": stats.get("attempted", 0) - stats.get("lost", 0),
+            "confidence": "repeated" if stats.get("attempted", 0) > 1 else "sparse",
+            "model_based": False, "reference_difficulty": difficulty,
+            "reference_class_rate": stats.get("reference_class_rate"), "reference_radius": radius,
+            "class_baseline_scope": stats.get("class_baseline_scope", "selected_group"),
+            "minimum": max(1.0, difficulty - radius), "maximum": min(float(cap), difficulty + radius),
+            "starter": max(1.0, difficulty - 1), "consolidation": difficulty,
+            "baseline_aim": difficulty, "aim": difficulty}
+
+
+def _entry_fit_rank(entry):
+    if entry.get("reference_stem_similarity") is not None:
+        return (entry.get("reference_radius", 1), -entry["reference_stem_similarity"], entry["distance"])
+    return (0, entry["distance"], -entry["preference"])
+
+
+def _prefer_type_candidate_layers(groups):
+    """Keep later layers available as fallback after current paper constraints."""
+    available = {}
+    for group in groups:
+        for entry in group:
+            if entry.get("reference_radius") is not None:
+                identity = (entry["student_id"], entry["key"])
+                band = (entry.get("match_level", 4), entry["reference_radius"])
+                available[identity] = min(available.get(identity, band), band)
+    def later(group):
+        return any((entry.get("match_level", 4), entry["reference_radius"])
+                   > available[(entry["student_id"], entry["key"])]
+                   for entry in group if entry.get("reference_radius") is not None)
+    if any(any(e.get("reference_radius") is not None for e in group) and not later(group) for group in groups):
+        return [group for group in groups if not later(group)]
+    return groups
+
+
+def _type_section_penalty(entry: Mapping[str, Any],
+                          section_counts: Mapping[str, int], chosen: int) -> int:
+    """Soft section spread: exceeding the 2/3 share lowers selection priority.
+
+    Type-mode only: skill entries and non-remediation rows return 0 so the
+    ranking columns behave exactly as before on releases without type nodes.
+    Penalised candidates remain usable when other sections cannot fill a paper.
+    """
+    if entry.get("practice_purpose") != "remediation" or not is_type_key(entry.get("key")):
+        return 0
+    section = str(entry.get("target_section") or "")
+    if not section:
+        return 0
+    cap = math.ceil(2 * (chosen + 1) / 3)
+    return max(0, section_counts.get(section, 0) + 1 - cap)
+
+
+def _remediation_section_counts(paper: Sequence[tuple[Mapping[str, Any], Any]]) -> tuple[dict[str, int], int]:
+    counts: dict[str, int] = {}
+    total = 0
+    for entry, _group in paper:
+        if entry.get("practice_purpose") != "remediation" or not is_type_key(entry.get("key")):
+            continue
+        total += 1
+        section = str(entry.get("target_section") or "")
+        if section:
+            counts[section] = counts.get(section, 0) + 1
+    return counts, total
+
+
 def _task_priorities(groups: Mapping[Any, Sequence[Mapping[str, Any]]], memo: dict | None = None) -> dict[tuple[str, ...], float]:
     priorities = {}
     for group in groups.values():
@@ -1079,8 +1324,12 @@ def _task_priorities(groups: Mapping[Any, Sequence[Mapping[str, Any]]], memo: di
             if not _is_core(entry) or entry.get("practice_purpose") != "remediation":
                 continue
             target = entry.get("target", {})
-            mastery = _rate(target.get("value", target.get("mastery")))
-            priority = 1. - mastery if mastery is not None else .5
+            stats = target.get("need_stats")
+            if is_type_key(entry.get("key")) and stats is not None:
+                priority = _type_need_priority(stats)
+            else:
+                mastery = _rate(target.get("value", target.get("mastery")))
+                priority = 1. - mastery if mastery is not None else .5
             for need in _task_need_ids(entry, memo):
                 priorities[need] = max(priorities.get(need, 0.), priority)
     return priorities
@@ -1138,14 +1387,16 @@ def _group_rank(group: Sequence[Mapping[str, Any]], needs: set,
                   {(e['student_id'], e.get('matched_key', e['key'])) for e in group},
                   not bool(core), repeated_consolidation_only(group),
                   min(e.get("match_level", 4) for e in group),
-                  median(e["distance"] for e in group), -max(e["preference"] for e in group),
+                  min(_entry_fit_rank(e) for e in group if e.get("reference_stem_similarity") is not None)
+                  if any(e.get("reference_stem_similarity") is not None for e in group)
+                  else (0, median(e["distance"] for e in group), -max(e["preference"] for e in group)),
                   group[0]["candidate"]["question_id"])
         if rank_memo is not None:
             rank_memo[id(group)] = static
-    beneficiaries, practice_needs, no_core, repeated, match_level, distance, preference, qid = static
+    beneficiaries, practice_needs, no_core, repeated, match_level, fit, qid = static
     return (-len(beneficiaries - members), -sum(priorities.get(n, .5) for n in needs - covered),
             -len(needs - covered), no_core, repeated, -len(practice_needs - practiced),
-            match_level, distance, preference, qid)
+            match_level, *fit, qid)
 
 
 def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: int,
@@ -1176,23 +1427,47 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
                    if _is_core(e) and e.get("practice_purpose", "remediation") == "remediation"))
                    for qid, group in groups.items()}
     selected, covered, members, practiced = [], set(), set(), set()
+    section_counts: dict[str, int] = {}
+    remediation_count = 0
     while groups and len(selected) < question_count:
         printed = [e["candidate"] for e, _ in selected]
         quota_state = _paper_quota_state(printed, pair_memo)
         usable = [group for group in groups.values() if _paper_diversity_allowed(group[0]["candidate"], printed, config, pair_memo=pair_memo, quota_state=quota_state)]
         if not usable:
             break
+        # Open later type-match layers and the ±2 band only after the earlier
+        # alternatives for those member/target pairs cannot enter this paper.
+        usable = _prefer_type_candidate_layers(usable)
         ranked = [(group, _group_rank(
             group, group_needs[group[0]["candidate"].get("duplicate_identity") or group[0]["candidate"]["question_id"]],
             priorities, members=members, covered=covered, practiced=practiced,
             rank_memo=rank_memo)) for group in usable]
-        # Lexicographic ranks can only be changed by variety when the first
-        # six columns tie. Avoid text comparison for already-losing questions.
-        leading = min(rank[:6] for _, rank in ranked)
-        group, _ = min(((group, rank) for group, rank in ranked if rank[:6] == leading),
-            key=lambda item: (_pattern_count(item[0][0]["candidate"], printed, pair_memo=pair_memo), item[1][6:]))
-        best = min(group, key=lambda e: (not _is_core(e), e["distance"], -e["preference"], e["student_id"], e["key"]))
+        # Type-mode section spread leads the group choice: a pick that would
+        # push its target section past the 2/3 share yields to any unpenalised
+        # group and wins again once every remaining group is penalised. The
+        # penalty is 0 for skill entries and non-remediation rows, so releases
+        # without type nodes keep the previous ordering exactly. Lexicographic
+        # ranks can still only be changed by variety when the first six
+        # columns tie, so text comparison is skipped for already-losing groups.
+        penalised = [(min((_type_section_penalty(e, section_counts, remediation_count)
+                          for e in group if e.get("practice_purpose") == "remediation"),
+                         default=0), group, rank)
+                     for group, rank in ranked]
+        leading = min((penalty, rank[:6]) for penalty, _group, rank in penalised)
+        group, _ = min(((g, r) for p, g, r in penalised if (p, r[:6]) == leading),
+            key=lambda item: (0 if any(e.get("reference_radius") is not None for e in item[0])
+                              else _pattern_count(item[0][0]["candidate"], printed, pair_memo=pair_memo), item[1][6:]))
+        anchored_group = any(e.get("reference_stem_similarity") is not None for e in group)
+        best = min(group, key=lambda e: (not _is_core(e),
+            anchored_group and e.get("practice_purpose") != "remediation",
+            _type_section_penalty(e, section_counts, remediation_count),
+            *_entry_fit_rank(e), e["student_id"], e["key"]))
         selected.append((best, group))
+        if best.get("practice_purpose") == "remediation" and is_type_key(best.get("key")):
+            remediation_count += 1
+            section = str(best.get("target_section") or "")
+            if section:
+                section_counts[section] = section_counts.get(section, 0) + 1
         covered.update(group_needs[best["candidate"].get("duplicate_identity") or best["candidate"]["question_id"]])
         practiced.update((e['student_id'], e.get('matched_key', e['key'])) for e in group)
         members.update(e["student_id"] for e in group if _is_core(e) and e.get("practice_purpose") == "remediation")
@@ -1212,7 +1487,7 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
             primer = added == 0 and min(config.max_unmeasured_questions, question_count - len(selected)) >= 2
             def new_rank(group):
                 candidate = group[0]["candidate"]
-                skills = {k for k in candidate.get("stable_keys", ()) if k.startswith("sk_")}
+                skills = set(training_keys(candidate.get("stable_keys", ())))
                 new_keys = {e["key"] for e in group} - practiced
                 novel_fraction = len(new_keys & skills) / len(skills) if skills else 1.
                 distance = median(abs(float(candidate["difficulty"]) - float(
@@ -1239,7 +1514,7 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
             if not choices:
                 break
             def consolidation_rank(group):
-                skills = {key for entry in group for key in entry['candidate'].get('stable_keys', ()) if key.startswith('sk_')}
+                skills = {key for entry in group for key in training_keys(entry['candidate'].get('stable_keys', ()))}
                 return (repeated_consolidation_only(group), -len(skills - practiced),
                     _pattern_count(group[0]['candidate'], printed, pair_memo=pair_memo), min(e.get('match_level', 4) for e in group),
                     median(e['distance'] for e in group), -max(e['preference'] for e in group), group[0]['candidate']['question_id'])
@@ -1275,14 +1550,25 @@ def _improve_personal_selection(groups, selected, question_count, config, audit,
         return {_loss_need_id(e) for _, group in paper for e in group
                 if _is_core(e) and e.get("practice_purpose") == "remediation"
                 and (not complete or e.get("practice_role") == "full_response")}
+    def section_excess(paper):
+        counts, total = _remediation_section_counts(paper)
+        cap = math.ceil(2 * total / 3)
+        return sum(max(0, count - cap) for count in counts.values())
+    def earlier_type_choices(group, printed):
+        if not any(e.get("reference_radius") is not None for e in group):
+            return True
+        usable = [other for other in groups.values() if _paper_diversity_allowed(
+            other[0]["candidate"], printed, config, pair_memo=pair_memo)]
+        return any(other is group for other in _prefer_type_candidate_layers(usable))
     representatives = {qid: min(group, key=lambda e: (not _is_core(e),
-        e.get("practice_purpose") != "remediation", e["distance"], -e["preference"], e["student_id"], e["key"]))
+        e.get("practice_purpose") != "remediation", *_entry_fit_rank(e), e["student_id"], e["key"]))
         for qid, group in groups.items()}
     joint_checks = 0
     while True:
         current = covered(selected, coverage)
         current_full = covered(selected, full)
         current_quality = quality(current, current_full)
+        current_section_excess = section_excess(selected)
         selected_ids = {identity(e) for e, _ in selected}
         best = None
         positions = list(range(len(selected))) + ([-1] if len(selected) < question_count else [])
@@ -1291,6 +1577,7 @@ def _improve_personal_selection(groups, selected, question_count, config, audit,
             kept = covered(remaining, coverage)
             kept_full = covered(remaining, full)
             printed = [e["candidate"] for e, _ in remaining]
+            section_counts, remediation_count = _remediation_section_counts(remaining)
             for qid, group in groups.items():
                 if qid in selected_ids:
                     continue
@@ -1298,13 +1585,22 @@ def _improve_personal_selection(groups, selected, question_count, config, audit,
                 if new_quality <= current_quality:
                     continue
                 entry = representatives[qid]
-                rank = (*(-v for v in new_quality), entry["distance"], -entry["preference"],
+                rank = (*(-v for v in new_quality),
+                        _type_section_penalty(entry, section_counts, remediation_count),
+                        *_entry_fit_rank(entry),
                         entry["candidate"]["question_id"], position)
                 if best is not None and rank >= best[0]:
                     continue
+                replacement = remaining + [(entry, group)] if position < 0 else [
+                    (entry, group) if i == position else value for i, value in enumerate(selected)]
+                # Preserve the greedy spread preference during exchanges. This
+                # does not reject a same-section top-up or an already concentrated
+                # paper when no other-section candidates are available.
+                if position >= 0 and section_excess(replacement) > current_section_excess:
+                    continue
+                if not earlier_type_choices(group, printed):
+                    continue
                 if _paper_diversity_allowed(entry["candidate"], printed, config, pair_memo=pair_memo):
-                    replacement = remaining + [(entry, group)] if position < 0 else [
-                        (entry, group) if i == position else value for i, value in enumerate(selected)]
                     best = (rank, replacement, [selected[position]] if position >= 0 else [], [(entry, group)])
         if best is None and len(selected) >= 2 and joint_checks < 8000:
             # Search candidates which add a missing demand first. A fixed budget
@@ -1317,6 +1613,7 @@ def _improve_personal_selection(groups, selected, question_count, config, audit,
                 remaining = [value for i, value in enumerate(selected) if i not in positions]
                 kept, kept_full = covered(remaining, coverage), covered(remaining, full)
                 printed = [e["candidate"] for e, _ in remaining]
+                section_counts, remediation_count = _remediation_section_counts(remaining)
                 for left, right in combinations(choices, 2):
                     if joint_checks >= 8000:
                         break
@@ -1325,15 +1622,24 @@ def _improve_personal_selection(groups, selected, question_count, config, audit,
                     if new_quality <= current_quality:
                         continue
                     additions = [(representatives[qid], groups[qid]) for qid in (left, right)]
-                    rank = (*(-v for v in new_quality), sum(e["distance"] for e, _ in additions),
+                    rank = (*(-v for v in new_quality),
+                            sum(_type_section_penalty(e, section_counts, remediation_count + i)
+                                for i, (e, _) in enumerate(additions)),
+                            sum(e["distance"] for e, _ in additions),
                             tuple(e["candidate"]["question_id"] for e, _ in additions), positions)
                     if best is not None and rank >= best[0]:
+                        continue
+                    replacement = remaining + additions
+                    if section_excess(replacement) > current_section_excess:
+                        continue
+                    if not all(earlier_type_choices(group, printed + [previous[0]["candidate"] for previous in additions[:i]])
+                               for i, (_entry, group) in enumerate(additions)):
                         continue
                     if not all(_paper_diversity_allowed(e["candidate"], printed + [
                         previous[0]["candidate"] for previous in additions[:i]], config, pair_memo=pair_memo)
                         for i, (e, _) in enumerate(additions)):
                         continue
-                    best = (rank, remaining + additions, [selected[i] for i in positions], additions)
+                    best = (rank, replacement, [selected[i] for i in positions], additions)
                 if joint_checks >= 8000:
                     break
         if best is None:
@@ -1495,8 +1801,9 @@ class PersonalizedRecommendationModule:
                 reject("written", f"学情卷最多选 {config.max_written_questions} 道解答题，请先移除一道再添加。")
             exceeded = _paper_skill_limit_exceeded(candidate, selected, config)
             if exceeded:
-                names = [candidate.get("stable_names", {}).get(key) or "该技能" for key in sorted(exceeded)]
-                reject("skill", f"同一技能最多选 {config.max_questions_per_skill} 道题；{'、'.join(dict.fromkeys(names))}已达上限，请先移除相关题目再添加。")
+                target_word = "题型" if any(is_type_key(key) for key in exceeded) else "技能"
+                names = [candidate.get("stable_names", {}).get(key) or f"该{target_word}" for key in sorted(exceeded)]
+                reject("skill", f"同一{target_word}最多选 {config.max_questions_per_skill} 道题；{'、'.join(dict.fromkeys(names))}已达上限，请先移除相关题目再添加。")
             if not paper_similarity_allowed(candidate, selected):
                 reject("similar", "这道题与已选题目重复或高度相似，请选用其他练习。")
             task_duplicates = paper_task_duplicates(candidate, selected)
@@ -1527,6 +1834,8 @@ class PersonalizedRecommendationModule:
         relations = tuple({"relation_type": relation.relation_type, "source_key": relation.source_key,
                            "target_key": relation.target_key} for relation in self.current_knowledge.relations)
         leaves = _scope_leaves(config.group_scope_keys, diagnosis=normalized, relations=relations)
+        volume_id = config.curriculum_volume_id or normalized.get("exam_scope", {}).get("curriculum_volume_id", "")
+        typed_scope = type_keys_active(self.current_knowledge, volume_id) if volume_id else any(is_type_key(key) for key in leaves)
         governed = {node.stable_key for node in self.current_knowledge.nodes}
         if not leaves or not set(leaves) <= governed:
             raise ValueError("grouping requires a current chapter or section")
@@ -1565,21 +1874,40 @@ class PersonalizedRecommendationModule:
         if need_sids and not _selection_only:
             need_set = set(need_sids)
             pools = self._group_matching_pools(
-                diagnosis={**normalized, "students": [profile for profile in normalized["students"]
-                                                      if str(profile["student_id"]) in need_set]},
+                # Type priorities compare against the whole selected class,
+                # including classmates who have no remediation need here.
+                diagnosis=(normalized if typed_scope else
+                           {**normalized, "students": [profile for profile in normalized["students"]
+                                                       if str(profile["student_id"]) in need_set]}),
                 config=replace(config, paper_mode="individual",
                                target_keys=tuple(sorted({key for sid in need_sids for key in needs[sid]}))),
                 candidates=candidates, mastery=mastery, source_metadata=metadata,
                 recent={sid: recent.get(sid, set()) for sid in need_sids},
                 excluded=excluded, evaluation_memo=evaluation_memo)
+        personal_coverage = None
+        if typed_scope and pools:
+            personal_config = replace(config, paper_mode="individual", remediation_only=True)
+            personal_coverage = {}
+            for sid in need_sids:
+                selected = _choose_practice_entries(pools.get(sid, ()), config.question_count, personal_config,
+                    pair_memo=evaluation_memo.setdefault("paper_pairs", {}))
+                personal_coverage[sid] = {e["key"] for _, group in selected for e in group
+                    if e["student_id"] == sid and _is_core(e) and e.get("practice_purpose") == "remediation"
+                    and e["key"] in needs[sid]}
         grouped_members = (_quality_group_members(needs=needs, pools=pools, recent=recent, config=config,
+                                                  personal_coverage=personal_coverage,
                                                   pair_memo=evaluation_memo.setdefault("paper_pairs", {}))
                            if not _selection_only else [])
         groups = [self._chapter_group_summary(
             diagnosis=normalized, members=members, targets=(), needs=needs, config=config,
             candidates=candidates, relations=relations, recent=recent, excluded=excluded, source_version=source_version, metadata=metadata,
             mastery=mastery, graded_activities=graded_activities, evaluation_memo=evaluation_memo,
+            personal_coverage=personal_coverage,
         ) for members in grouped_members]
+        if personal_coverage is not None:
+            # A group preview recalculates member-specific anchors. Verify its
+            # actual selected paper again, rather than trusting the pool trial.
+            groups = [group for group in groups if group["ready"]]
         groups.sort(key=lambda group: (not group["ready"], -len(group["targets"]),
                                       -group["compatibility"], -len(group["members"]), group["group_id"]))
         covered = {member["student_id"] for group in groups for member in group["members"]}
@@ -1673,11 +2001,12 @@ class PersonalizedRecommendationModule:
         mastery: Mapping[tuple[str, str], Mapping[str, Any]],
         graded_activities: Sequence[Mapping[str, Any]] | None = None,
         evaluation_memo: dict | None = None,
+        personal_coverage: Mapping[str, set[str]] | None = None,
     ) -> dict[str, Any]:
         profiles = {student["student_id"]: student for student in diagnosis["students"]}
         union = set().union(*(set(needs[sid]) for sid in members)) if members else set()
         keys = tuple(sorted(key for key in (set(targets) if targets else union)
-                            if str(key).startswith("sk_")))
+                            if is_training_target(key, self.current_knowledge, config.curriculum_volume_id)))
         issues = []
         warnings = []
         if len(members) < 2:
@@ -1721,6 +2050,14 @@ class PersonalizedRecommendationModule:
         preview = _choose_practice_entries(preview_entries, config.question_count, config,
             pair_memo=evaluation_memo.setdefault("paper_pairs", {}) if evaluation_memo is not None else None)
         count = len(preview)
+        if personal_coverage is not None:
+            retained = {sid: {e["key"] for _, entries in preview for e in entries
+                             if e["student_id"] == sid and _is_core(e)
+                             and e.get("practice_purpose") == "remediation" and e["key"] in needs[sid]}
+                        for sid in members}
+            if any(len(retained[sid]) < GROUP_MIN_RETENTION * len(personal_coverage.get(sid, ()))
+                   for sid in members):
+                issues.append("共用卷未保留每位成员至少四分之三的个人补弱目标；建议个人训练。")
         if not count:
             issues.append("当前成员需求暂无适用题目，请补充题库或调整目标。")
         if any(row["sparse_member_count"] for row in rows):
@@ -1891,7 +2228,9 @@ class PersonalizedRecommendationModule:
             candidate_config=config,
         )
         candidates, relations, base_source_version = snapshot
-        base_source_version = _hash_payload({"bank": base_source_version, "loss_sources": self._source_practice_metadata(normalized_diagnosis)})
+        base_source_version = _hash_payload({"bank": base_source_version, "loss_sources": self._source_practice_metadata(normalized_diagnosis),
+            **({"class_question_totals": normalized_diagnosis["_type_class_question_totals"]}
+               if "_type_class_question_totals" in normalized_diagnosis else {})})
         mastery = self._mastery_snapshot(normalized_diagnosis)
         recent = self._recent_question_ids(
             tuple(
@@ -2302,7 +2641,9 @@ class PersonalizedRecommendationModule:
             knowledge_keys=self._candidate_scope(diagnosis, candidate_config),
             candidate_config=candidate_config,
         )
-        base_source_version = _hash_payload({"bank": base_source_version, "loss_sources": self._source_practice_metadata(diagnosis)})
+        base_source_version = _hash_payload({"bank": base_source_version, "loss_sources": self._source_practice_metadata(diagnosis),
+            **({"class_question_totals": diagnosis["_type_class_question_totals"]}
+               if "_type_class_question_totals" in diagnosis else {})})
         recent = self._request_recent(request, student_ids, draft_id=draft_id)
         return (
             candidates,
@@ -2374,9 +2715,30 @@ class PersonalizedRecommendationModule:
                                "topic_keys": topic_keys(values.get("knowledge_point", []), self.current_knowledge, facets_index),
                                "question_type": str(row["question_type"] or ""),
                                "practice_tags": values,
+                               "question_text": str(row["question_text"] or ""),
+                               "secondary_type_keys": sorted(k for k in values.get("secondary_type", ()) if is_type_key(k)),
                                "difficulty_features": _valid_difficulty_features(dict(row), [f for f in features if f["question_id"] == qid]),
                                "parts": source_parts,
                                "evidence_version_id": source_version_id}
+        # Frozen exam sources keep their frozen links, but the bank question's
+        # stem and secondary types are whole-question properties used by
+        # type-mode matching and anchored similarity (§3.5).
+        missing = sorted(qid for qid, item in result.items() if "question_text" not in item)
+        for start in range(0, len(missing), 64):
+            batch = missing[start:start + 64]
+            marks = ",".join("?" for _ in batch)
+            with connect(self.db_path) as conn:
+                texts = conn.execute(f"SELECT id, question_text FROM questions WHERE id IN ({marks}) AND is_deleted=0", batch).fetchall()
+                tags = conn.execute(f"SELECT question_id, tag_value FROM question_tags WHERE tag_type='secondary_type' AND question_id IN ({marks})", batch).fetchall()
+            secondary: dict[int, list[str]] = {}
+            for tag in tags:
+                value = str(tag["tag_value"])
+                if is_type_key(value):
+                    secondary.setdefault(int(tag["question_id"]), []).append(value)
+            for row in texts:
+                qid = int(row["id"])
+                result[qid]["question_text"] = str(row["question_text"] or "")
+                result[qid]["secondary_type_keys"] = sorted(secondary.get(qid, []))
         return result
 
     def _links_for_metadata(
@@ -2423,9 +2785,16 @@ class PersonalizedRecommendationModule:
             enriched["task_evidence_version_matches"] = aligned
             enriched["source_alignment_reason"] = ("frozen_exam_source" if aligned else
                 "frozen_source_missing" if frozen is None else "frozen_source_mismatch")
+            enriched["question_text"] = source.get("question_text")
+            enriched["secondary_type_keys"] = clone(source.get("secondary_type_keys") or [])
+            if aligned and any(is_type_key(key) for key in (
+                *(ref.get("direct_keys") or ()), *(enriched.get("direct_keys") or ()),
+                *(source.get("direct_keys") or ()))) and enriched.get("question_difficulty") is None:
+                enriched["question_difficulty"] = source.get("question_difficulty")
             return enriched
         enriched = {**(deepcopy(ref) if copy_fields else ref), **{key: clone(source[key]) for key in
-                    ("question_difficulty", "direct_keys", "practice_tags", "question_type", "difficulty_features") if source.get(key)}}
+                    ("question_difficulty", "direct_keys", "practice_tags", "question_type", "difficulty_features",
+                     "question_text", "secondary_type_keys") if source.get(key)}}
         part_id = assessment.get("evidence_part_id") or assessment.get("part_id")
         cache_key = (int(ref.get("bank_question_id") or 0), str(part_id or ""))
         if part_cache is not None and cache_key in part_cache:
@@ -2488,7 +2857,7 @@ class PersonalizedRecommendationModule:
                 eligibility_cache[eligibility_key] = eligible
         entries, warnings = [], []
         scope = set(supplement_keys)
-        supplement_scope = {key for key in scope if str(key).startswith("sk_")}
+        supplement_scope = {key for key in scope if is_training_target(key, self.current_knowledge, config.curriculum_volume_id)}
         ordered_supplement_scope = tuple(sorted(supplement_scope))
         index = target_index(self.current_knowledge)
         links = source_links if source_links is not None else self._links_for_metadata(metadata)
@@ -2531,13 +2900,30 @@ class PersonalizedRecommendationModule:
             purpose = "remediation" if losses else "consolidation" if valid_refs else "new"
             diagnostic = not valid_refs and _coarse_loss(enriched)
             enriched["diagnostic_check"] = diagnostic
-            plan = _difficulty_plan({}, profile.get("score_rate"), config.difficulty_max, enriched, profile)
-            tasks = _training_tasks(enriched)
-            loss_parts = [(r, _loss_practice_parts(r, key)) for r in losses]
+            type_reference = (_type_reference_loss(losses, enriched.get("need_stats") or {})
+                              if is_type_key(key) and losses else None)
+            if type_reference is not None:
+                reference_plans = {radius: _type_reference_plan(type_reference, enriched, config.difficulty_max, radius)
+                                   for radius in (1, 2)}
+                plan = reference_plans[2]
+                if plan is None:
+                    warning = "部分失分题型的参照题缺少可核对的原题难度，未用统一难度代替，已保留补弱缺口。"
+                    if warning not in warnings:
+                        warnings.append(warning)
+                    continue
+                ref = type_reference
+                anchor_refs = [type_reference]
+                task_target = {**enriched, "source_question_refs": anchor_refs}
+            else:
+                plan = _difficulty_plan({}, profile.get("score_rate"), config.difficulty_max, enriched, profile)
+                anchor_refs = losses or refs
+                task_target = enriched
+            tasks = _training_tasks(task_target)
+            loss_parts = [(r, _loss_practice_parts(r, key)) for r in (anchor_refs if type_reference else losses)]
             source_practice_parts = [part for _, parts in loss_parts for part in parts]
             task_level = _task_evidence_level(source_practice_parts)
             preference_refs = [(r, _training_tasks({"stable_key": key, "source_question_refs": [r]}))
-                               for r in losses or refs]
+                               for r in anchor_refs]
             preference_inputs = [
                 (r, tasks, _json({
                     "direct_keys": r.get("direct_keys"), "practice_tags": r.get("practice_tags"),
@@ -2550,11 +2936,18 @@ class PersonalizedRecommendationModule:
                 for r, tasks in preference_refs]
 
             def preference(candidate):
+                if type_reference is not None:
+                    return _stem_similarity(str(type_reference.get("question_text") or ""),
+                                            str(candidate.get("question_text") or ""))
                 scores = []
                 for ref, tasks, signature, task_signature in preference_inputs:
-                    identity = (id(candidate), key, signature, task_signature)
+                    similarity = (_stem_similarity(str(ref.get("question_text") or ""),
+                                                   str(candidate.get("question_text") or ""))
+                                  if is_type_key(key) else 0.)
+                    identity = (id(candidate), key, signature, task_signature, similarity)
                     if preference_cache is None:
-                        score = _direct_preference(candidate, key, ref, tasks=tasks)
+                        score = _direct_preference(candidate, key, ref, tasks=tasks,
+                                                   similarity=similarity)
                     else:
                         if identity not in preference_cache:
                             candidate_id = ("preference", id(candidate))
@@ -2563,27 +2956,37 @@ class PersonalizedRecommendationModule:
                                 candidate_input = _preference_candidate_input(candidate)
                                 if fixed_candidate_inputs is not None:
                                     fixed_candidate_inputs[candidate_id] = candidate_input
-                            preference_cache[identity] = _fixed_preference(candidate_input, key, signature, task_signature)
+                            preference_cache[identity] = _fixed_preference(candidate_input, key, signature, task_signature, similarity)
                         score = preference_cache[identity]
                     scores.append(score)
                 return max(scores, default=0.)
-            sources = [part for r in (losses or refs) for part in r.get("target_facets", [])]
+            sources = [part for r in anchor_refs for part in r.get("target_facets", [])]
             # A new exercise uses the selected target, never a fictional wrong answer.
             if not sources and key in index and not any(r.get("assessment", {}).get("evidence_version_id") for r in refs):
                 anchor = index[key]
                 sources = [{"direct_keys": [key], "skill_keys": [key] if key.startswith("sk_") else [],
+                            "type_keys": [key] if is_type_key(key) else [],
                             "topic_keys": [key] if anchor["kind"] == "topic" else [],
                             "section_keys": [anchor["section"]] if anchor["section"] else [],
                             "chapter_keys": [anchor["chapter"]] if anchor["chapter"] else []}]
+            # Type targets anchor on the bank text of the student's source
+            # questions and their secondary types (§3.5 匹配档位与锚定相似度).
+            source_texts = tuple(str(r.get("question_text") or "") for r in anchor_refs
+                                 if r.get("question_text")) if is_type_key(key) else ()
+            source_secondary = tuple(sorted(
+                {str(k) for r in anchor_refs for k in r.get("secondary_type_keys", ())
+                 if is_type_key(k)})) if is_type_key(key) else ()
             selected_target = {**enriched, "target_difficulty": plan["aim"], "difficulty_plan": plan,
                                "overall_score_rate": _rate(profile.get("score_rate")), "training_tasks": tasks}
+            if type_reference is not None:
+                selected_target["source_question_refs"] = [type_reference, *(r for r in refs if r is not type_reference)]
             # Internal grouping borrows immutable inputs. Keep one target row
             # per difficulty plan instead of copying its evidence for every
             # accepted question. Public evaluation still owns its target dicts.
             selection_targets = {id(plan): selected_target}
             source_match_key = (key, tuple((str(part.get("part_id") or ""),
                 *(tuple(part.get(field, ())) for field in ("direct_keys", "topic_keys", "section_keys", "chapter_keys")))
-                for part in sources))
+                for part in sources)), source_texts, source_secondary
             source_match_input = _match_facets_input(sources)
             location = index.get(key, {})
             # Match rows contain only the fixed question/source relationship.
@@ -2592,15 +2995,25 @@ class PersonalizedRecommendationModule:
                           if target_match_cache is not None else None)
             frozen_source = any(r.get("assessment", {}).get("evidence_version_id") for r in refs)
             for candidate in eligible:
+                similarity = (max((_stem_similarity(text, str(candidate.get("question_text") or ""))
+                                   for text in source_texts), default=0.) if is_type_key(key) else 0.)
                 if direct_only and key not in candidate["stable_keys"]:
                     continue
                 if sources and candidate.get("target_facets"):
                     qid = candidate["question_id"]
-                    if match_rows is not None and qid in match_rows:
-                        direct, match = match_rows[qid]
+                    candidate_secondary = tuple(sorted(
+                        {str(k) for k in candidate.get("secondary_type_keys", ())
+                         if is_type_key(k)})) if is_type_key(key) else ()
+                    row_key = (qid, similarity, candidate_secondary)
+                    if match_rows is not None and row_key in match_rows:
+                        direct, match = match_rows[row_key]
                     else:
                         if target_match_cache is None:
-                            matches = [match_target(key, sources, [part], index) for part in candidate["target_facets"]]
+                            matches = [match_target(key, sources, [part], index,
+                                                    similarity=similarity,
+                                                    source_secondary=source_secondary,
+                                                    candidate_secondary=candidate_secondary)
+                                       for part in candidate["target_facets"]]
                             matches = [m for m in matches if m]
                         else:
                             candidate_id = ("facets", id(candidate))
@@ -2611,14 +3024,20 @@ class PersonalizedRecommendationModule:
                                     fixed_candidate_inputs[candidate_id] = candidate_input
                             matches = [json.loads(match) for match in _fixed_target_matches(key,
                                 source_match_input, candidate_input,
-                                location.get("section", ""), location.get("chapter", ""))]
-                        direct_matches = [m for m in matches if m["match_level"] <= 2
-                                          and key in candidate["stable_keys"]]
+                                location.get("section", ""), location.get("chapter", ""),
+                                similarity, source_secondary, candidate_secondary)]
+                        # Type targets: levels 1-3 are core hits; level 4 stays
+                        # supplement only (§3.5). Skill targets keep 1-2 direct.
+                        if is_type_key(key):
+                            direct_matches = [m for m in matches if m["match_level"] <= 3]
+                        else:
+                            direct_matches = [m for m in matches if m["match_level"] <= 2
+                                              and key in candidate["stable_keys"]]
                         direct = bool(direct_matches)
                         match = (min(direct_matches or matches, key=lambda m: (m["match_level"], m["candidate_part_id"]))
                                  if matches else None)
                         if match_rows is not None:
-                            match_rows[qid] = direct, match
+                            match_rows[row_key] = direct, match
                     if match is None:
                         continue
                 else:
@@ -2627,9 +3046,15 @@ class PersonalizedRecommendationModule:
                         continue
                     match = {"match_level": 2 if direct else 4,
                              "match_label": "同技能练习" if direct else MATCH_LABELS[4]}
+                    if direct and type_reference is not None:
+                        match.update(match_level=1, match_label="同题型")
                 if direct_only and not direct:
                     continue
                 if core_only and not direct:
+                    continue
+                if is_type_key(key) and not direct:
+                    # Same-section-only rows belong to the teacher's assembly
+                    # shortlist, never an automatically recommended paper.
                     continue
                 if diagnostic:
                     # A whole multipart total does not authorise targeted
@@ -2651,6 +3076,9 @@ class PersonalizedRecommendationModule:
                         matched_key = target_match_cache[supplement_key]
                 target_matched.add(candidate["question_id"])
                 candidate_plan = plan
+                if direct and type_reference is not None:
+                    radius = 1 if abs(candidate["difficulty"] - plan["aim"]) <= 1 else 2
+                    candidate_plan = reference_plans[radius]
                 if not direct:
                     if matched_key not in auxiliary_plans:
                         point = next((p for p in profile.get("weak_points", []) if p.get("knowledge_key") == matched_key), {})
@@ -2688,7 +3116,10 @@ class PersonalizedRecommendationModule:
                     entry_target = {**selected_target, "target_difficulty": candidate_plan["aim"],
                                     "difficulty_plan": candidate_plan}
                 entries.append({"candidate": candidate, "key": key, **match,
+                    **({"reference_radius": radius, "reference_stem_similarity": similarity}
+                       if direct and type_reference is not None else {}),
                     "target": entry_target,
+                    "target_section": str(location.get("section") or ""),
                     "matched_key": matched_key, "selection_kind": "direct" if direct else "supplement",
                     "practice_purpose": purpose if direct else "new",
                     "difficulty_basis": candidate_plan["basis"], "evidence_confidence": candidate_plan["confidence"],
@@ -2710,7 +3141,8 @@ class PersonalizedRecommendationModule:
             warnings.append("当前目标没有同时符合范围、适合难度、近期原题和有效资料要求的题目。")
         if targets and len(suitable_ids) < config.question_count:
             recent_count = sum(c["question_id"] in recent | excluded for c in candidates)
-            warnings.append(f"当前已具备有效训练资料的候选中：近期原题排除 {recent_count} 道；范围和难度上限检查后 {len(eligible)} 道；目标匹配后 {len(matched_ids)} 道；学生适合难度检查后 {len(suitable_ids)} 道。卷内同技能最多{config.max_questions_per_skill}道、相似题和解答题限制另行检查。")
+            target_word = "题型" if any(is_type_key(t.get("stable_key") or t.get("knowledge_key")) for t in targets) else "技能"
+            warnings.append(f"当前已具备有效训练资料的候选中：近期原题排除 {recent_count} 道；范围和难度上限检查后 {len(eligible)} 道；目标匹配后 {len(matched_ids)} 道；学生适合难度检查后 {len(suitable_ids)} 道。卷内同{target_word}最多{config.max_questions_per_skill}道、相似题和解答题限制另行检查。")
         return entries, warnings
 
     def _candidate_scope(self, diagnosis: Mapping[str, Any], config: PersonalizedRecommendationConfig) -> tuple[str, ...]:
@@ -2746,11 +3178,12 @@ class PersonalizedRecommendationModule:
         excluded = set(excluded or ())
         if config.paper_mode == "shared":
             excluded.update(q for ids in recent.values() for q in ids)
-        explicit = {key for key in (config.target_keys or scope) if str(key).startswith("sk_")}
+        explicit = {key for key in (config.target_keys or scope)
+                    if is_training_target(key, self.current_knowledge, config.curriculum_volume_id)}
         limited_personal = config.remediation_only and config.paper_mode == "individual" and bool(config.scope_keys or config.target_keys)
         if config.remediation_only and config.paper_mode == "individual" and config.scope_keys:
             explicit &= _scope_descendants(frozenset(config.scope_keys), self.current_knowledge)
-            explicit = {key for key in explicit if str(key).startswith("sk_")}
+            explicit = {key for key in explicit if is_training_target(key, self.current_knowledge, config.curriculum_volume_id)}
         metadata = source_metadata if source_metadata is not None else self._source_practice_metadata(diagnosis)
         # These computations depend on frozen source parts, not student scores.
         # Keep reuse within this evaluation so later source edits always reload.
@@ -2766,9 +3199,13 @@ class PersonalizedRecommendationModule:
         # Index once instead of scanning the full population for every member.
         mastery_by_student: dict[str, dict[str, Any]] = {}
         for (owner, key), value in mastery.items():
-            if str(key).startswith("sk_"):
+            if is_training_target(key, self.current_knowledge, config.curriculum_volume_id):
                 mastery_by_student.setdefault(owner, {})[key] = value
         pools, targets_by_student, warnings = {}, {}, {}
+        class_totals = ({class_id: _type_class_totals(diagnosis, class_id) for class_id in
+                         {str(p.get("class_id") or "") for p in diagnosis["students"]}} if any(is_type_key(key)
+                        for values in mastery_by_student.values() for key in values if not explicit or key in explicit)
+                        or any(is_type_key(key) for key in explicit) else None)
         for profile in diagnosis["students"]:
             sid = str(profile["student_id"])
             known = {key: (value if input_hashes is not None else dict(value)) if _borrow_inputs else deepcopy(value)
@@ -2779,6 +3216,15 @@ class PersonalizedRecommendationModule:
                 known.setdefault(key, {"stable_key": key, "display_name": node.display_name if node else key,
                                        "source_question_refs": [], "value": None, "evidence_count": 0})
             targets = [known[key] for key in sorted(known)]
+            if class_totals is not None:
+                targets = [
+                    ({**target, "need_stats": stats}
+                     if is_type_key(target.get("stable_key")) and (stats := _type_need_stats(
+                         target, class_totals[str(profile.get("class_id") or "")],
+                         comparison_scope="full_class" if "_type_class_question_totals" in diagnosis else "selected_group")) is not None
+                     else target)
+                    for target in targets
+                ]
             targets_by_student[sid] = targets
             pools[sid], warnings[sid] = self._candidate_entries(profile=profile, targets=targets, candidates=candidates,
                 metadata=metadata, config=config, supplement_keys=scope or tuple(known),
@@ -2798,9 +3244,9 @@ class PersonalizedRecommendationModule:
         if not config.curriculum_volume_id or not items:
             return {}
         by_id = {candidate['question_id']: candidate for candidate in candidates}
-        primary = {int(item['question_id']): (item['matched_key'] if str(item.get('matched_key', '')).startswith('sk_')
+        primary = {int(item['question_id']): (item['matched_key'] if is_training_target(item.get('matched_key', ''), self.current_knowledge, config.curriculum_volume_id)
             else next((key for key in by_id.get(item['question_id'], {}).get('stable_keys', ())
-                       if key.startswith('sk_')), '')) for item in items}
+                       if is_training_target(key, self.current_knowledge, config.curriculum_volume_id)), '')) for item in items}
         with sqlite3.connect(self.db_path.resolve().as_uri() + '?mode=ro', uri=True) as connection:
             connection.row_factory = sqlite3.Row
             skills = skill_placements(connection, set(primary.values()) - {''}, config.curriculum_volume_id)
@@ -2863,14 +3309,16 @@ class PersonalizedRecommendationModule:
                 if not items:
                     warnings.append("当前范围暂无可直接补弱的可用题目；请核对失分依据与候选缺口。")
             if missing:
-                warnings.append(f"符合范围、适合难度、近期原题排除与整卷限制的题目不足；同技能最多{config.max_questions_per_skill}道、解答题最多{config.max_written_questions}道，相似题受限，保留 {missing} 道缺口。")
+                target_word = "题型" if any(is_type_key(t.get("stable_key")) for t in targets_by_student[sid]) else "技能"
+                warnings.append(f"符合范围、适合难度、近期原题排除与整卷限制的题目不足；同{target_word}最多{config.max_questions_per_skill}道、解答题最多{config.max_written_questions}道，相似题受限，保留 {missing} 道缺口。")
             covered = {_loss_need_id(member) for _, group in selected for member in group
                        if _is_core(member) and member.get("practice_purpose") == "remediation" and member["student_id"] == sid}
             missing_targets = [target for target in targets_by_student[sid]
                                if _loss_refs(target) and not any(need[1] == target["stable_key"] for need in covered)]
             if missing_targets:
                 names = "、".join(str(target.get("display_name") or target["stable_key"]) for target in missing_targets)
-                warnings.append(f"以下失分知识点尚未获得直接练习或任务匹配练习：{names}。补充练习不计作这些目标的覆盖。")
+                target_label = "失分题型" if any(is_type_key(t.get("stable_key")) for t in missing_targets) else "失分知识点"
+                warnings.append(f"以下{target_label}尚未获得直接练习或任务匹配练习：{names}。补充练习不计作这些目标的覆盖。")
             students.append({"student_id": sid, "student_code": str(profile.get("student_code") or ""),
                              "student_name": str(profile.get("student_name") or ""), "class_id": str(profile.get("class_id") or ""),
                              "selection_mode": "mastery_targeted", "targets": deepcopy(targets_by_student[sid]), "items": items,
@@ -2894,7 +3342,8 @@ class PersonalizedRecommendationModule:
                 candidate = by_id.get(qid)
                 if candidate is None:
                     raise ValueError('组卷题目已不可用，请返回班级组卷调整。')
-                key = next((k for k in candidate['stable_keys'] if k.startswith('sk_')), candidate['stable_keys'][0] if candidate['stable_keys'] else '')
+                fixed = training_keys(candidate['stable_keys'])
+                key = next((k for k in candidate['stable_keys'] if k in fixed), candidate['stable_keys'][0] if candidate['stable_keys'] else '')
                 target = {'stable_key': key, 'display_name': candidate['stable_names'].get(key, key), 'source_question_refs': []}
                 item = _draft_item(candidate, stage='direct', slot=order, student_id=sid, target=target, matched_key=key, maintenance=False,
                     match_details={'practice_purpose': 'new'})
@@ -3428,6 +3877,8 @@ class PersonalizedRecommendationModule:
                         "question_type": str(row["question_type"] or ""),
                         "special_types": list(skill_tags.get("special_type", [])),
                         "practice_tags": skill_tags,
+                        "secondary_type_keys": sorted(
+                            str(v) for v in skill_tags.get("secondary_type", ()) if is_type_key(v)),
                         "difficulty_features": _valid_difficulty_features(dict(row), feature_by_question.get(question_id, [])),
                         "error_patterns": preferred_active_patterns(patterns.get(question_id, [])),
                         "question_text": str(row["question_text"] or ""),
@@ -3858,8 +4309,8 @@ class PersonalizedRecommendationModule:
                              or entry["candidate"]["question_id"] == command.replacement_question_id)]
             if not eligible:
                 raise RecommendationEditInvalid("no approved replacement is available")
-            selected = min(eligible, key=lambda entry: (not _is_core(entry), entry.get("match_level", 2), entry["distance"],
-                                                       -entry["preference"], entry["candidate"]["question_id"]))
+            selected = min(eligible, key=lambda entry: (not _is_core(entry), entry.get("match_level", 2),
+                                                       *_entry_fit_rank(entry), entry["candidate"]["question_id"]))
             matched_entries = self.evaluate_candidates(
                 diagnosis={**request["diagnosis"], "students": [source_profile]}, config=config,
                 candidates=(selected["candidate"],), graded_activities=request.get("graded_activities"),
@@ -3956,6 +4407,9 @@ def _normalize_diagnosis(value: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "_exam_source_metadata": dict(value.get("_exam_source_metadata"))
             if isinstance(value.get("_exam_source_metadata"), Mapping) else {},
+        **({"_type_class_question_totals": deepcopy(value.get("_type_class_question_totals"))
+            if isinstance(value.get("_type_class_question_totals"), Mapping) else {}}
+           if "_type_class_question_totals" in value else {}),
         "knowledge_catalog": [
             dict(item)
             for item in (
@@ -3971,13 +4425,16 @@ def _normalize_diagnosis(value: Mapping[str, Any]) -> dict[str, Any]:
 def _group_needs(diagnosis: Mapping[str, Any], leaves: Sequence[str], *, cap: float = 8) -> dict[str, dict[str, dict[str, Any]]]:
     """Only supported direct losses form a need; absent/coarse evidence stays unknown."""
     allowed = set(leaves)
+    targets = training_keys(leaves)
+    class_totals = {class_id: _type_class_totals(diagnosis, class_id) for class_id in
+                    {str(p.get("class_id") or "") for p in diagnosis.get("students", [])}} if any(is_type_key(key) for key in targets) else {}
     result: dict[str, dict[str, dict[str, Any]]] = {}
     for student in diagnosis.get("students", []):
         needs: dict[str, dict[str, Any]] = {}
         for point in student.get("weak_points", []):
             key = str(point.get("knowledge_key") or "")
             value = _rate(point.get("mastery"))
-            if key not in allowed or not key.startswith("sk_") or value is None or not point.get("evidence_count"):
+            if key not in allowed or key not in targets or value is None or not point.get("evidence_count"):
                 continue
             direct: dict[tuple[Any, ...], Mapping[str, Any]] = {}
             for ref in _loss_refs(point):
@@ -4000,12 +4457,19 @@ def _group_needs(diagnosis: Mapping[str, Any], leaves: Sequence[str], *, cap: fl
                     else "application" if known_levels and len(known_levels) == len(losses) and min(known_levels) >= 7
                     else "unspecified")
             count = len(direct) + training_count
+            reference_plan = None
+            if is_type_key(key):
+                stats = _type_need_stats(point, class_totals[str(student.get("class_id") or "")],
+                    comparison_scope="full_class" if "_type_class_question_totals" in diagnosis else "selected_group") or {}
+                reference_plan = _type_reference_plan(_type_reference_loss(losses, stats),
+                                                     {**point, "need_stats": stats}, cap, 2)
             needs[key] = {"knowledge_key": key, "knowledge_point": str(point.get("knowledge_point") or key),
                           "mastery": value, "score_rate": _rate(student.get("score_rate")), "evidence_count": count, "performance_kind": kind,
                           "weight": (1.0 - value) * (.75 + .25 * min(3, count) / 3),
                           "source_question_refs": deepcopy(point.get("source_question_refs", [])),
-                          "difficulty_plan": _difficulty_plan({}, student.get("score_rate"), cap, point, student),
-                          "difficulty_unknown": any(ref["assessment"].get("part_difficulty") is None for ref in losses)}
+                          "difficulty_plan": reference_plan or _difficulty_plan({}, student.get("score_rate"), cap, point, student),
+                          "difficulty_unknown": (reference_plan is None if is_type_key(key) else
+                                                 any(ref["assessment"].get("part_difficulty") is None for ref in losses))}
         result[str(student["student_id"])] = needs
     return result
 
@@ -4065,6 +4529,7 @@ def _quality_group_members(*, needs: Mapping[str, Mapping[str, Any]],
                            pools: Mapping[str, Sequence[dict[str, Any]]],
                            recent: Mapping[str, set[int]] | None,
                            config: PersonalizedRecommendationConfig,
+                           personal_coverage: Mapping[str, set[str]] | None = None,
                            pair_memo: dict | None = None) -> list[tuple[str, ...]]:
     """Greedy groups whose shared paper keeps most of each member's solo coverage."""
     recent = recent or {}
@@ -4139,7 +4604,21 @@ def _quality_group_members(*, needs: Mapping[str, Mapping[str, Any]],
             paper_cache[members] = (len(chosen), hits)
         return paper_cache[members]
 
-    solo = {sid: paper((sid,))[1][sid] for sid in sids}
+    if personal_coverage is not None:
+        solo = {sid: personal_coverage.get(sid, set()) for sid in sids}
+    elif any(is_type_key(key) for points in needs.values() for key in points):
+        # A one-member shared preview skips personal remediation exchanges.
+        # Compare with the actual individual selector before retaining 3/4.
+        solo = {}
+        for sid in sids:
+            chosen = _choose_practice_entries(pools.get(sid, ()), config.question_count,
+                replace(config, paper_mode="individual", remediation_only=True), pair_memo=pair_memo)
+            solo[sid] = {entry["key"] for _, group in chosen for entry in group
+                         if entry["student_id"] == sid and _is_core(entry)
+                         and entry.get("practice_purpose") == "remediation"
+                         and entry["key"] in needs[sid]}
+    else:
+        solo = {sid: paper((sid,))[1][sid] for sid in sids}
 
     def viable(members: Sequence[str]) -> bool:
         _, pool = shared_pool(tuple(sorted(members)))
@@ -4238,6 +4717,9 @@ def _draft_item(
     if original is None:
         original = source.get("question_difficulty")
         basis = "原题整体"
+    if (target.get("difficulty_plan") or {}).get("reference_difficulty") is not None:
+        original = target["difficulty_plan"]["reference_difficulty"]
+        basis = "参照原题"
     aim = target.get("target_difficulty")
     reason = (f"补充练习：选定范围内的 {matched_name}，按本次能力范围安排，不作为此知识点薄弱的证据。"
               if selection_kind == "supplement" else f"对应错题 {question_number} 的知识点，练习 {matched_name}。")

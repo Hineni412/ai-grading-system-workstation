@@ -11,7 +11,7 @@ import OverviewStudentTable from '../components/knowledge-overview/OverviewStude
 import OverviewTierBar from '../components/knowledge-overview/OverviewTierBar.vue'
 import StudentTierChips from '../components/knowledge-overview/StudentTierChips.vue'
 import { compareFocusNodes, defaultStudentSort, formatPercent, shortNodeName } from '../components/knowledge-overview/model'
-import { chapterMetrics, heatLevel, nodeLocation, overviewMetrics, relatedNodes, studentDistribution, volumeItems } from '../components/knowledge-overview/metrics'
+import { chapterMetrics, heatLevel, itemWeakCount, nodeLocation, overviewMetrics, relatedNodes, studentDistribution, volumeItems } from '../components/knowledge-overview/metrics'
 import KnowledgeTrainingTabs from '../components/knowledge-training/KnowledgeTrainingTabs.vue'
 import { saveEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
 import { presetFocusedTraining } from '../features/training/paper-selection-session'
@@ -22,10 +22,13 @@ const router = useRouter()
 const curriculum = useCurriculumScopeStore()
 const store = useMasteryOverviewStore()
 const overview = computed(() => store.overview)
+const typeMode = computed(() => overview.value?.target_kind === 'type')
 const metrics = computed(() => overview.value ? overviewMetrics(overview.value) : null)
-const skills = computed(() => volumeItems(overview.value?.nodes ?? []).filter(n => n.kind === 'skill' && n.distribution.weak > 0).sort(compareFocusNodes))
-const priorities = computed(() => skills.value.slice(0, 5))
-const attention = computed(() => defaultStudentSort(overview.value?.students ?? []).filter(s => s.topics.weak + s.skills.weak > 0).slice(0, 8))
+// The priority list ranks the training-target kind: types on typed releases,
+// skills everywhere else.
+const focusItems = computed(() => volumeItems(overview.value?.nodes ?? []).filter(n => n.kind === (typeMode.value ? 'type' : 'skill') && n.distribution.weak > 0).sort(compareFocusNodes))
+const priorities = computed(() => focusItems.value.slice(0, 5))
+const attention = computed(() => defaultStudentSort(overview.value?.students ?? []).filter(s => itemWeakCount(s) > 0).slice(0, 8))
 const chapters = computed(() => chapterMetrics(overview.value?.nodes ?? []))
 const examined = computed(() => chapters.value.filter(c => c.evidence > 0))
 const unexamined = computed(() => chapters.value.filter(c => c.evidence === 0))
@@ -34,7 +37,7 @@ function relatedNames(key: string) {
 }
 function train(node: TrainingOverviewNode) {
   const student_ids = node.students.filter(s => s.tier === 'weak').map(s => s.student_id)
-  if (!student_ids.length || node.kind !== 'skill') return
+  if (!student_ids.length || (node.kind !== 'skill' && node.kind !== 'type')) return
   saveEvidenceScope(semesterEvidenceQuery({ mode: 'selected', student_ids }, curriculum.selectedVolumeId))
   presetFocusedTraining({ targetKeys: [node.knowledge_key], rangeKeys: node.section_key ? [node.section_key] : [] })
   void router.push({ name: 'training', query: { mode: 'student' } })
@@ -71,16 +74,16 @@ function questions(node: TrainingOverviewNode) {
         <div><dt>有证据学生</dt><dd>{{ metrics.evidence_student_count }}<small> / {{ metrics.student_count }} 人</small></dd></div>
         <div><dt>本学期平均得分率</dt><dd>{{ formatPercent(metrics.exam_score_rate) }}<small>有成绩 {{ metrics.exam_student_count }} 人</small></dd></div>
         <div><dt>至少 1 项明显薄弱的学生</dt><dd>{{ metrics.weakStudents }}<small>人 / 有证据 {{ metrics.evidence_student_count }} 人</small></dd></div>
-        <div><dt>有学生明显薄弱的项</dt><dd>{{ metrics.weak_skill_count }}<small>项技能 · {{ metrics.weak_topic_count }} 项知识点</small></dd></div>
+        <div><dt>有学生明显薄弱的项</dt><dd v-if="typeMode">{{ metrics.weak_type_count ?? 0 }}<small>项题型</small></dd><dd v-else>{{ metrics.weak_skill_count }}<small>项技能 · {{ metrics.weak_topic_count }} 项知识点</small></dd></div>
       </dl>
       <div class="overview-action-layout">
         <section class="overview-card overview-priorities" aria-labelledby="overview-priorities-title">
           <header class="overview-card__header"><h2 id="overview-priorities-title">本周建议优先处理</h2><span>按明显薄弱人数排序</span></header>
-          <StatePanel v-if="!priorities.length" kind="empty" compact title="当前范围没有明显薄弱的技能" />
+          <StatePanel v-if="!priorities.length" kind="empty" compact :title="typeMode ? '当前范围没有明显薄弱的题型' : '当前范围没有明显薄弱的技能'" />
           <article v-for="(node, index) in priorities" :key="node.knowledge_key" class="overview-priority" :data-knowledge="node.knowledge_key">
             <div class="overview-priority-heading"><span class="overview-rank">{{ index + 1 }}</span><h3>{{ shortNodeName(node) }}</h3><span class="overview-weak-count">{{ node.distribution.weak }} 人明显薄弱</span></div>
             <p class="overview-location">属于 {{ nodeLocation(node, overview.nodes) }}</p>
-            <p class="overview-related">相关知识点：{{ relatedNames(node.knowledge_key) || '题库暂无关联' }}</p>
+            <p v-if="!typeMode" class="overview-related">相关知识点：{{ relatedNames(node.knowledge_key) || '题库暂无关联' }}</p>
             <div class="overview-distribution"><OverviewTierBar :distribution="node.distribution" show-counts /><span>有证据 {{ node.evidence_student_count }} 人</span></div>
             <StudentTierChips :node="node" :students="overview.students" weak-only :limit="8" />
             <div class="overview-priority-actions"><AppButton variant="primary" @click="train(node)">给这 {{ node.distribution.weak }} 人出训练卷</AppButton><AppButton @click="questions(node)">看错题</AppButton></div>
@@ -93,7 +96,7 @@ function questions(node: TrainingOverviewNode) {
             <header class="overview-card__header"><h2 id="overview-attention-title">需要个别关注的学生</h2></header>
             <StatePanel v-if="!attention.length" kind="empty" compact title="当前范围没有明显薄弱的学生。" />
             <button v-for="student in attention" :key="student.student_id" type="button" class="overview-attention-student" @click="router.push({ name: 'student-evidence', params: { studentId: student.student_id }, query: { from: 'overview' } })">
-              <span class="overview-attention-heading"><strong>{{ student.student_name }}</strong><span>{{ formatPercent(student.score_rate) }}</span><b>明显薄弱 {{ student.topics.weak + student.skills.weak }} 项</b></span>
+              <span class="overview-attention-heading"><strong>{{ student.student_name }}</strong><span>{{ formatPercent(student.score_rate) }}</span><b>明显薄弱 {{ itemWeakCount(student) }} 项</b></span>
               <span class="overview-location">{{ student.class_id || '—' }} · {{ student.student_code || '—' }}</span><OverviewTierBar :distribution="studentDistribution(student)" />
             </button>
           </section>

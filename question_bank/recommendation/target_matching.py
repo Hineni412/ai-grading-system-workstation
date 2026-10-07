@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from question_bank.current_knowledge import CurrentKnowledgeResolver
+from question_bank.question_types import is_type_key
 from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
 
 MATCH_LABELS = {
@@ -24,6 +25,17 @@ MATCH_LABELS = {
     3: "同知识主题巩固",
     4: "同小节补充",
 }
+
+# Type targets use their own labels; skill labels stay untouched.
+MATCH_TYPE_LABELS = {
+    1: "同题型",
+    2: "次题型相关",
+    3: "同小节相近题，不是同一题型",
+    4: "同小节补充",
+}
+
+# §3.5 匹配档位 3：同小节且题面相近（dice 模板相似度）但不是同一题型。
+TYPE_NEAR_MATCH_SIMILARITY = 0.6
 
 
 @lru_cache(maxsize=4)
@@ -45,6 +57,15 @@ def target_index(resolver: CurrentKnowledgeResolver) -> dict[str, dict[str, str]
         parent = parents.get(node.stable_key, "")
         anchor = index.get(parent, {})
         index[node.stable_key] = {"kind": "skill", "chapter": anchor.get("chapter", ""),
+                                  "section": anchor.get("section", "")}
+    for node in resolver.nodes:
+        if not is_type_key(node.stable_key):
+            continue
+        # Type nodes are absent from the curriculum catalog; their section and
+        # chapter come from the release parent relation to the section.
+        parent = parents.get(node.stable_key, "")
+        anchor = index.get(parent, {})
+        index[node.stable_key] = {"kind": "type", "chapter": anchor.get("chapter", ""),
                                   "section": anchor.get("section", "")}
     return index
 
@@ -95,6 +116,7 @@ def part_facets(evidence: Mapping[str, Any], links: Mapping[str, Sequence[Any]] 
         anchors = [index.get(key, {}) for key in (topics or keys)]
         result.append({"part_id": str(part.get("part_id") or ""), "direct_keys": sorted(keys),
                        "skill_keys": sorted(key for key in keys if key.startswith("sk_")),
+                       "type_keys": sorted(key for key in keys if is_type_key(key)),
                        "topic_keys": sorted(topics), "topic_basis": basis,
                        "chapter_keys": sorted({a["chapter"] for a in anchors if a.get("chapter")}),
                        "section_keys": sorted({a["section"] for a in anchors if a.get("section")})})
@@ -199,9 +221,39 @@ def _question_evidence_metadata(
 
 def match_target(target_key: str, source_parts: Sequence[Mapping[str, Any]],
                  candidate_parts: Sequence[Mapping[str, Any]],
-                 index: Mapping[str, Mapping[str, str]]) -> dict[str, Any] | None:
+                 index: Mapping[str, Mapping[str, str]], *,
+                 similarity: float = 0.0,
+                 source_secondary: Sequence[str] = (),
+                 candidate_secondary: Sequence[str] = ()) -> dict[str, Any] | None:
     """Return the strongest justified match, always within one candidate part."""
     target = index.get(target_key, {})
+    if is_type_key(target_key):
+        target_section = str(target.get("section") or "")
+        source_secondary_keys = set(source_secondary)
+        candidate_secondary_keys = set(candidate_secondary)
+        matches = []
+        for source in source_parts:
+            for candidate in candidate_parts:
+                candidate_types = set(candidate.get("type_keys", ()))
+                if target_key in candidate_types:
+                    level = 1
+                elif (target_key in candidate_secondary_keys
+                      or candidate_types.intersection(source_secondary_keys)):
+                    level = 2
+                elif target_section and target_section in set(candidate.get("section_keys", ())):
+                    level = (3 if float(similarity or 0.) >= TYPE_NEAR_MATCH_SIMILARITY else 4)
+                else:
+                    continue
+                matches.append({"match_level": level, "match_label": MATCH_TYPE_LABELS[level],
+                                "matched_topic_keys": sorted(
+                                    set(source.get("topic_keys", ())).intersection(candidate.get("topic_keys", ()))),
+                                "matched_skill_keys": [],
+                                "matched_type_keys": sorted(candidate_types & {target_key, *source_secondary_keys}),
+                                "similarity": float(similarity or 0.),
+                                "source_part_id": str(source.get("part_id") or ""),
+                                "candidate_part_id": str(candidate.get("part_id") or "")})
+        return (min(matches, key=lambda m: (m["match_level"], m["candidate_part_id"], m["source_part_id"]))
+                if matches else None)
     target_parts = [p for p in source_parts if target_key in p.get("direct_keys", ())]
     if target_key.startswith("sk_") and not target_parts:
         return None
@@ -273,9 +325,12 @@ def load_question_facets(db_path: Path, resolver: CurrentKnowledgeResolver,
             WHERE q.is_deleted=0 AND v.status IN ('approved','proposed')
         """) if ids is None or int(r["id"]) in ids]
         tags: dict[int, list[str]] = {}
-        for row in conn.execute("SELECT question_id, tag_value FROM question_tags WHERE tag_type='knowledge_point'"):
-            if ids is None or int(row["question_id"]) in ids:
-                tags.setdefault(int(row["question_id"]), []).append(str(row["tag_value"]))
+        secondary: dict[int, list[str]] = {}
+        for row in conn.execute("SELECT question_id, tag_type, tag_value FROM question_tags WHERE tag_type IN ('knowledge_point','secondary_type')"):
+            if ids is not None and int(row["question_id"]) not in ids:
+                continue
+            bucket = secondary if row["tag_type"] == "secondary_type" else tags
+            bucket.setdefault(int(row["question_id"]), []).append(str(row["tag_value"]))
         links = load_point_links(db_path, [str(r["evidence_version_id"]) for r in rows],
                                  resolver.release_id, connection=conn)
         result = {}
@@ -288,7 +343,9 @@ def load_question_facets(db_path: Path, resolver: CurrentKnowledgeResolver,
             result[qid] = {"parts": facets, "topic_keys": topics,
                            "evidence_version_id": str(row["evidence_version_id"]),
                            "practice_observations_by_key": practice["practice_observations_by_key"],
-                           "skill_keys": sorted({key for part in facets for key in part["skill_keys"]})}
+                           "skill_keys": sorted({key for part in facets for key in part["skill_keys"]}),
+                           "type_keys": sorted({key for part in facets for key in part["type_keys"]}),
+                           "secondary_type_keys": sorted({key for key in secondary.get(qid, []) if is_type_key(key)})}
         if cache_key is not None and generation == _source_generation_token(db_path):
             with _FACETS_CACHE_LOCK:
                 if len(_FACETS_CACHE) > 4:

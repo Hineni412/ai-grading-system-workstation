@@ -1237,7 +1237,10 @@ def _knowledge_rows(
 
 
 def _personal_knowledge_view(data: SessionAnalysisData, student: StudentReportData) -> dict[str, Any]:
+    from question_bank.question_types import is_type_key
+
     snapshot = data.knowledge_structure
+    type_mode = snapshot.get('target_kind') == 'type'
     catalog = {str(item['knowledge_key']): item for item in snapshot.get('catalog', [])}
     nodes: dict[str, dict[str, Any]] = {}
     for record in student.records:
@@ -1252,9 +1255,14 @@ def _personal_knowledge_view(data: SessionAnalysisData, student: StudentReportDa
             path = str(item.get('knowledge_point') or entry.get('path') or entry.get('label') or '')
             segments = [part.strip() for part in re.split('[|｜]', path) if part.strip()]
             label = str(entry.get('label') or (segments[-1] if segments else key))
-            kind = item.get('node_kind') or ('skill' if key.startswith('sk_') or label.startswith('技能') else 'topic')
-            if kind not in {'topic', 'skill'}:
+            kind = item.get('node_kind') or (
+                'type' if type_mode and is_type_key(key)
+                else 'skill' if key.startswith('sk_') or label.startswith('技能') else 'topic')
+            if kind not in {'topic', 'skill', 'type'}:
                 kind = 'topic'
+            if type_mode and kind != 'type':
+                # Typed releases list question types instead of topics/skills.
+                continue
             chapter, section, cursor, seen = '', '', item, set()
             parent_references = []
             while cursor and str(cursor.get('knowledge_key')) not in seen:
@@ -1269,14 +1277,14 @@ def _personal_knowledge_view(data: SessionAnalysisData, student: StudentReportDa
                 elif cursor.get('node_kind') == 'section':
                     section = str(cursor['knowledge_point']).split('｜')[-1].split('|')[-1]
                 cursor = catalog.get(str(cursor.get('parent_knowledge_key') or ''), {})
-            chapter = chapter or ('｜'.join(segments[:-2]) if len(segments) >= 3 else '本卷知识与技能')
+            chapter = chapter or ('｜'.join(segments[:-2]) if len(segments) >= 3 else '本卷题型' if type_mode else '本卷知识与技能')
             section = section or (segments[-2] if len(segments) >= 3 else '')
             mastery = student.knowledge_mastery.get(key, {})
             value = mastery.get('mastery')
             if value is not None and (not isinstance(value, (float, int)) or not math.isfinite(value)):
                 value = None
             node = nodes.setdefault(key, {
-                'key': key, 'label': re.sub(r'^技能[·・：:]\s*', '', label), 'kind': kind,
+                'key': key, 'label': re.sub(r'^(?:技能|题型)[·・：:]\s*', '', label), 'kind': kind,
                 'chapter': chapter, 'section': section, 'mastery': value,
                 **{field: mastery.get(field) for field in ('interval_low', 'interval_high', 'observation_count', 'full_correct_count', 'recent_trend', 'parameter_version')},
                 'tier': mastery.get('tier') or 'insufficient',
@@ -1295,6 +1303,7 @@ def _personal_knowledge_view(data: SessionAnalysisData, student: StudentReportDa
     edges = [dict(edge) for edge in snapshot.get('associations', [])
              if edge.get('topic_key') in nodes and edge.get('skill_key') in nodes]
     return {'nodes': list(nodes.values()), 'edges': edges, 'as_of': snapshot.get('as_of') or datetime.now().strftime('%Y-%m-%d %H:%M'),
+            'target_kind': 'type' if type_mode else 'skill',
             'note': snapshot.get('note') or '当前掌握度暂不可用；以下保留本卷考查范围与得分，不以得分率代替掌握度。'}
 
 
@@ -1343,6 +1352,7 @@ def _class_knowledge_view(data: SessionAnalysisData) -> dict[str, Any]:
                              for question in node['questions'].values()]
     snapshot = data.knowledge_structure
     return {'mode': 'class', 'student_count': len(data.students), 'nodes': list(nodes.values()),
+            'target_kind': snapshot.get('target_kind') or 'skill',
             'edges': [dict(edge) for edge in snapshot.get('associations', [])
                       if edge.get('topic_key') in nodes and edge.get('skill_key') in nodes],
             'as_of': snapshot.get('as_of') or datetime.now().strftime('%Y-%m-%d %H:%M'),
@@ -1381,21 +1391,30 @@ def _knowledge_view_html(view: dict[str, Any]) -> str:
                 f'<span class="kn-node-meta">{esc(node["section"])}<span>{detail}</span></span>'
                 f'{distribution}</button>')
 
+    type_mode = view.get('target_kind') == 'type'
     for chapter, nodes in chapters.items():
-        topics, skills = [n for n in nodes if n['kind'] == 'topic'], [n for n in nodes if n['kind'] == 'skill']
         columns = []
-        for title, group, kind in [('知识点', topics, 'topics'), ('技能点', skills, 'skills')]:
+        if type_mode:
+            groups = [('题型', nodes, 'types')]
+        else:
+            topics, skills = [n for n in nodes if n['kind'] == 'topic'], [n for n in nodes if n['kind'] == 'skill']
+            groups = [('知识点', topics, 'topics'), ('技能点', skills, 'skills')]
+        for title, group, kind in groups:
             columns.append(f'<div class="kn-column kn-{kind}"><h4>{title}<span>{len(group)} 项</span></h4>'
                            + (''.join(node_html(node) for node in group) or '<p class="kn-empty">本卷暂无直接考查记录</p>') + '</div>')
-        boards.append(f'<div class="kn-chapter"><h3>{esc(chapter)}</h3><div class="kn-board">'
+        boards.append(f'<div class="kn-chapter"><h3>{esc(chapter)}</h3>'
+                      f'<div class="kn-board{" is-types" if type_mode else ""}">'
                       '<svg class="kn-lines" aria-hidden="true"></svg>' + ''.join(columns) + '</div></div>')
     data_json = json.dumps(view, ensure_ascii=False, separators=(',', ':')).replace('<', r'\u003c').replace('>', r'\u003e').replace('&', r'\u0026')
-    title = '班级知识与技能掌握图' if class_mode else '知识与技能掌握图'
+    item_label = '题型' if type_mode else '知识与技能'
+    title = f'班级{item_label}掌握图' if class_mode else f'{item_label}掌握图'
     scope_note = (f'统计本班 {view["student_count"]} 名已有成绩的学生；缺考及未形成有效成绩者不计入。'
                   '节点百分比仅对有证据学生取平均；各档只统计有观测学生，无观测人数单列，不参与平均或分档。') if class_mode else ''
     footnote = ('节点颜色表示有证据学生中人数最多的档位；备课时同时查看各档人数，避免平均值掩盖差异。'
-                '“本卷得分率”为相关小问整体得分率，不是技能独立得分。') if class_mode else (
+                f'“本卷得分率”为相关小问整体得分率，不是{"题型" if type_mode else "技能"}独立得分。') if class_mode else (
                 '节点百分比为参考难度步骤做对的可能性，详情附 80% 把握区间；“本卷”分数为相关小问的整体得分，不能直接归因到其中每一步。')
+    help_text = ('点选题型，查看本卷表现。' if type_mode else
+                 '点选知识点或技能点，查看关联与本卷表现。实线：有同小问依据；虚线：仅同题出现。关联不表示掌握度相同。')
     return (f'<section class="knowledge-map" id="knowledge-map"><div class="kn-heading"><h2>{title}</h2>'
             f'<span class="kn-date">截至 {esc(view["as_of"])}</span></div>'
             f'<p class="kn-intro">{esc(view["note"])}</p>'
@@ -1405,7 +1424,7 @@ def _knowledge_view_html(view: dict[str, Any]) -> str:
             + ('<span>按人数最多档位：</span>' if class_mode else '')
             + ''.join(f'<span><i class="kn-dot kn-{band}"></i>{label} <b>{counts[band]} 项</b></span>'
                       for band, label in [('low', '明显薄弱'), ('mid', '还不稳'), ('good', '较稳定'), ('missing', '证据不足')])
-            + '</div><p class="kn-help">点选知识点或技能点，查看关联与本卷表现。实线：有同小问依据；虚线：仅同题出现。关联不表示掌握度相同。</p>'
+            + f'</div><p class="kn-help">{help_text}</p>'
             + ''.join(boards)
             + '<div class="kn-inspector" aria-live="polite"><p>点选上方节点，查看相关题目与证据。</p></div>'
             f'<p class="kn-footnote">{footnote}未达满分的教师复核步骤按未达成计入证据。</p>'
@@ -1881,15 +1900,15 @@ def _personal_exam_points(
     session_id: int,
     historical_session_ids: set[int] | None = None,
 ) -> list[dict[str, Any]]:
-    """本次考查点集合：全部 skill 节点 + 有未覆盖小题的 topic 节点。"""
+    """本次考查点集合：全部 skill/type 节点 + 有未覆盖小题的 topic 节点。"""
     nodes = view.get("nodes") or []
     skill_covered = {
-        q["id"] for n in nodes if n.get("kind") == "skill" for q in n.get("questions") or []
+        q["id"] for n in nodes if n.get("kind") in ("skill", "type") for q in n.get("questions") or []
     }
     points = []
     for node in nodes:
         kind = node.get("kind")
-        if kind == "skill":
+        if kind in ("skill", "type"):
             questions = list(node.get("questions") or [])
         elif kind == "topic":
             questions = [
@@ -2830,14 +2849,17 @@ def _render_personal_html(
     )
     card_e = ""
     if points:
+        target_label = '题型' if data.knowledge_structure.get('target_kind') == 'type' else '知识点'
+        score_note = ('这里只反映本次考试表现；题型下列出的分数是相关题目的整体得分。'
+                      if target_label == '题型' else '这里只反映本次考试表现；同一道题可能同时考几个知识点。')
         card_e = f"""
 <div class="card">
   <h2>本次考查点</h2>
   <div class="pt-counts"><b class="g">做得好 {n_good}</b><b class="m">部分做到 {n_mid}</b><b class="b">需要补 {n_bad}</b><b class="u">暂不能判断 {n_unknown}</b></div>
-  <div class="note">灰色“？”表示这道题有失分，但现有记录还不能确定这个知识点是否做对；不代表孩子一定不会，也不需要家长逐项确认。可先看“这次重点跟进”了解具体问题。</div>
+  <div class="note">灰色“？”表示这道题有失分，但现有记录还不能确定这个{target_label}是否做对；不代表孩子一定不会，也不需要家长逐项确认。可先看“这次重点跟进”了解具体问题。</div>
   {''.join(rows_html)}
   {f'<div class="tagcloud">{cloud}</div>' if cloud else ''}
-  <div class="note" style="margin-top:8px">这里只反映本次考试表现；同一道题可能同时考几个知识点。</div>
+  <div class="note" style="margin-top:8px">{score_note}</div>
 </div>"""
 
     # ---- F 附录 ----
@@ -2952,8 +2974,9 @@ def render_class_html(
         notes = '<p class="muted">AI 整理后在此显示。</p>'
     knowledge_html = _knowledge_view_html(_class_knowledge_view(data))
     if not knowledge_html:
-        knowledge_html = ('<section id="knowledge-map"><h2>班级知识与技能掌握图</h2>'
-                          '<p class="muted">本卷尚无可可靠匹配的知识与技能标签，暂不展示掌握图；逐题成绩仍可查看。</p></section>')
+        target_label = '题型' if data.knowledge_structure.get('target_kind') == 'type' else '知识与技能'
+        knowledge_html = (f'<section id="knowledge-map"><h2>班级{target_label}掌握图</h2>'
+                          f'<p class="muted">本卷尚无可可靠匹配的{target_label}标签，暂不展示掌握图；逐题成绩仍可查看。</p></section>')
     knowledge_css, knowledge_js = _report_knowledge_assets()
     styles = """
     *{box-sizing:border-box}body{margin:0;background:#f2f5f9;color:#24354b;font:15px/1.8 "Microsoft YaHei",sans-serif}

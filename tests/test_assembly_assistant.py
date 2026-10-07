@@ -812,3 +812,78 @@ def test_quick_draft_counts_out_of_volume_and_rejected_targets_as_unavailable(cl
     assert response.json()['skipped'] == {'skill': 0, 'written': 0, 'difficulty': 0, 'similar': 0, 'unavailable': 4}
     assert [kw['target_keys'] for kw in captured] == [['sk_boom'], ['sk_in2'], ['sk_in']]
     assert all(kw['record'] is False for kw in captured)
+
+
+def test_class_weaknesses_add_type_targets_only_on_type_releases(tmp_path):
+    from types import SimpleNamespace
+    from question_bank.services.assembly_assistant import class_weaknesses
+
+    class _Resolver:
+        """Hashable stand-in for CurrentKnowledgeResolver (target_index is cached)."""
+        def __init__(self, release_id, nodes, relations):
+            self.release_id = release_id
+            self.nodes = nodes
+            self.relations = relations
+
+        def node(self, key):
+            if any(getattr(node, "stable_key", None) == key for node in self.nodes):
+                return SimpleNamespace(display_name=f"题型·{key}")
+            return None
+
+    TYPE = "kp_bnu24_math_g8_upper_1_1_t05"
+    SECTION = CHAPTER["sections"][0]["knowledge_id"]
+    resolver = _Resolver(
+        "kgr_type_test",
+        (SimpleNamespace(stable_key=TYPE),),
+        (SimpleNamespace(relation_type="parent", source_key=TYPE,
+                         target_key=SECTION),),
+    )
+    profile = diagnosis()
+    typed_point = {
+        "knowledge_key": TYPE, "knowledge_point": "题型·合成题型",
+        "mastery": 0.2, "evidence_count": 2, "score_sum": 1, "full_score_sum": 5,
+        "tier": "weak",
+    }
+    profile["students"][0]["weak_points"].append(dict(typed_point))
+    profile["group_weak_points"].append({**typed_point, "mastery": 0.3})
+    points = class_weaknesses(profile, volume_id=VOLUME["id"], chapter_id=CHAPTER["id"],
+                              resolver=resolver)
+    typed = next(p for p in points if p["knowledge_key"] == TYPE)
+    assert typed["weak_student_count"] == 1 and typed["weak_tier_student_count"] == 1
+    assert typed["exam_score_rate"] == pytest.approx(0.2)
+    # A release without type nodes keeps the skill-only filter unchanged.
+    legacy = _Resolver("kgr_no_type_test", (), ())
+    legacy_points = class_weaknesses(profile, volume_id=VOLUME["id"],
+                                     chapter_id=CHAPTER["id"], resolver=legacy)
+    assert TYPE not in {p["knowledge_key"] for p in legacy_points}
+    assert {p["knowledge_key"] for p in legacy_points} >= set(SKILLS[:2])
+
+    # The same mixed release keeps another volume's skill targets and label.
+    from question_bank.services.assembly_assistant import shortlist_candidates
+
+    other_volume = load_curriculum_catalog()["volumes"][0]
+    other_chapter = other_volume["chapters"][0]
+    other_section = other_chapter["sections"][0]["knowledge_id"]
+    skill = "sk_test_unconverted_assembly"
+    mixed = _Resolver(
+        "kgr_mixed_assembly_test",
+        (SimpleNamespace(stable_key=TYPE), SimpleNamespace(stable_key=skill)),
+        (*resolver.relations, SimpleNamespace(relation_type="parent",
+                                             source_key=skill, target_key=other_section)),
+    )
+    point = {**typed_point, "knowledge_key": skill, "knowledge_point": "合成技能"}
+    mixed_profile = {"students": [{"student_id": "TEST-学生", "weak_points": [point]}],
+                     "group_weak_points": [point]}
+    other_points = class_weaknesses(mixed_profile, volume_id=other_volume["id"],
+                                  chapter_id=other_chapter["id"], resolver=mixed)
+    assert [p["knowledge_key"] for p in other_points] == [skill]
+    reader = SimpleNamespace(db_path=tmp_path / "TEST-unused.db", data_root=tmp_path)
+    output = shortlist_candidates(
+        diagnosis={**mixed_profile, "students": []}, read_service=reader,
+        recommendations=SimpleNamespace(current_knowledge=mixed),
+        volume_id=other_volume["id"], chapter_id=other_chapter["id"],
+        target_keys=[skill], question_type="", difficulty_min=0, difficulty_max=8,
+        excluded_question_ids=set(),
+    )
+    assert output["target_kind"] == "skill"
+    assert output["selected_target_keys"] == [skill]

@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
 
+from question_bank.current_knowledge import CurrentKnowledgeResolver
+from question_bank.question_types import is_type_key, type_keys_active
 from question_bank.services.question_skill_index import (
     build_skill_snapshot, short_node_name, skill_anchor_ids,
 )
@@ -90,8 +92,27 @@ def question_primary_skills(conn: sqlite3.Connection, db_path: Path, data_root: 
         return {}
     snapshot = build_skill_snapshot(conn, db_path, data_root,
                                     question_ids=tuple(sorted(set(question_ids))))
-    return {qid: next((key for key in skills if key.startswith('sk_')), '')
-            for qid, skills in snapshot['by_question'].items()}
+    result = {qid: next((key for key in skills if key.startswith('sk_')), '')
+              for qid, skills in snapshot['by_question'].items()}
+    try:
+        resolver = CurrentKnowledgeResolver.from_connection(conn)
+    except Exception:
+        resolver = None
+    if resolver is not None and type_keys_active(resolver):
+        # On a type release the primary training target is the question's type;
+        # skill_placements still places it through its section anchor.
+        ids = sorted(set(question_ids))
+        for start in range(0, len(ids), 400):
+            batch = ids[start:start + 400]
+            placeholders = ','.join('?' for _ in batch)
+            for row in conn.execute(
+                    f"SELECT question_id,tag_value FROM question_tags WHERE tag_type='knowledge_point' "
+                    f"AND question_id IN ({placeholders}) ORDER BY id", batch):
+                value = str(row['tag_value'])
+                qid = int(row['question_id'])
+                if is_type_key(value) and not is_type_key(result.get(qid, '')):
+                    result[qid] = value
+    return result
 
 
 def section_placements(conn: sqlite3.Connection, question_ids, volume_id: str) -> dict[int, Placement]:

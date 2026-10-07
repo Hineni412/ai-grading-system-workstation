@@ -37,7 +37,7 @@ def _database(tmp_path: Path) -> Path:
     return db_path
 
 
-@pytest.mark.parametrize('revision', range(3, 11))
+@pytest.mark.parametrize('revision', range(3, 12))
 def test_compact_catalog_roundtrip_preserves_legacy_release_and_vocabulary(
     tmp_path: Path, revision: int,
 ) -> None:

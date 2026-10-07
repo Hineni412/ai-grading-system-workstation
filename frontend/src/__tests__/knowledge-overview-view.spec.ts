@@ -328,6 +328,64 @@ describe('knowledge overview view', () => {
     expect(store.overview).toBeNull()
   })
 
+  it('lists types instead of skills when the release is type-enabled', async () => {
+    const data = overviewFixture()
+    const typed: TrainingOverview = {
+      ...data,
+      target_kind: 'type',
+      associations: [],
+      summary: { ...data.summary, topic_count: 0, skill_count: 0, weak_topic_count: 0,
+        weak_skill_count: 0, type_count: 2, weak_type_count: 2 },
+      nodes: [
+        node({ knowledge_key: 'ch1', kind: 'chapter', section_key: '',
+          display_name: '册｜第一章 勾股定理', distribution: distribution(2, 1, 0, 0) }),
+        node({ knowledge_key: 'sec1', kind: 'section', section_key: 'sec1',
+          display_name: '册｜第一章｜1 探索勾股定理', distribution: distribution(1, 1, 1, 0) }),
+        node({ knowledge_key: 'tp1', kind: 'type', group_mastery: 0.3,
+          evidence_student_count: 2, tier: 'weak',
+          display_name: '册｜第一章｜1｜题型·构造直角求边',
+          distribution: distribution(1, 1, 0, 0),
+          students: [
+            { student_id: '1', mastery: 0.2, tier: 'weak' },
+            { student_id: '2', mastery: 0.65, tier: 'unsteady' },
+          ] }),
+        node({ knowledge_key: 'tp2', kind: 'type', chapter_key: 'ch1', section_key: 'sec2',
+          evidence_student_count: 1,
+          display_name: '册｜第一章｜2｜题型·拼图验证',
+          distribution: distribution(1, 0, 0, 0),
+          students: [{ student_id: '1', mastery: 0.4, tier: 'weak' }] }),
+      ],
+      students: data.students.map((student, index) => ({
+        ...student,
+        types: index === 0
+          ? { weak: 2, unsteady: 0, stable: 0, insufficient: 0, evidence: 2 }
+          : index === 1
+            ? { weak: 0, unsteady: 1, stable: 0, insufficient: 0, evidence: 1 }
+            : { weak: 0, unsteady: 0, stable: 0, insufficient: 0, evidence: 0 },
+      })),
+    }
+    vi.mocked(trainingApi.overview).mockResolvedValue(typed)
+    const host = await mountView()
+    await vi.waitFor(() => expect(host.querySelectorAll('.overview-priority')).toHaveLength(2))
+    expect(host.querySelector('.overview-summary-strip')?.textContent).toContain('2项题型')
+    const priorities = [...host.querySelectorAll<HTMLElement>('.overview-priority')].map(el => el.dataset.knowledge)
+    // Same weak count; tp1 wins the tie on 还不稳.
+    expect(priorities).toEqual(['tp1', 'tp2'])
+    expect(host.textContent).toContain('构造直角求边')
+    expect(host.querySelector('.overview-related')).toBeNull()
+    const table = host.querySelector<HTMLDetailsElement>('.overview-all-students')!
+    table.open = true
+    await settle()
+    expect(table.textContent).toContain('题型')
+    expect(table.querySelector('thead')?.textContent).not.toContain('知识点')
+    expect(table.querySelector('thead')?.textContent).not.toContain('技能')
+    const button = [...host.querySelectorAll<HTMLButtonElement>('.overview-priority-actions button')]
+      .find(b => b.textContent?.includes('出训练卷'))!
+    button.click()
+    await vi.waitFor(() => expect(activeRouter.currentRoute.value.fullPath).toBe('/training?mode=student'), { timeout: 8000 })
+    expect(loadPaperSelectionSession()).toMatchObject({ targetKeys: ['tp1'] })
+  })
+
   it('sorts the first five skills and keeps prior-volume weaknesses out of priorities', async () => {
     const data = overviewFixture()
     data.nodes.push(...Array.from({ length: 6 }, (_, i) => node({ knowledge_key: `sk${i + 2}`, kind: 'skill', distribution: distribution(i + 2, 0, 0, 0) })),

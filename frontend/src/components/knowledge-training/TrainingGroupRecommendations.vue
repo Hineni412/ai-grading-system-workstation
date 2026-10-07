@@ -27,6 +27,7 @@ const emit = defineEmits<{
 }>()
 const training = useTrainingStore()
 const sortMode = defineModel<ChapterGroupSort>('sortMode', { default: 'size' })
+const targetLabel = computed(() => (props.diagnosis.target_kind === 'type' ? '题型' : '技能'))
 // These are complete read snapshots. Editors keep their own mutable arrays.
 const result = shallowRef<TrainingGrouping | null>(null)
 const checked = shallowRef<TrainingGroup | null>(null)
@@ -346,7 +347,7 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
       <footer><span>{{ memberIds.length }} 人 · {{ targetKeys.length }} 个训练目标</span><AppButton variant="primary" :disabled="!ready" @click="adopt">采用小组并核对出卷设置</AppButton></footer>
     </section>
     <details v-if="result?.unassigned.length" class="training-groups__unassigned"><summary>暂未推荐 {{ result.unassigned.length }} 人<span v-if="unassignedBreakdown">（{{ unassignedBreakdown }}）</span> · 查看原因</summary><p v-for="student in result.unassigned" :key="student.student_id"><strong>{{ student.student_name }} · {{ classLabel(student.class_id) }}</strong>：{{ student.reason }}</p></details>
-    <details class="training-groups__explanation"><summary>分组与统计说明</summary><p v-if="result?.summary">范围内 {{ result.summary.student_count }} 人 · 有直接失分需要 {{ result.summary.students_with_needs }} 人<template v-if="result.summary.unlinked_loss_count"> · 另有 {{ result.summary.unlinked_loss_count }} 处失分的判定点未关联技能，不计入补弱</template> · 已编组 {{ result.summary.grouped_student_count }} 人（{{ result.summary.group_count }} 组） · 暂未推荐 {{ result.unassigned.length }} 人</p><p>无证据不推断薄弱；明显不同需求可安排个人训练。</p></details>
+    <details class="training-groups__explanation"><summary>分组与统计说明</summary><p v-if="result?.summary">范围内 {{ result.summary.student_count }} 人 · 有直接失分需要 {{ result.summary.students_with_needs }} 人<template v-if="result.summary.unlinked_loss_count"> · 另有 {{ result.summary.unlinked_loss_count }} 处失分的判定点未关联{{ targetLabel }}，不计入补弱</template> · 已编组 {{ result.summary.grouped_student_count }} 人（{{ result.summary.group_count }} 组） · 暂未推荐 {{ result.unassigned.length }} 人</p><p>无证据不推断薄弱；明显不同需求可安排个人训练。</p></details>
   </section>
 </template>
 
