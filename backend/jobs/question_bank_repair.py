@@ -20,16 +20,45 @@ from question_bank.services.question_read_service import (
     _taxonomy_generation_token,
 )
 from question_bank.solution_evidence.part_assessments import load_profiles
-from question_bank.taxonomy.governance import get_taxonomy_governance
+from question_bank.taxonomy.governance import TaxonomyGovernance, get_taxonomy_governance
 from question_bank.training_criteria import QuestionAnalysisInputLoader
 from question_bank.training_criteria.analysis import source_content_hash_reuse
 from question_bank.training_criteria.versioning import TrainingCriterionModule, usable_training_criterion
 
 from .manager import JobContext
-from .tagging_sync import _failure, _load_tag_source_currentness, _load_tagging_candidates
+from .tagging_sync import _failure, _load_tag_source_currentness, _load_tagging_candidates, _plan_taxonomy
 
 
 _REPAIR_PREVIEW_FLIGHTS = ResultCache(limit=1, max_bytes=0)
+
+
+def _with_type_contracts(questions, db_path: Path, governance=None):
+    governance = governance or TaxonomyGovernance(
+        state_path=get_taxonomy_governance().state_path, knowledge_graph_db_path=db_path)
+    contracts, _revision = _plan_taxonomy(None, governance,
+        contexts={question.question_id: question.tagging_context for question in questions})
+    return [replace(question, taxonomy_contract=contracts.get(question.question_id, {}))
+            for question in questions]
+
+
+def _type_candidate_fingerprint(question) -> str:
+    from question_bank.question_types import is_type_key
+    candidates = sorted((row for row in question.taxonomy_contract.get('candidates', {}).get('knowledge', [])
+                         if is_type_key(row.get('id'))), key=lambda row: row['id'])
+    return sha256(json.dumps(candidates, sort_keys=True, ensure_ascii=False,
+                            separators=(',', ':')).encode()).hexdigest()
+
+
+def _current_type_review(value: str, question, release: str) -> bool:
+    from question_bank.training_criteria.analysis import compatible_source_content_hashes
+    try:
+        review = json.loads(value)
+    except (TypeError, ValueError):
+        return False
+    return bool(isinstance(review, dict) and review.get('status') == 'type_unclassified'
+                and review.get('release_id') == release
+                and review.get('source_hash') in compatible_source_content_hashes(question, kind='tag')
+                and review.get('type_candidate_fingerprint') == _type_candidate_fingerprint(question))
 
 
 def _skill_candidate_state_token() -> tuple[object, ...]:
@@ -127,6 +156,11 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
             f'SELECT q.*,p.title AS paper_title FROM questions q JOIN papers p ON p.id=q.paper_id WHERE q.id IN ({marks})', ids)}
         teacher = {str(row[0]) for row in conn.execute(
             f"SELECT DISTINCT evidence_version_id FROM evidence_point_knowledge_links WHERE question_id IN ({marks}) AND source_kind='teacher'", ids)}
+        type_reviews = {}
+        for review in conn.execute(
+                f"SELECT question_id,tag_value FROM question_tags WHERE question_id IN ({marks}) "
+                "AND tag_type='tag_status' ORDER BY id", ids):
+            type_reviews.setdefault(int(review[0]), []).append(str(review[1]))
         heads = {int(row['question_id']): dict(row) for row in conn.execute(
             f'SELECT * FROM training_criterion_heads WHERE question_id IN ({marks})', ids)}
     items = []
@@ -152,6 +186,9 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
                 with _read_connection(db) as conn:
                     snapshot = build_skill_snapshot(conn, db, root, inventory=inventory,
                                                     question_ids=tuple(batch), profiles=profiles)
+            type_questions = _with_type_contracts(
+                [question for qid, question in inputs.items() if qid not in snapshot.get('primary_types', {})], db)
+            inputs.update({question.question_id: question for question in type_questions})
             workspaces = module.read_many(list(inputs.values()), profiles=profiles)
             tags_ready.difference_update(qid for qid, current in
                 _load_tag_source_currentness(db, current_inputs=list(inputs.values())).items() if not current)
@@ -170,7 +207,7 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
                     missing.append('skills')
                 if qid not in snapshot.get('primary_types', {}):
                     missing.append('types')
-                if not snapshot.get('knowledge_by_question', {}).get(qid):
+                if not snapshot.get('knowledge_coverage_by_question', snapshot.get('knowledge_by_question', {})).get(qid):
                     missing.append('knowledge_points')
                 if not missing or (kind == 'skills' and 'skills' not in missing) or (kind == 'analysis' and not set(missing) & {'tags', 'evidence', 'criteria'}):
                     continue
@@ -184,7 +221,13 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
                     blocked = '当前技能标准不可用'
                 elif any(part in missing for part in ('skills', 'knowledge_points')) and str(profile.get('evidence_version_id', '')) in teacher:
                     blocked = '教师已确认关联，请打开题目人工核对'
+                if workspaces.get(qid, {}).get('state') == 'rejected':
+                    blocked = '训练判定已拒绝，请先核对题面或人工修正'
                 type_pending = '本章题型尚未整理，暂时待归类' if 'types' in missing and qid in inputs and inputs[qid].taxonomy_contract.get('question_type_mode') is not True else ''
+                if 'types' in missing and qid in inputs and any(
+                        _current_type_review(value, inputs[qid], str(snapshot['release']))
+                        for value in type_reviews.get(qid, ())):
+                    type_pending = '已核对当前候选，暂无适合题型，待标准整理'
                 if type_pending and missing == ['types']:
                     blocked = type_pending
                 item = {'id': qid, 'question_number': str(row['question_number']), 'paper_title': row['paper_title'],
@@ -194,7 +237,9 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
                 # Internal revision has no question body and is never returned in job diagnostics.
                 revision = [dict(row), heads.get(qid), profile.get('evidence_version_id'),
                             inputs[qid].source_content_hash if qid in inputs else '', snapshot['release'],
-                            snapshot.get('primary_types', {}).get(qid), sorted(snapshot.get('knowledge_by_question', {}).get(qid, ()))]
+                            snapshot.get('primary_types', {}).get(qid), sorted(snapshot.get('knowledge_coverage_by_question', {}).get(qid, ())),
+                            inputs[qid].taxonomy_contract.get('candidate_fingerprint') if qid in inputs else '',
+                            type_reviews.get(qid, ())]
                 item['revision'] = sha256(json.dumps(revision, sort_keys=True, default=str).encode()).hexdigest()
                 items.append(item)
     return _preview(volume_id, kind, items, scanned_count)
@@ -225,10 +270,11 @@ def run_question_bank_repair_job(*, context: JobContext, question_bank_db_path: 
                   item['revision'] == expected.get(str(item['id']))]
     analysis_ids = [item['id'] for item in candidates if set(item['missing']) & {'tags', 'evidence', 'criteria'}]
     type_ids = []
-    type_candidates = [item['id'] for item in candidates if 'types' in item['missing']]
+    type_candidates = [item['id'] for item in candidates if 'types' in item['missing'] and not item.get('type_pending_reason')]
     if type_candidates:
         questions = QuestionAnalysisInputLoader(db_path=question_bank_db_path, data_root=data_root).load(
             type_candidates, curriculum_volume_id=payload['curriculum_volume_id'])
+        questions = _with_type_contracts(questions, question_bank_db_path, taxonomy_governance)
         type_ids = [question.question_id for question in questions if question.taxonomy_contract.get('question_type_mode') is True]
     analysis_ids = list(dict.fromkeys([*analysis_ids, *type_ids]))
     result: dict[str, Any] = {'requested_count': len(ids), 'analysis_count': len(analysis_ids),

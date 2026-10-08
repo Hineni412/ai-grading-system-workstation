@@ -132,14 +132,14 @@ def _seed_paper(db_path: Path, paper_id: int = 1, title: str = "Paper") -> None:
         connection.close()
 
 
-def _seed_skill_bank(tmp_path: Path, count: int = 6):
+def _seed_skill_bank(tmp_path: Path, count: int = 6, *, taxonomy_revision: int = 7):
     from question_bank.database.schema import connect
     from question_bank.training_criteria import QuestionAnalysisInputLoader, solution_evidence_source_content_hash
 
     db = tmp_path / "TEST-skill-index.db"
     _seed_paper(db)
     from tests.current_knowledge_support import install_current_knowledge
-    install_current_knowledge(db, taxonomy_revision=7)
+    install_current_knowledge(db, taxonomy_revision=taxonomy_revision)
     with connect(db) as conn:
         # Use catalog metadata exactly as the production volume filter does.
         from question_bank.taxonomy.curriculum_catalog import curriculum_volume
@@ -1680,3 +1680,32 @@ def test_missing_knowledge_adds_only_fine_links_and_keeps_original_evidence_and_
     run_knowledge_link_job(context=JobContext(again.id, again.job_type, again.payload, store),
         question_bank_db_path=db, data_root=tmp_path, link_gateway=lambda request: {1: []})
     assert service.skill_index('bnu24-math-g8-upper')['coverage']['knowledge_points'] == 1
+
+
+def test_repair_preview_uses_current_type_candidates_and_stops_repeating_checked_unclassified(tmp_path):
+    import json
+    from backend.jobs.question_bank_repair import repair_preview, _with_type_contracts, _type_candidate_fingerprint
+    from question_bank.training_criteria import QuestionAnalysisInputLoader
+    from question_bank.database.schema import connect
+
+    service, db, _keys = _seed_skill_bank(tmp_path, count=1, taxonomy_revision=11)
+    first = repair_preview(service, 'bnu24-math-g8-upper', 'all')
+    item = first['items'][0]
+    assert 'types' in item['missing']
+    assert not item['type_pending_reason']
+    question = _with_type_contracts(QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path).load(
+        [1], curriculum_volume_id='bnu24-math-g8-upper'), db)[0]
+    assert question.taxonomy_contract['question_type_mode'] is True
+    with connect(db) as conn:
+        release = conn.execute("SELECT release_id FROM knowledge_graph_releases WHERE status='active'").fetchone()[0]
+        marker = {'status': 'type_unclassified', 'source_hash': question.source_content_hash,
+                  'release_id': release, 'type_candidate_fingerprint': _type_candidate_fingerprint(question)}
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) "
+                     "VALUES(1,'tag_status',?,'taxonomy')", (json.dumps(marker),))
+    checked = repair_preview(service, 'bnu24-math-g8-upper', 'all')['items'][0]
+    assert 'types' in checked['missing']
+    assert checked['type_pending_reason'] == '已核对当前候选，暂无适合题型，待标准整理'
+    with connect(db) as conn:
+        conn.execute("UPDATE questions SET question_text='TEST-changed-type-task' WHERE id=1")
+    changed = repair_preview(service, 'bnu24-math-g8-upper', 'all')['items'][0]
+    assert not changed['type_pending_reason']

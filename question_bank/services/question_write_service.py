@@ -3090,9 +3090,29 @@ def sync_question_type_labels(
                         {str(chapter['id']), str(chapter['knowledge_id']), str(chapter['display_name']), *map(str, chapter.get('exam_scope_values', ()))})}
         if len(possible) == 1:
             own_chapter = next(iter(possible))
+    new_model_type = False
+    if primary and source == 'taxonomy':
+        has_type = any(is_type_key(target.stable_key) for row in conn.execute(
+            "SELECT tag_value FROM question_tags WHERE question_id=? AND tag_type='knowledge_point'",
+            (question_id,)) for target in resolver.resolve(row[0]))
+        manual_ownership = conn.execute(
+            "SELECT 1 FROM question_tags WHERE question_id=? AND source='manual' "
+            "AND tag_type IN ('knowledge_point','exam_scope','curriculum_section') LIMIT 1",
+            (question_id,)).fetchone()
+        paper = conn.execute(
+            "SELECT p.grade,p.semester,p.textbook_version FROM questions q JOIN papers p "
+            "ON p.id=q.paper_id WHERE q.id=?", (question_id,)).fetchone()
+        from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+        volume = curriculum_volume(grade=paper[0], semester=paper[1], textbook_version=paper[2]) if paper else None
+        chapter = curriculum_knowledge_node(chapter_of(primary))
+        new_model_type = bool(not has_type and manual_ownership is None and volume and chapter
+                              and chapter['volume_id'] == volume['id'])
+    if new_model_type:
+        own_chapter = chapter_of(primary)
     if primary and not own_chapter:
         raise ValueError('question chapter is unavailable; confirm its section first')
-    if own_chapter and any(chapter_of(key) != own_chapter for key in ((primary,) if primary else ()) + secondary):
+    if own_chapter and any(
+            chapter_of(key) != own_chapter for key in ((primary,) if primary else ()) + secondary):
         raise ValueError('question type must belong to the current chapter')
     if source != 'manual' and conn.execute(
         "SELECT tag_value FROM question_tags WHERE question_id=? AND tag_type='knowledge_point' AND source='manual'",

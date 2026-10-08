@@ -210,3 +210,54 @@ def test_teacher_type_edit_updates_all_current_point_copies_and_keeps_other_link
     with connect(service.db_path) as conn:
         assert [tuple(row) for row in conn.execute("SELECT tag_type,tag_value,confidence,source,model_name FROM question_tags WHERE tag_type IN ('knowledge_point','secondary_type','prerequisite') ORDER BY tag_type,tag_value")] == protected_before
         assert [tuple(row) for row in conn.execute('SELECT * FROM evidence_point_knowledge_links')] == links_before
+
+
+@pytest.mark.parametrize('manual_ownership', [False, True])
+def test_first_model_type_corrects_legacy_automatic_chapter_but_keeps_manual_scope(write_seed, manual_ownership):
+    import json
+    from tests.current_knowledge_support import install_current_knowledge
+    from question_bank.current_knowledge import CurrentKnowledgeResolver
+    from question_bank.question_types import is_type_key
+    from question_bank.database.schema import connect
+    from question_bank.services.question_write_service import sync_question_type_labels
+    from question_bank.training_criteria import QuestionAnalysisInputLoader, solution_evidence_source_content_hash
+    from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+
+    service, qid, _revision = write_seed
+    release = install_current_knowledge(service.db_path, taxonomy_revision=11)
+    resolver = CurrentKnowledgeResolver.from_active_database(service.db_path)
+    main = next(node.stable_key for node in resolver.nodes
+                if is_type_key(node.stable_key) and node.stable_key.startswith('kp_bnu24_math_g8_upper_2_3_'))
+    volume = curriculum_volume(volume_id='bnu24-math-g8-upper')
+    with connect(service.db_path) as conn:
+        conn.execute('UPDATE papers SET grade=?,semester=?,textbook_version=? WHERE id=1',
+                     (volume['grade'], volume['semester'], volume['textbook_version']))
+        conn.execute('INSERT INTO question_scope_summary(question_id,primary_section_id,direct_section_ids_json) '
+                     "VALUES(?,'kp_bnu24_math_g7_lower_1_1','[]')", (qid,))
+        if manual_ownership:
+            conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) "
+                         "VALUES(?,'curriculum_section','bnu24-math-g7-lower-c01-s01','manual')", (qid,))
+    question = QuestionAnalysisInputLoader(db_path=service.db_path, data_root=service.data_root).load([qid])[0]
+    payload = {'parts': [{'part_id': 'part-1', 'evidence_points': [{'evidence_point_id': 'p1', 'target': '合成结果'}]}]}
+    with connect(service.db_path) as conn:
+        conn.execute("INSERT INTO question_solution_evidence_versions(evidence_version_id,question_id,source_content_hash,"
+                     "schema_version,content_hash,evidence_json,status,source_kind,source_reference,created_by,graph_release_id) "
+                     "VALUES(?,?,?,'question-solution-evidence-v2',?,?,'approved','combined_model','TEST-first-type','TEST',?)",
+                     ('b'*64, qid, solution_evidence_source_content_hash(question), 'c'*64, json.dumps(payload), release))
+        if manual_ownership:
+            with pytest.raises(ValueError, match='current chapter'):
+                sync_question_type_labels(conn, qid, main, [], resolver, source='taxonomy', data_root=service.data_root)
+            assert conn.execute("SELECT tag_value FROM question_tags WHERE source='manual'").fetchone()[0] == 'bnu24-math-g7-lower-c01-s01'
+        else:
+            other_chapter_type = next(node.stable_key for node in resolver.nodes
+                if is_type_key(node.stable_key) and node.stable_key.startswith('kp_bnu24_math_g8_upper_3_'))
+            tags_before = [tuple(row) for row in conn.execute('SELECT * FROM question_tags ORDER BY id')]
+            with pytest.raises(ValueError, match='current chapter'):
+                sync_question_type_labels(conn, qid, main, [other_chapter_type], resolver,
+                                          source='taxonomy', data_root=service.data_root)
+            assert [tuple(row) for row in conn.execute('SELECT * FROM question_tags ORDER BY id')] == tags_before
+            sync_question_type_labels(conn, qid, main, [], resolver, source='taxonomy', data_root=service.data_root)
+            assert conn.execute("SELECT tag_value FROM question_tags WHERE tag_type='knowledge_point' AND tag_value=?",
+                                (main,)).fetchone()[0] == main
+            assert conn.execute('SELECT primary_section_id FROM question_scope_summary WHERE question_id=?',
+                                (qid,)).fetchone()[0] == main.rsplit('_t', 1)[0]

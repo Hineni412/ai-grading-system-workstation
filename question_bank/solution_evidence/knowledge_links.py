@@ -514,7 +514,11 @@ def refresh_question_scope_summary(
     sectioned_keys = [
         key for key in direct_weight if key_anchors[key]["sections"]
     ]
-    primary_key = max(
+    primary_type = next((str(row[0]) for row in connection.execute(
+        "SELECT tag_value FROM question_tags WHERE question_id=? AND tag_type='knowledge_point' ORDER BY id",
+        (qid,)) if is_type_key(row[0]) and str(row[0]) in direct_weight
+        and key_anchors[str(row[0])]["sections"]), None)
+    primary_key = primary_type or max(
         sectioned_keys or list(direct_weight),
         key=lambda key: (direct_weight[key], key),
     )

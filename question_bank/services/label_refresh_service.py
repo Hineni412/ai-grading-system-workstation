@@ -223,6 +223,13 @@ def _persist_refresh(db_path: Path, data_root: Path, governance: TaxonomyGoverna
             connection.executemany('INSERT INTO question_tags(question_id,tag_type,tag_value,source,model_name,confidence) VALUES(?,?,?,\'ai\',?,0.8)',
                 [(qid, dimension, name, model_name) for name in validated['attributes'][dimension] if name not in manual])
         _refresh_unprotected_ownership(connection, db_path, data_root, item)
+        from question_bank.training_criteria.repository import CombinedAnalysisRepository
+        repository = CombinedAnalysisRepository(db_path)
+        projection_id = f'label_refresh:{operation_id}:{qid}'
+        repository.begin_operation(operation_id=projection_id, fingerprint=_hash(item.token),
+            questions=[item.question], requested_projection='tag', connection=connection)
+        repository.save_projection(operation_id=projection_id, question_id=qid,
+            projection='tag', status='succeeded', payload=validated, connection=connection)
 
 
 def _refresh_unprotected_ownership(connection, db_path, data_root, item):

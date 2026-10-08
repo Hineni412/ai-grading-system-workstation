@@ -2179,3 +2179,64 @@ def test_old_upper_refresh_accepts_prerequisite_only_fine_links(tmp_path):
     with connect(db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM evidence_point_knowledge_links WHERE stable_key=? AND role='supporting_prerequisite'",
             (chosen[0],)).fetchone()[0] > 0
+
+
+def test_old_upper_refresh_updates_source_state_and_still_detects_later_source_changes(tmp_path):
+    from dataclasses import replace
+    from backend.jobs.tagging_sync import _load_tag_source_currentness
+    from question_bank.services.label_refresh_service import execute_label_refresh
+    from question_bank.training_criteria import QuestionAnalysisInputLoader
+    from question_bank.training_criteria.repository import CombinedAnalysisRepository
+
+    db, governance = _upper_label_refresh_bank(tmp_path)
+    loader = QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path)
+    current = loader.load([1], curriculum_volume_id='bnu24-math-g8-upper')[0]
+    old = replace(current, tagging_context=replace(current.tagging_context, question_text='TEST-old-question-source'))
+    repository = CombinedAnalysisRepository(db)
+    repository.begin_operation(operation_id='TEST-legacy-source', fingerprint='f' * 64,
+        questions=[old], requested_projection='tag')
+    repository.save_projection(operation_id='TEST-legacy-source', question_id=1,
+        projection='tag', status='succeeded', payload={'TEST': 'old-tag-result'})
+    with connect(db) as conn:
+        conn.execute("UPDATE question_analysis_items SET updated_at='2000-01-01 00:00:00' "
+                     "WHERE operation_id='TEST-legacy-source'")
+        original = tuple(conn.execute("SELECT * FROM question_analysis_items "
+                                      "WHERE operation_id='TEST-legacy-source'").fetchone())
+    assert _load_tag_source_currentness(db, current_inputs=[current]) == {1: False}
+    result = execute_label_refresh(db_path=db, data_root=tmp_path, governance=governance,
+        authorization=_upper_refresh_plan(db, tmp_path, governance),
+        operation_id='TEST-source-refresh', gateway=_upper_refresh_response)
+    assert result['saved_count'] == 1
+    assert _load_tag_source_currentness(db, current_inputs=loader.load(
+        [1], curriculum_volume_id='bnu24-math-g8-upper')) == {1: True}
+    with connect(db) as conn:
+        assert tuple(conn.execute("SELECT * FROM question_analysis_items "
+                                  "WHERE operation_id='TEST-legacy-source'").fetchone()) == original
+        conn.execute("UPDATE questions SET question_text='TEST-new-question-source' WHERE id=1")
+    assert _load_tag_source_currentness(db, current_inputs=loader.load(
+        [1], curriculum_volume_id='bnu24-math-g8-upper')) == {1: False}
+
+
+def test_old_upper_refresh_rolls_back_labels_when_source_state_cannot_save(tmp_path, monkeypatch):
+    from question_bank.services.label_refresh_service import execute_label_refresh
+    from question_bank.training_criteria.repository import CombinedAnalysisRepository
+
+    db, governance = _upper_label_refresh_bank(tmp_path)
+    plan = _upper_refresh_plan(db, tmp_path, governance)
+    with connect(db) as conn:
+        tags_before = [tuple(row) for row in conn.execute('SELECT * FROM question_tags ORDER BY id')]
+        links_before = [tuple(row) for row in conn.execute(
+            'SELECT rowid,* FROM evidence_point_knowledge_links ORDER BY rowid')]
+    def fail_saved_source(*args, **kwargs):
+        raise OSError('TEST-projection-storage-failure')
+    monkeypatch.setattr(CombinedAnalysisRepository, 'save_projection', fail_saved_source)
+    result = execute_label_refresh(db_path=db, data_root=tmp_path, governance=governance,
+        authorization=plan, operation_id='TEST-source-failure', gateway=_upper_refresh_response)
+    assert result['saved_count'] == 0
+    assert result['questions'][0]['status'] == 'failed_no_retry'
+    with connect(db) as conn:
+        assert [tuple(row) for row in conn.execute('SELECT * FROM question_tags ORDER BY id')] == tags_before
+        assert [tuple(row) for row in conn.execute(
+            'SELECT rowid,* FROM evidence_point_knowledge_links ORDER BY rowid')] == links_before
+        assert conn.execute("SELECT COUNT(*) FROM question_analysis_items WHERE "
+                            "operation_id='label_refresh:TEST-source-failure:1'").fetchone()[0] == 0

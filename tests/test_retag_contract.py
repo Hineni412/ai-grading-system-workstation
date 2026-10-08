@@ -90,6 +90,7 @@ def _seed_evidence_links(
         (_SKILL_KEY, 1.0),
     ),
     supporting: tuple[str, ...] = (),
+    taxonomy_revision: int = 9,
 ) -> str:
     """写入一个可用判定点版本 + 判定点关联（直接 + supporting_prerequisite）。
 
@@ -99,7 +100,7 @@ def _seed_evidence_links(
 
     from tests.current_knowledge_support import install_current_knowledge
 
-    release_id = install_current_knowledge(database, taxonomy_revision=9)
+    release_id = install_current_knowledge(database, taxonomy_revision=taxonomy_revision)
     link_rows = [
         (
             version_id,
@@ -387,3 +388,22 @@ def test_prerequisite_fine_links_count_as_knowledge_coverage_without_direct_trai
     missing = service.list_questions(QuestionReadFilters(
         curriculum_volume_ids=('bnu24-math-g8-upper',), missing_knowledge=True))
     assert missing.total == 0
+
+
+def test_main_type_owns_primary_section_even_when_legacy_links_have_more_weight(tmp_path):
+    from question_bank.solution_evidence.knowledge_links import refresh_question_scope_summary
+
+    db = _base_db(tmp_path)
+    _add_question(db)
+    main = 'kp_bnu24_math_g8_upper_1_1_t01'
+    _seed_evidence_links(db, 1, direct=((_EARLIER_SECTION_KEY, 0.9), (main, 0.1)), taxonomy_revision=11)
+    with connect(db) as conn:
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) "
+                     "VALUES(1,'knowledge_point',?,'taxonomy')", (main,))
+        before = [tuple(row) for row in conn.execute(
+            'SELECT rowid,* FROM evidence_point_knowledge_links ORDER BY rowid')]
+        refresh_question_scope_summary(conn, 1, db_path=db, data_root=tmp_path)
+        scope = conn.execute('SELECT primary_section_id FROM question_scope_summary WHERE question_id=1').fetchone()[0]
+        assert scope == 'kp_bnu24_math_g8_upper_1_1'
+        assert [tuple(row) for row in conn.execute(
+            'SELECT rowid,* FROM evidence_point_knowledge_links ORDER BY rowid')] == before

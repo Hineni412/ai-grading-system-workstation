@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Literal
 
@@ -31,9 +32,12 @@ class CombinedAnalysisRepository:
         fingerprint: str,
         questions: Sequence[QuestionAnalysisInput],
         requested_projection: AnalysisProjection,
+        connection: sqlite3.Connection | None = None,
     ) -> bool:
-        with connect(self.db_path) as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        owns_connection = connection is None
+        with (connect(self.db_path) if owns_connection else nullcontext(connection)) as connection:
+            if owns_connection:
+                connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
                 SELECT input_fingerprint, requested_projection
@@ -193,6 +197,7 @@ class CombinedAnalysisRepository:
         status: Literal["succeeded", "failed", "cancelled"],
         payload: Mapping[str, Any] | None = None,
         error_category: str = "",
+        connection: sqlite3.Connection | None = None,
     ) -> None:
         status_column = _status_column(projection)
         payload_column = (
@@ -224,8 +229,10 @@ class CombinedAnalysisRepository:
                 else serialized
             )
         )
-        with connect(self.db_path) as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        owns_connection = connection is None
+        with (connect(self.db_path) if owns_connection else nullcontext(connection)) as connection:
+            if owns_connection:
+                connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 f"""
                 SELECT {status_column} AS projection_status,
