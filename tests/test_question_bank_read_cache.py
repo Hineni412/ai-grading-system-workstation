@@ -1102,17 +1102,29 @@ def test_repair_preview_whole_volume_result_is_cached_until_a_write(tmp_path, mo
     from question_bank.database.schema import connect
 
     service, db, _ = _seed_skill_bank(tmp_path)
+    service._skill_snapshot()
+    read_module._READ_RESULT_CACHE.clear()
+    restored = []
+    original_restore = service._read_local_skill_snapshot
+
+    def restore(*args, **kwargs):
+        result = original_restore(*args, **kwargs)
+        restored.append(result is not None)
+        return result
+
+    monkeypatch.setattr(service, '_read_local_skill_snapshot', restore)
     calls = []
-    original = repair._load_analysis_gaps
+    original = repair._compute_repair_preview
 
     def tracked(*args, **kwargs):
         calls.append(True)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(repair, '_load_analysis_gaps', tracked)
+    monkeypatch.setattr(repair, '_compute_repair_preview', tracked)
     first = repair.repair_preview(service, 'bnu24-math-g8-upper', 'all')
     second = repair.repair_preview(service, 'bnu24-math-g8-upper', 'all')
     assert len(calls) == 1 and second == first
+    assert restored == [True]
     # The returned copy must not alias the cached payload.
     second['items'].clear()
     second['counts']['skills'] = 999
@@ -1125,6 +1137,147 @@ def test_repair_preview_whole_volume_result_is_cached_until_a_write(tmp_path, mo
         conn.execute("UPDATE questions SET answer_text='TEST-新答案' WHERE id=4")
     fourth = repair.repair_preview(service, 'bnu24-math-g8-upper', 'all')
     assert len(calls) == 3 and fourth['fingerprint'] != first['fingerprint']
+    # File edits can change readiness without a database write.
+    sidecar = tmp_path / 'question_bank/rich_content/question_1.json'
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_text('{TEST-corrupt', encoding='utf-8')
+    changed = repair.repair_preview(service, 'bnu24-math-g8-upper', 'all')
+    assert len(calls) == 4
+    item = next(item for item in changed['items'] if item['id'] == 1)
+    assert item['blocked_reason_code'] == 'rich_content_invalid_json'
+    assert changed['fingerprint'] != fourth['fingerprint']
+
+
+def test_analysis_material_cache_reuses_pages_and_rechecks_database_and_assets(tmp_path, monkeypatch):
+    from question_bank.database.schema import connect
+    from question_bank.solution_evidence import part_assessments
+
+    service, db, _ = _seed_skill_bank(tmp_path)
+    loaded = []
+    original = part_assessments.current_inputs
+
+    def track(db_path, ids, *args, **kwargs):
+        loaded.append(tuple(ids))
+        return original(db_path, ids, *args, **kwargs)
+
+    monkeypatch.setattr(part_assessments, 'current_inputs', track)
+
+    def material(ids):
+        with read_module._read_connection(db) as conn:
+            return service._analysis_materials(conn, ids)
+
+    first = material([1, 2])
+    assert first[1]['evidence_ready'] and first[2]['evidence_ready']
+    assert material([1, 2, 4])[1] == first[1]
+    assert loaded == [(1, 2), (4,)]
+    first[1]['evidence_ready'] = False
+    assert material([1])[1]['evidence_ready']
+    with connect(db) as conn:
+        conn.execute("UPDATE questions SET question_text='TEST-source-edited' WHERE id=1")
+    assert not material([1])[1]['evidence_ready']
+    sidecar = tmp_path / 'question_bank/rich_content/question_2.json'
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_text('{TEST-corrupt', encoding='utf-8')
+    assert not material([2])[2]['evidence_ready']
+    assert loaded == [(1, 2), (4,), (1,), (2,)]
+
+
+@pytest.mark.parametrize('first_kind', ['all', 'analysis'])
+def test_repair_preview_shares_scan_but_keeps_analysis_question_scope(tmp_path, monkeypatch, first_kind):
+    from backend.jobs import question_bank_repair as repair
+
+    service, _, _ = _seed_skill_bank(tmp_path)
+    missing = [['types'], ['knowledge_points'], ['skills'],
+               ['tags', 'types'], ['evidence', 'skills'], ['criteria']]
+    items = [{'id': index, 'missing': parts, 'blocked_reason': ''}
+             for index, parts in enumerate(missing, 1)]
+    calls = []
+
+    def compute(service, volume, kind, ids):
+        calls.append(kind)
+        return repair._preview(volume, kind, items, 20)
+
+    monkeypatch.setattr(repair, '_compute_repair_preview', compute)
+    repair.repair_preview(service, 'bnu24-math-g8-upper', first_kind)
+    all_gaps = repair.repair_preview(service, 'bnu24-math-g8-upper', 'all')
+    analysis = repair.repair_preview(service, 'bnu24-math-g8-upper', 'analysis')
+    assert calls == ['all']
+    assert all_gaps['question_count'] == 6 and analysis['question_count'] == 3
+    assert analysis['scanned_count'] == 20
+    assert [item['id'] for item in analysis['items']] == [4, 5, 6]
+    assert analysis['items'][0]['missing'] == ['tags', 'types']
+    assert analysis['fingerprint'] != all_gaps['fingerprint']
+    analysis['items'][0]['missing'].clear()
+    assert repair.repair_preview(service, 'bnu24-math-g8-upper', 'all') == all_gaps
+
+
+@pytest.mark.parametrize('outcome', ['success', 'failure', 'source_changed'])
+def test_repair_preview_concurrent_entry_points_share_one_scan(tmp_path, monkeypatch, outcome):
+    import threading
+    import integration.result_cache as cache_module
+    from backend.jobs import question_bank_repair as repair
+    from question_bank.database.schema import connect
+
+    service, db, _ = _seed_skill_bank(tmp_path)
+    started, waiting, release = (threading.Event() for _ in range(3))
+    original_flight = cache_module._Flight
+
+    class ObservedEvent:
+        def __init__(self):
+            self.event = threading.Event()
+
+        def wait(self):
+            waiting.set()
+            assert self.event.wait(5)
+
+        def set(self):
+            self.event.set()
+
+    def flight():
+        result = original_flight()
+        result.event = ObservedEvent()
+        return result
+
+    monkeypatch.setattr(cache_module, '_Flight', flight)
+    calls = []
+
+    def compute(service, volume, kind, ids):
+        calls.append(kind)
+        started.set()
+        assert release.wait(5)
+        if len(calls) == 1 and outcome == 'failure':
+            raise ValueError('TEST-preview-failed')
+        if len(calls) == 1 and outcome == 'source_changed':
+            with connect(db) as conn:
+                conn.execute("UPDATE questions SET answer_text='TEST-concurrent-edit' WHERE id=1")
+        return repair._preview(volume, kind, [
+            {'id': 1, 'missing': ['tags'], 'blocked_reason': ''},
+            {'id': 2, 'missing': ['types'], 'blocked_reason': ''},
+        ], 5)
+
+    monkeypatch.setattr(repair, '_compute_repair_preview', compute)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        all_result = pool.submit(repair.repair_preview, service, 'bnu24-math-g8-upper', 'all')
+        assert started.wait(5)
+        analysis_result = pool.submit(repair.repair_preview, service, 'bnu24-math-g8-upper', 'analysis')
+        try:
+            assert waiting.wait(5)
+        finally:
+            release.set()
+        if outcome == 'failure':
+            for result in (all_result, analysis_result):
+                with pytest.raises(ValueError, match='TEST-preview-failed'):
+                    result.result(timeout=5)
+        else:
+            assert all_result.result(timeout=5)['question_count'] == 2
+            assert analysis_result.result(timeout=5)['question_count'] == 1
+    assert calls == ['all']
+    assert not repair._REPAIR_PREVIEW_FLIGHTS._flights
+    assert not repair._REPAIR_PREVIEW_FLIGHTS._entries
+    if outcome != 'success':
+        assert not any(key[0] == 'repair_preview' for key in read_module._READ_RESULT_CACHE)
+    repair.repair_preview(service, 'bnu24-math-g8-upper', 'analysis')
+    assert len(calls) == (1 if outcome == 'success' else 2)
 
 
 @pytest.mark.parametrize('analysis_fails', [False, True])

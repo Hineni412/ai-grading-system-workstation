@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ChevronDown } from '@lucide/vue'
 import { computed, nextTick, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { knowledgeLeafLabel, questionTypeWithSubtype, type QuestionBankListItem } from '../../api/question-bank'
@@ -53,7 +54,7 @@ watch(expanded, async (value, wasExpanded) => {
       <span v-if="!paperMode" class="qb-inline-card__source">{{ question.paper_title || '未命名试卷' }}</span>
       <span v-if="badgeLabel" class="qb-badge-label">{{ badgeLabel }}</span>
       <label v-if="!expanded" class="qb-inline-card__select"><input type="checkbox" :aria-label="`选择第 ${question.question_number || question.id} 题`" :checked="bank.selectedQuestionIds.includes(question.id)" :disabled="bank.selectionIsFull && !bank.selectedQuestionIds.includes(question.id)" @change="bank.toggleQuestionSelection(question.id, ($event.target as HTMLInputElement).checked)">选入</label>
-      <button v-if="!expanded" type="button" class="qb-inline-card__chevron" aria-label="展开题目详情" @click="toggle">▾</button>
+      <button v-if="!expanded" type="button" class="qb-inline-card__chevron" aria-label="展开题目详情" @click="toggle"><ChevronDown class="qb-caret" aria-hidden="true" /></button>
       <div v-if="expanded" class="qb-inline-card__heading-actions">
       <template v-if="expanded">
         <AppButton variant="secondary" :disabled="assembly.saveState === 'saving'" @click="basket">{{ inBasket ? '已在试卷篮' : '加入试卷篮' }}</AppButton>

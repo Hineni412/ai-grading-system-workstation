@@ -549,3 +549,75 @@ def test_published_training_retargets_current_type_from_frozen_facts(tmp_path, m
         exclude_evidence_ids=frozenset(), allowed_student_ids=None)
     assert rejected == {}
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("candidate_order,changed,selected_kind,expected_alias", [
+    (("current", "legacy_type"), False, "current", ""),
+    (("legacy_type", "current"), False, "legacy_type", "解答题（计算）"),
+    (("stale", "legacy_type", "current"), False, "legacy_type", "解答题（计算）"),
+    (("legacy_format", "current"), False, "legacy_format", ""),
+    (("current", "legacy_type"), True, "current", ""),
+])
+def test_profile_source_checks_keep_candidate_order_and_complete_persisted_hashes(
+    tmp_path, monkeypatch, candidate_order, changed, selected_kind, expected_alias,
+):
+    from dataclasses import replace
+    from question_bank.database.schema import connect, initialize_database
+    from question_bank.solution_evidence import part_assessments
+    from question_bank.training_criteria import analysis
+    from tests.training.test_combined_question_analysis import _question
+
+    path = tmp_path / "TEST-profile-source.db"
+    initialize_database(path)
+    question = replace(_question(1, question_type="解答题"), taxonomy_contract={})
+    hashes = part_assessments._input_source_hashes(question)
+    fingerprints = {
+        "current": hashes.current,
+        "legacy_type": next(value for kind, value in hashes.legacy if kind == "解答题（计算）"),
+        "legacy_format": next(value for value in hashes.compatible if value != hashes.current),
+        "stale": "0" * 64,
+    }
+    versions = {kind: str(index + 1) * 64 for index, kind in enumerate(candidate_order)}
+    evidence = json.dumps({"parts": [{"part_id": "TEST-part", "evidence_points": []}]})
+    with connect(path) as conn:
+        conn.execute(
+            "INSERT INTO questions(id,question_number,question_type,question_text,answer_text) VALUES(1,'1','解答题',?,?)",
+            (question.tagging_context.question_text, question.tagging_context.answer_text),
+        )
+        for kind in reversed(candidate_order):
+            conn.execute(
+                """INSERT INTO question_solution_evidence_versions
+                   (evidence_version_id,question_id,source_content_hash,schema_version,content_hash,
+                    evidence_json,status,source_kind,source_reference,created_by,created_at)
+                   VALUES (?,1,?,'question-solution-evidence-v2',?,?,'proposed','backfill',?,'test','2026-01-01')""",
+                (versions[kind], fingerprints[kind], versions[kind], evidence, kind),
+            )
+        _insert_feature_rows(conn, 1, [("TEST-part", 4)], fingerprint=hashes.current)
+    if changed:
+        question = replace(question, tagging_context=replace(question.tagging_context, answer_text="TEST-changed-answer"))
+    monkeypatch.setattr(part_assessments, "current_inputs", lambda *_args, **_kwargs: {1: question})
+    original = part_assessments._compute_input_source_hashes
+    bundles = []
+    def compute(value, input_key=""):
+        bundles.append(input_key)
+        return original(value, input_key)
+    monkeypatch.setattr(part_assessments, "_compute_input_source_hashes", compute)
+    with analysis.source_content_hash_reuse():
+        direct = part_assessments.load_profiles(path, [1], question_inputs={1: question})[1]
+        if not changed and candidate_order[0] == "current":
+            assert not bundles
+        else:
+            assert len(bundles) == 1
+        persisted = {}
+        retained = part_assessments.load_profiles(path, [1], source_hashes=persisted)[1]
+        assert direct == retained
+        assert persisted[1] == original(question, persisted[1].input_key)
+        assert persisted[1].legacy and persisted[1].compatible
+        assert len(persisted[1].input_key) == 64
+        assert direct["evidence_version_id"] == versions[selected_kind]
+        assert direct["source_type_alias"] == expected_alias
+        assert direct["available"] is (not changed)
+        assert direct["reason"] == ("part_assessment_source_changed" if changed else None)
+        assert direct["parts"][0]["difficulty"] == (None if changed else 4)
+        assert direct["current_source_content_hash"] == question.source_content_hash
+        assert part_assessments.load_profiles(path, [1], source_hashes=persisted)[1] == direct

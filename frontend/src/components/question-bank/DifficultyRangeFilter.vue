@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ChevronDown } from '@lucide/vue'
 import { computed, defineComponent, h, ref, useId } from 'vue'
 
 const props = withDefaults(defineProps<{
@@ -35,7 +36,7 @@ const MaybePopover = defineComponent({
       }, [
         h('summary', [
           h('span', { class: 'qb-difficulty-summary' }, popoverProps.summary),
-          h('span', { class: 'qb-caret' }, '⌄'),
+          h(ChevronDown, { class: 'qb-caret', 'aria-hidden': true }),
         ]),
         h('div', [
           slots.picks?.(),

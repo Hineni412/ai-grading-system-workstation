@@ -5,7 +5,7 @@ import { createMemoryHistory } from 'vue-router'
 
 import { ApiError } from '../api/errors'
 import type { JobResponse } from '../api/jobs'
-import { questionBankApi, type ChapterExamProfile as ChapterExamProfileData, type QuestionBankPaper } from '../api/question-bank'
+import { questionBankApi, type ChapterExamProfile as ChapterExamProfileData, type QuestionBankPaper, type QuestionRepairPreview } from '../api/question-bank'
 import { trainingApi } from '../api/training'
 import QuestionBasketDrawer from '../components/question-bank/QuestionBasketDrawer.vue'
 import { useAssemblyStore } from '../stores/assembly'
@@ -89,6 +89,33 @@ const paper: QuestionBankPaper = {
 }
 
 const mounted: Array<ReturnType<typeof createApp>> = []
+
+function prepareInitialQuestionBank() {
+  const host = document.createElement('div'); document.body.append(host)
+  const pinia = createPinia()
+  const router = createAppRouter(createMemoryHistory())
+  const bank = useQuestionBankStore(pinia)
+  const scope = useCurriculumScopeStore(pinia)
+  scope.selectedVolumeId = 'bnu24-math-g8-upper'
+  vi.spyOn(scope, 'initialize').mockResolvedValue()
+  vi.spyOn(bank, 'loadPapers').mockResolvedValue()
+  vi.spyOn(useJobStore(pinia), 'initialize').mockResolvedValue()
+  vi.spyOn(useAssemblyStore(pinia), 'load').mockResolvedValue()
+  const index: Awaited<ReturnType<typeof questionBankApi.skillIndex>> = {
+    curriculum_volume_id: scope.selectedVolumeId, graph_release_id: null, model_calls: 0,
+    question_count: 1, unlinked: { no_usable_evidence: 0, no_skill_link: 0 }, chapters: [],
+  }
+  const profile: ChapterExamProfileData = {
+    curriculum_volume_id: scope.selectedVolumeId, graph_release_id: null, model_calls: 0,
+    counted_question_count: 1, stages: [], merged_groups: [], chapters: [],
+  }
+  const preview = vi.spyOn(questionBankApi, 'repairPreview').mockResolvedValue({
+    curriculum_volume_id: scope.selectedVolumeId, kind: 'all', fingerprint: 'a'.repeat(64),
+    scanned_count: 1, question_count: 0, repairable_count: 0, model_calls: 0, items: [],
+    counts: { tags: 0, evidence: 0, criteria: 0, skills: 0, types: 0, knowledge_points: 0 },
+  })
+  return { host, pinia, router, bank, index, profile, preview }
+}
 
 async function mountView() {
   const host = document.createElement('div')
@@ -184,6 +211,50 @@ describe('question bank workspace', () => {
     expect(load).toHaveBeenCalledTimes(1)
   })
 
+  it.each(['exam', 'skill'])('waits for the %s first-screen reads before background repair prefetch', async tab => {
+    const { host, pinia, router, bank, index, profile, preview } = prepareInitialQuestionBank()
+    let resolveIndex: (value: typeof index) => void = () => {}
+    let resolveProfile: (value: typeof profile) => void = () => {}
+    const indexRead = vi.spyOn(questionBankApi, 'skillIndex').mockImplementation(() =>
+      new Promise(resolve => { resolveIndex = resolve }))
+    const profileRead = vi.spyOn(questionBankApi, 'chapterExamProfile').mockImplementation(() =>
+      new Promise(resolve => { resolveProfile = resolve }))
+    await router.push(`/question-bank?tab=${tab}`)
+    const app = createApp(QuestionBankView)
+    app.use(pinia).use(router).mount(host); mounted.push(app)
+    await nextTick()
+    expect(indexRead).toHaveBeenCalledTimes(1)
+    expect(profileRead).toHaveBeenCalledTimes(tab === 'exam' ? 1 : 0)
+    expect(preview).not.toHaveBeenCalled()
+    resolveIndex(index)
+    await vi.waitFor(() => expect(bank.skillIndexes.has(index.curriculum_volume_id)).toBe(true))
+    await nextTick()
+    expect(preview).toHaveBeenCalledTimes(tab === 'exam' ? 0 : 1)
+    resolveProfile(profile)
+    await vi.waitFor(() => expect(preview).toHaveBeenCalledTimes(1))
+    indexRead.mockResolvedValueOnce({ ...index, question_count: 2 })
+    await bank.loadSkillIndex(index.curriculum_volume_id)
+    await nextTick()
+    expect(preview).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['todo', 'dialog'])('allows an explicit %s read when first-screen statistics fail', async entry => {
+    const { host, pinia, router, preview } = prepareInitialQuestionBank()
+    vi.spyOn(questionBankApi, 'skillIndex').mockRejectedValue(new Error('TEST-索引读取失败'))
+    vi.spyOn(questionBankApi, 'chapterExamProfile').mockRejectedValue(new Error('TEST-考情读取失败'))
+    vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, total_pages: 0 })
+    await router.push(`/question-bank?tab=${entry === 'todo' ? 'todo' : 'exam'}`)
+    const app = createApp(QuestionBankView)
+    app.use(pinia).use(router).mount(host); mounted.push(app)
+    await nextTick()
+    if (entry === 'dialog') {
+      const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('AI 补齐'))
+      button?.click()
+    }
+    await vi.waitFor(() => expect(preview).toHaveBeenCalledTimes(1))
+    expect(document.body.textContent).not.toContain('缺失清单暂时无法读取')
+  })
+
   it('defaults to the chapter exam tab and maps legacy query params to their views', async () => {
     const host = document.createElement('div'); document.body.append(host)
     const pinia = createPinia()
@@ -247,6 +318,45 @@ describe('question bank workspace', () => {
     await vi.waitFor(() => expect(track).toHaveBeenCalled())
     expect(submit).toHaveBeenLastCalledWith(preview, [17], firstToken)
     expect(submit).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows the analysis subset immediately and keeps confirmation disabled when revalidation fails', async () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const pinia = createPinia()
+    const bank = useQuestionBankStore(pinia)
+    const all: QuestionRepairPreview = {
+      curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'all', fingerprint: 'a'.repeat(64),
+      scanned_count: 20, question_count: 4, repairable_count: 3, model_calls: 0,
+      counts: { tags: 1, evidence: 1, criteria: 0, skills: 2, types: 1, knowledge_points: 0 },
+      items: [
+        { id: 17, question_number: '1', paper_title: 'TEST-缺分析', missing: ['tags', 'skills'], blocked_reason: '', revision: 'b'.repeat(64) },
+        { id: 18, question_number: '2', paper_title: 'TEST-原题不可读', missing: ['evidence'], blocked_reason: '题目内容或图片无法读取', revision: 'c'.repeat(64) },
+        { id: 19, question_number: '3', paper_title: 'TEST-只缺题型', missing: ['types'], blocked_reason: '', revision: 'd'.repeat(64) },
+        { id: 20, question_number: '4', paper_title: 'TEST-只缺技能', missing: ['skills'], blocked_reason: '', revision: 'e'.repeat(64) },
+      ],
+    }
+    bank.repairPreviews.set(`${all.curriculum_volume_id}:all`, all)
+    let rejectRead: (error: Error) => void = () => {}
+    const load = vi.spyOn(questionBankApi, 'repairPreview').mockImplementation(() =>
+      new Promise<QuestionRepairPreview>((_resolve, reject) => { rejectRead = reject }))
+    const submit = vi.spyOn(questionBankApi, 'submitRepair')
+    const app = createApp(QuestionRepairDialog, { open: true, volumeId: all.curriculum_volume_id, volumeLabel: '八年级上册', kind: 'analysis' })
+    app.use(pinia).mount(host); mounted.push(app)
+    await nextTick()
+    expect(document.body.textContent).toContain('发现 2 道缺失题；本次可处理 1 道。')
+    expect(document.body.textContent).toContain('题型 · 0 题缺失')
+    expect(document.body.textContent).toContain('技能关联 · 1 题缺失')
+    expect(document.body.textContent).not.toContain('TEST-只缺题型')
+    expect(document.body.textContent).not.toContain('TEST-只缺技能')
+    const button = [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === '确认补齐 1 题')
+    expect(button?.disabled).toBe(true)
+    expect(load).toHaveBeenCalledWith(all.curriculum_volume_id, 'analysis', expect.anything())
+    rejectRead(new Error('TEST-复核失败'))
+    await vi.waitFor(() => expect(document.body.textContent).toContain('无法核对最新状态，请重试。'))
+    expect(button?.disabled).toBe(true)
+    button?.click()
+    expect(submit).not.toHaveBeenCalled()
+    expect(bank.repairPreviews.has(`${all.curriculum_volume_id}:analysis`)).toBe(false)
   })
 
   it.each(['resolve', 'reject'] as const)('keeps the reopened repair preview when a cancelled request later %s', async outcome => {
@@ -842,6 +952,46 @@ describe('question bank workspace', () => {
     return { host, pinia, router, query }
   }
 
+  it('restores the chapter profile before a refresh finishes and keeps it after failure', async () => {
+    const { host, pinia, router, query } = mountExamProfile('?tab=exam&section=sec_TEST_21')
+    await router.push(`/question-bank${query}`)
+    const bank = useQuestionBankStore(pinia)
+    bank.chapterExamProfiles.set('bnu24-math-g8-upper', examProfile())
+    vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100, total_pages: 0 })
+    let rejectRead: (error: Error) => void = () => {}
+    vi.mocked(questionBankApi.chapterExamProfile).mockImplementation(() =>
+      new Promise<ChapterExamProfileData>((_resolve, reject) => { rejectRead = reject }))
+    const app = createApp(ChapterExamProfile)
+    app.use(pinia).use(router).mount(host); mounted.push(app)
+    await nextTick()
+    expect(host.textContent).toContain('第二章 实数')
+    expect(host.textContent).not.toContain('正在统计本册期中与期末卷')
+    rejectRead(new Error('TEST-刷新失败'))
+    await vi.waitFor(() => expect(host.querySelector('.chapter-exam')).not.toBeNull())
+    expect(host.textContent).toContain('第二章 实数')
+  })
+
+  it('does not replace the new workspace list when an old chapter prefetch finishes', async () => {
+    const { host, pinia, router, query } = mountExamProfile('?tab=exam&section=sec_TEST_21')
+    await router.push(`/question-bank${query}`)
+    const bank = useQuestionBankStore(pinia)
+    let resolvePrefetch: (value: Awaited<ReturnType<typeof questionBankApi.listQuestions>>) => void = () => {}
+    const list = vi.spyOn(questionBankApi, 'listQuestions').mockImplementation(() =>
+      new Promise(resolve => { resolvePrefetch = resolve }))
+    const app = createApp(ChapterExamProfile)
+    app.use(pinia).use(router).mount(host)
+    await vi.waitFor(() => expect(list).toHaveBeenCalled())
+    app.unmount()
+    const current = { ...item, id: 501, question_text: 'TEST-当前筛选结果' }
+    await bank.loadQuestions({ keyword: '当前筛选' }, async () => ({
+      items: [current], total: 1, page: 1, page_size: 20, total_pages: 1,
+    }))
+    resolvePrefetch({ items: [{ ...item, id: 1 }], total: 1, page: 1, page_size: 100, total_pages: 1 })
+    await nextTick(); await nextTick()
+    expect(bank.appliedFilters.keyword).toBe('当前筛选')
+    expect(bank.questions.map(question => question.id)).toEqual([501])
+  })
+
   it('renders the chapter exam profile as one scroll and loads count cells into the shared ledger', async () => {
     const { host, pinia, router, query } = mountExamProfile('?tab=exam&section=sec_TEST_21')
     await router.push(`/question-bank${query}`)
@@ -1058,68 +1208,79 @@ describe('question bank workspace', () => {
   })
 
 
-  it('shows actionable todo groups from existing read filters', async () => {
-    const host = document.createElement('div'); document.body.append(host)
-    const pinia = createPinia(); useCurriculumScopeStore(pinia).selectedVolumeId = 'bnu24-math-g8-upper'
-    const load = vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [item], total: 1, page: 1, page_size: 20, total_pages: 1 })
-    const open = vi.fn()
-    const app = createApp({ render: () => h(QuestionBankTodo, { index: null, pendingCount: 2, onQuestion: open }) })
-    app.use(pinia).mount(host); mounted.push(app)
-    await vi.waitFor(() => expect(host.querySelector('.qb-todo-group article')?.textContent).toContain('第1题匿名期末试卷'))
-    expect(load).toHaveBeenCalledWith(expect.objectContaining({ criteriaNeedsReview: true }), expect.anything())
-    expect(load).toHaveBeenCalledWith(expect.objectContaining({ missingType: true }), expect.anything())
-    expect(load).toHaveBeenCalledWith(expect.objectContaining({ missingKnowledge: true }), expect.anything())
-    expect(load).not.toHaveBeenCalledWith(expect.objectContaining({ analysisStatus: 'incomplete' }), expect.anything())
-    const action = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '去处理 →')!
-    action.click(); expect(open).toHaveBeenCalledWith(item)
-  })
+  const todoPreview = {
+    curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'all' as const,
+    fingerprint: 'a'.repeat(64), scanned_count: 4, question_count: 4, repairable_count: 4, model_calls: 0,
+    counts: { types: 1, knowledge_points: 1, tags: 1, evidence: 1, criteria: 1, skills: 2 },
+    items: [
+      { id: 21, question_number: '3', paper_title: 'TEST-缺标签卷', missing: ['tags' as const, 'evidence' as const], blocked_reason: '', revision: 'b'.repeat(64) },
+      { id: 22, question_number: '4', paper_title: 'TEST-缺判定点卷', missing: ['criteria' as const, 'skills' as const], blocked_reason: '', revision: 'c'.repeat(64) },
+      { id: 23, question_number: '5', paper_title: 'TEST-只缺技能卷', missing: ['skills' as const], blocked_reason: '', revision: 'd'.repeat(64) },
+      { id: 24, question_number: '6', paper_title: 'TEST-缺题型与知识点卷', missing: ['types' as const, 'knowledge_points' as const], blocked_reason: '', revision: 'e'.repeat(64) },
+    ],
+  }
 
-  it('drives the analysis todo card from the same cached preview as the AI 补齐 dialog', async () => {
+  it('shows each repair question once and filters locally without reloading full question lists', async () => {
     const host = document.createElement('div'); document.body.append(host)
     const pinia = createPinia(); useCurriculumScopeStore(pinia).selectedVolumeId = 'bnu24-math-g8-upper'
-    vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, total_pages: 0 })
-    const preview = { curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'all' as const,
-      fingerprint: 'a'.repeat(64), scanned_count: 3, question_count: 3, repairable_count: 3, model_calls: 0,
-      counts: { types: 0, knowledge_points: 0, tags: 1, evidence: 1, criteria: 1, skills: 2 }, items: [
-        { id: 21, question_number: '3', paper_title: 'TEST-缺标签卷', missing: ['tags' as const, 'evidence' as const], blocked_reason: '', revision: 'b'.repeat(64) },
-        { id: 22, question_number: '4', paper_title: 'TEST-缺判定点卷', missing: ['criteria' as const, 'skills' as const], blocked_reason: '', revision: 'c'.repeat(64) },
-        { id: 23, question_number: '5', paper_title: 'TEST-只缺技能卷', missing: ['skills' as const], blocked_reason: '', revision: 'd'.repeat(64) },
-      ] }
-    vi.spyOn(questionBankApi, 'repairPreview').mockResolvedValue(preview)
-    const openQuestion = vi.fn()
-    const repair = vi.fn()
-    const app = createApp({ render: () => h(QuestionBankTodo, { index: null, pendingCount: 0, onOpenQuestion: openQuestion, onRepair: repair }) })
+    const list = vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [item], total: 1, page: 1, page_size: 20, total_pages: 1 })
+    const preview = vi.spyOn(questionBankApi, 'repairPreview').mockResolvedValue(todoPreview)
+    const standard = vi.spyOn(questionBankApi, 'standardSummary')
+    const candidates = vi.spyOn(questionBankApi, 'skillCandidateSummary')
+    const openQuestion = vi.fn(), repair = vi.fn()
+    const app = createApp({ render: () => h(QuestionBankTodo, { index: null, pendingCount: 2, onOpenQuestion: openQuestion, onRepair: repair }) })
     app.use(pinia).mount(host); mounted.push(app)
-    const analysisCard = () => [...host.querySelectorAll<HTMLElement>('.qb-todo-group')].find(el => el.querySelector('h2')?.textContent === '分析未完成')!
-    await vi.waitFor(() => expect(analysisCard().querySelector('.qb-todo-count')?.textContent).toBe('2'))
-    const articles = [...analysisCard().querySelectorAll('article')].map(el => el.textContent)
+    await vi.waitFor(() => expect(host.querySelectorAll('.qb-todo-questions article')).toHaveLength(4))
+    expect(host.querySelector('.qb-todo-overview h2')?.textContent).toBe('待补齐 4 题')
+    expect(list).toHaveBeenCalledTimes(1)
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ criteriaNeedsReview: true }), expect.anything())
+    expect(standard).not.toHaveBeenCalled(); expect(candidates).not.toHaveBeenCalled()
+    const filterButton = [...host.querySelectorAll<HTMLButtonElement>('.qb-todo-filters button')].find(button => button.textContent?.includes('分析未完成'))!
+    expect(filterButton.textContent).toContain('2 题')
+    filterButton.click(); await nextTick()
+    const articles = host.querySelectorAll('.qb-todo-questions article')
     expect(articles).toHaveLength(2)
-    expect(articles[0]).toContain('第3题')
-    expect(articles[0]).toContain('TEST-缺标签卷')
-    expect(articles[0]).toContain('缺：题目标签、解题证据')
-    expect(articles[1]).toContain('缺：判定点')
-    expect(articles[1]).not.toContain('技能关联')
-    const action = [...analysisCard().querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '去处理 →')!
-    action.click(); expect(openQuestion).toHaveBeenCalledWith({ questionId: 21, paperId: null })
-    const repairButton = [...analysisCard().querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'AI 补齐分析')!
-    repairButton.click(); expect(repair).toHaveBeenCalledWith('analysis')
+    expect(articles[0]?.textContent).toContain('缺题目标签')
+    expect(articles[1]?.textContent).toContain('缺判定点')
+    expect(articles[1]?.textContent).toContain('缺技能关联')
+    articles[0]?.querySelector<HTMLButtonElement>('button')?.click()
+    expect(openQuestion).toHaveBeenCalledWith({ questionId: 21, paperId: null })
+    host.querySelector<HTMLButtonElement>('.qb-todo-filter-action button')?.click()
+    expect(repair).toHaveBeenCalledWith('analysis')
+    expect(preview).toHaveBeenCalledTimes(1); expect(list).toHaveBeenCalledTimes(1)
   })
 
-  it('shows the analysis todo card empty state when no question misses analysis parts', async () => {
+  it('keeps the repair list usable when the independent review list fails', async () => {
     const host = document.createElement('div'); document.body.append(host)
     const pinia = createPinia(); useCurriculumScopeStore(pinia).selectedVolumeId = 'bnu24-math-g8-upper'
-    vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, total_pages: 0 })
-    vi.spyOn(questionBankApi, 'repairPreview').mockResolvedValue({ curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'all' as const,
-      fingerprint: 'a'.repeat(64), scanned_count: 1, question_count: 1, repairable_count: 1, model_calls: 0,
-      counts: { types: 0, knowledge_points: 0, tags: 0, evidence: 0, criteria: 0, skills: 1 }, items: [
-        { id: 23, question_number: '5', paper_title: 'TEST-只缺技能卷', missing: ['skills' as const], blocked_reason: '', revision: 'd'.repeat(64) },
-      ] })
+    vi.spyOn(questionBankApi, 'listQuestions').mockRejectedValue(new Error('review timeout'))
+    vi.spyOn(questionBankApi, 'repairPreview').mockResolvedValue(todoPreview)
     const app = createApp({ render: () => h(QuestionBankTodo, { index: null, pendingCount: 0 }) })
     app.use(pinia).mount(host); mounted.push(app)
-    const analysisCard = () => [...host.querySelectorAll<HTMLElement>('.qb-todo-group')].find(el => el.querySelector('h2')?.textContent === '分析未完成')!
-    await vi.waitFor(() => expect(analysisCard().querySelector('.qb-todo-count')?.textContent).toBe('0'))
-    expect(analysisCard().textContent).toContain('当前学期没有这类待处理题目。')
-    expect(analysisCard().querySelectorAll('article')).toHaveLength(0)
+    await vi.waitFor(() => expect(host.querySelectorAll('.qb-todo-questions article')).toHaveLength(4))
+    expect(host.querySelector('.qb-todo-overview h2')?.textContent).toBe('待补齐 4 题')
+    expect(host.querySelector('.qb-todo-questions')?.textContent).not.toContain('读取失败')
+    expect(host.querySelector('.qb-todo-fold')?.textContent).toContain('人工审核清单读取失败')
+    const button = [...host.querySelectorAll<HTMLButtonElement>('.qb-todo-filters button')].find(entry => entry.textContent?.includes('缺知识点'))!
+    button.click(); await nextTick()
+    expect(host.querySelectorAll('.qb-todo-questions article')).toHaveLength(1)
+    expect(host.querySelector('.qb-todo-questions article')?.textContent).toContain('TEST-缺题型与知识点卷')
+  })
+
+  it('does not present a failed repair preview as zero pending questions and allows retry', async () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const pinia = createPinia(); useCurriculumScopeStore(pinia).selectedVolumeId = 'bnu24-math-g8-upper'
+    vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, total_pages: 0 })
+    const preview = vi.spyOn(questionBankApi, 'repairPreview').mockRejectedValueOnce(new Error('timeout')).mockResolvedValue({ ...todoPreview, question_count: 0, repairable_count: 0, items: [], counts: { types: 0, knowledge_points: 0, tags: 0, evidence: 0, criteria: 0, skills: 0 } })
+    const app = createApp({ render: () => h(QuestionBankTodo, { index: null, pendingCount: 0 }) })
+    app.use(pinia).mount(host); mounted.push(app)
+    await vi.waitFor(() => expect(host.querySelector('.qb-todo-questions')?.textContent).toContain('待补齐题目暂时无法读取'))
+    expect(host.querySelector('.qb-todo-overview h2')?.textContent).toBe('待补齐 — 题')
+    const retry = [...host.querySelectorAll<HTMLButtonElement>('.qb-todo-questions button')].find(button => button.textContent === '重试')!
+    retry.click()
+    await vi.waitFor(() => expect(host.querySelector('.qb-todo-overview h2')?.textContent).toBe('待补齐 0 题'))
+    expect(host.querySelector('.qb-todo-questions')?.textContent).toContain('当前学期没有需要补齐的题目。')
+    expect(preview).toHaveBeenCalledTimes(2)
   })
 
   it('uses the shared basket draft and preserves it when a removal is rejected', async () => {

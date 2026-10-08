@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ChevronDown } from '@lucide/vue'
 
 import {
   questionBankApi,
@@ -51,6 +52,9 @@ let urlTimer: ReturnType<typeof setTimeout> | undefined
 const chapterItems = shallowRef(new Map<number, QuestionBankListItem>())
 let cacheKey = ''
 let cachePromise: Promise<void> | null = null
+let typicalGeneration = 0
+let questionReadVersion: number | undefined
+let mounted = true
 
 const TIER_LABELS = { basic: '基础入口', mid: '常见变式', hard: '提高变化' } as const
 
@@ -210,7 +214,7 @@ async function loadProfile(): Promise<void> {
   loadState.value = 'loading'
   errorMessage.value = ''
   try {
-    const value = await questionBankApi.chapterExamProfile(scope.selectedVolumeId, current.signal)
+    const value = await bank.loadChapterExamProfile(scope.selectedVolumeId, current.signal)
     if (!current.signal.aborted) {
       profile.value = value
       loadState.value = 'ready'
@@ -223,8 +227,25 @@ async function loadProfile(): Promise<void> {
     }
   }
 }
-watch(() => scope.selectedVolumeId, () => void loadProfile(), { immediate: true })
+watch(() => scope.selectedVolumeId, volumeId => {
+  typicalGeneration += 1
+  profile.value = volumeId ? bank.chapterExamProfiles.get(volumeId) ?? null : null
+  chapterItems.value = new Map()
+  cacheKey = ''
+  cachePromise = null
+  if (profile.value) restoreLast()
+  void loadProfile()
+}, { immediate: true })
+watch(() => bank.readRevision, () => {
+  typicalGeneration += 1
+  cacheKey = ''
+  cachePromise = null
+  void loadProfile()
+})
 onBeforeUnmount(() => {
+  mounted = false
+  typicalGeneration += 1
+  if (questionReadVersion !== undefined) bank.cancelQuestionRead(questionReadVersion)
   controller?.abort()
   observer?.disconnect()
   clearTimeout(urlTimer)
@@ -255,6 +276,7 @@ async function fetchAllPages(
 }
 
 function clearLedger(): void {
+  if (questionReadVersion !== undefined) bank.cancelQuestionRead(questionReadVersion)
   bank.questions = []
   bank.total = 0
   bank.totalPages = 1
@@ -262,15 +284,16 @@ function clearLedger(): void {
 }
 
 function ensureChapterItems(chapter: ChapterExamChapter): Promise<void> {
-  if (cacheKey === chapter.id && cachePromise) return cachePromise
-  cacheKey = chapter.id
   const ids = chapterPickIds(chapter).slice(0, 500)
+  const key = `${scope.selectedVolumeId}:${chapter.id}:${ids.join(',')}`
+  if (cacheKey === key && cachePromise) return cachePromise
+  cacheKey = key
   chapterItems.value = new Map()
   cachePromise = (async () => {
     if (!ids.length) return
     try {
       const result = await fetchAllPages(baseFilters(ids))
-      if (cacheKey === chapter.id) {
+      if (mounted && cacheKey === key) {
         chapterItems.value = new Map(result.items.map(item => [item.id, item]))
       }
     } catch { /* 缓存失败时明细加载回退到实时请求 */ }
@@ -279,6 +302,8 @@ function ensureChapterItems(chapter: ChapterExamChapter): Promise<void> {
 }
 
 async function applyTypical(): Promise<void> {
+  if (!mounted || (route.query.tab && route.query.tab !== 'exam')) return
+  const generation = ++typicalGeneration
   const ids = currentTypicalIds.value
   if (!ids.length) {
     clearLedger()
@@ -287,8 +312,9 @@ async function applyTypical(): Promise<void> {
   }
   const chapter = currentChapter.value
   if (chapter) await ensureChapterItems(chapter)
+  if (!mounted || generation !== typicalGeneration || ledgerKind.value !== 'default') return
   const cached = chapterItems.value
-  await bank.loadQuestions(baseFilters(ids), async (filters, signal) => {
+  const reading = bank.loadQuestions(baseFilters(ids), async (filters, signal) => {
     const items = ids
       .map(id => cached.get(id))
       .filter((item): item is QuestionBankListItem => !!item)
@@ -303,6 +329,8 @@ async function applyTypical(): Promise<void> {
     }
     return fetchAllPages(filters, signal)
   })
+  questionReadVersion = bank.questionReadVersion
+  await reading
   await nextTick()
   if (!bank.selectedQuestionId) {
     layout.value?.querySelector('.qb-question-list')?.scrollTo?.({ top: 0 })
@@ -311,10 +339,12 @@ async function applyTypical(): Promise<void> {
 
 function openCell(title: string, ids: number[]): void {
   if (!ids.length) return
+  typicalGeneration += 1
   ledgerKind.value = 'cell'
   cellHeading.value = `${title} ${ids.length} 题`
   void bank.selectQuestion(null)
   void bank.loadQuestions(baseFilters(ids.slice(0, 500)), fetchAllPages)
+  questionReadVersion = bank.questionReadVersion
 }
 
 function backToDefault(): void {
@@ -386,7 +416,11 @@ function setupSpy(): void {
 }
 
 watch(currentChapter, (chapter, previous) => {
-  if (!chapter || chapter.id === previous?.id) return
+  if (!chapter || chapter === previous) return
+  if (chapter.id === previous?.id) {
+    if (ledgerKind.value === 'default') void applyTypical()
+    return
+  }
   spyVisible.clear()
   const raw = queryText('section')
   spySection.value = raw && chapterSections.value.some(section => section.id === raw) ? raw : null
@@ -400,7 +434,7 @@ watch(currentChapter, (chapter, previous) => {
     void applyTypical()
   })
   persistLast()
-})
+}, { immediate: true })
 
 watch(() => route.query.section, (raw) => {
   const id = typeof raw === 'string' && raw ? raw : null
@@ -484,7 +518,7 @@ const narrowRail = computed(() => Boolean(bank.selectedQuestionId) && !railOpen.
         <details ref="chapterSwitcher" class="qb-label-popover qb-section-switcher">
           <summary>
             <span class="qb-switcher-current"><small>教材章节</small><b>{{ currentChapter?.label ?? '章节考情' }}</b></span>
-            <span class="qb-switcher-caret">▾</span>
+            <ChevronDown class="qb-switcher-caret" aria-hidden="true" />
           </summary>
           <div>
             <div class="qb-chapter-tree">

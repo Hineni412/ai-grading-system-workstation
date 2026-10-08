@@ -3,6 +3,8 @@ import { defineStore } from 'pinia'
 
 import {
   questionBankApi,
+  type ChapterExamProfile,
+  type QuestionSkillIndex,
   type QuestionBankDetail,
   type QuestionBankFilters,
   type QuestionBankListItem,
@@ -72,11 +74,42 @@ export interface QuestionBankPaperWriteApi {
 }
 
 const MAX_BATCH_SELECTION = 500
+const MAX_LIST_SNAPSHOTS = 12
+
+function waitForRead<T>(request: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return request
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'))
+      return
+    }
+    const onAbort = () => reject(new DOMException('Aborted', 'AbortError'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    request.then(
+      value => { signal.removeEventListener('abort', onAbort); resolve(value) },
+      error => { signal.removeEventListener('abort', onAbort); reject(error) },
+    )
+  })
+}
+
+function listSnapshotKey(filters: QuestionBankFilters): string {
+  return JSON.stringify(Object.entries(filters)
+    .filter(([, value]) => value !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => [key, Array.isArray(value) ? [...value].sort() : value]))
+}
 
 function copyFilters(filters: QuestionBankFilters): QuestionBankFilters {
   return {
     ...filters,
     questionTypes: [...(filters.questionTypes ?? [])],
+    questionIds: [...(filters.questionIds ?? [])],
+    skillKeys: [...(filters.skillKeys ?? [])],
+    typeKeys: [...(filters.typeKeys ?? [])],
+    curriculumVolumeIds: [...(filters.curriculumVolumeIds ?? [])],
+    curriculumSections: [...(filters.curriculumSections ?? [])],
+    errorTypes: [...(filters.errorTypes ?? [])],
+    errorPatternCategories: [...(filters.errorPatternCategories ?? [])],
     paperIds: [...(filters.paperIds ?? [])],
     years: [...(filters.years ?? [])],
     examTypes: [...(filters.examTypes ?? [])],
@@ -103,6 +136,57 @@ function copyDetail(value: QuestionBankDetail): QuestionBankDetail {
 }
 
 export const useQuestionBankStore = defineStore('question-bank', () => {
+  const skillIndexes = ref(new Map<string, QuestionSkillIndex>())
+  const chapterExamProfiles = ref(new Map<string, ChapterExamProfile>())
+  const readRevision = ref(0)
+  const skillIndexRequests = new Map<string, Promise<QuestionSkillIndex>>()
+  const chapterExamRequests = new Map<string, Promise<ChapterExamProfile>>()
+  const listSnapshots = new Map<string, QuestionBankListResponse>()
+
+  function invalidateReadSnapshots(): void {
+    readRevision.value += 1
+    skillIndexes.value.clear()
+    chapterExamProfiles.value.clear()
+    skillIndexRequests.clear()
+    chapterExamRequests.clear()
+    listSnapshots.clear()
+    cancelQuestionRead()
+  }
+
+  function loadSkillIndex(volumeId: string, signal?: AbortSignal): Promise<QuestionSkillIndex> {
+    let request = skillIndexRequests.get(volumeId)
+    if (!request) {
+      const revision = readRevision.value
+      const created = questionBankApi.skillIndex(volumeId).then(value => {
+        if (readRevision.value !== revision) throw new DOMException('Aborted', 'AbortError')
+        skillIndexes.value.set(volumeId, value)
+        return value
+      }).finally(() => {
+        if (skillIndexRequests.get(volumeId) === created) skillIndexRequests.delete(volumeId)
+      })
+      skillIndexRequests.set(volumeId, created)
+      request = created
+    }
+    return waitForRead(request, signal)
+  }
+
+  function loadChapterExamProfile(volumeId: string, signal?: AbortSignal): Promise<ChapterExamProfile> {
+    let request = chapterExamRequests.get(volumeId)
+    if (!request) {
+      const revision = readRevision.value
+      const created = questionBankApi.chapterExamProfile(volumeId).then(value => {
+        if (readRevision.value !== revision) throw new DOMException('Aborted', 'AbortError')
+        chapterExamProfiles.value.set(volumeId, value)
+        return value
+      }).finally(() => {
+        if (chapterExamRequests.get(volumeId) === created) chapterExamRequests.delete(volumeId)
+      })
+      chapterExamRequests.set(volumeId, created)
+      request = created
+    }
+    return waitForRead(request, signal)
+  }
+
   const appliedFilters = ref<QuestionBankFilters>({})
   const filterDraft = ref<QuestionBankFilters>({})
   const papers = ref<QuestionBankPaper[]>([])
@@ -117,6 +201,7 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
   const listState = ref<QuestionBankListState>('idle')
   const listError = ref('')
   const listUpdatedAt = ref('')
+  const questionReadVersion = ref(0)
 
   const selectedQuestionIds = ref<number[]>([])
   const selectedQuestionId = ref<number | null>(null)
@@ -157,7 +242,10 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
       // 发起方的中止信号直接传给请求；加入在途请求的中止只结束自己的等待。
       const created = questionBankApi.repairPreview(volumeId, kind, signal)
         .then(value => {
-          if (!signal?.aborted) repairPreviews.value.set(key, value)
+          if (signal?.aborted || repairPreviewRequests.get(key) !== created) {
+            throw new DOMException('Aborted', 'AbortError')
+          }
+          repairPreviews.value.set(key, value)
           return value
         })
         .finally(() => {
@@ -179,32 +267,22 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
       }
       return request
     }
-    if (!signal) return request
-    return new Promise<QuestionRepairPreview>((resolve, reject) => {
-      if (signal.aborted) {
-        reject(new DOMException('Aborted', 'AbortError'))
-        return
-      }
-      const onAbort = () => reject(new DOMException('Aborted', 'AbortError'))
-      signal.addEventListener('abort', onAbort, { once: true })
-      request.then(
-        value => { signal.removeEventListener('abort', onAbort); resolve(value) },
-        error => { signal.removeEventListener('abort', onAbort); reject(error) },
-      )
-    })
+    return waitForRead(request, signal)
   }
 
   function invalidateRepairPreviews(volumeId?: string): void {
-    if (!volumeId) {
-      repairPreviews.value.clear()
-      return
-    }
-    for (const key of [...repairPreviews.value.keys()]) {
-      if (key.startsWith(`${volumeId}:`)) repairPreviews.value.delete(key)
+    const keys = new Set([...repairPreviews.value.keys(), ...repairPreviewRequests.keys()])
+    for (const key of keys) {
+      if (volumeId && !key.startsWith(`${volumeId}:`)) continue
+      repairPreviews.value.delete(key)
+      repairPreviewRequests.delete(key)
+      repairPreviewLoading.value.delete(key)
     }
   }
 
   let listGeneration = 0
+  let listRequestKey: string | null = null
+  let listRequest: Promise<void> | null = null
   let listController: AbortController | null = null
   let detailGeneration = 0
   let detailController: AbortController | null = null
@@ -277,6 +355,7 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
           ...result,
         }
       }
+      invalidateReadSnapshots()
       paperWriteState.value = 'idle'
       paperWriteMessage.value = '试卷资料已经保存。'
       return true
@@ -293,41 +372,83 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     }
   }
 
-  async function loadQuestions(
+  function cancelQuestionRead(expectedVersion?: number): void {
+    if (expectedVersion !== undefined && expectedVersion !== questionReadVersion.value) return
+    questionReadVersion.value += 1
+    listController?.abort()
+    listController = null
+    listRequestKey = null
+    listRequest = null
+    listGeneration += 1
+    if (listState.value === 'loading') {
+      listState.value = questions.value.length ? 'ready' : 'idle'
+    }
+  }
+
+  function loadQuestions(
     filters: QuestionBankFilters = {},
     loader: QuestionBankListLoader = questionBankApi.listQuestions,
   ): Promise<void> {
+    questionReadVersion.value += 1
+    const requested = copyFilters(filters)
+    const key = loader === questionBankApi.listQuestions ? listSnapshotKey(requested) : null
+    if (key && key === listRequestKey && listRequest) return listRequest
     listController?.abort()
     const controller = new AbortController()
     listController = controller
     const generation = ++listGeneration
-    const requested = copyFilters(filters)
+    const revision = readRevision.value
     appliedFilters.value = requested
     listError.value = ''
-    listState.value = 'loading'
-    try {
-      const result = await loader(requested, controller.signal)
-      if (generation !== listGeneration || controller.signal.aborted) return
-      if (
-        result.page !== (requested.page ?? 1)
-        || result.page_size !== (requested.pageSize ?? 20)
-      ) {
-        throw new Error('Question list scope mismatch')
-      }
+
+    function showResult(result: QuestionBankListResponse): void {
       questions.value = result.items
       total.value = result.total
       page.value = result.page
       pageSize.value = result.page_size
       totalPages.value = result.total_pages
-      listUpdatedAt.value = new Date().toISOString()
       listState.value = result.total === 0 ? 'empty' : 'ready'
-    } catch {
-      if (generation !== listGeneration || controller.signal.aborted) return
-      listError.value = safeMessage()
-      listState.value = questions.value.length > 0 ? 'stale-error' : 'error'
-    } finally {
-      if (listController === controller) listController = null
     }
+
+    const cached = key ? listSnapshots.get(key) : undefined
+    if (cached) showResult(structuredClone(cached))
+    else listState.value = 'loading'
+
+    const request = (async () => {
+      try {
+        const result = await loader(requested, controller.signal)
+        if (generation !== listGeneration || controller.signal.aborted) return
+        if (
+          result.page !== (requested.page ?? 1)
+          || result.page_size !== (requested.pageSize ?? 20)
+        ) {
+          throw new Error('Question list scope mismatch')
+        }
+        showResult(result)
+        listUpdatedAt.value = new Date().toISOString()
+        if (key && readRevision.value === revision) {
+          listSnapshots.delete(key)
+          listSnapshots.set(key, structuredClone(toRaw(result)))
+          if (listSnapshots.size > MAX_LIST_SNAPSHOTS) {
+            const oldest = listSnapshots.keys().next().value
+            if (oldest !== undefined) listSnapshots.delete(oldest)
+          }
+        }
+      } catch {
+        if (generation !== listGeneration || controller.signal.aborted) return
+        listError.value = safeMessage()
+        listState.value = questions.value.length > 0 ? 'stale-error' : 'error'
+      }
+    })().finally(() => {
+      if (listController === controller) {
+        listController = null
+        listRequestKey = null
+        listRequest = null
+      }
+    })
+    listRequestKey = key
+    listRequest = request
+    return request
   }
 
   function toggleQuestionSelection(questionId: number, selected?: boolean): boolean {
@@ -403,6 +524,7 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
   }
 
   function applyTagWrite(questionId: number, revision: string, tags: QuestionBankTag[]): void {
+    invalidateReadSnapshots()
     const listItem = questions.value.find(({ id }) => id === questionId)
     if (listItem) {
       listItem.revision = revision
@@ -490,6 +612,7 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
         revision: result.revision,
         tags: result.tags,
       }
+      invalidateReadSnapshots()
       questions.value.unshift(restored)
       total.value += 1
       lastDeleted.value = null
@@ -507,6 +630,7 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
   }
 
   function removeQuestion(questionId: number): void {
+    invalidateReadSnapshots()
     const index = questions.value.findIndex(({ id }) => id === questionId)
     if (index >= 0) {
       questions.value.splice(index, 1)
@@ -521,6 +645,13 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
   }
 
   return {
+    skillIndexes,
+    chapterExamProfiles,
+    readRevision,
+    loadSkillIndex,
+    loadChapterExamProfile,
+    invalidateReadSnapshots,
+    cancelQuestionRead,
     appliedFilters,
     filterDraft,
     papers,
@@ -535,6 +666,7 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     listState,
     listError,
     listUpdatedAt,
+    questionReadVersion,
     selectedQuestionIds,
     paperQuestionRefs,
     paperJobLinks,

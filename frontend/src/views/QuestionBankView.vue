@@ -70,11 +70,18 @@ function prefetchRepairPreview() {
   if (!scope.selectedVolumeId) return
   void bank.loadRepairPreview(scope.selectedVolumeId, 'all').catch(() => {})
 }
-watch(() => scope.selectedVolumeId, () => { repairOpen.value = false; prefetchRepairPreview() }, { immediate: true })
+watch(() => scope.selectedVolumeId, () => { repairOpen.value = false }, { immediate: true })
+const repairPrefetchVolume = computed(() => {
+  const volumeId = scope.selectedVolumeId
+  if (!volumeId || tab.value === 'todo' || !bank.skillIndexes.has(volumeId)) return ''
+  if (tab.value === 'exam' && !bank.chapterExamProfiles.has(volumeId)) return ''
+  return volumeId
+})
+watch(repairPrefetchVolume, volumeId => { if (volumeId) prefetchRepairPreview() }, { immediate: true })
 function afterRepairRefresh() {
   bank.invalidateRepairPreviews(scope.selectedVolumeId || undefined)
+  bank.invalidateReadSnapshots()
   void bank.loadPapers()
-  void loadIndex()
   prefetchRepairPreview()
 }
 async function loadIndex() {
@@ -84,13 +91,13 @@ async function loadIndex() {
   indexController = controller
   indexLoading.value = true
   indexError.value = ''
-  try { const value = await questionBankApi.skillIndex(scope.selectedVolumeId, controller.signal); if (!controller.signal.aborted) index.value = value }
+  try { const value = await bank.loadSkillIndex(scope.selectedVolumeId, controller.signal); if (!controller.signal.aborted) index.value = value }
   catch { if (!controller.signal.aborted) indexError.value = '技能与题目统计暂时无法读取，请重试。' }
   finally { if (!controller.signal.aborted) indexLoading.value = false }
 }
-watch(() => scope.selectedVolumeId, (value, previous) => { index.value = null; if (previous && value !== previous) void bank.selectQuestion(null); void loadIndex() }, { immediate: true })
+watch(() => scope.selectedVolumeId, (value, previous) => { index.value = value ? bank.skillIndexes.get(value) ?? null : null; if (previous && value !== previous) void bank.selectQuestion(null); void loadIndex() }, { immediate: true })
 watch(() => bank.papers, () => void loadIndex())
-watch(() => bank.writeState, (state, previous) => { if (previous === 'saving' && state === 'idle') void loadIndex() })
+watch(() => bank.readRevision, () => void loadIndex())
 onBeforeUnmount(() => indexController?.abort())
 function setTab(next: BankTab) { void bank.selectQuestion(null); void router.push({ query: { ...route.query, tab: next, tagDim: next === 'skill' && !route.query.skill && !route.query.topic ? route.query.tagDim ?? 'typeKeys' : route.query.tagDim, question: undefined } }) }
 function openSkill(key: string) {
@@ -147,8 +154,14 @@ function openPaper(paper: QuestionBankPaper, questionId?: number): void {
 }
 const paperIncomplete = ref(new Set<number>())
 let paperController: AbortController | null = null
-onBeforeUnmount(() => paperController?.abort())
+let paperReadVersion: number | undefined
+onBeforeUnmount(() => {
+  paperController?.abort()
+  if (paperReadVersion !== undefined) bank.cancelQuestionRead(paperReadVersion)
+})
 watch([() => route.query.paper, tab, () => bank.papers], () => {
+  if (paperReadVersion !== undefined) bank.cancelQuestionRead(paperReadVersion)
+  paperReadVersion = undefined
   paperController?.abort()
   if (tab.value !== 'paper') return
   const paper = bank.papers.find(paper => paper.id === Number(route.query.paper))
@@ -168,6 +181,7 @@ watch([() => route.query.paper, tab, () => bank.papers], () => {
     await nextTick()
     return { ...first, items, total_pages: 1 }
   })
+  paperReadVersion = bank.questionReadVersion
   void (async () => {
     try {
       const first = await questionBankApi.listQuestionRefs({ paperIds: [paper.id], analysisStatus: 'incomplete', pageSize: 500 }, controller.signal)
@@ -219,7 +233,7 @@ async function openCandidateQuestion(ref: { questionId: number; paperId: number 
 
 <template>
   <section class="question-bank">
-    <PageHeader title="题库管理"><template #meta>{{ scope.selectedVolume?.label || '请选择教学学期' }} · {{ index?.question_count ?? 0 }} 题 · 题型覆盖 {{ index?.coverage?.types ?? 0 }} / {{ index?.question_count ?? 0 }} 题 · 知识点覆盖 {{ index?.coverage?.knowledge_points ?? 0 }} / {{ index?.question_count ?? 0 }} 题</template><template #navigation><nav class="page-tabs" aria-label="题库视图"><button v-for="item in VIEW_TABS" :key="item.key" type="button" :class="{ 'is-active': tab === item.key }" :aria-current="tab === item.key ? 'page' : undefined" @click="setTab(item.key)">{{ item.label }}</button></nav></template><template #actions><AppButton variant="secondary" @click="showBasket = true">试卷篮 · {{ assembly.selectedQuestionCount }}</AppButton><AppButton :disabled="!scope.selectedVolumeId" variant="secondary" :title="repairPreview?.question_count ? `${repairPreview.question_count} 道题有缺失或需刷新` : undefined" @click="openRepair()"><template #leading><Sparkles :size="14" :stroke-width="2" aria-hidden="true" /></template>AI 补齐{{ repairPreview?.question_count ? ` · ${repairPreview.question_count}` : '' }}</AppButton><div id="qb-library-actions" /></template></PageHeader>
+    <PageHeader title="题库管理"><template #meta>{{ scope.selectedVolume?.label || '请选择教学学期' }}<template v-if="index"> · {{ index.question_count }} 题 · 题型覆盖 {{ index.coverage?.types ?? 0 }} / {{ index.question_count }} 题 · 知识点覆盖 {{ index.coverage?.knowledge_points ?? 0 }} / {{ index.question_count }} 题</template><template v-else-if="scope.selectedVolumeId"> · {{ indexError ? '题量暂时无法读取' : '正在读取题量…' }}</template></template><template #navigation><nav class="page-tabs" aria-label="题库视图"><button v-for="item in VIEW_TABS" :key="item.key" type="button" :class="{ 'is-active': tab === item.key }" :aria-current="tab === item.key ? 'page' : undefined" @click="setTab(item.key)">{{ item.label }}</button></nav></template><template #actions><AppButton variant="secondary" @click="showBasket = true">试卷篮 · {{ assembly.selectedQuestionCount }}</AppButton><AppButton :disabled="!scope.selectedVolumeId" variant="secondary" :title="repairPreview?.question_count ? `${repairPreview.question_count} 道题有缺失或需刷新` : undefined" @click="openRepair()"><template #leading><Sparkles :size="14" :stroke-width="2" aria-hidden="true" /></template>AI 补齐{{ repairPreview?.question_count ? ` · ${repairPreview.question_count} 题` : '' }}</AppButton><div id="qb-library-actions" /></template></PageHeader>
     <div class="qb-workspace">
     <FeedbackBanner v-if="bank.lastDeleted" role="status" tone="warning" :description="bank.writeMessage" action-label="立即恢复" @action="bank.restoreLastDeleted()" />
     <QuestionSkillBrowser v-if="tab === 'skill'" :index="index" :loading="indexLoading" :error="indexError" @retry="loadIndex" @skill="openSkill" @repair="openRepair('skills')" />

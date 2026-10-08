@@ -51,7 +51,7 @@ async function refresh() {
   loading.value = false
   standard.value = standardResult.status === 'fulfilled' ? standardResult.value : null
   candidate.value = candidateResult.status === 'fulfilled' ? candidateResult.value : null
-  failed.value = standardResult.status === 'rejected' && candidateResult.status === 'rejected'
+  failed.value = standardResult.status === 'rejected' || candidateResult.status === 'rejected'
   emit('candidate', candidate.value)
 }
 
@@ -88,19 +88,19 @@ defineExpose({ refresh })
         </ul>
       </details>
       <p class="qb-standard-counts">
-        <span>本学期技能 <strong>{{ standard.skill_count }}</strong></span>
-        <span>未挂技能题 <strong>{{ standard.unlinked_question_count }}</strong></span>
-        <span>技能缺口判定点 <strong>{{ standard.gap_point_count }}</strong></span>
+        <span>本学期技能 <strong>{{ standard.skill_count }}</strong> 项</span>
+        <span>未挂技能题 <strong>{{ standard.unlinked_question_count }}</strong> 题</span>
+        <span>技能缺口 <strong>{{ standard.gap_point_count }}</strong> 个判定点</span>
       </p>
       <p v-if="candidate" class="qb-standard-breakdown">
-        待整理 {{ candidate.counts.ready }} · 待审核 {{ candidate.counts.pending_review }}
+        待整理 {{ candidate.counts.ready }} 个判定点 · 待审核 {{ candidate.counts.pending_review }} 个判定点
         · 已批准待发布 {{ candidate.approved_unpublished_skill_count }} 项技能
-        · 保持只归小节 {{ candidate.counts.dismissed }} · 未定位小节 {{ candidate.counts.unlocated }}
+        · 保持只归小节 {{ candidate.counts.dismissed }} 个判定点 · 未定位小节 {{ candidate.counts.unlocated }} 个判定点
       </p>
       <p v-if="hint" class="qb-standard-hint">{{ hint }}</p>
     </template>
     <p v-if="failed" role="alert" class="qb-standard-error">
-      学期标准暂时无法读取，请重试。
+      部分标准信息暂时无法读取，请重试。
       <button class="qb-link" type="button" @click="refresh">重试</button>
     </p>
     <p class="qb-standard-note">查看这些信息不调用模型。</p>

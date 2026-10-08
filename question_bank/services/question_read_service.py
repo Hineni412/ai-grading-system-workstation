@@ -443,7 +443,7 @@ _CURRENT_PREVIEW_ORDER_SQL = "updated_at DESC, id DESC"
 _READ_RESULT_CACHE_LIMIT = 48
 _BROWSE_CACHE_LIMITS = {"skill_snapshot": 2, "skill_inventory": 2, "skill_page": 4,
                         "skill_index": 4, "skill_questions": 8, "facets": 4, "papers": 2,
-                        "repair_preview": 6}
+                        "repair_preview": 6, "analysis_materials": 2}
 _READ_RESULT_CACHE_LOCK = threading.Lock()
 _SKILL_SNAPSHOT_LOCK = threading.Lock()
 _SKILL_LOCAL_CACHE_MAX_BYTES = 16 * 1024 * 1024
@@ -604,6 +604,7 @@ def _read_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
     if active is not None and active.source == requested:
         yield active.connection
         return
+    from question_bank.training_criteria.analysis import source_content_hash_reuse
     generation = _source_generation_token(requested)
     connection = _open_direct_read_connection(requested)
     token = _ACTIVE_READ_SCOPE.set(
@@ -614,7 +615,8 @@ def _read_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
         )
     )
     try:
-        yield connection
+        with source_content_hash_reuse():
+            yield connection
     except sqlite3.Error as exc:
         raise _direct_read_error(exc) from exc
     finally:
@@ -1198,9 +1200,23 @@ class QuestionBankReadService:
         scope = _ACTIVE_READ_SCOPE.get()
         key = self._cache_data_root or str(self.db_path.parent.parent)
         known = scope.analysis_materials.setdefault(key, {}) if scope is not None else {}
+        generation = scope.generation if scope is not None else None
+        asset_generation, _ = self._asset_generation()
+        cache_key = ("analysis_materials", generation, self._cache_data_root,
+                     asset_generation, _taxonomy_generation_token())
+        cacheable = (generation is not None and asset_generation is not None
+                     and generation == _source_generation_token(self.db_path))
+        cached = _read_result_cache_get(cache_key) if cacheable else _CACHE_MISS
+        if cached is not _CACHE_MISS:
+            known.update(cached)
         missing = [qid for qid in ids if qid not in known]
-        for start in range(0, len(missing), 200):
-            batch = missing[start:start + 200]
+        snapshot = scope.skill_snapshot if scope is not None else None
+        if snapshot is None and cacheable:
+            snapshot = _read_result_cache_get(("skill_snapshot", generation,
+                self._cache_data_root, asset_generation), shared=True)
+        retained = snapshot.get("profiles", {}) if isinstance(snapshot, dict) else {}
+        for start in range(0, len(missing), 64):
+            batch = missing[start:start + 64]
             marks = ",".join("?" for _ in batch)
             saved_ids = [int(row[0]) for row in conn.execute(
                 f"SELECT question_id FROM question_solution_evidence_versions "
@@ -1210,8 +1226,13 @@ class QuestionBankReadService:
             failures: dict[int, str] = {}
             inputs = current_inputs(self.db_path, saved_ids, conn, data_root=self.data_root,
                                     load_failures=failures) if saved_ids else {}
-            profiles = load_profiles(self.db_path, saved_ids, connection=conn,
-                                     data_root=self.data_root, question_inputs=inputs)
+            profiles = {qid: retained[qid] for qid, question in inputs.items()
+                        if qid in retained and retained[qid].get("current_source_content_hash")
+                        == question.source_content_hash}
+            unchecked = [qid for qid in saved_ids if qid not in profiles]
+            if unchecked:
+                profiles.update(load_profiles(self.db_path, unchecked, connection=conn,
+                                              data_root=self.data_root, question_inputs=inputs))
             module = TrainingCriterionModule(self.db_path, data_root=self.data_root)
             workspaces = module.read_many(
                 list(inputs.values()), connection=conn, profiles=profiles)
@@ -1228,6 +1249,10 @@ class QuestionBankReadService:
                         profile or workspace.get("current_version") or workspace.get("approved_version")
                         or workspace.get("read_failure")),
                 }
+        if (missing and cacheable and generation == _source_generation_token(self.db_path)
+                and asset_generation == self._asset_generation(refresh=True)[0]):
+            latest = _read_result_cache_get(cache_key)
+            _read_result_cache_put(cache_key, {**(latest if isinstance(latest, dict) else {}), **known})
         return {qid: known[qid] for qid in ids}
 
     def _criteria_needs_review_ids(
@@ -1472,12 +1497,12 @@ class QuestionBankReadService:
         from question_bank.services.question_skill_index import skill_index
 
         generation = None if _ACTIVE_READ_SCOPE.get() is not None else _source_generation_token(self.db_path)
-        asset_generation, _manifest = self._asset_generation()
-        key = ("skill_index", generation, self._cache_data_root, asset_generation, curriculum_volume_id)
-        cached = _read_result_cache_get(key) if generation is not None and asset_generation is not None else _CACHE_MISS
-        if cached is not _CACHE_MISS:
-            return cached
         with _read_connection(self.db_path) as conn:
+            asset_generation, _manifest = self._asset_generation()
+            key = ("skill_index", generation, self._cache_data_root, asset_generation, curriculum_volume_id)
+            cached = _read_result_cache_get(key) if generation is not None and asset_generation is not None else _CACHE_MISS
+            if cached is not _CACHE_MISS:
+                return cached
             snapshot = self._skill_snapshot(volume_id=curriculum_volume_id)
             review_ids = self._criteria_needs_review_ids(conn, list(snapshot["questions"]))
         result = skill_index(snapshot, curriculum_volume_id, review_ids)
@@ -1498,12 +1523,12 @@ class QuestionBankReadService:
         if volume is None:
             raise ValueError("请选择有效的教学学期")
         generation = None if _ACTIVE_READ_SCOPE.get() is not None else _source_generation_token(self.db_path)
-        asset_generation, _manifest = self._asset_generation()
-        key = ("chapter_exam_profile", generation, self._cache_data_root, asset_generation, curriculum_volume_id)
-        cached = _read_result_cache_get(key) if generation is not None and asset_generation is not None else _CACHE_MISS
-        if cached is not _CACHE_MISS:
-            return cached
         with _read_connection(self.db_path) as conn:
+            asset_generation, _manifest = self._asset_generation()
+            key = ("chapter_exam_profile", generation, self._cache_data_root, asset_generation, curriculum_volume_id)
+            cached = _read_result_cache_get(key) if generation is not None and asset_generation is not None else _CACHE_MISS
+            if cached is not _CACHE_MISS:
+                return cached
             snapshot = self._skill_snapshot(volume_id=curriculum_volume_id)
             result = build_chapter_exam_profile(conn, snapshot, volume)
         if (generation is not None and asset_generation is not None
@@ -1640,13 +1665,13 @@ class QuestionBankReadService:
             if _ACTIVE_READ_SCOPE.get() is not None
             else _source_generation_token(self.db_path)
         )
-        asset_generation, _manifest = self._asset_generation()
-        key = ("papers", generation, self._cache_data_root, asset_generation, bool(deleted))
-        if generation is not None and asset_generation is not None:
-            cached = _read_result_cache_get(key)
-            if cached is not _CACHE_MISS:
-                return cached  # type: ignore[return-value]
         with _read_connection(self.db_path):
+            asset_generation, _manifest = self._asset_generation()
+            key = ("papers", generation, self._cache_data_root, asset_generation, bool(deleted))
+            if generation is not None and asset_generation is not None:
+                cached = _read_result_cache_get(key)
+                if cached is not _CACHE_MISS:
+                    return cached  # type: ignore[return-value]
             items = self._list_papers(deleted=deleted)
             snapshot = self._skill_snapshot() if not deleted else None
         for item in items:
@@ -1837,13 +1862,13 @@ class QuestionBankReadService:
             if _ACTIVE_READ_SCOPE.get() is not None
             else _source_generation_token(self.db_path)
         )
-        asset_generation, _manifest = self._asset_generation()
-        key = ("questions", generation, self._cache_data_root, asset_generation, filters)
-        if generation is not None and asset_generation is not None:
-            cached = _read_result_cache_get(key)
-            if cached is not _CACHE_MISS:
-                return cached  # type: ignore[return-value]
         with _read_connection(self.db_path):
+            asset_generation, _manifest = self._asset_generation()
+            key = ("questions", generation, self._cache_data_root, asset_generation, filters)
+            if generation is not None and asset_generation is not None:
+                cached = _read_result_cache_get(key)
+                if cached is not _CACHE_MISS:
+                    return cached  # type: ignore[return-value]
             result = self._list_questions(filters)
         if (generation is not None and asset_generation is not None
                 and generation == _source_generation_token(self.db_path)
@@ -1950,7 +1975,7 @@ class QuestionBankReadService:
             if filters.missing_type:
                 ids.difference_update(snapshot.get('primary_types', {}))
             if filters.missing_knowledge:
-                ids = {qid for qid in ids if not snapshot.get('knowledge_by_question', {}).get(qid)}
+                ids = {qid for qid in ids if not snapshot.get('knowledge_coverage_by_question', snapshot.get('knowledge_by_question', {})).get(qid)}
             where.append("q.id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))")
             params.append(json.dumps(sorted(ids)))
         if filters.skill_keys or filters.skill_unlinked:
@@ -2253,13 +2278,13 @@ class QuestionBankReadService:
             if _ACTIVE_READ_SCOPE.get() is not None
             else _source_generation_token(self.db_path)
         )
-        asset_generation, _manifest = self._asset_generation()
-        key = ("facets", generation, self._cache_data_root, asset_generation, _taxonomy_generation_token(), filters)
-        if generation is not None and asset_generation is not None:
-            cached = _read_result_cache_get(key)
-            if cached is not _CACHE_MISS:
-                return cached  # type: ignore[return-value]
         with _read_connection(self.db_path):
+            asset_generation, _manifest = self._asset_generation()
+            key = ("facets", generation, self._cache_data_root, asset_generation, _taxonomy_generation_token(), filters)
+            if generation is not None and asset_generation is not None:
+                cached = _read_result_cache_get(key)
+                if cached is not _CACHE_MISS:
+                    return cached  # type: ignore[return-value]
             result = self._list_facets(filters)
         if (generation is not None and asset_generation is not None
                 and generation == _source_generation_token(self.db_path)

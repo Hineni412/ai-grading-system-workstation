@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ChevronDown } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { knowledgeLeafLabel, questionBankApi, type QuestionBankFacets, type QuestionBankFilters, type QuestionBankSort, type QuestionSkillIndex, type QuestionSkillEntry, type QuestionTopicEntry } from '../../api/question-bank'
@@ -98,6 +99,7 @@ const sourceSummary = computed(() => {
   return sourcePapers.value.find(paper => String(paper.id) === filters.paper)?.title ?? '来源：全部'
 })
 let facetController: AbortController | null = null
+let questionReadVersion: number | undefined
 let timer: ReturnType<typeof setTimeout> | undefined
 function requestFilters(): QuestionBankFilters {
   const entry = selected.value
@@ -121,13 +123,19 @@ function requestFilters(): QuestionBankFilters {
   return result
 }
 async function reload() {
-  if (!props.index || (mode.value !== 'tag' && !selected.value && !unlinked.value)) { bank.questions = []; bank.total = 0; bank.listState = 'empty'; return }
+  if (route.query.tab && route.query.tab !== 'skill') return
+  if (!route.query.tab && route.query.paper !== undefined) return
+  if (!props.index || (mode.value !== 'tag' && !selected.value && !unlinked.value)) { bank.cancelQuestionRead(); bank.questions = []; bank.total = 0; bank.listState = 'empty'; return }
   const next = requestFilters()
-  if (mode.value === 'tag' && !tagValue.value) { bank.questions = []; bank.total = 0; bank.listState = 'empty' }
-  else void bank.loadQuestions(next).then(async () => {
-    await nextTick()
-    if (!bank.selectedQuestionId) layout.value?.querySelector('.qb-question-list')?.scrollTo?.({ top: 0 })
-  })
+  if (mode.value === 'tag' && !tagValue.value) { bank.cancelQuestionRead(); bank.questions = []; bank.total = 0; bank.listState = 'empty' }
+  else {
+    const reading = bank.loadQuestions(next)
+    questionReadVersion = bank.questionReadVersion
+    void reading.then(async () => {
+      await nextTick()
+      if (!bank.selectedQuestionId) layout.value?.querySelector('.qb-question-list')?.scrollTo?.({ top: 0 })
+    })
+  }
   facetController?.abort()
   const controller = new AbortController()
   facetController = controller
@@ -221,6 +229,7 @@ onMounted(() => {
   document.addEventListener('keydown', closePopoverOnEscape)
 })
 onBeforeUnmount(() => {
+  if (questionReadVersion !== undefined) bank.cancelQuestionRead(questionReadVersion)
   clearTimeout(timer); clearTimeout(idleTimer); facetController?.abort(); overviewController?.abort()
   document.removeEventListener('pointerdown', closePopoverOnPointerDown)
   document.removeEventListener('keydown', closePopoverOnEscape)
@@ -235,7 +244,7 @@ onBeforeUnmount(() => {
     <aside class="qb-skill-pane qb-browse-pane">
       <div v-if="bank.selectedQuestionId" class="qb-skill-rail"><AppIconButton class="qb-rail-toggle" :label="skillRailOpen ? '收窄技能列表' : '展开技能列表'" icon="book-open" variant="secondary" :aria-expanded="skillRailOpen" @click="skillRailOpen = !skillRailOpen" /><span v-if="!skillRailOpen">{{ mode === 'tag' ? '标签' : switcherLabel }}</span><button v-if="!skillRailOpen" class="qb-rail-unlinked" :aria-label="`未挂技能 · ${unlinkedCount} 题`" title="未挂技能" @click="router.replace({ query: { tab: 'skill', skill: 'unlinked' } })">⚠<small>{{ unlinkedCount }}</small></button></div>
       <header class="qb-skill-list-heading">
-        <details ref="sectionSwitcher" class="qb-label-popover qb-section-switcher"><summary><span class="qb-switcher-current"><small>{{ switcherChapterLabel }}</small><b>{{ switcherLabel }}</b></span><span class="qb-switcher-caret">▾</span></summary><div>
+        <details ref="sectionSwitcher" class="qb-label-popover qb-section-switcher"><summary><span class="qb-switcher-current"><small>{{ switcherChapterLabel }}</small><b>{{ switcherLabel }}</b></span><ChevronDown class="qb-switcher-caret" aria-hidden="true" /></summary><div>
           <div class="qb-chapter-tree"><details v-for="chapter in index?.chapters ?? []" :key="chapter.id" :open="chapter.id === currentChapter?.id">
             <summary><span>{{ chapter.label }}</span><small>{{ chapter.question_count }}</small></summary>
             <button v-for="section in chapter.sections" :key="section.id" class="qb-tree-row" :class="{ 'is-active': section.id === sectionId }" :aria-pressed="section.id === sectionId" @click="chooseSection(section.id)">{{ section.label }} <small>{{ section.question_count }}</small></button>
@@ -262,10 +271,10 @@ onBeforeUnmount(() => {
         <StatePanel v-if="mode === 'tag' && !tagValue" compact kind="empty" title="在中间列选择一个标签" />
       </header>
       <div v-if="selected || unlinked || mode === 'tag'" class="qb-skill-filters">
-        <div class="qb-filter-line"><input v-model="filters.keyword" type="search" class="app-input qb-stem-search" aria-label="搜题干" placeholder="搜题干"><div class="qb-type-chips"><button class="qb-filter-chip" :class="{ 'is-active': !filters.questionTypes.length }" :aria-pressed="!filters.questionTypes.length" @click="filters.questionTypes = []">全部</button><button class="qb-filter-chip" :class="{ 'is-active': filters.questionTypes.some(type => /选择/.test(type)) }" :aria-pressed="filters.questionTypes.some(type => /选择/.test(type))" @click="toggleChoice">选择</button><button v-for="type in ['填空题', '解答题']" :key="type" class="qb-filter-chip" :class="{ 'is-active': filters.questionTypes.includes(type) }" :aria-pressed="filters.questionTypes.includes(type)" @click="toggleType(type)">{{ type.slice(0, 2) }}</button></div><DifficultyRangeFilter v-model:min="filters.difficultyMin" v-model:max="filters.difficultyMax" compact /><details ref="sourcePopover" class="qb-label-popover qb-source-filter" @toggle="onSourceToggle"><summary :title="sourceSummary"><span class="qb-source-summary">{{ sourceSummary }}</span><span>⌄</span></summary><div><input ref="sourceSearchInput" v-model="sourceSearch" type="search" class="app-input" aria-label="筛选来源" placeholder="筛选来源"><button class="qb-source-row" :class="{ 'is-active': !filters.paper }" :aria-pressed="!filters.paper" @click="chooseSource('')">全部来源</button><div class="qb-source-list"><button v-for="paper in filteredSourcePapers" :key="paper.id" class="qb-source-row" :class="{ 'is-active': filters.paper === String(paper.id) }" :aria-pressed="filters.paper === String(paper.id)" :title="paper.title ?? undefined" @click="chooseSource(String(paper.id))"><span>{{ paper.title }}</span><small>{{ paper.question_count }} 题</small></button><p v-if="!filteredSourcePapers.length" class="qb-help">没有匹配的来源。</p></div></div></details>
-        <details class="qb-label-popover qb-more-filter"><summary>更多 <span>⌄</span></summary><div><label>标签完整度<select v-model="filters.tagStatus" class="app-input"><option value="all">全部</option><option value="tagged">完整</option><option value="untagged">待完善</option></select></label><label><input v-model="filters.criteriaReview" type="checkbox">判定点待审核</label><label><input v-model="filters.questionTypes" type="checkbox" value="多选题">多选题</label><QuestionSortControl v-model="filters.questionSort" /><label><input type="checkbox" :checked="bank.questions.length > 0 && bank.questions.every(question => bank.selectedQuestionIds.includes(question.id))" @change="bank.selectCurrentPage(($event.target as HTMLInputElement).checked)">选择本页</label></div></details>
+        <div class="qb-filter-line"><input v-model="filters.keyword" type="search" class="app-input qb-stem-search" aria-label="搜题干" placeholder="搜题干"><div class="qb-type-chips"><button class="qb-filter-chip" :class="{ 'is-active': !filters.questionTypes.length }" :aria-pressed="!filters.questionTypes.length" @click="filters.questionTypes = []">全部</button><button class="qb-filter-chip" :class="{ 'is-active': filters.questionTypes.some(type => /选择/.test(type)) }" :aria-pressed="filters.questionTypes.some(type => /选择/.test(type))" @click="toggleChoice">选择</button><button v-for="type in ['填空题', '解答题']" :key="type" class="qb-filter-chip" :class="{ 'is-active': filters.questionTypes.includes(type) }" :aria-pressed="filters.questionTypes.includes(type)" @click="toggleType(type)">{{ type.slice(0, 2) }}</button></div><DifficultyRangeFilter v-model:min="filters.difficultyMin" v-model:max="filters.difficultyMax" compact /><details ref="sourcePopover" class="qb-label-popover qb-source-filter" @toggle="onSourceToggle"><summary :title="sourceSummary"><span class="qb-source-summary">{{ sourceSummary }}</span><ChevronDown class="qb-caret" aria-hidden="true" /></summary><div><input ref="sourceSearchInput" v-model="sourceSearch" type="search" class="app-input" aria-label="筛选来源" placeholder="筛选来源"><button class="qb-source-row" :class="{ 'is-active': !filters.paper }" :aria-pressed="!filters.paper" @click="chooseSource('')">全部来源</button><div class="qb-source-list"><button v-for="paper in filteredSourcePapers" :key="paper.id" class="qb-source-row" :class="{ 'is-active': filters.paper === String(paper.id) }" :aria-pressed="filters.paper === String(paper.id)" :title="paper.title ?? undefined" @click="chooseSource(String(paper.id))"><span>{{ paper.title }}</span><small>{{ paper.question_count }} 题</small></button><p v-if="!filteredSourcePapers.length" class="qb-help">没有匹配的来源。</p></div></div></details>
+        <details class="qb-label-popover qb-more-filter"><summary>更多 <ChevronDown class="qb-caret" aria-hidden="true" /></summary><div><label>标签完整度<select v-model="filters.tagStatus" class="app-input"><option value="all">全部</option><option value="tagged">完整</option><option value="untagged">待完善</option></select></label><label><input v-model="filters.criteriaReview" type="checkbox">判定点待审核</label><label><input v-model="filters.questionTypes" type="checkbox" value="多选题">多选题</label><QuestionSortControl v-model="filters.questionSort" /><label><input type="checkbox" :checked="bank.questions.length > 0 && bank.questions.every(question => bank.selectedQuestionIds.includes(question.id))" @change="bank.selectCurrentPage(($event.target as HTMLInputElement).checked)">选择本页</label></div></details>
         <label class="qb-duplicate-toggle" :class="{ 'is-active': filters.collapse }"><input v-model="filters.collapse" type="checkbox">折叠重复题<template v-if="filters.collapse && duplicateCount"> · 已折叠 {{ duplicateCount }}</template></label><label class="qb-progress-filter">教学进度：<select v-model="filters.progress" class="app-input" aria-label="教学进度"><option value="">不限</option><option v-for="chapter in scope.selectedVolume?.chapters ?? []" :key="chapter.id" :value="chapter.id">已学到{{ chapter.label }}</option></select></label>
-        <details class="qb-label-popover qb-tag-filter"><summary>标签筛选</summary><div><p v-if="facetsError" role="alert">{{ facetsError }}</p><div class="app-segmented"><button v-for="dimension in facetDimensions" :key="dimension.key" :class="{ 'is-active': facetTab === dimension.key }" :aria-pressed="facetTab === dimension.key" @click="facetTab = dimension.key">{{ dimension.label }}</button></div><div class="qb-facet-chips"><button v-for="item in facetItems(facetTab)" :key="item.value" class="qb-filter-chip" :class="{ 'is-active': filters[facetTab].includes(item.value) }" :aria-pressed="filters[facetTab].includes(item.value)" @click="toggleFacet(facetTab, item.value)">{{ item.value }} <small>{{ item.count }}</small></button><p v-if="!facetItems(facetTab).length" class="qb-help">当前范围没有可用标签。</p></div></div></details></div>
+        <details class="qb-label-popover qb-tag-filter"><summary>标签筛选<ChevronDown class="qb-caret" aria-hidden="true" /></summary><div><p v-if="facetsError" role="alert">{{ facetsError }}</p><div class="app-segmented"><button v-for="dimension in facetDimensions" :key="dimension.key" :class="{ 'is-active': facetTab === dimension.key }" :aria-pressed="facetTab === dimension.key" @click="facetTab = dimension.key">{{ dimension.label }}</button></div><div class="qb-facet-chips"><button v-for="item in facetItems(facetTab)" :key="item.value" class="qb-filter-chip" :class="{ 'is-active': filters[facetTab].includes(item.value) }" :aria-pressed="filters[facetTab].includes(item.value)" @click="toggleFacet(facetTab, item.value)">{{ item.value }} <small>{{ item.count }}</small></button><p v-if="!facetItems(facetTab).length" class="qb-help">当前范围没有可用标签。</p></div></div></details></div>
         <div v-if="facetDimensions.some(dimension => filters[dimension.key].length)" class="qb-filter-line"><template v-for="dimension in facetDimensions" :key="dimension.key"><button v-for="value in filters[dimension.key]" :key="value" class="qb-filter-chip is-active" :aria-label="`移除${value}筛选`" @click="filters[dimension.key] = filters[dimension.key].filter(item => item !== value)">{{ value }} ×</button></template></div>
       </div>
       <QuestionLedger v-if="selected || unlinked || (mode === 'tag' && !!tagValue)" :current-skill="mode === 'skill' ? selected?.stable_key : undefined" @skill="emit('skill', $event)" />

@@ -432,11 +432,16 @@ def test_source_reuse_keeps_copied_thread_contexts_private() -> None:
     assert analysis._SOURCE_CONTENT_REUSE.get() is None
 
 
-def test_source_hash_bundle_reuses_frozen_values_and_preserves_legacy_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("with_taxonomy_contract", [False, True])
+def test_source_hash_bundle_reuses_frozen_values_and_preserves_legacy_aliases(
+    monkeypatch: pytest.MonkeyPatch, with_taxonomy_contract: bool,
+) -> None:
     from question_bank.training_criteria import analysis
     from question_bank.solution_evidence import part_assessments
 
     question = _question(1, question_type="解答题")
+    if not with_taxonomy_contract:
+        question = replace(question, taxonomy_contract={})
     original = part_assessments._compute_input_source_hashes
     computed: list[str] = []
     def compute(question, input_key=""):
@@ -445,6 +450,8 @@ def test_source_hash_bundle_reuses_frozen_values_and_preserves_legacy_aliases(mo
     monkeypatch.setattr(part_assessments, "_compute_input_source_hashes", compute)
     expected = original(question, "TEST-row-A")
     with analysis.source_content_hash_reuse():
+        assert part_assessments.source_alias(question, expected.current) == ""
+        assert computed == []
         first = part_assessments._input_source_hashes(question, "TEST-row-A")
         assert first == expected
         assert part_assessments._input_source_hashes(replace(question), "TEST-row-A") is first

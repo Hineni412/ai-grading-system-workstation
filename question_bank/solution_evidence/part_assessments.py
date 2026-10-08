@@ -102,6 +102,10 @@ def reading(db_path: Path, connection: sqlite3.Connection | None = None) -> Iter
 
 
 def source_alias(question: Any, expected: str) -> str | None:
+    from question_bank.training_criteria.analysis import solution_evidence_source_content_hash
+
+    if solution_evidence_source_content_hash(question) == expected:
+        return ""
     return alias_from_hashes(_input_source_hashes(question), expected)
 
 
@@ -133,6 +137,8 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
     """
     if not ids:
         return {}
+    from question_bank.training_criteria.analysis import solution_evidence_source_content_hash
+
     with reading(db_path, connection) as conn:
         marks = ",".join("?" for _ in ids)
         # created_at has second precision; when two usable versions tie, the
@@ -206,6 +212,11 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
             for row in rows:
                 question_id = int(row["question_id"])
                 question = inputs.get(question_id)
+                if (source_hashes is None and question is not None
+                        and question_id not in load_failures
+                        and str(row["evidence_source_hash"]) == solution_evidence_source_content_hash(question)):
+                    selected.append(row)
+                    continue
                 entry = (source_hashes.get(question_id) if source_hashes is not None
                          else _input_source_hashes(question) if question is not None else None)
                 if entry is not None and question_id not in load_failures:
@@ -215,9 +226,6 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
             rows = selected
         from question_bank.solution_evidence.repository import (
             _classification_from_evidence_payload,
-        )
-        from question_bank.training_criteria.analysis import (
-            solution_evidence_source_content_hash,
         )
         for row in rows:
             question_id = int(row["question_id"])

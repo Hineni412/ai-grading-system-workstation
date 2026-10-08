@@ -26,6 +26,28 @@ let controller: AbortController | undefined
 let returnTarget: HTMLElement | null = null
 let token = ''
 const storageKey = computed(() => `question-bank-repair:${props.volumeId}:${props.kind}`)
+function cachedPreview(): QuestionRepairPreview | null {
+  const exact = bank.repairPreviews.get(`${props.volumeId}:${props.kind}`)
+  if (exact) return exact
+  const all = bank.repairPreviews.get(`${props.volumeId}:all`)
+  if (props.kind !== 'analysis' || !all) return null
+  const items = all.items.filter(item => item.missing.some(part =>
+    part === 'tags' || part === 'evidence' || part === 'criteria'))
+  const counts: QuestionRepairPreview['counts'] = {
+    tags: 0, evidence: 0, criteria: 0, skills: 0, types: 0, knowledge_points: 0,
+  }
+  for (const item of items) for (const part of item.missing) counts[part] += 1
+  return {
+    ...all,
+    kind: 'analysis',
+    fingerprint: '',
+    items,
+    counts,
+    question_count: items.length,
+    repairable_count: items.filter(item => !item.blocked_reason).length,
+  }
+}
+
 async function load() {
   controller?.abort()
   const requestController = new AbortController()
@@ -33,7 +55,7 @@ async function load() {
   message.value = ''
   refreshFailed.value = false
   revalidating.value = false
-  const cached = bank.repairPreviews.get(`${props.volumeId}:${props.kind}`) ?? null
+  const cached = cachedPreview()
   if (cached) {
     // 已有缓存先显示清单，后台核对最新状态，核对完成前不允许确认提交。
     preview.value = cached
@@ -60,6 +82,14 @@ async function load() {
     }
   }
 }
+watch(() => bank.repairPreviews.get(`${props.volumeId}:all`), () => {
+  if (!props.open || state.value !== 'loading') return
+  const cached = cachedPreview()
+  if (!cached) return
+  preview.value = cached
+  state.value = 'ready'
+  revalidating.value = true
+})
 watch(() => props.open, open => {
   if (!open) { controller?.abort(); return }
   returnTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -80,7 +110,8 @@ watch(() => props.open, open => {
   void load()
 }, { immediate: true })
 async function start() {
-  if (!preview.value || !targetIds.value.length || state.value === 'submitting') return
+  if (!preview.value || !targetIds.value.length || revalidating.value || refreshFailed.value
+    || (state.value !== 'ready' && state.value !== 'ambiguous')) return
   const original = preview.value
   if (state.value !== 'ambiguous') token = crypto.randomUUID().replace(/-/g, '')
   localStorage.setItem(storageKey.value, JSON.stringify({ preview: original, token }))
