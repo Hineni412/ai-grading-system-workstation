@@ -1968,6 +1968,8 @@ def _upper_refresh_plan(db, data_root, governance):
 def test_old_upper_refresh_is_one_request_and_preserves_protected_persistent_rows(tmp_path):
     from question_bank.services.label_refresh_service import execute_label_refresh
     db, governance = _upper_label_refresh_bank(tmp_path)
+    with connect(db) as conn:
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(1,'prerequisite','sk_bnu24_math_g8_upper_1_1_101','taxonomy')")
     plan = _upper_refresh_plan(db, tmp_path, governance)
     with connect(db) as conn:
         evidence_before = [tuple(row) for row in conn.execute('SELECT * FROM question_solution_evidence_versions')]

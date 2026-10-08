@@ -243,8 +243,8 @@ def _refresh_unprotected_ownership(connection, db_path, data_root, item):
             if manual != actual and (not manual_keys or manual_keys != actual_keys):
                 raise LabelRefreshConflict('teacher_ownership_conflict')
     for row in connection.execute('SELECT id,tag_type,tag_value,source FROM question_tags WHERE question_id=?', (qid,)).fetchall():
-        if row['source'] == 'manual' or row['tag_type'] == 'secondary_type' or (row['tag_type'] == 'knowledge_point'
-                and (is_type_key(row['tag_value']) or str(row['tag_value']).startswith('sk_'))):
+        if (row['source'] == 'manual' or row['tag_type'] == 'secondary_type'
+                or is_type_key(row['tag_value']) or str(row['tag_value']).startswith('sk_')):
             continue
         if (row['tag_type'] in ('exam_scope', 'curriculum_section', 'canonical_knowledge_id', 'prerequisite')
                 or row['tag_type'] == 'tag_status' and row['tag_value'] == 'derived_pending'
