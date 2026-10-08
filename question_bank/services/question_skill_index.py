@@ -86,6 +86,7 @@ def build_skill_snapshot(
     conn: sqlite3.Connection, db_path: Path, data_root: Path | None,
     *, inventory: dict[str, Any] | None = None, question_ids: tuple[int, ...] | None = None,
     source_hashes: MutableMapping[int, SourceHash] | None = None,
+    profiles: dict[int, Any] | None = None,
 ) -> dict[str, Any]:
     inventory = inventory if inventory is not None else load_skill_inventory(conn)
     release, nodes = inventory["release"], inventory["nodes"]
@@ -94,12 +95,14 @@ def build_skill_snapshot(
     selected = set(questions)
     members = {key: ids & selected for key, ids in inventory["members"].items()}
     volumes = {key: ids & selected for key, ids in inventory["volumes"].items()}
-    profiles = load_profiles(db_path, list(questions), connection=conn, data_root=data_root,
-                             source_hashes=source_hashes)
+    if profiles is None:
+        profiles = load_profiles(db_path, list(questions), connection=conn, data_root=data_root,
+                                 source_hashes=source_hashes)
     usable = {qid: profile for qid, profile in profiles.items() if profile.get("available")}
     links = load_point_links(db_path, [profile["evidence_version_id"] for profile in usable.values()], release, connection=conn)
     by_type: dict[str, set[int]] = defaultdict(set)
     knowledge_by_question: dict[int, set[str]] = defaultdict(set)
+    knowledge_coverage_by_question: dict[int, set[str]] = defaultdict(set)
     type_hits: dict[int, dict[str, list[dict[str, str]]]] = {}
     point_counts: dict[int, int] = {}
     by_skill: dict[str, set[int]] = defaultdict(set)
@@ -121,6 +124,12 @@ def build_skill_snapshot(
                 point_link_rows = point_links.get(point_id, ())
                 has_skill_link = False
                 for link in point_link_rows:
+                    if (link.role in {'direct', 'supporting_prerequisite'}
+                            and link.resolution_status == 'resolved'
+                            and not link.stable_key.startswith('sk_') and not is_type_key(link.stable_key)):
+                        fine = curriculum_knowledge_node(link.stable_key)
+                        if fine and fine['level'] == 3:
+                            knowledge_coverage_by_question[qid].add(link.stable_key)
                     if link.role == 'direct' and link.resolution_status == 'resolved':
                         if is_type_key(link.stable_key):
                             types.setdefault(link.stable_key, []).append({'point_id': point_id, 'point_label': str(point.get('target') or '')})
@@ -194,6 +203,8 @@ def build_skill_snapshot(
             "evidence_versions": evidence_versions, "gap_points": gap_points,
             "primary_types": primary_types, "secondary_types": dict(secondary_types), "by_type": dict(by_type), "type_hits": type_hits,
             "knowledge_by_question": dict(knowledge_by_question),
+            "knowledge_coverage_by_question": dict(knowledge_coverage_by_question),
+            "profiles": profiles,
             "topics": dict(topics), "topic_keys": topic_keys, "sections": dict(sections)}
 
 
@@ -270,7 +281,7 @@ def skill_index(snapshot: dict[str, Any], volume_id: str, review_ids: set[int]) 
                       for key in sorted(snapshot['nodes']) if is_type_key(key) and skill_anchor_ids(snapshot['nodes'][key], volume)
                       for qids in [snapshot.get('by_type', {}).get(key, set())]],
             "coverage": {"types": sum(qid in snapshot.get('primary_types', {}) for qid in ids),
-                         "knowledge_points": sum(bool(snapshot.get('knowledge_by_question', {}).get(qid)) for qid in ids)},
+                         "knowledge_points": sum(bool(snapshot.get('knowledge_coverage_by_question', {}).get(qid)) for qid in ids)},
             "gaps": {"types": sum(qid not in snapshot.get('primary_types', {}) for qid in ids),
-                     "knowledge_points": sum(not snapshot.get('knowledge_by_question', {}).get(qid) for qid in ids)}, "unlinked": {"no_usable_evidence": len(ids & snapshot["no_usable"]),
+                     "knowledge_points": sum(not snapshot.get('knowledge_coverage_by_question', {}).get(qid) for qid in ids)}, "unlinked": {"no_usable_evidence": len(ids & snapshot["no_usable"]),
             "no_skill_link": len((ids & snapshot["unlinked"]) - snapshot["no_usable"])}, "chapters": chapters}

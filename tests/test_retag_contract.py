@@ -348,3 +348,31 @@ def test_refresh_derived_ownership_preserves_unchanged_records(tmp_path: Path) -
         for row_id, row in before.items():
             if row[3] != _EARLIER_SECTION_KEY:
                 assert after_change.get(row_id) == row
+
+
+def test_prerequisite_fine_links_count_as_knowledge_coverage_without_direct_training_targets(tmp_path):
+    from question_bank.services.question_skill_index import build_skill_snapshot, skill_index
+    from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+
+    db = _base_db(tmp_path)
+    with connect(db) as conn:
+        conn.execute("INSERT INTO papers(id,title,grade,semester,textbook_version) "
+                     "VALUES(1,'TEST-prerequisite-paper','八年级','上','北师大版')")
+    upper = curriculum_volume(volume_id='bnu24-math-g8-upper')
+    with connect(db) as conn:
+        conn.execute('UPDATE papers SET grade=?,semester=?,textbook_version=? WHERE id=1',
+                     (upper['grade'], upper['semester'], upper['textbook_version']))
+    _add_question(db)
+    with connect(db) as conn:
+        conn.execute('UPDATE questions SET paper_id=1 WHERE id=1')
+    volume = curriculum_volume(volume_id='bnu24-math-g7-upper')
+    fine = volume['chapters'][3]['sections'][0]['knowledge_points'][0]['id']
+    _seed_evidence_links(db, 1, direct=((_SKILL_KEY, 1.0),), supporting=(fine,))
+    with connect(db) as conn:
+        snapshot = build_skill_snapshot(conn, db, tmp_path)
+    assert snapshot['knowledge_coverage_by_question'][1] == {fine}
+    assert not snapshot['knowledge_by_question'].get(1)
+    assert snapshot['by_skill'][_SKILL_KEY] == {1}
+    summary = skill_index(snapshot, 'bnu24-math-g8-upper', set())
+    assert summary['coverage']['knowledge_points'] == 1
+    assert summary['gaps']['knowledge_points'] == 0
