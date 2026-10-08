@@ -4602,4 +4602,5 @@ def _question_labels(snapshot: dict[str, Any], question_id: int,
         node = snapshot.get('nodes', {}).get(value, {})
         return {'key': value, 'label': short_node_name(str(node.get('display_name') or value))}
     knowledge = [label(value) for value in sorted(snapshot.get('knowledge_by_question', {}).get(question_id, ()))]
-    return {'primary_type': label(key) if key else None, 'secondary_types': [label(value) for value in snapshot.get('secondary_types', {}).get(question_id, ())], 'knowledge_points': knowledge}
+    coverage = snapshot.get('knowledge_coverage_by_question', snapshot.get('knowledge_by_question', {}))
+    return {'primary_type': label(key) if key else None, 'secondary_types': [label(value) for value in snapshot.get('secondary_types', {}).get(question_id, ())], 'knowledge_points': knowledge, 'knowledge_coverage': bool(coverage.get(question_id))}

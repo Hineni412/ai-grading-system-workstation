@@ -193,7 +193,13 @@ watch([() => route.query.paper, tab, () => bank.papers], () => {
 }, { immediate: true })
 async function navigateQuestion(id: number) { await bank.selectQuestion(id); await nextTick(); document.getElementById(`qb-question-${id}`)?.scrollIntoView({ block: 'start' }) }
 async function addPaper() { if (assembly.loadState === 'idle') await assembly.load(); await assembly.addQuestions([...new Set(bank.questions.map(question => question.id))]) }
-function questionState(question: QuestionBankListItem) { return paperIncomplete.value.has(question.id) ? '分析未完成' : question.criteria_needs_review ? '判定点待审核' : !question.labels?.primary_type ? '缺题型' : !question.labels.knowledge_points.length ? '缺知识点' : '完整' }
+function questionState(question: QuestionBankListItem) {
+  if (paperIncomplete.value.has(question.id)) return '分析未完成'
+  if (question.criteria_needs_review) return '判定点待审核'
+  if (!question.labels?.primary_type) return '缺题型'
+  const covered = question.labels.knowledge_coverage ?? question.labels.knowledge_points.length > 0
+  return covered ? '完整' : '缺知识点'
+}
 function openTaxonomyReview(): void {
   captureReviewFocus()
   showImport.value = false

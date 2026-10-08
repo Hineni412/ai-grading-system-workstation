@@ -376,3 +376,14 @@ def test_prerequisite_fine_links_count_as_knowledge_coverage_without_direct_trai
     summary = skill_index(snapshot, 'bnu24-math-g8-upper', set())
     assert summary['coverage']['knowledge_points'] == 1
     assert summary['gaps']['knowledge_points'] == 0
+
+    from backend.api.schemas.question_bank import QuestionLabelSummary
+    from question_bank.services.question_read_service import QuestionBankReadService, QuestionReadFilters
+
+    service = QuestionBankReadService(db, data_root=tmp_path)
+    labels = QuestionLabelSummary.model_validate(service.get_question(1)['labels'])
+    assert labels.knowledge_coverage is True
+    assert labels.knowledge_points == []
+    missing = service.list_questions(QuestionReadFilters(
+        curriculum_volume_ids=('bnu24-math-g8-upper',), missing_knowledge=True))
+    assert missing.total == 0

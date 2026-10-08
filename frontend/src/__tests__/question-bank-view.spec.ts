@@ -194,6 +194,38 @@ afterEach(() => {
 })
 
 describe('question bank workspace', () => {
+  it.each([
+    [true, '完整'], [false, '缺知识点'], [undefined, '缺知识点'],
+  ] as const)('uses knowledge coverage %s for the paper status without adding direct tags', async (coverage, expected) => {
+    const { host, pinia, router, bank, index } = prepareInitialQuestionBank()
+    bank.papers = [paper]; bank.papersState = 'ready'
+    vi.spyOn(questionBankApi, 'skillIndex').mockResolvedValue(index)
+    vi.spyOn(questionBankApi, 'listQuestionRefs').mockResolvedValue({ items: [], total: 0, page: 1, page_size: 500, total_pages: 0 })
+    const question = { ...item, labels: {
+      primary_type: { key: 'TEST-type', label: 'TEST-题型' }, secondary_types: [], knowledge_points: [],
+      ...(coverage === undefined ? {} : { knowledge_coverage: coverage }),
+    } }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => new Response(JSON.stringify(
+      String(input).startsWith('/api/question-bank/questions?')
+        ? { items: [question], total: 1, page: 1, page_size: 100, total_pages: 1 } : {},
+    ), { status: 200, headers: { 'content-type': 'application/json' } }))
+    await router.push(`/question-bank?tab=paper&paper=${paper.id}`)
+    const app = createApp(QuestionBankView)
+    app.use(pinia).use(router).mount(host); mounted.push(app)
+    await vi.waitFor(() => expect(host.querySelector('.qb-number-nav button')?.getAttribute('aria-label')).toBe(`第 1 题 · ${expected}`))
+    expect(bank.questions[0]?.labels?.knowledge_points).toEqual([])
+  })
+
+  it('rejects a nonboolean knowledge coverage field from the question API', async () => {
+    const question = { ...item, labels: {
+      primary_type: null, secondary_types: [], knowledge_points: [], knowledge_coverage: 'yes',
+    } }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      items: [question], total: 1, page: 1, page_size: 20, total_pages: 1,
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    await expect(questionBankApi.listQuestions()).rejects.toThrow()
+  })
+
   it('loads the paper catalog only when entering its workspace from skill browsing', async () => {
     const host = document.createElement('div'); document.body.append(host)
     const pinia = createPinia()

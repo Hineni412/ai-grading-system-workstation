@@ -124,7 +124,7 @@ export interface QuestionBankListItem {
    * structured preview yet. Network responses remain strict at decode time.
    */
   rich_content?: QuestionBankRichContent
-  labels?: { primary_type: { key: string; label: string } | null; secondary_types: { key: string; label: string }[]; knowledge_points: { key: string; label: string }[] }
+  labels?: { primary_type: { key: string; label: string } | null; secondary_types: { key: string; label: string }[]; knowledge_points: { key: string; label: string }[]; knowledge_coverage?: boolean }
   skills?: { stable_key: string; display_name: string }[]
   skill_hits?: { point_id: string; point_label: string }[]
 }
@@ -735,7 +735,11 @@ function isQuestionBankListItem(value: unknown): value is QuestionBankListItem {
 
 function isQuestionLabelSummary(value: unknown): boolean {
   const ref = (item: unknown) => isRecord(item) && hasExactKeys(item, ['key', 'label']) && typeof item.key === 'string' && typeof item.label === 'string'
-  return isRecord(value) && hasExactKeys(value, ['primary_type', 'secondary_types', 'knowledge_points'])
+  if (!isRecord(value)) return false
+  const keys = ['primary_type', 'secondary_types', 'knowledge_points']
+  if (value.knowledge_coverage !== undefined) keys.push('knowledge_coverage')
+  return hasExactKeys(value, keys)
+    && (value.knowledge_coverage === undefined || typeof value.knowledge_coverage === 'boolean')
     && (value.primary_type === null || ref(value.primary_type))
     && Array.isArray(value.secondary_types) && value.secondary_types.length <= 2 && value.secondary_types.every(ref)
     && Array.isArray(value.knowledge_points) && value.knowledge_points.every(ref)

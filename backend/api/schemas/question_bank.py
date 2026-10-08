@@ -319,6 +319,7 @@ class QuestionLabelSummary(_QuestionBankModel):
     primary_type: QuestionLabelRef | None
     secondary_types: list[QuestionLabelRef]
     knowledge_points: list[QuestionLabelRef]
+    knowledge_coverage: bool
 
 
 class QuestionListItem(_QuestionBankModel):
