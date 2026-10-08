@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from typing import Any
 
 from question_bank.taxonomy.curriculum_catalog import (
@@ -12,7 +13,17 @@ from question_bank.taxonomy.curriculum_catalog import (
 TYPE_KEY_PATTERN = r"^kp_[a-z0-9_]+_t\d{2}$"
 _TYPE_KEY = re.compile(TYPE_KEY_PATTERN)
 _TYPE_RELEASE_CACHE_LIMIT = 16
-_TYPE_RELEASE_CACHE: dict[tuple[str, str], tuple[dict[str, tuple[str, str]], frozenset[str]]] = {}
+
+
+@dataclass
+class _ReleaseTypeScope:
+    nodes: dict[str, tuple[str, str]]
+    typed_chapters: frozenset[str]
+    typed_volumes: frozenset[str]
+    chapter_kinds: dict[tuple[str, str], dict[str, str]] = field(default_factory=dict)
+
+
+_TYPE_RELEASE_CACHE: dict[tuple[str, str], _ReleaseTypeScope] = {}
 
 
 def is_type_key(key: object) -> bool:
@@ -41,7 +52,7 @@ def _scope_for_key(key: str, parents: dict[str, str]) -> tuple[str, str]:
     return "", ""
 
 
-def _release_type_scope(resolver: Any) -> tuple[dict[str, tuple[str, str]], frozenset[str]]:
+def _release_type_scope(resolver: Any) -> _ReleaseTypeScope:
     identity = (str(getattr(resolver, "release_id", "") or ""),
                 str(getattr(resolver, "content_hash", "") or ""))
     if identity[0] and identity in _TYPE_RELEASE_CACHE:
@@ -54,7 +65,11 @@ def _release_type_scope(resolver: Any) -> tuple[dict[str, tuple[str, str]], froz
               for node in nodes}
     typed = frozenset(scopes[str(node.stable_key)][1] for node in nodes
                       if is_type_key(node.stable_key) and scopes[str(node.stable_key)][1])
-    result = scopes, typed
+    result = _ReleaseTypeScope(
+        nodes=scopes,
+        typed_chapters=typed,
+        typed_volumes=frozenset(volume for volume, chapter in scopes.values() if chapter in typed),
+    )
     if identity[0]:
         _TYPE_RELEASE_CACHE[identity] = result
         while len(_TYPE_RELEASE_CACHE) > _TYPE_RELEASE_CACHE_LIMIT:
@@ -87,12 +102,17 @@ def chapter_target_kinds(resolver: Any, volume_id: object) -> dict[str, str]:
     volume = curriculum_volume(volume_id=selected)
     if volume is None:
         return {}
-    scopes, typed = _release_type_scope(resolver)
-    if selected == "bnu24-math-g8-upper" and any(v == selected and c in typed for v, c in scopes.values()):
-        return {str(chapter["knowledge_id"]): "type" for chapter in volume["chapters"]}
-    fallback = "knowledge" if _knowledge_fallback(resolver, selected) else "skill"
-    return {str(chapter["knowledge_id"]): ("type" if str(chapter["knowledge_id"]) in typed else fallback)
+    scope = _release_type_scope(resolver)
+    fallback = ("type" if selected == "bnu24-math-g8-upper" and selected in scope.typed_volumes
+                else "knowledge" if _knowledge_fallback(resolver, selected) else "skill")
+    cache_key = selected, fallback
+    kinds = scope.chapter_kinds.get(cache_key)
+    if kinds is None:
+        kinds = {str(chapter["knowledge_id"]): (
+            "type" if str(chapter["knowledge_id"]) in scope.typed_chapters else fallback)
             for chapter in volume["chapters"]}
+        scope.chapter_kinds[cache_key] = kinds
+    return dict(kinds)
 
 
 def chapter_target_kind(resolver: Any, volume_id: object, chapter_id: object = "") -> str:
@@ -110,8 +130,8 @@ def chapter_target_kind(resolver: Any, volume_id: object, chapter_id: object = "
 
 def target_kind_for_key(key: object, resolver: Any, volume_id: object = "") -> str:
     clean_key = str(key or "").strip()
-    scopes, _typed = _release_type_scope(resolver)
-    volume, chapter = scopes.get(clean_key) or _scope_for_key(clean_key, {})
+    scope = _release_type_scope(resolver)
+    volume, chapter = scope.nodes.get(clean_key) or _scope_for_key(clean_key, {})
     selected = str(volume_id or "").strip() or volume
     if selected and chapter:
         return chapter_target_kind(resolver, selected, chapter)
@@ -120,13 +140,13 @@ def target_kind_for_key(key: object, resolver: Any, volume_id: object = "") -> s
 
 def type_keys_active(resolver: Any, volume_id: object = "", chapter_id: object = "") -> bool:
     """Whether this release, volume or chapter contains active type nodes."""
-    scopes, typed = _release_type_scope(resolver)
+    scope = _release_type_scope(resolver)
     selected = str(volume_id or "").strip()
     if chapter_id:
-        return _chapter_key(selected, chapter_id) in typed
+        return _chapter_key(selected, chapter_id) in scope.typed_chapters
     if selected:
-        return any(volume == selected and chapter in typed for volume, chapter in scopes.values())
-    return bool(typed)
+        return selected in scope.typed_volumes
+    return bool(scope.typed_chapters)
 
 
 def is_training_target(key: object, resolver: Any, volume_id: object = "", chapter_id: object = "") -> bool:

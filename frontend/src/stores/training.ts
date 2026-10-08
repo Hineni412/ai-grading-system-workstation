@@ -79,7 +79,7 @@ export const useTrainingStore = defineStore('training', () => {
 
   let generation = 0
   let diagnosisController: AbortController | null = null
-  let diagnosisScopeKey = ''
+  const diagnosisScopeKey = ref('')
   // Browsing a chapter or returning from its editor reuses the last result.
   // Adoption still makes a fresh request; these previews never authorize a write.
   const groupDiagnosisCache = new Map<string, {
@@ -111,7 +111,7 @@ export const useTrainingStore = defineStore('training', () => {
   }
 
   const hasCurrentDiagnosis = computed(
-    () => diagnosis.value !== null && diagnosisScopeKey === scopeKey(),
+    () => diagnosis.value !== null && diagnosisScopeKey.value === scopeKey(),
   )
   const knowledgePoints = computed(() => uniqueText(
     diagnosis.value?.students.flatMap(
@@ -176,7 +176,7 @@ export const useTrainingStore = defineStore('training', () => {
     generation += 1
     diagnosisController?.abort()
     diagnosisController = null
-    diagnosisScopeKey = ''
+    diagnosisScopeKey.value = ''
     analysisState.value = 'idle'
     errorMessage.value = ''
   }
@@ -224,7 +224,7 @@ export const useTrainingStore = defineStore('training', () => {
     diagnosisController = controller
     const requestGeneration = generation
     const requestScopeKey = scopeKey()
-    diagnosisScopeKey = ''
+    diagnosisScopeKey.value = ''
     analysisState.value = 'loading'
     errorMessage.value = ''
     try {
@@ -241,7 +241,7 @@ export const useTrainingStore = defineStore('training', () => {
         rememberGroupDiagnosis(JSON.stringify({ ...initialGroupBody, response_mode: 'display' }), next, next)
       }
       diagnosis.value = next
-      diagnosisScopeKey = requestScopeKey
+      diagnosisScopeKey.value = requestScopeKey
       analysisState.value = next.students.some(
         (student) => student.weak_points.length > 0,
       ) ? 'ready' : 'empty'

@@ -171,7 +171,7 @@ def test_training_targets_follow_each_volumes_active_nodes(revision):
     from question_bank.knowledge_graph_release.loader import (
         load_release_for_taxonomy_revision, load_taxonomy_catalog_for_release,
     )
-    from question_bank.question_types import is_training_target, type_keys_active
+    from question_bank.question_types import chapter_target_kinds, is_training_target, type_keys_active
     from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
 
     release = load_release_for_taxonomy_revision(revision)
@@ -179,6 +179,11 @@ def test_training_targets_follow_each_volumes_active_nodes(revision):
     for volume in load_curriculum_catalog()["volumes"]:
         volume_id = volume["id"]
         converted = revision == 11 and volume_id == "bnu24-math-g8-upper"
+        expected_kind = ("type" if converted else "knowledge"
+                         if revision == 11 and volume_id == "bnu24-math-g8-lower" else "skill")
+        assert chapter_target_kinds(resolver, volume_id) == {
+            str(chapter["knowledge_id"]): expected_kind for chapter in volume["chapters"]
+        }
         assert type_keys_active(resolver, volume_id) is converted
         # Repeated cross-volume queries must not reuse the first volume's mode.
         assert type_keys_active(resolver, "bnu24-math-g8-upper") is (revision == 11)
@@ -234,3 +239,93 @@ def test_chapter_targets_keep_old_volumes_and_mix_new_volume():
     assert is_training_target(old_skill, resolver)
     assert training_keys((type_key, topic, current_skill), resolver) == {type_key, topic}
     assert chapter_target_kind(resolver, "bnu24-math-g7-upper") == "skill"
+
+
+def test_chapter_target_mapping_reuses_work_without_sharing_results(monkeypatch):
+    from types import SimpleNamespace
+    from question_bank import question_types as module
+
+    monkeypatch.setattr(module, "_TYPE_RELEASE_CACHE", {})
+    volume_id = "bnu24-math-g8-upper"
+    volume = dict(module.curriculum_volume(volume_id=volume_id))
+    expected = {str(chapter["knowledge_id"]): "type" for chapter in volume["chapters"]}
+    iterations = 0
+
+    class CountedChapters(list):
+        def __iter__(self):
+            nonlocal iterations
+            iterations += 1
+            return super().__iter__()
+
+    volume["chapters"] = CountedChapters(volume["chapters"])
+    monkeypatch.setattr(module, "curriculum_volume", lambda **_kwargs: volume)
+    resolver = SimpleNamespace(
+        release_id="TEST-reused-target-mapping", content_hash="content-v1", taxonomy_revision=11,
+        nodes=[SimpleNamespace(stable_key="kp_bnu24_math_g8_upper_1_1_t01")],
+    )
+    first = module.chapter_target_kinds(resolver, volume_id)
+    assert first == expected
+    first.clear()
+    for _ in range(20):
+        assert module.chapter_target_kinds(copy.copy(resolver), volume_id) == expected
+    assert iterations == 1
+
+
+def test_chapter_target_cache_follows_release_and_content_version(monkeypatch):
+    from types import SimpleNamespace
+    from question_bank import question_types as module
+
+    monkeypatch.setattr(module, "_TYPE_RELEASE_CACHE", {})
+    monkeypatch.setattr(module, "_TYPE_RELEASE_CACHE_LIMIT", 1)
+    resolver = SimpleNamespace(
+        release_id="TEST-target-version-a", content_hash="content-v1", taxonomy_revision=11,
+        nodes=[SimpleNamespace(stable_key="kp_bnu24_math_g8_upper_1_1_t01")],
+    )
+    assert module.chapter_target_kind(resolver, "bnu24-math-g8-upper") == "type"
+    resolver.content_hash = "content-v2"
+    resolver.nodes = []
+    assert module.chapter_target_kind(resolver, "bnu24-math-g8-upper") == "skill"
+    resolver.release_id = "TEST-target-version-b"
+    resolver.nodes = [SimpleNamespace(stable_key="kp_bnu24_math_g8_upper_1_1_t01")]
+    assert module.chapter_target_kind(resolver, "bnu24-math-g8-upper") == "type"
+    assert len(module._TYPE_RELEASE_CACHE) == 1
+    module._clear_type_cache_for_tests()
+    resolver.nodes = []
+    assert module.chapter_target_kind(resolver, "bnu24-math-g8-upper") == "skill"
+
+
+def test_chapter_target_cache_respects_current_fallback_policy(monkeypatch):
+    from types import SimpleNamespace
+    from question_bank import question_types as module
+
+    monkeypatch.setattr(module, "_TYPE_RELEASE_CACHE", {})
+    resolver = SimpleNamespace(
+        release_id="TEST-target-policy", content_hash="content-v1", taxonomy_revision=11,
+        knowledge_target_volumes=(), nodes=[],
+    )
+    volume_id = "bnu24-math-g7-upper"
+    assert module.chapter_target_kind(resolver, volume_id) == "skill"
+    resolver.knowledge_target_volumes = (volume_id,)
+    assert module.chapter_target_kind(resolver, volume_id) == "knowledge"
+    resolver.taxonomy_revision = 10
+    assert module.chapter_target_kind(resolver, volume_id) == "skill"
+    assert module.chapter_target_kind(resolver, "bnu24-math-g8-lower") == "skill"
+    resolver.taxonomy_revision = 11
+    assert module.chapter_target_kind(resolver, volume_id) == "knowledge"
+    assert module.chapter_target_kind(resolver, "bnu24-math-g8-lower") == "knowledge"
+    resolver.knowledge_target_volumes = ()
+    assert module.chapter_target_kind(resolver, volume_id) == "skill"
+
+
+def test_chapter_target_mapping_does_not_cache_unversioned_resolvers(monkeypatch):
+    from types import SimpleNamespace
+    from question_bank import question_types as module
+
+    monkeypatch.setattr(module, "_TYPE_RELEASE_CACHE", {})
+    resolver = SimpleNamespace(nodes=[], content_hash="content-v1", taxonomy_revision=11)
+    assert module.chapter_target_kind(resolver, "bnu24-math-g8-upper") == "skill"
+    resolver.nodes.append(SimpleNamespace(stable_key="kp_bnu24_math_g8_upper_1_1_t01"))
+    assert module.chapter_target_kind(resolver, "bnu24-math-g8-upper") == "type"
+    assert module.chapter_target_kinds(resolver, "TEST-unknown-volume") == {}
+    assert module.chapter_target_kinds(None, "TEST-unknown-volume") == {}
+    assert not module._TYPE_RELEASE_CACHE

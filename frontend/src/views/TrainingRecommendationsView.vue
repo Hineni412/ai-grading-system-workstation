@@ -306,7 +306,7 @@ async function analyze(): Promise<void> {
   }
 }
 
-async function applyEvidenceScope(query: GraphQueryInput, reuseCurrent = false): Promise<void> {
+async function applyEvidenceScope(query: GraphQueryInput): Promise<void> {
   query = semesterEvidenceQuery(query.scope, curriculumScope.selectedVolumeId)
   if (trainingMode.value === 'chapter') chapterScope.value = query
   saveEvidenceScope(query)
@@ -324,7 +324,7 @@ async function applyEvidenceScope(query: GraphQueryInput, reuseCurrent = false):
   training.setExamScope({
     mode: 'semester', sessionIds: [], curriculumVolumeId: curriculumScope.selectedVolumeId ?? '',
   })
-  if (!reuseCurrent || !training.hasCurrentDiagnosis) await analyze()
+  if (!training.hasCurrentDiagnosis && training.analysisState !== 'loading') await analyze()
 }
 
 async function generatePaperDraft(): Promise<void> {
@@ -424,7 +424,7 @@ async function loadStudents(): Promise<void> {
         const name = names.size === 1 ? [...names][0] : null
         scope = name ? { mode: 'class', class_ids: [name] } : { mode: 'all' }
       }
-      await applyEvidenceScope(semesterEvidenceQuery(scope, curriculumScope.selectedVolumeId), true)
+      await applyEvidenceScope(semesterEvidenceQuery(scope, curriculumScope.selectedVolumeId))
     }
   } catch {
     if (controller.signal.aborted) return
@@ -519,7 +519,7 @@ watch(trainingMode, (mode, previous) => {
   if (mode !== 'chapter' || previous !== 'student') return
   const active = activeEvidenceQuery.value
   const query = chapterScope.value ?? (active ? { ...active, scope: { ...active.scope, score_rate_min: null, score_rate_max: null } } : null)
-  if (query) void applyEvidenceScope(query, true)
+  if (query) void applyEvidenceScope(query)
 })
 
 watch([trainingMode, () => training.diagnosis, paperSourceKey], () => {

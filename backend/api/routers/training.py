@@ -314,6 +314,9 @@ def _build_grouped_diagnosis(service, grouping_module, *, scope_dump, exam_scope
 
 def _grouped_diagnosis_response_bytes(service, module, *, scope, exam_scope, grouping,
                                      include_student_detail=True, response_mode='full') -> bytes:
+    record_request('grouped_diagnosis', scope=scope, exam_scope=exam_scope,
+                   params={'grouping': grouping.model_dump(),
+                           'include_student_detail': include_student_detail, 'response_mode': response_mode})
     # Reuse the existing complete asset manifest. Database signatures alone do
     # not detect edits to rich content, image fallbacks or preview files.
     from question_bank.services.question_read_service import _skill_asset_manifest
@@ -332,8 +335,6 @@ def _grouped_diagnosis_response_bytes(service, module, *, scope, exam_scope, gro
     day = datetime.now(UTC).date() if callable(module) else module.clock().date()
     key = ('grouping-public-v2', json.dumps(grouping.model_dump(), sort_keys=True), str(day),
            tuple(sorted(manifest.items())))
-    record_request('grouped_diagnosis', scope=scope, exam_scope=exam_scope,
-                   params={'grouping': grouping.model_dump()})
     return _diagnosis_response_bytes(service, scope=scope, exam_scope=exam_scope,
         grouping_cache_key=key, diagnosis_factory=factory, include_student_detail=include_student_detail,
         response_mode=response_mode)
@@ -360,7 +361,9 @@ def build_training_diagnosis(
     try:
         scope_dump = body.scope.model_dump(exclude_none=True)
         exam_scope_dump = body.exam_scope.model_dump(exclude_none=True)
-        record_request("diagnosis", scope=scope_dump, exam_scope=exam_scope_dump, params={})
+        record_request("diagnosis", scope=scope_dump, exam_scope=exam_scope_dump,
+                       params={'include_student_detail': body.include_student_detail,
+                               'response_mode': body.response_mode})
         if body.grouping is None and isinstance(service, DiagnosisProfileService):
             return Response(content=_diagnosis_response_bytes(service, scope=scope_dump,
                             exam_scope=exam_scope_dump, include_student_detail=body.include_student_detail,

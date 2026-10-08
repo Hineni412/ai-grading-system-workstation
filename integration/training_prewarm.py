@@ -485,6 +485,13 @@ class TrainingPrewarmWorker:
         seen: set[tuple[str, str, str, str]],
         targets: list | None = None,
     ) -> list[Callable[[], None]]:
+        diagnosis_params = {'include_student_detail': True, 'response_mode': 'display'}
+        if kind in {'diagnosis', 'grouped_diagnosis'}:
+            diagnosis_params = {
+                'include_student_detail': params.get('include_student_detail', True),
+                'response_mode': params.get('response_mode', 'full'),
+            }
+            params = {**params, **diagnosis_params}
         identity = (
             kind,
             json.dumps(scope, sort_keys=True, default=str),
@@ -492,10 +499,15 @@ class TrainingPrewarmWorker:
             json.dumps(dict(params), sort_keys=True, default=str),
         )
         tasks: list[Callable[[], None]] = []
-        # Exam evidence does not consume tag profiles; every other kind does.
-        if kind != "assembly_exam" and ("diagnosis", identity[1], identity[2], "") not in seen:
-            seen.add(("diagnosis", identity[1], identity[2], ""))
-            tasks.append(lambda s=scope, e=exam_scope: self._compute("diagnosis", s, e, {}))
+        diagnosis_identity = ('diagnosis', identity[1], identity[2],
+                              json.dumps(diagnosis_params, sort_keys=True))
+        # Other panels need the shared profile, not another response format.
+        needs_diagnosis = (kind in {'diagnosis', 'grouped_diagnosis'}
+                           or not any(key[:3] == diagnosis_identity[:3] for key in seen))
+        if kind != 'assembly_exam' and needs_diagnosis and diagnosis_identity not in seen:
+            seen.add(diagnosis_identity)
+            tasks.append(lambda s=scope, e=exam_scope, p=diagnosis_params:
+                         self._compute('diagnosis', s, e, p))
         if kind == "overview":
             volume_id = str(params.get("volume_id") or "")
             if volume_id and identity not in seen:
@@ -579,12 +591,13 @@ class TrainingPrewarmWorker:
                 curriculum_volume_id=volume_id).model_dump()
         for scope in self._startup_scopes():
             defaults = [
-                ("diagnosis", {}),
+                ("diagnosis", {'include_student_detail': True, 'response_mode': 'display'}),
                 ("overview", {"volume_id": volume_id}),
                 ("graph", {"knowledge_keys": [], "prerequisite_depth": 1}),
             ]
             if grouping is not None:
-                defaults.append(('grouped_diagnosis', {'grouping': grouping}))
+                defaults.append(('grouped_diagnosis', {'grouping': grouping,
+                    'include_student_detail': True, 'response_mode': 'display'}))
             for kind, params in defaults:
                 tasks.extend(self._tasks_for(kind, dict(scope), dict(exam_scope), params, seen))
         for class_name in self._class_names():
@@ -745,6 +758,10 @@ class TrainingPrewarmWorker:
             # Only the existing idle background refresher writes derived local
             # profiles. Foreground recommendation requests remain read-only.
             service.persist_snapshots = True
+            response_options = {
+                'include_student_detail': params.get('include_student_detail', True),
+                'response_mode': params.get('response_mode', 'full'),
+            }
             if kind == "overview":
                 overview_payload(
                     service,
@@ -770,10 +787,10 @@ class TrainingPrewarmWorker:
                 module = PersonalizedRecommendationModule(db_path=self._paths.qb_db_path,
                     data_root=self._paths.data_root, semester_mastery=service.semester_mastery)
                 _grouped_diagnosis_response_bytes(service, module, scope=scope, exam_scope=exam_scope,
-                    grouping=TrainingGroupingRequest.model_validate(params['grouping']))
+                    grouping=TrainingGroupingRequest.model_validate(params['grouping']), **response_options)
             else:
                 from backend.api.routers.training import _diagnosis_response_bytes
-                _diagnosis_response_bytes(service, scope=scope, exam_scope=exam_scope)
+                _diagnosis_response_bytes(service, scope=scope, exam_scope=exam_scope, **response_options)
 
     def _compute_graph(
         self,

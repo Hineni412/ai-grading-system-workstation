@@ -1955,10 +1955,10 @@ class PersonalizedRecommendationModule:
                 "unassigned": [{"student_id": student["student_id"], "student_name": student["student_name"],
                                 "class_id": student["class_id"],
                                 "reason_kind": ("no_group_fit" if needs[student["student_id"]] else "no_direct_evidence"),
-                                "reason": ("与其他同学共用一卷时，本人能练到的薄弱技能少于单独出卷的四分之三，或可共用的题不足 6 道；建议一人一卷。"
+                                "reason": ("与其他同学共用一卷时，本人能练到的补弱目标少于单独出卷的四分之三，或可共用的题不足 6 道；建议一人一卷。"
                                            if needs[student["student_id"]] else "暂无足够的直接薄弱证据；无证据、整题或多目标综合失分不按不会处理。")}
                                for student in normalized["students"] if not _selection_only and student["student_id"] not in covered],
-                "warnings": ["按同技能多次作答形成的适合难度范围分组，共用卷须保留每位成员至少四分之三的个人补弱练习；无证据不推断薄弱。"]}
+                "warnings": ["按同一训练目标多次作答形成的适合难度范围分组，共用卷须保留每位成员至少四分之三的个人补弱练习；无证据不推断薄弱。"]}
 
     def _group_matching_pools(
         self, *, diagnosis: Mapping[str, Any], config: PersonalizedRecommendationConfig,
@@ -2134,7 +2134,7 @@ class PersonalizedRecommendationModule:
                 "compatibility": round(min(similarities, default=0), 4),
                 "ready": not issues, "issues": list(dict.fromkeys(issues)), "warnings": warnings,
                 "available_question_count": count, "recent_excluded_count": len(removed),
-                "reason": "组内成员共用一套题：每人能练到的薄弱技能不少于单独出卷的四分之三，整卷至少 6 道；先覆盖尚未练到的成员失分内容，再增加练习。"}
+                "reason": "组内成员共用一套题：每人能练到的补弱目标不少于单独出卷的四分之三，整卷至少 6 道；先覆盖尚未练到的成员失分内容，再增加练习。"}
 
     def create(
         self,

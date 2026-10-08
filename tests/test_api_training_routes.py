@@ -498,7 +498,19 @@ def test_idle_prewarm_saves_local_profiles_without_blocking_grading(training_ser
     # the current panel never sends.
     assert kinds == ['diagnosis', 'overview', 'graph', 'grouped_diagnosis',
                      'assembly_exam', 'assembly_exam']
-    group_request = next(item[3]['grouping'] for item in planned if item[0] == 'grouped_diagnosis')
+    display_options = {'include_student_detail': True, 'response_mode': 'display'}
+    assert planned[0][3] == display_options
+    group_params = next(item[3] for item in planned if item[0] == 'grouped_diagnosis')
+    assert {key: group_params[key] for key in display_options} == display_options
+    group_request = group_params['grouping']
+    seen = set()
+    startup_tasks = worker._startup_tasks(seen)
+    assert len(startup_tasks) == len(planned)
+    assert worker._tasks_for('grouped_diagnosis', planned[3][1], planned[3][2], group_params, seen) == []
+    full_group_params = {**group_params, 'response_mode': 'full'}
+    assert len(worker._tasks_for('grouped_diagnosis', planned[3][1], planned[3][2], full_group_params, seen)) == 2
+    assert worker._tasks_for('grouped_diagnosis', planned[3][1], planned[3][2],
+                             {'grouping': group_request}, seen) == []
     assert group_request['scope_keys'] == ['kp_bnu24_math_g8_upper_1']
     assert (group_request['question_count'], group_request['difficulty_max'],
             group_request['max_written_questions'], group_request['recent_activity_count']) == (10, 8, 2, 3)
@@ -512,6 +524,67 @@ def test_idle_prewarm_saves_local_profiles_without_blocking_grading(training_ser
     worker._startup_done = False
     assert worker.tick()
     assert worker.batches[-1][0] == 1
+
+
+@pytest.mark.parametrize('response_options', [
+    {}, {'include_student_detail': False}, {'response_mode': 'display'},
+    {'response_mode': 'display', 'include_student_detail': False},
+])
+@pytest.mark.parametrize('grouped', [False, True])
+def test_prewarm_replays_requested_diagnosis_bytes(
+    training_client, training_services, monkeypatch, response_options, grouped,
+):
+    from datetime import UTC, datetime
+    from backend.api.routers import training as router
+    from integration import training_prewarm as prewarm
+    from question_bank.recommendation import personalized
+
+    prewarm.clear_recent_requests()
+    service = training_services
+    paths = SimpleNamespace(db_path=service.grading_db_path, qb_db_path=service.question_bank_db_path,
+                            data_root=service.data_root)
+    module = SimpleNamespace(db_path=service.question_bank_db_path,
+        current_knowledge=SimpleNamespace(release_id='TEST-prewarm-release'),
+        clock=lambda: datetime(2026, 10, 8, tzinfo=UTC),
+        chapter_groups=lambda **kwargs: {'groups': [], 'selection': None, 'unassigned': [],
+                                        'warnings': ['TEST-prewarm-group']})
+    training_client.app.dependency_overrides[router._grouping_module] = lambda: module
+    monkeypatch.setattr(personalized, 'PersonalizedRecommendationModule', lambda **kwargs: module)
+    body = {'scope': {'mode': 'student', 'student_ids': ['12']},
+            'exam_scope': {'mode': 'current', 'session_ids': [14]}, **response_options}
+    if grouped:
+        body['grouping'] = {'scope_keys': ['kp_TEST-prewarm']}
+    expected = training_client.post('/api/training/diagnosis', json=body)
+    assert expected.status_code == 200, expected.text
+    options = {'include_student_detail': True, 'response_mode': 'full', **response_options}
+    recorded = prewarm.recent_requests()
+    assert recorded[0]['kinds']['diagnosis'] == options
+    if grouped:
+        assert {key: recorded[0]['kinds']['grouped_diagnosis'][key] for key in options} == options
+
+    _clear_profile_memory()
+    router._GROUPING_RESULT_CACHE.clear()
+    worker = prewarm.TrainingPrewarmWorker(paths, None, foreground_quiet_seconds=0)
+    worker._startup_done = True
+    monkeypatch.setattr(worker, '_warm_question_bank', lambda generation: None)
+    generation = prewarm._recent_generation()
+    for task in worker._refresh_plan():
+        task()
+    assert prewarm.recent_requests() == recorded
+    assert prewarm._recent_generation() == generation
+
+    monkeypatch.setattr(DiagnosisProfileService, 'build_profiles',
+                        lambda *args, **kwargs: pytest.fail('prewarmed response rebuilt profiles'))
+    monkeypatch.setattr(router, '_build_grouped_diagnosis',
+                        lambda *args, **kwargs: pytest.fail('prewarmed response rebuilt grouping'))
+    repeated = training_client.post('/api/training/diagnosis', json=body)
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.content == expected.content
+    _clear_profile_memory()
+    restored = training_client.post('/api/training/diagnosis', json=body)
+    assert restored.status_code == 200, restored.text
+    assert restored.content == expected.content
+    prewarm.clear_recent_requests()
 
 
 def test_prewarm_yields_to_foreground_requests(training_services, monkeypatch):
@@ -596,7 +669,10 @@ def test_recent_requests_round_trip_and_prioritize_latest_scope(training_service
     # preparation, even though its request kind was recorded afterwards.
     assert [item[0] for item in planned] == ['diagnosis', 'grouped_diagnosis', 'overview',
         'browse', 'diagnosis', 'assembly_exam', 'assistant', 'assistant']
-    assert planned[1] == ('grouped_diagnosis', latest_scope, latest_exams, grouping_params)
+    full_options = {'include_student_detail': True, 'response_mode': 'full'}
+    assert planned[0][3] == full_options
+    assert planned[1] == ('grouped_diagnosis', latest_scope, latest_exams,
+                          {**grouping_params, **full_options})
     # Switching back to a stored scope schedules it first after startup too;
     # repeated visits without changing scope or parameters do not add batches.
     worker._startup_done = True

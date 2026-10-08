@@ -362,6 +362,10 @@ describe('training recommendations view', () => {
     expect(trainingApiMock.diagnose.mock.calls.map(([body]) => body.grouping?.scope_keys)).toEqual(
       failGrouping ? [[chapterKey], undefined, [chapterKey]] : [[chapterKey]])
     expect(current.grouping).toEqual(failGrouping ? undefined : full.grouping)
+    const requestCount = trainingApiMock.diagnose.mock.calls.length
+    view.host.querySelector<HTMLButtonElement>('.training-scope-bar [aria-pressed="true"]')!.click()
+    await settle()
+    expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(requestCount)
   })
 
   it.each([['comprehensive', 'training'], ['focused', 'training'], ['focused', 'handout']] as const)('sends learned chapters for %s / %s and keeps the chosen rules on return', async (scopeMode, purpose) => {
@@ -428,7 +432,7 @@ describe('training recommendations view', () => {
     expect(trainingApiMock.diagnose.mock.calls[2]?.[0].scope.score_rate_min).toBe(.2)
   })
 
-  it('cancels an in-flight diagnosis and publishes only the latest class scope', async () => {
+  it('reuses the current pending or ready diagnosis and cancels requests when the class changes', async () => {
     let resolveFirst!: (value: TrainingDiagnosis) => void
     const first = new Promise<TrainingDiagnosis>((resolve) => { resolveFirst = resolve })
     const secondDiagnosis: TrainingDiagnosis = {
@@ -464,8 +468,15 @@ describe('training recommendations view', () => {
 
     const { host } = await mountView('/training?mode=student')
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(1))
+    const initialSignal = trainingApiMock.diagnose.mock.calls[0]?.[1]
+    host.querySelector<HTMLButtonElement>('.training-scope-bar [aria-pressed="true"]')!.click()
+    host.querySelector<HTMLButtonElement>('.training-scope-bar [aria-pressed="true"]')!.click()
+    await settle()
+    expect(trainingApiMock.diagnose).toHaveBeenCalledOnce()
+    expect(initialSignal?.aborted).toBe(false)
     ;[...host.querySelectorAll<HTMLButtonElement>('.training-scope-bar button')].find(item => item.textContent === '七年级二班')!.click()
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2))
+    expect(initialSignal?.aborted).toBe(true)
     resolveFirst(diagnosis)
     await vi.waitFor(() => expect(host.textContent).toContain('匿名学生乙'))
 
@@ -473,6 +484,28 @@ describe('training recommendations view', () => {
     expect(trainingApiMock.diagnose.mock.calls[1]?.[0]).toMatchObject({
       scope: { mode: 'class', class_ids: ['七年级二班'] },
     })
+    host.querySelector<HTMLButtonElement>('.training-scope-bar [aria-pressed="true"]')!.click()
+    await settle()
+    expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2)
+    ;[...host.querySelectorAll<HTMLButtonElement>('.training-scope-bar button')].find(item => item.textContent === '全部学生')!.click()
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(3))
+    expect(trainingApiMock.diagnose.mock.calls[2]?.[0].scope.mode).toBe('all')
+  })
+
+  it('retries a failed refresh from the current scope and keeps explicit refreshes fresh', async () => {
+    const { host, pinia } = await mountView('/training?mode=student')
+    const store = useTrainingStore(pinia)
+    await vi.waitFor(() => expect(store.hasCurrentDiagnosis).toBe(true))
+    trainingApiMock.diagnose.mockRejectedValueOnce(new Error('TEST diagnosis unavailable'))
+    await expect(store.analyze()).rejects.toThrow('TEST diagnosis unavailable')
+    expect(store.hasCurrentDiagnosis).toBe(false)
+    await settle()
+    host.querySelector<HTMLButtonElement>('.training-scope-bar [aria-pressed="true"]')!.click()
+    await vi.waitFor(() => expect(store.hasCurrentDiagnosis).toBe(true))
+    expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(3)
+    await store.analyze()
+    expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(4)
+    expect(store.hasCurrentDiagnosis).toBe(true)
   })
 
   it('checks seventeen adopted members and generates one shared draft without resetting it on diagnosis refresh', async () => {
