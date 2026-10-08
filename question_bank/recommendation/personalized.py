@@ -61,6 +61,7 @@ from question_bank.training_criteria import (
     TrainingCriterionModule,
     usable_training_criterion,
 )
+from question_bank.training_criteria.analysis import source_content_hash_reuse
 
 ENGINE_VERSION = "personalized-recommendation-v27-skill-mastery-model"
 GROUPING_VERSION = "chapter-skill-quality-v9-shared-paper"
@@ -3497,6 +3498,7 @@ class PersonalizedRecommendationModule:
         )
         return _SOURCE_SNAPSHOT_CACHE.get_or_compute(key, produce)
 
+    @source_content_hash_reuse()
     def _source_snapshot_uncached(
         self,
         *,
@@ -3511,9 +3513,20 @@ class PersonalizedRecommendationModule:
     ]:
         excluded_ids = excluded_question_ids or set()
         pool_keys = set(knowledge_keys)
+        selected_ids = sorted(qid for qid in set(question_ids) if -(1 << 63) <= qid < (1 << 63))
+        id_batches = [selected_ids[start:start + 64]
+                      for start in range(0, len(selected_ids), 64)] if question_ids else [()]
+        rows, knowledge_rows, skill_rows, feature_rows = [], [], [], []
+        evidence_rows, evidence_version_rows = [], []
         with connect(self.db_path) as connection:
-            rows = connection.execute(
-                """
+            for ids in id_batches:
+                marks = ",".join("?" for _ in ids)
+                question_filter = f" AND q.id IN ({marks})" if ids else ""
+                tag_filter = f" AND qt.question_id IN ({marks})" if ids else ""
+                source_filter = f" AND question_id IN ({marks})" if ids else ""
+                evidence_filter = f" AND e.question_id IN ({marks})" if ids else ""
+                rows.extend(connection.execute(
+                    """
                 SELECT q.id, q.question_number, q.question_text, q.answer_text, q.image_paths, q.has_images,
                        q.question_type, q.difficulty, q.updated_at,
                        p.title AS paper_title, p.grade AS paper_grade,
@@ -3522,56 +3535,56 @@ class PersonalizedRecommendationModule:
                 LEFT JOIN papers p ON p.id = q.paper_id
                 WHERE COALESCE(q.is_deleted, 0) = 0
                   AND COALESCE(p.import_status, '') <> 'deleted'
-                ORDER BY q.id
-                """
-            ).fetchall()
-            if question_ids:
-                selected_ids = set(question_ids)
-                rows = [row for row in rows if int(row["id"]) in selected_ids]
-            knowledge_rows = connection.execute(
-                """
+                    """ + question_filter + " ORDER BY q.id", ids,
+                ).fetchall())
+                knowledge_rows.extend(connection.execute(
+                    """
                 SELECT qt.question_id, qt.tag_value
                 FROM question_tags qt
                 WHERE qt.tag_type IN (
                     'knowledge_point', 'canonical_knowledge_id'
                 )
                   AND TRIM(COALESCE(qt.tag_value, '')) <> ''
-                ORDER BY qt.question_id, qt.id
-                """
-            ).fetchall()
-            skill_rows = connection.execute(
-                """
+                    """ + tag_filter + " ORDER BY qt.question_id, qt.id", ids,
+                ).fetchall())
+                skill_rows.extend(connection.execute(
+                    """
                 SELECT qt.question_id, qt.tag_type, qt.tag_value
                 FROM question_tags qt
                 WHERE TRIM(COALESCE(qt.tag_value, '')) <> ''
-                ORDER BY qt.question_id, qt.id
-                """
-            ).fetchall()
-            feature_by_question = {}
-            for feature in connection.execute("SELECT * FROM question_part_difficulty_features WHERE is_active=1"):
-                feature_by_question.setdefault(int(feature["question_id"]), []).append(feature)
-            # Cheap identity-only preselection includes every stored criterion
-            # version. Live source and approved/current precedence are still
-            # checked below; a stale version can widen a read, never admit a题.
-            evidence_rows = connection.execute(
-                "SELECT question_id, criteria_json FROM training_criterion_versions "
-                "WHERE status IN ('approved', 'proposed')"
-            ).fetchall() if pool_keys else []
-            # Stored evidence IDs may include the graph release, while criteria
-            # embed the semantic version ID. Resolve that identity independently
-            # of optional difficulty profiles, without borrowing another version.
-            evidence_version_rows = connection.execute(
-                """
+                    """ + tag_filter + " ORDER BY qt.question_id, qt.id", ids,
+                ).fetchall())
+                feature_rows.extend(connection.execute(
+                    "SELECT * FROM question_part_difficulty_features WHERE is_active=1"
+                    + source_filter, ids,
+                ).fetchall())
+                # Cheap identity-only preselection includes every stored criterion
+                # version. Live source and approved/current precedence are still
+                # checked below; a stale version can widen a read, never admit a题.
+                if pool_keys:
+                    evidence_rows.extend(connection.execute(
+                        "SELECT question_id, criteria_json FROM training_criterion_versions "
+                        "WHERE status IN ('approved', 'proposed')" + source_filter, ids,
+                    ).fetchall())
+                # Stored evidence IDs may include the graph release, while criteria
+                # embed the semantic version ID. Resolve that identity independently
+                # of optional difficulty profiles, without borrowing another version.
+                evidence_version_rows.extend(connection.execute(
+                    """
                 SELECT e.question_id, e.evidence_version_id,
                        json_extract(e.evidence_json, '$.version_id') AS semantic_version_id
                 FROM question_solution_evidence_versions e
                 LEFT JOIN question_scope_summary s ON s.question_id=e.question_id
                 WHERE e.status IN ('approved', 'proposed')
+                    """ + evidence_filter + """
                 ORDER BY COALESCE(e.graph_release_id = ?, 0) DESC,
                          COALESCE(e.evidence_version_id = s.evidence_version_id, 0) DESC,
                          e.created_at DESC, e.evidence_version_id DESC
-                """, (self.current_knowledge.release_id,),
-            ).fetchall()
+                    """, (*ids, self.current_knowledge.release_id),
+                ).fetchall())
+        feature_by_question = {}
+        for feature in feature_rows:
+            feature_by_question.setdefault(int(feature["question_id"]), []).append(feature)
         stable_by_question: dict[int, list[dict[str, str]]] = {}
         source_ids = {int(row["id"]) for row in rows}
         from question_bank.solution_evidence.knowledge_links import load_point_links

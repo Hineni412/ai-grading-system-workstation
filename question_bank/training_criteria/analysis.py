@@ -9,13 +9,18 @@ import math
 import re
 import threading
 import xml.etree.ElementTree as ET
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections import OrderedDict
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
 from dataclasses import replace as dataclass_replace
 from typing import Any, Literal, Protocol
 
 from backend.llm.errors import classify_transport_error
+from integration.result_cache import ResultCache
 from question_bank.models.tag_schema import (
     MAX_ABILITY_TAGS,
     PART_CONTEXT_KINDS,
@@ -2581,6 +2586,8 @@ def _content_text(value: object) -> str:
 
 _WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _MATH_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+_WORD_CONTENT_CACHE = ResultCache(limit=128, max_bytes=8 * 1024 * 1024)
+_WORD_CONTENT_CACHE_INPUT_LIMIT = 64 * 1024
 
 
 def _math_content(node: ET.Element) -> Any:
@@ -2604,6 +2611,14 @@ def _math_content(node: ET.Element) -> Any:
 
 
 def _word_content(xml: str, plain_text: str) -> list[Any]:
+    if len(xml) + len(plain_text) > _WORD_CONTENT_CACHE_INPUT_LIMIT:
+        return _parse_word_content(xml, plain_text)
+    return _WORD_CONTENT_CACHE.get_or_compute(
+        (xml, plain_text), lambda: _parse_word_content(xml, plain_text),
+    )
+
+
+def _parse_word_content(xml: str, plain_text: str) -> list[Any]:
     try:
         root = ET.fromstring(xml)
     except ET.ParseError as exc:
@@ -2665,6 +2680,128 @@ def _block_content(
     return content
 
 
+_SOURCE_CONTENT_REUSE_LIMIT = 1024
+
+
+class _SourceContentHashReuse(threading.local):
+    def __init__(self) -> None:
+        self.values: OrderedDict[bytes, Any] = OrderedDict()
+
+
+_SOURCE_CONTENT_REUSE: ContextVar[_SourceContentHashReuse | None] = ContextVar(
+    "source_content_hash_reuse", default=None,
+)
+
+
+@contextmanager
+def source_content_hash_reuse() -> Iterator[None]:
+    """Reuse immutable source checks only within this read batch.
+
+    A copied context gives each asset-loading thread its own bounded table.
+    Worker tables disappear when the loader's executor shuts down.
+    """
+    if _SOURCE_CONTENT_REUSE.get() is not None:
+        yield
+        return
+    reuse = _SourceContentHashReuse()
+    token = _SOURCE_CONTENT_REUSE.set(reuse)
+    try:
+        yield
+    finally:
+        reuse.values.clear()
+        _SOURCE_CONTENT_REUSE.reset(token)
+
+
+def _source_content_reuse_key(
+    question: QuestionAnalysisInput, *, current_only: bool,
+) -> bytes:
+    context = question.tagging_context
+    image_hashes = tuple(
+        (image.role, image.mime_type, image.sha256) for image in question.images
+    )
+    if current_only:
+        value = (
+            context.question_text, context.answer_text, context.question_type,
+            context.has_images, question.semantic_source,
+            question.word_question_blocks or question.rich_question_blocks,
+            question.word_answer_blocks or question.rich_answer_blocks,
+            image_hashes, question.reference_solution,
+        )
+    else:
+        value = (
+            question.question_id, context, question.question_type_confirmed,
+            question.semantic_source, question.rich_question_blocks,
+            question.rich_answer_blocks, question.word_question_blocks,
+            question.word_answer_blocks, image_hashes, question.reference_solution,
+            question.repair_context,
+            (question.taxonomy_snapshot.question_id,
+             question.taxonomy_snapshot.content_hash),
+        )
+    digest = hashlib.sha256()
+
+    def feed(item: object) -> None:
+        kind = type(item)
+        if item is None:
+            digest.update(b"none;")
+        elif kind in (str, bytes, bool, int, float):
+            if kind is bytes:
+                payload = item
+            elif kind is float:
+                payload = item.hex().encode("ascii")
+            else:
+                payload = str(item).encode("utf-8")
+            digest.update(kind.__name__.encode("ascii"))
+            digest.update(str(len(payload)).encode("ascii") + b":")
+            digest.update(payload)
+        elif kind in (list, tuple):
+            digest.update(kind.__name__.encode("ascii") + b"[")
+            for child in item:
+                feed(child)
+            digest.update(b"]")
+        elif kind is dict:
+            digest.update(b"dict{")
+            for key, child in item.items():
+                feed(key)
+                feed(child)
+            digest.update(b"}")
+        elif kind is TaggingContext:
+            digest.update(kind.__qualname__.encode("utf-8") + b"(")
+            for member in dataclass_fields(item):
+                feed(member.name)
+                feed(getattr(item, member.name))
+            digest.update(b")")
+        else:
+            raise TypeError("unsupported source content reuse key")
+
+    feed(value)
+    return digest.digest()
+
+
+def _reuse_source_content(
+    question: QuestionAnalysisInput | Mapping[str, Any], namespace: str,
+    compute: Callable[[], Any], *, current_only: bool = False,
+) -> Any:
+    reuse = _SOURCE_CONTENT_REUSE.get()
+    if reuse is None or not isinstance(question, QuestionAnalysisInput):
+        return compute()
+    try:
+        content_key = _source_content_reuse_key(question, current_only=current_only)
+        key = hashlib.sha256(namespace.encode("utf-8") + b"\0" + content_key).digest()
+    except (TypeError, ValueError, RecursionError, AttributeError, RuntimeError):
+        return compute()
+    values = reuse.values
+    if key in values:
+        values.move_to_end(key)
+        return values[key]
+    # Failed computations never enter the table. Preserve every source error.
+    result = compute()
+    values[key] = result
+    values.move_to_end(key)
+    while len(values) > _SOURCE_CONTENT_REUSE_LIMIT:
+        values.popitem(last=False)
+    return result
+
+
 def question_content_hash(
     question: QuestionAnalysisInput | Mapping[str, Any],
 ) -> str:
@@ -2673,6 +2810,15 @@ def question_content_hash(
     A row mapping can describe text-only content. For image or Word content,
     callers must supply loaded images and blocks to check the complete body.
     """
+    return _reuse_source_content(
+        question, "current", lambda: _compute_question_content_hash(question),
+        current_only=True,
+    )
+
+
+def _compute_question_content_hash(
+    question: QuestionAnalysisInput | Mapping[str, Any],
+) -> str:
     if isinstance(question, QuestionAnalysisInput):
         source: Mapping[str, Any] = {
             "question_text": question.tagging_context.question_text,
@@ -2812,6 +2958,17 @@ def compatible_source_content_hashes(
     kind: Literal["tag", "training_criteria", "solution_evidence"],
 ) -> frozenset[str]:
     """Recognise supported stored source hashes at the read boundary only."""
+    return _reuse_source_content(
+        question, f"compatible:{kind}",
+        lambda: _compute_compatible_source_content_hashes(question, kind=kind),
+    )
+
+
+def _compute_compatible_source_content_hashes(
+    question: QuestionAnalysisInput,
+    *,
+    kind: Literal["tag", "training_criteria", "solution_evidence"],
+) -> frozenset[str]:
     current = question_content_hash(question)
     if kind in {"tag", "training_criteria"}:
         hashes = {current}
@@ -4235,6 +4392,7 @@ __all__ = [
     "grading_config_skeleton_from_solution_evidence",
     "rubric_skeleton_from_solution_evidence",
     "question_content_hash",
+    "source_content_hash_reuse",
     "compatible_source_content_hashes",
     "source_content_hash_matches",
     "solution_evidence_source_content_hash",

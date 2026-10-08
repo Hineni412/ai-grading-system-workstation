@@ -13,6 +13,8 @@
 .scan-upload-summary__file { display: inline-flex; align-items: baseline; gap: var(--space-1); max-width: 100%; padding: var(--space-1) var(--space-2); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-subtle); font-size: var(--font-size-dense); }
 .scan-upload-summary__file strong { overflow: hidden; font-weight: var(--font-weight-medium); text-overflow: ellipsis; white-space: nowrap; }
 .scan-upload-summary__file small { flex: 0 0 auto; color: var(--color-text-muted); font-size: var(--font-size-caption); }
+.scan-upload-summary__actions { display: flex; flex: 0 0 auto; align-items: center; gap: var(--space-2); margin-inline-start: auto; }
+.scan-upload-summary__actions .scan-upload-summary__action { margin-inline-start: 0; }
 .scan-upload-summary__action { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; min-height: var(--control-height-default); margin-inline-start: auto; padding: 0 var(--space-3); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-text-primary); cursor: pointer; transition: background-color var(--duration-fast) ease, border-color var(--duration-fast) ease, box-shadow var(--duration-fast) ease; }
 .scan-upload-summary__action:hover { border-color: var(--color-border-strong); background: var(--color-bg-subtle); }
 .scan-upload-summary__action:focus-within { box-shadow: var(--focus-ring); }
@@ -25,7 +27,9 @@
 .scan-drop input { max-width: 100%; }
 .scan-drop__icon { display: grid; place-items: center; width: calc(var(--space-7) + var(--space-2)); height: calc(var(--space-7) + var(--space-2)); border: var(--border-width) solid var(--input); border-radius: var(--radius-control); background: var(--card); transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.3s ease, border-color var(--duration-base), color var(--duration-base); }
 .scan-drop span.scan-drop__icon { color: var(--color-text-muted); }
-.scan-drop__icon svg { width: var(--space-4); height: var(--space-4); }
+.scan-drop__icon svg { width: varCommand grep in …\AI阅卷系统_工作机版_v1.5.0
+cd "D:/AI阅卷系统_工作机版_v1.5.0" && grep -n "冻结\|批次\|预检\|重新上传\|补批\|追加" GRADING.md | head -40
+grep: GRADING.md: No such file or directory(--space-4); height: var(--space-4); }
 .scan-drop:hover:not([data-disabled="true"]) .scan-drop__icon { transform: translate(4px, -4px); border-color: var(--color-accent); box-shadow: var(--fx-shadow-card-hover); }
 .scan-drop:hover:not([data-disabled="true"]) span.scan-drop__icon { color: var(--color-accent); }
 .scan-drop span, .scan-file-list small { color: var(--color-text-secondary); }

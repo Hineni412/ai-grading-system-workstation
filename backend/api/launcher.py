@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import sys
 import threading
 import time
@@ -97,12 +98,17 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     import uvicorn
 
+    log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
+    log_config["loggers"]["ai_grading.api"] = {
+        "handlers": ["default"], "level": "INFO", "propagate": False,
+    }
     url = f"http://{args.host}:{args.port}/"
     server = uvicorn.Server(
         uvicorn.Config(
             "backend.api.app:app",
             host=args.host,
             port=args.port,
+            log_config=log_config,
         )
     )
     browser_thread = None

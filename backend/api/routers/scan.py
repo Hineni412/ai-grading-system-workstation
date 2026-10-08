@@ -128,10 +128,13 @@ async def upload_session_scan(
     request: Request,
     response: Response,
     replacement: bool = False,
+    append: bool = False,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadResponse:
     _require_session(db.sessions, session_id)
+    if replacement and append:
+        raise ApiError(422, "scan_upload_mode_conflict", "Conflicting upload modes")
     filename = unquote(str(request.headers.get("x-upload-filename") or ""))
     digest = str(request.headers.get("x-content-sha256") or "")
     media_type = str(request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
@@ -157,7 +160,14 @@ async def upload_session_scan(
                 content_sha256=digest,
                 source=upload,
                 replacement=replacement,
+                append=append,
             )
+    except ActiveScanAnalysisError as exc:
+        raise ApiError(
+            409,
+            "scan_analysis_still_active",
+            "预检任务仍在运行，结束后才能追加答卷文件。",
+        ) from exc
     except FrozenUploadBatchError as exc:
         raise ApiError(409, "scan_upload_batch_frozen", "Scan upload batch is frozen") from exc
     except ScanUploadTooLargeError as exc:
@@ -165,6 +175,18 @@ async def upload_session_scan(
     except InvalidScanUploadError as exc:
         raise ApiError(415, "invalid_scan_upload", "Scan upload type or metadata is invalid") from exc
     except ScanGradingWorkspaceError as exc:
+        if append and "frozen" in str(exc):
+            raise ApiError(
+                409,
+                "scan_append_requires_frozen_batch",
+                "只有已冻结的答卷批次才能追加文件。",
+            ) from exc
+        if append and "active" in str(exc):
+            raise ApiError(
+                409,
+                "scan_append_blocked",
+                "当前有预检或批改任务未结束，结束后才能追加答卷文件。",
+            ) from exc
         raise ApiError(422, "scan_upload_rejected", "Scan upload was rejected") from exc
     if result["duplicate"]:
         response.status_code = 200
@@ -191,18 +213,48 @@ def remove_session_scan_upload(
     upload_id: str,
     expected_revision: int,
     replacement: bool = False,
+    append: bool = False,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> ScanUploadBatchResponse:
     _require_session(db.sessions, session_id)
-    return _mutate_draft_uploads(
-        lambda: workspace.remove_upload(
+    if not append:
+        return _mutate_draft_uploads(
+            lambda: workspace.remove_upload(
+                session_id,
+                upload_id,
+                expected_revision=expected_revision,
+                replacement=replacement,
+            )
+        )
+    try:
+        batch = workspace.remove_upload(
             session_id,
             upload_id,
             expected_revision=expected_revision,
-            replacement=replacement,
+            append=True,
         )
-    )
+    except UploadBatchRevisionError as exc:
+        raise ApiError(409, "scan_upload_revision_conflict", "Scan upload batch changed") from exc
+    except FrozenUploadBatchError as exc:
+        raise ApiError(
+            409,
+            "scan_append_file_not_removable",
+            "冻结批次中只能移除本次新增的文件。",
+        ) from exc
+    except ActiveScanAnalysisError as exc:
+        raise ApiError(
+            409,
+            "scan_analysis_still_active",
+            "预检任务仍在运行，结束后才能移除新增文件。",
+        ) from exc
+    except ScanGradingWorkspaceError as exc:
+        raise ApiError(
+            409,
+            "scan_append_blocked",
+            "当前答卷状态不能移除新增文件。",
+        ) from exc
+    return ScanUploadBatchResponse.model_validate(batch)
 
 
 @router.delete(

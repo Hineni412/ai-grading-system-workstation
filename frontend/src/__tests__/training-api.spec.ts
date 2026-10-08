@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { trainingApi, decodePersonalizedRecommendationDraft } from '../api/training'
+import { trainingApi, decodePersonalizedRecommendationDraft, decodeTrainingDiagnosis, decodeTrainingDisplayDiagnosis } from '../api/training'
+import { createPinia, setActivePinia } from 'pinia'
+import { useTrainingStore } from '../stores/training'
 import { assertNoPathLikeKeys } from '../api/validation'
 import { previewWrongQuestionBooks } from '../api/students'
 
@@ -106,6 +108,81 @@ afterEach(() => {
 })
 
 describe('training group diagnosis api', () => {
+  it('decodes explicit display data into the store, retains unobserved items, and rejects mixed contracts', async () => {
+    const weak = { knowledge_key: 'TEST-type', knowledge_point: 'TEST题型', mastery: .4,
+      tier: 'weak', observation_count: 1, evidence_count: 0, source_reference_count: 2,
+      parent_knowledge_key: 'TEST-section' }
+    const display = { response_mode: 'display', diagnosis_identity: 'question_tag', target_kind: 'type',
+      scope: { mode: 'class', class_ids: ['TEST班'], student_ids: ['TEST-student'] },
+      exam_scope: { mode: 'semester', session_ids: [1], sessions: [{ session_id: 1, session_name: 'TEST考试' }] },
+      students: [{ student_id: 'TEST-student', student_name: 'TEST学生', student_code: 'TEST-1', class_id: 'TEST班',
+        weak_points: [weak, { ...weak, knowledge_key: 'TEST-unobserved', mastery: null,
+          tier: 'insufficient', observation_count: 0, source_reference_count: 0 }] }],
+      group_weak_points: [], knowledge_catalog: [{ knowledge_key: 'TEST-type', knowledge_point: 'TEST题型',
+        node_kind: 'type', parent_knowledge_key: 'TEST-section' }],
+      coverage: { covered_items: 1, total_items: 1, missing_items: {} },
+      confirmed_concept_ids: [], suggested_terms: [], unmapped_terms: [], warnings: [],
+    }
+    const fetch = vi.fn<(url: RequestInfo | URL, options?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify(display), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetch)
+    setActivePinia(createPinia())
+    const store = useTrainingStore()
+    store.setStudentScope({ mode: 'class', classId: 'TEST班', studentIds: [] })
+    store.setExamScope({ mode: 'semester', sessionIds: [], curriculumVolumeId: 'TEST-volume' })
+    await store.analyze()
+    expect(store.diagnosis).toEqual(display)
+    expect(store.analysisState).toBe('ready')
+    expect(store.diagnosis?.students[0]?.weak_points).toHaveLength(2)
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toMatchObject({ response_mode: 'display' })
+    expect(() => decodeTrainingDiagnosis(display)).toThrow('Invalid training diagnosis')
+    expect(() => decodeTrainingDisplayDiagnosis({ ...display, response_mode: 'full' })).toThrow()
+    expect(() => decodeTrainingDisplayDiagnosis({ ...display, include_student_detail: false })).toThrow()
+    for (const point of [{ ...weak, source_reference_count: -1 }, { ...weak, source_reference_count: 1.5 },
+      { ...weak, source_question_refs: [] }, { ...weak, observation_count: -1 }]) {
+      expect(() => decodeTrainingDisplayDiagnosis({ ...display,
+        students: [{ ...display.students[0], weak_points: [point] }] })).toThrow()
+    }
+    expect(() => decodeTrainingDisplayDiagnosis({ ...display, grouping: { TEST: { local_path: 'secret' } } })).toThrow()
+    expect(() => decodeTrainingDisplayDiagnosis({ ...display, knowledge_catalog: [{ knowledge_key: 'TEST-type',
+      knowledge_point: 'TEST题型', node_kind: 'unknown' }] })).toThrow()
+  })
+
+  it('preserves summary statistics and evidence while distinguishing detailed responses', async () => {
+    const point = { knowledge_key: 'TEST-type', knowledge_point: 'TEST知识项', mastery: .4,
+      tier: 'weak', observation_count: 2, full_correct_count: 0, evidence_count: 2,
+      score_sum: 4, full_score_sum: 10, deduction_count: 2, effective_weight: 2, exam_count: 1,
+      source_question_refs: [{ session_id: 1, session_name: 'TEST考试', question_id: 'Q1',
+        bank_question_id: 1, score_awarded: 4, full_score: 10 }], parent_knowledge_key: 'TEST-section' }
+    const diagnosis = { include_student_detail: false, diagnosis_identity: 'question_tag',
+      scope: { mode: 'all', student_ids: [] },
+      exam_scope: { mode: 'semester', session_ids: [], sessions: [] },
+      students: [{ student_id: 'TEST-student', student_name: 'TEST学生', student_code: 'TEST-1',
+        class_id: 'TEST班', score_rate: .4, score_rate_source: 'current_exam', weak_points: [point] }],
+      group_weak_points: [point], knowledge_catalog: [{ knowledge_key: 'TEST-type', node_kind: 'type' }],
+      coverage: { covered_items: 1, total_items: 1, missing_items: {} },
+      confirmed_concept_ids: [], suggested_terms: [], unmapped_terms: [], warnings: [],
+      grouping: { groups: [], selection: null, unassigned: [], warnings: [] } }
+    const fetch = vi.fn<(url: RequestInfo | URL, options?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify(diagnosis), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetch)
+    const body = { scope: { mode: 'all' as const, student_ids: [] },
+      exam_scope: { mode: 'semester' as const, session_ids: [] }, include_student_detail: false }
+    expect(await trainingApi.diagnose(body)).toEqual(diagnosis)
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual(body)
+    const { include_student_detail: _marker, ...unmarked } = diagnosis
+    expect(_marker).toBe(false)
+    expect(() => decodeTrainingDiagnosis(unmarked)).toThrow('Invalid training diagnosis')
+    const detailed = { ...point, actionable_reasons: ['TEST说明'], tag_context: {}, error_counts: {} }
+    expect(decodeTrainingDiagnosis({ ...unmarked, students: [{ ...diagnosis.students[0], weak_points: [detailed] }],
+      group_weak_points: [detailed] }).students[0]?.weak_points[0]?.source_question_refs).toEqual(point.source_question_refs)
+    expect(() => decodeTrainingDiagnosis({ ...diagnosis, students: [{ ...diagnosis.students[0],
+      weak_points: [{ ...point, observation_count: -1 }] }] })).toThrow()
+    expect(() => decodeTrainingDiagnosis({ ...diagnosis, include_student_detail: 'false' })).toThrow()
+  })
+
   it('accepts a group result after the former 30 second cutoff', async () => {
     vi.useFakeTimers()
     const diagnosis = {

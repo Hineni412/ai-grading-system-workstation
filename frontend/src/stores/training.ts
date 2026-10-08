@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 
 import {
   trainingApi,
-  type TrainingDiagnosis,
+  type TrainingReadDiagnosis,
   type TrainingDiagnosisRequest,
   type TrainingExamScopeRequest,
   type TrainingStudentScopeRequest,
@@ -40,10 +40,10 @@ export interface TrainingExamScopeInput {
 }
 
 export interface TrainingWorkflowApi {
-  diagnose(
+  diagnoseDisplay(
     body: TrainingDiagnosisRequest,
     signal?: AbortSignal,
-  ): Promise<TrainingDiagnosis>
+  ): Promise<TrainingReadDiagnosis>
 }
 
 function uniqueText(values: string[]): string[] {
@@ -73,7 +73,7 @@ export const useTrainingStore = defineStore('training', () => {
     sessionIds: [],
   })
   // Diagnosis is a read snapshot, replaced as a whole after each request.
-  const diagnosis = shallowRef<TrainingDiagnosis | null>(null)
+  const diagnosis = shallowRef<TrainingReadDiagnosis | null>(null)
   const analysisState = ref<TrainingRequestState>('idle')
   const errorMessage = ref('')
 
@@ -83,13 +83,13 @@ export const useTrainingStore = defineStore('training', () => {
   // Browsing a chapter or returning from its editor reuses the last result.
   // Adoption still makes a fresh request; these previews never authorize a write.
   const groupDiagnosisCache = new Map<string, {
-    basis: string; diagnosis: TrainingDiagnosis
+    basis: string; diagnosis: TrainingReadDiagnosis
   }>()
-  // API diagnoses are complete read snapshots, replaced rather than edited.
+  // API diagnoses are read snapshots, replaced rather than edited.
   // The same snapshot is checked by the store and chapter component.
-  const groupDiagnosisBases = new WeakMap<TrainingDiagnosis, string>()
+  const groupDiagnosisBases = new WeakMap<TrainingReadDiagnosis, string>()
 
-  function groupDiagnosisBasis(value: TrainingDiagnosis): string {
+  function groupDiagnosisBasis(value: TrainingReadDiagnosis): string {
     let basis = groupDiagnosisBases.get(value)
     if (basis === undefined) {
       basis = JSON.stringify([value.scope, value.exam_scope, value.students, value.knowledge_catalog])
@@ -98,13 +98,13 @@ export const useTrainingStore = defineStore('training', () => {
     return basis
   }
 
-  function cachedGroupDiagnosis(key: string, basis: TrainingDiagnosis): TrainingDiagnosis | null {
+  function cachedGroupDiagnosis(key: string, basis: TrainingReadDiagnosis): TrainingReadDiagnosis | null {
     const entry = groupDiagnosisCache.get(key)
     if (!entry || entry.basis !== groupDiagnosisBasis(basis)) return null
     return entry.diagnosis
   }
 
-  function rememberGroupDiagnosis(key: string, basis: TrainingDiagnosis, value: TrainingDiagnosis): void {
+  function rememberGroupDiagnosis(key: string, basis: TrainingReadDiagnosis, value: TrainingReadDiagnosis): void {
     groupDiagnosisCache.delete(key)
     groupDiagnosisCache.set(key, { basis: groupDiagnosisBasis(basis), diagnosis: value })
     while (groupDiagnosisCache.size > 8) groupDiagnosisCache.delete(groupDiagnosisCache.keys().next().value!)
@@ -214,9 +214,11 @@ export const useTrainingStore = defineStore('training', () => {
   async function analyze(
     api: TrainingWorkflowApi = trainingApi,
     initialGroupBody?: TrainingDiagnosisRequest,
-  ): Promise<TrainingDiagnosis | null> {
+  ): Promise<TrainingReadDiagnosis | null> {
     const body = requestBody()
-    if (initialGroupBody?.grouping) body.grouping = initialGroupBody.grouping
+    if (initialGroupBody?.grouping) {
+      body.grouping = initialGroupBody.grouping
+    }
     diagnosisController?.abort()
     const controller = new AbortController()
     diagnosisController = controller
@@ -226,7 +228,7 @@ export const useTrainingStore = defineStore('training', () => {
     analysisState.value = 'loading'
     errorMessage.value = ''
     try {
-      const next = await api.diagnose(body, controller.signal)
+      const next = await api.diagnoseDisplay(body, controller.signal)
       if (
         controller.signal.aborted
         || requestGeneration !== generation
@@ -236,7 +238,7 @@ export const useTrainingStore = defineStore('training', () => {
       // chapter component mounts in that update and would otherwise fetch
       // the same evidence a second time. Adoption still re-reads the source.
       if (initialGroupBody && next.grouping) {
-        rememberGroupDiagnosis(JSON.stringify(initialGroupBody), next, next)
+        rememberGroupDiagnosis(JSON.stringify({ ...initialGroupBody, response_mode: 'display' }), next, next)
       }
       diagnosis.value = next
       diagnosisScopeKey = requestScopeKey

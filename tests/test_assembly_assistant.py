@@ -4,6 +4,7 @@ from copy import deepcopy
 from question_bank.recommendation.personalized import PersonalizedRecommendationModule
 from tests.training.test_personalized_recommendation import (
     _approve_synthetic_criteria,
+    _capture_initial_source_reads,
     _install_release_with_skills,
 )
 
@@ -251,6 +252,7 @@ def test_exam_question_rates_weight_students_and_preserve_missing_causes(client_
 
 def test_api_returns_full_balanced_pool_without_creating_or_replacing_a_paper(
     client_and_source,
+    monkeypatch,
 ):
     client, _, calls, workspace = client_and_source
     before = workspace.draft_path.read_bytes()
@@ -306,6 +308,23 @@ def test_api_returns_full_balanced_pool_without_creating_or_replacing_a_paper(
     ).json()
     assert len(preview["items"]) == 31
     assert all(item["rich_content"] is not None for item in preview["items"])
+    from question_bank.recommendation.personalized import _SOURCE_SNAPSHOT_CACHE
+
+    page_ids = list(reversed(both_ids[:12]))
+    params = [("question_ids", qid) for qid in [*page_ids, page_ids[0], 99999]]
+    _SOURCE_SNAPSHOT_CACHE.clear()
+    with _capture_initial_source_reads(monkeypatch, {*page_ids, 99999}, legacy=True):
+        expected_page = client.get("/api/question-assembly/questions", params=params)
+    _SOURCE_SNAPSHOT_CACHE.clear()
+    with _capture_initial_source_reads(monkeypatch, {*page_ids, 99999}) as reads:
+        actual_page = client.get("/api/question-assembly/questions", params=params)
+    assert actual_page.status_code == expected_page.status_code == 200
+    assert actual_page.content == expected_page.content
+    assert [item["id"] for item in actual_page.json()["items"]] == page_ids
+    assert actual_page.json()["missing_question_ids"] == [99999]
+    assert all(set(read["returned_ids"]) <= {*page_ids, 99999} for read in reads)
+    assert all(item["skill_keys"] and item["rich_content"] for item in actual_page.json()["items"])
+    assert workspace.draft_path.read_bytes() == before
 
 
 def test_filters_empty_evidence_and_changed_scope_never_silently_expand(

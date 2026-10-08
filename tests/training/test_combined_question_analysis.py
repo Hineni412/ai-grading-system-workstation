@@ -101,7 +101,18 @@ def test_v8_import_prompt_and_source_hash_remain_compatible() -> None:
     assert normalize_question_type_result(old, raw) == raw
 
 
-def test_question_content_identity_is_shared_and_excludes_storage_and_layout() -> None:
+@pytest.fixture(params=[False, True])
+def source_content_reuse(request):
+    from question_bank.training_criteria.analysis import source_content_hash_reuse
+
+    if request.param:
+        with source_content_hash_reuse():
+            yield
+    else:
+        yield
+
+
+def test_question_content_identity_is_shared_and_excludes_storage_and_layout(source_content_reuse) -> None:
     from question_bank.training_criteria.analysis import solution_evidence_source_content_hash
     from question_bank.services.standard_difficulty import question_content_fingerprint
 
@@ -143,7 +154,91 @@ def test_question_content_identity_is_shared_and_excludes_storage_and_layout() -
         assert changed.source_content_hash != identity
 
 
-def test_content_identity_preserves_word_formulas_and_table_semantics() -> None:
+@pytest.fixture
+def word_content_cache(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, list[str]]:
+    from integration.result_cache import ResultCache
+    from question_bank.training_criteria import analysis
+
+    monkeypatch.setattr(analysis, "_WORD_CONTENT_CACHE", ResultCache(128, max_bytes=8 * 1024 * 1024))
+    original = analysis.ET.fromstring
+    parsed: list[str] = []
+
+    def parse(xml: str) -> Any:
+        parsed.append(xml)
+        return original(xml)
+
+    monkeypatch.setattr(analysis.ET, "fromstring", parse)
+    return analysis, parsed
+
+
+def test_word_content_cache_reuses_parsing_and_keeps_nested_values_private(word_content_cache) -> None:
+    analysis, parsed = word_content_cache
+    xml = ('<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+           '<w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>'
+           '<w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>')
+    expected = [{"table": [["A", "B"]]}, {"word_text": "AB"}]
+    first = analysis._word_content(xml, "")
+    assert first == expected
+    first[0]["table"][0][0] = "TEST-mutated-owner"
+    second = analysis._word_content(xml, "")
+    assert second == expected
+    second[0]["table"][0].clear()
+    assert analysis._word_content(xml, "") == expected
+    assert parsed == [xml]
+
+
+def test_word_content_cache_tracks_xml_and_plain_text_including_mutable_input_blocks(word_content_cache) -> None:
+    analysis, parsed = word_content_cache
+    xml = ('<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+           '<w:r><w:t>A</w:t></w:r></w:p>')
+    changed_xml = xml.replace("<w:t>A</w:t>", "<w:t>C</w:t>")
+    assert analysis._word_content(xml, "A") == []
+    assert analysis._word_content(xml, "A") == []
+    assert analysis._word_content(xml, "B") == [{"word_text": "A"}]
+    assert analysis._word_content(changed_xml, "A") == [{"word_text": "C"}]
+    question = replace(_question(1), word_question_blocks=({"text": "A", "xml": xml},))
+    original_hash = question.source_content_hash
+    block = question.word_question_blocks[0]
+    assert isinstance(block, dict)
+    block["xml"] = changed_xml
+    assert question.source_content_hash != original_hash
+    assert parsed == [xml, xml, changed_xml]
+
+
+def test_word_content_cache_does_not_cache_damaged_xml(word_content_cache) -> None:
+    analysis, parsed = word_content_cache
+    damaged = "<TEST-unclosed>"
+    for _ in range(2):
+        with pytest.raises(ValueError, match="题目 Word 内容损坏，不能核对公式内容"):
+            analysis._word_content(damaged, "")
+    assert parsed == [damaged, damaged]
+
+
+@pytest.mark.parametrize("oversized_field", ["xml", "plain_text"])
+def test_word_content_cache_parses_large_inputs_without_retaining_them(word_content_cache, oversized_field) -> None:
+    analysis, parsed = word_content_cache
+    xml = ('<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+           '<w:r><w:t>A</w:t></w:r></w:p>')
+    plain_text = "A"
+    if oversized_field == "xml":
+        xml += " " * (64 * 1024)
+    else:
+        plain_text = "A" * (64 * 1024)
+    expected = [] if oversized_field == "xml" else [{"word_text": "A"}]
+    assert analysis._word_content(xml, plain_text) == expected
+    assert analysis._word_content(xml, plain_text) == expected
+    assert parsed == [xml, xml]
+
+
+def test_content_identity_preserves_word_formulas_and_table_semantics(monkeypatch: pytest.MonkeyPatch, source_content_reuse) -> None:
+    from question_bank.training_criteria import analysis
+
+    def assert_uncached_hash(question: QuestionAnalysisInput) -> None:
+        with monkeypatch.context() as uncached:
+            uncached.setattr(analysis, "_word_content", analysis._parse_word_content)
+            expected = analysis._compute_question_content_hash(question)
+        assert question.source_content_hash == expected
+
     xml = ('<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
            'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
            '<w:pPr><w:jc w:val="left"/></w:pPr><m:oMath><m:r><w:rPr><w:b/></w:rPr>'
@@ -155,12 +250,16 @@ def test_content_identity_preserves_word_formulas_and_table_semantics() -> None:
         "xml": xml.replace("x + 1", "x + 2"),},))
     assert layout.source_content_hash == original.source_content_hash
     assert changed.source_content_hash != original.source_content_hash
+    for question in (original, layout, changed):
+        assert_uncached_hash(question)
     native = ('<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
               '<w:r><w:t>原文字</w:t></w:r></w:p>')
     original = replace(original, word_question_blocks=({"text": "原文字", "xml": native},))
     changed = replace(original, word_question_blocks=({"text": "原文字",
         "xml": native.replace("原文字", "修改后文字"),},))
     assert changed.source_content_hash != original.source_content_hash
+    for question in (original, changed):
+        assert_uncached_hash(question)
     table = ('<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
              '<w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>'
              '<w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>')
@@ -168,9 +267,19 @@ def test_content_identity_preserves_word_formulas_and_table_semantics() -> None:
     changed = replace(original, word_question_blocks=({"text": "相同提取文字",
         "xml": table.replace("<w:t>A</w:t>", "<w:t>C</w:t>"),},))
     assert changed.source_content_hash != original.source_content_hash
+    for question in (original, changed):
+        assert_uncached_hash(question)
+    positioned = ('<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                  '<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t>2</w:t></w:r></w:p>')
+    original = replace(original, word_question_blocks=({"text": "2", "xml": positioned},))
+    changed = replace(original, word_question_blocks=({"text": "2",
+        "xml": positioned.replace("superscript", "subscript")},))
+    assert changed.source_content_hash != original.source_content_hash
+    for question in (original, changed):
+        assert_uncached_hash(question)
 
 
-def test_supported_stored_source_hashes_are_accepted_only_for_unchanged_content() -> None:
+def test_supported_stored_source_hashes_are_accepted_only_for_unchanged_content(source_content_reuse) -> None:
     from question_bank.training_criteria.analysis import source_content_hash_matches
 
     question = _question(1)
@@ -190,6 +299,160 @@ def test_supported_stored_source_hashes_are_accepted_only_for_unchanged_content(
                 fingerprint, kind=kind,
             )
             assert not source_content_hash_matches(changed, fingerprint, kind=kind)
+
+
+def test_source_content_reuse_is_compact_bounded_and_released(monkeypatch: pytest.MonkeyPatch) -> None:
+    from question_bank.training_criteria import analysis
+
+    original = analysis._compute_question_content_hash
+    computed: list[int] = []
+
+    def compute(question):
+        computed.append(question.question_id)
+        return original(question)
+
+    monkeypatch.setattr(analysis, "_compute_question_content_hash", compute)
+    monkeypatch.setattr(analysis, "_SOURCE_CONTENT_REUSE_LIMIT", 2)
+    question = replace(_question(1), rich_question_blocks=({"text": "TEST-" + "A" * 100_000},))
+    with analysis.source_content_hash_reuse():
+        reuse = analysis._SOURCE_CONTENT_REUSE.get()
+        assert question.source_content_hash == replace(question, question_id=2, taxonomy_contract={}).source_content_hash
+        assert computed == [1]
+        assert all(type(key) is bytes and len(key) == 32 for key in reuse.values)
+        assert all(type(value) is str and len(value) == 64 for value in reuse.values.values())
+        with analysis.source_content_hash_reuse():
+            assert analysis._SOURCE_CONTENT_REUSE.get() is reuse
+            assert question.source_content_hash == original(question)
+        for text in ("TEST-other-A", "TEST-other-B"):
+            replace(question, tagging_context=replace(question.tagging_context, question_text=text)).source_content_hash
+        assert len(reuse.values) == 2
+        question.source_content_hash
+        assert computed == [1, 1, 1, 1]
+    assert not reuse.values
+    assert analysis._SOURCE_CONTENT_REUSE.get() is None
+    with analysis.source_content_hash_reuse():
+        question.source_content_hash
+    assert computed == [1, 1, 1, 1, 1]
+
+
+@pytest.mark.parametrize("field", ["word", "rich", "reference", "tags", "repair", "taxonomy"])
+def test_compatible_source_reuse_checks_complete_mutable_content(monkeypatch: pytest.MonkeyPatch, field: str) -> None:
+    from question_bank.training_criteria import analysis
+
+    xml = '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:r><w:t>A</w:t></w:r></w:p>'
+    question = replace(_question(1),
+        word_question_blocks=({"text": "A", "xml": xml},),
+        rich_question_blocks=({"text": "A", "nested": {"values": ["TEST-original"]}},),
+        reference_solution={"text": "TEST-reference", "source_segments": ["TEST-segment"],
+            "rich_blocks": [], "trust_level": "source_extracted", "source_kind": "answer"},
+        repair_context={"mode": "repair_previous_rejected_result", "validation_error": "TEST-error",
+            "previous_result": {"nested": ["TEST-original"]}})
+    original = analysis._compute_compatible_source_content_hashes
+    computed: list[str] = []
+
+    def compute(question, *, kind):
+        computed.append(kind)
+        return original(question, kind=kind)
+
+    monkeypatch.setattr(analysis, "_compute_compatible_source_content_hashes", compute)
+    with analysis.source_content_hash_reuse():
+        first = analysis.compatible_source_content_hashes(question, kind="training_criteria")
+        assert analysis.compatible_source_content_hashes(question, kind="training_criteria") is first
+        assert computed == ["training_criteria"]
+        if field == "word":
+            question.word_question_blocks[0]["xml"] = xml.replace(">A<", ">B<")
+        elif field == "rich":
+            question.rich_question_blocks[0]["nested"]["values"].append("TEST-change")
+        elif field == "reference":
+            question.reference_solution["source_segments"].append("TEST-change")
+        elif field == "tags":
+            question.tagging_context.existing_tags_by_dimension["special_type"] = ["证明"]
+        elif field == "repair":
+            question.repair_context["previous_result"]["nested"].append("TEST-change")
+        else:
+            question = replace(question, taxonomy_contract={"taxonomy_revision": 999})
+        changed = analysis.compatible_source_content_hashes(question, kind="training_criteria")
+        assert changed == original(question, kind="training_criteria")
+        assert computed == ["training_criteria", "training_criteria"]
+
+
+def test_source_content_reuse_does_not_cache_failures_or_unknown_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    from question_bank.training_criteria import analysis
+
+    question = replace(_question(1), word_question_blocks=({"xml": "<TEST-unclosed>"},))
+    with analysis.source_content_hash_reuse():
+        for _ in range(2):
+            with pytest.raises(ValueError, match="题目 Word 内容损坏"):
+                question.source_content_hash
+        assert not analysis._SOURCE_CONTENT_REUSE.get().values
+        question.word_question_blocks[0]["xml"] = ""
+        assert question.source_content_hash == analysis._compute_question_content_hash(question)
+        with pytest.raises(ValueError, match="source content hash kind is invalid"):
+            analysis.compatible_source_content_hashes(question, kind="TEST-invalid")
+    class ChangingText:
+        value = "TEST-A"
+        def __str__(self):
+            return self.value
+    value = ChangingText()
+    question.rich_question_blocks[0]["extra"] = value
+    with analysis.source_content_hash_reuse():
+        first = analysis.compatible_source_content_hashes(question, kind="training_criteria")
+        value.value = "TEST-B"
+        second = analysis.compatible_source_content_hashes(question, kind="training_criteria")
+        assert first != second
+        assert not analysis._SOURCE_CONTENT_REUSE.get().values or all(
+            type(entry) is str for entry in analysis._SOURCE_CONTENT_REUSE.get().values.values())
+
+
+def test_source_reuse_keeps_copied_thread_contexts_private() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from contextvars import copy_context
+    from question_bank.training_criteria import analysis
+
+    question = _question(1)
+    with analysis.source_content_hash_reuse():
+        expected = question.source_content_hash
+        parent_values = analysis._SOURCE_CONTENT_REUSE.get().values
+        context = copy_context()
+        def read():
+            values = analysis._SOURCE_CONTENT_REUSE.get().values
+            assert not values
+            assert question.source_content_hash == expected
+            return values
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            worker_values = pool.submit(context.run, read).result()
+        assert worker_values is not parent_values
+        assert len(parent_values) == len(worker_values) == 1
+    assert not parent_values
+    assert analysis._SOURCE_CONTENT_REUSE.get() is None
+
+
+def test_source_hash_bundle_reuses_frozen_values_and_preserves_legacy_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
+    from question_bank.training_criteria import analysis
+    from question_bank.solution_evidence import part_assessments
+
+    question = _question(1, question_type="解答题")
+    original = part_assessments._compute_input_source_hashes
+    computed: list[str] = []
+    def compute(question, input_key=""):
+        computed.append(input_key)
+        return original(question, input_key)
+    monkeypatch.setattr(part_assessments, "_compute_input_source_hashes", compute)
+    expected = original(question, "TEST-row-A")
+    with analysis.source_content_hash_reuse():
+        first = part_assessments._input_source_hashes(question, "TEST-row-A")
+        assert first == expected
+        assert part_assessments._input_source_hashes(replace(question), "TEST-row-A") is first
+        assert computed == ["TEST-row-A"]
+        second = part_assessments._input_source_hashes(question, "TEST-row-B")
+        assert second == original(question, "TEST-row-B")
+        assert computed == ["TEST-row-A", "TEST-row-B"]
+        for kind, fingerprint in first.legacy:
+            assert part_assessments.alias_from_hashes(first, fingerprint) == kind
+        changed = replace(question, tagging_context=replace(question.tagging_context, answer_text="TEST-new-answer"))
+        changed_hashes = part_assessments._input_source_hashes(changed, "TEST-row-A")
+        assert changed_hashes == original(changed, "TEST-row-A")
+        assert part_assessments.alias_from_hashes(changed_hashes, first.current) is None
 
 
 @pytest.mark.parametrize("changes", [

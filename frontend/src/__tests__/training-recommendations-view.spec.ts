@@ -6,7 +6,11 @@ import { createMemoryHistory } from 'vue-router'
 import type {
   PersonalizedRecommendationDraft,
   TrainingDiagnosis,
+  TrainingDiagnosisRequest,
+  TrainingGroup,
 } from '../api/training'
+import { decodeTrainingDisplayDiagnosis } from '../api/training'
+import { ApiError } from '../api/errors'
 import { savePaperSelectionSession } from '../features/training/paper-selection-session'
 import { saveEvidenceScope } from '../features/evidence-scope/session'
 import { createAppRouter } from '../router'
@@ -17,8 +21,10 @@ import TrainingRecommendationsView from '../views/TrainingRecommendationsView.vu
 
 const trainingApiMock = vi.hoisted(() => ({
   diagnose: vi.fn(),
+  diagnoseDisplay: vi.fn(),
   createPersonalizedDraft: vi.fn(),
   getPersonalizedDraft: vi.fn(),
+  getPersonalizedDraftByRequest: vi.fn(),
   editPersonalizedDraft: vi.fn(),
   listPaperInstances: vi.fn(),
   listPaperBatches: vi.fn(),
@@ -206,6 +212,23 @@ const paperDraft = {
 
 const mounted: App[] = []
 
+function displayFixture(value: TrainingDiagnosis) {
+  const projectedPoint = (point: TrainingDiagnosis['students'][number]['weak_points'][number]) => ({
+    knowledge_key: point.knowledge_key, knowledge_point: point.knowledge_point, mastery: point.mastery,
+    tier: point.tier ?? 'insufficient', observation_count: point.observation_count ?? 0,
+    evidence_count: point.evidence_count, parent_knowledge_key: point.parent_knowledge_key,
+    source_reference_count: point.source_question_refs.length,
+  })
+  return decodeTrainingDisplayDiagnosis({ ...value, response_mode: 'display',
+    students: value.students.map(student => ({ ...student, weak_points: student.weak_points.map(projectedPoint) })),
+    group_weak_points: (value.group_weak_points ?? []).map(projectedPoint),
+    knowledge_catalog: (value.knowledge_catalog ?? []).map(node => ({
+      knowledge_key: node.knowledge_key, knowledge_point: node.knowledge_point,
+      parent_knowledge_key: node.parent_knowledge_key, node_kind: node.node_kind,
+    })),
+  })
+}
+
 async function settle(): Promise<void> {
   await nextTick()
   await Promise.resolve()
@@ -266,6 +289,8 @@ beforeEach(() => {
     },
   ])
   trainingApiMock.diagnose.mockResolvedValue(diagnosis)
+  trainingApiMock.diagnoseDisplay.mockImplementation(async (body, signal) => displayFixture(
+    await trainingApiMock.diagnose({ ...body, response_mode: 'display' }, signal)))
   trainingApiMock.createPersonalizedDraft.mockResolvedValue(paperDraft)
   trainingApiMock.listPaperInstances.mockResolvedValue([])
   trainingApiMock.listPaperBatches.mockResolvedValue([])
@@ -287,8 +312,12 @@ describe('training recommendations view', () => {
     expect(trainingApiMock.createPersonalizedDraft).not.toHaveBeenCalled()
     view.host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
     await vi.waitFor(() => expect(view.router.currentRoute.value.query.mode).toBe('paper'))
+    await vi.waitFor(() => expect(view.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')?.disabled).toBe(false))
+    expect(trainingApiMock.diagnose.mock.calls[trainingApiMock.diagnose.mock.calls.length - 1]?.[0].response_mode).toBeUndefined()
+    expect(useTrainingStore(view.pinia).diagnosis).toEqual(displayFixture(diagnosis))
     view.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')!.click()
     await vi.waitFor(() => expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(view.host.querySelector('.personalized-match__evidence')?.textContent).toContain('匿名阶段测验 · 第 Q1 题 · 得 6/10 分'))
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({ scope: expect.objectContaining({ mode: 'selected', student_ids: ['12'] }), target_keys: ['sk_test_congruence'], scope_keys: ['kp_test_triangle_s1'] }))
   })
 
@@ -327,7 +356,7 @@ describe('training recommendations view', () => {
     await vi.waitFor(() => expect(useTrainingStore(pinia).analysisState).toBe('ready'))
     await settle()
     const current = useTrainingStore(pinia).diagnosis!
-    expect(current.students).toEqual(diagnosis.students)
+    expect(current.students).toEqual(displayFixture(diagnosis).students)
     expect(trainingApiMock.diagnose.mock.calls[0]?.[0].grouping.scope_keys).toEqual([chapterKey])
     await vi.waitFor(() => expect(view.host.textContent?.includes('小组建议暂时无法更新')).toBe(failGrouping))
     expect(trainingApiMock.diagnose.mock.calls.map(([body]) => body.grouping?.scope_keys)).toEqual(
@@ -479,6 +508,95 @@ describe('training recommendations view', () => {
     expect(trainingApiMock.getPersonalizedDraft).not.toHaveBeenCalled()
   })
 
+  it.each(['class', 'score_floor'] as const)('blocks an adopted group outside the changed %s scope and allows restoring its range', async changedScope => {
+    const profiles = diagnosis.students.flatMap(student => [student, {
+      ...student, student_id: '22', student_code: 'S022', student_name: '匿名学生乙',
+      class_id: '七年级二班', score_rate: .85,
+    }])
+    fetchStudentsMock.mockResolvedValue(profiles.map(student => ({
+      id: Number(student.student_id), student_code: student.student_code, name: student.student_name,
+      class_name: student.class_id, created_at: null,
+    })))
+    const group: TrainingGroup = {
+      group_id: 'test-shared-group', source_version: 'b'.repeat(64), ready: true,
+      issues: [], warnings: [], reason: '合成同卷小组', compatibility: 1,
+      available_question_count: 10, recent_excluded_count: 0,
+      members: profiles.map(student => ({
+        student_id: student.student_id, student_name: student.student_name,
+        student_code: student.student_code, class_id: student.class_id, evidence_count: 1,
+        targets: [{ knowledge_key: 'sk_test_congruence', knowledge_point: '三角形全等',
+          mastery: .55, evidence_count: 1, source_question_refs: [] }],
+      })),
+      targets: [{ knowledge_key: 'sk_test_congruence', knowledge_point: '三角形全等',
+        min_mastery: .55, max_mastery: .55, median_mastery: .55, evidence_count: 2,
+        sparse_member_count: 0, target_difficulty: 5, available_question_count: 10, difficulty_unknown: false }],
+    }
+    let finishScope: (() => void) | undefined
+    let scopeReleased = false
+    trainingApiMock.diagnose.mockImplementation((body: TrainingDiagnosisRequest) => {
+      const narrowed = Boolean(body.scope.class_ids?.length || body.scope.score_rate_min)
+      const response: TrainingDiagnosis = {
+        ...diagnosis, scope: body.scope, exam_scope: { ...diagnosis.exam_scope, ...body.exam_scope },
+        students: profiles.filter(student => (!body.scope.class_ids?.length || body.scope.class_ids.includes(student.class_id))
+          && student.score_rate >= (body.scope.score_rate_min ?? 0)),
+        grouping: { version: 'TEST', scope_keys: ['kp_test_triangle'],
+          groups: narrowed ? [] : [group], selection: body.grouping?.member_ids && !narrowed ? group : null,
+          unassigned: [], warnings: [] },
+      }
+      if (narrowed && !scopeReleased) return new Promise<TrainingDiagnosis>(resolve => {
+        finishScope = () => { scopeReleased = true; resolve(response) }
+      })
+      return Promise.resolve(response)
+    })
+    const { host, router } = await mountView('/training')
+    const findButton = (selector: string, label: string) => [...host.querySelectorAll<HTMLButtonElement>(selector)]
+      .find(button => button.textContent?.trim() === label)!
+    await vi.waitFor(() => expect(findButton('.training-groups button', '查看小组')?.disabled).toBe(false))
+    findButton('.training-groups button', '查看小组').click()
+    await settle()
+    findButton('.training-groups button', '采用小组并核对出卷设置').click()
+    const goPaper = () => host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!
+    await vi.waitFor(() => expect(goPaper().disabled).toBe(false))
+    expect(host.querySelector('.paper-settings-panel')?.textContent).toContain('2 人出')
+
+    if (changedScope === 'class') {
+      findButton('.training-scope-bar button', '七年级一班').click()
+    } else {
+      const floor = host.querySelector<HTMLInputElement>('[aria-label="最低考试得分率"]')!
+      floor.value = '60'
+      floor.dispatchEvent(new Event('input', { bubbles: true }))
+      floor.dispatchEvent(new Event('blur'))
+    }
+    await vi.waitFor(() => expect(finishScope).toBeTypeOf('function'))
+    expect(goPaper().disabled).toBe(true)
+    goPaper().click()
+    expect(router.currentRoute.value.query.mode).not.toBe('paper')
+    finishScope?.()
+    await vi.waitFor(() => expect(host.querySelector('.training-groups')?.textContent).toContain('来源范围已变化'))
+    expect(goPaper().disabled).toBe(true)
+    expect(host.querySelector('.paper-blocked')?.textContent).toContain('范围外学生')
+    expect(host.querySelector('.paper-blocked')?.textContent).toContain('恢复原范围或重新选择候选小组')
+    expect(host.querySelector('.paper-settings-panel')?.textContent).toContain('2 人出')
+    goPaper().click()
+    await settle()
+    expect(router.currentRoute.value.query.mode).not.toBe('paper')
+    expect(trainingApiMock.createPersonalizedDraft).not.toHaveBeenCalled()
+
+    if (changedScope === 'class') {
+      findButton('.training-scope-bar button', '全部学生').click()
+    } else {
+      const floor = host.querySelector<HTMLInputElement>('[aria-label="最低考试得分率"]')!
+      floor.value = ''
+      floor.dispatchEvent(new Event('input', { bubbles: true }))
+      floor.dispatchEvent(new Event('blur'))
+    }
+    await vi.waitFor(() => expect(goPaper().disabled).toBe(false))
+    expect(host.querySelector('.paper-blocked')).toBeNull()
+    goPaper().click()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.mode).toBe('paper'))
+    expect(trainingApiMock.createPersonalizedDraft).not.toHaveBeenCalled()
+  })
+
   it('switches paper-settings wording to 题型 when the diagnosis targets question types', async () => {
     trainingApiMock.diagnose.mockResolvedValue({
       ...diagnosis,
@@ -510,6 +628,10 @@ describe('training recommendations view', () => {
     first.app.unmount()
 
     // 模拟切到其他页签再回来：全新挂载，只剩会话暂存的勾选与草稿记录。
+    trainingApiMock.diagnose.mockImplementation(async body => {
+      if (body.response_mode !== 'display') throw new Error('TEST full source unavailable')
+      return diagnosis
+    })
     const second = await mountView('/training?mode=paper')
     await vi.waitFor(() => expect(second.host.textContent).toContain('三角形全等'))
     await vi.waitFor(() => expect(second.host.textContent).toContain('已恢复上次生成的草稿'))
@@ -523,10 +645,75 @@ describe('training recommendations view', () => {
     await settle()
     expect(second.host.querySelector('.step-progress [aria-current="step"]')?.textContent).toBe('打印试卷')
     expect(trainingApiMock.getPersonalizedDraft).toHaveBeenCalledWith(paperDraft.draft_id)
+    expect(second.host.textContent).toContain('完整出卷依据暂时无法读取')
+    expect(second.host.querySelector('.personalized-match__evidence')?.textContent).toContain('完整出卷依据尚未读取')
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledTimes(1)
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({ difficulty_max: 8 }))
     expect(second.host.querySelector('[aria-label="训练强度"]')).toBeNull()
     expect(second.host.querySelector('.draft-workflow-heading')).toBeNull()
+  })
+
+  it('recovers an unknown request with the same token after full evidence loading fails', async () => {
+    trainingApiMock.createPersonalizedDraft.mockRejectedValueOnce(new ApiError({ kind: 'timeout', status: null,
+      code: 'TEST-unknown', message: 'TEST outcome unknown', details: {}, requestId: 'TEST-request', retryable: true }))
+    trainingApiMock.getPersonalizedDraftByRequest.mockRejectedValue(new Error('TEST still pending'))
+    savePaperSelectionSession({ selectedStudentIds: ['12'], targetKeys: ['sk_test_congruence'],
+      rangeKeys: ['kp_test_triangle_s1'], scopeMode: 'focused', questionCount: 10, difficultyMax: 8,
+      excludeCurrentOriginals: true, paperMode: 'individual' })
+    const first = await mountView('/training?mode=student')
+    await vi.waitFor(() => expect(first.host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')?.disabled).toBe(false))
+    first.host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
+    await vi.waitFor(() => expect(first.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')?.disabled).toBe(false))
+    first.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')!.click()
+    await vi.waitFor(() => expect(first.host.textContent).toContain('不会重复创建草稿'))
+    const token = trainingApiMock.createPersonalizedDraft.mock.calls[0]?.[0].request_token
+    expect(trainingApiMock.getPersonalizedDraftByRequest).toHaveBeenLastCalledWith(token)
+    mounted.splice(mounted.indexOf(first.app), 1); first.app.unmount(); first.host.remove()
+    trainingApiMock.diagnose.mockImplementation(async body => {
+      if (body.response_mode !== 'display') throw new Error('TEST full unavailable')
+      return diagnosis
+    })
+    const second = await mountView('/training?mode=paper')
+    await vi.waitFor(() => expect(second.host.textContent).toContain('完整出卷依据暂时无法读取'))
+    await vi.waitFor(() => expect(second.host.textContent).toContain('不会重复创建草稿'))
+    const check = second.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')!
+    expect(check.disabled).toBe(false)
+    trainingApiMock.getPersonalizedDraftByRequest.mockResolvedValueOnce(paperDraft)
+    check.click()
+    await vi.waitFor(() => expect(second.host.textContent).toContain('已取回上次请求生成的草稿，没有重复创建'))
+    expect(trainingApiMock.getPersonalizedDraftByRequest).toHaveBeenLastCalledWith(token)
+    expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledOnce()
+  })
+
+  it('rejects late full evidence after the source scope changes and keeps the current settings', async () => {
+    let resolveOld!: (value: TrainingDiagnosis) => void
+    const old = new Promise<TrainingDiagnosis>(resolve => { resolveOld = resolve })
+    const current: TrainingDiagnosis = { ...diagnosis, students: diagnosis.students.map(student => ({ ...student,
+      weak_points: student.weak_points.map(weak => ({ ...weak, source_question_refs: weak.source_question_refs.map(ref => ({
+        ...ref, session_name: 'TEST当前依据', question_id: 'Q2',
+      })) })),
+    })) }
+    let fullReads = 0
+    trainingApiMock.diagnose.mockImplementation(body => body.response_mode === 'display'
+      ? Promise.resolve(diagnosis) : ++fullReads === 1 ? old : Promise.resolve(current))
+    savePaperSelectionSession({ selectedStudentIds: ['12'], targetKeys: ['sk_test_congruence'],
+      rangeKeys: ['kp_test_triangle_s1'], scopeMode: 'focused', questionCount: 10, difficultyMax: 7,
+      excludeCurrentOriginals: true, paperMode: 'individual' })
+    const view = await mountView('/training?mode=paper')
+    await vi.waitFor(() => expect(fullReads).toBe(1))
+    expect(view.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')?.disabled).toBe(true)
+    const oldCall = trainingApiMock.diagnose.mock.calls.find(([body]) => body.response_mode !== 'display')
+    const store = useTrainingStore(view.pinia)
+    store.setStudentScope({ mode: 'all', studentIds: [], classId: '', scoreRateMin: .2 })
+    await store.analyze()
+    await vi.waitFor(() => expect(fullReads).toBe(2))
+    expect(oldCall?.[1].aborted).toBe(true)
+    resolveOld(diagnosis)
+    await vi.waitFor(() => expect(view.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')?.disabled).toBe(false))
+    expect(view.host.querySelector('.paper-review-bar')?.textContent).toContain('难度 ≤ 7 级')
+    view.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')!.click()
+    await vi.waitFor(() => expect(view.host.querySelector('.personalized-match__evidence')?.textContent).toContain('TEST当前依据'))
+    expect(view.host.querySelector('.personalized-match__evidence')?.textContent).not.toContain('匿名阶段测验')
   })
 
 })

@@ -20,6 +20,7 @@ class ScanUploadFileResponse(BaseModel):
     size_bytes: int = Field(ge=0)
     sha256_prefix: str = Field(pattern=r"^[0-9a-f]{12}$")
     added_at: str
+    appended: bool = False
 
 
 class ScanUploadBatchResponse(BaseModel):
@@ -145,6 +146,8 @@ class ScanPreflightIdentityResponse(BaseModel):
 
 class ScanPreflightResponse(BaseModel):
     revision: int = Field(ge=0)
+    input_changed: bool = False
+    appended_file_count: int = Field(default=0, ge=0)
     summary: ScanPreflightSummaryResponse
     page_assignment: ScanPageAssignmentResponse
     groups: list[dict[str, Any]]

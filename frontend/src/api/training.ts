@@ -34,6 +34,7 @@ export interface TrainingDiagnosisRequest {
   scope: TrainingStudentScopeRequest
   exam_scope: TrainingExamScopeRequest
   grouping?: TrainingGroupingRequest
+  include_student_detail?: boolean
 }
 
 export interface TrainingGroupingRequest {
@@ -64,7 +65,7 @@ export interface TrainingGroup {
   targets: Array<{
     knowledge_key: string; knowledge_point: string; min_mastery: number; max_mastery: number
     median_mastery: number; evidence_count: number; sparse_member_count: number
-    target_difficulty: number | null; affected_student_count?: number; eligible_member_ids?: string[]; available_question_count: number; difficulty_unknown: boolean
+    target_difficulty?: number | null; affected_student_count?: number; eligible_member_ids?: string[]; available_question_count: number; difficulty_unknown: boolean
   }>
   ready: boolean
   issues: string[]
@@ -81,7 +82,7 @@ export interface TrainingGrouping {
   source_scope_revision?: string
   mastery_parameter_version?: string
   groups: TrainingGroup[]
-  selection: TrainingGroup | null
+  selection?: TrainingGroup | null
   summary?: {
     student_count: number
     students_with_needs: number
@@ -489,6 +490,14 @@ export interface TrainingWeakPoint {
   precise_training_evidence_count?: number
 }
 
+export type TrainingWeakPointSummary = Pick<TrainingWeakPoint,
+  | 'knowledge_key' | 'knowledge_point' | 'mastery' | 'tier'
+  | 'observation_count' | 'full_correct_count' | 'score_sum' | 'full_score_sum'
+  | 'deduction_count' | 'evidence_count' | 'effective_weight' | 'exam_count'
+  | 'source_question_refs' | 'parent_knowledge_key' | 'direct_evidence_count'
+  | 'child_evidence_count' | 'precise_training_evidence_count'
+>
+
 export interface TrainingStudentProfile {
   student_id: string
   student_code: string
@@ -498,10 +507,11 @@ export interface TrainingStudentProfile {
   score_rate_source?: 'current_exam' | 'historical_fallback' | 'none'
   historical_exam_count?: number
   historical_latest_exam_at?: string | null
-  weak_points: TrainingWeakPoint[]
+  weak_points: Array<TrainingWeakPoint | TrainingWeakPointSummary>
 }
 
 export interface TrainingDiagnosis {
+  include_student_detail?: false
   grouping?: TrainingGrouping | null
   scope: {
     mode: TrainingStudentScopeMode
@@ -526,7 +536,7 @@ export interface TrainingDiagnosis {
     }>
   }
   students: TrainingStudentProfile[]
-  group_weak_points?: TrainingWeakPoint[]
+  group_weak_points?: Array<TrainingWeakPoint | TrainingWeakPointSummary>
   knowledge_catalog?: Array<{
     knowledge_key: string
     knowledge_point: string
@@ -552,6 +562,38 @@ export interface TrainingDiagnosis {
   warnings: string[]
   diagnosis_identity: 'question_tag'
   target_kind?: OverviewTargetKind
+}
+
+export type TrainingDisplayWeakPoint = Pick<TrainingWeakPoint,
+  'knowledge_key' | 'knowledge_point' | 'mastery' | 'parent_knowledge_key'
+> & {
+  tier: 'stable' | 'unsteady' | 'weak' | 'insufficient'
+  observation_count: number
+  evidence_count: number
+  source_reference_count: number
+}
+
+export type TrainingDisplayStudent = Omit<TrainingStudentProfile, 'weak_points'> & {
+  weak_points: TrainingDisplayWeakPoint[]
+}
+
+export type TrainingDisplayDiagnosis = Omit<TrainingDiagnosis,
+  'include_student_detail' | 'students' | 'group_weak_points' | 'knowledge_catalog' | 'knowledge_associations'
+> & {
+  response_mode: 'display'
+  students: TrainingDisplayStudent[]
+  group_weak_points: TrainingDisplayWeakPoint[]
+  knowledge_catalog: Array<Pick<NonNullable<TrainingDiagnosis['knowledge_catalog']>[number],
+    'knowledge_key' | 'knowledge_point' | 'parent_knowledge_key' | 'node_kind'>>
+}
+
+export type TrainingReadDiagnosis = TrainingDiagnosis | TrainingDisplayDiagnosis
+export type TrainingReadStudent = TrainingStudentProfile | TrainingDisplayStudent
+
+export function trainingSourceReferenceCount(
+  point: TrainingWeakPointSummary | TrainingDisplayWeakPoint,
+): number {
+  return 'source_reference_count' in point ? point.source_reference_count : point.source_question_refs.length
 }
 
 export interface TrainingOverviewRequest {
@@ -716,7 +758,7 @@ function isEvidenceReference(value: unknown): value is TrainingEvidenceReference
   )
 }
 
-function isWeakPoint(value: unknown): value is TrainingWeakPoint {
+function isWeakPointSummary(value: unknown): value is TrainingWeakPointSummary {
   return (
     isRecord(value)
     && isNonEmptyString(value.knowledge_key)
@@ -731,16 +773,30 @@ function isWeakPoint(value: unknown): value is TrainingWeakPoint {
     && isInteger(value.exam_count)
     && Array.isArray(value.source_question_refs)
     && value.source_question_refs.every(isEvidenceReference)
+    && (value.tier === undefined || (typeof value.tier === 'string'
+      && ['stable', 'unsteady', 'weak', 'insufficient'].includes(value.tier)))
+    && (value.observation_count === undefined || isInteger(value.observation_count))
+    && (value.full_correct_count === undefined || isInteger(value.full_correct_count))
+    && (value.parent_knowledge_key === undefined || value.parent_knowledge_key === null
+      || typeof value.parent_knowledge_key === 'string')
+    && (value.direct_evidence_count === undefined || isInteger(value.direct_evidence_count))
+    && (value.child_evidence_count === undefined || isInteger(value.child_evidence_count))
+    && (value.precise_training_evidence_count === undefined || isInteger(value.precise_training_evidence_count))
+  )
+}
+
+function isWeakPoint(value: unknown): value is TrainingWeakPoint {
+  return isRecord(value)
     && isStringArray(value.actionable_reasons)
     && isStringListRecord(value.tag_context)
     && isNestedCountRecord(value.error_counts)
     && (value.child_knowledge_keys === undefined || isStringArray(value.child_knowledge_keys))
-    && (value.direct_evidence_count === undefined || isInteger(value.direct_evidence_count))
-    && (value.child_evidence_count === undefined || isInteger(value.child_evidence_count))
-  )
+    && isWeakPointSummary(value)
 }
 
-function isStudentProfile(value: unknown): value is TrainingStudentProfile {
+function isStudentProfile(value: unknown,
+  pointDecoder: (point: unknown) => point is TrainingWeakPointSummary = isWeakPoint,
+): value is TrainingStudentProfile {
   return (
     isRecord(value)
     && isNonEmptyString(value.student_id)
@@ -758,7 +814,7 @@ function isStudentProfile(value: unknown): value is TrainingStudentProfile {
       || value.historical_latest_exam_at === undefined
       || typeof value.historical_latest_exam_at === 'string')
     && Array.isArray(value.weak_points)
-    && value.weak_points.every(isWeakPoint)
+    && value.weak_points.every(pointDecoder)
   )
 }
 
@@ -815,16 +871,20 @@ function isCoverage(value: unknown): value is TrainingDiagnosis['coverage'] {
 
 export function decodeTrainingDiagnosis(value: unknown): TrainingDiagnosis {
   assertNoPathLikeKeys(value)
+  const pointDecoder = isRecord(value) && value.include_student_detail === false
+    ? isWeakPointSummary : isWeakPoint
   if (
     !isRecord(value)
+    || value.response_mode !== undefined
     || value.diagnosis_identity !== 'question_tag'
     || !isNormalizedScope(value.scope)
     || !isNormalizedExamScope(value.exam_scope)
     || !Array.isArray(value.students)
-    || !value.students.every(isStudentProfile)
+    || (value.include_student_detail !== undefined && value.include_student_detail !== false)
+    || !value.students.every(student => isStudentProfile(student, pointDecoder))
     || (value.group_weak_points !== undefined && (
       !Array.isArray(value.group_weak_points)
-      || !value.group_weak_points.every(isWeakPoint)
+      || !value.group_weak_points.every(pointDecoder)
     ))
     || (value.knowledge_catalog !== undefined && !Array.isArray(value.knowledge_catalog))
     || !isCoverage(value.coverage)
@@ -837,6 +897,96 @@ export function decodeTrainingDiagnosis(value: unknown): TrainingDiagnosis {
     throw new Error('Invalid training diagnosis')
   }
   return value as unknown as TrainingDiagnosis
+}
+
+function isDisplayPoint(value: unknown): value is TrainingDisplayWeakPoint {
+  return isRecord(value)
+    && Object.keys(value).every(key => ['knowledge_key', 'knowledge_point', 'mastery', 'tier',
+      'observation_count', 'evidence_count', 'parent_knowledge_key', 'source_reference_count'].includes(key))
+    && isNonEmptyString(value.knowledge_key) && isNonEmptyString(value.knowledge_point)
+    && (value.mastery === undefined || value.mastery === null || isRate(value.mastery))
+    && (value.tier === 'stable' || value.tier === 'unsteady' || value.tier === 'weak' || value.tier === 'insufficient')
+    && isInteger(value.observation_count) && isInteger(value.evidence_count) && isInteger(value.source_reference_count)
+    && (value.parent_knowledge_key === undefined || value.parent_knowledge_key === null
+      || typeof value.parent_knowledge_key === 'string')
+}
+
+function isDisplayStudent(value: unknown): value is TrainingDisplayStudent {
+  return isRecord(value) && isNonEmptyString(value.student_id)
+    && typeof value.student_code === 'string' && typeof value.student_name === 'string'
+    && typeof value.class_id === 'string' && isNullablePercentage(value.score_rate)
+    && (value.score_rate_source === undefined || value.score_rate_source === 'current_exam'
+      || value.score_rate_source === 'historical_fallback' || value.score_rate_source === 'none')
+    && (value.historical_exam_count === undefined || isInteger(value.historical_exam_count))
+    && (value.historical_latest_exam_at === undefined || value.historical_latest_exam_at === null
+      || typeof value.historical_latest_exam_at === 'string')
+    && Array.isArray(value.weak_points) && value.weak_points.every(isDisplayPoint)
+}
+
+function isDisplayCatalogNode(value: unknown): value is TrainingDisplayDiagnosis['knowledge_catalog'][number] {
+  return isRecord(value) && isNonEmptyString(value.knowledge_key) && isNonEmptyString(value.knowledge_point)
+    && Object.keys(value).every(key => ['knowledge_key', 'knowledge_point', 'parent_knowledge_key', 'node_kind'].includes(key))
+    && (value.parent_knowledge_key === undefined || value.parent_knowledge_key === null
+      || typeof value.parent_knowledge_key === 'string')
+    && (value.node_kind === undefined || value.node_kind === 'chapter' || value.node_kind === 'section'
+      || value.node_kind === 'topic' || value.node_kind === 'skill' || value.node_kind === 'type')
+}
+
+function isTrainingGroup(value: unknown): value is TrainingGroup {
+  return isRecord(value) && isNonEmptyString(value.group_id) && isNonEmptyString(value.source_version)
+    && Array.isArray(value.members) && value.members.every(member => isRecord(member)
+      && isNonEmptyString(member.student_id) && typeof member.student_name === 'string'
+      && typeof member.student_code === 'string' && typeof member.class_id === 'string' && isInteger(member.evidence_count)
+      && Array.isArray(member.targets) && member.targets.every(target => isRecord(target)
+        && isNonEmptyString(target.knowledge_key) && isNonEmptyString(target.knowledge_point) && isRate(target.mastery)
+        && isInteger(target.evidence_count) && Array.isArray(target.source_question_refs)
+        && target.source_question_refs.every(isEvidenceReference)))
+    && Array.isArray(value.targets) && value.targets.every(target => isRecord(target)
+      && isNonEmptyString(target.knowledge_key) && isNonEmptyString(target.knowledge_point)
+      && isRate(target.min_mastery) && isRate(target.max_mastery) && isRate(target.median_mastery)
+      && isInteger(target.evidence_count) && isInteger(target.sparse_member_count)
+      && (target.target_difficulty === undefined || target.target_difficulty === null || isFiniteNumber(target.target_difficulty))
+      && (target.affected_student_count === undefined || isInteger(target.affected_student_count))
+      && (target.eligible_member_ids === undefined || isStringArray(target.eligible_member_ids))
+      && isInteger(target.available_question_count) && typeof target.difficulty_unknown === 'boolean')
+    && typeof value.ready === 'boolean' && isStringArray(value.issues) && isStringArray(value.warnings)
+    && typeof value.reason === 'string' && isFiniteNumber(value.compatibility)
+    && isInteger(value.available_question_count) && isInteger(value.recent_excluded_count)
+}
+
+function isTrainingGrouping(value: unknown): value is TrainingGrouping {
+  return isRecord(value) && isNonEmptyString(value.version) && isStringArray(value.scope_keys)
+    && (value.source_scope_revision === undefined || typeof value.source_scope_revision === 'string')
+    && (value.mastery_parameter_version === undefined || typeof value.mastery_parameter_version === 'string')
+    && Array.isArray(value.groups) && value.groups.every(isTrainingGroup)
+    && (value.selection === undefined || value.selection === null || isTrainingGroup(value.selection))
+    && (value.summary === undefined || (isRecord(value.summary)
+      && isInteger(value.summary.student_count) && isInteger(value.summary.students_with_needs)
+      && isInteger(value.summary.grouped_student_count) && isInteger(value.summary.group_count)
+      && (value.summary.unlinked_loss_count === undefined || isInteger(value.summary.unlinked_loss_count))))
+    && Array.isArray(value.unassigned) && value.unassigned.every(item => isRecord(item)
+      && isNonEmptyString(item.student_id) && typeof item.student_name === 'string'
+      && typeof item.class_id === 'string' && typeof item.reason === 'string'
+      && (item.reason_kind === undefined || item.reason_kind === 'no_direct_evidence' || item.reason_kind === 'no_group_fit'))
+    && isStringArray(value.warnings)
+}
+
+function isDisplayDiagnosis(value: unknown): value is TrainingDisplayDiagnosis {
+  return isRecord(value) && value.response_mode === 'display' && value.include_student_detail === undefined
+    && value.diagnosis_identity === 'question_tag' && isNormalizedScope(value.scope)
+    && isNormalizedExamScope(value.exam_scope) && Array.isArray(value.students) && value.students.every(isDisplayStudent)
+    && Array.isArray(value.group_weak_points) && value.group_weak_points.every(isDisplayPoint)
+    && Array.isArray(value.knowledge_catalog) && value.knowledge_catalog.every(isDisplayCatalogNode)
+    && (value.grouping === undefined || value.grouping === null || isTrainingGrouping(value.grouping))
+    && isCoverage(value.coverage) && isPositiveIntegerArray(value.confirmed_concept_ids)
+    && isStringArray(value.suggested_terms) && isStringArray(value.unmapped_terms) && isStringArray(value.warnings)
+    && (value.target_kind === undefined || value.target_kind === 'skill' || value.target_kind === 'type')
+}
+
+export function decodeTrainingDisplayDiagnosis(value: unknown): TrainingDisplayDiagnosis {
+  assertNoPathLikeKeys(value)
+  if (!isDisplayDiagnosis(value)) throw new Error('Invalid training display diagnosis')
+  return value
 }
 
 function isOverviewDistribution(
@@ -1528,6 +1678,15 @@ export const trainingApi = {
       signal,
       // Group analysis also evaluates the common question pool for the roster.
       timeoutMs: body.grouping ? 120_000 : 30_000,
+    })
+  },
+
+  diagnoseDisplay(body: TrainingDiagnosisRequest, signal?: AbortSignal): Promise<TrainingDisplayDiagnosis> {
+    const request = { ...body }
+    delete request.include_student_detail
+    return apiClient.request('/api/training/diagnosis', {
+      method: 'POST', body: { ...request, response_mode: 'display' },
+      decode: decodeTrainingDisplayDiagnosis, signal, timeoutMs: body.grouping ? 120_000 : 30_000,
     })
   },
 

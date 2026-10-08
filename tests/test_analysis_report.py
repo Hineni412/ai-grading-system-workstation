@@ -959,7 +959,7 @@ def test_personal_online_and_offline_images_share_content_and_released_notice(an
 
 def test_personal_report_teacher_lock_change_invalidates_input(analysis_db):
     """教师最终分锁进入该生输入指纹：加锁使该生过期，其他学生不受影响。"""
-    from backend.personal_reports import student_report_digests
+    from backend.personal_reports import personal_report_states, student_report_digests
     from backend.session_analysis import (
         assemble_session_analysis,
         enrich_personal_questions,
@@ -970,6 +970,12 @@ def test_personal_report_teacher_lock_change_invalidates_input(analysis_db):
     data = assemble_session_analysis(db, sid, data_root=root)
     enrich_personal_questions(db, data, root)
     before = student_report_digests(db, sid, data, reports_dir=reports_dir)
+    from backend.report_results import PersonalReportStore, prompt_version
+    for saved_student_id, digest in before.items():
+        PersonalReportStore(reports_dir).save(sid, saved_student_id, narrative={"summary": "TEST-lock"},
+                                             input_digest=digest, prompt_version=prompt_version("personal_report"))
+    initial_states = personal_report_states(db, sid, reports_dir)
+    assert all(row["status"] == "current" for row in initial_states["students"] if row["student_id"] in before)
     student = db.results.get_session_results(sid)[0]
     student_id = student["student_id"]
     with sqlite3.connect(db.db_path) as conn:
@@ -978,6 +984,10 @@ def test_personal_report_teacher_lock_change_invalidates_input(analysis_db):
     after = student_report_digests(db, sid, data, reports_dir=reports_dir)
     assert after[student_id] != before[student_id]
     assert all(after[other] == before[other] for other in before if other != student_id)
+    refreshed = personal_report_states(db, sid, reports_dir)
+    assert next(row for row in refreshed["students"] if row["student_id"] == student_id)["status"] == "stale"
+    assert all(row["status"] == "current" for row in refreshed["students"]
+               if row["student_id"] in before and row["student_id"] != student_id)
 
 
 @pytest.mark.parametrize("limit", [8, 1])

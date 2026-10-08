@@ -1,6 +1,6 @@
 import { normalizeGraphQuery, type GraphQueryInput } from '../../api/graph-query'
 import type { CurriculumVolume } from '../../api/question-bank'
-import type { TrainingDiagnosis } from '../../api/training'
+import { trainingSourceReferenceCount, type TrainingReadDiagnosis } from '../../api/training'
 import { loadEvidenceScope, saveEvidenceScope } from '../evidence-scope/session'
 
 const STORAGE_KEY = 'ai-grading:personalized-paper-selection:v1'
@@ -124,13 +124,13 @@ export function loadPaperSelectionSession(): PaperSelectionSession | null {
   }
 }
 
-export function resolvePaperScope(volume: CurriculumVolume | null, diagnosis: TrainingDiagnosis | null,
+export function resolvePaperScope(volume: CurriculumVolume | null, diagnosis: TrainingReadDiagnosis | null,
   rangeKeys: string[], progressId: string, mode: 'comprehensive' | 'focused') {
   const parents = new Map((diagnosis?.knowledge_catalog ?? []).map(node => [node.knowledge_key, node.parent_knowledge_key]))
   const observed = new Set(rangeKeys)
   for (const student of mode === 'comprehensive' ? diagnosis?.students ?? [] : []) {
     for (const point of student.weak_points) {
-      if (!point.source_question_refs?.length && !point.evidence_count) continue
+      if (!trainingSourceReferenceCount(point) && !point.evidence_count) continue
       let key: string | null | undefined = point.knowledge_key
       const visited = new Set<string>()
       while (key && !visited.has(key)) { visited.add(key); observed.add(key); key = parents.get(key) }

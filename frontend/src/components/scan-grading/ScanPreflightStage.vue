@@ -23,6 +23,8 @@ const {
   savingDecisionCount,
   editableUploadBatch,
   uploadFrozen,
+  inputChanged,
+  supplementReady,
   preflightActive,
   preflightProgress,
   preflightProgressText,
@@ -70,6 +72,7 @@ const {
   keepConflictTarget,
   openViewer,
   chooseFiles,
+  chooseAppendFiles,
   confirmReplacement,
   otherAssignedPapers,
 } = props.recon
@@ -87,7 +90,14 @@ function selectStage(id: ScanStageId): void {
         <strong v-if="store.preflight">自动匹配 {{ store.preflight.summary.auto_matched ?? 0 }} · 异常 {{ store.preflight.summary.issues ?? 0 }}</strong>
         <strong v-else>{{ editableUploadBatch?.file_count ?? 0 }} 个文件 · {{ formatBytes(editableUploadBatch?.total_bytes ?? 0) }}</strong>
         <AppButton
-          v-if="store.preflight && !matchConflicts.length"
+          v-if="store.gradingRun?.allowed_actions.includes('supplement_new_matches')"
+          data-action="supplement"
+          variant="secondary"
+          :disabled="!supplementReady || Boolean(store.busyAction)"
+          @click="store.supplement"
+        >补批新匹配的答卷</AppButton>
+        <AppButton
+          v-if="store.preflight && !matchConflicts.length && !inputChanged"
           :variant="pendingCount ? 'secondary' : 'primary'"
           @click="selectStage('grade')"
         >下一步：批改</AppButton>
@@ -100,13 +110,20 @@ function selectStage(id: ScanStageId): void {
       <div class="scan-upload-summary__files">
         <span v-for="file in editableUploadBatch?.files ?? []" :key="file.id" class="scan-upload-summary__file">
           <strong>{{ file.name }}</strong><small>{{ formatBytes(file.size_bytes) }}</small>
+          <template v-if="file.appended">
+            <small>新增</small>
+            <AppButton variant="ghost" :disabled="Boolean(store.busyAction)" @click="store.remove(file.id, true)">移除</AppButton>
+          </template>
         </span>
       </div>
-      <label class="scan-upload-summary__action" :data-disabled="Boolean(store.busyAction)">
-        重新上传答卷
-        <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
-          :disabled="Boolean(store.busyAction)" @change="chooseFiles">
-      </label>
+      <div class="scan-upload-summary__actions">
+        <label class="scan-upload-summary__action" :data-disabled="Boolean(store.busyAction)">
+          新增答卷文件
+          <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+            :disabled="Boolean(store.busyAction)" @change="chooseAppendFiles">
+        </label>
+        <AppButton variant="secondary" :disabled="Boolean(store.busyAction)" @click="store.beginReplacement">替换全部答卷</AppButton>
+      </div>
     </div>
     <label v-else class="scan-drop" :data-disabled="Boolean(store.busyAction)">
       <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
@@ -159,6 +176,14 @@ function selectStage(id: ScanStageId): void {
       <template #actions><AppButton v-if="store.uploadBatch?.state === 'frozen' && !store.preflightJobId" data-action="retry-preflight" variant="secondary" @click="store.analyze">运行或重新运行预检</AppButton></template>
     </StatePanel>
     <template v-else>
+      <FeedbackBanner
+        v-if="inputChanged"
+        tone="warning"
+        title="已新增答卷文件，下方结果还未包含它们"
+        :description="store.preflight?.appended_file_count ? `批次中现有 ${store.preflight.appended_file_count} 个新增文件；原有匹配决定会在重新预检时保留。` : '答卷文件已变化；原有匹配决定会在重新预检时保留。'"
+        action-label="重新运行预检"
+        @action="store.analyze"
+      />
       <p v-if="store.preflight.identity" class="scan-identity">
         本机识别，未调用 AI · 自动匹配 {{ store.preflight.identity.auto }} 份 · 需确认 {{ store.preflight.identity.needs_confirmation }} 份
       </p>

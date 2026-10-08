@@ -30,8 +30,11 @@ from backend.scan_grading.workspace import (
     ScanGradingWorkspace,
     ScanGradingWorkspaceError,
     ScanMatchConflictError,
+    ScanPreflightOutdatedError,
     UploadBatchRevisionError,
 )
+
+SCAN_PREFLIGHT_OUTDATED_MESSAGE = "新增了答卷文件，请先重新运行预检再开始批改或补批"
 
 LEGACY_GRADING_MODE_MESSAGE = "旧批改方式已停用，请用 AI 批改重新开始未完成的部分"
 from backend.jobs.manager import (
@@ -116,8 +119,16 @@ def preview_session_grading(
         if str(upload_batch.get("state") or "") != "frozen":
             raise ScanGradingWorkspaceError("scan upload batch is not frozen")
         preflight = workspace.get_preflight(session_id)
+        if preflight.get("input_changed"):
+            raise ScanPreflightOutdatedError("scan preflight is outdated")
     except OriginalPagesCleared as exc:
         raise ApiError(409, "original_pages_cleared", "这场考试的原卷已清理，不能再让 AI 批改。") from exc
+    except ScanPreflightOutdatedError as exc:
+        raise ApiError(
+            409,
+            "scan_preflight_outdated",
+            SCAN_PREFLIGHT_OUTDATED_MESSAGE,
+        ) from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(
             409,
@@ -340,6 +351,12 @@ def supplement_session_grading(
             "grading_config_changed",
             "Grading configuration changed; newly matched scans cannot be supplemented",
         ) from exc
+    except ScanPreflightOutdatedError as exc:
+        raise ApiError(
+            409,
+            "scan_preflight_outdated",
+            SCAN_PREFLIGHT_OUTDATED_MESSAGE,
+        ) from exc
     except OriginalPagesCleared as exc:
         raise ApiError(409, "original_pages_cleared", "这场考试的原卷已清理，不能再让 AI 批改。") from exc
     except ScanGradingWorkspaceError as exc:
@@ -451,6 +468,12 @@ def run_session_grading(
             ) from exc
         except UploadBatchRevisionError as exc:
             raise ApiError(409, "grading_input_changed", "Grading input changed") from exc
+        except ScanPreflightOutdatedError as exc:
+            raise ApiError(
+                409,
+                "scan_preflight_outdated",
+                SCAN_PREFLIGHT_OUTDATED_MESSAGE,
+            ) from exc
         except GradingConfigChangedError as exc:
             raise ApiError(
                 409,

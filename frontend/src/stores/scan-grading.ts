@@ -81,6 +81,12 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     if (error instanceof ApiError && error.code === 'grading_preflight_stale') {
       return '评分依据或样卷题框已经更新，请重新运行扫描预检后再预览批改计划。'
     }
+    if (error instanceof ApiError && error.code === 'scan_preflight_outdated') {
+      return '新增了答卷文件，请先重新运行预检，再开始批改或补批。'
+    }
+    if (error instanceof ApiError && error.code === 'grading_config_changed') {
+      return '评分依据（细则、参考答案、题框或模型）与本次批改不一致，新匹配的答卷不能补批。'
+    }
     if (error instanceof ApiError && error.code === 'scan_replacement_training_snapshot_exists') {
       return '这场考试已经生成了独立训练任务。为避免训练材料失去来源，当前不能清空旧答卷；请先处理对应训练任务。'
     }
@@ -89,7 +95,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
       || error.code === 'scan_analysis_still_active'
       || error.code === 'grading_run_still_active'
     )) {
-      return '这场考试仍有预检、批改或报告任务正在运行，请先完成或取消任务后再重新上传。'
+      return '这场考试仍有预检、批改或报告任务正在运行，请先完成或取消任务。'
     }
     return error instanceof Error && error.message ? error.message : '操作没有完成，请稍后重试。'
   }
@@ -356,25 +362,14 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
   async function addFiles(files: File[]): Promise<void> {
     const id = sessionId.value; const current = generation
     if (!id || busyAction.value) return
+    const replacement = replacementBatch.value !== null
+    if (uploadBatch.value?.state === 'frozen' && !replacement) return
     busyAction.value = 'upload'
     errorMessage.value = ''
     let failed = 0
-    let replacement = replacementBatch.value !== null
-    if (uploadBatch.value?.state === 'frozen' && !replacement) {
-      try {
-        const batch = await beginScanReplacement(id)
-        if (!isCurrent(id, current) || !workspace.value) return
-        workspace.value.replacement_batch = batch
-        replacement = true
-      } catch (error) {
-        if (isCurrent(id, current)) errorMessage.value = safeMessage(error)
-        busyAction.value = ''
-        return
-      }
-    }
     for (const file of files) {
       if (!isCurrent(id, current)) return
-      try { await uploadScan(id, file, replacement) } catch { failed += 1 }
+      try { await uploadScan(id, file, replacement ? 'replacement' : 'default') } catch { failed += 1 }
     }
     if (!isCurrent(id, current)) return
     await load(id)
@@ -383,14 +378,41 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     }
   }
 
-  async function remove(uploadId: string): Promise<void> {
+  async function appendFiles(files: File[]): Promise<void> {
+    const id = sessionId.value; const current = generation
+    if (!id || busyAction.value) return
+    if (uploadBatch.value?.state !== 'frozen' || replacementBatch.value) return
+    busyAction.value = 'upload'
+    errorMessage.value = ''
+    let failed = 0
+    for (const file of files) {
+      if (!isCurrent(id, current)) return
+      try { await uploadScan(id, file, 'append') } catch { failed += 1 }
+    }
+    if (!isCurrent(id, current)) return
+    await load(id)
+    if (sessionId.value === id && failed > 0) {
+      errorMessage.value = `${failed} 个文件未加入；其他成功文件已经保留，重新预检后生效。`
+    }
+  }
+
+  async function beginReplacement(): Promise<void> {
+    const id = sessionId.value; const current = generation
+    if (!id || replacementBatch.value) return
+    await runAction('begin-replacement', id, current, async () => {
+      const batch = await beginScanReplacement(id)
+      if (isCurrent(id, current) && workspace.value) workspace.value.replacement_batch = batch
+    })
+  }
+
+  async function remove(uploadId: string, append = false): Promise<void> {
     const id = sessionId.value
     const replacement = replacementBatch.value !== null
     const batch = replacementBatch.value ?? uploadBatch.value
     const current = generation
     if (!id || !batch) return
     await runAction('remove', id, current, async () => {
-      const next = await removeScan(id, uploadId, batch.revision, replacement)
+      const next = await removeScan(id, uploadId, batch.revision, append ? 'append' : replacement ? 'replacement' : 'default')
       if (isCurrent(id, current) && workspace.value) {
         if (replacement) workspace.value.replacement_batch = next
         else workspace.value.upload_batch = next
@@ -650,7 +672,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     activeJobId, preflightJobId, selectedMode, gradingPlan, planState, planErrorMessage,
     uploadBatch, replacementBatch, gradingRun, preflightJob, gradingJob,
     load, prefetch, cachedInterventionSummary, rememberInterventionSummary,
-    addFiles, remove, clear, analyze, refreshPreflight,
+    addFiles, appendFiles, beginReplacement, remove, clear, analyze, refreshPreflight,
     saveDecisions, previewPlan, begin, control, cancel, supplement, newBatch,
     cancelReplacement, commitReplacement }
 })

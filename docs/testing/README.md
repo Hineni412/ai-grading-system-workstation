@@ -7,10 +7,10 @@
 - 文档和设置：检查内容、格式与引用；项目文档检查入口为 `tools/check_documentation.py`，不因此启动业务应用或执行完整业务测试。
 - 文案与布局：检查相关页面、显示效果和受影响操作，不默认新写自动测试。
 - 功能修复：重现并重走原操作，选择能覆盖实际故障的现有测试；需要回归保护时优先扩展现有测试，新增顺序见 `AGENTS.md` 收尾一节。
-- 题库格式与当前依据：复用 `tests/test_question_bank_importer.py`、`tests/test_question_bank_read_cache.py`、`tests/test_api_question_bank_routes.py` 和联合分析、判定版本、个性化推荐、训练卷的现有测试。核对旧格式实际入口、Word 公式与表格、正文和图片文件变化、不同资料目录、逐题失败隔离、同时间多版本选择、教师确认及编辑保护、读取不新增并行模型正文、已发卷快照和新进程缓存恢复。兼容旧摘要必须同时覆盖正文真正改变后拒绝复用。
+- 题库格式与当前依据：复用 `tests/test_question_bank_importer.py`、`tests/test_question_bank_read_cache.py`、`tests/test_api_question_bank_routes.py` 和联合分析、判定版本、个性化推荐、训练卷的现有测试。核对旧格式实际入口、Word 公式与表格、正文和图片文件变化、不同资料目录、逐题失败隔离、同时间多版本选择、教师确认及编辑保护、读取不新增并行模型正文、已发卷快照和新进程缓存恢复。`tests/training/test_combined_question_analysis.py` 核对 Word 解析复用时的完整内容键、嵌套结果独立、损坏输入重试及大输入不入缓存。兼容旧摘要必须同时覆盖正文真正改变后拒绝复用。
 - 数据库当前结构与升级协调：复用 `tests/test_schema_baseline.py`、`tests/test_migration_tooling.py`、`tests/test_p3_11_schema_version_gate.py`、`tests/test_make_update_package.py`、`tests/test_ops_jobs.py` 和 `tests/test_ops_offline.py`。检查空库直接初始化、当前库不读历史 SQL、历史前缀仍严格校验、异常记录不盖成功标记、两库失败恢复及代码回退范围；用 `tools/generate_schema_baseline.py --check` 核对生成定义。合成回归不代替实际旧机升级和完整安装包验收。
 - 评分、组卷、推荐、保存与性能：对照独立的预期结果；涉及保存时检查重新进入，性能变化比较同等输入的前后测量。
-- 后端读取性能：`test_request_read_connections` 覆盖捕获期间两库提交、有限重试与资源关闭；`test_api_training_routes` 覆盖任务元数据不使学情失效、有关输入刷新和解析缓存容量。`test_assembly_assistant` 核对每题资料请求内复用及来源变化不发布起草；`test_analysis_report` 核对修订输入共用、单人读取范围及跨考试并发。推荐原有小组采用用例同时核对固定成员读取和保存都不重新自动分组。
+- 后端读取性能：`test_request_read_connections` 覆盖捕获期间两库提交、有限重试与资源关闭；`test_api_training_routes` 覆盖任务元数据不使学情失效、有关输入刷新和解析缓存容量。`test_assembly_assistant` 核对每题资料请求内复用及来源变化不发布起草；`test_analysis_report` 核对修订输入共用、单人读取范围及跨考试并发。`test_report_results` 核对报告状态输入复用、保存结果即时显示及成绩、题面、答案、错因变化后失效；`test_api_workbench_overview` 核对跨请求复核计数复用及批次、赋分与数据库更新后失效。`test_api_frontend_launcher` 使用服务替身核对普通启动实际输出请求耗时，且不带查询参数或正文。推荐原有小组采用用例同时核对固定成员读取和保存都不重新自动分组。
 - 代理决定测试位置；用户确认业务预期，不必确认内部接口。已授权实现范围内，隔离本地测试可执行、修复并复跑受影响项。
 - 以下套件是可选入口，不是每次修改都要逐级执行的关卡；通过相关检查后，只有新修改、失败或具体未解决问题才扩大范围；日常小改动不默认全量测试或独立复审。
 - 学情总览与知识结构：后端 `tests/test_api_graph_selected_scope.py` 覆盖摘要／完整诊断、快照恢复、往届排除、群体区间与关联失败回退；完整题型诊断另核对单人／小组仍读完整同班基准、教师最终分与满分、未选中者改分后的缓存与快照恢复，摘要和技能模式不读新基准；前端 `knowledge-overview-view`、`knowledge-graph-view` 覆盖共享口径、热度边界、范围、出卷预填、筛选与焦点返回。`npx playwright test e2e/knowledge-graph.spec.ts` 使用默认配置与模拟接口验证两栏、关联实线／虚线、抽屉、窄屏和进入按学生训练时不创建草稿。
@@ -46,7 +46,7 @@ GitHub 的 [CI 工作流](../../.github/workflows/ci.yml) 在推送或提交 PR 
 | `release` | 发布候选或发布工具发生变化 | 先运行 `full`，再补充打包、历史数据库升级和性能工具检查；历史升级仍检查所有支持的起点 |
 | `review` | 人工复核、评分保存或成绩展示发生变化 | 复用相关后端和页面测试，再通过真实浏览器验证改分、刷新、新窗口重新进入、旧窗口冲突保护及下载成绩表 |
 
-性能回归复用 `tests/test_class_analysis.py`、`tests/test_question_bank_read_cache.py`、`tests/test_api_training_routes.py`、`tests/test_api_graph_selected_scope.py` 和 `tests/test_api_scan_grading_workspace.py`。检查学生人数增加时来源指纹的计算次数、按册和当前页的实际读取范围、概览与图谱精简内部投影后的完整输出相等、全体学生学期观测只读取一次、完整公开字段及输入不变、完整诊断及含小组响应的新进程恢复、小组参数与题目资源更新失效、命中后不再构造完整诊断或小组模块、小组追加字段与直接生成 JSON 后的响应与原完整模型编码字节相等、非有限数值及数值字符串拒绝、启动首章默认小组与新增最近请求触发空闲准备、最近范围及该范围完整分组优先、无最近范围时题库浏览优先、后台重放不改变前台最近记录、任务间及等待前台期间切换范围后重排，而真实批改任务继续让位、相同模型输入在扣分说明更新及请求临时快照间复用而观测结果／题库来源／参数／计算周／排除证据变化重新计算、本地概览与图谱恢复、题目关联读取不做全表统计且原地标签修改后刷新（`tests/question_bank/test_topic_skill_matching.py`）、正文增删改、计算版本失效、损坏和保存失败回退，以及批改两个未完成计数共用一次查询而下一次摘要重新读取。前端复用 `training-api`、`training-recommendations-view`、`practice-selection` 和 `training-group-recommendations`，核对重复字段及深层路径字段拦截、诊断范围切换、过期请求取消、章节页首次仅一次完整小组请求、小组失败回退基础诊断、整份结果更新、选题与草稿恢复。性能测量分别记录首次进入、连续刷新和合成数据更新后刷新；区分缓存恢复与缓存未命中的重算，并记录数据完成与页面内容可见时间。完整输出相等与耗时比较使用同等输入，真实数据只读。
+性能回归复用 `tests/test_class_analysis.py`、`tests/test_question_bank_read_cache.py`、`tests/test_api_training_routes.py`、`tests/test_api_graph_selected_scope.py` 和 `tests/test_api_scan_grading_workspace.py`。检查学生人数增加时来源指纹的计算次数、按册和当前页的实际读取范围、概览与图谱精简内部投影后的完整输出相等、全体学生学期观测只读取一次、完整公开字段及输入不变、完整诊断及含小组响应的新进程恢复、小组参数与题目资源更新失效、命中后不再构造完整诊断或小组模块、小组追加字段与直接生成 JSON 后的响应与原完整模型编码字节相等、非有限数值及数值字符串拒绝、启动首章默认小组与新增最近请求触发空闲准备、最近范围及该范围完整分组优先、无最近范围时题库浏览优先、后台重放不改变前台最近记录、任务间及等待前台期间切换范围后重排，而真实批改任务继续让位、相同模型输入在扣分说明更新及请求临时快照间复用而观测结果／题库来源／参数／计算周／排除证据变化重新计算、本地概览与图谱恢复、题目关联读取不做全表统计且原地标签修改后刷新（`tests/question_bank/test_topic_skill_matching.py`）、正文增删改、计算版本失效、损坏和保存失败回退，以及批改两个未完成计数共用一次查询而下一次摘要重新读取。前端复用 `training-api`、`training-recommendations-view`、`practice-selection` 和 `training-group-recommendations`，核对重复字段及深层路径字段拦截、诊断范围切换、过期请求取消、章节页首次仅一次显示小组请求、小组失败回退基础诊断、整份结果更新、所有知识项的左栏与学生概况相等、完整出卷依据的范围隔离、采用前完整来源复核，以及依据读取失败后的草稿与原令牌恢复。完整、旧摘要和显示响应分别核对进程内命中及新进程恢复。组卷预取复用 `assembly-assistant` 与 `question-assembly-view`，核对仅准备下一目标、前台优先、复用同目标请求、切范围取消及离页停止。正文摘要复用 `tests/training/test_combined_question_analysis.py` 与 `test_part_assessment_mastery.py`，核对嵌套内容变化、线程与请求隔离、容量和失败重试。指定题读取复用 `tests/training/test_personalized_recommendation.py` 与 `tests/test_assembly_assistant.py`，核对完整来源快照及题卡相等、批量边界、遗漏题号和原全范围路径。性能测量分别记录首次进入、连续刷新和合成数据更新后刷新；区分缓存恢复与缓存未命中的重算，并记录数据完成与页面内容可见时间。完整输出相等与耗时比较使用同等输入，真实数据只读。
 
 入口与并发：
 
@@ -57,7 +57,7 @@ GitHub 的 [CI 工作流](../../.github/workflows/ci.yml) 在推送或提交 PR 
 入口关系：
 
 - 这些入口复用同一批测试，不需要依次全部运行：`quick` 和 `review` 是按操作选择的子集；`serial` 只规定需要独立运行的环境，也包含少量发布工具测试；`release` 已包含 `full`。
-- 前端其他浏览器专项和演示服务测试通过下表的业务命令运行，不计入 `full` 的页面单元测试；统计全项目数量时应单独计入它们。
+- 前端其他浏览器专项和演示服务测试通过下表的业务命令运行，不计入 `full` 的页面单元测试；统计全项目数量时应单独计入它们。前端代码规范检查跳过 `frontend/output/` 中的测试缓存与生成产物，该目录仍保留在本机。
 - 兼容入口 `tools/smoke_check.py` 的后端测试委托给 `run_test_suite.py full --skip-frontend`，使用同一分组、隔离环境和默认进程数；它自身仍负责文档、静态编译及数据库副本初始化检查；`--pytest-workers` 和 `--pytest-durations` 会传给统一入口，`--parallel-tests` 仅保留为旧命令兼容参数；需要前端验收时直接使用 `full`。
 - `review` 复用 `tests/api_e2e/harness.py` 的合成考试与模型替身，通过真实页面、API 和临时数据库保存分数，不拦截保存响应；浏览器按当前步骤给分、确认后继续复核、返回成绩明细及下载成绩表的操作验收，同时检查非法输入、旧窗口冲突和重新进入后的分数。浏览器环境使用独立动态端口与数据目录，直接运行当前前端源码，不重建共享 `frontend/dist`。
 - 需已安装前端依赖和 Playwright Chromium；截图、失败追踪和浏览器日志保存在本次新建的 `output/review_browser_*` 目录。

@@ -11,12 +11,19 @@ const catalog = { schema_version: 2, catalog_id: 'TEST-catalog', knowledge_stand
 catalog.volumes = Array.from({ length: 5 }, (_, index) => ({ ...catalog.volumes[0]!, id: index === 2 ? volumeId : `TEST-volume-${index}`, order: index + 1 }))
 const students = [1, 2, 3].map(id => ({ id, student_code: `TEST-${id}`, name: `合成学生${id}`, class_name: id === 3 ? '二班' : '一班', created_at: null }))
 const weak = { knowledge_key: skill, knowledge_point: '技能·合成技能', parent_knowledge_key: section, tier: 'weak', mastery: .4, score_sum: 4, full_score_sum: 10, deduction_count: 1, evidence_count: 1, observation_count: 1, exam_count: 1, source_question_refs: [], actionable_reasons: [], tag_context: {}, error_counts: {} }
-function diagnosis(body: { scope: { mode: string; class_ids?: string[]; student_ids?: string[] } }) {
+function diagnosis(body: { scope: { mode: string; class_ids?: string[]; student_ids?: string[] }; response_mode?: 'full' | 'display' }) {
   const selected = students.filter(student => body.scope.mode === 'class' ? body.scope.class_ids?.includes(student.class_name) : body.scope.mode === 'selected' ? body.scope.student_ids?.includes(String(student.id)) : true)
-  return { scope: body.scope, exam_scope: { mode: 'semester', curriculum_volume_id: volumeId, session_ids: [7, 8], sessions: [{ session_id: 7, session_name: 'TEST考试7' }, { session_id: 8, session_name: 'TEST考试8' }] },
+  const full = { scope: body.scope, exam_scope: { mode: 'semester', curriculum_volume_id: volumeId, session_ids: [7, 8], sessions: [{ session_id: 7, session_name: 'TEST考试7' }, { session_id: 8, session_name: 'TEST考试8' }] },
     students: selected.map(student => ({ student_id: String(student.id), student_name: student.name, student_code: student.student_code, class_id: student.class_name, score_rate: .6, score_rate_source: 'current_exam', weak_points: [weak] })),
     knowledge_catalog: [{ knowledge_key: chapter, knowledge_point: '合成章', node_kind: 'chapter' }, { knowledge_key: section, knowledge_point: '合成节', node_kind: 'section', parent_knowledge_key: chapter }, { knowledge_key: skill, knowledge_point: '合成技能', node_kind: 'skill', parent_knowledge_key: section }],
     group_weak_points: [], knowledge_associations: [], coverage: { covered_items: 3, total_items: 3, missing_items: {} }, confirmed_concept_ids: [], suggested_terms: [], unmapped_terms: [], warnings: [], diagnosis_identity: 'question_tag' }
+  if (body.response_mode !== 'display') return full
+  return { ...full, response_mode: 'display', students: full.students.map(student => ({ ...student,
+    weak_points: student.weak_points.map(point => ({ knowledge_key: point.knowledge_key,
+      knowledge_point: point.knowledge_point, mastery: point.mastery, tier: point.tier,
+      observation_count: point.observation_count, evidence_count: point.evidence_count,
+      parent_knowledge_key: point.parent_knowledge_key, source_reference_count: point.source_question_refs.length })),
+  })) }
 }
 const job = { id: 71, job_type: 'wrong_question_export', payload: {}, result: { question_count: 3, filename: 'TEST错题本.zip', download_url: '/api/jobs/71/download', generated_students: [], empty_students: [], missing_items: [], failed_students: [] },
   status: 'succeeded', progress: 1, stage: 'wrong_question_export', detail: '已完成', error: null, cancel_requested: false,
@@ -72,6 +79,9 @@ test('student selection, separate handout defaults, chapter layout, drawer focus
   await page.getByTestId('go-paper').click()
   await expect(page).toHaveURL(/mode=paper/)
   await expect(page.getByTestId('generate-paper-draft')).toBeEnabled()
+  const diagnosisCalls = calls.filter(call => call.path === '/api/training/diagnosis')
+  expect(diagnosisCalls[0]?.body.response_mode).toBe('display')
+  expect(diagnosisCalls[diagnosisCalls.length - 1]?.body.response_mode).toBeUndefined()
   expect(calls.some(call => call.path === '/api/training/personalized-drafts' && Object.keys(call.body).length)).toBe(false)
   await page.goto('/training?mode=chapter')
   await expect(page.getByLabel('章节与小节')).toBeVisible()

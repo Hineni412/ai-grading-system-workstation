@@ -143,6 +143,55 @@ def _seed_session(db, tmp_path: Path) -> int:
     return _seed_analysis_session(db, tmp_path)
 
 
+@pytest.mark.parametrize("changed_input", ["score", "rubric", "answer", "error_records"])
+def test_personal_status_reuses_inputs_but_refreshes_results_and_changed_evidence(tmp_path, monkeypatch, changed_input):
+    import backend.personal_reports as reports
+    from backend.session_analysis import assemble_session_analysis, enrich_personal_questions
+
+    db = open_grading_repositories(tmp_path / "databases" / "TEST-grading.db")
+    db.initialize()
+    sid = _seed_session(db, tmp_path)
+    directory = tmp_path / "TEST-reports"
+    data = assemble_session_analysis(db, sid, data_root=tmp_path, page_only=True)
+    enrich_personal_questions(db, data, tmp_path)
+    digests = reports.student_report_digests(db, sid, data, reports_dir=directory)
+    student_id = data.students[0].student_id
+    calls = []
+    original = reports.assemble_session_analysis
+
+    def counted(*args, **kwargs):
+        calls.append(None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(reports, "assemble_session_analysis", counted)
+    first = reports.personal_report_states(db, sid, directory)
+    assert next(s for s in first["students"] if s["student_id"] == student_id)["status"] == "missing"
+    PersonalReportStore(directory).save(sid, student_id, narrative={"summary": "TEST"},
+                                       input_digest=digests[student_id], prompt_version=prompt_version("personal_report"))
+    ready = reports.personal_report_states(db, sid, directory)
+    assert next(s for s in ready["students"] if s["student_id"] == student_id)["status"] == "current"
+    assert len(calls) == 1
+    if changed_input == "score":
+        with sqlite3.connect(db.db_path) as connection:
+            connection.execute("UPDATE session_details SET score_awarded=score_awarded-1 WHERE question_id='Q1'")
+    elif changed_input in {"rubric", "answer"}:
+        session = db.sessions.get_grading_session(sid)
+        path = Path(session["rubric_path" if changed_input == "rubric" else "answer_key_path"])
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["questions"][0]["question_text" if changed_input == "rubric" else "analysis"] = "TEST-changed-input"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    else:
+        state_path = directory / ".class_analysis" / f"{sid}.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps({"error_records": {"Q1": {"records": [{
+            "student_id": student_id, "kind": "error", "category": "TEST", "pattern": "TEST-new-pattern",
+        }]}}}), encoding="utf-8")
+    refreshed = reports.personal_report_states(db, sid, directory)
+    assert next(s for s in refreshed["students"] if s["student_id"] == student_id)["status"] == "stale"
+    assert len(calls) == 2
+    assert refreshed == reports.personal_report_states(db, sid, directory, data=original(db, sid, data_root=tmp_path, page_only=True))
+
+
 def _legacy_index_and_cache(reports_dir: Path, sid: int, students: list[int]) -> Path:
     """旧式缓存：personal_index 列两个学生 + 键名文件；另有一个孤儿文件。"""
     cache_dir = reports_dir / ".analysis_narrative_cache"

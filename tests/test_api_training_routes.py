@@ -1150,6 +1150,66 @@ def test_training_diagnosis_uses_question_tag_identity(
         {k: v for k, v in original.items() if not k.startswith('_')})).model_dump(mode='json', exclude_none=True)
     assert grouped.content == json.dumps(expected, ensure_ascii=False, allow_nan=False,
                                        separators=(',', ':')).encode('utf-8')
+    summary_fields = {'knowledge_key', 'knowledge_point', 'mastery', 'tier',
+        'observation_count', 'full_correct_count', 'score_sum', 'full_score_sum',
+        'deduction_count', 'evidence_count', 'effective_weight', 'exam_count',
+        'source_question_refs', 'parent_knowledge_key', 'direct_evidence_count',
+        'child_evidence_count', 'precise_training_evidence_count'}
+    for request_body, full_response in [
+        ({'scope': {'mode': 'student', 'student_ids': ['12']},
+          'exam_scope': {'mode': 'current', 'session_ids': [14]}}, response),
+        (grouped_body, grouped),
+    ]:
+        compact_body = {**request_body, 'include_student_detail': False}
+        compact = training_client.post('/api/training/diagnosis', json=compact_body)
+        assert compact.status_code == 200
+        full_payload, compact_payload = full_response.json(), compact.json()
+        assert compact_payload['include_student_detail'] is False
+        for field in full_payload.keys() - {'students', 'group_weak_points'}:
+            assert compact_payload[field] == full_payload[field]
+        assert len(compact_payload['students']) == len(full_payload['students'])
+        pairs = [(compact_payload['group_weak_points'], full_payload['group_weak_points'])]
+        for compact_student, full_student in zip(compact_payload['students'], full_payload['students']):
+            assert {k: v for k, v in compact_student.items() if k != 'weak_points'} == {
+                k: v for k, v in full_student.items() if k != 'weak_points'}
+            pairs.append((compact_student['weak_points'], full_student['weak_points']))
+        for compact_points, full_points in pairs:
+            assert compact_points == [{k: v for k, v in point.items() if k in summary_fields}
+                                      for point in full_points]
+        assert len(compact.content) < len(full_response.content)
+        display_body = {**request_body, 'response_mode': 'display'}
+        display = training_client.post('/api/training/diagnosis', json=display_body)
+        assert display.status_code == 200
+        displayed = display.json()
+        assert displayed['response_mode'] == 'display'
+        assert 'include_student_detail' not in displayed
+        for field in full_payload.keys() - {'students', 'group_weak_points', 'knowledge_catalog', 'knowledge_associations'}:
+            assert displayed[field] == full_payload[field]
+        display_fields = {'knowledge_key', 'knowledge_point', 'mastery', 'tier',
+                          'observation_count', 'evidence_count', 'parent_knowledge_key'}
+        display_pairs = [(displayed['group_weak_points'], full_payload['group_weak_points'])]
+        assert len(displayed['students']) == len(full_payload['students'])
+        for display_student, full_student in zip(displayed['students'], full_payload['students']):
+            assert {k: v for k, v in display_student.items() if k != 'weak_points'} == {
+                k: v for k, v in full_student.items() if k != 'weak_points'}
+            display_pairs.append((display_student['weak_points'], full_student['weak_points']))
+        for display_points, full_points in display_pairs:
+            assert display_points == [{**{k: v for k, v in point.items() if k in display_fields},
+                                       'source_reference_count': len(point['source_question_refs'])}
+                                      for point in full_points]
+        assert displayed['knowledge_catalog'] == [{k: v for k, v in node.items()
+            if k in {'knowledge_key', 'knowledge_point', 'parent_knowledge_key', 'node_kind'}}
+            for node in full_payload['knowledge_catalog']]
+        assert len(display.content) < len(compact.content)
+        with monkeypatch.context() as patch:
+            patch.setattr(training_services, 'build_profiles',
+                          lambda **kwargs: pytest.fail('recomputed cached response variant'))
+            assert training_client.post('/api/training/diagnosis', json=compact_body).content == compact.content
+            assert training_client.post('/api/training/diagnosis', json=request_body).content == full_response.content
+            assert training_client.post('/api/training/diagnosis', json=display_body).content == display.content
+        assert training_client.post('/api/training/diagnosis', json={**display_body,
+            'response_mode': 'unsupported'}).status_code == 422
+    assert grouped_calls == [10]
     from copy import deepcopy
     from backend.api.routers.training import _validated_diagnosis_json
     # Direct serialization must preserve finite values and reject invalid
@@ -1173,6 +1233,15 @@ def test_training_diagnosis_uses_question_tag_identity(
         scope=request.scope.model_dump(exclude_none=True), exam_scope=request.exam_scope.model_dump(exclude_none=True),
         grouping=request.grouping)
     assert saved == grouped.content
+    saved_variants = []
+    for variant in ({**grouped_body, 'include_student_detail': False},
+                    {**grouped_body, 'response_mode': 'display'}):
+        variant_request = TrainingDiagnosisRequest.model_validate(variant)
+        encoded = _grouped_diagnosis_response_bytes(training_services, grouping,
+            scope=variant_request.scope.model_dump(exclude_none=True),
+            exam_scope=variant_request.exam_scope.model_dump(exclude_none=True), grouping=variant_request.grouping,
+            include_student_detail=variant_request.include_student_detail, response_mode=variant_request.response_mode)
+        saved_variants.append((variant, encoded))
     script = '''
 import hashlib,json,sys
 from types import SimpleNamespace
@@ -1189,7 +1258,8 @@ r=TrainingDiagnosisRequest.model_validate_json(sys.argv[3])
 m=SimpleNamespace(current_knowledge=SimpleNamespace(release_id='TEST-release'),
     clock=lambda:datetime(2026,10,3,tzinfo=UTC))
 result=training._grouped_diagnosis_response_bytes(s,m,scope=r.scope.model_dump(exclude_none=True),
-    exam_scope=r.exam_scope.model_dump(exclude_none=True),grouping=r.grouping)
+    exam_scope=r.exam_scope.model_dump(exclude_none=True),grouping=r.grouping,
+    include_student_detail=r.include_student_detail,response_mode=r.response_mode)
 print(hashlib.sha256(result).hexdigest())
 '''
     restored = subprocess.run([sys.executable, '-c', script, str(training_services.grading_db_path),
@@ -1197,6 +1267,12 @@ print(hashlib.sha256(result).hexdigest())
         capture_output=True, text=True, timeout=30)
     assert restored.returncode == 0, restored.stderr
     assert restored.stdout.strip() == hashlib.sha256(saved).hexdigest()
+    for variant, encoded in saved_variants:
+        restored_variant = subprocess.run([sys.executable, '-c', script, str(training_services.grading_db_path),
+            str(training_services.question_bank_db_path), json.dumps(variant)],
+            capture_output=True, text=True, timeout=30)
+        assert restored_variant.returncode == 0, restored_variant.stderr
+        assert restored_variant.stdout.strip() == hashlib.sha256(encoded).hexdigest()
     from backend.api.routers import training as router_module
     with monkeypatch.context() as patch:
         patch.setattr(router_module, 'get_personalized_recommendation_module',

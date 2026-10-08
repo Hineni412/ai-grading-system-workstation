@@ -39,6 +39,17 @@ def source_input_key(row: Mapping[str, Any]) -> str:
 
 
 def _input_source_hashes(question: Any, input_key: str = "") -> SourceHash:
+    from question_bank.training_criteria.analysis import _reuse_source_content
+
+    if type(input_key) is not str or len(input_key) > 256:
+        return _compute_input_source_hashes(question, input_key)
+    return _reuse_source_content(
+        question, f"source_bundle:{input_key}",
+        lambda: _compute_input_source_hashes(question, input_key),
+    )
+
+
+def _compute_input_source_hashes(question: Any, input_key: str = "") -> SourceHash:
     from question_bank.training_criteria.analysis import (
         compatible_source_content_hashes,
         solution_evidence_source_content_hash,

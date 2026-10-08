@@ -34,6 +34,7 @@ export interface ScanUploadFile {
   size_bytes: number
   sha256_prefix: string
   added_at: string
+  appended?: boolean
 }
 
 export interface ScanUploadBatch {
@@ -109,6 +110,8 @@ export interface ScanPreflightIdentity {
 
 export interface ScanPreflight {
   revision: number
+  input_changed?: boolean
+  appended_file_count?: number
   summary: Record<string, number>
   page_assignment?: ScanPageAssignment
   groups: Record<string, unknown>[]
@@ -166,14 +169,16 @@ function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): b
 
 function decodeUploadFile(value: unknown): ScanUploadFile {
   if (!isRecord(value) || !hasExactKeys(value, [
-    'id', 'name', 'media_type', 'size_bytes', 'sha256_prefix', 'added_at',
+    'id', 'name', 'media_type', 'size_bytes', 'sha256_prefix', 'added_at', 'appended',
   ])
     || typeof value.id !== 'string' || !value.id
     || typeof value.name !== 'string' || !value.name
     || typeof value.media_type !== 'string'
     || !finiteInteger(value.size_bytes)
     || typeof value.sha256_prefix !== 'string' || !/^[0-9a-f]{12}$/.test(value.sha256_prefix)
-    || typeof value.added_at !== 'string') throw new Error('Invalid scan upload file')
+    || typeof value.added_at !== 'string' || typeof value.appended !== 'boolean') {
+    throw new Error('Invalid scan upload file')
+  }
   return value as unknown as ScanUploadFile
 }
 
@@ -258,7 +263,9 @@ function decodePreflight(value: unknown): ScanPreflight {
   if (!isRecord(value) || !finiteInteger(value.revision)
     || !Array.isArray(value.groups) || !Array.isArray(value.issues)
     || !Array.isArray(value.absent_students) || !Array.isArray(value.warnings)
-    || !Array.isArray(value.decisions) || !finiteInteger(value.pending_issue_count)) {
+    || !Array.isArray(value.decisions) || !finiteInteger(value.pending_issue_count)
+    || (value.input_changed !== undefined && typeof value.input_changed !== 'boolean')
+    || (value.appended_file_count !== undefined && !finiteInteger(value.appended_file_count))) {
     throw new Error('Invalid scan preflight')
   }
   const pageAssignment = value.page_assignment
@@ -377,9 +384,11 @@ export function fetchGradingWorkspace(sessionId: number, signal?: AbortSignal): 
   })
 }
 
-export async function uploadScan(sessionId: number, file: File, replacement = false, signal?: AbortSignal): Promise<{ duplicate: boolean, file: ScanUploadFile }> {
+export type ScanUploadMode = 'default' | 'replacement' | 'append'
+
+export async function uploadScan(sessionId: number, file: File, mode: ScanUploadMode = 'default', signal?: AbortSignal): Promise<{ duplicate: boolean, file: ScanUploadFile }> {
   const digest = await sha256(file)
-  const suffix = replacement ? '?replacement=true' : ''
+  const suffix = mode === 'replacement' ? '?replacement=true' : mode === 'append' ? '?append=true' : ''
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan-uploads${suffix}`, {
     method: 'POST', rawBody: file, signal, timeoutMs: 120_000,
     headers: {
@@ -394,8 +403,9 @@ export async function uploadScan(sessionId: number, file: File, replacement = fa
   })
 }
 
-export function removeScan(sessionId: number, uploadId: string, revision: number, replacement = false): Promise<ScanUploadBatch> {
-  return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan-uploads/${encodeURIComponent(uploadId)}?expected_revision=${revision}${replacement ? '&replacement=true' : ''}`, {
+export function removeScan(sessionId: number, uploadId: string, revision: number, mode: 'default' | 'replacement' | 'append' = 'default'): Promise<ScanUploadBatch> {
+  const suffix = mode === 'replacement' ? '&replacement=true' : mode === 'append' ? '&append=true' : ''
+  return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan-uploads/${encodeURIComponent(uploadId)}?expected_revision=${revision}${suffix}`, {
     method: 'DELETE', decode: decodeUploadBatch,
   })
 }

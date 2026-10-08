@@ -5,6 +5,7 @@ import { ApiError } from '../api/errors'
 
 const STORAGE_KEY = 'ai-grading:assembly-assistant-filters:v1'
 const PAGE_SIZE = 12
+const PREFETCH_TARGET_COUNT = 1
 
 export const useAssemblyAssistantStore = defineStore('assembly-assistant', () => {
   let previous: Partial<AssemblyAssistantRequest> = {}
@@ -90,6 +91,15 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     return cacheSignature(filters)
   }
 
+  function requestSnapshot(targetKeys: AssemblyAssistantRequest['target_keys'] = filters.target_keys): AssemblyAssistantRequest {
+    return {
+      ...filters,
+      class_ids: filters.class_ids ? [...filters.class_ids] : undefined,
+      session_ids: filters.session_ids ? [...filters.session_ids] : undefined,
+      target_keys: targetKeys ? [...targetKeys] : targetKeys,
+    }
+  }
+
   function rememberResult(body: AssemblyAssistantRequest, next: AssemblyAssistantResult): void {
     resultCache.set(`${cacheSignature(body)}|${next.selected_target_keys.join(',')}`, next)
     while (resultCache.size > 80) resultCache.delete(resultCache.keys().next().value!)
@@ -116,13 +126,15 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     if (selectedKey.value === key && (filters.target_keys ?? result.value?.selected_target_keys ?? []).length === 1) return
     filters.target_keys = [key]
     const signature = filterSignature()
+    const inflight = prefetchInflight
+    if (inflight?.signature === signature && inflight.key === key) prefetchKeys = []
+    else stopPrefetch()
     const cached = resultCache.get(`${signature}|${key}`)
     if (cached) {
       await applyCached(cached)
       return
     }
     const stillSelected = () => filters.target_keys?.length === 1 && filters.target_keys[0] === key
-    const inflight = prefetchInflight
     if (inflight && inflight.signature === signature && inflight.key === key) {
       state.value = 'loading'
       await inflight.promise
@@ -143,7 +155,8 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   }
 
   function prefetch(keys: string[]): void {
-    prefetchKeys = [...keys]
+    const current = keys.indexOf(selectedKey.value)
+    prefetchKeys = keys.slice(current + 1, current + 1 + PREFETCH_TARGET_COUNT)
     // A loop for the current generation picks the keys up; a stale loop that is
     // still draining restarts itself from its finally block.
     if (runningGeneration === -1) startPrefetchLoop()
@@ -160,7 +173,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
           const key = prefetchKeys.find(k => !resultCache.has(`${signature}|${k}`) && k !== selectedKey.value)
           if (key === undefined) return
           prefetchKeys = prefetchKeys.filter(k => k !== key)
-          while (state.value === 'loading' || prefetchInflight) {
+          while (state.value === 'loading' || loadingMore.value || waiting.value || examState.value === 'loading' || prefetchInflight) {
             const pending = prefetchInflight
             if (pending) {
               await pending.promise
@@ -172,7 +185,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
           }
           const own = new AbortController()
           prefetchController = own
-          const body = { ...JSON.parse(requestKey.value), target_keys: [key] } as AssemblyAssistantRequest
+          const body = requestSnapshot([key])
           const promise = (async () => {
             try {
               const next = await fetchAssemblyCandidates(body, own.signal)
@@ -197,6 +210,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   function scheduleSearch(delay = 250): void {
     if (!result.value) return
     cancelScheduled()
+    stopPrefetch()
     controller?.abort()
     serial += 1
     state.value = 'ready'
@@ -230,6 +244,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   async function search(reusePreviews = false): Promise<void> {
     if (!(filters.class_ids?.length || filters.class_id) || !filters.curriculum_volume_id) return
     cancelScheduled()
+    stopPrefetch()
     const token = ++serial
     controller?.abort()
     controller = new AbortController()
@@ -237,10 +252,9 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     if (!reusePreviews) {
       previewCache.clear()
       resultCache.clear()
-      stopPrefetch()
     }
     loadingMore.value = false
-    const body = JSON.parse(requestKey.value) as AssemblyAssistantRequest
+    const body = requestSnapshot()
     const key = JSON.stringify(body)
     state.value = 'loading'
     message.value = ''
@@ -274,6 +288,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
 
   async function loadMore(): Promise<void> {
     if (!hasMore.value || isStale.value || loadingMore.value || state.value !== 'ready') return
+    stopPrefetch()
     const token = serial
     const key = requestKey.value
     const signal = controller!.signal
@@ -292,6 +307,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   }
 
   async function loadExams(): Promise<void> {
+    stopPrefetch()
     const token = ++examSerial
     examController?.abort()
     controller?.abort()
@@ -310,6 +326,6 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     } catch { if (token === examSerial) { examState.value = 'error'; message.value = '考试依据暂时无法读取，请重试。' } }
   }
 
-  return { filters, result, questions, state, message, isStale, canSearch, waiting, visibleCount, loadingMore, hasMore, selectedKey, changeScope, selectSkill, prefetch, scheduleSearch, search, loadMore, previewsFor,
+  return { filters, result, questions, state, message, isStale, canSearch, waiting, visibleCount, loadingMore, hasMore, selectedKey, changeScope, selectSkill, prefetch, stopPrefetch, scheduleSearch, search, loadMore, previewsFor,
     examResult, examState, threshold, sort, includeTraining, loadExams }
 })

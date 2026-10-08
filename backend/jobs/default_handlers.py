@@ -867,6 +867,7 @@ def _build_scan_analysis_handler(
             "template_fingerprint",
             "template_first_page_role",
             "config_revision",
+            "scan_upload_revision",
         ):
             if context.payload.get(key) is not None:
                 scan_kwargs[key] = context.payload[key]

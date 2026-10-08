@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 
 import AppSidebar from '../components/shell/AppSidebar.vue'
@@ -22,9 +22,9 @@ const curriculumScope = useCurriculumScopeStore()
 const jobs = useJobStore()
 const scanGradingStore = useScanGradingStore()
 const SIDEBAR_COLLAPSED_KEY = 'zhiheng.sidebar.collapsed'
-const hydratingWorkspace = ref(false)
+const hydratingWorkspace = ref(true)
 let hydratedConfigSession: number | null = null
-let configHydration: Promise<void> | null = null
+const configHydration = shallowRef<Promise<void> | null>(null)
 
 async function hydrateConfigWorkspace(): Promise<void> {
   const id = sessionStore.selectedSessionId
@@ -34,12 +34,12 @@ async function hydrateConfigWorkspace(): Promise<void> {
     hydratedConfigSession = id
     return
   }
-  if (configHydration) { await configHydration; return hydrateConfigWorkspace() }
-  configHydration = configStore.hydrateSafeIndex(sessionStore.sessions.map(item => item.id), id)
+  if (configHydration.value) { await configHydration.value; return hydrateConfigWorkspace() }
+  configHydration.value = configStore.hydrateSafeIndex(sessionStore.sessions.map(item => item.id), id)
   try {
-    await configHydration
+    await configHydration.value
     if (sessionStore.selectedSessionId === id) hydratedConfigSession = id
-  } finally { configHydration = null }
+  } finally { configHydration.value = null }
 }
 const navigationOpen = ref(false)
 const narrowNavigation = ref(false)
@@ -116,7 +116,6 @@ onMounted(() => {
   wideMediaQuery.addEventListener('change', syncWideViewport)
   window.addEventListener('beforeunload', onBeforeUnload)
   void jobs.initialize()
-  hydratingWorkspace.value = true
   void sessionStore.initialize().then(async () => {
     if (sessionStore.loadState !== 'ready') return
     await configStore.hydrateSafeIndex(
@@ -226,7 +225,13 @@ onBeforeUnmount(() => {
     <main id="main-workspace" class="main-workspace" tabindex="-1">
       <RouterView v-slot="{ Component }">
         <Transition name="page">
-          <component :is="Component" v-if="Component" />
+          <component
+            :is="Component"
+            v-if="Component"
+            v-bind="route.path === '/sessions'
+              ? { workspaceHydrating: hydratingWorkspace || configHydration !== null }
+              : {}"
+          />
         </Transition>
       </RouterView>
     </main>

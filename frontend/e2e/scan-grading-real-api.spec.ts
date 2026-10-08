@@ -88,6 +88,8 @@ test('real isolated API preserves grading controls, later-match supplement and b
   await expect(page.getByText('已完成 2')).toBeVisible()
 
   await page.getByRole('button', { name: /答卷与预检/ }).click()
+  await page.getByRole('button', { name: '替换全部答卷' }).click()
+  await expect(page.getByRole('button', { name: '确认替换并开始预检' })).toBeVisible()
   await expect(page.locator('input[type="file"]')).toBeEnabled()
   await page.locator('input[type="file"]').setInputFiles(
     resolve('test-results', 'p2-11-real', 'anonymous-class-scan.jpg'),

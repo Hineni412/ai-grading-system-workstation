@@ -314,6 +314,7 @@ function openExcelSettings(forceRegenerate = false): void {
 }
 
 function closeExcelSettings(): void {
+  if (fileCenter.submittingKey === 'report:score_excel') return
   excelSettingsOpen.value = false
   manualStudentSearch.value = ''
 }

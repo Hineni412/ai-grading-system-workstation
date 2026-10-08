@@ -118,6 +118,8 @@ class TrainingDiagnosisRequest(_TrainingModel):
     scope: TrainingScopeRequest
     exam_scope: TrainingExamScopeRequest
     grouping: TrainingGroupingRequest | None = None
+    include_student_detail: bool = True
+    response_mode: Literal["full", "display"] = "full"
 
 
 class TrainingOverviewRequest(_TrainingModel):
@@ -576,6 +578,65 @@ class TrainingDiagnosisResponse(_TrainingModel):
     diagnosis_identity: Literal["question_tag"]
     target_kind: Literal["skill", "type"] = "skill"
     grouping: dict[str, Any] | None = None
+
+
+class TrainingWeakPointSummary(_TrainingModel):
+    knowledge_key: str
+    knowledge_point: str
+    mastery: float | None
+    tier: Literal["stable", "unsteady", "weak", "insufficient"] = "insufficient"
+    observation_count: int = Field(default=0, ge=0)
+    full_correct_count: int = Field(default=0, ge=0)
+    score_sum: float
+    full_score_sum: float
+    deduction_count: int
+    evidence_count: int
+    effective_weight: float = Field(default=0.0, ge=0.0)
+    exam_count: int
+    source_question_refs: list[TrainingEvidenceReference]
+    parent_knowledge_key: str | None = None
+    direct_evidence_count: int = Field(default=0, ge=0)
+    child_evidence_count: int = Field(default=0, ge=0)
+    precise_training_evidence_count: int = Field(default=0, ge=0)
+
+
+class TrainingStudentSummary(TrainingStudentProfile):
+    weak_points: list[TrainingWeakPointSummary]
+
+
+class TrainingDiagnosisSummaryResponse(TrainingDiagnosisResponse):
+    include_student_detail: Literal[False] = False
+    students: list[TrainingStudentSummary]
+    group_weak_points: list[TrainingWeakPointSummary] = Field(default_factory=list)
+
+
+class TrainingDisplayWeakPoint(_TrainingModel):
+    knowledge_key: str
+    knowledge_point: str
+    mastery: float | None
+    tier: Literal["stable", "unsteady", "weak", "insufficient"] = "insufficient"
+    observation_count: int = Field(default=0, ge=0)
+    evidence_count: int = Field(ge=0)
+    parent_knowledge_key: str | None = None
+    source_reference_count: int = Field(ge=0)
+
+
+class TrainingDisplayCatalogNode(_TrainingModel):
+    knowledge_key: str
+    knowledge_point: str
+    parent_knowledge_key: str | None = None
+    node_kind: Literal["chapter", "section", "topic", "skill", "type"] | None = None
+
+
+class TrainingDisplayStudent(TrainingStudentProfile):
+    weak_points: list[TrainingDisplayWeakPoint]
+
+
+class TrainingDisplayDiagnosisResponse(TrainingDiagnosisResponse):
+    response_mode: Literal["display"] = "display"
+    students: list[TrainingDisplayStudent]
+    group_weak_points: list[TrainingDisplayWeakPoint] = Field(default_factory=list)
+    knowledge_catalog: list[TrainingDisplayCatalogNode] = Field(default_factory=list)
 
 
 class TrainingOverviewDistribution(_TrainingModel):

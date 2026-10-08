@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { knowledgeLeafLabel, type CurriculumVolume } from '../../api/question-bank'
-import type { TrainingDiagnosis } from '../../api/training'
+import { trainingSourceReferenceCount, type TrainingReadDiagnosis } from '../../api/training'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 type Tier = 'weak' | 'unsteady' | 'stable' | 'insufficient'
-const props = defineProps<{ volume: CurriculumVolume | null; diagnosis: TrainingDiagnosis; mode: 'range' | 'select-one'; studentIds?: string[]; purpose?: 'training' | 'handout' | 'wrong_book'; progressId?: string }>()
+const props = defineProps<{ volume: CurriculumVolume | null; diagnosis: TrainingReadDiagnosis; mode: 'range' | 'select-one'; studentIds?: string[]; purpose?: 'training' | 'handout' | 'wrong_book'; progressId?: string }>()
 const rangeKeys = defineModel<string[]>('rangeKeys', { default: () => [] })
 const scopeMode = defineModel<'comprehensive' | 'focused'>('scopeMode', { default: 'comprehensive' })
 const progress = defineModel<string>('teachingProgressChapterId', { default: '' })
@@ -39,7 +39,7 @@ const statistics = computed(() => {
       if (seen.has(point.knowledge_key)) continue
       seen.add(point.knowledge_key)
       const node = nodes.get(point.knowledge_key)
-      if (!listed.includes(node?.node_kind ?? '') || !(point.observation_count || point.evidence_count || point.source_question_refs?.length)) continue
+      if (!listed.includes(node?.node_kind ?? '') || !(point.observation_count || point.evidence_count || trainingSourceReferenceCount(point))) continue
       const key = sectionFor(point.knowledge_key)
       if (!key) continue
       const tier = point.tier ?? 'insufficient'

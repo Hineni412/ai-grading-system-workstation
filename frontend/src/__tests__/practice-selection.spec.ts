@@ -1,14 +1,16 @@
-import { createApp, defineComponent, h, nextTick, ref, type App } from 'vue'
+import { createApp, defineComponent, h, nextTick, ref, shallowRef, type App } from 'vue'
 import { createPinia } from 'pinia'
+import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CurriculumVolume } from '../api/question-bank'
-import type { TrainingDiagnosis, TrainingWeakPoint } from '../api/training'
+import { decodeTrainingDisplayDiagnosis, type TrainingDiagnosis, type TrainingReadDiagnosis, type TrainingWeakPoint } from '../api/training'
 import StudentPicker from '../components/knowledge-training/StudentPicker.vue'
+import StudentQuickView from '../components/knowledge-training/StudentQuickView.vue'
 import KnowledgeRangeList from '../components/knowledge-training/KnowledgeRangeList.vue'
 import TrainingScopeBar from '../components/knowledge-training/TrainingScopeBar.vue'
 import WrongQuestionBookExport from '../components/knowledge-training/WrongQuestionBookExport.vue'
 import { ApiError } from '../api/errors'
-import { DEFAULT_HANDOUT_RULES, DEFAULT_TRAINING_RULES, loadPaperSelectionSession, presetFocusedTraining } from '../features/training/paper-selection-session'
+import { DEFAULT_HANDOUT_RULES, DEFAULT_TRAINING_RULES, loadPaperSelectionSession, presetFocusedTraining, resolvePaperScope } from '../features/training/paper-selection-session'
 
 const apps: App[] = []
 const wrongApi = vi.hoisted(() => ({ preview: vi.fn(), submit: vi.fn(), find: vi.fn(), download: vi.fn() }))
@@ -50,9 +52,9 @@ const diagnosis: TrainingDiagnosis = {
   coverage: { covered_items: 0, total_items: 0, missing_items: {} }, confirmed_concept_ids: [], suggested_terms: [],
   unmapped_terms: [], warnings: [], diagnosis_identity: 'question_tag',
 }
-function mount(component: Parameters<typeof createApp>[0]) {
+function mount(component: Parameters<typeof createApp>[0], router?: Router) {
   const host = document.createElement('div'); document.body.append(host)
-  const app = createApp(component); app.use(createPinia()); app.mount(host); apps.push(app)
+  const app = createApp(component); app.use(createPinia()); if (router) app.use(router); app.mount(host); apps.push(app)
   return host
 }
 function button(host: HTMLElement, label: string) { return [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.trim() === label)! }
@@ -66,6 +68,54 @@ beforeEach(() => {
 afterEach(() => { apps.splice(0).forEach(app => app.unmount()); document.body.innerHTML = ''; vi.clearAllMocks() })
 
 describe('学生和章节选择', () => {
+  it('keeps roster, all-section statistics and learned progress equal with display references counted', async () => {
+    const referenceOnly: TrainingWeakPoint = { ...point('sk_reference', 'unsteady', 0),
+      parent_knowledge_key: 'kp_c2_s1', source_question_refs: [{ session_id: 7, session_name: 'TEST考试',
+        question_id: 'Q1', bank_question_id: 1, score_awarded: 0, full_score: 1 }] }
+    const extra = Array.from({ length: 13 }, (_, index) => ({ ...point(`sk_extra_${index}`, 'weak'), mastery: index / 20 }))
+    const full: TrainingDiagnosis = { ...diagnosis,
+      students: diagnosis.students.map((student, index) => ({ ...student,
+        weak_points: [...student.weak_points, ...(index === 0 ? [referenceOnly, ...extra] : [])] })),
+      knowledge_catalog: [...(diagnosis.knowledge_catalog ?? []),
+        { knowledge_key: 'kp_c2', knowledge_point: '第二章', node_kind: 'chapter' },
+        { knowledge_key: 'kp_c2_s1', knowledge_point: '第二章节1', node_kind: 'section', parent_knowledge_key: 'kp_c2' },
+        { knowledge_key: 'sk_reference', knowledge_point: '引用证据项', node_kind: 'skill', parent_knowledge_key: 'kp_c2_s1' },
+        ...extra.map((weak): NonNullable<TrainingDiagnosis['knowledge_catalog']>[number] => ({
+          knowledge_key: weak.knowledge_key, knowledge_point: weak.knowledge_point,
+          node_kind: 'skill', parent_knowledge_key: 'kp_c1_s1' }))],
+    }
+    const display = decodeTrainingDisplayDiagnosis({ ...full, response_mode: 'display', group_weak_points: [],
+      students: full.students.map(student => ({ ...student, weak_points: student.weak_points.map(weak => ({
+        knowledge_key: weak.knowledge_key, knowledge_point: weak.knowledge_point, mastery: weak.mastery,
+        tier: weak.tier ?? 'insufficient', observation_count: weak.observation_count ?? 0,
+        evidence_count: weak.evidence_count, parent_knowledge_key: weak.parent_knowledge_key,
+        source_reference_count: weak.source_question_refs.length,
+      })) })),
+    })
+    expect(display.students.map(student => student.weak_points.length)).toEqual(full.students.map(student => student.weak_points.length))
+    expect(resolvePaperScope(volume, display, [], '', 'comprehensive')).toEqual(resolvePaperScope(volume, full, [], '', 'comprehensive'))
+    expect(resolvePaperScope(volume, display, [], '', 'comprehensive').progressId).toBe('TEST-c2')
+    const fullHost = mount(defineComponent({ setup: () => () => h('div', [h(StudentPicker, { diagnosis: full, modelValue: [] }),
+      h(KnowledgeRangeList, { volume, diagnosis: full, mode: 'range' })]) }))
+    const displayHost = mount(defineComponent({ setup: () => () => h('div', [h(StudentPicker, { diagnosis: display, modelValue: [] }),
+      h(KnowledgeRangeList, { volume, diagnosis: display, mode: 'range' })]) }))
+    expect(displayHost.textContent).toBe(fullHost.textContent)
+    expect([...displayHost.querySelectorAll('.range-tier-bar')].map(node => node.getAttribute('aria-label')))
+      .toEqual([...fullHost.querySelectorAll('.range-tier-bar')].map(node => node.getAttribute('aria-label')))
+    const snapshot = shallowRef<TrainingReadDiagnosis>(full)
+    const blank = defineComponent({ render: () => null })
+    const router = createRouter({ history: createMemoryHistory(), routes: [
+      { path: '/', component: blank }, { name: 'student-evidence', path: '/student/:studentId', component: blank },
+    ] })
+    mount(defineComponent({ setup: () => () => h(StudentQuickView, { diagnosis: snapshot.value,
+      student: snapshot.value.students[0] ?? null, open: true }) }), router)
+    await vi.waitFor(() => expect(document.querySelectorAll('.practice-student-drawer li')).toHaveLength(10))
+    const before = [...document.querySelectorAll('.practice-student-drawer li')].map(node => node.textContent)
+    snapshot.value = display
+    await nextTick()
+    expect([...document.querySelectorAll('.practice-student-drawer li')].map(node => node.textContent)).toEqual(before)
+  })
+
   it('starts with no students, deduplicates weak leaves, and selects a whole class independently of search', async () => {
     const selected = ref<string[]>([]), show = vi.fn()
     const host = mount(defineComponent({ setup: () => () => h(StudentPicker, { diagnosis, modelValue: selected.value,

@@ -266,6 +266,48 @@ describe('file center view', () => {
     await vi.waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:download'))
   })
 
+  it.each(['success', 'failure'] as const)('keeps score settings open while submitting and handles %s', async outcome => {
+    let finish: ((job: JobResponse) => void) | undefined
+    let fail: ((error: Error) => void) | undefined
+    apiMock.submitReport.mockImplementationOnce(() => new Promise<JobResponse>((resolve, reject) => {
+      finish = resolve
+      fail = reject
+    }))
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="configure-score-excel"]')).not.toBeNull())
+    host.querySelector<HTMLButtonElement>('[data-testid="configure-score-excel"]')!.click()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="excel-settings-dialog"]')).not.toBeNull())
+    document.querySelector<HTMLButtonElement>('[data-testid="submit-score-excel"]')!.click()
+    await vi.waitFor(() => expect(apiMock.submitReport).toHaveBeenCalledOnce())
+
+    const settings = document.querySelector<HTMLElement>('[data-testid="excel-settings-dialog"]')!
+    const close = settings.querySelector<HTMLButtonElement>('[aria-label="关闭"]')!
+    const cancel = [...settings.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === '取消')!
+    close.click()
+    cancel.click()
+    close.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await settle()
+    expect(document.querySelector('[data-testid="excel-settings-dialog"]')).not.toBeNull()
+    expect(close.disabled).toBe(true)
+    expect(cancel.disabled).toBe(true)
+    expect(apiMock.submitReport).toHaveBeenCalledOnce()
+
+    if (outcome === 'success') {
+      finish?.(makeJob({ id: 61, status: 'queued', result: {} }))
+    } else {
+      fail?.(new Error('TEST report submission failed'))
+    }
+    await vi.waitFor(() => expect(host.textContent).toContain(outcome === 'success'
+      ? '成绩表已按当前设置加入生成队列。' : '成绩表生成请求未能提交'))
+    expect(document.querySelector('[data-testid="excel-settings-dialog"]') === null).toBe(outcome === 'success')
+    const activeCancel = document.querySelector<HTMLButtonElement>('.excel-settings-dialog__actions button')
+    expect(activeCancel?.disabled).toBe(outcome === 'success' ? undefined : false)
+    activeCancel?.click()
+    await settle()
+    expect(document.querySelector('[data-testid="excel-settings-dialog"]')).toBeNull()
+  })
+
   it('never presents an old score revision as the current download', async () => {
     apiMock.getReportContext.mockResolvedValueOnce({
       score_revision: 'a'.repeat(64),

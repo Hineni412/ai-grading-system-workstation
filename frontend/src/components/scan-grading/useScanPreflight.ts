@@ -693,6 +693,20 @@ export function useScanPreflight(sessionId: Ref<number>) {
     input.value = ''
   }
 
+  function chooseAppendFiles(event: Event): void {
+    const input = event.target as HTMLInputElement
+    if (input.files?.length) void store.appendFiles([...input.files])
+    input.value = ''
+  }
+
+  // 冻结批次追加了新文件后，旧预检结果不再覆盖全部答卷，须重新预检。
+  const inputChanged = computed(() => store.preflight?.input_changed === true)
+  const supplementReady = computed(() => Boolean(
+    store.gradingRun?.allowed_actions.includes('supplement_new_matches')
+    && !inputChanged.value
+    && !preflightActive.value,
+  ))
+
   async function confirmReplacement(): Promise<void> {
     const confirmed = await confirm({
       title: '改用这批最新答卷？',
@@ -727,6 +741,8 @@ export function useScanPreflight(sessionId: Ref<number>) {
     viewerCanvas,
     editableUploadBatch,
     uploadFrozen,
+    inputChanged,
+    supplementReady,
     preflightActive,
     preflightProgress,
     preflightProgressText,
@@ -798,6 +814,7 @@ export function useScanPreflight(sessionId: Ref<number>) {
     moveViewerPan,
     endViewerPan,
     chooseFiles,
+    chooseAppendFiles,
     confirmReplacement,
     formatBytes,
   }

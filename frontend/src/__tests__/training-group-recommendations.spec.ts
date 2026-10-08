@@ -1,14 +1,16 @@
 import { createApp, nextTick, type App } from 'vue';
 import { createPinia } from 'pinia';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { TrainingDiagnosis, TrainingGroup } from '../api/training';
+import { decodeTrainingDisplayDiagnosis, type TrainingDiagnosis, type TrainingGroup } from '../api/training';
 import TrainingGroupRecommendations from '../components/knowledge-training/TrainingGroupRecommendations.vue'
+import { useTrainingStore } from '../stores/training'
 
 import type { ChapterGroupEditor } from '../features/training/paper-selection-session';
 
 const diagnose = vi.hoisted(() => vi.fn())
+const diagnoseDisplay = vi.hoisted(() => vi.fn())
 vi.mock('../api/training', async (original) => ({
-  ...await original<typeof import('../api/training')>(), trainingApi: { diagnose },
+  ...await original<typeof import('../api/training')>(), trainingApi: { diagnose, diagnoseDisplay },
 }))
 
 const group: TrainingGroup = {
@@ -37,11 +39,15 @@ afterEach(() => { app?.unmount(); app = undefined; host?.remove(); vi.clearAllMo
 
 function mount(overlap = false, editor: ChapterGroupEditor | null = { memberIds: ['A', 'B'], targetKeys: ['target'], scopeKeys: ['chapter'] }, pinia = createPinia(), data = diagnosis) {
   diagnose.mockResolvedValue(data)
+  diagnoseDisplay.mockImplementation(async (body, signal) => decodeTrainingDisplayDiagnosis({
+    ...await diagnose({ ...body, response_mode: 'display' }, signal), response_mode: 'display',
+    group_weak_points: [], knowledge_catalog: data.knowledge_catalog,
+  }))
   const adopt = vi.fn()
   host = document.createElement('div')
   document.body.append(host)
   app = createApp(TrainingGroupRecommendations, {
-    diagnosis: data, scope: { mode: 'all' }, examScope: { mode: 'current', session_ids: [1] },
+    diagnosis: data, scope: { mode: 'all', student_ids: [] }, examScope: { mode: 'current', session_ids: [1] },
     settings: { scope_keys: ['chapter'], question_count: 10, expected_minutes: 40, difficulty_min: 2,
       difficulty_max: 8,
       exclude_current_exam_originals: true, curriculum_volume_id: '' },
@@ -60,6 +66,28 @@ function button(label: string): HTMLButtonElement {
 }
 
 describe('章节小组的采用与失败恢复', () => {
+  it('requests a summary once on entry and reuses it until an explicit source check', async () => {
+    const pinia = createPinia()
+    const training = useTrainingStore(pinia)
+    training.setExamScope({ mode: 'current', sessionIds: [1] })
+    const compact: TrainingDiagnosis = diagnosis
+    diagnose.mockResolvedValue(compact)
+    const initial = { scope: { mode: 'all' as const, student_ids: [] },
+      exam_scope: { mode: 'current' as const, session_ids: [1] },
+      grouping: { scope_keys: ['chapter'], question_count: 10, expected_minutes: 40, difficulty_min: 2,
+        difficulty_max: 8, exclude_current_exam_originals: true, curriculum_volume_id: '' } }
+    await training.analyze({ diagnoseDisplay: async (body, signal) => decodeTrainingDisplayDiagnosis({ ...await diagnose(body, signal), response_mode: 'display',
+      students: diagnosis.students, group_weak_points: [], knowledge_catalog: diagnosis.knowledge_catalog ?? [] }) }, initial)
+    expect(diagnose).toHaveBeenCalledTimes(1)
+    expect(diagnose.mock.calls[0]?.[0]).toEqual(initial)
+    mount(false, null, pinia, compact)
+    await vi.waitFor(() => expect(button('查看小组').disabled).toBe(false))
+    expect(diagnose).toHaveBeenCalledTimes(1)
+    button('刷新建议').click()
+    await vi.waitFor(() => expect(diagnose).toHaveBeenCalledTimes(2))
+    expect(diagnose.mock.calls[1]?.[0].response_mode).toBe('display')
+    expect(host.textContent).toContain('65%')
+  })
 
   it.each([[4.2, 5.6, '目标难度 4–6 级'], [4.2, 4.3, '目标难度 4 级'], [null, null, '难度未知']] as const)('shows target difficulty %s / %s', async (first, second, label) => {
     const current = { ...group, targets: [first, second].map(value => ({ ...group.targets[0]!, target_difficulty: value })) }
@@ -79,6 +107,10 @@ describe('章节小组的采用与失败恢复', () => {
     submit.click()
     await vi.waitFor(() => expect(adopted).toHaveBeenCalledOnce())
     expect(diagnose).toHaveBeenCalledTimes(2)
+    expect(diagnose.mock.calls[0]?.[0].response_mode).toBe('display')
+    expect(diagnose.mock.calls[1]?.[0].response_mode).toBeUndefined()
+    expect(diagnose.mock.calls[1]?.[0].include_student_detail).toBeUndefined()
+    expect(adopted.mock.calls[0]?.[1].students).toEqual(diagnosis.students)
     expect(adopted.mock.calls[0]?.[0].members.map((member: { student_id: string }) => member.student_id)).toEqual(['A', 'B'])
   })
 

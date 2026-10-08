@@ -5,6 +5,30 @@ from fastapi.testclient import TestClient
 from backend.repositories.grading_database import open_grading_repositories
 
 
+def test_review_summary_refreshes_on_score_context_and_rubric_changes(tmp_path):
+    from backend.workbench.service import WorkbenchService
+    db = open_grading_repositories(tmp_path / "databases" / "TEST-workbench.db")
+    db.initialize()
+    rubric_path = tmp_path / "TEST-rubric.json"
+    rubric_path.write_text("{}", encoding="utf-8")
+    sid = db.sessions.create_grading_session("TEST-home", str(rubric_path), "")
+    calls = []
+    def questions(*args, **kwargs):
+        calls.append(None)
+        return [SimpleNamespace(needs_review_count=len(calls))]
+    service = WorkbenchService(db, SimpleNamespace(list_questions=questions), SimpleNamespace(list=lambda **kwargs: ([], 0)))
+    session = db.sessions.get_grading_session(sid)
+    assert service.overview(sid, 5)["review"] == {"question_count": 1, "item_count": 1}
+    service = WorkbenchService(db, service.review_service, service.job_manager)
+    assert service.overview(sid, 5)["review"]["item_count"] == 1
+    assert len(calls) == 1
+    assert service.overview(sid, 5, manual_context={"scan_batch_id": "TEST-new", "papers": []})["review"]["item_count"] == 2
+    rubric_path.write_text('{"questions": []}', encoding="utf-8")
+    assert service.overview(sid, 5)["review"]["item_count"] == 3
+    db.sessions.create_grading_session("TEST-new-score-generation", "", "")
+    assert service.overview(sid, 5)["review"]["item_count"] == 4
+
+
 def test_overview_filters_before_limit_and_keeps_current_exam(tmp_path, monkeypatch):
     from backend.api.app import create_app
     from backend.api.dependencies import (

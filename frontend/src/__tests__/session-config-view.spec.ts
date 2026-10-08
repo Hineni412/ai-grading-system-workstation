@@ -1,4 +1,4 @@
-import { createApp, nextTick } from 'vue';
+import { createApp, h, nextTick, ref } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -42,7 +42,7 @@ async function settle(): Promise<void> {
   await Promise.resolve(); await nextTick()
 }
 
-async function mountDirtyView() {
+async function mountDirtyView(hydrating = false) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const sessions = useSessionStore(pinia)
@@ -61,16 +61,20 @@ async function mountDirtyView() {
   workspace.updateEditor({ row_id: 'row-1', standard_answer: '教师草稿' })
   const host = document.createElement('div')
   document.body.append(host)
-  const app = createApp(SessionConfigView, {
+  const workspaceHydrating = ref(hydrating)
+  const viewProps = {
     templateReadinessLoader: vi.fn(async (): Promise<RegionReadiness> => ({
       session_id: 7, scoring_configured: true, template_present: false,
       template_ready: false,
     })),
-  })
+  }
+  const app = createApp({ render: () => h(SessionConfigView, {
+    ...viewProps, workspaceHydrating: workspaceHydrating.value,
+  }) })
   app.use(pinia)
   app.mount(host)
   await nextTick()
-  return { host, workspace, unmount: () => app.unmount() }
+  return { host, workspace, workspaceHydrating, sessions, unmount: () => app.unmount() }
 }
 
 async function chooseAndSubmit(host: HTMLElement): Promise<void> {
@@ -114,6 +118,40 @@ beforeEach(() => {
 })
 
 describe('SessionConfigView source replacement guard', () => {
+
+  it('waits for configuration hydration before showing stages and uses the restored phase after an exam change', async () => {
+    const mounted = await mountDirtyView(true)
+    expect(mounted.host.textContent).toContain('正在读取考试配置')
+    expect(mounted.host.querySelector('.config-stage-rail')).toBeNull()
+    expect(mounted.host.querySelector('.session-draft-panel')).toBeNull()
+    expect(mounted.host.querySelector('.rubric-ledger')).toBeNull()
+
+    mounted.workspaceHydrating.value = false
+    await settle()
+    expect(mounted.host.querySelector('.config-stage-rail')).not.toBeNull()
+    expect(mounted.host.querySelector('.rubric-ledger')).not.toBeNull()
+    expect(mounted.host.querySelector('.session-draft-panel')).toBeNull()
+    expect(mounted.workspace.editorEdits[0]?.standard_answer).toBe('教师草稿')
+
+    mounted.workspaceHydrating.value = true
+    mounted.sessions.sessions.push({
+      id: 8, name: '合成新考试', status: 'created', is_deleted: false,
+      deleted_at: null, created_at: null, updated_at: null,
+    })
+    mounted.workspace.discardEditorDraft()
+    mounted.sessions.selectSession(8)
+    mounted.workspace.selectSession(8)
+    await nextTick()
+    expect(mounted.host.querySelector('.config-stage-rail')).toBeNull()
+    expect(mounted.host.querySelector('.session-draft-panel')).toBeNull()
+
+    mounted.workspaceHydrating.value = false
+    await settle()
+    expect(mounted.host.querySelector('.rubric-ledger')).toBeNull()
+    expect(mounted.host.querySelector<HTMLInputElement>('#session-draft-name')?.value)
+      .toBe('合成新考试')
+    mounted.unmount()
+  })
 
   it('unlocks an ambiguous single-question retry when its exact lookup confirms 404', async () => {
     const pinia = createPinia()

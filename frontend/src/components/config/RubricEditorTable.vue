@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import AppButton from '../design-system/AppButton.vue'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useEventListener, useResizeObserver } from '@vueuse/core'
 
 import type { ConfigEditorEdit, ConfigEditorIssue, ConfigEditorRow } from '../../api/config-workspace'
 import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
@@ -37,6 +38,9 @@ const emit = defineEmits<{
   regenerate: []
 }>()
 const root = ref<HTMLElement | null>(null)
+const toolbar = ref<HTMLElement | null>(null)
+const toolbarHeight = ref(0)
+const scrollParent = computed(() => root.value?.closest<HTMLElement>('.main-workspace') ?? null)
 const scoreErrors = ref<Record<string, string>>({})
 const scoreDrafts = ref<Record<string, string>>({})
 watch(() => props.rows, () => {
@@ -298,7 +302,7 @@ const issueRowIds = computed(() => new Set(
   props.issues.map((issue) => issue.row_id).filter((id): id is string => id !== null),
 ))
 const activePartKey = ref('')
-let partObserver: IntersectionObserver | undefined
+let outlineTargetKey: string | null = null
 
 function partElements(): HTMLElement[] {
   return [...(root.value?.querySelectorAll<HTMLElement>('[data-part-key]') ?? [])]
@@ -306,38 +310,64 @@ function partElements(): HTMLElement[] {
 
 function scrollToGroup(key: string): void {
   const target = partElements().find((el) => el.dataset.partKey === key)
-  target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  if (!target) return
+  outlineTargetKey = key
   activePartKey.value = key
+  target.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 function groupHasIssue(group: { rows: ConfigEditorRow[] }): boolean {
   return group.rows.some((row) => issueRowIds.value.has(row.row_id))
 }
 
-function observeParts(): void {
-  partObserver?.disconnect()
-  if (typeof IntersectionObserver === 'undefined') return
+function updateActivePart(): void {
+  if (outlineTargetKey !== null) return
   const elements = partElements()
   if (elements.length === 0) return
-  partObserver = new IntersectionObserver((entries) => {
-    for (const entry of entries) {
-      if (entry.isIntersecting) {
-        activePartKey.value = (entry.target as HTMLElement).dataset.partKey ?? ''
-      }
-    }
-  }, { rootMargin: '-96px 0px -60% 0px', threshold: 0 })
-  elements.forEach((el) => partObserver!.observe(el))
+  const pageHeader = root.value?.closest('.session-config-view')?.querySelector('.page-header')
+  const parentRect = scrollParent.value?.getBoundingClientRect()
+  const visibleTop = (parentRect?.top ?? 0)
+    + (pageHeader?.getBoundingClientRect().height ?? 0) + toolbarHeight.value
+  const visibleBottom = parentRect?.bottom ?? window.innerHeight
+  const visiblePart = elements.find((element) => {
+    const rect = element.getBoundingClientRect()
+    return rect.bottom > visibleTop && rect.top < visibleBottom
+  })
+  if (visiblePart) activePartKey.value = visiblePart.dataset.partKey ?? ''
 }
+
+function releaseOutlineTarget(): void {
+  outlineTargetKey = null
+}
+
+useResizeObserver(toolbar, () => {
+  toolbarHeight.value = toolbar.value?.getBoundingClientRect().height ?? 0
+  updateActivePart()
+})
+useEventListener(scrollParent, 'scroll', updateActivePart, { passive: true })
+useEventListener(scrollParent, 'scrollend', releaseOutlineTarget)
+useEventListener(scrollParent, 'wheel', releaseOutlineTarget, { passive: true })
+useEventListener(scrollParent, 'touchmove', releaseOutlineTarget, { passive: true })
+useEventListener(scrollParent, 'pointerdown', (event) => {
+  if (event.target === scrollParent.value) releaseOutlineTarget()
+})
+useEventListener(scrollParent, 'keydown', (event) => {
+  if (event.target instanceof HTMLElement
+    && event.target.closest('input, textarea, select, [contenteditable]')) return
+  if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) {
+    releaseOutlineTarget()
+  }
+})
 
 onMounted(async () => {
   await nextTick()
-  observeParts()
+  updateActivePart()
 })
 watch(scoringGroups, async () => {
+  releaseOutlineTarget()
   await nextTick()
-  observeParts()
+  updateActivePart()
 })
-onBeforeUnmount(() => partObserver?.disconnect())
 
 async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
   if (issue.row_id === null) return
@@ -354,13 +384,19 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
     .find((candidate) => candidate.dataset.rowId === targetRowId)
   const target = [...(row?.querySelectorAll<HTMLElement>('[data-edit-field]') ?? [])]
     .find((candidate) => candidate.dataset.editField === field)
+  releaseOutlineTarget()
   target?.focus()
   target?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
 }
 </script>
 
 <template>
-  <section ref="root" class="rubric-ledger" aria-labelledby="rubric-ledger-title">
+  <section
+    ref="root"
+    class="rubric-ledger"
+    :style="{ '--rubric-toolbar-height': `${toolbarHeight}px` }"
+    aria-labelledby="rubric-ledger-title"
+  >
     <div class="rubric-ledger__layout">
       <nav class="rubric-ledger__outline" aria-label="评分结构大纲">
         <button
@@ -383,7 +419,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
         </button>
       </nav>
       <div class="rubric-ledger__main">
-    <header class="rubric-ledger__toolbar">
+    <header ref="toolbar" class="rubric-ledger__toolbar">
       <h2 id="rubric-ledger-title" tabindex="-1">本场赋分</h2>
       <strong
         class="rubric-ledger__total"

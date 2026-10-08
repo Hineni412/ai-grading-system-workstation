@@ -224,7 +224,7 @@ watch(() => props.initialDraftId, id => {
   }
 })
 async function restoreDraft(): Promise<void> {
-  if (restoring || draft.value || state.value !== 'idle' || (!props.diagnosis && !props.initialDraftId)) return
+  if (restoring || draft.value || state.value !== 'idle') return
   const stored = props.initialDraftId ? { draftId: props.initialDraftId, fingerprint: settingsFingerprint.value, requestToken: '', handoutRequestToken: '' } : loadPaperDraftSession()
   if (!stored) return
   let previousRules = false
@@ -306,7 +306,7 @@ watch(() => props.difficultyMax, (value) => {
 })
 
 watch(
-  [settingsFingerprint, () => JSON.stringify(props.diagnosis?.students.map(student => student.student_id).sort() ?? [])],
+  [settingsFingerprint, () => JSON.stringify([...(props.scope.student_ids ?? [])].sort())],
   () => {
     // 草稿自带生成时的证据快照；重读同一批学生不清空草稿。
     if (props.initialDraftId && draft.value?.draft_id === props.initialDraftId) return
@@ -545,8 +545,12 @@ async function recoverPendingDraft(): Promise<void> {
 }
 
 async function generate(): Promise<void> {
+  if (pendingRequestToken.value) {
+    if (state.value === 'loading' || state.value === 'editing') return
+    await recoverPendingDraft()
+    return
+  }
   if (!canGenerate.value) return
-  if (pendingRequestToken.value) { await recoverPendingDraft(); return }
   const token = requestToken()
   const fingerprint = settingsFingerprint.value
   pendingRequestToken.value = token
@@ -914,7 +918,7 @@ async function editItem(
       <fieldset v-if="targetOptions.length && targetKeys === undefined" class="personalized-targets"><legend>本次训练目标</legend><label v-for="target in targetOptions" :key="target.key"><input v-model="selectedTargets" type="checkbox" :value="target.key">{{ target.label }}</label><p v-if="!selectedTargets.length">请勾选至少一个{{ typeMode ? '题型' : '知识点' }}。</p></fieldset>
       <fieldset v-else-if="targetOptions.length" class="personalized-targets"><legend>已选目标</legend><span v-for="target in selectedTargetLabels" :key="target">{{ knowledgeLeafLabel(target) }}</span><p v-if="!selectedTargets.length">请在知识结构中选择目标。</p></fieldset>
       <p v-else class="training-empty is-compact">当前范围暂无可用掌握证据。</p>
-      <AppButton variant="primary" data-testid="generate-personalized-draft" :disabled="!canGenerate" @click="generate">{{ state === 'loading' ? '正在生成并核对…' : pendingRequestToken ? '核对生成结果' : '生成个性化草稿' }}</AppButton>
+      <AppButton variant="primary" data-testid="generate-personalized-draft" :disabled="pendingRequestToken ? state === 'loading' || state === 'editing' : !canGenerate" @click="generate">{{ state === 'loading' ? '正在生成并核对…' : pendingRequestToken ? '核对生成结果' : '生成个性化草稿' }}</AppButton>
     </section></details>
     <p v-if="errorMessage" class="training-feedback is-warning" role="alert">{{ errorMessage }}</p>
 
@@ -948,7 +952,7 @@ async function editItem(
                   <template v-if="effectivePaperMode !== 'shared'"><AppButton variant="ghost" :disabled="state === 'editing'" @click="editItem(student.student_id, item, item.locked ? 'unlock' : 'lock')">{{ item.locked ? '解锁' : '锁定' }}</AppButton><AppButton variant="ghost" :disabled="item.locked || state === 'editing'" @click="editItem(student.student_id, item, 'replace')">替换</AppButton><AppButton variant="ghost" :disabled="item.locked || state === 'editing'" @click="editItem(student.student_id, item, 'exclude')">排除</AppButton></template>
                   <details class="personalized-match__evidence"><summary>推荐依据与来源</summary><p>{{ item.reason }}</p><p>{{ item.matched_name }}</p><p>{{ item.source_paper }} · 原卷第 {{ item.question_number }} 题<span v-if="item.difficulty_band"> · {{ { starter: '起步练习', consolidation: '巩固练习', stretch: '少量突破' }[item.difficulty_band] }}</span></p><p v-if="item.part_assessment">小问难度（1–10）：{{ item.part_assessment.parts.map((part, index) => `${part.label || `(${index + 1})`} ${part.difficulty ?? '暂无'}${part.direct_keys.includes(item.matched_key) ? ' · 本次目标' : ''}`).join('；') }}。按整题出卷。</p><p v-if="item.relation">已确认{{ item.relation.relation_type === 'prerequisite' ? '先修' : '相关' }}关系：{{ item.relation.rationale }}</p>
                     <strong>{{ item.practice_purpose === 'new' ? '新练习依据' : item.practice_purpose === 'consolidation' ? '巩固依据' : item.selection_kind === 'supplement' ? '补充依据' : '错题依据' }}</strong>
-                    <template v-if="evidenceDisplayFor(student.student_id, item).refs.length"><div v-for="evidence in evidenceDisplayFor(student.student_id, item).refs" :key="`${evidence.session_id}-${evidence.question_id}-${evidence.bank_question_id}`"><span>{{ evidenceRefLabel(evidence) }}</span><AppButton v-if="evidence.bank_question_id" variant="ghost" @click="openPreview(evidence.bank_question_id, '作答原题')">预览原题</AppButton></div></template><small v-else>{{ item.selection_kind === 'supplement' ? '范围内的新练习，不认定为已证实薄弱。' : '当前范围暂无逐题失分记录。' }}</small>
+                    <template v-if="evidenceDisplayFor(student.student_id, item).refs.length"><div v-for="evidence in evidenceDisplayFor(student.student_id, item).refs" :key="`${evidence.session_id}-${evidence.question_id}-${evidence.bank_question_id}`"><span>{{ evidenceRefLabel(evidence) }}</span><AppButton v-if="evidence.bank_question_id" variant="ghost" @click="openPreview(evidence.bank_question_id, '作答原题')">预览原题</AppButton></div></template><small v-else>{{ item.selection_kind === 'supplement' ? '范围内的新练习，不认定为已证实薄弱。' : !diagnosis ? '完整出卷依据尚未读取，请重试后查看逐题依据。' : '当前范围暂无逐题失分记录。' }}</small>
                   </details>
                 </div>
               </li></template>

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { TrainingDiagnosis, TrainingStudentProfile } from '../../api/training'
+import type { TrainingReadDiagnosis, TrainingReadStudent } from '../../api/training'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
-const props = defineProps<{ diagnosis: TrainingDiagnosis }>()
+const props = defineProps<{ diagnosis: TrainingReadDiagnosis }>()
 const selected = defineModel<string[]>({ required: true })
-const emit = defineEmits<{ 'show-student': [student: TrainingStudentProfile] }>()
+const emit = defineEmits<{ 'show-student': [student: TrainingReadStudent] }>()
 const search = ref('')
 const onlyWeak = ref(false)
 const collapsed = ref<string[]>([])
@@ -18,7 +18,7 @@ const counts = computed(() => {
     .map(point => point.knowledge_key)).size]))
 })
 const groups = computed(() => {
-  const classes = new Map<string, TrainingStudentProfile[]>()
+  const classes = new Map<string, TrainingReadStudent[]>()
   for (const student of props.diagnosis.students) {
     if (!`${student.student_name} ${student.student_code}`.includes(search.value.trim()) || (onlyWeak.value && !counts.value.get(student.student_id))) continue
     const name = student.class_id || '未分班'
@@ -34,8 +34,8 @@ function toggleClass(name: string) {
 }
 function allSelected(name: string) { return props.diagnosis.students.filter(student => (student.class_id || '未分班') === name).every(student => selected.value.includes(student.student_id)) }
 function fold(name: string) { collapsed.value = collapsed.value.includes(name) ? collapsed.value.filter(item => item !== name) : [...collapsed.value, name] }
-function score(student: TrainingStudentProfile) { return student.score_rate_source === 'current_exam' && typeof student.score_rate === 'number' ? `${Math.round(student.score_rate * 100)}%` : '无成绩' }
-function scoreClass(student: TrainingStudentProfile) { return score(student) === '无成绩' ? 'none' : (student.score_rate ?? 0) >= .8 ? 'high' : (student.score_rate ?? 0) >= .6 ? 'middle' : 'low' }
+function score(student: TrainingReadStudent) { return student.score_rate_source === 'current_exam' && typeof student.score_rate === 'number' ? `${Math.round(student.score_rate * 100)}%` : '无成绩' }
+function scoreClass(student: TrainingReadStudent) { return score(student) === '无成绩' ? 'none' : (student.score_rate ?? 0) >= .8 ? 'high' : (student.score_rate ?? 0) >= .6 ? 'middle' : 'low' }
 </script>
 <template>
   <section class="practice-box student-picker" aria-label="学生名单">

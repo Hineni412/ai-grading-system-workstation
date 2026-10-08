@@ -142,7 +142,7 @@ async function changeExams(ids:number[]){if(!ids.length)return;assistant.changeS
 async function chooseFirst(){const first=needFlat.value[0];if(first)await selectItem(first);else if(assistant.canSearch)await assistant.search()}
 watch(()=>assistant.examState,s=>{if(s==='ready'&&!assistant.result)void chooseFirst()})
 watch([needFlat,()=>assistant.result],()=>{if(!assistant.result||!needFlat.value.length||assistant.state==='loading')return;const ids=needFlat.value.map(itemId);if(!ids.includes(selectedId.value)){void selectItem(needFlat.value[0]!);return}const sel=needFlat.value.find(i=>itemId(i)===selectedId.value);if(sel?.kind==='skill'&&!activeOriginalKey.value)activeOriginalKey.value=sel.item.related[0]?.key??''},{immediate:true})
-watch([visibleSkillKeys,()=>assistant.state,()=>assistant.examState,()=>JSON.stringify(assistant.filters)],()=>{if(assistant.state==='ready'&&assistant.examState==='ready')assistant.prefetch(visibleSkillKeys.value)})
+watch([visibleSkillKeys,()=>assistant.state,()=>assistant.examState,()=>assistant.waiting,()=>assistant.loadingMore,()=>JSON.stringify(assistant.filters)],()=>{if(assistant.state==='ready'&&assistant.examState==='ready'&&!assistant.waiting&&!assistant.loadingMore)assistant.prefetch(visibleSkillKeys.value)})
 watch(()=>[rules.value.recent_activity_count,rules.value.difficulty_max,rules.value.purpose],()=>{Object.assign(assistant.filters,{recent_activity_count:rules.value.recent_activity_count,difficulty_max:rules.value.difficulty_max,purpose:rules.value.purpose});assistant.scheduleSearch()},{immediate:true})
 watch(()=>assistant.filters.question_type,()=>assistant.scheduleSearch())
 let originalSerial=0
@@ -184,7 +184,7 @@ function switchSource(id:number){const source=sources.value[id]
 }
 async function keys(e:KeyboardEvent){if(e.ctrlKey||e.metaKey||e.altKey||(e.target instanceof Element&&e.target.closest('input,select,textarea,[contenteditable]')))return;const d=e.key.toLowerCase()==='w'?-1:e.key.toLowerCase()==='s'?1:0;if(!d)return;e.preventDefault();const list=needFlat.value;const i=list.findIndex(item=>itemId(item)===selectedId.value);const item=list[Math.max(0,Math.min(list.length-1,i+d))];if(item)await selectItem(item);await nextTick();leftList.value?.querySelector('.is-selected')?.scrollIntoView?.({block:'nearest'})}
 onMounted(async()=>{window.addEventListener('keydown',keys);void curriculum.initialize();if(assembly.loadState==='idle')void assembly.load();try{classes.value=[...new Set((await fetchStudents()).flatMap(s=>s.class_name?[s.class_name]:[]))].sort((a,b)=>a.localeCompare(b,'zh-CN',{numeric:true}));const valid=selectedClasses.value.filter(c=>classes.value.includes(c));assistant.changeScope({class_ids:valid.length?valid:classes.value.slice(0,1)});rosterReady.value=true;if(!assistant.examResult)await assistant.loadExams()}catch{actionMessage.value='班级名册暂时无法读取，请重试。'}})
-onUnmounted(()=>window.removeEventListener('keydown',keys))
+onUnmounted(()=>{window.removeEventListener('keydown',keys);assistant.stopPrefetch()})
 </script>
 
 <template>

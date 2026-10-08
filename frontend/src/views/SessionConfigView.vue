@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { useResizeObserver } from '@vueuse/core'
 
 import ConfigStageRail from '../components/config/ConfigStageRail.vue'
 import ConfigSourceUpload from '../components/config/ConfigSourceUpload.vue'
@@ -35,6 +36,7 @@ import { useSessionStore } from '../stores/session'
 import '../styles/session-config.css'
 
 const props = withDefaults(defineProps<{
+  workspaceHydrating?: boolean
   editorSaver?: (sessionId: number, request: ConfigEditorSaveRequest) => Promise<ConfigEditorSaveResponse>
   editorLoader?: (sessionId: number) => Promise<ConfigEditorResponse>
   generationSubmitter?: (sessionId: number, request: ConfigGenerationRequest) => Promise<JobResponse>
@@ -42,6 +44,7 @@ const props = withDefaults(defineProps<{
   requestAbandoner?: (sessionId: number, requestToken: string) => Promise<void>
   templateReadinessLoader?: (sessionId: number) => Promise<RegionReadiness>
 }>(), {
+  workspaceHydrating: false,
   editorSaver: saveConfigEditor,
   editorLoader: fetchConfigEditor,
   generationSubmitter: submitConfigGeneration,
@@ -53,6 +56,13 @@ const props = withDefaults(defineProps<{
 const sessionStore = useSessionStore()
 const configStore = useConfigWorkspaceStore()
 const jobStore = useJobStore()
+const workspace = ref<HTMLElement | null>(null)
+const pageHeader = computed(() => workspace.value?.querySelector<HTMLElement>('.page-header') ?? null)
+const pageHeaderHeight = ref(0)
+const pageLoading = computed(() => sessionStore.loadState === 'loading' || props.workspaceHydrating)
+useResizeObserver(pageHeader, () => {
+  pageHeaderHeight.value = pageHeader.value?.getBoundingClientRect().height ?? 0
+})
 const { confirm } = useConfirm()
 const requestedStage = ref(new URLSearchParams(window.location.search).get('stage'))
 type StageId = 'draft' | 'source' | 'generation' | 'editor' | 'template'
@@ -156,19 +166,22 @@ const activeStage = computed<StageId>(() => activePanel.value === 'editor'
   ? 'editor'
   : sourceStage.value)
 
-watch(() => configStore.phase, (phase) => {
-  if (requestedStage.value !== null) return
+watch([() => configStore.phase, pageLoading], ([phase, loading]) => {
+  if (loading || requestedStage.value !== null) return
   if (phase === 'editor') {
     if (activePanel.value !== 'editor') transitionName.value = 'fx-stage-forward'
     activePanel.value = 'editor'
     return
   }
+  if (activePanel.value !== 'source') transitionName.value = 'fx-stage-back'
+  activePanel.value = 'source'
   sourceStage.value = phase
 }, { immediate: true })
 
 watch(
-  () => configStore.editor?.configured === true,
-  () => {
+  [() => configStore.editor?.configured === true, pageLoading],
+  ([, loading]) => {
+    if (loading) return
     const stage = requestedStage.value
     if (stage === null || !['draft', 'source', 'generation', 'editor'].includes(stage)) return
     if (stage === 'editor' && !configStore.editor?.configured) return
@@ -624,10 +637,14 @@ watch(
 </script>
 
 <template>
-  <article class="session-config-view config-workspace">
+  <article
+    ref="workspace"
+    class="session-config-view config-workspace"
+    :style="{ '--config-page-header-height': `${pageHeaderHeight}px` }"
+  >
     <PageHeader title="考试配置">
       <template
-        v-if="sessionStore.loadState !== 'loading' && sessionStore.loadState !== 'error'"
+        v-if="!pageLoading && sessionStore.loadState !== 'error'"
         #actions
       >
         <ConfigStageRail
@@ -645,10 +662,10 @@ watch(
     </PageHeader>
 
     <StatePanel
-      v-if="sessionStore.loadState === 'loading'"
+      v-if="pageLoading"
       class="session-config-view__state"
       kind="loading"
-      title="正在读取考试列表…"
+      :title="sessionStore.loadState === 'loading' ? '正在读取考试列表…' : '正在读取考试配置…'"
      
     />
     <StatePanel

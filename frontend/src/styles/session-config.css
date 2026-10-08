@@ -15,6 +15,10 @@
   margin-inline: var(--page-inset-x);
 }
 
+.config-workspace :is(#session-draft-title, #config-source-stage, #config-generation-stage) {
+  scroll-margin-block-start: calc(var(--config-page-header-height, 0px) + var(--space-3));
+}
+
 .config-source,
 .question-review,
 .config-editor {
@@ -265,10 +269,10 @@
 
 .rubric-ledger__outline {
   position: sticky;
-  top: 64px;
+  top: calc(var(--config-page-header-height, 0px) + var(--space-2));
   display: grid;
   align-content: start;
-  max-height: calc(100vh - 96px);
+  max-height: calc(100dvh - var(--config-page-header-height, 0px) - var(--space-6));
   overflow: auto;
 }
 
@@ -316,7 +320,7 @@
 
 .rubric-ledger__toolbar {
   position: sticky;
-  top: 56px;
+  top: var(--config-page-header-height, 0px);
   z-index: 6;
   display: flex;
   align-items: center;
@@ -368,6 +372,7 @@
 
 .rubric-part {
   min-width: 0;
+  scroll-margin-block-start: calc(var(--config-page-header-height, 0px) + var(--rubric-toolbar-height, 0px) + var(--space-3));
   border-block-start: var(--border-width) solid var(--color-border-default);
   background: var(--color-bg-surface);
 }

@@ -27,6 +27,8 @@ logs/
 # Keep business data and machine-local credentials out of future commits.
 user_data/
 backups/
+/cache/
+/exp_local_gemini/
 *.db
 *.db-*
 *.sqlite

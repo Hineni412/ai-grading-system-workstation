@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { knowledgeLeafLabel } from '../../api/question-bank'
-import { trainingApi, type TrainingDiagnosis, type TrainingGroup, type TrainingGrouping, type TrainingGroupingRequest,
+import { trainingApi, type TrainingDiagnosis, type TrainingReadDiagnosis, type TrainingGroup, type TrainingGrouping, type TrainingGroupingRequest,
   type TrainingStudentScopeRequest, type TrainingExamScopeRequest } from '../../api/training'
 import type { ChapterGroupEditor, AdoptedChapterGroup, ChapterGroupSort } from '../../features/training/paper-selection-session'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
@@ -12,7 +12,7 @@ import { ApiError } from '../../api/errors'
 import { useTrainingStore } from '../../stores/training'
 
 const props = defineProps<{
-  diagnosis: TrainingDiagnosis
+  diagnosis: TrainingReadDiagnosis
   scope: TrainingStudentScopeRequest
   examScope: TrainingExamScopeRequest
   settings: TrainingGroupingRequest
@@ -28,10 +28,10 @@ const emit = defineEmits<{
 const training = useTrainingStore()
 const sortMode = defineModel<ChapterGroupSort>('sortMode', { default: 'size' })
 const targetLabel = computed(() => (props.diagnosis.target_kind === 'type' ? '题型' : '技能'))
-// These are complete read snapshots. Editors keep their own mutable arrays.
+// Display snapshots retain every knowledge item. Editors own their arrays.
 const result = shallowRef<TrainingGrouping | null>(null)
 const checked = shallowRef<TrainingGroup | null>(null)
-const latestDiagnosis = shallowRef<TrainingDiagnosis | null>(null)
+const latestDiagnosis = shallowRef<TrainingReadDiagnosis | null>(null)
 const editing = ref(false)
 const memberIds = ref<string[]>([])
 const targetKeys = ref<string[]>([])
@@ -157,7 +157,8 @@ async function refresh(force = false): Promise<void> {
   busy.value = true
   message.value = ''
   try {
-    const base = { scope: props.scope, exam_scope: props.examScope, grouping: { ...props.settings } }
+    const base = { scope: props.scope, exam_scope: props.examScope, grouping: { ...props.settings },
+      response_mode: 'display' }
     const body = { ...base,
       grouping: { ...props.settings, ...(editing.value && memberIds.value.length ? {
         member_ids: [...memberIds.value], target_keys: [...targetKeys.value],
@@ -171,13 +172,13 @@ async function refresh(force = false): Promise<void> {
         ...originalResult, grouping: { ...originalResult.grouping, selection },
       }
     }
-    const diagnosis = cached ?? await trainingApi.diagnose(body, next.signal)
+    const diagnosis = cached ?? await trainingApi.diagnoseDisplay(body, next.signal)
     if (current !== revision) return
     if (!diagnosis.grouping) throw new Error('分组结果不可用')
     if (!cached) training.rememberGroupDiagnosis(key, props.diagnosis, diagnosis)
     result.value = diagnosis.grouping
     latestDiagnosis.value = diagnosis
-    checked.value = diagnosis.grouping.selection
+    checked.value = diagnosis.grouping.selection ?? null
     stale.value = false
   } catch (error) {
     if (current !== revision || next.signal.aborted) return
@@ -227,10 +228,31 @@ function restore(): void {
 }
 async function adopt(): Promise<void> {
   if (!ready.value) return
-  // Re-read once at adoption so saved candidates never count as fresh evidence.
-  await refresh(true)
-  if (!ready.value || !checked.value) return
-  emit('adopt', checked.value, latestDiagnosis.value ?? props.diagnosis)
+  controller?.abort()
+  const current = ++revision
+  const basis = props.diagnosis
+  const next = new AbortController()
+  controller = next
+  busy.value = true
+  message.value = ''
+  try {
+    // Adoption reads complete references, while preview caches hold display data.
+    const diagnosis = await trainingApi.diagnose({ scope: props.scope, exam_scope: props.examScope,
+      grouping: { ...props.settings, member_ids: [...memberIds.value], target_keys: [...targetKeys.value] } }, next.signal)
+    if (current !== revision || next.signal.aborted || basis !== props.diagnosis) return
+    const selection = diagnosis.grouping?.selection
+    if (!selection) throw new Error('小组依据不可用')
+    checked.value = selection
+    stale.value = false
+    if (!selection.ready) { message.value = selection.issues.join('；'); return }
+    emit('adopt', selection, diagnosis)
+  } catch {
+    if (current !== revision || next.signal.aborted) return
+    stale.value = true
+    message.value = '小组依据暂时无法核对，当前名单和目标已保留。请重试。'
+  } finally {
+    if (current === revision) busy.value = false
+  }
 }
 function closeEditor(): void {
   if (timer) clearTimeout(timer)

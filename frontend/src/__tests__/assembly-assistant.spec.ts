@@ -322,7 +322,7 @@ describe('class assembly assistant', () => {
     expect(api.fetchAssemblyCandidates).toHaveBeenCalledTimes(2)
   })
 
-  it('prefetches one skill at a time and stops when the scope changes', async () => {
+  it('prepares only the next target and stops when the scope changes', async () => {
     const assistant = useAssemblyAssistantStore()
     assistant.changeScope({ class_id: '9班', curriculum_volume_id: 'volume' })
     await assistant.search()
@@ -334,9 +334,13 @@ describe('class assembly assistant', () => {
       maxInFlight = Math.max(maxInFlight, inFlight)
       return new Promise<AssemblyAssistantResult>(done => resolvers.push(() => { inFlight -= 1; done(result()) }))
     })
-    assistant.prefetch(['sk_two', 'sk_three'])
+    assistant.prefetch(['sk_one', 'sk_two', 'sk_three', 'sk_four'])
     await vi.waitFor(() => expect(resolvers.length).toBe(1))
     resolvers[0]!()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(resolvers.length).toBe(1)
+    await assistant.selectSkill('sk_two')
+    assistant.prefetch(['sk_one', 'sk_two', 'sk_three', 'sk_four'])
     await vi.waitFor(() => expect(resolvers.length).toBe(2))
     assistant.changeScope({ class_id: '10班' })
     resolvers[1]!()
@@ -386,11 +390,30 @@ describe('class assembly assistant', () => {
     const pending = assistant.selectSkill('sk_two')
     void assistant.selectSkill('sk_three')
     await vi.waitFor(() => expect(resolvers.length).toBe(2))
+    expect(vi.mocked(api.fetchAssemblyCandidates).mock.calls[0]![1]?.aborted).toBe(true)
     resolvers[0]!(responseFor('sk_two', 12))
     await pending
     resolvers[1]!(responseFor('sk_three', 13))
     await vi.waitFor(() => expect(assistant.questions.map(item => item.id)).toEqual([13]))
     expect(assistant.selectedKey).toBe('sk_three')
+  })
+
+  it('does not start another background target after leaving the panel', async () => {
+    const { host, app } = await mountPanel()
+    const assistant = useAssemblyAssistantStore()
+    const finish: Array<(value: AssemblyAssistantResult) => void> = []
+    vi.mocked(api.fetchAssemblyCandidates).mockImplementation(() => new Promise(done => finish.push(done)))
+    assistant.prefetch(['sk_one', 'sk_late'])
+    await vi.waitFor(() => expect(finish.length).toBe(1))
+    const calls = vi.mocked(api.fetchAssemblyCandidates).mock.calls
+    const signal = calls[calls.length - 1]![1]
+    app.unmount()
+    mounted.splice(mounted.indexOf(app), 1)
+    host.remove()
+    expect(signal?.aborted).toBe(true)
+    finish[0]!(result())
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(finish.length).toBe(1)
   })
 
 })

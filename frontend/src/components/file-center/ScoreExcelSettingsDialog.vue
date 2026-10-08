@@ -129,6 +129,7 @@ const manualStudentSearch = defineModel<string>('manualStudentSearch', { require
       <div class="excel-settings-dialog__actions">
         <div>
           <AppButton variant="secondary"
+            :disabled="submitting"
             @click="emit('close')"
           >
             取消

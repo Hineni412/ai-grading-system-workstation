@@ -57,6 +57,10 @@ class ActiveScanAnalysisError(ScanGradingWorkspaceError):
     """当前上传批次仍有预检任务在运行。"""
 
 
+class ScanPreflightOutdatedError(ScanGradingWorkspaceError):
+    """新增答卷文件后预检结果已过期，必须重新预检。"""
+
+
 class ScanReplacementCleanupIncompleteError(ScanGradingWorkspaceError):
     """新答卷已生效，但旧文件清理仍需安全重试。"""
 
@@ -363,6 +367,8 @@ class ScanGradingWorkspace:
                 scan_dir, scan_batch_id = self.frozen_scan_input(session_id)
                 clean_payload["exams_dir"] = str(scan_dir)
                 clean_payload["scan_batch_id"] = scan_batch_id
+                manifest = self._load_or_create_manifest(session_id)
+                clean_payload["scan_upload_revision"] = int(manifest["revision"])
             return self.job_manager.submit_unique_active(
                 "scan_analysis",
                 clean_payload,
@@ -532,7 +538,12 @@ class ScanGradingWorkspace:
             raise ScanGradingWorkspaceError("scan upload batch is not frozen")
         if self._active_scan_analysis_job(session_id, str(manifest["batch_id"])) is not None:
             raise ScanGradingWorkspaceError("scan preflight is still active")
-        self.require_resolved_matches(self.get_preflight(session_id))
+        preflight = self.get_preflight(session_id)
+        if preflight.get("input_changed"):
+            raise ScanPreflightOutdatedError(
+                "scan input changed after the latest preflight"
+            )
+        self.require_resolved_matches(preflight)
         payload = {
             "session_id": int(session_id),
             "grading_mode": run.grading_mode,
@@ -600,6 +611,10 @@ class ScanGradingWorkspace:
             if int(upload_revision) != int(manifest["revision"]):
                 raise UploadBatchRevisionError("scan upload batch revision changed")
             preflight = self.get_preflight(session_id)
+            if preflight.get("input_changed"):
+                raise ScanPreflightOutdatedError(
+                    "scan input changed after the latest preflight"
+                )
             analysis, _identity = self._read_analysis(session_id)
             current_template = self._require_current_preflight_template(
                 session_id,
@@ -819,14 +834,20 @@ class ScanGradingWorkspace:
         content_sha256: str,
         source: BinaryIO,
         replacement: bool = False,
+        append: bool = False,
     ) -> dict[str, Any]:
+        if replacement and append:
+            raise ScanGradingWorkspaceError("conflicting upload modes")
         with self._lock(session_id):
             manifest = (
                 self._load_or_create_replacement_manifest(session_id)
                 if replacement
                 else self._load_or_create_manifest(session_id)
             )
-            self._require_draft(manifest)
+            if append:
+                self._require_appendable(session_id, manifest)
+            else:
+                self._require_draft(manifest)
             digest = str(content_sha256 or "").strip().lower()
             safe_name = Path(str(filename or "")).name
             suffix = Path(safe_name).suffix.lower()
@@ -894,6 +915,8 @@ class ScanGradingWorkspace:
                 "storage_name": storage_name,
                 "added_at": self._now(),
             }
+            if append:
+                item["appended"] = True
             manifest["files"].append(item)
             manifest["revision"] += 1
             self._write_target_manifest(session_id, manifest, replacement=replacement)
@@ -920,6 +943,7 @@ class ScanGradingWorkspace:
         *,
         expected_revision: int,
         replacement: bool = False,
+        append: bool = False,
     ) -> dict[str, Any]:
         with self._lock(session_id):
             manifest = (
@@ -927,7 +951,10 @@ class ScanGradingWorkspace:
                 if replacement
                 else self._load_or_create_manifest(session_id)
             )
-            self._require_draft(manifest)
+            if append:
+                self._require_appendable(session_id, manifest)
+            else:
+                self._require_draft(manifest)
             self._require_revision(manifest, expected_revision)
             removed = next(
                 (item for item in manifest["files"] if item["id"] == str(upload_id)),
@@ -935,6 +962,10 @@ class ScanGradingWorkspace:
             )
             if removed is None:
                 raise ScanGradingWorkspaceError("upload file was not found")
+            if append and not removed.get("appended"):
+                raise FrozenUploadBatchError(
+                    "original upload cannot be removed from a frozen batch"
+                )
             manifest["files"] = [
                 item for item in manifest["files"] if item["id"] != str(upload_id)
             ]
@@ -1030,6 +1061,17 @@ class ScanGradingWorkspace:
             self._atomic_write_json(self._replacement_commit_path(session_id), journal)
             self._write_target_manifest(session_id, candidate, replacement=True)
             return self._finish_replacement_commit(session_id, journal)
+
+    def _require_appendable(
+        self,
+        session_id: int,
+        manifest: dict[str, Any],
+    ) -> None:
+        if manifest.get("state") != "frozen":
+            raise ScanGradingWorkspaceError(
+                "appended uploads require a frozen batch"
+            )
+        self._require_no_active_scan_work(session_id)
 
     def _require_no_active_scan_work(self, session_id: int) -> None:
         if self._active_scan_analysis_job(session_id) is not None:
@@ -1277,7 +1319,7 @@ class ScanGradingWorkspace:
             if manifest.get("state") != "frozen":
                 raise ScanGradingWorkspaceError("scan upload batch is not frozen")
             analysis, identity = self._read_analysis(session_id)
-            state = self._read_decision_state(session_id, identity)
+            state = self._read_decision_state(session_id, analysis, identity)
             analysis_groups = [
                 item
                 for item in analysis.get("groups", [])
@@ -1318,9 +1360,16 @@ class ScanGradingWorkspace:
                 first_page_role = (
                     "front" if front_page_parity == "odd" else "back"
                 )
+            appended_files = [
+                item
+                for item in manifest.get("files", [])
+                if isinstance(item, dict) and item.get("appended")
+            ]
             payload = {
                 "scan_batch_id": str(manifest["batch_id"]),
                 "revision": int(state["revision"]),
+                "input_changed": self._preflight_input_changed(manifest, analysis),
+                "appended_file_count": len(appended_files),
                 "summary": {
                     "auto_matched": len(groups),
                     "issues": len(issues),
@@ -1382,7 +1431,7 @@ class ScanGradingWorkspace:
     ) -> dict[str, Any]:
         with self._lock(session_id):
             analysis, identity = self._read_analysis(session_id)
-            state = self._read_decision_state(session_id, identity)
+            state = self._read_decision_state(session_id, analysis, identity)
             if int(expected_revision) != int(state["revision"]):
                 raise UploadBatchRevisionError("preflight decision revision changed")
             group_by_id = {
@@ -1390,11 +1439,12 @@ class ScanGradingWorkspace:
                 for item in analysis.get("groups", [])
                 if isinstance(item, dict)
             }
-            issue_ids = {
-                str(item.get("issue_id") or "")
+            issue_by_id = {
+                str(item.get("issue_id") or ""): item
                 for item in analysis.get("issues", [])
                 if isinstance(item, dict)
             }
+            issue_ids = set(issue_by_id)
             public_decisions: list[dict[str, Any]] = []
             internal_decisions: list[dict[str, Any]] = []
             seen: set[tuple[str, str]] = set()
@@ -1426,7 +1476,13 @@ class ScanGradingWorkspace:
                     if action == "match":
                         internal["student_id"] = student_id
                 elif target_type == "issue" and target_id in issue_ids and action in {"pending", "invalid", "match"}:
-                    internal = {"issue_id": target_id, "action": action}
+                    issue = issue_by_id[target_id]
+                    internal = {
+                        "issue_id": target_id,
+                        "issue_source_label": str(issue.get("source_label") or ""),
+                        "issue_front_image": str(issue.get("front_image") or ""),
+                        "action": action,
+                    }
                     if action == "match":
                         internal["student_id"] = student_id
                 else:
@@ -1788,21 +1844,141 @@ class ScanGradingWorkspace:
             raise ScanGradingWorkspaceError("scan preflight belongs to another batch")
         return payload, hashlib.sha256(raw).hexdigest()
 
-    def _read_decision_state(self, session_id: int, identity: str) -> dict[str, Any]:
+    def _read_decision_state(
+        self,
+        session_id: int,
+        analysis: dict[str, Any],
+        identity: str,
+    ) -> dict[str, Any]:
         path = self._decision_state_path(session_id)
         if path.exists():
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(payload, dict) and payload.get("analysis_identity") == identity:
-                    return payload
             except (OSError, ValueError):
-                pass
+                payload = None
+            if isinstance(payload, dict):
+                if payload.get("analysis_identity") == identity:
+                    return payload
+                return self._migrate_decision_state(
+                    session_id, payload, analysis, identity
+                )
         return {
             "analysis_identity": identity,
             "revision": 0,
             "public_decisions": [],
             "internal_decisions": [],
         }
+
+    # A re-run preflight produces a new analysis snapshot. Decisions are carried
+    # over only when their target still identifies the same physical paper:
+    # group ids hash source label and front image path, issue decisions record
+    # the same source identity. Index-derived issue ids (image_pair_*, …) can
+    # point at a different paper after files are appended, so a legacy issue
+    # decision without a recorded source is kept only for name-derived ids.
+    def _migrate_decision_state(
+        self,
+        session_id: int,
+        state: dict[str, Any],
+        analysis: dict[str, Any],
+        identity: str,
+    ) -> dict[str, Any]:
+        public_decisions = state.get("public_decisions")
+        internal_decisions = state.get("internal_decisions")
+        if (
+            not isinstance(public_decisions, list)
+            or not isinstance(internal_decisions, list)
+        ):
+            return {
+                "analysis_identity": identity,
+                "revision": 0,
+                "public_decisions": [],
+                "internal_decisions": [],
+            }
+        group_ids = {
+            self._group_id(item)
+            for item in analysis.get("groups", [])
+            if isinstance(item, dict)
+        }
+        issues = [
+            item
+            for item in analysis.get("issues", [])
+            if isinstance(item, dict)
+        ]
+        carried_public: list[dict[str, Any]] = []
+        carried_internal: list[dict[str, Any]] = []
+        for public, internal in zip(public_decisions, internal_decisions):
+            if not isinstance(public, dict) or not isinstance(internal, dict):
+                continue
+            target_type = str(public.get("target_type") or "")
+            if target_type == "group":
+                if str(public.get("target_id") or "") not in group_ids:
+                    continue
+                carried_public.append(dict(public))
+                carried_internal.append(dict(internal))
+                continue
+            if target_type != "issue":
+                continue
+            migrated_issue_id = self._migrated_issue_id(internal, issues)
+            if migrated_issue_id is None:
+                continue
+            carried_public.append({**public, "target_id": migrated_issue_id})
+            carried_internal.append({**internal, "issue_id": migrated_issue_id})
+        migrated = {
+            "analysis_identity": identity,
+            "revision": int(state.get("revision") or 0) + 1,
+            "public_decisions": carried_public,
+            "internal_decisions": carried_internal,
+            "updated_at": self._now(),
+        }
+        self._atomic_write_json(self._decision_state_path(session_id), migrated)
+        self._atomic_write_json(
+            self._session_dir(session_id) / "scan_manual_decisions_latest.json",
+            carried_internal,
+        )
+        return migrated
+
+    _INDEXED_ISSUE_ID = re.compile(r"^(image_orphan_|image_pair_|reduced_match_)")
+
+    @classmethod
+    def _migrated_issue_id(
+        cls,
+        internal: dict[str, Any],
+        issues: list[dict[str, Any]],
+    ) -> str | None:
+        source_label = internal.get("issue_source_label")
+        front_image = internal.get("issue_front_image")
+        if source_label is not None or front_image is not None:
+            matches = [
+                item
+                for item in issues
+                if str(item.get("source_label") or "") == str(source_label or "")
+                and str(item.get("front_image") or "") == str(front_image or "")
+            ]
+            if len(matches) == 1:
+                return str(matches[0].get("issue_id") or "") or None
+            return None
+        issue_id = str(internal.get("issue_id") or "")
+        if cls._INDEXED_ISSUE_ID.match(issue_id):
+            return None
+        if any(str(item.get("issue_id") or "") == issue_id for item in issues):
+            return issue_id
+        return None
+
+    @staticmethod
+    def _preflight_input_changed(
+        manifest: dict[str, Any],
+        analysis: dict[str, Any],
+    ) -> bool:
+        try:
+            analysis_revision = int(analysis.get("scan_upload_revision"))
+        except (TypeError, ValueError):
+            analysis_revision = None
+        if analysis_revision is not None:
+            return analysis_revision != int(manifest.get("revision") or 0)
+        return any(
+            isinstance(item, dict) and item.get("appended")
+            for item in manifest.get("files", [])
+        )
 
     @staticmethod
     def _group_id(group: dict[str, Any]) -> str:
@@ -1889,6 +2065,7 @@ class ScanGradingWorkspace:
             "size_bytes": int(item["size_bytes"]),
             "sha256_prefix": str(item["sha256"])[:12],
             "added_at": item["added_at"],
+            "appended": bool(item.get("appended")),
         }
 
     def _public_batch(self, manifest: dict[str, Any]) -> dict[str, Any]:

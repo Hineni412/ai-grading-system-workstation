@@ -62,7 +62,7 @@ function onInteractOutside(event: Event) {
           <DialogTitle class="app-dialog__title">{{ title }}</DialogTitle>
           <slot name="header-extra" />
           <DialogClose as-child>
-            <AppIconButton label="关闭" icon="close" />
+            <AppIconButton label="关闭" icon="close" :disabled="!dismissible" />
           </DialogClose>
         </header>
         <VisuallyHidden v-else>

@@ -1068,6 +1068,7 @@ def enrich_personal_questions(
     data_root: Path | None,
     *,
     include_images: bool = True,
+    include_markup: bool = True,
 ) -> None:
     """读取本场评分依据和已绑定原题；考试错因整理仅复用文字投影。"""
     from backend.config_workspace.sources import ConfigSourceService
@@ -1121,7 +1122,7 @@ def enrich_personal_questions(
     source_figures = _docx_question_figures(source) if source is not None and include_images else {}
     # Use the native formula alongside the exact importer's HTML projection.
     # This preserves root indices and mixed fractions that plain text loses.
-    source_formulas = _source_formula_markup(source) if source is not None else {}
+    source_formulas = _source_formula_markup(source) if source is not None and include_markup else {}
     formula_pattern = re.compile('|'.join(re.escape(key) for key in sorted(source_formulas, key=len, reverse=True))) if source_formulas else None
 
     def texts(item: dict[str, Any], fields: tuple[str, ...]) -> str:
@@ -1148,7 +1149,8 @@ def enrich_personal_questions(
         if parent != info.question_id and part_text and part_text not in stem:
             stem = "\n".join(filter(None, (stem, f"本小问：{part_text}")))
         info.question_text = stem
-        info.question_markup = str(original.get("question_html") or "")
+        if include_markup:
+            info.question_markup = str(original.get("question_html") or "")
         if formula_pattern and info.question_markup and 'data-latex=' not in info.question_markup:
             info.question_markup = formula_pattern.sub(lambda match: source_formulas[match.group(0)], info.question_markup)
         info.reference_analysis = texts(answer_item, ("analysis", "full_answer", "explanation"))

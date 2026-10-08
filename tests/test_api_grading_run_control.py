@@ -558,3 +558,105 @@ def test_terminal_legacy_run_cannot_be_supplemented(
         assert submitted.json()["error"]["code"] == "legacy_grading_mode_disabled"
     finally:
         manager.shutdown()
+
+
+def test_appended_scan_blocks_supplement_until_preflight_rerun(tmp_path) -> None:
+    from backend.repositories.students import StudentRecord
+    from backend.scan_grading.grading_run_store import GradingRunStore
+
+    client, db, manager = _system(
+        tmp_path,
+        config_fingerprint_resolver=lambda _session_id, _mode: "a" * 64,
+    )
+    session_id = db.sessions.create_grading_session(
+        "追加答卷补批", "rubric.json", "answer.json"
+    )
+    late_content = b"\xff\xd8\xfflate scan"
+    headers = {
+        "content-type": "image/jpeg",
+        "x-upload-filename": "late.jpg",
+        "x-content-sha256": hashlib.sha256(late_content).hexdigest(),
+    }
+    try:
+        draft_append = client.post(
+            f"/api/sessions/{session_id}/scan-uploads?append=true",
+            content=late_content,
+            headers=headers,
+        )
+        assert draft_append.status_code == 409
+        assert draft_append.json()["error"]["code"] == "scan_append_requires_frozen_batch"
+
+        _prepare_ready_scan_batch(client, db, tmp_path, session_id)
+        store = GradingRunStore(db.db_path)
+        run = store.begin(session_id, "a" * 64, "ai")
+        store.finish(run.run_token, "completed")
+
+        mode_conflict = client.post(
+            f"/api/sessions/{session_id}/scan-uploads?append=true&replacement=true",
+            content=late_content,
+            headers=headers,
+        )
+        assert mode_conflict.status_code == 422
+        assert mode_conflict.json()["error"]["code"] == "scan_upload_mode_conflict"
+
+        appended = client.post(
+            f"/api/sessions/{session_id}/scan-uploads?append=true",
+            content=late_content,
+            headers=headers,
+        )
+        assert appended.status_code == 201
+        assert appended.json()["file"]["appended"] is True
+
+        stale = client.get(f"/api/sessions/{session_id}/scan/preflight")
+        assert stale.status_code == 200
+        assert stale.json()["input_changed"] is True
+        assert stale.json()["appended_file_count"] == 1
+
+        blocked = client.post(
+            f"/api/sessions/{session_id}/grading/runs/{run.id}/supplement-new-matches"
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["error"]["code"] == "scan_preflight_outdated"
+
+        # 重新预检让结果版本追上批次后，补批放行、只处理新匹配的答卷。
+        db.students.upsert_students([StudentRecord("S002", "学生乙", "测试班")])
+        new_student = next(
+            item for item in db.students.list_students() if item["name"] == "学生乙"
+        )
+        session_dir = tmp_path / "templates" / f"session_{session_id}"
+        manifest = json.loads(
+            (session_dir / "scan_upload_batch.json").read_text(encoding="utf-8")
+        )
+        late_scan = next(
+            (
+                tmp_path / "exams" / f"session_{session_id}"
+                / "scan_batches" / manifest["batch_id"] / "files"
+            ).glob(f"{appended.json()['file']['sha256_prefix']}*")
+        )
+        analysis_path = session_dir / "scan_analysis_latest.json"
+        analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+        analysis["scan_upload_revision"] = manifest["revision"]
+        analysis["groups"].append(
+            {
+                "source_label": "002",
+                "front_image": str(late_scan),
+                "back_image": None,
+                "student_id": int(new_student["id"]),
+                "student_name": "学生乙",
+                "match_method": "exact",
+                "match_score": 1.0,
+            }
+        )
+        analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+        current = client.get(f"/api/sessions/{session_id}/scan/preflight")
+        assert current.json()["input_changed"] is False
+        manager.register("grading_run", lambda _context: {"state": "completed"})
+        submitted = client.post(
+            f"/api/sessions/{session_id}/grading/runs/{run.id}/supplement-new-matches"
+        )
+        assert submitted.status_code == 202
+        assert submitted.json()["payload"]["supplement_only"] is True
+        assert submitted.json()["payload"]["supplement_run_id"] == run.id
+    finally:
+        manager.shutdown()

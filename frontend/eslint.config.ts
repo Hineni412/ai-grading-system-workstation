@@ -15,6 +15,7 @@ export default defineConfigWithVueTs(
     '**/node_modules/**',
     '**/playwright-report/**',
     '**/test-results/**',
+    'output/**',
     '**/.playwright-cli/**',
     // 本机生成的临时构建/预览产物，不是受检源码
     '**/.tmp-skill-build/**',

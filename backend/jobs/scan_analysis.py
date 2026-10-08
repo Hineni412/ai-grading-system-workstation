@@ -38,6 +38,7 @@ def run_scan_analysis(
     template_first_page_role: str | None = None,
     config_revision: str | None = None,
     scan_batch_id: str | None = None,
+    scan_upload_revision: int | None = None,
     raise_if_cancelled: Callable[[], None] | None = None,
     report: Callable[[float, str, str], None] | None = None,
 ) -> dict[str, object]:
@@ -161,6 +162,8 @@ def run_scan_analysis(
         payload["template_fingerprint"] = str(template_fingerprint)
     if scan_batch_id:
         payload["scan_batch_id"] = str(scan_batch_id)
+    if scan_upload_revision is not None:
+        payload["scan_upload_revision"] = int(scan_upload_revision)
 
     session_work_dir = Path(session_work_dir)
     output_path = session_work_dir / "scan_analysis_latest.json"
@@ -203,7 +206,11 @@ def run_scan_analysis(
                     != template_first_page_role
                 ):
                     raise ValueError("session template changed during scan analysis")
-            _require_current_scan_batch(session_work_dir, scan_batch_id)
+            _require_current_scan_batch(
+                session_work_dir,
+                scan_batch_id,
+                scan_upload_revision,
+            )
             os.replace(temporary_path, output_path)
             temporary_path = None
             if report is not None:
@@ -285,6 +292,7 @@ def _check_cancelled(callback: Callable[[], None] | None) -> None:
 def _require_current_scan_batch(
     session_work_dir: Path,
     scan_batch_id: str | None,
+    scan_upload_revision: int | None = None,
 ) -> None:
     if not scan_batch_id:
         return
@@ -298,4 +306,8 @@ def _require_current_scan_batch(
     if not isinstance(manifest, dict) or str(manifest.get("batch_id") or "") != str(
         scan_batch_id
     ):
+        raise ValueError("scan batch changed before analysis could be published")
+    if scan_upload_revision is not None and int(
+        manifest.get("revision") or -1
+    ) != int(scan_upload_revision):
         raise ValueError("scan batch changed before analysis could be published")

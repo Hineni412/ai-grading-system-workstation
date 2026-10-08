@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
+import json
 from pathlib import Path
 import sqlite3
 from typing import Any
@@ -9,6 +11,13 @@ from backend.jobs.manager import JobManager
 from backend.public_data import sanitize_public_diagnostic_text
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.review.service import ReviewApplicationService
+from backend.session_analysis import infer_data_root
+from integration.data_generation import commit_generation
+from integration.diagnosis_profile_service import _session_error_file_state
+from integration.result_cache import ResultCache
+from path_manager import resolve_stored_file_path
+
+_REVIEW_SUMMARIES = ResultCache(2, max_bytes=256 * 1024)
 
 
 class WorkbenchService:
@@ -57,30 +66,11 @@ class WorkbenchService:
             if session is not None:
                 current_session = _session_summary(session)
                 progress = self.db.papers.get_session_progress(int(session_id))
-                questions = self.review_service.list_questions(
-                    int(session_id),
-                    session,
-                    manual_context=manual_context,
-                )
-                review_questions = [
-                    question
-                    for question in questions
-                    if question.needs_review_count > 0
-                ]
-                review = {
-                    "question_count": len(review_questions),
-                    "item_count": sum(
-                        question.needs_review_count for question in review_questions
-                    ),
-                }
-                anomaly_rows = self.list_anomalies(int(session_id))
+                review = self._review_summary(int(session_id), session, manual_context)
                 anomalies = {
                     "unmatched_papers": progress["unmatched_papers"],
                     "scan_issue_students": progress["scan_issue_students"],
-                    "failed_papers": sum(
-                        row["anomaly_type"] == "grading_failed"
-                        for row in anomaly_rows
-                    ),
+                    "failed_papers": len(self.db.papers.list_failed_papers(int(session_id))),
                 }
                 jobs, _total = self.job_manager.list(
                     session_id=int(session_id),
@@ -105,6 +95,18 @@ class WorkbenchService:
             "recent_sessions": recent_sessions,
             "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
+
+    def _review_summary(self, session_id: int, session: dict[str, Any], manual_context) -> dict[str, int]:
+        rubric_path = resolve_stored_file_path(session.get("rubric_path"), data_root=infer_data_root(self.db.db_path))
+        key = (str(self.db.db_path), session_id, commit_generation(self.db.db_path), _session_error_file_state(rubric_path),
+               hashlib.sha256(json.dumps(manual_context, sort_keys=True, separators=(",", ":")).encode()).digest())
+
+        def compute():
+            questions = self.review_service.list_questions(session_id, session, manual_context=manual_context)
+            counts = [question.needs_review_count for question in questions if question.needs_review_count > 0]
+            return {"question_count": len(counts), "item_count": sum(counts)}
+
+        return _REVIEW_SUMMARIES.get_or_compute(key, compute)
 
     def list_anomalies(self, session_id: int) -> list[dict[str, Any]]:
         """Return sanitized stable anomaly rows."""

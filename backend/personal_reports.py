@@ -25,6 +25,7 @@ from backend.session_analysis import assemble_session_analysis, infer_data_root,
 _context_lock = threading.RLock()
 _contexts: OrderedDict = OrderedDict()
 _semester_summaries: OrderedDict = OrderedDict()
+_status_inputs: OrderedDict = OrderedDict()
 _context_flights: dict = {}
 _page_images: OrderedDict = OrderedDict()
 _page_lock = threading.Lock()
@@ -125,27 +126,45 @@ def student_report_digests(
 
 def personal_report_states(repositories, session_id: int, reports_dir: Path, *, data=None) -> dict:
     from backend.session_analysis import enrich_personal_questions
+    from integration.data_generation import commit_generation
+    from integration.diagnosis_profile_service import _session_error_file_state, _session_source_state
+    from path_manager import resolve_stored_file_path
 
-    data = data or assemble_session_analysis(repositories, session_id, data_root=infer_data_root(repositories.db_path), page_only=True)
-    enrich_personal_questions(repositories, data, None)
-    digests = student_report_digests(
-        repositories, int(session_id), data, reports_dir=reports_dir
-    )
+    root = infer_data_root(repositories.db_path)
+
+    def prepare(source=None):
+        source = source or assemble_session_analysis(repositories, session_id, data_root=root, page_only=True)
+        enrich_personal_questions(repositories, source, root, include_images=False, include_markup=False)
+        return dict(student_ids=[student.student_id for student in source.students],
+                    skipped=source.skipped,
+                    digests=student_report_digests(repositories, int(session_id), source, reports_dir=reports_dir))
+
+    if data is not None:
+        inputs = prepare(data)
+    else:
+        session = repositories.sessions.get_grading_session(int(session_id)) or {}
+        key = (str(repositories.db_path), int(session_id), commit_generation(repositories.db_path),
+               tuple(_session_error_file_state(resolve_stored_file_path(session.get(field), data_root=root))
+                     for field in ("rubric_path", "answer_key_path")),
+               _session_error_file_state(Path(reports_dir) / ".class_analysis" / f"{int(session_id)}.json"),
+               _session_source_state(root / "config" / "uploaded" / "config_sources" / f"session-{int(session_id)}")
+               if root is not None else None)
+        inputs = _cached_context(_status_inputs, key, prepare)
     store = PersonalReportStore(Path(reports_dir))
     students = []
-    for student in data.students:
-        entry = store.load(int(session_id), student.student_id)
+    for student_id in inputs["student_ids"]:
+        entry = store.load(int(session_id), student_id)
         state = resolve_result_state(
-            entry, digests.get(student.student_id, ""), "personal_report"
+            entry, inputs["digests"].get(student_id, ""), "personal_report"
         )
         students.append(dict(
-            student_id=student.student_id,
+            student_id=student_id,
             status=state["status"],
             generated_at=state["generated_at"],
             reason=None,
         ))
     students.extend(dict(student_id=int(s["student_id"]), status="unavailable", generated_at=None,
-                         reason=s["reason"]) for s in data.skipped)
+                         reason=s["reason"]) for s in inputs["skipped"])
     return dict(session_id=session_id, students=students)
 
 

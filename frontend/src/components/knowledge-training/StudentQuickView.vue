@@ -4,9 +4,9 @@ import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../ui/sheet'
 import { knowledgeLeafLabel } from '../../api/question-bank'
-import type { TrainingDiagnosis, TrainingStudentProfile } from '../../api/training'
+import type { TrainingReadDiagnosis, TrainingReadStudent } from '../../api/training'
 import AppButton from '../design-system/AppButton.vue'
-const props = defineProps<{ student: TrainingStudentProfile | null; diagnosis: TrainingDiagnosis }>()
+const props = defineProps<{ student: TrainingReadStudent | null; diagnosis: TrainingReadDiagnosis }>()
 const open = defineModel<boolean>('open', { default: false })
 const emit = defineEmits<{ 'wrong-book': [studentId: string] }>()
 const points = computed(() => {

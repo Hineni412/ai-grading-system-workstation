@@ -68,6 +68,80 @@ describe('scan grading store isolation and recovery', () => {
     expect(api.uploadScan).toHaveBeenCalledTimes(3)
   })
 
+  it('appends files into a frozen batch without starting replacement', async () => {
+    vi.mocked(api.fetchGradingWorkspace)
+      .mockResolvedValueOnce(workspace(1, 'frozen'))
+      .mockResolvedValueOnce({
+        ...workspace(1, 'frozen'),
+        upload_batch: { ...workspace(1, 'frozen').upload_batch, revision: 4, file_count: 2,
+          files: [
+            { id: 'a', name: 'a.jpg', media_type: 'image/jpeg', size_bytes: 1, sha256_prefix: 'a'.repeat(12), added_at: 'now' },
+            { id: 'b', name: 'late.jpg', media_type: 'image/jpeg', size_bytes: 1, sha256_prefix: 'b'.repeat(12), added_at: 'now', appended: true },
+          ] },
+      })
+    vi.mocked(api.uploadScan).mockResolvedValue({
+      duplicate: false,
+      file: { id: 'b', name: 'late.jpg', media_type: 'image/jpeg', size_bytes: 1,
+        sha256_prefix: 'b'.repeat(12), added_at: 'now', appended: true },
+    })
+    const store = useScanGradingStore()
+    await store.load(1)
+
+    await store.appendFiles([new File(['late'], 'late.jpg', { type: 'image/jpeg' })])
+
+    expect(api.uploadScan).toHaveBeenCalledWith(1, expect.any(File), 'append')
+    expect(api.beginScanReplacement).not.toHaveBeenCalled()
+    expect(store.uploadBatch?.file_count).toBe(2)
+  })
+
+  it('does not auto-start replacement when files are picked on a frozen batch', async () => {
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(workspace(1, 'frozen'))
+    const store = useScanGradingStore()
+    await store.load(1)
+
+    await store.addFiles([new File(['x'], 'x.jpg', { type: 'image/jpeg' })])
+
+    expect(api.uploadScan).not.toHaveBeenCalled()
+    expect(api.beginScanReplacement).not.toHaveBeenCalled()
+  })
+
+  it('starts a replacement batch only from the explicit action', async () => {
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(workspace(1, 'frozen'))
+    vi.mocked(api.beginScanReplacement).mockResolvedValue({
+      batch_id: 'replacement-1', revision: 0, state: 'draft', files: [],
+      file_count: 0, total_bytes: 0, frozen_at: null,
+    })
+    const store = useScanGradingStore()
+    await store.load(1)
+
+    await store.beginReplacement()
+
+    expect(api.beginScanReplacement).toHaveBeenCalledWith(1)
+    expect(store.replacementBatch?.batch_id).toBe('replacement-1')
+  })
+
+  it('removes an appended file against the frozen batch revision', async () => {
+    const frozen = workspace(1, 'frozen')
+    frozen.upload_batch.revision = 4
+    frozen.upload_batch.files = [
+      { id: 'a', name: 'a.jpg', media_type: 'image/jpeg', size_bytes: 1, sha256_prefix: 'a'.repeat(12), added_at: 'now' },
+      { id: 'b', name: 'late.jpg', media_type: 'image/jpeg', size_bytes: 1, sha256_prefix: 'b'.repeat(12), added_at: 'now', appended: true },
+    ]
+    frozen.upload_batch.file_count = 2
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(frozen)
+    vi.mocked(api.removeScan).mockResolvedValue({
+      ...frozen.upload_batch, revision: 5, file_count: 1,
+      files: [frozen.upload_batch.files[0]!],
+    })
+    const store = useScanGradingStore()
+    await store.load(1)
+
+    await store.remove('b', true)
+
+    expect(api.removeScan).toHaveBeenCalledWith(1, 'b', 4, 'append')
+    expect(store.uploadBatch?.file_count).toBe(1)
+  })
+
   it('does one trailing workspace refresh when a terminal poll arrives mid-refresh', async () => {
     const running = workspace(1, 'frozen')
     running.grading_run = {

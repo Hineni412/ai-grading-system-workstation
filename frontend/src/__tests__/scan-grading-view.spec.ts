@@ -214,6 +214,45 @@ describe('scan grading workspace', () => {
     expect(replacing.host.querySelector('.scan-stage')?.getAttribute('aria-labelledby')).toBe('prepare-title')
   })
 
+  it('warns that appended files need a fresh preflight and keeps supplement gated', async () => {
+    const value = workspace()
+    value.upload_batch.files = [
+      { id: 'a', name: '原批答卷.pdf', media_type: 'application/pdf', size_bytes: 2048,
+        sha256_prefix: 'a'.repeat(12), added_at: '2026-07-16T12:00:00Z' },
+      { id: 'b', name: '迟到答卷.jpg', media_type: 'image/jpeg', size_bytes: 512,
+        sha256_prefix: 'b'.repeat(12), added_at: '2026-07-16T12:30:00Z', appended: true },
+    ]
+    value.upload_batch.file_count = 2
+    value.grading_run = {
+      run_id: 9, mode: 'ai', state: 'completed',
+      counts: { graded: 88, grading: 0, pending: 0, skipped: 0, failed: 0, conflict: 0, total: 88 },
+      allowed_actions: ['supplement_new_matches'],
+    }
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(value)
+    vi.mocked(api.fetchPreflight).mockResolvedValue({
+      revision: 2, input_changed: true, appended_file_count: 1,
+      summary: { auto_matched: 88, ready_to_grade: 88, issues: 1, absent_candidates: 0, total_pages: 89 },
+      groups: [], issues: [
+        { id: 'i1', detected_name: '迟到卷', source_label: '089',
+          front_media_url: '/api/sessions/7/scan/preflight/media/issue:i1:front',
+          back_media_url: '/api/sessions/7/scan/preflight/media/issue:i1:back' },
+      ], absent_students: [], warnings: [],
+      decisions: [], pending_issue_count: 1,
+    })
+    const { host } = await mountView()
+    await openStage(host, 'prepare')
+
+    expect(host.textContent).toContain('已新增答卷文件')
+    expect(host.textContent).toContain('重新运行预检')
+    expect(host.textContent).toContain('新增答卷文件')
+    expect(host.textContent).toContain('替换全部答卷')
+    expect(host.textContent).not.toContain('重新上传答卷')
+    const supplement = host.querySelector<HTMLButtonElement>('.scan-stage [data-action="supplement"]')!
+    expect(supplement).not.toBeNull()
+    expect(supplement.disabled).toBe(true)
+    expect(host.querySelector('.scan-stage__side')?.textContent).not.toContain('下一步：批改')
+  })
+
   it('shows a finished run as finished instead of an in-progress placeholder', async () => {
     const done = workspace()
     done.grading_run = {

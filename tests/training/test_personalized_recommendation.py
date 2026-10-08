@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import sqlite3
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -2275,6 +2278,189 @@ def test_printed_duplicates_are_excluded_from_generation_and_replacement(
             ),
         )
     assert direct_module.get(draft["draft_id"]) == draft
+
+
+@contextmanager
+def _capture_initial_source_reads(monkeypatch, selected_ids, *, legacy=False, variable_limit=None):
+    from question_bank.recommendation import personalized
+
+    original_connect = personalized.connect
+    reads, seen = [], set()
+    selectors = {
+        "SELECT q.id, q.question_number": "questions",
+        "SELECT qt.question_id, qt.tag_value FROM": "knowledge_tags",
+        "SELECT qt.question_id, qt.tag_type, qt.tag_value": "skill_tags",
+        "SELECT * FROM question_part_difficulty_features WHERE is_active=1": "features",
+        "SELECT question_id, criteria_json FROM training_criterion_versions": "criteria",
+        "SELECT e.question_id, e.evidence_version_id": "evidence_versions",
+    }
+
+    class Rows:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, sql, params=()):
+            normalized = " ".join(sql.split())
+            kind = next((kind for prefix, kind in selectors.items() if normalized.startswith(prefix)), None)
+            if kind is None:
+                return self.connection.execute(sql, params)
+            supplied = tuple(params[:-1] if kind == "evidence_versions" else params)
+            if legacy:
+                if kind in seen:
+                    return Rows([])
+                seen.add(kind)
+                sql = re.sub(r" AND (?:q\.id|qt\.question_id|question_id|e\.question_id) IN \([?,]+\)", "", sql)
+                params = params[-1:] if kind == "evidence_versions" else ()
+            rows = self.connection.execute(sql, params).fetchall()
+            key = "id" if kind == "questions" else "question_id"
+            reads.append({"kind": kind, "selected_ids": supplied, "row_count": len(rows),
+                          "returned_ids": tuple(int(row[key]) for row in rows)})
+            if legacy and kind == "questions" and selected_ids:
+                rows = [row for row in rows if int(row["id"]) in selected_ids]
+            return Rows(rows)
+
+    @contextmanager
+    def recording_connect(*args, **kwargs):
+        with original_connect(*args, **kwargs) as connection:
+            if variable_limit is not None:
+                connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, variable_limit)
+            yield Connection(connection)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(personalized, "connect", recording_connect)
+        yield reads
+
+
+def _seed_targeted_snapshot_variants(module):
+    from question_bank.services.standard_difficulty import _legacy_question_content_fingerprint
+    from question_bank.training_criteria.analysis import solution_evidence_source_content_hash
+
+    variants = _printed_original_variants(module.data_root)
+    with connect(module.db_path) as conn:
+        for qid, variant in ((100, "original"), (101, "missing")):
+            row = variants[variant]
+            conn.execute("UPDATE questions SET question_text=?,has_images=1,image_paths=? WHERE id=?",
+                         (row["question_text"], json.dumps(row["image_paths"]), qid))
+        conn.execute("UPDATE questions SET is_deleted=1 WHERE id=31")
+        conn.execute("INSERT INTO papers(id,title,import_status) VALUES(2,'TEST-deleted-paper','deleted')")
+        conn.execute("UPDATE questions SET paper_id=2 WHERE id=32")
+        conn.execute("UPDATE questions SET question_text='TEST-如图但没有题图' WHERE id=33")
+        conn.execute("UPDATE questions SET question_text=question_text || ' TEST-changed-source' WHERE id=104")
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value) VALUES(100,'method','TEST-first-method')")
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value) VALUES(100,'method','TEST-first-method')")
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value) VALUES(100,'model','TEST-model')")
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value) VALUES(100,'prerequisite',?)", (BNU_PREREQ_NEAR,))
+        conn.execute("INSERT INTO knowledge_graph_releases(release_id,schema_version,taxonomy_revision,content_hash,payload_json,status,source_reference,created_by) "
+                     "VALUES('kgr_TEST_targeted_old','knowledge-graph-release-v1',1,?,'{}','retired','TEST','TEST')", ('f' * 64,))
+    inputs = {question.question_id: question for question in QuestionAnalysisInputLoader(
+        db_path=module.db_path, data_root=module.data_root).load([100, 105, 106])}
+    with connect(module.db_path) as conn:
+        criterion = json.loads(conn.execute("SELECT criteria_json FROM training_criterion_versions WHERE question_id=100").fetchone()[0])
+        criterion["source_content_hash"] = inputs[100].criterion_source_content_hash
+        payload = json.dumps(criterion, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        conn.execute("UPDATE training_criterion_versions SET source_content_hash=?,criteria_json=?,criteria_hash=? WHERE question_id=100",
+                     (inputs[100].criterion_source_content_hash, payload, hashlib.sha256(payload.encode()).hexdigest()))
+        conn.execute("UPDATE training_criterion_heads SET current_source_hash=? WHERE question_id=100", (inputs[100].criterion_source_content_hash,))
+        for qid in (100, 105, 106):
+            row = dict(conn.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone())
+            conn.execute("INSERT INTO question_part_difficulty_features(question_id,part_id,features_json,formula_difficulty,formula_version,source_content_hash,is_active) "
+                         "VALUES(?,'part1','{}',7,'std-difficulty-v1',?,1)", (qid, _legacy_question_content_fingerprint(row)))
+        for qid in (105, 106):
+            evidence = {"version_id": f"TEST-semantic-{qid}", "parts": [{"part_id": "part1", "label": "TEST-part",
+                "response_mode": "exact_objective", "evidence_points": [{"evidence_point_id": "p1", "target": "TEST-compute",
+                "observable_evidence": "TEST-result", "fine_term_links": []}]}]}
+            evidence_ids = {}
+            for label, graph_id, created_at in (("current", module.current_knowledge.release_id, "2026-07-30 08:00:00"),
+                                                 ("historical", "kgr_TEST_targeted_old", "2026-07-30 08:00:01")):
+                if qid == 106:
+                    graph_id = module.current_knowledge.release_id
+                version_id = hashlib.sha256(f"TEST-{qid}-{label}".encode()).hexdigest()
+                evidence_ids[label] = version_id
+                conn.execute("INSERT INTO question_solution_evidence_versions(evidence_version_id,question_id,source_content_hash,schema_version,content_hash,evidence_json,status,source_kind,source_reference,created_by,graph_release_id,created_at) "
+                    "VALUES(?,?,?,'question-solution-evidence-v2',?,?,'approved','combined_model',?,'TEST',?,?)",
+                    (version_id, qid, solution_evidence_source_content_hash(inputs[qid]), version_id,
+                     json.dumps(evidence), f"TEST-{label}", graph_id, created_at))
+                conn.execute("INSERT INTO evidence_point_knowledge_links(evidence_version_id,question_id,part_id,evidence_point_id,graph_release_id,role,term_id,stable_key,resolution_status,source_kind) "
+                    "VALUES(?,?,'part1','p1',?,'direct',?,?,'resolved','link_job')",
+                    (version_id, qid, module.current_knowledge.release_id,
+                     BNU_TARGET if label == "current" else BNU_PREREQ_NEAR,
+                     BNU_TARGET if label == "current" else BNU_PREREQ_NEAR))
+            conn.execute("INSERT INTO question_scope_summary(question_id,evidence_version_id,primary_section_id,direct_section_ids_json) "
+                         "VALUES(?,?,'','[]')", (qid, evidence_ids["historical" if qid == 105 else "current"]))
+            criterion = json.loads(conn.execute("SELECT criteria_json FROM training_criterion_versions WHERE question_id=?", (qid,)).fetchone()[0])
+            criterion["solution_evidence"] = evidence
+            payload = json.dumps(criterion, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            conn.execute("UPDATE training_criterion_versions SET criteria_json=?,criteria_hash=? WHERE question_id=?",
+                         (payload, hashlib.sha256(payload.encode()).hexdigest(), qid))
+        template = conn.execute("SELECT * FROM training_criterion_versions WHERE question_id=100").fetchone()
+        for qid in range(10000, 11000):
+            _insert_bnu24_questions(conn, ((qid, str(qid), "填空题", f"TEST-outside-selection-{qid}", "7", BNU_TARGET),))
+            conn.execute("INSERT INTO question_part_difficulty_features(question_id,part_id,features_json,formula_difficulty,formula_version,source_content_hash,is_active) "
+                         "VALUES(?,'part1','{}',7,'std-difficulty-v1',?,1)", (qid, '0' * 64))
+            conn.execute("INSERT INTO training_criterion_versions(version_id,question_id,version_number,source_content_hash,schema_version,status,source_kind,source_reference,criteria_json,criteria_hash,quality_status,created_by) "
+                         "VALUES(?,?,1,?,'training-criteria-draft-v1','approved','teacher_manual','TEST',?,?,'passed','TEST')",
+                         (hashlib.sha256(f"TEST-background-criterion-{qid}".encode()).hexdigest(), qid,
+                          template["source_content_hash"], template["criteria_json"], template["criteria_hash"]))
+            conn.execute("INSERT INTO question_solution_evidence_versions(evidence_version_id,question_id,source_content_hash,schema_version,content_hash,evidence_json,status,source_kind,source_reference,created_by,graph_release_id) "
+                         "VALUES(?,?,?,'question-solution-evidence-v2',?,'{}','approved','combined_model','TEST','TEST',?)",
+                         (hashlib.sha256(f"TEST-background-evidence-{qid}".encode()).hexdigest(), qid,
+                          '0' * 64, '0' * 64, module.current_knowledge.release_id))
+
+
+@pytest.mark.parametrize("knowledge_keys", [(), (BNU_TARGET,)])
+def test_targeted_source_snapshot_matches_full_read_and_bounds_all_initial_tables(direct_module, monkeypatch, knowledge_keys):
+    _seed_targeted_snapshot_variants(direct_module)
+    ids = [*reversed(range(100, 112)), 100, 31, 32, 33, 99999]
+    settings = dict(question_ids=ids, excluded_question_ids={103}, knowledge_keys=knowledge_keys,
+                    candidate_config=PersonalizedRecommendationConfig(difficulty_min=1, difficulty_max=8))
+    with _capture_initial_source_reads(monkeypatch, set(ids), legacy=True) as before:
+        expected = direct_module._source_snapshot_uncached(**settings)
+    with _capture_initial_source_reads(monkeypatch, set(ids)) as after:
+        actual = direct_module._source_snapshot_uncached(**settings)
+    assert actual == expected
+    candidates, relations, version = actual
+    assert relations and len(version) == 64
+    by_id = {candidate["question_id"]: candidate for candidate in candidates}
+    assert 100 in by_id and 105 in by_id
+    assert not {31, 32, 33, 101, 103, 104, 99999}.intersection(by_id)
+    assert by_id[100]["image_identity"] and by_id[100]["difficulty_features"]
+    assert by_id[100]["practice_tags"]["method"].count("TEST-first-method") == 1
+    assert by_id[105]["stable_keys"] == [BNU_TARGET]
+    assert by_id[106]["stable_keys"] == [BNU_TARGET]
+    assert by_id[105]["part_assessment"] is not None
+    assert [candidate["question_id"] for candidate in candidates] == sorted(by_id)
+    assert {read["kind"] for read in after} == {"questions", "knowledge_tags", "skill_tags", "features", "evidence_versions", *(["criteria"] if knowledge_keys else [])}
+    assert all(set(read["returned_ids"]) <= set(ids) and len(read["selected_ids"]) <= 64 for read in after)
+    assert all(read["row_count"] >= 1000 for read in before)
+    assert all(read["row_count"] < 100 for read in after)
+
+
+def test_targeted_snapshot_batches_without_limiting_ids_and_empty_ids_keep_full_range(direct_module, monkeypatch):
+    ids = [*reversed(range(100, 112)), *range(20000, 20200), 100]
+    with _capture_initial_source_reads(monkeypatch, set(ids), legacy=True) as before:
+        expected = direct_module._source_snapshot_uncached(question_ids=ids)
+    with _capture_initial_source_reads(monkeypatch, set(ids), variable_limit=65) as reads:
+        actual = direct_module._source_snapshot_uncached(question_ids=ids)
+    assert actual == expected
+    question_reads = [read for read in reads if read["kind"] == "questions"]
+    assert len(question_reads) == 4
+    assert set(qid for read in question_reads for qid in read["selected_ids"]) == set(ids)
+    assert all(len(read["selected_ids"]) <= 64 for read in reads)
+    with _capture_initial_source_reads(monkeypatch, set(), legacy=True):
+        expected_all = direct_module._source_snapshot_uncached()
+    with _capture_initial_source_reads(monkeypatch, set()) as all_reads:
+        actual_all = direct_module._source_snapshot_uncached(question_ids=[])
+    assert actual_all == expected_all
+    assert len(actual_all[0]) > len(actual[0])
+    assert all(not read["selected_ids"] for read in all_reads)
+    assert direct_module._source_snapshot_uncached(question_ids=[1 << 80]) == direct_module._source_snapshot_uncached(question_ids=[99999])
 
 
 def test_source_snapshot_pool_survives_restart_and_invalidates(

@@ -48,6 +48,11 @@ from backend.api.schemas.training import (
     TrainingAssessmentStartRequest,
     TrainingDiagnosisRequest,
     TrainingDiagnosisResponse,
+    TrainingDiagnosisSummaryResponse,
+    TrainingWeakPointSummary,
+    TrainingDisplayDiagnosisResponse,
+    TrainingDisplayWeakPoint,
+    TrainingDisplayCatalogNode,
     TrainingEvidenceReplayRequest,
     TrainingEvidenceReplayResponse,
     TrainingEvidenceSyncRequest,
@@ -138,8 +143,39 @@ _DIAGNOSIS_RESPONSE_CACHE = ResultCache(limit=8)
 _GROUPING_RESPONSE_ADAPTER = TypeAdapter(TrainingDiagnosisResponse.model_fields['grouping'].annotation)
 
 
-def _validated_diagnosis_json(public) -> bytes:
-    model = TrainingDiagnosisResponse.model_validate(public)
+def _diagnosis_summary(public):
+    point_fields = TrainingWeakPointSummary.model_fields
+    def points(values):
+        return [{key: value for key, value in point.items() if key in point_fields}
+                for point in values]
+    return {**public, 'include_student_detail': False,
+            'students': [{**student, 'weak_points': points(student['weak_points'])}
+                         for student in public['students']],
+            'group_weak_points': points(public.get('group_weak_points', []))}
+
+
+def _diagnosis_display(public):
+    def points(values):
+        return [{**{key: value for key, value in point.items()
+                    if key in TrainingDisplayWeakPoint.model_fields},
+                 'source_reference_count': len(point['source_question_refs'])}
+                for point in values]
+    return {**public, 'response_mode': 'display',
+            'students': [{**student, 'weak_points': points(student['weak_points'])}
+                         for student in public['students']],
+            'group_weak_points': points(public.get('group_weak_points', [])),
+            'knowledge_catalog': [{key: value for key, value in node.items()
+                                   if key in TrainingDisplayCatalogNode.model_fields}
+                                  for node in public.get('knowledge_catalog', [])],
+            'knowledge_associations': []}
+
+
+def _validated_diagnosis_json(public, *, include_student_detail=True, response_mode='full') -> bytes:
+    if response_mode == 'display':
+        model = TrainingDisplayDiagnosisResponse.model_validate(_diagnosis_display(public))
+    else:
+        model = (TrainingDiagnosisResponse.model_validate(public) if include_student_detail
+                 else TrainingDiagnosisSummaryResponse.model_validate(_diagnosis_summary(public)))
     # Preserve JSONResponse's rejection of NaN/Infinity, including a string
     # converted to float by a typed response field. Untyped values were
     # already checked during the public-data walk.
@@ -156,7 +192,8 @@ def _validated_diagnosis_json(public) -> bytes:
 
 
 def _diagnosis_response_bytes(service: DiagnosisProfileService, *, scope, exam_scope,
-                             diagnosis=None, grouping_cache_key=None, diagnosis_factory=None) -> bytes:
+                             diagnosis=None, grouping_cache_key=None, diagnosis_factory=None,
+                             include_student_detail=True, response_mode='full') -> bytes:
     """Reuse a validated, complete response under the existing source contract."""
     root = Path(__file__).resolve().parents[3]
     files = (Path(__file__), root / 'backend/api/schemas/training.py',
@@ -165,7 +202,7 @@ def _diagnosis_response_bytes(service: DiagnosisProfileService, *, scope, exam_s
              root / 'question_bank/taxonomy/curriculum_catalog.py')
     semantics = tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in files)
     key = (*service.tag_profile_cache_key(scope=scope, exam_scope=exam_scope),
-           'api-diagnosis-json-v1', semantics, grouping_cache_key)
+           'api-diagnosis-json-v1', semantics, grouping_cache_key, include_student_detail, response_mode)
 
     def compute():
         entry = service._read_local_profile(key)
@@ -180,7 +217,8 @@ def _diagnosis_response_bytes(service: DiagnosisProfileService, *, scope, exam_s
         if grouping_cache_key is not None:
             # Grouping only adds the final field to this same source snapshot.
             # Reuse the validated base bytes rather than walking all evidence again.
-            base = _diagnosis_response_bytes(service, scope=scope, exam_scope=exam_scope)
+            base = _diagnosis_response_bytes(service, scope=scope, exam_scope=exam_scope,
+                                             include_student_detail=include_student_detail, response_mode=response_mode)
             source = diagnosis if diagnosis is not None else diagnosis_factory()
             public_group = _public_training_mapping({'grouping': source['grouping']}, reject_nonfinite=True)
             grouping = _GROUPING_RESPONSE_ADAPTER.validate_python(public_group.get('grouping'))
@@ -196,7 +234,8 @@ def _diagnosis_response_bytes(service: DiagnosisProfileService, *, scope, exam_s
         if public.get('diagnosis_identity') != 'question_tag':
             raise ValueError('unexpected diagnosis identity')
         # Direct serialization avoids another full dict construction and walk.
-        encoded = _validated_diagnosis_json(public)
+        encoded = _validated_diagnosis_json(public, include_student_detail=include_student_detail,
+                                           response_mode=response_mode)
         compressed = gzip.compress(encoded, compresslevel=1, mtime=0)
         return compressed
 
@@ -273,7 +312,8 @@ def _build_grouped_diagnosis(service, grouping_module, *, scope_dump, exam_scope
     return diagnosis
 
 
-def _grouped_diagnosis_response_bytes(service, module, *, scope, exam_scope, grouping) -> bytes:
+def _grouped_diagnosis_response_bytes(service, module, *, scope, exam_scope, grouping,
+                                     include_student_detail=True, response_mode='full') -> bytes:
     # Reuse the existing complete asset manifest. Database signatures alone do
     # not detect edits to rich content, image fallbacks or preview files.
     from question_bank.services.question_read_service import _skill_asset_manifest
@@ -284,7 +324,8 @@ def _grouped_diagnosis_response_bytes(service, module, *, scope, exam_scope, gro
     if manifest is None:
         public = _public_training_mapping({k: v for k, v in factory().items() if not str(k).startswith('_')},
                                           reject_nonfinite=True)
-        return _validated_diagnosis_json(public)
+        return _validated_diagnosis_json(public, include_student_detail=include_student_detail,
+                                        response_mode=response_mode)
     # The outer response key already covers both source database generations.
     # The saved entry is checked against their logical content revisions, so
     # process-local counters must not appear again in this persistent suffix.
@@ -294,7 +335,8 @@ def _grouped_diagnosis_response_bytes(service, module, *, scope, exam_scope, gro
     record_request('grouped_diagnosis', scope=scope, exam_scope=exam_scope,
                    params={'grouping': grouping.model_dump()})
     return _diagnosis_response_bytes(service, scope=scope, exam_scope=exam_scope,
-        grouping_cache_key=key, diagnosis_factory=factory)
+        grouping_cache_key=key, diagnosis_factory=factory, include_student_detail=include_student_detail,
+        response_mode=response_mode)
 
 
 def _grouping_module(body: TrainingDiagnosisRequest) -> Callable[[], PersonalizedRecommendationModule] | None:
@@ -304,7 +346,7 @@ def _grouping_module(body: TrainingDiagnosisRequest) -> Callable[[], Personalize
 
 @router.post(
     "/diagnosis",
-    response_model=TrainingDiagnosisResponse,
+    response_model=TrainingDiagnosisResponse | TrainingDiagnosisSummaryResponse | TrainingDisplayDiagnosisResponse,
     response_model_exclude_none=True,
     responses=TRAINING_DATABASE_RESPONSES,
 )
@@ -314,18 +356,21 @@ def build_training_diagnosis(
         get_request_diagnosis_profile_service
     ),
     grouping_module: PersonalizedRecommendationModule | Callable[[], PersonalizedRecommendationModule] | None = Depends(_grouping_module),
-) -> TrainingDiagnosisResponse | Response:
+) -> TrainingDiagnosisResponse | TrainingDiagnosisSummaryResponse | TrainingDisplayDiagnosisResponse | Response:
     try:
         scope_dump = body.scope.model_dump(exclude_none=True)
         exam_scope_dump = body.exam_scope.model_dump(exclude_none=True)
         record_request("diagnosis", scope=scope_dump, exam_scope=exam_scope_dump, params={})
         if body.grouping is None and isinstance(service, DiagnosisProfileService):
             return Response(content=_diagnosis_response_bytes(service, scope=scope_dump,
-                            exam_scope=exam_scope_dump), media_type='application/json')
+                            exam_scope=exam_scope_dump, include_student_detail=body.include_student_detail,
+                            response_mode=body.response_mode),
+                            media_type='application/json')
         if body.grouping is not None and isinstance(service, DiagnosisProfileService):
             assert grouping_module is not None
             return Response(content=_grouped_diagnosis_response_bytes(service, grouping_module,
-                scope=scope_dump, exam_scope=exam_scope_dump, grouping=body.grouping),
+                scope=scope_dump, exam_scope=exam_scope_dump, grouping=body.grouping,
+                include_student_detail=body.include_student_detail, response_mode=body.response_mode),
                 media_type='application/json')
         resolved_module = grouping_module() if callable(grouping_module) else grouping_module
         diagnosis = _build_grouped_diagnosis(service, resolved_module, scope_dump=scope_dump,
@@ -352,6 +397,10 @@ def build_training_diagnosis(
             "training_scope_invalid",
             "Training scope is invalid",
         )
+    if body.response_mode == 'display':
+        return TrainingDisplayDiagnosisResponse.model_validate(_diagnosis_display(public))
+    if not body.include_student_detail:
+        return TrainingDiagnosisSummaryResponse.model_validate(_diagnosis_summary(public))
     return TrainingDiagnosisResponse.model_validate(public)
 
 
