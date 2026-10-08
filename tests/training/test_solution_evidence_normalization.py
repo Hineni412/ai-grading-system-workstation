@@ -128,3 +128,57 @@ def test_normalizer_preserves_numeric_zero_answers_and_evidence() -> None:
     assert evidence.parts[0].canonical_answer == "0"
     assert evidence.parts[0].full_answer == "0"
     assert evidence.parts[0].evidence_points[0].answer_anchor == "0"
+
+@pytest.mark.parametrize("schema_version", ["question-solution-evidence-v1", "question-solution-evidence-v2"])
+def test_fixed_answer_kind_keeps_legacy_evidence_payload_and_hash(schema_version: str) -> None:
+    from question_bank.canonical_hash import canonical_hash
+
+    raw = _payload(_part(mode="exact_objective", canonical_answer="3", full_answer=""))
+    raw["schema_version"] = schema_version
+    point = raw["parts"][0]["evidence_points"][0]
+    if schema_version.endswith("v1"):
+        for key in ("step_index", "justification", "answer_anchor", "depends_on"):
+            point.pop(key)
+    legacy = _parse(raw)
+    submitted = copy.deepcopy(raw)
+    submitted["parts"][0]["evidence_points"][0]["answer_kind"] = "fixed"
+    explicit = _parse(submitted)
+    assert explicit.to_dict() == legacy.to_dict()
+    assert explicit.parts[0].to_dict(schema_version=schema_version) == raw["parts"][0]
+    assert explicit.content_hash == canonical_hash({**raw, "source_content_hash": "0" * 64})
+
+
+def test_open_result_normalization_preserves_constraints_instead_of_example() -> None:
+    point = _point("open-result", index=1, target="给出一个大于 2 的整数", anchor="3")
+    point.update(answer_kind="conditions", observable_evidence="答案是整数且大于 2",
+                 counterexamples=["2 不大于 2", "2.5 不是整数"])
+    raw = _payload(_part(mode="exact_objective", canonical_answer="3", full_answer="", points=[point]))
+    normalized = normalize_model_solution_evidence(raw, question_id=1, question_type="fill_blank",
+        taxonomy_contract={}, objective_response_shape="single_blank")
+    actual = _parse(normalized.payload).parts[0].evidence_points[0]
+    assert actual.answer_kind == "conditions"
+    assert actual.target == point["target"]
+    assert actual.observable_evidence == point["observable_evidence"]
+    assert actual.answer_anchor == "3"
+    assert actual.counterexamples == ("2 不大于 2", "2.5 不是整数")
+
+
+@pytest.mark.parametrize("mode", ["process_required", "visual_construction"])
+def test_conditions_marker_cannot_relax_process_or_visual_obligations(mode: str) -> None:
+    point = _point("open-result", index=1, target="给出一个大于 2 的整数", anchor="3")
+    point["answer_kind"] = "conditions"
+    with pytest.raises(ValueError, match="result-only response mode"):
+        _parse(_payload(_part(mode=mode, canonical_answer="3", full_answer="3", points=[point])))
+
+
+def test_choice_or_empty_constraints_cannot_be_saved_as_open_answer() -> None:
+    point = _point("open-result", index=1, target="选择 A", anchor="A")
+    point["answer_kind"] = "conditions"
+    raw = _payload(_part(mode="exact_objective", canonical_answer="A", full_answer="", points=[point]))
+    with pytest.raises(ValueError, match="choice answers"):
+        normalize_model_solution_evidence(raw, question_id=1, question_type="single_choice",
+            taxonomy_contract={}, objective_response_shape="single_choice")
+    raw["parts"][0]["evidence_points"][0]["observable_evidence"] = ""
+    with pytest.raises(ValueError, match="explicit mathematical conditions"):
+        normalize_model_solution_evidence(raw, question_id=1, question_type="fill_blank",
+            taxonomy_contract={}, objective_response_shape="single_blank")

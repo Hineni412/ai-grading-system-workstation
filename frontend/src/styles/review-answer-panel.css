@@ -91,25 +91,82 @@
   font-size: var(--font-size-caption);
 }
 
+.review-answer-panel__part h5 {
+  margin: var(--space-3) 0 var(--space-2);
+  font-size: var(--font-size-dense);
+}
+
+.review-answer-panel__reference,
+.review-answer-panel__exceptions {
+  min-width: 0;
+  margin-block: var(--space-2);
+  font-size: var(--font-size-caption);
+}
+
+.review-answer-panel__reference > summary,
+.review-answer-panel__exceptions > summary {
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.review-answer-panel__reference[open] > summary,
+.review-answer-panel__exceptions[open] > summary {
+  margin-block-end: var(--space-2);
+}
+
 .review-answer-panel__point {
-  padding: var(--space-3) 0;
+  padding: var(--space-2) 0;
   border-block-start: var(--border-width) solid var(--color-border-subtle);
 }
 
 .review-answer-panel__point-header {
   display: flex;
   align-items: baseline;
-  flex-wrap: wrap;
-  gap: 0 var(--space-1);
-  margin-block-end: var(--space-2);
+  gap: var(--space-2);
   font-size: var(--font-size-dense);
   font-weight: var(--font-weight-semibold);
+  cursor: pointer;
 }
 
-/* 行内标题允许换行，覆盖 .question-html--inline 的 nowrap */
+.review-answer-panel__point-header::before {
+  content: '▸';
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+}
+
+.review-answer-panel__point[open] > .review-answer-panel__point-header {
+  margin-block-end: var(--space-2);
+}
+
+.review-answer-panel__point[open] > .review-answer-panel__point-header::before {
+  content: '▾';
+}
+
+.review-answer-panel__point-goal {
+  flex: 1;
+}
+
 .review-answer-panel__point-header .question-html {
   min-width: 0;
   white-space: normal;
+}
+
+.review-answer-panel__point:not([open]) .review-answer-panel__point-goal {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.review-answer-panel__point-score {
+  flex: 0 0 auto;
+  color: var(--color-accent);
+}
+
+.review-answer-panel__answer-kind {
+  margin: 0 0 var(--space-2);
+  color: var(--color-accent);
+  font-size: var(--font-size-caption);
 }
 
 .review-answer-panel__details {

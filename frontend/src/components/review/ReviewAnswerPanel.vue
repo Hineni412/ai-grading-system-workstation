@@ -42,6 +42,16 @@ let rubricGeneration = 0
 
 const subIndex = computed(() => subQuestionOf(props.questionId)?.index ?? null)
 
+const rubricParts = computed(() => {
+  const parts = new Map<string, { partId: string; label: string; reference: ReviewRubricPoint; points: ReviewRubricPoint[] }>()
+  for (const point of rubric.value?.points ?? []) {
+    const part = parts.get(point.part_id)
+    if (part) part.points.push(point)
+    else parts.set(point.part_id, { partId: point.part_id, label: point.part_label, reference: point, points: [point] })
+  }
+  return [...parts.values()]
+})
+
 function dedupedAnswers(point: ReviewRubricPoint): string[] {
   return dedupeAcceptedAnswers(point.accepted_answers, point.standard_answer)
 }
@@ -158,57 +168,59 @@ watch(
         <p v-else-if="!rubric" class="review-answer-panel__muted">
           当前题没有可展示的评分标准。
         </p>
-        <article
-          v-for="point in rubric?.points ?? []"
-          :key="`${point.part_id}:${point.step_id}`"
-          class="review-answer-panel__point"
-        >
-          <header class="review-answer-panel__point-header">
-            <QuestionHtmlBlock
-              class="review-answer-panel__point-goal"
-              :text="point.core_goal || point.part_label"
-              inline
-              typeset-text
-            />
-            <span>· {{ formatScore(point.score) }} 分</span>
-          </header>
-          <dl class="review-answer-panel__details">
-            <template v-if="point.standard_answer">
-              <dt>参考答案</dt>
-              <dd>
-                <QuestionHtmlBlock :text="point.standard_answer" :inline="false" typeset-text />
-              </dd>
-            </template>
-            <template v-if="dedupedAnswers(point).length">
-              <dt>等价答案</dt>
-              <dd>
-                <QuestionHtmlBlock :text="dedupedAnswers(point).join('；')" typeset-text />
-              </dd>
-            </template>
-            <template v-if="point.required_elements.length">
-              <dt>证据要求</dt>
-              <dd>
-                <QuestionHtmlBlock :text="point.required_elements.join('；')" typeset-text />
-              </dd>
-            </template>
-            <template v-if="point.deduction_rules.length">
-              <dt>扣分规则</dt>
-              <dd>
-                <QuestionHtmlBlock :text="point.deduction_rules.join('；')" typeset-text />
-              </dd>
-            </template>
-            <template v-if="point.answer_only_max_score !== null">
-              <dt>仅写答案</dt>
-              <dd>最高 {{ formatScore(point.answer_only_max_score) }} 分</dd>
-            </template>
-            <template v-if="point.require_final_answer !== null">
-              <dt>最终答案要求</dt>
-              <dd>
-                <QuestionHtmlBlock :text="finalAnswerText(point)" typeset-text />
-              </dd>
-            </template>
-          </dl>
-        </article>
+        <section v-for="part in rubricParts" :key="part.partId" class="review-answer-panel__part">
+          <h5 v-if="rubricParts.length > 1">{{ part.label || part.partId }}</h5>
+          <details class="review-answer-panel__reference">
+            <summary>参考解答与小问规则</summary>
+            <dl class="review-answer-panel__details">
+              <template v-if="part.reference.standard_answer">
+                <dt>{{ part.points.some(point => point.answer_kind === 'conditions') ? '参考解答与示例答案' : '参考解答' }}</dt>
+                <dd><QuestionHtmlBlock :text="part.reference.standard_answer" :inline="false" typeset-text /></dd>
+              </template>
+              <template v-if="dedupedAnswers(part.reference).length">
+                <dt>等价答案</dt>
+                <dd><QuestionHtmlBlock :text="dedupedAnswers(part.reference).join('；')" typeset-text /></dd>
+              </template>
+              <template v-if="part.reference.answer_only_max_score !== null">
+                <dt>仅写答案</dt>
+                <dd>最高 {{ formatScore(part.reference.answer_only_max_score) }} 分</dd>
+              </template>
+              <template v-if="part.reference.require_final_answer !== null">
+                <dt>最终答案要求</dt>
+                <dd><QuestionHtmlBlock :text="finalAnswerText(part.reference)" typeset-text /></dd>
+              </template>
+            </dl>
+          </details>
+          <details
+            v-for="point in part.points"
+            :key="`${point.part_id}:${point.step_id}`"
+            class="review-answer-panel__point"
+          >
+            <summary class="review-answer-panel__point-header">
+              <span class="review-answer-panel__point-identity">{{ point.step_id }}</span>
+              <QuestionHtmlBlock
+                class="review-answer-panel__point-goal"
+                :text="point.core_goal || point.part_label"
+                inline
+                typeset-text
+              />
+              <span class="review-answer-panel__point-score">{{ formatScore(point.score) }} 分</span>
+            </summary>
+            <p v-if="point.answer_kind === 'conditions'" class="review-answer-panel__answer-kind">
+              按条件判对，参考答案只是示例。满足全部条件即可得分。
+            </p>
+            <dl class="review-answer-panel__details">
+              <template v-if="point.required_elements.length">
+                <dt>{{ point.answer_kind === 'conditions' ? '判对条件' : '得分条件' }}</dt>
+                <dd><QuestionHtmlBlock :text="point.required_elements.join('；')" typeset-text /></dd>
+              </template>
+            </dl>
+            <details v-if="point.deduction_rules.length" class="review-answer-panel__exceptions">
+              <summary>扣分例外</summary>
+              <QuestionHtmlBlock :text="point.deduction_rules.join('；')" typeset-text />
+            </details>
+          </details>
+        </section>
       </section>
     </div>
   </aside>

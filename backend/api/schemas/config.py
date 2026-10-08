@@ -469,6 +469,7 @@ class ConfigEditorRowResponse(BaseModel):
     response_mode: str = ""
     allow_alternative_methods: bool = True
     equivalent_rules: list[str] = Field(default_factory=list)
+    answer_kind: Literal["fixed", "conditions"] = "fixed"
 
 
 class ConfigEditorIssueResponse(BaseModel):

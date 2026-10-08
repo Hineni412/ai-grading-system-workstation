@@ -138,6 +138,7 @@ onBeforeUnmount(() => controller?.abort())
                 <div>
                   <strong>{{ point.target }}</strong>
                   <p>{{ point.observable_evidence }}</p>
+                  <p v-if="point.answer_kind === 'conditions'" class="solution-evidence__help">按条件判对，参考答案只是示例。</p>
                 </div>
               </div>
               <div class="solution-evidence__terms">

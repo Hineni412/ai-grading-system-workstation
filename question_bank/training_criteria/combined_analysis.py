@@ -2725,6 +2725,7 @@ def compose_generated_config_from_skeletons(
                         "step_id": step_id,
                         "evidence_point_ids": _text_list(raw_step.get("evidence_point_ids")),
                         "step_score": 0,
+                        **({"answer_kind": "conditions"} if raw_step.get("answer_kind") == "conditions" else {}),
                         "core_goal": core_goal,
                         "required_elements": required_elements,
                         "allow_alternative_methods": allow_alternatives,
@@ -2766,6 +2767,8 @@ def compose_generated_config_from_skeletons(
             answer_parts.append(
                 {
                     "part_id": part_id,
+                    **({"answer_kind": "conditions"} if len(steps) == 1
+                        and steps[0].get("answer_kind") == "conditions" else {}),
                     "answer": str(answer_part.get("answer") or "").strip(),
                     "canonical_answer": str(
                         answer_part.get("canonical_answer") or ""

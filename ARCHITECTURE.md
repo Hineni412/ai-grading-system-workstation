@@ -49,6 +49,8 @@ SQLite 当前结构由 `backend/current_schema/` 定义，包含当前 DDL、稳
 
 当前题目内容摘要集中在 `question_bank/training_criteria/analysis.py`，既有富文本读取入口解释受支持的结构。`solution_evidence/part_assessments.py` 选择仍匹配题面的解题证据，`training_criteria/versioning.py` 在读取时转换训练判定点并保留教师覆盖。完整模型结果不重复写相同的训练正文；教师确认、编辑与历史兼容仍使用既有记录。题库资料状态和推荐复用上述只读能力，损坏输入按题隔离；`personalized_papers` 继续冻结实际采用的正文、判定点和来源，读取不改写冻结卷或真实旧数据。
 
+逐个解题证据点的可选 `answer_kind` 区分 `fixed` 与 `conditions`，只用于结果作答。数学条件继续保存在现有目标和可观察作答字段；训练转换、考试评分投影、编辑保存与批改上下文传递同一点的口径。证据序列化省略默认 `fixed`，旧输入的正文和摘要保持原样；未标记旧填空的批改继续依据完整题意。评分页复用原编辑器与参考答案面板的展开区域，完整规则仍送入批改，不因默认折叠减少字段。没有新增数据库表或迁移。
+
 Word 内容解析复用现有 `ResultCache`，按完整 XML 与对应纯文本区分输入。最多保存 128 项，序列化结果预算为 8 MiB；键的总输入超过 64 Ki 个字符时照常解析并跳过缓存，因此该结果预算不代表整个缓存的总内存。每次返回独立的嵌套值，损坏内容的解析失败不缓存。该复用不改变内容指纹、公式、表格或上下标的解析规则。
 
 题型身份和训练目标判断集中在 `question_bank/question_types.py`，发布加载器读取随代码分发的标准，以及活动标准内嵌的配对词表。`integration/question_tag_projection_service.py` 经已确认考试题库关联按章覆盖当前主题型或补充当前知识点，知识点换算校验题面来源和逐点身份、义务；未确认关联不推断。已发布训练证据在 `question_bank/mastery/current.py` 读取时换算，原记录与冻结训练卷不改写。

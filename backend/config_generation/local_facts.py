@@ -116,7 +116,12 @@ def _apply_local_question_facts(payload: dict[str, Any], question_blocks: list[d
                                 step.pop(alias, None)
                     elif not str(part.get("answer") or "").strip():
                         part["answer"] = base_answer
-        if single_blank_fact:
+        has_conditions = any(
+            step.get("answer_kind") == "conditions"
+            for part in question.get("parts", []) if isinstance(part, dict)
+            for step in part.get("steps", []) if isinstance(step, dict)
+        )
+        if single_blank_fact and not has_conditions:
             score = question.get("max_score", 1)
             answer_value = str(answer.get("canonical_answer") or canonical).strip()
             question["parts"] = [

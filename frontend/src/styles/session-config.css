@@ -423,7 +423,7 @@
 }
 
 .rubric-part:not(.rubric-part--objective) .rubric-part__col-head {
-  grid-template-columns: 36px minmax(200px, 1.3fr) minmax(120px, 1fr) minmax(110px, 1fr) minmax(140px, 1fr) auto;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
 }
 
 .rubric-part--objective .rubric-part__col-head {
@@ -467,7 +467,7 @@
 }
 
 .rubric-part:not(.rubric-part--objective) .rubric-unit-card__preview {
-  grid-template-columns: 36px minmax(200px, 1.3fr) minmax(120px, 1fr) minmax(110px, 1fr) minmax(140px, 1fr) auto;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
 }
 
 .rubric-part--objective .rubric-unit-card__preview {
@@ -503,10 +503,7 @@
 .rubric-unit-card__preview .rubric-unit-card__identity { grid-column: 1; }
 .rubric-unit-card__preview .rubric-unit-card__goal { grid-column: 2; }
 
-.rubric-part:not(.rubric-part--objective) .rubric-field--required { grid-column: 3; }
-.rubric-part:not(.rubric-part--objective) .rubric-field--deduction { grid-column: 4; }
-.rubric-part:not(.rubric-part--objective) .rubric-field--equiv { grid-column: 5; }
-.rubric-part:not(.rubric-part--objective) .rubric-unit-card__score-badge { grid-column: 6; }
+.rubric-part:not(.rubric-part--objective) .rubric-unit-card__score-badge { grid-column: 3; }
 
 .rubric-part--objective .rubric-field--answer { grid-column: 3; }
 .rubric-part--objective .rubric-field--required { grid-column: 4; }
@@ -594,10 +591,54 @@
 
 .rubric-part--objective .rubric-unit-card__goal { white-space: nowrap; }
 
-.rubric-part:not(.rubric-part--objective) .rubric-unit-card__goal {
+.rubric-part:not(.rubric-part--objective) .rubric-unit-card__preview .rubric-unit-card__goal {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+.rubric-unit-card__goal .question-html--inline {
+  white-space: normal;
+}
+
+.rubric-unit-card__answer-kind {
+  grid-column: 2;
+  grid-row: 2;
+  color: var(--color-accent);
+  font-size: var(--font-size-caption);
+}
+
+.rubric-unit-card__answer-note {
+  margin: 0;
+  color: var(--color-accent);
+  font-size: var(--font-size-caption);
+}
+
+.rubric-unit-card__exceptions,
+.rubric-part__common-editor {
+  min-width: 0;
+  font-size: var(--font-size-dense);
+}
+
+.rubric-unit-card__exceptions > summary,
+.rubric-part__common-editor > summary {
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.rubric-unit-card__exceptions[open] > summary,
+.rubric-part__common-editor[open] > summary {
+  margin-block-end: var(--space-2);
+}
+
+.rubric-unit-card__equivalent {
+  min-width: 0;
+  font-size: var(--font-size-caption);
+}
+
+.rubric-unit-card__equivalent > strong {
+  color: var(--color-text-secondary);
 }
 
 .rubric-unit-card__editor {

@@ -2,6 +2,7 @@ import { createApp, nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { classAnalysisApi } from '../api/class-analysis'
 import { fetchReviewRubric, type ReviewItem, type ReviewQuestionSummary, type ReviewRubricSection } from '../api/review'
 import ReviewBatchWorkspace from '../components/review/ReviewBatchWorkspace.vue'
 import { useReviewDraftStore } from '../stores/review-drafts'
@@ -70,6 +71,7 @@ async function mountWorkspace(
     page?: number
     totalPages?: number
     submitting?: boolean
+    answerPanelOpen?: boolean
   } = {},
 ) {
   const pinia = createPinia()
@@ -91,6 +93,7 @@ async function mountWorkspace(
     filteredTotal: (options.queueItems ?? items).length,
     loading: false,
     submitting: options.submitting ?? false,
+    answerPanelOpen: options.answerPanelOpen ?? false,
     onConfirmBatch: confirmBatch,
     onFocusScore: focusScore,
   })
@@ -111,17 +114,40 @@ describe('question batch review workspace', () => {
   it('skips non-red and locked steps across cards and submits complete explicit step attribution', async () => {
     const rubric: ReviewRubricSection = { question_id: 'Q1', parent_question_id: 'Q1', question_type: 'calculation', max_score: 5, knowledge_labels: [],
       points: [3, 2].map((score, index) => ({ part_id: 'Q1', part_label: '', step_id: `S${index + 1}`, core_goal: '测试步骤', score,
-        standard_answer: '', accepted_answers: [], match_rule: '', required_elements: [], deduction_rules: [], answer_only_max_score: null, require_final_answer: null, final_answer_rule: '' })) }
+        answer_kind: index === 0 ? 'conditions' : 'fixed', standard_answer: '3', accepted_answers: [], match_rule: '',
+        required_elements: ['答案是整数，且大于 2。'], deduction_rules: ['不满足任一条件不得分。'],
+        answer_only_max_score: null, require_final_answer: null, final_answer_rule: '' })) }
     vi.mocked(fetchReviewRubric).mockResolvedValue(rubric)
+    const preview = vi.spyOn(classAnalysisApi, 'getQuestionPreview').mockResolvedValue({
+      question_id: 'Q1', parent_question_id: 'Q1', text: 'TEST 写出一个大于 2 的整数', notice: '',
+      rich_content: { available: false, question_block_count: 0, answer_block_count: 0, question_blocks: [], answer_blocks: [] },
+    })
     const assessments = [{ part_id: 'Q1', step_id: 'S1', score_awarded: 3, achievement: 'full' },
       { part_id: 'Q1', step_id: 'S2', score_awarded: 0, achievement: 'uncertain' }]
     const items = [item(1, { review_item_id: 'batch:1', score_awarded: 3, metadata: { step_assessments: assessments } }),
       item(2, { review_item_id: 'batch:2', score_awarded: 3, score_status: 'ai_ready', metadata: { step_assessments: assessments } }),
       item(3, { review_item_id: 'batch:3', score_awarded: 3, score_status: 'failed', metadata: { step_assessments: assessments } }),
       item(4, { review_item_id: 'batch:4', score_awarded: 3, score_status: 'teacher_final', teacher_locked: true, metadata: { step_assessments: assessments } })]
-    const { app, host, confirmBatch } = await mountWorkspace(items, { questions: [{ ...questions[0]!, question_type: 'calculation' }] })
+    const { app, host, confirmBatch } = await mountWorkspace(items, { questions: [{ ...questions[0]!, question_type: 'calculation' }], answerPanelOpen: true })
     await vi.waitFor(() => expect(host.querySelectorAll('.review-step-cell > input')).toHaveLength(8))
     const inputs = [...host.querySelectorAll<HTMLInputElement>('.review-step-cell > input')]
+    await vi.waitFor(() => expect(host.querySelectorAll('.review-answer-panel__point')).toHaveLength(2))
+    const point = host.querySelector<HTMLDetailsElement>('.review-answer-panel__point')!
+    const originalScores = inputs.map(input => input.value)
+    expect(point.open).toBe(false)
+    point.querySelector<HTMLElement>('summary')!.click()
+    await nextTick()
+    expect(point.open).toBe(true)
+    expect(point.querySelector('.review-answer-panel__details')?.textContent).toContain('答案是整数，且大于 2。')
+    expect(point.textContent).toContain('参考答案只是示例')
+    const exception = point.querySelector<HTMLDetailsElement>('.review-answer-panel__exceptions')!
+    expect(exception.open).toBe(false)
+    exception.querySelector<HTMLElement>('summary')!.click()
+    expect(exception.textContent).toContain('不满足任一条件不得分。')
+    point.querySelector<HTMLElement>('summary')!.click()
+    expect(inputs.map(input => input.value)).toEqual(originalScores)
+    expect(confirmBatch).not.toHaveBeenCalled()
+    expect(host.querySelectorAll('.review-answer-panel__reference')).toHaveLength(1)
     const press = async (input: HTMLInputElement, key: string, shiftKey = false) => {
       input.focus(); input.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey, bubbles: true, cancelable: true })); await nextTick()
     }
@@ -139,6 +165,7 @@ describe('question batch review workspace', () => {
     expect(payload.every((input: { step_scores: unknown[] }) => input.step_scores.length === 2)).toBe(true)
     expect(payload[0].step_scores[1]).toEqual({ part_id: 'Q1', step_id: 'S2', score_awarded: 0, teacher_note: null, carried_error_from: null })
     app.unmount()
+    preview.mockRestore()
   })
 
   it('blocks the whole batch when one score is invalid and retains every draft', async () => {

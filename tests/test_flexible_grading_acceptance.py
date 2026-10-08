@@ -208,3 +208,28 @@ def test_saving_new_ai_grade_keeps_historical_fractional_teacher_lock_and_eviden
         assert conn.execute(
             "SELECT id,student_score FROM session_results"
         ).fetchone() == (saved_id, 7.5)
+
+
+def test_mixed_open_result_and_proof_prompt_retains_separate_obligations() -> None:
+    import json
+    from backend.scan_grading.ai_batch_grading_service import MajorQuestionSpec, build_ai_major_prompt
+
+    parts = [
+        {"part_id": "Q1(P1)", "part_score": 2, "response_mode": "exact_objective", "steps": [
+            {"step_id": "S1", "step_score": 2, "answer_kind": "conditions", "core_goal": "给出一个大于 2 的整数", "required_elements": ["答案是整数且大于 2"]}]},
+        {"part_id": "Q1(P2)", "part_score": 6, "response_mode": "process_required", "steps": [
+            {"step_id": "S1", "step_score": 3, "core_goal": "建立全等条件", "required_elements": ["三组对应关系"]},
+            {"step_id": "S2", "step_score": 3, "core_goal": "推出对应边相等", "required_elements": ["全等结论和对应边相等"]}]},
+    ]
+    spec = MajorQuestionSpec("Q1", ["Q1(P1)", "Q1(P2)"], {"question_id": "Q1", "question_type": "comprehensive", "max_score": 8, "parts": parts},
+        {"question_id": "Q1", "parts": [{"part_id": "Q1(P1)", "answer": "3"}, {"part_id": "Q1(P2)", "answer": "证明略"}]}, 8)
+    system, static, _dynamic = build_ai_major_prompt(spec, {"items": []})
+    payload = json.loads(static.split("QUESTION_PAYLOAD_JSON:", 1)[1])
+    actual = payload["rubric"]["parts"]
+    assert actual[0]["steps"][0]["answer_kind"] == "conditions"
+    assert actual[0]["steps"][0]["required_elements"] == ["答案是整数且大于 2"]
+    assert actual[1]["response_mode"] == "process_required"
+    assert all("answer_kind" not in step for step in actual[1]["steps"])
+    assert "不同空按各点 answer_kind 独立判断" in system
+    assert "只有 response_mode=process_required 的小问需要证明或推理证据" in system
+    assert "旧资料未提供 answer_kind 时继续依据完整题意" in system

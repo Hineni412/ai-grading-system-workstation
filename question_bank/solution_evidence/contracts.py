@@ -128,6 +128,7 @@ class SolutionEvidencePoint:
     fine_term_links: tuple[FineTermLink, ...]
     equivalent_rules: tuple[str, ...] = ()
     counterexamples: tuple[str, ...] = ()
+    answer_kind: Literal["fixed", "conditions"] = "fixed"
 
     @classmethod
     def from_model_dict(
@@ -151,6 +152,8 @@ class SolutionEvidencePoint:
             required_keys.update(
                 {"step_index", "justification", "answer_anchor", "depends_on"}
             )
+        if "answer_kind" in payload:
+            required_keys.add("answer_kind")
         _require_exact_keys(
             payload,
             required_keys,
@@ -200,6 +203,7 @@ class SolutionEvidencePoint:
             fine_term_links=links,
             equivalent_rules=_unique_text(payload.get("equivalent_rules")),
             counterexamples=_unique_text(payload.get("counterexamples")),
+            answer_kind=payload.get("answer_kind", "fixed"),
         )
 
     def __post_init__(self) -> None:
@@ -212,6 +216,8 @@ class SolutionEvidencePoint:
             or self.step_index <= 0
         ):
             raise ValueError("step_index must be positive")
+        if self.answer_kind not in {"fixed", "conditions"}:
+            raise ValueError("answer_kind is invalid")
         target = _required_text(self.target, "target")
         justification = _required_text(self.justification, "justification")
         answer_anchor = _required_text(self.answer_anchor, "answer_anchor")
@@ -256,6 +262,8 @@ class SolutionEvidencePoint:
                 "equivalent_rules": list(self.equivalent_rules),
                 "counterexamples": list(self.counterexamples),
             }
+        if self.answer_kind == "conditions":
+            payload["answer_kind"] = self.answer_kind
         return payload
 
 
@@ -361,6 +369,10 @@ class QuestionPart:
         points = tuple(self.evidence_points)
         if not points:
             raise ValueError("question part must contain evidence points")
+        if response_mode not in {"exact_objective", "short_answer_points"} and any(
+            point.answer_kind == "conditions" for point in points
+        ):
+            raise ValueError("conditions answers require a result-only response mode")
         point_ids = [item.evidence_point_id for item in points]
         if len(point_ids) != len(set(point_ids)):
             raise ValueError("evidence_point_id is duplicated in a question part")

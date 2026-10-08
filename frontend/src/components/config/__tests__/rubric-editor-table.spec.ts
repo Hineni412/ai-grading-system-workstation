@@ -52,7 +52,16 @@ describe('RubricEditorTable', () => {
   })
 
   it('edits evidence, deductions and first-row whole-question policy by row id', async () => {
-    const mounted = await mountTable()
+    const mounted = await mountTable({ rows: [row({ answer_kind: 'conditions' }), row({ row_id: 'row-q12-p1-s2', step_id: 'S2', score: 97 })] })
+    const preview = mounted.host.querySelector<HTMLButtonElement>('.rubric-unit-card__preview')!
+    expect(preview.textContent).toContain('按条件判对')
+    expect(preview.querySelector('.rubric-unit-card__preview-fields')).toBeNull()
+    preview.click()
+    await nextTick()
+    expect(mounted.host.querySelector('.rubric-unit-card__exceptions')?.hasAttribute('open')).toBe(false)
+    mounted.host.querySelector<HTMLButtonElement>('.rubric-unit-card__done')!.click()
+    await nextTick()
+    expect(mounted.emitted).toEqual([])
     const evidence = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 证据要求/关键步骤"]')!
     evidence.value = '列式\n关键结论'
     evidence.dispatchEvent(new Event('change', { bubbles: true }))
@@ -76,7 +85,10 @@ describe('RubricEditorTable', () => {
       { row_id: 'row-q12-p1-s1', final_answer_rule: '单位必须完整' },
     ]))
     expect(mounted.host.querySelectorAll('[aria-label="Q12 P1 要求最终答案"]')).toHaveLength(1)
-    expect(mounted.host.textContent).toContain('本评分点沿用同一小问首个评分点的评分策略')
+    expect(mounted.host.querySelectorAll('.rubric-part__common-editor')).toHaveLength(1)
+    expect(mounted.host.querySelector('.rubric-unit-card__editor [data-edit-field="standard_answer"]')).toBeNull()
+    expect(mounted.host.textContent).toContain('参考答案只是示例')
+    mounted.unmount()
   })
 
   it('applies choice score per question and fill score as each question total', async () => {

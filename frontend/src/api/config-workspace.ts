@@ -167,6 +167,7 @@ export interface ConfigEditorRow {
   part_label: string
   question_type: string
   core_goal: string
+  answer_kind?: 'fixed' | 'conditions'
   score: number
   standard_answer: string
   accepted_answers: string[]
@@ -376,12 +377,13 @@ function isEditorRow(value: unknown): value is ConfigEditorRow {
     'score', 'standard_answer', 'accepted_answers', 'match_rule',
     'answer_only_max_score', 'require_final_answer', 'required_elements', 'deduction_rules',
     'part_deduction_rules', 'final_answer_rule',
-    ...['response_mode', 'allow_alternative_methods', 'equivalent_rules'].filter((key) => key in value),
+    ...['response_mode', 'allow_alternative_methods', 'equivalent_rules', 'answer_kind'].filter((key) => key in value),
   ])) return false
   return ['row_id', 'question_id', 'part_id', 'step_id', 'part_label', 'question_type',
     'core_goal', 'standard_answer', 'match_rule', 'final_answer_rule']
     .every((key) => typeof value[key] === 'string')
     && isFiniteNumber(value.score)
+    && (value.answer_kind === undefined || value.answer_kind === 'fixed' || value.answer_kind === 'conditions')
     && (value.answer_only_max_score === null || isFiniteNumber(value.answer_only_max_score))
     && (value.require_final_answer === null || typeof value.require_final_answer === 'boolean')
     && isStringArray(value.accepted_answers) && isStringArray(value.required_elements)

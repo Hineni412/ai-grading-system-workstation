@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createApp, h, nextTick } from 'vue';
 
-import { type QuestionSolutionEvidenceResponse } from '../api/question-bank';
+import { decodeQuestionSolutionEvidenceResponse, type QuestionSolutionEvidenceResponse } from '../api/question-bank';
 import SolutionEvidenceReview from '../components/question-bank/SolutionEvidenceReview.vue'
 
 const mounted: Array<ReturnType<typeof createApp>> = []
@@ -31,6 +31,7 @@ function evidenceResponse(): QuestionSolutionEvidenceResponse {
           evidence_points: [
             {
               evidence_point_id: 'point-1',
+              answer_kind: 'conditions',
               target: '完成方程求解',
               observable_evidence: '写出配方过程并得到正确解。',
               fine_term_links: [
@@ -128,10 +129,27 @@ afterEach(() => {
 describe('solution evidence review', () => {
 
   it('keeps point-level direct, supporting, ambiguous and unmapped semantics visible', async () => {
-    const host = await mountReview(evidenceResponse())
+    const response = evidenceResponse()
+    const decoded = decodeQuestionSolutionEvidenceResponse(response)
+    expect(decoded.evidence?.parts[0]?.evidence_points[0]?.answer_kind).toBe('conditions')
+    const sourceEvidence = response.evidence
+    if (!sourceEvidence) throw new Error('Expected synthetic evidence')
+    const invalid = {
+      ...response,
+      evidence: {
+        ...sourceEvidence,
+        parts: sourceEvidence.parts.map(part => ({
+          ...part,
+          evidence_points: part.evidence_points.map(point => ({ ...point, answer_kind: 'unsupported' })),
+        })),
+      },
+    }
+    expect(() => decodeQuestionSolutionEvidenceResponse(invalid)).toThrow()
+    const host = await mountReview(decoded)
     const text = host.textContent?.replace(/\s+/g, '') ?? ''
     expect(text).toContain('小问1')
     expect(text).toContain('完成方程求解')
+    expect(text).toContain('按条件判对，参考答案只是示例')
     expect(text).toContain('直接一元二次方程求根已映射到知识图谱')
     expect(text).toContain('前置配方法存在多个图谱候选，待治理确认')
     expect(text).toContain('前置规范整理步骤尚未建立图谱映射')

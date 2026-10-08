@@ -999,6 +999,15 @@ def _combined_prompt(
         "义务；只抄边长后下结论、平方关系不成立或循环论证不能作为该等价正例。"
         "扣分规则针对缺失的数学依据；只有题干或教师明确要求特定计算过程或方法时，"
         "才要求对应书写形式，不从参考解答的详略自行增加限制。"
+        "每个 evidence point 返回 answer_kind：fixed 表示固定答案及数学等价形式；conditions "
+        "只用于 exact_objective 或 short_answer_points 的开放结果，按本点全部数学条件判定。"
+        "选择题、证明过程和作图点只能用 fixed。开放条件写在 target 与 observable_evidence，"
+        "canonical_answer 与 answer_anchor 是满足条件的示例，不是唯一正确值；不能凭空放宽题意。"
+        "例如写一个大于 2 的整数，条件是整数且大于 2，示例 3，4 与 100 均正确，2 与 2.5 错误。"
+        "不同空各点独立设置 answer_kind，不从首点或父题继承，不要求开放结果额外写过程。"
+        "target 用一句简短数学目标并保留必要前提与结论；observable_evidence 只写可核验成果。"
+        "justification 与完整参考过程写到对应解释侧，等价规则和反例只补不同边界，"
+        "不要在每点重复题干、参考过程和通用评分规则。不得截断公式或关键条件。"
         "target 与 observable_evidence 不得为空。exact_objective 时 canonical_answer "
         "不得为空；其他 response_mode 时 full_answer 不得为空。类型专用列表即使为空"
         "也要保留键。解题证据不得含分值字段。"
@@ -1090,7 +1099,9 @@ def _combined_prompt(
         "rules": instructions,
         "questions": questions,
     }
-    if any(item.taxonomy_contract.get("question_type_mode") is True for item in batch.questions):
+    if include_evidence:
+        task_payload["prompt_version"] = "combined-v6-open-answer-conditions"
+    elif any(item.taxonomy_contract.get("question_type_mode") is True for item in batch.questions):
         task_payload["prompt_version"] = "combined-v5-defined-labels"
     if contracts:
         task_payload["candidate_contracts"] = contracts

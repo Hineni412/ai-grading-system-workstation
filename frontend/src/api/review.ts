@@ -117,6 +117,7 @@ export interface ReviewRubricPoint {
   part_label: string
   step_id: string
   core_goal: string
+  answer_kind?: 'fixed' | 'conditions'
   score: number
   standard_answer: string
   accepted_answers: string[]
@@ -304,11 +305,12 @@ function isNullableNonnegativeNumber(value: unknown): value is number | null {
 
 function isReviewRubricPoint(value: unknown): value is ReviewRubricPoint {
   return isRecord(value)
-    && hasExactKeys(value, RUBRIC_POINT_KEYS)
+    && hasExactKeys(value, [...RUBRIC_POINT_KEYS, ...('answer_kind' in value ? ['answer_kind'] : [])])
     && isNonblankString(value.part_id)
     && isNonblankString(value.part_label)
     && isNonblankString(value.step_id)
     && typeof value.core_goal === 'string'
+    && (value.answer_kind === undefined || value.answer_kind === 'fixed' || value.answer_kind === 'conditions')
     && isFiniteNumber(value.score) && value.score >= 0
     && typeof value.standard_answer === 'string'
     && isStringArray(value.accepted_answers)

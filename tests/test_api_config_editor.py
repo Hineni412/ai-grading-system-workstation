@@ -310,3 +310,28 @@ def test_database_failure_cleans_both_new_files_and_keeps_binding(
     )
     assert list((tmp_path / "uploaded").glob("*editor*")) == []
     assert "private database failure" not in response.text
+
+
+def test_open_answer_round_trip_through_config_editor_api_keeps_conditions(editor_env) -> None:
+    from tests.test_config_generation_contract import _open_generated_config
+    from backend.config_generation.normalization import normalize_new_generated_config_payload
+
+    client, db, _manager, tmp_path = editor_env
+    payload = _open_generated_config()
+    normalize_new_generated_config_payload(payload)
+    session_id = _write_config(tmp_path, db, payload)
+    first = client.get(f"/api/sessions/{session_id}/config/editor").json()
+    assert first["rows"][0]["answer_kind"] == "conditions"
+    assert first["rows"][0]["required_elements"] == ["答案是整数且大于 2"]
+    response = client.put(f"/api/sessions/{session_id}/config/editor", json={
+        "revision": first["revision"], "edits": [{"row_id": first["rows"][0]["row_id"], "standard_answer": "100"}], "commands": [],
+    })
+    assert response.status_code == 200
+    assert response.json()["rows"][0]["answer_kind"] == "conditions"
+    assert response.json()["rows"][0]["required_elements"] == ["答案是整数且大于 2"]
+    current = db.sessions.get_grading_session(session_id)
+    persisted = json.loads(Path(current["rubric_path"]).read_text(encoding="utf-8"))
+    step = persisted["questions"][0]["parts"][0]["steps"][0]
+    assert step["answer_kind"] == "conditions"
+    assert step["required_elements"] == ["答案是整数且大于 2"]
+    assert db.results.get_session_results(session_id) == []

@@ -471,6 +471,7 @@ watch(() => store.selectedQuestionId, () => { typeEditing.value = false; typeErr
             <div v-for="(point, index) in part.evidence_points" v-show="!editing" :key="point.evidence_point_id" class="qb-evidence-row">
               <span>{{ index + 1 }}</span>
               <div><strong>{{ point.target }}</strong><p v-if="point.observable_evidence !== point.target">{{ point.observable_evidence }}</p>
+                <p v-if="point.answer_kind === 'conditions'" class="qb-help">按条件判对，参考答案只是示例。</p>
                 <div class="qb-skill-capsules"><button v-for="skill in directSkills(point)" :key="skill.key" type="button" class="qb-skill-capsule" :class="{ 'is-current': skill.key === currentSkill }" @click="emit('skill', skill.key)">{{ skill.label }}</button>
                   <span v-for="name in pointKnowledge(point)" :key="name" class="qb-topic-capsule">知识点 · {{ name }}</span>
                 </div>

@@ -602,3 +602,38 @@ def test_unreadable_answer_source_file_stops_objective_recognition(
             {"questions": [{"question_id": "Q1", "question_type": "choice"}]},
             {"questions": []},
         )
+
+
+@pytest.mark.parametrize("answer,expected_score", [("3", 4), ("4", 4), ("100", 4), ("2", 0), ("2.5", 0)])
+def test_open_fill_answer_receives_all_or_no_marks_from_conditions_payload(
+    tmp_path: Path, answer: str, expected_score: int,
+) -> None:
+    from tests.test_config_generation_contract import _open_generated_config
+    from backend.config_generation.normalization import normalize_new_generated_config_payload
+
+    class ConditionsClient(FakeBatchClient):
+        def json_from_images(self, prompt, images, **kwargs):
+            context = json.loads(prompt.rsplit("SCORING_CONTEXT_JSON:", 1)[1].split("BATCH_MANIFEST_JSON:", 1)[0])[0]
+            step = context["rubric"]["parts"][0]["steps"][0]
+            assert step["answer_kind"] == "conditions"
+            assert step["core_goal"] == "给出一个大于 2 的整数"
+            assert step["required_elements"] == ["答案是整数且大于 2"]
+            value = float(self.answer)
+            self.score = context["max_score"] if value.is_integer() and value > 2 else 0
+            return super().json_from_images(prompt, images, **kwargs)
+
+    payload = _open_generated_config()
+    normalize_new_generated_config_payload(payload)
+    payload["rubric"]["questions"][0]["max_score"] = 4
+    payload["rubric"]["questions"][0]["parts"][0]["part_score"] = 4
+    payload["rubric"]["questions"][0]["parts"][0]["steps"][0]["step_score"] = 4
+    client = ConditionsClient(answer=answer)
+    result = run_objective_batch_recognition(session_id="TEST-open-fill", paper_groups=_groups(tmp_path, 1),
+        answer_regions=[{"page": "front", "mapped_question_id": "Q5", "x": 10, "y": 10, "w": 120, "h": 80}],
+        rubric=payload["rubric"], answer_key=payload["answer_key"], output_root=tmp_path / "TEST-open-out",
+        recognition_client=client, recognition_model="TEST-conditions-model")
+    details = next(iter(result.details_by_paper_key.values()))
+    assert len(client.calls) == 1
+    assert result.review_items == []
+    assert details[0].score_awarded == expected_score
+    assert details[0].question_id == "Q5"

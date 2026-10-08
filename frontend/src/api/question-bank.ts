@@ -521,6 +521,7 @@ export interface SolutionEvidenceFineTermLink {
 
 export interface SolutionEvidencePoint {
   evidence_point_id: string
+  answer_kind?: 'fixed' | 'conditions'
   target: string
   observable_evidence: string
   fine_term_links: SolutionEvidenceFineTermLink[]
@@ -1506,6 +1507,7 @@ function isSolutionEvidencePoint(value: unknown): boolean {
     && typeof value.evidence_point_id === 'string' && value.evidence_point_id.length > 0
     && typeof value.target === 'string' && value.target.length > 0
     && typeof value.observable_evidence === 'string' && value.observable_evidence.length > 0
+    && (value.answer_kind === undefined || value.answer_kind === 'fixed' || value.answer_kind === 'conditions')
     && Array.isArray(value.fine_term_links)
     && value.fine_term_links.every(isSolutionEvidenceFineTerm)
     && isStringArray(value.equivalent_rules) && isStringArray(value.counterexamples)

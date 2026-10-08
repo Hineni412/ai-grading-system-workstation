@@ -148,3 +148,18 @@ def test_review_rubric_rejects_ambiguous_historical_parts(
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == ("review_rubric_question_conflict")
+
+
+def test_review_rubric_reports_open_result_kind_without_rewriting_frozen_config(tmp_path: Path) -> None:
+    rubric, answer_key = _multipart_config()
+    first = rubric["questions"][0]["parts"][0]
+    first["response_mode"] = "exact_objective"
+    first["steps"][0].update(answer_kind="conditions", core_goal="给出一个大于 2 的整数", required_elements=["答案是整数且大于 2"])
+    client, session_id, rubric_path, answer_path = _client_for_config(tmp_path, rubric=rubric, answer_key=answer_key)
+    original = (rubric_path.read_bytes(), answer_path.read_bytes())
+    response = client.get(f"/api/sessions/{session_id}/review/questions/Q11/rubric")
+    assert response.status_code == 200
+    points = response.json()["points"]
+    assert [point["answer_kind"] for point in points] == ["conditions", "fixed", "fixed"]
+    assert points[0]["required_elements"] == ["答案是整数且大于 2"]
+    assert (rubric_path.read_bytes(), answer_path.read_bytes()) == original

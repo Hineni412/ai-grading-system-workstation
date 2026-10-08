@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from backend.config_workspace.editor import project_config_editor
 from backend.config_workspace.publish import load_editor_config
@@ -37,6 +37,7 @@ class ReviewRubricPoint:
     answer_only_max_score: float | None
     require_final_answer: bool | None
     final_answer_rule: str
+    answer_kind: Literal["fixed", "conditions"] = "fixed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +175,7 @@ def load_review_rubric_section(
                 answer_only_max_score=row.answer_only_max_score,
                 require_final_answer=row.require_final_answer,
                 final_answer_rule=row.final_answer_rule,
+                answer_kind=row.answer_kind,
             )
             for row in rows
         ),

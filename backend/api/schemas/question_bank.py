@@ -575,6 +575,7 @@ class AnswerDraftJobRequest(_QuestionBankModel):
 
 
 class TrainingCriterionPointSchema(_QuestionBankModel):
+    answer_kind: Literal["fixed", "conditions"] = "fixed"
     point_id: str = Field(min_length=2, max_length=64)
     target: str = Field(min_length=1, max_length=2000)
     observable_evidence: str = Field(min_length=1, max_length=8000)

@@ -471,6 +471,7 @@ class TrainingCriterionPoint:
     equivalent_rules: tuple[str, ...] = ()
     counterexamples: tuple[str, ...] = ()
     depends_on: tuple[str, ...] = ()
+    answer_kind: Literal["fixed", "conditions"] = "fixed"
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> TrainingCriterionPoint:
@@ -484,6 +485,9 @@ class TrainingCriterionPoint:
             raise ProjectionValidationError(
                 "criterion target and observable evidence are required"
             )
+        answer_kind = payload.get("answer_kind", "fixed")
+        if answer_kind not in {"fixed", "conditions"}:
+            raise ProjectionValidationError("answer_kind is invalid")
         raw_depends = payload.get("depends_on")
         if raw_depends is None:
             depends_on: tuple[str, ...] = ()
@@ -506,10 +510,12 @@ class TrainingCriterionPoint:
             equivalent_rules=_text_tuple(payload.get("equivalent_rules")),
             counterexamples=_text_tuple(payload.get("counterexamples")),
             depends_on=depends_on,
+            answer_kind=answer_kind,
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            **({"answer_kind": "conditions"} if self.answer_kind == "conditions" else {}),
             "point_id": self.point_id,
             "target": self.target,
             "observable_evidence": self.observable_evidence,
@@ -2335,12 +2341,26 @@ def _judgment_points_draft(
     evidence: QuestionSolutionEvidence,
 ) -> TrainingCriteriaDraft:
     _reject_score_fields(evidence.to_dict())
+    points = training_criteria.points
+    if any(point.answer_kind == "conditions" for part in evidence.parts for point in part.evidence_points):
+        points = tuple(
+            TrainingCriterionPoint(
+                point_id=point.evidence_point_id,
+                target=point.target,
+                observable_evidence=point.observable_evidence,
+                equivalent_rules=point.equivalent_rules,
+                counterexamples=point.counterexamples,
+                depends_on=point.depends_on,
+                answer_kind=point.answer_kind,
+            )
+            for part in evidence.parts for point in part.evidence_points
+        )
     return TrainingCriteriaDraft(
         schema_version=JUDGMENT_POINTS_SCHEMA,
         question_id=training_criteria.question_id,
         source_content_hash=training_criteria.source_content_hash,
         question_type=training_criteria.question_type,
-        points=training_criteria.points,
+        points=points,
         auxiliary_rules=training_criteria.auxiliary_rules,
         rationale=training_criteria.rationale,
         confidence=training_criteria.confidence,
@@ -2361,7 +2381,12 @@ def criteria_from_confirmed_rubric(
     answer_key: Mapping[str, Any] | None = None,
 ) -> TrainingCriteriaDraft:
     answer = dict(answer_key or {})
-    if question.objective_response_shape in {
+    has_conditions = any(
+        step.get("answer_kind") == "conditions"
+        for part in rubric_question.get("parts", []) if isinstance(part, Mapping)
+        for step in part.get("steps", []) if isinstance(step, Mapping)
+    )
+    if not has_conditions and question.objective_response_shape in {
         "single_choice",
         "single_blank",
         "multiple_blank",
@@ -2433,10 +2458,12 @@ def criteria_from_confirmed_rubric(
                     "；".join(required) if required else target
                 ),
                 equivalent_rules=_text_tuple(
-                    step.get("alternative_methods")
+                    (step.get("equivalent_rules") if has_conditions else None)
+                    or step.get("alternative_methods")
                     or step.get("equivalent_answers")
                 ),
-                counterexamples=(),
+                counterexamples=_text_tuple(step.get("counterexamples")) if has_conditions else (),
+                answer_kind=step.get("answer_kind", "fixed"),
             )
         )
     if not points:
@@ -2470,6 +2497,7 @@ def criteria_from_confirmed_rubric(
                 observable_evidence=point.observable_evidence,
                 equivalent_rules=point.equivalent_rules,
                 counterexamples=point.counterexamples,
+                answer_kind=point.answer_kind,
             )
             for index, point in enumerate(points, start=1)
         ]
@@ -2581,6 +2609,7 @@ def training_criteria_from_solution_evidence(
             equivalent_rules=point.equivalent_rules,
             counterexamples=point.counterexamples,
             depends_on=point.depends_on,
+            answer_kind=point.answer_kind,
         )
         for part in evidence.parts
         for point in part.evidence_points
@@ -3067,6 +3096,7 @@ def rubric_skeleton_from_solution_evidence(
                         # required_elements 只收可核验的作答成果，
                         # 参考解法说明与定位锚点留在答案侧 step_milestones，
                         # 不作为学生必写清单。
+                        **({"answer_kind": "conditions"} if point.answer_kind == "conditions" else {}),
                         "core_goal": point.target,
                         "required_elements": list(
                             _text_tuple((point.observable_evidence,))
@@ -3102,6 +3132,8 @@ def answer_key_skeleton_from_solution_evidence(
         "parts": [
             {
                 "part_id": part.part_id,
+                **({"answer_kind": "conditions"} if len(part.evidence_points) == 1
+                    and part.evidence_points[0].answer_kind == "conditions" else {}),
                 "answer": part.full_answer or part.canonical_answer,
                 "canonical_answer": part.canonical_answer,
                 "accepted_forms": list(part.accepted_forms),
@@ -3110,6 +3142,7 @@ def answer_key_skeleton_from_solution_evidence(
                     {
                         "step_id": point.evidence_point_id,
                         "step_index": point.step_index,
+                        **({"answer_kind": "conditions"} if point.answer_kind == "conditions" else {}),
                         "target": point.target,
                         "justification": point.justification,
                         "answer_anchor": point.answer_anchor,
@@ -3768,6 +3801,7 @@ def _solution_evidence_schema(
         "evidence_point_id": machine_identifier,
         "step_index": {"type": "integer", "minimum": 1},
         "target": non_empty_text,
+        "answer_kind": {"type": "string", "enum": ["fixed", "conditions"]},
         "justification": non_empty_text,
         "answer_anchor": non_empty_text,
         "observable_evidence": non_empty_text,

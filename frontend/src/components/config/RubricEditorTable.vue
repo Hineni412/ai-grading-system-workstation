@@ -115,17 +115,21 @@ const firstRowIds = computed(() => {
   return first
 })
 const scoringGroups = computed(() => {
-  const groups = new Map<string, { key: string; title: string; rows: ConfigEditorRow[]; objective: boolean }>()
+  const groups = new Map<string, { key: string; title: string; reference: ConfigEditorRow; rows: ConfigEditorRow[]; objective: boolean }>()
   for (const row of props.rows) {
     const objective = isObjective(row)
     const key = objective ? `objective:${row.question_type}` : `${row.question_id}:${row.part_id}`
-    if (!groups.has(key)) groups.set(key, {
-      key, objective,
-      title: objective ? (row.question_type === 'choice' ? '选择题' : row.question_type === 'fill_blank' ? '填空题' : '客观题')
-        : partTitle(row),
-      rows: [],
-    })
-    groups.get(key)!.rows.push(row)
+    let group = groups.get(key)
+    if (!group) {
+      group = {
+        key, objective, reference: row,
+        title: objective ? (row.question_type === 'choice' ? '选择题' : row.question_type === 'fill_blank' ? '填空题' : '客观题')
+          : partTitle(row),
+        rows: [],
+      }
+      groups.set(key, group)
+    }
+    group.rows.push(row)
   }
   return [...groups.values()]
 })
@@ -185,7 +189,6 @@ function compactPreview(value: string | readonly string[], fallback = '未填写
 }
 
 function openEditor(rowId: string): void {
-  if (props.disabled) return
   editingRowId.value = rowId
 }
 
@@ -380,10 +383,17 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
     : issue.row_id
   editingRowId.value = targetRowId
   await nextTick()
-  const row = [...(root.value?.querySelectorAll<HTMLElement>('[data-row-id]') ?? [])]
+  const common = firstRowFields.has(field)
+    ? [...(root.value?.querySelectorAll<HTMLElement>('[data-common-row-id]') ?? [])]
+      .find((candidate) => candidate.dataset.commonRowId === targetRowId)
+    : undefined
+  const row = common ?? [...(root.value?.querySelectorAll<HTMLElement>('[data-row-id]') ?? [])]
     .find((candidate) => candidate.dataset.rowId === targetRowId)
   const target = [...(row?.querySelectorAll<HTMLElement>('[data-edit-field]') ?? [])]
     .find((candidate) => candidate.dataset.editField === field)
+  for (let parent = target?.parentElement; parent; parent = parent.parentElement) {
+    if (parent instanceof HTMLDetailsElement) parent.open = true
+  }
   releaseOutlineTarget()
   target?.focus()
   target?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
@@ -502,7 +512,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
           <h3>{{ group.title }}</h3>
           <span>{{ group.objective ? `${group.rows.length} 题` : `${group.rows.length} 个评分点` }} · 共 {{ group.rows.reduce((sum, row) => sum + row.score, 0) }} 分</span>
           <span v-if="!group.objective" class="rubric-part__mode">
-            {{ requiresProcess(group.rows[0]!) ? '按完成程度给分' : group.rows[0]!.response_mode === 'visual_construction' ? '按作图成果给分' : '按项给分' }}
+            {{ requiresProcess(group.reference) ? '按完成程度给分' : group.reference.response_mode === 'visual_construction' ? '按作图成果给分' : '按项给分' }}
           </span>
         </header>
         <div v-if="group.objective" class="rubric-part__rules">
@@ -511,27 +521,110 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
         <details v-else class="rubric-part__reference">
           <summary>参考解答与补充规则</summary>
           <div class="rubric-part__rules">
-            <template v-if="requiresProcess(group.rows[0]!)">
+            <template v-if="requiresProcess(group.reference)">
               <strong>按完成程度给整数分</strong>
               <span>完整或等价完成得本块满分；部分完成保留有效成果，同一错误不重复扣分。</span>
-              <span class="rubric-part__answer-cap">本小问只有正确答案、无有效过程：{{ group.rows[0]!.answer_only_max_score ?? 1 }} 分</span>
+              <span class="rubric-part__answer-cap">本小问只有正确答案、无有效过程：{{ group.reference.answer_only_max_score ?? 1 }} 分</span>
               <span>有有效过程或已完成的独立求值目标时，按对应块给分。</span>
             </template>
-            <template v-else><strong>{{ group.rows[0]!.response_mode === 'visual_construction' ? '按作图成果评分' : '各答案项分别给分' }}</strong><span>不套用“仅答案 1 分”的过程题规则。</span></template>
+            <template v-else><strong>{{ group.reference.response_mode === 'visual_construction' ? '按作图成果评分' : '各答案项分别给分' }}</strong><span>不套用“仅答案 1 分”的过程题规则。</span></template>
             <span>{{ group.rows.every(row => row.allow_alternative_methods !== false) ? '允许其他正确解法。' : '部分评分块限定方法，同一方法的等价表达仍可得分。' }}</span>
           </div>
-          <div v-if="group.rows[0]!.standard_answer"><strong>参考解答</strong><QuestionHtmlBlock :text="group.rows[0]!.standard_answer" /></div>
-          <QuestionHtmlBlock v-for="rule in group.rows[0]!.part_deduction_rules" :key="rule" :text="rule" />
-          <QuestionHtmlBlock v-if="group.rows[0]!.require_final_answer" :text="group.rows[0]!.final_answer_rule ?? ''" />
+          <div v-if="group.reference.standard_answer"><strong>{{ group.rows.some(item => item.answer_kind === 'conditions') ? '参考解答与示例答案' : '参考解答' }}</strong><QuestionHtmlBlock :text="group.reference.standard_answer" /></div>
+          <QuestionHtmlBlock v-for="rule in group.reference.part_deduction_rules" :key="rule" :text="rule" />
+          <QuestionHtmlBlock v-if="group.reference.require_final_answer" :text="group.reference.final_answer_rule ?? ''" />
+          <details class="rubric-part__common-editor" :data-common-row-id="group.reference.row_id">
+            <summary>编辑参考解答与小问规则</summary>
+            <div class="rubric-unit-card__fields">
+              <label>
+                <span>{{ group.rows.some(item => item.answer_kind === 'conditions') ? '参考解答与示例答案' : '标准答案' }}</span>
+                <textarea class="app-input"
+                  rows="3"
+                  data-edit-field="standard_answer"
+                  :aria-label="`${identity(group.reference)} 标准答案`"
+                  :value="group.reference.standard_answer"
+                  :disabled="disabled"
+                  @input="textEdit(group.reference, 'standard_answer', $event)"
+                  @change="textEdit(group.reference, 'standard_answer', $event)"
+                />
+              </label>
+              <label>
+                <span>等价答案（每行一个）</span>
+                <textarea class="app-input"
+                  rows="3"
+                  data-edit-field="accepted_answers"
+                  :aria-label="`${identity(group.reference)} 等价答案`"
+                  :value="group.reference.accepted_answers.join('\n')"
+                  :disabled="disabled"
+                  @change="acceptedEdit(group.reference, $event)"
+                />
+              </label>
+              <label>
+                <span>小问统一扣分规则</span>
+                <textarea class="app-input"
+                  rows="3"
+                  data-edit-field="part_deduction_rules"
+                  :aria-label="`${group.reference.question_id} ${group.reference.part_id} 小问统一扣分规则`"
+                  :value="group.reference.part_deduction_rules.join('\n')"
+                  :disabled="disabled"
+                  @change="listEdit(group.reference, 'part_deduction_rules', $event)"
+                />
+              </label>
+            </div>
+            <div class="rubric-ledger__policy">
+              <div class="rubric-ledger__policy-heading">
+                <strong>评分单元策略</strong>
+                <span>{{ isObjective(group.reference) ? '客观判定 · 答案正确得满分' : requiresProcess(group.reference) ? '过程评分 · 按目标给整数部分分' : '成果评分 · 按实际完成情况给分' }}</span>
+                <span v-if="group.reference.match_rule">{{ group.reference.match_rule }}</span>
+              </div>
+              <label class="rubric-ledger__policy-check">
+                <input
+                  type="checkbox"
+                  data-edit-field="require_final_answer"
+                  :aria-label="`${group.reference.question_id} ${group.reference.part_id} 要求最终答案`"
+                  :checked="group.reference.require_final_answer === true"
+                  :disabled="disabled"
+                  @change="policyRequiredEdit(group.reference, $event)"
+                >
+                要求最终答案
+              </label>
+              <label v-if="requiresProcess(group.reference)">
+                <span>仅答案最高分</span>
+                <input class="app-input"
+                  type="number"
+                  step="any"
+                  data-edit-field="answer_only_max_score"
+                  :aria-label="`${group.reference.question_id} ${group.reference.part_id} 仅答案最高分`"
+                  :value="group.reference.answer_only_max_score ?? ''"
+                  :aria-invalid="scoreErrors[`${group.reference.row_id}:policy`] ? 'true' : 'false'"
+                  :disabled="disabled"
+                  @change="policyNumberEdit(group.reference, $event)"
+                >
+                <small v-if="scoreErrors[`${group.reference.row_id}:policy`]" class="rubric-ledger__field-error" role="alert">
+                  {{ scoreErrors[`${group.reference.row_id}:policy`] }}
+                </small>
+              </label>
+              <label class="rubric-ledger__policy-rule">
+                <span>最终答案规则</span>
+                <textarea class="app-input"
+                  rows="2"
+                  data-edit-field="final_answer_rule"
+                  :aria-label="`${group.reference.question_id} ${group.reference.part_id} 最终答案规则`"
+                  :value="group.reference.final_answer_rule"
+                  :disabled="disabled"
+                  @change="policyRuleEdit(group.reference, $event)"
+                />
+              </label>
+            </div>
+          </details>
         </details>
         <div class="rubric-part__steps">
       <div class="rubric-part__col-head" aria-hidden="true">
         <span>{{ group.objective ? '题号' : '步骤' }}</span>
         <span>目标</span>
         <span v-if="group.objective">标准答案</span>
-        <span>{{ group.objective ? '接受答案' : '得分依据' }}</span>
-        <span v-if="!group.objective">具体扣分</span>
-        <span>等价达成</span>
+        <span v-if="group.objective">接受答案</span>
+        <span v-if="group.objective">等价达成</span>
         <span>分值</span>
       </div>
       <article
@@ -550,8 +643,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
           class="rubric-unit-card__preview"
           :aria-controls="editorId(row.row_id)"
           aria-expanded="false"
-          :aria-label="`${identity(row)}，${row.score} 分，点击编辑`"
-          :disabled="disabled"
+          :aria-label="`${identity(row)}，${row.score} 分，${disabled ? '点击查看' : '点击编辑'}`"
           @click="openEditor(row.row_id)"
         >
           <span class="rubric-unit-card__preview-header">
@@ -559,11 +651,12 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
               <strong>{{ group.objective ? row.question_id : row.step_id }}</strong>
             </span>
             <span class="rubric-unit-card__goal" :title="compactPreview(row.core_goal, '未提供评分点')">
-              <QuestionHtmlBlock :text="compactPreview(row.core_goal, '未提供评分点')" inline />
+              <QuestionHtmlBlock :text="row.core_goal || '未提供评分点'" inline typeset-text />
             </span>
+            <span v-if="row.answer_kind === 'conditions'" class="rubric-unit-card__answer-kind">按条件判对</span>
             <strong class="rubric-unit-card__score-badge">{{ group.objective ? '' : '最高 ' }}{{ row.score }} 分</strong>
           </span>
-          <span class="rubric-unit-card__preview-fields">
+          <span v-if="group.objective" class="rubric-unit-card__preview-fields">
             <span
               v-if="group.objective && firstRowIds.has(row.row_id)"
               class="rubric-unit-card__preview-field rubric-field--answer"
@@ -575,15 +668,6 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
               <span class="sr-only">{{ group.objective ? '接受答案' : '得分依据' }}</span>
               <span :title="compactPreview(row.required_elements)">
                 <QuestionHtmlBlock :text="compactPreview(row.required_elements)" inline />
-              </span>
-            </span>
-            <span
-              v-if="!group.objective && row.deduction_rules.length"
-              class="rubric-unit-card__preview-field rubric-field--deduction"
-            >
-              <span class="sr-only">具体扣分</span>
-              <span :title="compactPreview(row.deduction_rules)">
-                <QuestionHtmlBlock :text="compactPreview(row.deduction_rules)" inline />
               </span>
             </span>
             <span
@@ -612,7 +696,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
               <span>{{ row.step_id }}</span>
             </span>
             <span class="rubric-unit-card__goal" :title="compactPreview(row.core_goal, '未提供评分点')">
-              {{ compactPreview(row.core_goal, '未提供评分点') }}
+              <QuestionHtmlBlock :text="row.core_goal || '未提供评分点'" inline typeset-text />
             </span>
             <label class="rubric-unit-card__score">
               <span>分值</span>
@@ -636,9 +720,10 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
             </button>
           </header>
 
+          <p v-if="row.answer_kind === 'conditions'" class="rubric-unit-card__answer-note">按条件判对，参考答案只是示例。满足全部条件即可得分。</p>
           <div class="rubric-unit-card__fields">
-            <label v-if="firstRowIds.has(row.row_id)">
-              <span>标准答案</span>
+            <label v-if="group.objective && firstRowIds.has(row.row_id)">
+              <span>{{ row.answer_kind === 'conditions' ? '参考答案示例' : '标准答案' }}</span>
               <textarea class="app-input"
                 rows="3"
                 data-edit-field="standard_answer"
@@ -650,7 +735,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
               />
             </label>
             <label>
-              <span>关键步骤 / 得分证据</span>
+              <span>{{ row.answer_kind === 'conditions' ? '判对条件' : '得分条件' }}</span>
               <textarea class="app-input"
                 rows="3"
                 data-edit-field="required_elements"
@@ -660,18 +745,8 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
                 @change="listEdit(row, 'required_elements', $event)"
               />
             </label>
-            <label>
-              <span>扣分规则</span>
-              <textarea class="app-input"
-                rows="3"
-                data-edit-field="deduction_rules"
-                :aria-label="`${identity(row)} 扣分规则`"
-                :value="row.deduction_rules.join('\n')"
-                :disabled="disabled"
-                @change="listEdit(row, 'deduction_rules', $event)"
-              />
-            </label>
-            <label v-if="firstRowIds.has(row.row_id)">
+
+            <label v-if="group.objective && firstRowIds.has(row.row_id)">
               <span>等价答案（每行一个）</span>
               <textarea class="app-input"
                 rows="3"
@@ -682,7 +757,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
                 @change="acceptedEdit(row, $event)"
               />
             </label>
-            <label v-if="firstRowIds.has(row.row_id)">
+            <label v-if="group.objective && firstRowIds.has(row.row_id)">
               <span>小问统一扣分规则</span>
               <textarea class="app-input"
                 rows="3"
@@ -695,7 +770,28 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
             </label>
           </div>
 
-          <div v-if="firstRowIds.has(row.row_id)" class="rubric-ledger__policy">
+          <details class="rubric-unit-card__exceptions">
+            <summary>扣分例外与等价达成</summary>
+            <div class="rubric-unit-card__fields">
+              <label>
+                <span>扣分规则</span>
+                <textarea class="app-input"
+                  rows="3"
+                  data-edit-field="deduction_rules"
+                  :aria-label="`${identity(row)} 扣分规则`"
+                  :value="row.deduction_rules.join('\n')"
+                  :disabled="disabled"
+                  @change="listEdit(row, 'deduction_rules', $event)"
+                />
+              </label>
+              <div v-if="row.equivalent_rules?.length" class="rubric-unit-card__equivalent">
+                <strong>等价达成</strong>
+                <QuestionHtmlBlock v-for="rule in row.equivalent_rules" :key="rule" :text="rule" typeset-text />
+              </div>
+            </div>
+          </details>
+
+          <div v-if="group.objective && firstRowIds.has(row.row_id)" class="rubric-ledger__policy">
             <div class="rubric-ledger__policy-heading">
               <strong>评分单元策略</strong>
               <span>{{ isObjective(row) ? '客观判定 · 答案正确得满分' : requiresProcess(row) ? '过程评分 · 按目标给整数部分分' : '成果评分 · 按实际完成情况给分' }}</span>
@@ -740,9 +836,6 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
               />
             </label>
           </div>
-          <small v-else class="rubric-unit-card__policy-note">
-            本评分点沿用同一小问首个评分点的评分策略。
-          </small>
         </section>
       </article>
         </div>

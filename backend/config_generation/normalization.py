@@ -1163,6 +1163,18 @@ def _normalize_rubric_question(question: dict[str, Any], answer_item: dict[str, 
                     if not isinstance(step, dict):
                         step = {"core_goal": str(step)}
                         part["steps"][sidx - 1] = step
+                    answer_kind = step.get("answer_kind", "fixed")
+                    if answer_kind not in {"fixed", "conditions"}:
+                        raise ValueError("answer_kind is invalid")
+                    if answer_kind == "conditions" and (
+                        qtype == "choice" or str(part.get("response_mode") or "") not in {"exact_objective", "short_answer_points"}
+                    ):
+                        raise ValueError("conditions answers require a non-choice result-only scoring point")
+                    if answer_kind == "conditions" and (
+                        not str(step.get("core_goal") or "").strip()
+                        or not _string_list(step.get("required_elements"))
+                    ):
+                        raise ValueError("conditions answers require explicit mathematical conditions")
                     step["step_id"] = str(step.get("step_id") or f"S{sidx}")
                     # Avoid overriding explicit 0.0 with fallback by using explicit None checks
                     raw_score = step.get("step_score")
@@ -1326,6 +1338,24 @@ def _enforce_objective_question_rules(question: dict[str, Any], answer_item: dic
         ):
             continue
         answer_part = answer_parts[index] if index < len(answer_parts) and isinstance(answer_parts[index], dict) else {}
+        condition_steps = [
+            step for step in part.get("steps", [])
+            if isinstance(step, dict) and step.get("answer_kind") == "conditions"
+        ]
+        if condition_steps:
+            if qtype == "choice":
+                raise ValueError("choice answers must use fixed answer_kind")
+            steps = [step for step in part["steps"] if isinstance(step, dict)]
+            part["response_mode"] = "exact_objective" if len(steps) == 1 else "short_answer_points"
+            part["presentation_rules"] = []
+            part["deduction_policy"] = ["每个结果按该点全部条件或固定等价答案独立判定，不要求过程。"]
+            part["proof_obligations"] = []
+            part["visual_requirements"] = []
+            part["require_final_answer"] = False
+            part["answer_only_max_score"] = int(round(_safe_float(part.get("part_score"), 0.0)))
+            if len(steps) == 1:
+                answer_part["answer_kind"] = "conditions"
+            continue
         independent_answer_values = _string_list(answer_part.get("answer_values"))
         is_independent_fill = (
             qtype == "fill_blank"
@@ -1399,13 +1429,19 @@ def _enforce_objective_question_rules(question: dict[str, Any], answer_item: dic
         return
     question["require_final_answer"] = False
     question["answer_only_max_score"] = int(round(_safe_float(question.get("max_score"), 0.0)))
+    has_conditions = any(
+        step.get("answer_kind") == "conditions"
+        for part in parts if isinstance(part, dict)
+        for step in part.get("steps", []) if isinstance(step, dict)
+    )
     question["deduction_policy"] = [
-        "仅按标准答案或等价答案判分，不要求书写过程。"
+        "每个结果按该点全部条件或固定等价答案独立判定，不要求过程。"
+        if has_conditions else "仅按标准答案或等价答案判分，不要求书写过程。"
     ]
     question["answer_presentation_policy"] = {
         "require_final_answer": False,
         "answer_only_max_score": question["answer_only_max_score"],
-        "note": "客观题仅按标准答案或等价答案判分，不要求过程证据。",
+        "note": question["deduction_policy"][0] if has_conditions else "客观题仅按标准答案或等价答案判分，不要求过程证据。",
     }
 
 def _align_answer_parts_to_rubric_parts(
@@ -1471,6 +1507,8 @@ def _align_step_required_elements_with_answer_values(
 
         for step_index, step in enumerate(steps):
             if not isinstance(step, dict):
+                continue
+            if step.get("answer_kind") == "conditions":
                 continue
             step_key = str(step.get("score_point_id") or step.get("step_id") or "").strip()
             value = values_by_id.get(step_key)
@@ -1907,6 +1945,14 @@ def validate_generated_config(
                 for key in ["step_id", "step_score", "core_goal", "required_elements", "allow_alternative_methods"]:
                     if key not in step:
                         raise ValueError(f"rubric.questions[{idx - 1}].parts[{pidx - 1}].steps[{sidx - 1}] is missing field: {key}")
+                answer_kind = step.get("answer_kind", "fixed")
+                if answer_kind not in {"fixed", "conditions"}:
+                    raise ValueError("answer_kind is invalid")
+                if answer_kind == "conditions":
+                    if qtype == "choice" or str(part.get("response_mode") or "") not in {"exact_objective", "short_answer_points"}:
+                        raise ValueError("conditions answers require a non-choice result-only scoring point")
+                    if not str(step.get("core_goal") or "").strip() or not _string_list(step.get("required_elements")):
+                        raise ValueError("conditions answers require explicit mathematical conditions")
                 step_score = float(step["step_score"])
                 if not math.isfinite(step_score):
                     raise ValueError("Step score must be finite")

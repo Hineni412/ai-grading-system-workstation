@@ -78,7 +78,12 @@ def test_v9_import_candidates_are_scoped_and_prompt_preserves_type_definitions()
     assert sent["questions"][0]["candidate_contract"]["question_type_mode"] is True
     assert types[0] in sent["questions"][0]["candidate_contract"]["candidates"]["knowledge"]
     assert "最多 2 个" in sent["rules"]
-    assert sent["prompt_version"] == "combined-v5-defined-labels"
+    assert sent["prompt_version"] == "combined-v6-open-answer-conditions"
+    evidence_only = json.loads(_combined_prompt(PlannedAnalysisBatch((question,), 1000, 1000), "training_criteria")[1]["content"][0]["text"])
+    assert evidence_only["prompt_version"] == "combined-v6-open-answer-conditions"
+    tag_only = json.loads(_combined_prompt(PlannedAnalysisBatch((question,), 1000, 1000), "tag")[1]["content"][0]["text"])
+    assert tag_only["prompt_version"] == "combined-v5-defined-labels"
+    assert "evidence_examples" not in tag_only
     schema = combined_response_format(allowed_term_ids=controlled_term_ids_from_questions((question,)))
     assert schema["name"] == "question_bank_combined_analysis_v4"
     labels = schema["schema"]["properties"]["results"]["items"]["properties"]["question_type_labels"]
@@ -838,6 +843,10 @@ def test_prompt_shares_only_identical_candidate_catalogs(projection: str) -> Non
     )
     batch = PlannedAnalysisBatch(questions, 1000, 1000)
     payload = json.loads(_combined_prompt(batch, projection)[1]["content"][0]["text"])
+    if projection == "tag":
+        assert "prompt_version" not in payload
+    else:
+        assert payload["prompt_version"] == "combined-v6-open-answer-conditions"
     assert len(payload["candidate_contracts"]) == 2
     for original, sent in zip(questions, payload["questions"], strict=True):
         assert sent["question_id"] == original.question_id

@@ -46,6 +46,7 @@ class ConfigEditorRow:
     response_mode: str = ""
     allow_alternative_methods: bool = True
     equivalent_rules: tuple[str, ...] = ()
+    answer_kind: Literal["fixed", "conditions"] = "fixed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +228,7 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
                         response_mode=str(part.get("response_mode") or ("exact_objective" if question_type in _OBJECTIVE_TYPES else "process_required")),
                         allow_alternative_methods=bool(step.get("allow_alternative_methods", part.get("allow_alternative_methods", True))),
                         equivalent_rules=_unique_texts(step.get("equivalent_rules")),
+                        answer_kind=step.get("answer_kind", "fixed"),
                         score=_number(_first_value(step, "step_score", "score", "point_score", "max_score"), 0.0),
                         standard_answer=_answer_text(first_answer) if is_first else "",
                         accepted_answers=_unique_texts(first_answer.get("accepted_forms")) if is_first else (),
@@ -806,7 +808,7 @@ def _apply_replace_question_structure(
             {
                 "part_id": part_id,
                 "part_score": part_score,
-                "response_mode": "process_required",
+                "response_mode": str(old_part.get("response_mode") or "process_required"),
                 "steps": new_steps,
                 "presentation_rules": copy.deepcopy(old_part.get("presentation_rules"))
                 if isinstance(old_part.get("presentation_rules"), list)

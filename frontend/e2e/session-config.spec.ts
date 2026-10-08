@@ -194,6 +194,12 @@ async function installConfigWorkspaceMockApi(page: Page, options: MockOptions = 
           reason: '', retryable: question_id === 'Q3' && !complete,
         })),
       } })
+    } else if (path === '/api/sessions/7/config/generation-preview' && method === 'POST') {
+      await route.fulfill({ json: {
+        base_release_id: 'kgr_TEST-preview', input_fingerprint: 'f'.repeat(64), volume_id: 'volume-1',
+        chapters: [], planned_requests: 0, model_calls: 0, analysis_request_estimate: 1,
+        source_id: sourceId, source_revision: sourceRevision,
+      } })
     } else if (path === '/api/sessions/7/config/generate-from-source' && method === 'POST') {
       state.generationRequests += 1
       const mode = state.generationRequests === 1
@@ -295,6 +301,9 @@ async function makeEditorDirtyAndSavable(page: Page): Promise<void> {
   await page.getByLabel('Q1 P1 S1 分值').fill('20')
   await page.getByLabel('Q1 P1 S1 分值').press('Tab')
   await expect(page.getByRole('button', { name: '保存评分依据' })).toBeEnabled()
+  const part = page.locator('[data-part-key="Q1:P1"]')
+  await part.locator('.rubric-part__reference > summary').click()
+  await part.locator('.rubric-part__common-editor > summary').click()
 }
 
 test('draft to saved rubric survives partial generation and refresh', async ({ page }) => {
@@ -323,6 +332,9 @@ test('draft to saved rubric survives partial generation and refresh', async ({ p
   await page.getByRole('button', { name: '分析并入库', exact: true }).click()
   await page.getByRole('combobox', { name: '选择教材册别', exact: true }).selectOption('volume-1')
   await page.getByRole('button', { name: '开始分析并入库' }).click()
+  await expect(page.getByRole('alertdialog').getByText('确认分析并入库？')).toBeVisible()
+  expect(state.generationRequests).toBe(0)
+  await page.getByRole('alertdialog').getByRole('button', { name: '开始分析', exact: true }).click()
   await expect(page.getByText('已成功 2 道题', { exact: false })).toBeVisible()
 
   await page.reload()
@@ -330,7 +342,19 @@ test('draft to saved rubric survives partial generation and refresh', async ({ p
   await page.getByLabel('选择失败批次 B001').check()
   await page.getByRole('button', { name: '重试所选失败题' }).click()
   await expect(page.getByRole('heading', { name: '本场赋分', exact: true })).toBeVisible()
+  const point = page.locator('[data-row-id="row-q1-p1-s1"]')
+  await expect(point.getByLabel('Q1 P1 S1 证据要求/关键步骤')).toBeHidden()
+  await expect(page.getByLabel('Q1 P1 S1 标准答案')).toBeHidden()
+  expect(state.lastSave).toBeNull()
+  await point.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: resolve('../output/test_open_answers_rubric_20261008/rubric-editor.png'), fullPage: true, animations: 'disabled' })
   await page.getByRole('button', { name: /^Q1 P1 S1，.*点击编辑$/ }).click()
+  await expect(point.getByLabel('Q1 P1 S1 证据要求/关键步骤')).toHaveValue('列式\n结果')
+  await expect(point.getByLabel('Q1 P1 S1 扣分规则')).toBeHidden()
+  await point.locator('.rubric-unit-card__exceptions > summary').click()
+  await expect(point.getByLabel('Q1 P1 S1 扣分规则')).toHaveValue('漏写过程扣 2 分')
+  expect(state.lastSave).toBeNull()
+  await page.screenshot({ path: resolve('../output/test_open_answers_rubric_20261008/rubric-editor-expanded.png'), fullPage: true, animations: 'disabled' })
   await page.getByLabel('Q1 P1 S1 分值').fill('20')
   await page.getByLabel('Q1 P1 S1 分值').press('Tab')
   await expect(page.getByRole('button', { name: '保存评分依据' })).toBeEnabled()

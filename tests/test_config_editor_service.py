@@ -172,3 +172,25 @@ def test_step_reorder_and_new_step_never_borrow_frozen_point_identity():
     updated = apply_config_editor_changes(payload, edits=(), commands=(command,))
     actual = updated["rubric"]["questions"][0]["parts"][0]["steps"]
     assert [step.get("evidence_point_ids") for step in actual] == [["p2"], None, ["p1"]]
+
+
+def test_replacing_mixed_solution_steps_preserves_existing_open_result_kind_only() -> None:
+    payload = _payload()
+    part = payload["rubric"]["questions"][0]["parts"][0]
+    part["response_mode"] = "short_answer_points"
+    part["steps"][0].update(answer_kind="conditions", core_goal="给出一个大于 2 的整数",
+        required_elements=["答案是整数且大于 2"], evidence_point_ids=["original-open"])
+    command = ReplaceQuestionStructureCommand(kind="replace_question_structure", question_id="Q12", parts=(
+        ManualQuestionPartInput(part_id="P1", steps=(
+            ManualStepInput(step_id="S2", score=2, core_goal="原固定结果"),
+            ManualStepInput(step_id="S3", score=2, core_goal="新增结果"),
+            ManualStepInput(step_id="S1", score=2, core_goal="给出一个大于 2 的整数"),
+        )),
+    ))
+    saved = apply_config_editor_changes(payload, edits=(), commands=(command,))
+    actual = saved["rubric"]["questions"][0]["parts"][0]
+    assert actual["response_mode"] == "short_answer_points"
+    assert [step.get("answer_kind", "fixed") for step in actual["steps"]] == ["fixed", "fixed", "conditions"]
+    assert [step.get("evidence_point_ids") for step in actual["steps"]] == [None, None, ["original-open"]]
+    assert actual["steps"][2]["required_elements"] == ["答案是整数且大于 2"]
+    assert payload["rubric"]["questions"][0]["parts"][0]["steps"][0]["step_score"] == 3

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -19,6 +21,7 @@ class ReviewRubricPointResponse(BaseModel):
     answer_only_max_score: float | None
     require_final_answer: bool | None
     final_answer_rule: str
+    answer_kind: Literal["fixed", "conditions"] = "fixed"
 
 
 class ReviewRubricSectionResponse(BaseModel):

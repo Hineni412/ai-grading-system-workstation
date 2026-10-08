@@ -40,6 +40,7 @@ _POINT_FIELDS = {
     "fine_term_links",
     "equivalent_rules",
     "counterexamples",
+    "answer_kind",
 }
 _LINK_FIELDS = {"fine_term_id", "fine_term_name", "role"}
 
@@ -208,6 +209,11 @@ def normalize_model_solution_evidence(
     if response_shape == "single_choice" or (
         response_shape == "unknown" and confirmed_type == "single_choice"
     ):
+        if any(
+            point.get("answer_kind", "fixed") == "conditions"
+            for part in parts for point in part.get("evidence_points", [])
+        ):
+            raise ValueError("choice answers must use fixed answer_kind")
         submitted_choices = {
             choice
             for part in parts
@@ -304,6 +310,8 @@ def _normalize_part_shape(
             candidate_names=candidate_names,
             notes=notes,
         )
+        if point.get("answer_kind") == "conditions" and mode not in {"exact_objective", "short_answer_points"}:
+            raise ValueError("conditions answers require a result-only response mode")
         points.append(point)
         requires_review = requires_review or point_review
 
@@ -374,6 +382,13 @@ def _normalize_point_shape(
         context=f"第 {part_index} 个小问第 {point_index} 个评分点",
         notes=notes,
     )
+    answer_kind = point.get("answer_kind", "fixed")
+    if answer_kind not in {"fixed", "conditions"}:
+        raise ValueError("answer_kind is invalid")
+    if answer_kind == "conditions" and (
+        not _text(point.get("target")) or not _text(point.get("observable_evidence"))
+    ):
+        raise ValueError("conditions answers require explicit mathematical conditions")
     target = _text(point.get("target"))
     observable = _text(point.get("observable_evidence"))
     anchor = _text(point.get("answer_anchor"))
@@ -435,6 +450,7 @@ def _normalize_point_shape(
 
     return (
         {
+            **({"answer_kind": "conditions"} if answer_kind == "conditions" else {}),
             "evidence_point_id": _text(point.get("evidence_point_id")),
             "step_index": _integer_or_original(point.get("step_index")),
             "target": target,
@@ -540,6 +556,11 @@ def _collapse_fill_blank(
 
     if not parts:
         return [], []
+    if len(parts) > 1 and any(
+        point.get("answer_kind") == "conditions"
+        for part in parts for point in part.get("evidence_points", [])
+    ):
+        raise ValueError("an atomic open answer cannot merge multiple answer conditions")
     canonical_answers = [
         _text(part.get("canonical_answer"))
         or next(iter(_text_list(part.get("accepted_forms"))), "")
@@ -592,6 +613,7 @@ def _preserve_v1_point_shape(parts: Sequence[dict[str, Any]]) -> None:
         "fine_term_links",
         "equivalent_rules",
         "counterexamples",
+        "answer_kind",
     }
     for part in parts:
         points = part.get("evidence_points") or []
@@ -623,6 +645,16 @@ def _collapse_objective_part(
         for point in part.get("evidence_points") or []
         if isinstance(point, Mapping)
     ]
+    condition_points = [point for point in raw_points if point.get("answer_kind") == "conditions"]
+    if condition_points:
+        if len(raw_points) != 1:
+            raise ValueError("an atomic open answer must contain exactly one conditions point")
+        result = dict(part)
+        result["response_mode"] = "exact_objective"
+        result["canonical_answer"] = canonical_answer
+        result["accepted_forms"] = _unique_text(accepted_forms)
+        result["evidence_points"] = [dict(condition_points[0])]
+        return result
     for point in raw_points:
         for link in point.get("fine_term_links") or []:
             if not isinstance(link, Mapping):
