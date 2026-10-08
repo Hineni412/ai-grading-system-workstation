@@ -15,7 +15,8 @@ const emit = defineEmits<{
 
 type SortField = 'difficulty' | 'frequency'
 
-const activeField = computed<SortField | 'paper'>(() => {
+const activeField = computed<SortField | 'paper' | 'default'>(() => {
+  if (props.modelValue === 'newest') return 'default'
   if (props.modelValue === 'paper_order') return 'paper'
   return props.modelValue.startsWith('difficulty_') ? 'difficulty' : 'frequency'
 })
@@ -23,7 +24,9 @@ const direction = computed(() => props.modelValue.endsWith('_asc') ? 'asc' : 'de
 
 function choose(field: SortField): void {
   const nextDirection = activeField.value === field && direction.value === 'desc' ? 'asc' : 'desc'
-  const next = `${field}_${nextDirection}` as QuestionBankSort
+  const next: QuestionBankSort = field === 'difficulty'
+    ? nextDirection === 'asc' ? 'difficulty_asc' : 'difficulty_desc'
+    : nextDirection === 'asc' ? 'frequency_asc' : 'frequency_desc'
   emit('update:modelValue', next)
   emit('change', next)
 }

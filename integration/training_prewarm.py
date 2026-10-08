@@ -675,13 +675,7 @@ class TrainingPrewarmWorker:
         return str(row[0]).strip() if row else None
 
     def _warm_question_bank(self, generation: int) -> None:
-        """Warm the index and first current training target's read caches.
-
-        Replays question and facet reads with their route-specific filters.
-        A successful pass — including a
-        bank with nothing to warm — marks the generation; a failure leaves
-        it unseen so the next tick retries.
-        """
+        """Warm the tag browser's unfiltered first page and facet caches."""
 
         from question_bank.services.question_read_service import (
             QuestionBankReadService,
@@ -696,28 +690,16 @@ class TrainingPrewarmWorker:
             ).parent.parent
             service = QuestionBankReadService(paths.qb_db_path, data_root=data_root)
             service.skill_index(volume_id)
-            from question_bank.current_knowledge import CurrentKnowledgeResolver
-            from question_bank.question_types import is_training_target, target_kind_for_key
-            resolver = CurrentKnowledgeResolver.from_active_database(paths.qb_db_path)
-            from question_bank.recommendation.target_matching import target_index
-            from question_bank.taxonomy.curriculum_catalog import curriculum_volume
-            volume = curriculum_volume(volume_id=volume_id)
-            sections = {section["knowledge_id"] for chapter in volume["chapters"] for section in chapter["sections"]}
-            anchors = target_index(resolver)
-            target = next((node.stable_key for node in resolver.nodes
-                           if anchors.get(node.stable_key, {}).get("section") in sections
-                           and is_training_target(node.stable_key, resolver, volume_id)), "")
-            if target:
-                kind = target_kind_for_key(target, resolver, volume_id)
-                target_filter = ({"type_keys": (target,)} if kind == "type" else
-                                 {"knowledge_points": (target,)} if kind == "knowledge" else
-                                 {"skill_keys": (target,)})
-                common_filters = dict(target_filter, difficulty_min=1,
-                    difficulty_max=10, curriculum_volume_ids=(volume_id,),
-                    collapse_duplicates=True, scope_mode="primary")
-                service.list_questions(QuestionReadFilters(**common_filters,
-                    include_skills=True, page=1, page_size=20))
-                service.list_facets(QuestionReadFilters(**common_filters))
+            common_filters = dict(
+                difficulty_min=1, difficulty_max=10,
+                curriculum_volume_ids=(volume_id,), collapse_duplicates=True,
+                scope_mode="primary", tag_status="all", analysis_status="all",
+                sort="newest",
+            )
+            service.list_questions(QuestionReadFilters(
+                **common_filters, include_skills=True, page=1, page_size=20,
+            ))
+            service.list_facets(QuestionReadFilters(**common_filters))
         self._seen_qb_browse_generation = generation
 
     def _class_names(self) -> list[str]:

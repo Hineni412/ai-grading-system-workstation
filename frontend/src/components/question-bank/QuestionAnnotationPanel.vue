@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import {
   knowledgeLeafLabel,
-  skillLeafLabel,
   type QuestionSolutionEvidenceResponse,
   QUESTION_BANK_TAG_TYPES,
   questionBankApi,
@@ -24,8 +23,6 @@ import AppButton from '../design-system/AppButton.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 import TrainingCriterionReview from './TrainingCriterionReview.vue'
 
-defineProps<{ currentSkill?: string }>()
-const emit = defineEmits<{ skill: [key: string] }>()
 const store = useQuestionBankStore()
 const { confirm } = useConfirm()
 const evidence = ref<QuestionSolutionEvidenceResponse | null>(null)
@@ -55,10 +52,6 @@ watch(() => store.selectedQuestionId, (id) => {
 }, { immediate: true })
 onBeforeUnmount(() => controller.abort())
 const points = computed(() => evidence.value?.available ? evidence.value.evidence?.parts.flatMap((part) => part.evidence_points) ?? [] : [])
-function directSkills(point: typeof points.value[number]) {
-  return point.fine_term_links.filter(link => link.role === 'direct' && link.core_resolution.status === 'resolved')
-    .flatMap(link => link.core_resolution.stable_keys.filter(key => key.startsWith('sk_')).map(key => ({ key, label: skillLeafLabel(link.fine_term_name) })))
-}
 function mappedPatterns(pointId: string) {
   if (points.value.filter(point => point.evidence_point_id === pointId).length !== 1) return []
   return (store.detail?.error_patterns ?? []).filter(item => item.trigger_kind === 'step' && item.trigger_value === pointId)
@@ -192,7 +185,7 @@ async function changePattern(item: QuestionErrorPattern, action: 'edit' | 'rejec
 }
 // 教材小节不单独成行显示：位置信息统一由下方"精确标定教材小节"选择器呈现，
 // 选择器会同时校准教材章节（exam_scope），标签区不再重复出现两个位置标签。
-// 技能（skill）由判定点归属产生、不参与手输编辑，在下方判定点区块只读展示。
+// 技能（skill）由判定点归属产生，不参与手输标签编辑。
 const editableTagTypes = QUESTION_BANK_TAG_TYPES.filter(
   (type) => !['student_level', 'canonical_knowledge_id', 'curriculum_section', 'skill', 'knowledge_point', 'prerequisite'].includes(type),
 )
@@ -274,7 +267,7 @@ function chooseCurriculumSection(sectionId: string): void {
   }
 }
 
-// 技能标签供判定点区块展示：只保留末端操作名（"技能·求立方根"→"求立方根"）。
+// 判定点编辑使用技能标签的末端操作名。
 const skillLabels = computed(() => [
   ...new Set(store.tagDraft
     .filter((tag) => tag.tag_type === 'skill')
@@ -459,7 +452,7 @@ watch(() => store.selectedQuestionId, () => { typeEditing.value = false; typeErr
 
           <section class="qb-evidence-summary">
             <header class="qb-section-heading">
-              <h3>判定点（评分依据） <small v-if="points.length && criterion?.available && criterion.current_version?.quality_status === 'passed' && !store.detail.criteria_needs_review && points.every(point => directSkills(point).length)">{{ points.length }} 个判定点 · 全部质检通过</small><small v-else-if="points.length">{{ points.length }} 个判定点</small></h3>
+              <h3>判定点（评分依据） <small v-if="points.length && criterion?.available && criterion.current_version?.quality_status === 'passed' && !store.detail.criteria_needs_review">{{ points.length }} 个判定点 · 全部质检通过</small><small v-else-if="points.length">{{ points.length }} 个判定点</small></h3>
               <div><template v-if="editing"><AppButton variant="primary" @click="saveAnnotation">保存</AppButton><AppButton variant="ghost" @click="cancelAnnotation">取消</AppButton></template><AppButton v-else variant="secondary" @click="editing = true">编辑标注</AppButton></div>
             </header>
             <p v-if="editing" class="qb-help">修改不会改写已有考试成绩与报告</p>
@@ -472,13 +465,13 @@ watch(() => store.selectedQuestionId, () => { typeEditing.value = false; typeErr
               <span>{{ index + 1 }}</span>
               <div><strong>{{ point.target }}</strong><p v-if="point.observable_evidence !== point.target">{{ point.observable_evidence }}</p>
                 <p v-if="point.answer_kind === 'conditions'" class="qb-help">按条件判对，参考答案只是示例。</p>
-                <div class="qb-skill-capsules"><button v-for="skill in directSkills(point)" :key="skill.key" type="button" class="qb-skill-capsule" :class="{ 'is-current': skill.key === currentSkill }" @click="emit('skill', skill.key)">{{ skill.label }}</button>
+                <div v-if="pointKnowledge(point).length" class="qb-topic-capsules">
                   <span v-for="name in pointKnowledge(point)" :key="name" class="qb-topic-capsule">知识点 · {{ name }}</span>
                 </div>
                 <p v-if="pointPrerequisites(point).length" class="qb-help">前置知识 · {{ pointPrerequisites(point).join('、') }}</p>
                 <div v-for="item in mappedPatterns(point.evidence_point_id)" :key="item.id" class="qb-point-error"><strong>↳ {{ item.pattern }}</strong><p>{{ item.explanation }}</p><AppButton variant="ghost" size="small" @click="beginPatternEdit(item)">调整</AppButton> <AppButton :disabled="patternSaving" variant="ghost" size="small" @click="changePattern(item, 'reject')">驳回</AppButton></div>
               </div>
-              <small><span v-if="store.detail.criteria_needs_review">待审核</span><span v-if="!directSkills(point).length">未挂技能</span></small>
+              <small><span v-if="store.detail.criteria_needs_review">待审核</span></small>
             </div>
             </template>
             <div v-show="editing"><TrainingCriterionReview v-if="store.selectedQuestionId" ref="review" :question-id="store.selectedQuestionId" :skill-labels="skillLabels" :loader="loadCriterion" :evidence-loader="loadEvidence" @updated="criterion = $event" /></div>

@@ -23,6 +23,44 @@ describe('question bank API contracts', () => {
     expect(String(fetchSpy.mock.calls[2]?.[0])).not.toContain('include_skills')
   })
 
+  it('decodes main section counts, including unknown sections, and keeps old responses readable', async () => {
+    const { decodeQuestionBankFacets } = await import('../api/question-bank')
+    const legacy = {
+      exam_scopes: [], curriculum_sections: [], knowledge_points: [], curriculum_chapters: [],
+      abilities: [], methods: [], thoughts: [], models: [], special_types: [], error_types: [],
+      error_pattern_categories: [], student_levels: [], teaching_stages: [], sub_skills: [],
+      question_types: [], years: [], exam_types: [], grades: [],
+    }
+    const primarySections = [
+      { value: 'kp_TEST_chapter_2_section_1', count: 7 },
+      { value: '', count: 2 },
+    ]
+    const response = { ...legacy, primary_sections: primarySections, task_types: [{ value: 'kp_TEST_t01', count: 7 }] }
+    expect(decodeQuestionBankFacets(response)).toEqual(response)
+    expect(decodeQuestionBankFacets(legacy).primary_sections).toEqual([])
+    expect(() => decodeQuestionBankFacets({ ...response, primary_sections: [{ value: '', count: -1 }] })).toThrow()
+    expect(() => decodeQuestionBankFacets({ ...response, primary_sections: [{ value: ' ', count: 1 }] })).toThrow()
+    expect(() => decodeQuestionBankFacets({ ...response, knowledge_points: [{ value: '', count: 1 }] })).toThrow()
+  })
+
+  it('accepts optional type section identifiers and rejects invalid section values', async () => {
+    const { decodeQuestionSkillIndex } = await import('../api/question-bank')
+    const type = {
+      value: 'kp_TEST_t01', label: '题型·测试求根', count: 0,
+      definition: '测试定义', common_knowledge_points: [],
+    }
+    const response = {
+      graph_release_id: 'kgr_TEST', curriculum_volume_id: 'bnu24-math-g8-upper',
+      model_calls: 0, question_count: 0,
+      unlinked: { no_usable_evidence: 0, no_skill_link: 0 }, chapters: [], types: [type],
+    }
+    expect(decodeQuestionSkillIndex(response).types).toEqual([type])
+    const locatedType = { ...type, section_id: 'kp_TEST_section_1' }
+    expect(decodeQuestionSkillIndex({ ...response, types: [locatedType] }).types).toEqual([locatedType])
+    expect(() => decodeQuestionSkillIndex({ ...response, types: [{ ...type, section_id: 2 }] })).toThrow()
+    expect(() => decodeQuestionSkillIndex({ ...response, types: [{ ...type, section_id: null }] })).toThrow()
+  })
+
   it('accepts the initial skill index when preparation exceeds the normal read timeout', async () => {
     vi.useFakeTimers()
     try {

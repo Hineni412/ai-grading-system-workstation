@@ -4,7 +4,8 @@ import { createPinia } from 'pinia'
 
 import QuestionAnnotationPanel from '../QuestionAnnotationPanel.vue'
 import ConfirmDialogHost from '../../design-system/ConfirmDialogHost.vue'
-import { questionBankApi, type QuestionBankDetail, type QuestionErrorPattern } from '../../../api/question-bank'
+import { questionBankApi, type QuestionBankDetail, type QuestionErrorPattern, type QuestionSolutionEvidenceResponse } from '../../../api/question-bank'
+import { questionBankCriteriaApi, type TrainingCriterionWorkspace } from '../../../api/question-bank-criteria'
 import { useQuestionBankStore } from '../../../stores/question-bank'
 
 vi.mock('../TrainingCriterionReview.vue', () => ({
@@ -215,4 +216,104 @@ it('renders all linked skills with their derivation source', async () => {
     .find((button) => button.textContent === '调整')!.click()
   await nextTick()
   expect(section.querySelector('.qb-patterns__editor select')).not.toBeNull()
+})
+
+it('keeps knowledge and prerequisites visible and permits quality success without direct skill links', async () => {
+  vi.spyOn(questionBankApi, 'getCurriculum').mockRejectedValue(new Error('not needed'))
+  const evidence: QuestionSolutionEvidenceResponse = {
+    question_id: 1, available: true, evidence_version_id: 'c'.repeat(64), status: 'approved',
+    evidence: {
+      schema_version: 'question-solution-evidence-v1', question_id: 1,
+      source_content_hash: 'a'.repeat(64), content_hash: 'b'.repeat(64), version_id: 'c'.repeat(64),
+      auxiliary_rules: [], rationale: '测试判定资料', confidence: 1,
+      parts: [{
+        part_id: 'part-1', label: '第一问', response_mode: 'process_required',
+        canonical_answer: '2', accepted_forms: ['2'], full_answer: '测试答案',
+        proof_obligations: [], visual_requirements: [], deduction_policy: [], allow_alternative_methods: true,
+        evidence_points: [{
+          evidence_point_id: 'point-knowledge', target: '写出平方根', observable_evidence: '写出平方根',
+          fine_term_links: [{
+            fine_term_id: 'knowledge-1', fine_term_name: '平方根', role: 'direct',
+            core_resolution: { status: 'resolved', stable_keys: ['kp_TEST_sqrt'], reason: '' },
+          }, {
+            fine_term_id: 'prerequisite-1', fine_term_name: '乘方', role: 'supporting_prerequisite',
+            core_resolution: { status: 'resolved', stable_keys: ['kp_TEST_power'], reason: '' },
+          }], equivalent_rules: [], counterexamples: [],
+        }, {
+          evidence_point_id: 'point-skill', target: '检查答案', observable_evidence: '检查答案',
+          fine_term_links: [{
+            fine_term_id: 'skill-1', fine_term_name: '测试直接技能', role: 'direct',
+            core_resolution: { status: 'resolved', stable_keys: ['sk_TEST_check'], reason: '' },
+          }], equivalent_rules: [], counterexamples: [],
+        }],
+      }],
+      whole_question_classification: {
+        direct_fine_terms: [], supporting_prerequisite_fine_terms: [],
+        direct_resolved_core_node_ids: ['kp_TEST_sqrt', 'sk_TEST_check'],
+        supporting_resolved_core_node_ids: ['kp_TEST_power'],
+        direct_ambiguous_core_node_ids: [], supporting_ambiguous_core_node_ids: [],
+        direct_unmapped_fine_term_ids: [], supporting_unmapped_fine_term_ids: [],
+        resolved_core_node_ids: ['kp_TEST_sqrt', 'sk_TEST_check', 'kp_TEST_power'],
+        ambiguous_core_node_ids: [], unmapped_fine_term_ids: [],
+      },
+    },
+  }
+  const criterion: TrainingCriterionWorkspace = {
+    question_id: 1, state: 'available', available: true, revision: 1,
+    current_source_hash: 'a'.repeat(64), approved_version: null, versions: [],
+    current_version: {
+      version_id: 'c'.repeat(64), question_id: 1, version_number: 1, parent_version_id: null,
+      source_content_hash: 'a'.repeat(64), schema_version: 'judgment-points-v1', status: 'approved',
+      source_kind: 'teacher_manual', source_reference: '', criteria_hash: 'b'.repeat(64),
+      quality_status: 'passed', quality_codes: [], created_by: 'TEST', decision_by: 'TEST',
+      decision_note: '', decided_at: null, created_at: '2026-10-09', updated_at: '2026-10-09',
+      criteria: {
+        schema_version: 'judgment-points-v1', question_id: 1, source_content_hash: 'a'.repeat(64),
+        question_type: '解答题', points: [], auxiliary_rules: [], rationale: '', confidence: 1,
+        source_kind: 'confirmed_rubric_adapter',
+      },
+    },
+  }
+  vi.spyOn(questionBankApi, 'getSolutionEvidence').mockResolvedValue(evidence)
+  const workspaceRead = vi.spyOn(questionBankCriteriaApi, 'getWorkspace').mockResolvedValue(criterion)
+  const pinia = createPinia()
+  const host = document.createElement('div')
+  document.body.append(host)
+  const app = createApp(QuestionAnnotationPanel)
+  app.use(pinia)
+  app.mount(host)
+  apps.push(app)
+  const bank = useQuestionBankStore(pinia)
+  bank.selectedQuestionId = 1
+  bank.detail = {
+    ...detail([]), labels: {
+      primary_type: null, secondary_types: [], knowledge_points: [{ key: 'kp_TEST_sqrt', label: '平方根' }],
+    },
+  }
+  bank.detailState = 'ready'
+  await vi.waitFor(() => expect(host.querySelector('.qb-evidence-summary h3')?.textContent).toContain('全部质检通过'))
+  const summary = host.querySelector<HTMLElement>('.qb-evidence-summary')
+  expect(summary?.textContent).toContain('知识点 · 平方根')
+  expect(summary?.textContent).toContain('前置知识 · 乘方')
+  expect(summary?.textContent).not.toContain('测试直接技能')
+  expect(summary?.textContent).not.toContain('未挂技能')
+  expect(summary?.querySelector('.qb-skill-capsule')).toBeNull()
+
+  bank.detail.criteria_needs_review = true
+  await nextTick()
+  expect(summary?.querySelector('h3')?.textContent).not.toContain('全部质检通过')
+  bank.detail.criteria_needs_review = false
+  await nextTick()
+  expect(summary?.querySelector('h3')?.textContent).toContain('全部质检通过')
+
+  const blockedStates: TrainingCriterionWorkspace[] = [
+    { ...criterion, available: false },
+    { ...criterion, current_version: criterion.current_version && { ...criterion.current_version, quality_status: 'failed' } },
+  ]
+  for (const blocked of blockedStates) {
+    workspaceRead.mockResolvedValue(blocked)
+    bank.selectedQuestionId = (bank.selectedQuestionId ?? 1) + 1
+    await vi.waitFor(() => expect(summary?.querySelector('h3')?.textContent).toContain('2 个判定点'))
+    expect(summary?.querySelector('h3')?.textContent).not.toContain('全部质检通过')
+  }
 })

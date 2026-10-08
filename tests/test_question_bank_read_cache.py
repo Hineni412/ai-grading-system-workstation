@@ -1426,15 +1426,14 @@ def test_question_bank_browse_prewarm_follows_current_scope_and_replans_on_write
     assert warmed == [commit_generation(db)]
 
 
-@pytest.mark.parametrize(('revision', 'volume', 'target_field'), [
-    (7, 'bnu24-math-g8-upper', 'skill_keys'),
-    (11, 'bnu24-math-g8-upper', 'type_keys'),
-    (11, 'bnu24-math-g8-lower', 'knowledge_points'),
+@pytest.mark.parametrize(('revision', 'volume'), [
+    (7, 'bnu24-math-g8-upper'),
+    (11, 'bnu24-math-g8-upper'),
+    (11, 'bnu24-math-g8-lower'),
 ])
-def test_question_bank_browse_warm_uses_the_first_target_filters(tmp_path, monkeypatch, revision, volume, target_field):
+def test_question_bank_browse_warm_uses_unfiltered_tag_page_filters(tmp_path, monkeypatch, revision, volume):
     from tests.current_knowledge_support import install_current_knowledge
-    from question_bank.taxonomy.curriculum_catalog import curriculum_knowledge_node
-    db = tmp_path / 'TEST-prewarm-targets.db'
+    db = tmp_path / 'TEST-prewarm-tags.db'
     _seed_paper(db)
     install_current_knowledge(db, taxonomy_revision=revision)
     worker = _prewarm_worker(db, tmp_path)
@@ -1458,25 +1457,16 @@ def test_question_bank_browse_warm_uses_the_first_target_filters(tmp_path, monke
     assert worker._seen_qb_browse_generation == 7
     assert [call[0] for call in calls] == ['skill_index', 'list_questions', 'list_facets']
     assert calls[0][1] == volume
-    targets = getattr(calls[1][1], target_field)
-    assert len(targets) == 1
-    if target_field == 'knowledge_points':
-        assert curriculum_knowledge_node(targets[0])['level'] == 3
-    elif target_field == 'type_keys':
-        assert targets[0].rsplit('_', 1)[1].startswith('t')
-    else:
-        assert targets[0].startswith('sk_')
-    # Prewarm the current training target and the matching facet counts.
     assert calls[1][1] == QuestionReadFilters(
-        **{target_field: targets}, include_skills=True, page=1, page_size=20,
+        include_skills=True, page=1, page_size=20,
         difficulty_min=1, difficulty_max=10, curriculum_volume_ids=(volume,),
         collapse_duplicates=True, scope_mode='primary', sort='newest',
+        tag_status='all', analysis_status='all',
     )
-    # Same filters the /facets route builds for it.
     assert calls[2][1] == QuestionReadFilters(
-        **{target_field: targets}, difficulty_min=1, difficulty_max=10,
+        difficulty_min=1, difficulty_max=10,
         curriculum_volume_ids=(volume,), collapse_duplicates=True,
-        scope_mode='primary',
+        scope_mode='primary', tag_status='all', analysis_status='all',
     )
     # Without a resolvable volume there is nothing to warm; the generation is
     # still marked so an empty bank is not re-scanned every tick.
@@ -1709,3 +1699,28 @@ def test_repair_preview_uses_current_type_candidates_and_stops_repeating_checked
         conn.execute("UPDATE questions SET question_text='TEST-changed-type-task' WHERE id=1")
     changed = repair_preview(service, 'bnu24-math-g8-upper', 'all')['items'][0]
     assert not changed['type_pending_reason']
+
+
+def test_type_index_section_ids_follow_curriculum_anchors(tmp_path):
+    from copy import deepcopy
+    from question_bank.services.question_skill_index import skill_index
+    from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+
+    service, _db, _keys = _seed_skill_bank(tmp_path, count=1, taxonomy_revision=11)
+    volume_id = 'bnu24-math-g8-upper'
+    rows = service.skill_index(volume_id)['types']
+    assert rows and all(row['section_id'] for row in rows)
+    volume = curriculum_volume(volume_id=volume_id)
+    chapter = volume['chapters'][0]
+    section = chapter['sections'][1]
+    snapshot = deepcopy(service._skill_snapshot())
+    key = rows[0]['value']
+    node = snapshot['nodes'][key]
+    node['curriculum_anchors_json'] = json.dumps([
+        chapter['knowledge_id'], section['knowledge_points'][0]['id'],
+    ])
+    rows = {row['value']: row for row in skill_index(snapshot, volume_id, set())['types']}
+    assert rows[key]['section_id'] == section['knowledge_id']
+    node['curriculum_anchors_json'] = json.dumps([chapter['knowledge_id']])
+    rows = {row['value']: row for row in skill_index(snapshot, volume_id, set())['types']}
+    assert rows[key]['section_id'] == chapter['knowledge_id']

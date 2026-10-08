@@ -188,3 +188,90 @@ def test_resolve_anchor_keys_climbs_type_parent_relations(tmp_path: Path) -> Non
     assert anchors["chapters"] == ["kp_bnu24_math_g8_upper_1"]
     assert leaf["sections"] == ["kp_bnu24_math_g8_upper_1_1"]
     assert leaf["chapters"] == ["kp_bnu24_math_g8_upper_1"]
+
+
+@pytest.fixture()
+def tag_filter_bank(bank: dict) -> QuestionBankReadService:
+    sibling = "kp_bnu24_math_g7_lower_2_2"
+    with connect(bank["db_path"]) as connection:
+        for qid in range(1, 6):
+            connection.execute(
+                "UPDATE questions SET question_text=?, question_type='解答题', "
+                "difficulty='5' WHERE id=?", (f"TEST-标签筛选题 {qid}", qid),
+            )
+        for qid, leaf in ((1, _LEAF_IN), (2, _LEAF_SAME_VOL),
+                          (3, _LEAF_IN), (5, _LEAF_EARLIER)):
+            _tag(connection, qid, "knowledge_point", leaf)
+        for qid, section, catalog_id in (
+            (1, _SECTION, _SECTION_ID), (2, _SECTION, _SECTION_ID),
+            (3, sibling, "bnu24-math-g7-lower-c02-s02"),
+            (4, sibling, "bnu24-math-g7-lower-c02-s02"),
+        ):
+            _tag(connection, qid, "curriculum_section", catalog_id)
+            connection.execute(
+                "INSERT INTO question_scope_summary(question_id,primary_section_id,"
+                "direct_section_ids_json,supporting_max_volume_order) VALUES(?,?,?,0)",
+                (qid, section, json.dumps([section])),
+            )
+    return QuestionBankReadService(bank["db_path"], data_root=bank["db_path"].parent)
+
+
+@pytest.mark.parametrize("mode", ["any", "primary", "strict"])
+@pytest.mark.parametrize("field", ["knowledge_points", "knowledge_point"])
+def test_knowledge_filters_are_exact_and_intersect_sections(tag_filter_bank, mode, field):
+    service = tag_filter_bank
+    knowledge = {field: (_LEAF_IN,) if field == "knowledge_points" else _LEAF_IN}
+    selected = service.list_questions(QuestionReadFilters(scope_mode=mode, **knowledge))
+    assert {item["id"] for item in selected.items} == {1, 3}
+    selected = service.list_questions(QuestionReadFilters(
+        scope_mode=mode, curriculum_sections=(_SECTION_ID,), **knowledge,
+    ))
+    assert [item["id"] for item in selected.items] == [1]
+    assert selected.total == 1
+    assert service.list_questions(QuestionReadFilters(
+        scope_mode=mode, knowledge_points=(_LEAF_IN, _LEAF_SAME_VOL),
+    )).total == 3
+    assert service.list_questions(QuestionReadFilters(
+        scope_mode=mode, knowledge_points=("TEST-unknown knowledge",),
+    )).total == 0
+    facets = service.list_facets(QuestionReadFilters(
+        scope_mode=mode, curriculum_sections=(_SECTION_ID,), **knowledge,
+    ))
+    assert {row["value"]: row["count"] for row in facets["primary_sections"]} == {
+        _SECTION: 1, "kp_bnu24_math_g7_lower_2_2": 1,
+    }
+    assert sorted(row["count"] for row in facets["knowledge_points"]) == [1, 1]
+    assert facets["question_types"] == [{"value": "解答题", "count": 1}]
+
+
+@pytest.mark.parametrize("collapse", [False, True])
+def test_primary_section_facets_exclude_their_scope_and_keep_filtered_duplicates(
+    bank, tag_filter_bank, collapse,
+):
+    from dataclasses import replace
+
+    service = tag_filter_bank
+    with connect(bank["db_path"]) as connection:
+        connection.execute("UPDATE questions SET question_text="
+                           "(SELECT question_text FROM questions WHERE id=1) WHERE id=2")
+    filters = QuestionReadFilters(
+        scope_mode="primary", curriculum_sections=(_SECTION,),
+        collapse_duplicates=collapse,
+    )
+    counts = {row["value"]: row["count"]
+              for row in service.list_facets(filters)["primary_sections"]}
+    assert counts == {_SECTION: 1 if collapse else 2,
+                      "kp_bnu24_math_g7_lower_2_2": 2, "": 1}
+    assert service.list_questions(filters).total == counts[_SECTION]
+    chapter = service.list_questions(replace(
+        filters, curriculum_sections=("kp_bnu24_math_g7_lower_2",),
+    ))
+    assert chapter.total == counts[_SECTION] + counts["kp_bnu24_math_g7_lower_2_2"]
+    knowledge_only = replace(filters, knowledge_points=(_LEAF_SAME_VOL,),
+                             exam_scopes=("TEST-other chapter",))
+    assert service.list_facets(knowledge_only)["primary_sections"] == [
+        {"value": _SECTION, "count": 1},
+    ]
+    selected = service.list_questions(replace(knowledge_only, exam_scopes=()))
+    assert [item["id"] for item in selected.items] == [2]
+    assert selected.total == 1

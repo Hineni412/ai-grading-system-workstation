@@ -27,7 +27,6 @@ import ChapterExamOverview from './ChapterExamOverview.vue'
 import ChapterExamSection from './ChapterExamSection.vue'
 import '../../styles/chapter-exam-profile.css'
 
-const emit = defineEmits<{ skill: [key: string] }>()
 
 const route = useRoute()
 const router = useRouter()
@@ -625,7 +624,6 @@ const narrowRail = computed(() => Boolean(bank.selectedQuestionId) && !railOpen.
       </header>
       <QuestionLedger
         :question-labels="ledgerKind === 'default' ? typicalLabels : undefined"
-        @skill="emit('skill', $event)"
       />
     </main>
   </div>

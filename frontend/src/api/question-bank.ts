@@ -402,6 +402,7 @@ export interface QuestionBankFacet {
 }
 
 export interface QuestionBankFacets {
+  primary_sections: QuestionBankFacet[]
   task_types?: QuestionBankFacet[]
   exam_scopes: QuestionBankFacet[]
   curriculum_sections: QuestionBankFacet[]
@@ -583,6 +584,7 @@ export interface QuestionSolutionEvidenceResponse {
 export type QuestionBankTagStatus = 'all' | 'tagged' | 'untagged'
 export type QuestionBankAnalysisStatus = 'all' | 'complete' | 'incomplete'
 export type QuestionBankSort =
+  | 'newest'
   | 'paper_order'
   | 'difficulty_desc'
   | 'difficulty_asc'
@@ -1107,6 +1109,16 @@ function isFacet(value: unknown): value is QuestionBankFacet {
   )
 }
 
+function isPrimarySectionFacet(value: unknown): value is QuestionBankFacet {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['value', 'count']) &&
+    typeof value.value === 'string' &&
+    (value.value === '' || value.value.trim().length > 0) &&
+    isNonnegativeInteger(value.count)
+  )
+}
+
 const CURRICULUM_SECTION_KINDS = [
   'activity',
   'activity_group',
@@ -1347,15 +1359,19 @@ export function decodeQuestionBankFacets(value: unknown): QuestionBankFacets {
     'exam_types',
     'grades',
   ] as const
+  if (!isRecord(value)) throw new Error('Invalid question bank facets')
+  const expectedKeys: string[] = [...keys]
+  if (value.task_types !== undefined) expectedKeys.push('task_types')
+  if (value.primary_sections !== undefined) expectedKeys.push('primary_sections')
   if (
-    !isRecord(value) ||
-    !hasExactKeys(value, value.task_types === undefined ? keys : [...keys, 'task_types']) ||
+    !hasExactKeys(value, expectedKeys) ||
     (value.task_types !== undefined && (!Array.isArray(value.task_types) || !value.task_types.every(isFacet))) ||
+    (value.primary_sections !== undefined && (!Array.isArray(value.primary_sections) || !value.primary_sections.every(isPrimarySectionFacet))) ||
     !keys.every((key) => Array.isArray(value[key]) && value[key].every(isFacet))
   ) {
     throw new Error('Invalid question bank facets')
   }
-  return value as unknown as QuestionBankFacets
+  return { ...value, primary_sections: value.primary_sections ?? [] } as unknown as QuestionBankFacets
 }
 
 const SIMILARITY_REASON_KINDS: ReadonlySet<string> = new Set([
@@ -1978,7 +1994,7 @@ export interface QuestionTopicEntry extends Pick<QuestionSkillEntry, 'display_na
 export interface QuestionSkillIndex {
   coverage?: { types: number; knowledge_points: number }
   gaps?: { types: number; knowledge_points: number }
-  types?: { value: string; label: string; count: number; definition: string; common_knowledge_points: { key: string; label: string; question_count: number }[] }[]
+  types?: { value: string; label: string; section_id?: string; count: number; definition: string; common_knowledge_points: { key: string; label: string; question_count: number }[] }[]
   graph_release_id: string | null
   curriculum_volume_id: string
   model_calls: number
@@ -2008,6 +2024,7 @@ export function decodeQuestionSkillIndex(value: unknown): QuestionSkillIndex {
     || (value.gaps !== undefined && (!isRecord(value.gaps) || !['types', 'knowledge_points'].every(key => isNonnegativeInteger(value.gaps && (value.gaps as Record<string, unknown>)[key]) && Number((value.gaps as Record<string, unknown>)[key]) <= Number(value.question_count))))
     || (value.types !== undefined && (!Array.isArray(value.types) || !value.types.every(row => isRecord(row)
       && typeof row.value === 'string' && /_t\d{2}$/.test(row.value) && typeof row.label === 'string'
+      && (row.section_id === undefined || typeof row.section_id === 'string')
       && isNonnegativeInteger(row.count) && typeof row.definition === 'string'
       && Array.isArray(row.common_knowledge_points) && row.common_knowledge_points.every(point => isRecord(point)
         && typeof point.key === 'string' && typeof point.label === 'string' && isNonnegativeInteger(point.question_count) && Number(point.question_count) <= Number(row.count)))))

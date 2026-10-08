@@ -5,13 +5,15 @@ import { createMemoryHistory } from 'vue-router'
 
 import { ApiError } from '../api/errors'
 import type { JobResponse } from '../api/jobs'
-import { questionBankApi, type ChapterExamProfile as ChapterExamProfileData, type QuestionBankPaper, type QuestionRepairPreview } from '../api/question-bank'
+import { questionBankApi, type ChapterExamProfile as ChapterExamProfileData, type QuestionBankPaper, type QuestionRepairPreview, type QuestionBankFacets, type QuestionSkillIndex, type QuestionBankListItem } from '../api/question-bank'
 import { trainingApi } from '../api/training'
 import QuestionBasketDrawer from '../components/question-bank/QuestionBasketDrawer.vue'
 import { useAssemblyStore } from '../stores/assembly'
 import QuestionBankTodo from '../components/question-bank/QuestionBankTodo.vue'
 import QuestionRepairDialog from '../components/question-bank/QuestionRepairDialog.vue'
-import QuestionSkillBrowser from '../components/question-bank/QuestionSkillBrowser.vue'
+import QuestionTagBrowser from '../components/question-bank/QuestionTagBrowser.vue'
+import QuestionCard from '../components/question-bank/QuestionCard.vue'
+import { normalizeChapters, toggleChapter, queryValues } from '../components/question-bank/question-tag-filters'
 import ChapterExamProfile from '../components/question-bank/ChapterExamProfile.vue'
 import * as studentsApi from '../api/students'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
@@ -193,6 +195,58 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+const knowledgeA = '八年级上册｜第一章 实数｜1 认识实数｜无理数'
+const knowledgeB = '八年级上册｜第一章 实数｜2 平方根｜平方根'
+function tagIndex(): QuestionSkillIndex {
+  const stats = { question_count: 2, type_counts: { '选择题': 1, '多选题': 0, '填空题': 0, '解答题': 1 }, difficulty: null, criteria_needs_review_count: 0 }
+  return {
+    graph_release_id: 'kgr_TEST', curriculum_volume_id: 'bnu24-math-g8-upper', model_calls: 0, question_count: 6,
+    unlinked: { no_usable_evidence: 1, no_skill_link: 2 },
+    types: [
+      { value: 'TEST-type-a', label: '题型·实数计算', count: 3, section_id: 'TEST-s1', definition: '', common_knowledge_points: [] },
+      { value: 'TEST-type-b', label: '题型·平方根运算', count: 2, section_id: 'TEST-s2', definition: '', common_knowledge_points: [] },
+      { value: 'TEST-type-c', label: '题型·证明全等', count: 1, section_id: 'TEST-s3', definition: '', common_knowledge_points: [] },
+    ],
+    chapters: [
+      { id: 'TEST-c1', label: '第一章 实数', question_count: 5, cross_section_skills: [], sections: [
+        { id: 'TEST-s1', label: '1 认识实数', question_count: 2, skills: [{ ...stats, stable_key: 'sk_TEST_one', display_name: '判断实数', full_name: '八年级上册/判断实数', cross_section: false, definition: { observable_evidence: '', include_scope: '', exclude_scope: '' } }], topics: [{ ...stats, stable_key: 'TEST-topic', display_name: '无理数', filter_value: knowledgeA }] },
+        { id: 'TEST-s2', label: '2 平方根', question_count: 3, skills: [], topics: [] },
+      ] },
+      { id: 'TEST-c2', label: '第二章 三角形', question_count: 1, cross_section_skills: [], sections: [{ id: 'TEST-s3', label: '1 全等三角形', question_count: 1, skills: [], topics: [] }] },
+    ],
+  }
+}
+function tagFacets(): QuestionBankFacets {
+  return { exam_scopes: [], curriculum_sections: [], curriculum_chapters: [], primary_sections: [{ value: 'TEST-s1', count: 2 }, { value: 'TEST-s2', count: 3 }, { value: 'TEST-s3', count: 1 }, { value: '', count: 2 }],
+    task_types: [{ value: 'TEST-type-a', count: 3 }, { value: 'TEST-type-b', count: 2 }, { value: 'TEST-type-c', count: 1 }],
+    knowledge_points: [{ value: knowledgeA, count: 2 }, { value: knowledgeB, count: 1 }],
+    abilities: [{ value: '运算能力', count: 3 }], methods: [{ value: '公式法', count: 2 }, { value: '坐标法', count: 3 }], models: [{ value: '方程模型', count: 2 }], thoughts: [{ value: '数形结合', count: 2 }],
+    special_types: [{ value: '新定义题', count: 2 }], error_pattern_categories: [{ value: '方法与思路', count: 3 }],
+    error_types: [], student_levels: [], teaching_stages: [], sub_skills: [], question_types: [], years: [], exam_types: [], grades: [] }
+}
+async function mountTagBrowser(query = '?tab=tag') {
+  const host = document.createElement('div'); document.body.append(host)
+  const pinia = createPinia()
+  const router = createAppRouter(createMemoryHistory())
+  await router.push(`/question-bank${query}`); await router.isReady()
+  const scope = useCurriculumScopeStore(pinia)
+  scope.selectedVolumeId = 'bnu24-math-g8-upper'
+  const index = tagIndex()
+  scope.volumes = [{ id: scope.selectedVolumeId, label: '八年级上册', order: 1, grade: '八年级', semester: '上学期', textbook_version: '北师大版（2024）', source: {}, statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 }, chapters: index.chapters.map((chapter, order) => ({ id: chapter.id, knowledge_id: chapter.id, label: chapter.label, title: chapter.label, display_name: chapter.label, kind: 'chapter', number: String(order + 1), source_ref: { node_id: chapter.id, relative_url: '' }, exam_scope_values: [], order, sections: [] })) }]
+  const bank = useQuestionBankStore(pinia)
+  bank.papers = [{ ...paper, curriculum_volume_id: scope.selectedVolumeId, title: 'TEST-函数单元卷' }, { ...paper, id: 9, curriculum_volume_id: scope.selectedVolumeId, title: 'TEST-几何期末卷' }]; bank.papersState = 'ready'
+  const list = vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [item], total: 6, page: 1, page_size: 20, total_pages: 1 })
+  const facets = vi.spyOn(questionBankApi, 'listFacets').mockResolvedValue(tagFacets())
+  const app = createApp({ render: () => h(QuestionTagBrowser, { index, loading: false, error: '' }) })
+  app.use(pinia).use(router).mount(host); mounted.push(app)
+  await vi.waitFor(() => expect(router.currentRoute.value.query.tab).toBe(query.includes('unlinked') ? 'todo' : 'tag'))
+  if (!query.includes('unlinked')) await vi.waitFor(() => expect(bank.listState).toBe('ready'))
+  const dimension = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('.qb-dimension-tabs button')].find(button => button.textContent?.startsWith(label))!
+  const tag = (value: string) => [...host.querySelectorAll<HTMLButtonElement>('[data-tag-value]')].find(button => button.dataset.tagValue === value)!
+  const chapter = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('.qb-chapter-name')].find(button => button.textContent === label)!
+  return { host, bank, router, index, list, facets, dimension, tag, chapter }
+}
+
 describe('question bank workspace', () => {
   it.each([
     [true, '完整'], [false, '缺知识点'], [undefined, '缺知识点'],
@@ -243,7 +297,7 @@ describe('question bank workspace', () => {
     expect(load).toHaveBeenCalledTimes(1)
   })
 
-  it.each(['exam', 'skill'])('waits for the %s first-screen reads before background repair prefetch', async tab => {
+  it.each(['exam', 'tag'])('waits for the %s first-screen reads before background repair prefetch', async tab => {
     const { host, pinia, router, bank, index, profile, preview } = prepareInitialQuestionBank()
     let resolveIndex: (value: typeof index) => void = () => {}
     let resolveProfile: (value: typeof profile) => void = () => {}
@@ -766,108 +820,223 @@ describe('question bank workspace', () => {
     expect(fetchSpy.mock.calls.some((call) => String(call[0]) === '/api/question-bank/papers')).toBe(true)
   })
 
-  it('restores a skill bookmark and passes duplicate, progress and topic filters to the shared list', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const router = createAppRouter(createMemoryHistory())
-    await router.push('/question-bank?tab=skill&section=kp_TEST_section&skill=sk_TEST_one')
-    const scope = useCurriculumScopeStore(pinia)
-    scope.selectedVolumeId = 'bnu24-math-g8-upper'
-    scope.volumes = [{ id: scope.selectedVolumeId, label: '八年级上册', order: 1, grade: '八年级', semester: '上学期', textbook_version: '北师大版（2024）', source: {}, statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 }, chapters: [{ id: 'kp_TEST_chapter', knowledge_id: 'kp_TEST_chapter', label: '第一章', title: '第一章', display_name: '第一章', kind: 'chapter', number: '1', source_ref: { node_id: 'TEST', relative_url: '' }, exam_scope_values: [], order: 1, sections: [] }] }]
-    const bank = useQuestionBankStore(pinia)
-    const list = vi.spyOn(bank, 'loadQuestions').mockResolvedValue()
-    vi.spyOn(questionBankApi, 'listFacets').mockResolvedValue({ exam_scopes: [], curriculum_sections: [], knowledge_points: [], curriculum_chapters: [], abilities: [], methods: [], models: [], thoughts: [], special_types: [], error_types: [], error_pattern_categories: [], student_levels: [], teaching_stages: [], sub_skills: [], question_types: [], years: [], exam_types: [], grades: [] })
-    const stats = { question_count: 1, type_counts: { '选择题': 0, '多选题': 0, '填空题': 0, '解答题': 1 }, difficulty: { min: 4, median: 4, max: 4 }, criteria_needs_review_count: 0 }
-    const index = { graph_release_id: 'kgr_TEST', curriculum_volume_id: scope.selectedVolumeId, model_calls: 0, question_count: 1, unlinked: { no_usable_evidence: 0, no_skill_link: 0 }, chapters: [{ id: 'kp_TEST_chapter', label: '第一章', question_count: 1, cross_section_skills: [], sections: [{ id: 'kp_TEST_section', label: '第一节', question_count: 1, skills: [{ ...stats, stable_key: 'sk_TEST_one', display_name: '判断直角三角形', full_name: '八年级上册/判断直角三角形', cross_section: false, definition: { observable_evidence: '判断', include_scope: '三边', exclude_scope: '作图' } }], topics: [{ ...stats, stable_key: 'kp_TEST_topic', display_name: '勾股定理', filter_value: '八年级上册/第一章/勾股定理' }] }] }] }
-    const app = createApp({ render: () => h(QuestionSkillBrowser, { index, loading: false, error: '' }) })
-    app.use(pinia).use(router).mount(host)
-    mounted.push(app)
-    await vi.waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ skillKeys: ['sk_TEST_one'], collapseDuplicates: true, includeSkills: true })))
-    const progress = [...host.querySelectorAll<HTMLSelectElement>('select')].find(select => select.textContent?.includes('已学到第一章'))!
-    progress.value = 'kp_TEST_chapter'
-    progress.dispatchEvent(new Event('change', { bubbles: true }))
-    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ teachingProgressChapter: 'kp_TEST_chapter' })))
-    const topic = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '按知识主题')!
-    topic.click()
-    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ skillKeys: [], knowledgePoints: ['八年级上册/第一章/勾股定理'] })))
-    expect(router.currentRoute.value.query.topic).toBe('kp_TEST_topic')
-    expect(router.currentRoute.value.fullPath).not.toContain('勾股')
-    await router.replace({ query: { tab: 'skill', skill: 'unlinked' } })
-    await vi.waitFor(() => expect(host.querySelector('.qb-skill-layout')?.classList.contains('is-unlinked')).toBe(true))
-    expect(host.querySelector('.qb-skill-pane')).not.toBeNull()
-    expect(host.querySelector('.qb-unlinked')).not.toBeNull()
-    expect(host.textContent).toContain('AI 补挂技能')
-    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ skillUnlinked: true, skillKeys: [] }))
+  it('shows all semester questions and keeps every chosen dimension when switching labels', async () => {
+    const overview = vi.spyOn(trainingApi, 'overview')
+    const { host, router, list, facets, dimension, tag } = await mountTagBrowser()
+    expect(host.textContent).toContain('本学期全部题目 · 共 6 题')
+    expect(host.textContent).toContain('另有 2 题的主考小节不在本册')
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ scopeMode: 'primary', includeSkills: true, curriculumVolumeIds: ['bnu24-math-g8-upper'], curriculumSections: [], typeKeys: [], knowledgePoints: [], skillKeys: [], difficultyMin: 1, difficultyMax: 10, collapseDuplicates: true, sort: 'newest' }), expect.anything())
+    tag('TEST-type-a').click()
+    await vi.waitFor(() => expect(queryValues(router.currentRoute.value.query, 'type')).toEqual(['TEST-type-a']))
+    const reads = list.mock.calls.length
+    const counts = facets.mock.calls.length
+    dimension('方法').click(); await nextTick()
+    expect(list).toHaveBeenCalledTimes(reads)
+    expect(facets).toHaveBeenCalledTimes(counts)
+    tag('公式法').click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ typeKeys: ['TEST-type-a'], methods: ['公式法'] }), expect.anything()))
+    tag('坐标法').click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ typeKeys: ['TEST-type-a'], methods: ['公式法', '坐标法'] }), expect.anything()))
+    dimension('知识点').click(); await nextTick(); tag(knowledgeA).click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ typeKeys: ['TEST-type-a'], knowledgePoints: [knowledgeA], methods: ['公式法', '坐标法'], scopeMode: 'primary' }), expect.anything()))
+    expect(dimension('题型').querySelector('sup')?.textContent).toBe('1')
+    expect(dimension('方法').querySelector('sup')?.textContent).toBe('2')
+    expect(host.querySelector('.qb-selected-conditions')?.textContent).toContain('题型：实数计算')
+    expect(host.querySelector('.qb-selected-conditions')?.textContent).toContain('知识点：无理数')
+    host.querySelector<HTMLButtonElement>('[aria-label="删除方法：公式法"]')!.click()
+    await vi.waitFor(() => expect(queryValues(router.currentRoute.value.query, 'method')).toEqual(['坐标法']))
+    host.querySelector<HTMLButtonElement>('[aria-label="不限知识点"]')!.click()
+    await vi.waitFor(() => expect(queryValues(router.currentRoute.value.query, 'kp')).toEqual([]))
+    expect(queryValues(router.currentRoute.value.query, 'type')).toEqual(['TEST-type-a'])
+    expect(overview).not.toHaveBeenCalled()
+    for (const retired of ['按技能', '知识主题', '未挂技能', 'AI 补挂技能', '标签筛选']) expect(host.textContent).not.toContain(retired)
+    ;[...host.querySelectorAll<HTMLButtonElement>('.qb-selected-conditions button')].find(button => button.textContent?.trim() === '清空条件')!.click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ typeKeys: [], methods: [], knowledgePoints: [], curriculumSections: [] }), expect.anything()))
   })
 
-  it('switches sections from the column header and passes band and source picks to the shared list', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const router = createAppRouter(createMemoryHistory())
-    await router.push('/question-bank?tab=skill')
-    const scope = useCurriculumScopeStore(pinia)
-    scope.selectedVolumeId = 'bnu24-math-g8-upper'
-    scope.volumes = [{ id: scope.selectedVolumeId, label: '八年级上册', order: 1, grade: '八年级', semester: '上学期', textbook_version: '北师大版（2024）', source: {}, statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 }, chapters: [{ id: 'kp_TEST_chapter', knowledge_id: 'kp_TEST_chapter', label: '第一章', title: '第一章', display_name: '第一章', kind: 'chapter', number: '1', source_ref: { node_id: 'TEST', relative_url: '' }, exam_scope_values: [], order: 1, sections: [] }] }]
-    const bank = useQuestionBankStore(pinia)
-    const list = vi.spyOn(bank, 'loadQuestions').mockResolvedValue()
-    vi.spyOn(questionBankApi, 'listFacets').mockResolvedValue({ exam_scopes: [], curriculum_sections: [], knowledge_points: [], curriculum_chapters: [], abilities: [], methods: [], models: [], thoughts: [], special_types: [], error_types: [], error_pattern_categories: [], student_levels: [], teaching_stages: [], sub_skills: [], question_types: [], years: [], exam_types: [], grades: [] })
-    const overview = vi.spyOn(trainingApi, 'overview').mockResolvedValue({ nodes: [] } as unknown as Awaited<ReturnType<typeof trainingApi.overview>>)
-    bank.papers = [
-      { ...paper, id: 4, curriculum_volume_id: 'bnu24-math-g8-upper', title: 'TEST-函数单元卷' },
-      { ...paper, id: 9, curriculum_volume_id: 'bnu24-math-g8-upper', title: 'TEST-几何期末卷' },
-    ]
-    bank.papersState = 'ready'
-    const stats = { question_count: 1, type_counts: { '选择题': 0, '多选题': 0, '填空题': 0, '解答题': 1 }, difficulty: { min: 4, median: 4, max: 4 }, criteria_needs_review_count: 0 }
-    const skill = (key: string, name: string) => ({ ...stats, stable_key: key, display_name: name, full_name: `八年级上册/${name}`, cross_section: false, definition: { observable_evidence: '判断', include_scope: '三边', exclude_scope: '作图' } })
-    const section = (id: string, label: string, skills: ReturnType<typeof skill>[]) => ({ id, label, question_count: 1, skills, topics: [] })
-    const index = { graph_release_id: 'kgr_TEST', curriculum_volume_id: scope.selectedVolumeId, model_calls: 0, question_count: 2, unlinked: { no_usable_evidence: 1, no_skill_link: 2 }, chapters: [{ id: 'kp_TEST_chapter', label: '第一章', question_count: 2, cross_section_skills: [], sections: [section('kp_TEST_s1', '第一节', [skill('sk_TEST_one', '判断直角三角形')]), section('kp_TEST_s2', '第二节', [skill('sk_TEST_two', '应用勾股定理')])] }] }
-    const app = createApp({ render: () => h(QuestionSkillBrowser, { index, loading: false, error: '' }) })
-    app.use(pinia).use(router).mount(host)
-    mounted.push(app)
-    await vi.waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ skillKeys: ['sk_TEST_one'] })))
+  it('separates exclusive chapter names from additive checkboxes and merges full chapter selections', async () => {
+    const { host, router, list, chapter, index } = await mountTagBrowser()
+    const boxes = () => [...host.querySelectorAll<HTMLInputElement>('.qb-chapter-options input')]
+    const box = (label: string) => boxes().find(input => input.getAttribute('aria-label') === label)!
+    chapter('第一章 实数').click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ curriculumSections: ['TEST-c1'] }), expect.anything()))
+    expect(box('同时看第一章 实数').checked).toBe(true)
+    box('同时看第一章 实数 · 1 认识实数').click()
+    await vi.waitFor(() => expect(queryValues(router.currentRoute.value.query, 'sec')).toEqual(['TEST-s2']))
+    expect(box('同时看第一章 实数').indeterminate).toBe(true)
+    box('同时看第一章 实数 · 1 认识实数').click()
+    await vi.waitFor(() => expect(queryValues(router.currentRoute.value.query, 'sec')).toEqual(['TEST-c1']))
+    box('同时看第二章 三角形').click()
+    await vi.waitFor(() => expect(queryValues(router.currentRoute.value.query, 'sec')).toEqual(['TEST-c1', 'TEST-c2']))
+    chapter('1 认识实数').click()
+    await vi.waitFor(() => expect(queryValues(router.currentRoute.value.query, 'sec')).toEqual(['TEST-s1']))
+    chapter('本学期全部章节').click()
+    await vi.waitFor(() => expect(queryValues(router.currentRoute.value.query, 'sec')).toEqual([]))
+    expect(normalizeChapters(index.chapters, ['TEST-s1', 'TEST-s2', 'TEST-s2'])).toEqual(['TEST-c1'])
+    expect(toggleChapter(index.chapters, ['TEST-c1'], 'TEST-s1')).toEqual(['TEST-s2'])
+  })
 
-    const switcher = host.querySelector<HTMLDetailsElement>('.qb-section-switcher')!
-    switcher.open = true
-    await nextTick()
-    const row = [...switcher.querySelectorAll<HTMLButtonElement>('.qb-tree-row')].find(button => button.textContent?.includes('第二节'))!
-    row.click()
-    await vi.waitFor(() => expect(router.currentRoute.value.query.section).toBe('kp_TEST_s2'))
-    expect(switcher.open).toBe(false)
-    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ skillKeys: ['sk_TEST_two'] })))
+  it('removes only zero-count type and knowledge conditions after changing chapter', async () => {
+    const { host, router, list, facets, chapter } = await mountTagBrowser(`?tab=tag&type=TEST-type-a&kp=${encodeURIComponent(knowledgeA)}&method=公式法`)
+    facets.mockImplementation(async filters => {
+      const current = tagFacets()
+      if (filters?.curriculumSections?.includes('TEST-c2')) {
+        current.task_types = [{ value: 'TEST-type-a', count: 0 }, { value: 'TEST-type-c', count: 1 }]
+        current.knowledge_points = [{ value: knowledgeA, count: 0 }]
+        current.methods = [{ value: '公式法', count: 0 }]
+      }
+      return current
+    })
+    chapter('第一章 实数').click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ curriculumSections: ['TEST-c1'], typeKeys: ['TEST-type-a'], knowledgePoints: [knowledgeA] }), expect.anything()))
+    chapter('第二章 三角形').click()
+    await vi.waitFor(() => expect(queryValues(router.currentRoute.value.query, 'type')).toEqual([]))
+    expect(queryValues(router.currentRoute.value.query, 'kp')).toEqual([])
+    expect(queryValues(router.currentRoute.value.query, 'method')).toEqual(['公式法'])
+    expect(host.textContent).toContain('已去掉在所选章节里没有题的条件：实数计算、无理数')
+  })
 
+  it('keeps chapter-valid type and knowledge conditions when another dimension makes the intersection empty', async () => {
+    const { host, router, facets, chapter } = await mountTagBrowser(`?tab=tag&type=TEST-type-a&kp=${encodeURIComponent(knowledgeA)}&method=坐标法`)
+    facets.mockImplementation(async filters => {
+      const result = tagFacets()
+      if (filters?.methods?.length) { result.task_types = []; result.knowledge_points = [] }
+      return result
+    })
+    chapter('第一章 实数').click()
+    await vi.waitFor(() => expect(facets).toHaveBeenLastCalledWith(expect.objectContaining({ curriculumSections: ['TEST-c1'], scopeMode: 'primary' }), expect.anything()))
+    expect(facets.mock.lastCall?.[0]?.methods).toBeUndefined()
+    expect(queryValues(router.currentRoute.value.query, 'type')).toEqual(['TEST-type-a'])
+    expect(queryValues(router.currentRoute.value.query, 'kp')).toEqual([knowledgeA])
+    expect(queryValues(router.currentRoute.value.query, 'method')).toEqual(['坐标法'])
+    expect(host.textContent).not.toContain('已去掉')
+  })
+
+  it('keeps answer form, difficulty, source and progress rows in the same request as labels', async () => {
+    const { host, list, tag } = await mountTagBrowser()
+    tag('TEST-type-a').click(); await nextTick()
+    ;[...host.querySelectorAll<HTMLButtonElement>('.qb-type-chips button')].find(button => button.textContent === '选择')!.click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ typeKeys: ['TEST-type-a'], questionTypes: ['选择题', '多选题'] }), expect.anything()))
     const difficulty = host.querySelector<HTMLDetailsElement>('.qb-difficulty-filter')!
-    difficulty.open = true
-    await nextTick()
-    const band = [...difficulty.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('中档提升'))!
-    band.click()
-    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ difficultyMin: 4.5, difficultyMax: 6.4 })))
-
+    difficulty.open = true; await nextTick()
+    ;[...difficulty.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('中档提升'))!.click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ difficultyMin: 4.5, difficultyMax: 6.4 }), expect.anything()))
     const source = host.querySelector<HTMLDetailsElement>('.qb-source-filter')!
-    source.open = true
-    source.dispatchEvent(new Event('toggle'))
-    await nextTick()
-    const search = source.querySelector<HTMLInputElement>('input[aria-label="筛选来源"]')!
-    search.value = '几何'
-    search.dispatchEvent(new Event('input'))
-    await nextTick()
-    const rows = [...source.querySelectorAll<HTMLButtonElement>('.qb-source-list .qb-source-row')]
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!.textContent).toContain('TEST-几何期末卷')
-    rows[0]!.click()
-    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ paperIds: [9] })))
+    source.open = true; source.dispatchEvent(new Event('toggle')); await nextTick()
+    const search = source.querySelector<HTMLInputElement>('input')!
+    search.value = '几何'; search.dispatchEvent(new Event('input')); await nextTick()
+    const rows = source.querySelectorAll<HTMLButtonElement>('.qb-source-list button')
+    expect(rows).toHaveLength(1); rows[0]!.click()
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ paperIds: [9] }), expect.anything()))
     expect(source.open).toBe(false)
+    const progress = host.querySelector<HTMLSelectElement>('[aria-label="教学进度"]')!
+    progress.value = 'TEST-c1'; progress.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ typeKeys: ['TEST-type-a'], teachingProgressChapter: 'TEST-c1' }), expect.anything()))
+  })
 
-    const unlinkedButton = host.querySelector<HTMLButtonElement>('.qb-unlinked')!
-    expect(unlinkedButton.textContent).toContain('未挂技能')
-    unlinkedButton.click()
-    await vi.waitFor(() => expect(router.currentRoute.value.query.skill).toBe('unlinked'))
-    expect(host.querySelector('.qb-skill-pane')).not.toBeNull()
-    expect(host.querySelector('.qb-section-switcher')).not.toBeNull()
+  it.each([
+    ['?tab=skill', 'sec', []],
+    ['?tagDim=typeKeys&tag=TEST-type-a', 'type', ['TEST-type-a']],
+    ['?tagDim=knowledgePoints&tag=无理数', 'kp', ['无理数']],
+    ['?tagDim=abilities&tag=运算能力', 'ability', ['运算能力']],
+    ['?tagDim=thoughts&tag=数形结合', 'thought', ['数形结合']],
+    ['?tagDim=methods&tag=公式法', 'method', ['公式法']],
+    ['?tagDim=models&tag=方程模型', 'model', ['方程模型']],
+    ['?tagDim=specialTypes&tag=新定义题', 'special', ['新定义题']],
+    ['?tagDim=errorPatternCategories&tag=方法与思路', 'error', ['方法与思路']],
+    ['?tab=skill&section=TEST-s1', 'sec', []],
+    ['?tab=skill&section=TEST-s1&scope=volume', 'sec', []],
+    ['?tab=skill&section=TEST-s1&scope=section', 'sec', ['TEST-s1']],
+    ['?tab=skill&section=TEST-s1&scope=chapter', 'sec', ['TEST-c1']],
+    ['?topic=TEST-topic', 'kp', [knowledgeA]],
+  ])('converts the legacy address %s without retaining old navigation fields', async (query, key, expected) => {
+    const { router } = await mountTagBrowser(query)
+    expect(queryValues(router.currentRoute.value.query, key)).toEqual(expected)
+    for (const obsolete of ['topic', 'tagDim', 'tag', 'section', 'scope']) expect(router.currentRoute.value.query[obsolete]).toBeUndefined()
+  })
 
-    // The mastery read needs only group-level nodes, not per-student detail.
-    await vi.waitFor(() => expect(overview).toHaveBeenCalledWith(expect.objectContaining({ include_student_detail: false }), expect.anything()), { timeout: 4000 })
+  it('keeps and removes a legacy skill condition without exposing a skill dimension', async () => {
+    const { host, router, list } = await mountTagBrowser('?skill=sk_TEST_one')
+    expect(host.querySelector('.qb-selected-chip.is-legacy')?.textContent).toContain('技能：判断实数（旧链接）')
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ skillKeys: ['sk_TEST_one'] }), expect.anything())
+    expect(host.querySelector('.qb-dimension-tabs')?.textContent).not.toContain('技能')
+    host.querySelector<HTMLButtonElement>('[aria-label="删除技能：判断实数（旧链接）"]')!.click()
+    await vi.waitFor(() => expect(queryValues(router.currentRoute.value.query, 'skill')).toEqual([]))
+  })
+
+  it('ignores an unavailable legacy topic and sends unlinked bookmarks to pending maintenance', async () => {
+    const { host, router } = await mountTagBrowser('?topic=TEST-missing')
+    expect(host.textContent).toContain('该知识点不在当前学期')
+    expect(router.currentRoute.value.query.topic).toBeUndefined()
+    const pending = await mountTagBrowser('?tab=skill&skill=unlinked')
+    expect(pending.router.currentRoute.value.query.tab).toBe('todo')
+    expect(pending.router.currentRoute.value.query.skill).toBeUndefined()
+  })
+
+  it('keeps questions readable when facet counts fail and retries both count surfaces', async () => {
+    const { host, facets, router, bank } = await mountTagBrowser()
+    facets.mockRejectedValue(new Error('TEST-facet-unavailable'))
+    await router.replace({ query: { tab: 'tag', ability: '运算能力' } })
+    await vi.waitFor(() => expect(host.querySelectorAll('.qb-count-error')).toHaveLength(2))
+    expect(host.textContent).toContain('题数暂时无法读取')
+    expect(host.textContent).toContain('已知 x + y = 3')
+    expect(bank.listState).toBe('ready')
+    facets.mockResolvedValue(tagFacets())
+    host.querySelector<HTMLButtonElement>('.qb-count-error button')!.click()
+    await vi.waitFor(() => expect(host.querySelector('.qb-count-error')).toBeNull())
+  })
+
+  it('offers clear conditions after an empty intersection and resets answer filters', async () => {
+    const { host, list, tag, bank } = await mountTagBrowser()
+    list.mockResolvedValueOnce({ items: [], total: 0, page: 1, page_size: 20, total_pages: 0 })
+    tag('TEST-type-a').click()
+    await vi.waitFor(() => expect(bank.listState).toBe('empty'))
+    expect(host.textContent).toContain('没有同时满足全部条件的题')
+    list.mockResolvedValue({ items: [item], total: 6, page: 1, page_size: 20, total_pages: 1 })
+    host.querySelector<HTMLButtonElement>('[data-kind="empty"] button')!.click()
+    await vi.waitFor(() => expect(bank.listState).toBe('ready'))
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ typeKeys: [], knowledgePoints: [], questionTypes: [], difficultyMin: 1, difficultyMax: 10 }), expect.anything())
+  })
+
+  it('uses type section metadata for grouping and keeps search out of address filters', async () => {
+    const { host, chapter, tag, dimension, list, router } = await mountTagBrowser()
+    chapter('第一章 实数').click()
+    await vi.waitFor(() => expect(chapter('1 认识实数')).toBeTruthy())
+    chapter('1 认识实数').click()
+    await vi.waitFor(() => expect(queryValues(router.currentRoute.value.query, 'sec')).toEqual(['TEST-s1']))
+    expect(tag('TEST-type-b').closest('.qb-tag-row')?.textContent).toContain('其他小节')
+    expect(tag('TEST-type-a').textContent).toContain('实数计算')
+    const reads = list.mock.calls.length
+    dimension('知识点').click(); await nextTick()
+    const search = host.querySelector<HTMLInputElement>('[aria-label="搜知识点"]')!
+    search.value = '平方根'; search.dispatchEvent(new Event('input')); await nextTick()
+    expect(host.querySelector('.qb-tag-lines')?.classList.contains('is-clamped')).toBe(false)
+    expect(tag(knowledgeB).closest('.qb-tag-row')?.textContent).not.toContain('其他小节')
+    expect(list).toHaveBeenCalledTimes(reads)
+    expect(router.currentRoute.value.query.kp).toBeUndefined()
+  })
+
+  it('shows primary and secondary types, two knowledge points and no direct skill badges', async () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const question = { ...item, evidence_point_count: 3, skills: [{ stable_key: 'sk_TEST_one', display_name: '判断实数' }], labels: { primary_type: { key: 'TEST-a', label: '题型·实数计算' }, secondary_types: [{ key: 'TEST-b', label: '题型·分类讨论' }], knowledge_points: [{ key: 'kp1', label: '无理数' }, { key: 'kp2', label: '平方根' }, { key: 'kp3', label: '倒数' }] } }
+    const app = createApp({ render: () => h(QuestionCard, { question }) })
+    app.use(createPinia()).mount(host); mounted.push(app)
+    expect(host.querySelector('.qb-type-capsule:not(.is-secondary)')?.textContent).toBe('实数计算')
+    expect(host.querySelector('.qb-type-capsule.is-secondary')?.textContent).toBe('分类讨论')
+    expect([...host.querySelectorAll('.qb-topic-capsule')].map(point => point.textContent)).toEqual(['无理数', '平方根'])
+    expect(host.textContent).toContain('+1')
+    expect(host.textContent).toContain('判定点 3')
+    expect(host.textContent).not.toContain('技能')
+  })
+
+  it('keeps legacy knowledge labels but excludes raw type and skill identifiers from cards', () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const question: QuestionBankListItem = { ...item, tags: [{ tag_type: 'knowledge_point', tag_value: knowledgeA, confidence: 1 }, { tag_type: 'knowledge_point', tag_value: 'sk_TEST_one', confidence: 1 }, { tag_type: 'knowledge_point', tag_value: 'kp_TEST_t01', confidence: 1 }] }
+    const app = createApp({ render: () => h(QuestionCard, { question }) })
+    app.use(createPinia()).mount(host); mounted.push(app)
+    expect(host.textContent).toContain('无理数')
+    expect(host.textContent).not.toContain('sk_TEST_one')
+    expect(host.textContent).not.toContain('kp_TEST_t01')
   })
 
   function examProfile(): ChapterExamProfileData {
@@ -1183,61 +1352,6 @@ describe('question bank workspace', () => {
     expect(list.mock.calls.length).toBe(calls)
   })
 
-  it('browses questions across skills by tag dimension, scope and value', async () => {
-    const host = document.createElement('div')
-    document.body.append(host)
-    const pinia = createPinia()
-    const router = createAppRouter(createMemoryHistory())
-    await router.push('/question-bank?tab=skill&section=kp_TEST_section')
-    const scope = useCurriculumScopeStore(pinia)
-    scope.selectedVolumeId = 'bnu24-math-g8-upper'
-    scope.volumes = [{ id: scope.selectedVolumeId, label: '八年级上册', order: 1, grade: '八年级', semester: '上学期', textbook_version: '北师大版（2024）', source: {}, statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 }, chapters: [{ id: 'kp_TEST_chapter', knowledge_id: 'kp_TEST_chapter', label: '第一章', title: '第一章', display_name: '第一章', kind: 'chapter', number: '1', source_ref: { node_id: 'TEST', relative_url: '' }, exam_scope_values: [], order: 1, sections: [] }] }]
-    const bank = useQuestionBankStore(pinia)
-    const list = vi.spyOn(bank, 'loadQuestions').mockResolvedValue()
-    const facetList = vi.spyOn(questionBankApi, 'listFacets').mockResolvedValue({ exam_scopes: [], curriculum_sections: [], knowledge_points: [{ value: '八年级上册｜第一章｜勾股定理', count: 1 }], curriculum_chapters: [], abilities: [], methods: [], models: [], thoughts: [], special_types: [{ value: '新定义题', count: 2 }], error_types: [], error_pattern_categories: [{ value: '方法与思路', count: 3 }], student_levels: [], teaching_stages: [], sub_skills: [], question_types: [], years: [], exam_types: [], grades: [] })
-    const stats = { question_count: 1, type_counts: { '选择题': 0, '多选题': 0, '填空题': 0, '解答题': 1 }, difficulty: { min: 4, median: 4, max: 4 }, criteria_needs_review_count: 0 }
-    const index = { graph_release_id: 'kgr_TEST', curriculum_volume_id: scope.selectedVolumeId, model_calls: 0, question_count: 1, unlinked: { no_usable_evidence: 0, no_skill_link: 0 }, chapters: [{ id: 'kp_TEST_chapter', label: '第一章', question_count: 1, cross_section_skills: [], sections: [{ id: 'kp_TEST_section', label: '第一节', question_count: 1, skills: [{ ...stats, stable_key: 'sk_TEST_one', display_name: '判断直角三角形', full_name: '八年级上册/判断直角三角形', cross_section: false, definition: { observable_evidence: '判断', include_scope: '三边', exclude_scope: '作图' } }], topics: [{ ...stats, stable_key: 'kp_TEST_topic', display_name: '勾股定理', filter_value: '八年级上册/第一章/勾股定理' }] }] }] }
-    const app = createApp({ render: () => h(QuestionSkillBrowser, { index, loading: false, error: '' }) })
-    app.use(pinia).use(router).mount(host)
-    mounted.push(app)
-    const button = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === label)!
-    const tagRow = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('.qb-skill-row')].find(item => item.textContent?.includes(label))!
-    await vi.waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ skillKeys: ['sk_TEST_one'] })))
-    const callsBeforeTagMode = list.mock.calls.length
-    button('按标签').click()
-    await vi.waitFor(() => expect(router.currentRoute.value.query.tagDim).toBe('typeKeys'))
-    button('特殊考法').click()
-    await vi.waitFor(() => expect(router.currentRoute.value.query.tagDim).toBe('specialTypes'))
-    await vi.waitFor(() => expect(tagRow('新定义题')).toBeTruthy())
-    expect(list.mock.calls.length).toBe(callsBeforeTagMode)
-    expect(host.textContent).toContain('请选择标签')
-    expect(facetList).toHaveBeenLastCalledWith(expect.objectContaining({ skillKeys: [], curriculumVolumeIds: [scope.selectedVolumeId], curriculumSections: [] }), expect.anything())
-    tagRow('新定义题').click()
-    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ specialTypes: ['新定义题'], skillKeys: [], curriculumSections: [], curriculumVolumeIds: [scope.selectedVolumeId] })))
-    expect(list.mock.lastCall?.[0]).not.toHaveProperty('scopeMode')
-    expect(router.currentRoute.value.query.tag).toBe('新定义题')
-    button('本章').click()
-    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ curriculumSections: ['kp_TEST_chapter'] })))
-    button('本小节').click()
-    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ curriculumSections: ['kp_TEST_section'] })))
-    expect(router.currentRoute.value.query.scope).toBe('section')
-    button('知识点').click()
-    await vi.waitFor(() => expect(router.currentRoute.value.query.tagDim).toBe('knowledgePoints'))
-    expect(router.currentRoute.value.query.tag).toBeUndefined()
-    tagRow('勾股定理').click()
-    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ knowledgePoints: ['八年级上册｜第一章｜勾股定理'], specialTypes: [], scopeMode: 'any', curriculumSections: [] })))
-    expect(button('本章').disabled).toBe(true)
-    expect(button('本小节').disabled).toBe(true)
-    expect(button('整个学期').getAttribute('aria-pressed')).toBe('true')
-    button('错因').click()
-    await vi.waitFor(() => expect(router.currentRoute.value.query.tagDim).toBe('errorPatternCategories'))
-    tagRow('方法与思路').click()
-    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ errorPatternCategories: ['方法与思路'], specialTypes: [] })))
-    button('按技能').click()
-    await vi.waitFor(() => expect(router.currentRoute.value.query.tagDim).toBeUndefined())
-    expect(router.currentRoute.value.query.tag).toBeUndefined()
-    expect(router.currentRoute.value.query.scope).toBeUndefined()
-  })
 
 
   const todoPreview = {

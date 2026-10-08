@@ -451,6 +451,7 @@ class QuestionFacetsResponse(_QuestionBankModel):
     task_types: list[QuestionFacetItem] = Field(default_factory=list)
     exam_scopes: list[QuestionFacetItem]
     curriculum_sections: list[QuestionFacetItem]
+    primary_sections: list[QuestionFacetItem] = Field(default_factory=list)
     knowledge_points: list[QuestionFacetItem]
     curriculum_chapters: list[QuestionFacetItem]
     abilities: list[QuestionFacetItem]

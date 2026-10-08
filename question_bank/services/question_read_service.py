@@ -2373,6 +2373,7 @@ class QuestionBankReadService:
             "curriculum_sections": facet_source(
                 curriculum_sections=(),
             ),
+            "primary_sections": facet_source(curriculum_sections=(), exam_scopes=()),
             "task_types": facet_source(type_keys=()),
             "knowledge_points": facet_source(
                 knowledge_point=None,
@@ -2485,6 +2486,22 @@ class QuestionBankReadService:
                                 if name == "error_types" else None
                             ),
                         )
+                    elif name == "primary_sections":
+                        result[name] = [
+                            {"value": str(row["value"]), "count": int(row["count"])}
+                            for row in conn.execute(
+                                f"""
+                                WITH filtered_questions AS ({sql})
+                                SELECT COALESCE(s.primary_section_id, '') AS value,
+                                       COUNT(DISTINCT f.id) AS count
+                                FROM filtered_questions f
+                                LEFT JOIN question_scope_summary s ON s.question_id = f.id
+                                GROUP BY COALESCE(s.primary_section_id, '')
+                                ORDER BY count DESC, value
+                                """,
+                                params,
+                            ).fetchall()
+                        ]
                     elif name == "curriculum_chapters":
                         result[name] = _curriculum_chapter_facet(
                             tags.get("exam_scope", []),
@@ -3212,17 +3229,11 @@ class QuestionBankReadService:
 
 def _scope_mode_selection(
     filters: QuestionReadFilters,
-    expanded_knowledge: tuple[str, ...],
     expanded_scopes: tuple[str, ...],
     current_knowledge,
 ) -> dict[str, Any] | None:
-    """Resolve the selected scope (chapter/section/knowledge filters) into
-    section knowledge keys + volume order for strict/primary matching."""
-    if not (
-        filters.exam_scopes
-        or filters.curriculum_sections
-        or expanded_knowledge
-    ):
+    """Resolve chapter and section filters for strict/primary matching."""
+    if not (filters.exam_scopes or filters.curriculum_sections):
         return None
     catalog = load_curriculum_catalog()
     chapter_by_scope: dict[str, dict[str, Any]] = {}
@@ -3292,10 +3303,6 @@ def _scope_mode_selection(
     for value in filters.curriculum_sections:
         absorb_key(section_key_of_id.get(str(value), str(value)))
 
-    for value in expanded_knowledge:
-        for identity in current_knowledge.resolve(str(value)):
-            absorb_key(str(identity.stable_key))
-
     return {
         "section_keys": tuple(sorted(section_keys)),
         # Tag fallback compares against stored tag values, which are the raw
@@ -3309,7 +3316,6 @@ def _scope_mode_selection(
         "volume_order_max": max(volume_orders) if volume_orders else 0,
         "scope_values": expanded_scopes if filters.exam_scopes else (),
         "selected_sections": bool(filters.curriculum_sections),
-        "knowledge_values": expanded_knowledge,
     }
 
 
@@ -3342,13 +3348,6 @@ def _scope_mode_sql(mode: str, selection: dict[str, Any]) -> tuple[str, list[Any
             + "))"
         )
         tag_params.extend(section_tag_ids)
-    if selection["knowledge_values"]:
-        tag_clauses.append(
-            "(tag_type = 'knowledge_point' AND tag_value IN ("
-            + ",".join("?" for _ in selection["knowledge_values"])
-            + "))"
-        )
-        tag_params.extend(selection["knowledge_values"])
     legacy_match = (
         " AND ".join(
             "EXISTS (SELECT 1 FROM question_tags lt "
@@ -3474,11 +3473,10 @@ def _question_filter_parts(
     if (
         scope_mode in {"strict", "primary"}
         and current_knowledge is not None
-        and (expanded_scopes or filters.curriculum_sections or expanded_knowledge)
+        and (expanded_scopes or filters.curriculum_sections)
     ):
         selection = _scope_mode_selection(
             filters,
-            expanded_knowledge,
             expanded_scopes,
             current_knowledge,
         )
@@ -3508,12 +3506,9 @@ def _question_filter_parts(
                             expanded_scopes,
                         ),
                         ("curriculum_section", filters.curriculum_sections),
-                        (
-                            "knowledge_point",
-                            expanded_knowledge,
-                        ),
                     )
                 ),
+                ("knowledge_point", expanded_knowledge),
                 (
                     "ability",
                     expand("ability", filters.abilities),

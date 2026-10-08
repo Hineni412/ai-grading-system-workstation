@@ -103,6 +103,7 @@ def test_skill_routes_remain_read_only_and_optional_list_fields(question_bank_fi
     assert enriched == {**plain, 'labels': {'primary_type': None, 'secondary_types': [], 'knowledge_points': [], 'knowledge_coverage': False}, 'skills': [], 'skill_hits': [], 'evidence_point_count': 0, 'duplicate_members': []}
     assert client.get('/api/question-bank/questions?skill_keys=sk_TEST_missing').json()['total'] == 0
     assert client.get('/api/question-bank/facets?skill_keys=sk_TEST_missing').json()['question_types'] == []
+    assert client.get('/api/question-bank/facets').json()['primary_sections'] == [{'value': '', 'count': 1}]
     assert client.get('/api/question-bank/skill-index?curriculum_volume_id=invalid').status_code == 422
     index = client.get('/api/question-bank/skill-index?curriculum_volume_id=bnu24-math-g8-upper')
     assert index.status_code == 200 and index.json()['model_calls'] == 0
@@ -359,6 +360,9 @@ def test_solution_evidence_route_returns_latest_point_level_union(
     assert {item['id'] for item in incomplete['items']} == {2, 3}
     needs_review = client.get('/api/question-bank/questions?criteria_needs_review=true').json()
     assert [item['id'] for item in needs_review['items']] == [2]
+    review_facets = client.get('/api/question-bank/facets?criteria_needs_review=true').json()
+    assert review_facets['question_types'] == [{'value': '解答题', 'count': 1}]
+    assert review_facets['primary_sections'] == [{'value': '', 'count': 1}]
     paper = next(item for item in client.get('/api/question-bank/papers').json()['items'] if item['id'] == 2)
     assert paper['question_count'] == 3
     assert paper['evidence_question_count'] == paper['criteria_question_count'] == paper['complete_analysis_count'] == 1
@@ -1021,3 +1025,47 @@ def test_similarity_type_reason_is_separate_from_knowledge_point():
         shared_type_values=('由三边判断直角三角形',), type_values=frozenset({'由三边判断直角三角形'}))
     assert reasons[0] == {'kind': 'type', 'values': ['由三边判断直角三角形']}
     assert next(reason for reason in reasons if reason['kind'] == 'knowledge_point')['values'] == ['勾股定理的逆定理']
+
+
+def test_tag_browser_default_routes_hit_prewarmed_read_caches(
+    question_bank_fixture, monkeypatch,
+):
+    from types import SimpleNamespace
+    from integration.training_prewarm import TrainingPrewarmWorker
+    from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+
+    _service, db_path, _before = question_bank_fixture
+    volume_id = 'bnu24-math-g8-upper'
+    volume = curriculum_volume(volume_id=volume_id)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE papers SET grade=?,semester=?,textbook_version=? WHERE id=2",
+                     (volume['grade'], volume['semester'], volume['textbook_version']))
+        conn.execute("UPDATE questions SET difficulty='5' WHERE id=1")
+    paths = SimpleNamespace(db_path=db_path, qb_db_path=db_path, data_root=db_path.parent)
+    worker = TrainingPrewarmWorker(paths, None, foreground_quiet_seconds=0)
+    monkeypatch.setattr(worker, '_latest_volume_id', lambda: volume_id)
+    before_read = db_path.read_bytes()
+    worker._warm_question_bank(7)
+
+    def unexpected_recompute(*_args, **_kwargs):
+        pytest.fail('Default tag page did not reuse its prewarmed read result')
+
+    monkeypatch.setattr(QuestionBankReadService, '_list_questions', unexpected_recompute)
+    monkeypatch.setattr(QuestionBankReadService, '_list_facets', unexpected_recompute)
+    service = QuestionBankReadService(db_path, data_root=db_path.parent)
+    client = _question_bank_client(service, question_bank_db_path=db_path,
+                                   data_root=db_path.parent)
+    common = {
+        'curriculum_volume_ids': volume_id, 'difficulty_min': '1', 'difficulty_max': '10',
+        'collapse_duplicates': 'true', 'scope_mode': 'primary',
+        'tag_status': 'all', 'analysis_status': 'all',
+    }
+    page = client.get('/api/question-bank/questions', params={
+        **common, 'include_skills': 'true', 'page': '1', 'page_size': '20', 'sort': 'newest',
+    })
+    assert page.status_code == 200 and page.json()['total'] == 1
+    assert [item['id'] for item in page.json()['items']] == [1]
+    facets = client.get('/api/question-bank/facets', params=common)
+    assert facets.status_code == 200
+    assert facets.json()['primary_sections'] == [{'value': '', 'count': 1}]
+    assert db_path.read_bytes() == before_read

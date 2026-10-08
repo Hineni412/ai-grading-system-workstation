@@ -10,15 +10,23 @@ import AppButton from '../design-system/AppButton.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 import QuestionAnnotationPanel from './QuestionAnnotationPanel.vue'
 
-const props = defineProps<{ question: QuestionBankListItem; paperMode?: boolean; currentSkill?: string; badgeLabel?: string }>()
-const emit = defineEmits<{ similar: [question: QuestionBankListItem]; skill: [key: string] }>()
+const props = defineProps<{ question: QuestionBankListItem; paperMode?: boolean; badgeLabel?: string }>()
+const emit = defineEmits<{ similar: [question: QuestionBankListItem] }>()
 const bank = useQuestionBankStore()
 const assembly = useAssemblyStore()
 const { confirm } = useConfirm()
 const heading = ref<HTMLButtonElement | null>(null)
 const expanded = computed(() => bank.selectedQuestionId === props.question.id)
 const inBasket = computed(() => assembly.draft.basket_ids.includes(props.question.id))
-const tags = computed(() => props.question.tags.filter(tag => tag.tag_type === 'knowledge_point').slice(0, 2))
+const knowledgePoints = computed(() => props.question.labels
+  ? props.question.labels.knowledge_points
+  : props.question.tags
+    .filter(tag => tag.tag_type === 'knowledge_point')
+    .map(tag => ({ key: tag.tag_value, label: knowledgeLeafLabel(tag.tag_value) }))
+    .filter(point => !point.label.startsWith('sk_') && !/_t\d{2}$/.test(point.label)))
+function typeLabel(label: string): string {
+  return knowledgeLeafLabel(label).replace(/^题型[·：:]\s*/, '')
+}
 const preview = computed(() => bank.detail?.previews.find(item => item.preview_type === 'question' && item.url))
 async function toggle() { await bank.selectQuestion(expanded.value ? null : props.question.id) }
 function clickHeading(event: MouseEvent) {
@@ -69,17 +77,17 @@ watch(expanded, async (value, wasExpanded) => {
     </header>
     <div v-if="!expanded" class="qb-inline-card__collapsed">
       <div class="qb-inline-card__stem"><QuestionContentRenderer :blocks="question.rich_content?.question_blocks" :fallback="question.question_text" image-alt="题目配图" media-mode="list" compact /></div>
-      <div class="qb-inline-card__skills">
-        <span v-if="currentSkill && question.skill_hits?.length">命中判定点：{{ question.skill_hits.map(hit => hit.point_label.split('：')[0]).join('、') }} → 本技能 · 直接</span>
-        <span v-else>技能：</span>
-        <span v-if="currentSkill && question.skills?.some(skill => skill.stable_key !== currentSkill)">｜还关联：</span>
-        <button v-for="skill in (question.skills ?? []).filter(skill => skill.stable_key !== currentSkill)" :key="skill.stable_key" type="button" class="qb-topic-capsule" @click="emit('skill', skill.stable_key)">{{ skill.display_name }}</button>
-        <span v-if="question.skills?.length === 0" class="qb-warning">未挂技能</span>
+      <div class="qb-inline-card__tags">
+        <span>{{ questionTypeWithSubtype(question.question_type, question.tags) }}</span>
+        <span>难度 {{ question.difficulty || '待定' }}</span>
+        <span v-if="question.labels?.primary_type" class="qb-type-capsule" :title="`主题型：${question.labels.primary_type.label}`">{{ typeLabel(question.labels.primary_type.label) }}</span>
+        <span v-for="type in question.labels?.secondary_types ?? []" :key="type.key" class="qb-type-capsule is-secondary" :title="`次题型：${type.label}`">{{ typeLabel(type.label) }}</span>
+        <span v-for="point in knowledgePoints.slice(0, 2)" :key="point.key" class="qb-topic-capsule" :title="point.label">{{ knowledgeLeafLabel(point.label) }}</span>
+        <span v-if="knowledgePoints.length > 2" :title="`另有 ${knowledgePoints.length - 2} 个知识点`">+{{ knowledgePoints.length - 2 }}</span>
       </div>
-      <div class="qb-inline-card__tags"><span>{{ questionTypeWithSubtype(question.question_type, question.tags) }}</span><span>难度 {{ question.difficulty || '待定' }}</span><span v-for="tag in tags" :key="tag.tag_value" :title="tag.tag_value">{{ knowledgeLeafLabel(tag.tag_value) }}</span></div>
       <details v-if="question.duplicate_members?.length" class="qb-duplicate-members"><summary>另有 {{ question.duplicate_members.length }} 道相同题 ▸</summary><p v-for="member in question.duplicate_members" :key="member.id"><AppButton :to="{ path: '/question-bank', query: { tab: 'paper', paper: member.paper_id, question: member.id } }" variant="ghost" size="small" :as="RouterLink">第 {{ member.question_number }} 题 · {{ member.paper_title }}</AppButton></p></details>
-      <footer><small>判定点 {{ question.evidence_point_count ?? '待核对' }} · 技能 {{ question.skills?.length ?? 0 }}<template v-if="question.criteria_needs_review"> · 判定点待审核</template></small><div class="qb-inline-card__footer-actions"><AppButton type="button" variant="ghost" size="small" @click="toggle">展开标注</AppButton><AppButton type="button" variant="ghost" size="small" @click="emit('similar', question)">相似题</AppButton><AppButton variant="secondary" :disabled="assembly.saveState === 'saving'" @click="basket">{{ inBasket ? '已在试卷篮' : '加入试卷篮' }}</AppButton></div></footer>
+      <footer><small>判定点 {{ question.evidence_point_count ?? '待核对' }}<template v-if="question.criteria_needs_review"> · 判定点待审核</template></small><div class="qb-inline-card__footer-actions"><AppButton type="button" variant="ghost" size="small" @click="toggle">展开标注</AppButton><AppButton type="button" variant="ghost" size="small" @click="emit('similar', question)">相似题</AppButton><AppButton variant="secondary" :disabled="assembly.saveState === 'saving'" @click="basket">{{ inBasket ? '已在试卷篮' : '加入试卷篮' }}</AppButton></div></footer>
     </div>
-    <QuestionAnnotationPanel v-else :id="`qb-annotation-${question.id}`" :current-skill="currentSkill" @skill="emit('skill', $event)"><template #similar><AppButton type="button" variant="ghost" size="small" @click="emit('similar', question)">相似题</AppButton></template></QuestionAnnotationPanel>
+    <QuestionAnnotationPanel v-else :id="`qb-annotation-${question.id}`"><template #similar><AppButton type="button" variant="ghost" size="small" @click="emit('similar', question)">相似题</AppButton></template></QuestionAnnotationPanel>
   </article>
 </template>

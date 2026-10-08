@@ -149,4 +149,6 @@ GitHub 的 [CI 工作流](../../.github/workflows/ci.yml) 在推送或提交 PR 
 - `DATABASE_BASELINE_TEST_PATHS` 显式列出的业务测试复用当前数据库结构：每个进程真实初始化一次基础库，再为各用例复制独立数据库，继续执行生产入口的版本检查与后续初始化；只处理临时目录内尚不存在的数据库；已有数据库、自定义迁移、历史升级、数据库结构检查及真实 API 启动验收沿用原流程。
 - 修改测试分组后，先运行 `tests/test_test_suite_runner.py` 检查路径唯一性和车道边界。
 
+题库按标签筛选复用 `question-bank-view`、`question-bank-api`、`question-bank-store` 与题卡标注区测试，后端复用题库读取缓存、题库路由和 `tests/question_bank/test_scope_mode_and_links.py`。`question-bank-real-api.spec.ts` 的标签筛选用例以合成筛选响应检查 1280、1920 像素的两行折叠、章节名称与勾选、跨维度条件和键盘操作；题面与展开资料仍由隔离 API 服务读取。筛选 SQL、真实题数和预热缓存分别由后端用例与只读验收核对。
+
 页面验收选择受影响流程，检查操作完成、保存后重新进入、布局与失败提示；复杂改造再专门复审。不要用测试数量代替功能结果。正式服务重启和真实数据操作按 `AGENTS.md` 授权。

@@ -275,10 +275,13 @@ def skill_index(snapshot: dict[str, Any], volume_id: str, review_ids: set[int]) 
     return {"graph_release_id": snapshot["release"], "curriculum_volume_id": volume_id, "model_calls": 0,
             "question_count": len(ids),
             "types": [{"value": key, "label": short_node_name(snapshot['nodes'][key]['display_name']),
+                       "section_id": next((anchor for anchor in anchors
+                           if curriculum_knowledge_node(anchor)['level'] == 2), anchors[0]),
                        "count": len(qids & ids), "definition": str(snapshot['nodes'][key].get('definition') or ''),
                        "common_knowledge_points": [{"key": point, "label": short_node_name(snapshot['nodes'].get(point, {}).get('display_name', point)), "question_count": count}
                            for point, count in sorted(Counter(point for qid in qids & ids for point in snapshot.get('knowledge_by_question', {}).get(qid, ())).items(), key=lambda item: (-item[1], item[0]))]}
-                      for key in sorted(snapshot['nodes']) if is_type_key(key) and skill_anchor_ids(snapshot['nodes'][key], volume)
+                      for key in sorted(snapshot['nodes']) if is_type_key(key)
+                      for anchors in [skill_anchor_ids(snapshot['nodes'][key], volume)] if anchors
                       for qids in [snapshot.get('by_type', {}).get(key, set())]],
             "coverage": {"types": sum(qid in snapshot.get('primary_types', {}) for qid in ids),
                          "knowledge_points": sum(bool(snapshot.get('knowledge_coverage_by_question', {}).get(qid)) for qid in ids)},
