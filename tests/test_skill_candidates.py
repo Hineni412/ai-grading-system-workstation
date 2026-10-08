@@ -2128,3 +2128,54 @@ def test_old_upper_refresh_teacher_ownership_conflict_rolls_back_both_outputs(tm
     with connect(db) as conn:
         assert [tuple(row) for row in conn.execute('SELECT * FROM question_tags ORDER BY id')] == before
         assert conn.execute("SELECT COUNT(*) FROM evidence_point_knowledge_links WHERE source_reference='label_refresh:TEST-teacher-ownership'").fetchone()[0] == 0
+
+def test_old_upper_refresh_keeps_unresolved_point_links_and_still_saves_attributes(tmp_path):
+    from question_bank.services.label_refresh_service import execute_label_refresh
+    from question_bank.solution_evidence.part_assessments import load_profiles
+    from question_bank.solution_evidence.knowledge_links import replace_point_links
+    db, governance = _upper_label_refresh_bank(tmp_path)
+    profile = load_profiles(db, [1], data_root=tmp_path)[1]
+    with connect(db) as conn:
+        point = profile['evidence']['parts'][0]['evidence_points'][0]
+        replace_point_links(conn, evidence_version_id=profile['evidence_version_id'], question_id=1,
+            graph_release_id=conn.execute("SELECT release_id FROM knowledge_graph_releases WHERE status='active'").fetchone()[0], points=[{
+                'part_id': profile['evidence']['parts'][0]['part_id'],
+                'evidence_point_id': point['evidence_point_id'],
+                'links': [{'term_id': 'kp_bnu24_math_g8_upper_1_1_1', 'role': 'direct', 'weight': 0.7}],
+            }], source_kind='teacher', replace=False)
+        before = [tuple(row) for row in conn.execute('SELECT rowid,* FROM evidence_point_knowledge_links ORDER BY rowid')]
+    plan = _upper_refresh_plan(db, tmp_path, governance)
+    def gateway(item):
+        response = _upper_refresh_response(item)
+        for point in response['points']:
+            point['links'] = []
+        return response
+    result = execute_label_refresh(db_path=db, data_root=tmp_path, governance=governance,
+        authorization=plan, operation_id='TEST-refresh-kept-points', gateway=gateway)
+    assert result['saved_count'] == 1
+    assert result['questions'][0]['kept_point_ids']
+    with connect(db) as conn:
+        assert [tuple(row) for row in conn.execute('SELECT rowid,* FROM evidence_point_knowledge_links ORDER BY rowid')] == before
+        assert conn.execute("SELECT COUNT(*) FROM question_tags WHERE tag_value='TEST-old-method'").fetchone()[0] == 0
+
+
+def test_old_upper_refresh_accepts_prerequisite_only_fine_links(tmp_path):
+    from question_bank.services.label_refresh_service import execute_label_refresh, _fine_candidates
+    db, governance = _upper_label_refresh_bank(tmp_path)
+    plan = _upper_refresh_plan(db, tmp_path, governance)
+    chosen = []
+    def gateway(item):
+        term = next(row['id'] for row in _fine_candidates(item.contract).values()
+            if row.get('allowed_roles') == ['supporting_prerequisite'])
+        chosen.append(term)
+        response = _upper_refresh_response(item)
+        for point in response['points']:
+            point['links'] = [{'fine_term_id': term, 'role': 'supporting_prerequisite'}]
+        return response
+    result = execute_label_refresh(db_path=db, data_root=tmp_path, governance=governance,
+        authorization=plan, operation_id='TEST-refresh-prerequisite-only', gateway=gateway)
+    assert result['saved_count'] == 1
+    assert result['questions'][0]['prerequisite_only_point_ids']
+    with connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM evidence_point_knowledge_links WHERE stable_key=? AND role='supporting_prerequisite'",
+            (chosen[0],)).fetchone()[0] > 0
