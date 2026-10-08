@@ -308,3 +308,48 @@ def test_teacher_edits_from_current_evidence_without_losing_frozen_parent(tmp_pa
     assert module.read(question)["available"] is True
     assert module.freeze((question,))[0]["criteria"]["points"][0]["target"] == "教师修改的判定要求"
     assert module.get_version(identifier)["criteria"]["points"][0]["target"] == "正确移项"
+
+
+def test_reject_current_legacy_evidence_stays_unavailable(tmp_path):
+    from dataclasses import replace
+    from question_bank.solution_evidence.repository import SolutionEvidenceRepository
+    from question_bank.training_criteria import solution_evidence_source_content_hash
+
+    database = tmp_path / "TEST-reject-legacy-evidence.db"
+    _seed(database, 1)
+    with connect(database) as connection:
+        connection.execute("UPDATE questions SET question_type='解答题' WHERE id=1")
+    question, evidence, _ = _current_evidence(database)
+    legacy_question = replace(
+        question,
+        tagging_context=replace(question.tagging_context, question_type="解答题（计算）"),
+    )
+    legacy_evidence = replace(
+        evidence, source_content_hash=solution_evidence_source_content_hash(legacy_question),
+    )
+    identifier = SolutionEvidenceRepository(database).save(
+        legacy_evidence, source_kind="combined_model",
+        source_reference="TEST-legacy-evidence", created_by="TEST-model",
+    )
+    module = TrainingCriterionModule(database)
+    workspace = module.read(question)
+    assert workspace["current_version"]["version_id"] == identifier
+    assert workspace["current_version"]["criteria"]["solution_evidence"]["version_id"] != legacy_evidence.version_id
+    module.review(
+        CriterionReviewCommand(1, identifier, workspace["revision"], "reject", "TEST-teacher", "invalid judgment"),
+        question=question,
+    )
+    assert module.read(question)["available"] is False
+    assert module.read(question)["state"] == "rejected"
+    with pytest.raises(ApprovedCriterionMissing):
+        module.freeze((question,))
+
+    corrected = replace(evidence, parts=(replace(evidence.parts[0], evidence_points=(
+        replace(evidence.parts[0].evidence_points[0], target="修正后的判定要求"),
+    )),))
+    SolutionEvidenceRepository(database).save(
+        corrected, source_kind="combined_model",
+        source_reference="TEST-corrected-evidence", created_by="TEST-model",
+    )
+    assert module.read(question)["available"] is True
+    assert module.freeze((question,))[0]["criteria"]["points"][0]["target"] == "修正后的判定要求"

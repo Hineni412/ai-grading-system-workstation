@@ -291,7 +291,8 @@ class TrainingCriterionModule:
             rejected = False
             if isinstance(current, Mapping) and current.get("status") == "rejected":
                 rejected_evidence = current.get("criteria", {}).get("solution_evidence", {})
-                rejected = (not rejected_evidence.get("version_id")
+                rejected = (current.get("version_id") == profile.get("evidence_version_id")
+                    or not rejected_evidence.get("version_id")
                     or rejected_evidence["version_id"] == profile["evidence"].get("version_id"))
             if not rejected:
                 try:
