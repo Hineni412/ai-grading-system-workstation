@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>原型 · 题库管理“按标签”多维筛选</title>
+<style>
+:root { --bg: #faf9f6; --surface: #fff; --subtle: #f3f3ef; --selected: #e9ede9; --border: #dfe4e1; --border-subtle: #e9ede9;
+  --text: #202a30; --text-2: #59656b; --muted: #657176; --accent: #176b75; --accent-subtle: rgba(23,107,117,.08);
+  --warn: #9a6a12; --radius: 8px; --shadow: 0 1px 2px rgba(16,38,43,.06), 0 1px 1px rgba(16,38,43,.04); }
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.55 "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif; color: var(--text); background: var(--bg); }
+button, input, select { font: inherit; color: inherit; }
+.app { display: grid; grid-template-columns: 200px 1fr; height: 100vh; }
+.sidebar { background: linear-gradient(180deg,#0e1c20 0%,#10262b 70%,#0e2026 100%); color: #d8e3e2; padding: 16px 12px; font-size: 14px; }
+.sidebar b { display: block; color: #fff; font-size: 16px; margin-bottom: 18px; }
+.sidebar p { margin: 14px 0 6px; color: #8fa5a6; font-size: 13px; }
+.sidebar a { display: block; padding: 6px 10px; border-radius: 6px; color: inherit; text-decoration: none; }
+.sidebar a.on { background: rgba(255,255,255,.1); color: #fff; }
+.main { display: grid; grid-template-rows: auto auto 1fr; min-width: 0; min-height: 0; }
+.proto-note { background: #fff7e6; border-bottom: 1px solid #f0dfb8; padding: 6px 20px; font-size: 13px; color: #6b5014; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.proto-note details { flex: 1 1 100%; }
+.proto-note summary { cursor: pointer; }
+.proto-note ol { margin: 6px 0 4px; padding-left: 20px; }
+.proto-note button { border: 1px solid #e3cf9f; background: #fff; border-radius: 6px; padding: 1px 8px; cursor: pointer; font-size: 13px; }
+.page-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; padding: 10px 20px; border-bottom: 1px solid var(--border-subtle); background: var(--bg); }
+.page-head h1 { margin: 0; font-size: 20px; }
+.page-head .meta { color: var(--muted); font-size: 13px; }
+.tabs { display: flex; gap: 16px; margin-left: 8px; }
+.tabs button { border: 0; background: none; padding: 6px 0; color: var(--text-2); cursor: pointer; border-bottom: 2px solid transparent; }
+.tabs button.on { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.head-actions { margin-left: auto; display: flex; gap: 8px; }
+.btn { border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius); padding: 4px 12px; cursor: pointer; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.ghost { border-color: transparent; background: none; color: var(--accent); padding: 2px 6px; }
+.workspace { display: grid; grid-template-columns: 300px 1fr; gap: 12px; padding: 12px 20px 16px; min-height: 0; }
+.pane { background: var(--surface); border: 1px solid var(--border-subtle); border-radius: 12px; box-shadow: var(--shadow); min-height: 0; overflow: auto; }
+/* 左栏：分面筛选 */
+.facet-head { position: sticky; top: 0; z-index: 2; background: var(--surface); padding: 12px 14px 8px; border-bottom: 1px solid var(--border-subtle); display: flex; align-items: baseline; gap: 8px; }
+.facet-head strong { font-size: 15px; }
+.facet-head small { color: var(--muted); }
+.facet-head .btn.ghost { margin-left: auto; }
+.group { border-bottom: 1px solid var(--border-subtle); }
+.group-toggle { width: 100%; display: flex; align-items: baseline; gap: 8px; border: 0; background: none; padding: 10px 14px; cursor: pointer; text-align: left; }
+.group-toggle span { font-weight: 600; }
+.group-toggle em { font-style: normal; font-size: 12px; color: var(--accent); background: var(--accent-subtle); border-radius: 999px; padding: 0 8px; }
+.group-toggle i { margin-left: auto; font-style: normal; color: var(--muted); transition: transform .15s ease; }
+.group.open .group-toggle i { transform: rotate(90deg); }
+.group-body { padding: 0 10px 10px; }
+.group-body .search { width: 100%; border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 10px; margin: 0 0 6px; font-size: 14px; }
+.subhead { font-size: 12px; color: var(--muted); padding: 8px 4px 2px; }
+.row { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 6px; font-size: 14px; cursor: pointer; }
+.row:hover { background: var(--subtle); }
+.row.on { background: var(--accent-subtle); }
+.row input { accent-color: var(--accent); margin: 0; }
+.row .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .count { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
+.row.zero { opacity: .5; }
+.row.chapter .label { font-weight: 500; }
+.row .twist { border: 0; background: none; color: var(--muted); cursor: pointer; width: 18px; padding: 0; }
+.row.section { padding-left: 30px; }
+.more-link { border: 0; background: none; color: var(--accent); font-size: 13px; cursor: pointer; padding: 2px 4px; }
+.hint { color: var(--muted); font-size: 13px; padding: 2px 4px; }
+/* 右侧：结果 */
+.results { display: grid; grid-template-rows: auto 1fr; }
+.result-head { position: sticky; top: 0; z-index: 2; background: var(--surface); padding: 12px 16px 10px; border-bottom: 1px solid var(--border-subtle); display: grid; gap: 8px; }
+.title-line { display: flex; align-items: baseline; gap: 10px; }
+.title-line h2 { margin: 0; font-size: 18px; }
+.title-line .total { color: var(--text-2); }
+.title-line .total b { color: var(--text); font-variant-numeric: tabular-nums; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #b9d3d6; background: var(--accent-subtle); color: #0f4f57; border-radius: 999px; padding: 1px 4px 1px 10px; font-size: 13px; }
+.chip small { color: var(--muted); }
+.chip button { border: 0; background: none; cursor: pointer; color: inherit; width: 20px; height: 20px; border-radius: 50%; }
+.chip button:hover { background: rgba(23,107,117,.15); }
+.chip.legacy { border-color: #e3cf9f; background: #fff7e6; color: #6b5014; }
+.filter-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 14px; }
+.filter-line input[type=search], .filter-line select { border: 1px solid var(--border); border-radius: var(--radius); padding: 3px 8px; background: #fff; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.seg button { border: 0; background: #fff; padding: 3px 10px; cursor: pointer; }
+.seg button.on { background: var(--accent-subtle); color: var(--accent); font-weight: 600; }
+.toggle { display: inline-flex; gap: 4px; align-items: center; }
+.list { padding: 10px 16px 20px; display: grid; gap: 10px; align-content: start; }
+.card { border: 1px solid var(--border-subtle); border-radius: 10px; padding: 10px 14px; background: #fff; }
+.card header { display: flex; gap: 10px; align-items: baseline; font-size: 13px; color: var(--muted); }
+.card header b { color: var(--text); font-weight: 600; }
+.card header label { margin-left: auto; display: inline-flex; gap: 4px; align-items: center; color: var(--text-2); }
+.card .stem { margin: 6px 0; font-family: "SimSun", "Songti SC", serif; font-size: 16px; }
+.labels { display: flex; flex-wrap: wrap; gap: 6px; font-size: 13px; color: var(--text-2); }
+.labels .cap { border: 1px solid var(--border); border-radius: 6px; padding: 0 8px; background: var(--subtle); }
+.labels .cap.type { border-color: #b9d3d6; background: var(--accent-subtle); color: #0f4f57; }
+.card footer { display: flex; gap: 8px; align-items: center; margin-top: 6px; font-size: 13px; color: var(--muted); }
+.card footer .acts { margin-left: auto; display: flex; gap: 6px; }
+.dup { font-size: 13px; color: var(--text-2); }
+.annot { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 8px; font-size: 14px; display: grid; gap: 6px; }
+.annot .point { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.empty { text-align: center; color: var(--text-2); padding: 48px 0; }
+.removed { text-decoration: line-through; color: #b0483e; }
+@media (max-width: 1100px) { .app { grid-template-columns: 1fr; } .sidebar { display: none; } .workspace { grid-template-columns: 260px 1fr; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="sidebar" aria-label="主导航（示意）">
+    <b>知衡</b>
+    <p>考试与阅卷</p><a href="#">考试配置</a><a href="#">考试批改</a><a href="#">成绩中心</a>
+    <p>题库与组卷</p><a class="on" href="#">题库管理</a><a href="#">组卷工作台</a>
+    <p>教学分析</p><a href="#">知识与训练</a>
+  </nav>
+  <div class="main">
+    <div class="proto-note">
+      <strong>原型</strong><span>合成数据，不连接后端；只演示“按标签”页的交互与布局。</span>
+      <button type="button" id="demo-legacy-skill">模拟旧链接 ?skill=…</button>
+      <button type="button" id="demo-legacy-topic">模拟旧链接 ?topic=…</button>
+      <details>
+        <summary>本原型表达的要点（实施规则见方案文档）</summary>
+        <ol>
+          <li>一进页面显示本学期全部题；左栏勾选即筛选，不再要求“先选一个标签”。</li>
+          <li>同一组内勾多个 = 有其一即可；不同组之间 = 同时满足。</li>
+          <li>每项右侧数字 = 在其他组已选条件下、带这一项的题数，随勾选实时变化。</li>
+          <li>章节按“主考小节”归属，每题只属一个小节，所以章的数字等于各节之和。章始终全部列出，为 0 时灰显；其他长列表只列有题的项和已选项。</li>
+          <li>题型、知识点按章 → 节分组；七年级等往届知识点归入“前置知识”。“知识主题”取消，并入知识点。</li>
+          <li>右上一行列出全部已选条件，可逐个删除或清空。原“标签筛选”弹窗取消。</li>
+          <li>题卡不再显示技能；改为显示主题型与知识点。“按技能”、“未挂技能”入口取消。</li>
+          <li>旧链接带技能时，显示为黄色的“旧链接”条件，可删除；左栏不提供技能分组。</li>
+          <li>地址栏示意：<code id="url-preview"></code></li>
+        </ol>
+      </details>
+    </div>
+    <header class="page-head">
+      <h1>题库管理</h1>
+      <span class="meta">八年级上册 · <span id="volume-count"></span> 题（合成）</span>
+      <nav class="tabs" aria-label="题库视图"><button type="button">章节考情</button><button type="button" class="on" aria-current="page">按标签</button><button type="button">按试卷</button><button type="button">待处理</button></nav>
+      <div class="head-actions"><button type="button" class="btn">试卷篮 · <span id="basket-count">0</span></button><button type="button" class="btn">AI 补齐</button><button type="button" class="btn primary">上传试卷</button></div>
+    </header>
+    <div class="workspace">
+      <aside class="pane" id="facet-pane" aria-label="筛选条件"></aside>
+      <main class="pane results" id="result-pane"></main>
+    </div>
+  </div>
+</div>
+<script src="assets/question-bank-tag-filter-prototype-data.js"></script>
+<script src="assets/question-bank-tag-filter-prototype-app.js"></script>
+</body>
+</html>

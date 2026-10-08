@@ -18,5 +18,6 @@
 | 外观审查 | [历史组件审查](frontend-component-audit-20261001.html) | 保留视觉比较材料；历史快照与旧数量不代表当前状态 |
 | 题型改版 | [方案](question-type-redesign-plan-20261006.md)、[交接](question-type-redesign-handoff-20261007.md)、[进度网页](question-type-redesign-status-20261007.html) | 八上按题型诊断与配题；页面已人工验收，新导入、报告和权威文档已补齐。真实 v9 已获授权并启用；57 道预存失效题全部恢复，2 道歧义文字按用户确认修正。1292 道已标题型题均纳入；3 道低置信度题型抽查及实际训练收益仍待验证 |
 | 题库标签与新册自动题型 | [方案](question-bank-labels-and-auto-types-plan-20261008.md) | 已确认的标签分层、知识点恢复可写、新册按章自动整理题型、按章切换训练目标与各模块影响；全部尚未实现，模型调用、数据库迁移与真实重打需逐次授权 |
+| 按标签多维筛选 | [重设计方案](question-bank-tag-filter-redesign-plan-20261008.md)、[交互原型](question-bank-tag-filter-prototype-20261008.html) | 已确认的分面筛选、知识主题并入知识点、章节作为筛选维度与本页技能入口退役，交实施代理；全部尚未实现，原型只用合成数据 |
 
 已被正式页面与权威文档取代的实施方案、验收流水和原型不继续占用当前目录。需要回看时，在 Git 历史中定位原文件；实际操作入口从 [项目 README](../../README.md) 查找。
