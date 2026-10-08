@@ -51,6 +51,7 @@ from backend.api.schemas.question_bank import (
     QuestionTaggingJobRequest,
     QuestionRepairJobRequest,
     QuestionTagWriteRequest,
+    QuestionTypeWriteRequest,
     QuestionTaskContext,
     QuestionWriteResponse,
     SimilarQuestionItem,
@@ -1341,6 +1342,20 @@ def replace_question_tags(
     return _question_write_response(result)
 
 
+@router.put("/questions/{question_id}/question-types", response_model=QuestionWriteResponse,
+            responses=QUESTION_WRITE_ERROR_RESPONSES)
+def replace_question_types(question_id: int, body: QuestionTypeWriteRequest,
+        service: QuestionBankWriteService = Depends(get_question_bank_write_service)) -> QuestionWriteResponse:
+    try:
+        result = service.replace_question_types(question_id, expected_revision=body.expected_revision,
+            primary_type_key=body.primary_type_key, secondary_type_keys=body.secondary_type_keys)
+    except ValueError as exc:
+        raise ApiError(422, 'question_types_invalid', str(exc)) from exc
+    except (QuestionWriteNotFound, QuestionWriteConflict) as exc:
+        _raise_question_write_api_error(exc, question_id)
+    return _question_write_response(result)
+
+
 @router.delete(
     "/questions/{question_id}",
     response_model=QuestionWriteResponse,
@@ -1644,6 +1659,23 @@ def submit_question_repair(body: QuestionRepairJobRequest,
     return _job_response(job)
 
 
+def _tagging_type_scope(question_ids: list[int], scope: object) -> tuple[int, ...]:
+    values = question_ids if scope is None else scope
+    if (not isinstance(values, list) or not 1 <= len(values) <= 10000
+            or any(type(value) is not int or value <= 0 for value in values)
+            or not set(question_ids).issubset(values)):
+        raise ApiError(422, 'chapter_type_scope_invalid', '整理范围必须包含本次分析题目，请重新查看费用预估')
+    return tuple(sorted(set(values)))
+
+
+@router.post("/tagging-jobs/preview")
+def preview_tagging_job(body: QuestionTaggingJobRequest,
+        service: QuestionBankReadService = Depends(get_question_bank_read_service)) -> dict[str, Any]:
+    from question_bank.services.chapter_type_service import preview_chapter_type_plan
+    return preview_chapter_type_plan(db_path=service.db_path, data_root=service.data_root or service.db_path.parent.parent,
+        volume_id=body.curriculum_volume_id, question_ids=_tagging_type_scope(body.question_ids, body.chapter_type_scope_question_ids))
+
+
 @router.post(
     "/tagging-jobs",
     response_model=JobResponse,
@@ -1652,6 +1684,7 @@ def submit_question_repair(body: QuestionRepairJobRequest,
 )
 def submit_tagging_sync_job(
     body: QuestionTaggingJobRequest,
+    service: QuestionBankReadService = Depends(get_question_bank_read_service),
     manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
     question_ids = _unique_positive_ids(body.question_ids)
@@ -1682,6 +1715,16 @@ def submit_tagging_sync_job(
         "question_ids": question_ids,
         "curriculum_volume_id": str(volume["id"]),
     }
+    if body.chapter_type_authorization is not None:
+        authorization = body.chapter_type_authorization
+        from question_bank.services.chapter_type_service import preview_chapter_type_plan
+        plan = preview_chapter_type_plan(db_path=service.db_path, data_root=service.data_root or service.db_path.parent.parent,
+            volume_id=body.curriculum_volume_id, question_ids=_tagging_type_scope(question_ids, authorization.get('pending_question_ids')))
+        if (authorization.get('confirmed') is not True or authorization.get('request_limit') != plan['planned_requests']
+                or {key: value for key, value in authorization.items() if key not in {'confirmed', 'request_limit'}} != plan):
+            raise ApiError(409, 'chapter_type_preview_changed', '题型整理预估已变化，请重新确认费用')
+        if plan['planned_requests']:
+            payload['chapter_type_authorization'] = authorization
     if body.force_retag:
         payload["force_retag_question_ids"] = question_ids
     if body.source_job_id is not None:
@@ -2504,6 +2547,9 @@ def list_question_facets(
     keyword: str | None = None,
     knowledge_point: str | None = None,
     knowledge_points: Annotated[list[str] | None, Query()] = None,
+    type_keys: Annotated[list[str] | None, Query()] = None,
+    missing_type: bool = False,
+    missing_knowledge: bool = False,
     skill_keys: Annotated[list[str] | None, Query()] = None,
     skill_unlinked: bool = False,
     abilities: Annotated[list[str] | None, Query()] = None,
@@ -2537,6 +2583,9 @@ def list_question_facets(
     try:
         facets = service.list_facets(
             QuestionReadFilters(
+                type_keys=tuple(type_keys or ()),
+                missing_type=missing_type,
+                missing_knowledge=missing_knowledge,
                 skill_keys=tuple(skill_keys or ()),
                 skill_unlinked=skill_unlinked,
                 question_number=question_number,
@@ -2587,6 +2636,9 @@ def list_questions(
     keyword: str | None = None,
     knowledge_point: str | None = None,
     knowledge_points: Annotated[list[str] | None, Query()] = None,
+    type_keys: Annotated[list[str] | None, Query()] = None,
+    missing_type: bool = False,
+    missing_knowledge: bool = False,
     skill_keys: Annotated[list[str] | None, Query()] = None,
     skill_unlinked: bool = False,
     include_skills: bool = False,
@@ -2646,6 +2698,9 @@ def list_questions(
     try:
         result = service.list_questions(
             QuestionReadFilters(
+                type_keys=tuple(type_keys or ()),
+                missing_type=missing_type,
+                missing_knowledge=missing_knowledge,
                 skill_keys=tuple(skill_keys or ()),
                 skill_unlinked=skill_unlinked,
                 include_skills=include_skills,

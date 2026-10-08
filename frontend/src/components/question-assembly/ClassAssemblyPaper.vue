@@ -5,10 +5,10 @@ import {computed,ref,watch} from 'vue'
 import {useRouter} from 'vue-router'
 import {useAssemblyStore} from '../../stores/assembly'
 import {createTrainingFromAssembly,defaultPaperRules,type PaperRules,type AssemblyContext} from '../../api/assembly'
-const props=defineProps<{title:string;context:AssemblyContext;covered:number;total:number;canAct:boolean;targetKind?:'skill'|'type'}>()
+const props=defineProps<{title:string;context:AssemblyContext;covered:number;total:number;canAct:boolean;targetKind?:'skill'|'type'|'knowledge'|'mixed'}>()
 const emit=defineEmits<{edit:[];replace:[id:number]}>()
 const assembly=useAssemblyStore(), router=useRouter(), message=ref(''), generating=ref(false)
-const targetLabel=computed(()=>props.targetKind==='type'?'题型':'技能')
+const targetLabel=computed(()=>props.targetKind==='type'?'题型':props.targetKind==='knowledge'?'知识点':props.targetKind==='mixed'?'训练目标':'技能')
 const rules=computed<PaperRules>(()=>typeof assembly.draft.practice_rules==='object'&&assembly.draft.practice_rules?assembly.draft.practice_rules:defaultPaperRules())
 const settings=ref(defaultPaperRules())
 watch(rules,r=>{settings.value={...r}},{immediate:true})

@@ -7,7 +7,7 @@ export const WEAK_HEAT_LABELS = ['0', '≤10%', '≤20%', '≤30%', '≤40%', '>
 export const isItem = (node: TrainingOverviewNode) => node.kind === 'topic' || node.kind === 'skill' || node.kind === 'type'
 export const isTypeMode = (data: Pick<TrainingOverview, 'target_kind'>) => data.target_kind === 'type'
 export const itemWeakCount = (student: TrainingOverview['students'][number]) =>
-  student.types ? student.types.weak : student.topics.weak + student.skills.weak
+  (student.types?.weak ?? 0) + student.topics.weak + student.skills.weak
 export const volumeItems = (nodes: TrainingOverviewNode[]) => nodes.filter(node => node.in_volume !== false && isItem(node))
 export function weakRate(node: TrainingOverviewNode): number | null {
   return node.evidence_student_count > 0 ? node.distribution.weak / node.evidence_student_count : null
@@ -47,11 +47,7 @@ export function relatedNodes(data: TrainingOverview, key: string) {
       || b.association.question_count - a.association.question_count || a.node.knowledge_key.localeCompare(b.node.knowledge_key))
 }
 export function studentDistribution(student: TrainingOverview['students'][number]): TrainingOverviewDistribution {
-  if (student.types) {
-    const { weak, unsteady, stable, insufficient } = student.types
-    return { weak, unsteady, stable, insufficient }
-  }
   const a = student.topics, b = student.skills
-  return { weak: a.weak + b.weak, unsteady: a.unsteady + b.unsteady,
-    stable: a.stable + b.stable, insufficient: a.insufficient + b.insufficient }
+  return { weak: a.weak + b.weak + (student.types?.weak ?? 0), unsteady: a.unsteady + b.unsteady + (student.types?.unsteady ?? 0),
+    stable: a.stable + b.stable + (student.types?.stable ?? 0), insufficient: a.insufficient + b.insufficient + (student.types?.insufficient ?? 0) }
 }

@@ -29,10 +29,10 @@ interface SkillItem{key:string;name:string;section:string;related:AssemblyExamQu
 type NeedItem={kind:'skill';item:SkillItem}|{kind:'question';q:AssemblyExamQuestion}
 const weaknessMap=computed(()=>new Map((assistant.result?.weaknesses??[]).map(w=>[w.knowledge_key,w])))
 // Type-enabled releases return question-type targets; legacy releases return skills.
-const typeMode=computed(()=>assistant.result?.target_kind==='type'||assistant.examResult?.target_kind==='type')
-const targetLabel=computed(()=>typeMode.value?'题型':'技能')
+const targetKind=computed(()=>assistant.result?.target_kind??assistant.examResult?.target_kind??'skill')
+const targetLabel=computed(()=>targetKind.value==='type'?'题型':targetKind.value==='knowledge'?'知识点':targetKind.value==='mixed'?'训练目标':'技能')
 const TYPE_KEY=/^kp_[a-z0-9_]+_t\d{2}$/
-const isTargetKey=(key:string)=>typeMode.value?TYPE_KEY.test(key):key.startsWith('sk_')
+const isTargetKey=(key:string)=>targetKind.value==='type'?TYPE_KEY.test(key):targetKind.value==='knowledge'?key.startsWith('kp_')&&!TYPE_KEY.test(key):targetKind.value==='mixed'?key.startsWith('kp_')||key.startsWith('sk_'):key.startsWith('sk_')
 const skillItems=computed<SkillItem[]>(()=>{
  const bySkill=new Map<string,AssemblyExamQuestion[]>()
  for(const q of failingQs.value)for(const key of q.skill_keys)bySkill.set(key,[...(bySkill.get(key)??[]),q])
@@ -123,7 +123,7 @@ function leaf(s:string){return knowledgeLeafLabel(s).replace(/^(技能|题型)[�
 function causeTop(q:AssemblyExamQuestion){return [...(q.cause_category_counts??[])].filter(c=>c.count).sort((a,b)=>b.count-a.count).slice(0,2)}
 const COLORS=['#6c9b8a','#75aebb','#ba9666','#937eae','#a09173','#83a2a8','#b57874']
 const causeHint=computed(()=>{const c=currentOriginal.value&&causeTop(currentOriginal.value)[0]?.category;return !c?'':c==='未作答'?'可能偏难或时间不够，建议配更基础的题':c==='计算与化简'?'适合配同类型计算变式':'以「'+c+'」为主，建议配同'+targetLabel.value+'变式'})
-function context():AssemblyContext{return {class_ids:[...selectedClasses.value],session_ids:[...(assistant.filters.session_ids??[])],curriculum_volume_id:assistant.filters.curriculum_volume_id,title_generated:!assembly.draft.title||assembly.draft.assembly_context?.title_generated,...(typeMode.value?{target_kind:'type' as const}:{}),sources:{...sources.value}}}
+function context():AssemblyContext{return {class_ids:[...selectedClasses.value],session_ids:[...(assistant.filters.session_ids??[])],curriculum_volume_id:assistant.filters.curriculum_volume_id,title_generated:!assembly.draft.title||assembly.draft.assembly_context?.title_generated,target_kind:targetKind.value,sources:{...sources.value}}}
 function skillSource(){const item=activeItem.value;return item?{key:'skill:'+item.key,label:item.name,skill_keys:[item.key]}:undefined}
 function examSource(q:AssemblyExamQuestion){return{key:q.key,label:examTitle(q.session_id)+'·'+q.question_id,skill_keys:q.skill_keys,original:true}}
 async function add(id:number,source=skillSource()){
@@ -214,7 +214,7 @@ onUnmounted(()=>{window.removeEventListener('keydown',keys);assistant.stopPrefet
    <article v-for="(c,index) in candidates" :key="c.question_id" class="ca-candidate assistant-question" :class="{'is-in-basket':assembly.draft.basket_ids.includes(c.question_id)}"><header><strong>候选 {{index+1}} · {{c.question.question_type}}</strong><small>难度 {{c.difficulty??c.question.difficulty??'待定'}}<template v-if="originalDifficulty"> · {{difficultyRelation(c.difficulty)}}</template></small><AppButton :disabled="!canAct||assembly.draft.basket_ids.includes(c.question_id)" variant="secondary" @click="add(c.question_id)">{{assembly.draft.basket_ids.includes(c.question_id)?'已加入':'加入'}}</AppButton></header><QuestionContentRenderer :blocks="c.question.rich_content?.question_blocks" :fallback="c.question.question_text" media-mode="list" paper-media-flow dense typeset-text /><div class="ca-candidate-foot"><span class="ca-badge">{{c.match_level?c.match_level+'级 · ':''}}{{c.match_label}}</span><span>适合 {{c.suitable_student_count??0}} 人 · 补弱 {{c.remediation_student_count??0}} · 巩固 {{c.consolidation_student_count??0}} · 新练习 {{c.new_practice_student_count??0}}</span></div><div v-if="c.similar_question_ids?.length" class="ca-similar"><AppButton variant="ghost" size="small" @click="similar.has(c.question_id)?similar.delete(c.question_id):assistant.previewsFor(c.similar_question_ids).then(items=>similar.set(c.question_id,items))">高度相似 {{c.similar_question_ids.length}} 题 · {{similar.has(c.question_id)?'收起':'查看'}}</AppButton><article v-for="q in similar.get(c.question_id)??[]" :key="q.id"><QuestionContentRenderer :blocks="q.rich_content?.question_blocks" :fallback="q.question_text" dense typeset-text /><AppButton :disabled="!canAct||assembly.draft.basket_ids.includes(q.id)" variant="secondary" @click="add(q.id)">加入</AppButton></article></div><AppButton variant="ghost" size="small" @click="expanded.has(c.question_id)?expanded.delete(c.question_id):expanded.add(c.question_id)">{{expanded.has(c.question_id)?'收起解析':'查看解析'}}</AppButton><QuestionContentRenderer v-if="expanded.has(c.question_id)" :blocks="c.question.rich_content?.answer_blocks" :fallback="c.question.answer_text||'暂无解析'" dense typeset-text /><div v-if="blocked[c.question_id]" class="ca-blocked" role="status">{{blocked[c.question_id]}}<AppButton v-if="blocked[c.question_id]?.includes('同一技能')" variant="ghost" size="small" @click="replaceSkill(c.question_id)">替换</AppButton></div></article>
    <AppButton v-if="hasMore" :disabled="busy||assistant.loadingMore" variant="secondary" @click="moreCandidates()">{{assistant.loadingMore?'读取中…':'显示更多候选题'}}</AppButton></template>
   </div></section>
-  <ClassAssemblyPaper :title="title" :context="context()" :covered="coveredCount" :total="failingQs.length" :can-act="canAct" :target-kind="typeMode?'type':'skill'" @edit="emit('edit')" @replace="switchSource" />
+  <ClassAssemblyPaper :title="title" :context="context()" :covered="coveredCount" :total="failingQs.length" :can-act="canAct" :target-kind="targetKind" @edit="emit('edit')" @replace="switchSource" />
  </div>
 </section>
 </template>

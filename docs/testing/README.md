@@ -14,8 +14,9 @@
 - 代理决定测试位置；用户确认业务预期，不必确认内部接口。已授权实现范围内，隔离本地测试可执行、修复并复跑受影响项。
 - 以下套件是可选入口，不是每次修改都要逐级执行的关卡；通过相关检查后，只有新修改、失败或具体未解决问题才扩大范围；日常小改动不默认全量测试或独立复审。
 - 学情总览与知识结构：后端 `tests/test_api_graph_selected_scope.py` 覆盖摘要／完整诊断、快照恢复、往届排除、群体区间与关联失败回退；完整题型诊断另核对单人／小组仍读完整同班基准、教师最终分与满分、未选中者改分后的缓存与快照恢复，摘要和技能模式不读新基准；前端 `knowledge-overview-view`、`knowledge-graph-view` 覆盖共享口径、热度边界、范围、出卷预填、筛选与焦点返回。`npx playwright test e2e/knowledge-graph.spec.ts` 使用默认配置与模拟接口验证两栏、关联实线／虚线、抽屉、窄屏和进入按学生训练时不创建草稿。
-- 题型标准与新导入题：`tests/test_skill_candidates.py` 覆盖题型候选、主次标签约束、备份与隔离预演、数据变化停止、写入失败回退、来源失效拒绝或显式跳过、同时间版本取最新及已有文件保护；`tests/training/test_combined_question_analysis.py` 覆盖封闭题型候选、主次结果校验与保存、无合适题型待审、来源变化与恢复，兼容无题型标准。
-- 题型推荐与报告：`tests/training/test_personalized_recommendation.py` 覆盖完整班级基准的消费者、单人范围与跨班隔离、未选中者改分后的参照变化、原题参照、难度先上下 1 级不足再 2 级、候选分层、同题型题面排序、小节分散及候选不足补齐、小组对个人补弱需要的保留、后续换题优化与旧技能模式；`tests/test_analysis_report.py`、`tests/test_personal_report_design.py` 覆盖题型归并、同名不同身份、无关联或教学学期、报告称谓、混合标准的教材册边界、分数与排名。教师最终分锁仍由既有改分与报告比较测试覆盖。
+- 题型标准与新导入题：`tests/test_skill_candidates.py` 覆盖题型候选、主次标签约束、备份与隔离预演、数据变化停止、写入失败回退、来源失效拒绝或显式跳过、同时间版本取最新及已有文件保护；`tests/training/test_combined_question_analysis.py` 覆盖封闭题型候选、主次结果校验与保存、无合适题型待归类且不提知识点新词、五维定义合同及跨册直接链接拒绝、来源变化与恢复，兼容无题型标准。
+- 题型推荐与报告：`tests/training/test_personalized_recommendation.py` 覆盖完整班级基准的消费者、单人范围与跨班隔离、未选中者改分后的参照变化、原题参照、难度先上下 1 级不足再 2 级、候选分层、同题型题面排序、小节分散及候选不足补齐、小组对个人补弱需要的保留、后续换题优化与旧技能模式；`tests/test_analysis_report.py`、`tests/test_personal_report_design.py` 覆盖题型归并、同名不同身份、无关联或教学学期、报告称谓、同册混合题型与知识点章、往届技能兼容、目标切换的报告指纹、分数与排名。教师最终分锁仍由既有改分与报告比较测试覆盖。
+- 自动题型发布：复用 `tests/test_skill_candidates.py` 的合成整理用例，核对 30 道规范题与 3 份来源卷门槛、出现记录与删卷边界、预估上界实际未达门槛的零请求、无教师操作发布、新增类型与全题覆盖检查、未知请求不重发、处理中新增可用题拒绝发布及激活后写入失败回退。`tests/test_job_manager.py` 核对待发布任务不占满分析队列、排队任务先完成、发布期间阻止新提交、同册两卷共用一次整理授权与费用授权幂等；备份恢复复用原运维测试。旧八上受限合并刷新也扩展 `tests/test_skill_candidates.py`，核对每题一次请求、默认命令行只读、保护资料逐行保持、来源与标准冲突、人工值保留及同一操作不重发。
 - 核心流程失败优先修复；不用测试数量代替功能可用。
 - 按学生／按章节与批量错题本：`practice-selection` 覆盖名单、四档统计及导出恢复，连同 `training-recommendations-view`、`training-group-recommendations`、`personalized-recommendation-draft`、`student-evidence-view` 和 `training-api` 核对勾选、用途规则、概况及证据入口。后端扩展学生 API、题库读取缓存、个性化推荐、训练 API 与 Word 渲染的现有测试，核对知识排序、来源去重、批量预览、章节过滤、巩固上限、旧请求编号和旧草稿导出。真实数据验收通过应用生成草稿及错题本，不调用模型；仅记录匿名构成、缺口和版式结果。
 - 个人报告在线查看与批量导出：扩展 `tests/test_analysis_report.py`、`tests/test_api_report_jobs.py`、`tests/test_report_export_job.py`，核对本人输入失效、旧缓存只读兼容、损坏索引、状态、裁切路径、缓存导出、清单、取消与下载后回收；版式沿用 `tests/test_personal_report_design.py` 和 `tests/test_report_print_layout.py`。前端扩展 `results-center-view`、`file-center-view`、`app-shell`，核对四态入口、当前筛选翻页、复核返回、生成预估确认、多人多场与任务名称。真实数据只读查看，生成和数据写入用合成数据与模型替身；单列首次与连续翻页耗时，不以数据版验证代替真实叙述生成验收。
@@ -24,7 +25,7 @@
 
 ## 自动测试入口
 
-知识资料的生成排版验证复用 `tests/test_knowledge_graph_release.py`，逐一核对分类修订 3–11 的知识发布与配对词表在写入、重新读取后内容和发布哈希一致，并通过既有发布校验。完整级仍覆盖暂存、激活、回退与历史标准兼容；所有写入都使用合成临时文件和数据库。
+知识资料的生成排版验证复用 `tests/test_knowledge_graph_release.py`，逐一核对所有已登记分类修订的知识发布与配对词表在写入、重新读取后内容和发布哈希一致，并通过既有发布校验。完整级仍覆盖暂存、激活、回退与历史标准兼容；所有写入都使用合成临时文件和数据库。
 
 GitHub 的 [CI 工作流](../../.github/workflows/ci.yml) 在推送或提交 PR 到 `main` 时运行。后端使用现有 `quick --skip-frontend` 测试清单，并检查文档以及已跟踪的私有数据、密钥文件和运行产物；前端执行代码规范、全部单元测试、类型检查、生产构建、合成演示服务测试与默认模拟浏览器流程。仓库路径边界检查使用 `tests/test_repository_data_boundary.py`，覆盖业务目录外的数据库、配置备份、环境文件和生成文件，以及 Git 命令失败。CI 使用合成数据和模型替身，不配置真实模型密钥。它不替代 `full`、独立真实 API 浏览器验收或完整安装包验收。
 

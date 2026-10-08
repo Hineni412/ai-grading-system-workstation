@@ -276,6 +276,7 @@ def test_link_points_to_skill_carries_forward_and_replaces_direct(
     conn = sqlite3.connect(db)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        original_factory = conn.row_factory
         inserted = link_points_to_skill(
             conn,
             db_path=db,
@@ -289,6 +290,7 @@ def test_link_points_to_skill_carries_forward_and_replaces_direct(
         # The writer must not leave a custom row_factory on the connection.
         assert conn.row_factory is None
         assert isinstance(conn.execute("SELECT 1").fetchone(), tuple)
+        assert conn.row_factory is original_factory
         conn.commit()
     finally:
         conn.close()
@@ -1529,3 +1531,598 @@ def test_type_release_builds_core_nodes_and_rejects_name_collision(
         assert conn.execute(
             "SELECT release_id FROM knowledge_graph_releases WHERE status='active'"
         ).fetchone()[0] == release
+
+
+def _automatic_type_bank(tmp_path):
+    from tests.training.test_combined_question_analysis import _seed_questions
+    db = tmp_path / "TEST-automatic-types.db"
+    _seed_questions(db, 30)
+    release = install_current_knowledge(db, taxonomy_revision=11)
+    section = "kp_bnu24_math_g8_lower_1_1"
+    with connect(db) as conn:
+        conn.executemany("INSERT INTO papers(id,title,import_status) VALUES(?,?,'completed')",
+                         [(2, 'TEST-paper-2'), (3, 'TEST-paper-3')])
+        for qid in range(1, 31):
+            conn.execute("UPDATE questions SET paper_id=? WHERE id=?", ((qid % 3) + 1, qid))
+            conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(?,'curriculum_section',?,'ai')", (qid, section))
+    _approve_automatic_type_evidence(db, tmp_path, tuple(range(1, 31)), release)
+    return db, release
+
+
+def _approve_automatic_type_evidence(db, data_root, question_ids, release):
+    from tests.training.test_combined_question_analysis import _type_result
+    from question_bank.training_criteria import QuestionAnalysisInputLoader, solution_evidence_source_content_hash
+    inputs = QuestionAnalysisInputLoader(db_path=db, data_root=data_root).load(question_ids, curriculum_volume_id="bnu24-math-g8-lower")
+    with connect(db) as conn:
+        for question in inputs:
+            evidence = _type_result()["solution_evidence"]
+            evidence["question_id"] = question.question_id
+            conn.execute("INSERT INTO question_solution_evidence_versions(evidence_version_id,question_id,source_content_hash,schema_version,content_hash,evidence_json,status,source_kind,source_reference,created_by,graph_release_id) VALUES(?,?,?,'question-solution-evidence-v2',?,?,'approved','combined_model','TEST','TEST',?)",
+                (f"{question.question_id:064x}", question.question_id, solution_evidence_source_content_hash(question), "b"*64, json.dumps(evidence), release))
+
+
+def _add_automatic_type_questions(db, data_root, questions, release, *, available=True):
+    with connect(db) as conn:
+        for qid, paper_id, section in questions:
+            conn.execute("INSERT INTO questions(id,paper_id,question_number,question_type,question_text,answer_text) VALUES(?,?,?,'计算题',?,?)",
+                (qid, paper_id, str(qid), f"TEST-并行新增题目 {qid}", f"TEST-并行新增答案 {qid}"))
+            if section:
+                conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(?,'curriculum_section',?,'ai')", (qid, section))
+    if available:
+        _approve_automatic_type_evidence(db, data_root, tuple(row[0] for row in questions), release)
+
+
+def _automatic_response(payload):
+    refs = [row["question_ref"] for row in payload["questions"]]
+    return {"types": [{"type_id": "new_sum", "name": "TEST-角关系推理", "definition": "TEST-用角关系推出结论",
+        "include_scope": "TEST-内角与外角", "exclude_scope": "TEST-仅量角", "section_id": "kp_bnu24_math_g8_lower_1_1", "anchors": refs[:2]}],
+        "assignments": [{"question_ref": ref, "primary_type_id": "new_sum", "secondary_type_ids": []} for ref in refs]}
+
+
+def test_automatic_chapter_types_publish_without_teacher_steps_and_replay_without_requests(tmp_path):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from backend.jobs.chapter_types import run_chapter_type_job
+    from question_bank.services.chapter_type_service import preview_chapter_type_plan
+    from question_bank.current_knowledge import CurrentKnowledgeResolver
+    from question_bank.taxonomy.governance import TaxonomyGovernance
+    from question_bank.question_types import chapter_target_kind
+    db, old = _automatic_type_bank(tmp_path)
+    plan = preview_chapter_type_plan(db_path=db, data_root=tmp_path, volume_id="bnu24-math-g8-lower")
+    assert plan["planned_requests"] == 1
+    chapter = next(row for row in plan["chapters"] if row["planned_requests"])
+    assert (chapter["question_count"], chapter["paper_count"]) == (30, 3)
+    calls = []
+    gateway = SimpleNamespace(organize_chapter_types=lambda payload: calls.append(payload) or _automatic_response(payload))
+    context = SimpleNamespace(job_id=901, payload={"authorization": {**plan, "confirmed": True, "request_limit": 1}},
+        raise_if_cancelled=lambda: None, report=lambda *args: None)
+    guards = []
+    @contextmanager
+    def guard():
+        guards.append("entered")
+        yield
+    result = run_chapter_type_job(context=context, question_bank_db_path=db, data_root=tmp_path,
+        ai_service_factory=lambda: gateway, publication_guard=guard)
+    assert result["outcome"] == "published", result
+    assert result["published_count"] == 30
+    assert result["model_calls"] == 1
+    assert len(calls) == 1 and guards == ["entered", "entered"]
+    assert all("point_knowledge" in row for row in calls[0]["questions"])
+    resolver = CurrentKnowledgeResolver.from_active_database(db)
+    assert resolver.release_id != old
+    assert chapter_target_kind(resolver, "bnu24-math-g8-lower", "kp_bnu24_math_g8_lower_1") == "type"
+    assert chapter_target_kind(resolver, "bnu24-math-g8-lower", "kp_bnu24_math_g8_lower_2") == "knowledge"
+    governance = TaxonomyGovernance(state_path=tmp_path / "TEST-auto-taxonomy.json", knowledge_graph_db_path=db)
+    contract = governance.prompt_contract({"curriculum_volume_id": "bnu24-math-g8-lower", "question_text": "TEST-角关系"})
+    assert contract["question_type_mode"] is True
+    from question_bank.training_criteria.adapters import _prompt_candidate_contract
+    from question_bank.knowledge_graph_release.loader import load_taxonomy_catalog_for_release
+    from question_bank.knowledge_graph_release.repository import load_active_release
+    active_catalog = load_taxonomy_catalog_for_release(load_active_release(db))
+    type_key = "kp_bnu24_math_g8_lower_1_1_t01"
+    anchors = ["题干：合成题目 1\n答案：合成答案 1", "题干：合成题目 2\n答案：合成答案 2"]
+    assert next(row for row in active_catalog["terms"] if row["id"] == type_key)["anchors"] == anchors
+    new_type = next(row for row in _prompt_candidate_contract(contract)["candidates"]["knowledge"] if row["id"] == type_key)
+    assert all(anchor in new_type["observable_evidence"] for anchor in anchors)
+    assert "q1" not in new_type["observable_evidence"] and "q2" not in new_type["observable_evidence"]
+    assert all(row["definition"] for row in contract["candidates"]["ability"])
+    with connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM question_tags WHERE tag_type='knowledge_point' AND tag_value='kp_bnu24_math_g8_lower_1_1_t01'").fetchone()[0] == 30
+        assert conn.execute("SELECT COUNT(DISTINCT question_id) FROM evidence_point_knowledge_links WHERE graph_release_id=? AND stable_key='kp_bnu24_math_g8_lower_1_1_t01'", (resolver.release_id,)).fetchone()[0] == 30
+        assert conn.execute("SELECT COUNT(*) FROM question_solution_evidence_versions").fetchone()[0] == 30
+    assert run_chapter_type_job(context=context, question_bank_db_path=db, data_root=tmp_path,
+        ai_service_factory=lambda: gateway, publication_guard=guard) == result
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("problem", ["missing", "small_type", "duplicate", "unknown"])
+def test_automatic_chapter_type_rejection_keeps_active_release_and_never_retries(tmp_path, problem):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from backend.jobs.chapter_types import run_chapter_type_job
+    from question_bank.services.chapter_type_service import preview_chapter_type_plan
+    from question_bank.knowledge_graph_release.repository import active_release_id
+    db, old = _automatic_type_bank(tmp_path)
+    plan = preview_chapter_type_plan(db_path=db, data_root=tmp_path, volume_id="bnu24-math-g8-lower")
+    calls = []
+    def organize(payload):
+        calls.append(payload)
+        if problem == "unknown":
+            raise TimeoutError("TEST-request-outcome-unknown")
+        raw = _automatic_response(payload)
+        if problem == "missing":
+            raw["assignments"].pop()
+        elif problem == "duplicate":
+            raw["assignments"][1] = dict(raw["assignments"][0])
+        else:
+            raw["types"].append({**raw["types"][0], "type_id": "new_small", "name": "TEST-small", "anchors": [raw["assignments"][0]["question_ref"]]})
+            raw["assignments"][0]["primary_type_id"] = "new_small"
+        return raw
+    context = SimpleNamespace(job_id=902, payload={"authorization": {**plan, "confirmed": True, "request_limit": 1}},
+        raise_if_cancelled=lambda: None, report=lambda *args: None)
+    args = dict(context=context, question_bank_db_path=db, data_root=tmp_path,
+                ai_service_factory=lambda: SimpleNamespace(organize_chapter_types=organize), publication_guard=nullcontext)
+    first = run_chapter_type_job(**args)
+    assert first["published_count"] == 0
+    assert active_release_id(db) == old
+    run_chapter_type_job(**args)
+    assert len(calls) == 1
+
+
+def test_automatic_publish_failure_rolls_back_standard_labels_and_copies(tmp_path, monkeypatch):
+    from question_bank.services.chapter_type_service import (
+        _chapter_inputs, preview_chapter_type_plan, chapter_model_payload, validate_chapter_result,
+        build_chapter_release, publish_chapter_release)
+    from question_bank.knowledge_graph_release.repository import load_active_release, active_release_id
+    from question_bank.services import question_write_service
+    db, old = _automatic_type_bank(tmp_path)
+    base = load_active_release(db)
+    plan = preview_chapter_type_plan(db_path=db, data_root=tmp_path, volume_id="bnu24-math-g8-lower")
+    volume, groups = _chapter_inputs(db, tmp_path, "bnu24-math-g8-lower")
+    chapter = next(row for row in plan["chapters"] if row["planned_requests"])
+    rows = groups[chapter["chapter_id"]]
+    payload = chapter_model_payload(base, volume, chapter, rows)
+    response = validate_chapter_result(_automatic_response(payload), payload)
+    candidate, catalog, labels = build_chapter_release(base, [(chapter, rows, response)])
+    def fail(*args, **kwargs):
+        raise RuntimeError("TEST-failure-after-standard-activation")
+    monkeypatch.setattr(question_write_service, "sync_question_type_labels", fail)
+    with pytest.raises(RuntimeError, match="after-standard-activation"):
+        publish_chapter_release(db_path=db, data_root=tmp_path, base_release_id=old,
+            candidate=candidate, catalog=catalog, labels=labels)
+    assert active_release_id(db) == old
+    with connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM knowledge_graph_releases WHERE release_id=?", (candidate.release_id,)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM question_tags WHERE tag_value='kp_bnu24_math_g8_lower_1_1_t01'").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM evidence_point_knowledge_links WHERE graph_release_id=?", (candidate.release_id,)).fetchone()[0] == 0
+
+def test_automatic_chapter_plan_counts_distinct_questions_and_all_live_source_papers(tmp_path):
+    from question_bank.services.chapter_type_service import preview_chapter_type_plan
+    db, _ = _automatic_type_bank(tmp_path)
+    with connect(db) as conn:
+        conn.execute("UPDATE questions SET paper_id=1")
+        conn.executemany("INSERT INTO paper_question_occurrences(paper_id,question_id,question_number) VALUES(?,1,'1')", [(2,), (3,)])
+    plan = preview_chapter_type_plan(db_path=db, data_root=tmp_path, volume_id="bnu24-math-g8-lower")
+    chapter = next(row for row in plan["chapters"] if row["chapter_id"] == "kp_bnu24_math_g8_lower_1")
+    assert (chapter["question_count"], chapter["paper_count"], chapter["planned_requests"]) == (30, 3, 1)
+    with connect(db) as conn:
+        conn.execute("UPDATE papers SET deleted_at=datetime('now') WHERE id=3")
+    after = preview_chapter_type_plan(db_path=db, data_root=tmp_path, volume_id="bnu24-math-g8-lower")
+    assert after["planned_requests"] == 0
+    chapter = next(row for row in after["chapters"] if row["chapter_id"] == "kp_bnu24_math_g8_lower_1")
+    assert (chapter["question_count"], chapter["paper_count"]) == (30, 2)
+
+
+def test_automatic_authorized_upper_bound_skips_request_if_import_has_no_usable_new_question(tmp_path):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from backend.jobs.chapter_types import run_chapter_type_job
+    from question_bank.services.chapter_type_service import preview_chapter_type_plan
+    db, _ = _automatic_type_bank(tmp_path)
+    with connect(db) as conn:
+        conn.execute("UPDATE questions SET is_deleted=1 WHERE id=30")
+    plan = preview_chapter_type_plan(db_path=db, data_root=tmp_path, volume_id="bnu24-math-g8-lower", pending_question_count=1)
+    assert plan["planned_requests"] == 1
+    def forbidden():
+        pytest.fail("upper-bound confirmation must not issue a request below actual threshold")
+    context = SimpleNamespace(job_id=903, payload={"authorization": {**plan, "confirmed": True, "request_limit": 1}},
+        raise_if_cancelled=lambda: None, report=lambda *args: None)
+    result = run_chapter_type_job(context=context, question_bank_db_path=db, data_root=tmp_path,
+        ai_service_factory=forbidden, publication_guard=nullcontext)
+    assert result["outcome"] == "skipped" and result["model_calls"] == 0
+
+
+def test_automatic_authorization_changed_chapter_list_is_rejected_before_model(tmp_path):
+    from question_bank.services.chapter_type_service import authorized_chapter_inputs, preview_chapter_type_plan, ChapterTypeInvalid
+    db, _ = _automatic_type_bank(tmp_path)
+    plan = preview_chapter_type_plan(db_path=db, data_root=tmp_path, volume_id="bnu24-math-g8-lower")
+    plan["chapters"][0]["label"] = "TEST-altered-confirmation"
+    with pytest.raises(ChapterTypeInvalid, match="快照"):
+        authorized_chapter_inputs(db_path=db, data_root=tmp_path, authorization={**plan, "confirmed": True, "request_limit": 1})
+
+def test_automatic_chapter_plan_keeps_historical_skill_standard_without_requests(tmp_path, monkeypatch):
+    from question_bank.services import chapter_type_service as service
+    from question_bank.knowledge_graph_release.loader import load_release_for_taxonomy_revision
+    monkeypatch.setattr(service, "load_active_release", lambda db: load_release_for_taxonomy_revision(10))
+    def forbidden(*args, **kwargs):
+        pytest.fail("historical skill-only standards must not enter automatic type grouping")
+    monkeypatch.setattr(service, "_chapter_inputs", forbidden)
+    plan = service.preview_chapter_type_plan(db_path=tmp_path / "TEST-historical.db", data_root=tmp_path,
+        volume_id="bnu24-math-g8-lower", pending_question_count=40)
+    assert plan["planned_requests"] == 0 and plan["model_calls"] == 0 and plan["chapters"] == []
+    with pytest.raises(service.ChapterTypeInvalid, match="历史技能标准"):
+        service.authorized_chapter_inputs(db_path=tmp_path / "TEST-historical.db", data_root=tmp_path,
+            authorization={**plan, "confirmed": True, "request_limit": 0})
+
+@pytest.mark.parametrize("change,pending_count,message", [
+    ("extra_question", 0, "待导入题数"),
+    ("extra_source_paper", 0, "来源试卷"),
+    ("chapter_question_overflow", 1, "可用题目"),
+    ("chapter_source_overflow", 1, "来源试卷"),
+    ("whole_volume_budget", 1, "待导入题数"),
+    ("known_content", 0, "内容已变化"),
+    ("legacy_source_paper", 0, "来源试卷"),
+])
+def test_automatic_authorization_rejects_parallel_scope_growth_before_model(tmp_path, change, pending_count, message):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from backend.jobs.chapter_types import run_chapter_type_job
+    from question_bank.services.chapter_type_service import preview_chapter_type_plan, ChapterTypeInvalid, _hash
+    from question_bank.knowledge_graph_release.repository import active_release_id
+    db, old = _automatic_type_bank(tmp_path)
+    section = "kp_bnu24_math_g8_lower_1_1"
+    pending_ids = (31,) if change == "chapter_question_overflow" else ()
+    plan = preview_chapter_type_plan(db_path=db, data_root=tmp_path, volume_id="bnu24-math-g8-lower",
+        question_ids=pending_ids, pending_question_count=pending_count)
+    if change == "legacy_source_paper":
+        for chapter in plan["chapters"]:
+            chapter.pop("possible_question_count")
+            chapter.pop("possible_paper_count")
+        plan.pop("input_fingerprint")
+        plan["input_fingerprint"] = _hash(plan)
+        from question_bank.services.chapter_type_service import authorized_chapter_inputs
+        _, _, ready = authorized_chapter_inputs(db_path=db, data_root=tmp_path,
+            authorization={**plan, "confirmed": True, "request_limit": 1})
+        assert len(ready) == 1 and len(ready[0][1]) == 30
+    with connect(db) as conn:
+        if change in {"extra_source_paper", "chapter_source_overflow", "legacy_source_paper"}:
+            conn.execute("INSERT INTO papers(id,title,import_status) VALUES(4,'TEST-parallel-paper-4','completed')")
+        if change in {"extra_source_paper", "legacy_source_paper"}:
+            conn.execute("INSERT INTO paper_question_occurrences(paper_id,question_id,question_number) VALUES(4,1,'TEST-1')")
+        if change == "chapter_source_overflow":
+            conn.execute("INSERT INTO papers(id,title,import_status) VALUES(5,'TEST-parallel-paper-5','completed')")
+        if change == "known_content":
+            conn.execute("UPDATE questions SET question_text='TEST-changed-confirmed-content' WHERE id=1")
+    if change == "extra_question":
+        _add_automatic_type_questions(db, tmp_path, [(31, 1, section)], old)
+    elif change == "chapter_question_overflow":
+        _add_automatic_type_questions(db, tmp_path, [(31, 1, section), (32, 1, section)], old)
+    elif change == "chapter_source_overflow":
+        _add_automatic_type_questions(db, tmp_path, [(31, 4, section)], old)
+        with connect(db) as conn:
+            conn.execute("INSERT INTO paper_question_occurrences(paper_id,question_id,question_number) VALUES(5,31,'TEST-31')")
+    elif change == "whole_volume_budget":
+        _add_automatic_type_questions(db, tmp_path, [(31, 1, section), (32, 1, "kp_bnu24_math_g8_lower_2_1")], old)
+    calls = []
+    gateway = SimpleNamespace(organize_chapter_types=lambda payload: calls.append(payload) or _automatic_response(payload))
+    context = SimpleNamespace(job_id=904, payload={"authorization": {**plan, "confirmed": True, "request_limit": 1}},
+        raise_if_cancelled=lambda: None, report=lambda *args: None)
+    with pytest.raises(ChapterTypeInvalid, match=message):
+        run_chapter_type_job(context=context, question_bank_db_path=db, data_root=tmp_path,
+            ai_service_factory=lambda: gateway, publication_guard=nullcontext)
+    assert calls == []
+    assert active_release_id(db) == old
+
+
+def test_automatic_authorization_allows_only_confirmed_unknown_question_budget(tmp_path):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from backend.jobs.chapter_types import run_chapter_type_job
+    from question_bank.services.chapter_type_service import preview_chapter_type_plan
+    db, old = _automatic_type_bank(tmp_path)
+    plan = preview_chapter_type_plan(db_path=db, data_root=tmp_path, volume_id="bnu24-math-g8-lower", pending_question_count=1)
+    with connect(db) as conn:
+        conn.execute("INSERT INTO papers(id,title,import_status) VALUES(4,'TEST-confirmed-new-paper','completed')")
+    _add_automatic_type_questions(db, tmp_path, [(31, 4, "kp_bnu24_math_g8_lower_1_1")], old)
+    calls = []
+    gateway = SimpleNamespace(organize_chapter_types=lambda payload: calls.append(payload) or _automatic_response(payload))
+    context = SimpleNamespace(job_id=905, payload={"authorization": {**plan, "confirmed": True, "request_limit": 1}},
+        raise_if_cancelled=lambda: None, report=lambda *args: None)
+    result = run_chapter_type_job(context=context, question_bank_db_path=db, data_root=tmp_path,
+        ai_service_factory=lambda: gateway, publication_guard=nullcontext)
+    assert result["outcome"] == "published" and result["model_calls"] == 1
+    assert len(calls) == 1 and len(calls[0]["questions"]) == 31
+
+
+@pytest.mark.parametrize("pending_paper,expected_requests", [(1, 0), (4, 1)])
+def test_automatic_preview_counts_unlocated_pending_questions_and_distinct_source_papers(tmp_path, pending_paper, expected_requests):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from backend.jobs.chapter_types import run_chapter_type_job
+    from question_bank.services.chapter_type_service import preview_chapter_type_plan
+    from question_bank.knowledge_graph_release.repository import active_release_id
+    db, old = _automatic_type_bank(tmp_path)
+    with connect(db) as conn:
+        conn.execute("UPDATE questions SET is_deleted=1 WHERE id>=28")
+        conn.execute("UPDATE questions SET paper_id=(id % 2)+1 WHERE id<=27")
+        conn.execute("INSERT INTO papers(id,title,import_status) VALUES(4,'TEST-pending-third-paper','completed')")
+    pending_ids = (31, 32, 33)
+    _add_automatic_type_questions(db, tmp_path, [(qid, pending_paper, None) for qid in pending_ids], old, available=False)
+    plan = preview_chapter_type_plan(db_path=db, data_root=tmp_path, volume_id="bnu24-math-g8-lower", question_ids=pending_ids)
+    chapter = next(row for row in plan["chapters"] if row["chapter_id"] == "kp_bnu24_math_g8_lower_1")
+    assert (chapter["question_count"], chapter["paper_count"]) == (27, 2)
+    assert (chapter["possible_question_count"], chapter["possible_paper_count"]) == (30, 2 + expected_requests)
+    assert plan["planned_requests"] == expected_requests
+    assert all(str(qid) in plan["source_question_hashes"] for qid in pending_ids)
+    with connect(db) as conn:
+        conn.executemany("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(?,'curriculum_section','kp_bnu24_math_g8_lower_1_1','ai')", [(qid,) for qid in pending_ids])
+    _approve_automatic_type_evidence(db, tmp_path, pending_ids, old)
+    after = preview_chapter_type_plan(db_path=db, data_root=tmp_path, volume_id="bnu24-math-g8-lower", question_ids=pending_ids)
+    after_chapter = next(row for row in after["chapters"] if row["chapter_id"] == chapter["chapter_id"])
+    assert after_chapter["possible_question_count"] == 30
+    calls = []
+    gateway = SimpleNamespace(organize_chapter_types=lambda payload: calls.append(payload) or _automatic_response(payload))
+    context = SimpleNamespace(job_id=906, payload={"authorization": {**plan, "confirmed": True, "request_limit": expected_requests}},
+        raise_if_cancelled=lambda: None, report=lambda *args: None)
+    result = run_chapter_type_job(context=context, question_bank_db_path=db, data_root=tmp_path,
+        ai_service_factory=lambda: gateway, publication_guard=nullcontext)
+    assert result["model_calls"] == expected_requests and len(calls) == expected_requests
+    if expected_requests:
+        assert result["outcome"] == "published" and result["published_count"] == 30
+        assert {row["question_ref"] for row in calls[0]["questions"]} == {f"q{qid}" for qid in (*range(1, 28), *pending_ids)}
+        assert active_release_id(db) != old
+    else:
+        assert result["outcome"] == "skipped" and active_release_id(db) == old
+
+
+def test_automatic_authorization_rejects_changed_unlocated_pending_content(tmp_path):
+    from question_bank.services.chapter_type_service import preview_chapter_type_plan, authorized_chapter_inputs, ChapterTypeInvalid
+    db, old = _automatic_type_bank(tmp_path)
+    _add_automatic_type_questions(db, tmp_path, [(31, 1, None)], old, available=False)
+    plan = preview_chapter_type_plan(db_path=db, data_root=tmp_path, volume_id="bnu24-math-g8-lower", question_ids=(31,))
+    with connect(db) as conn:
+        conn.execute("UPDATE questions SET question_text='TEST-changed-unlocated-pending' WHERE id=31")
+    with pytest.raises(ChapterTypeInvalid, match="内容已变化"):
+        authorized_chapter_inputs(db_path=db, data_root=tmp_path, authorization={**plan, "confirmed": True, "request_limit": 1})
+
+
+def test_automatic_publish_rejects_newly_usable_chapter_question_after_model(tmp_path):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from backend.jobs.chapter_types import run_chapter_type_job
+    from question_bank.knowledge_graph_release.repository import active_release_id
+    from question_bank.services.chapter_type_service import preview_chapter_type_plan
+
+    db, old = _automatic_type_bank(tmp_path)
+    _add_automatic_type_questions(db, tmp_path, [(31, 3, 'kp_bnu24_math_g8_lower_1_1')], old, available=False)
+    plan = preview_chapter_type_plan(db_path=db, data_root=tmp_path, volume_id='bnu24-math-g8-lower')
+    calls = []
+    def organize(payload):
+        calls.append(payload)
+        _approve_automatic_type_evidence(db, tmp_path, [31], old)
+        return _automatic_response(payload)
+    context = SimpleNamespace(job_id=1909,
+        payload={'authorization': {**plan, 'confirmed': True, 'request_limit': 1}},
+        raise_if_cancelled=lambda: None, report=lambda *args: None)
+    result = run_chapter_type_job(context=context, question_bank_db_path=db, data_root=tmp_path,
+        ai_service_factory=lambda: SimpleNamespace(organize_chapter_types=organize), publication_guard=nullcontext)
+    assert result['outcome'] == 'failed' and result['published_count'] == 0
+    assert len(calls) == 1 and result['model_calls'] == 1
+    assert '可用待归类题已变化' in result['reason']
+    assert active_release_id(db) == old
+    with connect(db) as connection:
+        from question_bank.question_types import is_type_key
+        tags = connection.execute("SELECT tag_value FROM question_tags WHERE tag_type='knowledge_point'").fetchall()
+        assert not any(is_type_key(row[0]) for row in tags)
+        assert connection.execute("SELECT COUNT(*) FROM knowledge_graph_releases WHERE status='candidate'").fetchone()[0] == 0
+
+
+def _upper_label_refresh_bank(tmp_path):
+    from tests.training.test_combined_question_analysis import _seed_questions
+    from question_bank.taxonomy.governance import TaxonomyGovernance
+    db = tmp_path / 'databases' / 'question_bank.db'
+    _seed_questions(db, 1)
+    release = install_current_knowledge(db, taxonomy_revision=11)
+    with connect(db) as conn:
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(1,'curriculum_section','kp_bnu24_math_g8_upper_1_1','ai')")
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(1,'knowledge_point','kp_bnu24_math_g8_upper_1_1_t01','manual')")
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(1,'secondary_type','kp_bnu24_math_g8_upper_1_1_t02','manual')")
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(1,'method','TEST-old-method','ai')")
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(1,'knowledge_point','sk_bnu24_math_g8_upper_1_1_101','ai')")
+    _approve_automatic_type_evidence(db, tmp_path, [1], release)
+    from question_bank.solution_evidence.part_assessments import load_profiles
+    from question_bank.solution_evidence.knowledge_links import replace_point_links
+    profile = load_profiles(db, [1], data_root=tmp_path)[1]
+    with connect(db) as conn:
+        for part in profile['evidence']['parts']:
+            replace_point_links(conn, evidence_version_id=profile['evidence_version_id'], question_id=1,
+                graph_release_id=release, points=[{'part_id': part['part_id'], 'evidence_point_id': point['evidence_point_id'],
+                    'links': [{'term_id': 'kp_bnu24_math_g8_upper_1_1_t01', 'role': 'direct', 'weight': 1.0},
+                              {'term_id': 'sk_bnu24_math_g8_upper_1_1_101', 'role': 'direct', 'weight': 0.4}]} for point in part['evidence_points']],
+                source_kind='migrated_from_embedded', replace=False)
+    with connect(db) as conn:
+        conn.execute("UPDATE question_solution_evidence_versions SET source_kind='teacher_manual',created_by='TEST-teacher',decision_by='TEST-teacher',decision_note='TEST-approved-text'")
+        for part in profile['evidence']['parts']:
+            conn.execute("INSERT INTO question_part_difficulty_features(question_id,part_id,features_json,formula_difficulty,formula_version,source_content_hash,model_name) VALUES(1,?,'{}',4.2,'TEST-formula',?,'TEST-model')", (part['part_id'], profile['current_source_content_hash']))
+    governance = TaxonomyGovernance(state_path=tmp_path / 'TEST-refresh-taxonomy.json', knowledge_graph_db_path=db)
+    return db, governance
+
+
+def _upper_refresh_response(item):
+    from question_bank.services.label_refresh_service import ATTRIBUTES, _fine_candidates
+    candidates = item.contract['candidates']
+    fine = next(row['id'] for row in _fine_candidates(item.contract).values()
+                if str(row['id']).startswith('kp_bnu24_math_g8_upper_1_1_'))
+    return {'question_id': item.question.question_id,
+        'attributes': {key: [candidates[key][0]['id']] for key in ATTRIBUTES},
+        'points': [{'evidence_point_id': point['evidence_point_id'], 'links': [{'fine_term_id': fine, 'role': 'direct'}]}
+            for part in item.profile['evidence']['parts'] for point in part['evidence_points']]}
+
+
+def _upper_refresh_plan(db, data_root, governance):
+    from question_bank.services.label_refresh_service import preview_label_refresh
+    return {**preview_label_refresh(db_path=db, data_root=data_root, governance=governance, question_ids=[1]),
+            'confirmed': True, 'request_limit': 1}
+
+
+def test_old_upper_refresh_is_one_request_and_preserves_protected_persistent_rows(tmp_path):
+    from question_bank.services.label_refresh_service import execute_label_refresh
+    db, governance = _upper_label_refresh_bank(tmp_path)
+    plan = _upper_refresh_plan(db, tmp_path, governance)
+    with connect(db) as conn:
+        evidence_before = [tuple(row) for row in conn.execute('SELECT * FROM question_solution_evidence_versions')]
+        difficulty_before = [tuple(row) for row in conn.execute('SELECT * FROM question_part_difficulty_features')]
+        protected_before = [tuple(row) for row in conn.execute("SELECT * FROM question_tags WHERE source='manual' OR tag_value LIKE 'sk_%' ORDER BY id")]
+        links_before = [tuple(row) for row in conn.execute('SELECT rowid,* FROM evidence_point_knowledge_links ORDER BY rowid')]
+        question_before = tuple(conn.execute('SELECT question_type,question_text,answer_text,difficulty FROM questions WHERE id=1').fetchone())
+    calls = []
+    result = execute_label_refresh(db_path=db, data_root=tmp_path, governance=governance, authorization=plan,
+        operation_id='TEST-refresh-success', gateway=lambda item: calls.append(item) or _upper_refresh_response(item), model_name='TEST-model')
+    assert result['saved_count'] == 1 and result['model_calls'] == len(calls) == 1, result
+    with connect(db) as conn:
+        assert [tuple(row) for row in conn.execute('SELECT * FROM question_solution_evidence_versions')] == evidence_before
+        assert [tuple(row) for row in conn.execute('SELECT * FROM question_part_difficulty_features')] == difficulty_before
+        assert [tuple(row) for row in conn.execute("SELECT * FROM question_tags WHERE source='manual' OR tag_value LIKE 'sk_%' ORDER BY id")] == protected_before
+        old_ids = [row[0] for row in links_before]
+        assert [tuple(conn.execute('SELECT rowid,* FROM evidence_point_knowledge_links WHERE rowid=?', (key,)).fetchone()) for key in old_ids] == links_before
+        assert tuple(conn.execute('SELECT question_type,question_text,answer_text,difficulty FROM questions WHERE id=1').fetchone()) == question_before
+        assert conn.execute("SELECT COUNT(*) FROM question_tags WHERE tag_type='method' AND tag_value='TEST-old-method'").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM question_tags WHERE tag_type='knowledge_point' AND tag_value='kp_bnu24_math_g8_upper_1_1_t01'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM evidence_point_knowledge_links WHERE source_reference='label_refresh:TEST-refresh-success'").fetchone()[0] > 0
+    effective = load_point_links(db, [plan['questions'][0]['evidence_version_id']], plan['questions'][0]['release_id'])
+    assert all(any(link.stable_key == 'kp_bnu24_math_g8_upper_1_1_t01' for link in links)
+        for links in effective[plan['questions'][0]['evidence_version_id']].values())
+    replay = execute_label_refresh(db_path=db, data_root=tmp_path, governance=governance, authorization=plan,
+        operation_id='TEST-refresh-success', gateway=lambda _item: pytest.fail('must not replay a sent request'))
+    assert replay['replayed'] and replay['model_calls'] == 1
+    backup = tmp_path / 'backups/label_refresh_TEST-refresh-success/question_bank_before.db'
+    with sqlite3.connect(backup) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM question_tags WHERE tag_value='TEST-old-method'").fetchone()[0] == 1
+    receipt = json.loads((tmp_path / 'question_bank/label_refresh_runs/TEST-refresh-success/receipt.json').read_text(encoding='utf-8'))
+    assert receipt['questions']['1']['comparison']['old_attributes']['method'] == ['TEST-old-method']
+
+
+@pytest.mark.parametrize('mutation', ['source', 'standard', 'evidence', 'manual'])
+def test_old_upper_refresh_rejects_concurrent_changes_after_single_request(tmp_path, mutation):
+    from question_bank.services.label_refresh_service import execute_label_refresh
+    db, governance = _upper_label_refresh_bank(tmp_path)
+    plan = _upper_refresh_plan(db, tmp_path, governance)
+    calls = []
+    def gateway(item):
+        calls.append(item)
+        response = _upper_refresh_response(item)
+        with connect(db) as conn:
+            if mutation == 'source':
+                conn.execute("UPDATE questions SET answer_text='TEST-concurrent-answer' WHERE id=1")
+            elif mutation == 'standard':
+                conn.execute("UPDATE knowledge_graph_releases SET status='retired' WHERE status='active'")
+            elif mutation == 'evidence':
+                conn.execute("UPDATE question_solution_evidence_versions SET status='rejected'")
+            else:
+                conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(1,'ability','TEST-concurrent-manual','manual')")
+        return response
+    result = execute_label_refresh(db_path=db, data_root=tmp_path, governance=governance, authorization=plan,
+        operation_id='TEST-refresh-conflict', gateway=gateway)
+    assert result['saved_count'] == 0 and len(calls) == result['model_calls'] == 1
+    assert result['questions'][0]['status'] in {'review_required', 'failed_no_retry'}
+    with connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM question_tags WHERE tag_value='TEST-old-method'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM evidence_point_knowledge_links WHERE source_reference LIKE 'label_refresh:%'").fetchone()[0] == 0
+
+
+def test_old_upper_refresh_preserves_teacher_attribute_conflict_without_retry(tmp_path):
+    from question_bank.services.label_refresh_service import execute_label_refresh
+    db, governance = _upper_label_refresh_bank(tmp_path)
+    with connect(db) as conn:
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(1,'ability','TEST-teacher-ability','manual')")
+    plan = _upper_refresh_plan(db, tmp_path, governance)
+    result = execute_label_refresh(db_path=db, data_root=tmp_path, governance=governance, authorization=plan,
+        operation_id='TEST-refresh-teacher-conflict', gateway=_upper_refresh_response)
+    assert result['saved_count'] == 0 and result['model_calls'] == 1
+    assert result['questions'][0]['reason'] == 'teacher_attribute_conflict'
+    with connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM question_tags WHERE tag_value='TEST-teacher-ability' AND source='manual'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM question_tags WHERE tag_value='TEST-old-method'").fetchone()[0] == 1
+
+
+def test_old_upper_refresh_preview_cli_never_constructs_model_or_writes(tmp_path, monkeypatch, capsys):
+    from tools.refresh_g8_upper_labels import main
+    from question_bank.services import ai_tagging_service
+    db, governance = _upper_label_refresh_bank(tmp_path)
+    from types import SimpleNamespace
+    import path_manager
+    monkeypatch.setenv('AI_GRADING_DATA_DIR', str(tmp_path))
+    monkeypatch.setenv('AI_GRADING_TAXONOMY_STATE_PATH', str(governance.state_path))
+    monkeypatch.setattr(path_manager, 'get_path_manager', lambda: SimpleNamespace(taxonomy_state_path=governance.state_path))
+    monkeypatch.setattr(ai_tagging_service, 'AITaggingService', lambda **kwargs: pytest.fail('preview constructed a model'))
+    before = db.read_bytes()
+    assert main(['--data-root', str(tmp_path), '--question-ids', '1']) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['planned_requests'] == 1 and result['model_calls'] == 0 and not result['applied']
+    assert db.read_bytes() == before
+    assert not (tmp_path / 'backups').exists() and not (tmp_path / 'question_bank/label_refresh_runs').exists()
+
+
+def test_old_upper_refresh_keeps_same_manual_ownership_without_false_conflict(tmp_path):
+    from question_bank.services.label_refresh_service import execute_label_refresh
+    db, governance = _upper_label_refresh_bank(tmp_path)
+    with connect(db) as conn:
+        conn.execute("UPDATE question_tags SET source='manual' WHERE tag_type IN ('exam_scope','curriculum_section')")
+        before = [tuple(row) for row in conn.execute("SELECT * FROM question_tags WHERE source='manual' ORDER BY id")]
+    result = execute_label_refresh(db_path=db, data_root=tmp_path, governance=governance,
+        authorization=_upper_refresh_plan(db, tmp_path, governance), operation_id='TEST-same-manual-scope', gateway=_upper_refresh_response)
+    assert result['saved_count'] == 1, result
+    with connect(db) as conn:
+        assert [tuple(row) for row in conn.execute("SELECT * FROM question_tags WHERE source='manual' ORDER BY id")] == before
+
+
+def test_old_upper_refresh_teacher_fine_conflict_keeps_all_rows(tmp_path):
+    from question_bank.services.label_refresh_service import execute_label_refresh
+    db, governance = _upper_label_refresh_bank(tmp_path)
+    plan = _upper_refresh_plan(db, tmp_path, governance)
+    point_id = next(iter(load_point_links(db, [plan['questions'][0]['evidence_version_id']], plan['questions'][0]['release_id'])[plan['questions'][0]['evidence_version_id']]))
+    with connect(db) as conn:
+        part_id = conn.execute('SELECT part_id FROM evidence_point_knowledge_links LIMIT 1').fetchone()[0]
+        conn.execute("INSERT INTO evidence_point_knowledge_links(evidence_version_id,question_id,part_id,evidence_point_id,graph_release_id,role,term_id,stable_key,resolution_status,weight,source_kind,source_reference) VALUES(?,1,?,?,?,'direct','kp_bnu24_math_g8_upper_1_1_2','kp_bnu24_math_g8_upper_1_1_2','resolved',0.75,'teacher','TEST-teacher-fine')",
+            (plan['questions'][0]['evidence_version_id'], part_id, point_id, plan['questions'][0]['release_id']))
+        before = [tuple(row) for row in conn.execute('SELECT rowid,* FROM evidence_point_knowledge_links ORDER BY rowid')]
+    result = execute_label_refresh(db_path=db, data_root=tmp_path, governance=governance,
+        authorization=_upper_refresh_plan(db, tmp_path, governance), operation_id='TEST-teacher-fine', gateway=_upper_refresh_response)
+    assert result['saved_count'] == 0 and result['questions'][0]['reason'] == 'teacher_knowledge_conflict', result
+    with connect(db) as conn:
+        assert [tuple(row) for row in conn.execute('SELECT rowid,* FROM evidence_point_knowledge_links ORDER BY rowid')] == before
+
+
+def test_old_upper_refresh_transport_unknown_is_not_retried_or_replayed(tmp_path):
+    from types import SimpleNamespace
+    from question_bank.services.label_refresh_service import build_label_refresh_gateway, execute_label_refresh
+    db, governance = _upper_label_refresh_bank(tmp_path)
+    plan = _upper_refresh_plan(db, tmp_path, governance)
+    calls = []
+    def responses(**kwargs):
+        calls.append(kwargs)
+        raise TimeoutError('TEST-response-state-unknown')
+    service = SimpleNamespace(mock_mode=False, model='TEST-model', _protocol_adapter=lambda: SimpleNamespace(responses=responses))
+    gateway = build_label_refresh_gateway(service, operation_id='TEST-unknown')
+    result = execute_label_refresh(db_path=db, data_root=tmp_path, governance=governance,
+        authorization=plan, operation_id='TEST-unknown', gateway=gateway)
+    assert len(calls) == 1 and calls[0]['allow_retry'] is False
+    assert calls[0]['kwargs']['text']['format']['schema']['properties']['attributes']['required'] == ['ability', 'thought', 'method', 'model', 'special_type']
+    assert result['saved_count'] == 0 and result['questions'][0]['status'] == 'failed_no_retry'
+    replay = execute_label_refresh(db_path=db, data_root=tmp_path, governance=governance,
+        authorization=plan, operation_id='TEST-unknown', gateway=gateway)
+    assert replay['replayed'] and len(calls) == 1
+
+
+def test_old_upper_refresh_teacher_ownership_conflict_rolls_back_both_outputs(tmp_path):
+    from question_bank.services.label_refresh_service import execute_label_refresh
+    db, governance = _upper_label_refresh_bank(tmp_path)
+    with connect(db) as conn:
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(1,'exam_scope','kp_bnu24_math_g8_upper_2','manual')")
+        before = [tuple(row) for row in conn.execute('SELECT * FROM question_tags ORDER BY id')]
+    result = execute_label_refresh(db_path=db, data_root=tmp_path, governance=governance,
+        authorization=_upper_refresh_plan(db, tmp_path, governance), operation_id='TEST-teacher-ownership', gateway=_upper_refresh_response)
+    assert result['saved_count'] == 0 and result['questions'][0]['reason'] == 'teacher_ownership_conflict', result
+    with connect(db) as conn:
+        assert [tuple(row) for row in conn.execute('SELECT * FROM question_tags ORDER BY id')] == before
+        assert conn.execute("SELECT COUNT(*) FROM evidence_point_knowledge_links WHERE source_reference='label_refresh:TEST-teacher-ownership'").fetchone()[0] == 0

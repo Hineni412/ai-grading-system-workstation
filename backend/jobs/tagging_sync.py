@@ -101,6 +101,9 @@ def run_tagging_sync_job(
         context.payload.get("force_retag_question_ids"),
         requested_ids=question_ids,
     )
+    repair_type_ids = _normalize_retry_evidence_question_ids(
+        context.payload.get('repair_type_question_ids'), requested_ids=question_ids)
+    force_retag_question_ids = sorted(set(force_retag_question_ids) | set(repair_type_ids))
     db_path = Path(question_bank_db_path)
     lock_keys = [
         f"tagging-sync:{db_path.resolve(strict=False)}:{question_id}"
@@ -120,6 +123,7 @@ def run_tagging_sync_job(
             question_ids=question_ids,
             retry_evidence_question_ids=retry_evidence_question_ids,
             force_retag_question_ids=force_retag_question_ids,
+            repair_type_question_ids=repair_type_ids,
             curriculum_volume_id=str(
                 context.payload.get("curriculum_volume_id") or ""
             ).strip(),
@@ -140,7 +144,7 @@ def _run_tagging_sync_job_locked(**kwargs: Any) -> dict[str, object]:
         return _run_distinct_tagging_sync_job_locked(**kwargs)
     database = kwargs["question_bank_db_path"]
     input_failures: dict[int, str] = {}
-    QuestionAnalysisInputLoader(db_path=database, data_root=root).load(
+    loaded_inputs = QuestionAnalysisInputLoader(db_path=database, data_root=root).load(
         question_ids, load_failures=input_failures,
         curriculum_volume_id=kwargs['curriculum_volume_id'],
     )
@@ -157,6 +161,15 @@ def _run_tagging_sync_job_locked(**kwargs: Any) -> dict[str, object]:
     _, complete_ids, _ = _load_tagging_candidates(database, question_ids,
         curriculum_volume_id=kwargs["curriculum_volume_id"])
     complete = set(complete_ids)
+    type_only_copies = set()
+    if kwargs["context"].payload.get("repair_missing_only"):
+        current_tags = _load_tag_source_currentness(database, current_inputs=loaded_inputs)
+        type_only_copies = {
+            qid for qid in kwargs["repair_type_question_ids"]
+            if qid in complete and all(gaps.get(qid, {}).values())
+            and qid not in set(kwargs["retry_evidence_question_ids"])
+            and current_tags.get(qid, True)
+        }
     representatives: list[int] = []
     copies: dict[int, int] = {}
     for group in groups.values():
@@ -165,7 +178,7 @@ def _run_tagging_sync_job_locked(**kwargs: Any) -> dict[str, object]:
         representatives.append(representative)
         copies.update({qid: representative for qid in group if qid != representative})
     distinct = dict(kwargs, question_ids=representatives)
-    for field in ("retry_evidence_question_ids", "force_retag_question_ids"):
+    for field in ("retry_evidence_question_ids", "force_retag_question_ids", "repair_type_question_ids"):
         requested = set(kwargs[field])
         distinct[field] = list(dict.fromkeys(copies.get(qid, qid) for qid in question_ids if qid in requested))
     result = _run_distinct_tagging_sync_job_locked(**distinct)
@@ -173,6 +186,9 @@ def _run_tagging_sync_job_locked(**kwargs: Any) -> dict[str, object]:
     for target, source in copies.items():
         kwargs["context"].raise_if_cancelled()
         if source in successful:
+            if target in type_only_copies:
+                _copy_question_type_labels(database, source=source, target=target, data_root=root)
+                continue
             with connect(database) as conn:
                 link_exact_duplicate(conn, question_id=target, source_id=source, signature=identities[source], copy_tags=target not in complete)
             copy_duplicate_analysis(database, source_question_id=source,
@@ -211,6 +227,29 @@ def _run_tagging_sync_job_locked(**kwargs: Any) -> dict[str, object]:
     return result
 
 
+def _copy_question_type_labels(database: Path, *, source: int, target: int, data_root: Path) -> None:
+    from question_bank.current_knowledge import CurrentKnowledgeResolver
+    from question_bank.question_types import is_type_key
+    from question_bank.services.question_write_service import sync_question_type_labels
+    from question_bank.solution_evidence.part_assessments import load_profiles
+
+    with connect(database) as conn:
+        resolver = CurrentKnowledgeResolver.from_connection(conn)
+        rows = conn.execute(
+            "SELECT tag_type,tag_value FROM question_tags WHERE question_id=? ORDER BY id",
+            (source,),
+        ).fetchall()
+        primary = next((str(row[1]) for row in rows
+                        if row[0] == "knowledge_point" and is_type_key(row[1])), "")
+        secondary = [str(row[1]) for row in rows if row[0] == "secondary_type"]
+        profile = load_profiles(database, [target], connection=conn, data_root=data_root).get(target, {})
+        sync_question_type_labels(
+            conn, target, primary, secondary, resolver, source="taxonomy",
+            expected_evidence_version_id=str(profile.get("evidence_version_id") or "") if profile.get("available") else "",
+            expected_release_id=resolver.release_id, data_root=data_root,
+        )
+
+
 def _run_distinct_tagging_sync_job_locked(
     *,
     context: JobContext,
@@ -222,6 +261,7 @@ def _run_distinct_tagging_sync_job_locked(
     question_ids: list[int],
     retry_evidence_question_ids: list[int],
     force_retag_question_ids: list[int],
+    repair_type_question_ids: list[int],
     curriculum_volume_id: str,
 ) -> dict[str, object]:
     size = max(1, min(int(batch_size), 50))
@@ -316,6 +356,14 @@ def _run_distinct_tagging_sync_job_locked(
         _failure(question_id, "validation", reason_code=setup_input_failures.get(question_id, "question_not_found"))
         for question_id in unavailable_ids
     ]
+    type_only_ids = {
+        qid for qid in repair_type_question_ids
+        if context.payload.get("repair_missing_only") and qid in set(complete_ids)
+        and analysis_gaps.get(qid, {}).get("evidence_ready")
+        and analysis_gaps.get(qid, {}).get("criteria_ready")
+        and qid not in set(retry_evidence_question_ids)
+    }
+    complete_ids = [qid for qid in complete_ids if qid not in set(force_retag_question_ids)]
     successful_ids = list(complete_ids)
     tagged_count = 0
     pending_ids = [item for item in question_ids if item in contexts]
@@ -371,6 +419,7 @@ def _run_distinct_tagging_sync_job_locked(
             ai_service=ai_service,
             pending_ids=pending_ids,
             evidence_only_ids=evidence_only_ids,
+            type_only_ids=type_only_ids,
             complete_ids=complete_ids,
             unavailable_ids=unavailable_ids,
             taxonomy_contracts=taxonomy_contracts,
@@ -383,6 +432,10 @@ def _run_distinct_tagging_sync_job_locked(
             curriculum_volume_id=curriculum_volume_id,
             input_load_failures=setup_input_failures,
         )
+    if type_only_ids:
+        failures.extend(_failure(question_id, "quality") for question_id in type_only_ids)
+        pending_ids = [qid for qid in pending_ids if qid not in type_only_ids]
+        normal_pending_ids = [qid for qid in normal_pending_ids if qid not in type_only_ids]
     if evidence_only_ids:
         # Evidence-only retry is available only through the combined-v3 path.
         # Fail closed here so an already-successful tag projection is never
@@ -583,6 +636,7 @@ def _run_unified_tagging_analysis(
     ai_service: AITaggingService,
     pending_ids: list[int],
     evidence_only_ids: list[int],
+    type_only_ids: set[int],
     complete_ids: list[int],
     unavailable_ids: list[int],
     taxonomy_contracts: Mapping[int, Mapping[str, Any]],
@@ -708,6 +762,7 @@ def _run_unified_tagging_analysis(
                 analyze_tag=analyze_tag,
                 analyze_solution_evidence=analyze_evidence,
                 publish_saved_criterion=False,
+                tag_persistence="question_types" if question_id in type_only_ids else "full",
             )
         )
 

@@ -128,6 +128,9 @@ class CurrentKnowledgeResolver:
         self.content_hash = release.content_hash
         self.taxonomy_revision = release.taxonomy_revision
         payload = release.payload
+        policy = payload.get("training_target_policy") or {}
+        self.knowledge_target_volumes = frozenset(str(value) for value in
+            policy.get("knowledge_fallback_volumes", ()) if str(value).strip()) if isinstance(policy, Mapping) else frozenset()
 
         active_nodes = {
             str(item["stable_key"]).strip().casefold(): _node(item)

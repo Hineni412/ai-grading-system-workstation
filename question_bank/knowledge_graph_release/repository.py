@@ -169,6 +169,7 @@ def stage_release(
     source_reference: str,
     reason: str = "知识图谱发布包已完成结构校验并进入候选区",
     taxonomy_catalog: Mapping[str, Any] | None = None,
+    external_connection: sqlite3.Connection | None = None,
 ) -> str:
     candidate = release or load_release()
     validation = validate_release(
@@ -183,8 +184,9 @@ def stage_release(
     source = _required(source_reference, "source_reference")
     stage_reason = _required(reason, "reason")
     payload = candidate.payload
-    with connect(Path(db_path)) as connection:
-        connection.execute("BEGIN IMMEDIATE")
+    with connect(Path(db_path), external_connection=external_connection) as connection:
+        if external_connection is None:
+            connection.execute("BEGIN IMMEDIATE")
         existing = connection.execute(
             "SELECT content_hash FROM knowledge_graph_releases WHERE release_id = ?",
             (candidate.release_id,),
@@ -235,6 +237,7 @@ def activate_release(
     expected_active_release_id: str | None,
     actor_ref: str,
     reason: str,
+    external_connection: sqlite3.Connection | None = None,
 ) -> str:
     return _activate(
         Path(db_path),
@@ -243,6 +246,7 @@ def activate_release(
         actor_ref=_required(actor_ref, "actor_ref"),
         reason=_required(reason, "reason"),
         rollback=False,
+        external_connection=external_connection,
     )
 
 
@@ -450,9 +454,11 @@ def _activate(
     actor_ref: str,
     reason: str,
     rollback: bool,
+    external_connection: sqlite3.Connection | None = None,
 ) -> str:
-    with connect(db_path) as connection:
-        connection.execute("BEGIN IMMEDIATE")
+    with connect(db_path, external_connection=external_connection) as connection:
+        if external_connection is None:
+            connection.execute("BEGIN IMMEDIATE")
         current = _active_release_id(connection)
         if current != expected_active_release_id:
             raise KnowledgeGraphReleaseConflict(

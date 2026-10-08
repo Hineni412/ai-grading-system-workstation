@@ -580,6 +580,9 @@ class QuestionReadFilters:
     teaching_progress_chapter: str = ""
     collapse_duplicates: bool = False
     scope_mode: str = "any"
+    type_keys: tuple[str, ...] = ()
+    missing_type: bool = False
+    missing_knowledge: bool = False
     skill_keys: tuple[str, ...] = ()
     skill_unlinked: bool = False
     include_skills: bool = False
@@ -1933,6 +1936,23 @@ class QuestionBankReadService:
                 selected.append(qid)
             where.append("q.id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))")
             params.append(json.dumps(selected))
+        if filters.type_keys or filters.missing_type or filters.missing_knowledge:
+            snapshot = self._skill_snapshot()
+            ids = set(snapshot['questions'])
+            if filters.type_keys:
+                matched = set().union(*(snapshot.get('by_type', {}).get(key, set()) for key in filters.type_keys))
+                with _read_connection(self.db_path) as conn:
+                    marks = ','.join('?' for _ in filters.type_keys)
+                    matched.update(int(row[0]) for row in conn.execute(
+                        f"SELECT question_id FROM question_tags WHERE tag_type='secondary_type' AND tag_value IN ({marks})",
+                        filters.type_keys))
+                ids.intersection_update(matched)
+            if filters.missing_type:
+                ids.difference_update(snapshot.get('primary_types', {}))
+            if filters.missing_knowledge:
+                ids = {qid for qid in ids if not snapshot.get('knowledge_by_question', {}).get(qid)}
+            where.append("q.id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))")
+            params.append(json.dumps(sorted(ids)))
         if filters.skill_keys or filters.skill_unlinked:
             snapshot = self._skill_snapshot()
             ids = set(snapshot["questions"])
@@ -2122,6 +2142,7 @@ class QuestionBankReadService:
             snapshot = self._skill_snapshot(question_ids=tuple(int(item["id"]) for item in items))
             for item in items:
                 skills = snapshot["by_question"].get(int(item["id"]), {})
+                item["labels"] = _question_labels(snapshot, int(item["id"]), self.current_knowledge)
                 item["evidence_point_count"] = snapshot["point_counts"].get(int(item["id"]), 0)
                 item["duplicate_members"] = [members[qid] for qid in groups.get(int(item["id"]), []) if qid in members]
                 item["skills"] = [{"stable_key": key, "display_name": short_node_name(
@@ -2327,6 +2348,7 @@ class QuestionBankReadService:
             "curriculum_sections": facet_source(
                 curriculum_sections=(),
             ),
+            "task_types": facet_source(type_keys=()),
             "knowledge_points": facet_source(
                 knowledge_point=None,
                 knowledge_points=(),
@@ -2351,6 +2373,7 @@ class QuestionBankReadService:
         tag_specs = {
             "exam_scopes": ("exam_scope", None),
             "curriculum_sections": ("curriculum_section", None),
+            "task_types": ("knowledge_point", None),
             "knowledge_points": ("knowledge_point", "knowledge"),
             "abilities": ("ability", "ability"),
             "methods": ("method", "method"),
@@ -2387,6 +2410,8 @@ class QuestionBankReadService:
                 tag_types = {
                     tag_specs[name][0] for name in names if name in tag_specs
                 }
+                if "task_types" in names:
+                    tag_types.add("secondary_type")
                 if "thoughts" in names:
                     tag_types.add("method")
                 if "curriculum_chapters" in names:
@@ -2416,6 +2441,12 @@ class QuestionBankReadService:
                     if name in tag_specs:
                         tag_type, dimension = tag_specs[name]
                         tag_rows = tags.get(tag_type, [])
+                        if name == 'task_types':
+                            from question_bank.question_types import is_type_key
+                            tag_rows = [{'question_id': row['question_id'], 'value': target.stable_key}
+                                        for row in [*tag_rows, *tags.get('secondary_type', [])]
+                                        for target in (current_knowledge.resolve(row['value']) if current_knowledge else ())
+                                        if is_type_key(target.stable_key)]
                         if dimension == "thought":
                             tag_rows = [*tag_rows, *tags.get("method", [])]
                         result[name] = _tag_facet(
@@ -2608,6 +2639,9 @@ class QuestionBankReadService:
                 candidate,
                 candidate_tags,
                 wording_score=wording_score,
+                shared_type_values=tuple(self.current_knowledge.node(key).display_name for key in sorted(target_input.tags.get('type', frozenset()) & candidate_input.tags.get('type', frozenset())) if self.current_knowledge and self.current_knowledge.node(key)),
+                type_values=frozenset(value for key in target_input.tags.get('type', frozenset()) | candidate_input.tags.get('type', frozenset())
+                    for value in (key, self.current_knowledge.node(key).display_name if self.current_knowledge and self.current_knowledge.node(key) else key)),
             )
             item = self._public_question_with_rich_content(
                 candidate,
@@ -2692,6 +2726,8 @@ class QuestionBankReadService:
             revision=revision,
         )
         item["criteria_needs_review"] = int(question_id) in review_ids
+        snapshot = self._skill_snapshot(question_ids=(int(question_id),))
+        item["labels"] = _question_labels(snapshot, int(question_id), self.current_knowledge)
         item["selectable_skills"] = selectable_skills
         item["error_patterns"] = [
             {
@@ -3762,10 +3798,16 @@ def _current_knowledge_facet(
 ) -> list[dict[str, Any]]:
     if resolver is None:
         return []
+    from question_bank.taxonomy.curriculum_catalog import curriculum_knowledge_node
+    from question_bank.question_types import is_type_key
+    distinguish_types = any(is_type_key(node.stable_key) for node in resolver.nodes)
     counts: dict[str, int] = {}
     for item in items:
         term = resolver.canonical_term(item.get("value"))
         if term is None or not resolver.resolve(term[0]):
+            continue
+        if distinguish_types and not any((curriculum_knowledge_node(target.stable_key) or {}).get('level') == 3
+                                        for target in resolver.resolve(term[0])):
             continue
         counts[term[1]] = counts.get(term[1], 0) + int(
             item.get("count") or 0
@@ -3793,6 +3835,8 @@ def _similarity_reasons(
     candidate_tags: list[dict[str, Any]],
     *,
     wording_score: float,
+    shared_type_values: tuple[str, ...] = (),
+    type_values: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """按维度分组的推荐理由；kind 是稳定标识，前端据其决定标签和样式。
 
@@ -3800,7 +3844,7 @@ def _similarity_reasons(
     信号类维度的 values 直接是展示短语。
     """
 
-    reasons: list[dict[str, Any]] = []
+    reasons: list[dict[str, Any]] = ([{"kind": "type", "values": list(shared_type_values[:2])}] if shared_type_values else [])
     for kind, tag_types in (
         ("knowledge_point", ("knowledge_point",)),
         ("skill", ("skill",)),
@@ -3808,6 +3852,8 @@ def _similarity_reasons(
         ("model", ("model",)),
     ):
         shared = _shared_tag_values(target_tags, candidate_tags, tag_types)
+        if kind == "knowledge_point":
+            shared = [value for value in shared if value not in type_values]
         if shared:
             reasons.append({"kind": kind, "values": shared[:2]})
     target_difficulty = _numeric_difficulty(target["difficulty"])
@@ -4521,3 +4567,14 @@ def _is_absolute_or_file_uri(value: str) -> bool:
 def _release_label(release_id: str) -> str:
     match = re.search(r"_v(\d+)$", release_id)
     return f"v{match.group(1)}" if match else release_id
+
+
+def _question_labels(snapshot: dict[str, Any], question_id: int,
+                     resolver: CurrentKnowledgeResolver | None) -> dict[str, Any]:
+    from question_bank.services.question_skill_index import short_node_name
+    key = snapshot.get('primary_types', {}).get(question_id, '')
+    def label(value: str) -> dict[str, str]:
+        node = snapshot.get('nodes', {}).get(value, {})
+        return {'key': value, 'label': short_node_name(str(node.get('display_name') or value))}
+    knowledge = [label(value) for value in sorted(snapshot.get('knowledge_by_question', {}).get(question_id, ()))]
+    return {'primary_type': label(key) if key else None, 'secondary_types': [label(value) for value in snapshot.get('secondary_types', {}).get(question_id, ())], 'knowledge_points': knowledge}

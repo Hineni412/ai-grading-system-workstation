@@ -9,7 +9,9 @@ import sqlite3
 from typing import Any
 
 from integration.result_cache import ResultCache
-from question_bank.question_types import type_keys_active
+from question_bank.question_types import (
+    chapter_target_kind, chapter_target_kinds, target_kind_for_key,
+)
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume
 from question_bank.current_knowledge import CurrentKnowledgeResolver, CurrentKnowledgeUnavailable
 from question_bank.recommendation.target_matching import knowledge_skill_associations, load_question_facets
@@ -138,11 +140,15 @@ def build_mastery_overview(
         raise ValueError("unknown curriculum volume")
 
     stored_volume = str((diagnosis.get("exam_scope") or {}).get("curriculum_volume_id") or "").strip()
-    type_mode = type_keys_active(resolver, clean_id) or (
-        resolver is None and diagnosis.get("target_kind") == "type"
-        and (not stored_volume or stored_volume == clean_id)
-    )
-    item_kinds = ("type",) if type_mode else _ITEM_KINDS
+    target_kind = (chapter_target_kind(resolver, clean_id) if resolver is not None
+                   else str(diagnosis.get("target_kind") or "skill")
+                   if not stored_volume or stored_volume == clean_id else "skill")
+    chapter_kinds = (chapter_target_kinds(resolver, clean_id) if resolver is not None
+                     else dict(diagnosis.get("chapter_target_kinds") or
+                               {str(chapter["knowledge_id"]): target_kind for chapter in volume["chapters"]}))
+    type_mode = target_kind == "type"
+    has_types = type_mode or "type" in chapter_kinds.values()
+    item_kinds = ("type",) if type_mode else ("topic",) if target_kind == "knowledge" else ("topic", "skill", "type") if target_kind == "mixed" else _ITEM_KINDS
 
     catalog: dict[str, Mapping[str, Any]] = {}
     for item in diagnosis.get("knowledge_catalog") or []:
@@ -154,12 +160,14 @@ def build_mastery_overview(
     # or on a topic whose section owns the node. In type mode the item column
     # is question types only; topic/skill catalog nodes stay out of the set.
     section_keys: set[str] = set()
+    chapter_by_section: dict[str, str] = {}
     topic_anchor: dict[str, tuple[str, str]] = {}
     for chapter in volume["chapters"]:
         chapter_key = str(chapter["knowledge_id"])
         for section in chapter["sections"]:
             section_key = str(section["knowledge_id"])
             section_keys.add(section_key)
+            chapter_by_section[section_key] = chapter_key
             for point in section["knowledge_points"]:
                 topic_anchor[str(point["id"])] = (chapter_key, section_key)
 
@@ -167,7 +175,7 @@ def build_mastery_overview(
     for key, item in catalog.items():
         # Topics always come from the volume's knowledge_points; only the
         # training-target kind (skill or type) is anchored through parents.
-        if item.get("node_kind") != ("type" if type_mode else "skill"):
+        if item.get("node_kind") not in {"skill", "type"}:
             continue
         parent = str(item.get("parent_knowledge_key") or "")
         if parent in section_keys:
@@ -175,6 +183,9 @@ def build_mastery_overview(
         elif parent in topic_anchor:
             anchor = topic_anchor[parent][1]
         else:
+            continue
+        chapter_kind = chapter_kinds.get(chapter_by_section[anchor], target_kind)
+        if item.get("node_kind") != ("type" if chapter_kind == "type" else "skill") or chapter_kind == "knowledge":
             continue
         items_by_section.setdefault(anchor, []).append((key, item))
     for anchored in items_by_section.values():
@@ -191,7 +202,7 @@ def build_mastery_overview(
                 node_specs.append(
                     (section_key, "section", chapter_key, section_key)
                 )
-            if not type_mode:
+            if chapter_kinds.get(chapter_key, target_kind) != "type":
                 for point in section["knowledge_points"]:
                     point_key = str(point["id"])
                     if point_key in catalog:
@@ -200,7 +211,7 @@ def build_mastery_overview(
                         )
             for item_key, _item in items_by_section.get(section_key, []):
                 node_specs.append(
-                    (item_key, "type" if type_mode else "skill", chapter_key, section_key)
+                    (item_key, str(_item.get("node_kind") or "skill"), chapter_key, section_key)
                 )
 
     group_mastery_by_key = {
@@ -268,6 +279,7 @@ def build_mastery_overview(
             "kind": kind,
             "chapter_key": chapter_key,
             "section_key": section_key,
+            "target_kind": chapter_kinds.get(chapter_key, target_kind_for_key(key, resolver, clean_id)),
             "definition": str(catalog[key].get("definition") or ""),
             "in_volume": key in in_volume_keys,
             "group_mastery": (group_mastery_by_key.get(key) or {}).get("mastery"),
@@ -311,7 +323,7 @@ def build_mastery_overview(
             "topics": _count_tiers(topic_keys, index),
             "skills": _count_tiers(skill_keys, index),
         }
-        if type_mode:
+        if has_types:
             row["types"] = _count_tiers(type_keys, index)
         student_rows.append(row)
 
@@ -354,7 +366,8 @@ def build_mastery_overview(
             and node["distribution"]["weak"] > 0
         ),
     }
-    if type_mode:
+    summary["target_count"] = len(topic_keys) + len(skill_keys) + len(type_keys)
+    if has_types:
         summary["type_count"] = len(type_keys)
         summary["weak_type_count"] = sum(
             1
@@ -376,7 +389,8 @@ def build_mastery_overview(
         "scope": dict(diagnosis.get("scope") or {}),
         "exam_scope": dict(diagnosis.get("exam_scope") or {}),
         "warnings": list(diagnosis.get("warnings") or []),
-        "target_kind": "type" if type_mode else "skill",
+        "target_kind": target_kind,
+        "chapter_target_kinds": chapter_kinds,
         "nodes": nodes,
         "students": student_rows,
         "summary": summary,
@@ -422,7 +436,7 @@ def overview_payload(
             resolver = CurrentKnowledgeResolver.from_active_database(service.question_bank_db_path)
         except (CurrentKnowledgeUnavailable, OSError, sqlite3.Error, TypeError, ValueError):
             pass
-        if resolver is not None and type_keys_active(resolver, volume_id):
+        if resolver is not None and chapter_target_kind(resolver, volume_id) == "type":
             # Type nodes carry no knowledge-skill associations; skip loading
             # question facets entirely in type mode.
             associations = []

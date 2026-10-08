@@ -40,7 +40,7 @@ from integration.data_generation import commit_generation
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from integration.result_cache import ResultCache
 from integration.training_prewarm import record_request, record_target
-from question_bank.question_types import training_keys
+from question_bank.recommendation.personalized import _candidate_training_keys
 from question_bank.recommendation.personalized import PersonalizedRecommendationModule, PersonalizedRecommendationError
 from question_bank.services.assembly_assistant import shortlist_candidates
 from question_bank.services.assembly_workspace_service import (
@@ -344,7 +344,7 @@ def quick_draft(
     descriptors, _, _ = recommendations._source_snapshot(question_ids=selected) if selected else ([], [], '')
     candidate_cache = {qid: None for qid in selected}
     candidate_cache.update((item['question_id'], item) for item in descriptors)
-    covered = {key for q in descriptors for key in training_keys(q['stable_keys'])}
+    covered = {key for q in descriptors for key in _candidate_training_keys(q)}
     additions, skipped = [], {k: 0 for k in ('skill', 'written', 'difficulty', 'similar', 'unavailable')}
     pools = {}
     for question in questions:
@@ -380,7 +380,7 @@ def quick_draft(
                 continue
             selected.append(qid)
             descriptor = candidate_cache[qid]
-            covered.update(k for k in descriptor['stable_keys'] if k in training_keys(descriptor['stable_keys']))
+            covered.update(k for k in descriptor['stable_keys'] if k in _candidate_training_keys(descriptor))
             additions.append({'question_id': qid, 'source': question})
             break
         else:
@@ -592,7 +592,7 @@ def resolve_assembly_questions(
     found = {int(row["id"]) for row in rows}
     try:
         descriptors, _, _ = PersonalizedRecommendationModule(db_path=service.db_path, data_root=service.data_root or service.db_path.parent.parent)._source_snapshot(question_ids=ordered_ids)
-        skills = {q['question_id']: [k for k in q['stable_keys'] if k in training_keys(q['stable_keys'])] for q in descriptors}
+        skills = {q['question_id']: [k for k in q['stable_keys'] if k in _candidate_training_keys(q)] for q in descriptors}
     except (ValueError, PersonalizedRecommendationError):
         skills = {}
     items = [

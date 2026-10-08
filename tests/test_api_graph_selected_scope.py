@@ -620,3 +620,43 @@ def test_overview_type_mode_lists_types_with_typical_question():
     assert not {type_a, type_b, type_hidden, 'old-type'} & legacy_keys
     assert 'skill-1' in legacy_keys
     assert all(n['kind'] != 'type' for n in legacy['nodes'])
+
+
+def test_overview_mixed_chapters_count_actual_training_targets():
+    from types import SimpleNamespace
+    from integration.mastery_overview import build_mastery_overview
+    from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+    from backend.api.schemas.training import TrainingOverviewResponse
+    volume_id = "bnu24-math-g8-lower"
+    first, second = curriculum_volume(volume_id=volume_id)["chapters"][:2]
+    first_section, second_section = first["sections"][0], second["sections"][0]
+    type_key = first_section["knowledge_id"] + "_t01"
+    topic_one = first_section["knowledge_points"][0]["id"]
+    topic_two = second_section["knowledge_points"][0]["id"]
+    skill = "sk_bnu24_math_g8_lower_2_1_01"
+    rows = [(first["knowledge_id"], "chapter", None), (second["knowledge_id"], "chapter", None),
+            (first_section["knowledge_id"], "section", first["knowledge_id"]),
+            (second_section["knowledge_id"], "section", second["knowledge_id"]),
+            (type_key, "type", first_section["knowledge_id"]),
+            (topic_one, "topic", first_section["knowledge_id"]),
+            (topic_two, "topic", second_section["knowledge_id"]),
+            (skill, "skill", second_section["knowledge_id"])]
+    resolver = SimpleNamespace(release_id="TEST-mixed-overview", taxonomy_revision=11,
+        nodes=[SimpleNamespace(stable_key=key) for key, _, _ in rows],
+        relations=[SimpleNamespace(source_key=key, target_key=parent, relation_type="parent")
+                   for key, _, parent in rows if parent])
+    diagnosis = {"knowledge_catalog": [{"knowledge_key": key, "knowledge_point": key,
+        "parent_knowledge_key": parent, "node_kind": kind} for key, kind, parent in rows],
+        "students": [{"student_id": "TEST-student", "weak_points": []}], "group_weak_points": []}
+    result = build_mastery_overview(diagnosis, volume_id=volume_id, resolver=resolver)
+    assert result["target_kind"] == "mixed"
+    nodes = {item["knowledge_key"]: item for item in result["nodes"]}
+    assert nodes[type_key]["target_kind"] == "type"
+    assert nodes[topic_two]["target_kind"] == "knowledge"
+    assert topic_one not in nodes and skill not in nodes
+    assert result["summary"]["type_count"] == 1
+    assert result["summary"]["topic_count"] == 1
+    assert result["summary"]["skill_count"] == 0
+    assert result["summary"]["target_count"] == 2
+    TrainingOverviewResponse.model_validate({**result, "scope": {"mode": "all", "student_ids": ["TEST-student"]},
+        "exam_scope": {"mode": "semester", "session_ids": [], "sessions": []}})

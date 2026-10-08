@@ -490,6 +490,7 @@ class QuestionBankWriteService:
                 conn,
                 self.db_path,
                 int(question_id),
+                data_root=self.data_root,
             )
             # prerequisite 也属派生维度（来自 supporting_prerequisite 关联），
             # 重打时同样清理非手工旧值后由 _derived_ownership 重写。
@@ -1185,6 +1186,13 @@ class QuestionBankWriteService:
             if str(expected_revision) != current_revision:
                 raise QuestionWriteConflict(current_revision)
 
+            from question_bank.question_types import is_type_key
+            protected_rows = [dict(row) for row in conn.execute(
+                "SELECT tag_type,tag_value,confidence,source,model_name FROM question_tags WHERE question_id=?", (question_id,))
+                if row['tag_type'] == 'secondary_type' or (row['tag_type'] in {'knowledge_point', 'prerequisite'}
+                    and (is_type_key(row['tag_value']) or conn.execute("SELECT 1 FROM knowledge_graph_releases WHERE status='active'").fetchone()))]
+            active_standard = conn.execute("SELECT 1 FROM knowledge_graph_releases WHERE status='active'").fetchone() is not None
+            normalized = tuple(tag for tag in normalized if tag.tag_type not in {'knowledge_point', 'prerequisite'} or not active_standard)
             conn.execute(
                 "DELETE FROM question_tags WHERE question_id = ?",
                 (question_id,),
@@ -1200,16 +1208,44 @@ class QuestionBankWriteService:
                     for tag in normalized
                 ],
             )
+            conn.executemany(
+                "INSERT INTO question_tags(question_id,tag_type,tag_value,confidence,source,model_name) VALUES(?,?,?,?,?,?)",
+                [(question_id, row['tag_type'], row['tag_value'], row['confidence'], row['source'], row['model_name']) for row in protected_rows],
+            )
             _touch_question(conn, question_id)
             updated_revision = question_revision(conn, question_id)
             assert updated_revision is not None
+            saved_tags = tuple(tag for tag in _load_current_tags(conn, question_id) if tag.tag_type in ALLOWED_TAG_TYPES)
 
         return QuestionWriteResult(
             question_id=question_id,
             revision=updated_revision,
             deleted=False,
-            tags=normalized,
+            tags=saved_tags,
         )
+
+    def replace_question_types(
+        self, question_id: int, *, expected_revision: str,
+        primary_type_key: str, secondary_type_keys: Iterable[str] = (),
+    ) -> QuestionWriteResult:
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            state = _load_question_state(conn, question_id)
+            if state is None or bool(state["is_deleted"]):
+                raise QuestionWriteNotFound("Question not found")
+            current = question_revision(conn, question_id)
+            if expected_revision != current:
+                raise QuestionWriteConflict(current)
+            resolver = CurrentKnowledgeResolver.from_connection(conn)
+            from question_bank.solution_evidence.part_assessments import load_profiles
+            profile = load_profiles(self.db_path, [question_id], connection=conn, data_root=self.data_root).get(question_id, {})
+            sync_question_type_labels(conn, question_id, primary_type_key,
+                secondary_type_keys, resolver, source="manual",
+                expected_evidence_version_id=str(profile['evidence_version_id']) if profile.get('available') else '',
+                data_root=self.data_root)
+            updated = question_revision(conn, question_id)
+            return QuestionWriteResult(question_id, updated, False,
+                                       tuple(tag for tag in _load_current_tags(conn, question_id) if tag.tag_type in ALLOWED_TAG_TYPES))
 
     def add_tags(
         self,
@@ -2857,10 +2893,13 @@ def _dedupe_tag_rows(
     return result
 
 
-def refresh_derived_ownership_tags(conn: sqlite3.Connection, question_id: int) -> bool:
+def refresh_derived_ownership_tags(
+    conn: sqlite3.Connection, question_id: int, *, data_root: Path | None = None,
+) -> bool:
     """Refresh only the ownership projection; retain contextual/manual tags."""
     qid = int(question_id)
-    derived = _derived_ownership(conn, Path('.'), qid)
+    db_path = Path(next(row[2] for row in conn.execute('PRAGMA database_list') if row[1] == 'main'))
+    derived = _derived_ownership(conn, db_path, qid, data_root=data_root)
     if derived is None:
         return False
     conn.execute("DELETE FROM question_tags WHERE question_id=? AND (tag_type IN ('exam_scope','curriculum_section','canonical_knowledge_id') OR (tag_type='tag_status' AND tag_value='derived_pending') OR (tag_type='knowledge_point' AND (tag_value LIKE 'sk_%' OR source='taxonomy')) OR (tag_type='prerequisite' AND COALESCE(source,'') <> 'manual'))", (qid,))
@@ -2880,30 +2919,16 @@ def _derived_ownership(
     conn: sqlite3.Connection,
     db_path: Path,
     question_id: int,
+    *, data_root: Path | None = None,
 ) -> dict[str, Any] | None:
     """Derive chapter/section ownership from the current usable evidence
     version's resolved ``direct`` links. Returns ``None`` when no usable link
     exists so the caller can keep model-written values."""
-    row = conn.execute(
-        """
-        SELECT v.evidence_version_id, v.graph_release_id
-        FROM question_solution_evidence_versions v
-        JOIN (
-            SELECT question_id, MAX(created_at) AS max_created
-            FROM question_solution_evidence_versions
-            WHERE status IN ('proposed', 'approved')
-            GROUP BY question_id
-        ) m
-          ON m.question_id = v.question_id
-         AND m.max_created = v.created_at
-        WHERE v.question_id = ? AND v.status IN ('proposed', 'approved')
-        LIMIT 1
-        """,
-        (int(question_id),),
-    ).fetchone()
-    if row is None:
+    from question_bank.solution_evidence.part_assessments import load_profiles
+    profile = load_profiles(db_path, [question_id], connection=conn, data_root=data_root).get(question_id, {})
+    if not profile.get('available'):
         return None
-    version_id = str(row[0])
+    version_id = str(profile['evidence_version_id'])
     grouped = load_point_links(
         Path(db_path),
         [version_id],
@@ -2994,3 +3019,135 @@ def _catalog_ownership_indexes() -> tuple[dict[str, str], dict[str, str]]:
             for section in chapter["sections"]:
                 section_ids[str(section["knowledge_id"])] = str(section["id"])
     return section_ids, scope_values
+
+
+def sync_question_type_labels(
+    conn: sqlite3.Connection, question_id: int, primary_type_key: str,
+    secondary_type_keys: Iterable[str], resolver: CurrentKnowledgeResolver, *,
+    expected_evidence_version_id: str | None = None, source: str = "ai",
+    expected_release_id: str | None = None, data_root: Path | None = None,
+) -> None:
+    from question_bank.question_types import is_type_key
+    from question_bank.solution_evidence.knowledge_links import carry_forward_effective_links
+    active = conn.execute("SELECT release_id FROM knowledge_graph_releases WHERE status='active'").fetchone()
+    release_id = str(resolver.release_id)
+    expected = expected_release_id or release_id
+    if active is None or str(active[0]) != expected:
+        raise ValueError("question type release changed before persistence")
+    primary = str(primary_type_key or "").strip()
+    secondary = tuple(str(key).strip() for key in secondary_type_keys)
+    if ((not primary and secondary) or len(secondary) > 2 or len(set(secondary)) != len(secondary)
+            or primary in secondary or any(not is_type_key(key) or resolver.node(key) is None
+                                           for key in ((primary,) if primary else ()) + secondary)):
+        raise ValueError("question type labels are invalid")
+    if conn.execute("SELECT 1 FROM questions WHERE id=? AND is_deleted=0", (question_id,)).fetchone() is None:
+        raise QuestionWriteNotFound("Question not found")
+    from question_bank.taxonomy.curriculum_catalog import curriculum_knowledge_ancestors, curriculum_knowledge_node
+    def chapter_of(key: str) -> str:
+        current_key = key
+        seen = set()
+        parents = {relation.source_key: relation.target_key for relation in resolver.relations if relation.relation_type == 'parent'}
+        while current_key and current_key not in seen:
+            seen.add(current_key)
+            node = curriculum_knowledge_node(current_key)
+            if node:
+                if node['level'] == 1:
+                    return current_key
+                return next((ancestor for ancestor in curriculum_knowledge_ancestors(current_key)
+                             if curriculum_knowledge_node(ancestor)['level'] == 1), '')
+            current_key = parents.get(current_key, '')
+        return ''
+    scope_row = conn.execute("SELECT primary_section_id FROM question_scope_summary WHERE question_id=?", (question_id,)).fetchone()
+    own_chapter = chapter_of(str(scope_row[0] or '')) if scope_row else ''
+    if not own_chapter:
+        section_keys = {str(section['id']): str(section['knowledge_id']) for volume in load_curriculum_catalog()['volumes']
+                        for chapter in volume['chapters'] for section in chapter['sections']}
+        for row in conn.execute("SELECT tag_value FROM question_tags WHERE question_id=? AND tag_type='curriculum_section'", (question_id,)):
+            own_chapter = chapter_of(section_keys.get(str(row[0]), str(row[0])))
+            if own_chapter:
+                break
+    if not own_chapter:
+        stored_scopes = {str(row[0]) for row in conn.execute("SELECT tag_value FROM question_tags WHERE question_id=? AND tag_type='exam_scope'", (question_id,))}
+        possible = {str(chapter['knowledge_id']) for volume in load_curriculum_catalog()['volumes']
+                    for chapter in volume['chapters'] if stored_scopes.intersection(
+                        {str(chapter['id']), str(chapter['knowledge_id']), str(chapter['display_name']), *map(str, chapter.get('exam_scope_values', ()))})}
+        if len(possible) == 1:
+            own_chapter = next(iter(possible))
+    if primary and not own_chapter:
+        raise ValueError('question chapter is unavailable; confirm its section first')
+    if own_chapter and any(chapter_of(key) != own_chapter for key in ((primary,) if primary else ()) + secondary):
+        raise ValueError('question type must belong to the current chapter')
+    if source != 'manual' and conn.execute(
+        "SELECT tag_value FROM question_tags WHERE question_id=? AND tag_type='knowledge_point' AND source='manual'",
+        (question_id,),
+    ).fetchall():
+        manual = [row[0] for row in conn.execute(
+            "SELECT tag_value FROM question_tags WHERE question_id=? AND tag_type='knowledge_point' AND source='manual'", (question_id,))]
+        if any(is_type_key(target.stable_key) for value in manual for target in resolver.resolve(value)):
+            return
+    if expected_evidence_version_id is not None:
+        evidence = conn.execute(
+            "SELECT evidence_version_id,evidence_json FROM question_solution_evidence_versions "
+            "WHERE question_id=? AND evidence_version_id=? AND status IN ('approved','proposed')",
+            (question_id, expected_evidence_version_id),
+        ).fetchone() if expected_evidence_version_id else None
+        if expected_evidence_version_id and evidence is None:
+            raise ValueError('question evidence changed before type persistence')
+    else:
+        evidence = conn.execute(
+            "SELECT evidence_version_id,evidence_json FROM question_solution_evidence_versions "
+            "WHERE question_id=? AND status IN ('approved','proposed') "
+            "ORDER BY status='approved' DESC,created_at DESC,rowid DESC LIMIT 1", (question_id,),
+        ).fetchone()
+    version = str(evidence[0]) if evidence else ''
+    rows = conn.execute("SELECT id,tag_type,tag_value FROM question_tags WHERE question_id=?", (question_id,)).fetchall()
+    stale = [int(row[0]) for row in rows if row[1] == 'secondary_type'
+             or (row[1] == 'knowledge_point' and any(is_type_key(target.stable_key) for target in resolver.resolve(row[2])))]
+    conn.executemany("DELETE FROM question_tags WHERE id=?", [(value,) for value in stale])
+    conn.executemany(
+        "INSERT INTO question_tags(question_id,tag_type,tag_value,confidence,source) VALUES(?,?,?,1.0,?)",
+        ([ (question_id, 'knowledge_point', primary, source) ] if primary else []) +
+        [(question_id, 'secondary_type', key, source) for key in secondary],
+    )
+    if evidence:
+        payload = json.loads(str(evidence[1]))
+        db_path = Path(next(row[2] for row in conn.execute('PRAGMA database_list') if row[1] == 'main'))
+        carry_forward_effective_links(conn, db_path=db_path, question_id=question_id,
+            evidence_version_id=version, graph_release_id=release_id, skip_points=())
+        existing = conn.execute(
+            "SELECT rowid,stable_key,evidence_point_id,weight FROM evidence_point_knowledge_links WHERE evidence_version_id=? AND graph_release_id=?",
+            (version, release_id),
+        ).fetchall()
+        previous_weights = {}
+        for row in existing:
+            if is_type_key(row[1]):
+                previous_weights[str(row[2])] = previous_weights.get(str(row[2]), 0.0) + float(row[3])
+        conn.executemany("DELETE FROM evidence_point_knowledge_links WHERE rowid=?",
+                         [(row[0],) for row in existing if is_type_key(row[1])])
+        for part in payload.get('parts', []) if primary else []:
+            for point in part.get('evidence_points', []):
+                point_id = str(point['evidence_point_id'])
+                has_job = conn.execute(
+                    "SELECT 1 FROM evidence_point_knowledge_links WHERE evidence_version_id=? AND graph_release_id=? "
+                    "AND evidence_point_id=? AND source_kind='link_job'", (version, release_id, point_id),
+                ).fetchone()
+                conn.execute(
+                    "INSERT INTO evidence_point_knowledge_links(evidence_version_id,question_id,part_id,evidence_point_id,"
+                    "graph_release_id,role,term_id,stable_key,resolution_status,weight,source_kind,source_reference) "
+                    "VALUES(?,?,?,?,?,'direct',?,?,'resolved',?,?,?)",
+                    (version, question_id, str(part.get('part_id') or ''), point_id, release_id,
+                     primary, primary, previous_weights.get(point_id, 1.0), 'link_job' if has_job else 'teacher' if source == 'manual' else 'migrated_from_embedded',
+                     'question_type_label'),
+                )
+        for part in payload.get('parts', []):
+            for point in part.get('evidence_points', []):
+                point_id = str(point['evidence_point_id'])
+                direct = conn.execute("SELECT rowid,weight,source_kind FROM evidence_point_knowledge_links WHERE evidence_version_id=? AND graph_release_id=? AND evidence_point_id=? AND role='direct' AND resolution_status='resolved'", (version, release_id, point_id)).fetchall()
+                effective = [row for row in direct if row[2] == 'link_job'] or direct
+                total = sum(float(row[1]) for row in effective)
+                if total > 0:
+                    conn.executemany("UPDATE evidence_point_knowledge_links SET weight=? WHERE rowid=?", [(float(row[1]) / total, row[0]) for row in effective])
+        from question_bank.solution_evidence.knowledge_links import refresh_question_scope_summary
+        refresh_question_scope_summary(conn, question_id, db_path=db_path, data_root=data_root)
+        refresh_derived_ownership_tags(conn, question_id, data_root=data_root)
+    _touch_question(conn, question_id)

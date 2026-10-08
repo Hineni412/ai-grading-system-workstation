@@ -11,10 +11,12 @@ import {
   type CurriculumCatalog,
   type QuestionErrorPattern,
   type QuestionBankTag,
+  type QuestionSkillIndex,
 } from '../../api/question-bank'
 import { questionBankCriteriaApi, type TrainingCriterionWorkspace } from '../../api/question-bank-criteria'
 import { CAUSE_CATEGORIES } from '../../api/class-analysis'
 import { useConfirm } from '../../composables/useConfirm'
+import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import AppIconButton from '../design-system/AppIconButton.vue'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
@@ -63,12 +65,14 @@ function mappedPatterns(pointId: string) {
 }
 function attributeTags(type: string) { return (store.detail?.tags ?? []).filter(tag => tag.tag_type === type).map(tag => tag.tag_value) }
 const attributes = computed(() => [
-  { label: '教材', values: [...attributeTags('exam_scope'), ...attributeTags('knowledge_point')], tone: 'curriculum' },
+  { label: '章节', values: attributeTags('exam_scope'), tone: 'curriculum' },
+  { label: '知识点', values: store.detail?.labels?.knowledge_points.length ? store.detail.labels.knowledge_points.map(point => point.label) : ['待补知识点'], tone: 'curriculum' },
   { label: '能力', values: attributeTags('ability'), tone: 'ability' },
+  { label: '数学思想', values: attributeTags('thought'), tone: 'thought' },
+  { label: '解题方法', values: attributeTags('method'), tone: 'method' },
+  { label: '数学模型', values: attributeTags('model'), tone: 'model' },
   { label: '特殊考法', values: attributeTags('special_type'), tone: 'special' },
-  { label: '需先会', values: attributeTags('prerequisite'), tone: 'prerequisite' },
 ].filter(row => row.values.length))
-const solutionGroups = computed(() => ['method', 'model', 'thought'].map(tone => ({ tone, values: attributeTags(tone) })).filter(group => group.values.length))
 async function saveAnnotation() {
   const saved = await review.value?.saveDraft()
   if (saved) { editing.value = false; await store.loadQuestions(store.appliedFilters) }
@@ -190,9 +194,9 @@ async function changePattern(item: QuestionErrorPattern, action: 'edit' | 'rejec
 // 选择器会同时校准教材章节（exam_scope），标签区不再重复出现两个位置标签。
 // 技能（skill）由判定点归属产生、不参与手输编辑，在下方判定点区块只读展示。
 const editableTagTypes = QUESTION_BANK_TAG_TYPES.filter(
-  (type) => !['student_level', 'canonical_knowledge_id', 'curriculum_section', 'skill'].includes(type),
+  (type) => !['student_level', 'canonical_knowledge_id', 'curriculum_section', 'skill', 'knowledge_point', 'prerequisite'].includes(type),
 )
-const newTagType = ref<QuestionBankTag['tag_type']>('knowledge_point')
+const newTagType = ref<QuestionBankTag['tag_type']>('ability')
 
 // 手动"添加"产生的空标签在保存前保持可编辑输入框；
 // 已有知识点标签只显示最末端节点名，不参与文本编辑。
@@ -278,7 +282,7 @@ const skillLabels = computed(() => [
     .filter(Boolean)),
 ])
 
-const coreTagTypes: QuestionBankTag['tag_type'][] = ['knowledge_point', 'ability', 'exam_scope']
+const coreTagTypes: QuestionBankTag['tag_type'][] = ['ability', 'exam_scope']
 const coreTagStatus = computed(() => [
   ...coreTagTypes.map((type) => ({
     type,
@@ -367,6 +371,62 @@ async function save(): Promise<void> {
   await store.saveTags()
 }
 
+const scope = useCurriculumScopeStore()
+const typeOptions = ref<NonNullable<QuestionSkillIndex['types']>>([])
+const typeEditing = ref(false)
+const typeSaving = ref(false)
+const primaryType = ref('')
+const secondaryTypes = ref<string[]>([])
+const typeError = ref('')
+const responseModeLabels = { exact_objective: '客观作答', short_answer_points: '简答', process_required: '过程作答', visual_construction: '画图作答' }
+function partDifficulty(partId: string) { return evidence.value?.part_assessments?.find(part => part.part_id === partId)?.difficulty ?? '待定' }
+const fineKnowledgeKeys = computed(() => new Set([...(store.detail?.labels?.knowledge_points.map(point => point.key) ?? []), ...(curriculum.value?.volumes.flatMap(volume => volume.chapters.flatMap(chapter => chapter.sections.flatMap(section => section.knowledge_points.map(point => point.id)))) ?? [])]))
+function pointKnowledge(point: typeof points.value[number]) {
+  return point.fine_term_links.filter(link => link.role === 'direct' && link.core_resolution.status === 'resolved'
+    && link.core_resolution.stable_keys.some(key => fineKnowledgeKeys.value.has(key))).map(link => knowledgeLeafLabel(link.fine_term_name))
+}
+function pointPrerequisites(point: typeof points.value[number]) {
+  return point.fine_term_links.filter(link => link.role === 'supporting_prerequisite').map(link => knowledgeLeafLabel(link.fine_term_name))
+}
+async function editTypes() {
+  typeError.value = ''
+  const id = store.detail?.id
+  const volumeId = scope.selectedVolumeId
+  if (!id || !volumeId) return
+  primaryType.value = store.detail?.labels?.primary_type?.key ?? ''
+  secondaryTypes.value = store.detail?.labels?.secondary_types.map(type => type.key) ?? []
+  try {
+    const index = await questionBankApi.skillIndex(volumeId)
+    if (store.detail?.id !== id || scope.selectedVolumeId !== volumeId) return
+    const chapterKey = curriculumGroups.value.find(group => group.chapter.sections.some(section => section.id === selectedSectionId.value))?.chapter.knowledge_id
+      ?? index.chapters.find(chapter => primaryType.value.startsWith(`${chapter.id}_`))?.id
+    typeOptions.value = chapterKey ? (index.types ?? []).filter(type => type.value.startsWith(`${chapterKey}_`)) : []
+    if (!chapterKey) { typeError.value = '请先确认本题教材小节，再修改题型。'; return }
+    typeEditing.value = true
+  } catch { typeError.value = '题型清单暂时无法读取，请重试。' }
+}
+async function saveTypes() {
+  const detail = store.detail
+  if (!detail || !primaryType.value || typeSaving.value) return
+  const primary = primaryType.value
+  const secondary = secondaryTypes.value.filter(key => key !== primary)
+  typeSaving.value = true
+  typeError.value = ''
+  try {
+    await questionBankApi.replaceQuestionTypes(detail.id, detail.revision, primary, secondary)
+    if (store.selectedQuestionId !== detail.id) return
+    typeEditing.value = false
+    await store.selectQuestion(detail.id)
+    if (store.selectedQuestionId !== detail.id) return
+    const refreshedEvidence = await questionBankApi.getSolutionEvidence(detail.id, controller.signal)
+    if (store.selectedQuestionId !== detail.id) return
+    evidence.value = refreshedEvidence
+    await store.loadQuestions(store.appliedFilters)
+  } catch { if (store.selectedQuestionId === detail.id) typeError.value = '题型保存或最新资料读取未完成。请重新打开核对。' }
+  finally { typeSaving.value = false }
+}
+watch(() => store.selectedQuestionId, () => { typeEditing.value = false; typeError.value = '' })
+
 </script>
 <template>
   <div class="qb-annotation">
@@ -383,25 +443,43 @@ async function save(): Promise<void> {
           </div>
         </div>
         <div class="qb-expanded-markings">
+          <section class="qb-properties"><div class="qb-section-heading"><h3>整题标签</h3><AppButton variant="secondary" size="small" :disabled="typeSaving" @click="editTypes">修改题型</AppButton></div><dl>
+            <div><dt>作答形式</dt><dd>{{ questionTypeWithSubtype(store.detail.question_type, store.detail.tags) }}</dd></div>
+            <div><dt>主题型</dt><dd>{{ store.detail.labels?.primary_type?.label || '待归类' }}</dd></div>
+            <div><dt>次题型</dt><dd>{{ store.detail.labels?.secondary_types.map(type => type.label).join('、') || '无' }}</dd></div>
+            <div><dt>难度</dt><dd><meter min="1" max="10" :value="Number(store.detail.difficulty) || 1" /> {{ store.detail.difficulty || '待定' }}<small v-for="part in evidence?.part_assessments ?? []" :key="part.part_id"> · {{ part.part_id }}：{{ part.difficulty ?? '待定' }}</small></dd></div>
+            <div v-for="row in attributes" :key="row.label"><dt>{{ row.label }}</dt><dd :data-tone="row.tone"><span v-for="value in row.values" :key="value" :title="value">{{ row.tone === 'curriculum' ? value.split('｜').join(' › ') : knowledgeLeafLabel(value) }}</span></dd></div>
+            <div v-if="!selectedSectionId"><dt>教材小节</dt><dd class="qb-warning">小节待标定</dd></div>
+          </dl><div v-if="typeEditing" class="qb-type-editor">
+            <label>主题型<select v-model="primaryType" class="app-input" aria-label="主题型"><option value="">请选择题型</option><option v-for="type in typeOptions" :key="type.value" :value="type.value">{{ type.label }}</option></select></label>
+            <fieldset><legend>次题型，最多 2 个</legend><label v-for="type in typeOptions.filter(type => type.value !== primaryType)" :key="type.value"><input v-model="secondaryTypes" type="checkbox" :value="type.value" :disabled="secondaryTypes.length >= 2 && !secondaryTypes.includes(type.value)">{{ type.label }}</label></fieldset>
+            <p class="qb-help">保存时同时更新整题标签与当前判定点的题型副本。</p>
+            <AppButton variant="primary" :disabled="!primaryType || typeSaving" @click="saveTypes">{{ typeSaving ? '正在保存…' : '保存题型' }}</AppButton><AppButton variant="ghost" :disabled="typeSaving" @click="typeEditing = false">取消</AppButton>
+          </div><FeedbackBanner v-if="typeError" role="alert" tone="error" :description="typeError" /></section>
+
           <section class="qb-evidence-summary">
             <header class="qb-section-heading">
-              <h3>判定点 × 技能 <small v-if="points.length && criterion?.available && criterion.current_version?.quality_status === 'passed' && !store.detail.criteria_needs_review && points.every(point => directSkills(point).length)">{{ points.length }} 个判定点 · 全部质检通过</small><small v-else-if="points.length">{{ points.length }} 个判定点</small></h3>
+              <h3>判定点（评分依据） <small v-if="points.length && criterion?.available && criterion.current_version?.quality_status === 'passed' && !store.detail.criteria_needs_review && points.every(point => directSkills(point).length)">{{ points.length }} 个判定点 · 全部质检通过</small><small v-else-if="points.length">{{ points.length }} 个判定点</small></h3>
               <div><template v-if="editing"><AppButton variant="primary" @click="saveAnnotation">保存</AppButton><AppButton variant="ghost" @click="cancelAnnotation">取消</AppButton></template><AppButton v-else variant="secondary" @click="editing = true">编辑标注</AppButton></div>
             </header>
             <p v-if="editing" class="qb-help">修改不会改写已有考试成绩与报告</p>
             <FeedbackBanner v-if="evidenceError" role="alert" tone="error" :description="evidenceError" />
             <p v-else-if="!points.length" class="qb-help">尚无可用判定点，请核对判定点。</p>
             <div v-if="points.length && !editing" class="qb-evidence-columns"><span>编号</span><span>判定点内容</span><span>状态</span></div>
-            <div v-for="(point, index) in points" v-show="!editing" :key="point.evidence_point_id" class="qb-evidence-row">
+            <template v-for="part in evidence?.available ? evidence.evidence?.parts ?? [] : []" :key="part.part_id">
+            <p v-show="!editing" class="qb-part-heading">{{ part.label || part.part_id }} · {{ responseModeLabels[part.response_mode] }} · 小问难度 {{ partDifficulty(part.part_id) }}</p>
+            <div v-for="(point, index) in part.evidence_points" v-show="!editing" :key="point.evidence_point_id" class="qb-evidence-row">
               <span>{{ index + 1 }}</span>
               <div><strong>{{ point.target }}</strong><p v-if="point.observable_evidence !== point.target">{{ point.observable_evidence }}</p>
                 <div class="qb-skill-capsules"><button v-for="skill in directSkills(point)" :key="skill.key" type="button" class="qb-skill-capsule" :class="{ 'is-current': skill.key === currentSkill }" @click="emit('skill', skill.key)">{{ skill.label }}</button>
-                  <span v-for="link in point.fine_term_links.filter(link => link.role === 'direct' && link.core_resolution.stable_keys.some(key => key.startsWith('kp_')))" :key="link.fine_term_id" class="qb-topic-capsule">{{ knowledgeLeafLabel(link.fine_term_name) }}</span>
+                  <span v-for="name in pointKnowledge(point)" :key="name" class="qb-topic-capsule">知识点 · {{ name }}</span>
                 </div>
+                <p v-if="pointPrerequisites(point).length" class="qb-help">前置知识 · {{ pointPrerequisites(point).join('、') }}</p>
                 <div v-for="item in mappedPatterns(point.evidence_point_id)" :key="item.id" class="qb-point-error"><strong>↳ {{ item.pattern }}</strong><p>{{ item.explanation }}</p><AppButton variant="ghost" size="small" @click="beginPatternEdit(item)">调整</AppButton> <AppButton :disabled="patternSaving" variant="ghost" size="small" @click="changePattern(item, 'reject')">驳回</AppButton></div>
               </div>
               <small><span v-if="store.detail.criteria_needs_review">待审核</span><span v-if="!directSkills(point).length">未挂技能</span></small>
             </div>
+            </template>
             <div v-show="editing"><TrainingCriterionReview v-if="store.selectedQuestionId" ref="review" :question-id="store.selectedQuestionId" :skill-labels="skillLabels" :loader="loadCriterion" :evidence-loader="loadEvidence" @updated="criterion = $event" /></div>
             <AppButton v-if="!editing" type="button" variant="ghost" size="small" @click="editing = true">核对判定点 / 重新生成</AppButton>
           </section>
@@ -463,13 +541,6 @@ async function save(): Promise<void> {
           </section>
 
 
-          <section class="qb-properties"><h3>题目属性</h3><dl>
-            <div><dt>题型</dt><dd>{{ questionTypeWithSubtype(store.detail.question_type, store.detail.tags) }}</dd></div>
-            <div><dt>难度</dt><dd><meter min="1" max="10" :value="Number(store.detail.difficulty) || 1" /> {{ store.detail.difficulty || '待定' }}<small v-for="part in evidence?.part_assessments ?? []" :key="part.part_id"> · {{ part.part_id }}：{{ part.difficulty ?? '待定' }}</small></dd></div>
-            <div v-for="row in attributes" :key="row.label"><dt>{{ row.label }}</dt><dd :data-tone="row.tone"><span v-for="value in row.values" :key="value" :title="value">{{ row.tone === 'curriculum' ? value.split('｜').join(' › ') : knowledgeLeafLabel(value) }}</span></dd></div>
-            <div v-if="solutionGroups.length" class="qb-property-wide"><dt>解法</dt><dd class="qb-solution-tags"><template v-for="(group, index) in solutionGroups" :key="group.tone"><i v-if="index" aria-hidden="true">｜</i><span v-for="value in group.values" :key="value" :data-tone="group.tone">{{ knowledgeLeafLabel(value) }}</span></template></dd></div>
-            <div v-if="!selectedSectionId"><dt>教材小节</dt><dd class="qb-warning">小节待标定</dd></div>
-          </dl></section>
           <details class="qb-tags qb-property-editor"><summary>编辑题目属性 / 选择小节</summary>
             <header class="qb-section-heading">
               <div>
@@ -581,3 +652,10 @@ async function save(): Promise<void> {
     </template>
   </div>
 </template>
+
+<style scoped>
+.qb-part-heading { margin: 12px 0 4px; padding: 7px 10px; background: var(--color-bg-subtle); color: var(--color-text-secondary); font-size: var(--font-size-caption); }
+.qb-type-editor { display: grid; gap: 10px; margin-top: 12px; }
+.qb-type-editor fieldset { max-height: 180px; overflow: auto; border: 1px solid var(--color-border-subtle); }
+.qb-type-editor fieldset label { display: block; font-size: var(--font-size-caption); }
+</style>

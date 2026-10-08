@@ -152,6 +152,38 @@ def register_default_job_handlers(
     resolved_link_gateway_factory = knowledge_link_gateway_factory or (
         lambda: build_knowledge_link_gateway(resolved_tagging_factory())
     )
+    def submit_chapter_types(context, result):
+        authorization = context.payload.get('chapter_type_authorization')
+        if not isinstance(authorization, dict) or authorization.get('confirmed') is not True:
+            return result
+        if int(authorization.get('request_limit') or 0) <= 0:
+            return result
+        output = dict(result or {})
+        try:
+            job = manager.store.find_latest_job_by_payload(
+                job_type='chapter_type_organize', payload_equals={'source_job_id': int(context.job_id)})
+            if job is None:
+                job = manager.submit('chapter_type_organize', {
+                    'source_job_id': int(context.job_id), 'authorization': dict(authorization)})
+            output.update(chapter_type_job_id=job.id, chapter_type_state=job.status)
+        except (RuntimeError, ValueError):
+            output['chapter_type_state'] = 'submission_failed'
+        return output
+
+    def tagging_with_type_completion(**kwargs):
+        return submit_chapter_types(kwargs['context'], tagging_sync_runner(**kwargs))
+
+    def sync_with_type_completion(**kwargs):
+        return submit_chapter_types(kwargs['context'], question_bank_sync_runner(**kwargs))
+
+    def chapter_type_handler(context):
+        from .chapter_types import run_chapter_type_job
+        return run_chapter_type_job(context=context,
+            question_bank_db_path=resolved_question_bank_db, data_root=base_data_root,
+            ai_service_factory=resolved_tagging_factory,
+            publication_guard=lambda: manager.standard_publication_guard(context))
+
+    manager.register('chapter_type_organize', chapter_type_handler)
     manager.register(
         "report_export",
         _build_report_export_handler(
@@ -251,7 +283,7 @@ def register_default_job_handlers(
         _build_tagging_sync_handler(
             question_bank_db_path=resolved_question_bank_db,
             data_root=base_data_root,
-            tagging_sync_runner=tagging_sync_runner,
+            tagging_sync_runner=tagging_with_type_completion,
             ai_service_factory=resolved_tagging_factory,
             taxonomy_governance=resolved_taxonomy_governance,
         ),
@@ -276,7 +308,7 @@ def register_default_job_handlers(
     )
     manager.register('question_bank_repair', lambda context: run_question_bank_repair_job(
         context=context, question_bank_db_path=resolved_question_bank_db, data_root=base_data_root,
-        tagging_runner=tagging_sync_runner, link_runner=knowledge_link_runner,
+        tagging_runner=tagging_with_type_completion, link_runner=knowledge_link_runner,
         ai_service_factory=resolved_tagging_factory, link_gateway_factory=resolved_link_gateway_factory,
         taxonomy_governance=resolved_taxonomy_governance))
     manager.register(
@@ -315,9 +347,9 @@ def register_default_job_handlers(
             db_path=Path(db_path),
             question_bank_db_path=resolved_question_bank_db,
             data_root=base_data_root,
-            question_bank_sync_runner=question_bank_sync_runner,
+            question_bank_sync_runner=sync_with_type_completion,
             question_import_runner=question_import_runner,
-            tagging_sync_runner=tagging_sync_runner,
+            tagging_sync_runner=tagging_with_type_completion,
             ai_service_factory=resolved_tagging_factory,
             taxonomy_governance=resolved_taxonomy_governance,
             analysis_artifact_root=resolved_upload_config_dir,

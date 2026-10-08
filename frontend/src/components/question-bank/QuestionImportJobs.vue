@@ -7,12 +7,13 @@ import { computed, onMounted, ref } from 'vue'
 
 import {
   questionBankApi,
+  chapterTypeCostNote,
   questionJobFailures,
   questionJobFailuresCsv,
   questionJobRetryIds,
   type CurriculumVolume,
 } from '../../api/question-bank'
-import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
+import { chapterTypeJobSummary, TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 import QuestionPreviewDialog from '../training/QuestionPreviewDialog.vue'
 import { CURRICULUM_SCOPE_STORAGE_KEY } from '../../stores/curriculum-scope'
 import { useJobStore } from '../../stores/jobs'
@@ -63,9 +64,14 @@ onMounted(async () => {
   }
 })
 
-const jobs = computed(() => Object.values(jobStore.jobs)
-  .filter((job) => job.job_type === 'question_import' || job.job_type === 'tagging_sync')
-  .sort((left, right) => right.id - left.id))
+const jobs = computed(() => {
+  const all = Object.values(jobStore.jobs)
+  const parents = all.filter(job => job.job_type === 'question_import' || job.job_type === 'tagging_sync'
+    || (job.job_type === 'question_bank_sync' && (Number.isSafeInteger(job.result.chapter_type_job_id) || typeof job.result.chapter_type_state === 'string')))
+  const attached = new Set(parents.map(job => job.result.chapter_type_job_id))
+  return [...parents, ...all.filter(job => job.job_type === 'chapter_type_organize' && !attached.has(job.id))].sort((left, right) => right.id - left.id)
+})
+const jobTypeLabels: Record<string, string> = { question_import: '试卷导入', tagging_sync: 'AI 标注', question_bank_sync: '考试题目入库', chapter_type_organize: '章节题型整理' }
 
 const statusLabels: Record<string, string> = {
   queued: '等待中',
@@ -226,12 +232,6 @@ async function chooseFiles(event: Event): Promise<void> {
 async function startTagging(): Promise<void> {
   const count = bank.selectedQuestionIds.length
   if (count === 0 || busy.value) return
-  const confirmed = await confirm({
-    title: '启动 AI 标注？',
-    message: `将对已选 ${count} 道题调用 AI 标注，可能产生外部费用。`,
-    confirmLabel: '启动',
-  })
-  if (!confirmed) return
   busy.value = true
   feedback.value = ''
   try {
@@ -244,9 +244,14 @@ async function startTagging(): Promise<void> {
       feedback.value = '请选择同一份且教材资料完整的试卷题目，或从试卷卡片点击“继续完成未完成题目”。'
       return
     }
+    const volumeId = volumeIds[0]
+    if (!volumeId) return
+    const preview = await questionBankApi.previewTagging(bank.selectedQuestionIds, volumeId)
+    if (!await confirm({ title: '启动 AI 标注？',
+      message: `将对已选 ${count} 道题调用 AI 标注，可能产生外部费用。${chapterTypeCostNote(preview)}`, confirmLabel: '启动' })) return
     const job = await questionBankApi.submitTagging(
-      bank.selectedQuestionIds,
-      volumeIds[0]!,
+      bank.selectedQuestionIds, volumeId, undefined, undefined, false, undefined,
+      preview.planned_requests ? { ...preview, confirmed: true, request_limit: preview.planned_requests } : undefined,
     )
     jobStore.track(job)
     feedback.value = `已提交 ${count} 道题的 AI 标注任务。`
@@ -366,12 +371,22 @@ function downloadFailures(job: JobResponse): void {
         <article v-for="job in jobs" :key="job.id" class="qb-job">
           <header>
             <div>
-              <strong>{{ job.job_type === 'tagging_sync' ? 'AI 标注' : '试卷导入' }} #{{ job.id }}</strong>
+              <strong>{{ jobTypeLabels[job.job_type] }} #{{ job.id }}</strong>
               <span>{{ statusLabels[job.status] || job.status }} · {{ Math.round(job.progress * 100) }}%</span>
             </div>
             <progress :value="job.progress" max="1">{{ Math.round(job.progress * 100) }}%</progress>
           </header>
-          <p>{{ jobCompletionNote(job) }}</p>
+          <p v-if="job.job_type !== 'chapter_type_organize'">{{ jobCompletionNote(job) }}</p>
+          <template v-for="summary in [chapterTypeJobSummary(job, jobStore.jobs)]" :key="summary?.note ?? job.id">
+            <details v-if="summary?.chapters.length" class="qb-import-detail">
+              <summary>{{ summary.note }}</summary>
+              <div v-for="chapter in summary.chapters" :key="chapter.label" class="qb-import-detail__group">
+                <p>{{ chapter.label }}已整理题型 · 新增 {{ chapter.newTypeCount }} 类 · 本次处理 {{ chapter.questionCount }} 题 · 待归类 {{ chapter.unclassifiedCount }} 题</p>
+                <p v-for="type in chapter.types" :key="type.name">{{ type.name }} · {{ type.questionCount }} 题</p>
+              </div>
+            </details>
+            <p v-else-if="summary" role="status">{{ summary.note }}</p>
+          </template>
           <template v-if="job.job_type === 'question_import' && TERMINAL_JOB_STATUSES.has(job.status)">
             <FeedbackBanner v-for="dup in duplicatePapers(job.result)" :key="`dup-${dup.paperId}`" tone="warning">
               这份试卷已在题库中（《{{ dup.title }}》），本次未重复入库。

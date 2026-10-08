@@ -565,3 +565,36 @@ def test_typical_deterministic(typical_db):
     first = _build_typical(typical_db)
     second = _build_typical(typical_db)
     assert _typical_map(first) == _typical_map(second)
+
+
+def test_primary_type_statistics_keep_paper_groups_rates_and_difficulty(profile_db):
+    from question_bank.services.chapter_exam_profile import _prepare, UNLINKED
+    conn = sqlite3.connect(profile_db)
+    conn.row_factory = sqlite3.Row
+    volume = curriculum_volume(volume_id=VOLUME_ID)
+    baseline = build_chapter_exam_profile(conn, _snapshot(), volume)
+    baseline_frequency = build_exam_frequency(conn, _snapshot(), volume)
+    prep = _prepare(conn, _snapshot(), volume)
+    types = {'sk_a': S21 + '_t01', 'sk_b': S22 + '_t01'}
+    snapshot = _snapshot()
+    snapshot['nodes'].update({types[key]: _node(types[key], '题型' + key, [S21 if key == 'sk_a' else S22]) for key in types})
+    snapshot['primary_types'] = {qid: types[rec['skill_key']] for qid, rec in prep['recs'].items() if rec['skill_key'] != UNLINKED}
+    snapshot['primary_types'].update({qid: types[next(iter(hits))] for qid, hits in snapshot['by_question'].items() if qid not in snapshot['primary_types']})
+    snapshot['type_hits'] = {qid: {types[key]: hits for key, hits in values.items()} for qid, values in snapshot['by_question'].items()}
+    result = build_chapter_exam_profile(conn, snapshot, volume)
+    assert result['stages'] == baseline['stages']
+    assert result['merged_groups'] == baseline['merged_groups']
+    for chapter, old_chapter in zip(result['chapters'], baseline['chapters']):
+        assert chapter['totals'] == old_chapter['totals']
+        assert chapter['difficulty'] == old_chapter['difficulty']
+        for section, old_section in zip(chapter['sections'], old_chapter['sections']):
+            assert section['coverage'] == old_section['coverage']
+            assert section['overview'] == old_section['overview']
+            assert all(row['target_kind'] == 'type' for row in section['skills'])
+    assert build_exam_frequency(conn, snapshot, volume) == baseline_frequency
+    snapshot['primary_types'][1] = types['sk_b']
+    changed = build_chapter_exam_profile(conn, snapshot, volume)
+    section = _section(_chapter(changed, CH2), S21)
+    assert 1 in next(row for row in section['skills'] if row['key'] == types['sk_b'])['cells']['midterm']['choice_basic']
+    assert 1 not in next(row for row in section['skills'] if row['key'] == types['sk_a'])['cells']['midterm']['choice_basic']
+    conn.close()

@@ -78,7 +78,7 @@ def test_v9_import_candidates_are_scoped_and_prompt_preserves_type_definitions()
     assert sent["questions"][0]["candidate_contract"]["question_type_mode"] is True
     assert types[0] in sent["questions"][0]["candidate_contract"]["candidates"]["knowledge"]
     assert "最多 2 个" in sent["rules"]
-    assert sent["prompt_version"] == "combined-v4-question-types"
+    assert sent["prompt_version"] == "combined-v5-defined-labels"
     schema = combined_response_format(allowed_term_ids=controlled_term_ids_from_questions((question,)))
     assert schema["name"] == "question_bank_combined_analysis_v4"
     labels = schema["schema"]["properties"]["results"]["items"]["properties"]["question_type_labels"]
@@ -462,7 +462,7 @@ def test_source_hash_bundle_reuses_frozen_values_and_preserves_legacy_aliases(mo
     {"secondary_type_ids": ["kp_bnu24_math_g8_upper_1_1_t01"] * 2},
     {"secondary_type_ids": ["kp_bnu24_math_g8_upper_1_1_t01", "kp_bnu24_math_g8_upper_1_1_t02", "kp_bnu24_math_g8_upper_1_1_t04"]},
     {"secondary_type_ids": ["kp_bnu24_math_g8_upper_1_1_t03"]},
-    {"primary_type_id": "", "secondary_type_ids": []},
+    {"primary_type_id": "", "secondary_type_ids": [], "reason": ""},
 ])
 def test_v9_import_rejects_invalid_primary_and_secondary_types(changes: dict[str, Any]) -> None:
     from question_bank.training_criteria.analysis import ProjectionValidationError, normalize_question_type_result
@@ -490,7 +490,7 @@ def test_v9_import_primary_is_on_every_point_and_secondary_is_never_a_link() -> 
 
 
 @pytest.mark.parametrize("secondary_count", [0, 1, 2, None])
-def test_v9_deferred_import_roundtrip_adoption_and_new_term_review(
+def test_v9_deferred_import_roundtrip_adoption_and_unclassified_type(
     tmp_path: Path, secondary_count: int | None,
 ) -> None:
     from types import SimpleNamespace
@@ -516,6 +516,12 @@ def test_v9_deferred_import_roundtrip_adoption_and_new_term_review(
     if secondary_count is None:
         raw["question_type_labels"].update(primary_type_id="", secondary_type_ids=[],
             proposed_type_name="合成未收录的数学任务", reason="本题核心任务无法归入当前题型。")
+        local_knowledge = next(row for row in question.taxonomy_contract["candidates"]["knowledge"]
+            if row.get("level") == 3 and row.get("volume_id") == "bnu24-math-g8-upper")
+        for part in raw["solution_evidence"]["parts"]:
+            for point in part["evidence_points"]:
+                point["fine_term_links"] = [{"fine_term_id": local_knowledge["id"],
+                    "fine_term_name": local_knowledge["name"], "role": "direct"}]
     else:
         raw["question_type_labels"]["secondary_type_ids"] = [
             "kp_bnu24_math_g8_upper_1_1_t01", "kp_bnu24_math_g8_upper_1_1_t02",
@@ -546,7 +552,7 @@ def test_v9_deferred_import_roundtrip_adoption_and_new_term_review(
     for part in current.parts:
         for point in part.evidence_points:
             assert [link.fine_term_id for link in point.fine_term_links] == (
-                [raw["question_type_labels"]["primary_type_id"]] if secondary_count is not None else []
+                [raw["question_type_labels"]["primary_type_id"]] if secondary_count is not None else [local_knowledge["id"]]
             )
     with connect(database) as connection:
         secondaries = connection.execute("SELECT tag_value, source FROM question_tags WHERE question_id=1 AND tag_type='secondary_type'").fetchall()
@@ -558,9 +564,9 @@ def test_v9_deferred_import_roundtrip_adoption_and_new_term_review(
         typed_tags = [row[0] for row in connection.execute("SELECT tag_value FROM question_tags WHERE question_id=1 AND tag_type='knowledge_point'") if is_type_key(row[0])]
     assert typed_tags == ([raw["question_type_labels"]["primary_type_id"]] if secondary_count is not None else [])
     if secondary_count is None:
-        assert bundle.taxonomy_review_source_refs == ("Q1",)
-        assert outcome["taxonomy_review_required"] is True
-        assert governance.list_proposals()["items"]
+        assert bundle.taxonomy_review_source_refs == ()
+        assert outcome.get("taxonomy_review_required", False) is False
+        assert not governance.list_proposals()["items"]
         assert governance.resolve_term("knowledge", raw["question_type_labels"]["proposed_type_name"]) is None
     else:
         assert outcome["tag_status"] == "succeeded"
@@ -628,7 +634,7 @@ def test_v9_bank_import_saves_both_projections_without_an_extra_model_step(tmp_p
         secondary = [row[0] for row in connection.execute("SELECT tag_value FROM question_tags WHERE question_id=1 AND tag_type='secondary_type'")]
     assert secondary == raw["question_type_labels"]["secondary_type_ids"]
     if not matched:
-        assert governance.list_proposals()["items"]
+        assert not governance.list_proposals()["items"]
     module.analyze(operation_id="TEST-bank-type-import", questions=(question,))
     assert len(gateway.calls) == 1
     if matched:
@@ -644,8 +650,161 @@ def test_v9_bank_import_saves_both_projections_without_an_extra_model_step(tmp_p
         with connect(database) as connection:
             assert [row[0] for row in connection.execute("SELECT tag_value FROM question_tags WHERE question_id=1 AND tag_type='ability'")] == accepted_abilities
             assert connection.execute("SELECT COUNT(*) FROM question_tags WHERE question_id=1 AND tag_type='secondary_type'").fetchone()[0] == 0
-        assert governance.list_proposals()["items"]
+        assert not governance.list_proposals()["items"]
         assert len(gateway.calls) == 2
+
+
+@pytest.mark.parametrize("additional_gap", [None, "tags", "evidence", "criteria", "duplicate"])
+def test_missing_type_repair_preserves_saved_analysis_only_when_other_products_are_ready(
+    tmp_path: Path, additional_gap: str | None,
+) -> None:
+    from types import SimpleNamespace
+    from backend.jobs.tagging_sync import run_tagging_sync_job
+    from question_bank.current_knowledge import CurrentFineTermResolver
+    from question_bank.question_types import is_type_key
+    from question_bank.services.ai_tagging_service import AITaggingService
+    from question_bank.services.question_write_service import QuestionBankWriteService
+    from question_bank.solution_evidence.repository import SolutionEvidenceRepository, SolutionEvidenceProjectionWriter
+    from question_bank.taxonomy.governance import TaxonomyGovernance
+    from question_bank.training_criteria import QuestionAnalysisInputLoader, TrainingCriterionModule
+
+    database = tmp_path / "TEST-missing-type-repair.db"
+    ids = [1, 2] if additional_gap == "duplicate" else [1]
+    _seed_questions(database, len(ids))
+    if len(ids) > 1:
+        with connect(database) as conn:
+            conn.execute("UPDATE questions SET question_text='合成题目 1',answer_text='合成答案 1' WHERE id=2")
+    install_current_knowledge(database, taxonomy_revision=11)
+    governance = TaxonomyGovernance(state_path=tmp_path / "TEST-taxonomy.json", knowledge_graph_db_path=database)
+    loader = QuestionAnalysisInputLoader(db_path=database, data_root=tmp_path)
+    questions = tuple(replace(item, taxonomy_contract=governance.prompt_contract(item.tagging_context))
+        for item in loader.load(ids, curriculum_volume_id="bnu24-math-g8-upper"))
+    question = questions[0]
+    question = replace(question, taxonomy_contract=governance.prompt_contract(question.tagging_context))
+    original = _type_result()
+    original["tag_analysis"].update(taxonomy_revision=question.taxonomy_snapshot.taxonomy_revision)
+    section = next(row for row in question.taxonomy_contract["candidates"]["knowledge"]
+                   if row["id"] == "kp_bnu24_math_g8_upper_1_1")
+    for part in original["solution_evidence"]["parts"]:
+        for point in part["evidence_points"]:
+            point["fine_term_links"] = [{"fine_term_id": section["id"], "fine_term_name": section["name"], "role": "direct"}]
+    for dimension, field in (("ability", "ability_tags"), ("thought", "thought_tags"),
+                             ("method", "method_tags"), ("model", "math_model_tags"),
+                             ("special_type", "special_type_tags")):
+        original["tag_analysis"][field] = [question.taxonomy_contract["candidates"][dimension][0]["id"]]
+    resolver = CurrentFineTermResolver.from_active_database(database)
+    evidence_repository = SolutionEvidenceRepository(database)
+    originals = []
+    for item in questions:
+        payload = json.loads(json.dumps(original))
+        payload["question_id"] = item.question_id
+        payload["solution_evidence"]["question_id"] = item.question_id
+        originals.append(payload)
+    module = CombinedQuestionAnalysisModule(
+        repository=CombinedAnalysisRepository(database), gateway=QueueGateway([{"results": originals}]),
+        tag_writer=ExistingTagProjectionWriter(
+            write_service=QuestionBankWriteService(database, data_root=tmp_path),
+            tagging_service=SimpleNamespace(taxonomy_governance=governance)),
+        evidence_writer=SolutionEvidenceProjectionWriter(mapping_repository=resolver,
+            evidence_repository=evidence_repository, taxonomy_governance=governance),
+        criterion_module=TrainingCriterionModule(database, data_root=tmp_path),
+    )
+    initial = module.analyze(operation_id="TEST-original-analysis", questions=questions)
+    assert initial["status"] == "succeeded"
+    assert module.criterion_audit_summary("TEST-original-analysis", [1])["items"][0]["status"] == "succeeded"
+    from question_bank.training_criteria.versioning import CriterionReviewCommand
+    for item in questions:
+        workspace = module.criterion_module.read(item)
+        module.criterion_module.review(CriterionReviewCommand(
+            question_id=item.question_id, version_id=workspace["current_version"]["version_id"],
+            expected_revision=workspace["revision"], action="reject" if additional_gap == "criteria" else "approve",
+            actor_ref="TEST-teacher", reason="合成判定点确认。",
+        ), question=item)
+    with connect(database) as conn:
+        typed_ids = [row[0] for row in conn.execute(
+            "SELECT id,tag_type,tag_value FROM question_tags")
+            if row[1] == "secondary_type" or (row[1] == "knowledge_point" and is_type_key(row[2]))]
+        conn.executemany("DELETE FROM question_tags WHERE id=?", [(row_id,) for row_id in typed_ids])
+        if additional_gap == "tags":
+            conn.execute("DELETE FROM question_tags WHERE question_id=1 AND tag_type='ability'")
+        elif additional_gap == "evidence":
+            conn.execute("UPDATE question_solution_evidence_versions SET status='rejected' WHERE question_id=1")
+        snapshots = {
+            table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+            for table in ("question_part_difficulty_features", "question_solution_evidence_versions",
+                          "training_criterion_versions", "training_criterion_heads")
+        }
+        assert all(snapshots.values())
+        original_items = [tuple(row) for row in conn.execute(
+            "SELECT * FROM question_analysis_items WHERE operation_id='TEST-original-analysis' ORDER BY rowid")]
+        five_dimensions = [tuple(row) for row in conn.execute(
+            "SELECT * FROM question_tags WHERE tag_type IN ('method','thought','ability','model','special_type') ORDER BY id")]
+        saved_questions = [tuple(row) for row in conn.execute(
+            "SELECT difficulty,reason,question_type,question_text,answer_text FROM questions ORDER BY id")]
+    if additional_gap in {None, "duplicate"}:
+        assert {row[2] for row in five_dimensions} == {"method", "thought", "ability", "model", "special_type"}
+        from backend.jobs.tagging_sync import _load_analysis_gaps, _load_tag_source_currentness, _load_tagging_candidates
+        current_inputs = loader.load((1,), curriculum_volume_id="bnu24-math-g8-upper")
+        assert _load_tagging_candidates(database, [1], require_difficulty=True)[1] == [1]
+        assert _load_tag_source_currentness(database, current_inputs=current_inputs).get(1, True)
+        assert _load_analysis_gaps(database, [1], data_root=tmp_path,
+            curriculum_volume_id="bnu24-math-g8-upper")[1] == {"evidence_ready": True, "criteria_ready": True}
+    response = _type_result()
+    if additional_gap in {None, "tags", "duplicate"}:
+        response.pop("solution_evidence")
+    response["question_type_labels"] = _type_labels("kp_bnu24_math_g8_upper_1_1_t02")
+    response["tag_analysis"].update(
+        taxonomy_revision=question.taxonomy_snapshot.taxonomy_revision,
+        difficulty=9, reason="本轮返回的标签和难度不应覆盖仅缺题型的旧资料。",
+        method_tags=[], thought_tags=[], math_model_tags=[], special_type_tags=[],
+        ability_tags=[question.taxonomy_contract["candidates"]["ability"][1]["id"]],
+    )
+    response["tag_analysis"]["part_features"][0].update(solo=4, reasoning=2, computation=2)
+    if additional_gap in {None, "duplicate"}:
+        response["question_type_suggestion"] = {"question_type": "填空题", "reason": "合成作答形式变化建议。"}
+    adapter = CapturingProtocolAdapter({"results": [response]})
+    ai = AITaggingService(env={"QUESTION_BANK_TAGGING_API_KEY": "TEST-synthetic",
+        "QUESTION_BANK_TAGGING_MODEL": "TEST"}, protocol_adapter=adapter, taxonomy_governance=governance)
+    context = SimpleNamespace(job_id=f"TEST-type-repair-{additional_gap}", payload={
+        "question_ids": ids, "curriculum_volume_id": "bnu24-math-g8-upper",
+        "repair_missing_only": True, "repair_type_question_ids": ids,
+    }, raise_if_cancelled=lambda: None, report=lambda *_args: None)
+    result = run_tagging_sync_job(context=context, question_bank_db_path=database,
+        data_root=tmp_path, ai_service_factory=lambda: ai, taxonomy_governance=governance)
+    assert result["successful_question_ids"] == ids
+    assert len(adapter.calls) == 1
+    sent = json.loads(adapter.calls[0]["kwargs"]["input"][1]["content"][0]["text"])
+    assert sent["questions"][0]["expected_projection"] == ("tag" if additional_gap in {None, "tags", "duplicate"} else "both")
+    properties = adapter.calls[0]["kwargs"]["text"]["format"]["schema"]["properties"]["results"]["items"]["properties"]
+    assert "question_type_labels" in properties
+    assert any(is_type_key(row["id"]) for row in sent["questions"][0]["candidate_contract"]["candidates"]["knowledge"])
+    with connect(database) as conn:
+        assert [row[0] for row in conn.execute(
+            "SELECT tag_value FROM question_tags WHERE tag_type='knowledge_point' AND tag_value LIKE '%_t02'")] == [response["question_type_labels"]["primary_type_id"]] * len(ids), {
+                "versions": [tuple(row) for row in conn.execute("SELECT evidence_version_id,status,created_at FROM question_solution_evidence_versions")],
+                "types": [tuple(row) for row in conn.execute("SELECT evidence_version_id,stable_key,source_kind FROM evidence_point_knowledge_links WHERE stable_key LIKE '%_t%' GROUP BY evidence_version_id,stable_key,source_kind")],
+                "tags": [tuple(row) for row in conn.execute("SELECT tag_type,tag_value FROM question_tags WHERE tag_type IN ('knowledge_point','secondary_type')")],
+            }
+        if additional_gap in {None, "duplicate"}:
+            assert [tuple(row) for row in conn.execute(
+                "SELECT difficulty,reason,question_type,question_text,answer_text FROM questions ORDER BY id")] == saved_questions
+            assert [tuple(row) for row in conn.execute(
+                "SELECT * FROM question_tags WHERE tag_type IN ('method','thought','ability','model','special_type') ORDER BY id")] == five_dimensions
+            assert [tuple(row) for row in conn.execute(
+                "SELECT * FROM question_analysis_items WHERE operation_id='TEST-original-analysis' ORDER BY rowid")] == original_items
+            for table, before in snapshots.items():
+                assert [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")] == before, table
+            from question_bank.solution_evidence.part_assessments import load_profiles
+            profiles = load_profiles(database, ids, connection=conn, data_root=tmp_path)
+            for qid in ids:
+                current_version = profiles[qid]["evidence_version_id"]
+                copies = [row[0] for row in conn.execute(
+                    "SELECT stable_key FROM evidence_point_knowledge_links WHERE evidence_version_id=? ORDER BY rowid",
+                    (current_version,)) if is_type_key(row[0])]
+                assert copies and set(copies) == {response["question_type_labels"]["primary_type_id"]}
+        else:
+            assert [tuple(row) for row in conn.execute(
+                "SELECT * FROM question_tags WHERE tag_type IN ('method','thought','ability','model','special_type') ORDER BY id")] != five_dimensions
 
 
 @pytest.mark.parametrize(
@@ -1400,3 +1559,35 @@ def test_deferred_authentication_error_stops_scheduling_and_retry_recovers() -> 
 
     assert not retried.failures
     assert len(retried.items) == len(sources)
+
+
+@pytest.mark.parametrize("revision", [11, 12])
+def test_defined_attributes_and_leaf_knowledge_survive_unconverted_volume_prompt(tmp_path, revision):
+    from types import SimpleNamespace
+    from question_bank.taxonomy.governance import TaxonomyGovernance
+    from question_bank.training_criteria.adapters import _prompt_candidate_contract
+    from question_bank.solution_evidence.contracts import validate_evidence_fine_terms
+    db = tmp_path / "TEST-defined-labels.db"
+    initialize_database(db)
+    install_current_knowledge(db, taxonomy_revision=revision)
+    governance = TaxonomyGovernance(state_path=tmp_path / "TEST-taxonomy.json", knowledge_graph_db_path=db)
+    contract = governance.prompt_contract({"curriculum_volume_id": "bnu24-math-g8-lower", "question_text": "解不等式 x+2>3"})
+    compact = _prompt_candidate_contract(contract)
+    assert contract["attribute_definition_revision"] == 12
+    assert all(row["definition"] and row["include_scope"] and row["exclude_scope"] and row["anchors"]
+               for dimension in ("ability", "thought", "method", "model", "special_type")
+               for row in compact["candidates"][dimension])
+    local = next(row for row in contract["candidates"]["knowledge"] if row.get("volume_id") == "bnu24-math-g8-lower" and row.get("level") == 3)
+    prior = next(row for row in contract["candidates"]["knowledge"] if row.get("volume_id") == "bnu24-math-g8-upper" and row.get("level") == 3)
+    assert local["usage"] != "retrieval_only"
+    assert local["allowed_roles"] == ["direct", "supporting_prerequisite"]
+    assert prior["allowed_roles"] == ["supporting_prerequisite"]
+    def evidence(row, role):
+        link = SimpleNamespace(fine_term_id=row["id"], fine_term_name=row["name"], role=role)
+        return SimpleNamespace(parts=[SimpleNamespace(evidence_points=[SimpleNamespace(fine_term_links=[link])])])
+    validate_evidence_fine_terms(evidence(local, "direct"), contract)
+    validate_evidence_fine_terms(evidence(prior, "supporting_prerequisite"), contract)
+    with pytest.raises(ValueError, match="role is outside"):
+        validate_evidence_fine_terms(evidence(prior, "direct"), contract)
+    with pytest.raises(ValueError, match="role is outside"):
+        validate_evidence_fine_terms(evidence(prior, "direct"), contract, additional_allowed_term_ids=[prior["id"]])

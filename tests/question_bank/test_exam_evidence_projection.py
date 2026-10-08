@@ -542,3 +542,41 @@ def test_question_type_overlay_disabled_without_type_nodes(tmp_path: Path) -> No
         link for link in item.point_links["p1"] if link["role"] == "direct"
     ]
     assert [link["stable_key"] for link in direct] == [_SKILL_KEY]
+
+
+@pytest.mark.parametrize("aligned", [True, False], ids=["same-frozen-points", "changed-points"])
+def test_knowledge_fallback_reads_current_links_without_rewriting_snapshot(tmp_path, monkeypatch, aligned):
+    from copy import deepcopy
+    from question_bank.solution_evidence.knowledge_links import KnowledgeLink
+    from question_bank.solution_evidence.evidence_snapshot import snapshot_path
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    release = install_current_knowledge(db_path, taxonomy_revision=11)
+    skill = "sk_bnu24_math_g8_lower_1_1_01"
+    topic = "kp_bnu24_math_g8_lower_1_1_1"
+    _seed_bank_question(db_path, release, points=[_point("p1")],
+                        links=[("p1", "direct", skill, "resolved")])
+    with connect(db_path) as conn:
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(1,'knowledge_point',?,'test')", (skill,))
+    _confirm_link(db_path)
+    _freeze(tmp_path, db_path)
+    frozen_file = snapshot_path(tmp_path / "config" / "uploaded", _SESSION)
+    payload = json.loads(frozen_file.read_text(encoding="utf-8"))
+    evidence = payload["questions"]["Q1"]["evidence"]
+    evidence["source_content_hash"] = "e" * 64
+    frozen_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    before = frozen_file.read_bytes()
+    current = deepcopy(evidence)
+    if not aligned:
+        current["parts"][0]["evidence_points"][0]["target"] = "新的判定要求"
+    profile = {"available": True, "evidence": current, "current_source_content_hash": "e" * 64,
+               "evidence_source_hash": "e" * 64}
+    service = _projection_service(tmp_path, db_path)
+    monkeypatch.setattr(service, "_current_target_links", lambda *_: ({1: profile},
+        {1: {"p1": (KnowledgeLink(topic, topic, "direct", 1.0),)}}))
+    item, = service.project_session(grading_session_id=_SESSION, rubric=_rubric([_step("S1", ["p1"])] )).items
+    assert item.tags["knowledge_point"] == ((topic,) if aligned else ())
+    assert item.step_targets["S1"] == ((topic,) if aligned else ())
+    assert frozen_file.read_bytes() == before
+    with connect(db_path) as conn:
+        assert conn.execute("SELECT stable_key FROM evidence_point_knowledge_links WHERE role='direct'").fetchone()[0] == skill

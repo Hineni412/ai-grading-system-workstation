@@ -2057,9 +2057,7 @@ class DeferredCombinedQuestionAnalysisModule:
                                             candidate["id"], candidate["name"], usage=candidate.get("usage", ""),
                                         )
                                 candidate_snapshot = tuple(snapshot_by_id.values())
-                                if not raw["question_type_labels"]["primary_type_id"]:
-                                    taxonomy_audit = {**taxonomy_audit, "status": "needs_review",
-                                        "proposals": _merge_taxonomy_proposals(taxonomy_audit["proposals"], raw_tag["proposed_tags"])}
+
                         except Exception as exc:
                             if isinstance(exc, _DeferredAnalysisValidationError):
                                 validation_category = exc.category
@@ -2578,9 +2576,7 @@ class DeferredCombinedProjectionWriter:
                     if str(item.get("proposal_id") or item.get("id") or "")
                 )
             ),
-            review_required=bool(convergence.unresolved_links or missing_links or (
-                item.question_type_labels is not None and not item.question_type_labels["primary_type_id"]
-            )),
+            review_required=bool(convergence.unresolved_links or missing_links),
             retry_required=bool(
                 unresolved_reasons
                 & {

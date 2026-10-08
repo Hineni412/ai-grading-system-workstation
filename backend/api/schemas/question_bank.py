@@ -310,6 +310,17 @@ class QuestionDuplicateMember(_QuestionBankModel):
     paper_title: str | None
 
 
+class QuestionLabelRef(_QuestionBankModel):
+    key: str
+    label: str
+
+
+class QuestionLabelSummary(_QuestionBankModel):
+    primary_type: QuestionLabelRef | None
+    secondary_types: list[QuestionLabelRef]
+    knowledge_points: list[QuestionLabelRef]
+
+
 class QuestionListItem(_QuestionBankModel):
     id: int
     duplicate_of_question_id: int | None = None
@@ -343,13 +354,14 @@ class QuestionListItem(_QuestionBankModel):
     rich_content: QuestionRichContentMetadata
     evidence_point_count: int | None = None
     duplicate_members: list[QuestionDuplicateMember] | None = None
+    labels: QuestionLabelSummary | None = None
     skills: list[QuestionDirectSkill] | None = None
     skill_hits: list[QuestionSkillHit] | None = None
 
     @model_serializer(mode="wrap")
     def serialize_optional_skills(self, handler):
         result = handler(self)
-        for key in ("skills", "skill_hits", "evidence_point_count", "duplicate_members"):
+        for key in ("labels", "skills", "skill_hits", "evidence_point_count", "duplicate_members"):
             if result.get(key) is None:
                 result.pop(key, None)
         return result
@@ -435,6 +447,7 @@ class QuestionFacetItem(_QuestionBankModel):
 
 
 class QuestionFacetsResponse(_QuestionBankModel):
+    task_types: list[QuestionFacetItem] = Field(default_factory=list)
     exam_scopes: list[QuestionFacetItem]
     curriculum_sections: list[QuestionFacetItem]
     knowledge_points: list[QuestionFacetItem]
@@ -457,6 +470,7 @@ class QuestionFacetsResponse(_QuestionBankModel):
 
 class SimilarityReason(_QuestionBankModel):
     kind: Literal[
+        "type",
         "knowledge_point",
         "skill",
         "method",
@@ -487,6 +501,12 @@ class QuestionTagWriteRequest(_QuestionBankModel):
 class QuestionTagWriteItem(QuestionTagResponse):
     tag_value: str = Field(min_length=1, max_length=160)
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class QuestionTypeWriteRequest(_QuestionBankModel):
+    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    primary_type_key: str = Field(min_length=1, max_length=160)
+    secondary_type_keys: list[str] = Field(default_factory=list, max_length=2)
 
 
 class QuestionStateChangeRequest(_QuestionBankModel):
@@ -528,6 +548,8 @@ class QuestionImportRequestResponse(_QuestionBankModel):
 class QuestionTaggingJobRequest(_QuestionBankModel):
     question_ids: list[int] = Field(min_length=1, max_length=500)
     curriculum_volume_id: str = Field(min_length=1, max_length=80)
+    chapter_type_authorization: dict[str, Any] | None = None
+    chapter_type_scope_question_ids: list[int] | None = Field(default=None, min_length=1, max_length=10000)
     source_job_id: int | None = Field(default=None, gt=0)
     force_retag: bool = False
     client_request_token: str | None = Field(

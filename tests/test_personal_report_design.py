@@ -392,3 +392,34 @@ def test_score_comparison_reports_correct_direction_and_equal_full_scores(
 
     no_history = BeautifulSoup(_render_personal_html(data, student, None, {}), "html.parser")
     assert "暂无对比" in no_history.select_one(".cell.change").get_text()
+
+
+def test_report_mixed_chapters_show_only_their_current_training_targets(analysis_db):
+    from backend.reporting.analysis_report_exporter import _personal_knowledge_view, _knowledge_view_html
+    from backend.session_analysis import assemble_session_analysis
+
+    db, session, root = analysis_db
+    data = assemble_session_analysis(db, session, data_root=root)
+    student = data.students[0]
+    typed_key = 'kp_bnu24_math_g8_lower_1_1_t01'
+    topic_key = 'kp_bnu24_math_g8_lower_2_1_1'
+    data.knowledge_structure = {'target_kind': 'mixed', 'catalog': [
+        {'knowledge_key': typed_key, 'node_kind': 'type', 'target_kind': 'type'},
+        {'knowledge_key': topic_key, 'node_kind': 'topic', 'target_kind': 'knowledge'}]}
+    data.knowledge_backfill = {
+        'Q1': [{'stable_key': typed_key, 'label': 'TEST-分解任务',
+                'path': '八下｜第一章｜第一节｜TEST-分解任务', 'target_kind': 'type'},
+               {'stable_key': 'sk_old', 'label': '技能旧目标', 'target_kind': 'type'}],
+        'Q2': [{'stable_key': topic_key, 'label': 'TEST-知识点',
+                'path': '八下｜第二章｜第一节｜TEST-知识点', 'target_kind': 'knowledge'},
+               {'stable_key': 'sk_old', 'label': '技能旧目标', 'target_kind': 'knowledge'}]}
+    before = [(record.score, record.max_score) for record in student.records]
+    view = _personal_knowledge_view(data, student)
+    assert view['target_kind'] == 'mixed'
+    assert {node['key'] for node in view['nodes']} == {typed_key, topic_key}
+    assert {node['target_kind'] for node in view['nodes']} == {'type', 'knowledge'}
+    html = _knowledge_view_html(view)
+    assert '训练目标掌握图' in html
+    assert '题型 · 考什么' in html and '知识点 · 学什么' in html
+    assert '技能点' not in html
+    assert before == [(record.score, record.max_score) for record in student.records]

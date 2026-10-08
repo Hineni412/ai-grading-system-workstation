@@ -15,11 +15,12 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from question_bank.recommendation.target_matching import part_facets, target_index
+from question_bank.question_types import is_type_key
 from question_bank.services.similarity_service import strip_leading_score
 from question_bank.solution_evidence.knowledge_links import load_point_links
 from question_bank.solution_evidence.part_assessments import load_profiles
 
-WEIGHTS = {"skill": .42, "knowledge": .15, "method": .12, "model": .08,
+WEIGHTS = {"type": .42, "skill": .42, "knowledge": .15, "method": .12, "model": .08,
            "special_type": .07, "thought": .04, "ability": .03, "demand": .09}
 RRF_K = 20
 RRF_RULE_WEIGHT = .7
@@ -99,7 +100,7 @@ class SimilarQuestionIndex:
         self.questions = questions
         self.positions = {q.qid: i for i, q in enumerate(questions)}
         self.idf = {}
-        for dimension in ("skill", "method", "model", "special_type", "thought", "ability"):
+        for dimension in ("type", "skill", "method", "model", "special_type", "thought", "ability"):
             count = Counter(v for q in questions for v in q.tags.get(dimension, ()))
             self.idf[dimension] = {v: 1 + math.log((len(questions) + 1) / (df + 1)) for v, df in count.items()}
         self.weight_sums = {
@@ -208,7 +209,7 @@ def build_index(rows, public_tags, resolver, *, db_path, connection, data_root) 
             if kind in {"knowledge_point", "skill"}:
                 for identity in resolver.resolve(value) if resolver is not None else ():
                     key = identity.stable_key
-                    tags["skill" if key.startswith("sk_") else "topic"].add(key)
+                    tags["type" if is_type_key(key) else "skill" if key.startswith("sk_") else "topic"].add(key)
                     anchor = index.get(key, {})
                     for dim in ("section", "chapter"):
                         if anchor.get(dim):

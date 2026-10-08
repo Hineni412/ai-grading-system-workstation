@@ -9,7 +9,8 @@ from typing import Any
 
 from question_bank.question_types import (
     is_training_target,
-    type_keys_active,
+    chapter_target_kind,
+    target_kind_for_key,
 )
 from question_bank.recommendation.personalized import (
     PersonalizedRecommendationConfig,
@@ -43,10 +44,7 @@ def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id
     if resolver is not None:
         from question_bank.recommendation.target_matching import target_index
         allowed.update(key for key, node in target_index(resolver).items()
-                       if node["kind"] == "skill" and node["section"] in sections)
-        if type_keys_active(resolver, volume_id):
-            allowed.update(key for key, node in target_index(resolver).items()
-                           if node["kind"] == "type" and node["section"] in sections)
+                       if node["section"] in sections and is_training_target(key, resolver, volume_id))
     else:
         # The diagnosis already carries the active standard, including skills.
         allowed.update(str(node["knowledge_key"]) for node in diagnosis.get("knowledge_catalog", ())
@@ -78,6 +76,7 @@ def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id
         full = sum(float(item.get("full_score_sum", 0)) for item in evidence)
         result.append({
             "knowledge_key": key, "knowledge_point": point["knowledge_point"],
+            "target_kind": target_kind_for_key(key, resolver, volume_id),
             "mastery": point["mastery"], "weak_student_count": weak, "weak_tier_student_count": clearly_weak, "tier": point.get("tier", "insufficient"),
             "evidence_student_count": len(evidence),
             "exam_score_rate": round(score / full, 4) if full > 0 else None,
@@ -90,6 +89,7 @@ def class_weaknesses(diagnosis: Mapping[str, Any], *, volume_id: str, chapter_id
     for key in sorted(allowed - present):
         node = resolver.node(key) if resolver else None
         result.append({"knowledge_key": key, "knowledge_point": node.display_name if node else names.get(key, key),
+                       "target_kind": target_kind_for_key(key, resolver, volume_id),
                        "mastery": None, "weak_student_count": 0, "weak_tier_student_count": 0, "tier": "insufficient", "evidence_student_count": 0,
                        "exam_score_rate": None, "evidence_count": 0, "candidate_count": None, "target_difficulty": None})
     return sorted(result, key=lambda item: (item["weak_student_count"] == 0, -item["weak_tier_student_count"], -item["weak_student_count"], item["mastery"] if item["mastery"] is not None else 1, item["knowledge_key"]))
@@ -132,7 +132,7 @@ def shortlist_candidates(
         "exam_score_rate": round(sum(scores)/len(scores), 4) if scores else None,
         "exam_count": len(diagnosis.get("exam_scope", {}).get("session_ids", [])),
         "weaknesses": weaknesses, "selected_target_keys": selected, "candidate_total": 0, "candidates": [],
-        "target_kind": "type" if type_keys_active(resolver, volume_id) else "skill"}
+        "target_kind": chapter_target_kind(resolver, volume_id, chapter_id)}
     if not selected or not students:
         return output
     config = replace(config, paper_mode='shared', target_keys=tuple(selected))

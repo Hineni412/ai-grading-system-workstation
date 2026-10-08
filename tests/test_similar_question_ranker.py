@@ -110,3 +110,19 @@ def test_active_read_transaction_does_not_reuse_a_later_index(service):
             writer.execute("UPDATE questions SET is_deleted=1 WHERE id=2")
         assert service.find_similar_questions(1, limit=6) == before
     assert {row["id"] for row in service.find_similar_questions(1, limit=6)} == {6}
+
+
+def test_current_question_types_score_independently_from_knowledge_topics():
+    primary = 'kp_bnu24_math_g8_lower_1_1_t01'
+    other = 'kp_bnu24_math_g8_lower_1_1_t02'
+    questions = [
+        SimilarityQuestion(1, 'TEST-判断条件甲', 3, {'type': frozenset({primary}), 'topic': frozenset({'shared'})}),
+        SimilarityQuestion(2, 'TEST-判断条件乙', 3, {'type': frozenset({primary}), 'topic': frozenset({'different'})}),
+        SimilarityQuestion(3, 'TEST-判断条件丙', 3, {'type': frozenset({other}), 'topic': frozenset({'shared'})})]
+    index = SimilarQuestionIndex(questions)
+    same_type = index.components(questions[0], questions[1])
+    same_topic = index.components(questions[0], questions[2])
+    assert same_type['type'] == 1 and same_type['knowledge'] == 0
+    assert same_topic['type'] == 0 and same_topic['knowledge'] == 1
+    assert same_type['semantic'] > same_topic['semantic']
+    assert [qid for qid, score in index.rank(1)] == [2, 3]

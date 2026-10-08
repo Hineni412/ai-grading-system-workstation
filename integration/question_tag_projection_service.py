@@ -9,7 +9,9 @@ from typing import Any
 
 from backend.config_generation.contract import iter_effective_rubric_item_refs
 from question_bank.database.schema import connect, initialize_database
-from question_bank.question_types import question_type_key, type_keys_active
+from question_bank.question_types import (
+    chapter_target_kind, is_training_target, question_type_key, target_kind_for_key, type_keys_active,
+)
 from question_bank.services.source_question_link_service import (
     SourceQuestionLinkService,
 )
@@ -119,6 +121,7 @@ class QuestionTagProjectionService:
         )
         resolver = self._knowledge_resolver()
         types_active = type_keys_active(resolver)
+        current_profiles, current_links = self._current_target_links(bank_question_ids, resolver)
 
         projected: list[ProjectedQuestionTags] = []
         for item_ref, parent_ref, _question, _item in item_refs:
@@ -145,6 +148,8 @@ class QuestionTagProjectionService:
                 if types_active
                 else ""
             )
+            if type_key and not is_training_target(type_key, resolver):
+                type_key = ""
             snapshot_question = (
                 snapshot_questions.get(parent_ref)
                 if bank_question_id is not None
@@ -159,6 +164,11 @@ class QuestionTagProjectionService:
                     # 技能链接仍留在题库供展示。
                     snapshot_question = _type_overlaid_question(
                         snapshot_question, type_key
+                    )
+                else:
+                    snapshot_question = _current_target_overlaid_question(
+                        snapshot_question, current_profiles.get(bank_question_id),
+                        current_links.get(bank_question_id, {}), resolver,
                     )
                 covered_ids, item_steps = _covered_point_ids(_item)
                 evidence_points = {
@@ -231,10 +241,8 @@ class QuestionTagProjectionService:
                 fallback = (
                     (type_key,)
                     if type_key
-                    else self._section_fallback_keys(
-                        tags.get("knowledge_point", ()),
-                        resolver,
-                    )
+                    else self._legacy_target_keys(tags.get("knowledge_point", ()), resolver,
+                        current_profiles.get(bank_question_id), current_links.get(bank_question_id, {}))
                 )
                 if fallback:
                     tags = {**tags, "knowledge_point": fallback}
@@ -261,6 +269,24 @@ class QuestionTagProjectionService:
             )
         return QuestionTagProjection(tuple(projected))
 
+    def _current_target_links(self, question_ids: set[int], resolver: Any) -> tuple[dict, dict]:
+        if resolver is None or not question_ids:
+            return {}, {}
+        from question_bank.solution_evidence.knowledge_links import load_point_links
+        from question_bank.solution_evidence.part_assessments import load_profiles, reading
+        from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
+        if not any(chapter_target_kind(resolver, volume["id"]) in {"knowledge", "mixed"}
+                   for volume in load_curriculum_catalog()["volumes"]):
+            return {}, {}
+        with reading(self.db_path, self.external_connection) as connection:
+            profiles = load_profiles(self.db_path, sorted(question_ids), connection=connection,
+                                     data_root=self.data_root)
+            links = load_point_links(self.db_path,
+                [str(profile["evidence_version_id"]) for profile in profiles.values()],
+                resolver.release_id, connection=connection)
+        return profiles, {qid: links.get(str(profile["evidence_version_id"]), {})
+                          for qid, profile in profiles.items()}
+
     def _knowledge_resolver(self) -> Any:
         try:
             from question_bank.current_knowledge import CurrentKnowledgeResolver
@@ -268,6 +294,17 @@ class QuestionTagProjectionService:
             return CurrentKnowledgeResolver.from_active_database(self.db_path)
         except Exception:
             return None
+
+    def _legacy_target_keys(self, values, resolver, profile, links):
+        keys = {identity.stable_key for value in values for identity in resolver.resolve(value)} if resolver else set()
+        active = {link.stable_key for point_links in links.values() for link in point_links
+                  if link.role == "direct" and link.resolution_status == "resolved" and link.weight > 0}
+        if profile and profile.get("available"):
+            keys.update(active)
+        kinds = {target_kind_for_key(key, resolver) for key in keys}
+        if kinds.intersection({"knowledge", "type"}):
+            return tuple(sorted(key for key in keys if is_training_target(key, resolver)))
+        return self._section_fallback_keys(values, resolver)
 
     def _section_fallback_keys(
         self,
@@ -435,6 +472,54 @@ def _type_overlaid_question(
         )
         overlaid[pid] = kept
     return {**snapshot_question, "links": overlaid}
+
+
+
+def _current_target_overlaid_question(snapshot_question, profile, current_links, resolver):
+    """Reattribute matching frozen points without changing their obligations."""
+    frozen = snapshot_question.get("evidence") or {}
+    frozen_points = {str(point.get("evidence_point_id")): point
+                     for part in frozen.get("parts", ()) for point in part.get("evidence_points", ())}
+    active_points = {str(point.get("evidence_point_id")): point
+                     for part in (profile or {}).get("evidence", {}).get("parts", ())
+                     for point in part.get("evidence_points", ())}
+    aligned = bool(profile and profile.get("available") and frozen.get("source_content_hash")
+                   and frozen.get("source_content_hash") in {
+                       profile.get("current_source_content_hash"), profile.get("evidence_source_hash")}
+                   and set(frozen_points) == set(active_points))
+    fields = ("target", "observable_evidence", "equivalent_rules", "counterexamples", "depends_on")
+    aligned = aligned and all(all(point.get(field) == active_points[pid].get(field)
+                                  for field in fields) for pid, point in frozen_points.items())
+    result = {}
+    for pid, frozen_links in (snapshot_question.get("links") or {}).items():
+        direct = [link for link in frozen_links if link.get("role") == "direct"]
+        active = current_links.get(str(pid), ()) if aligned else ()
+        kinds = {target_kind_for_key(link.stable_key, resolver) for link in active
+                 if link.role == "direct"}
+        kinds.update(target_kind_for_key(link.get("stable_key"), resolver) for link in direct)
+        if not kinds.intersection({"knowledge", "type"}):
+            result[str(pid)] = list(frozen_links)
+            continue
+        kept = [dict(link) for link in frozen_links if link.get("role") != "direct"]
+        if aligned and "knowledge" in kinds:
+            kept.extend({"stable_key": link.stable_key, "term_id": link.term_id,
+                         "role": "direct", "resolution_status": "resolved", "weight": link.weight,
+                         "source_kind": "current_knowledge_overlay"}
+                        for link in active if link.role == "direct" and link.resolution_status == "resolved"
+                        and link.weight > 0 and is_training_target(link.stable_key, resolver))
+        else:
+            kept.extend(dict(link) for link in direct
+                        if is_training_target(link.get("stable_key"), resolver))
+        result[str(pid)] = kept
+    if aligned:
+        for pid in frozen_points.keys() - result.keys():
+            result[pid] = [{"stable_key": link.stable_key, "term_id": link.term_id,
+                            "role": "direct", "resolution_status": "resolved", "weight": link.weight,
+                            "source_kind": "current_knowledge_overlay"}
+                           for link in current_links.get(pid, ()) if link.role == "direct"
+                           and link.resolution_status == "resolved" and link.weight > 0
+                           and is_training_target(link.stable_key, resolver)]
+    return {**snapshot_question, "links": result}
 
 
 def _covered_point_ids(

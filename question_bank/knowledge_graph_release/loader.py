@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import threading
 from collections import OrderedDict
@@ -43,6 +44,7 @@ _RELEASE_PATHS_BY_TAXONOMY_REVISION = {
     9: DEFAULT_RELEASE_PATH.with_name('knowledge_graph_release_v7.json'),
     10: DEFAULT_RELEASE_PATH.with_name('knowledge_graph_release_v8.json'),
     11: DEFAULT_RELEASE_PATH.with_name('knowledge_graph_release_v9.json'),
+    12: DEFAULT_RELEASE_PATH.with_name('knowledge_graph_release_v10.json'),
 }
 _TAXONOMY_PATHS_BY_REVISION = {
     3: (
@@ -64,6 +66,7 @@ _TAXONOMY_PATHS_BY_REVISION = {
     9: DEFAULT_TAXONOMY_PATH.with_name('tag_vocabulary_v8.json'),
     10: DEFAULT_TAXONOMY_PATH.with_name('tag_vocabulary_v9.json'),
     11: DEFAULT_TAXONOMY_PATH.with_name('tag_vocabulary_v10.json'),
+    12: DEFAULT_TAXONOMY_PATH.with_name('tag_vocabulary_v11.json'),
 }
 
 
@@ -123,6 +126,11 @@ def load_taxonomy_catalog_for_release(
 ) -> dict[str, Any]:
     """Load the immutable governed vocabulary paired with one release."""
 
+    local_catalog = release.payload.get("taxonomy_catalog")
+    if isinstance(local_catalog, dict):
+        if int(local_catalog.get("revision") or 0) != release.taxonomy_revision:
+            raise ValueError("local taxonomy revision does not match release")
+        return copy.deepcopy(local_catalog)
     source = _TAXONOMY_PATHS_BY_REVISION.get(release.taxonomy_revision)
     if source is None:
         raise ValueError(

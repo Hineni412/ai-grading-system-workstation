@@ -5,6 +5,7 @@ import {
   abandonConfigGenerationRequest,
   createClientRequestToken,
   fetchConfigEditor,
+  fetchConfigGenerationPreview,
   fetchConfigGenerationJobByToken,
   fetchConfigGenerationQuestionStates,
   retryConfigGeneration,
@@ -13,9 +14,10 @@ import {
   type ConfigGenerationRequest,
   type GenerationMode,
 } from '../../api/config-workspace'
-import { jobApi, type JobResponse } from '../../api/jobs'
+import { chapterTypeJobSummary, type JobResponse } from '../../api/jobs'
 import { isAmbiguousWriteError, isAuthoritativeNotFoundError } from '../../api/errors'
 import {
+  chapterTypeCostNote,
   type CurriculumCatalog,
   type CurriculumVolume,
 } from '../../api/question-bank'
@@ -509,10 +511,19 @@ async function startGeneration(requestedMode: GenerationMode = 'batched'): Promi
   const context = configStore.captureGenerationContext()
   const sessionId = configStore.sessionId
   const requestToken = createClientRequestToken()
-  const request = {
+  const request: ConfigGenerationRequest = {
     ...configStore.sourceRequest(requestedMode, true, selectedVolume.value.id),
     client_request_token: requestToken,
   }
+  submitting.value = true
+  try {
+    const preview = await fetchConfigGenerationPreview(sessionId, request)
+    if (!await confirm({ title: '确认分析并入库？',
+      message: `预计 ${preview.analysis_request_estimate} 次分析请求。${chapterTypeCostNote(preview)}将使用配置的模型，按服务商计费；失败或结果不确定时不自动追加请求。`, confirmLabel: '开始分析' })) return
+    if (preview.planned_requests) request.chapter_type_authorization = { ...preview, confirmed: true, request_limit: preview.planned_requests }
+  } catch { requestError.value = '费用预估暂时无法读取，请重试；尚未提交分析。'; return }
+  finally { submitting.value = false }
+  if (configStore.captureGenerationContext() !== context || configStore.sessionId !== sessionId) return
   if (!configStore.markJobSubmissionPending(requestToken, 'generate', requestedMode)) return
   submitting.value = true
   requestError.value = ''
@@ -653,15 +664,11 @@ async function reloadEditor(current: JobResponse): Promise<void> {
   }
 }
 
+const chapterTypeSummary = computed(() => chapterTypeJobSummary(job.value, jobStore.jobs))
+
 watch(job, (current, previous) => {
   if (current?.id !== previous?.id) selectedFailed.value = []
   if (current?.status === 'succeeded' && current.result.outcome === 'complete') {
-    const syncJobId = Number(current.result.question_bank_sync_job_id)
-    if (Number.isSafeInteger(syncJobId) && syncJobId > 0) {
-      void jobApi.getJob(syncJobId)
-        .then((next) => jobStore.track(next))
-        .catch(() => undefined)
-    }
     void reloadEditor(current)
   }
 }, { immediate: true })
@@ -767,6 +774,14 @@ watch(
         <strong>{{ statusCopy(job) }}</strong>
         <span>{{ passedStateCount }} 题通过 · {{ redStateCount }} 题需处理 · {{ questionStates.length - passedStateCount - redStateCount }} 题处理中</span>
       </div>
+      <details v-if="chapterTypeSummary?.chapters.length" class="config-generation__retained">
+        <summary>{{ chapterTypeSummary.note }}</summary>
+        <div v-for="chapter in chapterTypeSummary.chapters" :key="chapter.label">
+          <p>{{ chapter.label }}已整理题型 · 新增 {{ chapter.newTypeCount }} 类 · 本次处理 {{ chapter.questionCount }} 题 · 待归类 {{ chapter.unclassifiedCount }} 题</p>
+          <p v-for="type in chapter.types" :key="type.name">{{ type.name }} · {{ type.questionCount }} 题</p>
+        </div>
+      </details>
+      <p v-else-if="chapterTypeSummary" class="config-generation__retained" role="status">{{ chapterTypeSummary.note }}</p>
       <progress class="sr-only" :value="progress" max="1" aria-label="评分依据生成进度" />
       <Teleport :to="intakeTeleportTarget ?? 'body'" :disabled="intakeTeleportTarget === null">
       <div v-if="intakeBlocked" class="config-generation__partial config-generation__intake-alert" role="alert">

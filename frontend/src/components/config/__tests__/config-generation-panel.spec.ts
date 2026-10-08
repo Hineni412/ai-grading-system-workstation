@@ -2,6 +2,8 @@ import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, nextTick } from 'vue';
 
+import { confirmRequest, settleConfirm } from '../../../composables/useConfirm'
+import { fetchConfigGenerationPreview } from '../../../api/config-workspace'
 import type { ConfigEditorResponse, ConfigGenerationRequest, ConfigSource } from '../../../api/config-workspace';
 import { ApiError } from '../../../api/errors';
 import type { JobResponse } from '../../../api/jobs';
@@ -11,6 +13,15 @@ import { useConfigWorkspaceStore } from '../../../stores/config-workspace';
 import { useJobStore } from '../../../stores/jobs';
 import { useCurriculumScopeStore } from '../../../stores/curriculum-scope'
 import ConfigGenerationPanel from '../ConfigGenerationPanel.vue'
+
+vi.mock('../../../api/config-workspace', async importOriginal => ({
+  ...await importOriginal<typeof import('../../../api/config-workspace')>(),
+  fetchConfigGenerationPreview: vi.fn(async (_sessionId, request: ConfigGenerationRequest) => ({
+    base_release_id: 'kgr_TEST', input_fingerprint: 'e'.repeat(64), volume_id: request.curriculum_volume_id,
+    chapters: [], planned_requests: 0, model_calls: 0, analysis_request_estimate: 1,
+    source_id: request.source_id, source_revision: request.source_revision,
+  })),
+}))
 
 function source(): ConfigSource {
   return {
@@ -90,6 +101,7 @@ async function settle(): Promise<void> {
   for (let index = 0; index < 5; index += 1) {
     await Promise.resolve()
     await nextTick()
+    if (confirmRequest.value?.title === '确认分析并入库？') settleConfirm(true)
   }
 }
 
@@ -135,6 +147,23 @@ beforeEach(async () => {
 })
 
 describe('ConfigGenerationPanel', () => {
+  it('requires one cost confirmation and binds the exact chapter request limit', async () => {
+    const plan = { base_release_id: 'kgr_TEST', input_fingerprint: 'f'.repeat(64), volume_id: 'bnu24-math-g7-upper',
+      chapters: [{ chapter_id: 'kp_TEST_1', label: 'TEST第一章', question_count: 30, paper_count: 3, unclassified_count: 30, planned_requests: 1 }],
+      planned_requests: 1, model_calls: 0 as const, analysis_request_estimate: 1, source_id: source().source_id, source_revision: source().source_revision }
+    vi.mocked(fetchConfigGenerationPreview).mockResolvedValueOnce(plan)
+    const submitter = vi.fn<(sessionId: number, request: ConfigGenerationRequest) => Promise<JobResponse>>(async () => job({ status: 'queued' }))
+    const mounted = await mountPanel({ submitter })
+    mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()
+    for (let index = 0; index < 8; index += 1) { await Promise.resolve(); await nextTick() }
+    expect(submitter).not.toHaveBeenCalled()
+    expect(confirmRequest.value?.message).toContain('预计增加 1 次模型请求')
+    settleConfirm(true)
+    await settle()
+    expect(submitter.mock.calls[0]?.[1]).toMatchObject({ chapter_type_authorization: { ...plan, confirmed: true, request_limit: 1 } })
+    mounted.unmount()
+  })
+
   it('reuses the global catalog, follows the term, and preserves a manual choice', async () => {
     const scope = useCurriculumScopeStore()
     const catalog = curriculum()

@@ -458,6 +458,7 @@ export interface TrainingEvidenceReference {
 }
 
 export interface TrainingWeakPoint {
+  target_kind?: OverviewTargetKind
   interval_low?: number | null
   interval_high?: number | null
   tier?: 'stable' | 'unsteady' | 'weak' | 'insufficient'
@@ -543,6 +544,7 @@ export interface TrainingDiagnosis {
     parent_knowledge_key?: string | null
     parent_knowledge_point?: string | null
     node_kind?: 'chapter' | 'section' | 'topic' | 'skill' | 'type'
+    target_kind?: OverviewTargetKind
   }>
   knowledge_associations?: Array<{
     topic_key: string
@@ -584,7 +586,7 @@ export type TrainingDisplayDiagnosis = Omit<TrainingDiagnosis,
   students: TrainingDisplayStudent[]
   group_weak_points: TrainingDisplayWeakPoint[]
   knowledge_catalog: Array<Pick<NonNullable<TrainingDiagnosis['knowledge_catalog']>[number],
-    'knowledge_key' | 'knowledge_point' | 'parent_knowledge_key' | 'node_kind'>>
+    'knowledge_key' | 'knowledge_point' | 'parent_knowledge_key' | 'node_kind' | 'target_kind'>>
 }
 
 export type TrainingReadDiagnosis = TrainingDiagnosis | TrainingDisplayDiagnosis
@@ -603,7 +605,7 @@ export interface TrainingOverviewRequest {
 }
 
 export type OverviewNodeKind = 'chapter' | 'section' | 'topic' | 'skill' | 'type'
-export type OverviewTargetKind = 'skill' | 'type'
+export type OverviewTargetKind = 'skill' | 'type' | 'knowledge' | 'mixed'
 
 export interface TrainingOverviewDistribution {
   weak: number
@@ -623,6 +625,7 @@ export interface TrainingOverviewTypicalQuestion extends TrainingOverviewExamQue
 }
 
 export interface TrainingOverviewNode {
+  target_kind?: OverviewTargetKind
   definition?: string
   in_volume?: boolean
   group_interval_low?: number | null
@@ -672,6 +675,8 @@ export interface TrainingOverviewSummary {
   weak_skill_count: number
   type_count?: number
   weak_type_count?: number
+  target_count?: number
+  weak_target_count?: number
 }
 
 export interface TrainingOverviewAssociation {
@@ -683,6 +688,7 @@ export interface TrainingOverviewAssociation {
 }
 
 export interface TrainingOverview {
+  chapter_target_kinds?: Record<string, OverviewTargetKind>
   associations?: TrainingOverviewAssociation[]
   target_kind?: OverviewTargetKind
   scope: TrainingDiagnosis['scope']
@@ -892,7 +898,7 @@ export function decodeTrainingDiagnosis(value: unknown): TrainingDiagnosis {
     || !isStringArray(value.suggested_terms)
     || !isStringArray(value.unmapped_terms)
     || !isStringArray(value.warnings)
-    || (value.target_kind !== undefined && value.target_kind !== 'skill' && value.target_kind !== 'type')
+    || (value.target_kind !== undefined && !['skill', 'type', 'knowledge', 'mixed'].includes(String(value.target_kind)))
   ) {
     throw new Error('Invalid training diagnosis')
   }
@@ -925,7 +931,7 @@ function isDisplayStudent(value: unknown): value is TrainingDisplayStudent {
 
 function isDisplayCatalogNode(value: unknown): value is TrainingDisplayDiagnosis['knowledge_catalog'][number] {
   return isRecord(value) && isNonEmptyString(value.knowledge_key) && isNonEmptyString(value.knowledge_point)
-    && Object.keys(value).every(key => ['knowledge_key', 'knowledge_point', 'parent_knowledge_key', 'node_kind'].includes(key))
+    && Object.keys(value).every(key => ['knowledge_key', 'knowledge_point', 'parent_knowledge_key', 'node_kind', 'target_kind'].includes(key))
     && (value.parent_knowledge_key === undefined || value.parent_knowledge_key === null
       || typeof value.parent_knowledge_key === 'string')
     && (value.node_kind === undefined || value.node_kind === 'chapter' || value.node_kind === 'section'
@@ -980,7 +986,7 @@ function isDisplayDiagnosis(value: unknown): value is TrainingDisplayDiagnosis {
     && (value.grouping === undefined || value.grouping === null || isTrainingGrouping(value.grouping))
     && isCoverage(value.coverage) && isPositiveIntegerArray(value.confirmed_concept_ids)
     && isStringArray(value.suggested_terms) && isStringArray(value.unmapped_terms) && isStringArray(value.warnings)
-    && (value.target_kind === undefined || value.target_kind === 'skill' || value.target_kind === 'type')
+    && (value.target_kind === undefined || ['skill', 'type', 'knowledge', 'mixed'].includes(String(value.target_kind)))
 }
 
 export function decodeTrainingDisplayDiagnosis(value: unknown): TrainingDisplayDiagnosis {
@@ -1100,7 +1106,7 @@ export function decodeTrainingOverview(value: unknown): TrainingOverview {
     || !Array.isArray(value.students)
     || !value.students.every(isOverviewStudent)
     || !isOverviewSummary(value.summary)
-    || (value.target_kind !== undefined && value.target_kind !== 'skill' && value.target_kind !== 'type')
+    || (value.target_kind !== undefined && !['skill', 'type', 'knowledge', 'mixed'].includes(String(value.target_kind)))
     || (value.associations !== undefined && (!Array.isArray(value.associations) || !value.associations.every(a =>
       isRecord(a) && isNonEmptyString(a.topic_key) && isNonEmptyString(a.skill_key)
       && isInteger(a.question_count) && isInteger(a.same_part_question_count)
@@ -2105,4 +2111,24 @@ export const trainingApi = {
       timeoutMs: 60_000,
     })
   },
+}
+
+
+export function trainingTargetNodeKinds(kind: OverviewTargetKind | undefined): string[] {
+  switch (kind) {
+    case 'type': return ['type']
+    case 'knowledge': return ['topic']
+    case 'mixed': return ['type', 'topic', 'skill']
+    case 'skill':
+    case undefined: return ['skill', 'topic']
+    default: { const exhaustive: never = kind; return exhaustive }
+  }
+}
+
+export function trainingTargetLabelForKey(diagnosis: Pick<TrainingReadDiagnosis, 'knowledge_catalog' | 'target_kind'> | null | undefined, key: string): string {
+  const node = diagnosis?.knowledge_catalog?.find(item => item.knowledge_key === key)
+  if (node?.node_kind === 'type' || /_t\d{2}$/.test(key)) return '题型'
+  if (node?.node_kind === 'skill' || key.startsWith('sk_')) return '技能'
+  if (node?.node_kind === 'topic' || key.startsWith('kp_') || diagnosis?.target_kind === 'knowledge') return '知识点'
+  return diagnosis?.target_kind === 'type' ? '题型' : '训练目标'
 }

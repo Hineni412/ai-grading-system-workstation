@@ -222,7 +222,7 @@ class ReportGenerator:
         type_names = self._type_bucket_names(
             (snapshot.session or {}).get("curriculum_volume_id"), snapshot.knowledge_backfill,
         )
-        knowledge_item_label = "题型" if type_names is not None else "知识点"
+        knowledge_item_label = _target_summary_label(type_names)
         knowledge_summary = self._build_session_knowledge_summary_by_class(
             eligible_details,
             score_map,
@@ -1493,17 +1493,16 @@ class ReportGenerator:
     def _type_bucket_names(
         self, volume_id: object = "", knowledge_backfill: dict[str, list[dict[str, str]]] | None = None,
     ) -> dict[str, str] | None:
-        """Type-key → display name map, or ``None`` outside type mode.
+        """Current chapter-target names, or ``None`` in legacy skill mode.
 
-        The knowledge summary sheet lists question types instead of skill or
-        topic tags only when the report's volume publishes type nodes.
+        The summary uses current types and fallback knowledge points per chapter.
         An unbound exam can use its own confirmed type identities.
         """
         from question_bank.current_knowledge import (
             CurrentKnowledgeResolver,
             CurrentKnowledgeUnavailable,
         )
-        from question_bank.question_types import is_type_key, type_keys_active
+        from question_bank.question_types import chapter_target_kind, is_training_target, is_type_key
 
         path = self._question_bank_db_path()
         if path is None:
@@ -1513,17 +1512,20 @@ class ReportGenerator:
         except (CurrentKnowledgeUnavailable, OSError, TypeError, ValueError):
             return None
         selected = str(volume_id or "").strip()
-        if not type_keys_active(resolver, selected):
+        if selected and chapter_target_kind(resolver, selected) == "skill":
             return None
         if not selected and not any(
             is_type_key(entry.get("stable_key"))
             for entries in (knowledge_backfill or {}).values() for entry in entries
         ):
             return None
+        observed_keys = {str(entry.get("stable_key") or "") for entries in (knowledge_backfill or {}).values() for entry in entries}
         return {
             str(node.stable_key): re.sub(r"^题型[·・：:]\s*", "", str(node.display_name))
             for node in resolver.nodes
-            if is_type_key(getattr(node, "stable_key", ""))
+            if is_training_target(getattr(node, "stable_key", ""), resolver, selected)
+            and (selected or is_type_key(getattr(node, "stable_key", "")))
+            and (not observed_keys or str(node.stable_key) in observed_keys)
         }
 
     def _build_session_knowledge_summary_by_class(
@@ -1534,7 +1536,7 @@ class ReportGenerator:
         knowledge_backfill: dict[str, list[dict[str, str]]] | None = None,
         type_names: dict[str, str] | None = None,
     ) -> pd.DataFrame:
-        item_label = "题型" if type_names is not None else "知识点"
+        item_label = _target_summary_label(type_names)
         columns = ["班级", item_label, "涉及题目", "累计得分", "累计满分", "得分率", "失分人数"]
         if df_details.empty:
             return pd.DataFrame(columns=columns)
@@ -1939,6 +1941,15 @@ def _parent_question_id(question_id: str) -> str:
     return _PART_SUFFIX_RE.sub("", str(question_id or "").strip())
 
 
+def _target_summary_label(names: dict[str, str] | None) -> str:
+    from question_bank.question_types import is_type_key
+
+    if names is None or not names:
+        return "知识点"
+    kinds = {is_type_key(key) for key in names}
+    return "题型" if kinds == {True} else "知识点" if kinds == {False} else "训练目标"
+
+
 def _knowledge_bucket_labels(
     item: dict,
     knowledge_label_map: dict[str, str],
@@ -1955,8 +1966,8 @@ def _knowledge_bucket_labels(
     displaying the leaf label.  Part-level ids such as ``Q10(P1)`` fall back
     to their parent question ``Q10`` for the backfill lookup.
 
-    ``type_names`` is the active release's type-key display map; when given,
-    only question-type entries bucket (one row per type).
+    ``type_names`` lists current chapter targets by stable key; when given,
+    only those confirmed entries form buckets.
     """
     from question_bank.question_types import is_type_key
 
@@ -1977,13 +1988,13 @@ def _knowledge_bucket_labels(
         parent = _parent_question_id(qid)
         if parent and parent != qid:
             entries = backfill_map.get(parent)
-    unknown = "未命名题型" if type_names is not None else "未命名知识点"
+    unknown = "未命名" + _target_summary_label(type_names)
     pairs: list[tuple[str, str]] = []
     seen: set[str] = set()
     for entry in entries or []:
         if type_names is not None:
             key = str(entry.get("stable_key") or entry.get("path") or "").strip()
-            if not is_type_key(key) or key in seen:
+            if key not in type_names or key in seen:
                 continue
             seen.add(key)
             pairs.append((key, type_names.get(key) or str(entry.get("label") or key) or unknown))

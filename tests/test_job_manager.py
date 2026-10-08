@@ -269,3 +269,126 @@ def test_job_manager_restart_removes_only_interrupted_automatic_question_links(
         )
     finally:
         manager.shutdown()
+
+
+def test_chapter_publication_drains_analysis_without_blocking_its_queue(job_manager):
+    started = threading.Event()
+    release_analysis = threading.Event()
+    second_finished = threading.Event()
+    publishing = threading.Event()
+    release_publication = threading.Event()
+    new_submission = threading.Event()
+
+    def analysis(context):
+        if context.payload.get('first'):
+            started.set()
+            assert release_analysis.wait(5)
+        else:
+            second_finished.set()
+        return {'done': True}
+
+    def publish(context):
+        with job_manager.standard_publication_guard(context):
+            assert second_finished.is_set()
+            publishing.set()
+            assert release_publication.wait(5)
+        return {'published': True}
+
+    job_manager.register('tagging_sync', analysis)
+    job_manager.register('chapter_type_organize', publish)
+    first = job_manager.submit('tagging_sync', {'first': True})
+    assert started.wait(3)
+    second = job_manager.submit('tagging_sync', {})
+    chapter = job_manager.submit('chapter_type_organize', {})
+    assert not publishing.is_set()
+    assert job_manager.get(second.id).status == 'queued'
+    release_analysis.set()
+    try:
+        assert publishing.wait(3)
+        def submit_new():
+            job_manager.submit('tagging_sync', {})
+            new_submission.set()
+        thread = threading.Thread(target=submit_new)
+        thread.start()
+        assert not new_submission.wait(.1)
+    finally:
+        release_publication.set()
+    thread.join(3)
+    assert new_submission.is_set()
+    for job in (first, second, chapter):
+        job_manager.wait(job.id, timeout=3)
+        assert job_manager.get(job.id).status == 'succeeded'
+
+
+def test_tagging_token_also_binds_confirmed_chapter_budget(job_manager):
+    from backend.jobs.store import TaggingSyncJobRequestConflictError
+
+    job_manager.register('tagging_sync', lambda context: {'done': True})
+    payload = {'question_ids': [1], 'client_request_token': 'e' * 32,
+               'chapter_type_authorization': {'confirmed': True, 'request_limit': 1}}
+    first, created = job_manager.submit_idempotent_tagging_sync(payload)
+    job_manager.wait(first.id, timeout=3)
+    replay, replay_created = job_manager.submit_idempotent_tagging_sync(payload)
+    assert created and not replay_created and replay.id == first.id
+    with pytest.raises(TaggingSyncJobRequestConflictError):
+        job_manager.submit_idempotent_tagging_sync({**payload,
+            'chapter_type_authorization': {'confirmed': True, 'request_limit': 2}})
+
+
+@pytest.mark.parametrize('multiple_papers', [False, True])
+def test_default_handlers_automatically_publish_authorized_chapter_after_tagging(job_manager, tmp_path, multiple_papers):
+    import threading
+    from types import SimpleNamespace
+    from backend.jobs.default_handlers import register_default_job_handlers
+    from question_bank.knowledge_graph_release.repository import load_active_release
+    from question_bank.services.chapter_type_service import preview_chapter_type_plan
+    from tests.test_skill_candidates import (_automatic_type_bank, _automatic_response,
+        _add_automatic_type_questions, _approve_automatic_type_evidence)
+
+    bank, old_release_id = _automatic_type_bank(tmp_path)
+    pending = list(range(31, 61)) if multiple_papers else []
+    if pending:
+        _add_automatic_type_questions(bank, tmp_path,
+            [(qid, 1 if qid < 46 else 2, 'kp_bnu24_math_g8_lower_1_1') for qid in pending],
+            old_release_id, available=False)
+    calls, analyses = [], []
+    lock = threading.Lock()
+    def organize(payload):
+        calls.append(payload)
+        return _automatic_response(payload)
+    def tagging(**kwargs):
+        ids = kwargs['context'].payload['question_ids']
+        with lock:
+            analyses.append(ids)
+            if pending:
+                _approve_automatic_type_evidence(bank, tmp_path, ids, old_release_id)
+        return {'outcome': 'complete', 'successful_question_ids': ids}
+    register_default_job_handlers(job_manager, db_path=job_manager.store.db_path,
+        reports_dir=tmp_path / 'reports', data_root=tmp_path, question_bank_db_path=bank,
+        taxonomy_governance=SimpleNamespace(state_path=tmp_path / 'taxonomy.json'),
+        tagging_ai_service_factory=lambda: SimpleNamespace(organize_chapter_types=organize),
+        tagging_sync_runner=tagging)
+    plan = preview_chapter_type_plan(db_path=bank, data_root=tmp_path,
+        volume_id='bnu24-math-g8-lower', question_ids=pending)
+    first = None
+    if pending:
+        first = job_manager.submit('tagging_sync', {'question_ids': pending[:15]})
+    analysis = job_manager.submit('tagging_sync', {'question_ids': pending[15:] if pending else [1],
+        'chapter_type_authorization': {**plan, 'confirmed': True, 'request_limit': plan['planned_requests']}})
+    job_manager.wait(analysis.id, timeout=30)
+    completed = job_manager.get(analysis.id)
+    assert completed.status == 'succeeded'
+    chapter_job = job_manager.get(completed.result['chapter_type_job_id'])
+    job_manager.wait(chapter_job.id, timeout=30)
+    published = job_manager.get(chapter_job.id)
+    assert published.status == 'succeeded'
+    assert published.result['outcome'] == 'published'
+    assert published.result['published_count'] == (60 if pending else 30)
+    assert published.result['model_calls'] == 1 == len(calls)
+    assert load_active_release(bank).release_id != old_release_id
+    if first:
+        assert job_manager.get(first.id).status == 'succeeded'
+        assert 'chapter_type_job_id' not in job_manager.get(first.id).result
+        assert job_manager.store.list_jobs(job_types=('chapter_type_organize',))[1] == 1
+        assert sorted(qid for batch in analyses for qid in batch) == pending
+        assert len(calls[0]['questions']) == 60

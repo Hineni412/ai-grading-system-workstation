@@ -23,6 +23,7 @@ from question_bank.solution_evidence.knowledge_links import (
     carry_forward_effective_links,
     drop_later_chapter_supporting_links,
     replace_point_links,
+    load_point_links,
     skill_layer_report,
 )
 from question_bank.solution_evidence.part_assessments import load_profiles
@@ -108,7 +109,7 @@ def build_knowledge_link_gateway(service: Any) -> Callable[[Mapping[str, Any]], 
 
 def run_knowledge_link_job(**kwargs: Any) -> dict[str, object]:
     context = kwargs['context']
-    if context.payload.get('mode') != 'missing_skills':
+    if context.payload.get('mode') not in {'missing_skills', 'missing_knowledge'}:
         return _run_knowledge_link_job(**kwargs)
     ids = context.payload.get('question_ids')
     if not isinstance(ids, list) or not ids:
@@ -131,13 +132,13 @@ def _run_knowledge_link_job(
     db_path = Path(question_bank_db_path)
     payload = context.payload
     mode = str(payload.get("mode") or "missing_only").strip()
-    if mode not in {"missing_only", "regenerate", "missing_skills"}:
+    if mode not in {"missing_only", "regenerate", "missing_skills", "missing_knowledge"}:
         raise ValueError("knowledge_link mode is invalid")
     raw_ids = payload.get("question_ids")
     if raw_ids is not None and (not isinstance(raw_ids, Sequence) or isinstance(raw_ids, (str, bytes))):
         raise ValueError("knowledge_link question_ids must be a list")
     question_ids = [int(item) for item in raw_ids] if raw_ids is not None else None
-    if mode == 'missing_skills' and not question_ids:
+    if mode in {'missing_skills', 'missing_knowledge'} and not question_ids:
         raise ValueError('skill repair requires explicit question_ids')
     batch_size = int(payload.get("batch_size") or _DEFAULT_BATCH_SIZE)
     batch_size = min(max(batch_size, 1), 10)
@@ -185,7 +186,7 @@ def _run_knowledge_link_job(
             data_root=data_root, question_inputs=inputs)
         protected = {str(row[0]) for row in connection.execute(
             "SELECT DISTINCT evidence_version_id FROM evidence_point_knowledge_links WHERE source_kind='teacher'")
-        } if mode == 'missing_skills' else set()
+        } if mode in {'missing_skills', 'missing_knowledge'} else set()
     for qid, profile in profiles.items():
         if not profile.get('available'):
             reason = str(profile.get('reason') or 'evidence_unavailable')
@@ -200,22 +201,24 @@ def _run_knowledge_link_job(
 
     # Per (version, release) already-linked points drive missing_only.
     covered: dict[str, set[str]] = {}
-    if mode in {"missing_only", "missing_skills"} and versions:
+    if mode in {"missing_only", "missing_skills", "missing_knowledge"} and versions:
         marks = ",".join("?" for _ in versions)
         with connect(db_path) as connection:
             covered_rows = connection.execute(
                 f"""
-                SELECT evidence_version_id, evidence_point_id
+                SELECT evidence_version_id, evidence_point_id, stable_key
                 FROM evidence_point_knowledge_links
                 WHERE graph_release_id = ?
                   AND role = 'direct' AND resolution_status = 'resolved'
                   AND stable_key <> '' AND weight > 0
-                  AND (? = 'missing_only' OR stable_key LIKE 'sk_%')
+                  AND (? IN ('missing_only', 'missing_knowledge') OR stable_key LIKE 'sk_%')
                   AND evidence_version_id IN ({marks})
                 """,
                 [release_id, mode] + [v["evidence_version_id"] for v in versions],
             ).fetchall()
         for row in covered_rows:
+            if mode == 'missing_knowledge' and not _is_fine_knowledge_key(row['stable_key']):
+                continue
             covered.setdefault(str(row["evidence_version_id"]), set()).add(
                 str(row["evidence_point_id"])
             )
@@ -344,6 +347,8 @@ def _run_knowledge_link_job(
         result: dict[str, dict[str, str]] = {}
         for term in knowledge:
             term_id = str(term.get("id") or "").strip()
+            if mode == 'missing_knowledge' and not _is_fine_knowledge_key(term_id):
+                continue
             if not term_id or term.get("usage") in {'retrieval_only', 'do_not_use_as_knowledge', 'temporary_observation'}:
                 continue
             node = current.node(term_id)
@@ -360,7 +365,7 @@ def _run_knowledge_link_job(
                     exclude_scope=node.exclude_scope,
                     observable_evidence=node.observable_evidence,
                 )
-        for section in _earlier_volume_sections(question_id):
+        for section in ([] if mode == 'missing_knowledge' else _earlier_volume_sections(question_id)):
             term_id = section["id"]
             if term_id in result:
                 continue
@@ -382,10 +387,11 @@ def _run_knowledge_link_job(
     def _supporting_only_ids(question_id: int) -> set[str]:
         """该题只允许 supporting_prerequisite 的候选（更早册别小节）。"""
 
-        return {
-            section["id"]
-            for section in _earlier_volume_sections(question_id)
-        }
+        protected = {section['id'] for section in _earlier_volume_sections(question_id)}
+        knowledge = ((contracts.get(question_id) or {}).get('candidates') or {}).get('knowledge') or []
+        protected.update(str(term['id']) for term in knowledge
+            if 'supporting_prerequisite' in term.get('allowed_roles', ()) and 'direct' not in term.get('allowed_roles', ()))
+        return protected
 
     section_key_of_id = {
         str(section["id"]): str(section["knowledge_id"])
@@ -478,7 +484,7 @@ def _run_knowledge_link_job(
             ],
         }
         context.raise_if_cancelled()
-        if mode == 'missing_skills':
+        if mode in {'missing_skills', 'missing_knowledge'}:
             current = load_profiles(db_path, [item['question_id'] for item in batch], data_root=data_root)
             batch = [item for item in batch if current.get(item['question_id'], {}).get('available')
                      and current[item['question_id']]['evidence_version_id'] == item['evidence_version_id']]
@@ -690,8 +696,32 @@ def _run_knowledge_link_job(
                 continue
             try:
                 with connect(db_path) as connection:
-                    if mode in {'missing_skills', 'missing_only'}:
+                    if mode in {'missing_skills', 'missing_only', 'missing_knowledge'}:
                         connection.execute('BEGIN IMMEDIATE')
+                    if mode == 'missing_knowledge':
+                        current_profile = load_profiles(db_path, [question_id], connection=connection, data_root=data_root).get(question_id, {})
+                        active_now = load_active_release(db_path)
+                        if (not current_profile.get('available') or current_profile['evidence_version_id'] != item['evidence_version_id']
+                                or active_now is None or active_now.release_id != release_id
+                                or connection.execute("SELECT 1 FROM evidence_point_knowledge_links WHERE evidence_version_id=? AND source_kind='teacher'", (item['evidence_version_id'],)).fetchone()):
+                            continue
+                        effective = load_point_links(db_path, [item['evidence_version_id']], release_id, connection=connection).get(item['evidence_version_id'], {})
+                        selected_points = []
+                        for point in points_to_write:
+                            existing = effective.get(point['evidence_point_id'], ())
+                            if any(link.role == 'direct' and _is_fine_knowledge_key(link.stable_key) for link in existing):
+                                continue
+                            added = [link for link in point['links'] if _is_fine_knowledge_key(link['stable_key'])]
+                            if not added:
+                                continue
+                            kind = LINK_JOB_KIND if any(link.source_kind == LINK_JOB_KIND for link in existing) else 'migrated_from_embedded'
+                            selected_points.append({**point, 'links': added, 'source_kind': kind})
+                        points_to_write = selected_points
+                        if not points_to_write:
+                            continue
+                        carry_forward_effective_links(connection, db_path=db_path, question_id=question_id,
+                            evidence_version_id=item['evidence_version_id'], graph_release_id=release_id,
+                            skip_points=())
                     if mode == 'missing_skills':
                         current = load_profiles(db_path, [question_id], connection=connection, data_root=data_root).get(question_id, {})
                         active_now = load_active_release(db_path)
@@ -726,16 +756,23 @@ def _run_knowledge_link_job(
                             graph_release_id=release_id,
                             skip_points={point['evidence_point_id'] for point in points_to_write},
                         )
-                    inserted = replace_point_links(
-                        connection,
-                        evidence_version_id=item["evidence_version_id"],
-                        question_id=question_id,
-                        graph_release_id=release_id,
-                        points=points_to_write,
-                        source_kind=LINK_JOB_KIND,
-                        source_reference=f"link_job:{context.job_id}",
-                        replace=(mode == "regenerate"),
-                    )
+                    if mode == 'missing_knowledge':
+                        inserted = sum(replace_point_links(connection, evidence_version_id=item['evidence_version_id'],
+                            question_id=question_id, graph_release_id=release_id, points=[point],
+                            source_kind=point['source_kind'], source_reference=f'link_job:{context.job_id}', replace=False, data_root=data_root)
+                            for point in points_to_write)
+                    else:
+                        inserted = replace_point_links(
+                            connection,
+                            evidence_version_id=item["evidence_version_id"],
+                            question_id=question_id,
+                            graph_release_id=release_id,
+                            points=points_to_write,
+                            source_kind=LINK_JOB_KIND,
+                            source_reference=f"link_job:{context.job_id}",
+                            replace=(mode == "regenerate"),
+                            data_root=data_root,
+                        )
             except (sqlite3.Error, ValueError):
                 summary["questions_failed"] = int(summary["questions_failed"]) + 1
                 continue
@@ -759,3 +796,10 @@ def _report(db_path: Path, release_id: str) -> dict[str, Any]:
 
 
 __all__ = ["run_knowledge_link_job"]
+
+
+def _is_fine_knowledge_key(key: object) -> bool:
+    from question_bank.taxonomy.curriculum_catalog import curriculum_knowledge_node
+    from question_bank.question_types import is_type_key
+    node = curriculum_knowledge_node(str(key or ''))
+    return bool(node and node['level'] == 3 and not is_type_key(key))

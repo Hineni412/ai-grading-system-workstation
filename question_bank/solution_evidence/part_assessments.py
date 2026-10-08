@@ -84,7 +84,12 @@ def alias_from_hashes(entry: SourceHash, expected: str) -> str | None:
 @contextmanager
 def reading(db_path: Path, connection: sqlite3.Connection | None = None) -> Iterator[sqlite3.Connection]:
     if connection is not None:
-        yield connection
+        original_factory = connection.row_factory
+        connection.row_factory = sqlite3.Row
+        try:
+            yield connection
+        finally:
+            connection.row_factory = original_factory
         return
     borrowed = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True)
     borrowed.row_factory = sqlite3.Row

@@ -561,7 +561,8 @@ def test_report_target_buckets_keep_final_scores_and_ranks(
         assert any(bank.skill_key in item["skill_keys"]
                    for exam in exams["exams"] for item in exam["questions"])
         empty = service.assembly_exam_questions(class_ids=["TEST-empty-class"], volume_id=volume_id)
-        assert empty == {"student_count": 0, "exams": [], "target_kind": "skill"}
+        assert {key: empty[key] for key in ("student_count", "exams", "target_kind")} == {"student_count": 0, "exams": [], "target_kind": "skill"}
+        assert set(empty.get("chapter_target_kinds", {}).values()) == {"skill"}
 
     generator = ReportGenerator(db, root / "out")
     workbook = load_workbook(generator.export_session(session))
@@ -1056,3 +1057,31 @@ def test_personal_store_writes_on_caller_thread_and_tolerates_corruption(analysi
     by_id = {s["student_id"]: s["status"] for s in states}
     assert by_id[corrupted_id] == "missing"
     assert sum(1 for s in states if s["status"] == "current") == len(files) - 1
+
+
+def test_personal_freshness_tracks_linked_target_but_ignores_unrelated_bank_changes(analysis_db, question_bank_database):
+    from backend.personal_reports import personal_report_states, student_report_digests
+    from backend.report_results import PersonalReportStore, prompt_version
+    from backend.session_analysis import assemble_session_analysis, enrich_personal_questions
+
+    db, session, root = analysis_db
+    bank = _seed_report_knowledge(analysis_db, question_bank_database, type_mode=True)
+    data = assemble_session_analysis(db, session, data_root=root)
+    enrich_personal_questions(db, data, root)
+    reports_dir = root / 'reports'
+    before = student_report_digests(db, session, data, reports_dir=reports_dir)
+    for student_id, digest in before.items():
+        PersonalReportStore(reports_dir).save(session, student_id, narrative={'summary': 'TEST-target'},
+            input_digest=digest, prompt_version=prompt_version('personal_report'))
+    with sqlite3.connect(bank.path) as connection:
+        connection.execute("INSERT INTO questions(id,question_number,question_type,question_text) VALUES(3,'3','choice','TEST-unrelated')")
+        connection.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(3,'knowledge_point',?,'taxonomy')", (bank.type_key,))
+    assert student_report_digests(db, session, data, reports_dir=reports_dir) == before
+    assert all(row['status'] == 'current' for row in personal_report_states(db, session, reports_dir)['students'] if row['student_id'] in before)
+    scores = _score_state(db.db_path)
+    with sqlite3.connect(bank.path) as connection:
+        connection.execute("UPDATE question_tags SET tag_value=? WHERE question_id=1 AND tag_type='knowledge_point' AND tag_value=?", (bank.type_key[:-2]+'02', bank.type_key))
+    after = student_report_digests(db, session, data, reports_dir=reports_dir)
+    assert all(after[student_id] != before[student_id] for student_id in before)
+    assert all(row['status'] == 'stale' for row in personal_report_states(db, session, reports_dir)['students'] if row['student_id'] in before)
+    assert _score_state(db.db_path) == scores

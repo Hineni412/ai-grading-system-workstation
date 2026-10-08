@@ -446,7 +446,7 @@ def refresh_question_scope_summary(
     connection: sqlite3.Connection,
     question_id: int,
     *,
-    db_path: Path | None = None,
+    db_path: Path | None = None, data_root: Path | None = None,
 ) -> None:
     """Recompute the §8 ``question_scope_summary`` row for one question.
 
@@ -455,30 +455,14 @@ def refresh_question_scope_summary(
     row so scope filters fall back to tag matching.
     """
     qid = int(question_id)
-    row = connection.execute(
-        """
-        SELECT v.evidence_version_id, v.graph_release_id
-        FROM question_solution_evidence_versions v
-        JOIN (
-            SELECT question_id, MAX(created_at) AS max_created
-            FROM question_solution_evidence_versions
-            WHERE status IN ('proposed', 'approved')
-            GROUP BY question_id
-        ) m
-          ON m.question_id = v.question_id
-         AND m.max_created = v.created_at
-        WHERE v.question_id = ? AND v.status IN ('proposed', 'approved')
-        LIMIT 1
-        """,
-        (qid,),
-    ).fetchone()
-    if row is None:
-        connection.execute(
-            "DELETE FROM question_scope_summary WHERE question_id = ?",
-            (qid,),
-        )
+    from question_bank.solution_evidence.part_assessments import load_profiles
+    db_path = Path(db_path) if db_path is not None else Path(next(
+        row[2] for row in connection.execute('PRAGMA database_list') if row[1] == 'main'))
+    profile = load_profiles(db_path, [qid], connection=connection, data_root=data_root).get(qid, {})
+    if not profile.get('available'):
+        connection.execute('DELETE FROM question_scope_summary WHERE question_id = ?', (qid,))
         return
-    version_id = str(row[0])
+    version_id = str(profile['evidence_version_id'])
     grouped = load_point_links(
         Path(db_path) if db_path is not None else Path("."),
         [version_id],
@@ -708,6 +692,8 @@ def replace_point_links(
     source_kind: str = LINK_JOB_KIND,
     source_reference: str = "",
     replace: bool = True,
+    refresh_projections: bool = True,
+    data_root: Path | None = None,
 ) -> int:
     """Write link rows for a version under one release.
 
@@ -715,7 +701,8 @@ def replace_point_links(
     (iterables of ``{term_id, stable_key, role, weight}``). With ``replace``
     the existing rows of the same ``source_kind`` for this (version, release)
     are deleted first; migrated and teacher rows are never touched and stay as
-    fallback for points the job did not cover.
+    fallback for points the job did not cover. With ``refresh_projections=False``,
+    the caller must refresh ownership and scope within the same transaction.
     """
     release = str(graph_release_id or "").strip()
     if not release:
@@ -772,11 +759,12 @@ def replace_point_links(
                 ),
             )
             inserted += 1
-    refresh_question_scope_summary(connection, int(question_id))
-    from question_bank.services.question_write_service import (
-        refresh_derived_ownership_tags,
-    )
-    refresh_derived_ownership_tags(connection, int(question_id))
+    if refresh_projections:
+        refresh_question_scope_summary(connection, int(question_id), data_root=data_root)
+        from question_bank.services.question_write_service import (
+            refresh_derived_ownership_tags,
+        )
+        refresh_derived_ownership_tags(connection, int(question_id), data_root=data_root)
     return inserted
 
 

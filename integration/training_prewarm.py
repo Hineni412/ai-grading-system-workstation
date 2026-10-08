@@ -662,11 +662,10 @@ class TrainingPrewarmWorker:
         return str(row[0]).strip() if row else None
 
     def _warm_question_bank(self, generation: int) -> None:
-        """Warm the read caches for the page the 按技能 tab opens with.
+        """Warm the index and first current training target's read caches.
 
-        Replays the frontend's first requests (skill index, first skill's
-        first question page and facet counts) so the result-cache keys match
-        the ones the foreground routes fill. A successful pass — including a
+        Replays question and facet reads with their route-specific filters.
+        A successful pass — including a
         bank with nothing to warm — marks the generation; a failure leaves
         it unseen so the next tick retries.
         """
@@ -683,40 +682,29 @@ class TrainingPrewarmWorker:
                 paths.qb_db_path
             ).parent.parent
             service = QuestionBankReadService(paths.qb_db_path, data_root=data_root)
-            index = service.skill_index(volume_id)
-            skill_key = ""
-            for chapter in index.get("chapters") or []:
-                for section in chapter.get("sections") or []:
-                    skills = section.get("skills") or []
-                    if skills:
-                        skill_key = str(skills[0].get("stable_key") or "")
-                        break
-                if skill_key:
-                    break
-            if skill_key:
-                service.list_questions(
-                    QuestionReadFilters(
-                        skill_keys=(skill_key,),
-                        include_skills=True,
-                        page=1,
-                        page_size=20,
-                        difficulty_min=1,
-                        difficulty_max=10,
-                        curriculum_volume_ids=(volume_id,),
-                        collapse_duplicates=True,
-                        scope_mode="primary",
-                    )
-                )
-                service.list_facets(
-                    QuestionReadFilters(
-                        skill_keys=(skill_key,),
-                        difficulty_min=1,
-                        difficulty_max=10,
-                        curriculum_volume_ids=(volume_id,),
-                        collapse_duplicates=True,
-                        scope_mode="primary",
-                    )
-                )
+            service.skill_index(volume_id)
+            from question_bank.current_knowledge import CurrentKnowledgeResolver
+            from question_bank.question_types import is_training_target, target_kind_for_key
+            resolver = CurrentKnowledgeResolver.from_active_database(paths.qb_db_path)
+            from question_bank.recommendation.target_matching import target_index
+            from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+            volume = curriculum_volume(volume_id=volume_id)
+            sections = {section["knowledge_id"] for chapter in volume["chapters"] for section in chapter["sections"]}
+            anchors = target_index(resolver)
+            target = next((node.stable_key for node in resolver.nodes
+                           if anchors.get(node.stable_key, {}).get("section") in sections
+                           and is_training_target(node.stable_key, resolver, volume_id)), "")
+            if target:
+                kind = target_kind_for_key(target, resolver, volume_id)
+                target_filter = ({"type_keys": (target,)} if kind == "type" else
+                                 {"knowledge_points": (target,)} if kind == "knowledge" else
+                                 {"skill_keys": (target,)})
+                common_filters = dict(target_filter, difficulty_min=1,
+                    difficulty_max=10, curriculum_volume_ids=(volume_id,),
+                    collapse_duplicates=True, scope_mode="primary")
+                service.list_questions(QuestionReadFilters(**common_filters,
+                    include_skills=True, page=1, page_size=20))
+                service.list_facets(QuestionReadFilters(**common_filters))
         self._seen_qb_browse_generation = generation
 
     def _class_names(self) -> list[str]:

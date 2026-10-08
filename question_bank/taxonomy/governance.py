@@ -8,6 +8,7 @@ cannot silently replace approved terms or the review queue.
 from __future__ import annotations
 
 from question_bank.atomic_files import replace_with_retry
+from question_bank.taxonomy.attribute_definitions import definition_for_attribute
 
 import copy
 import hashlib
@@ -369,6 +370,10 @@ def _validate_term(
                 "retrieval_hints",
                 "legacy_names",
                 "legacy_ids",
+                "definition",
+                "include_scope",
+                "exclude_scope",
+                "anchors",
             }
         )
         if allow_metadata
@@ -436,6 +441,13 @@ def _validate_term(
             )
         result["retrieval_hints"] = retrieval_hints
     if allow_metadata:
+        for field in ("definition", "include_scope", "exclude_scope"):
+            if field in raw:
+                result[field] = _required_string(raw.get(field), label=f"{label}.{field}")
+        if "anchors" in raw:
+            result["anchors"] = _string_list(raw.get("anchors"), label=f"{label}.anchors")
+            if not 1 <= len(result["anchors"]) <= 2:
+                raise TaxonomyValidationError(f"{label}.anchors must contain one or two examples")
         for field in ("legacy_names", "legacy_ids"):
             if field not in raw:
                 continue
@@ -1118,7 +1130,6 @@ def _knowledge_release_prompt_contract(
 ) -> dict[str, Any]:
     """Return the compact, immutable knowledge catalog shared by a batch."""
 
-    packaged_release = load_release_for_taxonomy_revision(taxonomy_revision)
     database_exists = Path(db_path).is_file()
     active_release = load_active_release(db_path) if database_exists else None
     if (
@@ -1128,7 +1139,7 @@ def _knowledge_release_prompt_contract(
         raise TaxonomyStorageError(
             "Active knowledge release and taxonomy catalog revisions do not match"
         )
-    release = active_release or packaged_release
+    release = active_release or load_release_for_taxonomy_revision(taxonomy_revision)
     payload = release.payload
     node_names = {
         str(item["stable_key"]): str(item["display_name"])
@@ -1207,6 +1218,12 @@ def _knowledge_release_prompt_contract(
         "taxonomy_revision": release.taxonomy_revision,
         "terms": terms,
         "skill_terms": skill_terms,
+        "type_terms": {str(node["stable_key"]): {
+            "id": str(node["stable_key"]), "name": str(node["display_name"]), "usage": "mapped",
+            "parent_id": parent_of.get(str(node["stable_key"]), ""),
+            **{key: str(node.get(key) or "") for key in ("definition", "include_scope", "exclude_scope", "observable_evidence")},
+        } for node in payload.get("core_nodes", []) if re.fullmatch(r"kp_[a-z0-9_]+_t\d{2}", str(node.get("stable_key") or ""))
+            and node.get("status") == "active"},
     }
 
 
@@ -1326,7 +1343,8 @@ class TaxonomyGovernance:
         if cached is not None:
             return cached
         try:
-            release = load_release_for_taxonomy_revision(revision)
+            active = load_active_release(self.knowledge_graph_db_path) if self.knowledge_graph_db_path.is_file() else None
+            release = active if active is not None and active.taxonomy_revision == revision else load_release_for_taxonomy_revision(revision)
             catalog = _validate_catalog(
                 load_taxonomy_catalog_for_release(release),
                 source=Path(f"bundled-taxonomy-revision-{revision}"),
@@ -2019,26 +2037,22 @@ class TaxonomyGovernance:
                                 "label": term["name"],
                             }
                         )
-                    if skill_terms:
-                        usage = str(item.get("usage") or "")
-                        if usage not in {
-                            "retrieval_only",
-                            "do_not_use_as_knowledge",
-                            "temporary_observation",
-                        }:
-                            linkable = term["id"].startswith("sk_") or (
-                                metadata is not None
-                                and int(metadata.get("level") or 0) == 2
-                                and str(metadata.get("volume_id") or "")
-                                == volume_id
-                            )
-                            if not linkable:
-                                item["usage"] = "retrieval_only"
+                    if metadata is not None and int(metadata.get("level") or 0) >= 2:
+                        if item.get("usage") not in {"do_not_use_as_knowledge", "temporary_observation"}:
+                            item["usage"] = "mapped"
+                        item["allowed_roles"] = (
+                            ["direct", "supporting_prerequisite"]
+                            if str(metadata.get("volume_id") or "") == volume_id
+                            else ["supporting_prerequisite"]
+                        )
                     knowledge_candidates.append(item)
                 candidates[dimension] = knowledge_candidates
             else:
                 candidates[dimension] = [
-                    {"id": term["id"], "name": term["name"]}
+                    {"id": term["id"], "name": term["name"], **definition_for_attribute(term["name"]), **{
+                        key: copy.deepcopy(term[key]) for key in
+                        ("definition", "include_scope", "exclude_scope", "anchors") if key in term
+                    }}
                     for term in selected
                 ]
             allowed_term_ids[dimension] = [term["id"] for term in selected]
@@ -2046,6 +2060,7 @@ class TaxonomyGovernance:
         fingerprint = _fingerprint(
             {
                 "revision": revision,
+                "attribute_definition_revision": 12,
                 "knowledge_graph_release_id": knowledge_release["release_id"],
                 "allowed_term_ids": allowed_term_ids,
             }
@@ -2055,6 +2070,7 @@ class TaxonomyGovernance:
         )
         result = {
             "schema_version": 1,
+            "attribute_definition_revision": 12,
             "taxonomy_revision": revision,
             "knowledge_graph_release_id": knowledge_release["release_id"],
             "knowledge_catalog_revision": knowledge_release[
@@ -2112,6 +2128,16 @@ class TaxonomyGovernance:
                 "模型返回 curriculum_sections，本地程序据此派生所属章节。"
             )
             result["output_shape"]["curriculum_sections"] = ["section-id"]
+        type_terms = knowledge_release.get("type_terms") or {}
+        section_ids = {str(row.get("knowledge_id") or row.get("id") or "")
+                       for row in (volume_contract or {}).get("sections", [])}
+        selected_types = [dict(row) for row in type_terms.values() if row.get("parent_id") in section_ids]
+        if selected_types:
+            result["candidates"]["knowledge"].extend(selected_types)
+            result["allowed_term_ids"]["knowledge"].extend(row["id"] for row in selected_types)
+            result["question_type_mode"] = True
+            result["candidate_fingerprint"] = _fingerprint({"release_id": knowledge_release["release_id"],
+                "allowed_term_ids": result["allowed_term_ids"]})
         return result
 
     def _classify(

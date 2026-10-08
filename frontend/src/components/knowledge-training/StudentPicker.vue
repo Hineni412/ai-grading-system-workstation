@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { TrainingReadDiagnosis, TrainingReadStudent } from '../../api/training'
+import { trainingTargetNodeKinds, type TrainingReadDiagnosis, type TrainingReadStudent } from '../../api/training'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 const props = defineProps<{ diagnosis: TrainingReadDiagnosis }>()
@@ -12,7 +12,7 @@ const collapsed = ref<string[]>([])
 const counts = computed(() => {
   const kinds = new Map((props.diagnosis.knowledge_catalog ?? []).map(node => [node.knowledge_key, node.node_kind]))
   // Typed releases count weak question types; legacy releases count skills/topics.
-  const listed = props.diagnosis.target_kind === 'type' ? ['type'] : ['skill', 'topic']
+  const listed = trainingTargetNodeKinds(props.diagnosis.target_kind)
   return new Map(props.diagnosis.students.map(student => [student.student_id, new Set(student.weak_points
     .filter(point => point.tier === 'weak' && listed.includes(kinds.get(point.knowledge_key) ?? ''))
     .map(point => point.knowledge_key)).size]))

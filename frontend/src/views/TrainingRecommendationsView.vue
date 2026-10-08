@@ -117,7 +117,7 @@ const trainingMode = computed<TrainingMode>(() => {
   if (route.query.mode === 'paper') return 'paper'
   return 'chapter'
 })
-const targetLabel = computed(() => (paperDiagnosis.value ?? training.diagnosis)?.target_kind === 'type' ? '题型' : '技能')
+const targetLabel = computed(() => (paperDiagnosis.value ?? training.diagnosis)?.target_kind === 'type' ? '题型' : (paperDiagnosis.value ?? training.diagnosis)?.target_kind === 'knowledge' ? '知识点' : (paperDiagnosis.value ?? training.diagnosis)?.target_kind === 'mixed' ? '训练目标' : '技能')
 const pageCopy = computed(() => ({
   chapter: {
     title: '按章节训练',

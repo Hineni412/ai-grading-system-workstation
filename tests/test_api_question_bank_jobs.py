@@ -249,3 +249,78 @@ def test_task_context_uses_imported_papers_and_handles_missing_sources(tmp_path,
         assert not absent_root.exists()
     finally:
         manager.shutdown()
+
+
+def test_tagging_type_cost_preview_binds_exact_authorized_plan(tmp_path, monkeypatch):
+    from backend.api.dependencies import get_question_bank_read_service
+    from question_bank.services.question_read_service import QuestionBankReadService
+    import question_bank.services.chapter_type_service as organizer
+    client, manager, writer, _ = _client(tmp_path)
+    client.app.dependency_overrides[get_question_bank_read_service] = lambda: QuestionBankReadService(writer.db_path, data_root=writer.data_root)
+    plan = {'base_release_id': 'kgr_TEST', 'input_fingerprint': 'a' * 64, 'volume_id': VOLUME_ID,
+            'chapters': [{'chapter_id': 'kp_TEST_1', 'label': 'TEST第一章', 'question_count': 30,
+                          'paper_count': 3, 'unclassified_count': 30, 'planned_requests': 1}],
+            'planned_requests': 1, 'model_calls': 0}
+    monkeypatch.setattr(organizer, 'preview_chapter_type_plan', lambda **kwargs: dict(plan))
+    request = {'question_ids': [11], 'curriculum_volume_id': VOLUME_ID, 'client_request_token': 'd' * 32}
+    preview = client.post('/api/question-bank/tagging-jobs/preview', json=request)
+    assert preview.status_code == 200 and preview.json() == plan
+    assert manager.store.list_jobs() == ([], 0)
+    authorization = {**preview.json(), 'confirmed': True, 'request_limit': 1}
+    rejected = client.post('/api/question-bank/tagging-jobs', json={**request,
+        'chapter_type_authorization': {**authorization, 'request_limit': 2}})
+    assert rejected.status_code == 409
+    accepted = client.post('/api/question-bank/tagging-jobs', json={**request, 'chapter_type_authorization': authorization})
+    assert accepted.status_code == 202
+    manager.wait(accepted.json()['id'], timeout=5)
+    assert manager.store.get_job(accepted.json()['id']).payload['chapter_type_authorization'] == authorization
+    replay = client.post('/api/question-bank/tagging-jobs', json={**request, 'chapter_type_authorization': authorization})
+    assert replay.status_code == 202 and replay.json()['id'] == accepted.json()['id']
+    plan['input_fingerprint'] = 'b' * 64
+    changed = client.post('/api/question-bank/tagging-jobs', json={**request, 'client_request_token': 'e' * 32,
+        'chapter_type_authorization': authorization})
+    assert changed.status_code == 409
+    manager.shutdown()
+
+
+def test_tagging_one_volume_batch_authorizes_union_without_expanding_analysis(tmp_path, monkeypatch):
+    from backend.api.dependencies import get_question_bank_read_service
+    from question_bank.services.question_read_service import QuestionBankReadService
+    import question_bank.services.chapter_type_service as organizer
+    client, manager, writer, _ = _client(tmp_path)
+    client.app.dependency_overrides[get_question_bank_read_service] = lambda: QuestionBankReadService(writer.db_path, data_root=writer.data_root)
+    scopes = []
+    def preview(**kwargs):
+        scopes.append(kwargs['question_ids'])
+        return {'base_release_id': 'kgr_TEST', 'input_fingerprint': 'a' * 64,
+                'volume_id': VOLUME_ID, 'pending_question_ids': list(kwargs['question_ids']),
+                'chapters': [], 'planned_requests': 1, 'model_calls': 0}
+    monkeypatch.setattr(organizer, 'preview_chapter_type_plan', preview)
+    first = {'question_ids': [11], 'curriculum_volume_id': VOLUME_ID}
+    second = {'question_ids': [12], 'curriculum_volume_id': VOLUME_ID}
+    try:
+        invalid = client.post('/api/question-bank/tagging-jobs/preview', json={**first,
+            'chapter_type_scope_question_ids': [12]})
+        assert invalid.status_code == 422
+        response = client.post('/api/question-bank/tagging-jobs/preview', json={**second,
+            'chapter_type_scope_question_ids': [11, 12]})
+        assert response.status_code == 200
+        authorization = {**response.json(), 'confirmed': True, 'request_limit': 1}
+        first_job = client.post('/api/question-bank/tagging-jobs', json=first)
+        last_job = client.post('/api/question-bank/tagging-jobs', json={**second,
+            'chapter_type_authorization': authorization})
+        assert first_job.status_code == last_job.status_code == 202
+        manager.wait(last_job.json()['id'], timeout=5)
+        assert manager.store.get_job(first_job.json()['id']).payload['question_ids'] == [11]
+        assert 'chapter_type_authorization' not in manager.store.get_job(first_job.json()['id']).payload
+        saved = manager.store.get_job(last_job.json()['id']).payload
+        assert saved['question_ids'] == [12]
+        assert saved['chapter_type_authorization']['pending_question_ids'] == [11, 12]
+        assert scopes == [(11, 12), (11, 12)]
+        outside = client.post('/api/question-bank/tagging-jobs', json={**first,
+            'chapter_type_authorization': {**authorization, 'pending_question_ids': [12]}})
+        assert outside.status_code == 422
+        too_many = client.post('/api/question-bank/tagging-jobs', json={**first, 'question_ids': list(range(1, 502))})
+        assert too_many.status_code == 422
+    finally:
+        manager.shutdown()

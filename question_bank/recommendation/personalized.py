@@ -30,8 +30,8 @@ from question_bank.mastery.model import sigmoid
 from question_bank.question_types import (
     is_training_target,
     is_type_key,
+    target_kind_for_key,
     training_keys,
-    type_keys_active,
 )
 from question_bank.recommendation.recommendation_engine import normalize_question_text, text_similarity
 from question_bank.recommendation.target_matching import (
@@ -769,11 +769,11 @@ def _stem_similarity(source_text: str, candidate_text: str) -> float:
 def _fixed_target_matches(key: str, source_input: tuple, candidate_input: tuple,
                           section: str, chapter: str, similarity: float = 0.0,
                           source_secondary: tuple = (),
-                          candidate_secondary: tuple = ()) -> tuple[str, ...]:
+                          candidate_secondary: tuple = (), target_kind: str = "") -> tuple[str, ...]:
     def unpack(parts):
         return [{"part_id": part[0], **dict(zip(_MATCH_FACET_FIELDS, part[1:]))} for part in parts]
     sources = unpack(source_input)
-    index = {key: {"section": section, "chapter": chapter}}
+    index = {key: {"section": section, "chapter": chapter, "target_kind": target_kind}}
     return tuple(_json(match) for part in unpack(candidate_input)
                  if (match := match_target(key, sources, [part], index,
                                            similarity=similarity,
@@ -826,10 +826,21 @@ def _practice_stem_literal(text: str) -> str:
     return normalize_question_text(strip_leading_score(value))
 
 
+def _target_word(targets) -> str:
+    kinds = {target.get("target_kind") or ("type" if is_type_key(target.get("stable_key") or target.get("knowledge_key")) else "skill")
+             for target in targets}
+    return {"type": "题型", "knowledge": "知识点", "skill": "技能"}.get(next(iter(kinds)), "训练目标") if len(kinds) == 1 else "训练目标"
+
+
+def _candidate_training_keys(candidate: Mapping[str, Any]) -> frozenset[str]:
+    explicit = candidate.get("training_target_keys")
+    return frozenset(explicit) if explicit is not None else training_keys(candidate.get("stable_keys", ()))
+
+
 def _paper_skill_limit_exceeded(candidate: Mapping[str, Any], selected: Sequence[Mapping[str, Any]],
                                config: PersonalizedRecommendationConfig | None = None) -> set[str]:
     """Count whole questions by actual direct skills, independently of recommendation reasons."""
-    skills = training_keys(candidate.get("stable_keys", ()))
+    skills = _candidate_training_keys(candidate)
     return {key for key in skills
             if sum(key in other.get("stable_keys", ()) for other in selected) >= (config.max_questions_per_skill if config else 1)}
 
@@ -842,7 +853,7 @@ def _paper_quota_state(selected, pair_memo):
             identity = ("quota-facts", id(other))
             if identity not in pair_memo:
                 pair_memo[identity] = (other,
-                    training_keys(other.get("stable_keys", ())),
+                    _candidate_training_keys(other),
                     _is_written_question(other))
             skills, is_written = pair_memo[identity][1:]
             written += is_written
@@ -865,7 +876,7 @@ def _paper_diversity_allowed(candidate: Mapping[str, Any], selected: Sequence[Ma
         identity = ("quota-facts", id(question))
         if identity not in pair_memo:
             pair_memo[identity] = (question,
-                training_keys(question.get("stable_keys", ())),
+                _candidate_training_keys(question),
                 _is_written_question(question))
         return pair_memo[identity][1:]
     # Counts belong to the exact current paper, never a prior selection state.
@@ -911,7 +922,7 @@ def paper_task_duplicates(candidate: Mapping[str, Any], selected: Sequence[Mappi
         return []
     template = _practice_template(str(candidate.get("question_text") or ""))
     solution = str(candidate.get("solution_template") or "")
-    skills = {str(key) for key in training_keys(candidate.get("stable_keys", ()))}
+    skills = {str(key) for key in _candidate_training_keys(candidate)}
     if not skills:
         return []
     duplicates = []
@@ -920,7 +931,7 @@ def paper_task_duplicates(candidate: Mapping[str, Any], selected: Sequence[Mappi
             continue
         if candidate.get("image_identity", ()) != other.get("image_identity", ()):
             continue
-        if skills != {str(key) for key in training_keys(other.get("stable_keys", ()))}:
+        if skills != {str(key) for key in _candidate_training_keys(other)}:
             continue
         other_template = _practice_template(str(other.get("question_text") or ""))
         other_solution = str(other.get("solution_template") or "")
@@ -1270,20 +1281,28 @@ def _entry_fit_rank(entry):
     return (0, entry["distance"], -entry["preference"])
 
 
+def _match_layer_band(entry):
+    radius = entry.get("reference_radius")
+    if radius is not None:
+        return entry.get("match_level", 4), radius
+    if entry.get("target", {}).get("target_kind") == "knowledge":
+        return entry.get("match_level", 4), 0
+    return None
+
+
 def _prefer_type_candidate_layers(groups):
-    """Keep later layers available as fallback after current paper constraints."""
+    """Open a later target layer only when earlier candidates cannot enter."""
     available = {}
     for group in groups:
         for entry in group:
-            if entry.get("reference_radius") is not None:
+            band = _match_layer_band(entry)
+            if band is not None:
                 identity = (entry["student_id"], entry["key"])
-                band = (entry.get("match_level", 4), entry["reference_radius"])
                 available[identity] = min(available.get(identity, band), band)
     def later(group):
-        return any((entry.get("match_level", 4), entry["reference_radius"])
-                   > available[(entry["student_id"], entry["key"])]
-                   for entry in group if entry.get("reference_radius") is not None)
-    if any(any(e.get("reference_radius") is not None for e in group) and not later(group) for group in groups):
+        return any(band > available[(entry["student_id"], entry["key"])]
+                   for entry in group if (band := _match_layer_band(entry)) is not None)
+    if any(any(_match_layer_band(e) is not None for e in group) and not later(group) for group in groups):
         return [group for group in groups if not later(group)]
     return groups
 
@@ -1488,7 +1507,7 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
             primer = added == 0 and min(config.max_unmeasured_questions, question_count - len(selected)) >= 2
             def new_rank(group):
                 candidate = group[0]["candidate"]
-                skills = set(training_keys(candidate.get("stable_keys", ())))
+                skills = set(_candidate_training_keys(candidate))
                 new_keys = {e["key"] for e in group} - practiced
                 novel_fraction = len(new_keys & skills) / len(skills) if skills else 1.
                 distance = median(abs(float(candidate["difficulty"]) - float(
@@ -1515,7 +1534,7 @@ def _choose_practice_entries(entries: Sequence[dict[str, Any]], question_count: 
             if not choices:
                 break
             def consolidation_rank(group):
-                skills = {key for entry in group for key in training_keys(entry['candidate'].get('stable_keys', ()))}
+                skills = {key for entry in group for key in _candidate_training_keys(entry['candidate'])}
                 return (repeated_consolidation_only(group), -len(skills - practiced),
                     _pattern_count(group[0]['candidate'], printed, pair_memo=pair_memo), min(e.get('match_level', 4) for e in group),
                     median(e['distance'] for e in group), -max(e['preference'] for e in group), group[0]['candidate']['question_id'])
@@ -1556,7 +1575,7 @@ def _improve_personal_selection(groups, selected, question_count, config, audit,
         cap = math.ceil(2 * total / 3)
         return sum(max(0, count - cap) for count in counts.values())
     def earlier_type_choices(group, printed):
-        if not any(e.get("reference_radius") is not None for e in group):
+        if not any(_match_layer_band(e) is not None for e in group):
             return True
         usable = [other for other in groups.values() if _paper_diversity_allowed(
             other[0]["candidate"], printed, config, pair_memo=pair_memo)]
@@ -1802,7 +1821,7 @@ class PersonalizedRecommendationModule:
                 reject("written", f"学情卷最多选 {config.max_written_questions} 道解答题，请先移除一道再添加。")
             exceeded = _paper_skill_limit_exceeded(candidate, selected, config)
             if exceeded:
-                target_word = "题型" if any(is_type_key(key) for key in exceeded) else "技能"
+                target_word = _target_word([{ "stable_key": key, "target_kind": target_kind_for_key(key, self.current_knowledge)} for key in exceeded])
                 names = [candidate.get("stable_names", {}).get(key) or f"该{target_word}" for key in sorted(exceeded)]
                 reject("skill", f"同一{target_word}最多选 {config.max_questions_per_skill} 道题；{'、'.join(dict.fromkeys(names))}已达上限，请先移除相关题目再添加。")
             if not paper_similarity_allowed(candidate, selected):
@@ -1834,9 +1853,11 @@ class PersonalizedRecommendationModule:
         excluded = set()
         relations = tuple({"relation_type": relation.relation_type, "source_key": relation.source_key,
                            "target_key": relation.target_key} for relation in self.current_knowledge.relations)
-        leaves = _scope_leaves(config.group_scope_keys, diagnosis=normalized, relations=relations)
+        leaves = _scope_leaves(config.group_scope_keys, diagnosis=normalized, relations=relations,
+                               resolver=self.current_knowledge, volume_id=config.curriculum_volume_id)
         volume_id = config.curriculum_volume_id or normalized.get("exam_scope", {}).get("curriculum_volume_id", "")
-        typed_scope = type_keys_active(self.current_knowledge, volume_id) if volume_id else any(is_type_key(key) for key in leaves)
+        typed_scope = any(target_kind_for_key(key, self.current_knowledge, volume_id) in {"type", "knowledge"}
+                          and is_training_target(key, self.current_knowledge, volume_id) for key in leaves)
         governed = {node.stable_key for node in self.current_knowledge.nodes}
         if not leaves or not set(leaves) <= governed:
             raise ValueError("grouping requires a current chapter or section")
@@ -1851,7 +1872,7 @@ class PersonalizedRecommendationModule:
                                    "mastery": point.get("value"), "evidence_count": point.get("evidence_count", 0)}
                     profile["weak_points"].append(by_key[key])
                 by_key[key]["source_question_refs"] = point.get("source_question_refs", [])
-        needs = _group_needs(normalized, leaves, cap=config.difficulty_max)
+        needs = _group_needs(normalized, leaves, cap=config.difficulty_max, resolver=self.current_knowledge, volume_id=volume_id)
         need_sids = sorted(sid for sid in needs if needs[sid])
         candidates, source_version, recent = (), "", {}
         metadata = self._source_practice_metadata(normalized)
@@ -1859,7 +1880,7 @@ class PersonalizedRecommendationModule:
         part_cache: dict = {}
         unlinked_losses = sum(
             _unlinked_loss_count(student, set(leaves),
-                                 lambda r: self._enrich_source_ref(r, metadata, links, part_cache))
+                                 lambda r: self._enrich_source_ref(r, metadata, links, part_cache), resolver=self.current_knowledge)
             for student in normalized["students"])
         # All borrowed inputs below are read-only for this grouping call.
         # Fingerprints retain their objects and never survive the request.
@@ -2012,7 +2033,8 @@ class PersonalizedRecommendationModule:
         warnings = []
         if len(members) < 2:
             issues.append("群体训练至少需要两名学生；单人请使用按学生训练。")
-        allowed_targets = set(_scope_leaves(config.group_scope_keys or config.scope_keys, diagnosis=diagnosis, relations=relations))
+        allowed_targets = set(_scope_leaves(config.group_scope_keys or config.scope_keys, diagnosis=diagnosis, relations=relations,
+                                                    resolver=self.current_knowledge, volume_id=config.curriculum_volume_id))
         if not keys or not set(keys) <= allowed_targets:
             issues.append("所选目标不在当前教学范围内，请调整目标。")
         rows = []
@@ -2023,6 +2045,7 @@ class PersonalizedRecommendationModule:
             available = [needs[sid][key] for sid in members if key in needs[sid]]
             values = [item["mastery"] for item in available if item.get("mastery") is not None]
             rows.append({"knowledge_key": key, "knowledge_point": available[0]["knowledge_point"] if available else key,
+                         "target_kind": target_kind_for_key(key, self.current_knowledge, config.curriculum_volume_id),
                          "min_mastery": min(values, default=0), "max_mastery": max(values, default=0),
                          "median_mastery": median(values) if values else 0,
                          "evidence_count": sum(item["evidence_count"] for item in available),
@@ -2868,6 +2891,8 @@ class PersonalizedRecommendationModule:
         profile_version = _hash_payload(profile, _memo=_input_hashes) if target_evaluation_cache is not None else None
         for target in targets:
             key = str(target.get("stable_key") or target.get("knowledge_key"))
+            target_kind = target_kind_for_key(key, self.current_knowledge, config.curriculum_volume_id)
+            layered_target = target_kind in {"type", "knowledge"}
             cache_key = ((id(candidates), id(metadata), profile_version, _hash_payload(target, _memo=_input_hashes),
                           config.difficulty_max, tuple(supplement_keys), direct_only, core_only)
                          if target_evaluation_cache is not None else None)
@@ -2944,7 +2969,7 @@ class PersonalizedRecommendationModule:
                 for ref, tasks, signature, task_signature in preference_inputs:
                     similarity = (_stem_similarity(str(ref.get("question_text") or ""),
                                                    str(candidate.get("question_text") or ""))
-                                  if is_type_key(key) else 0.)
+                                  if layered_target else 0.)
                     identity = (id(candidate), key, signature, task_signature, similarity)
                     if preference_cache is None:
                         score = _direct_preference(candidate, key, ref, tasks=tasks,
@@ -2973,12 +2998,13 @@ class PersonalizedRecommendationModule:
             # Type targets anchor on the bank text of the student's source
             # questions and their secondary types (§3.5 匹配档位与锚定相似度).
             source_texts = tuple(str(r.get("question_text") or "") for r in anchor_refs
-                                 if r.get("question_text")) if is_type_key(key) else ()
+                                 if r.get("question_text")) if layered_target else ()
             source_secondary = tuple(sorted(
                 {str(k) for r in anchor_refs for k in r.get("secondary_type_keys", ())
                  if is_type_key(k)})) if is_type_key(key) else ()
             selected_target = {**enriched, "target_difficulty": plan["aim"], "difficulty_plan": plan,
-                               "overall_score_rate": _rate(profile.get("score_rate")), "training_tasks": tasks}
+                               "overall_score_rate": _rate(profile.get("score_rate")), "training_tasks": tasks,
+                               "target_kind": target_kind}
             if type_reference is not None:
                 selected_target["source_question_refs"] = [type_reference, *(r for r in refs if r is not type_reference)]
             # Internal grouping borrows immutable inputs. Keep one target row
@@ -2997,7 +3023,7 @@ class PersonalizedRecommendationModule:
             frozen_source = any(r.get("assessment", {}).get("evidence_version_id") for r in refs)
             for candidate in eligible:
                 similarity = (max((_stem_similarity(text, str(candidate.get("question_text") or ""))
-                                   for text in source_texts), default=0.) if is_type_key(key) else 0.)
+                                   for text in source_texts), default=0.) if layered_target else 0.)
                 if direct_only and key not in candidate["stable_keys"]:
                     continue
                 if sources and candidate.get("target_facets"):
@@ -3026,10 +3052,10 @@ class PersonalizedRecommendationModule:
                             matches = [json.loads(match) for match in _fixed_target_matches(key,
                                 source_match_input, candidate_input,
                                 location.get("section", ""), location.get("chapter", ""),
-                                similarity, source_secondary, candidate_secondary)]
+                                similarity, source_secondary, candidate_secondary, target_kind)]
                         # Type targets: levels 1-3 are core hits; level 4 stays
                         # supplement only (§3.5). Skill targets keep 1-2 direct.
-                        if is_type_key(key):
+                        if layered_target:
                             direct_matches = [m for m in matches if m["match_level"] <= 3]
                         else:
                             direct_matches = [m for m in matches if m["match_level"] <= 2
@@ -3045,15 +3071,15 @@ class PersonalizedRecommendationModule:
                     direct = key in candidate["stable_keys"] and not frozen_source
                     if not direct and not supplement_scope.intersection(candidate["stable_keys"]):
                         continue
-                    match = {"match_level": 2 if direct else 4,
-                             "match_label": "同技能练习" if direct else MATCH_LABELS[4]}
+                    match = {"match_level": (1 if layered_target else 2) if direct else 4,
+                             "match_label": ("同知识点" if target_kind == "knowledge" else "同题型" if target_kind == "type" else "同技能练习") if direct else MATCH_LABELS[4]}
                     if direct and type_reference is not None:
                         match.update(match_level=1, match_label="同题型")
                 if direct_only and not direct:
                     continue
                 if core_only and not direct:
                     continue
-                if is_type_key(key) and not direct:
+                if layered_target and not direct:
                     # Same-section-only rows belong to the teacher's assembly
                     # shortlist, never an automatically recommended paper.
                     continue
@@ -3135,14 +3161,14 @@ class PersonalizedRecommendationModule:
                     "suitable_ids": target_suitable, "warnings": target_warnings,
                     "entries": {entry["candidate"]["question_id"]: entry for entry in entries[target_start:]}}
         unlinked = _unlinked_loss_count(profile, scope, lambda r: self._enrich_source_ref(
-            r, metadata, links, source_part_cache, copy_fields=not _borrow_inputs))
+            r, metadata, links, source_part_cache, copy_fields=not _borrow_inputs), resolver=self.current_knowledge)
         if unlinked:
             warnings.append(f"有 {unlinked} 处失分所在的判定点尚未关联技能，未计入补弱；可在题库“未挂技能”中补齐后重新生成。")
         if targets and not entries:
             warnings.append("当前目标没有同时符合范围、适合难度、近期原题和有效资料要求的题目。")
         if targets and len(suitable_ids) < config.question_count:
             recent_count = sum(c["question_id"] in recent | excluded for c in candidates)
-            target_word = "题型" if any(is_type_key(t.get("stable_key") or t.get("knowledge_key")) for t in targets) else "技能"
+            target_word = _target_word(targets)
             warnings.append(f"当前已具备有效训练资料的候选中：近期原题排除 {recent_count} 道；范围和难度上限检查后 {len(eligible)} 道；目标匹配后 {len(matched_ids)} 道；学生适合难度检查后 {len(suitable_ids)} 道。卷内同{target_word}最多{config.max_questions_per_skill}道、相似题和解答题限制另行检查。")
         return entries, warnings
 
@@ -3150,7 +3176,8 @@ class PersonalizedRecommendationModule:
         relations = tuple({"relation_type": r.relation_type, "source_key": r.source_key, "target_key": r.target_key}
                           for r in self.current_knowledge.relations)
         return _scope_leaves(config.scope_keys or config.group_scope_keys or config.target_keys,
-                             diagnosis=diagnosis, relations=relations)
+                             diagnosis=diagnosis, relations=relations, resolver=self.current_knowledge,
+                             volume_id=config.curriculum_volume_id)
 
     def evaluate_candidates(self, *, diagnosis: Mapping[str, Any], config: PersonalizedRecommendationConfig,
                             candidates: Sequence[dict[str, Any]] | None = None,
@@ -3216,7 +3243,8 @@ class PersonalizedRecommendationModule:
                 node = self.current_knowledge.node(key)
                 known.setdefault(key, {"stable_key": key, "display_name": node.display_name if node else key,
                                        "source_question_refs": [], "value": None, "evidence_count": 0})
-            targets = [known[key] for key in sorted(known)]
+            targets = [{**known[key], "target_kind": target_kind_for_key(key, self.current_knowledge, config.curriculum_volume_id)}
+                       for key in sorted(known)]
             if class_totals is not None:
                 targets = [
                     ({**target, "need_stats": stats}
@@ -3310,7 +3338,7 @@ class PersonalizedRecommendationModule:
                 if not items:
                     warnings.append("当前范围暂无可直接补弱的可用题目；请核对失分依据与候选缺口。")
             if missing:
-                target_word = "题型" if any(is_type_key(t.get("stable_key")) for t in targets_by_student[sid]) else "技能"
+                target_word = _target_word(targets_by_student[sid])
                 warnings.append(f"符合范围、适合难度、近期原题排除与整卷限制的题目不足；同{target_word}最多{config.max_questions_per_skill}道、解答题最多{config.max_written_questions}道，相似题受限，保留 {missing} 道缺口。")
             covered = {_loss_need_id(member) for _, group in selected for member in group
                        if _is_core(member) and member.get("practice_purpose") == "remediation" and member["student_id"] == sid}
@@ -3343,9 +3371,10 @@ class PersonalizedRecommendationModule:
                 candidate = by_id.get(qid)
                 if candidate is None:
                     raise ValueError('组卷题目已不可用，请返回班级组卷调整。')
-                fixed = training_keys(candidate['stable_keys'])
+                fixed = _candidate_training_keys(candidate)
                 key = next((k for k in candidate['stable_keys'] if k in fixed), candidate['stable_keys'][0] if candidate['stable_keys'] else '')
-                target = {'stable_key': key, 'display_name': candidate['stable_names'].get(key, key), 'source_question_refs': []}
+                target = {'stable_key': key, 'display_name': candidate['stable_names'].get(key, key), 'source_question_refs': [],
+                          'target_kind': target_kind_for_key(key, self.current_knowledge, config.curriculum_volume_id)}
                 item = _draft_item(candidate, stage='direct', slot=order, student_id=sid, target=target, matched_key=key, maintenance=False,
                     match_details={'practice_purpose': 'new'})
                 item.update(item_order=order, locked=True, reason='班级组卷 · 全班：教师固定选题，全部学生使用同一套题与题序。')
@@ -3885,6 +3914,8 @@ class PersonalizedRecommendationModule:
                         "difficulty": difficulty,
                         "part_assessment": assessment,
                         "stable_keys": stable_keys,
+                        "training_target_keys": sorted(training_keys(stable_keys, self.current_knowledge,
+                            candidate_config.curriculum_volume_id if candidate_config else "")),
                         "target_facets": metadata["target_facets"],
                         "required_keys": metadata["required_keys"],
                         "supporting_keys": sorted(set(metadata.get("supporting_keys", [])) | {
@@ -3976,6 +4007,7 @@ class PersonalizedRecommendationModule:
                 **item.to_dict(),
                 "stable_key": item.stable_key,
                 "display_name": item.display_name,
+                "target_kind": target_kind_for_key(item.stable_key, self.current_knowledge),
                 "mode": "current",
                 "status": item.status,
                 "value": item.value,
@@ -4270,7 +4302,8 @@ class PersonalizedRecommendationModule:
             relations = tuple({"relation_type": relation.relation_type, "source_key": relation.source_key,
                                "target_key": relation.target_key} for relation in self.current_knowledge.relations)
             scope = _scope_leaves(config.group_scope_keys or config.scope_keys or config.target_keys,
-                                  diagnosis=request["diagnosis"], relations=relations)
+                                  diagnosis=request["diagnosis"], relations=relations,
+                                  resolver=self.current_knowledge, volume_id=config.curriculum_volume_id)
             entries, _ = self._candidate_entries(
                 profile=source_profile, targets=(item["target"],), candidates=candidates,
                 metadata=self._source_practice_metadata(request["diagnosis"]),
@@ -4414,10 +4447,10 @@ def _normalize_diagnosis(value: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _group_needs(diagnosis: Mapping[str, Any], leaves: Sequence[str], *, cap: float = 8) -> dict[str, dict[str, dict[str, Any]]]:
+def _group_needs(diagnosis: Mapping[str, Any], leaves: Sequence[str], *, cap: float = 8, resolver=None, volume_id="") -> dict[str, dict[str, dict[str, Any]]]:
     """Only supported direct losses form a need; absent/coarse evidence stays unknown."""
     allowed = set(leaves)
-    targets = training_keys(leaves)
+    targets = training_keys(leaves, resolver, volume_id)
     class_totals = {class_id: _type_class_totals(diagnosis, class_id) for class_id in
                     {str(p.get("class_id") or "") for p in diagnosis.get("students", [])}} if any(is_type_key(key) for key in targets) else {}
     result: dict[str, dict[str, dict[str, Any]]] = {}
@@ -4456,6 +4489,7 @@ def _group_needs(diagnosis: Mapping[str, Any], leaves: Sequence[str], *, cap: fl
                 reference_plan = _type_reference_plan(_type_reference_loss(losses, stats),
                                                      {**point, "need_stats": stats}, cap, 2)
             needs[key] = {"knowledge_key": key, "knowledge_point": str(point.get("knowledge_point") or key),
+                          "target_kind": target_kind_for_key(key, resolver, volume_id),
                           "mastery": value, "score_rate": _rate(student.get("score_rate")), "evidence_count": count, "performance_kind": kind,
                           "weight": (1.0 - value) * (.75 + .25 * min(3, count) / 3),
                           "source_question_refs": deepcopy(point.get("source_question_refs", [])),
@@ -4467,11 +4501,13 @@ def _group_needs(diagnosis: Mapping[str, Any], leaves: Sequence[str], *, cap: fl
 
 
 def _unlinked_loss_count(profile: Mapping[str, Any], scope_keys: set | frozenset | None = None,
-                         enrich: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None) -> int:
+                         enrich: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None, *, resolver=None) -> int:
     """Distinct loss parts whose kp direct link has no direct skill link."""
     result = set()
     for point in profile.get("weak_points", []):
         key = str(point.get("knowledge_key") or point.get("stable_key") or "")
+        if resolver is not None and is_training_target(key, resolver):
+            continue
         if not key.startswith("kp_") or (scope_keys is not None and key not in scope_keys):
             continue
         for raw_ref in _loss_refs(point):
@@ -4945,6 +4981,7 @@ def _scope_leaves(
     *,
     diagnosis: Mapping[str, Any],
     relations: Sequence[Mapping[str, Any]],
+    resolver=None, volume_id="",
 ) -> tuple[str, ...]:
     if not scope_keys:
         return ()
@@ -4976,6 +5013,11 @@ def _scope_leaves(
     def walk(node: str, trail: frozenset[str]) -> None:
         if not node or node in trail:
             return
+        if resolver is not None and target_kind_for_key(node, resolver, volume_id) != "skill" and is_training_target(node, resolver, volume_id):
+            if node not in seen:
+                seen.add(node)
+                leaves.append(node)
+            return
         kids = children.get(node, ())
         if not kids:
             if node not in seen:
@@ -4991,7 +5033,7 @@ def _scope_leaves(
     context_leaves = set(leaves)
     for edge in diagnosis.get("knowledge_associations", ()):
         skill = str(edge.get("skill_key") or "")
-        if edge.get("topic_key") in context_leaves and edge.get("same_part_question_count", 0) > 0 and skill and skill not in seen:
+        if edge.get("topic_key") in context_leaves and edge.get("same_part_question_count", 0) > 0 and skill and skill not in seen and (resolver is None or is_training_target(skill, resolver, volume_id)):
             seen.add(skill)
             leaves.append(skill)
     return tuple(leaves)

@@ -195,6 +195,10 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
                 result["filename"] = filename
             result["download_url"] = f"/api/jobs/{job.id}/download"
         return sanitize_public_mapping(result)
+    if job.job_type == 'chapter_type_organize':
+        allowed = ('outcome', 'volume_id', 'release_id', 'chapter_summaries',
+                   'published_count', 'model_calls', 'retryable', 'reason')
+        return sanitize_public_mapping({key: job.result[key] for key in allowed if key in job.result})
     if job.job_type in {"question_import", "tagging_sync"}:
         allowed = (
             "request_id",
@@ -203,6 +207,8 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "question_count",
             "requested_count",
             "skipped_complete_count",
+            "chapter_type_job_id",
+            "chapter_type_state",
             "tagged_count",
             "complete_tagged_count",
             "evidence_count",
@@ -254,6 +260,8 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "outcome",
             "imported_count",
             "question_count",
+            "chapter_type_job_id",
+            "chapter_type_state",
             "tagged_count",
             "complete_tagged_count",
             "evidence_count",
@@ -467,6 +475,8 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
+    if job.job_type == 'chapter_type_organize':
+        return {'source_job_id': job.payload.get('source_job_id')}
     if job.job_type == "criterion_backfill":
         allowed = ("run_id", "retry_of_run_id")
         return sanitize_public_mapping(
@@ -598,6 +608,7 @@ def submit_job(
     if clean_job_type in {
         "config_generation",
         "question_import",
+        "chapter_type_organize",
         "question_bank_sync",
         "tagging_sync",
         "taxonomy_suggestion",

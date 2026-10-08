@@ -906,3 +906,26 @@ def test_class_weaknesses_add_type_targets_only_on_type_releases(tmp_path):
     )
     assert output["target_kind"] == "skill"
     assert output["selected_target_keys"] == [skill]
+
+
+def test_class_weaknesses_in_knowledge_fallback_keep_point_targets():
+    from question_bank.current_knowledge import CurrentKnowledgeResolver
+    from question_bank.knowledge_graph_release.loader import load_release_for_taxonomy_revision, load_taxonomy_catalog_for_release
+    from question_bank.services.assembly_assistant import class_weaknesses
+    from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+    release = load_release_for_taxonomy_revision(11)
+    resolver = CurrentKnowledgeResolver(release, load_taxonomy_catalog_for_release(release))
+    volume = curriculum_volume(volume_id="bnu24-math-g8-lower")
+    chapter = volume["chapters"][1]
+    key = chapter["sections"][0]["knowledge_points"][0]["id"]
+    point = {"knowledge_key": key, "knowledge_point": key, "mastery": .2, "tier": "weak",
+             "evidence_count": 1, "score_sum": 1, "full_score_sum": 5}
+    profile = {"students": [{"student_id": "TEST-student", "weak_points": [point]}],
+               "group_weak_points": [point]}
+    rows = class_weaknesses(profile, volume_id=volume["id"], chapter_id=chapter["id"], resolver=resolver)
+    target = next(row for row in rows if row["knowledge_key"] == key)
+    assert target["target_kind"] == "knowledge"
+    assert target["weak_tier_student_count"] == 1
+    assert target["evidence_student_count"] == 1
+    assert target["exam_score_rate"] == .2
+    assert all(row["target_kind"] == "knowledge" and not row["knowledge_key"].startswith("sk_") for row in rows)

@@ -1940,6 +1940,8 @@ def _submit_automatic_question_bank_sync(
             "source_paper_sha256": source_sha,
             "curriculum_volume_id": str(volume["id"]),
         }
+        if context.payload.get("chapter_type_authorization"):
+            identity["chapter_type_authorization"] = context.payload["chapter_type_authorization"]
         deferred_identity = (
             str(analysis_artifact_id or "").strip().casefold(),
             str(analysis_artifact_hash or "").strip().casefold(),

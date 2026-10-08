@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { knowledgeLeafLabel } from '../../api/question-bank'
-import { trainingApi, type TrainingDiagnosis, type TrainingReadDiagnosis, type TrainingGroup, type TrainingGrouping, type TrainingGroupingRequest,
+import { trainingTargetLabelForKey, trainingApi, type TrainingDiagnosis, type TrainingReadDiagnosis, type TrainingGroup, type TrainingGrouping, type TrainingGroupingRequest,
   type TrainingStudentScopeRequest, type TrainingExamScopeRequest } from '../../api/training'
 import type { ChapterGroupEditor, AdoptedChapterGroup, ChapterGroupSort } from '../../features/training/paper-selection-session'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
@@ -27,7 +27,7 @@ const emit = defineEmits<{
 }>()
 const training = useTrainingStore()
 const sortMode = defineModel<ChapterGroupSort>('sortMode', { default: 'size' })
-const targetLabel = computed(() => (props.diagnosis.target_kind === 'type' ? '题型' : '技能'))
+const targetLabel = computed(() => (props.diagnosis.target_kind === 'type' ? '题型' : props.diagnosis.target_kind === 'knowledge' ? '知识点' : props.diagnosis.target_kind === 'mixed' ? '训练目标' : '技能'))
 // Display snapshots retain every knowledge item. Editors own their arrays.
 const result = shallowRef<TrainingGrouping | null>(null)
 const checked = shallowRef<TrainingGroup | null>(null)
@@ -314,7 +314,7 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
       <div class="training-groups__grid">
         <article v-for="{ group, stats } in cards" :key="group.group_id" class="training-groups__candidate">
           <header class="training-groups__card-heading">
-            <div><h3>{{ classSummary(group) }}</h3><details class="training-groups__target-list"><summary>{{ group.targets.length }} 个训练目标</summary><ul><li v-for="target in group.targets" :key="target.knowledge_key">{{ knowledgeLeafLabel(target.knowledge_point) }}<span v-if="target.affected_student_count != null"> · {{ target.affected_student_count }} 人</span></li></ul></details></div>
+            <div><h3>{{ classSummary(group) }}</h3><details class="training-groups__target-list"><summary>{{ group.targets.length }} 个训练目标</summary><ul><li v-for="target in group.targets" :key="target.knowledge_key">{{ trainingTargetLabelForKey(diagnosis, target.knowledge_key) }} · {{ knowledgeLeafLabel(target.knowledge_point) }}<span v-if="target.affected_student_count != null"> · {{ target.affected_student_count }} 人</span></li></ul></details></div>
             <strong class="training-groups__size">{{ group.members.length }}<span>人</span></strong>
           </header>
           <dl class="training-groups__stats">
@@ -347,14 +347,14 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
       </dl>
       <fieldset><legend>训练目标</legend><label v-for="target in targetOptions" :key="target.key"><input type="checkbox" :checked="targetKeys.includes(target.key)" @change="toggleTarget(target.key)">{{ target.label }}</label></fieldset>
       <details class="training-groups__targets" v-if="checked"><summary>查看目标难度与可用题</summary>
-        <p v-for="target in checked.targets" :key="target.knowledge_key">{{ knowledgeLeafLabel(target.knowledge_point) }}：掌握度 {{ percent(target.min_mastery) }}–{{ percent(target.max_mastery) }} · 目标难度 {{ target.target_difficulty ?? '证据不足' }} · 涉及 {{ target.affected_student_count ?? checked?.members.length }} 人 · {{ target.available_question_count }} 道适用题</p>
+        <p v-for="target in checked.targets" :key="target.knowledge_key">{{ trainingTargetLabelForKey(diagnosis, target.knowledge_key) }} · {{ knowledgeLeafLabel(target.knowledge_point) }}：掌握度 {{ percent(target.min_mastery) }}–{{ percent(target.max_mastery) }} · 目标难度 {{ target.target_difficulty ?? '证据不足' }} · 涉及 {{ target.affected_student_count ?? checked?.members.length }} 人 · {{ target.available_question_count }} 道适用题</p>
       </details>
       <div class="training-groups__members-heading"><h4>小组成员 <span>{{ memberIds.length }} 人</span></h4></div>
       <div class="training-groups__members">
         <details v-for="student in selectedMembers" :key="student.student_id">
           <summary><div class="training-groups__member-name"><label @click.stop><input type="checkbox" checked :aria-label="`移除 ${classLabel(student.class_id)} ${student.student_name} ${student.student_code}`" @change="toggleMember(student.student_id)">{{ student.student_name }}</label><span>{{ classLabel(student.class_id) }} · {{ student.student_code }}</span></div><div class="training-groups__member-scores"><span>掌握度 <b>{{ percent(studentMastery(student.student_id)) }}</b></span><span>考试得分率 <b>{{ percent(studentProfiles.get(student.student_id)?.score_rate ?? null) }}</b><small v-if="studentProfiles.get(student.student_id)?.score_rate_source === 'historical_fallback'">（历史）</small></span></div></summary>
           <div v-for="target in checkedMembers.get(student.student_id)?.targets ?? []" :key="target.knowledge_key">
-            <p>{{ knowledgeLeafLabel(target.knowledge_point) }} · {{ percent(target.mastery) }} · {{ target.evidence_count }} 条直接依据</p>
+            <p>{{ trainingTargetLabelForKey(diagnosis, target.knowledge_key) }} · {{ knowledgeLeafLabel(target.knowledge_point) }} · {{ percent(target.mastery) }} · {{ target.evidence_count }} 条直接依据</p>
             <p v-for="ref in target.source_question_refs" :key="`${ref.session_id}:${ref.question_id}`">{{ ref.session_name }} · {{ ref.question_id }} · {{ ref.score_awarded }}/{{ ref.full_score }} 分</p>
           </div>
         </details>

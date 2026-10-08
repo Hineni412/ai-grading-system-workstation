@@ -148,6 +148,7 @@ class AssemblyQuickDraftRequest(AssemblyAssistantRequest):
 
 
 class AssemblyWeakness(_AssemblyModel):
+    target_kind: Literal["skill", "type", "knowledge", "mixed"] = "skill"
     knowledge_key: str
     knowledge_point: str
     mastery: float | None = Field(ge=0, le=1)
@@ -190,4 +191,4 @@ class AssemblyAssistantResponse(_AssemblyModel):
     selected_target_keys: list[str]
     candidate_total: int
     candidates: list[AssemblyAssistantCandidate]
-    target_kind: Literal["skill", "type"] = "skill"
+    target_kind: Literal["skill", "type", "knowledge", "mixed"] = "skill"

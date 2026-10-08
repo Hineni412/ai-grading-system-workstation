@@ -989,6 +989,38 @@ def abandon_config_generation_request(
     return {"status": "abandoned"}
 
 
+def _config_type_plan(*, request, session_id, source_service, db_path, data_root, prepared=None):
+    from question_bank.services.chapter_type_service import preview_chapter_type_plan
+    if prepared is None:
+        record = source_service.load_for_generation(session_id=session_id,
+            source_id=request.source_id, source_revision=request.source_revision)
+        prepared = source_service.prepare_generation_input(record,
+            [QuestionDecision(**item.model_dump(exclude_defaults=True)) for item in request.decisions],
+            request.generation_mode,
+            [AmbiguousAssetDecision(**item.model_dump(exclude_defaults=True)) for item in request.asset_decisions])
+    count = len(prepared.confirmed_blocks)
+    plan = preview_chapter_type_plan(db_path=db_path, data_root=data_root,
+        volume_id=str(request.curriculum_volume_id or ''), pending_question_count=count)
+    return {**plan, 'analysis_request_estimate': (count + 2) // 3,
+            'source_id': request.source_id, 'source_revision': request.source_revision}
+
+
+@router.post('/sessions/{session_id}/config/generation-preview')
+def preview_session_config_generation(session_id: int, request: ConfigSourceGenerationRequest,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    source_service: ConfigSourceService = Depends(get_config_source_service),
+    question_bank_db_path: Path = Depends(get_question_bank_db_path),
+    data_root: Path = Depends(get_data_root)) -> dict[str, Any]:
+    _require_active_session(db, session_id)
+    try:
+        return _config_type_plan(request=request, session_id=session_id,
+            source_service=source_service, db_path=question_bank_db_path, data_root=data_root)
+    except ConfigSourceError as exc:
+        raise _source_api_error(exc) from None
+    except (TypeError, ValueError) as exc:
+        raise ApiError(422, 'config_generation_preview_invalid', '无法估算本次分析请求，请核对来源和教材册别') from exc
+
+
 @router.post(
     "/sessions/{session_id}/config/generate-from-source",
     response_model=JobResponse,
@@ -1002,6 +1034,8 @@ def generate_session_config_from_source(
     manager: JobManager = Depends(get_job_manager),
     upload_config_dir: Path = Depends(get_upload_config_dir),
     source_service: ConfigSourceService = Depends(get_config_source_service),
+    question_bank_db_path: Path = Depends(get_question_bank_db_path),
+    data_root: Path = Depends(get_data_root),
 ) -> JobResponse:
     session = _require_active_session(db, session_id)
     if request.generation_mode != "batched" or not request.sync_to_question_bank:
@@ -1041,6 +1075,13 @@ def generate_session_config_from_source(
             "invalid_config_generation_request",
             "Config generation request is invalid",
         ) from None
+
+    if request.chapter_type_authorization is not None:
+        plan = _config_type_plan(request=request, session_id=session_id, source_service=source_service,
+            db_path=question_bank_db_path, data_root=data_root, prepared=prepared)
+        expected = {**plan, 'confirmed': True, 'request_limit': int(plan['planned_requests'])}
+        if request.chapter_type_authorization != expected:
+            raise ApiError(409, 'chapter_type_preview_changed', '整理题型的预计范围已变化，请重新确认费用')
 
     loaded_regeneration = None
     if request.regenerate_question_ids is not None:
@@ -1115,6 +1156,7 @@ def generate_session_config_from_source(
                 ),
                 "generation_mode": request.generation_mode,
                 "input_id": input_id,
+                "chapter_type_authorization": request.chapter_type_authorization,
                 "source_id": record.source_id,
                 "source_revision": record.source_revision,
                 "sync_to_question_bank": bool(

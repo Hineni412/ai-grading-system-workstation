@@ -434,8 +434,15 @@ class QuestionAnalysisWorkItem:
     analyze_tag: bool = True
     analyze_solution_evidence: bool = True
     publish_saved_criterion: bool = False
+    tag_persistence: Literal["full", "question_types"] = "full"
 
     def __post_init__(self) -> None:
+        if self.tag_persistence not in {"full", "question_types"}:
+            raise ValueError("unknown tag persistence mode")
+        if self.tag_persistence == "question_types" and (
+            not self.analyze_tag or self.analyze_solution_evidence or self.publish_saved_criterion
+        ):
+            raise ValueError("question type repair must request only the tag projection")
         if not isinstance(self.question, QuestionAnalysisInput):
             raise TypeError("question must be a QuestionAnalysisInput")
         if not (
@@ -808,6 +815,7 @@ class CombinedQuestionAnalysisModule:
         self._criterion_audit_lock = threading.Lock()
         self._projection_notes: dict[tuple[str, int], dict[str, str]] = {}
         self._projection_notes_lock = threading.Lock()
+        self._type_only_items: set[tuple[str, int]] = set()
 
     def analyze_work_items(
         self,
@@ -872,6 +880,10 @@ class CombinedQuestionAnalysisModule:
                 continue
             child_operation = _child_operation_id(clean_operation, projection)
             operation_ids[projection] = child_operation
+            self._type_only_items.update(
+                (child_operation, item.question.question_id) for item in normalized
+                if item.tag_persistence == "question_types" and item.projection == projection
+            )
             group_start = completed_questions
 
             def report(
@@ -1673,6 +1685,27 @@ class CombinedQuestionAnalysisModule:
         model_name: str,
     ) -> str | None:
         """Persist the tag projection; return a sanitized failure detail."""
+        if (str(operation_id), question.question_id) in self._type_only_items:
+            try:
+                if question.taxonomy_contract.get("question_type_mode") is not True:
+                    raise ProjectionValidationError("question type catalog is unavailable")
+                labels = validate_question_type_labels(raw.get("question_type_labels"), question.taxonomy_contract)
+                self.tag_writer.write_question_type_labels(
+                    question, labels, model_name=model_name, operation_id=operation_id,
+                )
+            except Exception as exc:
+                detail = _projection_error_detail(exc)
+                self._record_projection_note(operation_id, question.question_id, "tag_error_detail", detail)
+                self.repository.save_projection(
+                    operation_id=operation_id, question_id=question.question_id,
+                    projection="tag", status="failed", error_category="tag_validation",
+                )
+                return detail
+            self.repository.save_projection(
+                operation_id=operation_id, question_id=question.question_id,
+                projection="tag", status="succeeded", payload={"question_type_labels": labels},
+            )
+            return None
         payload = raw.get("tag_analysis")
         if not isinstance(payload, Mapping):
             self.repository.save_projection(
@@ -1684,7 +1717,7 @@ class CombinedQuestionAnalysisModule:
             )
             return "响应缺少 tag_analysis 对象。"
         try:
-            if isinstance(raw.get("solution_evidence"), Mapping):
+            if question.taxonomy_contract.get("question_type_mode") is True or isinstance(raw.get("solution_evidence"), Mapping):
                 raw = normalize_question_type_result(question, raw)
                 payload = raw["tag_analysis"]
             tag_question = question
@@ -1700,6 +1733,10 @@ class CombinedQuestionAnalysisModule:
                 model_name=model_name,
                 operation_id=operation_id,
             )
+            if question.taxonomy_contract.get("question_type_mode") is True and not isinstance(evidence_payload, Mapping):
+                self.tag_writer.write_question_type_labels(
+                    question, raw["question_type_labels"], model_name=model_name, operation_id=operation_id,
+                )
         except Exception as exc:
             detail = _projection_error_detail(exc)
             self._record_projection_note(
@@ -3258,9 +3295,9 @@ def validate_question_type_labels(
     if primary:
         if primary not in candidates or proposed.strip():
             raise ProjectionValidationError("primary question type is outside candidate vocabulary")
-    elif not proposed.strip() or not reason.strip() or secondary:
+    elif not reason.strip() or secondary:
         raise ProjectionValidationError(
-            "unmatched question type requires a new-term review proposal"
+            "unmatched question type requires an unclassified reason"
         )
     return dict(labels)
 
@@ -3283,15 +3320,6 @@ def normalize_question_type_result(
         item["id"]: item
         for item in question.taxonomy_contract.get("candidates", {}).get("knowledge", [])
     }
-    if not primary:
-        tag = result.setdefault("tag_analysis", {"proposed_tags": []})
-        if not isinstance(tag, dict):
-            raise ProjectionValidationError("tag_analysis must be an object")
-        tag["proposed_tags"] = [*tag.get("proposed_tags", []), {
-            "dimension": "knowledge", "name": proposed.strip(),
-            "definition": reason.strip(), "reason": reason.strip(),
-            "nearest_id": "", "why_not_reuse": reason.strip(),
-        }]
     evidence = result.get("solution_evidence")
     if isinstance(evidence, dict):
         parts = evidence.get("parts")
@@ -3490,18 +3518,18 @@ def combined_response_format(
             knowledge_ids=ids.get("knowledge") or (),
             defs=defs,
         )
-        if ids.get("question_types"):
-            item_properties["question_type_labels"] = {
-                "type": "object",
-                "properties": {
-                    "primary_type_id": _enum_string_schema(ids["question_types"], include_empty=True),
-                    "secondary_type_ids": {**_enum_array_schema(ids["question_types"]), "maxItems": 2},
-                    "proposed_type_name": {"type": "string"},
-                    "reason": {"type": "string"},
-                },
-                "required": ["primary_type_id", "secondary_type_ids", "proposed_type_name", "reason"],
-                "additionalProperties": False,
-            }
+    if ids.get("question_types"):
+        item_properties["question_type_labels"] = {
+            "type": "object",
+            "properties": {
+                "primary_type_id": _enum_string_schema(ids["question_types"], include_empty=True),
+                "secondary_type_ids": {**_enum_array_schema(ids["question_types"]), "maxItems": 2},
+                "proposed_type_name": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["primary_type_id", "secondary_type_ids", "proposed_type_name", "reason"],
+            "additionalProperties": False,
+        }
     schema: dict[str, Any] = {"type": "object"}
     if defs:
         schema["$defs"] = defs

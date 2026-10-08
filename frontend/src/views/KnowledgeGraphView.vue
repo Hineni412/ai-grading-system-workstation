@@ -30,7 +30,7 @@ const typeMode = computed(() => overview.value?.target_kind === 'type')
 const metrics = computed(() => overview.value ? overviewMetrics(overview.value) : null)
 const filters = computed(() => typeMode.value
   ? [{ key: 'all', label: '全部' }, { key: 'weak', label: '只看有学生明显薄弱' }]
-  : [{ key: 'all', label: '全部' }, { key: 'skill', label: '只看技能' }, { key: 'topic', label: '只看知识点' }, { key: 'weak', label: '只看有学生明显薄弱' }])
+  : [{ key: 'all', label: '全部' }, { key: 'type', label: '只看题型' }, { key: 'skill', label: '只看技能' }, { key: 'topic', label: '只看知识点' }, { key: 'weak', label: '只看有学生明显薄弱' }])
 const filter = computed(() => filters.value.some(f => f.key === route.query.filter) ? String(route.query.filter) : 'all')
 const selectedKey = computed(() => typeof route.query.focus === 'string' ? route.query.focus : '')
 const selected = computed(() => overview.value?.nodes.find(n => isItem(n) && n.knowledge_key === selectedKey.value) ?? null)
@@ -119,7 +119,7 @@ function scheduleLines() {
 }
 function train(node: TrainingOverviewNode) {
   const student_ids = node.students.filter(s => s.tier === 'weak').map(s => s.student_id)
-  if (!student_ids.length || (node.kind !== 'skill' && node.kind !== 'type')) return
+  if (!student_ids.length || (node.kind !== 'skill' && node.kind !== 'type' && node.target_kind !== 'knowledge')) return
   saveEvidenceScope(semesterEvidenceQuery({ mode: 'selected', student_ids }, curriculum.selectedVolumeId))
   presetFocusedTraining({ targetKeys: [node.knowledge_key], rangeKeys: node.section_key ? [node.section_key] : [] })
   void router.push({ name: 'training', query: { mode: 'student' } })

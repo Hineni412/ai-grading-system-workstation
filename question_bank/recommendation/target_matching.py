@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from question_bank.current_knowledge import CurrentKnowledgeResolver
-from question_bank.question_types import is_type_key
+from question_bank.question_types import is_type_key, target_kind_for_key
 from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
 
 MATCH_LABELS = {
@@ -67,6 +67,8 @@ def target_index(resolver: CurrentKnowledgeResolver) -> dict[str, dict[str, str]
         anchor = index.get(parent, {})
         index[node.stable_key] = {"kind": "type", "chapter": anchor.get("chapter", ""),
                                   "section": anchor.get("section", "")}
+    for key, item in index.items():
+        item["target_kind"] = target_kind_for_key(key, resolver)
     return index
 
 
@@ -227,28 +229,31 @@ def match_target(target_key: str, source_parts: Sequence[Mapping[str, Any]],
                  candidate_secondary: Sequence[str] = ()) -> dict[str, Any] | None:
     """Return the strongest justified match, always within one candidate part."""
     target = index.get(target_key, {})
-    if is_type_key(target_key):
+    knowledge_mode = target.get("target_kind") == "knowledge"
+    if is_type_key(target_key) or knowledge_mode:
         target_section = str(target.get("section") or "")
         source_secondary_keys = set(source_secondary)
         candidate_secondary_keys = set(candidate_secondary)
         matches = []
         for source in source_parts:
             for candidate in candidate_parts:
-                candidate_types = set(candidate.get("type_keys", ()))
+                candidate_types = set(candidate.get("topic_keys" if knowledge_mode else "type_keys", ()))
                 if target_key in candidate_types:
                     level = 1
-                elif (target_key in candidate_secondary_keys
-                      or candidate_types.intersection(source_secondary_keys)):
+                elif (not knowledge_mode and (target_key in candidate_secondary_keys
+                      or candidate_types.intersection(source_secondary_keys))):
                     level = 2
                 elif target_section and target_section in set(candidate.get("section_keys", ())):
+                    if knowledge_mode and float(similarity or 0.) < TYPE_NEAR_MATCH_SIMILARITY:
+                        continue
                     level = (3 if float(similarity or 0.) >= TYPE_NEAR_MATCH_SIMILARITY else 4)
                 else:
                     continue
-                matches.append({"match_level": level, "match_label": MATCH_TYPE_LABELS[level],
+                matches.append({"match_level": level, "match_label": ({1: "同知识点", 3: "同小节相近题"}[level] if knowledge_mode else MATCH_TYPE_LABELS[level]),
                                 "matched_topic_keys": sorted(
                                     set(source.get("topic_keys", ())).intersection(candidate.get("topic_keys", ()))),
                                 "matched_skill_keys": [],
-                                "matched_type_keys": sorted(candidate_types & {target_key, *source_secondary_keys}),
+                                "matched_type_keys": [] if knowledge_mode else sorted(candidate_types & {target_key, *source_secondary_keys}),
                                 "similarity": float(similarity or 0.),
                                 "source_part_id": str(source.get("part_id") or ""),
                                 "candidate_part_id": str(candidate.get("part_id") or "")})

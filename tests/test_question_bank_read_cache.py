@@ -1273,10 +1273,18 @@ def test_question_bank_browse_prewarm_follows_current_scope_and_replans_on_write
     assert warmed == [commit_generation(db)]
 
 
-def test_question_bank_browse_warm_uses_the_first_skill_page_filters(tmp_path, monkeypatch):
-    _service, db, _keys = _seed_skill_bank(tmp_path)
+@pytest.mark.parametrize(('revision', 'volume', 'target_field'), [
+    (7, 'bnu24-math-g8-upper', 'skill_keys'),
+    (11, 'bnu24-math-g8-upper', 'type_keys'),
+    (11, 'bnu24-math-g8-lower', 'knowledge_points'),
+])
+def test_question_bank_browse_warm_uses_the_first_target_filters(tmp_path, monkeypatch, revision, volume, target_field):
+    from tests.current_knowledge_support import install_current_knowledge
+    from question_bank.taxonomy.curriculum_catalog import curriculum_knowledge_node
+    db = tmp_path / 'TEST-prewarm-targets.db'
+    _seed_paper(db)
+    install_current_knowledge(db, taxonomy_revision=revision)
     worker = _prewarm_worker(db, tmp_path)
-    volume = 'bnu24-math-g8-upper'
     monkeypatch.setattr(worker, '_latest_volume_id', lambda: volume)
     calls = []
     index = {'chapters': [{'id': 'c1', 'sections': [
@@ -1297,15 +1305,23 @@ def test_question_bank_browse_warm_uses_the_first_skill_page_filters(tmp_path, m
     assert worker._seen_qb_browse_generation == 7
     assert [call[0] for call in calls] == ['skill_index', 'list_questions', 'list_facets']
     assert calls[0][1] == volume
-    # Same filters the /questions route builds for the page's first request.
+    targets = getattr(calls[1][1], target_field)
+    assert len(targets) == 1
+    if target_field == 'knowledge_points':
+        assert curriculum_knowledge_node(targets[0])['level'] == 3
+    elif target_field == 'type_keys':
+        assert targets[0].rsplit('_', 1)[1].startswith('t')
+    else:
+        assert targets[0].startswith('sk_')
+    # Prewarm the current training target and the matching facet counts.
     assert calls[1][1] == QuestionReadFilters(
-        skill_keys=('sk_TEST_first',), include_skills=True, page=1, page_size=20,
+        **{target_field: targets}, include_skills=True, page=1, page_size=20,
         difficulty_min=1, difficulty_max=10, curriculum_volume_ids=(volume,),
         collapse_duplicates=True, scope_mode='primary', sort='newest',
     )
     # Same filters the /facets route builds for it.
     assert calls[2][1] == QuestionReadFilters(
-        skill_keys=('sk_TEST_first',), difficulty_min=1, difficulty_max=10,
+        **{target_field: targets}, difficulty_min=1, difficulty_max=10,
         curriculum_volume_ids=(volume,), collapse_duplicates=True,
         scope_mode='primary',
     )
@@ -1457,3 +1473,57 @@ def test_skill_snapshot_rebuild_reloads_only_changed_question_inputs(tmp_path, m
     loaded.clear()
     snapshot = restarted._skill_snapshot()
     assert snapshot == expected and set(loaded) == {5}
+
+
+def test_missing_knowledge_adds_only_fine_links_and_keeps_original_evidence_and_skills(tmp_path):
+    from backend.jobs.knowledge_link_job import run_knowledge_link_job
+    from backend.jobs.manager import JobContext
+    from backend.jobs.store import JobStore
+    from question_bank.database.schema import connect
+    from question_bank.solution_evidence.knowledge_links import load_point_links
+    from question_bank.solution_evidence.part_assessments import load_profiles, training_part_observations
+    from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+    service, db, keys = _seed_skill_bank(tmp_path)
+    release = service.skill_index('bnu24-math-g8-upper')['graph_release_id']
+    fine = curriculum_volume(volume_id='bnu24-math-g8-upper')['chapters'][0]['sections'][0]['knowledge_points'][0]['id']
+    with connect(db) as conn:
+        row = conn.execute('SELECT evidence_version_id,evidence_json FROM question_solution_evidence_versions WHERE question_id=1').fetchone()
+        evidence = json.loads(row['evidence_json'])
+        for point in evidence['parts'][0]['evidence_points']:
+            point['observable_evidence'] = 'TEST-可观察作答'
+        conn.execute('UPDATE question_solution_evidence_versions SET evidence_json=? WHERE evidence_version_id=?', (json.dumps(evidence), row['evidence_version_id']))
+        old_evidence = [tuple(row) for row in conn.execute('SELECT * FROM question_solution_evidence_versions WHERE question_id=1')]
+        old_links = [tuple(row) for row in conn.execute('SELECT * FROM evidence_point_knowledge_links WHERE question_id=1')]
+    profile = load_profiles(db, [1], data_root=tmp_path)[1]
+    criteria = {'solution_evidence': {'source_content_hash': profile['evidence_source_hash']},
+        'points': [{'point_id': point['evidence_point_id'], 'target': point['target'],
+            'observable_evidence': point['observable_evidence']} for point in profile['evidence']['parts'][0]['evidence_points']]}
+    facts = [{'point_id': 'p1', 'state': 'met'}, {'point_id': 'p2', 'state': 'not_met'}]
+    before = training_part_observations(profile, criteria, facts, load_point_links(db, [f'{1:064x}'], release)[f'{1:064x}'])
+    assert before is not None and len(before) == 2
+    calls = []
+    def gateway(request):
+        calls.append(request)
+        assert request['mode'] == 'missing_knowledge'
+        from question_bank.taxonomy.curriculum_catalog import curriculum_knowledge_node
+        assert all((curriculum_knowledge_node(candidate['id']) or {}).get('level') == 3 for candidate in request['questions'][0]['candidates'])
+        return {1: [{'evidence_point_id': 'p1', 'links': [{'fine_term_id': fine, 'role': 'direct'}]}]}
+    store = JobStore(tmp_path / 'TEST-fine-repair.db')
+    record = store.create_job('knowledge_link', {'mode': 'missing_knowledge', 'question_ids': [1]})
+    result = run_knowledge_link_job(context=JobContext(record.id, record.job_type, record.payload, store),
+        question_bank_db_path=db, data_root=tmp_path, link_gateway=gateway)
+    assert result['questions_linked'] == 1
+    links = load_point_links(db, [f'{1:064x}'], release)[f'{1:064x}']
+    assert {link.stable_key for link in links['p1']} == {keys[0], fine}
+    assert {link.stable_key for link in links['p2']} == {keys[1]}
+    after = training_part_observations(load_profiles(db, [1], data_root=tmp_path)[1], criteria, facts, links)
+    assert after is not None
+    assert [item for item in after if item['stable_key'] in keys] == before
+    with connect(db) as conn:
+        assert [tuple(row) for row in conn.execute('SELECT * FROM question_solution_evidence_versions WHERE question_id=1')] == old_evidence
+        rows = [tuple(row) for row in conn.execute('SELECT * FROM evidence_point_knowledge_links WHERE question_id=1')]
+        assert all(row in rows for row in old_links)
+    again = store.create_job('knowledge_link', {'mode': 'missing_knowledge', 'question_ids': [1]})
+    run_knowledge_link_job(context=JobContext(again.id, again.job_type, again.payload, store),
+        question_bank_db_path=db, data_root=tmp_path, link_gateway=lambda request: {1: []})
+    assert service.skill_index('bnu24-math-g8-upper')['coverage']['knowledge_points'] == 1

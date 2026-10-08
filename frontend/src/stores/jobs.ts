@@ -232,6 +232,7 @@ export const useJobStore = defineStore('jobs', () => {
           delete syncErrors.value[id]
           retryCounts.delete(id)
           const snapshot = jobs.value[id]!
+          trackResultJobs(snapshot)
           const terminal = TERMINAL_JOB_STATUSES.has(snapshot.status)
           persistTerminalState(id, terminal)
           if (terminal) stopPolling(id)
@@ -262,6 +263,17 @@ export const useJobStore = defineStore('jobs', () => {
     })()
     for (const id of pending) inFlight.set(id, promise)
     await promise
+  }
+
+  function trackResultJobs(job: JobResponse): void {
+    if (!['question_import', 'tagging_sync', 'question_bank_sync', 'config_generation'].includes(job.job_type)) return
+    for (const [field, jobType] of [['question_bank_sync_job_id', 'question_bank_sync'], ['chapter_type_job_id', 'chapter_type_organize']] as const) {
+      const id = job.result[field]
+      if (!Number.isSafeInteger(id) || Number(id) <= 0 || id === job.id || references.has(Number(id))) continue
+      references.set(Number(id), { id: Number(id), jobType, trackedAt: dependencies.now().toISOString() })
+      persistReferences()
+      void refresh(Number(id))
+    }
   }
 
   function stopPolling(id: number): void {
@@ -309,6 +321,7 @@ export const useJobStore = defineStore('jobs', () => {
         delete syncErrors.value[id]
         retryCounts.delete(id)
         const snapshot = jobs.value[id]!
+        trackResultJobs(snapshot)
         const terminal = TERMINAL_JOB_STATUSES.has(snapshot.status)
         persistTerminalState(id, terminal)
         if (terminal) stopPolling(id)
@@ -388,6 +401,7 @@ export const useJobStore = defineStore('jobs', () => {
       persistTerminalState(job.id, TERMINAL_JOB_STATUSES.has(snapshot.status))
     }
     const snapshot = jobs.value[job.id]!
+    trackResultJobs(snapshot)
     if (TERMINAL_JOB_STATUSES.has(snapshot.status)) stopPolling(job.id)
     else schedulePolling(job.id)
   }
@@ -407,6 +421,7 @@ export const useJobStore = defineStore('jobs', () => {
         if (currentGeneration(id) !== generation || !references.has(id)) return
         if (shouldReplaceJob(jobs.value[id], next)) jobs.value[id] = next
         delete syncErrors.value[id]
+        trackResultJobs(jobs.value[id]!)
         const terminal = TERMINAL_JOB_STATUSES.has(jobs.value[id]!.status)
         persistTerminalState(id, terminal)
         if (terminal) stopPolling(id)

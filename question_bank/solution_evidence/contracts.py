@@ -667,6 +667,7 @@ def validate_evidence_fine_terms(
     )
     candidates: dict[str, set[str]] = {}
     non_linkable: set[str] = set()
+    allowed_roles: dict[str, set[str]] = {}
     for raw in (knowledge if isinstance(knowledge, list) else []):
         if not isinstance(raw, Mapping):
             continue
@@ -677,6 +678,9 @@ def validate_evidence_fine_terms(
         usage = str(raw.get("usage") or "").strip()
         if usage in {"retrieval_only", "do_not_use_as_knowledge"}:
             non_linkable.add(term_id)
+        roles = raw.get("allowed_roles")
+        if isinstance(roles, list):
+            allowed_roles[term_id] = {str(value) for value in roles}
         names = {name}
         aliases = raw.get("aliases")
         if isinstance(aliases, list):
@@ -688,6 +692,8 @@ def validate_evidence_fine_terms(
         str(item or "").strip() for item in additional_allowed_term_ids
     }
     for link in links:
+        if link.fine_term_id in allowed_roles and link.role not in allowed_roles[link.fine_term_id]:
+            raise ValueError("solution evidence fine term role is outside the question contract")
         if link.fine_term_id in locally_converged:
             continue
         if link.fine_term_id in non_linkable:
@@ -695,6 +701,7 @@ def validate_evidence_fine_terms(
                 "solution evidence fine term is marked non-linkable "
                 "(retrieval_only or wrong dimension)"
             )
+
         allowed_names = candidates.get(link.fine_term_id)
         if not allowed_names or _normalize_term_name(
             link.fine_term_name

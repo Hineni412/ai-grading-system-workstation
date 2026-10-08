@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlite3
 
 from question_bank.current_knowledge import CurrentKnowledgeResolver
-from question_bank.question_types import is_type_key, type_keys_active
+from question_bank.question_types import is_training_target
 from question_bank.services.question_skill_index import (
     build_skill_snapshot, short_node_name, skill_anchor_ids,
 )
@@ -98,7 +98,8 @@ def question_primary_skills(conn: sqlite3.Connection, db_path: Path, data_root: 
         resolver = CurrentKnowledgeResolver.from_connection(conn)
     except Exception:
         resolver = None
-    if resolver is not None and type_keys_active(resolver):
+    if resolver is not None:
+        result = {qid: key if is_training_target(key, resolver) else "" for qid, key in result.items()}
         # On a type release the primary training target is the question's type;
         # skill_placements still places it through its section anchor.
         ids = sorted(set(question_ids))
@@ -110,7 +111,7 @@ def question_primary_skills(conn: sqlite3.Connection, db_path: Path, data_root: 
                     f"AND question_id IN ({placeholders}) ORDER BY id", batch):
                 value = str(row['tag_value'])
                 qid = int(row['question_id'])
-                if is_type_key(value) and not is_type_key(result.get(qid, '')):
+                if is_training_target(value, resolver) and not is_training_target(result.get(qid, ''), resolver):
                     result[qid] = value
     return result
 

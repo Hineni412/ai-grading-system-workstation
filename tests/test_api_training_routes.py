@@ -1150,7 +1150,7 @@ def test_training_diagnosis_uses_question_tag_identity(
         {k: v for k, v in original.items() if not k.startswith('_')})).model_dump(mode='json', exclude_none=True)
     assert grouped.content == json.dumps(expected, ensure_ascii=False, allow_nan=False,
                                        separators=(',', ':')).encode('utf-8')
-    summary_fields = {'knowledge_key', 'knowledge_point', 'mastery', 'tier',
+    summary_fields = {'target_kind', 'knowledge_key', 'knowledge_point', 'mastery', 'tier',
         'observation_count', 'full_correct_count', 'score_sum', 'full_score_sum',
         'deduction_count', 'evidence_count', 'effective_weight', 'exam_count',
         'source_question_refs', 'parent_knowledge_key', 'direct_evidence_count',

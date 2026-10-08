@@ -385,3 +385,51 @@ def test_startup_entry_points_stay_light() -> None:
         loaded = set(json.loads(result.stdout.strip().splitlines()[-1]))
         leaked = sorted(loaded & heavy_modules)
         assert not leaked, f"{module} loaded heavy modules: {leaked}"
+
+
+def test_automatic_standard_and_request_receipt_survive_ordinary_backup_and_offline_restore(tmp_path):
+    import shutil
+    from contextlib import nullcontext
+    from tests.test_ops_jobs import _paths as current_paths, _Context, _payload, _service
+    from tests.test_skill_candidates import _automatic_type_bank, _automatic_response
+    from backend.jobs.chapter_types import run_chapter_type_job
+    from backend.ops.jobs import run_ops_backup_job
+    from question_bank.current_knowledge import CurrentKnowledgeResolver
+    from question_bank.knowledge_graph_release.loader import load_release, load_taxonomy_catalog_for_release
+    from question_bank.services.chapter_type_service import preview_chapter_type_plan
+    source = tmp_path / "TEST-source"
+    db, _ = _automatic_type_bank(source)
+    plan = preview_chapter_type_plan(db_path=db, data_root=source, volume_id="bnu24-math-g8-lower")
+    context = SimpleNamespace(job_id=904, payload={"authorization": {**plan, "confirmed": True, "request_limit": 1}},
+        raise_if_cancelled=lambda: None, report=lambda *args: None)
+    result = run_chapter_type_job(context=context, question_bank_db_path=db, data_root=source,
+        ai_service_factory=lambda: SimpleNamespace(organize_chapter_types=_automatic_response), publication_guard=nullcontext)
+    assert result["outcome"] == "published", result
+    expected = CurrentKnowledgeResolver.from_active_database(db)
+    paths = current_paths(tmp_path / "TEST-backup", migration_current=True)
+    with sqlite3.connect(db) as original, sqlite3.connect(paths.qb_db_path) as target:
+        original.backup(target)
+    shutil.copytree(source / "question_bank", paths.qb_data_dir)
+    backup = run_ops_backup_job(context=_Context(_payload(_service(paths), "backup", reason="manual")), paths=paths)
+    with zipfile.ZipFile(paths.backups_dir / backup["filename"]) as archive:
+        members = {name: archive.read(name) for name in archive.namelist() if not name.endswith("/")}
+    prefix = f"user_data/question_bank/knowledge_releases/{expected.release_id}"
+    assert f"{prefix}/release.json" in members and f"{prefix}/taxonomy.json" in members
+    assert "user_data/question_bank/chapter_type_runs/job-904.json" in members
+    assert not any("api_profiles" in name for name in members)
+    restored = current_paths(tmp_path / "TEST-restored", migration_current=True)
+    journal = _prepare_restore(restored, members)
+    assert apply_pending_operation(paths=restored) == 0
+    assert journal.load_public(OPERATION_ID)["status"] == "applied"
+    actual = CurrentKnowledgeResolver.from_active_database(restored.qb_db_path)
+    assert (actual.release_id, actual.content_hash) == (expected.release_id, expected.content_hash)
+    local_release = load_release(restored.qb_data_dir / "knowledge_releases" / expected.release_id / "release.json")
+    catalog = load_taxonomy_catalog_for_release(local_release)
+    assert all(term["definition"] for term in catalog["terms"] if term["dimension"] == "ability")
+    receipt = json.loads((restored.qb_data_dir / "chapter_type_runs/job-904.json").read_text(encoding="utf-8"))
+    assert receipt["requests"][0]["status"] == "validated" and receipt["status"] == "published"
+    def forbidden():
+        pytest.fail("restored completed chapter task must never add a model request")
+    replay = run_chapter_type_job(context=context, question_bank_db_path=restored.qb_db_path,
+        data_root=restored.data_root, ai_service_factory=forbidden, publication_guard=nullcontext)
+    assert replay == result

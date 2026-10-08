@@ -99,6 +99,7 @@ function closeSimilar(): void {
 
 // 标签类维度显示维度名 + 叶子名；信号类维度 values 已是完整短语。
 const SIMILAR_REASON_KIND_LABELS: Partial<Record<SimilarityReasonKind, string>> = {
+  type: '同题型',
   knowledge_point: '同知识点',
   skill: '同技能',
   method: '同解法',
@@ -111,7 +112,7 @@ function similarReasonKindLabel(kind: SimilarityReasonKind): string {
 
 function similarReasonText(reason: SimilarityReason): string {
   const values =
-    reason.kind === 'knowledge_point' || reason.kind === 'skill'
+    reason.kind === 'type' || reason.kind === 'knowledge_point' || reason.kind === 'skill'
       ? reason.values.map(
           (value) => knowledgeLeafLabel(value).replace(/^技能[·：:]\s*/, ''),
         )
@@ -120,7 +121,7 @@ function similarReasonText(reason: SimilarityReason): string {
 }
 
 function similarReasonTitle(reason: SimilarityReason): string | undefined {
-  return reason.kind === 'knowledge_point' || reason.kind === 'skill'
+  return reason.kind === 'type' || reason.kind === 'knowledge_point' || reason.kind === 'skill'
     ? reason.values.join('、')
     : undefined
 }

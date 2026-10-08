@@ -506,6 +506,27 @@ class AITaggingService:
             )
         return dict(parsed)
 
+    def organize_chapter_types(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        if self.mock_mode:
+            raise RuntimeError("未配置可用于章节题型整理的大模型")
+        from question_bank.services.chapter_type_service import chapter_type_response_format, CHAPTER_TYPE_PROMPT
+        messages = [{"role": "system", "content": CHAPTER_TYPE_PROMPT},
+                    {"role": "user", "content": json.dumps(dict(payload), ensure_ascii=False)}]
+        response_format = chapter_type_response_format()
+        if self.llm_client is not None and not (self.api_key or self.client or self._protocol_adapter_instance is not None):
+            parsed = _json_from_text_once_compat(self.llm_client,
+                "\n\n".join(item["content"] for item in messages),
+                model=_model_for_llm_client(self.llm_client, self.model),
+                response_format=_chat_response_format(response_format))
+        else:
+            response = self._protocol_adapter().responses(request_kind=LLMRequestKind.TAGGING,
+                model=self.model, allow_retry=False,
+                kwargs={"text": {"format": response_format}, "input": messages})
+            parsed = json.loads(str(getattr(response, "output_text", "") or ""))
+        if not isinstance(parsed, Mapping):
+            raise TaxonomySuggestionModelResponseError("章节题型整理返回不是对象")
+        return dict(parsed)
+
     def analyze_review_question(
         self,
         context: TaggingContext,

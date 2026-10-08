@@ -20,7 +20,7 @@ import type {
   QuestionBankPaperMetadataInput,
   QuestionBankPaperPermanentDeleteImpact,
 } from '../../api/question-bank'
-import { questionBankApi } from '../../api/question-bank'
+import { questionBankApi, chapterTypeCostNote, type ChapterTypePlan, type ChapterTypeAuthorization } from '../../api/question-bank'
 import { useConfirm } from '../../composables/useConfirm'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import { useJobStore } from '../../stores/jobs'
@@ -390,14 +390,14 @@ const libraryJobs = computed(() => Object.values(jobStore.jobs)
 
 watch(
   () => Object.values(jobStore.jobs)
-    .filter(isQuestionBankLibraryJob)
+    .filter(job => isQuestionBankLibraryJob(job) || job.job_type === 'chapter_type_organize')
     .map((job) => `${job.id}:${job.status}:${job.updated_at}`)
     .sort()
     .join('|'),
   (signature) => {
     if (!signature) return
     const terminalJob = Object.values(jobStore.jobs).find((job) => (
-      isQuestionBankLibraryJob(job)
+      (isQuestionBankLibraryJob(job) || job.job_type === 'chapter_type_organize')
       && TERMINAL_JOB_STATUSES.has(job.status)
       && !refreshedTerminalJobs.has(`${job.id}:${job.status}:${job.updated_at}`)
     ))
@@ -660,7 +660,7 @@ function requestTokenFor(storageKey: string): string {
 
 async function submitTaggingBatches(
   questionIds: number[],
-  options: { forceRetag: boolean; scope: string; volumeId: string; paperId?: number },
+  options: { forceRetag: boolean; scope: string; volumeId: string; paperId?: number; preview?: ChapterTypePlan },
 ): Promise<number> {
   let jobs = 0
   for (let index = 0; index < questionIds.length; index += 500) {
@@ -668,8 +668,10 @@ async function submitTaggingBatches(
     if (batch.length === 0) continue
     const storageKey = `question-bank:tagging:${options.scope}:${index}:${batch.join('-')}`
     const requestToken = requestTokenFor(storageKey)
+    const preview = index + 500 >= questionIds.length ? options.preview : undefined
+    const authorization: ChapterTypeAuthorization | undefined = preview?.planned_requests ? { ...preview, confirmed: true, request_limit: preview.planned_requests } : undefined
     const job = await questionBankApi.submitTagging(
-      batch, options.volumeId, undefined, undefined, options.forceRetag, requestToken,
+      batch, options.volumeId, undefined, undefined, options.forceRetag, requestToken, authorization,
     )
     jobStore.track(job)
     if (options.paperId) rememberJobPaper(job.id, options.paperId)
@@ -682,6 +684,7 @@ async function submitTaggingBatches(
 interface PaperTaggingPlan {
   paper: QuestionBankPaper
   ids: number[]
+  preview?: ChapterTypePlan
 }
 
 async function submitTaggingPlans(
@@ -689,13 +692,14 @@ async function submitTaggingPlans(
   forceRetag: boolean,
 ): Promise<number> {
   let jobs = 0
-  for (const { paper, ids } of plans) {
+  for (const { paper, ids, preview } of plans) {
     if (!paper.curriculum_volume_id) continue
     jobs += await submitTaggingBatches(ids, {
       forceRetag,
       scope: `paper-${paper.id}-${forceRetag ? 'retag' : 'fill'}`,
       volumeId: paper.curriculum_volume_id,
       paperId: paper.id,
+      preview,
     })
   }
   return jobs
@@ -703,6 +707,18 @@ async function submitTaggingPlans(
 
 // Batch entry points confirm once for the whole selection, then reuse the exact
 // per-paper submission path (same scopes, same localStorage idempotency tokens).
+async function attachChapterTypePreviews(plans: PaperTaggingPlan[]): Promise<void> {
+  const volumes = [...new Set(plans.map(plan => plan.paper.curriculum_volume_id).filter((id): id is string => Boolean(id)))]
+  for (const volumeId of volumes) {
+    const volumePlans = plans.filter(plan => plan.paper.curriculum_volume_id === volumeId)
+    const last = volumePlans[volumePlans.length - 1]
+    if (!last) continue
+    const scopeIds = [...new Set(volumePlans.flatMap(plan => plan.ids))]
+    const finalBatch = last.ids.slice(Math.floor((last.ids.length - 1) / 500) * 500)
+    last.preview = await questionBankApi.previewTagging(finalBatch, volumeId, undefined, scopeIds)
+  }
+}
+
 async function collectTaggingPlans(
   papers: QuestionBankPaper[],
 ): Promise<{ plans: PaperTaggingPlan[]; skippedWithoutVolume: number }> {
@@ -716,6 +732,7 @@ async function collectTaggingPlans(
     const ids = await loadQuestionIds([paper.id])
     if (ids.length > 0) plans.push({ paper, ids })
   }
+  await attachChapterTypePreviews(plans)
   return { plans, skippedWithoutVolume }
 }
 
@@ -753,7 +770,7 @@ async function fillSelectedPapers(): Promise<void> {
     )
     if (!await confirm({
       title: '补齐所选试卷的标签？',
-      message: `选中的 ${plans.length} 份试卷还有 ${incomplete} 道题未打全标签。将把共 ${total} 道题提交后端逐题核对：只补齐缺失、失败或已过期的标签和判定点，真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。${skippedVolumeNote(skippedWithoutVolume)}`,
+      message: `选中的 ${plans.length} 份试卷还有 ${incomplete} 道题未打全标签。将把共 ${total} 道题提交后端逐题核对：只补齐缺失、失败或已过期的标签和判定点，真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。${plans.flatMap(plan => plan.preview ? [plan.preview] : []).map(chapterTypeCostNote).filter(Boolean).join(' ')}${skippedVolumeNote(skippedWithoutVolume)}`,
       confirmLabel: '继续',
     })) return
     const count = await submitTaggingPlans(plans, false)
@@ -783,7 +800,7 @@ async function retagSelectedPapers(): Promise<void> {
     }
     if (!await confirm({
       title: '重新标注所选试卷？',
-      message: `将重新分析选中的 ${plans.length} 份试卷共 ${total} 道题，可能产生模型费用；人工修改的标签会保留。${skippedVolumeNote(skippedWithoutVolume)}`,
+      message: `将重新分析选中的 ${plans.length} 份试卷共 ${total} 道题，可能产生模型费用；人工修改的标签会保留。${plans.flatMap(plan => plan.preview ? [plan.preview] : []).map(chapterTypeCostNote).filter(Boolean).join(' ')}${skippedVolumeNote(skippedWithoutVolume)}`,
       confirmLabel: '继续',
     })) return
     const count = await submitTaggingPlans(plans, true)
@@ -868,12 +885,14 @@ async function retagPaper(paper: QuestionBankPaper): Promise<void> {
       retagMessage.value = '这份试卷没有可重新标注的题目。'
       return
     }
+    const plans: PaperTaggingPlan[] = [{ paper, ids }]
+    await attachChapterTypePreviews(plans)
     if (!await confirm({
       title: '重新标注这份试卷？',
-      message: `将重新分析“${paper.title || `试卷 #${paper.id}`}”的 ${ids.length} 道题，可能产生模型费用；人工修改的标签会保留。`,
+      message: `将重新分析“${paper.title || `试卷 #${paper.id}`}”的 ${ids.length} 道题，可能产生模型费用；人工修改的标签会保留。${plans.flatMap(plan => plan.preview ? [plan.preview] : []).map(chapterTypeCostNote).filter(Boolean).join(' ')}`,
       confirmLabel: '继续',
     })) return
-    const count = await submitTaggingPlans([{ paper, ids }], true)
+    const count = await submitTaggingPlans(plans, true)
     retagMessage.value = `已提交 ${ids.length} 道题，共 ${count} 个重新标注任务。`
   } catch {
     retagMessage.value = '重新标注任务没有完整提交；已提交的任务会保留，请先查看任务记录。'

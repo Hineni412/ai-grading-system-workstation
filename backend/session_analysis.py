@@ -1203,7 +1203,8 @@ def enrich_personal_knowledge(
         CurrentKnowledgeResolver,
         CurrentKnowledgeUnavailable,
     )
-    from question_bank.question_types import is_training_target, is_type_key, type_keys_active
+    from question_bank.question_types import (chapter_target_kind, chapter_target_kinds,
+                                               is_training_target, is_type_key, target_kind_for_key)
     from question_bank.solution_evidence.part_assessments import reading
     root = data_root or infer_data_root(repositories.db_path)
     path = root / 'databases' / 'question_bank.db'
@@ -1225,11 +1226,14 @@ def enrich_personal_knowledge(
                 identities = resolver.resolve(entry.get('stable_key') or entry.get('path') or '')
                 if len(identities) == 1:
                     entry['stable_key'] = identities[0].stable_key
-        type_mode = type_keys_active(resolver, volume) if volume else any(
-            is_type_key(entry.get('stable_key')) and is_training_target(entry.get('stable_key'), resolver)
-            for entries in data.knowledge_backfill.values() for entry in entries
-        )
-        snapshot['target_kind'] = 'type' if type_mode else 'skill'
+        target_kind = chapter_target_kind(resolver, volume) if volume else (
+            'type' if any(is_type_key(entry.get('stable_key')) and is_training_target(entry.get('stable_key'), resolver)
+                          for entries in data.knowledge_backfill.values() for entry in entries) else 'skill')
+        snapshot['target_kind'] = target_kind
+        snapshot['chapter_target_kinds'] = chapter_target_kinds(resolver, volume) if volume else {}
+        for entries in data.knowledge_backfill.values():
+            for entry in entries:
+                entry['target_kind'] = target_kind_for_key(entry.get('stable_key') or '', resolver, volume)
         if not volume:
             snapshot['note'] = '这场考试尚未关联教学学期，暂不展示当前掌握度；下方保留本卷考查范围与得分。'
             return
@@ -1242,7 +1246,11 @@ def enrich_personal_knowledge(
             )
         snapshot.update(catalog=profile.get('knowledge_catalog') or [],
                         associations=profile.get('knowledge_associations') or [],
-                        target_kind=profile.get('target_kind') or snapshot['target_kind'])
+                        target_kind=profile.get('target_kind') or snapshot['target_kind'],
+                        chapter_target_kinds=profile.get('chapter_target_kinds') or snapshot['chapter_target_kinds'])
+        observed_kinds = {entry.get('target_kind') for entries in data.knowledge_backfill.values() for entry in entries if entry.get('target_kind')}
+        if observed_kinds:
+            snapshot['target_kind'] = next(iter(observed_kinds)) if len(observed_kinds) == 1 else 'mixed'
         profiles = {str(item['student_id']): item for item in profile.get('students', [])}
         for student in selected:
             student.knowledge_mastery = {
@@ -1256,6 +1264,8 @@ def enrich_personal_knowledge(
             snapshot['note'] = (
                 '仅展开本卷涉及的题型。当前掌握度综合本学期考试、训练、题目难度与时间；本次考试得分单独列出。'
                 if snapshot.get('target_kind') == 'type'
+                else '本卷按章展示题型或知识点训练目标。当前掌握度综合本学期考试、训练、题目难度与时间；本次考试得分单独列出。'
+                if snapshot.get('target_kind') in {'knowledge', 'mixed'}
                 else '仅展开本卷涉及的知识与技能。当前掌握度综合本学期考试、训练、题目难度与时间；本次考试得分单独列出。'
             )
     except (CurrentKnowledgeUnavailable, OSError, sqlite3.Error, ValueError, TypeError):

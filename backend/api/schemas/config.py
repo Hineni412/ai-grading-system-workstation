@@ -272,6 +272,7 @@ class ConfigSourceGenerationRequest(BaseModel):
         max_length=5_000,
     )
     sync_to_question_bank: bool = False
+    chapter_type_authorization: dict[str, Any] | None = None
     curriculum_volume_id: str | None = Field(default=None, max_length=80)
     regenerate_question_ids: list[str] | None = Field(
         default=None,

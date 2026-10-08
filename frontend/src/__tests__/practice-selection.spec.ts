@@ -68,6 +68,28 @@ beforeEach(() => {
 afterEach(() => { apps.splice(0).forEach(app => app.unmount()); document.body.innerHTML = ''; vi.clearAllMocks() })
 
 describe('学生和章节选择', () => {
+  it('keeps type and knowledge targets visible together in a mixed semester', async () => {
+    const mixed: TrainingDiagnosis = { ...diagnosis, target_kind: 'mixed',
+      knowledge_catalog: [
+        { knowledge_key: 'type_a', knowledge_point: '题型甲', node_kind: 'type', target_kind: 'type', parent_knowledge_key: 'kp_c1_s1' },
+        { knowledge_key: 'topic_b', knowledge_point: '知识点乙', node_kind: 'topic', target_kind: 'knowledge', parent_knowledge_key: 'kp_c2_s1' },
+        ...(diagnosis.knowledge_catalog ?? []).filter(node => node.node_kind === 'chapter' || node.node_kind === 'section'),
+        { knowledge_key: 'kp_c2_s1', knowledge_point: '第二章第一节', node_kind: 'section', parent_knowledge_key: 'kp_c2' },
+      ],
+      students: [{ ...diagnosis.students[0]!, weak_points: [point('type_a', 'weak'), point('topic_b', 'weak')] }],
+    }
+    const host = mount(defineComponent({ setup: () => () => h('div', [h(StudentPicker, { diagnosis: mixed, modelValue: [] }),
+      h(KnowledgeRangeList, { volume, diagnosis: mixed, mode: 'range' })]) }))
+    await nextTick()
+    expect(host.querySelector('.student-picker-weak')?.textContent).toBe('薄弱 2')
+    const sections = [...host.querySelectorAll('.range-section')]
+    expect(sections.find(section => section.textContent?.includes('节1.1'))?.querySelector('.range-section-stats small')?.textContent).toBe('明显薄弱 1 人')
+    expect(sections.find(section => section.textContent?.includes('节2.1'))?.querySelector('.range-section-stats small')?.textContent).toBe('明显薄弱 1 人')
+    expect(host.textContent).toContain('第1章')
+    expect(host.textContent).toContain('第2章')
+    expect(host.textContent).not.toContain('暂无可用范围')
+  })
+
   it('keeps roster, all-section statistics and learned progress equal with display references counted', async () => {
     const referenceOnly: TrainingWeakPoint = { ...point('sk_reference', 'unsteady', 0),
       parent_knowledge_key: 'kp_c2_s1', source_question_refs: [{ session_id: 7, session_name: 'TEST考试',

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { knowledgeLeafLabel, type CurriculumVolume } from '../../api/question-bank'
-import { trainingSourceReferenceCount, type TrainingReadDiagnosis } from '../../api/training'
+import { trainingTargetNodeKinds, trainingSourceReferenceCount, type TrainingReadDiagnosis } from '../../api/training'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 type Tier = 'weak' | 'unsteady' | 'stable' | 'insufficient'
@@ -20,7 +20,7 @@ const selectedStudents = computed(() => props.studentIds === undefined ? props.d
 const statistics = computed(() => {
   const nodes = new Map((props.diagnosis.knowledge_catalog ?? []).map(node => [node.knowledge_key, node]))
   // Typed releases count question types per section; legacy releases count skills/topics.
-  const listed = props.diagnosis.target_kind === 'type' ? ['type'] : ['skill', 'topic']
+  const listed = trainingTargetNodeKinds(props.diagnosis.target_kind)
   const sections = new Set(chapters.value.flatMap(chapter => chapter.sections.map(section => section.knowledge_id)))
   const ancestry = new Map<string, string>()
   const sectionFor = (start: string) => {

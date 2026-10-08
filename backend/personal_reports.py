@@ -81,7 +81,7 @@ def student_report_digests(
     data 需已 enrich_personal_questions（question_text/reference_analysis
     参与指纹）。错因记录取状态文件里该生物化行的投影 [question_id, kind,
     category, reason]，不做新鲜度过滤：重新整理后行内容变化即过期，其他学生
-    的成绩变化不会连带本场已物化记录。指纹不包含题库关联与提示词版本。
+    的成绩变化不会连带本场已物化记录。指纹包含本卷已确认题库关联的当前题型或知识点目标，不包含无关标准变化与提示词版本。
     """
     from backend.class_analysis import ClassAnalysisStateStore
 
@@ -98,6 +98,7 @@ def student_report_digests(
             error_rows_by_student.setdefault(student_key, []).append(
                 [question_id, row.get("kind"), row.get("category"), row.get("pattern")]
             )
+    target_inputs = _current_report_targets(repositories, int(session_id))
     locks_all = repositories.reviews.list_teacher_score_locks(int(session_id))
     questions = [
         [info.question_id, info.question_text, info.reference_analysis]
@@ -119,9 +120,51 @@ def student_report_digests(
             records=records,
             locks=locks,
             error_records=error_rows,
-            questions=questions,
+            questions=[*questions, *[row for row in target_inputs
+                       if row[0] in {record.question_id for record in student.records}
+                       or row[0] in {record.question_id.split('(')[0] for record in student.records}]],
         )
     return digests
+
+
+def _current_report_targets(repositories, session_id: int) -> list[list]:
+    from question_bank.current_knowledge import CurrentKnowledgeResolver, CurrentKnowledgeUnavailable
+    from question_bank.question_types import is_training_target, target_kind_for_key
+    from question_bank.solution_evidence.part_assessments import reading
+    from integration.question_tag_projection_service import QuestionTagProjectionService
+    from path_manager import resolve_stored_file_path
+    import sqlite3
+
+    root = infer_data_root(repositories.db_path)
+    bank = root / 'databases' / 'question_bank.db'
+    if not bank.is_file():
+        return []
+    session = repositories.sessions.get_grading_session(session_id) or {}
+    rubric_path = resolve_stored_file_path(session.get('rubric_path'), data_root=root)
+    try:
+        rubric = json.loads(rubric_path.read_text(encoding='utf-8'))
+        resolver = CurrentKnowledgeResolver.from_active_database(bank)
+        volume = str(session.get('curriculum_volume_id') or '')
+        with reading(bank) as connection:
+            projection = QuestionTagProjectionService(bank, external_connection=connection, data_root=root).project_session(
+                grading_session_id=session_id, rubric=rubric)
+        rows = []
+        for item in projection.items:
+            keys = sorted(str(key) for key in item.tags.get('knowledge_point', ())
+                          if is_training_target(key, resolver, volume)
+                          and target_kind_for_key(key, resolver, volume) in {'type', 'knowledge'})
+            if keys:
+                rows.append([item.item_ref, 'training_targets',
+                             [[key, target_kind_for_key(key, resolver, volume)] for key in keys]])
+        return rows
+    except (CurrentKnowledgeUnavailable, OSError, sqlite3.Error, ValueError, TypeError):
+        return []
+
+
+def _report_bank_generation(repositories):
+    from integration.data_generation import commit_generation
+    bank = infer_data_root(repositories.db_path) / 'databases' / 'question_bank.db'
+    return commit_generation(bank) if bank.is_file() else None
 
 
 def personal_report_states(repositories, session_id: int, reports_dir: Path, *, data=None) -> dict:
@@ -144,6 +187,7 @@ def personal_report_states(repositories, session_id: int, reports_dir: Path, *, 
     else:
         session = repositories.sessions.get_grading_session(int(session_id)) or {}
         key = (str(repositories.db_path), int(session_id), commit_generation(repositories.db_path),
+               _report_bank_generation(repositories),
                tuple(_session_error_file_state(resolve_stored_file_path(session.get(field), data_root=root))
                      for field in ("rubric_path", "answer_key_path")),
                _session_error_file_state(Path(reports_dir) / ".class_analysis" / f"{int(session_id)}.json"),

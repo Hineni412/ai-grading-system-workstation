@@ -39,7 +39,9 @@ from question_bank.mastery.current import (
     CURRENT_MASTERY_PARAMETERS,
     aggregate_current_mastery,
 )
-from question_bank.question_types import is_training_target, is_type_key, type_keys_active
+from question_bank.question_types import (
+    chapter_target_kind, chapter_target_kinds, is_training_target, is_type_key, target_kind_for_key,
+)
 
 GENERIC_ERROR_REASONS = {
     "未作答",
@@ -789,6 +791,7 @@ class DiagnosisProfileService:
             facets_index = target_index(resolver)
             for item in knowledge_catalog:
                 item["node_kind"] = facets_index.get(item["knowledge_key"], {}).get("kind", "topic")
+                item["target_kind"] = target_kind_for_key(item["knowledge_key"], resolver, profile_volume)
             if include_source_details:
                 knowledge_associations = knowledge_skill_associations(
                     load_question_facets(self.question_bank_db_path, resolver)
@@ -849,7 +852,8 @@ class DiagnosisProfileService:
             "warnings": _unique(warnings),
             "diagnosis_identity": "question_tag",
             # An unconverted volume keeps its existing skill presentation.
-            "target_kind": "type" if profile_volume and type_keys_active(hierarchy_resolver, profile_volume) else "skill",
+            "target_kind": chapter_target_kind(hierarchy_resolver, profile_volume),
+            "chapter_target_kinds": chapter_target_kinds(hierarchy_resolver, profile_volume),
             # Internal read-only contract. The API excludes root underscore
             # fields; source point text is not added to public references.
             "_exam_source_metadata": {
@@ -858,7 +862,12 @@ class DiagnosisProfileService:
                 for session_id, projection in projection_by_session.items()
             },
         }
-        if include_source_details and result["target_kind"] == "type":
+        for student in student_profiles:
+            for point in student["weak_points"]:
+                point["target_kind"] = target_kind_for_key(point["knowledge_key"], hierarchy_resolver, profile_volume)
+        for point in group_weak_points:
+            point["target_kind"] = target_kind_for_key(point["knowledge_key"], hierarchy_resolver, profile_volume)
+        if include_source_details and result["target_kind"] in {"type", "mixed"}:
             result["_type_class_question_totals"] = self._type_class_question_totals(
                 student_profiles, evidence_rows,
             )
@@ -1253,7 +1262,8 @@ class DiagnosisProfileService:
             except (CurrentKnowledgeUnavailable, OSError, sqlite3.Error, TypeError, ValueError):
                 resolver = None
             return {"student_count": len(students), "exams": [],
-                    "target_kind": "type" if type_keys_active(resolver, volume_id) else "skill"}
+                    "target_kind": chapter_target_kind(resolver, volume_id),
+                    "chapter_target_kinds": chapter_target_kinds(resolver, volume_id)}
         ids = [int(s["id"]) for s in sessions]
         projections = self._tag_projections(ids)
         causes = self._error_cause_index(ids)
@@ -1339,6 +1349,7 @@ class DiagnosisProfileService:
                     "difficulty": bank_difficulty.get(projected.bank_question_id) if projected else None,
                     "skill_keys": keys, "skills": [{"key": key,
                         "label": resolver.node(key).display_name if resolver.node(key) else key,
+                        "target_kind": target_kind_for_key(key, resolver, volume_id),
                         "in_volume": volume_sections is None or anchors.get(key, {}).get("section") in volume_sections}
                         for key in keys],
                     "question_text": str(question.get("question_text") or item.get("question_text") or "")})
@@ -1347,7 +1358,8 @@ class DiagnosisProfileService:
                     "date": str(session.get("created_at") or ""), "class_ids": sorted({students[s].get("class_name") for s in participants}),
                     "student_count": len(participants), "average_score": round(sum(totals.values()) / len(participants), 2), "questions": questions})
         return {"student_count": len(students), "exams": exams,
-                "target_kind": "type" if type_keys_active(resolver, volume_id) else "skill"}
+                "target_kind": chapter_target_kind(resolver, volume_id),
+                    "chapter_target_kinds": chapter_target_kinds(resolver, volume_id)}
 
     def _error_cause_index(
         self,

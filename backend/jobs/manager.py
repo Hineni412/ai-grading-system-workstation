@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -88,6 +88,7 @@ class JobManager:
         self._handlers: dict[str, JobHandler] = {}
         self._executor = ThreadPoolExecutor(max_workers=max(1, int(max_workers)))
         self._interactive_executor = ThreadPoolExecutor(max_workers=2)
+        self._chapter_type_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chapter-types")
         self._futures: dict[int, Future[None]] = {}
         self._lock = threading.Lock()
         self._shutdown = False
@@ -527,11 +528,38 @@ class JobManager:
             self._shutdown = True
         self._executor.shutdown(wait=True)
         self._interactive_executor.shutdown(wait=True)
+        self._chapter_type_executor.shutdown(wait=True)
 
     def _executor_for(self, job_type: str) -> ThreadPoolExecutor:
+        if job_type == "chapter_type_organize":
+            return self._chapter_type_executor
         if job_type in _INTERACTIVE_JOB_TYPES:
             return self._interactive_executor
         return self._executor
+
+    @contextmanager
+    def standard_publication_guard(self, context: JobContext):
+        """Drain queued and running analysis, then prevent new submissions."""
+        analysis_types = ('tagging_sync', 'config_generation', 'question_bank_sync',
+                          'question_bank_repair', 'criterion_backfill', 'knowledge_link')
+        delay = threading.Event()
+        while True:
+            context.raise_if_cancelled()
+            acquired = self._lock.acquire(timeout=.1)
+            if not acquired:
+                continue
+            try:
+                if self._shutdown:
+                    raise RuntimeError('应用正在关闭，本章题型尚未发布')
+                _jobs, count = self.store.list_jobs(job_types=analysis_types,
+                                                    statuses=('queued', 'running'), limit=1)
+                if not count:
+                    yield
+                    return
+            finally:
+                self._lock.release()
+            context.report(.9, 'waiting_for_analysis', '等待已排队和进行中的联合分析结束')
+            delay.wait(.05)
 
     def _run_job(self, job_id: int, handler: JobHandler) -> None:
         if not self.store.mark_running(job_id):

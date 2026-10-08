@@ -16,6 +16,7 @@ from backend.llm import LLMRequestKind, usage_fields
 from backend.llm.json_repair import parse_json_object_locally
 from backend.llm.policy import policy_from_profile
 from question_bank.database.schema import connect
+from question_bank.question_types import is_type_key
 from question_bank.models.tag_schema import (
     DIFFICULTY_SCALE_GUIDANCE,
     TagAnalysis,
@@ -249,46 +250,21 @@ class ExistingTagProjectionWriter:
         validate_question_type_labels(labels, question.taxonomy_contract)
         if active_release_id(self.write_service.db_path) != question.taxonomy_snapshot.knowledge_graph_release_id:
             raise ValueError("question type release changed before tag persistence")
-        with self._audit_lock:
-            existing_proposals = list(self._audits.get((str(operation_id), question.question_id), {}).get("proposals", []))
-        proposal_already_written = any(
-            str(item.get("proposed_name") or item.get("name") or "").strip()
-            == str(labels["proposed_type_name"]).strip()
-            for item in existing_proposals
-        )
-        if not labels["primary_type_id"] and not proposal_already_written:
-            # A criteria-only retry retains the accepted tags, but still needs
-            # to land this new-word exception through the same governance flow.
-            reason = str(labels["reason"]).strip()
-            governed = self.tagging_service.taxonomy_governance.constrain(
-                {"proposed_tags": [{
-                    "dimension": "knowledge", "name": str(labels["proposed_type_name"]).strip(),
-                    "definition": reason, "reason": reason, "nearest_id": "", "why_not_reuse": reason,
-                }]},
-                context={
-                    "persist_proposals": True, "question_ref": str(question.question_id),
-                    "model": model_name, "request_token": f"combined-type:{operation_id}:{question.question_id}",
-                    "expected_revision": question.taxonomy_snapshot.taxonomy_revision,
-                    "allowed_term_ids": question.taxonomy_contract.get("allowed_term_ids", {}),
-                    "knowledge_catalog_revision": question.taxonomy_contract.get("knowledge_catalog_revision"),
-                },
-            )
-            with self._audit_lock:
-                key = (str(operation_id), question.question_id)
-                audit = self._audits.setdefault(key, {"retrieval_misses": [], "proposals": []})
-                audit["proposals"] = [*audit["proposals"], *governed.get("proposals", [])]
+        from question_bank.current_knowledge import CurrentKnowledgeResolver
+        from question_bank.services.question_write_service import sync_question_type_labels
+        from question_bank.solution_evidence.part_assessments import load_profiles
+
+        resolver = CurrentKnowledgeResolver.from_active_database(self.write_service.db_path)
         with connect(self.write_service.db_path) as connection:
-            if connection.execute("SELECT 1 FROM questions WHERE id=? AND is_deleted=0", (question.question_id,)).fetchone() is None:
-                raise KeyError(question.question_id)
-            connection.execute(
-                "DELETE FROM question_tags WHERE question_id=? AND tag_type='secondary_type' AND source='taxonomy'",
-                (question.question_id,),
-            )
-            connection.executemany(
-                """INSERT INTO question_tags (question_id, tag_type, tag_value, confidence, source, model_name)
-                   SELECT ?, 'secondary_type', ?, 1.0, 'taxonomy', ?
-                   WHERE NOT EXISTS (SELECT 1 FROM question_tags WHERE question_id=? AND tag_type='secondary_type' AND tag_value=?)""",
-                [(question.question_id, value, model_name, question.question_id, value) for value in labels["secondary_type_ids"]],
+            profile = load_profiles(self.write_service.db_path, [question.question_id],
+                connection=connection, data_root=self.write_service.data_root).get(question.question_id, {})
+            current_version = str(profile.get("evidence_version_id") or "") if profile.get("available") else ""
+            sync_question_type_labels(
+                connection, question.question_id, str(labels["primary_type_id"]),
+                list(labels["secondary_type_ids"]), resolver,
+                expected_evidence_version_id=current_version,
+                expected_release_id=question.taxonomy_snapshot.knowledge_graph_release_id,
+                source="taxonomy", data_root=self.write_service.data_root,
             )
 
     def audit_summary(
@@ -836,14 +812,14 @@ def _prompt_candidate_contract(
 ) -> dict[str, Any]:
     """Shrink a taxonomy contract for the prompt.
 
-    ``include_knowledge=False`` (tag-only projection) drops the knowledge
-    candidate tree and curriculum volume: the tag analysis no longer emits
-    prerequisite/knowledge fields, so the catalog would only inflate the
-    request. Combined projections keep them for ``fine_term_links``.
+    Tag-only requests retain the type candidates needed for whole-question
+    labels. Other knowledge candidates and the curriculum volume are needed
+    only by evidence requests.
     """
     compact: dict[str, Any] = {}
     for key in (
         "schema_version",
+        "attribute_definition_revision",
         "taxonomy_revision",
         "knowledge_graph_release_id",
         "allowed_dimensions",
@@ -860,15 +836,16 @@ def _prompt_candidate_contract(
                     "id": str(item.get("id") or ""),
                     "name": str(item.get("name") or ""),
                     **({key: item[key] for key in (
-                        "usage", "parent_id", "definition", "include_scope", "exclude_scope", "observable_evidence",
-                    ) if key in item} if contract.get("question_type_mode") is True else {}),
+                        "usage", "parent_id", "definition", "include_scope", "exclude_scope", "observable_evidence", "anchors", "allowed_roles",
+                    ) if key in item}),
                 }
                 for item in items
                 if isinstance(item, Mapping) and str(item.get("id") or "").strip()
+                and (include_knowledge or str(dimension) != "knowledge" or is_type_key(item.get("id")))
             ]
             for dimension, items in candidates.items()
             if isinstance(items, list)
-            and (include_knowledge or str(dimension) != "knowledge")
+            and (include_knowledge or str(dimension) != "knowledge" or contract.get("question_type_mode") is True)
         }
     volume = contract.get("curriculum_volume")
     if not include_knowledge:
@@ -919,7 +896,7 @@ def _combined_prompt(
         "tag_analysis 的 method_tags、thought_tags、ability_tags、"
         "math_model_tags、special_type_tags "
         "只能逐字照抄该题 candidate_contract 中对应维度候选条的 id，不得填写名称、"
-        "改写或自造；ability_tags 只标主要考查的 1–2 项。"
+        "改写或自造；按候选 definition、include_scope、exclude_scope 与 anchors 核对条件。拿不准时留空，不凑标签；ability_tags 只标主要考查的 1–2 项。"
         "不再输出整题知识点、前置知识、易错点、章与小节归属、学生层次、教学阶段与 "
         "canonical_knowledge_id：题目知识点与前置知识归属全部由判定点关联派生。"
         "解答题的 special_type 子类（画图/计算/证明）按题目要求学生产出的形式"
@@ -999,7 +976,7 @@ def _combined_prompt(
         "^[a-z][a-z0-9_-]{1,127}$；优先 part-1、part-1-step-1。"
         "每个 evidence point 的 fine_term_links 只能引用该题 "
         "candidate_contract.candidates.knowledge 中 usage 不是 retrieval_only "
-        "或 do_not_use_as_knowledge 的候选条（技能与本册小节可链接；情境叶子仅供检索），"
+        "或 do_not_use_as_knowledge 的候选条（技能、本册小节与细项知识点均可链接），"
         "且必须把同一候选条的 id 与 name "
         "成对原样照抄；不得用其他维度、拟议标签、改写或自造词。没有完全匹配的受控知识时"
         "返回空数组，真正新词只放在 tag_analysis.proposed_tags 供人工审核。"
@@ -1007,7 +984,7 @@ def _combined_prompt(
         "就能完成的操作不挂到更晚章节的词条（例如完全平方数开方这类已会操作，"
         "不得因为式子里出现 √ 就挂到更晚章节的开平方词条）；"
         "supporting_prerequisite 不得来自比本题主考章节更晚的章节。"
-        "更早册别的小节候选只用于标记“用到的前置知识”，只能标 "
+        "候选条带 allowed_roles 时只能照抄其中的角色。更早册别的小节与细项知识点只用于标记“用到的前置知识”，只能标 "
         "supporting_prerequisite，不得标 direct。"
         "每个链接标注 direct 或 supporting_prerequisite，同一 (id, role) 不得在一个 "
         "evidence point 内重复。不要推断或返回核心图谱映射。"
@@ -1040,18 +1017,22 @@ def _combined_prompt(
     )
     if include_evidence:
         instructions += evidence_instructions
-        if any(item.taxonomy_contract.get("question_type_mode") is True for item in batch.questions):
+    if any(item.taxonomy_contract.get("question_type_mode") is True for item in batch.questions):
+        instructions += (
+            "候选目录 question_type_mode=true 的题采用题型规则：整道题恰好选 1 个主题型，"
+            "最多 2 个不重复次题型；按整题核心数学任务选择，不按背景或关键词选择。"
+            "返回 question_type_labels.primary_type_id、secondary_type_ids、proposed_type_name、reason。"
+            "主题型和次题型只取该题知识候选中 _tNN 结尾的 id，依据定义、纳入和排除范围判别。"
+            "次题型只放 secondary_type_ids，绝不挂到判定点，不参与掌握度。"
+            "无合适题型时 primary_type_id 为空，"
+            "secondary_type_ids 为空数组，proposed_type_name 留空，reason 写明待归类原因，"
+            "应用记为待归类，留给本章下次自动整理，不进入知识点新词待审。有主题型时 proposed_type_name 留空。"
+            "其余题沿用原知识与技能规则，不要求题型标签。"
+        )
+        if include_evidence:
             instructions += (
-                "候选目录 question_type_mode=true 的题采用题型规则：整道题恰好选 1 个主题型，"
-                "最多 2 个不重复次题型；按整题核心数学任务选择，不按背景或关键词选择。"
-                "返回 question_type_labels.primary_type_id、secondary_type_ids、proposed_type_name、reason。"
-                "主题型和次题型只取该题知识候选中 _tNN 结尾的 id，依据定义、纳入和排除范围判别。"
                 "主题型作为整题任务，必须以 direct 挂到每个 evidence point；它不受前述逐步骤必须知识规则限制。"
-                "次题型只放 secondary_type_ids，绝不挂到判定点，不参与掌握度。"
-                "技能和前置知识链接仍按逐步骤规则保留。无合适题型时 primary_type_id 为空，"
-                "secondary_type_ids 为空数组，proposed_type_name 与 reason 写明新词及现有题型不能复用的理由，"
-                "应用将转入现有新词例外待审，不自行创建题型。有主题型时 proposed_type_name 留空。"
-                "其余题沿用原知识与技能规则，不要求题型标签。"
+                "技能和前置知识链接仍按逐步骤规则保留。"
             )
     questions = []
     contracts: dict[str, dict[str, Any]] = {}
@@ -1109,8 +1090,8 @@ def _combined_prompt(
         "rules": instructions,
         "questions": questions,
     }
-    if include_evidence and any(item.taxonomy_contract.get("question_type_mode") is True for item in batch.questions):
-        task_payload["prompt_version"] = "combined-v4-question-types"
+    if any(item.taxonomy_contract.get("question_type_mode") is True for item in batch.questions):
+        task_payload["prompt_version"] = "combined-v5-defined-labels"
     if contracts:
         task_payload["candidate_contracts"] = contracts
     if include_evidence:

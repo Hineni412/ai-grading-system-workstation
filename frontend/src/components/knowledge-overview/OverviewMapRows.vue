@@ -8,7 +8,6 @@ const props = defineProps<{ nodes: TrainingOverviewNode[]; catalog: TrainingOver
 const emit = defineEmits<{ select: [node: TrainingOverviewNode, event: MouseEvent]; hover: [key: string] }>()
 // Type mode (typed release active): one "题型" column, types without exam
 // evidence stay hidden; chapters and sections aggregate as before.
-const typeMode = computed(() => props.catalog.some(node => node.kind === 'type'))
 const rows = computed(() => {
   const groups = new Map<string, TrainingOverviewNode[]>()
   for (const node of props.nodes) {
@@ -18,13 +17,15 @@ const rows = computed(() => {
   return [...groups].map(([key, nodes]) => ({ key, nodes,
     label: props.catalog.find(n => n.knowledge_key === key)?.display_name.split(/[|｜]/).pop()
       || nodes[0]?.display_name.split(/[|｜]/).slice(-2, -1)[0] || '未提供小节' }))
-    .filter(row => !typeMode.value || row.nodes.some(node => node.kind === 'type' && node.evidence_student_count > 0))
+    .filter(row => row.nodes.some(node => node.kind !== 'type' || node.evidence_student_count > 0))
 })
-const columns = computed(() => typeMode.value
-  ? [{ kind: 'type', label: '题型 · 考什么' }] as const
-  : [{ kind: 'topic', label: '知识点 · 学什么' }, { kind: 'skill', label: '技能 · 会做什么' }] as const)
+function columns(row: { nodes: TrainingOverviewNode[] }) {
+  if (row.nodes.some(node => node.target_kind === 'type' || node.kind === 'type')) return [{ kind: 'type', label: '题型 · 考什么' }]
+  if (row.nodes.some(node => node.target_kind === 'knowledge')) return [{ kind: 'topic', label: '知识点 · 学什么' }]
+  return [{ kind: 'topic', label: '知识点 · 学什么' }, { kind: 'skill', label: '技能 · 会做什么' }]
+}
 function cellNodes(row: { nodes: TrainingOverviewNode[] }, kind: string) {
-  return row.nodes.filter(node => node.kind === kind && (!typeMode.value || node.evidence_student_count > 0))
+  return row.nodes.filter(node => node.kind === kind && (node.kind !== 'type' || node.evidence_student_count > 0))
 }
 function label(node: TrainingOverviewNode) {
   const rate = weakRate(node)
@@ -37,7 +38,7 @@ function label(node: TrainingOverviewNode) {
   <div v-for="row in rows" :key="row.key" class="mastery-map-row">
     <h3>{{ row.label }}</h3>
     <div class="mastery-map-columns">
-      <div v-for="column in columns" :key="column.kind" class="mastery-map-column" :data-kind="column.kind">
+      <div v-for="column in columns(row)" :key="column.kind" class="mastery-map-column" :data-kind="column.kind">
         <h4>{{ column.label }}</h4>
         <div class="mastery-map-cells">
           <button v-for="node in cellNodes(row, column.kind)" :key="node.knowledge_key" type="button"

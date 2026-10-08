@@ -20,6 +20,7 @@ const props = defineProps<{
   masteryState: 'idle' | 'loading' | 'ready' | 'error'
 }>()
 
+const targetLabel = computed(() => props.section.skills.some(row => row.target_kind === 'type') ? '题型' : '技能')
 const emit = defineEmits<{ cell: [title: string, ids: number[]] }>()
 
 const COLS: { key: ChapterExamCellColumn; label: string }[] = [
@@ -110,7 +111,7 @@ function isWeakPick(skill: ChapterExamSkillRow): boolean {
     <table class="app-heat-table app-heat-table--compact cep-skill-table">
       <thead>
         <tr>
-          <th>技能</th>
+          <th>{{ targetLabel }}</th>
           <th v-for="col in COLS" :key="col.key">{{ col.label }}</th>
           <th>本班明显薄弱</th>
         </tr>
@@ -123,7 +124,7 @@ function isWeakPick(skill: ChapterExamSkillRow): boolean {
               <small>n={{ skill.total }}</small>
               <small v-if="skill.home_section_label">（属 {{ skill.home_section_label }}）</small>
               <details v-if="skill.definition" class="cep-skill-definition">
-                <summary aria-label="展开技能定义" />
+                <summary :aria-label="`展开${targetLabel}定义`" />
                 <p>{{ skill.definition }}</p>
               </details>
               <span v-if="isWeakPick(skill)" class="cep-badge-warn">常考且薄弱</span>
@@ -160,7 +161,7 @@ function isWeakPick(skill: ChapterExamSkillRow): boolean {
       </tbody>
     </table>
     </div>
-    <p class="cep-note">每道整题只计入一个主要技能（判定点关联最多者）。常考且薄弱＝主考 ≥3 题且明显薄弱占比 ≥30%。</p>
+    <p class="cep-note">{{ targetLabel === '题型' ? '每道整题只按当前主题型统计。' : '每道整题只计入一个主要技能（判定点关联最多者）。' }}常考且薄弱＝主考 ≥3 题且明显薄弱占比 ≥30%。</p>
   </section>
 
   <section class="cep-block" aria-labelledby="cep-pos-title">
@@ -169,7 +170,7 @@ function isWeakPick(skill: ChapterExamSkillRow): boolean {
     <table class="app-heat-table app-heat-table--compact cep-pos-table">
       <thead>
         <tr>
-          <th>技能</th>
+          <th>{{ targetLabel }}</th>
           <th>阶段</th>
           <th v-for="bucket in POS_BUCKETS" :key="bucket">{{ bucket }}</th>
         </tr>

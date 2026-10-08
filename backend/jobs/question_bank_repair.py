@@ -113,6 +113,10 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
             missing.append('criteria')
         if qid in snapshot['unlinked']:
             missing.append('skills')
+        if qid not in snapshot.get('primary_types', {}):
+            missing.append('types')
+        if not snapshot.get('knowledge_by_question', {}).get(qid):
+            missing.append('knowledge_points')
         if not missing or (kind == 'skills' and 'skills' not in missing) or (kind == 'analysis' and not set(missing) - {'skills'}):
             continue
         row = rows[qid]
@@ -123,15 +127,19 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
             blocked = '题目内容或图片无法读取，请先检查原题'
         elif not snapshot['release']:
             blocked = '当前技能标准不可用'
-        elif 'skills' in missing and str(profile.get('evidence_version_id', '')) in teacher:
+        elif any(part in missing for part in ('skills', 'knowledge_points')) and str(profile.get('evidence_version_id', '')) in teacher:
             blocked = '教师已确认关联，请打开题目人工核对'
+        type_pending = '本章题型尚未整理，暂时待归类' if 'types' in missing and qid in inputs and inputs[qid].taxonomy_contract.get('question_type_mode') is not True else ''
+        if type_pending and missing == ['types']:
+            blocked = type_pending
         item = {'id': qid, 'question_number': str(row['question_number']), 'paper_title': row['paper_title'],
-                'missing': missing, 'blocked_reason': blocked}
+                'missing': missing, 'blocked_reason': blocked, 'type_pending_reason': type_pending}
         if qid in load_failures:
             item['blocked_reason_code'] = load_failures[qid]
         # Internal revision has no question body and is never returned in job diagnostics.
         revision = [dict(row), heads.get(qid), profile.get('evidence_version_id'),
-                    inputs[qid].source_content_hash if qid in inputs else '', snapshot['release']]
+                    inputs[qid].source_content_hash if qid in inputs else '', snapshot['release'],
+                    snapshot.get('primary_types', {}).get(qid), sorted(snapshot.get('knowledge_by_question', {}).get(qid, ()))]
         item['revision'] = sha256(json.dumps(revision, sort_keys=True, default=str).encode()).hexdigest()
         items.append(item)
     return _preview(volume_id, kind, items, ids)
@@ -143,7 +151,7 @@ def _preview(volume: str, kind: str, items: list[dict[str, Any]], scoped: list[i
             'scanned_count': len(scoped), 'question_count': len(items),
             'repairable_count': sum(not item['blocked_reason'] for item in items),
             'counts': {part: sum(part in item['missing'] for item in items)
-                       for part in ('tags', 'evidence', 'criteria', 'skills')},
+                       for part in ('tags', 'evidence', 'criteria', 'skills', 'types', 'knowledge_points')},
             'items': items, 'model_calls': 0}
 
 
@@ -160,13 +168,21 @@ def run_question_bank_repair_job(*, context: JobContext, question_bank_db_path: 
     expected = payload.get('revisions', {})
     candidates = [item for item in preview['items'] if not item['blocked_reason'] and
                   item['revision'] == expected.get(str(item['id']))]
-    analysis_ids = [item['id'] for item in candidates if set(item['missing']) - {'skills'}]
+    analysis_ids = [item['id'] for item in candidates if set(item['missing']) & {'tags', 'evidence', 'criteria'}]
+    type_ids = []
+    type_candidates = [item['id'] for item in candidates if 'types' in item['missing']]
+    if type_candidates:
+        questions = QuestionAnalysisInputLoader(db_path=question_bank_db_path, data_root=data_root).load(
+            type_candidates, curriculum_volume_id=payload['curriculum_volume_id'])
+        type_ids = [question.question_id for question in questions if question.taxonomy_contract.get('question_type_mode') is True]
+    analysis_ids = list(dict.fromkeys([*analysis_ids, *type_ids]))
     result: dict[str, Any] = {'requested_count': len(ids), 'analysis_count': len(analysis_ids),
                               'skill_count': 0, 'completed_count': 0, 'remaining': []}
     context.raise_if_cancelled()
     if analysis_ids:
         child = replace(context, payload={'question_ids': analysis_ids,
-            'curriculum_volume_id': payload['curriculum_volume_id'], 'repair_missing_only': True})
+            'curriculum_volume_id': payload['curriculum_volume_id'], 'repair_missing_only': True,
+            'repair_type_question_ids': type_ids})
         tagging_runner(context=child, question_bank_db_path=question_bank_db_path,
             data_root=data_root, ai_service_factory=ai_service_factory,
             taxonomy_governance=taxonomy_governance)
@@ -174,17 +190,26 @@ def run_question_bank_repair_job(*, context: JobContext, question_bank_db_path: 
     after = repair_preview(service, payload['curriculum_volume_id'], 'all',
                            [item['id'] for item in candidates]) if candidates else {'items': []}
     # A failed earlier stage never adds a second paid request to the same question.
-    link_ids = [item['id'] for item in after['items'] if not item['blocked_reason'] and item['missing'] == ['skills']]
+    link_ids = [item['id'] for item in after['items'] if not item['blocked_reason']
+                and 'skills' in item['missing'] and not set(item['missing']) & {'tags', 'evidence', 'criteria'}]
+    knowledge_ids = [item['id'] for item in after['items'] if not item['blocked_reason']
+                     and 'knowledge_points' in item['missing'] and not set(item['missing']) & {'tags', 'evidence', 'criteria'}
+                     and item['id'] not in analysis_ids and item['id'] not in link_ids]
     result['skill_count'] = len(link_ids)
     if link_ids:
         child = replace(context, payload={'question_ids': link_ids, 'mode': 'missing_skills'})
         link_runner(context=child, question_bank_db_path=question_bank_db_path,
                     data_root=data_root, link_gateway=link_gateway_factory(),
                     taxonomy_governance=taxonomy_governance)
+    if knowledge_ids:
+        child = replace(context, payload={'question_ids': knowledge_ids, 'mode': 'missing_knowledge'})
+        link_runner(context=child, question_bank_db_path=question_bank_db_path,
+                    data_root=data_root, link_gateway=link_gateway_factory(),
+                    taxonomy_governance=taxonomy_governance)
     context.raise_if_cancelled()
     final = repair_preview(service, payload['curriculum_volume_id'], 'all', ids)
     result['remaining'] = [{'id': item['id'], 'question_number': item['question_number'],
-        'missing': item['missing'], 'reason': item['blocked_reason'] or
+        'missing': item['missing'], 'reason': item['blocked_reason'] or item.get('type_pending_reason') or
         ('题目已变化，请重新查看补齐清单' if item['id'] not in {i['id'] for i in candidates}
          else '本次未补齐，请打开题目核对；再次请求需要重新确认')}
         for item in final['items']]

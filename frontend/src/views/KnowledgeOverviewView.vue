@@ -26,7 +26,7 @@ const typeMode = computed(() => overview.value?.target_kind === 'type')
 const metrics = computed(() => overview.value ? overviewMetrics(overview.value) : null)
 // The priority list ranks the training-target kind: types on typed releases,
 // skills everywhere else.
-const focusItems = computed(() => volumeItems(overview.value?.nodes ?? []).filter(n => n.kind === (typeMode.value ? 'type' : 'skill') && n.distribution.weak > 0).sort(compareFocusNodes))
+const focusItems = computed(() => volumeItems(overview.value?.nodes ?? []).filter(n => (n.target_kind === 'knowledge' ? n.kind === 'topic' : n.target_kind === 'type' ? n.kind === 'type' : n.kind === (typeMode.value ? 'type' : 'skill')) && n.distribution.weak > 0).sort(compareFocusNodes))
 const priorities = computed(() => focusItems.value.slice(0, 5))
 const attention = computed(() => defaultStudentSort(overview.value?.students ?? []).filter(s => itemWeakCount(s) > 0).slice(0, 8))
 const chapters = computed(() => chapterMetrics(overview.value?.nodes ?? []))
@@ -37,7 +37,7 @@ function relatedNames(key: string) {
 }
 function train(node: TrainingOverviewNode) {
   const student_ids = node.students.filter(s => s.tier === 'weak').map(s => s.student_id)
-  if (!student_ids.length || (node.kind !== 'skill' && node.kind !== 'type')) return
+  if (!student_ids.length || (node.kind !== 'skill' && node.kind !== 'type' && node.target_kind !== 'knowledge')) return
   saveEvidenceScope(semesterEvidenceQuery({ mode: 'selected', student_ids }, curriculum.selectedVolumeId))
   presetFocusedTraining({ targetKeys: [node.knowledge_key], rangeKeys: node.section_key ? [node.section_key] : [] })
   void router.push({ name: 'training', query: { mode: 'student' } })
@@ -74,12 +74,12 @@ function questions(node: TrainingOverviewNode) {
         <div><dt>有证据学生</dt><dd>{{ metrics.evidence_student_count }}<small> / {{ metrics.student_count }} 人</small></dd></div>
         <div><dt>本学期平均得分率</dt><dd>{{ formatPercent(metrics.exam_score_rate) }}<small>有成绩 {{ metrics.exam_student_count }} 人</small></dd></div>
         <div><dt>至少 1 项明显薄弱的学生</dt><dd>{{ metrics.weakStudents }}<small>人 / 有证据 {{ metrics.evidence_student_count }} 人</small></dd></div>
-        <div><dt>有学生明显薄弱的项</dt><dd v-if="typeMode">{{ metrics.weak_type_count ?? 0 }}<small>项题型</small></dd><dd v-else>{{ metrics.weak_skill_count }}<small>项技能 · {{ metrics.weak_topic_count }} 项知识点</small></dd></div>
+        <div><dt>有学生明显薄弱的项</dt><dd v-if="typeMode">{{ metrics.weak_type_count ?? 0 }}<small>项题型</small></dd><dd v-else-if="overview.target_kind === 'mixed' || overview.target_kind === 'knowledge'">{{ (metrics.weak_type_count ?? 0) + metrics.weak_topic_count + metrics.weak_skill_count }}<small>项训练目标</small></dd><dd v-else>{{ metrics.weak_skill_count }}<small>项技能 · {{ metrics.weak_topic_count }} 项知识点</small></dd></div>
       </dl>
       <div class="overview-action-layout">
         <section class="overview-card overview-priorities" aria-labelledby="overview-priorities-title">
           <header class="overview-card__header"><h2 id="overview-priorities-title">本周建议优先处理</h2><span>按明显薄弱人数排序</span></header>
-          <StatePanel v-if="!priorities.length" kind="empty" compact :title="typeMode ? '当前范围没有明显薄弱的题型' : '当前范围没有明显薄弱的技能'" />
+          <StatePanel v-if="!priorities.length" kind="empty" compact :title="'当前范围没有明显薄弱的训练目标'" />
           <article v-for="(node, index) in priorities" :key="node.knowledge_key" class="overview-priority" :data-knowledge="node.knowledge_key">
             <div class="overview-priority-heading"><span class="overview-rank">{{ index + 1 }}</span><h3>{{ shortNodeName(node) }}</h3><span class="overview-weak-count">{{ node.distribution.weak }} 人明显薄弱</span></div>
             <p class="overview-location">属于 {{ nodeLocation(node, overview.nodes) }}</p>
@@ -111,7 +111,7 @@ function questions(node: TrainingOverviewNode) {
           </section>
         </div>
       </div>
-      <details class="overview-all-students"><summary>全部 {{ overview.students.length }} 名学生</summary><OverviewStudentTable :students="overview.students" /></details>
+      <details class="overview-all-students"><summary>全部 {{ overview.students.length }} 名学生</summary><OverviewStudentTable :target-kind="overview.target_kind" :students="overview.students" /></details>
       <details v-if="overview.warnings.length" class="overview-data-notes"><summary>数据说明（{{ overview.warnings.length }}）</summary><ul><li v-for="warning in overview.warnings" :key="warning">{{ warning }}</li></ul></details>
     </template>
   </section>

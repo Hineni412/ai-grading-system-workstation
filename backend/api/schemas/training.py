@@ -483,6 +483,7 @@ class TrainingEvidenceReference(_TrainingModel):
 
 
 class TrainingWeakPoint(_TrainingModel):
+    target_kind: Literal["skill", "type", "knowledge", "mixed"] = "skill"
     interval_low: float | None = None
     interval_high: float | None = None
     tier: Literal["stable", "unsteady", "weak", "insufficient"] = "insufficient"
@@ -564,6 +565,7 @@ class TrainingCoverage(_TrainingModel):
 
 
 class TrainingDiagnosisResponse(_TrainingModel):
+    chapter_target_kinds: dict[str, str] = Field(default_factory=dict)
     scope: TrainingNormalizedScope
     exam_scope: TrainingNormalizedExamScope
     students: list[TrainingStudentProfile]
@@ -576,11 +578,12 @@ class TrainingDiagnosisResponse(_TrainingModel):
     unmapped_terms: list[str]
     warnings: list[str]
     diagnosis_identity: Literal["question_tag"]
-    target_kind: Literal["skill", "type"] = "skill"
+    target_kind: Literal["skill", "type", "knowledge", "mixed"] = "skill"
     grouping: dict[str, Any] | None = None
 
 
 class TrainingWeakPointSummary(_TrainingModel):
+    target_kind: Literal["skill", "type", "knowledge", "mixed"] = "skill"
     knowledge_key: str
     knowledge_point: str
     mastery: float | None
@@ -670,6 +673,7 @@ class TrainingOverviewTypicalQuestion(TrainingOverviewExamQuestion):
 
 
 class TrainingOverviewNode(_TrainingModel):
+    target_kind: Literal["skill", "type", "knowledge", "mixed"] = "skill"
     definition: str = ""
     in_volume: bool = True
     group_interval_low: float | None = None
@@ -709,6 +713,7 @@ class TrainingOverviewStudent(_TrainingModel):
 
 
 class TrainingOverviewSummary(_TrainingModel):
+    target_count: int = Field(default=0, ge=0)
     student_count: int = Field(ge=0)
     evidence_student_count: int = Field(ge=0)
     exam_student_count: int = Field(ge=0)
@@ -730,8 +735,9 @@ class TrainingOverviewAssociation(_TrainingModel):
 
 
 class TrainingOverviewResponse(_TrainingModel):
+    chapter_target_kinds: dict[str, str] = Field(default_factory=dict)
     associations: list[TrainingOverviewAssociation] = Field(default_factory=list)
-    target_kind: Literal["skill", "type"] = "skill"
+    target_kind: Literal["skill", "type", "knowledge", "mixed"] = "skill"
     scope: TrainingNormalizedScope
     exam_scope: TrainingNormalizedExamScope
     warnings: list[str]

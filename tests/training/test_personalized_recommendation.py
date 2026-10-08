@@ -3807,3 +3807,75 @@ def test_type_section_spread_prefers_other_sections_and_allows_top_up(paper_mode
                      entry(4, "sk_d", "s2", mastery=.9)]
     chosen_skills = _choose_practice_entries(skill_entries, 3, config)
     assert [e["key"] for e, _ in chosen_skills] == ["sk_a", "sk_b", "sk_c"]
+
+
+def test_knowledge_target_matching_shares_layers_and_similarity_boundary():
+    from question_bank.recommendation.target_matching import match_target
+    from question_bank.recommendation.personalized import _candidate_training_keys, _paper_skill_limit_exceeded
+    key = "kp_bnu24_math_g8_lower_2_1_1"
+    second = "kp_bnu24_math_g8_lower_2_1_2"
+    section = "kp_bnu24_math_g8_lower_2_1"
+    index = {key: {"kind": "topic", "target_kind": "knowledge", "section": section, "chapter": "chapter"}}
+    source = [{"part_id": "source", "topic_keys": [key], "direct_keys": [key], "section_keys": [section]}]
+    same = [{"part_id": "same", "topic_keys": [key], "direct_keys": [key], "section_keys": [section]}]
+    near = [{"part_id": "near", "topic_keys": [second], "direct_keys": [second], "section_keys": [section]}]
+    assert match_target(key, source, same, index, similarity=0)["match_label"] == "同知识点"
+    assert match_target(key, source, near, index, similarity=.6)["match_level"] == 3
+    assert match_target(key, source, near, index, similarity=.5999) is None
+    assert match_target(key, source, [{**near[0], "section_keys": ["elsewhere"]}], index, similarity=1) is None
+    candidate = {"stable_keys": [key, "sk_old"], "training_target_keys": [key]}
+    assert _candidate_training_keys(candidate) == {key}
+    assert _paper_skill_limit_exceeded(candidate, [candidate]) == {key}
+
+
+def test_knowledge_fallback_recommendation_uses_same_target_then_near_section(monkeypatch):
+    from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+    monkeypatch.setattr(PersonalizedRecommendationModule, "_handout_placements", lambda *_: None)
+    volume = curriculum_volume(volume_id="bnu24-math-g8-lower")
+    chapter = volume["chapters"][1]
+    section = chapter["sections"][0]
+    key, second = [point["id"] for point in section["knowledge_points"][:2]]
+    def facets(topic):
+        return [{"part_id": "part1", "direct_keys": [topic], "topic_keys": [topic], "skill_keys": [],
+                 "type_keys": [], "section_keys": [section["knowledge_id"]], "chapter_keys": [chapter["knowledge_id"]]}]
+    source_text = "解不等式2x+3>5，并在数轴上表示解集"
+    candidates = [
+        _selection_candidate(1, "同知识点独立练习", key=key, training_target_keys=[key], target_facets=facets(key)),
+        _selection_candidate(2, source_text, key=second, training_target_keys=[second], target_facets=facets(second)),
+        _selection_candidate(3, "三角形中的面积计算与角度证明", key=second, training_target_keys=[second], target_facets=facets(second)),
+    ]
+    diagnosis = _direct_diagnosis((("A", .9, 900, key),))
+    ref = diagnosis["students"][0]["weak_points"][0]["source_question_refs"][0]
+    ref.update(question_text=source_text, direct_keys=[key], target_facets=facets(key))
+    draft = _selection_draft(monkeypatch, candidates, diagnosis, taxonomy_revision=11,
+        scope_keys=(chapter["knowledge_id"],), curriculum_volume_id=volume["id"],
+        remediation_only=True, max_unmeasured_questions=0, purpose="handout", question_count=1, max_written_questions=1)
+    item, = draft["students"][0]["items"]
+    assert item["question_id"] == 1
+    assert item["target"]["target_kind"] == "knowledge"
+    assert item["match_level"] == 1 and item["match_label"] == "同知识点"
+    assert "尚未关联技能" not in " ".join(draft["students"][0]["warnings"])
+    near = _selection_draft(monkeypatch, candidates[1:], diagnosis, taxonomy_revision=11,
+        scope_keys=(chapter["knowledge_id"],), curriculum_volume_id=volume["id"],
+        remediation_only=True, max_unmeasured_questions=0, purpose="handout", question_count=1, max_written_questions=1)
+    item, = near["students"][0]["items"]
+    assert item["question_id"] == 2
+    assert item["match_level"] == 3 and item["match_label"] == "同小节相近题"
+
+
+def test_knowledge_scope_keeps_target_when_it_has_skill_children():
+    from types import SimpleNamespace
+    from question_bank.recommendation.personalized import _scope_leaves
+    topic = "kp_bnu24_math_g8_lower_2_1_1"
+    skill = "sk_bnu24_math_g8_lower_2_1_01"
+    parent = "kp_bnu24_math_g8_lower_2_1"
+    relations = [{"relation_type": "parent", "source_key": topic, "target_key": parent},
+                 {"relation_type": "parent", "source_key": skill, "target_key": topic}]
+    resolver = SimpleNamespace(release_id="TEST-knowledge-with-skill-child", taxonomy_revision=11,
+        nodes=[SimpleNamespace(stable_key=key) for key in (topic, skill)],
+        relations=[SimpleNamespace(**edge) for edge in relations])
+    assert _scope_leaves((parent,), diagnosis={}, relations=relations, resolver=resolver,
+                         volume_id="bnu24-math-g8-lower") == (topic,)
+    assert _scope_leaves((topic,), diagnosis={}, relations=relations, resolver=resolver,
+                         volume_id="bnu24-math-g8-lower") == (topic,)
+    assert _scope_leaves((parent,), diagnosis={}, relations=relations) == (skill,)

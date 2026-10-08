@@ -19,6 +19,7 @@ import statistics
 from collections import defaultdict
 from typing import Any
 
+from question_bank.question_types import is_type_key
 from question_bank.services.question_frequency_service import normalize_exam_type
 from question_bank.services.question_skill_index import (
     short_node_name,
@@ -466,12 +467,18 @@ def _prepare(
         }
 
     nodes = snapshot["nodes"]
+    type_mode = any(is_type_key(key) for key in nodes)
+    primary_types = snapshot.get('primary_types', {})
+    if type_mode and not primary_types:
+        for row in conn.execute("SELECT question_id,tag_value FROM question_tags WHERE tag_type='knowledge_point' ORDER BY id"):
+            if is_type_key(row[1]) and str(row[1]) in nodes:
+                primary_types.setdefault(int(row[0]), str(row[1]))
     skill_sections = {
         key: skill_anchor_ids(node, volume)
         for key, node in nodes.items()
-        if key.startswith("sk_")
+        if (is_type_key(key) if type_mode else key.startswith("sk_"))
     }
-    by_question = snapshot["by_question"]
+    by_question = snapshot.get("type_hits", {}) if type_mode else snapshot["by_question"]
     point_counts = snapshot.get("point_counts") or {}
 
     recs: dict[int, dict[str, Any]] = {}
@@ -514,7 +521,7 @@ def _prepare(
     for rec in recs.values():
         hits = rec["skill_hits"]
         own = [key for key in hits if rec["section"] in skill_sections.get(key, [])]
-        best = _primary_skill_key(hits, rec["section"], skill_sections)
+        best = primary_types.get(rec["id"]) if type_mode else _primary_skill_key(hits, rec["section"], skill_sections)
         if best is None:
             rec["skill_key"], rec["skill_own"] = UNLINKED, True
             continue
@@ -522,12 +529,12 @@ def _prepare(
         rec["skill_own"] = bool(own)
         node = nodes.get(best)
         rec["skill_name"] = (
-            "未挂技能" if best == UNLINKED or node is None
+            ("待归类" if type_mode else "未挂技能") if best == UNLINKED or node is None
             else short_node_name(str(node["display_name"]))
         )
     for rec in recs.values():
         if rec["skill_key"] == UNLINKED:
-            rec["skill_name"] = "未挂技能"
+            rec["skill_name"] = "待归类" if type_mode else "未挂技能"
 
     stage_groups = {
         stage: [root for root, members in groups.items()
@@ -540,7 +547,7 @@ def _prepare(
         for stage, _label in STAGES
     }
     return {
-        "volume_id": volume_id,
+        "volume_id": volume_id, "type_mode": type_mode, "primary_types": primary_types,
         "volume_qids": volume_qids,
         "papers": papers,
         "groups": groups,
@@ -610,6 +617,7 @@ def build_chapter_exam_profile(
                     "key": None if key == UNLINKED else key,
                     "name": rec["skill_name"],
                     "unlinked": key == UNLINKED,
+                    "target_kind": "type" if prep["type_mode"] else "skill",
                     "home_section_label": (
                         "" if key == UNLINKED or rec["skill_own"]
                         else _skill_home(key, skill_sections, section_label)
@@ -799,7 +807,7 @@ def build_exam_frequency(
         tier = _tier_of(difficulty)
         if tier is None:
             continue
-        best = _primary_skill_key(
+        best = prep["primary_types"].get(qid) if prep["type_mode"] else _primary_skill_key(
             hits, extra_section.get(qid, ""), skill_sections
         )
         if best is None:

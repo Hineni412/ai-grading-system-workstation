@@ -10,6 +10,7 @@ from statistics import median
 from typing import Any
 from question_bank.current_knowledge import CurrentKnowledgeResolver, CurrentKnowledgeUnavailable
 
+from question_bank.question_types import is_type_key
 from question_bank.solution_evidence.knowledge_links import load_point_links
 from question_bank.solution_evidence.part_assessments import SourceHash, load_profiles
 from question_bank.taxonomy.curriculum_catalog import (
@@ -97,6 +98,9 @@ def build_skill_snapshot(
                              source_hashes=source_hashes)
     usable = {qid: profile for qid, profile in profiles.items() if profile.get("available")}
     links = load_point_links(db_path, [profile["evidence_version_id"] for profile in usable.values()], release, connection=conn)
+    by_type: dict[str, set[int]] = defaultdict(set)
+    knowledge_by_question: dict[int, set[str]] = defaultdict(set)
+    type_hits: dict[int, dict[str, list[dict[str, str]]]] = {}
     point_counts: dict[int, int] = {}
     by_skill: dict[str, set[int]] = defaultdict(set)
     by_question: dict[int, dict[str, list[dict[str, str]]]] = {}
@@ -104,6 +108,7 @@ def build_skill_snapshot(
     gap_points: dict[int, list[dict[str, Any]]] = {}
     for qid, profile in usable.items():
         skills: dict[str, list[dict[str, str]]] = {}
+        types: dict[str, list[dict[str, str]]] = {}
         point_links = links.get(profile["evidence_version_id"], {})
         evidence_versions[qid] = str(profile["evidence_version_id"])
         number = 0
@@ -116,6 +121,13 @@ def build_skill_snapshot(
                 point_link_rows = point_links.get(point_id, ())
                 has_skill_link = False
                 for link in point_link_rows:
+                    if link.role == 'direct' and link.resolution_status == 'resolved':
+                        if is_type_key(link.stable_key):
+                            types.setdefault(link.stable_key, []).append({'point_id': point_id, 'point_label': str(point.get('target') or '')})
+                        elif not link.stable_key.startswith('sk_'):
+                            anchor = curriculum_knowledge_node(link.stable_key)
+                            if anchor and anchor['level'] == 3:
+                                knowledge_by_question[qid].add(link.stable_key)
                     if link.role == "direct" and link.resolution_status == "resolved" and link.stable_key.startswith("sk_"):
                         has_skill_link = True
                         hit = {"point_id": point_id, "point_label": f"判定点 {number}：{point.get('target', '')}"}
@@ -131,6 +143,7 @@ def build_skill_snapshot(
                                                  and link.stable_key and not link.stable_key.startswith("sk_")]})
         point_counts[qid] = number
         by_question[qid] = skills
+        type_hits[qid] = types
         if gaps:
             gap_points[qid] = gaps
     topics: dict[str, set[int]] = defaultdict(set)
@@ -140,13 +153,24 @@ def build_skill_snapshot(
         resolver = CurrentKnowledgeResolver.from_connection(conn)
     except CurrentKnowledgeUnavailable:
         resolver = None
+    primary_types: dict[int, str] = {}
+    secondary_types: dict[int, list[str]] = defaultdict(list)
     resolved_topics: dict[str, tuple[str, str] | None] = {}
-    for row in conn.execute("SELECT question_id,tag_type,tag_value FROM question_tags WHERE tag_type IN ('knowledge_point','curriculum_section','exam_scope')"):
+    for row in conn.execute("SELECT question_id,tag_type,tag_value FROM question_tags WHERE tag_type IN ('knowledge_point','secondary_type','curriculum_section','exam_scope')"):
         qid = int(row["question_id"])
         if qid not in questions:
             continue
+        if row['tag_type'] == 'secondary_type':
+            if is_type_key(row['tag_value']) and row['tag_value'] in nodes:
+                secondary_types[qid].append(str(row['tag_value']))
+            continue
         if row["tag_type"] == "knowledge_point":
             value = str(row['tag_value'])
+            if is_type_key(value):
+                if value in nodes:
+                    primary_types.setdefault(qid, value)
+                    by_type[value].add(qid)
+                continue
             if value not in resolved_topics:
                 term = resolver.canonical_term(value) if resolver else None
                 targets = resolver.resolve(value) if resolver else ()
@@ -155,6 +179,10 @@ def build_skill_snapshot(
             resolved = resolved_topics[value]
             if resolved:
                 value, topic_key = resolved
+                if is_type_key(topic_key):
+                    primary_types.setdefault(qid, topic_key)
+                    by_type[topic_key].add(qid)
+                    continue
                 topic_keys[value] = topic_key
                 topics[value].add(qid)
         else:
@@ -164,6 +192,8 @@ def build_skill_snapshot(
             "point_counts": point_counts, "no_usable": set(questions) - set(usable),
             "unlinked": {qid for qid in questions if not by_question.get(qid)},
             "evidence_versions": evidence_versions, "gap_points": gap_points,
+            "primary_types": primary_types, "secondary_types": dict(secondary_types), "by_type": dict(by_type), "type_hits": type_hits,
+            "knowledge_by_question": dict(knowledge_by_question),
             "topics": dict(topics), "topic_keys": topic_keys, "sections": dict(sections)}
 
 
@@ -232,5 +262,15 @@ def skill_index(snapshot: dict[str, Any], volume_id: str, review_ids: set[int]) 
         chapters.append({"id": key, "label": chapter["label"], "question_count": len(chapter_ids & ids),
                          "cross_section_skills": skill_rows[key], "sections": section_rows})
     return {"graph_release_id": snapshot["release"], "curriculum_volume_id": volume_id, "model_calls": 0,
-            "question_count": len(ids), "unlinked": {"no_usable_evidence": len(ids & snapshot["no_usable"]),
+            "question_count": len(ids),
+            "types": [{"value": key, "label": short_node_name(snapshot['nodes'][key]['display_name']),
+                       "count": len(qids & ids), "definition": str(snapshot['nodes'][key].get('definition') or ''),
+                       "common_knowledge_points": [{"key": point, "label": short_node_name(snapshot['nodes'].get(point, {}).get('display_name', point)), "question_count": count}
+                           for point, count in sorted(Counter(point for qid in qids & ids for point in snapshot.get('knowledge_by_question', {}).get(qid, ())).items(), key=lambda item: (-item[1], item[0]))]}
+                      for key in sorted(snapshot['nodes']) if is_type_key(key) and skill_anchor_ids(snapshot['nodes'][key], volume)
+                      for qids in [snapshot.get('by_type', {}).get(key, set())]],
+            "coverage": {"types": sum(qid in snapshot.get('primary_types', {}) for qid in ids),
+                         "knowledge_points": sum(bool(snapshot.get('knowledge_by_question', {}).get(qid)) for qid in ids)},
+            "gaps": {"types": sum(qid not in snapshot.get('primary_types', {}) for qid in ids),
+                     "knowledge_points": sum(not snapshot.get('knowledge_by_question', {}).get(qid) for qid in ids)}, "unlinked": {"no_usable_evidence": len(ids & snapshot["no_usable"]),
             "no_skill_link": len((ids & snapshot["unlinked"]) - snapshot["no_usable"])}, "chapters": chapters}

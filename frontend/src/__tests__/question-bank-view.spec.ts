@@ -1,9 +1,10 @@
 import { createPinia } from 'pinia'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, h, nextTick, ref } from 'vue'
 import { createMemoryHistory } from 'vue-router'
 
 import { ApiError } from '../api/errors'
+import type { JobResponse } from '../api/jobs'
 import { questionBankApi, type ChapterExamProfile as ChapterExamProfileData, type QuestionBankPaper } from '../api/question-bank'
 import { trainingApi } from '../api/training'
 import QuestionBasketDrawer from '../components/question-bank/QuestionBasketDrawer.vue'
@@ -153,6 +154,10 @@ function confirmDialogButton(dialog: HTMLElement, label: string): HTMLButtonElem
     .find((button) => button.textContent?.trim() === label)!
 }
 
+beforeEach(() => {
+  vi.spyOn(questionBankApi, 'previewTagging').mockImplementation(async (_ids, volumeId) => ({ base_release_id: 'kgr_TEST', input_fingerprint: 'e'.repeat(64), volume_id: volumeId, chapters: [], planned_requests: 0, model_calls: 0 }))
+})
+
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount()
   document.body.innerHTML = ''
@@ -196,12 +201,12 @@ describe('question bank workspace', () => {
     expect(host.querySelector('.page-header__navigation')).not.toBeNull()
     expect(host.querySelector('nav.qb-viewnav')).toBeNull()
     expect([...nav.querySelectorAll('button')].map(b => b.textContent?.trim()))
-      .toEqual(['章节考情', '按技能', '按试卷', '待处理'])
+      .toEqual(['章节考情', '按标签', '按试卷', '待处理'])
     const current = () => nav.querySelector('button[aria-current="page"]')?.textContent?.trim()
     expect(current()).toBe('章节考情')
 
     for (const [query, label] of [
-      ['?skill=sk_1', '按技能'], ['?topic=t_1', '按技能'], ['?tagDim=idea', '按技能'],
+      ['?skill=sk_1', '按标签'], ['?topic=t_1', '按标签'], ['?tagDim=idea', '按标签'],
       ['?paper=7', '按试卷'], ['?tab=todo&skill=sk_1', '待处理'], ['?tab=paper', '按试卷'],
     ] as const) {
       await router.push(`/question-bank${query}`); await nextTick()
@@ -217,7 +222,7 @@ describe('question bank workspace', () => {
     const pinia = createPinia()
     const preview = { curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'skills' as const,
       fingerprint: 'a'.repeat(64), scanned_count: 100, question_count: 2, repairable_count: 1, model_calls: 0,
-      counts: { tags: 0, evidence: 1, criteria: 1, skills: 2 }, items: [
+      counts: { types: 0, knowledge_points: 0, tags: 0, evidence: 1, criteria: 1, skills: 2 }, items: [
         { id: 17, question_number: '1', paper_title: 'TEST-试卷', missing: ['skills' as const], blocked_reason: '', revision: 'b'.repeat(64) },
         { id: 18, question_number: '2', paper_title: 'TEST-试卷', missing: ['evidence' as const, 'criteria' as const, 'skills' as const], blocked_reason: '题目内容或图片无法读取', revision: 'c'.repeat(64) },
       ] }
@@ -248,7 +253,7 @@ describe('question bank workspace', () => {
     const host = document.createElement('div'); document.body.append(host)
     const preview = { curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'skills' as const,
       fingerprint: 'a'.repeat(64), scanned_count: 1, question_count: 1, repairable_count: 1, model_calls: 0,
-      counts: { tags: 0, evidence: 0, criteria: 0, skills: 1 }, items: [
+      counts: { types: 0, knowledge_points: 0, tags: 0, evidence: 0, criteria: 0, skills: 1 }, items: [
         { id: 17, question_number: '1', paper_title: 'TEST-当前清单', missing: ['skills' as const], blocked_reason: '', revision: 'b'.repeat(64) },
       ] }
     let settlePrevious!: () => void
@@ -1018,6 +1023,8 @@ describe('question bank workspace', () => {
     await vi.waitFor(() => expect(list).toHaveBeenCalledWith(expect.objectContaining({ skillKeys: ['sk_TEST_one'] })))
     const callsBeforeTagMode = list.mock.calls.length
     button('按标签').click()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.tagDim).toBe('typeKeys'))
+    button('特殊考法').click()
     await vi.waitFor(() => expect(router.currentRoute.value.query.tagDim).toBe('specialTypes'))
     await vi.waitFor(() => expect(tagRow('新定义题')).toBeTruthy())
     expect(list.mock.calls.length).toBe(callsBeforeTagMode)
@@ -1060,7 +1067,8 @@ describe('question bank workspace', () => {
     app.use(pinia).mount(host); mounted.push(app)
     await vi.waitFor(() => expect(host.querySelector('.qb-todo-group article')?.textContent).toContain('第1题匿名期末试卷'))
     expect(load).toHaveBeenCalledWith(expect.objectContaining({ criteriaNeedsReview: true }), expect.anything())
-    expect(load).toHaveBeenCalledWith(expect.objectContaining({ skillUnlinked: true }), expect.anything())
+    expect(load).toHaveBeenCalledWith(expect.objectContaining({ missingType: true }), expect.anything())
+    expect(load).toHaveBeenCalledWith(expect.objectContaining({ missingKnowledge: true }), expect.anything())
     expect(load).not.toHaveBeenCalledWith(expect.objectContaining({ analysisStatus: 'incomplete' }), expect.anything())
     const action = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '去处理 →')!
     action.click(); expect(open).toHaveBeenCalledWith(item)
@@ -1072,7 +1080,7 @@ describe('question bank workspace', () => {
     vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, total_pages: 0 })
     const preview = { curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'all' as const,
       fingerprint: 'a'.repeat(64), scanned_count: 3, question_count: 3, repairable_count: 3, model_calls: 0,
-      counts: { tags: 1, evidence: 1, criteria: 1, skills: 2 }, items: [
+      counts: { types: 0, knowledge_points: 0, tags: 1, evidence: 1, criteria: 1, skills: 2 }, items: [
         { id: 21, question_number: '3', paper_title: 'TEST-缺标签卷', missing: ['tags' as const, 'evidence' as const], blocked_reason: '', revision: 'b'.repeat(64) },
         { id: 22, question_number: '4', paper_title: 'TEST-缺判定点卷', missing: ['criteria' as const, 'skills' as const], blocked_reason: '', revision: 'c'.repeat(64) },
         { id: 23, question_number: '5', paper_title: 'TEST-只缺技能卷', missing: ['skills' as const], blocked_reason: '', revision: 'd'.repeat(64) },
@@ -1103,7 +1111,7 @@ describe('question bank workspace', () => {
     vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, total_pages: 0 })
     vi.spyOn(questionBankApi, 'repairPreview').mockResolvedValue({ curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'all' as const,
       fingerprint: 'a'.repeat(64), scanned_count: 1, question_count: 1, repairable_count: 1, model_calls: 0,
-      counts: { tags: 0, evidence: 0, criteria: 0, skills: 1 }, items: [
+      counts: { types: 0, knowledge_points: 0, tags: 0, evidence: 0, criteria: 0, skills: 1 }, items: [
         { id: 23, question_number: '5', paper_title: 'TEST-只缺技能卷', missing: ['skills' as const], blocked_reason: '', revision: 'd'.repeat(64) },
       ] })
     const app = createApp({ render: () => h(QuestionBankTodo, { index: null, pendingCount: 0 }) })
@@ -1307,6 +1315,44 @@ describe('question bank workspace', () => {
     }
     await nextTick()
     expect(document.body.textContent).toContain('取消请求未能同步，任务可能仍在继续。')
+  })
+
+  it.each(['published', 'failed_status', 'failed_result', 'outcome_unknown', 'skipped', 'paused'])('shows chapter child %s in the existing import result', async (outcome) => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(QuestionImportJobs)
+    app.use(pinia)
+    app.mount(host)
+    mounted.push(app)
+    const base: JobResponse = { id: 43, job_type: 'tagging_sync', payload: {}, result: { chapter_type_job_id: 44, chapter_type_state: 'queued' },
+      status: 'succeeded', progress: 1, stage: '', detail: '', error: null, cancel_requested: false,
+      created_at: '2026-10-08T10:00:00Z', started_at: null, updated_at: '2026-10-08T10:00:01Z', finished_at: '2026-10-08T10:00:01Z' }
+    let resolveChild!: (job: JobResponse) => void
+    const pending = new Promise<JobResponse>(resolve => { resolveChild = resolve })
+    const getJob = vi.fn(() => pending)
+    const jobs = useJobStore(pinia)
+    await jobs.initialize({ api: { getJob, cancelJob: vi.fn(async () => base), getJobStatusBatch: vi.fn(async () => []) },
+      now: () => new Date(0), schedule: setTimeout, cancelScheduled: clearTimeout, pollIntervalMs: 2_000, maxBackoffMs: 30_000 })
+    jobs.track(base)
+    await nextTick()
+    expect(host.textContent).toContain('等待题型整理完成')
+    expect(getJob).toHaveBeenCalledExactlyOnceWith(44, expect.any(AbortSignal))
+    resolveChild({ ...base, id: 44, job_type: 'chapter_type_organize', payload: { private_body: 'TEST-full-model-body' },
+      status: outcome === 'failed_status' ? 'failed' : outcome === 'paused' ? 'paused' : 'succeeded',
+      result: ['failed_status', 'paused'].includes(outcome) ? {} : { outcome: outcome === 'failed_result' ? 'failed' : outcome, chapter_summaries: [{ label: '第1章', new_type_count: 2,
+        question_count: 30, unclassified_count: 1, types: [{ name: 'TEST整式化简', question_count: 29 }] }] } })
+    await vi.waitFor(() => expect(jobs.jobs[44]).toBeDefined())
+    const noteByOutcome: Record<string, string> = { failed_result: '题型整理未完成，原标准已保留', skipped: '本次可用题目尚未达到章节整理条件', paused: '题型整理已暂停。' }
+    const expectedCopy = outcome === 'published'
+      ? ['第1章已整理题型', '新增 2 类', '本次处理 30 题', '待归类 1 题', 'TEST整式化简 · 29 题']
+      : [noteByOutcome[outcome] ?? '题型整理任务状态需要核对；不会自动追加请求']
+    for (const copy of expectedCopy) expect(host.textContent).toContain(copy)
+    expect(host.textContent?.includes('第1章已整理题型')).toBe(outcome === 'published')
+    expect(host.textContent?.includes('原标准已保留')).toBe(outcome === 'failed_result')
+    expect(host.textContent).not.toContain('TEST-full-model-body')
+    expect(host.querySelectorAll('.qb-job')).toHaveLength(1)
+    jobs.$dispose()
   })
 
   it('surfaces grouped import match detail with preview links on completion', async () => {
@@ -1902,30 +1948,41 @@ describe('question bank workspace', () => {
     expect([...host.querySelectorAll('.paper-batch-bar button')]).toHaveLength(0)
   })
 
-  it('asks once and submits a tagging job per selected paper for batch fill', async () => {
+  it.each([1, 501])('confirms one chapter scope and keeps per-paper batches for %i questions each', async (questionCount) => {
     const host = document.createElement('div')
     document.body.append(host)
     const pinia = createPinia()
     const app = createApp(PaperLibrary)
     app.use(pinia)
     const store = useQuestionBankStore(pinia)
-    store.papers = [paper, { ...paper, id: 5, title: '第二份试卷' }]
+    store.papers = [{ ...paper, question_count: questionCount }, { ...paper, id: 5, title: '第二份试卷', question_count: questionCount }]
     store.papersState = 'ready'
     app.mount(host)
     mounted.push(app)
     mountConfirmHost()
     const taggingBodies: Array<Record<string, unknown>> = []
+    const idsFor = (paperId: number) => Array.from({ length: questionCount }, (_, index) => 3_000 + paperId + index * 10)
+    const scopeIds = [...idsFor(4), ...idsFor(5)]
+    const finalIds = idsFor(5).slice(Math.floor((questionCount - 1) / 500) * 500)
+    const plan = { base_release_id: 'kgr_TEST', input_fingerprint: 'e'.repeat(64), volume_id: 'bnu24-math-g7-lower',
+      chapters: [{ chapter_id: 'kp_TEST', label: '第1章', question_count: scopeIds.length, paper_count: 2, unclassified_count: scopeIds.length, planned_requests: 1 }],
+      pending_question_ids: scopeIds, planned_requests: 1, model_calls: 0 as const }
+    vi.mocked(questionBankApi.previewTagging).mockResolvedValueOnce(plan)
+    const child: JobResponse = { id: 990, job_type: 'chapter_type_organize', payload: {}, result: {}, status: 'queued', progress: 0, stage: '', detail: '', error: null,
+      cancel_requested: false, created_at: '2026-10-08T10:00:00Z', started_at: null, updated_at: '2026-10-08T10:00:00Z', finished_at: null }
+    const getJob = vi.fn(async () => child)
+    const jobs = useJobStore(pinia)
+    await jobs.initialize({ api: { getJob, cancelJob: vi.fn(async () => child), getJobStatusBatch: vi.fn(async () => []) }, now: () => new Date(0),
+      schedule: setTimeout, cancelScheduled: clearTimeout, pollIntervalMs: 2_000, maxBackoffMs: 30_000 })
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
       if (url.startsWith('/api/question-bank/question-refs')) {
         const paperIds = new URL(url, 'http://local.test').searchParams
           .getAll('paper_ids')
           .map(Number)
-        return questionRefs(paperIds.map((paperId) => ({
-          id: 3_000 + paperId,
-          paper_id: paperId,
-          question_number: String(paperId),
-        })))
+        const page = Number(new URL(url, 'http://local.test').searchParams.get('page') || 1)
+        const refs = paperIds.flatMap(paperId => idsFor(paperId).map(id => ({ id, paper_id: paperId, question_number: String(id) })))
+        return response({ items: refs.slice((page - 1) * 500, page * 500), total: refs.length, page, page_size: 500, total_pages: Math.ceil(refs.length / 500) })
       }
       if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
         taggingBodies.push(JSON.parse(String(init.body)))
@@ -1933,8 +1990,8 @@ describe('question bank workspace', () => {
           id: 300 + taggingBodies.length,
           job_type: 'tagging_sync',
           payload: {},
-          result: {},
-          status: 'queued',
+          result: taggingBodies.length === Math.ceil(questionCount / 500) * 2 ? { chapter_type_job_id: 990, chapter_type_state: 'queued' } : {},
+          status: taggingBodies.length === Math.ceil(questionCount / 500) * 2 ? 'succeeded' : 'queued',
           progress: 0,
           stage: '',
           detail: '',
@@ -1956,14 +2013,21 @@ describe('question bank workspace', () => {
     batchBarButton(host, '继续完成未完成题目').click()
 
     const batchDialog = await confirmDialogOpen()
-    expect(batchDialog.textContent).toContain('还有 2 道题未打全标签')
-    expect(batchDialog.textContent).toContain('共 2 道题提交后端逐题核对')
+    expect(batchDialog.textContent).toContain(`还有 ${scopeIds.length} 道题未打全标签`)
+    expect(batchDialog.textContent).toContain(`共 ${scopeIds.length} 道题提交后端逐题核对`)
+    expect(batchDialog.textContent?.split('预计增加 1 次模型请求')).toHaveLength(2)
+    expect(questionBankApi.previewTagging).toHaveBeenCalledExactlyOnceWith(finalIds, paper.curriculum_volume_id, undefined, scopeIds)
     confirmDialogButton(batchDialog, '继续').click()
 
-    await vi.waitFor(() => expect(taggingBodies).toHaveLength(2))
-    expect(taggingBodies.map((body) => body.question_ids)).toEqual([[3_004], [3_005]])
+    await vi.waitFor(() => expect(taggingBodies).toHaveLength(Math.ceil(questionCount / 500) * 2))
+    expect(taggingBodies.map((body) => body.question_ids)).toEqual([4, 5].flatMap(id => Array.from({ length: Math.ceil(questionCount / 500) }, (_, index) => idsFor(id).slice(index * 500, (index + 1) * 500))))
+    expect(taggingBodies.slice(0, -1).every(body => body.chapter_type_authorization === undefined)).toBe(true)
+    expect(taggingBodies[taggingBodies.length - 1]?.chapter_type_authorization).toEqual({ ...plan, confirmed: true, request_limit: 1 })
+    await vi.waitFor(() => expect(jobs.jobs[990]).toBeDefined())
+    expect(getJob).toHaveBeenCalledExactlyOnceWith(990, expect.any(AbortSignal))
     expect(taggingBodies.every((body) => body.force_retag === undefined)).toBe(true)
-    expect(host.textContent).toContain('已提交 2 份试卷等待后端核对（其中 2 道题未打全标签）')
+    expect(host.textContent).toContain(`已提交 2 份试卷等待后端核对（其中 ${scopeIds.length} 道题未打全标签）`)
+    jobs.$dispose()
   })
 
   it('previews and deletes the whole selection with one request each', async () => {

@@ -505,3 +505,47 @@ def test_new_analysis_survives_checkpoint_and_linked_adoption(tmp_path, monkeypa
         operation_id="direct-parts",
     )
     assert profiles.load_profiles(path, [1])[1]["parts"][0]["difficulty"] == 3
+
+
+def test_published_training_retargets_current_type_from_frozen_facts(tmp_path, monkeypatch):
+    import sqlite3
+    from types import SimpleNamespace
+    from question_bank.mastery.current import CurrentMasteryCalculator
+    from question_bank.solution_evidence import part_assessments, knowledge_links
+    key = "kp_bnu24_math_g8_lower_1_1_t01"
+    old_key = "kp_bnu24_math_g8_lower_1_1_1"
+    path = tmp_path / "TEST-frozen-training.db"
+    frozen = {"points": [{"point_id": pid, "target": "冻结要求", "observable_evidence": "冻结作答", "depends_on": []}
+                         for pid in ("p1", "p2")], "solution_evidence": {"source_content_hash": "same-source"}}
+    source = json.dumps({"bank_question_id": 1})
+    states = json.dumps([{"point_id": "p1", "state": "met"}, {"point_id": "p2", "state": "not_met"}])
+    with sqlite3.connect(path) as conn:
+        conn.executescript("""
+            CREATE TABLE training_evidence_records(evidence_id,student_id,stable_key,occurred_at,status,
+                source_json,criterion_version_id,criterion_hash,task_item_code,final_points_json,submission_id,submission_revision);
+            CREATE TABLE training_criterion_versions(version_id,question_id,criteria_json,criteria_hash);
+            CREATE TABLE question_tags(question_id,tag_type,tag_value,id);
+        """)
+        conn.execute("INSERT INTO training_evidence_records VALUES('e1','TEST-student',?,'2026-10-01','active',?,'v1','hash','task',?,'submission',1)", (old_key, source, states))
+        conn.execute("INSERT INTO training_evidence_records VALUES('e2','TEST-student',?,'2026-10-01','active',?,'v1','hash','task',?,'submission',1)", (old_key + "_old", source, states))
+        conn.execute("INSERT INTO training_criterion_versions VALUES('v1',1,?,'hash')", (json.dumps(frozen),))
+        conn.execute("INSERT INTO question_tags VALUES(1,'knowledge_point',?,1)", (key,))
+    before = path.read_bytes()
+    profile = {"question_id": 1, "available": True, "evidence_version_id": "current",
+               "current_source_content_hash": "same-source", "evidence_source_hash": "same-source",
+               "evidence": {"parts": [{"part_id": "new-part", "evidence_points": [{"evidence_point_id": "new-point"}]}]}}
+    monkeypatch.setattr(part_assessments, "load_profiles", lambda *_args, **_kwargs: {1: profile})
+    monkeypatch.setattr(knowledge_links, "load_point_links", lambda *_args, **_kwargs: {})
+    resolver = SimpleNamespace(release_id="TEST-training-current-type", taxonomy_revision=11,
+        nodes=[SimpleNamespace(stable_key=key)], relations=[],
+        resolve=lambda value: [SimpleNamespace(stable_key=value)])
+    observed = CurrentMasteryCalculator(path, resolver).training_observations(
+        exclude_evidence_ids=frozenset(), allowed_student_ids=None)
+    assert set(observed) == {("TEST-student", key)}
+    assert [(item.achieved_points, item.total_points) for item in observed["TEST-student", key]] == [(1, 1), (0, 1)]
+    assert path.read_bytes() == before
+    profile["current_source_content_hash"] = profile["evidence_source_hash"] = "changed-source"
+    rejected = CurrentMasteryCalculator(path, resolver).training_observations(
+        exclude_evidence_ids=frozenset(), allowed_student_ids=None)
+    assert rejected == {}
+    assert path.read_bytes() == before

@@ -35,6 +35,41 @@ export interface JobResponse {
   finished_at: string | null
 }
 
+
+export interface ChapterTypeJobSummary {
+  note: string
+  chapters: { label: string; newTypeCount: number; questionCount: number; unclassifiedCount: number; types: { name: string; questionCount: number }[] }[]
+}
+
+/** Only public chapter counts and type names are shown in parent task results. */
+export function chapterTypeJobSummary(parent: JobResponse | null, jobs: Readonly<Record<number, JobResponse>>): ChapterTypeJobSummary | null {
+  if (!parent) return null
+  const syncId = parent.result.question_bank_sync_job_id
+  const directId = parent.result.chapter_type_job_id
+  const source = Number.isSafeInteger(directId) && Number(directId) > 0 ? parent
+    : Number.isSafeInteger(syncId) && Number(syncId) > 0 ? jobs[Number(syncId)] ?? parent : parent
+  const id = source.result.chapter_type_job_id
+  const child = parent.job_type === 'chapter_type_organize' ? parent
+    : Number.isSafeInteger(id) && Number(id) > 0 ? jobs[Number(id)] : undefined
+  const state = source.result.chapter_type_state
+  if (!child && !(Number.isSafeInteger(id) && Number(id) > 0) && typeof state !== 'string') return null
+  const empty = (note: string): ChapterTypeJobSummary => ({ note, chapters: [] })
+  if (child?.result.outcome === 'failed') return empty('题型整理未完成，原标准已保留。')
+  if (state === 'submission_failed') return empty('整理任务未能确认提交；不会自动追加请求。')
+  if (child?.status === 'failed' || child?.result.outcome === 'outcome_unknown') return empty('题型整理任务状态需要核对；不会自动追加请求。')
+  if (child?.status === 'cancelled') return empty('题型整理已取消；请核对现有标准，不会自动追加请求。')
+  if (child?.status !== 'succeeded') return empty(child?.status === 'running' ? '题型整理进行中。' : child?.status === 'paused' ? '题型整理已暂停。' : '等待题型整理完成。')
+  if (child.result.outcome === 'skipped') return empty('本次可用题目尚未达到章节整理条件，原标准保持。')
+  if (child.result.outcome !== 'published') return empty('题型整理已结束，请核对整理结果。')
+  const count = (value: unknown) => Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0
+  const chapters = (Array.isArray(child.result.chapter_summaries) ? child.result.chapter_summaries : [])
+    .filter(isRecord).filter(item => typeof item.label === 'string')
+    .map(item => ({ label: String(item.label), newTypeCount: count(item.new_type_count), questionCount: count(item.question_count),
+      unclassifiedCount: count(item.unclassified_count), types: (Array.isArray(item.types) ? item.types : [])
+        .filter(isRecord).filter(type => typeof type.name === 'string').map(type => ({ name: String(type.name), questionCount: count(type.question_count) })) }))
+  return { note: '本次章节题型已整理。', chapters }
+}
+
 export interface JobApi {
   getJob(id: number, signal?: AbortSignal): Promise<JobResponse>
   cancelJob(id: number, signal?: AbortSignal): Promise<JobResponse>

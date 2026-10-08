@@ -5,6 +5,7 @@ import { exportsApi } from '../../api/exports'
 
 import {
   trainingApi,
+  trainingTargetLabelForKey,
   type PersonalizedPaperInstance,
   type PersonalizedPaperBatch,
   type PersonalizedRecommendationDraft,
@@ -124,7 +125,7 @@ const paperCancelBusy = ref(false)
 let paperBatchPollGeneration = 0
 
 const typeMode = computed(() => props.diagnosis?.target_kind === 'type')
-const targetLabel = computed(() => (typeMode.value ? '题型' : '技能'))
+const targetLabel = computed(() => (typeMode.value ? '题型' : props.diagnosis?.target_kind === 'knowledge' ? '知识点' : props.diagnosis?.target_kind === 'mixed' ? '训练目标' : '技能'))
 const targetOptions = computed(() => {
   const options = new Map<string, string>()
   for (const weak of (props.diagnosis?.students ?? []).flatMap((student) => student.weak_points)) {
@@ -915,8 +916,8 @@ async function editItem(
     <header v-if="!externalSetup"><h3 id="personalized-draft-title">{{ effectivePaperMode === 'shared' ? '多人同题草稿' : '一人一卷草稿' }}</h3></header>
     <details v-if="!externalSetup" class="personalized-settings" :open="!draft"><summary>训练设置</summary><section>
       <label class="personalized-edit-reason">难度上限<input v-model.number="difficultyMax" class="app-input" type="number" min="1" max="10"></label>
-      <fieldset v-if="targetOptions.length && targetKeys === undefined" class="personalized-targets"><legend>本次训练目标</legend><label v-for="target in targetOptions" :key="target.key"><input v-model="selectedTargets" type="checkbox" :value="target.key">{{ target.label }}</label><p v-if="!selectedTargets.length">请勾选至少一个{{ typeMode ? '题型' : '知识点' }}。</p></fieldset>
-      <fieldset v-else-if="targetOptions.length" class="personalized-targets"><legend>已选目标</legend><span v-for="target in selectedTargetLabels" :key="target">{{ knowledgeLeafLabel(target) }}</span><p v-if="!selectedTargets.length">请在知识结构中选择目标。</p></fieldset>
+      <fieldset v-if="targetOptions.length && targetKeys === undefined" class="personalized-targets"><legend>本次训练目标</legend><label v-for="target in targetOptions" :key="target.key"><input v-model="selectedTargets" type="checkbox" :value="target.key">{{ trainingTargetLabelForKey(diagnosis, target.key) }} · {{ target.label }}</label><p v-if="!selectedTargets.length">请勾选至少一个{{ typeMode ? '题型' : '知识点' }}。</p></fieldset>
+      <fieldset v-else-if="targetOptions.length" class="personalized-targets"><legend>已选目标</legend><span v-for="(target, index) in selectedTargetLabels" :key="target">{{ trainingTargetLabelForKey(diagnosis, selectedTargets[index] ?? '') }} · {{ knowledgeLeafLabel(target) }}</span><p v-if="!selectedTargets.length">请在知识结构中选择目标。</p></fieldset>
       <p v-else class="training-empty is-compact">当前范围暂无可用掌握证据。</p>
       <AppButton variant="primary" data-testid="generate-personalized-draft" :disabled="pendingRequestToken ? state === 'loading' || state === 'editing' : !canGenerate" @click="generate">{{ state === 'loading' ? '正在生成并核对…' : pendingRequestToken ? '核对生成结果' : '生成个性化草稿' }}</AppButton>
     </section></details>

@@ -186,8 +186,9 @@ def test_training_targets_follow_each_volumes_active_nodes(revision):
         skills = [node.stable_key for node in resolver.nodes
                   if node.stable_key.startswith("sk_" + volume_id.replace("-", "_") + "_")]
         for key in skills:
-            assert is_training_target(key, resolver, volume_id) is (not converted)
-            assert is_training_target(key, resolver) is (not converted)
+            expected_skill = not converted and not (revision == 11 and volume_id == "bnu24-math-g8-lower")
+            assert is_training_target(key, resolver, volume_id) is expected_skill
+            assert is_training_target(key, resolver) is expected_skill
     assert is_training_target("kp_bnu24_math_g8_upper_1_1_t01", resolver) is (revision == 11)
 
 
@@ -208,3 +209,28 @@ def test_training_target_volume_uses_resolver_parent_before_key_namespace():
     assert not type_keys_active(resolver, "bnu24-math-g7-upper")
     assert is_training_target("sk_TEST_g7", resolver)
     assert not is_training_target("sk_TEST_g8", resolver)
+
+
+def test_chapter_targets_keep_old_volumes_and_mix_new_volume():
+    from types import SimpleNamespace
+    from question_bank.question_types import (
+        chapter_target_kind, chapter_target_kinds, is_training_target, training_keys,
+    )
+    type_key = "kp_bnu24_math_g8_lower_1_1_t01"
+    topic = "kp_bnu24_math_g8_lower_2_1_1"
+    old_skill = "sk_bnu24_math_g7_upper_1_1_01"
+    current_skill = "sk_bnu24_math_g8_lower_2_1_01"
+    resolver = SimpleNamespace(release_id="TEST-chapter-target-policy", taxonomy_revision=11,
+        nodes=[SimpleNamespace(stable_key=key) for key in (type_key, topic, old_skill, current_skill)],
+        relations=[SimpleNamespace(source_key=type_key, target_key="kp_bnu24_math_g8_lower_1_1",
+                                   relation_type="parent")])
+    assert chapter_target_kind(resolver, "bnu24-math-g8-lower") == "mixed"
+    modes = chapter_target_kinds(resolver, "bnu24-math-g8-lower")
+    assert modes["kp_bnu24_math_g8_lower_1"] == "type"
+    assert modes["kp_bnu24_math_g8_lower_2"] == "knowledge"
+    assert is_training_target(type_key, resolver)
+    assert is_training_target(topic, resolver)
+    assert not is_training_target(current_skill, resolver)
+    assert is_training_target(old_skill, resolver)
+    assert training_keys((type_key, topic, current_skill), resolver) == {type_key, topic}
+    assert chapter_target_kind(resolver, "bnu24-math-g7-upper") == "skill"

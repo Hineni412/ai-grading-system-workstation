@@ -47,7 +47,7 @@ export interface PaperRules {
 }
 export interface AssemblyContext {
   class_ids: string[]; session_ids: number[]; curriculum_volume_id: string; title_generated?: boolean
-  target_kind?: 'skill' | 'type'
+  target_kind?: 'skill' | 'type' | 'knowledge' | 'mixed'
   sources: Record<string, { key: string; label: string; skill_keys: string[]; original?: boolean }>
 }
 export const defaultPaperRules = (): PaperRules => ({ purpose: 'handout', question_count: 10, difficulty_max: 8, max_questions_per_skill: 1, max_written_questions: 2, recent_activity_count: 3 })
@@ -56,7 +56,7 @@ export function createTrainingFromAssembly(body: { request_token: string; class_
     decode: value => { if (!isRecord(value) || !isRevision(value.draft_id)) throw new Error('Invalid training draft'); return { draft_id: value.draft_id } },
   })
 }
-export function paperRulesSummary(rules: PaperRules, targetKind: 'skill' | 'type' = 'skill'): string { return `同${targetKind === 'type' ? '题型' : '技能'}最多 ${rules.max_questions_per_skill} 道 · 解答题最多 ${rules.max_written_questions} 道 · 难度 ≤ ${rules.difficulty_max} · 排除最近 ${rules.recent_activity_count} 次原题` }
+export function paperRulesSummary(rules: PaperRules, targetKind: 'skill' | 'type' | 'knowledge' | 'mixed' = 'skill'): string { return `同${targetKind === 'type' ? '题型' : targetKind === 'knowledge' ? '知识点' : targetKind === 'mixed' ? '训练目标' : '技能'}最多 ${rules.max_questions_per_skill} 道 · 解答题最多 ${rules.max_written_questions} 道 · 难度 ≤ ${rules.difficulty_max} · 排除最近 ${rules.recent_activity_count} 次原题` }
 
 export interface AssemblyQuestion {
   id: number
@@ -139,7 +139,7 @@ export interface AssemblyExam {
   session_id: number; title: string; date: string; class_ids: string[]; student_count: number
   average_score: number; questions: AssemblyExamQuestion[]
 }
-export interface AssemblyExamResult { student_count: number; exams: AssemblyExam[]; target_kind?: 'skill' | 'type' }
+export interface AssemblyExamResult { student_count: number; exams: AssemblyExam[]; target_kind?: 'skill' | 'type' | 'knowledge' | 'mixed' }
 const isCount = isNonnegativeInteger
 const isStrings = isStringArray
 const isRate = (v: unknown) => v === null || (typeof v === 'number' && v >= 0 && v <= 1)
@@ -158,7 +158,7 @@ export function fetchAssemblyExams(class_ids: string[], curriculum_volume_id: st
     method: 'POST', body: { class_ids, curriculum_volume_id }, signal, timeoutMs: 120_000,
     decode: value => {
       if (!isRecord(value) || !isCount(value.student_count) || !Array.isArray(value.exams)
-        || (value.target_kind !== undefined && value.target_kind !== 'skill' && value.target_kind !== 'type')
+        || (value.target_kind !== undefined && !['skill', 'type', 'knowledge', 'mixed'].includes(String(value.target_kind)))
         || !value.exams.every(e => isRecord(e) && isPositiveInteger(e.session_id) && typeof e.title === 'string' && typeof e.date === 'string'
           && isStrings(e.class_ids) && isCount(e.student_count) && typeof e.average_score === 'number' && Number.isFinite(e.average_score)
           && Array.isArray(e.questions) && e.questions.every(isExamQuestion))) throw new Error('Invalid exam evidence')
@@ -191,7 +191,7 @@ export interface AssemblyAssistantResult {
   selected_target_keys: string[]
   candidate_total: number
   candidates: Array<{ question_id: number; target_keys: string[]; practice_kind?: 'focus' | 'foundation'; selection_kind?: 'direct' | 'task_matched' | 'supplement' | null; match_level?: number | null; match_label?: string; difficulty?: number | null; difficulty_band?: 'suitable' | 'lower' | 'higher' | 'unknown'; similar_question_ids?: number[]; direct_target_keys?: string[]; suitable_student_count?: number; remediation_student_count?: number; consolidation_student_count?: number; new_practice_student_count?: number; uncertain_student_count?: number; difficulty_basis?: string }>
-  target_kind?: 'skill' | 'type'
+  target_kind?: 'skill' | 'type' | 'knowledge' | 'mixed'
 }
 
 export function decodeAssemblyAssistant(value: unknown): AssemblyAssistantResult {
@@ -213,7 +213,7 @@ export function decodeAssemblyAssistant(value: unknown): AssemblyAssistantResult
         || item.difficulty_band === 'lower' || item.difficulty_band === 'higher' || item.difficulty_band === 'unknown')
       && (item.similar_question_ids === undefined
         || (Array.isArray(item.similar_question_ids) && item.similar_question_ids.every(isPositiveInteger))))
-    || (value.target_kind !== undefined && value.target_kind !== 'skill' && value.target_kind !== 'type')) {
+    || (value.target_kind !== undefined && !['skill', 'type', 'knowledge', 'mixed'].includes(String(value.target_kind)))) {
     throw new Error('Invalid class assembly candidates')
   }
   return value as unknown as AssemblyAssistantResult
@@ -261,7 +261,7 @@ function isPaperRules(v: unknown): v is PaperRules {
 function isAssemblyContext(v: unknown): v is AssemblyContext {
   return isRecord(v) && isStrings(v.class_ids) && Array.isArray(v.session_ids) && v.session_ids.every(isPositiveInteger)
     && typeof v.curriculum_volume_id === 'string' && (v.title_generated === undefined || typeof v.title_generated === 'boolean')
-    && (v.target_kind === undefined || v.target_kind === 'skill' || v.target_kind === 'type')
+    && (v.target_kind === undefined || ['skill', 'type', 'knowledge', 'mixed'].includes(String(v.target_kind)))
     && isRecord(v.sources) && Object.values(v.sources).every(s => isRecord(s) && typeof s.key === 'string' && typeof s.label === 'string'
       && isStrings(s.skill_keys) && (s.original === undefined || typeof s.original === 'boolean'))
 }

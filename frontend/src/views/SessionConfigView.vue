@@ -18,6 +18,7 @@ import {
   abandonConfigGenerationRequest,
   createClientRequestToken,
   fetchConfigEditor,
+  fetchConfigGenerationPreview,
   fetchConfigGenerationJobByToken,
   saveConfigEditor,
   submitConfigGeneration,
@@ -29,6 +30,7 @@ import {
 } from '../api/config-workspace'
 import type { JobResponse } from '../api/jobs'
 import { fetchRegionReadiness, type RegionReadiness } from '../api/template-regions'
+import { chapterTypeCostNote } from '../api/question-bank'
 import { useConfirm } from '../composables/useConfirm'
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
 import { useJobStore } from '../stores/jobs'
@@ -491,6 +493,15 @@ async function regenerateEditorQuestions(
   request.base_revision = configStore.editor?.revision
   request.sync_to_question_bank = true
   request.curriculum_volume_id = curriculumVolumeId
+  regenerationSubmitting.value = true
+  try {
+    const preview = await fetchConfigGenerationPreview(sessionId, request)
+    if (!await confirm({ title: '确认重新分析？',
+      message: `预计 ${preview.analysis_request_estimate} 次分析请求。${chapterTypeCostNote(preview)}将使用配置的模型，按服务商计费；失败或结果不确定时不自动追加请求。`, confirmLabel: '重新分析' })) return
+    if (preview.planned_requests) request.chapter_type_authorization = { ...preview, confirmed: true, request_limit: preview.planned_requests }
+  } catch { regenerationError.value = '费用预估暂时无法读取，请重试；尚未提交分析。'; return }
+  finally { regenerationSubmitting.value = false }
+  if (configStore.captureGenerationContext() !== generationContext || configStore.sessionId !== sessionId) return
   if (!configStore.markJobSubmissionPending(requestToken, 'generate', 'batched')) return
   const previousScoreReviewRequirements = new Set(scoreReviewRequiredQuestions.value)
   if (requireManualScoreReview) {

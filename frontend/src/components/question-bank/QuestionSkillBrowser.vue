@@ -61,9 +61,9 @@ const filters = reactive({ keyword: '', questionTypes: [] as string[], difficult
 const facetDimensions = [{ key: 'abilities', label: '能力' }, { key: 'methods', label: '方法' }, { key: 'models', label: '模型' }, { key: 'thoughts', label: '思想' }, { key: 'specialTypes', label: '特殊考法' }] as const
 const facets = ref<QuestionBankFacets | null>(null)
 const facetsError = ref('')
-const tagDimensions = [{ key: 'specialTypes', label: '特殊考法' }, { key: 'thoughts', label: '思想' }, { key: 'methods', label: '方法' }, { key: 'models', label: '模型' }, { key: 'knowledgePoints', label: '知识点' }, { key: 'errorPatternCategories', label: '错因' }] as const
+const tagDimensions = [{ key: 'typeKeys', label: '题型' }, { key: 'abilities', label: '能力' }, { key: 'specialTypes', label: '特殊考法' }, { key: 'thoughts', label: '思想' }, { key: 'methods', label: '方法' }, { key: 'models', label: '模型' }, { key: 'knowledgePoints', label: '知识点' }, { key: 'errorPatternCategories', label: '错因' }] as const
 type TagDimensionKey = typeof tagDimensions[number]['key']
-const tagFacetFields: Record<TagDimensionKey, keyof QuestionBankFacets> = { specialTypes: 'special_types', thoughts: 'thoughts', methods: 'methods', models: 'models', knowledgePoints: 'knowledge_points', errorPatternCategories: 'error_pattern_categories' }
+const tagFacetFields: Record<TagDimensionKey, keyof QuestionBankFacets> = { typeKeys: 'task_types', abilities: 'abilities', specialTypes: 'special_types', thoughts: 'thoughts', methods: 'methods', models: 'models', knowledgePoints: 'knowledge_points', errorPatternCategories: 'error_pattern_categories' }
 const tagDimension = computed(() => tagDimensions.find(dimension => dimension.key === queryText('tagDim')) ?? tagDimensions[0])
 const tagValue = computed(() => mode.value === 'tag' ? queryText('tag') : '')
 const tagScope = computed(() => {
@@ -74,8 +74,8 @@ const tagScope = computed(() => {
   return 'volume'
 })
 const tagSearch = ref('')
-const tagRowLabel = (value: string) => tagDimension.value.key === 'knowledgePoints' ? knowledgeLeafLabel(value) : value
-const tagItems = computed(() => facets.value?.[tagFacetFields[tagDimension.value.key]] ?? [])
+const tagRowLabel = (value: string) => tagDimension.value.key === 'typeKeys' ? props.index?.types?.find(type => type.value === value)?.label ?? value : tagDimension.value.key === 'knowledgePoints' ? knowledgeLeafLabel(value) : value
+const tagItems = computed(() => tagDimension.value.key === 'typeKeys' ? facets.value?.task_types ?? props.index?.types ?? [] : facets.value?.[tagFacetFields[tagDimension.value.key]] ?? [])
 const tagRows = computed(() => {
   const needle = tagSearch.value.trim()
   return tagItems.value.filter(item => !needle || tagRowLabel(item.value).includes(needle) || item.value.includes(needle))
@@ -183,7 +183,7 @@ function selectEntry(entry: Entry) {
   void router.replace({ query: { tab: 'skill', section: sectionId.value, ...('filter_value' in entry ? { topic: entry.stable_key } : { skill: entry.stable_key }) } })
 }
 function setMode(next: 'skill' | 'topic' | 'tag') {
-  if (next === 'tag') { void router.replace({ query: { tab: 'skill', section: sectionId.value, tagDim: 'specialTypes' } }); return }
+  if (next === 'tag') { void router.replace({ query: { tab: 'skill', section: sectionId.value, tagDim: 'typeKeys' } }); return }
   const first = next === 'topic' ? selectedSection.value?.topics[0] : selectedSection.value?.skills[0]
   void router.replace({ query: { tab: 'skill', section: sectionId.value, ...(next === 'topic' ? { topic: first?.stable_key || 'none' } : {}) } })
 }
@@ -257,6 +257,7 @@ onBeforeUnmount(() => {
     <main class="qb-question-pane qb-browse-pane">
       <header class="qb-target-heading"><div class="qb-target-heading__line"><h2>{{ unlinked ? '未挂技能的题目' : mode === 'tag' ? tagHeading : selected?.display_name || '请选择技能或知识主题' }}</h2><span v-if="selected" class="qb-row-badges"><span :class="!selected.question_count ? 'is-empty' : selected.question_count < 5 ? 'is-low' : 'is-ok'">{{ !selected.question_count ? '暂无题' : selected.question_count < 5 ? '题量少' : '正常' }}</span></span><span v-if="selected" class="qb-target-count">共 {{ selected.question_count }} 题</span><span v-if="mode === 'tag' && tagValue" class="qb-target-count">共 {{ bank.total }} 题</span><AppButton v-if="selected && mode === 'skill'" :to="{ path: '/question-assembly', query: { mode: 'assistant', skill: selected.stable_key } }" variant="ghost" size="small" :as="RouterLink">按班级学情挑这个技能的题 →</AppButton></div>
         <div v-if="unlinked" class="qb-repair-entry"><span>共 {{ (index?.unlinked.no_usable_evidence ?? 0) + (index?.unlinked.no_skill_link ?? 0) }} 题 · 先查看缺失部分，再只补缺失</span><AppButton variant="primary" @click="emit('repair')">AI 补挂技能</AppButton></div>
+        <details v-if="mode === 'tag' && tagDimension.key === 'typeKeys' && tagValue" class="qb-skill-definition"><summary>常涉及的知识点（按主题型题目统计）</summary><p v-for="point in index?.types?.find(type => type.value === tagValue)?.common_knowledge_points ?? []" :key="point.key">{{ point.label }} · {{ point.question_count }} / {{ index?.types?.find(type => type.value === tagValue)?.count ?? 0 }} 题</p></details>
         <details v-if="selected && 'definition' in selected" class="qb-skill-definition"><summary><b>技能定义</b><span>{{ selected.definition.observable_evidence || '展开查看技能的纳入与排除范围' }}</span></summary><div><p>可观察操作：{{ selected.definition.observable_evidence || '待补充' }}</p><p>纳入：{{ selected.definition.include_scope || '待补充' }}</p><p>不纳入：{{ selected.definition.exclude_scope || '待补充' }}</p></div></details>
         <StatePanel v-if="mode === 'tag' && !tagValue" compact kind="empty" title="在中间列选择一个标签" />
       </header>

@@ -25,7 +25,7 @@ export const QUESTION_BANK_TAG_TYPES = [
 export type QuestionBankTagType = (typeof QUESTION_BANK_TAG_TYPES)[number]
 
 export type QuestionRepairKind = 'skills' | 'analysis' | 'all'
-export type QuestionRepairPart = 'tags' | 'evidence' | 'criteria' | 'skills'
+export type QuestionRepairPart = 'tags' | 'evidence' | 'criteria' | 'skills' | 'types' | 'knowledge_points'
 export interface QuestionRepairPreview {
   curriculum_volume_id: string
   kind: QuestionRepairKind
@@ -35,7 +35,7 @@ export interface QuestionRepairPreview {
   repairable_count: number
   model_calls: number
   counts: Record<QuestionRepairPart, number>
-  items: { id: number; question_number: string; paper_title: string; missing: QuestionRepairPart[]; blocked_reason: string; revision: string }[]
+  items: { id: number; question_number: string; paper_title: string; missing: QuestionRepairPart[]; blocked_reason: string; type_pending_reason?: string; revision: string }[]
 }
 
 function decodeRepairPreview(value: unknown): QuestionRepairPreview {
@@ -43,10 +43,11 @@ function decodeRepairPreview(value: unknown): QuestionRepairPreview {
       || !Array.isArray(value.items) || !isRecord(value.counts) || value.model_calls !== 0
       || !['skills', 'analysis', 'all'].includes(String(value.kind)) || typeof value.curriculum_volume_id !== 'string'
       || !['scanned_count', 'question_count', 'repairable_count'].every(key => Number.isSafeInteger(value[key]) && Number(value[key]) >= 0)
-      || !['tags', 'evidence', 'criteria', 'skills'].every(key => Number.isSafeInteger((value.counts as Record<string, unknown>)[key]))
+      || !['tags', 'evidence', 'criteria', 'skills', 'types', 'knowledge_points'].every(key => Number.isSafeInteger((value.counts as Record<string, unknown>)[key]))
       || !value.items.every(item => isRecord(item) && Number.isSafeInteger(item.id) && Number(item.id) > 0
         && typeof item.question_number === 'string' && typeof item.paper_title === 'string' && typeof item.blocked_reason === 'string'
-        && Array.isArray(item.missing) && item.missing.every(part => ['tags', 'evidence', 'criteria', 'skills'].includes(String(part))))) {
+        && (item.type_pending_reason === undefined || typeof item.type_pending_reason === 'string')
+        && Array.isArray(item.missing) && item.missing.every(part => ['tags', 'evidence', 'criteria', 'skills', 'types', 'knowledge_points'].includes(String(part))))) {
     throw new Error('Invalid repair preview')
   }
   assertNoPathLikeKeys(value)
@@ -123,6 +124,7 @@ export interface QuestionBankListItem {
    * structured preview yet. Network responses remain strict at decode time.
    */
   rich_content?: QuestionBankRichContent
+  labels?: { primary_type: { key: string; label: string } | null; secondary_types: { key: string; label: string }[]; knowledge_points: { key: string; label: string }[] }
   skills?: { stable_key: string; display_name: string }[]
   skill_hits?: { point_id: string; point_label: string }[]
 }
@@ -400,6 +402,7 @@ export interface QuestionBankFacet {
 }
 
 export interface QuestionBankFacets {
+  task_types?: QuestionBankFacet[]
   exam_scopes: QuestionBankFacet[]
   curriculum_sections: QuestionBankFacet[]
   knowledge_points: QuestionBankFacet[]
@@ -423,6 +426,7 @@ export interface QuestionBankFacets {
 // 相似题推荐理由按维度分组：标签类维度的 values 是原始标签值
 // （知识点/技能为全路径，展示时取叶子名），信号类维度的 values 是展示短语。
 export type SimilarityReasonKind =
+  | 'type'
   | 'knowledge_point'
   | 'skill'
   | 'method'
@@ -585,6 +589,9 @@ export type QuestionBankSort =
   | 'frequency_asc'
 
 export interface QuestionBankFilters {
+  typeKeys?: string[]
+  missingType?: boolean
+  missingKnowledge?: boolean
   skillKeys?: string[]
   skillUnlinked?: boolean
   includeSkills?: boolean
@@ -664,7 +671,7 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 
 function hasExactQuestionKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const base = Object.fromEntries(Object.entries(value).filter(([key]) =>
-    !['duplicate_of_question_id', 'duplicate_labels_reused', 'skills', 'skill_hits', 'evidence_point_count', 'duplicate_members'].includes(key)))
+    !['duplicate_of_question_id', 'duplicate_labels_reused', 'labels', 'skills', 'skill_hits', 'evidence_point_count', 'duplicate_members'].includes(key)))
   return hasExactKeys(base, keys)
 }
 
@@ -725,8 +732,17 @@ function isQuestionBankListItem(value: unknown): value is QuestionBankListItem {
   return hasQuestionBankListFields(value)
 }
 
+function isQuestionLabelSummary(value: unknown): boolean {
+  const ref = (item: unknown) => isRecord(item) && hasExactKeys(item, ['key', 'label']) && typeof item.key === 'string' && typeof item.label === 'string'
+  return isRecord(value) && hasExactKeys(value, ['primary_type', 'secondary_types', 'knowledge_points'])
+    && (value.primary_type === null || ref(value.primary_type))
+    && Array.isArray(value.secondary_types) && value.secondary_types.length <= 2 && value.secondary_types.every(ref)
+    && Array.isArray(value.knowledge_points) && value.knowledge_points.every(ref)
+}
+
 function hasQuestionBankListFields(value: Record<string, unknown>): boolean {
   return (
+    (value.labels === undefined || isQuestionLabelSummary(value.labels)) &&
     (value.evidence_point_count === undefined || isNonnegativeInteger(value.evidence_point_count)) &&
     (value.duplicate_members === undefined || (Array.isArray(value.duplicate_members) && value.duplicate_members.every(member => isRecord(member) && hasExactKeys(member, ['id', 'paper_id', 'question_number', 'paper_title']) && isPositiveInteger(member.id) && isNullableInteger(member.paper_id) && typeof member.question_number === 'string' && isNullableString(member.paper_title)))) &&
     (value.skills === undefined || (Array.isArray(value.skills) && value.skills.every((item) =>
@@ -1328,7 +1344,8 @@ export function decodeQuestionBankFacets(value: unknown): QuestionBankFacets {
   ] as const
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, keys) ||
+    !hasExactKeys(value, value.task_types === undefined ? keys : [...keys, 'task_types']) ||
+    (value.task_types !== undefined && (!Array.isArray(value.task_types) || !value.task_types.every(isFacet))) ||
     !keys.every((key) => Array.isArray(value[key]) && value[key].every(isFacet))
   ) {
     throw new Error('Invalid question bank facets')
@@ -1337,6 +1354,7 @@ export function decodeQuestionBankFacets(value: unknown): QuestionBankFacets {
 }
 
 const SIMILARITY_REASON_KINDS: ReadonlySet<string> = new Set([
+  'type',
   'knowledge_point',
   'skill',
   'method',
@@ -1781,6 +1799,9 @@ function questionListPath(filters: QuestionBankFilters): string {
   appendTexts(parameters, 'curriculum_sections', filters.curriculumSections)
   if (filters.scopeMode) parameters.set('scope_mode', filters.scopeMode)
   appendTexts(parameters, 'knowledge_points', filters.knowledgePoints)
+  appendTexts(parameters, 'type_keys', filters.typeKeys)
+  if (filters.missingType) parameters.set('missing_type', 'true')
+  if (filters.missingKnowledge) parameters.set('missing_knowledge', 'true')
   appendTexts(parameters, 'skill_keys', filters.skillKeys)
   if (filters.skillUnlinked) parameters.set('skill_unlinked', 'true')
   if (filters.includeSkills) parameters.set('include_skills', 'true')
@@ -1949,6 +1970,9 @@ export interface QuestionTopicEntry extends Pick<QuestionSkillEntry, 'display_na
 }
 
 export interface QuestionSkillIndex {
+  coverage?: { types: number; knowledge_points: number }
+  gaps?: { types: number; knowledge_points: number }
+  types?: { value: string; label: string; count: number; definition: string; common_knowledge_points: { key: string; label: string; question_count: number }[] }[]
   graph_release_id: string | null
   curriculum_volume_id: string
   model_calls: number
@@ -1974,6 +1998,13 @@ export function decodeQuestionSkillIndex(value: unknown): QuestionSkillIndex {
       && ['observable_evidence', 'include_scope', 'exclude_scope'].every((key) => typeof (row.definition as Record<string, unknown>)[key] === 'string')
   }
   if (!isRecord(value) || !isNullableString(value.graph_release_id) || typeof value.curriculum_volume_id !== 'string'
+    || (value.coverage !== undefined && (!isRecord(value.coverage) || !['types', 'knowledge_points'].every(key => isNonnegativeInteger(value.coverage && (value.coverage as Record<string, unknown>)[key]) && Number((value.coverage as Record<string, unknown>)[key]) <= Number(value.question_count))))
+    || (value.gaps !== undefined && (!isRecord(value.gaps) || !['types', 'knowledge_points'].every(key => isNonnegativeInteger(value.gaps && (value.gaps as Record<string, unknown>)[key]) && Number((value.gaps as Record<string, unknown>)[key]) <= Number(value.question_count))))
+    || (value.types !== undefined && (!Array.isArray(value.types) || !value.types.every(row => isRecord(row)
+      && typeof row.value === 'string' && /_t\d{2}$/.test(row.value) && typeof row.label === 'string'
+      && isNonnegativeInteger(row.count) && typeof row.definition === 'string'
+      && Array.isArray(row.common_knowledge_points) && row.common_knowledge_points.every(point => isRecord(point)
+        && typeof point.key === 'string' && typeof point.label === 'string' && isNonnegativeInteger(point.question_count) && Number(point.question_count) <= Number(row.count)))))
     || value.model_calls !== 0 || !isNonnegativeInteger(value.question_count) || !isRecord(value.unlinked)
     || !isNonnegativeInteger(value.unlinked.no_usable_evidence) || !isNonnegativeInteger(value.unlinked.no_skill_link)
     || !Array.isArray(value.chapters) || !value.chapters.every((chapter) => isRecord(chapter)
@@ -2007,6 +2038,7 @@ export interface ChapterExamStageCells {
 }
 
 export interface ChapterExamSkillRow {
+  target_kind?: 'type' | 'skill'
   key: string | null
   name: string
   unlinked: boolean
@@ -2413,7 +2445,45 @@ function decodeSkillCandidateReview(value: unknown): SkillCandidateReviewResult 
   return value as unknown as SkillCandidateReviewResult
 }
 
+export interface ChapterTypePlan {
+  base_release_id: string
+  input_fingerprint: string
+  volume_id: string
+  chapters: { chapter_id: string; label: string; question_count: number; paper_count: number; unclassified_count: number; planned_requests: number }[]
+  planned_requests: number
+  model_calls: 0
+  pending_question_ids?: number[]
+}
+export type ChapterTypeAuthorization = ChapterTypePlan & { confirmed: true; request_limit: number }
+export function decodeChapterTypePlan(value: unknown): ChapterTypePlan {
+  if (!isRecord(value) || typeof value.base_release_id !== 'string' || typeof value.input_fingerprint !== 'string'
+    || typeof value.volume_id !== 'string' || value.model_calls !== 0 || !isNonnegativeInteger(value.planned_requests)
+    || (value.pending_question_ids !== undefined && (!Array.isArray(value.pending_question_ids) || value.pending_question_ids.length > 10_000 || !value.pending_question_ids.every(isPositiveInteger)))
+    || !Array.isArray(value.chapters) || !value.chapters.every(chapter => isRecord(chapter)
+      && typeof chapter.chapter_id === 'string' && typeof chapter.label === 'string'
+      && ['question_count', 'paper_count', 'unclassified_count', 'planned_requests'].every(key => isNonnegativeInteger(chapter[key])))) {
+    throw new Error('题型整理预估格式不正确')
+  }
+  return value as unknown as ChapterTypePlan
+}
+export function chapterTypeCostNote(plan: ChapterTypePlan): string {
+  return plan.planned_requests ? `本次分析后将整理${plan.chapters.filter(chapter => chapter.planned_requests).map(chapter => chapter.label).join('、')}的题型，预计增加 ${plan.planned_requests} 次模型请求。` : ''
+}
+
 export const questionBankApi = {
+  previewTagging(questionIds: readonly number[], curriculumVolumeId: string, signal?: AbortSignal, scopeQuestionIds?: readonly number[]): Promise<ChapterTypePlan> {
+    const ids = normalizedQuestionIds(questionIds)
+    const scopeIds = scopeQuestionIds === undefined ? undefined : [...new Set(scopeQuestionIds)]
+    if (scopeIds && (!scopeIds.length || scopeIds.length > 10_000 || !scopeIds.every(isPositiveInteger) || !ids.every(id => scopeIds.includes(id)))) throw new Error('Invalid chapter type question scope')
+    return apiClient.request('/api/question-bank/tagging-jobs/preview', { method: 'POST',
+      body: { question_ids: ids, curriculum_volume_id: curriculumVolumeId, ...(scopeIds ? { chapter_type_scope_question_ids: scopeIds } : {}) },
+      decode: decodeChapterTypePlan, signal })
+  },
+  replaceQuestionTypes(questionId: number, revision: string, primaryTypeKey: string, secondaryTypeKeys: string[]) {
+    return apiClient.request(`/api/question-bank/questions/${questionId}/question-types`, { method: 'PUT',
+      body: { expected_revision: revision, primary_type_key: primaryTypeKey, secondary_type_keys: secondaryTypeKeys },
+      decode: decodeQuestionWriteResult })
+  },
   repairPreview(volumeId: string, kind: QuestionRepairKind, signal?: AbortSignal): Promise<QuestionRepairPreview> {
     return apiClient.request(`/api/question-bank/repair-preview?curriculum_volume_id=${encodeURIComponent(volumeId)}&kind=${kind}`,
       { decode: decodeRepairPreview, signal, timeoutMs: 60_000 })
@@ -2830,6 +2900,7 @@ export const questionBankApi = {
     signal?: AbortSignal,
     forceRetag = false,
     clientRequestToken?: string,
+    chapterTypeAuthorization?: ChapterTypeAuthorization,
   ): Promise<JobResponse> {
     const body: {
       question_ids: number[]
@@ -2837,6 +2908,7 @@ export const questionBankApi = {
       source_job_id?: number
       force_retag?: boolean
       client_request_token?: string
+      chapter_type_authorization?: ChapterTypeAuthorization
     } = {
       question_ids: normalizedQuestionIds(questionIds),
       curriculum_volume_id: String(curriculumVolumeId ?? '').trim(),
@@ -2846,6 +2918,7 @@ export const questionBankApi = {
       if (!isPositiveInteger(sourceJobId)) throw new Error('Invalid source job id')
       body.source_job_id = sourceJobId
     }
+    if (chapterTypeAuthorization) body.chapter_type_authorization = chapterTypeAuthorization
     if (forceRetag) body.force_retag = true
     if (clientRequestToken !== undefined) {
       if (!/^[0-9a-f]{32}$/.test(clientRequestToken)) {

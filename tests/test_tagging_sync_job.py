@@ -687,3 +687,36 @@ def test_classify_tagging_error_keeps_local_error_categories() -> None:
 
     assert classify_tagging_error(ValueError("validation failed")) == "validation"
     assert classify_tagging_error(RuntimeError("cancelled mid-run")) == "unknown"
+
+
+def test_type_only_repair_requests_tags_and_keeps_current_evidence_versions(tmp_path, monkeypatch):
+    db_path = tmp_path / 'TEST-type-only.db'
+    root = tmp_path / 'data'
+    qid = _seed(db_path, 1)[0]
+    bank = QuestionBankTestStore(db_path)
+    bank.save_tag_analysis(qid, _analysis(), model_name='TEST-existing')
+    question = QuestionAnalysisInputLoader(db_path=db_path, data_root=root).load([qid], curriculum_volume_id='bnu24-math-g7-lower')[0]
+    _seed_current_projection_rows(db_path, question)
+    with connect(db_path) as conn:
+        evidence = [tuple(row) for row in conn.execute('SELECT * FROM question_solution_evidence_versions')]
+        criteria = [tuple(row) for row in conn.execute('SELECT * FROM training_criterion_versions')]
+    calls = []
+    class Combined:
+        def __init__(self, **kwargs):
+            pass
+        def analyze_work_items(self, *, work_items, **kwargs):
+            calls.extend((item.question.question_id, item.projection) for item in work_items)
+            return {'items': [{'question_id': qid, 'tag_status': 'succeeded', 'tag_error_category': '',
+                               'criteria_status': 'not_requested', 'criteria_error_category': ''}],
+                    'criterion_audit': {'items': []}, 'projection_audit': {'retrieval_misses': [], 'proposals': [],
+                    'secondary_matches': [], 'retrieval_miss_question_ids': [], 'proposal_question_ids': []},
+                    'question_projection_audits': {}}
+    monkeypatch.setattr(tagging_sync_module, 'CombinedQuestionAnalysisModule', Combined)
+    ai = AITaggingService(env={'QUESTION_BANK_TAGGING_API_KEY': 'TEST-synthetic', 'QUESTION_BANK_TAGGING_MODEL': 'TEST'}, protocol_adapter=object())
+    context, _ = _context(tmp_path, {'question_ids': [qid], 'curriculum_volume_id': 'bnu24-math-g7-lower',
+        'repair_missing_only': True, 'repair_type_question_ids': [qid]})
+    run_tagging_sync_job(context=context, question_bank_db_path=db_path, data_root=root, ai_service_factory=lambda: ai)
+    assert calls == [(qid, 'tag')]
+    with connect(db_path) as conn:
+        assert [tuple(row) for row in conn.execute('SELECT * FROM question_solution_evidence_versions')] == evidence
+        assert [tuple(row) for row in conn.execute('SELECT * FROM training_criterion_versions')] == criteria

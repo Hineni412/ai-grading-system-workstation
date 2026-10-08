@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from question_bank.current_knowledge import CurrentKnowledgeResolver
+from question_bank.question_types import is_training_target, question_type_key, target_kind_for_key
 from question_bank.mastery.model import (
     MasteryModel, MasteryParameters, build_exam_observations, lineage, week_of,
 )
@@ -298,10 +299,28 @@ class CurrentMasteryCalculator:
                 None,
                 connection=connection,
             )
+            tag_values = defaultdict(list)
+            for tag in connection.execute(
+                    "SELECT question_id,tag_value FROM question_tags WHERE tag_type='knowledge_point' "
+                    "AND question_id IN (SELECT value FROM json_each(?)) ORDER BY id",
+                    (json.dumps(sorted(profiles)),)):
+                tag_values[int(tag["question_id"])].append(str(tag["tag_value"]))
+            current_types = {qid: key for qid, values in tag_values.items()
+                             if (key := question_type_key(values)) and is_training_target(key, self.resolver)}
+            from question_bank.solution_evidence.knowledge_links import KnowledgeLink
+            for question_id, type_key in current_types.items():
+                profile = profiles[question_id]
+                version = str(profile["evidence_version_id"])
+                existing = point_links.get(version, {})
+                point_links[version] = {str(point["evidence_point_id"]): (
+                    *(link for link in existing.get(str(point["evidence_point_id"]), ()) if link.role != "direct"),
+                    KnowledgeLink(type_key, type_key, "direct", 1.0, source_kind="question_type_overlay"))
+                    for part in profile["evidence"].get("parts", ()) for point in part.get("evidence_points", ())}
             connection_criteria = {}
             for row in rows:
-                criterion = connection.execute("SELECT criteria_json,criteria_hash FROM training_criterion_versions WHERE version_id=?", (row["criterion_version_id"],)).fetchone()
-                if criterion and criterion["criteria_hash"] == row["criterion_hash"]:
+                criterion = connection.execute("SELECT question_id,criteria_json,criteria_hash FROM training_criterion_versions WHERE version_id=?", (row["criterion_version_id"],)).fetchone()
+                expected_question = source_by_id.get(str(row["evidence_id"]), {}).get("bank_question_id")
+                if criterion and criterion["criteria_hash"] == row["criterion_hash"] and (not expected_question or int(criterion["question_id"]) == int(expected_question)):
                     connection_criteria[str(row["evidence_id"])] = json.loads(criterion["criteria_json"])
                 else:
                     # Older frozen papers can retain their criterion even when
@@ -320,8 +339,14 @@ class CurrentMasteryCalculator:
                 profile = profiles.get(int(source_by_id.get(str(row["evidence_id"]), {}).get("bank_question_id") or 0))
                 if profile is None:
                     continue
-                criterion = connection.execute("SELECT criteria_json,criteria_hash FROM training_criterion_versions WHERE version_id=? AND question_id=?", (row["criterion_version_id"], profile["question_id"])).fetchone()
-                refined[str(row["evidence_id"])] = training_part_observations(profile, json.loads(criterion["criteria_json"]), json.loads(row["final_points_json"]), links=point_links.get(str(profile["evidence_version_id"]), {})) if criterion and criterion["criteria_hash"] == row["criterion_hash"] else []
+                frozen_criteria = connection_criteria.get(str(row["evidence_id"]), {})
+                observations = training_part_observations(profile, frozen_criteria, json.loads(row["final_points_json"]),
+                    links=point_links.get(str(profile["evidence_version_id"]), {})) if frozen_criteria else []
+                if observations is None and profile["question_id"] in current_types and profile.get("available"):
+                    source_hash = (frozen_criteria.get("solution_evidence") or {}).get("source_content_hash")
+                    if source_hash and source_hash in {profile.get("current_source_content_hash"), profile.get("evidence_source_hash")}:
+                        continue
+                refined[str(row["evidence_id"])] = observations or []
         finally:
             connection.close()
         result: dict[tuple[str, str], list[TrainingEvidence]] = defaultdict(list)
@@ -335,6 +360,8 @@ class CurrentMasteryCalculator:
             if str(row["evidence_id"]) in refined:
                 for observation in refined[str(row["evidence_id"])] or []:
                     for target in self.resolver.resolve(observation["stable_key"]):
+                        if target_kind_for_key(target.stable_key, self.resolver) != "skill" and not is_training_target(target.stable_key, self.resolver):
+                            continue
                         observation_id = f"training:{row['submission_id']}:{row['submission_revision']}:{row['task_item_code']}:{observation['part_id']}"
                         atom_id = f"{observation_id}:target:{observation['point_id']}:{target.stable_key}"
                         identity = (student_id, target.stable_key, atom_id)
@@ -359,8 +386,13 @@ class CurrentMasteryCalculator:
                     continue
                 if states[pid] == "not_met" and any(states.get(dep) != "met" for dep in point.get("depends_on", [])):
                     continue
-                for target in self.resolver.resolve(row["stable_key"]):
-                    atom = f"{row['evidence_id']}:point:{pid}"
+                question_id = int(source_by_id.get(str(row["evidence_id"]), {}).get("bank_question_id") or 0)
+                key = current_types.get(question_id) or row["stable_key"]
+                for target in self.resolver.resolve(key):
+                    if target_kind_for_key(target.stable_key, self.resolver) != "skill" and not is_training_target(target.stable_key, self.resolver):
+                        continue
+                    atom = (f"training:{row['submission_id']}:{row['submission_revision']}:{row['task_item_code']}:point:{pid}"
+                            if question_id in current_types else f"{row['evidence_id']}:point:{pid}")
                     identity = student_id, target.stable_key, atom
                     if identity in seen:
                         continue

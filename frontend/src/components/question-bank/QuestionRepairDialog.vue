@@ -20,7 +20,7 @@ const message = ref('')
 const activeJobId = ref<number | null>(null)
 const job = computed(() => activeJobId.value ? jobs.jobs[activeJobId.value] : undefined)
 const targetIds = computed(() => preview.value?.items.filter(item => !item.blocked_reason).slice(0, 500).map(item => item.id) ?? [])
-const labels: Record<QuestionRepairPart, string> = { tags: '题目标签', evidence: '解题证据', criteria: '判定点', skills: '技能关联' }
+const labels: Record<QuestionRepairPart, string> = { tags: '题目标签', evidence: '解题证据', criteria: '判定点', skills: '技能关联', types: '题型', knowledge_points: '知识点关联' }
 const remaining = computed(() => (job.value?.result.remaining ?? []) as { id: number; question_number: string; missing: QuestionRepairPart[]; reason: string }[])
 let controller: AbortController | undefined
 let returnTarget: HTMLElement | null = null
@@ -129,8 +129,8 @@ onBeforeUnmount(() => controller?.abort())
           <p v-if="revalidating" class="qb-repair-check" role="status">正在核对最新状态…</p>
           <p class="qb-repair-summary">发现 <strong>{{ preview.question_count }}</strong> 道缺失题；本次可处理 <strong>{{ targetIds.length }}</strong> 道。</p>
           <p v-if="preview.repairable_count > 500">每次最多处理 500 道，剩余题目可在本次结束后继续补齐。</p>
-          <div class="qb-repair-steps"><div v-for="part in (['tags', 'evidence', 'criteria', 'skills'] as const)" :key="part"><strong>{{ labels[part] }} · {{ preview.counts[part] }} 题缺失</strong><span>{{ part === 'tags' ? '只为缺失或过期标签的题补标签' : part === 'evidence' || part === 'criteria' ? '进入判定点分析流程，保留已有可用结果' : '已有判定点直接补关联；缺判定点先补齐再关联' }}</span></div></div>
-          <details class="qb-repair-list" open><summary>查看逐题清单 · {{ preview.items.length }} 题</summary><table class="app-table app-table--sticky"><thead><tr><th>题目</th><th>缺失部分</th><th>本次处理</th></tr></thead><tbody><tr v-for="item in preview.items" :key="item.id"><td><strong>第 {{ item.question_number }} 题</strong><small>{{ item.paper_title }}</small></td><td>{{ item.missing.map(part => labels[part]).join('、') }}</td><td>{{ item.blocked_reason || (targetIds.includes(item.id) ? '只补左侧所列部分' : '下一批处理') }}</td></tr></tbody></table></details>
+          <div class="qb-repair-steps"><div v-for="part in (['tags', 'evidence', 'criteria', 'types', 'knowledge_points', 'skills'] as const)" :key="part"><strong>{{ labels[part] }} · {{ preview.counts[part] }} 题缺失</strong><span>{{ part === 'tags' ? '只为缺失或过期标签的题补标签' : part === 'evidence' || part === 'criteria' ? '进入判定点分析流程，保留已有可用结果' : part === 'types' ? '有本章题型时补主题型；尚未整理的章保留待归类' : '只补缺失关联，保留判定点正文' }}</span></div></div>
+          <details class="qb-repair-list" open><summary>查看逐题清单 · {{ preview.items.length }} 题</summary><table class="app-table app-table--sticky"><thead><tr><th>题目</th><th>缺失部分</th><th>本次处理</th></tr></thead><tbody><tr v-for="item in preview.items" :key="item.id"><td><strong>第 {{ item.question_number }} 题</strong><small>{{ item.paper_title }}</small></td><td>{{ item.missing.map(part => labels[part]).join('、') }}</td><td>{{ item.blocked_reason || (targetIds.includes(item.id) ? item.type_pending_reason ? `只补可处理部分；${item.type_pending_reason}` : '只补左侧所列部分' : '下一批处理') }}</td></tr></tbody></table></details>
           <p class="qb-repair-cost">确认后将使用配置的 AI 模型，按服务商计费，金额取决于题目长度和模型。已有完整题不提交；失败或结果不确定时不自动追加请求。</p>
         </template>
         <AppButton v-if="state === 'error' || refreshFailed" variant="secondary" @click="load">重新统计</AppButton>

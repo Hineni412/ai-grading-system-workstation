@@ -1,6 +1,6 @@
 import { apiClient } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
-import type { QuestionBankRichContent } from './question-bank'
+import { decodeChapterTypePlan, type ChapterTypePlan, type ChapterTypeAuthorization, type QuestionBankRichContent } from './question-bank'
 import {
   assertNoPathLikeKeys,
   hasExactKeys,
@@ -139,6 +139,7 @@ export interface ConfigSourceDuplicates {
 }
 
 export interface ConfigGenerationRequest {
+  chapter_type_authorization?: ChapterTypeAuthorization & { analysis_request_estimate: number; source_id: string; source_revision: string }
   source_id: string
   source_revision: string
   generation_mode: GenerationMode
@@ -648,6 +649,17 @@ export async function abandonConfigGenerationRequest(
     `/api/sessions/${id}/config/generation-jobs/requests/${requireRequestToken(requestToken)}/abandon`,
     { method: 'POST', decode: decodeAbandoned },
   )
+}
+
+export async function fetchConfigGenerationPreview(sessionId: number, request: ConfigGenerationRequest): Promise<ChapterTypePlan & { analysis_request_estimate: number; source_id: string; source_revision: string }> {
+  return apiClient.request(`/api/sessions/${requireSessionId(sessionId)}/config/generation-preview`, {
+    method: 'POST', body: request, decode: (value) => {
+      const plan = decodeChapterTypePlan(value)
+      if (!isRecord(value) || !Number.isSafeInteger(value.analysis_request_estimate) || Number(value.analysis_request_estimate) < 0
+        || typeof value.source_id !== 'string' || typeof value.source_revision !== 'string') throw new Error('分析费用预估格式不正确')
+      return { ...plan, analysis_request_estimate: Number(value.analysis_request_estimate), source_id: value.source_id, source_revision: value.source_revision }
+    },
+  })
 }
 
 export async function submitConfigGeneration(

@@ -63,6 +63,40 @@ beforeEach(() => {
 
 describe('Job Store persistence and recovery', () => {
 
+  it.each(['question_import', 'tagging_sync', 'question_bank_sync'])('tracks a completed %s chapter child and retains it after recovery', async (jobType) => {
+    const child = makeJob({ id: 42, job_type: 'chapter_type_organize', payload: {}, result: {}, status: 'queued' })
+    const dependencies = makeDependencies({ getJob: vi.fn(async id => id === 41
+      ? makeJob({ job_type: jobType, status: 'succeeded', result: { chapter_type_job_id: 42, chapter_type_state: 'queued' } }) : child) })
+    const store = useJobStore()
+    store.track(makeJob({ job_type: jobType, result: {} }), dependencies)
+    await store.refresh(41)
+    await vi.waitFor(() => expect(store.jobs[42]?.status).toBe('queued'))
+    expect(vi.mocked(dependencies.api.getJob).mock.calls.filter(([id]) => id === 42)).toHaveLength(1)
+    expect(JSON.parse(localStorage.getItem(JOB_STORAGE_KEY)!)).toContainEqual({ id: 42, jobType: 'chapter_type_organize', trackedAt: dependencies.now().toISOString() })
+    store.$dispose()
+    setActivePinia(createPinia())
+    const recovered = useJobStore()
+    const restored = makeDependencies({ getJob: vi.fn(async id => id === 42 ? child : makeJob({ status: 'succeeded', result: { chapter_type_job_id: 42 } })) })
+    await recovered.initialize(restored)
+    expect(vi.mocked(restored.api.getJob).mock.calls.filter(([id]) => id === 42)).toHaveLength(1)
+    expect(recovered.jobs[42]?.status).toBe('queued')
+    recovered.$dispose()
+  })
+
+  it('tracks the config intake and its chapter child without changing the submitted task notice', async () => {
+    const dependencies = makeDependencies({ getJob: vi.fn(async id => id === 42
+      ? makeJob({ id: 42, job_type: 'question_bank_sync', status: 'succeeded', result: { chapter_type_job_id: 43 } })
+      : makeJob({ id: 43, job_type: 'chapter_type_organize', status: 'succeeded', result: { outcome: 'published', chapter_summaries: [] } })) })
+    const store = useJobStore()
+    store.track(makeJob({ job_type: 'config_generation', status: 'succeeded', result: { question_bank_sync_job_id: 42 } }), dependencies)
+    await vi.waitFor(() => expect(store.jobs[43]?.status).toBe('succeeded'))
+    expect(vi.mocked(dependencies.api.getJob).mock.calls.map(([id]) => id)).toEqual([42, 43])
+    expect(store.latestTrackedJobId).toBe(41)
+    expect(store.jobNoticeRevision).toBe(1)
+    expect(JSON.parse(localStorage.getItem(JOB_STORAGE_KEY)!)).toHaveLength(3)
+    store.$dispose()
+  })
+
   it('restores only valid persisted ids and polls only active jobs', async () => {
     localStorage.setItem(
       JOB_STORAGE_KEY,

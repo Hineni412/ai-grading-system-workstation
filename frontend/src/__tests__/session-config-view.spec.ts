@@ -2,7 +2,7 @@ import { createApp, h, nextTick, ref } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { uploadConfigSource, type ConfigSource } from '../api/config-workspace';
+import { uploadConfigSource, type ConfigSource, type ConfigGenerationRequest } from '../api/config-workspace';
 import type { JobResponse } from '../api/jobs';
 import { ApiError } from '../api/errors';
 import type { RegionReadiness } from '../api/template-regions';
@@ -10,11 +10,17 @@ import { useConfigWorkspaceStore } from '../stores/config-workspace';
 import { useJobStore } from '../stores/jobs';
 import { useSessionStore } from '../stores/session';
 import SessionConfigView from '../views/SessionConfigView.vue'
+import { confirmRequest, settleConfirm } from '../composables/useConfirm'
 import ConfirmDialogHost from '../components/design-system/ConfirmDialogHost.vue'
 
 vi.mock('../api/config-workspace', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/config-workspace')>(),
   uploadConfigSource: vi.fn(),
+  fetchConfigGenerationPreview: vi.fn(async (_sessionId, request: ConfigGenerationRequest) => ({
+    base_release_id: 'kgr_TEST', input_fingerprint: 'e'.repeat(64), volume_id: request.curriculum_volume_id,
+    chapters: [], planned_requests: 0, model_calls: 0, analysis_request_estimate: 1,
+    source_id: request.source_id, source_revision: request.source_revision,
+  })),
 }))
 
 function source(id = 'a', revision = 'b'): ConfigSource {
@@ -40,6 +46,7 @@ async function settle(): Promise<void> {
   await Promise.resolve(); await nextTick()
   await new Promise((resolve) => setTimeout(resolve, 240))
   await Promise.resolve(); await nextTick()
+  if (confirmRequest.value?.title === '确认重新分析？') { settleConfirm(true); for (let index = 0; index < 10; index += 1) { await Promise.resolve(); await nextTick() } }
 }
 
 async function mountDirtyView(hydrating = false) {

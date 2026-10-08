@@ -100,7 +100,7 @@ def test_skill_routes_remain_read_only_and_optional_list_fields(question_bank_fi
     plain = client.get('/api/question-bank/questions').json()['items'][0]
     assert 'skills' not in plain and 'skill_hits' not in plain
     enriched = client.get('/api/question-bank/questions?include_skills=true').json()['items'][0]
-    assert enriched == {**plain, 'skills': [], 'skill_hits': [], 'evidence_point_count': 0, 'duplicate_members': []}
+    assert enriched == {**plain, 'labels': {'primary_type': None, 'secondary_types': [], 'knowledge_points': []}, 'skills': [], 'skill_hits': [], 'evidence_point_count': 0, 'duplicate_members': []}
     assert client.get('/api/question-bank/questions?skill_keys=sk_TEST_missing').json()['total'] == 0
     assert client.get('/api/question-bank/facets?skill_keys=sk_TEST_missing').json()['question_types'] == []
     assert client.get('/api/question-bank/skill-index?curriculum_volume_id=invalid').status_code == 422
@@ -1010,3 +1010,14 @@ def question_bank_media_seed(
         db_before=db_path.read_bytes(),
         sqlite_sidecars_before=_sqlite_sidecar_snapshot(db_path),
     )
+
+
+def test_similarity_type_reason_is_separate_from_knowledge_point():
+    from question_bank.services.question_read_service import _similarity_reasons
+    question = {'difficulty': '5', 'question_type': '解答题'}
+    tags = [{'tag_type': 'knowledge_point', 'tag_value': '由三边判断直角三角形'},
+            {'tag_type': 'knowledge_point', 'tag_value': '勾股定理的逆定理'}]
+    reasons = _similarity_reasons(question, tags, question, tags, wording_score=0,
+        shared_type_values=('由三边判断直角三角形',), type_values=frozenset({'由三边判断直角三角形'}))
+    assert reasons[0] == {'kind': 'type', 'values': ['由三边判断直角三角形']}
+    assert next(reason for reason in reasons if reason['kind'] == 'knowledge_point')['values'] == ['勾股定理的逆定理']

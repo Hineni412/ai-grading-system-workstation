@@ -2,8 +2,8 @@
 import AppButton from '../design-system/AppButton.vue'
 import WrongQuestionBookExport from './WrongQuestionBookExport.vue'
 import { computed } from 'vue'
-const props = defineProps<{ context: 'student' | 'group'; studentIds: string[]; volumeId: string; scopeKeys: string[]; valid: boolean; blockedReason?: string; generating?: boolean; targetKind?: 'skill' | 'type' }>()
-const targetLabel = computed(() => (props.targetKind === 'type' ? '题型' : '技能'))
+const props = defineProps<{ context: 'student' | 'group'; studentIds: string[]; volumeId: string; scopeKeys: string[]; valid: boolean; blockedReason?: string; generating?: boolean; targetKind?: 'skill' | 'type' | 'knowledge' | 'mixed' }>()
+const targetLabel = computed(() => (props.targetKind === 'type' ? '题型' : props.targetKind === 'knowledge' ? '知识点' : props.targetKind === 'mixed' ? '训练目标' : '技能'))
 const emit = defineEmits<{ goPaper: [] }>()
 const purpose = defineModel<'training' | 'handout' | 'wrong_book'>('purpose', { default: 'training' })
 const paperMode = defineModel<'individual' | 'shared'>('paperMode', { default: 'individual' })

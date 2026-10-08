@@ -21,7 +21,7 @@
 - 已部署机器的版本升级使用增量更新包,不用新完整包覆盖安装目录。
 - 开发机上用 `update_tools/make_update.py` 生成更新包:内容为 `update_manifest.json`、`app/`(代码、`frontend/dist`、`VERSION`、启动器与 `runtime/tectonic`)、全量 `migrations/` 与全量 `update_tools/`。生成规则与完整安装包同源,只产出文件夹。更新包绝不包含 `user_data`。
 - 目标机上用 `update_tools/apply_update.py <更新包目录>` 应用更新：先备份 `user_data`（zip，不含 API 密钥）与将被覆盖的代码（`app_backup_v<旧版本>/`，包含 `migrations/` 和 `update_tools/`），再覆盖代码。随后调用目标版本的 `backend.ops.offline`，复用应用维护的预演、迁移前备份、操作日志、锁和待执行操作；没有待迁移时不写业务库。支持 `--dry-run` 与 `--rollback`，更新摘要写入 `logs/backup.log`。
-- 代码覆盖阶段不携带或覆盖 user_data；随后核心库迁移会写入数据库。
+- 代码覆盖阶段不携带或覆盖 user_data，包括本机自动生成的知识标准、题型词表和整理回执；这些资料随普通业务备份恢复。随后确有核心库迁移时才按原受保护流程写数据库；自动题型使用已有表，不新增结构迁移。
 - `update_tools/backup_data.py`、`update_tools/backup_core.py`、`update_tools/list_backups.py` 提供独立的数据备份与查询。
 
 ## 数据库 schema 迁移

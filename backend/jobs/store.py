@@ -431,6 +431,7 @@ class JobStore:
             force_retag_question_ids,
             normalized_source_job_id,
             clean_payload.get('fingerprint') if job_type == 'question_bank_repair' else None,
+            clean_payload.get('chapter_type_authorization'),
         )
         payload_json = json.dumps(
             clean_payload,
@@ -488,6 +489,7 @@ class JobStore:
                             else None
                         ),
                         existing_payload.get('fingerprint') if job_type == 'question_bank_repair' else None,
+                        existing_payload.get('chapter_type_authorization'),
                     )
                     if existing_payload.get("client_request_token") == token:
                         if existing_signature != signature:

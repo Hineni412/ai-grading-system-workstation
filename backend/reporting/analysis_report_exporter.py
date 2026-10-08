@@ -1240,7 +1240,8 @@ def _personal_knowledge_view(data: SessionAnalysisData, student: StudentReportDa
     from question_bank.question_types import is_type_key
 
     snapshot = data.knowledge_structure
-    type_mode = snapshot.get('target_kind') == 'type'
+    target_kind = snapshot.get('target_kind') or 'skill'
+    type_mode = target_kind == 'type'
     catalog = {str(item['knowledge_key']): item for item in snapshot.get('catalog', [])}
     nodes: dict[str, dict[str, Any]] = {}
     for record in student.records:
@@ -1255,13 +1256,15 @@ def _personal_knowledge_view(data: SessionAnalysisData, student: StudentReportDa
             path = str(item.get('knowledge_point') or entry.get('path') or entry.get('label') or '')
             segments = [part.strip() for part in re.split('[|｜]', path) if part.strip()]
             label = str(entry.get('label') or (segments[-1] if segments else key))
+            entry_target_kind = str(entry.get('target_kind') or item.get('target_kind') or target_kind)
             kind = item.get('node_kind') or (
-                'type' if type_mode and is_type_key(key)
+                'type' if is_type_key(key)
                 else 'skill' if key.startswith('sk_') or label.startswith('技能') else 'topic')
             if kind not in {'topic', 'skill', 'type'}:
                 kind = 'topic'
-            if type_mode and kind != 'type':
-                # Typed releases list question types instead of topics/skills.
+            if entry_target_kind == 'type' and kind != 'type':
+                continue
+            if entry_target_kind == 'knowledge' and kind != 'topic':
                 continue
             chapter, section, cursor, seen = '', '', item, set()
             parent_references = []
@@ -1286,6 +1289,7 @@ def _personal_knowledge_view(data: SessionAnalysisData, student: StudentReportDa
             node = nodes.setdefault(key, {
                 'key': key, 'label': re.sub(r'^(?:技能|题型)[·・：:]\s*', '', label), 'kind': kind,
                 'chapter': chapter, 'section': section, 'mastery': value,
+                'target_kind': entry_target_kind,
                 **{field: mastery.get(field) for field in ('interval_low', 'interval_high', 'observation_count', 'full_correct_count', 'recent_trend', 'parameter_version')},
                 'tier': mastery.get('tier') or 'insufficient',
                 'parent_references': parent_references,
@@ -1303,7 +1307,7 @@ def _personal_knowledge_view(data: SessionAnalysisData, student: StudentReportDa
     edges = [dict(edge) for edge in snapshot.get('associations', [])
              if edge.get('topic_key') in nodes and edge.get('skill_key') in nodes]
     return {'nodes': list(nodes.values()), 'edges': edges, 'as_of': snapshot.get('as_of') or datetime.now().strftime('%Y-%m-%d %H:%M'),
-            'target_kind': 'type' if type_mode else 'skill',
+            'target_kind': target_kind,
             'note': snapshot.get('note') or '当前掌握度暂不可用；以下保留本卷考查范围与得分，不以得分率代替掌握度。'}
 
 
@@ -1394,26 +1398,34 @@ def _knowledge_view_html(view: dict[str, Any]) -> str:
     type_mode = view.get('target_kind') == 'type'
     for chapter, nodes in chapters.items():
         columns = []
-        if type_mode:
-            groups = [('题型', nodes, 'types')]
+        chapter_kinds = {node.get('target_kind') or view.get('target_kind') or 'skill' for node in nodes}
+        chapter_type_mode = chapter_kinds == {'type'} or all(node['kind'] == 'type' for node in nodes)
+        chapter_knowledge_mode = chapter_kinds == {'knowledge'}
+        if chapter_type_mode:
+            groups = [('题型 · 考什么', nodes, 'types')]
+        elif chapter_knowledge_mode:
+            groups = [('知识点 · 学什么', nodes, 'topics')]
         else:
             topics, skills = [n for n in nodes if n['kind'] == 'topic'], [n for n in nodes if n['kind'] == 'skill']
             groups = [('知识点', topics, 'topics'), ('技能点', skills, 'skills')]
+            types = [n for n in nodes if n['kind'] == 'type']
+            if types:
+                groups.append(('题型 · 考什么', types, 'types'))
         for title, group, kind in groups:
             columns.append(f'<div class="kn-column kn-{kind}"><h4>{title}<span>{len(group)} 项</span></h4>'
                            + (''.join(node_html(node) for node in group) or '<p class="kn-empty">本卷暂无直接考查记录</p>') + '</div>')
         boards.append(f'<div class="kn-chapter"><h3>{esc(chapter)}</h3>'
-                      f'<div class="kn-board{" is-types" if type_mode else ""}">'
+                      f'<div class="kn-board{" is-types" if chapter_type_mode or chapter_knowledge_mode else ""}">'
                       '<svg class="kn-lines" aria-hidden="true"></svg>' + ''.join(columns) + '</div></div>')
     data_json = json.dumps(view, ensure_ascii=False, separators=(',', ':')).replace('<', r'\u003c').replace('>', r'\u003e').replace('&', r'\u0026')
-    item_label = '题型' if type_mode else '知识与技能'
+    item_label = {'type': '题型', 'knowledge': '知识点', 'mixed': '训练目标'}.get(view.get('target_kind'), '知识与技能')
     title = f'班级{item_label}掌握图' if class_mode else f'{item_label}掌握图'
     scope_note = (f'统计本班 {view["student_count"]} 名已有成绩的学生；缺考及未形成有效成绩者不计入。'
                   '节点百分比仅对有证据学生取平均；各档只统计有观测学生，无观测人数单列，不参与平均或分档。') if class_mode else ''
     footnote = ('节点颜色表示有证据学生中人数最多的档位；备课时同时查看各档人数，避免平均值掩盖差异。'
                 f'“本卷得分率”为相关小问整体得分率，不是{"题型" if type_mode else "技能"}独立得分。') if class_mode else (
                 '节点百分比为参考难度步骤做对的可能性，详情附 80% 把握区间；“本卷”分数为相关小问的整体得分，不能直接归因到其中每一步。')
-    help_text = ('点选题型，查看本卷表现。' if type_mode else
+    help_text = ('点选训练目标，查看本卷表现。' if view.get('target_kind') in {'type', 'knowledge', 'mixed'} else
                  '点选知识点或技能点，查看关联与本卷表现。实线：有同小问依据；虚线：仅同题出现。关联不表示掌握度相同。')
     return (f'<section class="knowledge-map" id="knowledge-map"><div class="kn-heading"><h2>{title}</h2>'
             f'<span class="kn-date">截至 {esc(view["as_of"])}</span></div>'
@@ -2849,7 +2861,7 @@ def _render_personal_html(
     )
     card_e = ""
     if points:
-        target_label = '题型' if data.knowledge_structure.get('target_kind') == 'type' else '知识点'
+        target_label = {'type': '题型', 'mixed': '训练目标'}.get(data.knowledge_structure.get('target_kind'), '知识点')
         score_note = ('这里只反映本次考试表现；题型下列出的分数是相关题目的整体得分。'
                       if target_label == '题型' else '这里只反映本次考试表现；同一道题可能同时考几个知识点。')
         card_e = f"""
@@ -2974,7 +2986,7 @@ def render_class_html(
         notes = '<p class="muted">AI 整理后在此显示。</p>'
     knowledge_html = _knowledge_view_html(_class_knowledge_view(data))
     if not knowledge_html:
-        target_label = '题型' if data.knowledge_structure.get('target_kind') == 'type' else '知识与技能'
+        target_label = {'type': '题型', 'knowledge': '知识点', 'mixed': '训练目标'}.get(data.knowledge_structure.get('target_kind'), '知识与技能')
         knowledge_html = (f'<section id="knowledge-map"><h2>班级{target_label}掌握图</h2>'
                           f'<p class="muted">本卷尚无可可靠匹配的{target_label}标签，暂不展示掌握图；逐题成绩仍可查看。</p></section>')
     knowledge_css, knowledge_js = _report_knowledge_assets()
