@@ -132,6 +132,43 @@ describe('ConfigSaveResult', () => {
     expect(mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')?.value).toBe('最新服务器答案')
   })
 
+  it('keeps an answer typed during conflict reload before the field loses focus', async () => {
+    const pending = deferred<ConfigEditorResponse>()
+    const loader = vi.fn(() => pending.promise)
+    const conflict = new ApiError({ kind: 'conflict', status: 409,
+      code: 'config_revision_conflict', message: 'conflict', details: {}, requestId: 'safe', retryable: false })
+    const saver = vi.fn(async () => { throw conflict })
+    const mounted = await mountView({ saver, loader })
+    mounted.workspace.updateEditor({ row_id: 'row-q12-p1-s1', score: 101 })
+    await nextTick()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')!.click()
+    await settle()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="重新加载最新版本"]')!.click()
+    await nextTick()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="确认丢弃并重新加载"]')!.click()
+    await settle()
+    expect(loader).toHaveBeenCalledExactlyOnceWith(7)
+
+    mounted.host.querySelector<HTMLButtonElement>('.rubric-unit-card__preview')!.click()
+    await nextTick()
+    const answer = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')!
+    answer.focus()
+    answer.value = '请求之后的新草稿'
+    answer.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(document.activeElement).toBe(answer)
+    pending.resolve(editor('旧响应答案', 'c'))
+    await settle()
+
+    expect(saver).toHaveBeenCalledOnce()
+    expect(loader).toHaveBeenCalledExactlyOnceWith(7)
+    expect(mounted.workspace.hasDirtyEditor).toBe(true)
+    expect(mounted.workspace.effectiveEditorRows[0]?.standard_answer).toBe('请求之后的新草稿')
+    expect(answer.value).toBe('请求之后的新草稿')
+    expect(mounted.workspace.editor?.rows[0]?.standard_answer).toBe('旧答案')
+    mounted.unmount()
+  })
+
   it('reconciles a lost save response against the authoritative editor before retry', async () => {
     const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
       message: 'timeout', details: {}, requestId: 'safe', retryable: false })

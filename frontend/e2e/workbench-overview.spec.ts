@@ -1,5 +1,5 @@
 import { expect, type Page, type Route, type TestInfo } from '@playwright/test';
-import { curriculumCatalog, test } from './mock-fixtures'
+import { curriculumCatalog, fulfillEmptyScanRead, test } from './mock-fixtures'
 
 const STORAGE_KEY = 'ai-grading:selected-session:v1'
 
@@ -192,6 +192,7 @@ async function installSyntheticApi(
       await fulfillJson(route, { items: [], total: 0, page: 1, page_size: 20, total_pages: 0 })
       return
     }
+    if (await fulfillEmptyScanRead(route)) return
     await route.fulfill({ status: 418, body: `unexpected synthetic API request: ${request.method()} ${pathname}` })
   })
 

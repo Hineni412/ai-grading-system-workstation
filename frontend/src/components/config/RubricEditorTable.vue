@@ -645,6 +645,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
                 :aria-label="`${identity(row)} 标准答案`"
                 :value="row.standard_answer"
                 :disabled="disabled"
+                @input="textEdit(row, 'standard_answer', $event)"
                 @change="textEdit(row, 'standard_answer', $event)"
               />
             </label>

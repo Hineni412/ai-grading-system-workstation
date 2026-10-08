@@ -28,12 +28,14 @@ function overview() {
     associations: [{ topic_key: 'topic', skill_key: 'skill', question_count: 12, same_part_question_count: 10, basis: 'same_part' },
       { topic_key: 'topic', skill_key: 'skill2', question_count: 3, same_part_question_count: 0, basis: 'question_cooccurrence' }] }
 }
-function diagnosis(body: { scope: { mode: string; student_ids?: string[]; class_ids?: string[] } }) {
+function diagnosis(body: { scope: { mode: string; student_ids?: string[]; class_ids?: string[] }; response_mode?: 'full' | 'display' }) {
   const data = overview()
-  return { ...data, students: data.students.filter(s => body.scope.mode === 'class'
+  const full = { ...data, scope: body.scope, students: data.students.filter(s => body.scope.mode === 'class'
     ? body.scope.class_ids?.includes(s.class_id) : body.scope.student_ids?.includes(s.student_id)).map(s => ({ ...s, weak_points: [] })),
     group_weak_points: [], knowledge_catalog: data.nodes.map(n => ({ knowledge_key: n.knowledge_key, knowledge_point: n.display_name, parent_knowledge_key: n.kind === 'chapter' ? null : n.kind === 'section' ? 'ch' : n.section_key, node_kind: n.kind })),
-    knowledge_associations: data.associations, coverage: { covered_items: 0, total_items: 0, missing_items: {} }, confirmed_concept_ids: [], suggested_terms: [], unmapped_terms: [], diagnosis_identity: 'question_tag' }
+    knowledge_associations: data.associations, coverage: { covered_items: 0, total_items: 0, missing_items: {} }, confirmed_concept_ids: [], suggested_terms: [], unmapped_terms: [], warnings: [], diagnosis_identity: 'question_tag' }
+  if (body.response_mode !== 'display') return full
+  return { ...full, response_mode: 'display', knowledge_associations: [] }
 }
 async function install(page: Page) {
   page.on('pageerror', error => { throw error })
@@ -115,6 +117,7 @@ test('overview opens existing student training with presets and sends no create 
   const selection = await page.evaluate(() => ({ scope: JSON.parse(localStorage.getItem('p4-evidence-scope-v1')!), paper: JSON.parse(localStorage.getItem('ai-grading:personalized-paper-selection:v1')!) }))
   await expect(page.getByRole('checkbox', { name: '选择测试甲', exact: true })).toBeChecked()
   await expect(page.getByRole('checkbox', { name: '选择测试乙', exact: true })).toHaveCount(0)
+  expect(requests.filter(r => r.path === '/api/training/diagnosis')).toHaveLength(1)
   expect(selection.paper.selectedStudentIds).toEqual(['1'])
   expect(selection.paper).toMatchObject({ targetKeys: ['skill'], rangeKeys: ['sec'], scopeMode: 'focused', paperMode: 'individual' })
   expect(requests.filter(r => r.method === 'POST' && !['/api/training/overview', '/api/training/diagnosis'].includes(r.path))).toHaveLength(0)
