@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any, Mapping
@@ -31,6 +32,8 @@ from question_bank.training_criteria import (
     GatewayBatchResponse,
     GatewayUsage,
     QuestionAnalysisInput,
+    QuestionAnalysisInputLoader,
+    solution_evidence_source_content_hash,
 )
 
 STAGED_SCHEMA = (
@@ -152,6 +155,18 @@ def _seed_evidence_links(
                       ?, 'link_job', 'test')
             """,
             link_rows,
+        )
+    question = QuestionAnalysisInputLoader(
+        db_path=database, data_root=database.parent,
+    ).load((question_id,))[0]
+    evidence = {"parts": [{"part_id": "part-1", "evidence_points": [
+        {"evidence_point_id": row[2]} for row in link_rows
+    ]}]}
+    with connect(database) as conn:
+        conn.execute(
+            "UPDATE question_solution_evidence_versions "
+            "SET source_content_hash=?,evidence_json=? WHERE evidence_version_id=?",
+            (solution_evidence_source_content_hash(question), json.dumps(evidence), version_id),
         )
     return version_id
 
@@ -292,3 +307,44 @@ def test_save_tag_analysis_derives_prerequisite_and_keeps_manual(
 
 
 # ------------------------------------------------- F. 整题难度来自逐小问公式
+
+
+def test_refresh_derived_ownership_preserves_unchanged_records(tmp_path: Path) -> None:
+    from question_bank.services.question_write_service import refresh_derived_ownership_tags
+
+    database = _base_db(tmp_path)
+    _add_question(database)
+    _seed_evidence_links(database, 1, supporting=(_EARLIER_SECTION_KEY,))
+    original = [
+        ("knowledge_point", _SECTIONED_KEY, "taxonomy"),
+        ("knowledge_point", _SKILL_KEY, "taxonomy"),
+        ("prerequisite", _EARLIER_SECTION_KEY, "taxonomy"),
+        ("knowledge_point", "sk_manual_context", "manual"),
+        ("knowledge_point", "kp_bnu24_math_g8_upper_1_1_t01", "taxonomy"),
+        ("prerequisite", "teacher prerequisite", "manual"),
+    ]
+    with connect(database) as conn:
+        conn.executemany(
+            "INSERT INTO question_tags(question_id,tag_type,tag_value,confidence,source,created_at) "
+            "VALUES (1,?,?,0.7,?,'2001-01-01 00:00:00')", original,
+        )
+        before = {row['id']: tuple(row) for row in conn.execute("SELECT * FROM question_tags WHERE question_id=1")}
+        assert refresh_derived_ownership_tags(conn, 1, data_root=tmp_path)
+        after = {row['id']: tuple(row) for row in conn.execute("SELECT * FROM question_tags WHERE question_id=1")}
+        assert all(after.get(row_id) == row for row_id, row in before.items())
+        first = after
+        refresh_derived_ownership_tags(conn, 1, data_root=tmp_path)
+        assert {row['id']: tuple(row) for row in conn.execute("SELECT * FROM question_tags WHERE question_id=1")} == first
+        conn.execute(
+            "UPDATE evidence_point_knowledge_links SET stable_key=?,term_id=? "
+            "WHERE question_id=1 AND role='supporting_prerequisite'",
+            (_LATER_CHAPTER_SECTION_KEY, _LATER_CHAPTER_SECTION_KEY),
+        )
+        refresh_derived_ownership_tags(conn, 1, data_root=tmp_path)
+        tags = {(row['tag_type'], row['tag_value']) for row in conn.execute("SELECT * FROM question_tags WHERE question_id=1")}
+        assert ('prerequisite', _EARLIER_SECTION_KEY) not in tags
+        assert ('prerequisite', _LATER_CHAPTER_SECTION_KEY) in tags
+        after_change = {row['id']: tuple(row) for row in conn.execute("SELECT * FROM question_tags WHERE question_id=1")}
+        for row_id, row in before.items():
+            if row[3] != _EARLIER_SECTION_KEY:
+                assert after_change.get(row_id) == row

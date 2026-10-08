@@ -2896,21 +2896,38 @@ def _dedupe_tag_rows(
 def refresh_derived_ownership_tags(
     conn: sqlite3.Connection, question_id: int, *, data_root: Path | None = None,
 ) -> bool:
-    """Refresh only the ownership projection; retain contextual/manual tags."""
+    """Refresh changed ownership values without recreating unchanged records."""
+    from question_bank.question_types import is_type_key
+
     qid = int(question_id)
     db_path = Path(next(row[2] for row in conn.execute('PRAGMA database_list') if row[1] == 'main'))
     derived = _derived_ownership(conn, db_path, qid, data_root=data_root)
     if derived is None:
         return False
-    conn.execute("DELETE FROM question_tags WHERE question_id=? AND (tag_type IN ('exam_scope','curriculum_section','canonical_knowledge_id') OR (tag_type='tag_status' AND tag_value='derived_pending') OR (tag_type='knowledge_point' AND (tag_value LIKE 'sk_%' OR source='taxonomy')) OR (tag_type='prerequisite' AND COALESCE(source,'') <> 'manual'))", (qid,))
-    for kind, values in [('exam_scope', derived['exam_scope']),
-                         ('curriculum_section', derived['curriculum_section']),
-                         ('knowledge_point', derived['direct_keys']),
-                         ('prerequisite', derived['prerequisite_keys'])]:
-        for value in values:
+    desired = {
+        'exam_scope': set(derived['exam_scope']),
+        'curriculum_section': set(derived['curriculum_section']),
+        'knowledge_point': set(derived['direct_keys']),
+        'prerequisite': set(derived['prerequisite_keys']),
+    }
+    rows = conn.execute(
+        'SELECT id,tag_type,tag_value,source FROM question_tags WHERE question_id=?', (qid,),
+    ).fetchall()
+    for row_id, kind, value, source in rows:
+        if source == 'manual' or is_type_key(value):
+            continue
+        managed = (
+            kind in {'exam_scope', 'curriculum_section', 'canonical_knowledge_id'}
+            or (kind == 'tag_status' and value == 'derived_pending')
+            or (kind == 'knowledge_point' and (str(value).startswith('sk_') or source == 'taxonomy'))
+            or kind == 'prerequisite'
+        )
+        if managed and value not in desired.get(kind, set()):
+            conn.execute('DELETE FROM question_tags WHERE id=?', (row_id,))
+    for kind, values in desired.items():
+        for value in sorted(values):
             conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,confidence,source) SELECT ?,?,?,1.0,'taxonomy' WHERE NOT EXISTS(SELECT 1 FROM question_tags WHERE question_id=? AND tag_type=? AND tag_value=?)",
                          (qid, kind, value, qid, kind, value))
-    conn.execute("DELETE FROM question_tags WHERE id IN (SELECT id FROM (SELECT id,ROW_NUMBER() OVER(PARTITION BY tag_type,tag_value ORDER BY CASE WHEN source='manual' THEN 0 ELSE 1 END,id) AS n FROM question_tags WHERE question_id=?) WHERE n>1)", (qid,))
     conn.execute("UPDATE questions SET updated_at=datetime('now','localtime') WHERE id=?", (qid,))
     return True
 
