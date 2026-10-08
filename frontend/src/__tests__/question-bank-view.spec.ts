@@ -6,7 +6,8 @@ import { createMemoryHistory } from 'vue-router'
 import { ApiError } from '../api/errors'
 import type { JobResponse } from '../api/jobs'
 import { questionBankApi, type ChapterExamProfile as ChapterExamProfileData, type QuestionBankPaper, type QuestionRepairPreview, type QuestionBankFacets, type QuestionSkillIndex, type QuestionBankListItem } from '../api/question-bank'
-import { trainingApi } from '../api/training'
+import { trainingApi, type TrainingOverview } from '../api/training'
+import { useMasteryOverviewStore } from '../stores/mastery-overview'
 import QuestionBasketDrawer from '../components/question-bank/QuestionBasketDrawer.vue'
 import { useAssemblyStore } from '../stores/assembly'
 import QuestionBankTodo from '../components/question-bank/QuestionBankTodo.vue'
@@ -224,6 +225,21 @@ function tagFacets(): QuestionBankFacets {
     special_types: [{ value: '新定义题', count: 2 }], error_pattern_categories: [{ value: '方法与思路', count: 3 }],
     error_types: [], student_levels: [], teaching_stages: [], sub_skills: [], question_types: [], years: [], exam_types: [], grades: [] }
 }
+function tagOverview(): TrainingOverview {
+  return {
+    scope: { mode: 'all', student_ids: ['1', '2', '3', '4'] },
+    exam_scope: { mode: 'semester', session_ids: [7, 8], sessions: [{ session_id: 7, session_name: 'TEST-单元考试' }, { session_id: 8, session_name: 'TEST-阶段考试' }] },
+    warnings: [],
+    nodes: [
+      { knowledge_key: 'TEST-c1', display_name: '第一章 实数', kind: 'chapter', chapter_key: 'TEST-c1', section_key: '', group_mastery: .73, evidence_student_count: 4, distribution: { weak: 1, unsteady: 2, stable: 1, insufficient: 0 }, students: [] },
+      { knowledge_key: 'TEST-s1', display_name: '1 认识实数', kind: 'section', chapter_key: 'TEST-c1', section_key: 'TEST-s1', group_mastery: .61, evidence_student_count: 3, distribution: { weak: 1, unsteady: 0, stable: 1, insufficient: 1 }, students: [] },
+      { knowledge_key: 'TEST-s2', display_name: '2 平方根', kind: 'section', chapter_key: 'TEST-c1', section_key: 'TEST-s2', group_mastery: null, evidence_student_count: 0, distribution: { weak: 0, unsteady: 0, stable: 0, insufficient: 0 }, students: [] },
+      { knowledge_key: 'TEST-c2', display_name: '第二章 三角形', kind: 'chapter', chapter_key: 'TEST-c2', section_key: '', group_mastery: null, evidence_student_count: 0, distribution: { weak: 0, unsteady: 0, stable: 0, insufficient: 0 }, students: [] },
+    ],
+    students: [],
+    summary: { student_count: 4, evidence_student_count: 4, exam_student_count: 4, exam_score_rate: .7, topic_count: 0, skill_count: 0, weak_topic_count: 0, weak_skill_count: 0 },
+  }
+}
 async function mountTagBrowser(query = '?tab=tag') {
   const host = document.createElement('div'); document.body.append(host)
   const pinia = createPinia()
@@ -232,6 +248,10 @@ async function mountTagBrowser(query = '?tab=tag') {
   const scope = useCurriculumScopeStore(pinia)
   scope.selectedVolumeId = 'bnu24-math-g8-upper'
   const index = tagIndex()
+  scope.loadState = 'ready'
+  const mastery = useMasteryOverviewStore(pinia)
+  const overview = vi.spyOn(trainingApi, 'overview').mockResolvedValue(tagOverview())
+  vi.spyOn(studentsApi, 'fetchStudents').mockResolvedValue(Array.from({ length: 4 }, (_, index) => ({ id: index + 1, student_code: `TEST-${index}`, name: '合成学生', class_name: index < 2 ? '9班' : '10班', created_at: null })))
   scope.volumes = [{ id: scope.selectedVolumeId, label: '八年级上册', order: 1, grade: '八年级', semester: '上学期', textbook_version: '北师大版（2024）', source: {}, statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 }, chapters: index.chapters.map((chapter, order) => ({ id: chapter.id, knowledge_id: chapter.id, label: chapter.label, title: chapter.label, display_name: chapter.label, kind: 'chapter', number: String(order + 1), source_ref: { node_id: chapter.id, relative_url: '' }, exam_scope_values: [], order, sections: [] })) }]
   const bank = useQuestionBankStore(pinia)
   bank.papers = [{ ...paper, curriculum_volume_id: scope.selectedVolumeId, title: 'TEST-函数单元卷' }, { ...paper, id: 9, curriculum_volume_id: scope.selectedVolumeId, title: 'TEST-几何期末卷' }]; bank.papersState = 'ready'
@@ -241,10 +261,11 @@ async function mountTagBrowser(query = '?tab=tag') {
   app.use(pinia).use(router).mount(host); mounted.push(app)
   await vi.waitFor(() => expect(router.currentRoute.value.query.tab).toBe(query.includes('unlinked') ? 'todo' : 'tag'))
   if (!query.includes('unlinked')) await vi.waitFor(() => expect(bank.listState).toBe('ready'))
+  await vi.waitFor(() => expect(mastery.loadState).toBe('ready'))
   const dimension = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('.qb-dimension-tabs button')].find(button => button.textContent?.startsWith(label))!
   const tag = (value: string) => [...host.querySelectorAll<HTMLButtonElement>('[data-tag-value]')].find(button => button.dataset.tagValue === value)!
   const chapter = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('.qb-chapter-name')].find(button => button.textContent === label)!
-  return { host, bank, router, index, list, facets, dimension, tag, chapter }
+  return { host, bank, router, index, list, facets, dimension, tag, chapter, mastery, overview }
 }
 
 describe('question bank workspace', () => {
@@ -821,8 +842,7 @@ describe('question bank workspace', () => {
   })
 
   it('shows all semester questions and keeps every chosen dimension when switching labels', async () => {
-    const overview = vi.spyOn(trainingApi, 'overview')
-    const { host, router, list, facets, dimension, tag } = await mountTagBrowser()
+    const { host, router, list, facets, dimension, tag, overview } = await mountTagBrowser()
     expect(host.textContent).toContain('本学期全部题目 · 共 6 题')
     expect(host.textContent).toContain('另有 2 题的主考小节不在本册')
     expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ scopeMode: 'primary', includeSkills: true, curriculumVolumeIds: ['bnu24-math-g8-upper'], curriculumSections: [], typeKeys: [], knowledgePoints: [], skillKeys: [], difficultyMin: 1, difficultyMax: 10, collapseDuplicates: true, sort: 'newest' }), expect.anything())
@@ -848,7 +868,7 @@ describe('question bank workspace', () => {
     host.querySelector<HTMLButtonElement>('[aria-label="不限知识点"]')!.click()
     await vi.waitFor(() => expect(queryValues(router.currentRoute.value.query, 'kp')).toEqual([]))
     expect(queryValues(router.currentRoute.value.query, 'type')).toEqual(['TEST-type-a'])
-    expect(overview).not.toHaveBeenCalled()
+    expect(overview).toHaveBeenCalledTimes(1)
     for (const retired of ['按技能', '知识主题', '未挂技能', 'AI 补挂技能', '标签筛选']) expect(host.textContent).not.toContain(retired)
     ;[...host.querySelectorAll<HTMLButtonElement>('.qb-selected-conditions button')].find(button => button.textContent?.trim() === '清空条件')!.click()
     await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ typeKeys: [], methods: [], knowledgePoints: [], curriculumSections: [] }), expect.anything()))
@@ -861,6 +881,13 @@ describe('question bank workspace', () => {
     chapter('第一章 实数').click()
     await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ curriculumSections: ['TEST-c1'] }), expect.anything()))
     expect(box('同时看第一章 实数').checked).toBe(true)
+    expect(host.querySelector('.qb-chapter-mastery[data-knowledge="TEST-c1"]')?.textContent).toContain('掌握度 73%')
+    expect(host.querySelector('.qb-chapter-mastery[data-knowledge="TEST-c1"]')?.textContent).toContain('需关注 3 人 / 有证据 4 人')
+    expect(host.querySelector('.qb-chapter-mastery[data-knowledge="TEST-s1"]')?.textContent).toContain('掌握度 61%')
+    expect(host.querySelector('.qb-chapter-mastery[data-knowledge="TEST-s1"]')?.textContent).toContain('需关注 1 人 / 有证据 3 人')
+    expect(host.querySelector('.qb-chapter-mastery[data-knowledge="TEST-s2"]')?.textContent).toBe('暂无作答证据')
+    expect(host.querySelector('.qb-chapter-mastery[data-knowledge="TEST-c2"]')?.textContent).toBe('暂无作答证据')
+    expect(host.querySelector('.qb-chapter-heading')?.textContent).toContain('题库题数 · 随筛选更新')
     box('同时看第一章 实数 · 1 认识实数').click()
     await vi.waitFor(() => expect(queryValues(router.currentRoute.value.query, 'sec')).toEqual(['TEST-s2']))
     expect(box('同时看第一章 实数').indeterminate).toBe(true)
@@ -874,6 +901,47 @@ describe('question bank workspace', () => {
     await vi.waitFor(() => expect(queryValues(router.currentRoute.value.query, 'sec')).toEqual([]))
     expect(normalizeChapters(index.chapters, ['TEST-s1', 'TEST-s2', 'TEST-s2'])).toEqual(['TEST-c1'])
     expect(toggleChapter(index.chapters, ['TEST-c1'], 'TEST-s1')).toEqual(['TEST-s2'])
+  })
+
+  it('uses the chosen class and hides old chapter values during loading or failed scope changes', async () => {
+    const { host, mastery, overview } = await mountTagBrowser()
+    const summary = () => host.querySelector('.qb-chapter-mastery[data-knowledge="TEST-c1"]')?.textContent
+    const classButton = (name: string) => [...host.querySelectorAll<HTMLButtonElement>('.knowledge-overview-scope-bar button')].find(button => button.textContent === name)!
+    expect(host.querySelector('.qb-chapter-overview-scope')?.textContent).toContain('本学期 2 场考试 + 已发布训练')
+    expect(summary()).toContain('掌握度 73%')
+    let finish: ((result: TrainingOverview) => void) | undefined
+    overview.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    classButton('10班').click()
+    await vi.waitFor(() => expect(mastery.loadState).toBe('loading'))
+    expect(summary()).toBe('学情读取中')
+    expect(summary()).not.toContain('73%')
+    expect(overview).toHaveBeenLastCalledWith(expect.objectContaining({ scope: expect.objectContaining({ mode: 'class', class_id: '10班', class_ids: ['10班'] }) }), expect.anything())
+    const selected = tagOverview()
+    selected.nodes = selected.nodes.map(node => node.knowledge_key === 'TEST-c1' ? { ...node, group_mastery: .83, evidence_student_count: 2, distribution: { weak: 0, unsteady: 1, stable: 1, insufficient: 0 } } : node)
+    selected.scope = { mode: 'class', class_id: '10班', class_ids: ['10班'], student_ids: ['3', '4'] }
+    if (!finish) throw new Error('TEST overview request did not start')
+    finish(selected)
+    await vi.waitFor(() => expect(summary()).toContain('掌握度 83%'))
+    expect(summary()).toContain('需关注 1 人 / 有证据 2 人')
+
+    overview.mockRejectedValueOnce(new Error('TEST-refresh-failed'))
+    await mastery.load('bnu24-math-g8-upper', true)
+    await nextTick()
+    expect(summary()).toContain('83%')
+    expect(host.querySelector('.qb-chapter-overview-scope')?.textContent).toContain('显示上次学情，本次刷新失败。')
+    overview.mockResolvedValueOnce(selected)
+    ;[...host.querySelectorAll<HTMLButtonElement>('.qb-chapter-overview-scope button')].find(button => button.textContent === '重试学情')!.click()
+    await vi.waitFor(() => expect(mastery.loadState).toBe('ready'))
+
+    overview.mockRejectedValueOnce(new Error('TEST-class-read-failed'))
+    classButton('9班').click()
+    await vi.waitFor(() => expect(mastery.loadState).toBe('error'))
+    expect(summary()).toBe('学情暂不可用')
+    expect(summary()).not.toMatch(/\d+%|需关注/)
+    expect(host.textContent).toContain('已知 x + y = 3')
+    overview.mockResolvedValueOnce(tagOverview())
+    ;[...host.querySelectorAll<HTMLButtonElement>('.qb-chapter-overview-scope button')].find(button => button.textContent === '重试学情')!.click()
+    await vi.waitFor(() => expect(summary()).toContain('掌握度 73%'))
   })
 
   it('removes only zero-count type and knowledge conditions after changing chapter', async () => {

@@ -4,9 +4,11 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from 'vue-router'
 import { knowledgeLeafLabel, questionBankApi, type QuestionBankFacets, type QuestionBankFilters, type QuestionBankSort, type QuestionSkillIndex } from '../../api/question-bank'
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
+import { useMasteryOverviewStore } from '../../stores/mastery-overview'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import { TAG_DIMENSIONS, chapterLabel, migrateTagQuery, normalizeChapters, parseTagSelection, selectionQuery, toggleChapter, type TagDimensionKey, type TagSelection } from './question-tag-filters'
 import QuestionChapterTree from './QuestionChapterTree.vue'
+import OverviewScopeBar from '../knowledge-overview/OverviewScopeBar.vue'
 import QuestionTagBar from './QuestionTagBar.vue'
 import DifficultyRangeFilter from './DifficultyRangeFilter.vue'
 import QuestionSortControl from './QuestionSortControl.vue'
@@ -15,11 +17,13 @@ import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
+import '../../styles/knowledge-overview.css'
 
 const props = defineProps<{ index: QuestionSkillIndex | null; loading: boolean; error: string }>()
 const emit = defineEmits<{ retry: [] }>()
 const bank = useQuestionBankStore()
 const scope = useCurriculumScopeStore()
+const mastery = useMasteryOverviewStore()
 const route = useRoute()
 const router = useRouter()
 const selection = computed(() => parseTagSelection(route.query))
@@ -199,7 +203,17 @@ onBeforeUnmount(() => {
         <AppIconButton class="qb-rail-toggle" :label="railOpen ? '收窄章节列表' : `展开章节列表 · ${railLabel}`" icon="book-open" variant="secondary" :aria-expanded="railOpen" @click="railOpen = !railOpen" />
         <span v-if="!railOpen">{{ railLabel }}</span>
       </div>
-      <QuestionChapterTree :chapters="index.chapters" :counts="facets?.primary_sections ?? []" :selection="selection.sections" :error="facetsError" @exclusive="chooseChapters([$event])" @toggle="chooseChapters(toggleChapter(chapters, selection.sections, $event))" @all="chooseChapters([])" @retry="reload" />
+      <div class="qb-chapter-overview-scope">
+        <OverviewScopeBar />
+        <p class="qb-chapter-evidence-note">掌握度与人数按所选学生统计；需关注 = 还不稳 + 明显薄弱。</p>
+        <p v-if="mastery.loadState === 'idle' || mastery.loadState === 'loading'" class="qb-chapter-evidence-note" role="status">正在读取班级学情…</p>
+        <FeedbackBanner v-else-if="mastery.loadState === 'error' || mastery.loadState === 'stale-error'" role="status" tone="warning"
+          :description="mastery.loadState === 'stale-error' ? '显示上次学情，本次刷新失败。' : mastery.errorMessage || '班级学情暂时无法读取。'"
+          action-label="重试学情" @action="mastery.load(scope.selectedVolumeId, true)" />
+      </div>
+      <QuestionChapterTree :chapters="index.chapters" :counts="facets?.primary_sections ?? []" :selection="selection.sections" :error="facetsError"
+        :overview-nodes="mastery.overview?.nodes ?? []" :overview-state="mastery.loadState"
+        @exclusive="chooseChapters([$event])" @toggle="chooseChapters(toggleChapter(chapters, selection.sections, $event))" @all="chooseChapters([])" @retry="reload" />
     </aside>
     <main ref="results" class="qb-tag-results qb-question-pane qb-browse-pane">
       <section class="qb-tag-panel" aria-label="筛选题目">

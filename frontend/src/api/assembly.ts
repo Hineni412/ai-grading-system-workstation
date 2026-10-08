@@ -1,4 +1,5 @@
 import { apiClient } from './client'
+import { CAUSE_RESULT_STATES, type CauseResultState, type ClassCauseKind } from './class-analysis'
 import { decodeJobResponse, type JobResponse } from './jobs'
 import {
   isQuestionBankRichContent,
@@ -127,12 +128,18 @@ export interface AssemblyAssistantRequest {
 }
 
 
+export type AssemblyCauseReason = Extract<ClassCauseKind, 'review' | 'carry_forward'> | 'positive_only' | 'missing' | 'stale'
+
 export interface AssemblyExamQuestion {
   key: string; session_id: number; question_id: string; question_type: string; full_score: number
   class_rate: number | null; student_count: number; bank_question_id: number | null; difficulty: number | null
   class_rates: Array<{ class_id: string; student_count: number; class_rate: number | null }>
   cause_category_counts: Array<{ category: string; count: number }> | null
   cause_unclassified_count: number
+  cause_availability?: {
+    status: CauseResultState
+    unclassified_by_reason: Array<{ reason: AssemblyCauseReason; count: number }>
+  }
   skill_keys: string[]; skills: Array<{ key: string; label: string; in_volume: boolean }>; question_text: string
 }
 export interface AssemblyExam {
@@ -143,6 +150,21 @@ export interface AssemblyExamResult { student_count: number; exams: AssemblyExam
 const isCount = isNonnegativeInteger
 const isStrings = isStringArray
 const isRate = (v: unknown) => v === null || (typeof v === 'number' && v >= 0 && v <= 1)
+function isCauseReason(value: unknown): value is AssemblyCauseReason {
+  return value === 'review' || value === 'carry_forward' || value === 'positive_only' || value === 'missing' || value === 'stale'
+}
+function isCauseAvailability(value: unknown, unclassifiedCount: number): value is NonNullable<AssemblyExamQuestion['cause_availability']> {
+  if (!isRecord(value) || !CAUSE_RESULT_STATES.some(state => state === value.status) || !Array.isArray(value.unclassified_by_reason)) return false
+  const reasons = new Set<AssemblyCauseReason>()
+  let total = 0
+  for (const entry of value.unclassified_by_reason) {
+    if (!isRecord(entry) || !isCauseReason(entry.reason) || !isCount(entry.count) || reasons.has(entry.reason)) return false
+    reasons.add(entry.reason)
+    total += entry.count
+    if (total > unclassifiedCount) return false
+  }
+  return total === unclassifiedCount
+}
 function isExamQuestion(v: unknown): v is AssemblyExamQuestion {
   return isRecord(v) && typeof v.key === 'string' && isPositiveInteger(v.session_id) && typeof v.question_id === 'string'
     && typeof v.question_type === 'string' && typeof v.question_text === 'string' && typeof v.full_score === 'number' && v.full_score > 0
@@ -152,6 +174,7 @@ function isExamQuestion(v: unknown): v is AssemblyExamQuestion {
     && Array.isArray(v.class_rates) && v.class_rates.every(c => isRecord(c) && typeof c.class_id === 'string' && isCount(c.student_count) && isRate(c.class_rate))
     && (v.cause_category_counts === null || (Array.isArray(v.cause_category_counts) && v.cause_category_counts.every(c => isRecord(c) && typeof c.category === 'string' && isCount(c.count))))
     && isCount(v.cause_unclassified_count)
+    && (v.cause_availability === undefined || isCauseAvailability(v.cause_availability, v.cause_unclassified_count))
 }
 export function fetchAssemblyExams(class_ids: string[], curriculum_volume_id: string, signal?: AbortSignal): Promise<AssemblyExamResult> {
   return apiClient.request('/api/question-assembly/assistant/exam-questions', {

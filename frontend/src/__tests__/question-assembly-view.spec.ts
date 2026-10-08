@@ -114,6 +114,8 @@ describe('question assembly view', () => {
     app.use(pinia)
     app.mount(host)
     mounted.push(app)
+    expect(host.querySelector('.page-tabs .is-active')?.textContent).toBe('班级组卷')
+    ;[...host.querySelectorAll<HTMLButtonElement>('.page-tabs button')].find(button => button.textContent === '整理与导出')!.click()
     await settle()
 
     expect(host.querySelector('.assembly')?.classList.contains('is-workspace-wide')).toBe(true)
@@ -155,10 +157,10 @@ describe('question assembly view', () => {
     const host = document.createElement('div'); document.body.append(host)
     const app = createApp(QuestionAssemblyView); app.use(createPinia()).use(router).mount(host); mounted.push(app)
     expect(host.querySelectorAll('.page-tabs button')).toHaveLength(2)
-    expect(host.querySelector('.page-tabs .is-active')?.textContent).toBe(query.includes('ai') || query.includes('assistant') ? '班级组卷' : '整理与导出')
+    expect(host.querySelector('.page-tabs .is-active')?.textContent).toBe(query.includes('browse') || query.includes('edit') ? '整理与导出' : '班级组卷')
     const bank = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '去题库选题')!
     bank.click()
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/question-bank?tab=skill'), { timeout: 5000 })
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/question-bank?tab=tag'), { timeout: 5000 })
   })
 
   it('shows the training entrance and resumes the exact generated draft', async () => {

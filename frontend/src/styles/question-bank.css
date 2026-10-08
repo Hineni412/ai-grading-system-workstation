@@ -2762,11 +2762,20 @@ details[open] > summary > .qb-caret, details[open] > summary > .qb-switcher-care
 .question-bank *::-webkit-scrollbar-track, .assembly *::-webkit-scrollbar-track { background: transparent; }
 .question-bank .qb-ledger .qb-pagination .app-button.app-button.app-button { border: 1px solid var(--color-border-default); background: var(--card); --app-control-height: var(--control-height-small); --app-control-padding: 11px; --app-control-font: var(--font-size-caption); }
 
-.qb-tag-layout { --chapter-width: 250px; display: grid; grid-template-columns: var(--chapter-width) minmax(0,1fr); gap: 14px; flex: 1; min-height: 0; min-width: 0; height: 100%; }
+.qb-tag-layout { --chapter-width: 300px; display: grid; grid-template-columns: var(--chapter-width) minmax(0,1fr); gap: 14px; flex: 1; min-height: 0; min-width: 0; height: 100%; }
 .qb-tag-layout.is-chapter-narrow { --chapter-width: 44px; }
-.qb-tag-layout.is-chapter-narrow .qb-chapter-heading, .qb-tag-layout.is-chapter-narrow .qb-chapter-options, .qb-tag-layout.is-chapter-narrow .qb-chapter-foot, .qb-tag-layout.is-chapter-narrow .qb-chapter-pane > .qb-count-error { display: none; }
+.qb-tag-layout.is-chapter-narrow .qb-chapter-overview-scope, .qb-tag-layout.is-chapter-narrow .qb-chapter-heading, .qb-tag-layout.is-chapter-narrow .qb-chapter-options, .qb-tag-layout.is-chapter-narrow .qb-chapter-foot, .qb-tag-layout.is-chapter-narrow .qb-chapter-pane > .qb-count-error { display: none; }
 .qb-chapter-pane { overflow-y: auto; }
-.qb-chapter-heading { display: flex; gap: 8px; align-items: baseline; position: sticky; top: 0; z-index: 2; background: var(--card); }
+.qb-chapter-heading { display: flex; gap: 8px; align-items: baseline; position: sticky; top: 0; z-index: 2; background: var(--card); padding: 10px 12px 6px; }
+.qb-chapter-overview-scope { padding: 10px 10px 0; }
+.qb-chapter-overview-scope .knowledge-overview-scope-bar { padding: 7px 8px; gap: 4px; }
+.qb-chapter-overview-scope .knowledge-overview-scope-bar > strong, .qb-chapter-overview-scope .knowledge-overview-scope-bar > span { flex-basis: 100%; margin: 0; padding: 0; font-size: var(--font-size-caption); }
+.qb-chapter-overview-scope .knowledge-overview-scope-bar button { min-height: var(--control-height-small); padding-inline: 7px; font-size: var(--font-size-caption); }
+.qb-chapter-overview-scope .overview-scope-definition { margin-left: 0; }
+.qb-chapter-overview-scope .overview-scope-definition summary { padding: 4px 7px; }
+.qb-chapter-overview-scope .overview-scope-definition > div { position: static; width: 100%; padding: 8px; box-shadow: none; margin-top: 4px; }
+.qb-chapter-evidence-note { margin: 6px 2px; font-size: var(--font-size-caption); color: var(--color-text-muted); line-height: 1.6; }
+.qb-chapter-mastery { display: grid; gap: 1px; margin: 0 4px 7px 51px; color: var(--color-text-muted); font-size: var(--font-size-caption); line-height: 1.6; font-variant-numeric: tabular-nums; }
 .qb-chapter-heading small, .qb-chapter-row small, .qb-tag-hint, .qb-tag-bar-tools > small, .qb-tag-section-label { color: var(--color-text-muted); font-size: var(--font-size-caption); }
 .qb-chapter-options { padding: 6px 8px 12px; }
 .qb-chapter-row { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 6px; font-size: var(--font-size-dense); }

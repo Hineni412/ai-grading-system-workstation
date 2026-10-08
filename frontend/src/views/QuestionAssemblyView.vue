@@ -13,12 +13,12 @@ const route = useRoute() as ReturnType<typeof useRoute> | undefined
 const router = useRouter() as ReturnType<typeof useRouter> | undefined
 const assembly = useAssemblyStore()
 const jobs = useJobStore()
-const localMode = ref<'assistant' | 'edit'>('edit')
-const mode = computed(() => route ? (route.query.mode === 'assistant' || route.query.mode === 'ai' ? 'assistant' : 'edit') : localMode.value)
+const localMode = ref<'assistant' | 'edit'>('assistant')
+const mode = computed(() => route ? (route.query.mode === 'edit' || route.query.mode === 'browse' ? 'edit' : 'assistant') : localMode.value)
 const initialSkill = computed(() => typeof route?.query.skill === 'string' ? route.query.skill : '')
 const trainingPurpose = computed(() => typeof assembly.draft.practice_rules === 'object' && assembly.draft.practice_rules?.purpose === 'training')
 function setMode(next: 'assistant' | 'edit') { if (router && route) void router.replace({ query: { ...route.query, mode: next } }); else localMode.value = next }
-function goBank() { if (router) void router.push({ path: '/question-bank', query: { tab: 'skill' } }) }
+function goBank() { if (router) void router.push({ path: '/question-bank', query: { tab: 'tag' } }) }
 onMounted(() => { if (assembly.loadState === 'idle') void assembly.load(); void jobs.initialize() })
 </script>
 <template>

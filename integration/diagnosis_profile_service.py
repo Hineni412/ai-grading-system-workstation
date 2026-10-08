@@ -1267,6 +1267,7 @@ class DiagnosisProfileService:
         ids = [int(s["id"]) for s in sessions]
         projections = self._tag_projections(ids)
         causes = self._error_cause_index(ids)
+        cause_availability = self._assembly_cause_availability_index(ids)
         rows = self.db.results.get_active_assessment_rows(student_ids=[int(s) for s in students], session_ids=ids)
         score_maps = {sid: self.db.results._load_rubric_maps_for_session(sid)['score'] for sid in ids}
         by_item: dict[tuple[int, str], dict[str, Any]] = {}
@@ -1313,6 +1314,8 @@ class DiagnosisProfileService:
                 rate_sum = 0.0
                 lost: set[str] = set()
                 classified: set[str] = set()
+                availability = cause_availability.get((sid, qid), {})
+                cause_status = availability.get("status", "missing")
                 members = {c: set() for c in categories}
                 for name in sorted(classes):
                     values = [(student, row) for student, row in scored.items() if students[student].get("class_name") == name]
@@ -1326,7 +1329,7 @@ class DiagnosisProfileService:
                         totals[student] = totals.get(student, 0) + awarded
                         if awarded < maximum:
                             lost.add(student)
-                        records = causes.get((sid, int(student), qid))
+                        records = causes.get((sid, int(student), qid)) if cause_status != "stale" else None
                         for record in records or []:
                             if record.get("category") in members:
                                 members[record["category"]].add(student)
@@ -1335,6 +1338,11 @@ class DiagnosisProfileService:
                     if values:
                         per_class.append({"class_id": name, "student_count": len(values), "class_rate": round(class_rate_sum / len(values), 4)})
                     rate_sum += class_rate_sum
+                unclassified_reasons = Counter(
+                    "stale" if cause_status == "stale" else
+                    availability.get("reasons_by_student", {}).get(int(student), "missing")
+                    for student in lost - classified
+                )
                 projected = projection.get(qid)
                 keys = list(projected.tags.get("knowledge_point", ())) if projected else []
                 keys = [key for key in keys if is_training_target(key, resolver, volume_id)]
@@ -1345,6 +1353,14 @@ class DiagnosisProfileService:
                     "class_rates": per_class, "student_count": len(scored),
                     "cause_category_counts": None if lost and not classified else [{"category": c, "count": len(members[c])} for c in categories],
                     "cause_unclassified_count": len(lost - classified),
+                    "cause_availability": {
+                        "status": cause_status,
+                        "unclassified_by_reason": [
+                            {"reason": reason, "count": unclassified_reasons[reason]}
+                            for reason in ("review", "carry_forward", "positive_only", "missing", "stale")
+                            if unclassified_reasons[reason]
+                        ],
+                    },
                     "bank_question_id": projected.bank_question_id if projected else None,
                     "difficulty": bank_difficulty.get(projected.bank_question_id) if projected else None,
                     "skill_keys": keys, "skills": [{"key": key,
@@ -1360,6 +1376,79 @@ class DiagnosisProfileService:
         return {"student_count": len(students), "exams": exams,
                 "target_kind": chapter_target_kind(resolver, volume_id),
                     "chapter_target_kinds": chapter_target_kinds(resolver, volume_id)}
+
+    def _assembly_cause_availability_index(
+        self,
+        session_ids: Iterable[int],
+    ) -> dict[tuple[int, str], dict[str, Any]]:
+        """组卷专用状态与非大类原因；每场一次装配，仍校验当前学生证据。"""
+        from backend.class_analysis import (
+            ClassAnalysisStateStore, _cause_evidence, _evidence_hash, _evidence_key,
+            _saved_prompt_version, _step_units, assemble_cause_data, build_cause_inputs,
+        )
+        from backend.report_results import cause_input_digest, prompt_version, resolve_result_state
+
+        store = ClassAnalysisStateStore(self.data_root / "reports")
+        index: dict[tuple[int, str], dict[str, Any]] = {}
+        for session_id in session_ids:
+            sid = int(session_id)
+            state = store.load(sid) or {}
+            saved_questions = (state.get("cause_analysis") or {}).get("questions") or {}
+            if not saved_questions:
+                continue
+            data = assemble_cause_data(self.db, sid, data_root=self.data_root)
+            sources = {source["question_id"]: source for source in build_cause_inputs(data)}
+            for qid, saved in saved_questions.items():
+                if not isinstance(saved, dict) or not isinstance(saved.get("result"), dict):
+                    continue
+                source = sources.get(qid)
+                status = resolve_result_state(
+                    saved, cause_input_digest(source) if source is not None else "", "causes",
+                )["status"]
+                reasons: dict[int, str] = {}
+                index[(sid, str(qid))] = {"status": status, "reasons_by_student": reasons}
+                if status not in ("current", "old_prompt"):
+                    continue
+                saved_input = saved.get("input")
+                if not isinstance(saved_input, dict) or not isinstance(saved_input.get("evidence"), list):
+                    continue
+                by_step = _saved_prompt_version(saved) == prompt_version("causes")
+                hash_items = saved_input["evidence"] if by_step else [
+                    {key: value for key, value in item.items() if key != "failed_steps"}
+                    for item in saved_input["evidence"]
+                ]
+                evidence_ids = {
+                    _evidence_hash(_evidence_key(item)): item["id"] for item in hash_items
+                }
+                units = _step_units(saved_input)
+                result = saved["result"]
+                members: dict[str, set[str]] = {
+                    "review": set(), "carry_forward": set(), "positive_only": set(),
+                }
+                for group in result.get("groups") or []:
+                    kind = group.get("kind")
+                    if kind not in ("review", "carry_forward"):
+                        continue
+                    refs = set(group.get("evidence_ids") or [])
+                    refs.update(ref for variant in group.get("manifestations") or []
+                                for ref in variant.get("evidence_ids") or [])
+                    members[kind].update(units[ref][0] if ref in units else ref for ref in refs)
+                for field, reason in (("uncertain_ids", "review"), ("positive_ids", "positive_only")):
+                    members[reason].update(
+                        units[ref][0] if ref in units else ref for ref in result.get(field) or []
+                    )
+                for student in data.students:
+                    for record in student.records:
+                        if record.question_id != qid or not record.lost:
+                            continue
+                        digest = _evidence_hash(_evidence_key(
+                            _cause_evidence(student, record, data, by_step=by_step)))
+                        evidence_id = evidence_ids.get(digest)
+                        reason = next((name for name in ("review", "carry_forward", "positive_only")
+                                       if evidence_id in members[name]), None)
+                        if reason is not None:
+                            reasons[int(student.student_id)] = reason
+        return index
 
     def _error_cause_index(
         self,

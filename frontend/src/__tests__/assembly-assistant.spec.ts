@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../api/assembly'
 import type { AssemblyAssistantResult, AssemblyDraft, AssemblyQuestion } from '../api/assembly';
 import * as students from '../api/students'
+import { CAUSE_RESULT_STATES } from '../api/class-analysis'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { useAssemblyAssistantStore } from '../stores/assembly-assistant';
 import { useAssemblyStore } from '../stores/assembly';
@@ -74,6 +75,8 @@ describe('class assembly assistant', () => {
     vi.mocked(students.fetchStudents).mockResolvedValue(['9班','10班'].map((class_name,i)=>({id:i+1,class_name,student_code:'TEST-'+i,name:'合成学生',created_at:null})))
     const {host,app} = await mountPanel()
     expect(host.textContent).toContain('适合配同类型计算变式')
+    expect(host.querySelector('.ca-related-summary')?.textContent).toBe('TEST-两班考试 1 40%')
+    expect(host.querySelector('.ca-related-hint')).toBeNull()
     host.querySelector<HTMLButtonElement>('.ca-scope-row button')!.click()
     await vi.waitFor(()=>expect(useAssemblyAssistantStore().filters.class_ids).toEqual(['9班','10班']))
     await vi.waitFor(()=>expect(host.textContent).toContain('仅10班'))
@@ -85,13 +88,81 @@ describe('class assembly assistant', () => {
     ;([...host.querySelectorAll<HTMLButtonElement>('button')].find(b=>b.textContent==='全部')!).click()
     await vi.waitFor(()=>expect(host.querySelectorAll('.ca-candidate')).toHaveLength(1))
     expect(host.querySelector('.ca-relative')).not.toBeNull()
-    expect(host.textContent).toContain('另有 2 人未归类')
+    expect(host.textContent).toContain('暂无可用分类 2 人')
     expect(api.assemblyApi.saveDraft).not.toHaveBeenCalled()
     app.unmount()
     mounted.splice(mounted.indexOf(app),1)
     const reopened=await mountPanel()
     await vi.waitFor(()=>expect(reopened.host.querySelector('.ca-original')?.textContent).toContain(question.question_text))
   })
+  function examPayload(availability: unknown, unclassifiedCount = 2) {
+    const [exam] = examEvidence().exams
+    const question = exam?.questions[0]
+    if (!exam || !question) throw new Error('TEST exam fixture is empty')
+    return { student_count: 30, exams: [{ ...exam, questions: [{ ...question, cause_unclassified_count: unclassifiedCount, cause_availability: availability }] }] }
+  }
+  function useExamResponse(payload: unknown) {
+    vi.mocked(api.fetchAssemblyExams).mockRestore()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } }))
+  }
+  it.each(CAUSE_RESULT_STATES)('accepts %s cause availability and preserves every reason partition from the HTTP response', async status => {
+    const availability = { status, unclassified_by_reason: [{ reason: 'review', count: 1 }, { reason: 'carry_forward', count: 1 }, { reason: 'positive_only', count: 1 }, { reason: 'missing', count: 1 }, { reason: 'stale', count: 1 }] }
+    const payload = examPayload(availability, 5)
+    useExamResponse(payload)
+    await expect(api.fetchAssemblyExams(['9班'], 'volume')).resolves.toEqual(payload)
+  })
+  it('accepts legacy exam responses without cause availability and a current result with no unclassified loss', async () => {
+    const legacy = examPayload(undefined)
+    useExamResponse(legacy)
+    await expect(api.fetchAssemblyExams(['9班'], 'volume')).resolves.toEqual(JSON.parse(JSON.stringify(legacy)))
+    const empty = examPayload({ status: 'current', unclassified_by_reason: [] }, 0)
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(JSON.stringify(empty), { status: 200, headers: { 'content-type': 'application/json' } }))
+    await expect(api.fetchAssemblyExams(['9班'], 'volume')).resolves.toEqual(empty)
+  })
+  it.each([
+    { name: 'unknown state', availability: { status: 'ready', unclassified_by_reason: [{ reason: 'missing', count: 2 }] } },
+    { name: 'unknown reason', availability: { status: 'current', unclassified_by_reason: [{ reason: 'error', count: 2 }] } },
+    { name: 'duplicate reason', availability: { status: 'current', unclassified_by_reason: [{ reason: 'review', count: 1 }, { reason: 'review', count: 1 }] } },
+    { name: 'negative count', availability: { status: 'current', unclassified_by_reason: [{ reason: 'review', count: -1 }, { reason: 'positive_only', count: 3 }] } },
+    { name: 'fractional count', availability: { status: 'current', unclassified_by_reason: [{ reason: 'review', count: 1.5 }, { reason: 'positive_only', count: .5 }] } },
+    { name: 'too small total', availability: { status: 'current', unclassified_by_reason: [{ reason: 'review', count: 1 }] } },
+    { name: 'too large total', availability: { status: 'current', unclassified_by_reason: [{ reason: 'review', count: 3 }] } },
+    { name: 'null metadata', availability: null },
+    { name: 'missing partition', availability: { status: 'current' } },
+  ])('rejects cause availability with $name at the API boundary', async ({ availability }) => {
+    useExamResponse(examPayload(availability))
+    await expect(api.fetchAssemblyExams(['9班'], 'volume')).rejects.toThrow()
+  })
+
+  it('shows saved stale causes as needing a check without treating them as unsaved', async () => {
+    const evidence = examEvidence()
+    const [exam] = evidence.exams
+    const source = exam?.questions[0]
+    if (!exam || !source) throw new Error('TEST exam fixture is empty')
+    exam.questions = [{ ...source, cause_category_counts: null, cause_unclassified_count: 10, cause_availability: { status: 'stale', unclassified_by_reason: [{ reason: 'stale', count: 10 }] } }]
+    vi.mocked(api.fetchAssemblyExams).mockResolvedValue(evidence)
+    const { host } = await mountPanel()
+    expect(host.querySelector('.ca-need [data-cause-reason="stale"]')?.textContent).toBe('归类依据已更新 10 人')
+    expect(host.querySelector('.ca-original .ca-cause-availability')?.textContent).toBe('错因归类已保存，题面、解析或作答资料更新后需核对')
+    expect(host.textContent).not.toContain('错因未整理')
+    expect(host.querySelector('.ca-original [data-cause-reason="missing"]')).toBeNull()
+  })
+  it('does not label a no-loss empty classification as missing', async () => {
+    const evidence = examEvidence()
+    const [exam] = evidence.exams
+    const source = exam?.questions[0]
+    if (!exam || !source) throw new Error('TEST exam fixture is empty')
+    exam.questions = [{ ...source, class_rate: 1, cause_category_counts: [], cause_unclassified_count: 0, cause_availability: { status: 'current', unclassified_by_reason: [] } }]
+    vi.mocked(api.fetchAssemblyExams).mockResolvedValue(evidence)
+    useAssemblyAssistantStore().threshold = 100
+    const { host } = await mountPanel()
+    expect(host.querySelector('.ca-original')).not.toBeNull()
+    expect(host.querySelector('.ca-cause-availability')).toBeNull()
+    expect(host.querySelector('.ca-cause-reason')).toBeNull()
+    expect(host.textContent).not.toContain('暂无可用分类')
+    expect(host.textContent).not.toContain('错因未整理')
+  })
+
   it('quick drafts once and discards a result if the evidence changed', async () => {
     const evidence=examEvidence()
     vi.mocked(api.fetchAssemblyExams).mockResolvedValue(evidence)
@@ -252,26 +323,40 @@ describe('class assembly assistant', () => {
       full_score: 3, class_rate: .4, student_count: 25, bank_question_id: 11, difficulty: 4,
       class_rates: [{ class_id: '9班', student_count: 25, class_rate: .4 }],
       cause_category_counts: [{ category: '计算与化简', count: 8 }], cause_unclassified_count: 2,
+      cause_availability: { status: 'current', unclassified_by_reason: [{ reason: 'review', count: 1 }, { reason: 'positive_only', count: 1 }] },
       skill_keys: ['sk_one'], skills: [{ key: 'sk_one', label: '勾股定理应用', in_volume: true }], question_text: '直角边题' }
     const second: api.AssemblyExamQuestion = { ...shared, key: '6:Q5', session_id: 6, question_id: 'Q5', class_rate: .5,
-      cause_category_counts: [{ category: '计算与化简', count: 3 }], cause_unclassified_count: 1 }
+      cause_category_counts: [{ category: '计算与化简', count: 3 }], cause_unclassified_count: 1,
+      cause_availability: { status: 'current', unclassified_by_reason: [{ reason: 'review', count: 1 }] } }
     const loose: api.AssemblyExamQuestion = { ...shared, key: '7:Q9', question_id: 'Q9', class_rate: .3,
-      bank_question_id: null, difficulty: null, cause_category_counts: null, cause_unclassified_count: 4, skill_keys: [], skills: [] }
+      bank_question_id: null, difficulty: null, cause_category_counts: null, cause_unclassified_count: 4, cause_availability: undefined, skill_keys: [], skills: [] }
     vi.mocked(api.fetchAssemblyExams).mockResolvedValue({ student_count: 30, exams: [
       { session_id: 7, title: 'TEST-两班考试', date: '2026-10-02', class_ids: ['9班'], student_count: 25, average_score: 40, questions: [shared, loose] },
       { session_id: 6, title: 'TEST-单班考试', date: '2026-10-01', class_ids: ['9班'], student_count: 15, average_score: 50, questions: [second] },
     ] })
     const { host } = await mountPanel()
-    await vi.waitFor(() => expect(host.textContent).toContain('TEST-两班考试 1 40% · TEST-单班考试 5 50%'))
+    await vi.waitFor(() => expect(host.querySelector('.ca-related-summary')?.textContent).toBe('2 道相关题 · 最低：TEST-两班考试 1 40%'))
+    const skillCard = host.querySelector<HTMLButtonElement>('.ca-need:has(.ca-related-summary)')!
+    expect(skillCard.textContent).not.toContain('TEST-单班考试 5 50%')
+    expect(skillCard.textContent).toContain('完整题目见配题栏，可切换查看')
+    expect(skillCard.querySelector('button')).toBeNull()
+    expect(host.querySelectorAll('.ca-related button')).toHaveLength(2)
+    ;[...host.querySelectorAll<HTMLButtonElement>('.ca-related button')].find(button => button.textContent?.includes('TEST-单班考试'))!.click()
+    await vi.waitFor(() => expect(host.querySelector('.ca-original header')?.textContent).toContain('TEST-单班考试 · 5'))
+    expect(host.querySelector('.ca-original .ca-legend')?.textContent).toContain('计算与化简 3')
     expect(host.textContent).toContain('计算与化简 11人次')
-    expect(host.textContent).toContain('另有 3 人次未归类')
+    expect(skillCard.querySelector('[data-cause-reason="review"]')?.textContent).toBe('待复核 2 人次')
+    expect(skillCard.querySelector('[data-cause-reason="positive_only"]')?.textContent).toBe('仅有正向记录 1 人次')
+    expect(host.querySelector('.ca-original [data-cause-reason="review"]')?.textContent).toBe('待复核 1 人')
+    expect(host.querySelector('.ca-original [data-cause-reason="positive_only"]')).toBeNull()
     expect(host.textContent).toContain('19 人需关注 / 25 人有证据')
     expect(host.textContent).toContain('未挂技能的题')
     const looseCard = [...host.querySelectorAll<HTMLButtonElement>('.ca-need')].find(b => b.textContent?.includes('未关联题库'))!
-    expect(looseCard.textContent).toContain('错因未整理')
+    expect(looseCard.textContent).toContain('暂无可用分类 4 人')
     expect(looseCard.textContent).toContain('未关联题库 · 不能加入原题')
     looseCard.click()
     await vi.waitFor(() => expect(host.textContent).toContain('该题未挂技能也未关联题库，无法配题'))
+    expect(host.querySelector('.ca-original .ca-cause-availability')?.textContent).toBe('暂无可用错因分类')
   })
 
   it('groups out-of-volume skills under 往届技能 and never requests candidates for them', async () => {

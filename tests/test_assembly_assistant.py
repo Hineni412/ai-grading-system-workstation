@@ -225,11 +225,20 @@ def test_exam_question_rates_weight_students_and_preserve_missing_causes(client_
     rows += [{'session_id': 8, 'student_id': 3, 'question_id': 'Q1', 'score_awarded': 4, 'teacher_final_max_score': 5}, {'session_id': 7, 'student_id': 1, 'question_id': 'Q2', 'score_awarded': 0}, {'session_id': 7, 'student_id': 2, 'question_id': 'Q2', 'score_awarded': 3}, {'session_id': 7, 'student_id': 3, 'question_id': 'Q3', 'score_awarded': 2}, {'session_id': 7, 'student_id': 1, 'question_id': 'Q3', 'score_awarded': None}]
     service = DiagnosisProfileService.__new__(DiagnosisProfileService)
     service.question_bank_db_path = module.db_path
-    service.db = NS(students=NS(list_students=lambda: students), sessions=NS(list_grading_sessions=lambda: sessions), results=NS(get_active_assessment_rows=lambda **_: rows, _load_session_rubric=lambda sid: {}, _load_rubric_maps_for_session=lambda sid: {'score': {'Q1': 10, 'Q2': 10, 'Q3': 10}}))
+    service.db = NS(students=NS(list_students=lambda: students), sessions=NS(list_grading_sessions=lambda: sessions), results=NS(get_active_assessment_rows=lambda **_: rows, _load_session_rubric=lambda sid: {}, _load_rubric_maps_for_session=lambda sid: {'score': {'Q1': 10, 'Q2': 10, 'Q3': 10, 'Q4': 10, 'Q5': 10}}))
     projections = NS(items=[NS(item_ref=q, bank_question_id=2 if q=='Q1' else None, tags={'knowledge_point': [key]}, assessment={}) for q in ('Q1','Q2','Q3')])
     service._tag_projections = lambda ids: {sid: projections for sid in ids}
-    service._error_cause_index = lambda ids: {(7,i,'Q1'): [{'category':'计算与化简'}, {'category':'计算与化简'}] for i in (1,2,3)} | {(7,1,'Q2'): [{'category':'审题与条件'}]}
-    monkeypatch.setattr(contract, 'iter_effective_rubric_item_refs', lambda _: [(q,q,{'question_type':'choice'}, {}) for q in ('Q1','Q2','Q3')])
+    service._error_cause_index = lambda ids: {(7,i,'Q1'): [{'category':'计算与化简'}, {'category':'计算与化简'}] for i in (1,2,3)} | {(7,1,'Q2'): [{'category':'审题与条件'}], (7,5,'Q4'): [{'category':'计算与化简'}], (7,1,'Q5'): [{'category':'概念理解'}], (7,3,'Q5'): [{'category':'概念理解'}]}
+    service._assembly_cause_availability_index = lambda ids: {
+        (7, 'Q1'): {'status': 'current'}, (7, 'Q2'): {'status': 'current'},
+        (8, 'Q1'): {'status': 'old_prompt'},
+        (7, 'Q4'): {'status': 'current', 'reasons_by_student': {
+            1: 'review', 2: 'carry_forward', 3: 'positive_only',
+            5: 'review', 6: 'review', 7: 'review',
+        }},
+        (7, 'Q5'): {'status': 'stale'},
+    }
+    monkeypatch.setattr(contract, 'iter_effective_rubric_item_refs', lambda _: [(q,q,{'question_type':'choice'}, {}) for q in ('Q1','Q2','Q3','Q4','Q5')])
     result = service.assembly_exam_questions(class_ids=['合成9班','合成10班'], volume_id=VOLUME['id'])
     exam = next(e for e in result['exams'] if e['session_id']==7)
     q = exam['questions'][0]
@@ -248,6 +257,110 @@ def test_exam_question_rates_weight_students_and_preserve_missing_causes(client_
     single = next(e for e in result['exams'] if e['session_id']==8)
     assert single['class_ids'] == ['合成10班']
     assert single['questions'][0]['class_rate'] == .8
+    assert q['cause_availability'] == {'status': 'current', 'unclassified_by_reason': []}
+    assert exam['questions'][1]['cause_availability'] == {
+        'status': 'current', 'unclassified_by_reason': [{'reason': 'missing', 'count': 1}]}
+    assert exam['questions'][2]['cause_availability'] == {
+        'status': 'missing', 'unclassified_by_reason': [{'reason': 'missing', 'count': 1}]}
+    assert single['questions'][0]['cause_availability']['status'] == 'old_prompt'
+
+    students.extend({'id': i, 'class_name': '合成10班'} for i in range(4, 9))
+    rows.extend({'session_id': 7, 'student_id': i, 'question_id': 'Q4',
+                 'score_awarded': 10 if i == 6 else 0} for i in range(1, 9))
+    rows.extend({'session_id': 7, 'student_id': i, 'question_id': 'Q5',
+                 'score_awarded': score} for i, score in ((1, 0), (2, 10), (3, 5)))
+    expanded = service.assembly_exam_questions(class_ids=['合成9班', '合成10班'], volume_id=VOLUME['id'])
+    questions = {q['question_id']: q for q in next(e for e in expanded['exams'] if e['session_id'] == 7)['questions']}
+    current = questions['Q4']
+    # A category wins over review; full-score members do not enter the partition.
+    assert next(c['count'] for c in current['cause_category_counts'] if c['category'] == '计算与化简') == 1
+    assert current['cause_unclassified_count'] == 6
+    assert current['cause_availability'] == {
+        'status': 'current', 'unclassified_by_reason': [
+            {'reason': 'review', 'count': 2}, {'reason': 'carry_forward', 'count': 1},
+            {'reason': 'positive_only', 'count': 1}, {'reason': 'missing', 'count': 2}]}
+    stale = questions['Q5']
+    assert stale['cause_category_counts'] is None
+    assert stale['cause_unclassified_count'] == 2
+    assert stale['cause_availability'] == {
+        'status': 'stale', 'unclassified_by_reason': [{'reason': 'stale', 'count': 2}]}
+    for question in questions.values():
+        assert sum(r['count'] for r in question['cause_availability']['unclassified_by_reason']) == question['cause_unclassified_count']
+
+
+@pytest.mark.parametrize('saved_prompt', ['class_error_causes_v4', 'class_error_causes_v3'])
+def test_assembly_cause_availability_reuses_matched_members_and_rejects_changed_hash(
+    tmp_path, monkeypatch, saved_prompt,
+):
+    from types import SimpleNamespace as NS
+    import backend.class_analysis as analysis
+    from backend.report_results import cause_input_digest, prompt_version
+    from integration.diagnosis_profile_service import DiagnosisProfileService
+
+    stepped = saved_prompt == prompt_version('causes')
+    students = [NS(student_id=i, records=[NS(
+        question_id='Q1', lost=True, max_score=10,
+        deduction_reason='', error_summary='', error_category='', teacher_comment='',
+        student_answer=f'TEST-answer-{i}', evidence_steps=[], missing_steps=[],
+        teacher_confirmed=False, failed_steps=[{
+            'step_id': 'S1', 'part_id': 'Q1', 'reason': 'TEST-failed-step',
+        }] if stepped else [],
+    )]) for i in range(1, 6)]
+    data = NS(students=students, questions=[NS(
+        question_id='Q1', max_score=10, stem_summary='TEST-stem',
+        canonical_answer='TEST-answer', question_text='TEST-question', reference_analysis='',
+    )], rubric={'questions': [{'question_id': 'Q1', 'parts': [{
+        'part_id': 'Q1', 'steps': [{'step_id': 'S1', 'step_score': 10, 'core_goal': 'TEST-goal'}],
+    }]}]})
+    sources = analysis.build_cause_inputs(data)
+    source = sources[0]
+    ids_by_hash = {
+        analysis._evidence_hash(analysis._evidence_key(item)): item['id']
+        for item in source['evidence']
+    }
+    evidence_ids = {student.student_id: ids_by_hash[analysis._evidence_hash(
+        analysis._evidence_key(analysis._cause_evidence(student, student.records[0], data)))]
+        for student in students}
+    units = analysis._step_units(source)
+    refs = {student: next((unit for unit, (parent, _) in units.items() if parent == eid), eid)
+            for student, eid in evidence_ids.items()}
+    saved = {
+        'input': source, 'input_digest': cause_input_digest(source), 'prompt_version': saved_prompt,
+        'result': {'groups': [
+            {'kind': 'review', 'manifestations': [{'evidence_ids': [refs[1]]}]},
+            {'kind': 'carry_forward', 'evidence_ids': [refs[1], refs[2]]},
+        ], 'positive_ids': [refs[1], refs[2], refs[3]], 'uncertain_ids': [refs[5]]},
+    }
+    store = analysis.ClassAnalysisStateStore(tmp_path / 'reports')
+    store.save(7, cause_analysis={'questions': {'Q1': saved}})
+    calls = []
+    monkeypatch.setattr(analysis, 'assemble_cause_data',
+        lambda db, sid, **kw: (calls.append(sid) or data))
+    service = DiagnosisProfileService.__new__(DiagnosisProfileService)
+    service.data_root = tmp_path
+    service.db = NS()
+    result = service._assembly_cause_availability_index([7])[(7, 'Q1')]
+    assert result == {
+        'status': 'current' if stepped else 'old_prompt',
+        'reasons_by_student': {1: 'review', 2: 'carry_forward', 3: 'positive_only', 5: 'review'},
+    }
+    assert calls == [7]
+
+    # Even when the whole-input lookup is unchanged, a changed student's hash
+    # cannot borrow the saved review or positive membership of the old answer.
+    monkeypatch.setattr(analysis, 'build_cause_inputs', lambda _: sources)
+    students[0].records[0].student_answer = 'TEST-changed-review-answer'
+    students[2].records[0].student_answer = 'TEST-changed-positive-answer'
+    changed = service._assembly_cause_availability_index([7])[(7, 'Q1')]
+    assert changed['status'] == result['status']
+    assert changed['reasons_by_student'] == {2: 'carry_forward', 5: 'review'}
+
+    changed_source = {**source, 'question_text': 'TEST-new-question-input'}
+    monkeypatch.setattr(analysis, 'build_cause_inputs', lambda _: [changed_source])
+    assert service._assembly_cause_availability_index([7])[(7, 'Q1')] == {
+        'status': 'stale', 'reasons_by_student': {}}
+    store.save(7, cause_analysis={'questions': {}})
+    assert service._assembly_cause_availability_index([7]) == {}
 
 
 def test_api_returns_full_balanced_pool_without_creating_or_replacing_a_paper(
@@ -780,6 +893,7 @@ def test_exam_evidence_marks_skills_anchored_in_another_volume(tmp_path, monkeyp
         tags={'knowledge_point': [SKILLS[0], sk_other]}, assessment={})])
     service._tag_projections = lambda ids: {sid: projections for sid in ids}
     service._error_cause_index = lambda ids: {}
+    service._assembly_cause_availability_index = lambda ids: {}
     monkeypatch.setattr(contract, 'iter_effective_rubric_item_refs',
         lambda _: [('Q1', 'Q1', {'question_type': 'choice'}, {})])
     result = service.assembly_exam_questions(class_ids=['合成9班'], volume_id=VOLUME['id'])
