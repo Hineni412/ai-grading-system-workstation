@@ -2501,7 +2501,7 @@ export const questionBankApi = {
   },
   skillIndex(curriculumVolumeId: string, signal?: AbortSignal): Promise<QuestionSkillIndex> {
     const parameters = new URLSearchParams({ curriculum_volume_id: curriculumVolumeId })
-    return apiClient.request(`/api/question-bank/skill-index?${parameters}`, { decode: decodeQuestionSkillIndex, signal })
+    return apiClient.request(`/api/question-bank/skill-index?${parameters}`, { decode: decodeQuestionSkillIndex, signal, timeoutMs: 60_000 })
   },
   chapterExamProfile(curriculumVolumeId: string, signal?: AbortSignal): Promise<ChapterExamProfile> {
     const parameters = new URLSearchParams({ curriculum_volume_id: curriculumVolumeId })

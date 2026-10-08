@@ -23,6 +23,31 @@ describe('question bank API contracts', () => {
     expect(String(fetchSpy.mock.calls[2]?.[0])).not.toContain('include_skills')
   })
 
+  it('accepts the initial skill index when preparation exceeds the normal read timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const { questionBankApi } = await import('../api/question-bank')
+      const response = { graph_release_id: 'kgr_TEST', curriculum_volume_id: 'bnu24-math-g8-upper',
+        model_calls: 0, question_count: 0, unlinked: { no_usable_evidence: 0, no_skill_link: 0 }, chapters: [] }
+      vi.spyOn(globalThis, 'fetch').mockImplementation((_input, options) => new Promise<Response>((resolve, reject) => {
+        const reply = setTimeout(() => resolve(new Response(JSON.stringify(response), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })), 20_000)
+        options?.signal?.addEventListener('abort', () => {
+          clearTimeout(reply)
+          reject(new DOMException('Aborted', 'AbortError'))
+        }, { once: true })
+      }))
+      const result = questionBankApi.skillIndex('bnu24-math-g8-upper')
+      await Promise.all([
+        expect(result).resolves.toEqual(response),
+        vi.advanceTimersByTimeAsync(20_000),
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('stages one controlled file before creating and submitting its import request', async () => {
     const { questionBankApi } = await import('../api/question-bank')
     const uploadId = 'e'.repeat(32)
