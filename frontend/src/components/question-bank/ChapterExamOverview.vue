@@ -9,11 +9,8 @@ import type {
   ChapterExamStageStats,
 } from '../../api/question-bank'
 
-type StageSelection = ChapterExamStage | 'all'
-
 const props = defineProps<{
   chapter: ChapterExamChapter
-  stage: StageSelection
   stages: ChapterExamStageStats[]
 }>()
 
@@ -35,11 +32,10 @@ const DIFFICULTY_COLS: { key: 'basic' | 'mid' | 'hard'; label: string }[] = [
   { key: 'hard', label: '提高 7–10' },
 ]
 
+const STAGES: ChapterExamStage[] = ['midterm', 'final']
+
 const stageInfo = computed(
   () => Object.fromEntries(props.stages.map(row => [row.stage, row])) as Record<ChapterExamStage, ChapterExamStageStats>,
-)
-const panels = computed<ChapterExamStage[]>(
-  () => (props.stage === 'all' ? ['midterm', 'final'] : [props.stage]),
 )
 const crossMidterm = computed(() => props.chapter.cross_question_ids.midterm)
 const crossFinal = computed(() => props.chapter.cross_question_ids.final)
@@ -48,19 +44,34 @@ function stageLabel(stage: ChapterExamStage): string {
   return stageInfo.value[stage]?.label ?? stage
 }
 
-function coverageText(section: ChapterExamSection, stage: ChapterExamStage): string {
-  const cell = section.coverage[stage]
-  const percent = cell.percent === null ? '—' : `${cell.percent}%`
-  return `${cell.groups}/${cell.of}${stageInfo.value[stage]?.unit ?? '份'} · ${percent}`
+function stageSample(stage: ChapterExamStage): string {
+  const info = stageInfo.value[stage]
+  return `${stageLabel(stage)} ${info?.group_count ?? 0}${info?.unit ?? '组'}`
 }
 
-function coverageDelta(section: ChapterExamSection): string {
+function averageMain(stage: ChapterExamStage): string {
+  const count = stageInfo.value[stage]?.group_count ?? 0
+  if (!count) return '—'
+  return (props.chapter.totals[stage].main / count).toFixed(2)
+}
+
+function coveragePercent(section: ChapterExamSection, stage: ChapterExamStage): string {
+  const percent = section.coverage[stage].percent
+  return percent === null ? '—' : `${percent}%`
+}
+
+function coverageDelta(section: ChapterExamSection): number | null {
   const first = section.coverage.midterm.percent
   const second = section.coverage.final.percent
-  if (first === null || second === null) return '—'
-  const delta = second - first
+  if (first === null || second === null) return null
+  return second - first
+}
+
+function coverageDeltaText(section: ChapterExamSection): string {
+  const delta = coverageDelta(section)
+  if (delta === null) return '—'
   if (delta === 0) return '持平'
-  return `${delta > 0 ? '+' : '−'}${Math.abs(delta)} 个百分点`
+  return `${delta > 0 ? '+' : '−'}${Math.abs(delta)} ppt`
 }
 
 function coverageHeat(percent: number | null): string {
@@ -76,7 +87,7 @@ function coverageHeat(percent: number | null): string {
 const overviewMax = computed(() => {
   let max = 0
   for (const section of props.chapter.sections) {
-    for (const stage of panels.value) {
+    for (const stage of STAGES) {
       for (const col of COLS) {
         max = Math.max(max, section.overview[stage][col.key].length)
       }
@@ -103,13 +114,20 @@ function ratio(part: number, whole: number): string {
 
 <template>
   <div class="cep-ov-grid">
-  <div class="cep-ov-col">
-  <section class="cep-block" aria-labelledby="cep-coverage-title">
-    <h3 id="cep-coverage-title" class="cep-block-title">小节出卷率</h3>
+  <section class="cep-block cep-card" aria-labelledby="cep-coverage-title">
+    <header class="cep-card-head">
+      <h3 id="cep-coverage-title" class="cep-block-title">{{ chapter.label }} · 考点热力图</h3>
+      <p class="cep-card-sub">{{ stageSample('midterm') }} · {{ stageSample('final') }}　颜色＝出卷率（该小节至少出现 1 题的卷组占比）</p>
+    </header>
     <div class="app-heat-table-wrap">
-    <table class="app-heat-table app-heat-table--compact">
+    <table class="app-heat-table app-heat-table--compact cep-cov-table">
       <thead>
-        <tr><th>小节</th><th>期中</th><th>期末</th><th>变化</th></tr>
+        <tr>
+          <th>小节</th>
+          <th>{{ stageSample('midterm') }}</th>
+          <th>{{ stageSample('final') }}</th>
+          <th>变化</th>
+        </tr>
       </thead>
       <tbody>
         <tr v-for="section in chapter.sections" :key="section.id" :class="{ 'is-empty': !section.main_count }">
@@ -123,61 +141,36 @@ function ratio(part: number, whole: number): string {
             <span v-else class="cep-row-static">{{ section.label }}<small>无主考题</small></span>
           </td>
           <td :class="coverageHeat(section.coverage.midterm.percent)">
-            {{ coverageText(section, 'midterm') }}
+            <span class="cep-cov-cell">
+              <b>{{ coveragePercent(section, 'midterm') }}</b>
+              <small>{{ section.coverage.midterm.groups }}/{{ section.coverage.midterm.of }}</small>
+            </span>
           </td>
           <td :class="coverageHeat(section.coverage.final.percent)">
-            {{ coverageText(section, 'final') }}
+            <span class="cep-cov-cell">
+              <b>{{ coveragePercent(section, 'final') }}</b>
+              <small>{{ section.coverage.final.groups }}/{{ section.coverage.final.of }}</small>
+            </span>
           </td>
-          <td>{{ coverageDelta(section) }}</td>
+          <td class="cep-delta-cell" :class="{ 'is-strong': Math.abs(coverageDelta(section) ?? 0) >= 10 }">
+            {{ coverageDeltaText(section) }}
+          </td>
         </tr>
       </tbody>
     </table>
     </div>
-    <p class="cep-note">出卷率＝至少有 1 道本节主考题的试卷数 ÷ 该阶段试卷数（同源卷合并后）。点击表格中的数字查看对应题目。</p>
+    <p class="cep-info">本章主考整题（同源卷已合并）　期中平均 {{ averageMain('midterm') }} 题/{{ stageInfo.midterm?.unit ?? '组' }}　期末平均 {{ averageMain('final') }} 题/{{ stageInfo.final?.unit ?? '份' }}</p>
+    <p class="cep-legend"><span class="cep-legend__label">出卷率</span><i class="is-heat-1" /><i class="is-heat-2" /><i class="is-heat-3" /><i class="is-heat-4" /><i class="is-heat-5" /><span>低 → 高</span></p>
+    <p class="cep-note">同小节同卷组只计一次 · ppt＝百分点 · 不同阶段样本独立，变化并非同一批学生的追踪。</p>
   </section>
 
-  <section class="cep-block" aria-labelledby="cep-difficulty-title">
-    <h3 id="cep-difficulty-title" class="cep-block-title">难度与题型</h3>
-    <div class="cep-table-scroll">
-    <table class="app-table">
-      <thead>
-        <tr>
-          <th>阶段</th>
-          <th class="is-num">总题数</th>
-          <th v-for="col in DIFFICULTY_COLS" :key="col.key" class="is-num">{{ col.label }}</th>
-          <th class="is-num">选择</th>
-          <th class="is-num">填空</th>
-          <th class="is-num">解答</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="stage in (['midterm', 'final'] as ChapterExamStage[])" :key="stage">
-          <td class="cep-row-label">{{ stageLabel(stage) }}</td>
-          <td class="is-num">{{ chapter.difficulty[stage].total }}</td>
-          <td v-for="col in DIFFICULTY_COLS" :key="col.key" class="is-num">
-            {{ chapter.difficulty[stage][col.key] }}
-            <small class="cep-stage-tag">{{ ratio(chapter.difficulty[stage][col.key], chapter.difficulty[stage].total) }}</small>
-          </td>
-          <td class="is-num">{{ chapter.difficulty[stage].choice }}</td>
-          <td class="is-num">{{ chapter.difficulty[stage].fill }}</td>
-          <td class="is-num">{{ chapter.difficulty[stage].written }}</td>
-        </tr>
-      </tbody>
-    </table>
-    </div>
-    <p class="cep-note">
-      另有
-      <button type="button" class="cep-inline-link" :disabled="!crossMidterm.length" @click="emit('cell', '跨章涉及 · 期中', crossMidterm)">期中 {{ crossMidterm.length }} 题</button>、
-      <button type="button" class="cep-inline-link" :disabled="!crossFinal.length" @click="emit('cell', '跨章涉及 · 期末', crossFinal)">期末 {{ crossFinal.length }} 题</button>
-      主要考其他章、同时涉及本章。
-    </p>
-  </section>
-  </div>
-
-  <section class="cep-block" aria-labelledby="cep-overview-title">
-    <h3 id="cep-overview-title" class="cep-block-title">命题总览</h3>
+  <section class="cep-block cep-card" aria-labelledby="cep-overview-title">
+    <header class="cep-card-head">
+      <h3 id="cep-overview-title" class="cep-block-title">命题总览</h3>
+      <p class="cep-card-sub">期中与期末并排　颜色＝本节主考题数（两阶段共用同一刻度）</p>
+    </header>
     <div class="cep-panels">
-      <div v-for="panel in panels" :key="panel">
+      <div v-for="panel in STAGES" :key="panel">
         <p class="cep-panel-title">{{ stageLabel(panel) }}</p>
         <div class="app-heat-table-wrap">
         <table class="app-heat-table">
@@ -213,7 +206,47 @@ function ratio(part: number, whole: number): string {
         </div>
       </div>
     </div>
-    <p class="cep-note">基础＝难度 1–3.9，中高＝4–10；填空、解答不分难度。按整题计数。</p>
+    <p class="cep-legend"><span class="cep-legend__label">出现次数</span><i class="is-heat-1" /><i class="is-heat-2" /><i class="is-heat-3" /><i class="is-heat-4" /><i class="is-heat-5" /><span>少 → 多</span></p>
+    <p class="cep-note">基础＝难度 1–3.9；中高＝4–10。填空、解答不按难度拆列。</p>
+  </section>
+
+  <section class="cep-block cep-card" aria-labelledby="cep-difficulty-title">
+    <header class="cep-card-head">
+      <h3 id="cep-difficulty-title" class="cep-block-title">难度与题型</h3>
+    </header>
+    <div class="cep-table-scroll">
+    <table class="app-table">
+      <thead>
+        <tr>
+          <th>阶段</th>
+          <th class="is-num">总题数</th>
+          <th v-for="col in DIFFICULTY_COLS" :key="col.key" class="is-num">{{ col.label }}</th>
+          <th class="is-num">选择</th>
+          <th class="is-num">填空</th>
+          <th class="is-num">解答</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="stage in STAGES" :key="stage">
+          <td class="cep-row-label">{{ stageLabel(stage) }}</td>
+          <td class="is-num">{{ chapter.difficulty[stage].total }}</td>
+          <td v-for="col in DIFFICULTY_COLS" :key="col.key" class="is-num">
+            {{ chapter.difficulty[stage][col.key] }}
+            <small class="cep-stage-tag">{{ ratio(chapter.difficulty[stage][col.key], chapter.difficulty[stage].total) }}</small>
+          </td>
+          <td class="is-num">{{ chapter.difficulty[stage].choice }}</td>
+          <td class="is-num">{{ chapter.difficulty[stage].fill }}</td>
+          <td class="is-num">{{ chapter.difficulty[stage].written }}</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="cep-note">
+      另有
+      <button type="button" class="cep-inline-link" :disabled="!crossMidterm.length" @click="emit('cell', '跨章涉及 · 期中', crossMidterm)">期中 {{ crossMidterm.length }} 题</button>、
+      <button type="button" class="cep-inline-link" :disabled="!crossFinal.length" @click="emit('cell', '跨章涉及 · 期末', crossFinal)">期末 {{ crossFinal.length }} 题</button>
+      主要考其他章、同时涉及本章。
+    </p>
   </section>
   </div>
 </template>

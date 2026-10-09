@@ -1,46 +1,37 @@
 /* 章节考情：频次热力沿用共享 app-heat-table 的主题色瓷贴色阶（频次不代表好坏）；
-   掌握度薄弱仍沿用危险色斜纹含义。 */
+   掌握度薄弱仍沿用危险色斜纹含义。单栏报告页：头部 → 小节索引条 → 滚动区。 */
 
-/* 章节考情以分析栏为主栏：覆盖父布局 280px 的技能列宽。 */
-.chapter-exam.qb-skill-layout {
-  grid-template-columns: minmax(560px, 1.15fr) minmax(440px, 1fr);
+.chapter-exam.qb-browse-pane {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
 }
 
-.chapter-exam.qb-skill-layout.is-skill-narrow {
-  grid-template-columns: 44px minmax(0, 1fr);
+.chapter-exam .cep-head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
-.chapter-exam.is-skill-narrow .cep-tools,
-.chapter-exam.is-skill-narrow .cep-index {
-  display: none;
+.chapter-exam .cep-head-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
 }
 
-@media (max-width: 1279.98px) {
-  .chapter-exam.qb-skill-layout {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    overflow-y: auto;
-    height: 100%;
-  }
+.chapter-exam .cep-subline {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
 
-  .chapter-exam.qb-skill-layout > .qb-skill-pane {
-    flex: none;
-    max-height: none;
-  }
-
-  .chapter-exam.qb-skill-layout > .qb-skill-pane .cep-scroll {
-    overflow: visible;
-  }
-
-  .chapter-exam.qb-skill-layout > .qb-question-pane {
-    flex: none;
-    min-height: 420px;
-  }
-
-  .chapter-exam.qb-skill-layout.is-skill-narrow > .qb-skill-pane {
-    width: 44px;
-  }
+.chapter-exam .cep-head .knowledge-overview-scope-bar {
+  padding: 0;
+  font-size: var(--font-size-caption);
 }
 
 /* 小节索引条固定在章节头部之下、滚动区之上；无主考题的小节禁用。 */
@@ -64,21 +55,25 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 10px 12px 16px;
+  padding: 12px 14px 18px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
 .chapter-exam .cep-scroll [data-cep-block] {
   scroll-margin-top: 6px;
 }
 
+.chapter-exam .cep-scroll p {
+  margin: 0;
+}
+
 .chapter-exam .cep-section-block {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding-top: 10px;
+  padding-top: 12px;
   border-top: 1px solid var(--color-border-subtle);
 }
 
@@ -89,33 +84,119 @@
   gap: 2px 14px;
 }
 
-.chapter-exam.is-skill-narrow .cep-scroll {
-  display: none;
+/* 报告式卡片：标题带（题名＋一行样本说明）＋瓷贴热力＋图例＋脚注。 */
+.chapter-exam .cep-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  background: var(--color-bg-surface);
 }
 
-.chapter-exam .cep-table-scroll {
-  max-width: 100%;
-  overflow-x: auto;
+.chapter-exam .cep-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.chapter-exam .app-heat-table td,
-.chapter-exam .cep-table-scroll td {
+.chapter-exam h3.cep-block-title {
+  margin: 0 0 2px;
+  font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.chapter-exam .cep-card-sub {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.chapter-exam .cep-subchart {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.chapter-exam .cep-subchart-title {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+}
+
+.chapter-exam .cep-subchart-title small {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular);
+}
+
+/* 覆盖热度格：大号百分比＋小字 组/总；变化列保持中性，幅度大时加粗。 */
+.chapter-exam .cep-cov-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
   white-space: nowrap;
 }
 
-/* 总览两栏列宽约 516px：难度表收紧横向内边距以占满列宽不换行。 */
-.chapter-exam .cep-table-scroll .app-table th,
-.chapter-exam .cep-table-scroll .app-table td {
-  padding-inline: 8px;
+.chapter-exam .cep-cov-cell b {
+  font-weight: var(--font-weight-semibold);
 }
 
-.chapter-exam .cep-scroll p {
-  margin: 0;
+.chapter-exam .cep-cov-cell small {
+  color: inherit;
+  opacity: 0.75;
+  font-size: var(--font-size-caption);
 }
 
-.chapter-exam .cep-note {
+.chapter-exam .cep-delta-cell {
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.chapter-exam .cep-delta-cell.is-strong {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.chapter-exam .cep-info {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+/* 图例条：五级瓷贴色阶与热力单元格同源。 */
+.chapter-exam .cep-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   color: var(--color-text-muted);
   font-size: var(--font-size-caption);
+}
+
+.chapter-exam .cep-legend i {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.chapter-exam .cep-legend i.is-heat-1 { background: color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-surface)); }
+.chapter-exam .cep-legend i.is-heat-2 { background: color-mix(in srgb, var(--color-accent) 26%, var(--color-bg-surface)); }
+.chapter-exam .cep-legend i.is-heat-3 { background: color-mix(in srgb, var(--color-accent) 44%, var(--color-bg-surface)); }
+.chapter-exam .cep-legend i.is-heat-4 { background: color-mix(in srgb, var(--color-accent) 70%, var(--color-bg-surface)); }
+.chapter-exam .cep-legend i.is-heat-5 { background: var(--color-accent); }
+
+.chapter-exam .cep-legend span:last-child {
+  margin-left: 2px;
 }
 
 .chapter-exam .cep-coverage {
@@ -131,11 +212,24 @@
   color: var(--color-text-primary);
 }
 
-.chapter-exam h3.cep-block-title {
-  margin: 0 0 2px;
-  font-size: var(--font-size-dense);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
+.chapter-exam .cep-note {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.chapter-exam .cep-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.chapter-exam .cep-table-scroll .app-table th,
+.chapter-exam .cep-table-scroll .app-table td {
+  padding-inline: 8px;
+}
+
+.chapter-exam .app-heat-table td,
+.chapter-exam .cep-table-scroll td {
+  white-space: nowrap;
 }
 
 /* 宽表在自身容器内横向滚动，行标签列吸附在左侧；瓷贴底色不透明以遮住滑过的单元格。 */
@@ -158,18 +252,34 @@
   z-index: 2;
 }
 
+.chapter-exam .cep-pos-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.chapter-exam .cep-pos-table th,
+.chapter-exam .cep-pos-table td {
+  padding-inline: 4px;
+}
+
+.chapter-exam .cep-pos-table td.cep-row-label,
+.chapter-exam .cep-pos-table thead th:first-child {
+  width: 140px;
+}
+
 .chapter-exam .cep-pos-table td.cep-row-label {
-  width: 110px;
-  max-width: 110px;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  vertical-align: top;
 }
 
 .chapter-exam .cep-pos-table td.cep-stage-tag,
 .chapter-exam .cep-pos-table thead th:nth-child(2) {
   position: sticky;
-  left: 110px;
+  left: 140px;
   z-index: 1;
-  width: 36px;
-  min-width: 36px;
+  width: 44px;
   background: var(--color-bg-surface);
 }
 
@@ -177,14 +287,22 @@
   z-index: 2;
 }
 
-.chapter-exam .cep-pos-table th,
-.chapter-exam .cep-pos-table td {
-  min-width: 20px;
+/* 题号轴与分段带：分段三格横跨第1—8、9—13、14题起。 */
+.chapter-exam .cep-pos-table tfoot td {
+  background: var(--color-bg-surface);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
 }
 
-.chapter-exam .cep-pos-table th:last-child,
-.chapter-exam .cep-pos-table td:last-child {
-  min-width: 26px;
+.chapter-exam .cep-pos-band td[colspan] {
+  text-align: center;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+}
+
+.chapter-exam .cep-pos-table td.cep-stage-tag.is-final {
+  color: var(--color-accent);
+  font-weight: var(--font-weight-medium);
 }
 
 .chapter-exam .cep-row-label {
@@ -260,17 +378,10 @@
   color: var(--color-text-muted);
 }
 
-/* 本章总览在分析栏内单列堆叠。 */
+/* 本章总览在内容区内单列堆叠；命题总览两阶段面板并排，宽度不足时换行。 */
 .chapter-exam .cep-ov-grid {
   display: grid;
   gap: 14px;
-}
-
-.chapter-exam .cep-ov-col {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  min-width: 0;
 }
 
 .chapter-exam .cep-panels {
@@ -281,6 +392,7 @@
 }
 
 .chapter-exam .cep-panels > div {
+  flex: 1 1 420px;
   min-width: 0;
 }
 
@@ -291,17 +403,19 @@
   font-weight: var(--font-weight-medium);
 }
 
-/* 考法热力：计数列只要胶囊宽度，表头允许折行，把列宽让给技能名与薄弱占比。 */
+/* 怎么考：计数列只要胶囊宽度，表头允许折行，把列宽让给技能名与薄弱占比。 */
 .chapter-exam .cep-skill-table thead th:not(:first-child):not(:last-child) {
   white-space: normal;
   min-width: 40px;
   padding-inline: 4px;
 }
 
-/* 考法热力技能名列：窄栏内技能名占首行，n=/归属/定义/标记折到第二行，最多两行。 */
+/* 技能名整行完整折行，不截断；n=/归属/定义/标记排在名称之后。 */
 .chapter-exam td.cep-skill-cell {
   white-space: normal;
   overflow: visible;
+  max-width: none;
+  min-width: 160px;
 }
 
 .chapter-exam .cep-skill-title {
@@ -309,17 +423,8 @@
 }
 
 .chapter-exam .cep-skill-name {
-  display: -webkit-box;
-  overflow: hidden;
-  white-space: normal;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-/* 定义展开后取消两行截断。 */
-.chapter-exam .cep-skill-name:has(.cep-skill-definition[open]) {
   display: inline;
-  overflow: visible;
+  white-space: normal;
 }
 
 .chapter-exam .cep-skill-name small {
@@ -395,25 +500,18 @@
   font-size: var(--font-size-caption);
 }
 
-.chapter-exam .cep-pos-skill {
-  writing-mode: initial;
-}
-
-.chapter-exam .knowledge-overview-scope-bar {
-  padding: 0;
-  font-size: var(--font-size-caption);
-}
-
-.chapter-exam .cep-tools {
+/* 典型题按小节内联列出，题卡复用共享样式。 */
+.chapter-exam .cep-typical {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--color-border-subtle);
 }
 
-.chapter-exam .cep-tools .app-segmented {
-  align-self: flex-start;
+.chapter-exam h4.cep-typical-title {
+  margin: 0;
+  font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
 }
 
 .chapter-exam .cep-merged-details {
@@ -433,6 +531,100 @@
   margin-top: 2px;
   color: var(--color-text-secondary);
   white-space: normal;
+}
+
+/* 选中条：抽屉关闭但有勾选时贴在内容底部。 */
+.chapter-exam .cep-selection {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 14px 12px;
+  padding: 8px 12px;
+  background: var(--color-accent-subtle);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 18%, transparent);
+  border-left: 4px solid var(--color-accent);
+  border-radius: var(--radius-control);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.chapter-exam .cep-selection strong {
+  color: var(--color-text-primary);
+}
+
+.chapter-exam .cep-selection__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 计数字格抽屉：约 680px，窄窗口收缩。 */
+[data-slot="sheet-content"].cep-cell-drawer {
+  width: min(680px, 94vw);
+  max-width: 94vw;
+  gap: 0;
+  border-radius: var(--radius-overlay) 0 0 var(--radius-overlay);
+}
+
+.cep-cell-drawer .cep-drawer-head {
+  flex: none;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.cep-cell-drawer .qb-ledger {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 0;
+  padding: 0 14px 12px;
+}
+
+.cep-cell-drawer .qb-ledger > .qb-section-heading {
+  flex: none;
+  padding: 10px 0 0;
+}
+
+.cep-cell-drawer .qb-ledger > .qb-section-heading h2 {
+  display: none;
+}
+
+.cep-cell-drawer .qb-ledger > .qb-selection-bar {
+  flex: none;
+  margin: 8px 0 0;
+}
+
+.cep-cell-drawer .qb-ledger .qb-question-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 0;
+  align-content: start;
+}
+
+.cep-cell-drawer .qb-ledger .qb-pagination {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  padding: 11px 0 0;
+  margin: 0;
+  border-top: 1px solid var(--color-border-subtle);
+  font-size: var(--font-size-caption);
+}
+
+/* 窄窗口：页面本身滚动，只有落在第几题宽表在卡片内横滚。 */
+@media (max-width: 900px) {
+  .chapter-exam.qb-browse-pane {
+    height: auto;
+    overflow: visible;
+  }
+
+  .chapter-exam .cep-scroll {
+    overflow: visible;
+  }
 }
 
 /* 题卡头部由 QuestionLedger 透传的档位与同类题说明。 */
