@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import type {
   ChapterExamCellColumn,
@@ -70,6 +70,42 @@ function coverageAria(section: ChapterExamSection, stage: ChapterExamStage): str
   const cell = section.coverage[stage]
   const percent = cell.percent === null ? '—' : `${cell.percent}%`
   return `${section.label} · ${stageLabel(stage)}出卷率 ${percent}（${cell.groups}/${cell.of}${stageInfo.value[stage]?.unit ?? '组'}）`
+}
+
+/* 哑铃箭头：期中考点连向期末点；线两端各让 8px（圆点半径 6.5px＋约 1px），使箭头停在期末点边缘外。Δ=0 或过近不画。 */
+const ARROW_PAD = 8
+const dumbTrackEl = ref<HTMLElement | null>(null)
+const dumbTrackWidth = ref(720)
+let dumbRo: ResizeObserver | undefined
+
+function captureTrack(el: unknown): void {
+  if (!dumbTrackEl.value && el instanceof HTMLElement) dumbTrackEl.value = el
+}
+
+onMounted(() => {
+  if (typeof ResizeObserver === 'undefined' || !dumbTrackEl.value) return
+  dumbRo = new ResizeObserver(entries => {
+    const rect = entries[0]?.contentRect
+    if (rect && rect.width > 0) dumbTrackWidth.value = rect.width
+  })
+  dumbRo.observe(dumbTrackEl.value)
+})
+
+onBeforeUnmount(() => {
+  dumbRo?.disconnect()
+})
+
+function coverageArrow(section: ChapterExamSection): { left: string; width: string; back: boolean } | null {
+  const first = section.coverage.midterm.percent
+  const second = section.coverage.final.percent
+  if (first === null || second === null || first === second) return null
+  const gap = Math.abs(second - first)
+  if ((gap / 100) * dumbTrackWidth.value < 16) return null
+  return {
+    left: `calc(${Math.min(first, second)}% + ${ARROW_PAD}px)`,
+    width: `calc(${gap}% - ${ARROW_PAD * 2}px)`,
+    back: second < first,
+  }
 }
 
 function stageIds(section: ChapterExamSection, stage: ChapterExamStage): number[] {
@@ -224,6 +260,14 @@ function openQuad(row: QuadRow): void {
 function ratio(part: number, whole: number): string {
   return whole ? `${Math.round((part / whole) * 100)}%` : '—'
 }
+
+function difficultyLine(stage: ChapterExamStage): string {
+  const row = props.chapter.difficulty[stage]
+  const parts = TIERS.map(tier => `${tier.label} ${row[tier.key]}（${ratio(row[tier.key], row.total)}）`)
+  const undetermined = Math.max(0, row.total - row.basic - row.mid - row.hard)
+  if (undetermined) parts.push(`未定难度 ${undetermined}`)
+  return `全章 ${stageLabel(stage)} ${row.total} 题：${parts.join('· ')}`
+}
 </script>
 
 <template>
@@ -242,17 +286,15 @@ function ratio(part: number, whole: number): string {
           @click="emit('section', section.id)"
         >{{ section.label }}<small>{{ section.main_count }} 题</small></button>
         <span v-else class="cep-row-static cep-dumb-label">{{ section.label }}</span>
-        <div class="cep-dumb-track">
+        <div class="cep-dumb-track" :ref="captureTrack">
           <template v-if="section.main_count">
             <span class="cep-dumb-axis" aria-hidden="true" />
             <span
-              v-if="section.coverage.midterm.percent !== null && section.coverage.final.percent !== null"
-              class="cep-dumb-link"
+              v-if="coverageArrow(section)"
+              class="cep-dumb-arrow"
+              :class="{ 'is-back': coverageArrow(section)!.back }"
               aria-hidden="true"
-              :style="{
-                left: `${Math.min(section.coverage.midterm.percent, section.coverage.final.percent)}%`,
-                width: `${Math.abs((section.coverage.final.percent ?? 0) - (section.coverage.midterm.percent ?? 0))}%`,
-              }"
+              :style="{ left: coverageArrow(section)!.left, width: coverageArrow(section)!.width }"
             />
             <button
               v-if="section.coverage.midterm.percent !== null"
@@ -346,6 +388,15 @@ function ratio(part: number, whole: number): string {
       <span class="cep-legend__tail">点击分段看题单</span>
     </p>
     <p class="cep-note">无难度题不进入难度档统计；两阶段卷组数不同，条长按平均每{{ stageInfo.midterm?.unit ?? '组' }}/{{ stageInfo.final?.unit ?? '份' }}折算后才可比较。</p>
+    <div class="cep-diff-summary">
+      <p v-for="stage in STAGES" :key="stage">{{ difficultyLine(stage) }}</p>
+    </div>
+    <p class="cep-note">
+      另有
+      <button type="button" class="cep-inline-link" :disabled="!crossMidterm.length" @click="emit('cell', '跨章涉及 · 期中', crossMidterm)">期中 {{ crossMidterm.length }} 题</button>、
+      <button type="button" class="cep-inline-link" :disabled="!crossFinal.length" @click="emit('cell', '跨章涉及 · 期末', crossFinal)">期末 {{ crossFinal.length }} 题</button>
+      主要考其他章、同时涉及本章。
+    </p>
   </section>
 
   <section class="cep-block cep-card" aria-labelledby="cep-quad-title">
@@ -395,55 +446,6 @@ function ratio(part: number, whole: number): string {
     <p v-if="quadInsufficient.length" class="cep-note cep-quad-list">证据不足：{{ quadInsufficient.map(row => row.name).join('、') }}</p>
     <p v-if="quadNoEvidence.length" class="cep-note cep-quad-list">暂无学情证据：{{ quadNoEvidence.map(row => row.name).join('、') }}</p>
     <p class="cep-note">同名行按键跨小节合并：n 与各档题数取合计，卷组数取各小节最大值；明显薄弱占比＝明显薄弱÷（明显薄弱＋不稳＋掌握），证据不足的学生不进分母。</p>
-  </section>
-
-  <section class="cep-block cep-card" aria-labelledby="cep-difficulty-title">
-    <header class="cep-card-head">
-      <h3 id="cep-difficulty-title" class="cep-block-title">难度与题型</h3>
-    </header>
-    <div class="cep-table-scroll">
-    <table class="app-table">
-      <thead>
-        <tr>
-          <th>阶段</th>
-          <th class="is-num">总题数</th>
-          <th class="is-num">基础 1–3.9</th>
-          <th class="is-num">中档 4–6.9</th>
-          <th class="is-num">提高 7–10</th>
-          <th class="is-num">选择</th>
-          <th class="is-num">填空</th>
-          <th class="is-num">解答</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="stage in STAGES" :key="stage">
-          <td class="cep-row-label">{{ stageLabel(stage) }}</td>
-          <td class="is-num">{{ chapter.difficulty[stage].total }}</td>
-          <td class="is-num">
-            {{ chapter.difficulty[stage].basic }}
-            <small class="cep-stage-tag">{{ ratio(chapter.difficulty[stage].basic, chapter.difficulty[stage].total) }}</small>
-          </td>
-          <td class="is-num">
-            {{ chapter.difficulty[stage].mid }}
-            <small class="cep-stage-tag">{{ ratio(chapter.difficulty[stage].mid, chapter.difficulty[stage].total) }}</small>
-          </td>
-          <td class="is-num">
-            {{ chapter.difficulty[stage].hard }}
-            <small class="cep-stage-tag">{{ ratio(chapter.difficulty[stage].hard, chapter.difficulty[stage].total) }}</small>
-          </td>
-          <td class="is-num">{{ chapter.difficulty[stage].choice }}</td>
-          <td class="is-num">{{ chapter.difficulty[stage].fill }}</td>
-          <td class="is-num">{{ chapter.difficulty[stage].written }}</td>
-        </tr>
-      </tbody>
-    </table>
-    </div>
-    <p class="cep-note">
-      另有
-      <button type="button" class="cep-inline-link" :disabled="!crossMidterm.length" @click="emit('cell', '跨章涉及 · 期中', crossMidterm)">期中 {{ crossMidterm.length }} 题</button>、
-      <button type="button" class="cep-inline-link" :disabled="!crossFinal.length" @click="emit('cell', '跨章涉及 · 期末', crossFinal)">期末 {{ crossFinal.length }} 题</button>
-      主要考其他章、同时涉及本章。
-    </p>
   </section>
   </div>
 </template>

@@ -31,6 +31,45 @@
   gap: 8px 14px;
 }
 
+/* 章节页签：与小节索引同族、大一号，读作章→节两级。 */
+.chapter-exam .cep-chapters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chapter-exam button.cep-chapter-tab {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  height: 30px;
+  min-height: 0;
+  padding: 0 13px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-dense);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chapter-exam .cep-chapter-tab small {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.chapter-exam .cep-chapter-tab.is-active {
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+}
+
+.chapter-exam .cep-chapter-tab.is-active small {
+  color: var(--color-accent);
+}
+
 .chapter-exam .cep-subline {
   margin: 0;
   color: var(--color-text-muted);
@@ -201,18 +240,17 @@
   font-size: var(--font-size-caption);
 }
 
-.chapter-exam .cep-table-scroll {
-  max-width: 100%;
-  overflow-x: auto;
+.chapter-exam .cep-diff-summary {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  font-size: var(--font-size-dense);
+  color: var(--color-text-secondary);
 }
 
-.chapter-exam .cep-table-scroll .app-table th,
-.chapter-exam .cep-table-scroll .app-table td {
-  padding-inline: 8px;
-}
-
-.chapter-exam .cep-table-scroll td {
-  white-space: nowrap;
+.chapter-exam .cep-diff-summary p {
+  margin: 0;
 }
 
 .chapter-exam .cep-row-label {
@@ -333,11 +371,6 @@
   color: var(--color-warning);
   font-size: var(--font-size-caption);
   white-space: nowrap;
-}
-
-.chapter-exam .cep-stage-tag {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-caption);
 }
 
 /* 典型题按小节内联列出，题卡复用共享样式。 */
@@ -567,13 +600,34 @@
   background: var(--color-border-subtle);
 }
 
-.chapter-exam .cep-dumb-link {
+/* 期中考点 → 期末点的连线变成箭头，头部指向期末点、停在点边缘外。 */
+.chapter-exam .cep-dumb-arrow {
   position: absolute;
   top: 50%;
-  height: 3px;
+  height: 2px;
   transform: translateY(-50%);
   border-radius: 2px;
   background: color-mix(in srgb, var(--cep-midterm) 40%, var(--cep-final));
+  pointer-events: none;
+}
+
+.chapter-exam .cep-dumb-arrow::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: -1px;
+  width: 7px;
+  height: 7px;
+  border-top: 2px solid color-mix(in srgb, var(--cep-midterm) 40%, var(--cep-final));
+  border-right: 2px solid color-mix(in srgb, var(--cep-midterm) 40%, var(--cep-final));
+  transform: translateY(-50%) rotate(45deg);
+  transform-origin: center;
+}
+
+.chapter-exam .cep-dumb-arrow.is-back::after {
+  right: auto;
+  left: -1px;
+  transform: translateY(-50%) rotate(225deg);
 }
 
 .chapter-exam button.cep-dumb-dot {
@@ -900,6 +954,61 @@
   top: 50%;
   height: 1px;
   background: var(--color-border-subtle);
+}
+
+/* 平均题号漂移：中线菱形标记＋期中→期末箭头；箭头不挡气泡点击。 */
+.chapter-exam .cep-pos-drift-arrow {
+  position: absolute;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--cep-midterm) 45%, var(--cep-final));
+  pointer-events: none;
+}
+
+.chapter-exam .cep-pos-drift-arrow::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: -1px;
+  width: 6px;
+  height: 6px;
+  border-top: 2px solid color-mix(in srgb, var(--cep-midterm) 45%, var(--cep-final));
+  border-right: 2px solid color-mix(in srgb, var(--cep-midterm) 45%, var(--cep-final));
+  transform: translateY(-50%) rotate(45deg);
+  transform-origin: center;
+}
+
+.chapter-exam .cep-pos-drift-arrow.is-back::after {
+  right: auto;
+  left: -1px;
+  transform: translateY(-50%) rotate(225deg);
+}
+
+.chapter-exam .cep-pos-mark {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.chapter-exam .cep-pos-mark.is-midterm {
+  background: var(--cep-midterm);
+}
+
+.chapter-exam .cep-pos-mark.is-final {
+  background: var(--cep-final);
+}
+
+.chapter-exam .cep-pos-label small.cep-pos-avg {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--font-size-caption);
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-normal);
 }
 
 .chapter-exam button.cep-pos-dot {

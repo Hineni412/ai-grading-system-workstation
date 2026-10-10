@@ -1199,6 +1199,35 @@ describe('question bank workspace', () => {
           },
           skills: [],
         }],
+      }, {
+        id: 'ch_TEST_3', label: '第三章 三角形',
+        totals: { midterm: { main: 4, cross: 1 }, final: { main: 1, cross: 0 } },
+        difficulty: {
+          midterm: { total: 4, basic: 1, mid: 1, hard: 1, choice: 3, fill: 0, written: 1 },
+          final: { total: 1, basic: 0, mid: 0, hard: 1, choice: 0, fill: 0, written: 1 },
+        },
+        cross_question_ids: { midterm: [20], final: [] },
+        sections: [{
+          id: 'sec_TEST_31', label: '3.1 认识三角形', synthesis: false, main_count: 5,
+          coverage: {
+            midterm: { groups: 1, of: 1, percent: 100, questions: 4 },
+            final: { groups: 1, of: 1, percent: 100, questions: 1 },
+          },
+          overview: {
+            midterm: { basic: [11], mid: [12], hard: [13] },
+            final: { basic: [], mid: [], hard: [14] },
+          },
+          skills: [{
+            key: 'sk_TEST_e', name: '判断三边关系', unlinked: false,
+            home_section_label: '', definition: '', total: 5, group_count: 2,
+            cells: {
+              midterm: { basic: [11], mid: [12], hard: [13] },
+              final: { basic: [], mid: [], hard: [14] },
+            },
+            positions: { midterm: { '3': [11] }, final: { '3': [14] } },
+            typical: [],
+          }],
+        }],
       }],
     }
   }
@@ -1320,6 +1349,12 @@ describe('question bank workspace', () => {
     // 哑铃图圆点可点开抽屉：2.1 与 2.2 各期中期末两点。
     const dots = [...overviewBlock.querySelectorAll<HTMLButtonElement>('.cep-dumb-row:not(.is-empty) button.cep-dumb-dot')]
     expect(dots).toHaveLength(4)
+    // 期中→期末漂移箭头：Δ≠0 的 2.2 行有箭头，2.1 持平行与空行不画。
+    const dumbRows = [...overviewBlock.querySelectorAll<HTMLElement>('.cep-dumb-row')]
+    const row21 = dumbRows.find(row => row.textContent?.includes('2.1'))!
+    const row22 = dumbRows.find(row => row.textContent?.includes('2.2'))!
+    expect(row22.querySelector('.cep-dumb-arrow')).not.toBeNull()
+    expect(row21.querySelector('.cep-dumb-arrow')).toBeNull()
     // 命题结构蝴蝶图：每个小节一行，期中向左、期末向右，按难度档分段。
     const bflyRows = [...overviewBlock.querySelectorAll<HTMLElement>('.cep-bfly-row')]
     expect(bflyRows).toHaveLength(3)
@@ -1327,6 +1362,20 @@ describe('question bank workspace', () => {
     expect([...midSegments].map(b => b.textContent?.trim())).toEqual(['2', '1'])
     const finSegments = bflyRows[0]!.querySelectorAll('.cep-bfly-half.is-right .cep-seg')
     expect([...finSegments].map(b => b.textContent?.trim())).toEqual(['1', '1'])
+    // 难度与题型表已移除；蝴蝶图下方给出两阶段难度构成摘要与跨章链接。
+    expect(host.textContent).not.toContain('难度与题型')
+    expect(overviewBlock.textContent).toContain('全章 期中 5 题：基础 3（60%）· 中档 2（40%）· 提高 0（0%）')
+    expect(overviewBlock.textContent).toContain('全章 期末 2 题：基础 0（0%）· 中档 2（100%）· 提高 0（0%）')
+    expect(overviewBlock.textContent).toContain('另有')
+    expect(overviewBlock.textContent).toContain('主要考其他章、同时涉及本章')
+    // 章节页签：每章一枚，当前章高亮。
+    const chapterTabs = [...host.querySelectorAll<HTMLButtonElement>('.cep-chapter-tab')]
+    expect(chapterTabs).toHaveLength(2)
+    expect(chapterTabs[0]!.textContent).toContain('第二章 实数')
+    expect(chapterTabs[0]!.textContent).toContain('主考 7')
+    expect(chapterTabs[0]!.getAttribute('aria-current')).toBe('true')
+    expect(chapterTabs[1]!.textContent).toContain('第三章 三角形')
+    expect(chapterTabs[1]!.getAttribute('aria-current')).toBeNull()
     // 点击蝴蝶分段打开抽屉：2.1 · 期中 · 基础 → [1,2]。
     ;(midSegments[0] as HTMLButtonElement).click()
     await vi.waitFor(() => expect(document.body.textContent).toContain('2.1 认识实数 · 期中 · 基础 · 2 题'))
@@ -1398,9 +1447,42 @@ describe('question bank workspace', () => {
     expect(block.textContent).toContain('第1—8题')
     expect(block.textContent).toContain('第9—13题')
     expect(block.textContent).toContain('第14题起')
+    // 平均题号漂移：期中 (1+2)/2=1.5，期末 13.0 → 后移 11.5 题；中线两枚菱形加一支箭头。
+    expect(block.textContent).toContain('平均题号 1.5 → 13.0（后移 11.5 题）')
+    expect(block.querySelectorAll('.cep-pos-mark')).toHaveLength(2)
+    expect(block.querySelectorAll('.cep-pos-drift-arrow')).toHaveLength(1)
+    expect(block.querySelector('.cep-pos-mark.is-midterm')?.getAttribute('aria-label'))
+      .toBe('平均题号 1.5 → 13.0（后移 11.5 题）')
     // 点击气泡打开抽屉：类型 × 阶段 × 题号。
     block.querySelector<HTMLButtonElement>('.cep-pos-dot.is-midterm')!.click()
     await vi.waitFor(() => expect(document.body.textContent).toContain('2.1 认识实数 · 区分有理数无理数 · 第1题 · 期中 · 1 题'))
+  })
+
+  it('switches the chapter from a chapter tab and updates the query', async () => {
+    const { host, pinia, router } = mountExamProfile('?tab=exam&chapter=ch_TEST_2')
+    await router.push('/question-bank?tab=exam&chapter=ch_TEST_2')
+    vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100, total_pages: 0 })
+    const app = createApp({ render: () => h(ChapterExamProfile) })
+    app.use(pinia).use(router).mount(host)
+    mounted.push(app)
+    await vi.waitFor(() => expect(host.querySelectorAll('.cep-chapter-tab')).toHaveLength(2))
+    expect(host.textContent).toContain('2.1 认识实数')
+    const next = [...host.querySelectorAll<HTMLButtonElement>('.cep-chapter-tab')]
+      .find(tab => tab.textContent?.includes('第三章 三角形'))!
+    next.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.chapter).toBe('ch_TEST_3'))
+    expect(router.currentRoute.value.query.section).toBeUndefined()
+    await vi.waitFor(() => expect(host.textContent).toContain('3.1 认识三角形'))
+    expect(host.querySelector<HTMLElement>('[data-cep-block="sec_TEST_31"]')).not.toBeNull()
+    expect(host.querySelector<HTMLElement>('[data-cep-block="sec_TEST_21"]')).toBeNull()
+    expect(next.getAttribute('aria-current')).toBe('true')
+    // 切换后的章节摘要与难度摘要随章变化；3.1 行平均题号持平 → 只画菱形不画箭头。
+    const overviewBlock = host.querySelector<HTMLElement>('[data-cep-block="overview"]')!
+    await vi.waitFor(() => expect(overviewBlock.textContent).toContain('全章 期中 4 题：基础 1（25%）· 中档 1（25%）· 提高 1（25%）· 未定难度 1'))
+    const block31 = host.querySelector<HTMLElement>('[data-cep-block="sec_TEST_31"]')!
+    expect(block31.textContent).toContain('平均题号 3.0 → 3.0（基本持平）')
+    expect(block31.querySelectorAll('.cep-pos-mark')).toHaveLength(2)
+    expect(block31.querySelector('.cep-pos-drift-arrow')).toBeNull()
   })
 
   it('renders a legacy ?stage=final address without the stage toggle', async () => {

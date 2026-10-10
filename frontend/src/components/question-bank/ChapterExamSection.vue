@@ -158,6 +158,68 @@ function positionAria(skill: ChapterExamSkillRow, stage: ChapterExamStage, bucke
   return `${skillName(skill)} · ${stageLabel(stage)} · ${bucketPlace(bucket)} · ${count} 题`
 }
 
+/* E 漂移：各阶段平均题号（Σ题号×题数÷题数，20+ 按 20 计），中线画菱形＋箭头。 */
+interface PosDrift {
+  mid: number
+  fin: number
+  delta: number
+  arrow: { left: string; width: string; back: boolean } | null
+}
+
+function posAverage(skill: ChapterExamSkillRow, stage: ChapterExamStage): number | null {
+  const buckets = skill.positions[stage] ?? {}
+  let sum = 0
+  let count = 0
+  for (const bucket of POS_BUCKETS) {
+    const ids = buckets[bucket]
+    if (!ids?.length) continue
+    sum += (bucket === '20+' ? 20 : Number(bucket)) * ids.length
+    count += ids.length
+  }
+  return count ? sum / count : null
+}
+
+/* 题号 k 落在第 k 列中心，线性插值；菱形对角线约 14px，箭头两端各让 8px，尖部停在菱形边缘外。 */
+function posX(value: number): number {
+  const clamped = Math.min(20, Math.max(1, value))
+  return ((clamped - 0.5) / POS_BUCKETS.length) * 100
+}
+
+function driftArrow(mid: number, fin: number): PosDrift['arrow'] {
+  if (Math.abs(fin - mid) < 0.5) return null
+  const lo = posX(Math.min(mid, fin))
+  const hi = posX(Math.max(mid, fin))
+  return {
+    left: `calc(${lo}% + 8px)`,
+    width: `calc(${hi - lo}% - 16px)`,
+    back: fin < mid,
+  }
+}
+
+const drifts = computed(() => {
+  const map = new Map<string, PosDrift>()
+  for (const skill of props.section.skills) {
+    const mid = posAverage(skill, 'midterm')
+    const fin = posAverage(skill, 'final')
+    if (mid === null || fin === null) continue
+    map.set(skill.key ?? 'unlinked', { mid, fin, delta: fin - mid, arrow: driftArrow(mid, fin) })
+  }
+  return map
+})
+
+function driftOf(skill: ChapterExamSkillRow): PosDrift | undefined {
+  return drifts.value.get(skill.key ?? 'unlinked')
+}
+
+function posDriftText(skill: ChapterExamSkillRow): string {
+  const drift = driftOf(skill)
+  if (!drift) return ''
+  const from = drift.mid.toFixed(1)
+  const to = drift.fin.toFixed(1)
+  if (Math.abs(drift.delta) < 0.5) return `平均题号 ${from} → ${to}（基本持平）`
+  return `平均题号 ${from} → ${to}（${drift.delta > 0 ? '后移' : '前移'} ${Math.abs(drift.delta).toFixed(1)} 题）`
+}
+
 /* F 典型题：一型一卡，卡内按难度档切换 */
 interface TypCard {
   row: ChapterExamSkillRow
@@ -298,7 +360,10 @@ function onTrackKeydown(event: KeyboardEvent): void {
           </span>
         </div>
         <div v-for="skill in section.skills" :key="skill.key ?? 'unlinked'" class="cep-pos-row">
-          <div class="cep-pos-label">{{ skillName(skill) }}</div>
+          <div class="cep-pos-label">
+            {{ skillName(skill) }}
+            <small v-if="posDriftText(skill)" class="cep-pos-avg">{{ posDriftText(skill) }}</small>
+          </div>
           <div class="cep-pos-track">
             <span
               v-for="band in POS_BANDS"
@@ -323,6 +388,29 @@ function onTrackKeydown(event: KeyboardEvent): void {
                 :title="positionAria(skill, stage, bucket)"
                 :aria-label="positionAria(skill, stage, bucket)"
                 @click="openPosition(skill, stage, bucket)"
+              />
+            </template>
+            <template v-if="driftOf(skill)">
+              <span
+                v-if="driftOf(skill)!.arrow"
+                class="cep-pos-drift-arrow"
+                :class="{ 'is-back': driftOf(skill)!.arrow!.back }"
+                aria-hidden="true"
+                :style="{ left: driftOf(skill)!.arrow!.left, width: driftOf(skill)!.arrow!.width }"
+              />
+              <i
+                class="cep-pos-mark is-midterm"
+                role="img"
+                :style="{ left: `${posX(driftOf(skill)!.mid)}%` }"
+                :title="posDriftText(skill)"
+                :aria-label="posDriftText(skill)"
+              />
+              <i
+                class="cep-pos-mark is-final"
+                role="img"
+                :style="{ left: `${posX(driftOf(skill)!.fin)}%` }"
+                :title="posDriftText(skill)"
+                :aria-label="posDriftText(skill)"
               />
             </template>
           </div>

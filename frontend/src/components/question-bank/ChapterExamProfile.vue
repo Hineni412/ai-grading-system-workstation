@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChevronDown } from '@lucide/vue'
 
 import {
   questionBankApi,
@@ -42,7 +41,6 @@ const loadState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const errorMessage = ref('')
 let controller: AbortController | null = null
 const scrollEl = ref<HTMLElement | null>(null)
-const chapterSwitcher = ref<HTMLDetailsElement | null>(null)
 const drawerOpen = ref(false)
 const cellHeading = ref('')
 const spySection = ref<string | null>(null)
@@ -465,15 +463,6 @@ function selectChapter(id: string): void {
   })
 }
 
-function choose(id: string): void {
-  selectChapter(id)
-  const popover = chapterSwitcher.value
-  if (popover) {
-    popover.open = false
-    popover.querySelector<HTMLElement>('summary')?.focus()
-  }
-}
-
 function chipLabel(section: ChapterExamSectionData): string {
   return section.label.split(/\s+/)[0] || section.label
 }
@@ -503,24 +492,17 @@ function sectionCoverage(section: ChapterExamSectionData, stageKey: ChapterExamS
   <div v-else-if="profile" class="chapter-exam qb-browse-pane">
     <header class="cep-head">
       <div class="cep-head-top">
-        <details ref="chapterSwitcher" class="qb-label-popover qb-section-switcher">
-          <summary>
-            <span class="qb-switcher-current"><small>教材章节</small><b>{{ currentChapter?.label ?? '章节考情' }}</b></span>
-            <ChevronDown class="qb-switcher-caret" aria-hidden="true" />
-          </summary>
-          <div>
-            <div class="qb-chapter-tree">
-              <button
-                v-for="chapter in profile.chapters"
-                :key="chapter.id"
-                type="button"
-                class="qb-tree-row"
-                :class="{ 'is-active': chapter.id === currentChapter?.id }"
-                @click="choose(chapter.id)"
-              >{{ chapter.label }} <small>主考 {{ chapter.totals.midterm.main + chapter.totals.final.main }}</small></button>
-            </div>
-          </div>
-        </details>
+        <nav class="cep-chapters" aria-label="教材章节">
+          <button
+            v-for="chapter in profile.chapters"
+            :key="chapter.id"
+            type="button"
+            class="cep-chapter-tab"
+            :class="{ 'is-active': chapter.id === currentChapter?.id }"
+            :aria-current="chapter.id === currentChapter?.id ? 'true' : undefined"
+            @click="selectChapter(chapter.id)"
+          >{{ chapter.label }}<small>主考 {{ chapter.totals.midterm.main + chapter.totals.final.main }}</small></button>
+        </nav>
         <p class="cep-subline">{{ subline }}</p>
       </div>
       <OverviewScopeBar weak-share-note="明显薄弱占比 = 明显薄弱人数 ÷（明显薄弱＋不稳＋掌握人数），证据不足的学生不进分母。" />
