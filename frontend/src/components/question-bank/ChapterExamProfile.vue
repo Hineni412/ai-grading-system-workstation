@@ -26,6 +26,8 @@ import QuestionLedger from './QuestionLedger.vue'
 import QuestionSimilarSheet from './QuestionSimilarSheet.vue'
 import ChapterExamOverview from './ChapterExamOverview.vue'
 import ChapterExamSection from './ChapterExamSection.vue'
+import ChapterExamTypicalViewer from './ChapterExamTypicalViewer.vue'
+import { typicalCardsOf } from './chapterExamTypical'
 import '../../styles/chapter-exam-profile.css'
 
 
@@ -318,6 +320,14 @@ function closeSimilar(): void {
   similarSource.value = null
 }
 
+/* 放大浏览：全章典型题卡按小节顺序串成一条浏览序列。 */
+const viewerKey = ref<string | null>(null)
+const viewerCards = computed(() => (currentChapter.value?.sections ?? []).flatMap(typicalCardsOf))
+
+function openBrowse(cardKey: string): void {
+  viewerKey.value = cardKey
+}
+
 function queueUrlWrite(): void {
   clearTimeout(urlTimer)
   urlTimer = setTimeout(() => {
@@ -500,8 +510,10 @@ function sectionCoverage(section: ChapterExamSectionData, stageKey: ChapterExamS
             class="cep-chapter-tab"
             :class="{ 'is-active': chapter.id === currentChapter?.id }"
             :aria-current="chapter.id === currentChapter?.id ? 'true' : undefined"
+            :title="`本章主考 ${chapter.totals.midterm.main + chapter.totals.final.main} 题`"
+            :aria-label="`${chapter.label} · 本章主考 ${chapter.totals.midterm.main + chapter.totals.final.main} 题`"
             @click="selectChapter(chapter.id)"
-          >{{ chapter.label }}<small>主考 {{ chapter.totals.midterm.main + chapter.totals.final.main }}</small></button>
+          >{{ chapter.label }}<small>{{ chapter.totals.midterm.main + chapter.totals.final.main }}</small></button>
         </nav>
         <p class="cep-subline">{{ subline }}</p>
       </div>
@@ -570,6 +582,7 @@ function sectionCoverage(section: ChapterExamSectionData, stageKey: ChapterExamS
           @cell="openCell"
           @retry-items="retryChapterItems"
           @similar="openSimilar"
+          @browse="openBrowse"
         />
       </section>
     </div>
@@ -597,4 +610,11 @@ function sectionCoverage(section: ChapterExamSectionData, stageKey: ChapterExamS
   </Sheet>
 
   <QuestionSimilarSheet :source="similarSource" @close="closeSimilar" />
+
+  <ChapterExamTypicalViewer
+    :cards="viewerCards"
+    :open-key="viewerKey"
+    :items="chapterItems"
+    @close="viewerKey = null"
+  />
 </template>

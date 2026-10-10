@@ -12,6 +12,7 @@ import type {
 } from '../../api/question-bank'
 import type { TrainingOverviewNode } from '../../api/training'
 import { isWeakAndFrequent, weakShareOf, weakShareText } from './chapterExamWeak'
+import { typicalCardsOf, type ChapterExamTypicalCard } from './chapterExamTypical'
 import QuestionCard from './QuestionCard.vue'
 
 const props = defineProps<{
@@ -27,6 +28,7 @@ const emit = defineEmits<{
   cell: [title: string, ids: number[]]
   retryItems: []
   similar: [question: QuestionBankListItem]
+  browse: [cardKey: string]
 }>()
 
 const TIERS: { key: ChapterExamCellColumn; label: string }[] = [
@@ -158,12 +160,14 @@ function positionAria(skill: ChapterExamSkillRow, stage: ChapterExamStage, bucke
   return `${skillName(skill)} · ${stageLabel(stage)} · ${bucketPlace(bucket)} · ${count} 题`
 }
 
-/* E 漂移：各阶段平均题号（Σ题号×题数÷题数，20+ 按 20 计），中线画菱形＋箭头。 */
+/* E 漂移：各阶段平均题号（Σ题号×题数÷题数，20+ 按 20 计），气泡道下方一条细灰道。 */
 interface PosDrift {
   mid: number
   fin: number
   delta: number
-  arrow: { left: string; width: string; back: boolean } | null
+  back: boolean
+  flat: boolean
+  hit: { left: string; width: string }
 }
 
 function posAverage(skill: ChapterExamSkillRow, stage: ChapterExamStage): number | null {
@@ -179,21 +183,10 @@ function posAverage(skill: ChapterExamSkillRow, stage: ChapterExamStage): number
   return count ? sum / count : null
 }
 
-/* 题号 k 落在第 k 列中心，线性插值；菱形对角线约 14px，箭头两端各让 8px，尖部停在菱形边缘外。 */
+/* 题号 k 落在第 k 列中心，线性插值，与气泡列对齐。 */
 function posX(value: number): number {
   const clamped = Math.min(20, Math.max(1, value))
   return ((clamped - 0.5) / POS_BUCKETS.length) * 100
-}
-
-function driftArrow(mid: number, fin: number): PosDrift['arrow'] {
-  if (Math.abs(fin - mid) < 0.5) return null
-  const lo = posX(Math.min(mid, fin))
-  const hi = posX(Math.max(mid, fin))
-  return {
-    left: `calc(${lo}% + 8px)`,
-    width: `calc(${hi - lo}% - 16px)`,
-    back: fin < mid,
-  }
 }
 
 const drifts = computed(() => {
@@ -202,13 +195,30 @@ const drifts = computed(() => {
     const mid = posAverage(skill, 'midterm')
     const fin = posAverage(skill, 'final')
     if (mid === null || fin === null) continue
-    map.set(skill.key ?? 'unlinked', { mid, fin, delta: fin - mid, arrow: driftArrow(mid, fin) })
+    const delta = fin - mid
+    const flat = Math.abs(delta) < 0.5
+    const lo = posX(Math.min(mid, fin))
+    const span = Math.abs(posX(fin) - posX(mid))
+    const hit = flat
+      ? { left: `calc(${posX((mid + fin) / 2)}% - 10px)`, width: '20px' }
+      : { left: `calc(${lo}% - 10px)`, width: `calc(${span}% + 20px)` }
+    map.set(skill.key ?? 'unlinked', { mid, fin, delta, back: delta < 0, flat, hit })
   }
   return map
 })
 
 function driftOf(skill: ChapterExamSkillRow): PosDrift | undefined {
   return drifts.value.get(skill.key ?? 'unlinked')
+}
+
+function driftTickX(drift: PosDrift): number {
+  return posX(drift.flat ? (drift.mid + drift.fin) / 2 : drift.mid)
+}
+
+function driftLine(drift: PosDrift): { left: string; width: string } {
+  const lo = posX(Math.min(drift.mid, drift.fin))
+  const span = Math.abs(posX(drift.fin) - posX(drift.mid))
+  return { left: `calc(${lo}% + 6px)`, width: `calc(${span}% - 12px)` }
 }
 
 function posDriftText(skill: ChapterExamSkillRow): string {
@@ -220,42 +230,26 @@ function posDriftText(skill: ChapterExamSkillRow): string {
   return `平均题号 ${from} → ${to}（${drift.delta > 0 ? '后移' : '前移'} ${Math.abs(drift.delta).toFixed(1)} 题）`
 }
 
-/* F 典型题：一型一卡，卡内按难度档切换 */
-interface TypCard {
-  row: ChapterExamSkillRow
-  rank: number
-  key: string
-}
-
-const typicalCards = computed<TypCard[]>(() => {
-  const keyed = props.section.skills.filter(row => !row.unlinked)
-  return keyed
-    .filter(row => row.typical.length)
-    .map(row => ({
-      row,
-      rank: keyed.indexOf(row) + 1,
-      key: row.key ?? 'unlinked',
-    }))
-})
+/* F 典型题：一型一卡，卡内按难度档切换；与放大浏览共用卡片次序。 */
+const typicalCards = computed<ChapterExamTypicalCard[]>(() => typicalCardsOf(props.section))
 
 const pickIndex = reactive<Record<string, number>>({})
 
-function currentPick(card: TypCard): ChapterExamTypicalPick {
+function currentPick(card: ChapterExamTypicalCard): ChapterExamTypicalPick {
   const index = Math.min(pickIndex[card.key] ?? 0, card.row.typical.length - 1)
   return card.row.typical[index] ?? card.row.typical[0]!
 }
 
-function currentItem(card: TypCard): QuestionBankListItem | undefined {
+function currentItem(card: ChapterExamTypicalCard): QuestionBankListItem | undefined {
   return props.items.get(currentPick(card).question_id)
 }
 
-function selectPick(card: TypCard, index: number): void {
+function selectPick(card: ChapterExamTypicalCard, index: number): void {
   pickIndex[card.key] = index
 }
 
-function openFull(card: TypCard): void {
-  const pick = currentPick(card)
-  emit('cell', `${props.section.label} · ${skillName(card.row)} · 典型题`, [pick.question_id])
+function openFull(card: ChapterExamTypicalCard): void {
+  emit('browse', card.cardKey)
 }
 
 const track = ref<HTMLElement | null>(null)
@@ -282,6 +276,8 @@ function onTrackScroll(): void {
   ))
 }
 
+const TIER_DIGITS: Record<string, ChapterExamCellColumn> = { '1': 'basic', '2': 'mid', '3': 'hard' }
+
 function onTrackKeydown(event: KeyboardEvent): void {
   if (event.key === 'ArrowLeft') {
     event.preventDefault()
@@ -289,6 +285,18 @@ function onTrackKeydown(event: KeyboardEvent): void {
   } else if (event.key === 'ArrowRight') {
     event.preventDefault()
     stepCard(1)
+  } else if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    const card = typicalCards.value[activeCard.value]
+    if (card) emit('browse', card.cardKey)
+  } else {
+    const tier = TIER_DIGITS[event.key]
+    const card = typicalCards.value[activeCard.value]
+    const index = card?.row.typical.findIndex(pick => pick.tier === tier) ?? -1
+    if (tier && card && index >= 0) {
+      event.preventDefault()
+      selectPick(card, index)
+    }
   }
 }
 </script>
@@ -346,7 +354,7 @@ function onTrackKeydown(event: KeyboardEvent): void {
     </div>
 
     <div class="cep-subchart">
-      <h4 class="cep-subchart-title">落在第几题 <small>期中在上 · 期末在下 · 题号＝试卷位置 · 气泡面积∝题数</small></h4>
+      <h4 class="cep-subchart-title">落在第几题 <small>期中在上 · 期末在下 · 题号＝试卷位置 · 气泡面积∝题数 · 灰色箭头＝平均题号由期中移到期末</small></h4>
       <div class="cep-pos">
         <div class="cep-pos-bandrow" aria-hidden="true">
           <span class="cep-pos-bandcell" />
@@ -391,26 +399,24 @@ function onTrackKeydown(event: KeyboardEvent): void {
               />
             </template>
             <template v-if="driftOf(skill)">
+              <span class="cep-pos-drift-lane" aria-hidden="true">
+                <span class="cep-pos-drift-tick" :style="{ left: `${driftTickX(driftOf(skill)!)}%` }" />
+                <template v-if="!driftOf(skill)!.flat">
+                  <span class="cep-pos-drift-line" :style="driftLine(driftOf(skill)!)" />
+                  <span
+                    class="cep-pos-drift-head"
+                    :class="{ 'is-back': driftOf(skill)!.back }"
+                    :style="{ left: `${posX(driftOf(skill)!.fin)}%` }"
+                  />
+                </template>
+              </span>
               <span
-                v-if="driftOf(skill)!.arrow"
-                class="cep-pos-drift-arrow"
-                :class="{ 'is-back': driftOf(skill)!.arrow!.back }"
-                aria-hidden="true"
-                :style="{ left: driftOf(skill)!.arrow!.left, width: driftOf(skill)!.arrow!.width }"
-              />
-              <i
-                class="cep-pos-mark is-midterm"
+                class="cep-pos-drift-hit"
                 role="img"
-                :style="{ left: `${posX(driftOf(skill)!.mid)}%` }"
+                tabindex="0"
                 :title="posDriftText(skill)"
                 :aria-label="posDriftText(skill)"
-              />
-              <i
-                class="cep-pos-mark is-final"
-                role="img"
-                :style="{ left: `${posX(driftOf(skill)!.fin)}%` }"
-                :title="posDriftText(skill)"
-                :aria-label="posDriftText(skill)"
+                :style="driftOf(skill)!.hit"
               />
             </template>
           </div>
@@ -436,11 +442,12 @@ function onTrackKeydown(event: KeyboardEvent): void {
         <span class="cep-car-count">{{ activeCard + 1 }} / {{ typicalCards.length }}</span>
         <button type="button" :disabled="activeCard >= typicalCards.length - 1" @click="stepCard(1)">下一卡 ›</button>
       </div>
+      <p class="cep-car-hint">快捷键：← → 切换题型 · 1 2 3 切换难度 · Enter 放大浏览</p>
       <div
         ref="track"
         class="cep-car-track"
         tabindex="0"
-        aria-label="典型题卡片，左右方向键切换"
+        aria-label="典型题卡片：左右方向键切换，数字键切换难度，Enter 放大浏览"
         @scroll.passive="onTrackScroll"
         @keydown="onTrackKeydown"
       >
@@ -471,7 +478,7 @@ function onTrackKeydown(event: KeyboardEvent): void {
             <p v-else class="cep-note">题面未收录。</p>
             <span class="cep-qcard-fade" aria-hidden="true" />
           </div>
-          <button type="button" class="cep-inline-link cep-qcard-more" @click="openFull(card)">展开全文 ›</button>
+          <button type="button" class="cep-inline-link cep-qcard-more" @click="openFull(card)">放大浏览 ›</button>
         </article>
       </div>
       <div class="cep-car-dots">

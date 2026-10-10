@@ -932,13 +932,13 @@
 
 .chapter-exam .cep-pos-track {
   position: relative;
-  height: 48px;
+  height: 60px;
 }
 
 .chapter-exam .cep-pos-band {
   position: absolute;
   top: 0;
-  bottom: 0;
+  bottom: 12px;
   border-radius: 4px;
   background: var(--color-bg-subtle);
 }
@@ -951,56 +951,68 @@
   position: absolute;
   left: 0;
   right: 0;
-  top: 50%;
+  top: 24px;
   height: 1px;
   background: var(--color-border-subtle);
 }
 
-/* 平均题号漂移：中线菱形标记＋期中→期末箭头；箭头不挡气泡点击。 */
-.chapter-exam .cep-pos-drift-arrow {
+/* 平均题号漂移道：气泡道下方 12px 细灰道，中性墨色，不挡气泡点击。 */
+.chapter-exam .cep-pos-drift-lane {
   position: absolute;
-  top: 50%;
-  height: 2px;
-  transform: translateY(-50%);
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--cep-midterm) 45%, var(--cep-final));
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 12px;
   pointer-events: none;
 }
 
-.chapter-exam .cep-pos-drift-arrow::after {
-  content: '';
+.chapter-exam .cep-pos-drift-tick {
   position: absolute;
-  top: 50%;
-  right: -1px;
-  width: 6px;
-  height: 6px;
-  border-top: 2px solid color-mix(in srgb, var(--cep-midterm) 45%, var(--cep-final));
-  border-right: 2px solid color-mix(in srgb, var(--cep-midterm) 45%, var(--cep-final));
-  transform: translateY(-50%) rotate(45deg);
-  transform-origin: center;
-}
-
-.chapter-exam .cep-pos-drift-arrow.is-back::after {
-  right: auto;
-  left: -1px;
-  transform: translateY(-50%) rotate(225deg);
-}
-
-.chapter-exam .cep-pos-mark {
-  position: absolute;
-  top: 50%;
-  width: 10px;
+  top: 1px;
+  width: 2px;
   height: 10px;
-  border-radius: 2px;
-  transform: translate(-50%, -50%) rotate(45deg);
+  transform: translateX(-50%);
+  border-radius: 1px;
+  background: var(--color-text-secondary);
 }
 
-.chapter-exam .cep-pos-mark.is-midterm {
-  background: var(--cep-midterm);
+.chapter-exam .cep-pos-drift-line {
+  position: absolute;
+  top: 5px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--color-text-secondary);
+  opacity: 0.85;
 }
 
-.chapter-exam .cep-pos-mark.is-final {
-  background: var(--cep-final);
+.chapter-exam .cep-pos-drift-head {
+  position: absolute;
+  top: 2px;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 7px solid var(--color-text-secondary);
+  transform: translateX(-100%);
+}
+
+.chapter-exam .cep-pos-drift-head.is-back {
+  border-left: 0;
+  border-right: 7px solid var(--color-text-secondary);
+  transform: none;
+}
+
+.chapter-exam .cep-pos-drift-hit {
+  position: absolute;
+  bottom: 0;
+  height: 14px;
+  background: transparent;
+}
+
+.chapter-exam .cep-pos-drift-hit:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
+  border-radius: 3px;
 }
 
 .chapter-exam .cep-pos-label small.cep-pos-avg {
@@ -1028,7 +1040,7 @@
 }
 
 .chapter-exam .cep-pos-dot.is-final {
-  bottom: 3px;
+  bottom: 15px;
   background: color-mix(in srgb, var(--cep-final) 60%, transparent);
   border-color: var(--cep-final);
 }
@@ -1088,15 +1100,20 @@
   border-radius: 8px;
 }
 
+.chapter-exam .cep-car-hint {
+  margin: -2px 0 6px;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
 .chapter-exam .cep-qcard {
-  flex: 0 0 440px;
-  max-width: 92%;
+  flex: 0 0 min(680px, 62%);
   scroll-snap-align: start;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  height: 340px;
-  padding: 12px 14px;
+  height: 520px;
+  padding: 14px 16px;
   border: 1px solid var(--color-border-subtle);
   border-radius: 10px;
   background: var(--color-bg-surface);
@@ -1164,6 +1181,12 @@
   padding: 0;
 }
 
+.chapter-exam .cep-qcard-body img {
+  max-width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+}
+
 .chapter-exam .cep-qcard-fade {
   position: absolute;
   left: 0;
@@ -1221,4 +1244,142 @@
   .chapter-exam .cep-bfly-row {
     grid-template-columns: 1fr 120px 1fr;
   }
+}
+
+/* 典型题放大浏览（对话框 portal 到 body，不用 .chapter-exam 前缀）。 */
+.app-dialog.cep-tv-dialog {
+  --cep-tier-basic: #bcd6da;
+  --cep-tier-mid: #5f9aa5;
+  --cep-tier-hard: #12616d;
+  width: min(960px, calc(100vw - 2 * var(--space-5)));
+}
+
+.cep-tv-dialog .cep-tv-meta {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-normal);
+}
+
+.cep-tv {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cep-tv-head .cep-tv-tiers {
+  display: flex;
+  gap: 6px;
+}
+
+.cep-tv-head .cep-tier-tab {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-surface);
+  border-radius: 999px;
+  padding: 3px 14px;
+  min-height: 0;
+  font-size: var(--font-size-caption);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.cep-tv-head .cep-tier-tab.is-on.is-basic {
+  background: var(--cep-tier-basic);
+  border-color: var(--cep-tier-basic);
+  color: var(--color-text-primary);
+}
+
+.cep-tv-head .cep-tier-tab.is-on.is-mid {
+  background: var(--cep-tier-mid);
+  border-color: var(--cep-tier-mid);
+  color: #fff;
+}
+
+.cep-tv-head .cep-tier-tab.is-on.is-hard {
+  background: var(--cep-tier-hard);
+  border-color: var(--cep-tier-hard);
+  color: #fff;
+}
+
+.cep-tv-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cep-tv-body {
+  min-height: 200px;
+}
+
+/* 题图默认放大到可读宽度（JS 内联宽度 min(100%, max(自然宽×2, 420px))），点击整宽/还原。 */
+.cep-tv-body .question-content__media figure {
+  width: 100%;
+  margin: 10px 0;
+}
+
+.cep-tv-body .question-content__media figure .question-content__image-button {
+  display: block;
+  width: 100%;
+  min-height: 0;
+}
+
+.cep-tv-dialog .cep-tv-body .question-content__media figure img,
+.cep-tv-dialog .cep-tv-body .question-html img {
+  display: block;
+  max-width: 100%;
+  max-height: 46vh;
+  object-fit: contain;
+  margin-inline: auto;
+  cursor: zoom-in;
+}
+
+.cep-tv-body .question-content__media figure:has(img.is-zoom) {
+  grid-column: 1 / -1;
+}
+
+.cep-tv-body .question-content__media figure:has(img.is-zoom) .question-content__image-button,
+.cep-tv-dialog .cep-tv-body img.is-zoom {
+  cursor: zoom-out;
+}
+
+.cep-tv-dialog .cep-tv-body .question-content__media figure img.is-zoom,
+.cep-tv-dialog .cep-tv-body .question-html img.is-zoom {
+  width: 100% !important;
+  max-width: 100%;
+  max-height: none;
+}
+
+.cep-tv-answer {
+  margin-top: 14px;
+  border-top: 1px solid var(--color-border-subtle);
+  padding-top: 8px;
+}
+
+button.cep-tv-answer-toggle {
+  min-height: 0;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--color-accent);
+  font-size: var(--font-size-dense);
+  cursor: pointer;
+}
+
+.cep-tv-answer-body {
+  padding-top: 8px;
+  color: var(--color-text-secondary);
+}
+
+.cep-tv-source {
+  margin-right: auto;
+  align-self: center;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.cep-tv-hint {
+  flex-basis: 100%;
+  text-align: right;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
 }

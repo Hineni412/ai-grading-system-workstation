@@ -1368,11 +1368,13 @@ describe('question bank workspace', () => {
     expect(overviewBlock.textContent).toContain('全章 期末 2 题：基础 0（0%）· 中档 2（100%）· 提高 0（0%）')
     expect(overviewBlock.textContent).toContain('另有')
     expect(overviewBlock.textContent).toContain('主要考其他章、同时涉及本章')
-    // 章节页签：每章一枚，当前章高亮。
+    // 章节页签：每章一枚，当前章高亮；页签只写章名与题数，主考数收进 title/aria。
     const chapterTabs = [...host.querySelectorAll<HTMLButtonElement>('.cep-chapter-tab')]
     expect(chapterTabs).toHaveLength(2)
     expect(chapterTabs[0]!.textContent).toContain('第二章 实数')
-    expect(chapterTabs[0]!.textContent).toContain('主考 7')
+    expect(chapterTabs[0]!.textContent).not.toContain('主考')
+    expect(chapterTabs[0]!.textContent).toContain('7')
+    expect(chapterTabs[0]!.getAttribute('title')).toBe('本章主考 7 题')
     expect(chapterTabs[0]!.getAttribute('aria-current')).toBe('true')
     expect(chapterTabs[1]!.textContent).toContain('第三章 三角形')
     expect(chapterTabs[1]!.getAttribute('aria-current')).toBeNull()
@@ -1447,11 +1449,14 @@ describe('question bank workspace', () => {
     expect(block.textContent).toContain('第1—8题')
     expect(block.textContent).toContain('第9—13题')
     expect(block.textContent).toContain('第14题起')
-    // 平均题号漂移：期中 (1+2)/2=1.5，期末 13.0 → 后移 11.5 题；中线两枚菱形加一支箭头。
+    // 平均题号漂移：期中 (1+2)/2=1.5，期末 13.0 → 后移 11.5 题；细灰道竖线＋线＋三角箭头，无菱形。
     expect(block.textContent).toContain('平均题号 1.5 → 13.0（后移 11.5 题）')
-    expect(block.querySelectorAll('.cep-pos-mark')).toHaveLength(2)
-    expect(block.querySelectorAll('.cep-pos-drift-arrow')).toHaveLength(1)
-    expect(block.querySelector('.cep-pos-mark.is-midterm')?.getAttribute('aria-label'))
+    expect(block.querySelectorAll('.cep-pos-mark')).toHaveLength(0)
+    expect(block.querySelectorAll('.cep-pos-drift-lane')).toHaveLength(1)
+    expect(block.querySelectorAll('.cep-pos-drift-tick')).toHaveLength(1)
+    expect(block.querySelectorAll('.cep-pos-drift-line')).toHaveLength(1)
+    expect(block.querySelectorAll('.cep-pos-drift-head')).toHaveLength(1)
+    expect(block.querySelector('.cep-pos-drift-hit')?.getAttribute('aria-label'))
       .toBe('平均题号 1.5 → 13.0（后移 11.5 题）')
     // 点击气泡打开抽屉：类型 × 阶段 × 题号。
     block.querySelector<HTMLButtonElement>('.cep-pos-dot.is-midterm')!.click()
@@ -1481,8 +1486,9 @@ describe('question bank workspace', () => {
     await vi.waitFor(() => expect(overviewBlock.textContent).toContain('全章 期中 4 题：基础 1（25%）· 中档 1（25%）· 提高 1（25%）· 未定难度 1'))
     const block31 = host.querySelector<HTMLElement>('[data-cep-block="sec_TEST_31"]')!
     expect(block31.textContent).toContain('平均题号 3.0 → 3.0（基本持平）')
-    expect(block31.querySelectorAll('.cep-pos-mark')).toHaveLength(2)
-    expect(block31.querySelector('.cep-pos-drift-arrow')).toBeNull()
+    expect(block31.querySelectorAll('.cep-pos-drift-tick')).toHaveLength(1)
+    expect(block31.querySelectorAll('.cep-pos-drift-line')).toHaveLength(0)
+    expect(block31.querySelectorAll('.cep-pos-drift-head')).toHaveLength(0)
   })
 
   it('renders a legacy ?stage=final address without the stage toggle', async () => {
@@ -1612,7 +1618,75 @@ describe('question bank workspace', () => {
     expect(list.mock.calls.length).toBe(calls)
   })
 
-
+  it('opens the typical-question viewer from the focused track and skims cards with keyboard', async () => {
+    const { host, pinia, router } = mountExamProfile('?tab=exam&chapter=ch_TEST_2')
+    await router.push('/question-bank?tab=exam&chapter=ch_TEST_2')
+    const itemsById = new Map([[1, { ...item, id: 1 }], [3, { ...item, id: 3 }], [9, { ...item, id: 9 }]])
+    vi.spyOn(questionBankApi, 'listQuestions').mockImplementation(async (filters = {}) => {
+      const ids = filters.questionIds ?? []
+      return {
+        items: ids.map(id => itemsById.get(id)!).filter(Boolean),
+        total: ids.length,
+        page: filters.page ?? 1,
+        page_size: filters.pageSize ?? 100,
+        total_pages: 1,
+      }
+    })
+    const detail = vi.spyOn(questionBankApi, 'getQuestion').mockImplementation(async id => ({
+      ...itemsById.get(id)!,
+      page_range: null,
+      assets: [],
+      previews: [],
+      rich_content: {
+        available: true,
+        question_block_count: 1,
+        answer_block_count: 1,
+        question_blocks: [{ kind: 'paragraph', text: `题干 ${id}`, segments: [], rows: [], asset_indexes: [], asset_urls: ['test-fig.png'] }],
+        answer_blocks: [{ kind: 'paragraph', text: `解析 ${id}`, segments: [], rows: [], asset_indexes: [], asset_urls: [] }],
+      },
+    }))
+    const app = createApp({ render: () => h(ChapterExamProfile) })
+    app.use(pinia).use(router).mount(host)
+    mounted.push(app)
+    await vi.waitFor(() => expect(host.querySelector('.cep-car-track')).not.toBeNull())
+    // 轮播轨道聚焦后按 Enter → 打开第一张卡的放大浏览。
+    host.querySelector<HTMLElement>('.cep-car-track')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.cep-tv-dialog')).not.toBeNull())
+    const dialog = () => document.querySelector<HTMLElement>('.cep-tv-dialog')!
+    expect(document.body.textContent).toContain('区分有理数无理数')
+    expect(document.body.textContent).toContain('第 1 / 2 个技能')
+    expect(document.body.textContent).toContain('2.1 认识实数')
+    // 数字键 2 切到中档档位的 pick（题号 1 → 3）。
+    dialog().dispatchEvent(new KeyboardEvent('keydown', { key: '2', bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent).toContain('题干 3'))
+    expect(document.body.textContent).not.toContain('解析 3')
+    // A 展开答案与解析。
+    dialog().dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent).toContain('解析 3'))
+    // → 跨小节进入下一卡（2.2 求平方根）。
+    dialog().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent).toContain('求平方根'))
+    expect(document.body.textContent).toContain('2.2 平方根与立方根')
+    expect(document.body.textContent).toContain('第 2 / 2 个技能')
+    // 已到末尾，再按 → 不越界。
+    dialog().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await nextTick()
+    expect(document.body.textContent).toContain('第 2 / 2 个技能')
+    // F 切换第一张配图的整宽缩放状态。
+    const figure = () => dialog().querySelector('.cep-tv-body .question-content__media img')
+    expect(figure()).not.toBeNull()
+    dialog().dispatchEvent(new KeyboardEvent('keydown', { key: 'f', bubbles: true }))
+    await nextTick()
+    expect(figure()!.classList.contains('is-zoom')).toBe(true)
+    dialog().dispatchEvent(new KeyboardEvent('keydown', { key: 'f', bubbles: true }))
+    await nextTick()
+    expect(figure()!.classList.contains('is-zoom')).toBe(false)
+    // Escape 关闭。
+    dialog().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.cep-tv-dialog')).toBeNull())
+    expect(detail).toHaveBeenCalled()
+  })
 
   const todoPreview = {
     curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'all' as const,
