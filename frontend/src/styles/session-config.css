@@ -700,28 +700,38 @@
   grid-column: 1 / -1;
 }
 
-.rubric-unit-card__collapse {
-  min-height: var(--control-height-small);
-  padding-inline: var(--space-2);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
-  color: var(--color-accent);
+.rubric-unit-card__editor {
   cursor: pointer;
-  font: inherit;
-  font-size: var(--font-size-dense);
-  font-weight: var(--font-weight-medium);
+}
+
+.rubric-unit-card__editor :is(input, select, button, a, [contenteditable]) {
+  cursor: auto;
+}
+
+.rubric-unit-card__editor textarea {
+  cursor: text;
+}
+
+.rubric-unit-card__editor label:has(input[type="checkbox"], input[type="radio"]) {
+  cursor: auto;
+}
+
+.rubric-unit-card__editor:hover:not(:has(:is(input, textarea, select, button, a, [contenteditable], label:has(input[type="checkbox"], input[type="radio"])):hover)) {
+  background: var(--color-bg-subtle);
+}
+
+.rubric-unit-card__collapse-hint {
+  align-self: center;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
   white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-base) ease;
 }
 
-.rubric-unit-card__collapse:hover {
-  border-color: var(--color-accent);
-  background: var(--color-accent-subtle);
-}
-
-.rubric-unit-card__collapse:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+.rubric-unit-card__editor:hover:not(:has(:is(input, textarea, select, button, a, [contenteditable], label:has(input[type="checkbox"], input[type="radio"])):hover)) .rubric-unit-card__collapse-hint {
+  opacity: 1;
 }
 
 .rubric-unit-card__editor-header .rubric-unit-card__goal--edit {

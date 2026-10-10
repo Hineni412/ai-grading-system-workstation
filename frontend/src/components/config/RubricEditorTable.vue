@@ -192,22 +192,49 @@ function compactPreview(value: string | readonly string[], fallback = '未填写
   return compacted || fallback
 }
 
+function rowCard(rowId: string): HTMLElement | undefined {
+  return [...(root.value?.querySelectorAll<HTMLElement>('[data-row-id]') ?? [])]
+    .find((candidate) => candidate.dataset.rowId === rowId)
+}
+
 function openEditor(rowId: string): void {
   editingRowId.value = rowId
+  void nextTick(() => {
+    const card = rowCard(rowId)
+    const target = card?.querySelector<HTMLElement>('[data-edit-field="core_goal"]')
+      ?? card?.querySelector<HTMLElement>('[data-edit-field="score"]')
+    target?.focus()
+    if (target instanceof HTMLTextAreaElement) {
+      target.setSelectionRange(target.value.length, target.value.length)
+    }
+  })
 }
 
 function closeEditor(rowId: string): void {
-  const row = [...(root.value?.querySelectorAll<HTMLElement>('[data-row-id]') ?? [])]
-    .find((candidate) => candidate.dataset.rowId === rowId)
+  const row = rowCard(rowId)
   const activeElement = document.activeElement
   if (activeElement instanceof HTMLElement && row?.contains(activeElement)) activeElement.blur()
   editingRowId.value = null
   void nextTick(() => row?.querySelector<HTMLButtonElement>('.rubric-unit-card__preview')?.focus())
 }
 
-function editorHeaderClick(rowId: string, event: MouseEvent): void {
-  if (event.target instanceof HTMLElement
-    && event.target.closest('input, textarea, select, label, button')) return
+const EDITOR_CONTROL_SELECTOR = 'input, textarea, select, button, a, [contenteditable]'
+let editorPointerDownInControl = false
+
+function editorPointerDown(event: PointerEvent): void {
+  editorPointerDownInControl = event.target instanceof HTMLElement
+    && event.target.closest(EDITOR_CONTROL_SELECTOR) !== null
+}
+
+function editorBlankClick(rowId: string, event: MouseEvent): void {
+  const startedInControl = editorPointerDownInControl
+  editorPointerDownInControl = false
+  if (!(event.target instanceof HTMLElement)) return
+  if (event.target.closest(EDITOR_CONTROL_SELECTOR)) return
+  const label = event.target.closest('label')
+  if (label?.querySelector('input[type="checkbox"], input[type="radio"]')) return
+  if (startedInControl || window.getSelection()?.toString()) return
+  event.preventDefault()
   closeEditor(rowId)
 }
 
@@ -728,8 +755,10 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
           class="rubric-unit-card__editor"
           :aria-label="`${identity(row)} 编辑区`"
           @keydown.esc.stop="closeEditor(row.row_id)"
+          @pointerdown="editorPointerDown"
+          @click="editorBlankClick(row.row_id, $event)"
         >
-          <header class="rubric-unit-card__editor-header" @click="editorHeaderClick(row.row_id, $event)">
+          <header class="rubric-unit-card__editor-header">
             <span class="rubric-unit-card__identity">
               <strong>{{ group.objective ? row.question_id : row.step_id }}</strong>
               <span>{{ row.part_label }}</span>
@@ -770,13 +799,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
                 {{ scoreErrors[row.row_id] }}
               </small>
             </label>
-            <button
-              type="button"
-              class="rubric-unit-card__collapse"
-              :aria-controls="editorId(row.row_id)"
-              aria-expanded="true"
-              @click="closeEditor(row.row_id)"
-            >收起 ▴</button>
+            <span class="rubric-unit-card__collapse-hint" aria-hidden="true">点击空白处收起 · Esc</span>
           </header>
 
           <p v-if="row.answer_kind === 'conditions'" class="rubric-unit-card__answer-note">按条件判对，参考答案只是示例。满足全部条件即可得分。</p>

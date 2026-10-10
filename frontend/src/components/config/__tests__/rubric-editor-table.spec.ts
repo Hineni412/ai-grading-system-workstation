@@ -61,7 +61,8 @@ describe('RubricEditorTable', () => {
     preview.click()
     await nextTick()
     expect(mounted.host.querySelector('.rubric-unit-card__exceptions')).toBeNull()
-    mounted.host.querySelector<HTMLButtonElement>('.rubric-unit-card__collapse')!.click()
+    mounted.host.querySelector<HTMLElement>('.rubric-unit-card__editor')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await nextTick()
     expect(mounted.emitted).toEqual([])
     const evidence = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 判对条件"]')!
@@ -135,20 +136,79 @@ describe('RubricEditorTable', () => {
     mounted.unmount()
   })
 
-  it('collapses from the expanded header outside fields, not inside the goal textarea', async () => {
+  it('collapses on blank-area clicks, not on controls or drags from controls', async () => {
     const mounted = await mountTable()
     const card = mounted.host.querySelector<HTMLElement>('[data-row-id="row-q12-p1-s1"]')!
+    const editor = card.querySelector<HTMLElement>('.rubric-unit-card__editor')!
+    const goal = card.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 评分点"]')!
     card.querySelector<HTMLButtonElement>('.rubric-unit-card__preview')!.click()
     await nextTick()
-    const header = card.querySelector<HTMLElement>('.rubric-unit-card__editor-header')!
-    const goal = card.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 评分点"]')!
+    expect(editor.querySelector('button')).toBeNull()
+
     goal.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await nextTick()
-    expect(card.querySelector<HTMLElement>('.rubric-unit-card__editor')!.style.display).not.toBe('none')
-    header.querySelector<HTMLElement>('.rubric-unit-card__identity')!
+    card.querySelector<HTMLInputElement>('[aria-label="Q12 P1 S1 分值"]')!
       .dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await nextTick()
-    expect(card.querySelector<HTMLElement>('.rubric-unit-card__editor')!.style.display).toBe('none')
+    expect(editor.style.display).not.toBe('none')
+
+    goal.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    editor.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(editor.style.display).not.toBe('none')
+
+    card.querySelector<HTMLElement>('.rubric-unit-card__fields')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(editor.style.display).toBe('none')
+    mounted.unmount()
+  })
+
+  it('treats a non-checkbox label caption as blank area', async () => {
+    const mounted = await mountTable()
+    const card = mounted.host.querySelector<HTMLElement>('[data-row-id="row-q12-p1-s1"]')!
+    const editor = card.querySelector<HTMLElement>('.rubric-unit-card__editor')!
+    const preview = card.querySelector<HTMLButtonElement>('.rubric-unit-card__preview')!
+    preview.click()
+    await nextTick()
+    const evidence = card.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 怎样算达成"]')!
+    const caption = [...editor.querySelectorAll<HTMLElement>('.rubric-unit-card__fields label > span')]
+      .find((span) => span.textContent === '怎样算达成')!
+    caption.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(editor.style.display).toBe('none')
+    expect(document.activeElement).not.toBe(evidence)
+    expect(document.activeElement).toBe(preview)
+    mounted.unmount()
+  })
+
+  it('focuses the goal textarea on open and returns focus after Esc', async () => {
+    const mounted = await mountTable()
+    const card = mounted.host.querySelector<HTMLElement>('[data-row-id="row-q12-p1-s1"]')!
+    const editor = card.querySelector<HTMLElement>('.rubric-unit-card__editor')!
+    const preview = card.querySelector<HTMLButtonElement>('.rubric-unit-card__preview')!
+    const goal = card.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 评分点"]')!
+    preview.click()
+    await nextTick()
+    expect(document.activeElement).toBe(goal)
+    editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await nextTick()
+    expect(editor.style.display).toBe('none')
+    expect(document.activeElement).toBe(preview)
+    mounted.unmount()
+  })
+
+  it('keeps a checkbox label toggling without collapsing', async () => {
+    const mounted = await mountTable({ rows: [
+      row({ row_id: 'choice-1', question_id: 'Q1', question_type: 'choice', score: 2, require_final_answer: true }),
+    ] })
+    const card = mounted.host.querySelector<HTMLElement>('[data-row-id="choice-1"]')!
+    card.querySelector<HTMLButtonElement>('.rubric-unit-card__preview')!.click()
+    await nextTick()
+    card.querySelector<HTMLElement>('.rubric-ledger__policy-check')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(card.querySelector<HTMLElement>('.rubric-unit-card__editor')!.style.display).not.toBe('none')
+    expect(mounted.emitted).toEqual([{ row_id: 'choice-1', require_final_answer: false }])
     mounted.unmount()
   })
 
