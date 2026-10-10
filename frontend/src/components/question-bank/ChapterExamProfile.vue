@@ -121,7 +121,7 @@ function chapterPickIds(chapter: ChapterExamChapter | undefined): number[] {
 
 const masteryNodes = computed(() => new Map<string, TrainingOverviewNode>(
   (masteryStore.overview?.nodes ?? [])
-    .filter(node => node.kind === 'skill')
+    .filter(node => node.kind === 'skill' || node.kind === 'type')
     .map(node => [node.knowledge_key, node]),
 ))
 const masteryState = computed<'idle' | 'loading' | 'ready' | 'error'>(() => {

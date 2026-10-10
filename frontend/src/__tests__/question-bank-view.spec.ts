@@ -1214,7 +1214,11 @@ describe('question bank workspace', () => {
     scope.volumes = [{ id: scope.selectedVolumeId, label: '八年级上册', order: 1, grade: '八年级', semester: '上学期', textbook_version: '北师大版（2024）', source: {}, statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 }, chapters: [] }]
     vi.spyOn(studentsApi, 'fetchStudents').mockResolvedValue([])
     vi.spyOn(trainingApi, 'overview').mockResolvedValue({
-      nodes: [{ kind: 'skill', knowledge_key: 'sk_TEST_a', display_name: '区分有理数无理数', chapter_key: 'ch', section_key: 'sec', group_mastery: 0.5, evidence_student_count: 4, distribution: { weak: 2, unsteady: 1, stable: 1, insufficient: 0 }, students: [] }],
+      nodes: [
+        // 现行题型标准返回 kind: 'type' 的行，不能按 'skill' 过滤掉。
+        { kind: 'type', knowledge_key: 'sk_TEST_a', display_name: '区分有理数无理数', chapter_key: 'ch', section_key: 'sec', group_mastery: 0.5, evidence_student_count: 4, distribution: { weak: 2, unsteady: 1, stable: 1, insufficient: 0 }, students: [] },
+        { kind: 'skill', knowledge_key: 'sk_TEST_b', display_name: '求平方根', chapter_key: 'ch', section_key: 'sec2', group_mastery: 0.6, evidence_student_count: 10, distribution: { weak: 1, unsteady: 4, stable: 5, insufficient: 0 }, students: [] },
+      ],
       exam_scope: { sessions: [] },
     } as unknown as Awaited<ReturnType<typeof trainingApi.overview>>)
     vi.spyOn(questionBankApi, 'chapterExamProfile').mockResolvedValue(examProfile())
@@ -1309,8 +1313,12 @@ describe('question bank workspace', () => {
     expect(block.textContent).toContain('区分有理数无理数')
     expect(host.textContent).toContain('同源卷合并')
     // 本班明显薄弱列：弱占比 2/4 = 50%，且主考 4 题 ≥3 → 常考且薄弱。
+    // 证据节点 kind: 'type'（题型标准）与 'skill' 都要命中对应行键。
     await vi.waitFor(() => expect(block.textContent).toContain('50%（2/4 人）'))
-    expect(block.textContent).toContain('常考且薄弱')
+    expect(block.querySelector('.cep-badge-warn')?.textContent).toBe('常考且薄弱')
+    const block22 = host.querySelector<HTMLElement>('[data-cep-block="sec_TEST_22"]')!
+    expect(block22.textContent).toContain('10%（1/10 人）')
+    expect(block22.querySelector('.cep-badge-warn')).toBeNull()
     // 怎么考：两阶段合计（选择·基础 期中 2 题 + 期末 1 题 = 3）。
     expect(block.textContent).toContain('怎么考')
     const combinedCell = [...block.querySelectorAll<HTMLButtonElement>('.cep-cell')].find(button => button.textContent?.trim() === '3')!
