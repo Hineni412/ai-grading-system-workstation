@@ -6,8 +6,8 @@
   同组内近乎相同的题只计一次；
 - 主考＝question_scope_summary.primary_section_id 落在本章节/小节；
   跨章＝主考不在本章、但直接判定点落在本章；
-- 每道整题只计入一个主要技能（判定点关联最多者，同数取稳定键小者；
-  优先取锚定到该题所属小节的技能）；
+- 每道整题只计入一个主题型或主要技能（取决于当前知识标准；技能口径取
+  判定点关联最多者，同数取稳定键小者，优先取锚定到该题所属小节的技能）；
 - 出卷率＝至少 1 道本节主考题的卷组数 ÷ 该阶段卷组数。
 """
 from __future__ import annotations
@@ -28,7 +28,8 @@ from question_bank.services.question_skill_index import (
 from question_bank.services.similar_question_ranker import clean_text, dice, grams
 
 STAGES = (("midterm", "期中"), ("final", "期末"))
-COLS = ("choice_basic", "choice_advanced", "fill", "written")
+# 计数列＝难度档：基础 [1,4)、中档 [4,7)、提高 [7,10]；作答形式不再拆列。
+COLS = ("basic", "mid", "hard")
 TIERS = (("basic", 1.0, 4.0), ("mid", 4.0, 7.0), ("hard", 7.0, 10.01))
 POS_BUCKETS = [str(i) for i in range(1, 20)] + ["20+"]
 SAME_QUESTION = 0.9       # 三字片段 Dice 达到此值视为同一道题
@@ -58,13 +59,6 @@ def _tier_of(d: float | None) -> str | None:
         return "hard"
     return next((key for key, lo, hi in TIERS if lo <= d < hi), None)
 
-
-def _col_of(qtype: str, tier: str | None) -> str | None:
-    if tier is None:
-        return None
-    if qtype == "choice":
-        return "choice_basic" if tier == "basic" else "choice_advanced"
-    return qtype
 
 
 def _qn_int(raw: object) -> int | None:
@@ -217,10 +211,12 @@ def _section_typical(
     point_counts: dict[int, int],
     *,
     synthesis: bool,
+    type_mode: bool,
 ) -> dict[str, list[dict]]:
-    """按教师报告口径挑典型题：技能按本节覆盖卷组数排序，先给每个常考
-    技能一个基础入口，再补有增量的中档变式，最后按限额补提高变化；
-    只从至少 2 题且来自至少 2 个卷组的技能×难度档单元里选。"""
+    """按教师报告口径挑典型题：每个常考主题型（或主考技能）一张卡，
+    卡片内按难度档给入口、中档变式与至多一个提高变化；
+    只从至少 2 题且来自至少 2 个卷组的键×难度档单元里选。"""
+    noun = "题型" if type_mode else "技能"
     skills: dict[str, dict] = {}
     names: dict[str, str] = {}
     cells: dict[tuple[str, str], list[int]] = {}
@@ -240,9 +236,8 @@ def _section_typical(
         key=lambda key: (-len(skills[key]["groups"]), -skills[key]["total"],
                          names[key], key),
     )
-    budget = max(1 if synthesis else 2,
-                 min(4 if synthesis else 10, round(len(smain) / 9)))
-    hard_cap = max(1, budget // 4)
+    # 卡片上限：普通小节 10 张，章内综合 4 张；变式与提高不占用卡位。
+    card_cap = 4 if synthesis else 10
 
     def is_typical(cell: list[int]) -> bool:
         return len(cell) >= 2 and len({recs[x]["group"] for x in cell}) >= 2
@@ -262,10 +257,10 @@ def _section_typical(
         chosen.append(qid)
         cell_groups = len({recs[x]["group"] for x in cell})
         if slot == "entry":
-            reason = (f"本节第{rank.index(key) + 1}常考技能，"
+            reason = (f"本节第{rank.index(key) + 1}常考{noun}，"
                       f"出现在{len(skills[key]['groups'])}套试卷")
         elif slot == "variant":
-            reason = f"同技能中档变式，同类{len(cell)}题"
+            reason = f"同{noun}中档变式，同类{len(cell)}题"
         else:
             reason = f"出现在{cell_groups}套试卷"
         picks.setdefault(key, {})[slot] = {
@@ -278,9 +273,10 @@ def _section_typical(
         }
         return True
 
-    # 基础入口：覆盖至少 2 个卷组的技能取最低的非难档典型单元。
+    # 入口：覆盖至少 2 个卷组的键取最低的非难档典型单元，一个键一张卡。
+    cards = 0
     for key in rank:
-        if len(chosen) >= budget:
+        if cards >= card_cap:
             break
         if len(skills[key]["groups"]) < 2:
             continue
@@ -291,35 +287,23 @@ def _section_typical(
         )
         if tier is None:
             continue
-        take(key, tier, "entry", "基础入口" if tier == "basic" else "常见变式",
-             entry=True)
-    # 常见变式：中档单元未被入口占用且至少 3 题、2 个卷组。
+        if take(key, tier, "entry", "基础入口" if tier == "basic" else "常见变式",
+                entry=True):
+            cards += 1
+    # 卡内变式与提高：只补有入口的卡；入口已是中档则跳过变式；
+    # 提高单元需 ≥2 题且 ≥3 个卷组，每卡至多一个，不设小节限额。
     for key in rank:
-        if len(chosen) >= budget:
-            break
-        cell = cells.get((key, "mid")) or []
-        if len(cell) < 3 or len({recs[x]["group"] for x in cell}) < 2:
-            continue
         entry_pick = picks.get(key, {}).get("entry")
-        if entry_pick and entry_pick["tier"] == "mid":
+        if not entry_pick:
             continue
-        take(key, "mid", "variant", "常见变式", window="near")
-    # 提高变化：限额的难档典型单元（≥2 题且 ≥3 个卷组），覆盖卷组多、题多的单元优先。
-    hard_cells = [
-        (key, cell) for (key, tier), cell in cells.items()
-        if tier == "hard" and is_typical(cell)
-        and len({recs[x]["group"] for x in cell}) >= 3
-    ]
-    hard_cells.sort(
-        key=lambda item: (-len({recs[x]["group"] for x in item[1]}),
-                          -len(item[1]), item[0])
-    )
-    hard_taken = 0
-    for key, _cell in hard_cells:
-        if hard_taken >= hard_cap or len(chosen) >= budget:
-            break
-        if take(key, "hard", "hard", "提高变化", ceiling=HARD_PICK_MAX):
-            hard_taken += 1
+        cell = cells.get((key, "mid")) or []
+        if (entry_pick["tier"] != "mid" and len(cell) >= 3
+                and len({recs[x]["group"] for x in cell}) >= 2):
+            take(key, "mid", "variant", "常见变式", window="near")
+        hard_cell = cells.get((key, "hard")) or []
+        if (is_typical(hard_cell)
+                and len({recs[x]["group"] for x in hard_cell}) >= 3):
+            take(key, "hard", "hard", "提高变化", ceiling=HARD_PICK_MAX)
     return {
         key: [picks[key][slot] for slot in ("entry", "variant", "hard")
               if slot in picks[key]]
@@ -508,7 +492,6 @@ def _prepare(
             "type": qtype,
             "difficulty": difficulty,
             "tier": tier,
-            "col": _col_of(qtype, tier),
             "section": primary,
             "chapter": section_chapter.get(primary, ""),
             "direct_chapters": sorted(
@@ -570,7 +553,7 @@ def build_chapter_exam_profile(
     snapshot: dict[str, Any],
     volume: dict[str, Any],
 ) -> dict[str, Any]:
-    """按本册期中/期末卷统计章节出卷情况；snapshot 为读服务的技能快照。"""
+    """按本册期中/期末卷统计章节出卷情况；snapshot 为读服务的知识快照。"""
     prep = _prepare(conn, snapshot, volume)
     volume_id = prep["volume_id"]
     section_label = prep["section_label"]
@@ -632,13 +615,13 @@ def build_chapter_exam_profile(
                     "typical": [],
                 })
                 row["total"] += 1
-                if rec["col"]:
-                    row["cells"][rec["stage"]][rec["col"]].append(rec["id"])
-                    overview[rec["stage"]][rec["col"]].append(rec["id"])
+                if rec["tier"]:
+                    row["cells"][rec["stage"]][rec["tier"]].append(rec["id"])
+                    overview[rec["stage"]][rec["tier"]].append(rec["id"])
                 bucket = _pos_bucket(rec["qn"])
                 if bucket:
                     row["positions"][rec["stage"]][bucket].append(rec["id"])
-            # 技能行按本节覆盖卷组数排序（与典型题技能次序一致），未挂技能居末。
+            # 行按本节覆盖卷组数排序（与典型题卡片次序一致），未挂键的居末。
             skill_groups: dict[str, set[int]] = {}
             for rec in smain:
                 if rec["skill_key"] != UNLINKED:
@@ -653,8 +636,12 @@ def build_chapter_exam_profile(
             )
             typical_map = _section_typical(
                 smain, recs, tpl_sets, point_counts, synthesis=synthesis,
+                type_mode=prep["type_mode"],
             )
             for row in ordered:
+                row["group_count"] = len(
+                    skill_groups.get(row["key"] or "", ())
+                )
                 row["typical"] = typical_map.get(row["key"] or "", [])
             sections_out.append({
                 "id": f"{cid}#synthesis" if synthesis else raw_id,

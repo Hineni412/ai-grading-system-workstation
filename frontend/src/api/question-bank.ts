@@ -2043,7 +2043,7 @@ export function decodeQuestionSkillIndex(value: unknown): QuestionSkillIndex {
 }
 
 export type ChapterExamStage = 'midterm' | 'final'
-export type ChapterExamCellColumn = 'choice_basic' | 'choice_advanced' | 'fill' | 'written'
+export type ChapterExamCellColumn = 'basic' | 'mid' | 'hard'
 
 export interface ChapterExamStageStats {
   stage: ChapterExamStage
@@ -2054,10 +2054,18 @@ export interface ChapterExamStageStats {
 }
 
 export interface ChapterExamStageCells {
-  choice_basic: number[]
-  choice_advanced: number[]
-  fill: number[]
-  written: number[]
+  basic: number[]
+  mid: number[]
+  hard: number[]
+}
+
+export interface ChapterExamTypicalPick {
+  tier: 'basic' | 'mid' | 'hard'
+  question_id: number
+  same_tier_count: number
+  group_count: number
+  role?: string
+  reason?: string
 }
 
 export interface ChapterExamSkillRow {
@@ -2068,16 +2076,10 @@ export interface ChapterExamSkillRow {
   home_section_label: string
   definition: string
   total: number
+  group_count: number
   cells: Record<ChapterExamStage, ChapterExamStageCells>
   positions: Record<ChapterExamStage, Record<string, number[]>>
-  typical: {
-    tier: 'basic' | 'mid' | 'hard'
-    question_id: number
-    same_tier_count: number
-    group_count: number
-    role?: string
-    reason?: string
-  }[]
+  typical: ChapterExamTypicalPick[]
 }
 
 export interface ChapterExamSection {
@@ -2113,7 +2115,7 @@ export interface ChapterExamProfile {
 }
 
 const CHAPTER_EXAM_STAGES: ChapterExamStage[] = ['midterm', 'final']
-const CHAPTER_EXAM_COLS: ChapterExamCellColumn[] = ['choice_basic', 'choice_advanced', 'fill', 'written']
+const CHAPTER_EXAM_COLS: ChapterExamCellColumn[] = ['basic', 'mid', 'hard']
 
 export function decodeChapterExamProfile(value: unknown): ChapterExamProfile {
   function idList(row: unknown): boolean {
@@ -2129,7 +2131,7 @@ export function decodeChapterExamProfile(value: unknown): ChapterExamProfile {
     return isRecord(row) && (row.key === null || typeof row.key === 'string')
       && typeof row.name === 'string' && typeof row.unlinked === 'boolean'
       && typeof row.home_section_label === 'string' && typeof row.definition === 'string'
-      && isNonnegativeInteger(row.total)
+      && isNonnegativeInteger(row.total) && isNonnegativeInteger(row.group_count)
       && stageMap(row.cells, stageCells)
       && stageMap(row.positions, (buckets) => isRecord(buckets) && Object.values(buckets).every(idList))
       && Array.isArray(row.typical) && row.typical.every((pick) => isRecord(pick)

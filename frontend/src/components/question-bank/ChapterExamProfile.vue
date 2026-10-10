@@ -523,7 +523,7 @@ function sectionCoverage(section: ChapterExamSectionData, stageKey: ChapterExamS
         </details>
         <p class="cep-subline">{{ subline }}</p>
       </div>
-      <OverviewScopeBar />
+      <OverviewScopeBar weak-share-note="明显薄弱占比 = 明显薄弱人数 ÷（明显薄弱＋不稳＋掌握人数），证据不足的学生不进分母。" />
       <div v-if="mergedSummary" class="cep-note">
         同源卷合并：{{ mergedSummary }}
         <details v-if="mergedTitles" class="cep-merged-details">
@@ -558,6 +558,8 @@ function sectionCoverage(section: ChapterExamSectionData, stageKey: ChapterExamS
         <ChapterExamOverview
           :chapter="currentChapter"
           :stages="stages"
+          :mastery="masteryNodes"
+          :mastery-state="masteryState"
           @section="jumpTo"
           @cell="openCell"
         />

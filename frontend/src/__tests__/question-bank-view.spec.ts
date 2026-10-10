@@ -1133,38 +1133,59 @@ describe('question bank workspace', () => {
             final: { groups: 1, of: 1, percent: 100, questions: 1 },
           },
           overview: {
-            midterm: { choice_basic: [1, 2], choice_advanced: [3], fill: [], written: [] },
-            final: { choice_basic: [6], choice_advanced: [], fill: [], written: [4] },
+            midterm: { basic: [1, 2], mid: [3], hard: [] },
+            final: { basic: [6], mid: [], hard: [4] },
           },
           skills: [{
             key: 'sk_TEST_a', name: '区分有理数无理数', unlinked: false,
-            home_section_label: '', definition: '无限不循环小数是无理数', total: 4,
+            home_section_label: '', definition: '无限不循环小数是无理数', total: 4, group_count: 2,
             cells: {
-              midterm: { choice_basic: [1, 2], choice_advanced: [3], fill: [], written: [] },
-              final: { choice_basic: [6], choice_advanced: [], fill: [], written: [4] },
+              midterm: { basic: [1, 2], mid: [3], hard: [] },
+              final: { basic: [6], mid: [], hard: [4] },
             },
             positions: { midterm: { '1': [1], '2': [2] }, final: { '13': [4] } },
-            typical: [{ tier: 'basic', question_id: 1, same_tier_count: 2, group_count: 1, role: '基础入口', reason: '本节第1常考技能' }],
+            typical: [
+              { tier: 'basic', question_id: 1, same_tier_count: 2, group_count: 1, role: '基础入口', reason: '本节第1常考技能' },
+              { tier: 'mid', question_id: 3, same_tier_count: 3, group_count: 2, role: '常见变式', reason: '同技能中档变式，同类3题' },
+            ],
           }],
         }, {
-          id: 'sec_TEST_22', label: '2.2 平方根与立方根', synthesis: false, main_count: 2,
+          id: 'sec_TEST_22', label: '2.2 平方根与立方根', synthesis: false, main_count: 4,
           coverage: {
             midterm: { groups: 1, of: 1, percent: 100, questions: 2 },
             final: { groups: 0, of: 1, percent: 0, questions: 0 },
           },
           overview: {
-            midterm: { choice_basic: [9], choice_advanced: [8], fill: [], written: [] },
-            final: { choice_basic: [], choice_advanced: [], fill: [], written: [] },
+            midterm: { basic: [9], mid: [8], hard: [] },
+            final: { basic: [], mid: [], hard: [] },
           },
           skills: [{
             key: 'sk_TEST_b', name: '求平方根', unlinked: false,
-            home_section_label: '', definition: '', total: 2,
+            home_section_label: '', definition: '', total: 2, group_count: 1,
             cells: {
-              midterm: { choice_basic: [9], choice_advanced: [8], fill: [], written: [] },
-              final: { choice_basic: [], choice_advanced: [], fill: [], written: [] },
+              midterm: { basic: [9], mid: [8], hard: [] },
+              final: { basic: [], mid: [], hard: [] },
             },
             positions: { midterm: {}, final: {} },
             typical: [{ tier: 'basic', question_id: 9, same_tier_count: 3, group_count: 2, role: '基础入口', reason: '本节第1常考技能' }],
+          }, {
+            key: 'sk_TEST_c', name: '估算无理数范围', unlinked: false,
+            home_section_label: '', definition: '', total: 1, group_count: 1,
+            cells: {
+              midterm: { basic: [7], mid: [], hard: [] },
+              final: { basic: [], mid: [], hard: [] },
+            },
+            positions: { midterm: {}, final: {} },
+            typical: [],
+          }, {
+            key: 'sk_TEST_d', name: '实数混合运算', unlinked: false,
+            home_section_label: '', definition: '', total: 1, group_count: 1,
+            cells: {
+              midterm: { basic: [], mid: [10], hard: [] },
+              final: { basic: [], mid: [], hard: [] },
+            },
+            positions: { midterm: {}, final: {} },
+            typical: [],
           }],
         }, {
           id: 'sec_TEST_23', label: '☆ 问题解决策略', synthesis: false, main_count: 0,
@@ -1173,8 +1194,8 @@ describe('question bank workspace', () => {
             final: { groups: 0, of: 1, percent: 0, questions: 0 },
           },
           overview: {
-            midterm: { choice_basic: [], choice_advanced: [], fill: [], written: [] },
-            final: { choice_basic: [], choice_advanced: [], fill: [], written: [] },
+            midterm: { basic: [], mid: [], hard: [] },
+            final: { basic: [], mid: [], hard: [] },
           },
           skills: [],
         }],
@@ -1216,8 +1237,11 @@ describe('question bank workspace', () => {
     vi.spyOn(trainingApi, 'overview').mockResolvedValue({
       nodes: [
         // 现行题型标准返回 kind: 'type' 的行，不能按 'skill' 过滤掉。
-        { kind: 'type', knowledge_key: 'sk_TEST_a', display_name: '区分有理数无理数', chapter_key: 'ch', section_key: 'sec', group_mastery: 0.5, evidence_student_count: 4, distribution: { weak: 2, unsteady: 1, stable: 1, insufficient: 0 }, students: [] },
+        // 明显薄弱占比分母剔除证据不足：2/(2+1+1) = 50%，3 名证据不足不计。
+        { kind: 'type', knowledge_key: 'sk_TEST_a', display_name: '区分有理数无理数', chapter_key: 'ch', section_key: 'sec', group_mastery: 0.5, evidence_student_count: 7, distribution: { weak: 2, unsteady: 1, stable: 1, insufficient: 3 }, students: [] },
         { kind: 'skill', knowledge_key: 'sk_TEST_b', display_name: '求平方根', chapter_key: 'ch', section_key: 'sec2', group_mastery: 0.6, evidence_student_count: 10, distribution: { weak: 1, unsteady: 4, stable: 5, insufficient: 0 }, students: [] },
+        // 有学情人数但三档之和为 0 → 证据不足。
+        { kind: 'type', knowledge_key: 'sk_TEST_c', display_name: '估算无理数范围', chapter_key: 'ch', section_key: 'sec2', group_mastery: null, evidence_student_count: 3, distribution: { weak: 0, unsteady: 0, stable: 0, insufficient: 3 }, students: [] },
       ],
       exam_scope: { sessions: [] },
     } as unknown as Awaited<ReturnType<typeof trainingApi.overview>>)
@@ -1269,7 +1293,7 @@ describe('question bank workspace', () => {
     const { host, pinia, router, query } = mountExamProfile('?tab=exam&section=sec_TEST_21')
     await router.push(`/question-bank${query}`)
     const bank = useQuestionBankStore(pinia)
-    const itemsById = new Map([[1, { ...item, id: 1 }], [2, { ...item, id: 2 }], [6, { ...item, id: 6 }], [9, { ...item, id: 9 }]])
+    const itemsById = new Map([[1, { ...item, id: 1 }], [2, { ...item, id: 2 }], [3, { ...item, id: 3 }], [4, { ...item, id: 4 }], [6, { ...item, id: 6 }], [9, { ...item, id: 9 }]])
     const list = vi.spyOn(questionBankApi, 'listQuestions').mockImplementation(async (filters = {}) => {
       const ids = filters.questionIds ?? []
       return {
@@ -1284,22 +1308,44 @@ describe('question bank workspace', () => {
     app.use(pinia).use(router).mount(host)
     mounted.push(app)
     // 期中与期末始终并列：没有阶段切换器。
-    await vi.waitFor(() => expect(host.textContent).toContain('考点热力图'))
+    await vi.waitFor(() => expect(host.textContent).toContain('出卷率'))
     expect(host.querySelector('.app-segmented')).toBeNull()
-    // 考点热力图：变化列与平均题数按夹具计算。
+    // 出卷率哑铃图：变化列与平均题数按夹具计算。
     const overviewBlock = host.querySelector<HTMLElement>('[data-cep-block="overview"]')!
-    expect(overviewBlock.textContent).toContain('第二章 实数 · 考点热力图')
-    expect(overviewBlock.textContent).toContain('−100 ppt')
+    expect(overviewBlock.textContent).toContain('第二章 实数 · 出卷率')
+    expect(overviewBlock.textContent).toContain('▼ −100 ppt')
     expect(overviewBlock.textContent).toContain('持平')
     expect(overviewBlock.textContent).toContain('期中平均 5.00 题/组')
     expect(overviewBlock.textContent).toContain('期末平均 2.00 题/份')
-    // 命题总览：期中、期末两块面板并排，各含夹具计数。
-    const panels = [...overviewBlock.querySelectorAll<HTMLElement>('.cep-panels > div')]
-    expect(panels).toHaveLength(2)
-    expect(panels[0]!.textContent).toContain('期中')
-    expect(panels[1]!.textContent).toContain('期末')
-    expect([...panels[0]!.querySelectorAll('button.cep-cell')].map(b => b.textContent?.trim())).toEqual(['2', '1', '1', '1'])
-    expect([...panels[1]!.querySelectorAll('button.cep-cell')].map(b => b.textContent?.trim())).toEqual(['1', '1'])
+    // 哑铃图圆点可点开抽屉：2.1 与 2.2 各期中期末两点。
+    const dots = [...overviewBlock.querySelectorAll<HTMLButtonElement>('.cep-dumb-row:not(.is-empty) button.cep-dumb-dot')]
+    expect(dots).toHaveLength(4)
+    // 命题结构蝴蝶图：每个小节一行，期中向左、期末向右，按难度档分段。
+    const bflyRows = [...overviewBlock.querySelectorAll<HTMLElement>('.cep-bfly-row')]
+    expect(bflyRows).toHaveLength(3)
+    const midSegments = bflyRows[0]!.querySelectorAll('.cep-bfly-half.is-left .cep-seg')
+    expect([...midSegments].map(b => b.textContent?.trim())).toEqual(['2', '1'])
+    const finSegments = bflyRows[0]!.querySelectorAll('.cep-bfly-half.is-right .cep-seg')
+    expect([...finSegments].map(b => b.textContent?.trim())).toEqual(['1', '1'])
+    // 点击蝴蝶分段打开抽屉：2.1 · 期中 · 基础 → [1,2]。
+    ;(midSegments[0] as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('2.1 认识实数 · 期中 · 基础 · 2 题'))
+    await vi.waitFor(() => expect(bank.questions.map(question => question.id)).toEqual([1, 2]))
+    const closeB = [...document.body.querySelectorAll<HTMLButtonElement>('[data-slot="sheet-content"] button')].find(button => button.getAttribute('aria-label') === '关闭')!
+    closeB.click()
+    await vi.waitFor(() => expect(document.body.querySelector('[data-slot="sheet-content"]')).toBeNull())
+    // 本章优先讲题型：有证据的行入图，证据不足与无证据列在下方。
+    await vi.waitFor(() => expect(overviewBlock.querySelectorAll('.cep-quad-dot')).not.toHaveLength(0))
+    expect(overviewBlock.querySelectorAll('.cep-quad-dot')).toHaveLength(2)
+    expect(overviewBlock.textContent).toContain('常考且薄弱 · 优先讲')
+    expect(overviewBlock.textContent).toContain('证据不足：估算无理数范围')
+    expect(overviewBlock.textContent).toContain('暂无学情证据：实数混合运算')
+    ;(overviewBlock.querySelector<HTMLButtonElement>('.cep-quad-dot.is-priority'))!.click()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('区分有理数无理数 · 期中＋期末 · 5 题'))
+    await vi.waitFor(() => expect(bank.questions.map(question => question.id).sort()).toEqual([1, 2, 3, 4, 6]))
+    const closeC = [...document.body.querySelectorAll<HTMLButtonElement>('[data-slot="sheet-content"] button')].find(button => button.getAttribute('aria-label') === '关闭')!
+    closeC.click()
+    await vi.waitFor(() => expect(document.body.querySelector('[data-slot="sheet-content"]')).toBeNull())
     // 小节索引条：本章总览 + 各小节，无主考题的小节禁用。
     const chips = [...host.querySelectorAll<HTMLButtonElement>('.cep-index-chip')]
     expect(chips.map(chip => chip.textContent?.trim())).toEqual(['本章总览', '2.1', '2.2', '☆'])
@@ -1312,19 +1358,21 @@ describe('question bank workspace', () => {
     expect(block.textContent).toContain('出卷率')
     expect(block.textContent).toContain('区分有理数无理数')
     expect(host.textContent).toContain('同源卷合并')
-    // 本班明显薄弱列：弱占比 2/4 = 50%，且主考 4 题 ≥3 → 常考且薄弱。
+    // 本班明显薄弱列：弱占比分母剔除证据不足 2/(2+1+1) = 50%，主考 4 题 ≥3 → 常考且薄弱。
     // 证据节点 kind: 'type'（题型标准）与 'skill' 都要命中对应行键。
     await vi.waitFor(() => expect(block.textContent).toContain('50%（2/4 人）'))
     expect(block.querySelector('.cep-badge-warn')?.textContent).toBe('常考且薄弱')
     const block22 = host.querySelector<HTMLElement>('[data-cep-block="sec_TEST_22"]')!
     expect(block22.textContent).toContain('10%（1/10 人）')
+    expect(block22.textContent).toContain('证据不足')
+    expect(block22.textContent).toContain('无证据')
     expect(block22.querySelector('.cep-badge-warn')).toBeNull()
-    // 怎么考：两阶段合计（选择·基础 期中 2 题 + 期末 1 题 = 3）。
+    // 怎么考：难度档分段两阶段合计（基础 期中 2 题 + 期末 1 题 = 3）。
     expect(block.textContent).toContain('怎么考')
-    const combinedCell = [...block.querySelectorAll<HTMLButtonElement>('.cep-cell')].find(button => button.textContent?.trim() === '3')!
+    const combinedCell = [...block.querySelectorAll<HTMLButtonElement>('.cep-seg')].find(button => button.textContent?.trim() === '3')!
     combinedCell.click()
     await vi.waitFor(() => expect(document.body.querySelector('[data-slot="sheet-content"]')).not.toBeNull())
-    expect(document.body.textContent).toContain('2.1 认识实数 · 区分有理数无理数 · 选择·基础 · 期中＋期末 · 3 题')
+    expect(document.body.textContent).toContain('2.1 认识实数 · 区分有理数无理数 · 基础 · 期中＋期末 · 3 题')
     await vi.waitFor(() => expect(bank.questions.map(question => question.id)).toEqual([1, 2, 6]))
     await vi.waitFor(() => expect(document.body.querySelectorAll('[data-slot="sheet-content"] .qb-question-card')).toHaveLength(3))
     // 关闭抽屉回到整页，展开的题卡收起。
@@ -1335,7 +1383,7 @@ describe('question bank workspace', () => {
     expect(list.mock.calls.some(call => JSON.stringify(call[0]?.questionIds) === '[1,2,6]')).toBe(true)
   })
 
-  it('renders the position grid with both stages and the segment band', async () => {
+  it('renders the position bubble strip for both stages and opens a drawer from a bubble', async () => {
     const { host, pinia, router } = mountExamProfile('?tab=exam&section=sec_TEST_21')
     await router.push('/question-bank?tab=exam&section=sec_TEST_21')
     vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100, total_pages: 0 })
@@ -1344,13 +1392,15 @@ describe('question bank workspace', () => {
     mounted.push(app)
     await vi.waitFor(() => expect(host.textContent).toContain('落在第几题'))
     const block = host.querySelector<HTMLElement>('[data-cep-block="sec_TEST_21"]')!
-    const rows = [...block.querySelectorAll('.cep-pos-table tbody tr')]
-    expect(rows).toHaveLength(2)
-    expect(rows[0]!.textContent).toContain('期中')
-    expect(rows[1]!.textContent).toContain('期末')
+    expect(block.querySelectorAll('.cep-pos-row')).toHaveLength(1)
+    expect(block.querySelectorAll('.cep-pos-dot.is-midterm')).toHaveLength(2)
+    expect(block.querySelectorAll('.cep-pos-dot.is-final')).toHaveLength(1)
     expect(block.textContent).toContain('第1—8题')
     expect(block.textContent).toContain('第9—13题')
     expect(block.textContent).toContain('第14题起')
+    // 点击气泡打开抽屉：类型 × 阶段 × 题号。
+    block.querySelector<HTMLButtonElement>('.cep-pos-dot.is-midterm')!.click()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('2.1 认识实数 · 区分有理数无理数 · 第1题 · 期中 · 1 题'))
   })
 
   it('renders a legacy ?stage=final address without the stage toggle', async () => {
@@ -1360,7 +1410,7 @@ describe('question bank workspace', () => {
     const app = createApp({ render: () => h(ChapterExamProfile) })
     app.use(pinia).use(router).mount(host)
     mounted.push(app)
-    await vi.waitFor(() => expect(host.textContent).toContain('考点热力图'))
+    await vi.waitFor(() => expect(host.textContent).toContain('出卷率'))
     expect(host.querySelector('.app-segmented')).toBeNull()
     expect(host.querySelector('.cep-index-chip.is-active')).not.toBeNull()
   })
@@ -1404,7 +1454,7 @@ describe('question bank workspace', () => {
     // 旧记录中的阶段字段不再恢复、不再写回地址。
     expect(router.currentRoute.value.query.stage).toBeUndefined()
     await vi.waitFor(() => expect(
-      list.mock.calls.some(call => JSON.stringify(call[0]?.questionIds) === '[1,9]'),
+      list.mock.calls.some(call => JSON.stringify(call[0]?.questionIds) === '[1,3,9]'),
     ).toBe(true))
     expect(host.querySelector('.cep-index-chip.is-active')?.textContent?.trim()).toBe('2.2')
   })
@@ -1422,7 +1472,7 @@ describe('question bank workspace', () => {
     mounted.push(app)
     // 失效的章节号不写入地址，落在第一章总览并预取全章典型题。
     await vi.waitFor(() => expect(
-      list.mock.calls.some(call => JSON.stringify(call[0]?.questionIds) === '[1,9]'),
+      list.mock.calls.some(call => JSON.stringify(call[0]?.questionIds) === '[1,3,9]'),
     ).toBe(true))
     expect(router.currentRoute.value.query.chapter).toBeUndefined()
     expect(router.currentRoute.value.query.section).toBeUndefined()
@@ -1434,7 +1484,7 @@ describe('question bank workspace', () => {
     vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
     const { host, pinia, router } = mountExamProfile('?tab=exam&chapter=ch_TEST_2')
     await router.push('/question-bank?tab=exam&chapter=ch_TEST_2')
-    const itemsById = new Map([[1, { ...item, id: 1 }], [9, { ...item, id: 9 }]])
+    const itemsById = new Map([[1, { ...item, id: 1 }], [3, { ...item, id: 3 }], [9, { ...item, id: 9 }]])
     const list = vi.spyOn(questionBankApi, 'listQuestions').mockImplementation(async (filters = {}) => {
       const ids = filters.questionIds ?? []
       return {
@@ -1448,17 +1498,28 @@ describe('question bank workspace', () => {
     const app = createApp({ render: () => h(ChapterExamProfile) })
     app.use(pinia).use(router).mount(host)
     mounted.push(app)
-    // 全章典型题一次性按本章题号拉取，各小节内联显示带角色标注的题卡。
+    // 全章典型题一次性按本章题号拉取，一型一卡横向轮播。
     await vi.waitFor(() => expect(
-      list.mock.calls.some(call => JSON.stringify(call[0]?.questionIds) === '[1,9]'),
+      list.mock.calls.some(call => JSON.stringify(call[0]?.questionIds) === '[1,3,9]'),
     ).toBe(true))
     const first = host.querySelector<HTMLElement>('[data-cep-block="sec_TEST_21"]')!
     const second = host.querySelector<HTMLElement>('[data-cep-block="sec_TEST_22"]')!
-    await vi.waitFor(() => expect(first.textContent).toContain('典型题 · 1 道'))
-    expect(first.querySelectorAll('.cep-typical .qb-question-card')).toHaveLength(1)
-    expect(first.textContent).toContain('基础入口 · 本节第1常考技能')
-    await vi.waitFor(() => expect(second.textContent).toContain('典型题 · 1 道'))
-    expect(second.querySelectorAll('.cep-typical .qb-question-card')).toHaveLength(1)
+    await vi.waitFor(() => expect(first.textContent).toContain('典型题 · 1 个常考技能'))
+    expect(first.querySelectorAll('.cep-typical .cep-qcard')).toHaveLength(1)
+    // 卡片头部：类型名 + 常考位次/题数/卷组数。
+    const card = first.querySelector<HTMLElement>('.cep-qcard')!
+    expect(card.textContent).toContain('区分有理数无理数')
+    expect(card.textContent).toContain('本节第1常考 · 共 4 题 · 出现在 2 套卷')
+    // 默认显示第一个 pick（基础），切到中档换题。
+    await vi.waitFor(() => expect(card.querySelector('#qb-question-1')).not.toBeNull())
+    expect(card.querySelector('.qb-badge-label')?.textContent).toBe('本节第1常考技能')
+    const tabs = [...card.querySelectorAll<HTMLButtonElement>('.cep-tier-tab')]
+    expect(tabs.map(tab => tab.textContent?.trim())).toEqual(['基础', '中档'])
+    tabs[1]!.click()
+    await vi.waitFor(() => expect(card.querySelector('#qb-question-3')).not.toBeNull())
+    expect(card.querySelector('.qb-badge-label')?.textContent).toBe('同技能中档变式，同类3题')
+    await vi.waitFor(() => expect(second.textContent).toContain('典型题 · 1 个常考技能'))
+    expect(second.querySelectorAll('.cep-typical .cep-qcard')).toHaveLength(1)
     const calls = list.mock.calls.length
     // 滚动定位到其他块：典型题来自章级缓存，不再请求列表接口。
     const io = MockIntersectionObserver.instances[MockIntersectionObserver.instances.length - 1]!

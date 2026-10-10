@@ -1,5 +1,13 @@
-/* 章节考情：频次热力沿用共享 app-heat-table 的主题色瓷贴色阶（频次不代表好坏）；
-   掌握度薄弱仍沿用危险色斜纹含义。单栏报告页：头部 → 小节索引条 → 滚动区。 */
+/* 章节考情报告页：期中＝主题青、期末＝暖琥珀；难度档用同色系的浅→深连续色（与琥珀明显区分）。
+   掌握度薄弱仍沿用危险色含义。单栏报告页：头部 → 小节索引条 → 滚动区。 */
+
+.chapter-exam {
+  --cep-midterm: var(--color-accent);
+  --cep-final: #d9822b;
+  --cep-tier-basic: #bcd6da;
+  --cep-tier-mid: #5f9aa5;
+  --cep-tier-hard: #12616d;
+}
 
 .chapter-exam.qb-browse-pane {
   flex: 1;
@@ -137,34 +145,6 @@
   font-weight: var(--font-weight-regular);
 }
 
-/* 覆盖热度格：大号百分比＋小字 组/总；变化列保持中性，幅度大时加粗。 */
-.chapter-exam .cep-cov-cell {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  white-space: nowrap;
-}
-
-.chapter-exam .cep-cov-cell b {
-  font-weight: var(--font-weight-semibold);
-}
-
-.chapter-exam .cep-cov-cell small {
-  color: inherit;
-  opacity: 0.75;
-  font-size: var(--font-size-caption);
-}
-
-.chapter-exam .cep-delta-cell {
-  color: var(--color-text-secondary);
-  white-space: nowrap;
-}
-
-.chapter-exam .cep-delta-cell.is-strong {
-  color: var(--color-text-primary);
-  font-weight: var(--font-weight-semibold);
-}
-
 .chapter-exam .cep-info {
   padding: 6px 10px;
   border-radius: 8px;
@@ -173,11 +153,12 @@
   font-size: var(--font-size-caption);
 }
 
-/* 图例条：五级瓷贴色阶与热力单元格同源。 */
+/* 图例条：阶段圆点与难度档色块与图形标记同源。 */
 .chapter-exam .cep-legend {
   display: flex;
   align-items: center;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 4px 10px;
   color: var(--color-text-muted);
   font-size: var(--font-size-caption);
 }
@@ -187,16 +168,19 @@
   width: 12px;
   height: 12px;
   border-radius: 3px;
+  margin-right: 3px;
+  vertical-align: -1px;
 }
 
-.chapter-exam .cep-legend i.is-heat-1 { background: color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-surface)); }
-.chapter-exam .cep-legend i.is-heat-2 { background: color-mix(in srgb, var(--color-accent) 26%, var(--color-bg-surface)); }
-.chapter-exam .cep-legend i.is-heat-3 { background: color-mix(in srgb, var(--color-accent) 44%, var(--color-bg-surface)); }
-.chapter-exam .cep-legend i.is-heat-4 { background: color-mix(in srgb, var(--color-accent) 70%, var(--color-bg-surface)); }
-.chapter-exam .cep-legend i.is-heat-5 { background: var(--color-accent); }
+.chapter-exam .cep-legend i.is-midterm { background: var(--cep-midterm); border-radius: 50%; }
+.chapter-exam .cep-legend i.is-final { background: var(--cep-final); border-radius: 50%; }
+.chapter-exam .cep-legend i.is-basic { background: var(--cep-tier-basic); }
+.chapter-exam .cep-legend i.is-mid { background: var(--cep-tier-mid); }
+.chapter-exam .cep-legend i.is-hard { background: var(--cep-tier-hard); }
 
-.chapter-exam .cep-legend span:last-child {
-  margin-left: 2px;
+.chapter-exam .cep-legend__tail {
+  margin-left: auto;
+  color: var(--color-text-muted);
 }
 
 .chapter-exam .cep-coverage {
@@ -227,82 +211,8 @@
   padding-inline: 8px;
 }
 
-.chapter-exam .app-heat-table td,
 .chapter-exam .cep-table-scroll td {
   white-space: nowrap;
-}
-
-/* 宽表在自身容器内横向滚动，行标签列吸附在左侧；瓷贴底色不透明以遮住滑过的单元格。 */
-.chapter-exam .cep-table-scroll .cep-row-label,
-.chapter-exam .cep-table-scroll thead th:first-child,
-.chapter-exam .app-heat-table-wrap .cep-row-label,
-.chapter-exam .app-heat-table-wrap thead th:first-child {
-  position: sticky;
-  left: 0;
-  z-index: 1;
-}
-
-.chapter-exam .cep-table-scroll .cep-row-label,
-.chapter-exam .cep-table-scroll thead th:first-child {
-  background: var(--color-bg-surface);
-}
-
-.chapter-exam .cep-table-scroll thead th:first-child,
-.chapter-exam .app-heat-table-wrap thead th:first-child {
-  z-index: 2;
-}
-
-.chapter-exam .cep-pos-table {
-  table-layout: fixed;
-  width: 100%;
-}
-
-.chapter-exam .cep-pos-table th,
-.chapter-exam .cep-pos-table td {
-  padding-inline: 4px;
-}
-
-.chapter-exam .cep-pos-table td.cep-row-label,
-.chapter-exam .cep-pos-table thead th:first-child {
-  width: 140px;
-}
-
-.chapter-exam .cep-pos-table td.cep-row-label {
-  white-space: normal;
-  overflow: visible;
-  text-overflow: clip;
-  vertical-align: top;
-}
-
-.chapter-exam .cep-pos-table td.cep-stage-tag,
-.chapter-exam .cep-pos-table thead th:nth-child(2) {
-  position: sticky;
-  left: 140px;
-  z-index: 1;
-  width: 44px;
-  background: var(--color-bg-surface);
-}
-
-.chapter-exam .cep-pos-table thead th:nth-child(2) {
-  z-index: 2;
-}
-
-/* 题号轴与分段带：分段三格横跨第1—8、9—13、14题起。 */
-.chapter-exam .cep-pos-table tfoot td {
-  background: var(--color-bg-surface);
-  color: var(--color-text-muted);
-  font-size: var(--font-size-caption);
-}
-
-.chapter-exam .cep-pos-band td[colspan] {
-  text-align: center;
-  background: var(--color-bg-subtle);
-  color: var(--color-text-secondary);
-}
-
-.chapter-exam .cep-pos-table td.cep-stage-tag.is-final {
-  color: var(--color-accent);
-  font-weight: var(--font-weight-medium);
 }
 
 .chapter-exam .cep-row-label {
@@ -340,21 +250,6 @@
   white-space: nowrap;
 }
 
-.chapter-exam button.cep-cell {
-  display: block;
-  width: 100%;
-  border: 0;
-  border-radius: inherit;
-  background: transparent;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-}
-
-.chapter-exam button.cep-cell:hover {
-  text-decoration: underline;
-}
-
 .chapter-exam button.cep-inline-link {
   border: 0;
   background: transparent;
@@ -373,64 +268,15 @@
   cursor: default;
 }
 
-.chapter-exam .app-heat-table tr.is-empty .cep-row-label,
-.chapter-exam .app-heat-table tr.is-empty td {
-  color: var(--color-text-muted);
-}
-
-/* 本章总览在内容区内单列堆叠；命题总览两阶段面板并排，宽度不足时换行。 */
+/* 本章总览在内容区内单列堆叠。 */
 .chapter-exam .cep-ov-grid {
   display: grid;
   gap: 14px;
 }
 
-.chapter-exam .cep-panels {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  align-items: flex-start;
-}
-
-.chapter-exam .cep-panels > div {
-  flex: 1 1 420px;
-  min-width: 0;
-}
-
-.chapter-exam .cep-panel-title {
-  margin: 0 0 6px;
-  font-size: var(--font-size-caption);
-  color: var(--color-text-secondary);
-  font-weight: var(--font-weight-medium);
-}
-
-/* 怎么考：计数列只要胶囊宽度，表头允许折行，把列宽让给技能名与薄弱占比。 */
-.chapter-exam .cep-skill-table thead th:not(:first-child):not(:last-child) {
-  white-space: normal;
-  min-width: 40px;
-  padding-inline: 4px;
-}
-
-/* 技能名整行完整折行，不截断；n=/归属/定义/标记排在名称之后。 */
-.chapter-exam td.cep-skill-cell {
-  white-space: normal;
-  overflow: visible;
-  max-width: none;
-  min-width: 160px;
-}
-
 .chapter-exam .cep-skill-title {
   display: block;
-}
-
-.chapter-exam .cep-skill-name {
-  display: inline;
-  white-space: normal;
-}
-
-.chapter-exam .cep-skill-name small {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-caption);
-  margin-left: 4px;
+  font-weight: var(--font-weight-medium);
 }
 
 .chapter-exam .cep-skill-definition {
@@ -459,12 +305,6 @@
   color: var(--color-text-secondary);
   max-width: 40em;
   white-space: normal;
-}
-
-.chapter-exam .cep-mastery {
-  min-width: 176px;
-  text-align: left;
-  white-space: nowrap;
 }
 
 .chapter-exam .cep-mastery-bar {
@@ -636,4 +476,640 @@
   color: var(--color-accent);
   font-size: var(--font-size-caption);
   white-space: nowrap;
+}
+
+/* ===== 报告图形：全部图形标记都是可聚焦按钮，悬停/聚焦用 title 提示原始数值。 ===== */
+
+/* 分段条共用：难度档三段浅→深。分段过窄时隐藏数字，数值仍在提示与 aria-label 里。 */
+.chapter-exam button.cep-seg {
+  flex: 0 1 auto;
+  min-width: 2px;
+  min-height: 0;
+  border: 0;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  color: #fff;
+  cursor: pointer;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+  container-type: inline-size;
+}
+
+@container (max-width: 18px) {
+  .cep-seg > .cep-seg-n {
+    display: none;
+  }
+}
+
+.chapter-exam .cep-seg.is-basic {
+  background: var(--cep-tier-basic);
+  color: var(--color-text-primary);
+}
+
+.chapter-exam .cep-seg.is-mid {
+  background: var(--cep-tier-mid);
+}
+
+.chapter-exam .cep-seg.is-hard {
+  background: var(--cep-tier-hard);
+}
+
+.chapter-exam button.cep-seg:hover {
+  filter: brightness(1.12);
+}
+
+.chapter-exam button.cep-seg:focus-visible,
+.chapter-exam button.cep-dumb-dot:focus-visible,
+.chapter-exam button.cep-quad-dot:focus-visible,
+.chapter-exam button.cep-pos-dot:focus-visible {
+  outline: 2px solid var(--color-text-primary);
+  outline-offset: 1px;
+}
+
+/* A 出卷率哑铃图：标签 | 轨道 | 差值。 */
+.chapter-exam .cep-dumb {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chapter-exam .cep-dumb-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 200px) 1fr 92px;
+  align-items: center;
+  gap: 10px;
+}
+
+.chapter-exam .cep-dumb-row.is-empty {
+  opacity: 0.55;
+}
+
+.chapter-exam .cep-dumb-label {
+  min-width: 0;
+  white-space: normal;
+}
+
+.chapter-exam .cep-dumb-track {
+  position: relative;
+  height: 20px;
+}
+
+.chapter-exam .cep-dumb-axis {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: var(--color-border-subtle);
+}
+
+.chapter-exam .cep-dumb-link {
+  position: absolute;
+  top: 50%;
+  height: 3px;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--cep-midterm) 40%, var(--cep-final));
+}
+
+.chapter-exam button.cep-dumb-dot {
+  position: absolute;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+}
+
+.chapter-exam .cep-dumb-dot.is-midterm { background: var(--cep-midterm); }
+.chapter-exam .cep-dumb-dot.is-final { background: var(--cep-final); }
+
+.chapter-exam .cep-dumb-dot:hover {
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 30%, transparent);
+}
+
+.chapter-exam .cep-dumb-empty {
+  display: block;
+  text-align: center;
+  line-height: 20px;
+  font-size: var(--font-size-caption);
+  color: var(--color-text-muted);
+}
+
+.chapter-exam .cep-dumb-delta {
+  justify-self: end;
+  white-space: nowrap;
+  font-size: var(--font-size-caption);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chapter-exam .cep-dumb-delta.is-up {
+  color: var(--cep-midterm);
+  font-weight: var(--font-weight-semibold);
+}
+
+.chapter-exam .cep-dumb-delta.is-down {
+  color: #b3561f;
+  font-weight: var(--font-weight-semibold);
+}
+
+/* B 命题结构蝴蝶图：左期中 | 中央小节名 | 右期末。 */
+.chapter-exam .cep-bfly {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chapter-exam .cep-bfly-axis {
+  display: grid;
+  grid-template-columns: 1fr 170px 1fr;
+  gap: 8px;
+  font-size: var(--font-size-caption);
+  color: var(--color-text-muted);
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.chapter-exam .cep-bfly-axis .is-midterm { color: var(--cep-midterm); text-align: right; }
+.chapter-exam .cep-bfly-axis .is-final { color: var(--cep-final); text-align: left; }
+.chapter-exam .cep-bfly-axis span:nth-child(2) { text-align: center; }
+
+.chapter-exam .cep-bfly-row {
+  display: grid;
+  grid-template-columns: 1fr 170px 1fr;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+}
+
+.chapter-exam .cep-bfly-row.is-empty {
+  opacity: 0.55;
+}
+
+.chapter-exam .cep-bfly-half {
+  display: flex;
+  min-width: 0;
+}
+
+.chapter-exam .cep-bfly-half.is-left {
+  justify-content: flex-end;
+}
+
+.chapter-exam .cep-bfly-bar {
+  display: flex;
+  height: 20px;
+  max-width: 100%;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.chapter-exam .cep-bfly-half.is-left .cep-bfly-bar {
+  flex-direction: row-reverse;
+}
+
+.chapter-exam .cep-bfly-label {
+  justify-self: center;
+  text-align: center;
+  white-space: normal;
+}
+
+/* C 四象限气泡：x＝n，y＝明显薄弱占比。 */
+.chapter-exam .cep-quad-wrap {
+  position: relative;
+}
+
+.chapter-exam .cep-quad {
+  position: relative;
+  height: 280px;
+  margin: 6px 14px 6px 46px;
+  border-left: 1px solid var(--color-border-subtle);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.chapter-exam .cep-quad-guide.is-v {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed var(--color-text-muted);
+  opacity: 0.5;
+}
+
+.chapter-exam .cep-quad-guide.is-h {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-bottom: 1px dashed var(--color-text-muted);
+  opacity: 0.5;
+}
+
+.chapter-exam .cep-quad-tag {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  color: var(--color-warning);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+}
+
+.chapter-exam .cep-quad-ylabel {
+  position: absolute;
+  top: -2px;
+  left: -46px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.chapter-exam .cep-quad-xlabel {
+  position: absolute;
+  bottom: -20px;
+  right: 0;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.chapter-exam button.cep-quad-dot {
+  position: absolute;
+  transform: translate(-50%, 50%);
+  border: 0;
+  border-radius: 50%;
+  min-height: 0;
+  padding: 0;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--cep-midterm) 68%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chapter-exam .cep-quad-dot i {
+  font-style: normal;
+  font-size: 10px;
+  color: #fff;
+  line-height: 1;
+}
+
+.chapter-exam .cep-quad-dot.is-priority {
+  background: color-mix(in srgb, var(--color-warning) 78%, transparent);
+}
+
+.chapter-exam .cep-quad-dot:hover {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cep-midterm) 25%, transparent);
+}
+
+.chapter-exam .cep-quad-yticks span {
+  position: absolute;
+  left: -42px;
+  transform: translateY(50%);
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chapter-exam .cep-quad-ticks {
+  display: flex;
+  justify-content: space-between;
+  margin: 4px 14px 0 46px;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chapter-exam .cep-quad-list {
+  margin-top: 4px;
+}
+
+/* D 怎么考：标签 | 堆叠条 | 薄弱占比。 */
+.chapter-exam .cep-how {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chapter-exam .cep-how-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 220px) 1fr 190px;
+  align-items: center;
+  gap: 10px;
+}
+
+.chapter-exam .cep-how-label {
+  min-width: 0;
+  font-size: var(--font-size-dense);
+}
+
+.chapter-exam .cep-how-label small {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  margin-left: 4px;
+}
+
+.chapter-exam .cep-how-track {
+  display: flex;
+  min-width: 0;
+}
+
+.chapter-exam .cep-how-bar {
+  display: flex;
+  height: 20px;
+  max-width: 100%;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.chapter-exam .cep-how-weak {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+
+/* E 落在第几题：标签列 + 20 列气泡带，期中贴上半、期末贴下半。 */
+.chapter-exam .cep-pos {
+  overflow-x: auto;
+}
+
+.chapter-exam .cep-pos-bandrow,
+.chapter-exam .cep-pos-axisrow {
+  display: flex;
+  align-items: center;
+}
+
+.chapter-exam .cep-pos-bandcell {
+  flex: 0 0 160px;
+}
+
+.chapter-exam .cep-pos-bandflex {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+}
+
+.chapter-exam .cep-pos-bandlabel {
+  text-align: center;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+  padding-bottom: 3px;
+}
+
+.chapter-exam .cep-pos-row {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  align-items: center;
+}
+
+.chapter-exam .cep-pos-label {
+  padding-right: 8px;
+  font-size: var(--font-size-dense);
+  color: var(--color-text-primary);
+}
+
+.chapter-exam .cep-pos-track {
+  position: relative;
+  height: 48px;
+}
+
+.chapter-exam .cep-pos-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 4px;
+  background: var(--color-bg-subtle);
+}
+
+.chapter-exam .cep-pos-band:nth-of-type(2) {
+  background: color-mix(in srgb, var(--color-bg-subtle) 55%, var(--color-bg-surface));
+}
+
+.chapter-exam .cep-pos-center {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: var(--color-border-subtle);
+}
+
+.chapter-exam button.cep-pos-dot {
+  position: absolute;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  border: 1px solid transparent;
+  min-height: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.chapter-exam .cep-pos-dot.is-midterm {
+  top: 3px;
+  background: color-mix(in srgb, var(--cep-midterm) 60%, transparent);
+  border-color: var(--cep-midterm);
+}
+
+.chapter-exam .cep-pos-dot.is-final {
+  bottom: 3px;
+  background: color-mix(in srgb, var(--cep-final) 60%, transparent);
+  border-color: var(--cep-final);
+}
+
+.chapter-exam .cep-pos-dot:hover {
+  filter: brightness(1.1);
+}
+
+.chapter-exam .cep-pos-axiscell {
+  flex: 1;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  padding-top: 3px;
+}
+
+/* F 典型题轮播：440px 卡 + scroll-snap，固定高度，长题面淡出。 */
+.chapter-exam .cep-car-ctl {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.chapter-exam .cep-car-ctl button {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-surface);
+  border-radius: 6px;
+  padding: 4px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.chapter-exam .cep-car-ctl button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.chapter-exam .cep-car-count {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.chapter-exam .cep-car-track {
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  padding-bottom: 8px;
+  outline: none;
+}
+
+.chapter-exam .cep-car-track:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-accent);
+  border-radius: 8px;
+}
+
+.chapter-exam .cep-qcard {
+  flex: 0 0 440px;
+  max-width: 92%;
+  scroll-snap-align: start;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 340px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 10px;
+  background: var(--color-bg-surface);
+}
+
+.chapter-exam .cep-qcard-head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.chapter-exam .cep-qcard-name {
+  font-size: var(--font-size-dense);
+  color: var(--color-text-primary);
+}
+
+.chapter-exam .cep-qcard-head small {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.chapter-exam .cep-qcard-tiers {
+  display: flex;
+  gap: 6px;
+}
+
+.chapter-exam .cep-tier-tab {
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-surface);
+  border-radius: 999px;
+  padding: 1px 10px;
+  font-size: var(--font-size-caption);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.chapter-exam .cep-tier-tab.is-on.is-basic {
+  background: var(--cep-tier-basic);
+  border-color: var(--cep-tier-basic);
+  color: var(--color-text-primary);
+}
+
+.chapter-exam .cep-tier-tab.is-on.is-mid {
+  background: var(--cep-tier-mid);
+  border-color: var(--cep-tier-mid);
+  color: #fff;
+}
+
+.chapter-exam .cep-tier-tab.is-on.is-hard {
+  background: var(--cep-tier-hard);
+  border-color: var(--cep-tier-hard);
+  color: #fff;
+}
+
+.chapter-exam .cep-qcard-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chapter-exam .cep-qcard-body .qb-question-card {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+
+.chapter-exam .cep-qcard-fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 46px;
+  pointer-events: none;
+  background: linear-gradient(transparent, var(--color-bg-surface));
+}
+
+.chapter-exam .cep-qcard-more {
+  align-self: flex-start;
+}
+
+.chapter-exam .cep-car-dots {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.chapter-exam .cep-car-dots button {
+  width: 10px;
+  height: 10px;
+  min-height: 0;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0.4;
+}
+
+.chapter-exam .cep-car-dots button.is-basic { background: var(--cep-tier-basic); }
+.chapter-exam .cep-car-dots button.is-mid { background: var(--cep-tier-mid); }
+.chapter-exam .cep-car-dots button.is-hard { background: var(--cep-tier-hard); }
+
+.chapter-exam .cep-car-dots button.is-on {
+  opacity: 1;
+  box-shadow: 0 0 0 2px var(--color-bg-surface), 0 0 0 3px var(--color-border-subtle);
+}
+
+/* 窄屏：哑铃与蝴蝶退化为竖排，题号带保留内部横滚。 */
+@media (max-width: 900px) {
+  .chapter-exam .cep-dumb-row,
+  .chapter-exam .cep-how-row {
+    grid-template-columns: minmax(120px, 160px) 1fr;
+  }
+
+  .chapter-exam .cep-dumb-delta,
+  .chapter-exam .cep-how-weak {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .chapter-exam .cep-bfly-axis,
+  .chapter-exam .cep-bfly-row {
+    grid-template-columns: 1fr 120px 1fr;
+  }
 }

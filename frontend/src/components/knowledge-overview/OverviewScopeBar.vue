@@ -3,6 +3,9 @@ import { computed, onMounted, watch } from 'vue'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { useMasteryOverviewStore } from '../../stores/mastery-overview'
+withDefaults(defineProps<{ weakShareNote?: string }>(), {
+  weakShareNote: '明显薄弱占比 = 明显薄弱人数 ÷ 该项有证据学生人数。',
+})
 const curriculum = useCurriculumScopeStore()
 const store = useMasteryOverviewStore()
 const classes = computed(() => [...new Set(store.students.map(s => s.class_name?.trim()).filter((s): s is string => !!s))]
@@ -23,7 +26,7 @@ watch([() => curriculum.loadState, () => curriculum.selectedVolumeId], () => {
     <details class="overview-scope-definition"><summary>口径说明</summary>
       <div>
         <p>有证据学生：该项有作答观测的学生，四档人数之和等于此数。</p>
-        <p>明显薄弱占比 = 明显薄弱人数 ÷ 该项有证据学生人数。</p>
+        <p>{{ weakShareNote }}</p>
         <p>往届内容单列，不计入本册数字。</p>
       </div>
     </details>

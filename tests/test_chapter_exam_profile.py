@@ -228,19 +228,27 @@ def test_coverage_tiers_columns_and_skills(profile_db):
     assert chapter["difficulty"]["midterm"] == {
         "total": 5, "basic": 2, "mid": 1, "hard": 2, "choice": 3, "fill": 1, "written": 1,
     }
+    # 计数列＝难度档，不再有作答形式列。
+    for stage_cells in section["overview"].values():
+        assert set(stage_cells) == {"basic", "mid", "hard"}
     skills = {row["name"]: row for row in section["skills"]}
     own = skills["区分有理数无理数"]
     assert own["key"] == "sk_a" and own["total"] == 5
     assert own["home_section_label"] == ""
-    assert own["cells"]["midterm"]["choice_basic"] == [1, 7]
-    assert own["cells"]["midterm"]["choice_advanced"] == [105]
-    assert own["cells"]["final"]["choice_advanced"] == [10, 11]
+    assert set(own["cells"]["midterm"]) == {"basic", "mid", "hard"}
+    assert own["cells"]["midterm"]["basic"] == [1, 7]
+    assert own["cells"]["midterm"]["hard"] == [105]
+    assert own["cells"]["final"]["mid"] == [10, 11]
+    # 行内 group_count＝本节主考题覆盖的卷组数（与排序口径一致）。
+    assert own["group_count"] == 2
     foreign = skills["平方根求法"]
     assert foreign["total"] == 1
+    assert foreign["group_count"] == 1
     assert foreign["home_section_label"] == "2.2 平方根与立方根"
     unlinked = section["skills"][-1]
     assert unlinked["unlinked"] is True and unlinked["key"] is None
-    assert unlinked["cells"]["midterm"]["written"] == [3]
+    assert unlinked["group_count"] == 0
+    assert unlinked["cells"]["midterm"]["hard"] == [3]
     # 位置按试卷内题号入桶，20 题及以后合并。
     assert own["positions"]["final"]["12"] == [10]
     synthesis_skill = _section(chapter, f"{CH2}#synthesis")["skills"][0]
@@ -364,8 +372,9 @@ def typical_db(tmp_path: Path, question_bank_database):
         (2021, 6, "4", "解答题", 8, "利用平方根性质解含参数方程"),
         (2022, 7, "6", "解答题", 8, "利用立方根性质求参数范围"),
         (2023, 7, "7", "解答题", 8, "平方根与立方根混合求参数"),
-        # sk_C：难档 4 题 4 组；3021 难度高于中位数且对两个成员同模板（居中），
-        # 难度窗口应把它排除 → 4 组 4 题
+        # sk_C：基础 2 题 2 组（入口）；难档 4 题 4 组，3021 超提高上限被排除
+        (3101, 2, "8", "选择题", 2, "数轴上表示实数的位置判断"),
+        (3102, 6, "9", "选择题", 3, "实数与数轴点的对应关系"),
         (3021, 3, "3", "解答题", 9, "探究动点问题的第一部分证明综合讨论第二部分的结论与依据"),
         (3022, 5, "6", "解答题", 8, "探究动点问题的第一部分证明"),
         (3023, 8, "6", "解答题", 8, "综合讨论第二部分的结论与依据"),
@@ -386,12 +395,14 @@ def typical_db(tmp_path: Path, question_bank_database):
         (6001, 1, "6", "填空题", 6.9, "二次根式混合运算题11"),
         (6002, 4, "6", "填空题", 5, "二次根式混合运算题22"),
         (6003, 6, "8", "填空题", 5, "根式加减与数轴表示"),
-        # sk_F：难档 3 题 3 组 [8,9,9]，中位数 9 使低难度窗口不生效，
-        # 但 ≤8.5 绝对上限只留下 7002 → 3 组 3 题
+        # sk_F：基础 2 题 2 组（入口）；难档 3 题 3 组 [8,9,9]，
+        # ≤8.5 绝对上限只留下 7002
+        (7101, 5, "9", "选择题", 2, "估算无理数大小的基础题"),
+        (7102, 8, "10", "选择题", 3, "无理数估算概念辨析"),
         (7001, 1, "5", "解答题", 9, "无理数估算综合应用题11"),
         (7002, 3, "4", "解答题", 8, "无理数估算综合应用题22"),
         (7003, 6, "7", "解答题", 9, "无理数估算综合应用题33"),
-        # sk_H：难档 3 题 3 组，因提高名额已满不入选 → 3 组 3 题
+        # sk_H：难档 3 题 3 组，但无基础/中档入口 → 不成卡 → 3 组 3 题
         (8001, 2, "5", "解答题", 8, "数轴几何综合压轴题11"),
         (8002, 4, "7", "解答题", 8, "数轴几何综合压轴题22"),
         (8003, 8, "9", "解答题", 9, "数轴几何综合压轴题33"),
@@ -439,7 +450,7 @@ def _typical_snapshot() -> dict:
     for qid in [2001, 2002, 2003, 2011, 2012, 2013, 2021, 2022, 2023]:
         hits[qid] = {"sk_B": hit(1, f"b{qid}")}
         point_counts[qid] = 1
-    for qid in [3021, 3022, 3023, 3024]:
+    for qid in [3021, 3022, 3023, 3024, 3101, 3102]:
         hits[qid] = {"sk_C": hit(1, f"c{qid}")}
         point_counts[qid] = 1
     for qid in [4001, 4002, 4003, 4004, 4011, 4012, 4021, 4022, 4023]:
@@ -451,7 +462,7 @@ def _typical_snapshot() -> dict:
     for qid in [6001, 6002, 6003]:
         hits[qid] = {"sk_G": hit(1, f"g{qid}")}
         point_counts[qid] = 1
-    for qid in [7001, 7002, 7003]:
+    for qid in [7001, 7002, 7003, 7101, 7102]:
         hits[qid] = {"sk_F": hit(1, f"f{qid}")}
         point_counts[qid] = 1
     for qid in [8001, 8002, 8003]:
@@ -497,25 +508,79 @@ def _typical_map(result: dict) -> dict:
     }
 
 
-def test_typical_budget_cap_and_pass_order(typical_db):
+def test_typical_one_card_per_key_and_caps(typical_db):
     result = _build_typical(typical_db)
     section = _section(_chapter(result, CH2), S21)
-    assert section["main_count"] == 82          # B = clamp(round(82/9),2,10) = 9
+    assert section["main_count"] == 86
     typical = _typical_map(result)
     picks = [pick for row in typical.values() for pick in row]
-    # 4 个入口 + 2 个变式 + 限额 2 个提高（C/F/H 三个合格难档单元只取 2）= 8 题。
-    assert len(picks) == 8
-    hard = [pick for pick in picks if pick["role"] == "提高变化"]
-    assert len(hard) == 2                       # H = max(1, 9//4) = 2
-    # 发出的技能次序 = 卷组覆盖排序：A(8) B(7) D(6) C(4) G(3,名) F(3,名)。
+    # 一键一卡：A B D C F G 各有基础/中档入口；E 单组、H 只有难档 → 不成卡。
     emitted = [key for key, row in typical.items() if row]
-    assert emitted == ["sk_A", "sk_B", "sk_D", "sk_C", "sk_G", "sk_F"]
+    assert emitted == ["sk_A", "sk_B", "sk_D", "sk_C", "sk_F", "sk_G"]
+    assert len(emitted) <= 10                   # 卡片上限 10，变式与提高不占卡位
+    assert len(emitted) == len(set(emitted))    # 无两卡同键
+    assert len(picks) == 10
+    # 卡内各 pick 难度档互异；提高至多一个且 ≥3 卷组。
+    for row in typical.values():
+        assert len({pick["tier"] for pick in row}) == len(row)
+        assert sum(1 for pick in row if pick["tier"] == "hard") <= 1
+    hard = [pick for pick in picks if pick["role"] == "提高变化"]
+    assert len(hard) == 2                       # C、F 各一，无小节限额
     flat = [pick["role"] for row in typical.values() for pick in row]
     assert flat == ["基础入口", "常见变式", "基础入口", "常见变式",
-                    "基础入口", "提高变化", "常见变式", "提高变化"]
+                    "基础入口", "基础入口", "提高变化",
+                    "基础入口", "提高变化", "常见变式"]
     assert all(pick["same_tier_count"] >= 2 and pick["group_count"] >= 2
                for pick in picks)
     assert all(pick["group_count"] >= 3 for pick in hard)
+
+
+def test_typical_card_cap_and_type_mode_wording():
+    """卡片上限 10（章内综合 4）；reason 措辞随 type_mode 在题型/技能间切换。"""
+    from question_bank.services.chapter_exam_profile import _section_typical
+    recs: dict[int, dict] = {}
+    smain: list[dict] = []
+    for i in range(12):
+        for j in range(2):
+            qid = 1000 * i + j + 1
+            recs[qid] = {
+                "id": qid, "paper": j + 1, "group": j + 1, "stage": "midterm",
+                "year": 2020, "qn": str(j + 1), "type": "choice",
+                "difficulty": 2.0, "tier": "basic", "text": f"第{i}键第{j}题的文本",
+                "points": ["p"], "skill_key": f"k{i:02d}",
+                "skill_hits": {f"k{i:02d}": 1},
+                "skill_name": f"键{i:02d}", "skill_own": True,
+                "section": S21, "chapter": CH2, "direct_chapters": set(),
+            }
+            smain.append(recs[qid])
+    # k00 追加中档单元（3 题 2 组）→ 卡内出现变式 pick，用于变式措辞断言。
+    for j in range(3):
+        qid = 100 + j
+        recs[qid] = {
+            "id": qid, "paper": 3 + j % 2, "group": 3 + j % 2,
+            "stage": "midterm", "year": 2020, "qn": str(3 + j),
+            "type": "fill", "difficulty": 5.0, "tier": "mid",
+            "text": f"第0键中档题{j}的文本", "points": ["p"],
+            "skill_key": "k00", "skill_hits": {"k00": 1},
+            "skill_name": "键00", "skill_own": True,
+            "section": S21, "chapter": CH2, "direct_chapters": set(),
+        }
+        smain.append(recs[qid])
+    tpl_sets = {qid: frozenset() for qid in recs}
+    point_counts = {qid: 1 for qid in recs}
+    full = _section_typical(smain, recs, tpl_sets, point_counts,
+                            synthesis=False, type_mode=False)
+    assert list(full) == [f"k{i:02d}" for i in range(10)]
+    syn = _section_typical(smain, recs, tpl_sets, point_counts,
+                           synthesis=True, type_mode=False)
+    assert len(syn) == 4
+    # 技能口径用“技能”，题型口径用“题型”。
+    assert "常考技能" in full["k00"][0]["reason"]
+    assert full["k00"][1]["reason"].startswith("同技能中档变式")
+    typed = _section_typical(smain, recs, tpl_sets, point_counts,
+                             synthesis=False, type_mode=True)
+    assert "常考题型" in typed["k00"][0]["reason"]
+    assert typed["k00"][1]["reason"].startswith("同题型中档变式")
 
 
 def test_typical_filters_windows_and_tiebreaks(typical_db):
@@ -533,10 +598,14 @@ def test_typical_filters_windows_and_tiebreaks(typical_db):
     assert typical["sk_B"][0]["question_id"] == 2002
     # 变式难度窗口 ±1：sk_B 中档中位数 5，2013（6.7）被排除 → 卷年新者 2012。
     assert typical["sk_B"][1]["question_id"] == 2012
-    # 提高难度窗口：sk_C 难档中位数 8，3021（难度9、居中最高）被排除 → 3023。
-    assert typical["sk_C"][0]["question_id"] == 3023
-    # 提高绝对上限 ≤8.5：sk_F 难档 [8,9,9] 中位数 9 让窗口失效，上限只留 7002。
-    assert typical["sk_F"][0]["question_id"] == 7002
+    # sk_C 基础入口窗口只留 ≤中位数 → 3101；提高上限 ≤8.5 排除 3021 → 3023。
+    assert typical["sk_C"][0]["question_id"] == 3101
+    assert typical["sk_C"][0]["tier"] == "basic"
+    assert typical["sk_C"][1]["question_id"] == 3023
+    assert typical["sk_C"][1]["tier"] == "hard"
+    # sk_F 基础入口 7101；难档 [8,9,9] 上限只留 7002。
+    assert typical["sk_F"][0]["question_id"] == 7101
+    assert typical["sk_F"][1]["question_id"] == 7002
     # 中档单元作入口也用下窗口：sk_G 中位数 5，6001（6.9）被排除 → 6002。
     assert typical["sk_G"][0]["question_id"] == 6002
     assert typical["sk_G"][0]["role"] == "常见变式"
@@ -548,12 +617,12 @@ def test_typical_reason_and_single_group_excluded(typical_db):
     result = _build_typical(typical_db)
     typical = _typical_map(result)
     assert typical["sk_E"] == []                # 只有一个卷组，永不入选
-    assert typical["sk_H"] == []                # 提高名额已满
+    assert typical["sk_H"] == []                # 只有难档单元，无入口不成卡
     assert all(pick["tier"] != "mid" for pick in typical["sk_D"])  # 单组中档不选
     entry = typical["sk_A"][0]
     assert "第1常考技能" in entry["reason"] and "8套试卷" in entry["reason"]
     assert typical["sk_A"][1]["reason"].startswith("同技能中档变式")
-    assert typical["sk_C"][0]["reason"].startswith("出现在")
+    assert typical["sk_C"][1]["reason"].startswith("出现在")
     # 卡片已显示角色，理由文本不得重复角色名。
     assert all(
         pick["role"] not in pick["reason"]
@@ -595,6 +664,6 @@ def test_primary_type_statistics_keep_paper_groups_rates_and_difficulty(profile_
     snapshot['primary_types'][1] = types['sk_b']
     changed = build_chapter_exam_profile(conn, snapshot, volume)
     section = _section(_chapter(changed, CH2), S21)
-    assert 1 in next(row for row in section['skills'] if row['key'] == types['sk_b'])['cells']['midterm']['choice_basic']
-    assert 1 not in next(row for row in section['skills'] if row['key'] == types['sk_a'])['cells']['midterm']['choice_basic']
+    assert 1 in next(row for row in section['skills'] if row['key'] == types['sk_b'])['cells']['midterm']['basic']
+    assert 1 not in next(row for row in section['skills'] if row['key'] == types['sk_a'])['cells']['midterm']['basic']
     conn.close()
