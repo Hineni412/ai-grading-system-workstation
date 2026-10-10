@@ -183,7 +183,7 @@ def _run_knowledge_link_job(
     }
     with connect(db_path) as connection:
         profiles = load_profiles(db_path, ids, connection=connection,
-            data_root=data_root, question_inputs=inputs)
+            data_root=data_root, question_inputs=inputs, verify_source=True)
         protected = {str(row[0]) for row in connection.execute(
             "SELECT DISTINCT evidence_version_id FROM evidence_point_knowledge_links WHERE source_kind='teacher'")
         } if mode in {'missing_skills', 'missing_knowledge'} else set()
@@ -485,7 +485,7 @@ def _run_knowledge_link_job(
         }
         context.raise_if_cancelled()
         if mode in {'missing_skills', 'missing_knowledge'}:
-            current = load_profiles(db_path, [item['question_id'] for item in batch], data_root=data_root)
+            current = load_profiles(db_path, [item['question_id'] for item in batch], data_root=data_root, verify_source=True)
             batch = [item for item in batch if current.get(item['question_id'], {}).get('available')
                      and current[item['question_id']]['evidence_version_id'] == item['evidence_version_id']]
             if not batch:
@@ -699,7 +699,7 @@ def _run_knowledge_link_job(
                     if mode in {'missing_skills', 'missing_only', 'missing_knowledge'}:
                         connection.execute('BEGIN IMMEDIATE')
                     if mode == 'missing_knowledge':
-                        current_profile = load_profiles(db_path, [question_id], connection=connection, data_root=data_root).get(question_id, {})
+                        current_profile = load_profiles(db_path, [question_id], connection=connection, data_root=data_root, verify_source=True).get(question_id, {})
                         active_now = load_active_release(db_path)
                         if (not current_profile.get('available') or current_profile['evidence_version_id'] != item['evidence_version_id']
                                 or active_now is None or active_now.release_id != release_id
@@ -723,7 +723,7 @@ def _run_knowledge_link_job(
                             evidence_version_id=item['evidence_version_id'], graph_release_id=release_id,
                             skip_points=())
                     if mode == 'missing_skills':
-                        current = load_profiles(db_path, [question_id], connection=connection, data_root=data_root).get(question_id, {})
+                        current = load_profiles(db_path, [question_id], connection=connection, data_root=data_root, verify_source=True).get(question_id, {})
                         active_now = load_active_release(db_path)
                         if (not current.get('available') or current['evidence_version_id'] != item['evidence_version_id']
                             or active_now is None or active_now.release_id != release_id

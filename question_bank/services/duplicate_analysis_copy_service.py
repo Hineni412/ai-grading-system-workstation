@@ -55,53 +55,11 @@ _USABLE_STATUSES = {"proposed", "approved"}
 
 # Stored instead of a (text, formulas) tuple when block XML fails to parse.
 _FORMULA_PARSE_FAILED = ("\x00formula-parse-error",)
-_IDENTITY_VERSION: tuple | None = None
-_IDENTITY_VERSION_LOCK = threading.Lock()
-
-
-def _question_identity_version() -> tuple:
-    """Stamps of every module whose code determines these identity values.
-
-    Library versions matter too: the image pipeline (PIL/numpy/cv2) and the
-    formula parsers (lxml/ElementTree via docx_importer) decide the stored
-    digests, so an upgrade invalidates old entries.
-    """
-    global _IDENTITY_VERSION
-    with _IDENTITY_VERSION_LOCK:
-        if _IDENTITY_VERSION is not None:
-            return _IDENTITY_VERSION
-        root = Path(__file__).resolve()
-        files = [
-            root,
-            root.parent / "file_cache.py",
-            root.parent / "asset_path_service.py",
-            root.parent / "rich_content_service.py",
-            root.parent.parent / "document_pipeline" / "math_omml.py",
-            root.parent.parent / "models" / "question.py",
-            root.parent.parent / "importers" / "docx_importer.py",
-        ]
-        stamps = tuple(
-            (str(path), path.stat().st_mtime_ns, path.stat().st_size)
-            for path in files
-        )
-        libraries = []
-        for module_name in ("PIL", "lxml.etree", "numpy", "cv2"):
-            try:
-                module = __import__(module_name)
-                for part in module_name.split(".")[1:]:
-                    module = getattr(module, part)
-                libraries.append((module_name, getattr(module, "__version__", None)))
-            except Exception:
-                libraries.append((module_name, None))
-        _IDENTITY_VERSION = (stamps, tuple(libraries))
-        return _IDENTITY_VERSION
-
-
 def _identity_digest_map(data_root: Path):
     """Persistent identity digests for this data_root; None on any failure."""
     try:
         from question_bank.services.file_cache import question_identity_map
-        return question_identity_map(data_root, _question_identity_version())
+        return question_identity_map(data_root)
     except Exception:
         return None
 

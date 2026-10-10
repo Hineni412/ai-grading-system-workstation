@@ -132,7 +132,8 @@ const routes: RouteRecordRaw[] = [
   {
     path: knowledgeGraphRouteDefinition.path,
     name: knowledgeGraphRouteDefinition.id,
-    component: () => import('../views/KnowledgeGraphView.vue'),
+    redirect: to => ({ name: knowledgeOverviewRouteDefinition.id,
+      query: { ...to.query, view: 'chapters' }, hash: to.hash }),
     meta: {
       title: knowledgeGraphRouteDefinition.title,
       description: knowledgeGraphRouteDefinition.description,
@@ -229,5 +230,12 @@ const routes: RouteRecordRaw[] = [
 ]
 
 export function createAppRouter(history: RouterHistory = createWebHistory()) {
-  return createRouter({ history, routes })
+  const router = createRouter({ history, routes })
+  router.beforeEach(to => {
+    if (to.name === 'training' && (to.query.mode === 'chapter' || to.query.mode === 'student')) {
+      return { name: 'training', query: { ...to.query, mode: 'setup',
+        ...(to.query.mode === 'chapter' ? { pick: 'groups' } : {}) }, hash: to.hash, replace: true }
+    }
+  })
+  return router
 }

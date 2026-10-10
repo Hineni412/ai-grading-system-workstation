@@ -251,6 +251,7 @@ def test_wrong_question_books_preview_export_replay_download_and_read_only(tmp_p
         assert client.post('/api/students/wrong-question-books/preview', json=dict(scope, student_ids=[999999])).status_code == 422
         evidence = client.get(f"/api/students/{students[0]['id']}/exam-results", params={"curriculum_volume_id": scope["curriculum_volume_id"]}).json()
         assert next(item for exam in evidence["sessions"] for item in exam["items"] if item["question_id"] == "Q10(P2)")["bank_question_id"] is not None
+        assert all("step_diagnosis" in item for exam in evidence["sessions"] for item in exam["items"])
         assert [(item["session_name"], item["question_id"]) for item in preview["missing_items"]] == [("测试早期考试", "Q6")]
         selected = client.post('/api/students/wrong-question-books/preview', json=dict(scope, session_ids=[sessions[1]])).json()
         assert selected["question_count"] == 3

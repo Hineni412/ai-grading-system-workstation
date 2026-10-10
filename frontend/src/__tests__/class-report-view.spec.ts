@@ -156,6 +156,20 @@ afterEach(() => {
 
 describe('class report view', () => {
 
+  it.each([true, false])('shows a read warning and keeps the report frame with saved narrative %s', async (hasNarrative) => {
+    const warning = '班级报告保存内容暂无法读取，原文件保留。'
+    apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
+      read_error: warning,
+      ...(hasNarrative ? {} : { narrative: null }),
+    }))
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="class-report-frame"]')).not.toBeNull())
+    expect(host.querySelector('[data-testid="class-report-banner"]')?.textContent).toContain(warning)
+    expect(host.textContent).not.toContain('AI 讲评部分尚未整理')
+    expect(host.querySelector('[data-testid="class-report-frame"]')?.getAttribute('src'))
+      .toContain('/api/sessions/7/class-analysis/report')
+  })
+
   it('renders the data report with a pending banner when no AI narrative exists', async () => {
     apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
       narrative: null,
@@ -179,7 +193,8 @@ describe('class report view', () => {
     await vi.waitFor(() => expect(
       host.querySelector('.class-analysis__banner'),
     ).not.toBeNull())
-    expect(host.textContent).toContain('AI 分析可能与当前成绩不一致')
+    expect(host.textContent).toContain('仍可查看这份报告')
+    expect(host.textContent).toContain('更新本场已保存结果')
     expect(host.textContent).toContain('「AI 整理」')
   })
 

@@ -70,6 +70,7 @@ class RegionDraftStateResponse(BaseModel):
     status: Literal["missing", "compatible", "incompatible", "corrupt"]
     revision: int = Field(ge=0)
     regions: list[dict[str, Any]]
+    reason: str | None = None
 
 
 class QuestionBindingOptionResponse(BaseModel):
@@ -109,6 +110,7 @@ class RegionDraftResponse(BaseModel):
     template_id: int
     template_fingerprint: str
     draft: dict[str, Any] | None = None
+    reason: str | None = None
 
 
 class RegionCommitRequest(BaseModel):

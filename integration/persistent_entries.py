@@ -2,8 +2,8 @@
 
 One small ``*.entry`` file per key under a controlled directory; the file
 name is ``sha256(pickle(key))[:40]`` and the payload is
-``{"version": 1, "key", "signature", "payload"}``. A stored entry is used
-only when its key and signature match the caller's; every read or write
+``{"key", "change_stamp", "payload"}``. A stored entry is used
+only when its request key and change metadata match the caller's; every read or write
 failure is silent and falls back to recomputation.
 """
 
@@ -31,11 +31,11 @@ def _file_state(path: Path) -> tuple:
 
 
 class PersistentEntryStore:
-    """Versioned one-file-per-key store with bounds and silent failure.
+    """One-file-per-request store with bounds and silent failure.
 
     ``signature`` in ``get`` is either the expected value or a callable that
     receives the stored signature and returns the live expected signature (or
-    ``None`` to reject cheaply before the expensive signature is computed).
+    ``None`` if the captured database no longer matches the live change metadata).
     """
 
     def __init__(self, directory: Path, *, max_entries: int, max_bytes: int) -> None:
@@ -52,6 +52,7 @@ class PersistentEntryStore:
         # Verified on-disk state per entry file so a repeated put can skip
         # rewriting identical bytes without loading the file back.
         self._saved: OrderedDict[str, tuple] = OrderedDict()
+        self._saved_bytes = 0
 
     def entry_path(self, key: Any) -> Path:
         digest = hashlib.sha256(
@@ -99,10 +100,9 @@ class PersistentEntryStore:
             path = self.entry_path(key)
             snapshot = self._snapshot(path)
             if (snapshot is None or not isinstance(snapshot, dict)
-                    or snapshot.get("version") != 1
                     or snapshot.get("key") != key):
                 return None
-            stored_signature = snapshot["signature"]
+            stored_signature = snapshot.get("change_stamp", snapshot.get("signature"))
             expected = (signature(stored_signature)
                         if callable(signature) else signature)
             if expected is None or stored_signature != expected:
@@ -117,11 +117,10 @@ class PersistentEntryStore:
         temporary: Path | None = None
         try:
             data = pickle.dumps(
-                {"version": 1, "key": key, "signature": signature,
+                {"key": key, "change_stamp": signature,
                  "payload": payload},
                 pickle.HIGHEST_PROTOCOL,
             )
-            digest = hashlib.sha256(data).digest()
             with self._lock:
                 memo = self._saved.get(str(path))
                 if memo is not None:
@@ -129,7 +128,7 @@ class PersistentEntryStore:
                         current = _file_state(path)
                     except OSError:
                         current = None
-                    if current == memo[0] and signature == memo[1] and digest == memo[2]:
+                    if current == memo[0] and signature == memo[1] and data == memo[2]:
                         self._saved.move_to_end(str(path))
                         return
                 self._dir.mkdir(parents=True, exist_ok=True)
@@ -140,12 +139,19 @@ class PersistentEntryStore:
                 self._drop_snapshots(str(path))
                 try:
                     file_state = _file_state(path)
-                    self._saved[str(path)] = (file_state, signature, digest)
-                    self._saved.move_to_end(str(path))
-                    while len(self._saved) > _SAVED_LIMIT:
-                        self._saved.popitem(last=False)
+                    previous = self._saved.pop(str(path), None)
+                    if previous is not None:
+                        self._saved_bytes -= len(previous[2])
+                    if len(data) <= self._snapshot_max_bytes:
+                        self._saved[str(path)] = (file_state, signature, data)
+                        self._saved_bytes += len(data)
+                    while (len(self._saved) > _SAVED_LIMIT
+                           or self._saved_bytes > self._snapshot_max_bytes):
+                        self._saved_bytes -= len(self._saved.popitem(last=False)[1][2])
                 except OSError:
-                    self._saved.pop(str(path), None)
+                    removed = self._saved.pop(str(path), None)
+                    if removed is not None:
+                        self._saved_bytes -= len(removed[2])
                 self._evict(keep=path)
         except (OSError, pickle.PickleError):
             pass  # Saving a derived cache must not fail the request.
@@ -179,7 +185,9 @@ class PersistentEntryStore:
                     item_size = item.stat().st_size
                     item.unlink()
                     self._drop_snapshots(str(item))
-                    self._saved.pop(str(item), None)
+                    removed = self._saved.pop(str(item), None)
+                    if removed is not None:
+                        self._saved_bytes -= len(removed[2])
                     overflow -= 1
                     size -= item_size
                 except OSError:

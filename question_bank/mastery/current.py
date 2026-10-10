@@ -33,6 +33,7 @@ class TrainingEvidence:
     item_key: tuple = ()
     activity: tuple = ()
     source_id: str = ""
+    display_name: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +65,7 @@ class CurrentMastery:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "display_name": self.display_name,
             "status": self.status,
             "value": self.value,
             "evidence_count": self.evidence_count,
@@ -127,6 +129,13 @@ class CurrentMasteryCalculator:
         # Never fit a page's selected students: the supplied snapshot determines
         # the population; allowed_student_ids only filters the result.
         parent = {r.source_key: r.target_key for r in self.resolver.relations if r.relation_type == "parent"}
+        paths = {}
+
+        def path_for(key):
+            if key not in paths:
+                paths[key] = lineage(key, parent)
+            return paths[key]
+
         from question_bank.recommendation.target_matching import target_index
         kinds = target_index(self.resolver)
         model = MasteryModel(parent, self.parameters, dynamic_nodes={key for key, item in kinds.items() if item.get("kind") in {"topic", "skill"}}).fit(observations)
@@ -136,54 +145,58 @@ class CurrentMasteryCalculator:
             nodes = set()
             for key in observation["links"]:
                 direct[observation["student"], key].append(observation)
-                nodes.update(lineage(key, parent))
+                nodes.update(path_for(key))
             for key in nodes:
                 counts[observation["student"], key].append(observation)
         # Include prior estimates for this semester's unobserved nodes, without
         # expanding each student to every textbook volume in the catalogue.
-        roots = {lineage(key, parent)[-1] for o in observations for key in o["links"]}
+        roots = {path_for(key)[-1] for o in observations for key in o["links"]}
         volume_id = (profile.get("exam_scope") or {}).get("curriculum_volume_id")
         if volume_id:
             from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
             for volume in load_curriculum_catalog()["volumes"]:
                 if volume["id"] == volume_id:
                     roots = {str(c["knowledge_id"]) for c in volume["chapters"]}
-        active_keys = [node.stable_key for node in self.resolver.nodes if lineage(node.stable_key, parent)[-1] in roots]
+        active_keys = [node.stable_key for node in self.resolver.nodes if path_for(node.stable_key)[-1] in roots]
         for student in {o["student"] for o in observations}:
             for key in active_keys:
                 counts.setdefault((student, key), [])
         result = {}
         parameter_version = self.parameters.version
+        week = week_of(as_of)
+        difficulty_slope = model.difficulty_slope
         for (student, key), records in sorted(counts.items()):
             if allowed_student_ids is not None and student not in allowed_student_ids:
                 continue
             node = self.resolver.node(key)
-            if node is None:
-                continue
-            activities = defaultdict(list)
-            for o in sorted(records, key=lambda o: (o["occurred_at"], str(o["activity"]))):
-                activities[o["activity"]].append(o["y"] == 1)
-            perfect = [all(v) for v in activities.values()]
             trend = None
-            if perfect and not perfect[-1] and any(perfect[:-1]):
-                trend = "最近一次出错"
-            elif perfect and perfect[-1] and not all(perfect):
-                streak = next((i for i, v in enumerate(reversed(perfect)) if not v), len(perfect))
-                if streak >= 2:
-                    trend = f"最近 {streak} 次全对 ↑"
-            exam_activities = {(o["activity"], o.get("qkey", o["item"])) for o in records if o["source"] == "exam"}
-            training_activities = {(o["activity"], o["item"][:2]) for o in records if o["source"] == "training"}
-            week = week_of(as_of)
+            if records:
+                activities = defaultdict(list)
+                for o in sorted(records, key=lambda o: (o["occurred_at"], str(o["activity"]))):
+                    activities[o["activity"]].append(o["y"] == 1)
+                perfect = [all(v) for v in activities.values()]
+                if perfect and not perfect[-1] and any(perfect[:-1]):
+                    trend = "最近一次出错"
+                elif perfect and perfect[-1] and not all(perfect):
+                    streak = next((i for i, v in enumerate(reversed(perfect)) if not v), len(perfect))
+                    if streak >= 2:
+                        trend = f"最近 {streak} 次全对 ↑"
+                exam_activities = {(o["activity"], o.get("qkey", o["item"])) for o in records if o["source"] == "exam"}
+                training_activities = {(o["activity"], o["item"][:2]) for o in records if o["source"] == "training"}
+            else:
+                exam_activities = training_activities = ()
+            direct_records = direct.get((student, key), ())
             logit_mean, logit_sd = model.mastery(student, key, week)
             calculated = model.result(student, key, week)
             if not records:
                 calculated["tier"] = "insufficient"
-            result[student, key] = CurrentMastery(stable_key=key, display_name=node.display_name,
+            result[student, key] = CurrentMastery(stable_key=key, display_name=node.display_name if node is not None else next(
+                    (o.get("display_names", {}).get(key) for o in records if o.get("display_names", {}).get(key)), key),
                 status="available", evidence_count=len(records), effective_weight=float(len(records)),
                 parameter_version=parameter_version, exam_evidence_count=len(exam_activities),
-                logit_mean=logit_mean, logit_sd=logit_sd, difficulty_slope=model.difficulty_slope,
-                training_evidence_count=len(training_activities), direct_evidence_count=len(direct.get((student, key), [])),
-                precise_training_evidence_count=sum(o["source"] == "training" for o in direct.get((student, key), [])),
+                logit_mean=logit_mean, logit_sd=logit_sd, difficulty_slope=difficulty_slope,
+                training_evidence_count=len(training_activities), direct_evidence_count=len(direct_records),
+                precise_training_evidence_count=sum(o["source"] == "training" for o in direct_records),
                 observation_count=len(records), full_correct_count=sum(o["y"] == 1 for o in records),
                 recent_trend=trend, **calculated)
         return result
@@ -207,6 +220,8 @@ class CurrentMasteryCalculator:
                     source="training", occurred_at=record.occurred_at, week=week_of(record.occurred_at),
                     d=record.part_difficulty or 5.5, y=record.achieved_points/record.total_points, links={}))
                 observation["links"][key] = observation["links"].get(key, 0.) + record.evidence_weight
+                if record.display_name:
+                    observation.setdefault("display_names", {})[key] = record.display_name
         for observation in grouped.values():
             total = sum(observation["links"].values())
             observation["links"] = {key: value/total for key, value in observation["links"].items()}
@@ -285,68 +300,28 @@ class CurrentMasteryCalculator:
                 rows = scoped_rows
             if not rows:
                 return {}
-            from question_bank.solution_evidence.knowledge_links import load_point_links
-            from question_bank.solution_evidence.part_assessments import (
-                load_profiles,
-                training_part_observations,
-            )
+            from question_bank.solution_evidence.knowledge_links import links_from_embedded
+            from question_bank.solution_evidence.part_assessments import training_part_observations
             source_by_id = {str(row["evidence_id"]): json.loads(row["source_json"]) for row in rows
                             if "source_json" in row.keys()}
-            profiles = load_profiles(self.db_path, sorted({int(source["bank_question_id"]) for source in source_by_id.values() if source.get("bank_question_id")}), connection=connection, data_root=self.data_root)
-            point_links = load_point_links(
-                self.db_path,
-                [str(profile["evidence_version_id"]) for profile in profiles.values() if profile.get("evidence_version_id")],
-                None,
-                connection=connection,
-            )
-            tag_values = defaultdict(list)
-            for tag in connection.execute(
-                    "SELECT question_id,tag_value FROM question_tags WHERE tag_type='knowledge_point' "
-                    "AND question_id IN (SELECT value FROM json_each(?)) ORDER BY id",
-                    (json.dumps(sorted(profiles)),)):
-                tag_values[int(tag["question_id"])].append(str(tag["tag_value"]))
-            current_types = {qid: key for qid, values in tag_values.items()
-                             if (key := question_type_key(values)) and is_training_target(key, self.resolver)}
-            from question_bank.solution_evidence.knowledge_links import KnowledgeLink
-            for question_id, type_key in current_types.items():
-                profile = profiles[question_id]
-                version = str(profile["evidence_version_id"])
-                existing = point_links.get(version, {})
-                point_links[version] = {str(point["evidence_point_id"]): (
-                    *(link for link in existing.get(str(point["evidence_point_id"]), ()) if link.role != "direct"),
-                    KnowledgeLink(type_key, type_key, "direct", 1.0, source_kind="question_type_overlay"))
-                    for part in profile["evidence"].get("parts", ()) for point in part.get("evidence_points", ())}
+            tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             connection_criteria = {}
-            for row in rows:
-                criterion = connection.execute("SELECT question_id,criteria_json,criteria_hash FROM training_criterion_versions WHERE version_id=?", (row["criterion_version_id"],)).fetchone()
-                expected_question = source_by_id.get(str(row["evidence_id"]), {}).get("bank_question_id")
-                if criterion and criterion["criteria_hash"] == row["criterion_hash"] and (not expected_question or int(criterion["question_id"]) == int(expected_question)):
-                    connection_criteria[str(row["evidence_id"])] = json.loads(criterion["criteria_json"])
-                else:
-                    # Older frozen papers can retain their criterion even when
-                    # the live criterion catalogue no longer has that version.
-                    source = source_by_id.get(str(row["evidence_id"]), {})
-                    item = connection.execute(
-                        "SELECT criterion_version_id,criterion_hash,criterion_snapshot_json FROM personalized_paper_items WHERE paper_instance_id=? AND task_item_code=?",
-                        (source.get("paper_instance_id"), row["task_item_code"]),
-                    ).fetchone()
-                    if item and item["criterion_version_id"] == row["criterion_version_id"] and item["criterion_hash"] == row["criterion_hash"]:
-                        snapshot = json.loads(item["criterion_snapshot_json"])
-                        if snapshot.get("version_id") == row["criterion_version_id"] and snapshot.get("criteria_hash") == row["criterion_hash"]:
-                            connection_criteria[str(row["evidence_id"])] = snapshot.get("criteria", {})
             refined = {}
+            material_by_item = {}
             for row in rows:
-                profile = profiles.get(int(source_by_id.get(str(row["evidence_id"]), {}).get("bank_question_id") or 0))
-                if profile is None:
-                    continue
-                frozen_criteria = connection_criteria.get(str(row["evidence_id"]), {})
-                observations = training_part_observations(profile, frozen_criteria, json.loads(row["final_points_json"]),
-                    links=point_links.get(str(profile["evidence_version_id"]), {})) if frozen_criteria else []
-                if observations is None and profile["question_id"] in current_types and profile.get("available"):
-                    source_hash = (frozen_criteria.get("solution_evidence") or {}).get("source_content_hash")
-                    if source_hash and source_hash in {profile.get("current_source_content_hash"), profile.get("evidence_source_hash")}:
-                        continue
-                refined[str(row["evidence_id"])] = observations or []
+                source = source_by_id.get(str(row["evidence_id"]), {})
+                material_key = (source.get("paper_instance_id"), row["task_item_code"], row["criterion_version_id"])
+                if material_key not in material_by_item:
+                    material_by_item[material_key] = _saved_training_material(connection, row, source, tables)
+                frozen_criteria, assessment = material_by_item[material_key]
+                connection_criteria[str(row["evidence_id"])] = frozen_criteria
+                embedded = frozen_criteria.get("solution_evidence") or {}
+                observations = training_part_observations(
+                    {"parts": assessment.get("parts", [])}, frozen_criteria,
+                    json.loads(row["final_points_json"]), links=links_from_embedded(embedded),
+                ) if frozen_criteria else None
+                if observations is not None:
+                    refined[str(row["evidence_id"])] = observations
         finally:
             connection.close()
         result: dict[tuple[str, str], list[TrainingEvidence]] = defaultdict(list)
@@ -359,17 +334,16 @@ class CurrentMasteryCalculator:
                 continue
             if str(row["evidence_id"]) in refined:
                 for observation in refined[str(row["evidence_id"])] or []:
-                    for target in self.resolver.resolve(observation["stable_key"]):
-                        if target_kind_for_key(target.stable_key, self.resolver) != "skill" and not is_training_target(target.stable_key, self.resolver):
-                            continue
+                    for stable_key in _saved_training_target_keys(self.resolver, observation["stable_key"]):
                         observation_id = f"training:{row['submission_id']}:{row['submission_revision']}:{row['task_item_code']}:{observation['part_id']}"
-                        atom_id = f"{observation_id}:target:{observation['point_id']}:{target.stable_key}"
-                        identity = (student_id, target.stable_key, atom_id)
+                        atom_id = f"{observation_id}:target:{observation['point_id']}:{stable_key}"
+                        identity = (student_id, stable_key, atom_id)
                         if identity in seen:
                             continue
                         seen.add(identity)
-                        result[(student_id, target.stable_key)].append(TrainingEvidence(
-                            evidence_id=atom_id, stable_key=target.stable_key,
+                        result[(student_id, stable_key)].append(TrainingEvidence(
+                            evidence_id=atom_id, stable_key=stable_key,
+                            display_name=observation.get("display_name", ""),
                             occurred_at=_parse_datetime(row["occurred_at"]),
                             achieved_points=observation["achieved"], total_points=1,
                             part_difficulty=observation["difficulty"], evidence_weight=observation["weight"],
@@ -386,24 +360,46 @@ class CurrentMasteryCalculator:
                     continue
                 if states[pid] == "not_met" and any(states.get(dep) != "met" for dep in point.get("depends_on", [])):
                     continue
-                question_id = int(source_by_id.get(str(row["evidence_id"]), {}).get("bank_question_id") or 0)
-                key = current_types.get(question_id) or row["stable_key"]
-                for target in self.resolver.resolve(key):
-                    if target_kind_for_key(target.stable_key, self.resolver) != "skill" and not is_training_target(target.stable_key, self.resolver):
-                        continue
-                    atom = (f"training:{row['submission_id']}:{row['submission_revision']}:{row['task_item_code']}:point:{pid}"
-                            if question_id in current_types else f"{row['evidence_id']}:point:{pid}")
-                    identity = student_id, target.stable_key, atom
+                for stable_key in _saved_training_target_keys(self.resolver, str(row["stable_key"])):
+                    atom = f"training:{row['submission_id']}:{row['submission_revision']}:{row['task_item_code']}:point:{pid}"
+                    identity = student_id, stable_key, atom
                     if identity in seen:
                         continue
                     seen.add(identity)
-                    result[student_id, target.stable_key].append(TrainingEvidence(
-                        evidence_id=atom, stable_key=target.stable_key,
+                    result[student_id, stable_key].append(TrainingEvidence(
+                        evidence_id=atom, stable_key=stable_key,
+                        display_name=str(source_by_id.get(str(row["evidence_id"]), {}).get("matched_name") or ""),
                         occurred_at=_parse_datetime(row["occurred_at"]),
                         achieved_points=int(states[pid] == "met"), total_points=1,
                         item_key=("training", source_by_id[str(row["evidence_id"])].get("bank_question_id"), str(row["criterion_version_id"]), pid),
                         activity=("training", str(row["submission_id"]), int(row["submission_revision"])), source_id=str(row["evidence_id"])))
         return result
+
+
+def _saved_training_target_keys(resolver, stable_key: str) -> tuple[str, ...]:
+    targets = resolver.resolve(stable_key)
+    return tuple(dict.fromkeys(target.stable_key for target in targets)) or (stable_key,)
+
+
+def _saved_training_material(connection, row, source, tables):
+    if source.get("paper_instance_id") and "personalized_paper_items" in tables:
+        item = connection.execute(
+            "SELECT * FROM personalized_paper_items WHERE paper_instance_id=? AND task_item_code=?",
+            (source["paper_instance_id"], row["task_item_code"]),
+        ).fetchone()
+        if item and item["criterion_version_id"] == row["criterion_version_id"]:
+            snapshot = json.loads(item["criterion_snapshot_json"])
+            recommendation = json.loads(item["recommendation_snapshot_json"]) if "recommendation_snapshot_json" in item.keys() else {}
+            return snapshot.get("criteria", {}), recommendation.get("part_assessment") or {}
+    if "training_criterion_versions" in tables:
+        criterion = connection.execute(
+            "SELECT question_id,criteria_json FROM training_criterion_versions WHERE version_id=?",
+            (row["criterion_version_id"],),
+        ).fetchone()
+        question_id = source.get("bank_question_id")
+        if criterion and (not question_id or int(criterion["question_id"]) == int(question_id)):
+            return json.loads(criterion["criteria_json"]), {}
+    return {}, {}
 
 
 def aggregate_current_mastery(values):

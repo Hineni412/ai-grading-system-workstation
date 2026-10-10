@@ -2,6 +2,7 @@
 import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
 import { computed, ref, watch } from 'vue'
+import type { KeyStepStats } from '../../api/step-diagnosis'
 
 import {
   classAnalysisApi,
@@ -25,10 +26,12 @@ const props = defineProps<{
   sessionId: number
   questionId: string
   embedded?: boolean
+  stepStats?: KeyStepStats[]
 }>()
 
 const emit = defineEmits<{
   close: []
+  selectKeyStep: [key: string]
 }>()
 
 const preview = ref<ClassQuestionPreview | null>(null)
@@ -51,6 +54,10 @@ const rubricParts = computed(() => {
   }
   return [...parts.values()]
 })
+
+function statsFor(point: ReviewRubricPoint): KeyStepStats | undefined {
+  return props.stepStats?.find((step) => step.step_id === point.step_id && step.part_id === point.part_id)
+}
 
 function dedupedAnswers(point: ReviewRubricPoint): string[] {
   return dedupeAcceptedAnswers(point.accepted_answers, point.standard_answer)
@@ -205,6 +212,14 @@ watch(
                 typeset-text
               />
               <span class="review-answer-panel__point-score">{{ formatScore(point.score) }} 分</span>
+              <span v-if="statsFor(point)" class="review-answer-panel__step-stats">
+                <button v-for="target in statsFor(point)?.key_steps" :key="target.key" type="button"
+                  class="review-answer-panel__key-step" @click.stop.prevent="emit('selectKeyStep', target.key)">{{ target.name }}</button>
+                <span v-if="!statsFor(point)?.key_steps.length">未挂关键步骤</span>
+                <span>独立失分 {{ statsFor(point)?.counts.independent ?? 0 }} 人 · 受前一步影响 {{ statsFor(point)?.counts.carried ?? 0 }} 人 · 整题未作答 {{ statsFor(point)?.counts.blank ?? 0 }} 人</span>
+                <span v-if="statsFor(point)?.counts.uncertain"> · AI 判不准 {{ statsFor(point)?.counts.uncertain }} 人</span>
+                <span v-if="statsFor(point)?.counts.independent_confirmed_ai">其中 {{ statsFor(point)?.counts.independent_confirmed_ai }} 人为教师确认总分，步骤为 AI 判断</span>
+              </span>
             </summary>
             <p v-if="point.answer_kind === 'conditions'" class="review-answer-panel__answer-kind">
               按条件判对，参考答案只是示例。满足全部条件即可得分。

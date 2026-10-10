@@ -503,9 +503,6 @@ class TrainingEvidencePublisher:
                             context["paper_instance_id"]
                         ),
                         "draft_id": str(context["draft_id"]),
-                        "draft_result_version": str(
-                            context["draft_result_version"]
-                        ),
                         "bank_question_id": item["bank_question_id"],
                         "matched_name": target.display_name,
                         "source_paper": str(item["source_paper"]),
@@ -852,7 +849,6 @@ class TrainingEvidencePublisher:
             }
         )
         feedback = {
-            "schema_version": "training-feedback-v1",
             "feedback_id": feedback_id,
             "submission_id": submission_id,
             "submission_revision": submission_revision,
@@ -1205,7 +1201,7 @@ class TrainingEvidencePublisher:
             "status": "draft",
             "draft_id": str(draft["draft_id"]),
             "revision": int(draft["revision"]),
-            "result_version": str(draft["result_version"]),
+            "generated_at": draft.get("generated_at"),
             "message": "已沿用原训练范围和册别限制，为该学生生成个性化补练草稿；教师确认后才能形成正式训练卷。",
             "changes": changes,
             "student": student,

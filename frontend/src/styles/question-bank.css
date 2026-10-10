@@ -1188,8 +1188,7 @@
   justify-content: space-between;
 }
 
-.criterion-point__rules summary,
-.criterion-history summary {
+.criterion-point__rules summary {
   color: var(--color-text-secondary);
   cursor: pointer;
   font-size: var(--font-size-caption);
@@ -1240,38 +1239,6 @@
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
-}
-
-.criterion-history {
-  border-top: 1px solid var(--color-border-subtle);
-  margin-top: 13px;
-  padding-top: 11px;
-}
-
-.criterion-history ol {
-  display: grid;
-  gap: 6px;
-  list-style: none;
-  margin: 10px 0 0;
-  padding: 0;
-}
-
-.criterion-history li {
-  align-items: center;
-  color: var(--color-text-secondary);
-  display: grid;
-  font-size: var(--font-size-caption);
-  gap: 8px;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
-}
-
-.criterion-history li > span {
-  color: var(--color-accent);
-  font-family: var(--font-family-mono);
-}
-
-.criterion-history li strong {
-  color: var(--color-text-primary);
 }
 
 .qb-modal-layer {

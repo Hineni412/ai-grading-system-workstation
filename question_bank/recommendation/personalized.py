@@ -4,10 +4,11 @@ import hashlib
 import json
 import math
 import re
+import secrets
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from itertools import combinations
@@ -16,7 +17,7 @@ from statistics import median
 from typing import Any, Literal
 
 from integration.data_generation import commit_generation
-from integration.result_cache import ResultCache
+from integration.result_cache import ResultCache, cache_values as _cache_values
 from question_bank.current_knowledge import (
     CurrentKnowledgeResolver,
     CurrentKnowledgeUnavailable,
@@ -61,10 +62,9 @@ from question_bank.training_criteria import (
     TrainingCriterionModule,
     usable_training_criterion,
 )
+
 from question_bank.training_criteria.analysis import source_content_hash_reuse
 
-ENGINE_VERSION = "personalized-recommendation-v27-skill-mastery-model"
-GROUPING_VERSION = "chapter-skill-quality-v9-shared-paper"
 GROUP_MIN_SHARED_RATIO = 0.5
 GROUP_MAX_AIM_GAP = 2.0
 GROUP_MIN_RETENTION = 0.75
@@ -83,6 +83,21 @@ _GROUP_MATCHING_CACHE = ResultCache(limit=1, max_bytes=64 * 1024 * 1024)
 Stage = Literal["direct", "prerequisite", "transfer"]
 Action = Literal["lock", "unlock", "exclude", "replace"]
 _PRACTICE_TAG_KINDS = ("method", "model", "thought", "ability", "special_type")
+
+
+@dataclass(frozen=True, slots=True)
+class _MatchingCacheValue:
+    value: tuple
+    _value_hash: int = field(init=False, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_value_hash", hash(self.value))
+
+    def __hash__(self) -> int:
+        return self._value_hash
+
+    def __reduce__(self):
+        return type(self), (self.value,)
 
 
 class PersonalizedRecommendationError(RuntimeError):
@@ -196,7 +211,7 @@ class PersonalizedRecommendationConfig:
     def to_dict(self) -> dict[str, Any]:
         return {
             **{key: value for key, value in asdict(self).items()
-               if key not in {"expected_minutes", "difficulty_min", "training_intent"}},
+               if key not in {"expected_minutes", "difficulty_min", "training_intent", "group_source_version"}},
             "target_keys": list(self.target_keys),
             "scope_keys": list(self.scope_keys),
             "group_scope_keys": list(self.group_scope_keys),
@@ -727,7 +742,7 @@ def _direct_preference(candidate: Mapping[str, Any], key: str, ref: Mapping[str,
 @lru_cache(maxsize=65536)
 def _fixed_preference(candidate_input: str, key: str, source_input: str, task_input: str,
                       similarity: float = 0.0) -> float:
-    """Content-only score; source versions and student state are checked outside."""
+    """Content-only score; saved evidence ownership and student state are checked outside."""
     return _direct_preference(json.loads(candidate_input), key, json.loads(source_input),
                               tasks=json.loads(task_input), similarity=similarity)
 
@@ -785,10 +800,12 @@ def _valid_difficulty_features(question: Mapping[str, Any], rows: Sequence[Any],
     from question_bank.models.tag_schema import PART_FEATURE_ORDER
     result = []
     for row in rows:
-        if not standard_difficulty.difficulty_source_content_hash_matches(
-                question, str(row["source_content_hash"]), analysis_input=analysis_input):
+        try:
+            payload = json.loads(row["features_json"])
+        except (TypeError, ValueError):
             continue
-        payload = json.loads(row["features_json"])
+        if not isinstance(payload, dict):
+            continue
         result.append({"part_id": row["part_id"],
                        "features": {name: payload[name] for name in PART_FEATURE_ORDER if name in payload}})
     return result
@@ -1563,9 +1580,13 @@ def _improve_personal_selection(groups, selected, question_count, config, audit,
         return entry["candidate"].get("duplicate_identity") or entry["candidate"]["question_id"]
     def covered(paper, values):
         return set().union(*(values[identity(e)] for e, _ in paper)) if paper else set()
-    def quality(needs, complete):
+    @lru_cache(maxsize=8192)
+    def quality_value(needs, complete):
         return (round(sum(priorities[n] for n in needs), 12),
                 round(sum(priorities[n] for n in complete), 12), len(needs), len(complete))
+    def quality(needs, complete):
+        # Keep set iteration order because floating-point sums depend on it.
+        return quality_value(tuple(needs), tuple(complete))
     def associated(paper, complete=False):
         return {_loss_need_id(e) for _, group in paper for e in group
                 if _is_core(e) and e.get("practice_purpose") == "remediation"
@@ -1574,15 +1595,20 @@ def _improve_personal_selection(groups, selected, question_count, config, audit,
         counts, total = _remediation_section_counts(paper)
         cap = math.ceil(2 * total / 3)
         return sum(max(0, count - cap) for count in counts.values())
-    def earlier_type_choices(group, printed):
-        if not any(_match_layer_band(e) is not None for e in group):
+    layered_groups = {qid: any(_match_layer_band(e) is not None for e in group)
+                      for qid, group in groups.items()}
+    def earlier_type_choices(qid, printed, quota_state, layer_choices):
+        if not layered_groups[qid]:
             return True
-        usable = [other for other in groups.values() if _paper_diversity_allowed(
-            other[0]["candidate"], printed, config, pair_memo=pair_memo)]
-        return any(other is group for other in _prefer_type_candidate_layers(usable))
+        if "preferred" not in layer_choices:
+            usable = [other for other in groups.values() if _paper_diversity_allowed(
+                other[0]["candidate"], printed, config, pair_memo=pair_memo, quota_state=quota_state)]
+            layer_choices["preferred"] = {id(other) for other in _prefer_type_candidate_layers(usable)}
+        return id(groups[qid]) in layer_choices["preferred"]
     representatives = {qid: min(group, key=lambda e: (not _is_core(e),
         e.get("practice_purpose") != "remediation", *_entry_fit_rank(e), e["student_id"], e["key"]))
         for qid, group in groups.items()}
+    fit_ranks = {qid: _entry_fit_rank(entry) for qid, entry in representatives.items()}
     joint_checks = 0
     while True:
         current = covered(selected, coverage)
@@ -1597,6 +1623,8 @@ def _improve_personal_selection(groups, selected, question_count, config, audit,
             kept = covered(remaining, coverage)
             kept_full = covered(remaining, full)
             printed = [e["candidate"] for e, _ in remaining]
+            quota_state = _paper_quota_state(printed, pair_memo) if pair_memo is not None else None
+            layer_choices = {}
             section_counts, remediation_count = _remediation_section_counts(remaining)
             for qid, group in groups.items():
                 if qid in selected_ids:
@@ -1607,7 +1635,7 @@ def _improve_personal_selection(groups, selected, question_count, config, audit,
                 entry = representatives[qid]
                 rank = (*(-v for v in new_quality),
                         _type_section_penalty(entry, section_counts, remediation_count),
-                        *_entry_fit_rank(entry),
+                        *fit_ranks[qid],
                         entry["candidate"]["question_id"], position)
                 if best is not None and rank >= best[0]:
                     continue
@@ -1618,9 +1646,10 @@ def _improve_personal_selection(groups, selected, question_count, config, audit,
                 # paper when no other-section candidates are available.
                 if position >= 0 and section_excess(replacement) > current_section_excess:
                     continue
-                if not earlier_type_choices(group, printed):
+                if not earlier_type_choices(qid, printed, quota_state, layer_choices):
                     continue
-                if _paper_diversity_allowed(entry["candidate"], printed, config, pair_memo=pair_memo):
+                if _paper_diversity_allowed(entry["candidate"], printed, config,
+                                             pair_memo=pair_memo, quota_state=quota_state):
                     best = (rank, replacement, [selected[position]] if position >= 0 else [], [(entry, group)])
         if best is None and len(selected) >= 2 and joint_checks < 8000:
             # Search candidates which add a missing demand first. A fixed budget
@@ -1633,6 +1662,8 @@ def _improve_personal_selection(groups, selected, question_count, config, audit,
                 remaining = [value for i, value in enumerate(selected) if i not in positions]
                 kept, kept_full = covered(remaining, coverage), covered(remaining, full)
                 printed = [e["candidate"] for e, _ in remaining]
+                quota_state = _paper_quota_state(printed, pair_memo) if pair_memo is not None else None
+                layer_choices, extended_papers = {}, {}
                 section_counts, remediation_count = _remediation_section_counts(remaining)
                 for left, right in combinations(choices, 2):
                     if joint_checks >= 8000:
@@ -1652,12 +1683,21 @@ def _improve_personal_selection(groups, selected, question_count, config, audit,
                     replacement = remaining + additions
                     if section_excess(replacement) > current_section_excess:
                         continue
-                    if not all(earlier_type_choices(group, printed + [previous[0]["candidate"] for previous in additions[:i]])
-                               for i, (_entry, group) in enumerate(additions)):
+                    if not earlier_type_choices(left, printed, quota_state, layer_choices):
                         continue
-                    if not all(_paper_diversity_allowed(e["candidate"], printed + [
-                        previous[0]["candidate"] for previous in additions[:i]], config, pair_memo=pair_memo)
-                        for i, (e, _) in enumerate(additions)):
+                    if left not in extended_papers:
+                        with_left = printed + [representatives[left]["candidate"]]
+                        with_left_quota = (_paper_quota_state(with_left, pair_memo)
+                                           if pair_memo is not None else None)
+                        extended_papers[left] = with_left, with_left_quota, {}
+                    with_left, with_left_quota, with_left_layers = extended_papers[left]
+                    if not earlier_type_choices(right, with_left, with_left_quota, with_left_layers):
+                        continue
+                    if not _paper_diversity_allowed(additions[0][0]["candidate"], printed, config,
+                                                    pair_memo=pair_memo, quota_state=quota_state):
+                        continue
+                    if not _paper_diversity_allowed(additions[1][0]["candidate"], with_left, config,
+                                                    pair_memo=pair_memo, quota_state=with_left_quota):
                         continue
                     best = (rank, replacement, [selected[i] for i in positions], additions)
                 if joint_checks >= 8000:
@@ -1784,6 +1824,13 @@ class PersonalizedRecommendationModule:
         violations = self.paper_rule_violations(question_ids, rules, recent_question_ids=recent_question_ids)
         if violations:
             raise ValueError(violations[0]["message"])
+        loader = QuestionAnalysisInputLoader(db_path=self.db_path, data_root=self.data_root)
+        questions = loader.load(list(dict.fromkeys(question_ids)), load_failures={})
+        workspaces = TrainingCriterionModule(self.db_path, data_root=self.data_root).read_many(
+            questions, verify_source=True)
+        if any(qid not in workspaces or usable_training_criterion(workspaces[qid]) is None
+               for qid in dict.fromkeys(question_ids)):
+            raise ValueError("所选题目的训练资料需要核对，已有草稿仍可打开。")
 
     def paper_rule_violations(self, question_ids: Sequence[int], rules: Mapping[str, Any] | None = None, *, recent_question_ids: Sequence[int] = (), _candidate_cache: dict | None = None) -> list[dict[str, Any]]:
         """Apply the same whole-paper limits when a teacher assembles a practice."""
@@ -1843,7 +1890,7 @@ class PersonalizedRecommendationModule:
         """Read-only preview using the same source and eligibility rules as drafts."""
         students = diagnosis.get("students", [])
         if not students:
-            return {"version": GROUPING_VERSION, "groups": [], "unassigned": [], "selection": None,
+            return {"groups": [], "unassigned": [], "selection": None,
                     "scope_keys": list(config.group_scope_keys), "warnings": ["当前范围没有学生。"],
                     "summary": {"student_count": 0, "students_with_needs": 0, "unlinked_loss_count": 0,
                                 "grouped_student_count": 0, "group_count": 0}}
@@ -1862,10 +1909,13 @@ class PersonalizedRecommendationModule:
         if not leaves or not set(leaves) <= governed:
             raise ValueError("grouping requires a current chapter or section")
         mastery = self._mastery_snapshot(normalized)
+        mastery_by_student: dict[str, dict[str, Any]] = {}
+        for (sid, key), point in mastery.items():
+            mastery_by_student.setdefault(sid, {})[key] = point
         for profile in normalized["students"]:
             by_key = {p["knowledge_key"]: p for p in profile["weak_points"]}
-            for (sid, key), point in mastery.items():
-                if sid != profile["student_id"] or key not in leaves:
+            for key, point in mastery_by_student.get(profile["student_id"], {}).items():
+                if key not in leaves:
                     continue
                 if key not in by_key:
                     by_key[key] = {"knowledge_key": key, "knowledge_point": point["display_name"],
@@ -1874,7 +1924,7 @@ class PersonalizedRecommendationModule:
                 by_key[key]["source_question_refs"] = point.get("source_question_refs", [])
         needs = _group_needs(normalized, leaves, cap=config.difficulty_max, resolver=self.current_knowledge, volume_id=volume_id)
         need_sids = sorted(sid for sid in needs if needs[sid])
-        candidates, source_version, recent = (), "", {}
+        candidates, recent = (), {}
         metadata = self._source_practice_metadata(normalized)
         links = self._links_for_metadata(metadata)
         part_cache: dict = {}
@@ -1883,12 +1933,12 @@ class PersonalizedRecommendationModule:
                                  lambda r: self._enrich_source_ref(r, metadata, links, part_cache), resolver=self.current_knowledge)
             for student in normalized["students"])
         # All borrowed inputs below are read-only for this grouping call.
-        # Fingerprints retain their objects and never survive the request.
-        evaluation_memo: dict = {"group_input_hashes": {}}
+        # Cached input values retain their objects only within this request.
+        evaluation_memo: dict = {"group_input_values": {}}
         # Read question bodies whenever any member need could be served; a
         # coarse-only diagnosis needs no question pool.
         if need_sids or member_ids:
-            candidates, relations, source_version = self._source_snapshot(
+            candidates, relations, _ = self._source_snapshot(
                 excluded_question_ids=excluded, knowledge_keys=leaves, candidate_config=config,
             )
             recent = self._recent_question_ids(tuple(str(student["student_id"]) for student in students), diagnosis=normalized, graded_activities=graded_activities, recent_activity_count=config.recent_activity_count, purpose=config.purpose)
@@ -1922,7 +1972,7 @@ class PersonalizedRecommendationModule:
                            if not _selection_only else [])
         groups = [self._chapter_group_summary(
             diagnosis=normalized, members=members, targets=(), needs=needs, config=config,
-            candidates=candidates, relations=relations, recent=recent, excluded=excluded, source_version=source_version, metadata=metadata,
+            candidates=candidates, relations=relations, recent=recent, excluded=excluded, metadata=metadata,
             mastery=mastery, graded_activities=graded_activities, evaluation_memo=evaluation_memo,
             personal_coverage=personal_coverage,
         ) for members in grouped_members]
@@ -1939,12 +1989,11 @@ class PersonalizedRecommendationModule:
                 raise ValueError("group members are outside the selected student scope")
             selection = self._chapter_group_summary(
                 diagnosis=normalized, members=tuple(sorted(set(member_ids))), targets=target_keys, needs=needs, config=config,
-                candidates=candidates, relations=relations, recent=recent, excluded=excluded, source_version=source_version, metadata=metadata,
+                candidates=candidates, relations=relations, recent=recent, excluded=excluded, metadata=metadata,
                 mastery=mastery, graded_activities=graded_activities, evaluation_memo=evaluation_memo,
             )
-        return {"version": GROUPING_VERSION, "scope_keys": list(config.group_scope_keys),
+        return {"scope_keys": list(config.group_scope_keys),
                 "source_scope_revision": str(diagnosis.get("scope", {}).get("scope_revision") or ""),
-                "mastery_parameter_version": CURRENT_MASTERY_PARAMETERS.version,
                 "groups": groups, "selection": selection,
                 "summary": {"student_count": len(normalized["students"]),
                             "students_with_needs": sum(1 for student in normalized["students"]
@@ -1976,23 +2025,29 @@ class PersonalizedRecommendationModule:
         methods = (self.evaluate_candidates, self._candidate_entries)
         source_identity = (
             str(self.db_path.resolve()), str(self.data_root.resolve()),
-            self.current_knowledge.release_id, self.current_knowledge.content_hash,
-            commit_generation(self.db_path), ENGINE_VERSION,
+            self.current_knowledge.release_id, commit_generation(self.db_path),
             tuple(id(getattr(method, "__func__", method)) for method in methods),
         )
         # Compare values, not pickle's object-alias layout: a snapshot restored
         # from its own cache must match an equal freshly constructed snapshot.
-        signature = _hash_payload((
+        signature = _cache_values((
             source_identity, diagnosis, constraints, candidates,
             [(owner, key, value) for (owner, key), value in sorted(mastery.items())],
             source_metadata, {sid: sorted(ids) for sid, ids in recent.items()}, sorted(excluded),
         ))
+        # The signature already contains each complete profile value. Borrow
+        # those values only for this immutable grouping request, so matching
+        # and cards do not traverse the same student again.
+        profile_values = dict(signature[1])["students"]
+        input_values = evaluation_memo.setdefault("group_input_values", {})
+        for profile, value in zip(diagnosis["students"], profile_values, strict=True):
+            input_values[id(profile)] = (profile, value)
 
         def compute():
-            # The owner also needs its request-local fingerprints for cards;
+            # The owner also needs its request-local values for cards;
             # only pools and target records enter the cross-request cache.
             memo = evaluation_memo
-            memo.setdefault("group_input_hashes", {})
+            memo.setdefault("group_input_values", {})
             result = self.evaluate_candidates(
                 diagnosis=diagnosis, config=config, candidates=candidates, mastery=mastery,
                 source_metadata=source_metadata, recent=recent, excluded=excluded,
@@ -2000,7 +2055,7 @@ class PersonalizedRecommendationModule:
             )
             return result["pools"], memo["target_evaluations"]
 
-        pools, records = _GROUP_MATCHING_CACHE.get_or_compute(signature, compute)
+        pools, records = _GROUP_MATCHING_CACHE.get_or_compute(_MatchingCacheValue(signature), compute)
         # Pickle hits are independent objects. Restore this request's candidate
         # identities for pair selection and its target-record keys for cards.
         by_id = {candidate["question_id"]: candidate for candidate in candidates}
@@ -2018,7 +2073,7 @@ class PersonalizedRecommendationModule:
         self, *, diagnosis: Mapping[str, Any], members: Sequence[str], targets: Sequence[str],
         needs: Mapping[str, Mapping[str, Any]], config: PersonalizedRecommendationConfig,
         candidates: Sequence[dict[str, Any]], relations: Sequence[Mapping[str, Any]],
-        recent: Mapping[str, set[int]], excluded: set[int], source_version: str,
+        recent: Mapping[str, set[int]], excluded: set[int],
         metadata: Mapping[int, Mapping[str, Any]],
         mastery: Mapping[tuple[str, str], Mapping[str, Any]],
         graded_activities: Sequence[Mapping[str, Any]] | None = None,
@@ -2092,40 +2147,8 @@ class PersonalizedRecommendationModule:
             warnings.append("范围内新练习不计作已证实的薄弱目标覆盖。")
         similarities = [_group_similarity(needs[left], needs[right])
                         for index, left in enumerate(members) for right in members[index + 1:]]
-        # Scope-specific diagnoses can be calculated seconds apart. The existing
-        # source revision covers raw scores, training records and parameters;
-        # natural time decay is not a teacher/source edit. Build the hashed
-        # subset without mutating the shared diagnosis: each weak_points entry
-        # drops the volatile mastery/effective_weight keys during construction.
-        selected = {
-            **diagnosis,
-            **({"_graded_activities": graded_activities} if graded_activities is not None else {}),
-            "students": [
-                {
-                    **profiles[sid],
-                    "weak_points": [
-                        {
-                            key: value
-                            for key, value in point.items()
-                            if key not in ("mastery", "effective_weight")
-                        }
-                        for point in profiles[sid]["weak_points"]
-                    ],
-                }
-                for sid in sorted(members)
-            ],
-        }
-        settings = config.to_dict()
-        settings.pop("group_source_version", None)
-        settings["target_keys"] = list(keys)
-        settings["scope_keys"] = []
-        selected_source_ids = {int(ref.get("bank_question_id") or 0) for student in selected["students"] for point in student["weak_points"] for ref in _loss_refs(point)}
-        version = _hash_payload({"version": GROUPING_VERSION, "source": source_version,
-                                 "loss_sources": {qid: metadata[qid] for qid in sorted(selected_source_ids) if qid in metadata},
-                                 "diagnosis": selected, "settings": settings,
-                                 "recent": sorted(shared_recent), "day": _day_clock(self.clock()).isoformat()})
-        return {"group_id": _hash_payload({"members": sorted(members), "targets": keys})[:20],
-                "source_version": version, "members": [
+        group_id = ":".join((",".join(sorted(members)), ",".join(sorted(keys))))
+        return {"group_id": group_id, "members": [
                     {"student_id": sid, "student_name": profiles[sid]["student_name"],
                      "student_code": profiles[sid]["student_code"], "class_id": profiles[sid]["class_id"],
                      "evidence_count": sum(needs[sid][key]["evidence_count"] for key in keys if key in needs[sid]),
@@ -2174,58 +2197,55 @@ class PersonalizedRecommendationModule:
             request['assembly_snapshot'] = dict(assembly_snapshot)
         if graded_activities is not None:
             request["graded_activities"] = graded_activities
-        # Old stored requests embedded the activities inside the diagnosis; the
-        # fingerprint keeps hashing that payload so a retry maps to its draft.
-        input_fingerprint = _hash_payload(
-            {
-                "diagnosis": (
-                    {**normalized_diagnosis, "_graded_activities": graded_activities}
-                    if graded_activities is not None
-                    else normalized_diagnosis
-                ),
-                "config": request["config"],
-                **({'assembly_snapshot': dict(assembly_snapshot)} if assembly_snapshot is not None else {}),
-            }
+        # Old retries hash activities inside the diagnosis. Freeze that large
+        # JSON field once; legacy configurations change only the small prefix.
+        fingerprint_diagnosis = (
+            {**normalized_diagnosis, "_graded_activities": graded_activities}
+            if graded_activities is not None else normalized_diagnosis
         )
-        fingerprint_payloads = [{
-            "diagnosis": ({**normalized_diagnosis, "_graded_activities": graded_activities}
-                          if graded_activities is not None else normalized_diagnosis),
-            "config": request["config"],
-            **({'assembly_snapshot': dict(assembly_snapshot)} if assembly_snapshot is not None else {}),
-        }]
-        if config.max_unmeasured_questions == 0:
-            fingerprint_payloads.append({
-                "diagnosis": ({**normalized_diagnosis, "_graded_activities": graded_activities}
-                              if graded_activities is not None else normalized_diagnosis),
-                "config": {key: value for key, value in request["config"].items() if key != "max_unmeasured_questions"},
-                **({'assembly_snapshot': dict(assembly_snapshot)} if assembly_snapshot is not None else {}),
-            })
-        if (config.purpose == "training" and config.max_questions_per_skill == 1
-                and config.max_written_questions == 2 and config.recent_activity_count == 3
-                and config.difficulty_max <= 8):
-            legacy_config = {key: value for key, value in request["config"].items()
-                             if key not in {"purpose", "max_questions_per_skill", "max_written_questions"}}
-            fingerprint_payloads.append({
-                "diagnosis": ({**normalized_diagnosis, "_graded_activities": graded_activities}
-                              if graded_activities is not None else normalized_diagnosis),
-                "config": legacy_config,
-            })
-            if config.max_unmeasured_questions == 0:
-                fingerprint_payloads.append({
-                    "diagnosis": ({**normalized_diagnosis, "_graded_activities": graded_activities}
-                                  if graded_activities is not None else normalized_diagnosis),
-                    "config": {key: value for key, value in legacy_config.items() if key != "max_unmeasured_questions"},
-                })
-        if config.max_consolidation_questions == 0:
-            fingerprint_payloads += [{**payload, "config": {
-                key: value for key, value in payload["config"].items()
-                if key != "max_consolidation_questions"}}
-                for payload in list(fingerprint_payloads)]
-        compatible_fingerprints = {_hash_payload(payload) for payload in fingerprint_payloads}
+        diagnosis_json = _json(fingerprint_diagnosis)
+        assembly_json = _json(dict(assembly_snapshot)) if assembly_snapshot is not None else None
+
+        def fingerprint_for(config_values, include_assembly=True):
+            prefix = (f'"assembly_snapshot":{assembly_json},'
+                      if include_assembly and assembly_json is not None else "")
+            return _hash_json("{" + prefix + '"config":' + _json(config_values)
+                              + ',"diagnosis":' + diagnosis_json + "}")
+
+        input_fingerprint = fingerprint_for(request["config"])
+        compatible_fingerprints = None
+
+        def matches_fingerprint(saved):
+            nonlocal compatible_fingerprints
+            if saved == input_fingerprint:
+                return True
+            if compatible_fingerprints is None:
+                variants = [(request["config"], True)]
+                if config.max_unmeasured_questions == 0:
+                    variants.append(({key: value for key, value in request["config"].items()
+                                      if key != "max_unmeasured_questions"}, True))
+                if (config.purpose == "training" and config.max_questions_per_skill == 1
+                        and config.max_written_questions == 2 and config.recent_activity_count == 3
+                        and config.difficulty_max <= 8):
+                    legacy = {key: value for key, value in request["config"].items()
+                              if key not in {"purpose", "max_questions_per_skill", "max_written_questions"}}
+                    variants.append((legacy, False))
+                    if config.max_unmeasured_questions == 0:
+                        variants.append(({key: value for key, value in legacy.items()
+                                          if key != "max_unmeasured_questions"}, False))
+                if config.max_consolidation_questions == 0:
+                    variants += [({key: value for key, value in values.items()
+                                   if key != "max_consolidation_questions"}, include_assembly)
+                                 for values, include_assembly in list(variants)]
+                compatible_fingerprints = {input_fingerprint}
+                compatible_fingerprints.update(fingerprint_for(values, include_assembly)
+                                              for values, include_assembly in variants[1:])
+            return saved in compatible_fingerprints
+
         existing = self._by_request_token(token)
         if existing is not None:
             existing_fingerprint = str(existing.pop("_input_fingerprint"))
-            if existing_fingerprint not in compatible_fingerprints:
+            if not matches_fingerprint(existing_fingerprint):
                 raise RecommendationRequestConflict(
                     "recommendation request token was reused"
                 )
@@ -2238,8 +2258,6 @@ class PersonalizedRecommendationModule:
                                           _selection_only=True)["selection"]
             if not checked or not checked["ready"]:
                 raise ValueError("selected group no longer has compatible common targets")
-            if not config.group_source_version or checked["source_version"] != config.group_source_version:
-                raise RecommendationSourceChanged("group evidence or source has changed; refresh the group")
 
         excluded = set()
         snapshot_generation = commit_generation(self.db_path)
@@ -2250,10 +2268,7 @@ class PersonalizedRecommendationModule:
             knowledge_keys=candidate_scope,
             candidate_config=config,
         )
-        candidates, relations, base_source_version = snapshot
-        base_source_version = _hash_payload({"bank": base_source_version, "loss_sources": self._source_practice_metadata(normalized_diagnosis),
-            **({"class_question_totals": normalized_diagnosis["_type_class_question_totals"]}
-               if "_type_class_question_totals" in normalized_diagnosis else {})})
+        candidates, relations, _ = snapshot
         mastery = self._mastery_snapshot(normalized_diagnosis)
         recent = self._recent_question_ids(
             tuple(
@@ -2263,12 +2278,6 @@ class PersonalizedRecommendationModule:
             completed_paper_instance_id=completed_paper_instance_id,
         )
         request["recent_question_ids"] = {sid: sorted(ids) for sid, ids in recent.items()}
-        source_version = _context_source_version(
-            base_source_version,
-            as_of=_day_clock(self.clock()),
-            recent=recent,
-            excluded_question_ids=excluded,
-        )
         if assembly_snapshot is not None:
             self.validate_paper_questions(assembly_snapshot['question_ids'], request['config'])
             if any(q in ids for ids in recent.values() for q in assembly_snapshot['question_ids']):
@@ -2279,22 +2288,13 @@ class PersonalizedRecommendationModule:
                 diagnosis=normalized_diagnosis, config=config, candidates=candidates,
                 relations=relations, mastery=mastery, recent=recent, excluded_question_ids=excluded,
             )
-        result_version = _hash_payload(
-            {"source_version": source_version, "draft": draft}
-        )
-        draft_id = _hash_payload(
-            {
-                "request_token": token,
-                "input_fingerprint": input_fingerprint,
-            }
-        )
+        draft_id = secrets.token_hex(32)
         stored = {
             "draft_id": draft_id,
             "status": "draft",
             "revision": 1,
-            "result_version": result_version,
-            "engine_version": ENGINE_VERSION,
-            "source_version": source_version,
+            "generated_at": self.clock().isoformat(),
+            "needs_update": False,
             **draft,
             "history": [
                 {
@@ -2329,7 +2329,7 @@ class PersonalizedRecommendationModule:
                 (token,),
             ).fetchone()
             if row is not None:
-                if str(row["input_fingerprint"]) not in compatible_fingerprints:
+                if not matches_fingerprint(str(row["input_fingerprint"])):
                     raise RecommendationRequestConflict(
                         "recommendation request token was reused"
                     )
@@ -2346,9 +2346,9 @@ class PersonalizedRecommendationModule:
                     draft_id,
                     token,
                     input_fingerprint,
-                    result_version,
-                    ENGINE_VERSION,
-                    source_version,
+                    draft_id,
+                    "",
+                    draft_id,
                     encoded_request,
                     encoded_draft,
                     actor,
@@ -2366,7 +2366,7 @@ class PersonalizedRecommendationModule:
                 (
                     draft_id,
                     token,
-                    _hash_payload(request),
+                    _hash_json(encoded_request),
                     actor,
                     "教师生成个性化推荐草稿",
                     encoded_draft,
@@ -2427,49 +2427,37 @@ class PersonalizedRecommendationModule:
         result = self._by_request_token(_request_token(request_token))
         if result is None:
             raise RecommendationDraftNotFound(request_token)
-        result.pop("_input_fingerprint", None)
-        return result
+        return self.get(str(result["draft_id"]))
 
     def get(self, draft_id: str) -> dict[str, Any]:
         clean_id = _draft_id(draft_id)
         with connect(self.db_path) as connection:
             row = connection.execute(
-                """
-                SELECT draft_json
-                FROM personalized_recommendation_drafts
-                WHERE draft_id = ?
-                """,
+                "SELECT draft_json, created_at FROM personalized_recommendation_drafts WHERE draft_id=?",
                 (clean_id,),
             ).fetchone()
-        if row is None:
-            raise RecommendationDraftNotFound(clean_id)
-        return json.loads(str(row["draft_json"]))
+            if row is None:
+                raise RecommendationDraftNotFound(clean_id)
+            result = json.loads(str(row["draft_json"]))
+            changed = bool(result.get("needs_update"))
+            related = sorted({int(item["question_id"])
+                              for student in result.get("students", ())
+                              for item in student.get("items", ()) if item.get("question_id")})
+            if row["created_at"]:
+                for start in range(0, len(related), 64):
+                    batch = related[start:start + 64]
+                    marks = ",".join("?" for _ in batch)
+                    changed = changed or bool(connection.execute(
+                        f"SELECT 1 FROM questions WHERE id IN ({marks}) AND julianday(updated_at)>julianday(?) LIMIT 1",
+                        (*batch, str(row["created_at"])),
+                    ).fetchone())
+            result.setdefault("generated_at", row["created_at"])
+            result["needs_update"] = changed
+        return result
 
     def ensure_current(self, draft_id: str) -> dict[str, Any]:
-        """Return a draft only when every recommendation source is unchanged."""
-
-        clean_id = _draft_id(draft_id)
-        with connect(self.db_path) as connection:
-            row = connection.execute(
-                """
-                SELECT request_json, source_version, draft_json
-                FROM personalized_recommendation_drafts
-                WHERE draft_id = ?
-                """,
-                (clean_id,),
-            ).fetchone()
-        if row is None:
-            raise RecommendationDraftNotFound(clean_id)
-        request = json.loads(str(row["request_json"]))
-        _candidates, current_source = self._current_source_for_request(
-            request,
-            draft_id=clean_id,
-        )
-        if current_source != str(row["source_version"]):
-            raise RecommendationSourceChanged(
-                "recommendation sources changed"
-            )
-        return json.loads(str(row["draft_json"]))
+        """Read a saved draft by identity; updates never prevent continuation."""
+        return self.get(draft_id)
 
     def edit(
         self,
@@ -2516,7 +2504,7 @@ class PersonalizedRecommendationModule:
             raise RecommendationEditInvalid(
                 "shared paper questions cannot be edited per student"
             )
-        source_candidates, current_source = (
+        source_candidates, _source = (
             self._current_source_for_request(
                 source_request,
                 draft_id=clean_id,
@@ -2559,11 +2547,6 @@ class PersonalizedRecommendationModule:
                 raise RecommendationEditInvalid(
                     "reviewed recommendation cannot be changed"
                 )
-            if current_source != str(row["source_version"]):
-                raise RecommendationSourceChanged(
-                    "recommendation sources changed"
-                )
-
             request = json.loads(str(row["request_json"]))
             draft = json.loads(str(row["draft_json"]))
             before, after = self._apply_edit(
@@ -2587,14 +2570,8 @@ class PersonalizedRecommendationModule:
                     "after_question_id": after.get("question_id"),
                 }
             )
-            result_version = _hash_payload(
-                {
-                    key: value
-                    for key, value in draft.items()
-                    if key not in {"history", "revision", "result_version"}
-                }
-            )
-            draft["result_version"] = result_version
+            for field in ("result_version", "source_version", "engine_version"):
+                draft.pop(field, None)
             encoded = _json(draft)
             cursor = connection.execute(
                 """
@@ -2607,7 +2584,7 @@ class PersonalizedRecommendationModule:
                 """,
                 (
                     encoded,
-                    result_version,
+                    clean_id,
                     next_revision,
                     clean_id,
                     current_revision,
@@ -2657,25 +2634,13 @@ class PersonalizedRecommendationModule:
         )
         excluded = set()
         candidate_config = PersonalizedRecommendationConfig(**_config_constructor(config))
-        candidates, _relations, base_source_version = self._source_snapshot(
+        candidates, _relations, _ = self._source_snapshot(
             question_ids=request.get('assembly_snapshot', {}).get('question_ids', ()),
             excluded_question_ids=excluded,
             knowledge_keys=self._candidate_scope(diagnosis, candidate_config),
             candidate_config=candidate_config,
         )
-        base_source_version = _hash_payload({"bank": base_source_version, "loss_sources": self._source_practice_metadata(diagnosis),
-            **({"class_question_totals": diagnosis["_type_class_question_totals"]}
-               if "_type_class_question_totals" in diagnosis else {})})
-        recent = self._request_recent(request, student_ids, draft_id=draft_id)
-        return (
-            candidates,
-            _context_source_version(
-                base_source_version,
-                as_of=_day_clock(self.clock()),
-                recent=recent,
-                excluded_question_ids=excluded,
-            ),
-        )
+        return candidates, ""
 
     def _source_practice_metadata(self, diagnosis: Mapping[str, Any]) -> dict[int, dict[str, Any]]:
         """Keep frozen exam sources; current-bank reads only support compatibility inputs."""
@@ -2709,12 +2674,7 @@ class PersonalizedRecommendationModule:
                 features = conn.execute(f"SELECT * FROM question_part_difficulty_features WHERE is_active=1 AND question_id IN ({marks})", batch).fetchall()
             profiles = load_profiles(self.db_path, batch, data_root=self.data_root)
             from question_bank.solution_evidence import SolutionEvidenceRepository
-            from question_bank.training_criteria.analysis import (
-                solution_evidence_source_content_hash,
-            )
             evidence_repository = SolutionEvidenceRepository(self.db_path)
-            source_inputs = {item.question_id: item for item in QuestionAnalysisInputLoader(
-                db_path=self.db_path, data_root=self.data_root).load([int(row["id"]) for row in rows], load_failures={})}
 
             for row in rows:
                 qid = int(row["id"])
@@ -2729,10 +2689,7 @@ class PersonalizedRecommendationModule:
                 source_version_id = str(profile.get("evidence_version_id") or "")
                 if not source_parts:
                     latest = evidence_repository.latest(qid)
-                    current_input = source_inputs.get(qid)
-                    from question_bank.training_criteria.analysis import source_content_hash_matches
-                    if latest and current_input and latest.get("status") in {"proposed", "approved"} and source_content_hash_matches(
-                            current_input, str(latest.get("source_content_hash") or ""), kind="solution_evidence"):
+                    if latest and latest.get("status") in {"proposed", "approved"}:
                         source_parts = (latest.get("evidence") or {}).get("parts", [])
                         source_version_id = str(latest.get("evidence_version_id") or source_version_id)
                 result[qid] = {**result.get(qid, {}), "question_difficulty": _difficulty(row["difficulty"]), "direct_keys": keys,
@@ -2741,7 +2698,7 @@ class PersonalizedRecommendationModule:
                                "practice_tags": values,
                                "question_text": str(row["question_text"] or ""),
                                "secondary_type_keys": sorted(k for k in values.get("secondary_type", ()) if is_type_key(k)),
-                               "difficulty_features": _valid_difficulty_features(dict(row), [f for f in features if f["question_id"] == qid], analysis_input=source_inputs.get(qid)),
+                               "difficulty_features": _valid_difficulty_features(dict(row), [f for f in features if f["question_id"] == qid], analysis_input=None),
                                "parts": source_parts,
                                "evidence_version_id": source_version_id}
         # Frozen exam sources keep their frozen links, but the bank question's
@@ -2863,7 +2820,7 @@ class PersonalizedRecommendationModule:
         target_evaluation_cache: dict | None = None,
         preference_cache: dict | None = None,
         fixed_candidate_inputs: dict | None = None,
-        _input_hashes: dict | None = None,
+        _input_values: dict | None = None,
         _borrow_inputs: bool = False,
         direct_only: bool = False,
         core_only: bool = False,
@@ -2888,12 +2845,15 @@ class PersonalizedRecommendationModule:
         auxiliary_plans = {}
         matched_ids, suitable_ids = set(), set()
         eligible_ids = frozenset(candidate["question_id"] for candidate in eligible)
-        profile_version = _hash_payload(profile, _memo=_input_hashes) if target_evaluation_cache is not None else None
+        profile_values = (
+            _MatchingCacheValue(_cache_values(profile, _memo=_input_values))
+            if target_evaluation_cache is not None else None
+        )
         for target in targets:
             key = str(target.get("stable_key") or target.get("knowledge_key"))
             target_kind = target_kind_for_key(key, self.current_knowledge, config.curriculum_volume_id)
             layered_target = target_kind in {"type", "knowledge"}
-            cache_key = ((id(candidates), id(metadata), profile_version, _hash_payload(target, _memo=_input_hashes),
+            cache_key = ((id(candidates), id(metadata), profile_values, _cache_values(target, _memo=_input_values),
                           config.difficulty_max, tuple(supplement_keys), direct_only, core_only)
                          if target_evaluation_cache is not None else None)
             cached = target_evaluation_cache.get(cache_key) if target_evaluation_cache is not None else None
@@ -3021,60 +2981,78 @@ class PersonalizedRecommendationModule:
             match_rows = (target_match_cache.setdefault(("rows", id(candidates), source_match_key), {})
                           if target_match_cache is not None else None)
             frozen_source = any(r.get("assessment", {}).get("evidence_version_id") for r in refs)
-            for candidate in eligible:
-                similarity = (max((_stem_similarity(text, str(candidate.get("question_text") or ""))
-                                   for text in source_texts), default=0.) if layered_target else 0.)
-                if direct_only and key not in candidate["stable_keys"]:
-                    continue
-                if sources and candidate.get("target_facets"):
-                    qid = candidate["question_id"]
-                    candidate_secondary = tuple(sorted(
-                        {str(k) for k in candidate.get("secondary_type_keys", ())
-                         if is_type_key(k)})) if is_type_key(key) else ()
-                    row_key = (qid, similarity, candidate_secondary)
-                    if match_rows is not None and row_key in match_rows:
-                        direct, match = match_rows[row_key]
+            def fixed_relationships():
+                for candidate in eligible:
+                    similarity = (max((_stem_similarity(text, str(candidate.get("question_text") or ""))
+                                       for text in source_texts), default=0.) if layered_target else 0.)
+                    if direct_only and key not in candidate["stable_keys"]:
+                        continue
+                    if sources and candidate.get("target_facets"):
+                        qid = candidate["question_id"]
+                        candidate_secondary = tuple(sorted(
+                            {str(k) for k in candidate.get("secondary_type_keys", ())
+                             if is_type_key(k)})) if is_type_key(key) else ()
+                        row_key = (qid, similarity, candidate_secondary)
+                        if match_rows is not None and row_key in match_rows:
+                            direct, match = match_rows[row_key]
+                        else:
+                            if target_match_cache is None:
+                                matches = [match_target(key, sources, [part], index,
+                                                        similarity=similarity,
+                                                        source_secondary=source_secondary,
+                                                        candidate_secondary=candidate_secondary)
+                                           for part in candidate["target_facets"]]
+                                matches = [m for m in matches if m]
+                            else:
+                                candidate_id = ("facets", id(candidate))
+                                candidate_input = fixed_candidate_inputs.get(candidate_id) if fixed_candidate_inputs is not None else None
+                                if candidate_input is None:
+                                    candidate_input = _match_facets_input(candidate["target_facets"])
+                                    if fixed_candidate_inputs is not None:
+                                        fixed_candidate_inputs[candidate_id] = candidate_input
+                                matches = [json.loads(match) for match in _fixed_target_matches(key,
+                                    source_match_input, candidate_input,
+                                    location.get("section", ""), location.get("chapter", ""),
+                                    similarity, source_secondary, candidate_secondary, target_kind)]
+                            # Type targets: levels 1-3 are core hits; level 4 stays
+                            # supplement only (§3.5). Skill targets keep 1-2 direct.
+                            if layered_target:
+                                direct_matches = [m for m in matches if m["match_level"] <= 3]
+                            else:
+                                direct_matches = [m for m in matches if m["match_level"] <= 2
+                                                  and key in candidate["stable_keys"]]
+                            direct = bool(direct_matches)
+                            match = (min(direct_matches or matches, key=lambda m: (m["match_level"], m["candidate_part_id"]))
+                                     if matches else None)
+                            if match_rows is not None:
+                                match_rows[row_key] = direct, match
+                        if match is None:
+                            continue
                     else:
-                        if target_match_cache is None:
-                            matches = [match_target(key, sources, [part], index,
-                                                    similarity=similarity,
-                                                    source_secondary=source_secondary,
-                                                    candidate_secondary=candidate_secondary)
-                                       for part in candidate["target_facets"]]
-                            matches = [m for m in matches if m]
-                        else:
-                            candidate_id = ("facets", id(candidate))
-                            candidate_input = fixed_candidate_inputs.get(candidate_id) if fixed_candidate_inputs is not None else None
-                            if candidate_input is None:
-                                candidate_input = _match_facets_input(candidate["target_facets"])
-                                if fixed_candidate_inputs is not None:
-                                    fixed_candidate_inputs[candidate_id] = candidate_input
-                            matches = [json.loads(match) for match in _fixed_target_matches(key,
-                                source_match_input, candidate_input,
-                                location.get("section", ""), location.get("chapter", ""),
-                                similarity, source_secondary, candidate_secondary, target_kind)]
-                        # Type targets: levels 1-3 are core hits; level 4 stays
-                        # supplement only (§3.5). Skill targets keep 1-2 direct.
-                        if layered_target:
-                            direct_matches = [m for m in matches if m["match_level"] <= 3]
-                        else:
-                            direct_matches = [m for m in matches if m["match_level"] <= 2
-                                              and key in candidate["stable_keys"]]
-                        direct = bool(direct_matches)
-                        match = (min(direct_matches or matches, key=lambda m: (m["match_level"], m["candidate_part_id"]))
-                                 if matches else None)
-                        if match_rows is not None:
-                            match_rows[row_key] = direct, match
-                    if match is None:
-                        continue
+                        direct = key in candidate["stable_keys"] and not frozen_source
+                        if not direct and not supplement_scope.intersection(candidate["stable_keys"]):
+                            continue
+                        match = {"match_level": (1 if layered_target else 2) if direct else 4,
+                                 "match_label": ("同知识点" if target_kind == "knowledge" else "同题型" if target_kind == "type" else "同技能练习") if direct else MATCH_LABELS[4]}
+                        if direct and type_reference is not None:
+                            match.update(match_level=1, match_label="同题型")
+                    yield candidate, direct, match, similarity
+            # Reuse only the grouping call's borrowed, fixed inputs.
+            if target_match_cache is None or not _borrow_inputs:
+                fixed_rows = fixed_relationships()
+            else:
+                candidate_row_key = ("candidate_rows", id(candidates), source_match_key,
+                                     frozen_source, ordered_supplement_scope,
+                                     type_reference is not None, direct_only)
+                retained_rows = target_match_cache.get(candidate_row_key)
+                if retained_rows is not None and eligible_ids <= retained_rows[0]:
+                    fixed_rows = retained_rows[1]
                 else:
-                    direct = key in candidate["stable_keys"] and not frozen_source
-                    if not direct and not supplement_scope.intersection(candidate["stable_keys"]):
-                        continue
-                    match = {"match_level": (1 if layered_target else 2) if direct else 4,
-                             "match_label": ("同知识点" if target_kind == "knowledge" else "同题型" if target_kind == "type" else "同技能练习") if direct else MATCH_LABELS[4]}
-                    if direct and type_reference is not None:
-                        match.update(match_level=1, match_label="同题型")
+                    fixed_rows = tuple(fixed_relationships())
+                    target_match_cache[candidate_row_key] = eligible_ids, fixed_rows
+            for candidate, direct, match, similarity in fixed_rows:
+                if candidate["question_id"] not in eligible_ids:
+                    continue
                 if direct_only and not direct:
                     continue
                 if core_only and not direct:
@@ -3222,13 +3200,22 @@ class PersonalizedRecommendationModule:
         target_evaluation_cache = memo.setdefault("target_evaluations", {}) if evaluation_memo is not None else None
         preference_cache = memo.setdefault("preferences", {})
         fixed_candidate_inputs = memo.setdefault("fixed_candidate_inputs", {})
-        input_hashes = memo.get("group_input_hashes") if _borrow_inputs else None
+        input_hashes = memo.get("group_input_values") if _borrow_inputs else None
         source_links = self._links_for_metadata(metadata)
-        # Index once instead of scanning the full population for every member.
-        mastery_by_student: dict[str, dict[str, Any]] = {}
-        for (owner, key), value in mastery.items():
-            if is_training_target(key, self.current_knowledge, config.curriculum_volume_id):
-                mastery_by_student.setdefault(owner, {})[key] = value
+        retained_mastery = memo.get("group_mastery_by_student") if input_hashes is not None else None
+        if (retained_mastery is not None and retained_mastery[0] is mastery
+                and retained_mastery[1] is self.current_knowledge
+                and retained_mastery[2] == config.curriculum_volume_id):
+            mastery_by_student = retained_mastery[3]
+        else:
+            mastery_by_student: dict[str, dict[str, Any]] = {}
+            for (owner, key), value in mastery.items():
+                if is_training_target(key, self.current_knowledge, config.curriculum_volume_id):
+                    mastery_by_student.setdefault(owner, {})[key] = value
+            if input_hashes is not None:
+                memo["group_mastery_by_student"] = (
+                    mastery, self.current_knowledge, config.curriculum_volume_id, mastery_by_student,
+                )
         pools, targets_by_student, warnings = {}, {}, {}
         class_totals = ({class_id: _type_class_totals(diagnosis, class_id) for class_id in
                          {str(p.get("class_id") or "") for p in diagnosis["students"]}} if any(is_type_key(key)
@@ -3262,7 +3249,7 @@ class PersonalizedRecommendationModule:
                 target_evaluation_cache=target_evaluation_cache,
                 preference_cache=preference_cache,
                 fixed_candidate_inputs=fixed_candidate_inputs,
-                _input_hashes=input_hashes,
+                _input_values=input_hashes,
                 _borrow_inputs=_borrow_inputs,
                 recent=recent.get(sid, set()), excluded=excluded, direct_only=direct_only, core_only=core_only)
         return {"pools": pools, "targets": targets_by_student, "warnings": warnings, "candidates": candidates}
@@ -3475,7 +3462,7 @@ class PersonalizedRecommendationModule:
         question_ids: Sequence[int] = (),
     ) -> tuple:
         return (
-            "source-snapshot-v3-read-constraints",
+            "source-snapshot",
             str(Path(self.db_path).resolve(strict=False)),
             str(Path(self.data_root).resolve(strict=False)),
             str(self.current_knowledge.release_id),
@@ -3527,7 +3514,6 @@ class PersonalizedRecommendationModule:
         )
         return _SOURCE_SNAPSHOT_CACHE.get_or_compute(key, produce)
 
-    @source_content_hash_reuse()
     def _source_snapshot_uncached(
         self,
         *,
@@ -3588,8 +3574,8 @@ class PersonalizedRecommendationModule:
                     + source_filter, ids,
                 ).fetchall())
                 # Cheap identity-only preselection includes every stored criterion
-                # version. Live source and approved/current precedence are still
-                # checked below; a stale version can widen a read, never admit a题.
+                # result. Readable saved evidence is included below; adopting
+                # selected questions checks their current basis separately.
                 if pool_keys:
                     evidence_rows.extend(connection.execute(
                         "SELECT question_id, criteria_json FROM training_criterion_versions "
@@ -3625,7 +3611,7 @@ class PersonalizedRecommendationModule:
         profile_ids = sorted(source_ids)
         for start in range(0, len(profile_ids), 64):
             profiles.update(load_profiles(self.db_path, profile_ids[start:start + 64],
-                                          verify_source=not pool_keys, data_root=self.data_root))
+                                          verify_source=False, data_root=self.data_root))
         evidence_versions: dict[tuple[int, str], str] = {}
         for row in evidence_version_rows:
             if int(row["question_id"]) not in source_ids:
@@ -3786,166 +3772,166 @@ class PersonalizedRecommendationModule:
         # Group previews can skip identity comparisons for ineligible questions.
         # Bound image memory and isolate bad sources as in the single reader.
         for start in range(0, len(candidate_ids), 64):
-            ids = candidate_ids[start:start + 64]
-            load_failures: dict[int, str] = {}
-            questions = loader.load(ids, load_failures=load_failures)
-            if pool_keys:
-                # Reuse this batch's image bodies for the live source check.
-                # Stored identities above only narrowed the read, not eligibility.
-                profiles.update(load_profiles(self.db_path, [q.question_id for q in questions],
-                    data_root=self.data_root, question_inputs={q.question_id: q for q in questions}))
-                point_links.update(load_point_links(
-                    self.db_path,
-                    [str(p["evidence_version_id"]) for p in profiles.values()
-                     if p.get("evidence_version_id") and str(p["evidence_version_id"]) not in point_links],
-                    self.current_knowledge.release_id,
-                ))
-            try:
-                workspaces = criteria.read_many(questions)
-            except (KeyError, OSError, ValueError):
-                workspaces = {}
+            with source_content_hash_reuse():
+                ids = candidate_ids[start:start + 64]
+                load_failures: dict[int, str] = {}
+                questions = loader.load(ids, load_failures=load_failures)
+                if pool_keys:
+                    # Reuse this batch's image bodies for the live source check.
+                    # Stored identities above only narrowed the read, not eligibility.
+                    profiles.update(load_profiles(self.db_path, [q.question_id for q in questions],
+                        data_root=self.data_root, question_inputs={q.question_id: q for q in questions}))
+                    point_links.update(load_point_links(
+                        self.db_path,
+                        [str(p["evidence_version_id"]) for p in profiles.values()
+                         if p.get("evidence_version_id") and str(p["evidence_version_id"]) not in point_links],
+                        self.current_knowledge.release_id,
+                    ))
+                try:
+                    workspaces = criteria.read_many(questions, profiles=profiles if pool_keys else None)
+                except (KeyError, OSError, ValueError):
+                    workspaces = {}
+                    for question in questions:
+                        try:
+                            workspaces[question.question_id] = criteria.read(question)
+                        except (KeyError, OSError, ValueError):
+                            continue
                 for question in questions:
-                    try:
-                        workspaces[question.question_id] = criteria.read(question)
-                    except (KeyError, OSError, ValueError):
+                    question_id = question.question_id
+                    workspace = workspaces.get(question_id)
+                    if workspace is None:
                         continue
-            for question in questions:
-                question_id = question.question_id
-                workspace = workspaces.get(question_id)
-                if workspace is None:
-                    continue
-                row = candidate_rows[question_id]
-                # Answer diagrams cannot stand in for a figure referenced by
-                # the printed question. Keep incomplete sources out of practice.
-                if (re.search(r"如图|图中|图示", str(row["question_text"] or ""))
-                        and not any(image.role == "question" for image in question.images)):
-                    continue
-                identities = stable_by_question.get(question_id, [])
-                usable = usable_training_criterion(workspace)
-                if usable is None:
-                    continue
-                difficulty = _difficulty(row["difficulty"])
-                profile = profiles.get(question_id)
-                assessment = None
-                if profile and profile["available"]:
-                    evidence_parts = {part["part_id"]: part for part in profile["evidence"]["parts"]}
-                    parts = [
-                        {**part, "label": evidence_parts[part["part_id"]].get("label") or part["part_id"],
-                         "direct_keys": list(direct_targets(
-                             evidence_parts[part["part_id"]],
-                             point_links.get(str(profile.get("evidence_version_id") or ""), {})))}
-                        for part in profile["parts"]
-                    ]
-                    # A recommendation prints the whole question. Its hardest
-                    # part must respect the student's difficulty ceiling.
-                    if parts and not any(part["difficulty"] is None for part in parts):
-                        difficulty = float(max(part["difficulty"] for part in parts))
-                    elif any(part["difficulty"] is not None for part in parts):
+                    row = candidate_rows[question_id]
+                    # Answer diagrams cannot stand in for a figure referenced by
+                    # the printed question. Keep incomplete sources out of practice.
+                    if (re.search(r"如图|图中|图示", str(row["question_text"] or ""))
+                            and not any(image.role == "question" for image in question.images)):
                         continue
-                    # else: 没有任何有效逐小问特征时回退到整题难度，
-                    # parts 里的 None 让前端仍显示"需重评"。
-                    assessment = {"profile_revision": profile["revision"],
-                                  "evidence_version_id": profile["evidence_version_id"],
-                                  "selection_basis": "hardest_part", "parts": parts}
-                criterion = usable.get("criteria")
-                evidence = criterion.get("solution_evidence") if isinstance(criterion, Mapping) else None
-                if not isinstance(evidence, Mapping) and profile and profile["available"]:
-                    evidence = profile["evidence"]
-                version_links = links_for_evidence(question_id, evidence) if isinstance(evidence, Mapping) else None
-                metadata = (_question_evidence_metadata(evidence, self.current_knowledge,
-                                                        links=version_links)
-                            if isinstance(evidence, Mapping) else {
-                                "stable_keys": [item["stable_key"] for item in identities],
-                                "required_keys": [item["stable_key"] for item in identities],
-                                "scope_complete": False, "response_modes_by_key": {}, "practice_observations_by_key": {}})
-                metadata["target_facets"] = part_facets(
-                    evidence or {}, version_links, self.current_knowledge, facets_index,
-                    [key for key in source_tag_keys.get(question_id, []) if facets_index.get(key, {}).get("kind") == "topic"])
-                # Whole-question topics still constrain what must have been
-                # taught. Do not assign them to individual parts or count them
-                # as direct targets when the refined evidence contains skills.
-                metadata["required_keys"] = sorted(set(metadata["required_keys"]) | {
-                    key for key in source_tag_keys.get(question_id, [])
-                    if facets_index.get(key, {}).get("kind") == "topic"
-                })
-                identities = [{"stable_key": key, "display_name": self.current_knowledge.node(key).display_name}
-                              for key in metadata["stable_keys"] if self.current_knowledge.node(key) is not None]
-                context_keys = {key for part in metadata["target_facets"] for key in part["topic_keys"]}
-                if not identities or (pool_keys and not pool_keys.intersection(set(metadata["stable_keys"]) | context_keys)):
-                    continue
-                points = (
-                    criterion.get("points")
-                    if isinstance(criterion, Mapping)
-                    else None
-                )
-                if candidate_config is not None:
-                    if (difficulty is None or not candidate_config.difficulty_min <= difficulty <= candidate_config.difficulty_max
-                            or not _question_scope_allowed(metadata, candidate_config, allowed, self.current_knowledge)):
+                    identities = stable_by_question.get(question_id, [])
+                    usable = usable_training_criterion(workspace, verify_source=False)
+                    if usable is None:
                         continue
-                stable_keys = [item["stable_key"] for item in identities]
-                skill_tags = skill_by_question.get(question_id, {})
-                method_tags = skill_tags.get("method", [])
-                model_tags = skill_tags.get("model", [])
-                candidates.append(
-                    {
-                        "question_id": question_id,
-                        **question_identities(dict(row), data_root=self.data_root, image_cache=image_cache,
-                                              exact_key=exact_keys.get(question_id)),
-                        "question_number": str(
-                            row["question_number"] or question_id
-                        ),
-                        "question_type": str(row["question_type"] or ""),
-                        "special_types": list(skill_tags.get("special_type", [])),
-                        "practice_tags": skill_tags,
-                        "secondary_type_keys": sorted(
-                            str(v) for v in skill_tags.get("secondary_type", ()) if is_type_key(v)),
-                        "difficulty_features": _valid_difficulty_features(dict(row), feature_by_question.get(question_id, []), analysis_input=question),
-                        "error_patterns": preferred_active_patterns(patterns.get(question_id, [])),
-                        "question_text": str(row["question_text"] or ""),
-                        "solution_template": _practice_template(re.split(r"【解答】", str(row["answer_text"] or ""))[-1].split("【点评】")[0])
-                                             if "【解答】" in str(row["answer_text"] or "") else "",
-                        "solution_observable": re.split(r"【分析】|【解答】", str(row["answer_text"] or ""), maxsplit=1)[-1]
-                                               if any(mark in str(row["answer_text"] or "") for mark in ("【分析】", "【解答】")) else "",
-                        "image_identity": tuple(sorted(image.sha256 for image in question.images)),
-                        "source_paper": str(row["paper_title"] or ""),
-                        "paper_level_rank": _paper_level_rank(
-                            row["paper_grade"], row["paper_semester"]
-                        ),
-                        "difficulty": difficulty,
-                        "part_assessment": assessment,
-                        "stable_keys": stable_keys,
-                        "training_target_keys": sorted(training_keys(stable_keys, self.current_knowledge,
-                            candidate_config.curriculum_volume_id if candidate_config else "")),
-                        "target_facets": metadata["target_facets"],
-                        "required_keys": metadata["required_keys"],
-                        "supporting_keys": sorted(set(metadata.get("supporting_keys", [])) | {
-                            identity.stable_key for value in skill_tags.get("prerequisite", [])
-                            for identity in self.current_knowledge.resolve(value)}),
-                        "scope_complete": metadata["scope_complete"],
-                        "response_modes_by_key": metadata["response_modes_by_key"],
-                        "practice_observations_by_key": metadata["practice_observations_by_key"],
-                        "stable_names": {
-                            item["stable_key"]: item["display_name"]
-                            for item in identities
-                        },
-                        "text_fingerprint": _text_fingerprint(
-                            row["question_text"]
-                        ),
-                        "similarity_profile": _similarity_profile(
-                            difficulty=difficulty,
-                            stable_keys=stable_keys,
-                            method_tags=method_tags,
-                            model_tags=model_tags,
-                            thought_tags=skill_tags.get("thought", []),
-                        ),
-                        "criterion_version_id": str(usable["version_id"]),
-                        "criterion_point_count": (
-                            len(points) if isinstance(points, list) else 0
-                        ),
-                        "question_revision": question.source_content_hash,
-                        "source_tag_keys": source_tag_keys.get(question_id, []),
-                    }
-                )
+                    difficulty = _difficulty(row["difficulty"])
+                    profile = profiles.get(question_id)
+                    assessment = None
+                    if profile and profile["available"]:
+                        evidence_parts = {part["part_id"]: part for part in profile["evidence"]["parts"]}
+                        parts = [
+                            {**part, "label": evidence_parts[part["part_id"]].get("label") or part["part_id"],
+                             "direct_keys": list(direct_targets(
+                                 evidence_parts[part["part_id"]],
+                                 point_links.get(str(profile.get("evidence_version_id") or ""), {})))}
+                            for part in profile["parts"]
+                        ]
+                        # A recommendation prints the whole question. Its hardest
+                        # part must respect the student's difficulty ceiling.
+                        if parts and not any(part["difficulty"] is None for part in parts):
+                            difficulty = float(max(part["difficulty"] for part in parts))
+                        elif any(part["difficulty"] is not None for part in parts):
+                            continue
+                        # else: 没有任何有效逐小问特征时回退到整题难度，
+                        # parts 里的 None 让前端仍显示"需重评"。
+                        assessment = {"profile_revision": profile["revision"],
+                                      "evidence_version_id": profile["evidence_version_id"],
+                                      "selection_basis": "hardest_part", "parts": parts}
+                    criterion = usable.get("criteria")
+                    evidence = criterion.get("solution_evidence") if isinstance(criterion, Mapping) else None
+                    if not isinstance(evidence, Mapping) and profile and profile["available"]:
+                        evidence = profile["evidence"]
+                    version_links = links_for_evidence(question_id, evidence) if isinstance(evidence, Mapping) else None
+                    metadata = (_question_evidence_metadata(evidence, self.current_knowledge,
+                                                            links=version_links)
+                                if isinstance(evidence, Mapping) else {
+                                    "stable_keys": [item["stable_key"] for item in identities],
+                                    "required_keys": [item["stable_key"] for item in identities],
+                                    "scope_complete": False, "response_modes_by_key": {}, "practice_observations_by_key": {}})
+                    metadata["target_facets"] = part_facets(
+                        evidence or {}, version_links, self.current_knowledge, facets_index,
+                        [key for key in source_tag_keys.get(question_id, []) if facets_index.get(key, {}).get("kind") == "topic"])
+                    # Whole-question topics still constrain what must have been
+                    # taught. Do not assign them to individual parts or count them
+                    # as direct targets when the refined evidence contains skills.
+                    metadata["required_keys"] = sorted(set(metadata["required_keys"]) | {
+                        key for key in source_tag_keys.get(question_id, [])
+                        if facets_index.get(key, {}).get("kind") == "topic"
+                    })
+                    identities = [{"stable_key": key, "display_name": self.current_knowledge.node(key).display_name}
+                                  for key in metadata["stable_keys"] if self.current_knowledge.node(key) is not None]
+                    context_keys = {key for part in metadata["target_facets"] for key in part["topic_keys"]}
+                    if not identities or (pool_keys and not pool_keys.intersection(set(metadata["stable_keys"]) | context_keys)):
+                        continue
+                    points = (
+                        criterion.get("points")
+                        if isinstance(criterion, Mapping)
+                        else None
+                    )
+                    if candidate_config is not None:
+                        if (difficulty is None or not candidate_config.difficulty_min <= difficulty <= candidate_config.difficulty_max
+                                or not _question_scope_allowed(metadata, candidate_config, allowed, self.current_knowledge)):
+                            continue
+                    stable_keys = [item["stable_key"] for item in identities]
+                    skill_tags = skill_by_question.get(question_id, {})
+                    method_tags = skill_tags.get("method", [])
+                    model_tags = skill_tags.get("model", [])
+                    candidates.append(
+                        {
+                            "question_id": question_id,
+                            **question_identities(dict(row), data_root=self.data_root, image_cache=image_cache,
+                                                  exact_key=exact_keys.get(question_id)),
+                            "question_number": str(
+                                row["question_number"] or question_id
+                            ),
+                            "question_type": str(row["question_type"] or ""),
+                            "special_types": list(skill_tags.get("special_type", [])),
+                            "practice_tags": skill_tags,
+                            "secondary_type_keys": sorted(
+                                str(v) for v in skill_tags.get("secondary_type", ()) if is_type_key(v)),
+                            "difficulty_features": _valid_difficulty_features(dict(row), feature_by_question.get(question_id, []), analysis_input=question),
+                            "error_patterns": preferred_active_patterns(patterns.get(question_id, [])),
+                            "question_text": str(row["question_text"] or ""),
+                            "solution_template": _practice_template(re.split(r"【解答】", str(row["answer_text"] or ""))[-1].split("【点评】")[0])
+                                                 if "【解答】" in str(row["answer_text"] or "") else "",
+                            "solution_observable": re.split(r"【分析】|【解答】", str(row["answer_text"] or ""), maxsplit=1)[-1]
+                                                   if any(mark in str(row["answer_text"] or "") for mark in ("【分析】", "【解答】")) else "",
+                            "image_identity": tuple(sorted(image.sha256 for image in question.images)),
+                            "source_paper": str(row["paper_title"] or ""),
+                            "paper_level_rank": _paper_level_rank(
+                                row["paper_grade"], row["paper_semester"]
+                            ),
+                            "difficulty": difficulty,
+                            "part_assessment": assessment,
+                            "stable_keys": stable_keys,
+                            "training_target_keys": sorted(training_keys(stable_keys, self.current_knowledge,
+                                candidate_config.curriculum_volume_id if candidate_config else "")),
+                            "target_facets": metadata["target_facets"],
+                            "required_keys": metadata["required_keys"],
+                            "supporting_keys": sorted(set(metadata.get("supporting_keys", [])) | {
+                                identity.stable_key for value in skill_tags.get("prerequisite", [])
+                                for identity in self.current_knowledge.resolve(value)}),
+                            "scope_complete": metadata["scope_complete"],
+                            "response_modes_by_key": metadata["response_modes_by_key"],
+                            "practice_observations_by_key": metadata["practice_observations_by_key"],
+                            "stable_names": {
+                                item["stable_key"]: item["display_name"]
+                                for item in identities
+                            },
+                            "text_fingerprint": _text_fingerprint(
+                                row["question_text"]
+                            ),
+                            "similarity_profile": _similarity_profile(
+                                difficulty=difficulty,
+                                stable_keys=stable_keys,
+                                method_tags=method_tags,
+                                model_tags=model_tags,
+                                thought_tags=skill_tags.get("thought", []),
+                            ),
+                            "criterion_version_id": str(usable["version_id"]),
+                            "criterion_point_count": (
+                                len(points) if isinstance(points, list) else 0
+                            ),
+                            "source_tag_keys": source_tag_keys.get(question_id, []),
+                        }
+                    )
         relations = tuple(
             {
                 "relation_id": relation.relation_key,
@@ -3968,17 +3954,7 @@ class PersonalizedRecommendationModule:
         for candidate in sorted(candidates, key=lambda item: int(item["question_id"])):
             distinct.setdefault(candidate["duplicate_identity"], candidate)
         normalized_candidates = tuple(distinct.values())
-        source_version = _hash_payload(
-            {
-                "engine_version": ENGINE_VERSION,
-                "candidates": normalized_candidates,
-                "source_questions": [{key: value for key, value in dict(row).items()
-                                      if key != "updated_at"} for row in rows],
-                "relations": relations,
-                "current_mastery": self._current_mastery_version(),
-            }
-        )
-        return normalized_candidates, relations, source_version
+        return normalized_candidates, relations, ""
 
     def _mastery_snapshot(
         self,
@@ -3997,7 +3973,7 @@ class PersonalizedRecommendationModule:
         # students: a changed population may change their shared parameters.
         key = ("recommendation-mastery-v1", str(self.db_path.resolve()),
                str(self.data_root.resolve()), self.current_knowledge.release_id,
-               generation, _hash_payload(diagnosis), tuple(calculated.items()))
+               generation, _cache_values(diagnosis), tuple(calculated.items()))
         return _MASTERY_SNAPSHOT_CACHE.get_or_compute(key, lambda: self._prepare_mastery_snapshot(
             diagnosis, calculated, calculator))
 
@@ -4049,35 +4025,6 @@ class PersonalizedRecommendationModule:
                     "assessment": {"eligible": True, "granularity": "part", "part_id": part_id,
                                    "part_difficulty": observation.part_difficulty, "evidence_weight": 1.}})
         return snapshot
-
-    def _current_mastery_version(self) -> dict[str, Any]:
-        with connect(self.db_path) as connection:
-            feature_rows = [tuple(row) for row in connection.execute(
-                "SELECT question_id,part_id,formula_difficulty,source_content_hash FROM question_part_difficulty_features WHERE is_active=1 ORDER BY question_id,part_id"
-            )] if connection.execute("SELECT 1 FROM sqlite_master WHERE name='question_part_difficulty_features'").fetchone() else []
-            evidence_rows = [
-                (
-                    str(row["evidence_id"]),
-                    str(row["payload_hash"]),
-                    str(row["status"]),
-                    int(row["source_review_revision"]),
-                )
-                for row in connection.execute(
-                    """
-                    SELECT evidence_id, payload_hash, status,
-                           source_review_revision
-                    FROM training_evidence_records
-                    ORDER BY evidence_id
-                    """
-                ).fetchall()
-            ]
-        return {
-            "formula": CURRENT_MASTERY_PARAMETERS.formula_version,
-            "parameter_version": CURRENT_MASTERY_PARAMETERS.version,
-            "graph_release_id": self.current_knowledge.release_id,
-            "training_evidence_version": _hash_payload(evidence_rows),
-            "part_assessment_version": _hash_payload(feature_rows),
-        }
 
     def _request_recent(self, request: Mapping[str, Any], student_ids: tuple[str, ...], *,
                         draft_id: str | None = None) -> dict[str, set[int]]:
@@ -4938,26 +4885,6 @@ def _past_action(action: Action) -> str:
     }[action]
 
 
-def _context_source_version(
-    base_source_version: str,
-    *,
-    as_of: datetime,
-    recent: Mapping[str, set[int]],
-    excluded_question_ids: set[int],
-) -> str:
-    return _hash_payload(
-        {
-            "base_source_version": base_source_version,
-            "as_of_day": as_of.date().isoformat(),
-            "recent_question_ids": {
-                student_id: sorted(question_ids)
-                for student_id, question_ids in sorted(recent.items())
-            },
-            "excluded_question_ids": sorted(excluded_question_ids),
-        }
-    )
-
-
 def _identity_keys(values: Sequence[str], *, field: str) -> tuple[str, ...]:
     normalized = tuple(
         dict.fromkeys(
@@ -5111,42 +5038,26 @@ def _apply_diagnosis_mastery(
 
 
 def _persistent_source_snapshot(module, key: tuple, compute) -> tuple:
-    """Compute a source snapshot, reusing the durable per-pool store.
-
-    Only pool-wide snapshots (empty ``question_ids``) reach this helper;
-    request-shaped ``question_ids`` lookups stay memory-only. The stored key
-    drops the process-local elements of the in-memory key (resolved db path
-    and the commit counter); durability is carried by the signature instead.
-    """
-    from integration.data_generation import cached_content_revision
-    from integration.diagnosis_profile_service import _PROFILE_CALCULATION_STATE
+    """Reuse one temporary pool by its read constraints and file modification times."""
+    from integration.data_generation import database_change_stamp
     from integration.persistent_entries import persistent_entry_store
-    from question_bank.services.file_cache import flush_identity_caches
     from question_bank.services.question_read_service import _skill_asset_manifest
 
     manifest = _skill_asset_manifest(Path(module.data_root))
     if manifest is None:
         return compute()
-    pkey = tuple(
-        part for index, part in enumerate(key)
-        if index not in (1, 4)  # resolved db path, commit generation
-    )
-    signature = (
-        cached_content_revision(module.db_path),
-        tuple(sorted(manifest.items())),
-        _PROFILE_CALCULATION_STATE,
-    )
-    store = persistent_entry_store(
-        Path(module.data_root) / "cache" / "recommendation_pools",
-        max_entries=16,
-        max_bytes=512 * 1024 * 1024,
-    )
-    payload = store.get(pkey, signature)
+    pkey = tuple(part for index, part in enumerate(key) if index not in (1, 4))
+    changes = (database_change_stamp(module.db_path), tuple(sorted(manifest.items())))
+    store = persistent_entry_store(Path(module.data_root) / "cache" / "recommendation_pools",
+                                   max_entries=16, max_bytes=512 * 1024 * 1024)
+    payload = store.get(pkey, changes)
     if isinstance(payload, tuple) and len(payload) == 3:
         return payload
     result = compute()
-    store.put(pkey, signature, result)
-    flush_identity_caches()
+    after = (database_change_stamp(module.db_path),
+             tuple(sorted((_skill_asset_manifest(Path(module.data_root)) or {}).items())))
+    if after == changes:
+        store.put(pkey, changes, result)
     return result
 
 
@@ -5171,7 +5082,7 @@ def _draft_id(value: object) -> str:
     if len(draft_id) != 64 or any(
         character not in "0123456789abcdef" for character in draft_id
     ):
-        raise ValueError("draft_id must be a 64-character hash")
+        raise ValueError("draft_id must be a 64-character identifier")
     return draft_id
 
 
@@ -5182,12 +5093,16 @@ def _required_text(value: object, field: str) -> str:
     return text
 
 
+def _hash_json(encoded: str) -> str:
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _hash_payload(value: object, *, _memo: dict | None = None) -> str:
     """Optional memo is only for read-only inputs within one grouping call."""
     stored = _memo.get(id(value)) if _memo is not None else None
     if stored is not None and stored[0] is value:
         return stored[1]
-    fingerprint = hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
+    fingerprint = _hash_json(_json(value))
     if _memo is not None:
         # Retention prevents an object's id from being reused during the call.
         _memo[id(value)] = (value, fingerprint)
@@ -5204,7 +5119,6 @@ def _json(value: object) -> str:
 
 
 __all__ = [
-    "ENGINE_VERSION",
     "PersonalizedRecommendationConfig",
     "PersonalizedRecommendationError",
     "PersonalizedRecommendationModule",

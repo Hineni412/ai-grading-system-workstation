@@ -1,6 +1,5 @@
 import type {
   TrainingOverviewNode,
-  TrainingOverviewStudent,
 } from '../../api/training'
 import { formatPercent } from '../../lib/format'
 
@@ -79,16 +78,4 @@ export function compareFocusNodes(left: TrainingOverviewNode, right: TrainingOve
     || right.evidence_student_count - left.evidence_student_count
     || left.knowledge_key.localeCompare(right.knowledge_key)
   )
-}
-
-export function defaultStudentSort(
-  students: readonly TrainingOverviewStudent[],
-): TrainingOverviewStudent[] {
-  const weakCount = (student: TrainingOverviewStudent) =>
-    (student.types?.weak ?? 0) + student.topics.weak + student.skills.weak
-  return [...students].sort((left, right) => (
-    weakCount(right) - weakCount(left)
-    || (left.score_rate ?? Number.POSITIVE_INFINITY) - (right.score_rate ?? Number.POSITIVE_INFINITY)
-    || left.student_code.localeCompare(right.student_code, 'zh')
-  ))
 }

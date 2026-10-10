@@ -1238,7 +1238,7 @@ class QuestionBankWriteService:
                 raise QuestionWriteConflict(current)
             resolver = CurrentKnowledgeResolver.from_connection(conn)
             from question_bank.solution_evidence.part_assessments import load_profiles
-            profile = load_profiles(self.db_path, [question_id], connection=conn, data_root=self.data_root).get(question_id, {})
+            profile = load_profiles(self.db_path, [question_id], connection=conn, data_root=self.data_root, verify_source=True).get(question_id, {})
             sync_question_type_labels(conn, question_id, primary_type_key,
                 secondary_type_keys, resolver, source="manual",
                 expected_evidence_version_id=str(profile['evidence_version_id']) if profile.get('available') else '',
@@ -2942,7 +2942,7 @@ def _derived_ownership(
     version's resolved ``direct`` links. Returns ``None`` when no usable link
     exists so the caller can keep model-written values."""
     from question_bank.solution_evidence.part_assessments import load_profiles
-    profile = load_profiles(db_path, [question_id], connection=conn, data_root=data_root).get(question_id, {})
+    profile = load_profiles(db_path, [question_id], connection=conn, data_root=data_root, verify_source=True).get(question_id, {})
     if not profile.get('available'):
         return None
     version_id = str(profile['evidence_version_id'])

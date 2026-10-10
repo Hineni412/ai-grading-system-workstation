@@ -41,12 +41,10 @@ function makeJob(overrides: Partial<JobResponse> = {}): JobResponse {
     payload: {
       session_id: 7,
       report_type: 'score_excel',
-      score_revision: 'a'.repeat(64),
     },
     result: {
       session_id: 7,
       report_type: 'score_excel',
-      score_revision: 'a'.repeat(64),
       filename: '七年级成绩.xlsx',
       download_url: '/api/jobs/41/download',
     },
@@ -152,27 +150,23 @@ beforeEach(() => {
   personalMock.bundle.mockResolvedValue(makeJob({job_type: 'personal_report_bundle', status: 'queued', result: {}}))
   storageMock.getOriginals.mockResolvedValue({ originals_state: 'complete' })
   apiMock.getReportContext.mockResolvedValue({
-    score_revision: 'a'.repeat(64),
     has_results: true,
     jobs: [
-      { ...makeJob(), is_current_revision: true, file_status: 'available' },
+      { ...makeJob(), file_status: 'available' },
       {
         ...makeJob({
           id: 40,
           payload: {
             session_id: 7,
             report_type: 'annotated_original_pdf',
-            score_revision: 'a'.repeat(64),
           },
           result: {
             session_id: 7,
             report_type: 'annotated_original_pdf',
-            score_revision: 'b'.repeat(64),
             filename: '旧批注原卷.pdf',
             download_url: '/api/jobs/40/download',
           },
         }),
-        is_current_revision: true,
         file_status: 'expired',
       },
     ],
@@ -308,19 +302,16 @@ describe('file center view', () => {
     expect(document.querySelector('[data-testid="excel-settings-dialog"]')).toBeNull()
   })
 
-  it('never presents an old score revision as the current download', async () => {
+  it('keeps an available saved file downloadable after other data changes', async () => {
     apiMock.getReportContext.mockResolvedValueOnce({
-      score_revision: 'a'.repeat(64),
       has_results: true,
       jobs: [{
         ...makeJob({
           payload: {
             session_id: 7,
             report_type: 'score_excel',
-            score_revision: 'b'.repeat(64),
           },
         }),
-        is_current_revision: false,
         file_status: 'available',
       }],
       total: 1,
@@ -330,10 +321,10 @@ describe('file center view', () => {
     })
 
     const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('成绩已变化，需重新生成'))
+    await vi.waitFor(() => expect(host.textContent).toContain('可下载'))
 
-    expect(host.querySelector('[data-testid="download-report-41"]')).toBeNull()
-    expect(host.querySelector('[data-testid="generate-score_excel"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="download-report-41"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="regenerate-score_excel"]')).not.toBeNull()
   })
 
   it('offers only the export entry on the personal report card', async () => {
@@ -351,7 +342,6 @@ describe('file center view', () => {
 
   it('links a finished personal report job to the review notes in results center', async () => {
     apiMock.getReportContext.mockResolvedValueOnce({
-      score_revision: 'a'.repeat(64),
       has_results: true,
       jobs: [{
         ...makeJob({
@@ -359,18 +349,15 @@ describe('file center view', () => {
           payload: {
             session_id: 7,
             report_type: 'personal_analysis_html',
-            score_revision: 'a'.repeat(64),
           },
           result: {
             session_id: 7,
             report_type: 'personal_analysis_html',
-            score_revision: 'a'.repeat(64),
             filename: '个人分析报告.zip',
             download_url: '/api/jobs/55/download',
             review_note_count: 2,
           },
         }),
-        is_current_revision: true,
         file_status: 'available',
       }],
       total: 1,

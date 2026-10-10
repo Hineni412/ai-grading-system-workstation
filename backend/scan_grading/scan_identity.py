@@ -85,11 +85,14 @@ def _handwriting_segment(probs: np.ndarray, column_chars: Sequence[str]) -> np.n
     conf = probs.max(axis=1)
     start, end = 0, probs.shape[0]
     for t in range(probs.shape[0]):
-        if arg[t] != 0 and conf[t] > _CONFIDENT_FRAME and column_chars[arg[t]] in LABEL_CHARS:
+        if arg[t] != 0 and conf[t] > _CONFIDENT_FRAME:
+            if column_chars[arg[t]] not in LABEL_CHARS:
+                break
             start = t + 1
-    for t in range(probs.shape[0] - 1, start - 1, -1):
+    for t in range(start, probs.shape[0]):
         if arg[t] != 0 and conf[t] > _CONFIDENT_FRAME and column_chars[arg[t]] in TAIL_CHARS:
             end = t
+            break
     segment = probs[start:end]
     return segment if segment.shape[0] >= 2 else probs
 
@@ -187,7 +190,10 @@ def read_class_name(
     candidates = [text for text in box_texts if "级" in str(text) or "班" in str(text)]
     candidates.append(band_text)
     for text in candidates:
-        digits = re.sub(r"[^0-9]", "", str(text or "").replace("八", "8"))
+        text = str(text or "")
+        labeled = re.search(r"(?:班级|班别)\s*[:：]?\s*([八\d()（）\s]+)", text)
+        class_text = labeled.group(1) if labeled else text
+        digits = re.sub(r"[^0-9]", "", class_text.replace("八", "8"))
         if not digits:
             continue
         for name in ordered:
@@ -195,6 +201,52 @@ def read_class_name(
                 votes[name] += 1
                 break
     return votes.most_common(1)[0][0] if votes else None
+
+
+def _identity_field_boxes(
+    rows: Sequence,
+    name_box: tuple[int, int, int, int],
+    class_box: tuple[int, int, int, int],
+    image_width: int,
+) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
+    labels = []
+    for polygon, text, confidence in rows:
+        if confidence < 0.65:
+            continue
+        text = str(text).strip()
+        if not re.match(r"^(?:姓名|班级|班别)\s*[:：]?", text):
+            continue
+        points = np.asarray(polygon, dtype=float)
+        left, top = points.min(axis=0)
+        right, bottom = points.max(axis=0)
+        labels.append((text, left + name_box[0], top + name_box[1],
+                       right + name_box[0], bottom + name_box[1]))
+    names = [label for label in labels if label[0].startswith("姓名")]
+    if not names:
+        return name_box, class_box
+    name = min(names, key=lambda label: label[2])
+    line_height = max(8, int(round(name[4] - name[2])))
+    classes = [label for label in labels if label[0].startswith(("班级", "班别"))
+               and label[1] >= name[3] and abs(label[2] - name[2]) <= line_height * 2]
+    class_label = min(classes, key=lambda label: label[1]) if classes else None
+    top = max(name_box[1], int(name[2] - line_height * 2))
+    bottom = min(name_box[3], int(name[4] + line_height * 1.5))
+    left = max(name_box[0], int(name[1] - line_height * 0.5))
+    right = min(name_box[2], int(class_label[3] + line_height * 0.5)) if class_label else name_box[2]
+    focused_name = (left, top, max(left + 1, right), max(top + 1, bottom))
+    if class_label:
+        class_height = max(8, int(round(class_label[4] - class_label[2])))
+        focused_class = (
+            max(0, int(class_label[1] - class_height * 0.5)),
+            max(name_box[1], int(class_label[2] - class_height)),
+            min(image_width, max(name_box[2], int(class_label[3] + class_height * 10))),
+            min(name_box[3], int(class_label[4] + class_height)),
+        )
+    elif "班级" in name[0] or "班别" in name[0]:
+        focused_class = focused_name
+    else:
+        focused_class = (class_box[0], top, class_box[2], bottom)
+    return focused_name, focused_class
 
 
 def extract_paper_evidence(
@@ -207,13 +259,13 @@ def extract_paper_evidence(
     file_key: str,
     ocr=None,
 ) -> PaperEvidence:
-    """Run local OCR on the padded name box and the class band to its right.
+    """Locate printed identity labels, then read padded name/class fields locally.
 
     Recognizer probabilities are restricted to the vocabulary columns (blank =
     column 0); vocabulary entries the recognizer does not know are dropped
     consistently from both the columns and the scoring alphabet.
     """
-    from backend.scan_grading.scanner import _student_name_crop_box  # local import: scanner imports us
+    from backend.scan_grading.scanner import _clean_student_name_text, _student_name_crop_box
 
     if ocr is None:
         from backend.document_parsing.local_ocr import get_local_ocr
@@ -233,7 +285,11 @@ def extract_paper_evidence(
         min(width, right + int(box_w * CLASS_BAND_WIDTH)),
         min(height, bottom + int(box_h * NAME_PAD_Y)),
     )
+    original_class_box = class_box
     rgb = page if page.mode == "RGB" else page.convert("RGB")
+    name_bgr = np.asarray(rgb.crop(name_box))[:, :, ::-1].copy()
+    label_rows, _elapsed = ocr(name_bgr)
+    name_box, class_box = _identity_field_boxes(label_rows, name_box, class_box, width)
     name_bgr = np.asarray(rgb.crop(name_box))[:, :, ::-1].copy()
     class_bgr = np.asarray(rgb.crop(class_box))[:, :, ::-1].copy()
 
@@ -252,14 +308,21 @@ def extract_paper_evidence(
     line_best = per_line.max(axis=1) if per_line.size else np.array([-np.inf])
     best_line = int(np.argmax(line_best)) if len(line_best) else -1
     raw_text = name_lines[best_line][0] if 0 <= best_line < len(name_lines) else ""
-    display_text = "".join(
-        ch for ch in str(raw_text) if ch not in LABEL_CHARS and ch not in TAIL_CHARS
-    )
+    display_text = _clean_student_name_text(raw_text) or ""
+    class_names = sorted({entry.class_name for entry in roster if entry.class_name})
     class_name = read_class_name(
-        [text for text, _conf, _probs in class_lines[:-1]],
+        [*[text for _polygon, text, confidence in label_rows if confidence >= 0.65],
+         *[text for text, _conf, _probs in [*name_lines, *class_lines[:-1]]]],
         class_lines[-1][0] if class_lines else "",
-        sorted({entry.class_name for entry in roster if entry.class_name}),
+        class_names,
     )
+    if class_name is None and class_box != original_class_box and original_class_box[2] > original_class_box[0]:
+        original_band = np.asarray(rgb.crop(original_class_box))[:, :, ::-1].copy()
+        fallback_lines = ocr.line_probabilities(original_band, [0], detect=True)
+        class_name = read_class_name(
+            [text for text, _confidence, _probs in fallback_lines[:-1]],
+            fallback_lines[-1][0] if fallback_lines else "", class_names,
+        )
     return PaperEvidence(
         key=key,
         file_key=file_key,

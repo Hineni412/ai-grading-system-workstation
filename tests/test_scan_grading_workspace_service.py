@@ -375,7 +375,12 @@ def test_rerun_preflight_migrates_decisions_by_stable_identity(tmp_path):
         upload_revision=batch["revision"] + 1,
     )
 
+    original_files = {path: path.read_bytes() for path in (tmp_path / "templates" / "session_7").rglob("*") if path.is_file()}
+    readonly = workspace.get_preflight(7, read_only=True)
+    assert {path: path.read_bytes() for path in (tmp_path / "templates" / "session_7").rglob("*") if path.is_file()} == original_files
     preflight = workspace.get_preflight(7)
+    assert preflight["decisions"] == readonly["decisions"]
+    assert preflight["revision"] == readonly["revision"]
     assert preflight["input_changed"] is False
     assert preflight["revision"] == 2
     decisions = {

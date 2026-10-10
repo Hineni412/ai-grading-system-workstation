@@ -11,8 +11,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 import sqlite3
 from collections.abc import Iterable
@@ -44,7 +42,6 @@ def _parent_qid(question_id: str) -> str:
 
     return parent_question_id(question_id)
 
-OPTION_ANALYSIS_VERSION = "option_analysis_v1"
 CHOICE_TYPES = {"choice", "single_choice"}
 FILL_TYPES = {"fill_blank", "fill_in_blank"}
 
@@ -115,13 +112,6 @@ def normalize_wrong_answer(value: Any) -> str:
     return str(normalized or "").strip()[:80]
 
 
-def question_fingerprint(question_text: Any, canonical_answer: Any) -> str:
-    """题目内容指纹：题干/答案未变时选项分析可跨场次复用。"""
-    payload = json.dumps(
-        {"question_text": str(question_text or ""), "canonical_answer": str(canonical_answer or "")},
-        ensure_ascii=False, sort_keys=True,
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +286,11 @@ def option_analysis_entries(state: dict[str, Any] | None) -> dict[str, Any]:
 def save_option_analysis(store: Any, session_id: int, question_id: str, entry: dict[str, Any]) -> None:
     state = store.load(session_id) or {}
     entries = dict(option_analysis_entries(state))
-    entries[str(question_id)] = entry
+    previous = entries.get(str(question_id))
+    if entry.get("failed") and isinstance(previous, dict) and previous.get("analysis"):
+        entries[str(question_id)] = {**previous, "last_generation_failed": True}
+    else:
+        entries[str(question_id)] = {**entry, "last_generation_failed": bool(entry.get("failed"))}
     store.save(session_id, option_analysis=entries)
 
 
@@ -341,19 +335,11 @@ def record_answer_patterns(
 
 
 def find_option_analysis(
-    store: Any,
-    session_id: int,
-    parent_question_id: str,
-    fingerprint: str,
-    linked: Iterable[tuple[int, str]] = (),
+    store: Any, session_id: int, parent_question_id: str,
+    source: dict[str, Any], linked: Iterable[tuple[int, str]] = (),
 ) -> dict[str, Any] | None:
-    """按“本场次 → 关联场次”的顺序找可复用的选项分析（指纹必须一致）。
-
-    linked 为 ``(场次id, 该场次中的题号)`` 对：同一题库题在不同场次的
-    题号可能不同，跨场次匹配必须用对方场次自己的题号。
-    """
-    own = _match_option_entry(option_analysis_entries(store.load(session_id)),
-                              parent_question_id, fingerprint)
+    """生成操作按实际题面和答案复用资料；同题在其他考试可以使用不同题号。"""
+    own = _match_option_entry(option_analysis_entries(store.load(session_id)), parent_question_id, source)
     if own is not None:
         return own
     for other in linked or ():
@@ -363,22 +349,23 @@ def find_option_analysis(
             continue
         if other_id == int(session_id):
             continue
-        entry = _match_option_entry(option_analysis_entries(store.load(other_id)),
-                                    other_parent, fingerprint)
+        entry = _match_option_entry(option_analysis_entries(store.load(other_id)), other_parent, source)
         if entry is not None:
             return entry
     return None
 
 
 def _match_option_entry(
-    entries: dict[str, Any], parent_question_id: str, fingerprint: str,
+    entries: dict[str, Any], parent_question_id: str, source: dict[str, Any],
 ) -> dict[str, Any] | None:
     for qid, entry in entries.items():
-        if _parent_qid(str(qid)) != str(parent_question_id):
+        if _parent_qid(str(qid)) != str(parent_question_id) or not isinstance(entry, dict):
             continue
-        if not isinstance(entry, dict) or entry.get("version") != OPTION_ANALYSIS_VERSION:
+        saved_source = entry.get("source_input")
+        if not isinstance(saved_source, dict):
             continue
-        if entry.get("input_fingerprint") != fingerprint:
+        if any(str(saved_source.get(key) or "").strip() != str(source.get(key) or "").strip()
+               for key in ("question_text", "canonical_answer")):
             continue
         return entry
     return None
@@ -606,9 +593,6 @@ def build_option_analysis_input(
     }
 
 
-def option_input_fingerprint(source: dict[str, Any]) -> str:
-    payload = json.dumps(source, ensure_ascii=False, sort_keys=True, default=str)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def merge_bank_triggers_into_patterns(
@@ -658,11 +642,6 @@ def cause_group_bank_triggers(
     v4 按物化记录的证据点写 step 触发；组成员含无点记录（整条证据或
     无证据点的步骤）时补一条 observation。v3 沿用组上 step_id。
     """
-    from backend.report_results import prompt_version
-
-    if str((entry or {}).get("prompt_version") or "") != prompt_version("causes"):
-        step_id = str(group.get("step_id") or "").strip()
-        return [("step", step_id)] if step_id else [("observation", "")]
     rows = [
         row
         for row in records or []
@@ -670,6 +649,9 @@ def cause_group_bank_triggers(
         and str(row.get("kind") or "") == str(group.get("kind") or "")
         and str(row.get("pattern") or "").strip() == str(group.get("reason") or "").strip()
     ]
+    if not any("evidence_point_ids" in row for row in rows):
+        step_id = str(group.get("step_id") or "").strip()
+        return [("step", step_id)] if step_id else [("observation", "")]
     triggers = [
         ("step", str(point))
         for point in sorted({
@@ -697,7 +679,7 @@ def sync_session_patterns_to_bank(
     出现快照、不重复建行。只写 bank_context 中已关联的题（写 ctx["bank_id"]，
     判重家族成员经 bank_ids 读取侧覆盖）；表缺失/未关联直接跳过。
     """
-    from backend.report_results import cause_input_digest, prompt_version, resolve_result_state
+    from backend.report_results import resolve_result_state
     from question_bank.services.error_pattern_service import record_auto_patterns
 
     if question_bank_path is None or not bank_context:
@@ -710,11 +692,12 @@ def sync_session_patterns_to_bank(
         valid = {}
         for source in current_sources:
             entry = questions.get(str(source["question_id"])) or {}
-            resolved = resolve_result_state(entry, cause_input_digest(source), "causes")
-            if resolved["status"] == "current" or (
-                resolved["status"] == "old_prompt"
-                and entry.get("prompt_version") == "class_error_causes_v3"
-            ):
+            resolved = resolve_result_state(entry, "causes")
+            saved_input = entry.get("input") if isinstance(entry.get("input"), dict) else {}
+            same_input = all(not saved_input.get(key) or not source.get(key)
+                             or saved_input[key] == source[key]
+                             for key in ("question_text", "canonical_answer"))
+            if resolved["status"] != "missing" and same_input:
                 valid[str(source["question_id"])] = source
         state = {**state, "cause_analysis": {"questions": {qid: questions[qid] for qid in valid}},
                  "option_analysis": {qid: entry for qid, entry in option_analysis_entries(state).items() if qid in valid},
@@ -756,9 +739,11 @@ def sync_session_patterns_to_bank(
         correct = normalize_option_answer(saved_input.get("canonical_answer")) or extract_canonical_option(
             bank_row.get("answer_text")
         )
-        if entry.get("input_fingerprint") != question_fingerprint(
-            current_text, correct
-        ):
+        option_source = entry.get("source_input") or saved_input
+        if not isinstance(option_source, dict) or not option_source:
+            continue
+        if any(str(option_source.get(key) or "").strip() != str(value or "").strip()
+               for key, value in (("question_text", current_text), ("canonical_answer", correct))):
             continue
         used_ids = {
             str(evidence_id)
@@ -825,9 +810,7 @@ def sync_session_patterns_to_bank(
         ctx = ctx_for(qid)
         if ctx is None or not isinstance(entry, dict):
             continue
-        if entry.get("prompt_version") not in (
-                "class_error_causes_v4", "class_error_causes_v3",
-        ) or entry.get("origin") != "model":
+        if entry.get("origin") != "model":
             continue
         result = entry.get("result")
         if not isinstance(result, dict):
@@ -867,7 +850,6 @@ __all__ = [
     "CHOICE_TYPES",
     "FILL_TYPES",
     "OPTION_ANALYSIS_PROMPT",
-    "OPTION_ANALYSIS_VERSION",
     "additions_from_v3_result",
     "answer_pattern_map",
     "bank_confirmed_triggers",
@@ -883,9 +865,7 @@ __all__ = [
     "normalize_option_answer",
     "normalize_wrong_answer",
     "option_analysis_entries",
-    "option_input_fingerprint",
     "parse_option_letters",
-    "question_fingerprint",
     "record_answer_patterns",
     "save_option_analysis",
     "session_bank_context",

@@ -432,6 +432,66 @@ def test_source_reuse_keeps_copied_thread_contexts_private() -> None:
     assert analysis._SOURCE_CONTENT_REUSE.get() is None
 
 
+@pytest.mark.parametrize("question_count", [3, 9])
+def test_analysis_loader_hands_successful_hashes_to_current_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, question_count: int,
+) -> None:
+    import threading
+    from question_bank.training_criteria import QuestionAnalysisInputLoader, analysis
+
+    database = tmp_path / "TEST-source-hash-handoff.db"
+    _seed_questions(database, question_count)
+    rich_root = tmp_path / "question_bank" / "rich_content"
+    rich_root.mkdir(parents=True)
+    xml = '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:r><w:t>TEST-A</w:t></w:r></w:p>'
+    for question_id, word_xml in ((1, xml), (2, "<TEST-unclosed>")):
+        (rich_root / f"question_{question_id}.json").write_text(json.dumps({
+            "version": "legacy", "question_id": question_id,
+            "question_blocks": [{"text": "TEST-A", "xml": word_xml}],
+            "answer_blocks": [],
+        }), encoding="utf-8")
+
+    original = analysis._compute_question_content_hash
+    computed: list[int] = []
+    lock = threading.Lock()
+
+    def compute(question):
+        with lock:
+            computed.append(question.question_id)
+        return original(question)
+
+    monkeypatch.setattr(analysis, "_compute_question_content_hash", compute)
+    requested = tuple(reversed(range(1, question_count + 1)))
+    failures: dict[int, str] = {}
+    with analysis.source_content_hash_reuse() as reuse:
+        questions = QuestionAnalysisInputLoader(db_path=database, data_root=tmp_path).load(
+            requested, load_failures=failures,
+        )
+        assert [question.question_id for question in questions] == [qid for qid in requested if qid != 2]
+        assert failures == {2: "rich_content_invalid_xml"}
+        assert sorted(computed) == [qid for qid in range(1, question_count + 1) if qid != 2]
+        loaded_computations = list(computed)
+        assert [question.source_content_hash for question in questions] == [original(question) for question in questions]
+        assert computed == loaded_computations
+        assert len(reuse.values) == question_count - 1
+
+        question = next(item for item in questions if item.question_id == 1)
+        first = question.source_content_hash
+        question.word_question_blocks[0]["xml"] = xml.replace("TEST-A", "TEST-B")
+        changed = question.source_content_hash
+        assert changed != first
+        assert changed == original(question)
+        assert computed == [*loaded_computations, 1]
+
+        monkeypatch.setattr(analysis, "_SOURCE_CONTENT_REUSE_LIMIT", 2)
+        completed_values = dict(reuse.values)
+        reuse.merge_worker_values((completed_values, completed_values))
+        assert len(reuse.values) == 2
+    assert not reuse.values
+    assert question.source_content_hash == changed
+    assert computed == [*loaded_computations, 1, 1]
+
+
 @pytest.mark.parametrize("with_taxonomy_contract", [False, True])
 def test_source_hash_bundle_reuses_frozen_values_and_preserves_legacy_aliases(
     monkeypatch: pytest.MonkeyPatch, with_taxonomy_contract: bool,

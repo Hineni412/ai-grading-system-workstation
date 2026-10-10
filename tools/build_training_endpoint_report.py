@@ -10,7 +10,7 @@ def build(directory):
     data = (directory / "comparison.json").read_text(encoding="utf-8")
     report = json.loads(data)
     assert report["input"]["same_student_scores"] and report["input"]["same_recent_history"]
-    assert report["input"]["same_read_versions"]
+    assert report["input"].get("unchanged_database_inputs", report["input"].get("same_read_versions", False))
     assert report["model_requests"] == report["database_writes"] == report["raw_student_exports"] == 0
     for scope in report["scopes"]:
         assert all(scope["native_parity"])

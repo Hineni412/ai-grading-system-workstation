@@ -53,6 +53,7 @@ from question_bank.training_criteria.analysis import (
     TaxonomyProjectionReviewRequired,
     combined_response_format,
     controlled_term_ids_from_questions,
+    source_content_hash_reuse,
 )
 
 _IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>[^\]|]+)(?:\|[^\]]*)?\]\]")
@@ -257,7 +258,7 @@ class ExistingTagProjectionWriter:
         resolver = CurrentKnowledgeResolver.from_active_database(self.write_service.db_path)
         with connect(self.write_service.db_path) as connection:
             profile = load_profiles(self.write_service.db_path, [question.question_id],
-                connection=connection, data_root=self.write_service.data_root).get(question.question_id, {})
+                connection=connection, data_root=self.write_service.data_root, verify_source=True).get(question.question_id, {})
             current_version = str(profile.get("evidence_version_id") or "") if profile.get("available") else ""
             sync_question_type_labels(
                 connection, question.question_id, str(labels["primary_type_id"]),
@@ -648,13 +649,21 @@ class QuestionAnalysisInputLoader:
                     raise
                 return question_id, "question_content_unreadable"
 
-        with batch_file_reads(self.data_root):
+        with batch_file_reads(self.data_root), source_content_hash_reuse() as hash_reuse:
             if len(ids) < 8:
                 loaded = [try_load_one(question_id) for question_id in ids]
             else:
+                def load_with_hashes(question_id: int):
+                    item = try_load_one(question_id)
+                    return item, hash_reuse.values
+
                 context = copy_context()
                 with ThreadPoolExecutor(max_workers=4, thread_name_prefix="question-assets") as pool:
-                    loaded = list(pool.map(lambda qid: context.copy().run(try_load_one, qid), ids))
+                    completed = list(pool.map(lambda qid: context.copy().run(load_with_hashes, qid), ids))
+                loaded = [item for item, _ in completed]
+                hash_reuse.merge_worker_values(
+                    values for item, values in completed if isinstance(item, QuestionAnalysisInput)
+                )
         result: list[QuestionAnalysisInput] = []
         for item in loaded:
             if isinstance(item, QuestionAnalysisInput):

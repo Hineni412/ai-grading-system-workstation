@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools import experiment_training_fit as experiment
 from backend.repositories.grading_database import open_grading_repositories
+from integration.data_generation import database_change_stamp
 
 VOLUME = "bnu24-math-g8-upper"
 LEVELS = ["较低", "中下", "中上", "较高", "成绩资料不足"]
@@ -204,7 +205,7 @@ def run(output, *, baseline_remediation_only=False, max_unmeasured_questions=0,
     data = ROOT / "user_data"
     configuration_before = config_fingerprint(data)
     gp, bp = (data / "databases" / name for name in ("grading_system.db", "question_bank.db"))
-    report = {"versions": [engine.ENGINE_VERSION for engine in engines], "scopes": [], "catalog": {},
+    report = {"pipeline_labels": ["baseline", "latest"], "scopes": [], "catalog": {},
               "method": "Current identical raw inputs; both papers rechecked with latest target/task/difficulty rules. This is a rule audit, not independent learning efficacy.",
               "model_requests": 0, "database_writes": 0, "raw_student_exports": 0}
     report["group_comparison"] = not personal_only
@@ -212,11 +213,11 @@ def run(output, *, baseline_remediation_only=False, max_unmeasured_questions=0,
                                    "baseline_max_unmeasured_questions": baseline_max_unmeasured_questions,
                                    "latest_max_unmeasured_questions": max_unmeasured_questions}
     if intermediate:
-        report.update(intermediate_version=intermediate.ENGINE_VERSION, stage_shared_evaluation_verified=True)
+        report.update(intermediate_label="unmeasured", stage_shared_evaluation_verified=True)
     with experiment.readonly_runtime() as reading:
         with reading(gp) as grading, reading(bp) as bank:
             versions = [connection.execute("PRAGMA data_version").fetchone()[0] for connection in (grading, bank)]
-            fingerprints = [profiles[1]._database_content_revision(path, connection) for path, connection in ((gp, grading), (bp, bank))]
+            database_changes = [database_change_stamp(path) for path in (gp, bp)]
             services, diagnoses, modules, masteries, activities = [], [], [], [], []
             for i, (engine, profile_module) in enumerate(zip(engines, profiles)):
                 service = profile_module.DiagnosisProfileService(gp, bp,
@@ -256,8 +257,8 @@ def run(output, *, baseline_remediation_only=False, max_unmeasured_questions=0,
             all_keys = {key for scope in scope_results for key in scope["target_keys"]}
             report["catalog"] = {key: label_for(resolver, key) for key in sorted(all_keys)}
             assert versions == [connection.execute("PRAGMA data_version").fetchone()[0] for connection in (grading, bank)]
-            assert fingerprints == [profiles[1]._database_content_revision(path, connection) for path, connection in ((gp, grading), (bp, bank))]
-            report["input"] = {"grading": fingerprints[0], "bank": fingerprints[1], "same_student_scores": True, "same_recent_history": True, "same_read_versions": True}
+            assert database_changes == [database_change_stamp(path) for path in (gp, bp)]
+            report["input"] = {"same_student_scores": True, "same_recent_history": True, "unchanged_database_inputs": True}
     configuration_after = config_fingerprint(data)
     assert configuration_before == configuration_after, "Exam configuration changed during comparison"
     report["input"].update(exam_config_count=configuration_after[0], exam_config_hash=configuration_after[1])
@@ -312,8 +313,7 @@ def run_performance(output):
 
     with experiment.readonly_runtime() as reading:
         with reading(gp) as grading, reading(bp) as bank:
-            fingerprints = [profile_module._database_content_revision(path, connection)
-                            for path, connection in ((gp, grading), (bp, bank))]
+            database_changes = [database_change_stamp(path) for path in (gp, bp)]
             service = profile_module.DiagnosisProfileService(gp, bp,
                 grading_db=open_grading_repositories(gp, external_connection=grading),
                 question_bank_connection=bank, data_root=data, persist_snapshots=False)
@@ -349,12 +349,12 @@ def run_performance(output):
                     require_same(cold, warm, label + " cold/warm grouping")
                     scope_report["grouping"].append({"cold_seconds": cold_seconds, "warm_seconds": warm_seconds})
                     grouped.append(cold)
-                require_same(*grouped, "group members/targets/statistics/warnings/source versions")
+                require_same(*grouped, "group members/targets/statistics/warnings")
                 scope_report.update(group_count=len(grouped[0]["groups"]),
                                     grouped_student_count=grouped[0]["summary"]["grouped_student_count"])
                 pools = [module._source_snapshot(knowledge_keys=module._candidate_scope(diagnosis, config),
                                                  candidate_config=config) for module, config in zip(modules, configs)]
-                require_same(pools[0], pools[1], "candidate inputs and source versions")
+                require_same(pools[0], pools[1], "candidate inputs")
                 drafts = []
                 for label, module, config, (candidates, relations, _) in zip(("baseline", "latest"), modules, configs, pools):
                     draft, seconds = timed("performance_personal_" + label, lambda: module._build_draft(
@@ -396,23 +396,22 @@ def run_performance(output):
                     targets = tuple(row["knowledge_key"] for row in largest["targets"])
                     selections = []
                     for index, (module, config) in enumerate(zip(modules, group_configs)):
-                        config = replace(config, target_keys=targets, group_source_version=largest["source_version"])
+                        config = replace(config, target_keys=targets)
                         extra = {"_selection_only": True} if index else {}
                         selection, seconds = timed("performance_selected_group_" + str(index), lambda: module.chapter_groups(
                             diagnosis=scoped, config=config, member_ids=members, target_keys=targets,
                             graded_activities=activities, **extra)["selection"])
                         selections.append(selection)
                         scope_report["selected_group_validation"].append({"seconds": seconds, "members": len(members)})
-                    require_same(*selections, "selected group validation and source version")
+                    require_same(*selections, "selected group validation")
                 scope_report["complete_outputs_equal"] = True
                 report["scopes"].append(scope_report)
                 write_chunks(output / "performance.json", json.dumps(report, ensure_ascii=False, indent=2))
                 experiment.progress("performance_scope_complete", chapters=list(chapters), complete_outputs_equal=True)
             if encoded(diagnosis) != diagnosis_before:
                 raise AssertionError("Comparison mutated the diagnosis input")
-            report["same_read_versions"] = fingerprints == [profile_module._database_content_revision(path, connection)
-                for path, connection in ((gp, grading), (bp, bank))]
-            if not report["same_read_versions"]:
+            report["unchanged_database_inputs"] = database_changes == [database_change_stamp(path) for path in (gp, bp)]
+            if not report["unchanged_database_inputs"]:
                 raise AssertionError("Database inputs changed during comparison")
     if config_before != config_fingerprint(data):
         raise AssertionError("Exam configuration changed during comparison")

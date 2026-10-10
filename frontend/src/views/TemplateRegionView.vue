@@ -173,14 +173,14 @@ watch(focusLayout, syncFocusLayout, { flush: 'post' })
         <FeedbackBanner v-if="store.errorMessage" role="alert" tone="error" :description="store.errorMessage" />
         <FeedbackBanner v-if="store.saveState === 'error'" role="alert" tone="error" description="草稿仍保留在当前页面，可以再次尝试保存。" action-label="重试保存草稿" @action="store.flushDraft" />
         <FeedbackBanner v-if="store.saveState === 'conflict'" role="alert" tone="error" description="服务器已有较新草稿，自动保存已停止。" action-label="重新加载服务器草稿" @action="store.load(routeSessionId)" />
-        <FeedbackBanner v-if="store.draftChoiceRequired" role="status" tone="info" title="发现上次未完成的草稿" description="请选择继续上次草稿，或丢弃它并从已确认版本重新开始。">
+        <FeedbackBanner v-if="store.draftChoiceRequired" role="status" tone="info" title="发现上次未完成的草稿" description="已保存的草稿可以继续查看。若样卷换过，使用前请核对题框位置。">
           <div class="template-regions-view__choice-actions">
             <AppButton type="button" variant="secondary" @click="store.continueDraft">继续上次草稿</AppButton>
-            <AppButton type="button" variant="secondary" @click="store.restartFromFormal">从已确认版本重新开始</AppButton>
+            <AppButton type="button" variant="secondary" @click="store.restartFromFormal">从已确认题框重新开始</AppButton>
           </div>
         </FeedbackBanner>
         <FeedbackBanner v-if="store.workspace.draft.status === 'incompatible' || store.workspace.draft.status === 'corrupt'"
-          role="alert" tone="error" description="旧草稿与当前样卷不一致，未自动套用。可丢弃旧草稿后从已确认版本重新开始。"
+          role="alert" tone="error" :description="store.workspace.draft.reason ?? '草稿暂时无法读取，原文件已保留。'"
           action-label="丢弃旧草稿" @action="store.discardDraft" />
       </div>
       <TemplateUploadPanel

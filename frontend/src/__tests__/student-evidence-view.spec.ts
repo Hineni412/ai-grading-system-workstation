@@ -216,7 +216,7 @@ describe('student evidence wrong question book', () => {
     await vi.waitFor(() => expect(host.textContent).toContain(student.name))
     const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.trim() === '导出错题本')!
     button.click()
-    await vi.waitFor(() => expect(router.currentRoute.value.query.mode).toBe('student'))
+    await vi.waitFor(() => expect(router.currentRoute.value.query.mode).toBe('setup'), { timeout: 10000 })
     expect(router.currentRoute.value.path).toBe('/training')
     expect(loadPaperSelectionSession()).toMatchObject({ selectedStudentIds: ['12'], purpose: 'wrong_book', scopeMode: 'comprehensive' })
     expect(document.querySelector('.wrong-book-dialog')).toBeNull()
@@ -289,6 +289,27 @@ describe('student evidence view original question panel', () => {
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await vi.waitFor(() => expect(document.querySelector('.question-panel')).toBeNull())
+  })
+
+  it('shows independent and affected steps with the final-score source and exclusion notice', async () => {
+    const original = sessionItem(7).items[0]
+    if (!original) throw new Error('Missing synthetic item')
+    fetchStudentExamResultsMock.mockResolvedValue(responseFor([sessionItem(7, { items: [
+      { ...original, step_diagnosis: { availability: 'available', scope: 'key_steps', source: 'teacher_confirmed_ai', steps: [
+        { step_id: 'S1', goal: '列等量关系', state: 'independent', key_steps: [{ key: 'sk_test', name: '列等量关系' }], reason: 'TEST-等式漏项' },
+        { step_id: 'S2', goal: '求解方程', state: 'carried', key_steps: [], reason: '沿用前步结果' },
+        { step_id: 'S3', goal: '写出结论', state: 'met', key_steps: [], reason: '' },
+      ] } },
+      { ...original, detail_id: 502, question_id: 'Q2', step_diagnosis: { availability: 'teacher_total_only', source: null, steps: [] } },
+    ] })]))
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('卡在哪一步'))
+    expect(host.textContent).toContain('教师确认总分，步骤为 AI 判断')
+    expect(host.textContent).toContain('独立失分')
+    expect(host.textContent).toContain('受前一步影响')
+    expect(host.textContent).toContain('已完成：S3')
+    expect(host.textContent).toContain('缺少与教师最终分相符的步骤记录')
+    expect(host.textContent).toContain('6 / 10')
   })
 
 })

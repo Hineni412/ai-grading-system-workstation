@@ -1,4 +1,5 @@
 import { apiClient } from './client'
+import { decodeKeyStepStats, decodeStepDiagnosisSummary, type KeyStepStats, type StepDiagnosisSummary } from './step-diagnosis'
 import {
   assertNoPathLikeKeys,
   isFiniteNumber,
@@ -77,19 +78,20 @@ export interface ClassCause {
   manifestations?: { description: string; source_question_id: string | null; evidence: ClassCauseEvidence[] }[]
 }
 
-export const CAUSE_RESULT_STATES = ['current', 'stale', 'old_prompt', 'missing'] as const
+export const CAUSE_RESULT_STATES = ['current', 'stale', 'missing'] as const
 export type CauseResultState = (typeof CAUSE_RESULT_STATES)[number]
 
 export interface ClassCauseQuestionStates {
   current: number
   stale: number
-  old_prompt: number
+  /** 只兼容旧接口输入；新接口不返回。 */
+  old_prompt?: number
   failed: number
 }
 
 export interface ClassCauseAnalysis {
   status: 'ready' | 'partial' | 'not_generated'
-  /** stale + missing 题数：待整理；old_prompt 不计入待整理。 */
+  /** 尚无保存结果的题数；已有正文按需要显式更新。 */
   pending_questions: number
   total_questions: number
   failed_questions: number
@@ -107,6 +109,7 @@ export interface ClassAnalysisQuestion {
   canonical_answer: string | null
   records: ClassAnalysisRecord[]
   causes?: ClassCause[]
+  key_steps?: KeyStepStats[]
   causes_grouped?: boolean
   causes_legacy?: boolean
   /** 该题已存整理结果的状态；missing/失败的题没有此字段。 */
@@ -162,6 +165,7 @@ export interface ClassAnalysisData {
   roster_absent: string[]
   score_distribution: ClassScoreDistribution
   questions: ClassAnalysisQuestion[]
+  step_diagnosis?: StepDiagnosisSummary
   students: ClassAnalysisStudent[]
   skipped: ClassAnalysisSkipped[]
 }
@@ -201,6 +205,7 @@ export interface ClassAnalysisResponse {
   narrative_failed: boolean
   generated_at: string | null
   stale: boolean
+  read_error?: string | null
   /** 所选班级叙述条目的结果状态；summary 视图或未选班为 undefined。 */
   narrative_state?: CauseResultState | null
   active_job_id: number | null
@@ -305,19 +310,43 @@ function decodeCause(value: unknown): ClassCause {
     ...(value.evidence === undefined ? {} : { evidence: decodeCauseEvidence(value.evidence) }) }
 }
 
+function decodeCauseState(value: unknown): CauseResultState {
+  if (value === 'old_prompt') return 'current'
+  const state = CAUSE_RESULT_STATES.find(candidate => candidate === value)
+  if (state === undefined) throw new Error('Invalid class cause state')
+  return state
+}
+
 function decodeCauseAnalysis(value: unknown): ClassCauseAnalysis | null {
   if (value == null) return null
   const states = isRecord(value) && isRecord(value.question_states) ? value.question_states : null
-  if (!isRecord(value) || !['ready', 'partial', 'not_generated'].includes(String(value.status))
+  const status = isRecord(value)
+    ? (['ready', 'partial', 'not_generated'] as const).find(candidate => candidate === value.status)
+    : undefined
+  if (!isRecord(value) || status === undefined
     || !isNonnegativeInteger(value.pending_questions) || !isNonnegativeInteger(value.total_questions)
     || !isNonnegativeInteger(value.failed_questions) || typeof value.stale !== 'boolean'
     || states === null
     || !isNonnegativeInteger(states.current) || !isNonnegativeInteger(states.stale)
-    || !isNonnegativeInteger(states.old_prompt) || !isNonnegativeInteger(states.failed)
+    || !(states.old_prompt === undefined || isNonnegativeInteger(states.old_prompt))
+    || !isNonnegativeInteger(states.failed)
     || !isNullableString(value.generated_at) || !isNullableString(value.origin)) {
     throw new Error('Invalid class cause analysis')
   }
-  return value as unknown as ClassCauseAnalysis
+  return {
+    status,
+    pending_questions: value.pending_questions,
+    total_questions: value.total_questions,
+    failed_questions: value.failed_questions,
+    question_states: {
+      current: states.current + (typeof states.old_prompt === 'number' ? states.old_prompt : 0),
+      stale: states.stale,
+      failed: states.failed,
+    },
+    stale: value.stale,
+    generated_at: value.generated_at,
+    origin: value.origin,
+  }
 }
 
 function decodeQuestion(value: unknown): ClassAnalysisQuestion {
@@ -332,7 +361,7 @@ function decodeQuestion(value: unknown): ClassAnalysisQuestion {
     || !Array.isArray(value.records)
     || !(value.causes_grouped === undefined || typeof value.causes_grouped === 'boolean')
     || !(value.causes_legacy === undefined || typeof value.causes_legacy === 'boolean')
-    || !(value.state === undefined || CAUSE_RESULT_STATES.some((s) => s === value.state))
+    || !(value.state === undefined || value.state === 'old_prompt' || CAUSE_RESULT_STATES.some((s) => s === value.state))
     || !(value.causes_by_step === undefined || typeof value.causes_by_step === 'boolean')
     || !(value.cause_review === undefined || isRecord(value.cause_review))
     || !(value.bank_question_id === undefined || value.bank_question_id === null || isNonnegativeInteger(value.bank_question_id))
@@ -353,10 +382,11 @@ function decodeQuestion(value: unknown): ClassAnalysisQuestion {
     stem_summary: value.stem_summary,
     canonical_answer: value.canonical_answer,
     records: value.records.map(decodeRecord),
+    ...(value.key_steps === undefined ? {} : { key_steps: decodeKeyStepStats(value.key_steps) }),
     ...(Array.isArray(value.causes) ? { causes: value.causes.map(decodeCause) } : {}),
     ...(typeof value.causes_grouped === 'boolean' ? { causes_grouped: value.causes_grouped } : {}),
     ...(typeof value.causes_legacy === 'boolean' ? { causes_legacy: value.causes_legacy } : {}),
-    ...(value.state === undefined ? {} : { state: value.state as CauseResultState }),
+    ...(value.state === undefined ? {} : { state: decodeCauseState(value.state) }),
     ...(typeof value.causes_by_step === 'boolean' ? { causes_by_step: value.causes_by_step } : {}),
     ...(value.bank_question_id === undefined ? {} : { bank_question_id: value.bank_question_id }),
     cause_category_counts: Array.isArray(value.cause_category_counts)
@@ -458,6 +488,7 @@ function decodeData(value: unknown): ClassAnalysisData {
     roster_absent: [...value.roster_absent] as string[],
     score_distribution: decodeScoreDistribution(value.score_distribution),
     questions: value.questions.map(decodeQuestion),
+    ...(value.step_diagnosis === undefined ? {} : { step_diagnosis: decodeStepDiagnosisSummary(value.step_diagnosis) }),
     students: value.students.map(decodeStudent),
     skipped: Array.isArray(value.skipped)
       ? value.skipped.map((item) => {
@@ -535,11 +566,12 @@ export function decodeClassAnalysisResponse(value: unknown): ClassAnalysisRespon
     || typeof value.narrative_failed !== 'boolean'
     || !isNullableString(value.generated_at)
     || typeof value.stale !== 'boolean'
+    || (value.read_error !== undefined && !isNullableString(value.read_error))
     || decodeActiveJobId(value.active_job_id) === undefined
     || !(value.class_names === undefined || (Array.isArray(value.class_names) && value.class_names.every((item) => typeof item === 'string')))
     || !(value.selected_class === undefined || isNullableString(value.selected_class))
     || !(value.narrative_state === undefined || value.narrative_state === null
-      || CAUSE_RESULT_STATES.some((s) => s === value.narrative_state))
+      || value.narrative_state === 'old_prompt' || CAUSE_RESULT_STATES.some((s) => s === value.narrative_state))
   ) {
     throw new Error('Invalid class analysis response')
   }
@@ -552,8 +584,9 @@ export function decodeClassAnalysisResponse(value: unknown): ClassAnalysisRespon
     narrative_failed: value.narrative_failed,
     generated_at: value.generated_at,
     stale: value.stale,
+    read_error: typeof value.read_error === "string" ? value.read_error : null,
     ...(value.narrative_state !== undefined
-      ? { narrative_state: value.narrative_state as CauseResultState | null } : {}),
+      ? { narrative_state: value.narrative_state === null ? null : decodeCauseState(value.narrative_state) } : {}),
     active_job_id: decodeActiveJobId(value.active_job_id) ?? null,
     ...(value.cause_analysis === undefined ? {} : { cause_analysis: decodeCauseAnalysis(value.cause_analysis) }),
     ...(Array.isArray(value.class_names) ? { class_names: value.class_names as string[] } : {}),

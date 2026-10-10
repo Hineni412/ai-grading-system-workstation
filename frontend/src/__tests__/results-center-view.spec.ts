@@ -152,14 +152,14 @@ function reviewItems(qid: string): ResolvedReviewItem[] {
 }
 
 async function mountView(tab: string | null = 'details', analysis?: ClassAnalysisResponse, open = '',
-    statuses?: [string, number][]) {
+    statuses?: [string, number][], readErrors: Readonly<Record<number, string>> = {}) {
   localStorage.clear()
   pipelineMock.getStatus.mockClear()
   pipelineMock.start.mockClear()
   jobsMock.getJob.mockClear().mockImplementation(jobsMock.defaultJob)
-  personalMock.states.mockResolvedValue((statuses ?? [['current', 1], ['stale', 2], ['missing', 3], ['unavailable', 4]]).map(([status, id]) => ({student_id: id, status, generated_at: '2026-10-03', reason: status === 'unavailable' ? '缺考' : null})))
+  personalMock.states.mockResolvedValue((statuses ?? [['current', 1], ['stale', 2], ['missing', 3], ['unavailable', 4]]).map(([status, id]) => ({student_id: id, status, generated_at: '2026-10-03', reason: status === 'unavailable' ? '缺考' : null, read_error: readErrors[id] ?? null})))
   personalMock.exams.mockImplementation(async (id: number) => [{session_id: 7, session_name: '合成成绩验证', graded_at: '2026-10-03', score: 8, max_score: 10,
-    status: id === 1 ? 'current' : id === 2 ? 'stale' : id === 3 ? 'missing' : 'unavailable', generated_at: '2026-10-03', reason: id === 4 ? '缺考' : null}])
+    status: id === 1 ? 'current' : id === 2 ? 'stale' : id === 3 ? 'missing' : 'unavailable', generated_at: '2026-10-03', reason: id === 4 ? '缺考' : null, read_error: readErrors[id] ?? null}])
   vi.mocked(fetchResultsCenter).mockReset().mockResolvedValue(fixture())
   classAnalysisMock.getClassAnalysis.mockReset().mockRejectedValue(new Error('合成环境不读班级分析'))
   invalidateClassAnalysis(7)
@@ -396,7 +396,7 @@ describe('results center class filtering and return position', () => {
       narrative: { key_findings: [{ title: '合成观察', detail: '旧叙述', severity: 'info' }],
         common_issues: [], student_notes: [], grouping_advice: '' },
     })
-    await vi.waitFor(() => expect(host.textContent).toContain('成绩或错因已变化，显示上次生成；点页面顶部「AI 整理」更新'))
+    await vi.waitFor(() => expect(host.textContent).toContain('相关内容已修改，报告仍可查看；可在「AI 整理」中选择更新。'))
     expect(host.textContent).toContain('查看报告')
     expect(host.textContent).not.toContain('去 AI 整理')
   })
@@ -723,6 +723,23 @@ describe('results center class filtering and return position', () => {
 })
 
 describe('personal report reading and review return', () => {
+  it.each([
+    { studentId: 1, status: 'current', narrativeMode: 'auto' },
+    { studentId: 3, status: 'missing', narrativeMode: 'none' },
+  ])('keeps student $studentId readable while showing a saved-file read warning', async ({ status, narrativeMode }) => {
+    const warning = '个人报告保存文件暂无法读取；已有兼容正文仍可查看。'
+    const { host } = await mountView('details', undefined, '', undefined, { 1: warning, 3: warning })
+    await vi.waitFor(() => expect(host.textContent).toContain('报告未生成或可更新（1）'))
+    const missing = host.querySelector<HTMLButtonElement>('.personal-report-status--missing')!
+    expect(missing.getAttribute('aria-label')).toContain('保存内容暂无法读取')
+    host.querySelector<HTMLButtonElement>(`.personal-report-status--${status}`)!.click()
+    await vi.waitFor(() => expect(document.querySelector('iframe')?.getAttribute('src'))
+      .toContain(`narrative=${narrativeMode}`))
+    expect(document.querySelector('.personal-reader [data-testid="feedback-banner"]')?.textContent)
+      .toContain(warning)
+    expect(document.querySelector('.personal-reader')?.textContent).not.toContain('AI 分析部分尚未整理')
+  })
+
   it('accepts report keyboard messages only from the current same-origin frame', async () => {
     const { host } = await mountView()
     await vi.waitFor(() => expect(host.querySelector('.personal-report-status--current')).not.toBeNull())
@@ -744,7 +761,7 @@ describe('personal report reading and review return', () => {
     await vi.waitFor(() => expect(document.querySelector('.personal-reader')).toBeNull())
     expect(document.querySelector('#student-result-title')?.textContent).toBe('合成乙')
   })
-  it.each([[1, '查看个人报告'], [2, '上次生成'], [3, '查看报告（数据版）'], [4, '缺考']])('shows the report block in student %i drawer', async (id, text) => {
+  it.each([[1, '查看个人报告'], [2, '查看已保存的个人报告'], [3, '查看报告（数据版）'], [4, '缺考']])('shows the report block in student %i drawer', async (id, text) => {
     const { host } = await mountView()
     await vi.waitFor(() => expect(host.querySelectorAll('.personal-report-status')).toHaveLength(3))
     host.querySelectorAll<HTMLTableRowElement>('.results-matrix tbody tr')[Number(id) - 1]!.querySelector<HTMLButtonElement>('th > button')!.click()
@@ -775,7 +792,7 @@ describe('personal report reading and review return', () => {
     const next = [...document.querySelectorAll<HTMLButtonElement>('.personal-reader button')].find(b => b.textContent === '下一位 →')!
     next.click()
     await vi.waitFor(() => expect(document.querySelector('.personal-reader__identity')?.textContent).toContain('合成乙'))
-    await vi.waitFor(() => expect(document.querySelector('.personal-reader [data-testid="feedback-banner"]')?.textContent).toContain('上次生成'))
+    await vi.waitFor(() => expect(document.querySelector('.personal-reader [data-testid="feedback-banner"]')?.textContent).toContain('这份报告仍可查看和导出'))
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await vi.waitFor(() => expect(document.querySelector('.personal-reader')).toBeNull())
     expect(document.querySelector('#student-result-title')?.textContent).toBe('合成乙')
@@ -788,16 +805,16 @@ describe('personal report reading and review return', () => {
     await vi.waitFor(() => expect(host.querySelector('.personal-report-status--old_prompt')).not.toBeNull())
     const icon = host.querySelector<HTMLButtonElement>('.personal-report-status--old_prompt')!
     expect(icon.textContent).toBe('✓')
-    expect(icon.getAttribute('aria-label')).toContain('用旧版提示词生成')
-    // 「报告未生成或需重新生成」只计 missing + stale。
-    expect(host.textContent).toContain('报告未生成或需重新生成（2）')
+    expect(icon.getAttribute('aria-label')).toContain('已生成')
+    // 「报告未生成或可更新」只计 missing + stale。
+    expect(host.textContent).toContain('报告未生成或可更新（2）')
     host.querySelectorAll<HTMLTableRowElement>('.results-matrix tbody tr')[0]!.querySelector<HTMLButtonElement>('th > button')!.click()
-    await vi.waitFor(() => expect(document.querySelector('.personal-report-drawer')?.textContent).toContain('用旧版提示词生成'))
+    await vi.waitFor(() => expect(document.querySelector('.personal-report-drawer')?.textContent).toContain('已保存，可直接查看'))
   })
   it('filters missing and stale reports within the class and follows the matrix order', async () => {
     const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('报告未生成或需重新生成（2）'))
-    const filter = [...host.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.includes('报告未生成或需重新生成（2）'))!
+    await vi.waitFor(() => expect(host.textContent).toContain('报告未生成或可更新（2）'))
+    const filter = [...host.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.includes('报告未生成或可更新（2）'))!
     filter.click()
     await vi.waitFor(() => expect(host.querySelectorAll('.results-matrix tbody tr')).toHaveLength(2))
     host.querySelector<HTMLButtonElement>('.personal-report-status')!.click()

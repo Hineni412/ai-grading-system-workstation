@@ -121,6 +121,7 @@
 
 .review-answer-panel__point-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: var(--space-2);
   font-size: var(--font-size-dense);
@@ -195,3 +196,6 @@
     border-block-end: var(--border-width) solid var(--color-border-default);
   }
 }
+
+.review-answer-panel__step-stats { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); flex: 1 0 100%; color: var(--color-text-muted); font-size: var(--font-size-caption); font-weight: var(--font-weight-regular); }
+.review-answer-panel__key-step { padding: 2px 6px; border: 1px solid var(--color-border-default); border-radius: var(--radius-sm); background: var(--color-bg-subtle); color: var(--color-accent); cursor: pointer; }

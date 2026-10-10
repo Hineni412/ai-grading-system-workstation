@@ -44,7 +44,14 @@ def _note_item(student_id: int, question_id: str, **overrides) -> dict:
 
 
 def test_load_session_notes_missing_file_returns_none(tmp_path: Path) -> None:
-    assert load_session_notes(tmp_path / "reports", 7) is None
+    reports = tmp_path / 'reports'
+    assert load_session_notes(reports, 7) is None
+    target = session_notes_path(reports, 7)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({'version': 99, 'session_id': 7, 'items': [_note_item(1, 'Q2')]}), encoding='utf-8')
+    before = target.read_bytes()
+    assert load_session_notes(reports, 7)['items'][0]['question_id'] == 'Q2'
+    assert target.read_bytes() == before
 
 
 def test_merge_session_notes_replaces_scoped_students(tmp_path: Path) -> None:
@@ -52,7 +59,6 @@ def test_merge_session_notes_replaces_scoped_students(tmp_path: Path) -> None:
     total = merge_session_notes(
         reports_dir,
         5,
-        score_revision="rev-a",
         items=[
             _note_item(1, "Q1", note="旧提示"),
             _note_item(2, "Q2"),
@@ -64,14 +70,12 @@ def test_merge_session_notes_replaces_scoped_students(tmp_path: Path) -> None:
     total = merge_session_notes(
         reports_dir,
         5,
-        score_revision="rev-b",
         items=[_note_item(1, "Q3", note="新提示")],
         scoped_student_ids={1},
     )
     assert total == 2
     payload = load_session_notes(reports_dir, 5)
     assert payload is not None
-    assert payload["score_revision"] == "rev-b"
     assert payload["generated_at"]
     by_student = {item["student_id"]: item for item in payload["items"]}
     assert by_student[1]["question_id"] == "Q3"
@@ -82,7 +86,7 @@ def test_merge_session_notes_replaces_scoped_students(tmp_path: Path) -> None:
 def test_merge_session_notes_atomic_write_leaves_no_temp(tmp_path: Path) -> None:
     reports_dir = tmp_path / "reports"
     merge_session_notes(
-        reports_dir, 3, score_revision="r", items=[], scoped_student_ids=set()
+        reports_dir, 3, items=[], scoped_student_ids=set()
     )
     target = session_notes_path(reports_dir, 3)
     assert target.is_file()
@@ -175,12 +179,11 @@ def test_personal_export_writes_review_notes_sidecar(
         reports_dir=reports_dir,
     )
     generator.export_session(
-        session_id, "personal_analysis_html", score_revision="rev-test"
+        session_id, "personal_analysis_html"
     )
 
     payload = load_session_notes(reports_dir, session_id)
     assert payload is not None
-    assert payload["score_revision"] == "rev-test"
     students = _student_ids(db)
     expected = {students["张三"], students["李四"]}
     assert {item["student_id"] for item in payload["items"]} == expected
@@ -209,7 +212,7 @@ def test_personal_export_merge_scoped_and_lock_revision(
         reports_dir=reports_dir,
     )
     generator.export_session(
-        session_id, "personal_analysis_html", score_revision="rev-1"
+        session_id, "personal_analysis_html"
     )
     first = load_session_notes(reports_dir, session_id)
     assert first is not None
@@ -237,15 +240,15 @@ def test_personal_export_merge_scoped_and_lock_revision(
     generator2.export_session(
         session_id,
         "personal_analysis_html",
-        score_revision="rev-2",
         student_ids={lisi},
     )
     merged = load_session_notes(reports_dir, session_id)
     assert merged is not None
     assert len(merged["items"]) == 2
     by_student = {item["student_id"]: item for item in merged["items"]}
-    assert by_student[lisi]["note"] == "第二轮提示"
-    assert by_student[lisi]["lock_revision"] == 2
+    assert by_student[lisi]["note"] == "第一轮提示"
+    assert second_client.calls == 0
+    assert by_student[lisi]["lock_revision"] == 0
     assert by_student[students["张三"]]["note"] == "第一轮提示"
 
 
@@ -353,7 +356,6 @@ def test_analysis_review_notes_endpoint_status_and_item_id(
     merge_session_notes(
         reports_dir,
         session_id,
-        score_revision="rev",
         items=[
             _note_item(11, "Q2", lock_revision=0),
             _note_item(12, "Q1", lock_revision=5),

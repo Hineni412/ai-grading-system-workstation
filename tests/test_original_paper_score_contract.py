@@ -232,7 +232,8 @@ def test_auto_regions_strip_rescues_missing_line_orders_numbers_and_spans_pages(
                 _ocr_row("5. body number", 250, 700),
                 _ocr_row("5. body number at the right side", 650, 900),
             ], 0.0
-        return ([_ocr_row("Continuation working", 50, 70, w=820),
+        return ([_ocr_row("三、解答题（共2小题）", 50, 30, w=350),
+                 _ocr_row("Continuation working", 50, 70, w=820),
                  _ocr_row("4. printed", 50, 500, w=820)] if width == 1000 else []), 0.0
 
     proposal = propose_answer_regions(pages, catalog, ocr_engine=ocr)
@@ -241,21 +242,32 @@ def test_auto_regions_strip_rescues_missing_line_orders_numbers_and_spans_pages(
     assert {item["mapped_question_id"] for item in regions} == {"Q1", "Q2", "Q3", "Q4", "__student_name__"}
     assert (1, 350) in calls and (2, 350) in calls
     q1 = next(item for item in regions if item["mapped_question_id"] == "Q1")
-    assert (q1["x"], q1["y"], q1["w"], q1["h"]) == (38, 196, 862, 204)
+    assert (q1["x"], q1["w"]) == (0, 1000)
+    assert q1["y"] <= 180 and q1["y"] + q1["h"] >= 420
     q3 = [item for item in regions if item["mapped_question_id"] == "Q3"]
     assert [item["page"] for item in q3] == ["front", "back"]
-    assert q3[0]["y"] + q3[0]["h"] == 1388
-    assert q3[1]["y"] + q3[1]["h"] == 500
+    assert q3[0]["y"] + q3[0]["h"] == 1400
+    assert q3[1]["y"] + q3[1]["h"] >= 520
+    assert 30 < q3[1]["y"] < 70  # Section heading stays out of continuation evidence.
+    assert (q3[1]["x"], q3[1]["w"]) == (0, 1000)
     name = next(item for item in regions if item["mapped_question_id"] == "__student_name__")
-    assert name["x"] < 280 and 400 < name["x"] + name["w"] < 430
-    assert name["y"] == 58 and name["h"] == 48
+    assert 0 < name["x"] <= 240 and 620 <= name["x"] + name["w"] < 1000
+    assert name["y"] <= 46 and 118 <= name["y"] + name["h"] < 200
     assert all(item["mapping_status"] == "auto" and not item["is_confirmed"] for item in regions)
     assert all(item["confidence"] >= 0.55 for item in regions)
     validation = validate_regions(regions, image_sizes={"front": (1000, 1400), "back": (1000, 1400)}, template_matches=True)
     assert [issue.code for issue in validation.issues] == ["unconfirmed_multi_region"]
+    for marker, page in enumerate(("front", "back"), start=1):
+        image = Image.new("RGB", (1000, 2800), "white")
+        image.putpixel((0, 0), (marker, marker, marker))
+        image.save(pages[page])
+    taller_page = propose_answer_regions(pages, catalog, ocr_engine=ocr)
+    taller_name = next(item for item in taller_page["regions"] if item["mapped_question_id"] == "__student_name__")
+    assert tuple(taller_name[key] for key in ("x", "y", "w", "h")) == tuple(name[key] for key in ("x", "y", "w", "h"))
 
 
-def test_auto_regions_double_columns_name_label_and_missing_name_fallback(tmp_path):
+@pytest.mark.parametrize("name_y", [70, 170])
+def test_auto_regions_double_columns_name_label_and_missing_name_fallback(tmp_path, name_y):
     from backend.answer_regions.answer_region_auto_proposal import propose_answer_regions
     from backend.answer_regions.answer_region_models import QuestionBindingCatalog
 
@@ -267,7 +279,10 @@ def test_auto_regions_double_columns_name_label_and_missing_name_fallback(tmp_pa
         if image.shape[1] != 1000 or int(image[0, 0, 0]) != 1:
             return [], 0.0
         return [
-            _ocr_row("姓名：", 220, 70, w=50), _ocr_row("班级：", 430, 70, w=80),
+            _ocr_row("第3周测试", 270, 30, w=400),
+            _ocr_row("姓名：", 220, name_y, w=50), _ocr_row("班级：", 430, name_y, w=80),
+            _ocr_row("测试学生", 285, name_y, w=130),
+            _ocr_row("一、选择题（共7小题）", 40, 180, w=260),
             _ocr_row("1. left top", 50, 200, w=380),
             _ocr_row("2. left bottom", 50, 600, w=380),
             _ocr_row("3. right top", 550, 200, w=380),
@@ -280,11 +295,27 @@ def test_auto_regions_double_columns_name_label_and_missing_name_fallback(tmp_pa
     assert result["missing_question_ids"] == []
     questions = [item for item in result["regions"] if item["mapped_question_id"] != "__student_name__"]
     assert [item["mapped_question_id"] for item in questions] == ["Q1", "Q2", "Q3", "Q4"]
-    assert questions[0]["x"] + questions[0]["w"] < questions[2]["x"]
-    assert questions[0]["y"] + questions[0]["h"] == 600
+    assert (questions[0]["x"], questions[0]["w"]) == (0, 500)
+    assert (questions[2]["x"], questions[2]["w"]) == (500, 500)
+    assert questions[0]["y"] + questions[0]["h"] >= 620
     assert calls.count((1400, 175)) == 2
     name = result["regions"][0]
-    assert name["x"] == 214 and name["x"] + name["w"] == 427
+    assert 0 < name["x"] <= 180 and 710 <= name["x"] + name["w"] < 1000
+    assert 0 <= name["y"] <= 6 and name_y + 24 <= name["y"] + name["h"] < 200
+
+    def heading_only(image):
+        if image.shape[1] != 1000:
+            return [], 0.0
+        if int(image[0, 0, 0]) == 1:
+            return [_ocr_row("1. printed", 50, 200)], 0.0
+        return [_ocr_row("三、解答题（共2小题）", 50, 70),
+                _ocr_row("2. printed", 50, 200),
+                _ocr_row("第2页（共2页）", 400, 1300)], 0.0
+
+    headings = propose_answer_regions(pages, catalog, ocr_engine=heading_only)
+    assert [(item["mapped_question_id"], item["page"]) for item in headings["regions"]] == [
+        ("Q1", "front"), ("Q2", "back"),
+    ]
 
     def top_rescan(image):
         if image.shape[:2] == (350, 1000) and int(image[0, 0, 0]) == 1:

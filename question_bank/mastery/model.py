@@ -7,6 +7,7 @@ import math
 from collections import defaultdict
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
+from functools import cached_property
 
 import numpy as np
 
@@ -36,7 +37,7 @@ class MasteryParameters:
         if self.tau_theta < 0 or self.tau_kc < 0 or not 0 <= self.slip < 1 - self.stable_threshold:
             raise ValueError("invalid mastery time/slip parameters")
 
-    @property
+    @cached_property
     def version(self):
         return hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode()).hexdigest()
 
@@ -128,7 +129,8 @@ def classify(mean, sd, parameters=MasteryParameters()):
     return "insufficient"
 
 
-def lbfgs(objective, initial, iterations=600, memory=10):
+def lbfgs(objective, initial, iterations=600, memory=10, *, loss=None):
+    """Use a matching scalar loss to skip gradients for rejected trials."""
     x = initial.copy()
     value, grad = objective(x)
     history = []
@@ -150,8 +152,13 @@ def lbfgs(objective, initial, iterations=600, memory=10):
             direction, history = -grad, []
         for _ in range(40):
             candidate = x + step * direction
-            new_value, new_grad = objective(candidate)
+            if loss is None:
+                new_value, new_grad = objective(candidate)
+            else:
+                new_value = loss(candidate)
             if new_value <= value + 1e-4 * step * (grad @ direction):
+                if loss is not None:
+                    new_value, new_grad = objective(candidate)
                 break
             step *= 0.5
         else:
@@ -238,22 +245,25 @@ class MasteryModel:
         self.y = np.array([o["y"] for o in self.observations])
         count = len(self.observations)
 
-        def objective(x, slip):
+        def objective(x, slip, *, gradient=True):
             eta = np.bincount(self.obs_index, self.coef * x[self.par_index], minlength=count)
-            q = sigmoid(eta)
+            q = sigmoid(eta) if gradient or slip else None
             if slip == 0:
                 loss = np.sum(np.logaddexp(0, eta) - self.y * eta)
-                residual = q - self.y
             else:
                 p = (1 - slip) * q
                 loss = -np.sum(self.y * (math.log1p(-slip) - np.logaddexp(0, -eta)) + (1 - self.y) * np.log1p(-p))
-                residual = (p - self.y) * (1 - q) / (1 - p)
+            if not gradient:
+                return loss + 0.5 * np.sum(self.prec * x*x)
+            residual = q - self.y if slip == 0 else (p - self.y) * (1 - q) / (1 - p)
             grad = np.bincount(self.par_index, self.coef * residual[self.obs_index], minlength=len(x))
             return loss + 0.5 * np.sum(self.prec * x*x), grad + self.prec*x
 
-        self.x = lbfgs(lambda x: objective(x, 0), np.zeros(len(self.prec)), iterations)
+        self.x = lbfgs(lambda x: objective(x, 0), np.zeros(len(self.prec)), iterations,
+                       loss=lambda x: objective(x, 0, gradient=False))
         if self.parameters.slip:
-            self.x = lbfgs(lambda x: objective(x, self.parameters.slip), self.x, iterations)
+            self.x = lbfgs(lambda x: objective(x, self.parameters.slip), self.x, iterations,
+                           loss=lambda x: objective(x, self.parameters.slip, gradient=False))
         self.cov = {}
         self._mastery_states = {}
         if laplace:

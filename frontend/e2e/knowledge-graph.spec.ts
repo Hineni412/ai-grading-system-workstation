@@ -61,8 +61,9 @@ async function install(page: Page) {
 test('map groups, same-part and cooccurrence lines, drawer, keyboard focus, and shared requests', async ({ page }) => {
   const requests = await install(page)
   await page.goto('/knowledge-overview')
-  await expect(page.getByRole('heading', { name: '本周建议优先处理' })).toBeVisible()
-  await page.getByRole('link', { name: '知识结构', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '题型清单' })).toBeVisible()
+  await page.screenshot({ path: '../output/test_knowledge_training_merge_20261009/overview-synthetic.png', animations: 'disabled' })
+  await page.getByRole('button', { name: '按教材章节', exact: true }).click()
   await expect(page.locator('.mastery-map-node[data-knowledge="topic"]')).toBeVisible()
   expect(requests.filter(r => r.path === '/api/training/overview')).toHaveLength(1)
   const source = page.locator('.mastery-map-node[data-knowledge="topic"]')
@@ -70,6 +71,7 @@ test('map groups, same-part and cooccurrence lines, drawer, keyboard focus, and 
   await expect(page.locator('.mastery-map-drawer')).toBeVisible()
   await expect(page.locator('.mastery-map-drawer')).toContainText('同一小问 10 题')
   await expect(page.locator('.mastery-map-drawer')).toContainText('仅同题出现 3 题（虚线）')
+  await page.screenshot({ path: '../output/test_knowledge_training_merge_20261009/map-detail-synthetic.png', animations: 'disabled' })
   await page.mouse.move(1000, 100)
   await expect(page.locator('.mastery-map-connections path')).toHaveCount(2)
   await expect(page.locator('.mastery-map-connections path.is-dashed')).toHaveCount(1)
@@ -111,9 +113,10 @@ test('narrow map stacks both columns and uses a full-width bottom drawer without
 
 test('overview opens existing student training with presets and sends no create request', async ({ page }) => {
   const requests = await install(page); await page.goto('/knowledge-overview')
-  await page.locator('.overview-priority').first().getByRole('button', { name: /给这 1 人出训练卷/ }).click()
-  await expect(page).toHaveURL(/\/training\?mode=student$/)
-  await expect(page.getByRole('heading', { name: '按学生训练', exact: true })).toBeVisible()
+  await page.locator('.overview-priority-select').first().click()
+  await page.locator('.mastery-map-drawer-actions').getByRole('button', { name: /出训练卷/ }).click()
+  await expect(page).toHaveURL(/\/training\?mode=setup$/)
+  await expect(page.getByRole('heading', { name: '出训练', exact: true })).toBeVisible()
   const selection = await page.evaluate(() => ({ scope: JSON.parse(localStorage.getItem('p4-evidence-scope-v1')!), paper: JSON.parse(localStorage.getItem('ai-grading:personalized-paper-selection:v1')!) }))
   await expect(page.getByRole('checkbox', { name: '选择测试甲', exact: true })).toBeChecked()
   await expect(page.getByRole('checkbox', { name: '选择测试乙', exact: true })).toHaveCount(0)

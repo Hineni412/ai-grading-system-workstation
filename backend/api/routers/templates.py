@@ -436,7 +436,7 @@ def get_region_workspace(
     session_dir = _session_dir(templates_dir, session_id)
     draft_service = AnswerRegionDraftService(session_dir)
     draft_result = draft_service.load(
-        expected_template_fingerprint=template_result.template_fingerprint
+        expected_session_id=int(session_id)
     )
     formal_regions = _public_regions(db.templates.list_answer_regions(int(session_id)))
     draft_payload = draft_result.draft if draft_result.status == "compatible" else None
@@ -468,6 +468,7 @@ def get_region_workspace(
             "status": draft_result.status,
             "revision": revision,
             "regions": draft_regions,
+            "reason": draft_result.reason,
         },
         automatic_candidates=list(catalog.automatic_candidates),
         manual_question_options=[
@@ -612,6 +613,7 @@ def _draft_response(
         template_id=int(template["id"]),
         template_fingerprint=template_fingerprint,
         draft=public_draft,
+        reason=load_result.reason,
     )
 
 
@@ -668,7 +670,7 @@ def get_answer_region_draft(
     template = _require_template(db, session_id)
     draft_service = _draft_service(templates_dir, session_id)
     fingerprint = _template_fingerprint(template, draft_service)
-    load_result = draft_service.load(expected_template_fingerprint=fingerprint)
+    load_result = draft_service.load(expected_session_id=int(session_id))
     return _draft_response(
         session_id=session_id,
         template=template,
@@ -725,7 +727,9 @@ def save_answer_region_draft(
             "region_draft_template_changed",
             "Session template changed before the draft was saved",
         ) from None
-    load_result = draft_service.load(expected_template_fingerprint=fingerprint)
+    except ValueError:
+        raise ApiError(422, "region_draft_unreadable", "Saved draft cannot be replaced automatically") from None
+    load_result = draft_service.load(expected_session_id=int(session_id))
     return _draft_response(
         session_id=session_id,
         template=template,

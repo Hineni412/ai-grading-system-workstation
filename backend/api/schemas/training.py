@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -119,7 +119,7 @@ class TrainingDiagnosisRequest(_TrainingModel):
     exam_scope: TrainingExamScopeRequest
     grouping: TrainingGroupingRequest | None = None
     include_student_detail: bool = True
-    response_mode: Literal["full", "display"] = "full"
+    response_mode: Literal["full", "display", "display_shared"] = "full"
 
 
 class TrainingOverviewRequest(_TrainingModel):
@@ -142,7 +142,7 @@ class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest, Recommen
     exclude_current_exam_originals: bool = True
     curriculum_volume_id: str | None = None
     group_scope_keys: list[str] = Field(default_factory=list, max_length=50)
-    group_source_version: str = Field(default="", pattern=r"^$|^[0-9a-f]{64}$")
+    group_source_version: str = ""
     training_intent: Literal["remediation", "challenge"] = "remediation"
     teaching_progress_chapter_id: str = Field(default="", max_length=100)
 
@@ -223,9 +223,11 @@ class PersonalizedRecommendationDraftResponse(_TrainingModel):
     draft_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     status: Literal["draft", "reviewed"]
     revision: int = Field(ge=1)
-    result_version: str = Field(pattern=r"^[0-9a-f]{64}$")
-    engine_version: str
-    source_version: str = Field(pattern=r"^[0-9a-f]{64}$")
+    result_version: str | None = Field(default=None, exclude=True)
+    engine_version: str | None = Field(default=None, exclude=True)
+    source_version: str | None = Field(default=None, exclude=True)
+    generated_at: str | None = None
+    needs_update: bool = False
     config: dict[str, Any]
     group_basis: dict[str, Any] | None = None
     students: list[dict[str, Any]]
@@ -438,7 +440,7 @@ class TrainingAssessmentOutcomeResponse(_TrainingModel):
 
 
 class TrainingFeedbackResponse(_TrainingModel):
-    schema_version: Literal["training-feedback-v1"]
+    schema_version: str | None = Field(default=None, exclude=True)
     feedback_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     submission_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     submission_revision: int = Field(ge=1)
@@ -640,6 +642,44 @@ class TrainingDisplayDiagnosisResponse(TrainingDiagnosisResponse):
     students: list[TrainingDisplayStudent]
     group_weak_points: list[TrainingDisplayWeakPoint] = Field(default_factory=list)
     knowledge_catalog: list[TrainingDisplayCatalogNode] = Field(default_factory=list)
+
+
+class TrainingDisplayPointMetadata(_TrainingModel):
+    knowledge_key: str
+    knowledge_point: str
+    parent_knowledge_key: str | None = None
+
+
+TrainingDisplayPointIndex = Annotated[int, Field(strict=True, ge=0)]
+TrainingDisplayCount = Annotated[int, Field(strict=True, ge=0)]
+TrainingDisplayMastery = Annotated[float, Field(strict=True, ge=0.0, le=1.0, allow_inf_nan=False)]
+TrainingDisplayPointValues = tuple[
+    TrainingDisplayPointIndex,
+    TrainingDisplayMastery | None,
+    Literal["stable", "unsteady", "weak", "insufficient"],
+    TrainingDisplayCount,
+    TrainingDisplayCount,
+    TrainingDisplayCount,
+]
+
+
+class TrainingDisplaySharedStudent(TrainingStudentProfile):
+    weak_points: list[TrainingDisplayPointValues]
+
+
+class TrainingDisplaySharedDiagnosisResponse(TrainingDisplayDiagnosisResponse):
+    response_mode: Literal["display_shared"] = "display_shared"
+    students: list[TrainingDisplaySharedStudent]
+    group_weak_points: list[TrainingDisplayPointValues] = Field(default_factory=list)
+    weak_point_catalog: list[TrainingDisplayPointMetadata] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_point_indices(self):
+        size = len(self.weak_point_catalog)
+        point_lists = [self.group_weak_points, *(student.weak_points for student in self.students)]
+        if any(point[0] >= size for points in point_lists for point in points):
+            raise ValueError("display point index is outside the shared catalog")
+        return self
 
 
 class TrainingOverviewDistribution(_TrainingModel):

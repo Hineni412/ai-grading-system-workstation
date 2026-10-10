@@ -890,7 +890,7 @@ class ConfigSourceService:
         *,
         session_id: int,
         source_id: str,
-        require_active: bool = True,
+        require_active: bool = False,
     ) -> dict[str, Any]:
         metadata = self._load_metadata(
             session_id=session_id,
@@ -1009,7 +1009,7 @@ class ConfigSourceService:
         metadata = self._load_metadata(
             session_id=session_id,
             source_id=source_id,
-            require_active=True,
+            require_active=False,
         )
         entry = metadata.asset_files.get(clean_question_id)
         legacy_filename = entry.get(kind) if isinstance(entry, dict) else None
@@ -1067,7 +1067,7 @@ class ConfigSourceService:
         metadata = self._load_metadata(
             session_id=session_id,
             source_id=source_id,
-            require_active=True,
+            require_active=False,
         )
         candidate = next(
             (
@@ -1646,7 +1646,7 @@ class ConfigSourceService:
             "asset_files",
             "whole_page_files",
         }
-        if set(manifest) != expected_manifest_keys:
+        if not (expected_manifest_keys - {"version"}).issubset(manifest):
             raise ConfigSourceInvalidError()
         session_id = int(manifest.get("session_id"))
         source_id = str(manifest.get("source_id") or "")
@@ -1656,8 +1656,7 @@ class ConfigSourceService:
         sha256 = str(manifest.get("sha256") or "")
         size_bytes = int(manifest.get("size_bytes"))
         if (
-            manifest.get("version") != 2
-            or manifest.get("parse_state") != "ready"
+            manifest.get("parse_state") != "ready"
             or session_id <= 0
             or not _SOURCE_ID.fullmatch(source_id)
             or not _SOURCE_REVISION.fullmatch(source_revision)

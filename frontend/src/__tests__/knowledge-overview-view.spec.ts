@@ -168,6 +168,7 @@ async function mountView(volumeId: string | null = 'bnu24-math-g8-upper') {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   globalThis.localStorage?.clear()
   vi.mocked(fetchStudents).mockResolvedValue(roster)
   vi.mocked(trainingApi.overview).mockImplementation(async () => overviewFixture())
@@ -176,6 +177,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount()
   document.body.innerHTML = ''
+  vi.unstubAllGlobals()
 })
 
 describe('knowledge overview view', () => {
@@ -210,8 +212,8 @@ describe('knowledge overview view', () => {
     const host = await mountView()
     await vi.waitFor(() => expect(trainingApi.overview).toHaveBeenCalledTimes(1))
     await settle()
-    const point = host.querySelector<HTMLDetailsElement>('.overview-layer-list')!
-    point.open = true
+    host.querySelector<HTMLButtonElement>('.overview-priority-select')!.click()
+    await vi.waitFor(() => expect(host.querySelector('.mastery-map-drawer')).not.toBeNull())
     await settle()
     expect(host.textContent).toContain('明显薄弱（1 人）')
     expect(host.textContent).toContain('较稳定（1 人）')
@@ -256,13 +258,13 @@ describe('knowledge overview view', () => {
     expect(trainingApi.overview).not.toHaveBeenCalled()
   })
 
-  it('shows metrics with denominators, related topics, and chapter totals', async () => {
+  it('shows no summary strip, keeps related topics, and chapter totals still match', async () => {
     const host = await mountView()
     await vi.waitFor(() => expect(host.querySelector('.overview-priority')).not.toBeNull())
-    expect(host.querySelector('.overview-summary-strip')?.textContent).toContain('有证据学生3 / 3 人')
-    expect(host.querySelector('.overview-summary-strip')?.textContent).toContain('有成绩 2 人')
-    expect(host.querySelector('.overview-summary-strip')?.textContent).toContain('2人 / 有证据 3 人')
-    expect(host.querySelector('.overview-related')?.textContent).toContain('用勾股定理求边长')
+    expect(host.querySelector('.overview-summary-strip')).toBeNull()
+    expect(host.textContent).not.toContain('本学期考查进度')
+    host.querySelector<HTMLButtonElement>('.overview-priority-select')!.click()
+    await vi.waitFor(() => expect(host.querySelector('.mastery-map-related')?.textContent).toContain('用勾股定理求边长'))
     const data = overviewFixture()
     expect(chapterMetrics(data.nodes).reduce((sum, chapter) => sum + chapter.weak, 0)).toBe(overviewMetrics(data).weak)
     expect(overviewMetrics(data).weak).toBe(data.summary.weak_topic_count + data.summary.weak_skill_count)
@@ -271,9 +273,11 @@ describe('knowledge overview view', () => {
   it('presets only weak students, the skill and section, and enters student training without generating', async () => {
     const host = await mountView()
     await vi.waitFor(() => expect(host.querySelector('.overview-priority')).not.toBeNull())
-    const button = [...host.querySelectorAll<HTMLButtonElement>('.overview-priority-actions button')].find(b => b.textContent?.includes('出训练卷'))!
+    host.querySelector<HTMLButtonElement>('.overview-priority-select')!.click()
+    await vi.waitFor(() => expect(host.querySelector('.mastery-map-drawer')).not.toBeNull())
+    const button = [...host.querySelectorAll<HTMLButtonElement>('.mastery-map-drawer-actions button')].find(b => b.textContent?.includes('出训练卷'))!
     button.click()
-    await vi.waitFor(() => expect(activeRouter.currentRoute.value.fullPath).toBe('/training?mode=student'), { timeout: 8000 })
+    await vi.waitFor(() => expect(activeRouter.currentRoute.value.fullPath).toBe('/training?mode=setup'), { timeout: 8000 })
     expect(JSON.parse(localStorage.getItem('p4-evidence-scope-v1')!).scope).toMatchObject({ mode: 'selected', student_ids: ['1'] })
     expect(loadPaperSelectionSession()).toMatchObject({ targetKeys: ['sk1'], rangeKeys: ['sec1'], scopeMode: 'focused',
       paperMode: 'individual', questionCount: 10, difficultyMax: 8, adoptedGroup: null, groupEditor: null })
@@ -282,7 +286,9 @@ describe('knowledge overview view', () => {
   it('opens group wrong questions with the exact node and return origin', async () => {
     const host = await mountView()
     await vi.waitFor(() => expect(host.querySelector('.overview-priority')).not.toBeNull())
-    const button = [...host.querySelectorAll<HTMLButtonElement>('.overview-priority-actions button')].find(b => b.textContent === '看错题')!
+    host.querySelector<HTMLButtonElement>('.overview-priority-select')!.click()
+    await vi.waitFor(() => expect(host.querySelector('.mastery-map-drawer')).not.toBeNull())
+    const button = [...host.querySelectorAll<HTMLButtonElement>('.mastery-map-drawer-actions button')].find(b => b.textContent === '看错题')!
     button.click()
     await vi.waitFor(() => expect(activeRouter.currentRoute.value.name).toBe('student-evidence'))
     expect(activeRouter.currentRoute.value.params.studentId).toBe('group')
@@ -367,22 +373,24 @@ describe('knowledge overview view', () => {
     vi.mocked(trainingApi.overview).mockResolvedValue(typed)
     const host = await mountView()
     await vi.waitFor(() => expect(host.querySelectorAll('.overview-priority')).toHaveLength(2))
-    expect(host.querySelector('.overview-summary-strip')?.textContent).toContain('2项题型')
+    expect(host.querySelector('.overview-summary-strip')).toBeNull()
     const priorities = [...host.querySelectorAll<HTMLElement>('.overview-priority')].map(el => el.dataset.knowledge)
     // Same weak count; tp1 wins the tie on 还不稳.
     expect(priorities).toEqual(['tp1', 'tp2'])
     expect(host.textContent).toContain('构造直角求边')
     expect(host.querySelector('.overview-related')).toBeNull()
-    const table = host.querySelector<HTMLDetailsElement>('.overview-all-students')!
-    table.open = true
-    await settle()
-    expect(table.textContent).toContain('题型')
-    expect(table.querySelector('thead')?.textContent).not.toContain('知识点')
-    expect(table.querySelector('thead')?.textContent).not.toContain('技能')
-    const button = [...host.querySelectorAll<HTMLButtonElement>('.overview-priority-actions button')]
+    const panel = host.querySelector<HTMLElement>('.overview-opportunity')!
+    const oppRows = [...panel.querySelectorAll<HTMLElement>('.overview-opportunity-row')]
+    expect(oppRows).toHaveLength(1)
+    expect(oppRows[0]!.textContent).toContain('学生甲')
+    expect([...oppRows[0]!.querySelectorAll('.overview-opportunity-item')].map(b => b.textContent))
+      .toEqual([expect.stringContaining('构造直角求边'), expect.stringContaining('拼图验证')])
+    host.querySelector<HTMLButtonElement>('.overview-priority-select')!.click()
+    await vi.waitFor(() => expect(host.querySelector('.mastery-map-drawer')).not.toBeNull())
+    const button = [...host.querySelectorAll<HTMLButtonElement>('.mastery-map-drawer-actions button')]
       .find(b => b.textContent?.includes('出训练卷'))!
     button.click()
-    await vi.waitFor(() => expect(activeRouter.currentRoute.value.fullPath).toBe('/training?mode=student'), { timeout: 8000 })
+    await vi.waitFor(() => expect(activeRouter.currentRoute.value.fullPath).toBe('/training?mode=setup'), { timeout: 8000 })
     expect(loadPaperSelectionSession()).toMatchObject({ targetKeys: ['tp1'] })
   })
 
@@ -392,8 +400,88 @@ describe('knowledge overview view', () => {
       node({ knowledge_key: 'old-skill', kind: 'skill', in_volume: false, distribution: distribution(99, 0, 0, 0) }))
     vi.mocked(trainingApi.overview).mockResolvedValue(data)
     const host = await mountView()
-    await vi.waitFor(() => expect(host.querySelectorAll('.overview-priority')).toHaveLength(5))
-    expect([...host.querySelectorAll<HTMLElement>('.overview-priority')].map(el => el.dataset.knowledge)).toEqual(['sk7', 'sk6', 'sk5', 'sk4', 'sk3'])
+    await vi.waitFor(() => expect(host.querySelectorAll('.overview-priority')).toHaveLength(7))
+    expect([...host.querySelectorAll<HTMLElement>('.overview-priority')].slice(0, 5).map(el => el.dataset.knowledge)).toEqual(['sk7', 'sk6', 'sk5', 'sk4', 'sk3'])
+  })
+
+  it('uses three tabs, limits the first list to ten, and marks the same five priorities in the map', async () => {
+    const data = overviewFixture()
+    data.nodes = data.nodes.filter(item => item.kind === 'chapter' || item.kind === 'section')
+    data.nodes.push(...Array.from({ length: 12 }, (_, index) => node({ knowledge_key: 'sk-extra-' + index,
+      kind: 'skill', evidence_student_count: 3, distribution: distribution(index % 3, 1, 1, 0) })))
+    vi.mocked(trainingApi.overview).mockResolvedValue(data)
+    const host = await mountView()
+    await vi.waitFor(() => expect(host.querySelectorAll('.overview-priority')).toHaveLength(10))
+    expect([...host.querySelectorAll('.knowledge-training-tabs a')].map(item => item.textContent)).toEqual(['学情', '出训练', '生成试卷'])
+    const first = [...host.querySelectorAll<HTMLElement>('.overview-priority')].slice(0, 5).map(item => item.dataset.knowledge)
+    const toggle = [...host.querySelectorAll<HTMLButtonElement>('[aria-label="题型清单排列"] button')].find(item => item.textContent === '按教材章节')!
+    toggle.click(); await vi.waitFor(() => expect(host.querySelectorAll('.mastery-map-node')).toHaveLength(12))
+    expect([...host.querySelectorAll<HTMLElement>('.mastery-map-node')].filter(item => item.querySelector('.mastery-map-priority')).map(item => item.dataset.knowledge).sort()).toEqual([...first].sort())
+    expect(trainingApi.overview).toHaveBeenCalledOnce()
+  })
+
+  it('orders weak chips by exam score rate, lists score opportunities, and finds students', async () => {
+    const data = overviewFixture()
+    data.students.push(
+      { student_id: '4', student_code: 'S4', student_name: '学生丁', class_id: '',
+        score_rate: null, score_rate_source: 'none',
+        topics: { weak: 1, unsteady: 0, stable: 0, insufficient: 0, evidence: 1 },
+        skills: { weak: 0, unsteady: 0, stable: 0, insufficient: 0, evidence: 0 } },
+      { student_id: '5', student_code: 'S5', student_name: '学生戊', class_id: '八年级1班',
+        score_rate: 0.2, score_rate_source: 'current_exam',
+        topics: { weak: 1, unsteady: 0, stable: 0, insufficient: 0, evidence: 1 },
+        skills: { weak: 0, unsteady: 0, stable: 0, insufficient: 0, evidence: 0 } })
+    const sk1 = data.nodes.find(n => n.knowledge_key === 'sk1')!
+    sk1.students.push({ student_id: '4', mastery: 0.3, tier: 'weak' }, { student_id: '5', mastery: 0.1, tier: 'weak' })
+    sk1.distribution = distribution(3, 1, 1, 0)
+    data.nodes.push(node({ knowledge_key: 'sk2', kind: 'skill', evidence_student_count: 1,
+      display_name: '技能·画直角边', distribution: distribution(1, 0, 0, 0),
+      students: [{ student_id: '2', mastery: 0.25, tier: 'weak' }] }))
+    vi.mocked(trainingApi.overview).mockResolvedValue(data)
+    const host = await mountView()
+    await vi.waitFor(() => expect(host.querySelector('.overview-priority[data-knowledge="sk1"]')).not.toBeNull())
+
+    // Chips inside a priority row: score rate descending, null last, chip shows the rate.
+    const chips = [...host.querySelectorAll<HTMLButtonElement>('.overview-priority[data-knowledge="sk1"] .student-tier-chip')]
+    expect(chips.map(chip => chip.firstChild?.textContent?.trim())).toEqual(['学生甲', '学生戊', '学生丁'])
+    expect(chips.map(chip => chip.querySelector('span')!.textContent)).toEqual(['50%', '20%', '无成绩'])
+    expect(chips[0]!.title).toContain('考试得分率 50%')
+    expect(chips[2]!.title).toContain('考试得分率 无成绩')
+    expect(chips[2]!.title).toContain('掌握度 30%')
+
+    // 找学生 searches all students by name or code regardless of the opportunity rules.
+    const input = host.querySelector<HTMLInputElement>('.overview-opportunity input[aria-label="找学生"]')!
+    input.value = 'S4'
+    input.dispatchEvent(new Event('input'))
+    await settle()
+    let matches = [...host.querySelectorAll<HTMLElement>('.overview-opportunity-student')]
+    expect(matches).toHaveLength(1)
+    expect(matches[0]!.textContent).toContain('学生丁')
+    expect(matches[0]!.textContent).toContain('未分班')
+    expect(matches[0]!.textContent).toContain('无成绩')
+    input.value = '没有这个人'
+    input.dispatchEvent(new Event('input'))
+    await settle()
+    expect(host.querySelector('.overview-opportunity')!.textContent).toContain('没有匹配的学生。')
+    input.value = ''
+    input.dispatchEvent(new Event('input'))
+    await settle()
+
+    // 提分机会 keeps only score_rate >= 40% with a weak target, ordered by rate descending.
+    const panel = host.querySelector<HTMLElement>('.overview-opportunity')!
+    const rows = [...panel.querySelectorAll<HTMLElement>('.overview-opportunity-row')]
+    expect(rows.map(row => row.querySelector('.overview-opportunity-name strong')!.textContent)).toEqual(['学生乙', '学生甲'])
+    expect(rows.map(row => row.querySelector('.overview-opportunity-name b')!.textContent)).toEqual(['90%', '50%'])
+    expect(panel.textContent).not.toContain('学生戊')
+    expect(panel.textContent).not.toContain('学生丁')
+    const items = [...rows[0]!.querySelectorAll<HTMLButtonElement>('.overview-opportunity-item')]
+    expect(items.map(button => button.textContent)).toEqual([expect.stringContaining('画直角边')])
+
+    // Clicking a weak item opens that node's drawer.
+    items[0]!.click()
+    await vi.waitFor(() => expect(host.querySelector('.mastery-map-drawer')).not.toBeNull())
+    expect(activeRouter.currentRoute.value.query.focus).toBe('sk2')
+    expect(host.querySelector('.mastery-map-drawer')!.textContent).toContain('画直角边')
   })
 
 })

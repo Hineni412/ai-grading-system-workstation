@@ -52,7 +52,7 @@ def _load_question(db_path: Path, data_root: Path, governance: TaxonomyGovernanc
         external_connection=connection).load([question_id], curriculum_volume_id=VOLUME_ID)
     question = questions[0]
     profile = load_profiles(db_path, [question_id], connection=connection,
-        data_root=data_root, question_inputs={question_id: question}).get(question_id, {})
+        data_root=data_root, question_inputs={question_id: question}, verify_source=True).get(question_id, {})
     if not profile.get('available'):
         raise LabelRefreshConflict('usable_evidence_required')
     from question_bank.services.ai_tagging_service import _taxonomy_context

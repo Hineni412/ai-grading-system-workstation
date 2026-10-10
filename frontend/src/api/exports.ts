@@ -52,12 +52,10 @@ export interface ReportFileDeleteResult {
 }
 
 export interface ReportHistoryJob extends JobResponse {
-  is_current_revision: boolean
   file_status: ReportFileStatus
 }
 
 export interface ReportContext {
-  score_revision: string
   has_results: boolean
   jobs: ReportHistoryJob[]
   total: number
@@ -164,7 +162,6 @@ function decodeReportHistoryJob(value: unknown): ReportHistoryJob {
   assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
-    || typeof value.is_current_revision !== 'boolean'
     || !isReportFileStatus(value.file_status)
   ) {
     throw new Error('Invalid report history job')
@@ -172,7 +169,6 @@ function decodeReportHistoryJob(value: unknown): ReportHistoryJob {
   const job = decodeJobResponse(value)
   return {
     ...job,
-    is_current_revision: value.is_current_revision,
     file_status: value.file_status,
   }
 }
@@ -181,8 +177,6 @@ export function decodeReportContext(value: unknown): ReportContext {
   assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
-    || typeof value.score_revision !== 'string'
-    || !/^[0-9a-f]{64}$/.test(value.score_revision)
     || typeof value.has_results !== 'boolean'
     || !Array.isArray(value.jobs)
     || !Number.isSafeInteger(value.total)
@@ -197,7 +191,6 @@ export function decodeReportContext(value: unknown): ReportContext {
     throw new Error('Invalid report context')
   }
   return {
-    score_revision: value.score_revision,
     has_results: value.has_results,
     jobs: value.jobs.map(decodeReportHistoryJob),
     total: Number(value.total),

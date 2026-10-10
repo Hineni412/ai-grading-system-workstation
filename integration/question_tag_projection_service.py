@@ -483,9 +483,7 @@ def _current_target_overlaid_question(snapshot_question, profile, current_links,
     active_points = {str(point.get("evidence_point_id")): point
                      for part in (profile or {}).get("evidence", {}).get("parts", ())
                      for point in part.get("evidence_points", ())}
-    aligned = bool(profile and profile.get("available") and frozen.get("source_content_hash")
-                   and frozen.get("source_content_hash") in {
-                       profile.get("current_source_content_hash"), profile.get("evidence_source_hash")}
+    aligned = bool(profile and profile.get("available")
                    and set(frozen_points) == set(active_points))
     fields = ("target", "observable_evidence", "equivalent_rules", "counterexamples", "depends_on")
     aligned = aligned and all(all(point.get(field) == active_points[pid].get(field)

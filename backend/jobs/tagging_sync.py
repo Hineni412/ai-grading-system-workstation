@@ -242,7 +242,7 @@ def _copy_question_type_labels(database: Path, *, source: int, target: int, data
         primary = next((str(row[1]) for row in rows
                         if row[0] == "knowledge_point" and is_type_key(row[1])), "")
         secondary = [str(row[1]) for row in rows if row[0] == "secondary_type"]
-        profile = load_profiles(database, [target], connection=conn, data_root=data_root).get(target, {})
+        profile = load_profiles(database, [target], connection=conn, data_root=data_root, verify_source=True).get(target, {})
         sync_question_type_labels(
             conn, target, primary, secondary, resolver, source="taxonomy",
             expected_evidence_version_id=str(profile.get("evidence_version_id") or "") if profile.get("available") else "",

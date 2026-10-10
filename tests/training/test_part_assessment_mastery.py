@@ -16,12 +16,53 @@ def _model_observations():
             for session in range(3) for q in range(6)]
 
 
-def test_hierarchical_model_static_reproducible_and_zero_time_drift():
+def _fit_eager_mastery(monkeypatch, model, observations):
+    from question_bank.mastery import model as mastery_model
+    solve = mastery_model.lbfgs
+
+    def eager(objective, initial, iterations=600, memory=10, *, loss=None):
+        assert loss is not None
+        return solve(objective, initial, iterations, memory)
+
+    with monkeypatch.context() as context:
+        context.setattr(mastery_model, "lbfgs", eager)
+        return model.fit(observations)
+
+
+def _assert_mastery_models_equal(current, reference, observations):
+    import numpy as np
+    assert current.index == reference.index
+    assert current.rows == reference.rows
+    assert current.state_weeks == reference.state_weeks
+    assert np.array_equal(current.x, reference.x)
+    assert np.array_equal(current.prec, reference.prec)
+    assert current.cov.keys() == reference.cov.keys()
+    for student in current.cov:
+        current_position, current_cov = current.cov[student]
+        reference_position, reference_cov = reference.cov[student]
+        assert current_position == reference_position
+        assert np.array_equal(current_cov, reference_cov)
+    week = max(observation["week"] for observation in observations)
+    nodes = set(current.parent) | set(current.parent.values())
+    for student in {observation["student"] for observation in observations}:
+        for node in nodes:
+            for when in (week, week + 10):
+                assert current.mastery(student, node, when) == reference.mastery(student, node, when)
+                assert current.result(student, node, when) == reference.result(student, node, when)
+    for observation in observations:
+        assert current.predict(observation) == reference.predict(observation)
+
+
+def test_hierarchical_model_static_reproducible_and_zero_time_drift(monkeypatch):
+    import hashlib
+    from dataclasses import asdict, replace
     from question_bank.mastery.model import MasteryModel, MasteryParameters, classify
     parent = {"leaf": "section", "section": "chapter"}
     observations = _model_observations()
     model = MasteryModel(parent).fit(observations)
-    repeat = MasteryModel(parent, MasteryParameters(tau_theta=0, tau_kc=0)).fit(list(reversed(observations)))
+    repeat = _fit_eager_mastery(monkeypatch,
+        MasteryModel(parent, MasteryParameters(tau_theta=0, tau_kc=0)), list(reversed(observations)))
+    _assert_mastery_models_equal(model, repeat, observations)
     for student in ("high", "low", "middle"):
         mean, sd = model.mastery(student, "leaf", 20000)
         assert (mean, sd) == repeat.mastery(student, "leaf", 20000)
@@ -31,13 +72,32 @@ def test_hierarchical_model_static_reproducible_and_zero_time_drift():
     assert ("gamma",) not in model.index
     # Parent results use the same latent model, with no recomputed score ratio.
     assert model.result("high", "chapter", 20000)["value"] > model.result("low", "chapter", 20000)["value"]
+    parameters = MasteryParameters()
+    variants = [parameters, replace(parameters, formula_version="TEST-formula"),
+                replace(parameters, slip=.02, tau_theta=.15, tau_kc=.2),
+                *[replace(parameters, sigma_theta=value) for value in (True, 1, 1.0)]]
+    for variant in variants:
+        serialized = asdict(variant)
+        expected = hashlib.sha256(json.dumps(serialized, sort_keys=True).encode()).hexdigest()
+        assert variant.version == variant.version == expected
+        assert asdict(variant) == serialized
+        assert "version" not in asdict(variant)
+        cloned = replace(variant)
+        assert cloned is not variant
+        assert asdict(cloned) == serialized and cloned.version == expected
+    assert variants[-3] == variants[-2] == variants[-1]
+    assert len({variant.version for variant in variants[-3:]}) == 3
+    assert len({variant.version for variant in variants[:3]}) == 3
 
 
-def test_hierarchical_time_walk_widens_interval_and_handles_deep_paths():
+def test_hierarchical_time_walk_widens_interval_and_handles_deep_paths(monkeypatch):
     from question_bank.mastery.model import MasteryModel, MasteryParameters
     observations = _model_observations()
     parent = {"leaf": "extra", "extra": "section", "section": "chapter"}
-    model = MasteryModel(parent, MasteryParameters(tau_theta=.15, tau_kc=.2, slip=.02)).fit(observations)
+    parameters = MasteryParameters(tau_theta=.15, tau_kc=.2, slip=.02)
+    model = MasteryModel(parent, parameters).fit(observations)
+    eager = _fit_eager_mastery(monkeypatch, MasteryModel(parent, parameters), observations)
+    _assert_mastery_models_equal(model, eager, observations)
     week = max(o["week"] for o in observations)
     mean, sd = model.mastery("high", "leaf", week)
     later_mean, later_sd = model.mastery("high", "leaf", week+10)
@@ -46,6 +106,46 @@ def test_hierarchical_time_walk_widens_interval_and_handles_deep_paths():
     assert later_sd**2-sd**2 == pytest.approx(10*(.15**2+.2**2))
     result = model.result("high", "leaf", week)
     assert 0 <= result["interval_low"] <= result["value"] <= result["interval_high"] <= .98
+
+
+@pytest.mark.parametrize("reject_all", [False, True])
+def test_lbfgs_scalar_loss_skips_rejected_gradients_with_identical_steps(reject_all):
+    import numpy as np
+    from question_bank.mastery.model import lbfgs
+    initial = np.array([1., 2.])
+    original = initial.copy()
+    weights = np.array([1000., 1.])
+    eager_points, screened_points, loss_points = [], [], []
+
+    def evaluate(x):
+        if reject_all:
+            return 0., np.ones_like(x)
+        return 0.5 * np.sum(weights * x*x), weights * x
+
+    def eager(x):
+        eager_points.append(x.copy())
+        return evaluate(x)
+
+    def screened(x):
+        screened_points.append(x.copy())
+        return evaluate(x)
+
+    def loss(x):
+        loss_points.append(x.copy())
+        return 0. if reject_all else 0.5 * np.sum(weights * x*x)
+
+    expected = lbfgs(eager, initial, iterations=1)
+    actual = lbfgs(screened, initial, iterations=1, loss=loss)
+    assert np.array_equal(actual, expected)
+    assert np.array_equal(initial, original)
+    assert len(eager_points) == len(loss_points) + 1
+    assert len(screened_points) == (1 if reject_all else 2)
+    assert len(loss_points) > len(screened_points)
+    assert all(np.array_equal(before, after)
+               for before, after in zip(eager_points[1:], loss_points, strict=True))
+    if reject_all:
+        assert len(loss_points) == 40
+        assert np.array_equal(actual, initial)
 
 
 def test_exam_observations_keep_point_weight_and_exclude_ineligible_missing():
@@ -65,17 +165,24 @@ def test_exam_observations_keep_point_weight_and_exclude_ineligible_missing():
     assert result[0]["links"] == pytest.approx({"leaf": .25, "second": .75})
 
 
-def test_current_mastery_filters_after_fitting_and_counts_activity_trends(tmp_path, monkeypatch):
+@pytest.mark.parametrize("time_slip", [(0., 0., 0.), (.15, .2, .02)])
+def test_current_mastery_filters_after_fitting_and_counts_activity_trends(tmp_path, monkeypatch, time_slip):
+    from datetime import timedelta
     from types import SimpleNamespace
     from question_bank.mastery.current import CurrentMasteryCalculator, aggregate_current_mastery
+    from question_bank.mastery.model import MasteryParameters, week_of
     class Resolver:
-        nodes = [SimpleNamespace(stable_key=k, display_name=k) for k in ("leaf", "spare", "section", "chapter")]
+        nodes = [SimpleNamespace(stable_key=k, display_name=k)
+                 for k in ("leaf", "spare", "extra", "section", "chapter", "outside")]
         relations = [SimpleNamespace(source_key=k, target_key=p, relation_type="parent")
-                     for k, p in (("leaf", "section"), ("spare", "section"), ("section", "chapter"))]
+                     for k, p in (("leaf", "extra"), ("extra", "section"),
+                                  ("spare", "section"), ("section", "chapter"))]
         def node(self, key):
             return next((n for n in self.nodes if n.stable_key == key), None)
+    as_of = [datetime(2026, 10, 1, tzinfo=UTC)]
+    parameters = MasteryParameters(tau_theta=time_slip[0], tau_kc=time_slip[1], slip=time_slip[2])
     calculator = CurrentMasteryCalculator(tmp_path / "synthetic.db", Resolver(),
-        clock=lambda: datetime(2026, 10, 1, tzinfo=UTC))
+        parameters=parameters, clock=lambda: as_of[0])
     monkeypatch.setattr(calculator, "training_observations", lambda **kwargs: {})
     observations = _model_observations()
     for observation in observations:
@@ -83,20 +190,56 @@ def test_current_mastery_filters_after_fitting_and_counts_activity_trends(tmp_pa
             observation["y"] = float(observation["activity"][1] > 0)
         elif observation["student"] == "low":
             observation["y"] = float(observation["activity"][1] == 0)
+    occurred = datetime(2026, 9, 28, tzinfo=UTC)
+    observations.extend(dict(student="middle", item=("training", "TEST-task", point),
+        activity=("training", "TEST-submission"), source="training", occurred_at=occurred,
+        week=week_of(occurred), d=4., y=y, links={"leaf": .5, "TEST-frozen-skill": .5},
+        display_names={"TEST-frozen-skill": "TEST 冻结技能"})
+        for point, y in (("p1", 1.), ("p2", 0.)))
     profile = {"_mastery_observations": observations}
     values = calculator.calculate(profile)
     selected = calculator.calculate(profile, allowed_student_ids=frozenset({"high"}))
+    assert list(values) == sorted(values)
+    assert len(values) == 16
+    assert not any(key == "outside" for _student, key in values)
     assert selected == {identity: value for identity, value in values.items() if identity[0] == "high"}
+    assert selected["high", "extra"].observation_count == 18
     assert selected["high", "leaf"].recent_trend == "最近 2 次全对 ↑"
     assert values["low", "leaf"].recent_trend == "最近一次出错"
     assert selected["high", "chapter"].observation_count == 18
     assert selected["high", "chapter"].full_correct_count == 12
     assert selected["high", "spare"].tier == "insufficient"
     assert selected["high", "spare"].value is not None
+    untested = selected["high", "spare"]
+    assert untested.interval_low <= untested.value <= untested.interval_high
+    assert untested.evidence_count == untested.observation_count == untested.full_correct_count == 0
+    assert untested.exam_evidence_count == untested.training_evidence_count == 0
+    assert untested.direct_evidence_count == untested.precise_training_evidence_count == 0
+    assert untested.recent_trend is None
+    assert untested.parameter_version == parameters.version
+    assert values["middle", "leaf"].exam_evidence_count == 18
+    assert values["middle", "leaf"].training_evidence_count == 1
+    assert values["middle", "leaf"].precise_training_evidence_count == 2
+    assert values["middle", "leaf"].direct_evidence_count == 20
+    assert values["middle", "TEST-frozen-skill"].display_name == "TEST 冻结技能"
+    assert values["middle", "TEST-frozen-skill"].observation_count == 2
+    assert values["middle", "TEST-frozen-skill"].full_correct_count == 1
     group = aggregate_current_mastery(values)
     assert "spare" not in group
     assert group["leaf"].value == pytest.approx(sum(values[s, "leaf"].value for s in ("high", "middle", "low"))/3)
     assert sum(dict(group["leaf"].tier_counts).values()) == 3
+    as_of[0] += timedelta(days=14)
+    later = calculator.calculate(profile, allowed_student_ids=frozenset({"high"}))
+    assert later["high", "spare"].logit_mean == untested.logit_mean
+    if parameters.tau_theta:
+        assert later["high", "spare"].logit_sd > untested.logit_sd
+    else:
+        assert later == selected
+    next(relation for relation in calculator.resolver.relations
+         if relation.source_key == "spare").target_key = "outside"
+    updated = calculator.calculate(profile, allowed_student_ids=frozenset({"high"}))
+    assert ("high", "spare") not in updated
+    assert ("high", "leaf") in updated
 
 
 def _insert_feature_rows(conn, question_id, parts, *, fingerprint=None):
@@ -261,7 +404,7 @@ def test_refined_recommendation_freezes_current_criteria_and_returns_part_eviden
     path, root, question, evidence, profile, old_version = refined_training_source
     criteria = TrainingCriterionModule(path)
     assert criteria.read(question)["state"] == "available"
-    assert usable_training_criterion(criteria.read(question))["version_id"] != old_version
+    assert criteria.freeze((question,))[0]["version_id"] != old_version
     with connect(path) as conn:
         assert (
             conn.execute("SELECT COUNT(*) FROM training_criterion_versions").fetchone()[
@@ -279,13 +422,14 @@ def test_refined_recommendation_freezes_current_criteria_and_returns_part_eviden
         "sk_geo_triangle_congruence",
     }
     assert candidate["criterion_version_id"] != old_version
-    assert (
-        criteria.get_version(old_version)["criteria"]["points"][1]["target"]
-        == "旧的判定目标"
-    )
+    from question_bank.training_criteria.versioning import CriterionVersionNotFound
+    # The previous model draft had no teacher decision or historical reference.
+    with pytest.raises(CriterionVersionNotFound):
+        criteria.get_version(old_version)
     assert module._source_snapshot()[2] == version
     with connect(path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM training_criterion_versions").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM question_solution_evidence_versions").fetchone()[0] == 1
     eligible = module._eligible_candidates(
         candidates,
         stage="direct",
@@ -507,7 +651,7 @@ def test_new_analysis_survives_checkpoint_and_linked_adoption(tmp_path, monkeypa
     assert profiles.load_profiles(path, [1])[1]["parts"][0]["difficulty"] == 3
 
 
-def test_published_training_retargets_current_type_from_frozen_facts(tmp_path, monkeypatch):
+def test_published_training_keeps_saved_links_after_current_material_changes(tmp_path, monkeypatch):
     import sqlite3
     from types import SimpleNamespace
     from question_bank.mastery.current import CurrentMasteryCalculator
@@ -527,7 +671,7 @@ def test_published_training_retargets_current_type_from_frozen_facts(tmp_path, m
             CREATE TABLE question_tags(question_id,tag_type,tag_value,id);
         """)
         conn.execute("INSERT INTO training_evidence_records VALUES('e1','TEST-student',?,'2026-10-01','active',?,'v1','hash','task',?,'submission',1)", (old_key, source, states))
-        conn.execute("INSERT INTO training_evidence_records VALUES('e2','TEST-student',?,'2026-10-01','active',?,'v1','hash','task',?,'submission',1)", (old_key + "_old", source, states))
+        conn.execute("INSERT INTO training_evidence_records VALUES('e2','TEST-student',?,'2026-10-01','active',?,'v1','hash','task',?,'submission',1)", (old_key, source, states))
         conn.execute("INSERT INTO training_criterion_versions VALUES('v1',1,?,'hash')", (json.dumps(frozen),))
         conn.execute("INSERT INTO question_tags VALUES(1,'knowledge_point',?,1)", (key,))
     before = path.read_bytes()
@@ -538,7 +682,7 @@ def test_published_training_retargets_current_type_from_frozen_facts(tmp_path, m
     monkeypatch.setattr(knowledge_links, "load_point_links", lambda *_args, **_kwargs: {})
     resolver = SimpleNamespace(release_id="TEST-training-current-type", taxonomy_revision=11,
         nodes=[SimpleNamespace(stable_key=key)], relations=[],
-        resolve=lambda value: [SimpleNamespace(stable_key=value)])
+        resolve=lambda value: [SimpleNamespace(stable_key=key)] if value == old_key else [])
     observed = CurrentMasteryCalculator(path, resolver).training_observations(
         exclude_evidence_ids=frozenset(), allowed_student_ids=None)
     assert set(observed) == {("TEST-student", key)}
@@ -547,7 +691,7 @@ def test_published_training_retargets_current_type_from_frozen_facts(tmp_path, m
     profile["current_source_content_hash"] = profile["evidence_source_hash"] = "changed-source"
     rejected = CurrentMasteryCalculator(path, resolver).training_observations(
         exclude_evidence_ids=frozenset(), allowed_student_ids=None)
-    assert rejected == {}
+    assert rejected == observed
     assert path.read_bytes() == before
 
 
@@ -603,13 +747,13 @@ def test_profile_source_checks_keep_candidate_order_and_complete_persisted_hashe
         return original(value, input_key)
     monkeypatch.setattr(part_assessments, "_compute_input_source_hashes", compute)
     with analysis.source_content_hash_reuse():
-        direct = part_assessments.load_profiles(path, [1], question_inputs={1: question})[1]
+        direct = part_assessments.load_profiles(path, [1], question_inputs={1: question}, verify_source=True)[1]
         if not changed and candidate_order[0] == "current":
             assert not bundles
         else:
             assert len(bundles) == 1
         persisted = {}
-        retained = part_assessments.load_profiles(path, [1], source_hashes=persisted)[1]
+        retained = part_assessments.load_profiles(path, [1], source_hashes=persisted, verify_source=True)[1]
         assert direct == retained
         assert persisted[1] == original(question, persisted[1].input_key)
         assert persisted[1].legacy and persisted[1].compatible
@@ -620,4 +764,50 @@ def test_profile_source_checks_keep_candidate_order_and_complete_persisted_hashe
         assert direct["reason"] == ("part_assessment_source_changed" if changed else None)
         assert direct["parts"][0]["difficulty"] == (None if changed else 4)
         assert direct["current_source_content_hash"] == question.source_content_hash
-        assert part_assessments.load_profiles(path, [1], source_hashes=persisted)[1] == direct
+        assert part_assessments.load_profiles(path, [1], source_hashes=persisted, verify_source=True)[1] == direct
+
+
+def test_saved_training_facts_use_frozen_material_without_reading_current_question(refined_training_source, tmp_path, monkeypatch):
+    import sqlite3
+    from types import SimpleNamespace
+    from question_bank.mastery.current import CurrentMasteryCalculator
+    from question_bank.training_criteria.analysis import training_criteria_from_solution_evidence
+    from question_bank.solution_evidence import part_assessments
+    _path, _root, question, evidence, profile, _old = refined_training_source
+    frozen = training_criteria_from_solution_evidence(evidence, question=question).to_dict()
+    path = tmp_path / "TEST-saved-training-observations.db"
+    states = [{"point_id": p["point_id"], "state": "met" if i == 0 else "not_met"}
+              for i, p in enumerate(frozen["points"])]
+    with sqlite3.connect(path) as conn:
+        conn.executescript("""
+            CREATE TABLE training_evidence_records(evidence_id,student_id,stable_key,occurred_at,status,
+                source_json,criterion_version_id,criterion_hash,task_item_code,final_points_json,submission_id,submission_revision);
+            CREATE TABLE personalized_paper_items(paper_instance_id,task_item_code,criterion_version_id,
+                criterion_snapshot_json,recommendation_snapshot_json);
+            CREATE TABLE questions(id,answer_text);
+            CREATE TABLE question_tags(question_id,tag_value);
+        """)
+        source = json.dumps({"bank_question_id": 1, "paper_instance_id": "TEST-paper"})
+        conn.execute("INSERT INTO training_evidence_records VALUES('TEST-evidence','TEST-student','old-key','2026-10-01','active',?,'saved-id','old-code','task',?,'TEST-submission',1)", (source, json.dumps(states)))
+        conn.execute("INSERT INTO personalized_paper_items VALUES('TEST-paper','task','saved-id',?,?)", (
+            json.dumps({"criteria": frozen}), json.dumps({"part_assessment": {"parts": profile["parts"]}})))
+        conn.execute("INSERT INTO questions VALUES(1,'TEST-original-answer')")
+        conn.execute("INSERT INTO question_tags VALUES(1,'TEST-original-tag')")
+    resolver = SimpleNamespace(resolve=lambda key: [SimpleNamespace(stable_key=key)])
+    monkeypatch.setattr(part_assessments, "load_profiles", lambda *_args, **_kwargs: pytest.fail("historical training must not read current question inputs"))
+    calculator = CurrentMasteryCalculator(path, resolver)
+    first = calculator.training_observations(exclude_evidence_ids=frozenset(), allowed_student_ids=None)
+    assert {(key, items[0].achieved_points, items[0].part_difficulty) for (_student, key), items in first.items()} == {
+        ("sk_alg_linear_equation", 1, 2), ("sk_geo_triangle_congruence", 0, 8)}
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE questions SET answer_text='TEST-changed-answer'")
+        conn.execute("UPDATE question_tags SET tag_value='TEST-changed-tag'")
+    before = path.read_bytes()
+    second = calculator.training_observations(exclude_evidence_ids=frozenset(), allowed_student_ids=None)
+    assert second == first
+    assert sum(len(items) for items in second.values()) == 2
+    assert {items[0].display_name for items in second.values()} == {"一元一次方程", "三角形全等"}
+    calculator.resolver = SimpleNamespace(resolve=lambda _key: [])
+    unmapped = calculator.training_observations(exclude_evidence_ids=frozenset(), allowed_student_ids=None)
+    assert unmapped == second
+    assert path.read_bytes() == before

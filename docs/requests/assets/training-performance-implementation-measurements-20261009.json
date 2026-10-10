@@ -1,0 +1,5067 @@
+{
+  "purpose": "Anonymous implementation measurements from existing saved reports",
+  "completed": true,
+  "completed_definition": "All required reports were read, not that every validation or the five-second goal passed.",
+  "missing_required_reports": [],
+  "invalid_reports": [],
+  "required_reports": [
+    "first-batch-local.json",
+    "first-batch-complete-valid.json",
+    "second-batch-candidates.json",
+    "matching-freeze-recheck.json",
+    "final-complete.json",
+    "final-phases.json",
+    "source-guard-coverage.json",
+    "final-phases-baseline-profile.json",
+    "final-phases-latest-profile.json",
+    "selection-scope-comparison/performance.json",
+    "scope-source-guard.json"
+  ],
+  "optional_single_runtime_report": "final-single-runtime.json",
+  "time_unit": "seconds",
+  "memory_unit": "bytes",
+  "baseline_provenance": "This task's baseline-code working-source snapshot; never Git HEAD.",
+  "paired_final_validation_passed": true,
+  "final_paired_cold_latency": {
+    "baseline": {
+      "unit": "seconds",
+      "sample_count": 5,
+      "seconds": [
+        103.89415500001633,
+        72.38721079999232,
+        76.63908569997875,
+        96.85691120001138,
+        90.3920736
+      ],
+      "median_seconds": 90.3920736,
+      "minimum_seconds": 72.38721079999232,
+      "maximum_seconds": 103.89415500001633,
+      "mean_seconds": 88.03388725999976,
+      "original_reported_summary": {
+        "samples": 5,
+        "median_seconds": 90.3920736,
+        "minimum_seconds": 72.38721079999232,
+        "maximum_seconds": 103.89415500001633
+      },
+      "five_second_threshold": 5.0,
+      "per_run_goal": [
+        {
+          "sample": 1,
+          "seconds": 103.89415500001633,
+          "at_most_5_seconds": false
+        },
+        {
+          "sample": 2,
+          "seconds": 72.38721079999232,
+          "at_most_5_seconds": false
+        },
+        {
+          "sample": 3,
+          "seconds": 76.63908569997875,
+          "at_most_5_seconds": false
+        },
+        {
+          "sample": 4,
+          "seconds": 96.85691120001138,
+          "at_most_5_seconds": false
+        },
+        {
+          "sample": 5,
+          "seconds": 90.3920736,
+          "at_most_5_seconds": false
+        }
+      ],
+      "all_observed_runs_at_most_5_seconds": false,
+      "long_term_p95_estimated": false,
+      "reported_sample_count_matches": true
+    },
+    "latest": {
+      "unit": "seconds",
+      "sample_count": 5,
+      "seconds": [
+        82.50069050001912,
+        62.50899199998821,
+        72.25697000001674,
+        80.23742089999723,
+        73.50269759999355
+      ],
+      "median_seconds": 73.50269759999355,
+      "minimum_seconds": 62.50899199998821,
+      "maximum_seconds": 82.50069050001912,
+      "mean_seconds": 74.20135420000297,
+      "original_reported_summary": {
+        "samples": 5,
+        "median_seconds": 73.50269759999355,
+        "minimum_seconds": 62.50899199998821,
+        "maximum_seconds": 82.50069050001912
+      },
+      "five_second_threshold": 5.0,
+      "per_run_goal": [
+        {
+          "sample": 1,
+          "seconds": 82.50069050001912,
+          "at_most_5_seconds": false
+        },
+        {
+          "sample": 2,
+          "seconds": 62.50899199998821,
+          "at_most_5_seconds": false
+        },
+        {
+          "sample": 3,
+          "seconds": 72.25697000001674,
+          "at_most_5_seconds": false
+        },
+        {
+          "sample": 4,
+          "seconds": 80.23742089999723,
+          "at_most_5_seconds": false
+        },
+        {
+          "sample": 5,
+          "seconds": 73.50269759999355,
+          "at_most_5_seconds": false
+        }
+      ],
+      "all_observed_runs_at_most_5_seconds": false,
+      "long_term_p95_estimated": false,
+      "reported_sample_count_matches": true
+    },
+    "median_change_seconds": -16.88937600000645,
+    "median_reduction_seconds": 16.88937600000645,
+    "median_reduction_percent": 18.68457634321429,
+    "paired_sample_count": 5,
+    "paired_runs_faster": 5,
+    "paired_changes_seconds": [
+      -21.393464499997208,
+      -9.878218800004106,
+      -4.382115699962014,
+      -16.61949030001415,
+      -16.88937600000645
+    ]
+  },
+  "five_second_final_paired_latest_goal": false,
+  "route_measurements": {
+    "first-batch-local.json": {
+      "input_report": "first-batch-local.json",
+      "status": "available",
+      "timing": {
+        "baseline": {
+          "unit": "seconds",
+          "sample_count": 1,
+          "seconds": [
+            72.28579910000553
+          ],
+          "median_seconds": 72.28579910000553,
+          "minimum_seconds": 72.28579910000553,
+          "maximum_seconds": 72.28579910000553,
+          "mean_seconds": 72.28579910000553,
+          "original_reported_summary": {
+            "samples": 1,
+            "median_seconds": 72.28579910000553,
+            "minimum_seconds": 72.28579910000553,
+            "maximum_seconds": 72.28579910000553
+          },
+          "five_second_threshold": 5.0,
+          "per_run_goal": [
+            {
+              "sample": 1,
+              "seconds": 72.28579910000553,
+              "at_most_5_seconds": false
+            }
+          ],
+          "all_observed_runs_at_most_5_seconds": false,
+          "long_term_p95_estimated": false,
+          "reported_sample_count_matches": true
+        },
+        "latest": {
+          "unit": "seconds",
+          "sample_count": 1,
+          "seconds": [
+            70.88666620000731
+          ],
+          "median_seconds": 70.88666620000731,
+          "minimum_seconds": 70.88666620000731,
+          "maximum_seconds": 70.88666620000731,
+          "mean_seconds": 70.88666620000731,
+          "original_reported_summary": {
+            "samples": 1,
+            "median_seconds": 70.88666620000731,
+            "minimum_seconds": 70.88666620000731,
+            "maximum_seconds": 70.88666620000731
+          },
+          "five_second_threshold": 5.0,
+          "per_run_goal": [
+            {
+              "sample": 1,
+              "seconds": 70.88666620000731,
+              "at_most_5_seconds": false
+            }
+          ],
+          "all_observed_runs_at_most_5_seconds": false,
+          "long_term_p95_estimated": false,
+          "reported_sample_count_matches": true
+        },
+        "median_change_seconds": -1.3991328999982215,
+        "median_reduction_seconds": 1.3991328999982215,
+        "median_reduction_percent": 1.9355570767953432,
+        "paired_sample_count": 1,
+        "paired_runs_faster": 1,
+        "paired_changes_seconds": [
+          -1.3991328999982215
+        ]
+      },
+      "warm_timing": null,
+      "work": [
+        {
+          "pair": 1,
+          "side": "baseline",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "mastery_expansion": 2,
+            "mastery_fit": 1,
+            "validation": 1,
+            "grouping": 1,
+            "source_rebuild": 1,
+            "selection": 176
+          },
+          "process_cpu_seconds": 68.671875,
+          "phases": null
+        },
+        {
+          "pair": 1,
+          "side": "latest",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 67.984375,
+          "phases": null
+        }
+      ],
+      "original_flags": {
+        "completed": null,
+        "complete_responses_equal": true,
+        "complete_outputs_equal": null,
+        "model_vectors_and_covariance_equal": true,
+        "same_database_inputs": true,
+        "unchanged_database_inputs": null,
+        "same_configuration": true,
+        "same_source_during_measurement": true,
+        "same_diagnosis_and_projection_sources": null
+      },
+      "source_summary": {
+        "recorded_code_file_count": 359,
+        "code_inventory_sha256": "68a3b98f1c75c436b4c4416bbbd422725af1db1fdaf0e28850f767503d3b03c1",
+        "training_source_sha256": {
+          "question_bank/question_types.py": "fdee657af46d5300b325d861a4196a8ed60a33fbe20e6f335e2f39cbf1cc0777",
+          "question_bank/training_criteria/versioning.py": "80d54db686b1723576c7f35a50ea7858088f13634d59f349c24a01036db28d40",
+          "question_bank/training_criteria/analysis.py": "76b3014ed939e86c739249b78c467e59e18eb2a8b6bd1b3858ab615981d98277",
+          "question_bank/training_criteria/adapters.py": "ce0b772092a6b2d857e0badb55385b36262f349050a3731848ce14addd4ba414",
+          "question_bank/mastery/model.py": "c0b414e25194d13bfaa3c0073c40fd0507a1e9d4efcdf0bf6d1a14d02487e509",
+          "question_bank/mastery/current.py": "d84c5b66974cd63b85a0d6751f6e102012107eedf2f417fff733eebe2b3f5309",
+          "question_bank/recommendation/personalized.py": "c5cd9c14d5bcdaa4068e41bd823c1e38c69b548e2c641b62ec6b5fa002512e22",
+          "question_bank/recommendation/target_matching.py": "f7cc5355e7471d5d9a90d32fff839e2950e7c0a172aa2498aa1290d79d458fd3",
+          "integration/result_cache.py": "c5ee3c45b6dd8e8a59d9b7eff1226309d7a31caddf75cf35de4934d0bbd3f4ed",
+          "integration/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9",
+          "integration/diagnosis_profile_service.py": "a9ae9f55423c11de246077f2590fe0173c623d51622642f19f1aecf06c959b66",
+          "integration/data_generation.py": "b793cd64eeb21f25600d061f2d279c58a719fafdc380b4a3c66641c23eebea51",
+          "question_bank/services/file_cache.py": "775549e1505a8003d091d18fdad16a00a714c80b4efe70b725eca2869e195c9f",
+          "backend/public_data.py": "9b87a6cfe45d88f63a22e597df59d69412b9617bc68e6a5f3319e537eedc51d4",
+          "backend/class_analysis.py": "2b218880ddb2b99d1fcdc5ae93c4f4a9201e85b2345dbdf3eadf65638ce3934f",
+          "question_bank/solution_evidence/repository.py": "1f088b124b41ffef6187eb211961c03f7b51c803d540ce58ff293c02108cf969",
+          "question_bank/solution_evidence/part_assessments.py": "1be981800424c39b79814ab409ebfa66e7029c7362689224f72abd250df36c7b",
+          "question_bank/solution_evidence/knowledge_links.py": "fdbd303f264450948096119c9da2432ed1412557593436ae7d61c90757bb6b82",
+          "backend/api/routers/training.py": "71f90840ea2a0ecdde865174ee130a0158db4310462aa37db2848b6349df8a41",
+          "backend/api/schemas/training.py": "15fd5ca363a9e5e810c3f4305509d4892b2980354623008bf7bed340e6c5ceec"
+        },
+        "source_snapshot_sha256": {},
+        "inventory_contains_all_training_sources": true,
+        "original_inventory_retained_in_input_report": true
+      },
+      "memory": {
+        "scope": null,
+        "sample_count": null,
+        "samples": null,
+        "ranges": null
+      },
+      "cache_state": "all logical result and parsed-file caches cleared; persistent result reads and writes disabled; OS file cache retained",
+      "surface": "formal route function; no HTTP, browser, or application lifespan",
+      "baseline_source": "baseline-code",
+      "chapters": [
+        1,
+        2
+      ],
+      "logical_processors": 16,
+      "activity_counts": {
+        "model_requests": 0,
+        "database_writes": 0,
+        "real_data_exports": 0,
+        "raw_student_exports": null
+      },
+      "units": {
+        "M1": {
+          "timing": {
+            "baseline": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                11.44933289999608,
+                12.39073250000365,
+                11.827573500020662,
+                7.2347719999961555,
+                7.231008600007044
+              ],
+              "median_seconds": 11.44933289999608,
+              "minimum_seconds": 7.231008600007044,
+              "maximum_seconds": 12.39073250000365,
+              "mean_seconds": 10.026683900004718,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 11.44933289999608,
+                "minimum_seconds": 7.231008600007044,
+                "maximum_seconds": 12.39073250000365
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 11.44933289999608,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 2,
+                  "seconds": 12.39073250000365,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 3,
+                  "seconds": 11.827573500020662,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 4,
+                  "seconds": 7.2347719999961555,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 5,
+                  "seconds": 7.231008600007044,
+                  "at_most_5_seconds": false
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": false,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "latest": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                8.934080800012453,
+                8.28259070002241,
+                5.424861999985296,
+                5.537699700013036,
+                5.7799098000105005
+              ],
+              "median_seconds": 5.7799098000105005,
+              "minimum_seconds": 5.424861999985296,
+              "maximum_seconds": 8.934080800012453,
+              "mean_seconds": 6.791828600008739,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 5.7799098000105005,
+                "minimum_seconds": 5.424861999985296,
+                "maximum_seconds": 8.934080800012453
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 8.934080800012453,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 2,
+                  "seconds": 8.28259070002241,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 3,
+                  "seconds": 5.424861999985296,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 4,
+                  "seconds": 5.537699700013036,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 5,
+                  "seconds": 5.7799098000105005,
+                  "at_most_5_seconds": false
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": false,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "median_change_seconds": -5.669423099985579,
+            "median_reduction_seconds": 5.669423099985579,
+            "median_reduction_percent": 49.5174972158205,
+            "paired_sample_count": 5,
+            "paired_runs_faster": 5,
+            "paired_changes_seconds": [
+              -2.515252099983627,
+              -4.10814179998124,
+              -6.402711500035366,
+              -1.6970722999831196,
+              -1.4510987999965437
+            ]
+          },
+          "complete_outputs_equal": true,
+          "selection_calls": 176,
+          "version_calls_replayed": null
+        },
+        "D2": {
+          "timing": {
+            "baseline": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                1.193171799997799,
+                1.2430839999869931,
+                1.029961699998239,
+                1.667161200020928,
+                1.8335695000132546
+              ],
+              "median_seconds": 1.2430839999869931,
+              "minimum_seconds": 1.029961699998239,
+              "maximum_seconds": 1.8335695000132546,
+              "mean_seconds": 1.3933896400034427,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 1.2430839999869931,
+                "minimum_seconds": 1.029961699998239,
+                "maximum_seconds": 1.8335695000132546
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 1.193171799997799,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 2,
+                  "seconds": 1.2430839999869931,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 3,
+                  "seconds": 1.029961699998239,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 4,
+                  "seconds": 1.667161200020928,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 5,
+                  "seconds": 1.8335695000132546,
+                  "at_most_5_seconds": true
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": true,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "latest": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                0.9692285999772139,
+                0.9175460000114981,
+                1.584080200002063,
+                1.7344826000044122,
+                1.260076200007461
+              ],
+              "median_seconds": 1.260076200007461,
+              "minimum_seconds": 0.9175460000114981,
+              "maximum_seconds": 1.7344826000044122,
+              "mean_seconds": 1.2930827200005297,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 1.260076200007461,
+                "minimum_seconds": 0.9175460000114981,
+                "maximum_seconds": 1.7344826000044122
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 0.9692285999772139,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 2,
+                  "seconds": 0.9175460000114981,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 3,
+                  "seconds": 1.584080200002063,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 4,
+                  "seconds": 1.7344826000044122,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 5,
+                  "seconds": 1.260076200007461,
+                  "at_most_5_seconds": true
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": true,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "median_change_seconds": 0.016992200020467862,
+            "median_reduction_seconds": -0.016992200020467862,
+            "median_reduction_percent": -1.3669390017605938,
+            "paired_sample_count": 5,
+            "paired_runs_faster": 3,
+            "paired_changes_seconds": [
+              -0.2239432000205852,
+              -0.32553799997549504,
+              0.554118500003824,
+              0.0673213999834843,
+              -0.5734933000057936
+            ]
+          },
+          "complete_outputs_equal": true,
+          "selection_calls": null,
+          "version_calls_replayed": null
+        },
+        "R1": {
+          "timing": {
+            "baseline": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                1.7801336999982595,
+                2.225541699997848,
+                1.8311388000147417,
+                1.9812105000019073,
+                2.189339500007918
+              ],
+              "median_seconds": 1.9812105000019073,
+              "minimum_seconds": 1.7801336999982595,
+              "maximum_seconds": 2.225541699997848,
+              "mean_seconds": 2.001472840004135,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 1.9812105000019073,
+                "minimum_seconds": 1.7801336999982595,
+                "maximum_seconds": 2.225541699997848
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 1.7801336999982595,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 2,
+                  "seconds": 2.225541699997848,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 3,
+                  "seconds": 1.8311388000147417,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 4,
+                  "seconds": 1.9812105000019073,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 5,
+                  "seconds": 2.189339500007918,
+                  "at_most_5_seconds": true
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": true,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "latest": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                0.670052500005113,
+                0.6960775000043213,
+                0.7634608000225853,
+                0.892167200014228,
+                0.6816072999790777
+              ],
+              "median_seconds": 0.6960775000043213,
+              "minimum_seconds": 0.670052500005113,
+              "maximum_seconds": 0.892167200014228,
+              "mean_seconds": 0.740673060005065,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 0.6960775000043213,
+                "minimum_seconds": 0.670052500005113,
+                "maximum_seconds": 0.892167200014228
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 0.670052500005113,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 2,
+                  "seconds": 0.6960775000043213,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 3,
+                  "seconds": 0.7634608000225853,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 4,
+                  "seconds": 0.892167200014228,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 5,
+                  "seconds": 0.6816072999790777,
+                  "at_most_5_seconds": true
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": true,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "median_change_seconds": -1.285132999997586,
+            "median_reduction_seconds": 1.285132999997586,
+            "median_reduction_percent": 64.86605032611874,
+            "paired_sample_count": 5,
+            "paired_runs_faster": 5,
+            "paired_changes_seconds": [
+              -1.1100811999931466,
+              -1.5294641999935266,
+              -1.0676779999921564,
+              -1.0890432999876793,
+              -1.5077322000288405
+            ]
+          },
+          "complete_outputs_equal": true,
+          "selection_calls": null,
+          "version_calls_replayed": null
+        },
+        "A1": {
+          "timing": {
+            "baseline": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                21.273793600004865,
+                23.244599300000118,
+                20.95488779997686,
+                20.810986899974523,
+                21.696170300012454
+              ],
+              "median_seconds": 21.273793600004865,
+              "minimum_seconds": 20.810986899974523,
+              "maximum_seconds": 23.244599300000118,
+              "mean_seconds": 21.596087579993764,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 21.273793600004865,
+                "minimum_seconds": 20.810986899974523,
+                "maximum_seconds": 23.244599300000118
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 21.273793600004865,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 2,
+                  "seconds": 23.244599300000118,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 3,
+                  "seconds": 20.95488779997686,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 4,
+                  "seconds": 20.810986899974523,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 5,
+                  "seconds": 21.696170300012454,
+                  "at_most_5_seconds": false
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": false,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "latest": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                14.19256709999172,
+                14.161316000012448,
+                19.419713200011756,
+                18.50473950000014,
+                15.784546099981526
+              ],
+              "median_seconds": 15.784546099981526,
+              "minimum_seconds": 14.161316000012448,
+              "maximum_seconds": 19.419713200011756,
+              "mean_seconds": 16.412576379999518,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 15.784546099981526,
+                "minimum_seconds": 14.161316000012448,
+                "maximum_seconds": 19.419713200011756
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 14.19256709999172,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 2,
+                  "seconds": 14.161316000012448,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 3,
+                  "seconds": 19.419713200011756,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 4,
+                  "seconds": 18.50473950000014,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 5,
+                  "seconds": 15.784546099981526,
+                  "at_most_5_seconds": false
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": false,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "median_change_seconds": -5.489247500023339,
+            "median_reduction_seconds": 5.489247500023339,
+            "median_reduction_percent": 25.802861507606632,
+            "paired_sample_count": 5,
+            "paired_runs_faster": 5,
+            "paired_changes_seconds": [
+              -7.081226500013145,
+              -9.08328329998767,
+              -1.535174599965103,
+              -2.3062473999743816,
+              -5.9116242000309285
+            ]
+          },
+          "complete_outputs_equal": true,
+          "selection_calls": null,
+          "version_calls_replayed": null
+        }
+      },
+      "one_actual_core_rebuild_per_recorded_cold_run": true,
+      "original_guards_all_true": true
+    },
+    "first-batch-complete-valid.json": {
+      "input_report": "first-batch-complete-valid.json",
+      "status": "available",
+      "timing": {
+        "baseline": {
+          "unit": "seconds",
+          "sample_count": 5,
+          "seconds": [
+            79.04275109997252,
+            81.17608930001734,
+            86.99346159998095,
+            75.6868224000209,
+            75.65841750000254
+          ],
+          "median_seconds": 79.04275109997252,
+          "minimum_seconds": 75.65841750000254,
+          "maximum_seconds": 86.99346159998095,
+          "mean_seconds": 79.71150837999885,
+          "original_reported_summary": {
+            "samples": 5,
+            "median_seconds": 79.04275109997252,
+            "minimum_seconds": 75.65841750000254,
+            "maximum_seconds": 86.99346159998095
+          },
+          "five_second_threshold": 5.0,
+          "per_run_goal": [
+            {
+              "sample": 1,
+              "seconds": 79.04275109997252,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 2,
+              "seconds": 81.17608930001734,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 3,
+              "seconds": 86.99346159998095,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 4,
+              "seconds": 75.6868224000209,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 5,
+              "seconds": 75.65841750000254,
+              "at_most_5_seconds": false
+            }
+          ],
+          "all_observed_runs_at_most_5_seconds": false,
+          "long_term_p95_estimated": false,
+          "reported_sample_count_matches": true
+        },
+        "latest": {
+          "unit": "seconds",
+          "sample_count": 5,
+          "seconds": [
+            67.9022316999908,
+            67.01501850000932,
+            82.8293127999932,
+            68.70222960002138,
+            68.68392119999044
+          ],
+          "median_seconds": 68.68392119999044,
+          "minimum_seconds": 67.01501850000932,
+          "maximum_seconds": 82.8293127999932,
+          "mean_seconds": 71.02654276000104,
+          "original_reported_summary": {
+            "samples": 5,
+            "median_seconds": 68.68392119999044,
+            "minimum_seconds": 67.01501850000932,
+            "maximum_seconds": 82.8293127999932
+          },
+          "five_second_threshold": 5.0,
+          "per_run_goal": [
+            {
+              "sample": 1,
+              "seconds": 67.9022316999908,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 2,
+              "seconds": 67.01501850000932,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 3,
+              "seconds": 82.8293127999932,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 4,
+              "seconds": 68.70222960002138,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 5,
+              "seconds": 68.68392119999044,
+              "at_most_5_seconds": false
+            }
+          ],
+          "all_observed_runs_at_most_5_seconds": false,
+          "long_term_p95_estimated": false,
+          "reported_sample_count_matches": true
+        },
+        "median_change_seconds": -10.358829899982084,
+        "median_reduction_seconds": 10.358829899982084,
+        "median_reduction_percent": 13.10535090925711,
+        "paired_sample_count": 5,
+        "paired_runs_faster": 5,
+        "paired_changes_seconds": [
+          -11.140519399981713,
+          -14.16107080000802,
+          -4.164148799987743,
+          -6.984592799999518,
+          -6.974496300012106
+        ]
+      },
+      "warm_timing": null,
+      "work": [
+        {
+          "pair": 1,
+          "side": "baseline",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 75.953125,
+          "phases": null
+        },
+        {
+          "pair": 1,
+          "side": "latest",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 65.75,
+          "phases": null
+        },
+        {
+          "pair": 2,
+          "side": "latest",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 64.40625,
+          "phases": null
+        },
+        {
+          "pair": 2,
+          "side": "baseline",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 77.109375,
+          "phases": null
+        },
+        {
+          "pair": 3,
+          "side": "baseline",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 83.6875,
+          "phases": null
+        },
+        {
+          "pair": 3,
+          "side": "latest",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 79.859375,
+          "phases": null
+        },
+        {
+          "pair": 4,
+          "side": "latest",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 68.109375,
+          "phases": null
+        },
+        {
+          "pair": 4,
+          "side": "baseline",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 74.265625,
+          "phases": null
+        },
+        {
+          "pair": 5,
+          "side": "baseline",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 74.203125,
+          "phases": null
+        },
+        {
+          "pair": 5,
+          "side": "latest",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 67.671875,
+          "phases": null
+        }
+      ],
+      "original_flags": {
+        "completed": null,
+        "complete_responses_equal": true,
+        "complete_outputs_equal": null,
+        "model_vectors_and_covariance_equal": true,
+        "same_database_inputs": true,
+        "unchanged_database_inputs": null,
+        "same_configuration": true,
+        "same_source_during_measurement": false,
+        "same_diagnosis_and_projection_sources": null
+      },
+      "source_summary": {
+        "recorded_code_file_count": 359,
+        "code_inventory_sha256": "ec33b8dc206c6d4389f7744e8e1bd31a1a2a5249b4e2d74b308c898c6f50b613",
+        "training_source_sha256": {
+          "question_bank/question_types.py": "fdee657af46d5300b325d861a4196a8ed60a33fbe20e6f335e2f39cbf1cc0777",
+          "question_bank/training_criteria/versioning.py": "80d54db686b1723576c7f35a50ea7858088f13634d59f349c24a01036db28d40",
+          "question_bank/training_criteria/analysis.py": "76b3014ed939e86c739249b78c467e59e18eb2a8b6bd1b3858ab615981d98277",
+          "question_bank/training_criteria/adapters.py": "ce0b772092a6b2d857e0badb55385b36262f349050a3731848ce14addd4ba414",
+          "question_bank/mastery/model.py": "c0b414e25194d13bfaa3c0073c40fd0507a1e9d4efcdf0bf6d1a14d02487e509",
+          "question_bank/mastery/current.py": "d84c5b66974cd63b85a0d6751f6e102012107eedf2f417fff733eebe2b3f5309",
+          "question_bank/recommendation/personalized.py": "c5cd9c14d5bcdaa4068e41bd823c1e38c69b548e2c641b62ec6b5fa002512e22",
+          "question_bank/recommendation/target_matching.py": "f7cc5355e7471d5d9a90d32fff839e2950e7c0a172aa2498aa1290d79d458fd3",
+          "integration/result_cache.py": "c5ee3c45b6dd8e8a59d9b7eff1226309d7a31caddf75cf35de4934d0bbd3f4ed",
+          "integration/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9",
+          "integration/diagnosis_profile_service.py": "a9ae9f55423c11de246077f2590fe0173c623d51622642f19f1aecf06c959b66",
+          "integration/data_generation.py": "b793cd64eeb21f25600d061f2d279c58a719fafdc380b4a3c66641c23eebea51",
+          "question_bank/services/file_cache.py": "775549e1505a8003d091d18fdad16a00a714c80b4efe70b725eca2869e195c9f",
+          "backend/public_data.py": "9b87a6cfe45d88f63a22e597df59d69412b9617bc68e6a5f3319e537eedc51d4",
+          "backend/class_analysis.py": "2b218880ddb2b99d1fcdc5ae93c4f4a9201e85b2345dbdf3eadf65638ce3934f",
+          "question_bank/solution_evidence/repository.py": "1f088b124b41ffef6187eb211961c03f7b51c803d540ce58ff293c02108cf969",
+          "question_bank/solution_evidence/part_assessments.py": "1be981800424c39b79814ab409ebfa66e7029c7362689224f72abd250df36c7b",
+          "question_bank/solution_evidence/knowledge_links.py": "fdbd303f264450948096119c9da2432ed1412557593436ae7d61c90757bb6b82",
+          "backend/api/routers/training.py": "71f90840ea2a0ecdde865174ee130a0158db4310462aa37db2848b6349df8a41",
+          "backend/api/schemas/training.py": "15fd5ca363a9e5e810c3f4305509d4892b2980354623008bf7bed340e6c5ceec"
+        },
+        "source_snapshot_sha256": {},
+        "inventory_contains_all_training_sources": true,
+        "original_inventory_retained_in_input_report": true
+      },
+      "memory": {
+        "scope": null,
+        "sample_count": null,
+        "samples": null,
+        "ranges": null
+      },
+      "cache_state": "all logical result and parsed-file caches cleared; persistent result reads and writes disabled; OS file cache retained",
+      "surface": "formal route function; no HTTP, browser, or application lifespan",
+      "baseline_source": "baseline-code",
+      "chapters": [
+        1,
+        2
+      ],
+      "logical_processors": 16,
+      "activity_counts": {
+        "model_requests": 0,
+        "database_writes": 0,
+        "real_data_exports": 0,
+        "raw_student_exports": null
+      },
+      "units": {},
+      "one_actual_core_rebuild_per_recorded_cold_run": true,
+      "original_guards_all_true": false
+    },
+    "second-batch-candidates.json": {
+      "input_report": "second-batch-candidates.json",
+      "status": "available",
+      "timing": {
+        "baseline": {
+          "unit": "seconds",
+          "sample_count": 1,
+          "seconds": [
+            68.61872699999367
+          ],
+          "median_seconds": 68.61872699999367,
+          "minimum_seconds": 68.61872699999367,
+          "maximum_seconds": 68.61872699999367,
+          "mean_seconds": 68.61872699999367,
+          "original_reported_summary": {
+            "samples": 1,
+            "median_seconds": 68.61872699999367,
+            "minimum_seconds": 68.61872699999367,
+            "maximum_seconds": 68.61872699999367
+          },
+          "five_second_threshold": 5.0,
+          "per_run_goal": [
+            {
+              "sample": 1,
+              "seconds": 68.61872699999367,
+              "at_most_5_seconds": false
+            }
+          ],
+          "all_observed_runs_at_most_5_seconds": false,
+          "long_term_p95_estimated": false,
+          "reported_sample_count_matches": true
+        },
+        "latest": {
+          "unit": "seconds",
+          "sample_count": 1,
+          "seconds": [
+            55.05669869997655
+          ],
+          "median_seconds": 55.05669869997655,
+          "minimum_seconds": 55.05669869997655,
+          "maximum_seconds": 55.05669869997655,
+          "mean_seconds": 55.05669869997655,
+          "original_reported_summary": {
+            "samples": 1,
+            "median_seconds": 55.05669869997655,
+            "minimum_seconds": 55.05669869997655,
+            "maximum_seconds": 55.05669869997655
+          },
+          "five_second_threshold": 5.0,
+          "per_run_goal": [
+            {
+              "sample": 1,
+              "seconds": 55.05669869997655,
+              "at_most_5_seconds": false
+            }
+          ],
+          "all_observed_runs_at_most_5_seconds": false,
+          "long_term_p95_estimated": false,
+          "reported_sample_count_matches": true
+        },
+        "median_change_seconds": -13.562028300017118,
+        "median_reduction_seconds": 13.562028300017118,
+        "median_reduction_percent": 19.764325123691627,
+        "paired_sample_count": 1,
+        "paired_runs_faster": 1,
+        "paired_changes_seconds": [
+          -13.562028300017118
+        ]
+      },
+      "warm_timing": null,
+      "work": [
+        {
+          "pair": 1,
+          "side": "baseline",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_expansion": 2,
+            "mastery_fit": 1,
+            "validation": 1,
+            "grouping": 1,
+            "freeze": 3383,
+            "source_rebuild": 1,
+            "matching": 1,
+            "selection": 176
+          },
+          "process_cpu_seconds": 65.9375,
+          "phases": null
+        },
+        {
+          "pair": 1,
+          "side": "latest",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 52.0625,
+          "phases": null
+        }
+      ],
+      "original_flags": {
+        "completed": null,
+        "complete_responses_equal": true,
+        "complete_outputs_equal": null,
+        "model_vectors_and_covariance_equal": true,
+        "same_database_inputs": true,
+        "unchanged_database_inputs": null,
+        "same_configuration": true,
+        "same_source_during_measurement": true,
+        "same_diagnosis_and_projection_sources": null
+      },
+      "source_summary": {
+        "recorded_code_file_count": 359,
+        "code_inventory_sha256": "a1cedc72935df3df0235deac6dcd36f897a79f59ca3a1a016e4b580487212057",
+        "training_source_sha256": {
+          "question_bank/question_types.py": "fdee657af46d5300b325d861a4196a8ed60a33fbe20e6f335e2f39cbf1cc0777",
+          "question_bank/training_criteria/versioning.py": "80d54db686b1723576c7f35a50ea7858088f13634d59f349c24a01036db28d40",
+          "question_bank/training_criteria/analysis.py": "76b3014ed939e86c739249b78c467e59e18eb2a8b6bd1b3858ab615981d98277",
+          "question_bank/training_criteria/adapters.py": "ce0b772092a6b2d857e0badb55385b36262f349050a3731848ce14addd4ba414",
+          "question_bank/mastery/model.py": "c0b414e25194d13bfaa3c0073c40fd0507a1e9d4efcdf0bf6d1a14d02487e509",
+          "question_bank/mastery/current.py": "d84c5b66974cd63b85a0d6751f6e102012107eedf2f417fff733eebe2b3f5309",
+          "question_bank/recommendation/personalized.py": "c5cd9c14d5bcdaa4068e41bd823c1e38c69b548e2c641b62ec6b5fa002512e22",
+          "question_bank/recommendation/target_matching.py": "f7cc5355e7471d5d9a90d32fff839e2950e7c0a172aa2498aa1290d79d458fd3",
+          "integration/result_cache.py": "c5ee3c45b6dd8e8a59d9b7eff1226309d7a31caddf75cf35de4934d0bbd3f4ed",
+          "integration/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9",
+          "integration/diagnosis_profile_service.py": "a9ae9f55423c11de246077f2590fe0173c623d51622642f19f1aecf06c959b66",
+          "integration/data_generation.py": "b793cd64eeb21f25600d061f2d279c58a719fafdc380b4a3c66641c23eebea51",
+          "question_bank/services/file_cache.py": "775549e1505a8003d091d18fdad16a00a714c80b4efe70b725eca2869e195c9f",
+          "backend/public_data.py": "9b87a6cfe45d88f63a22e597df59d69412b9617bc68e6a5f3319e537eedc51d4",
+          "backend/class_analysis.py": "2b218880ddb2b99d1fcdc5ae93c4f4a9201e85b2345dbdf3eadf65638ce3934f",
+          "question_bank/solution_evidence/repository.py": "1f088b124b41ffef6187eb211961c03f7b51c803d540ce58ff293c02108cf969",
+          "question_bank/solution_evidence/part_assessments.py": "1be981800424c39b79814ab409ebfa66e7029c7362689224f72abd250df36c7b",
+          "question_bank/solution_evidence/knowledge_links.py": "fdbd303f264450948096119c9da2432ed1412557593436ae7d61c90757bb6b82",
+          "backend/api/routers/training.py": "71f90840ea2a0ecdde865174ee130a0158db4310462aa37db2848b6349df8a41",
+          "backend/api/schemas/training.py": "15fd5ca363a9e5e810c3f4305509d4892b2980354623008bf7bed340e6c5ceec"
+        },
+        "source_snapshot_sha256": {},
+        "inventory_contains_all_training_sources": true,
+        "original_inventory_retained_in_input_report": true
+      },
+      "memory": {
+        "unit": "bytes",
+        "scope": "combined comparer process holding two loaded source universes; samples after routes and cumulative process peak, not isolated per-side peaks",
+        "sample_count": 2,
+        "samples": [
+          {
+            "pair": 1,
+            "run": null,
+            "side": "baseline",
+            "working_set_bytes": 1348493312,
+            "process_peak_working_set_bytes": 1420619776
+          },
+          {
+            "pair": 1,
+            "run": null,
+            "side": "latest",
+            "working_set_bytes": 1948573696,
+            "process_peak_working_set_bytes": 2106228736
+          }
+        ],
+        "ranges": {
+          "baseline": {
+            "working_set_bytes": {
+              "minimum": 1348493312,
+              "maximum": 1348493312
+            },
+            "process_peak_working_set_bytes": {
+              "minimum": 1420619776,
+              "maximum": 1420619776
+            }
+          },
+          "latest": {
+            "working_set_bytes": {
+              "minimum": 1948573696,
+              "maximum": 1948573696
+            },
+            "process_peak_working_set_bytes": {
+              "minimum": 2106228736,
+              "maximum": 2106228736
+            }
+          },
+          "all_recorded_samples": {
+            "working_set_bytes": {
+              "minimum": 1348493312,
+              "maximum": 1948573696
+            },
+            "process_peak_working_set_bytes": {
+              "minimum": 1420619776,
+              "maximum": 2106228736
+            }
+          }
+        },
+        "independent_per_side_peak_claimed": false
+      },
+      "cache_state": "all logical result and parsed-file caches cleared; persistent result reads and writes disabled; OS file cache retained",
+      "surface": "formal route function; no HTTP, browser, or application lifespan",
+      "baseline_source": "first-batch-code",
+      "chapters": [
+        1,
+        2
+      ],
+      "logical_processors": 16,
+      "activity_counts": {
+        "model_requests": 0,
+        "database_writes": 0,
+        "real_data_exports": 0,
+        "raw_student_exports": null
+      },
+      "units": {
+        "M2": {
+          "timing": {
+            "baseline": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                2.4613188999937847,
+                4.115388200007146,
+                2.7688217000104487,
+                2.5846496999729425,
+                2.813623499998357
+              ],
+              "median_seconds": 2.7688217000104487,
+              "minimum_seconds": 2.4613188999937847,
+              "maximum_seconds": 4.115388200007146,
+              "mean_seconds": 2.948760399996536,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 2.7688217000104487,
+                "minimum_seconds": 2.4613188999937847,
+                "maximum_seconds": 4.115388200007146
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 2.4613188999937847,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 2,
+                  "seconds": 4.115388200007146,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 3,
+                  "seconds": 2.7688217000104487,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 4,
+                  "seconds": 2.5846496999729425,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 5,
+                  "seconds": 2.813623499998357,
+                  "at_most_5_seconds": true
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": true,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "latest": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                6.814582499995595,
+                6.887029000004986,
+                4.108384899998782,
+                4.004531399987172,
+                3.937047800020082
+              ],
+              "median_seconds": 4.108384899998782,
+              "minimum_seconds": 3.937047800020082,
+              "maximum_seconds": 6.887029000004986,
+              "mean_seconds": 5.1503151200013235,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 4.108384899998782,
+                "minimum_seconds": 3.937047800020082,
+                "maximum_seconds": 6.887029000004986
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 6.814582499995595,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 2,
+                  "seconds": 6.887029000004986,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 3,
+                  "seconds": 4.108384899998782,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 4,
+                  "seconds": 4.004531399987172,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 5,
+                  "seconds": 3.937047800020082,
+                  "at_most_5_seconds": true
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": false,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "median_change_seconds": 1.3395631999883335,
+            "median_reduction_seconds": -1.3395631999883335,
+            "median_reduction_percent": -48.3802622604149,
+            "paired_sample_count": 5,
+            "paired_runs_faster": 0,
+            "paired_changes_seconds": [
+              4.35326360000181,
+              2.77164079999784,
+              1.3395631999883335,
+              1.4198817000142299,
+              1.1234243000217248
+            ]
+          },
+          "complete_outputs_equal": true,
+          "selection_calls": null,
+          "version_calls_replayed": null
+        },
+        "M3": {
+          "timing": {
+            "baseline": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                9.129552400001558,
+                8.676170699996874,
+                8.754659600002924,
+                9.311593899998115,
+                8.704051199980313
+              ],
+              "median_seconds": 8.754659600002924,
+              "minimum_seconds": 8.676170699996874,
+              "maximum_seconds": 9.311593899998115,
+              "mean_seconds": 8.915205559995957,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 8.754659600002924,
+                "minimum_seconds": 8.676170699996874,
+                "maximum_seconds": 9.311593899998115
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 9.129552400001558,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 2,
+                  "seconds": 8.676170699996874,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 3,
+                  "seconds": 8.754659600002924,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 4,
+                  "seconds": 9.311593899998115,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 5,
+                  "seconds": 8.704051199980313,
+                  "at_most_5_seconds": false
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": false,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "latest": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                6.821829499996966,
+                7.098841900005937,
+                6.730091299978085,
+                7.030452300008619,
+                6.942072599980747
+              ],
+              "median_seconds": 6.942072599980747,
+              "minimum_seconds": 6.730091299978085,
+              "maximum_seconds": 7.098841900005937,
+              "mean_seconds": 6.924657519994071,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 6.942072599980747,
+                "minimum_seconds": 6.730091299978085,
+                "maximum_seconds": 7.098841900005937
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 6.821829499996966,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 2,
+                  "seconds": 7.098841900005937,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 3,
+                  "seconds": 6.730091299978085,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 4,
+                  "seconds": 7.030452300008619,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 5,
+                  "seconds": 6.942072599980747,
+                  "at_most_5_seconds": false
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": false,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "median_change_seconds": -1.8125870000221767,
+            "median_reduction_seconds": 1.8125870000221767,
+            "median_reduction_percent": 20.704254452355535,
+            "paired_sample_count": 5,
+            "paired_runs_faster": 5,
+            "paired_changes_seconds": [
+              -2.307722900004592,
+              -1.5773287999909371,
+              -2.024568300024839,
+              -2.281141599989496,
+              -1.7619785999995656
+            ]
+          },
+          "complete_outputs_equal": true,
+          "selection_calls": null,
+          "version_calls_replayed": null
+        },
+        "A2": {
+          "timing": {
+            "baseline": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                11.515783899987582,
+                8.765429199993378,
+                8.669334900012473,
+                8.76746119998279,
+                9.003388400014956
+              ],
+              "median_seconds": 8.76746119998279,
+              "minimum_seconds": 8.669334900012473,
+              "maximum_seconds": 11.515783899987582,
+              "mean_seconds": 9.344279519998235,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 8.76746119998279,
+                "minimum_seconds": 8.669334900012473,
+                "maximum_seconds": 11.515783899987582
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 11.515783899987582,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 2,
+                  "seconds": 8.765429199993378,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 3,
+                  "seconds": 8.669334900012473,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 4,
+                  "seconds": 8.76746119998279,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 5,
+                  "seconds": 9.003388400014956,
+                  "at_most_5_seconds": false
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": false,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "latest": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                8.734116099978564,
+                8.767708899977151,
+                8.908024800010026,
+                8.823757299978752,
+                8.774511900002835
+              ],
+              "median_seconds": 8.774511900002835,
+              "minimum_seconds": 8.734116099978564,
+              "maximum_seconds": 8.908024800010026,
+              "mean_seconds": 8.801623799989466,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 8.774511900002835,
+                "minimum_seconds": 8.734116099978564,
+                "maximum_seconds": 8.908024800010026
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 8.734116099978564,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 2,
+                  "seconds": 8.767708899977151,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 3,
+                  "seconds": 8.908024800010026,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 4,
+                  "seconds": 8.823757299978752,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 5,
+                  "seconds": 8.774511900002835,
+                  "at_most_5_seconds": false
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": false,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "median_change_seconds": 0.007050700020045042,
+            "median_reduction_seconds": -0.007050700020045042,
+            "median_reduction_percent": -0.08041894750625053,
+            "paired_sample_count": 5,
+            "paired_runs_faster": 2,
+            "paired_changes_seconds": [
+              -2.781667800009018,
+              0.002279699983773753,
+              0.23868989999755286,
+              0.05629609999596141,
+              -0.22887650001212023
+            ]
+          },
+          "complete_outputs_equal": true,
+          "selection_calls": null,
+          "version_calls_replayed": null
+        },
+        "D5": {
+          "timing": {
+            "baseline": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                1.2676071999885608,
+                1.1508456000010483,
+                1.0886321000289172,
+                1.1463600999850314,
+                1.1965577999944799
+              ],
+              "median_seconds": 1.1508456000010483,
+              "minimum_seconds": 1.0886321000289172,
+              "maximum_seconds": 1.2676071999885608,
+              "mean_seconds": 1.1700005599996075,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 1.1508456000010483,
+                "minimum_seconds": 1.0886321000289172,
+                "maximum_seconds": 1.2676071999885608
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 1.2676071999885608,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 2,
+                  "seconds": 1.1508456000010483,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 3,
+                  "seconds": 1.0886321000289172,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 4,
+                  "seconds": 1.1463600999850314,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 5,
+                  "seconds": 1.1965577999944799,
+                  "at_most_5_seconds": true
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": true,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "latest": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                0.34359619999304414,
+                0.3442184000159614,
+                0.35548559998278506,
+                0.3832667000242509,
+                0.39656109997304156
+              ],
+              "median_seconds": 0.35548559998278506,
+              "minimum_seconds": 0.34359619999304414,
+              "maximum_seconds": 0.39656109997304156,
+              "mean_seconds": 0.36462559999781663,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 0.35548559998278506,
+                "minimum_seconds": 0.34359619999304414,
+                "maximum_seconds": 0.39656109997304156
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 0.34359619999304414,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 2,
+                  "seconds": 0.3442184000159614,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 3,
+                  "seconds": 0.35548559998278506,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 4,
+                  "seconds": 0.3832667000242509,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 5,
+                  "seconds": 0.39656109997304156,
+                  "at_most_5_seconds": true
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": true,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "median_change_seconds": -0.7953600000182632,
+            "median_reduction_seconds": 0.7953600000182632,
+            "median_reduction_percent": 69.11092157084659,
+            "paired_sample_count": 5,
+            "paired_runs_faster": 5,
+            "paired_changes_seconds": [
+              -0.9240109999955166,
+              -0.8066271999850869,
+              -0.7331465000461321,
+              -0.7630933999607805,
+              -0.7999967000214383
+            ]
+          },
+          "complete_outputs_equal": true,
+          "selection_calls": null,
+          "version_calls_replayed": null
+        }
+      },
+      "one_actual_core_rebuild_per_recorded_cold_run": true,
+      "original_guards_all_true": true
+    },
+    "matching-freeze-recheck.json": {
+      "input_report": "matching-freeze-recheck.json",
+      "status": "available",
+      "timing": {
+        "baseline": {
+          "unit": "seconds",
+          "sample_count": 1,
+          "seconds": [
+            69.80251819998375
+          ],
+          "median_seconds": 69.80251819998375,
+          "minimum_seconds": 69.80251819998375,
+          "maximum_seconds": 69.80251819998375,
+          "mean_seconds": 69.80251819998375,
+          "original_reported_summary": {
+            "samples": 1,
+            "median_seconds": 69.80251819998375,
+            "minimum_seconds": 69.80251819998375,
+            "maximum_seconds": 69.80251819998375
+          },
+          "five_second_threshold": 5.0,
+          "per_run_goal": [
+            {
+              "sample": 1,
+              "seconds": 69.80251819998375,
+              "at_most_5_seconds": false
+            }
+          ],
+          "all_observed_runs_at_most_5_seconds": false,
+          "long_term_p95_estimated": false,
+          "reported_sample_count_matches": true
+        },
+        "latest": {
+          "unit": "seconds",
+          "sample_count": 1,
+          "seconds": [
+            75.66497700000764
+          ],
+          "median_seconds": 75.66497700000764,
+          "minimum_seconds": 75.66497700000764,
+          "maximum_seconds": 75.66497700000764,
+          "mean_seconds": 75.66497700000764,
+          "original_reported_summary": {
+            "samples": 1,
+            "median_seconds": 75.66497700000764,
+            "minimum_seconds": 75.66497700000764,
+            "maximum_seconds": 75.66497700000764
+          },
+          "five_second_threshold": 5.0,
+          "per_run_goal": [
+            {
+              "sample": 1,
+              "seconds": 75.66497700000764,
+              "at_most_5_seconds": false
+            }
+          ],
+          "all_observed_runs_at_most_5_seconds": false,
+          "long_term_p95_estimated": false,
+          "reported_sample_count_matches": true
+        },
+        "median_change_seconds": 5.862458800023887,
+        "median_reduction_seconds": -5.862458800023887,
+        "median_reduction_percent": -8.39863510830366,
+        "paired_sample_count": 1,
+        "paired_runs_faster": 0,
+        "paired_changes_seconds": [
+          5.862458800023887
+        ]
+      },
+      "warm_timing": null,
+      "work": [
+        {
+          "pair": 1,
+          "side": "baseline",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_expansion": 2,
+            "mastery_fit": 1,
+            "validation": 1,
+            "grouping": 1,
+            "freeze": 3383,
+            "source_rebuild": 1,
+            "matching": 1,
+            "selection": 176
+          },
+          "process_cpu_seconds": 67.25,
+          "phases": null
+        },
+        {
+          "pair": 1,
+          "side": "latest",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 71.4375,
+          "phases": null
+        }
+      ],
+      "original_flags": {
+        "completed": null,
+        "complete_responses_equal": true,
+        "complete_outputs_equal": null,
+        "model_vectors_and_covariance_equal": true,
+        "same_database_inputs": true,
+        "unchanged_database_inputs": null,
+        "same_configuration": true,
+        "same_source_during_measurement": true,
+        "same_diagnosis_and_projection_sources": null
+      },
+      "source_summary": {
+        "recorded_code_file_count": 359,
+        "code_inventory_sha256": "a1cedc72935df3df0235deac6dcd36f897a79f59ca3a1a016e4b580487212057",
+        "training_source_sha256": {
+          "question_bank/question_types.py": "fdee657af46d5300b325d861a4196a8ed60a33fbe20e6f335e2f39cbf1cc0777",
+          "question_bank/training_criteria/versioning.py": "80d54db686b1723576c7f35a50ea7858088f13634d59f349c24a01036db28d40",
+          "question_bank/training_criteria/analysis.py": "76b3014ed939e86c739249b78c467e59e18eb2a8b6bd1b3858ab615981d98277",
+          "question_bank/training_criteria/adapters.py": "ce0b772092a6b2d857e0badb55385b36262f349050a3731848ce14addd4ba414",
+          "question_bank/mastery/model.py": "c0b414e25194d13bfaa3c0073c40fd0507a1e9d4efcdf0bf6d1a14d02487e509",
+          "question_bank/mastery/current.py": "d84c5b66974cd63b85a0d6751f6e102012107eedf2f417fff733eebe2b3f5309",
+          "question_bank/recommendation/personalized.py": "c5cd9c14d5bcdaa4068e41bd823c1e38c69b548e2c641b62ec6b5fa002512e22",
+          "question_bank/recommendation/target_matching.py": "f7cc5355e7471d5d9a90d32fff839e2950e7c0a172aa2498aa1290d79d458fd3",
+          "integration/result_cache.py": "c5ee3c45b6dd8e8a59d9b7eff1226309d7a31caddf75cf35de4934d0bbd3f4ed",
+          "integration/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9",
+          "integration/diagnosis_profile_service.py": "a9ae9f55423c11de246077f2590fe0173c623d51622642f19f1aecf06c959b66",
+          "integration/data_generation.py": "b793cd64eeb21f25600d061f2d279c58a719fafdc380b4a3c66641c23eebea51",
+          "question_bank/services/file_cache.py": "775549e1505a8003d091d18fdad16a00a714c80b4efe70b725eca2869e195c9f",
+          "backend/public_data.py": "9b87a6cfe45d88f63a22e597df59d69412b9617bc68e6a5f3319e537eedc51d4",
+          "backend/class_analysis.py": "2b218880ddb2b99d1fcdc5ae93c4f4a9201e85b2345dbdf3eadf65638ce3934f",
+          "question_bank/solution_evidence/repository.py": "1f088b124b41ffef6187eb211961c03f7b51c803d540ce58ff293c02108cf969",
+          "question_bank/solution_evidence/part_assessments.py": "1be981800424c39b79814ab409ebfa66e7029c7362689224f72abd250df36c7b",
+          "question_bank/solution_evidence/knowledge_links.py": "fdbd303f264450948096119c9da2432ed1412557593436ae7d61c90757bb6b82",
+          "backend/api/routers/training.py": "71f90840ea2a0ecdde865174ee130a0158db4310462aa37db2848b6349df8a41",
+          "backend/api/schemas/training.py": "15fd5ca363a9e5e810c3f4305509d4892b2980354623008bf7bed340e6c5ceec"
+        },
+        "source_snapshot_sha256": {},
+        "inventory_contains_all_training_sources": true,
+        "original_inventory_retained_in_input_report": true
+      },
+      "memory": {
+        "unit": "bytes",
+        "scope": "combined comparer process holding two loaded source universes; samples after routes and cumulative process peak, not isolated per-side peaks",
+        "sample_count": 2,
+        "samples": [
+          {
+            "pair": 1,
+            "run": null,
+            "side": "baseline",
+            "working_set_bytes": 1326858240,
+            "process_peak_working_set_bytes": 1420427264
+          },
+          {
+            "pair": 1,
+            "run": null,
+            "side": "latest",
+            "working_set_bytes": 1828970496,
+            "process_peak_working_set_bytes": 2021875712
+          }
+        ],
+        "ranges": {
+          "baseline": {
+            "working_set_bytes": {
+              "minimum": 1326858240,
+              "maximum": 1326858240
+            },
+            "process_peak_working_set_bytes": {
+              "minimum": 1420427264,
+              "maximum": 1420427264
+            }
+          },
+          "latest": {
+            "working_set_bytes": {
+              "minimum": 1828970496,
+              "maximum": 1828970496
+            },
+            "process_peak_working_set_bytes": {
+              "minimum": 2021875712,
+              "maximum": 2021875712
+            }
+          },
+          "all_recorded_samples": {
+            "working_set_bytes": {
+              "minimum": 1326858240,
+              "maximum": 1828970496
+            },
+            "process_peak_working_set_bytes": {
+              "minimum": 1420427264,
+              "maximum": 2021875712
+            }
+          }
+        },
+        "independent_per_side_peak_claimed": false
+      },
+      "cache_state": "all logical result and parsed-file caches cleared; persistent result reads and writes disabled; OS file cache retained",
+      "surface": "formal route function; no HTTP, browser, or application lifespan",
+      "baseline_source": "first-batch-code",
+      "chapters": [
+        1,
+        2
+      ],
+      "logical_processors": 16,
+      "activity_counts": {
+        "model_requests": 0,
+        "database_writes": 0,
+        "real_data_exports": 0,
+        "raw_student_exports": null
+      },
+      "units": {
+        "M2": {
+          "timing": {
+            "baseline": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                4.565487200015923,
+                3.7451819999841973,
+                3.8198058999842033,
+                4.1749770999886096,
+                3.937799300008919
+              ],
+              "median_seconds": 3.937799300008919,
+              "minimum_seconds": 3.7451819999841973,
+              "maximum_seconds": 4.565487200015923,
+              "mean_seconds": 4.04865029999637,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 3.937799300008919,
+                "minimum_seconds": 3.7451819999841973,
+                "maximum_seconds": 4.565487200015923
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 4.565487200015923,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 2,
+                  "seconds": 3.7451819999841973,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 3,
+                  "seconds": 3.8198058999842033,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 4,
+                  "seconds": 4.1749770999886096,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 5,
+                  "seconds": 3.937799300008919,
+                  "at_most_5_seconds": true
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": true,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "latest": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                6.5998460999981035,
+                6.1303722000156995,
+                6.245551999978488,
+                6.8826533000101335,
+                6.991541699972004
+              ],
+              "median_seconds": 6.5998460999981035,
+              "minimum_seconds": 6.1303722000156995,
+              "maximum_seconds": 6.991541699972004,
+              "mean_seconds": 6.569993059994886,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 6.5998460999981035,
+                "minimum_seconds": 6.1303722000156995,
+                "maximum_seconds": 6.991541699972004
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 6.5998460999981035,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 2,
+                  "seconds": 6.1303722000156995,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 3,
+                  "seconds": 6.245551999978488,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 4,
+                  "seconds": 6.8826533000101335,
+                  "at_most_5_seconds": false
+                },
+                {
+                  "sample": 5,
+                  "seconds": 6.991541699972004,
+                  "at_most_5_seconds": false
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": false,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "median_change_seconds": 2.6620467999891844,
+            "median_reduction_seconds": -2.6620467999891844,
+            "median_reduction_percent": -67.60239913657242,
+            "paired_sample_count": 5,
+            "paired_runs_faster": 0,
+            "paired_changes_seconds": [
+              2.0343588999821804,
+              2.385190200031502,
+              2.425746099994285,
+              2.707676200021524,
+              3.0537423999630846
+            ]
+          },
+          "complete_outputs_equal": true,
+          "selection_calls": null,
+          "version_calls_replayed": null
+        },
+        "D4": {
+          "timing": {
+            "baseline": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                0.2206892000103835,
+                0.05584419998922385,
+                0.05658229999244213,
+                0.06035799998790026,
+                0.060385200020391494
+              ],
+              "median_seconds": 0.06035799998790026,
+              "minimum_seconds": 0.05584419998922385,
+              "maximum_seconds": 0.2206892000103835,
+              "mean_seconds": 0.09077178000006825,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 0.06035799998790026,
+                "minimum_seconds": 0.05584419998922385,
+                "maximum_seconds": 0.2206892000103835
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 0.2206892000103835,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 2,
+                  "seconds": 0.05584419998922385,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 3,
+                  "seconds": 0.05658229999244213,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 4,
+                  "seconds": 0.06035799998790026,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 5,
+                  "seconds": 0.060385200020391494,
+                  "at_most_5_seconds": true
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": true,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "latest": {
+              "unit": "seconds",
+              "sample_count": 5,
+              "seconds": [
+                0.0005234999989625067,
+                0.0003425999893806875,
+                0.000384899991331622,
+                0.00020939999376423657,
+                0.00041760000749491155
+              ],
+              "median_seconds": 0.000384899991331622,
+              "minimum_seconds": 0.00020939999376423657,
+              "maximum_seconds": 0.0005234999989625067,
+              "mean_seconds": 0.00037559999618679284,
+              "original_reported_summary": {
+                "samples": 5,
+                "median_seconds": 0.000384899991331622,
+                "minimum_seconds": 0.00020939999376423657,
+                "maximum_seconds": 0.0005234999989625067
+              },
+              "five_second_threshold": 5.0,
+              "per_run_goal": [
+                {
+                  "sample": 1,
+                  "seconds": 0.0005234999989625067,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 2,
+                  "seconds": 0.0003425999893806875,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 3,
+                  "seconds": 0.000384899991331622,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 4,
+                  "seconds": 0.00020939999376423657,
+                  "at_most_5_seconds": true
+                },
+                {
+                  "sample": 5,
+                  "seconds": 0.00041760000749491155,
+                  "at_most_5_seconds": true
+                }
+              ],
+              "all_observed_runs_at_most_5_seconds": true,
+              "long_term_p95_estimated": false,
+              "reported_sample_count_matches": true
+            },
+            "median_change_seconds": -0.059973099996568635,
+            "median_reduction_seconds": 0.059973099996568635,
+            "median_reduction_percent": 99.36230492824683,
+            "paired_sample_count": 5,
+            "paired_runs_faster": 5,
+            "paired_changes_seconds": [
+              -0.220165700011421,
+              -0.055501599999843165,
+              -0.05619740000111051,
+              -0.06014859999413602,
+              -0.05996760001289658
+            ]
+          },
+          "complete_outputs_equal": true,
+          "selection_calls": null,
+          "version_calls_replayed": 2762
+        }
+      },
+      "one_actual_core_rebuild_per_recorded_cold_run": true,
+      "original_guards_all_true": true
+    },
+    "final-complete.json": {
+      "input_report": "final-complete.json",
+      "status": "available",
+      "timing": {
+        "baseline": {
+          "unit": "seconds",
+          "sample_count": 5,
+          "seconds": [
+            103.89415500001633,
+            72.38721079999232,
+            76.63908569997875,
+            96.85691120001138,
+            90.3920736
+          ],
+          "median_seconds": 90.3920736,
+          "minimum_seconds": 72.38721079999232,
+          "maximum_seconds": 103.89415500001633,
+          "mean_seconds": 88.03388725999976,
+          "original_reported_summary": {
+            "samples": 5,
+            "median_seconds": 90.3920736,
+            "minimum_seconds": 72.38721079999232,
+            "maximum_seconds": 103.89415500001633
+          },
+          "five_second_threshold": 5.0,
+          "per_run_goal": [
+            {
+              "sample": 1,
+              "seconds": 103.89415500001633,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 2,
+              "seconds": 72.38721079999232,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 3,
+              "seconds": 76.63908569997875,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 4,
+              "seconds": 96.85691120001138,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 5,
+              "seconds": 90.3920736,
+              "at_most_5_seconds": false
+            }
+          ],
+          "all_observed_runs_at_most_5_seconds": false,
+          "long_term_p95_estimated": false,
+          "reported_sample_count_matches": true
+        },
+        "latest": {
+          "unit": "seconds",
+          "sample_count": 5,
+          "seconds": [
+            82.50069050001912,
+            62.50899199998821,
+            72.25697000001674,
+            80.23742089999723,
+            73.50269759999355
+          ],
+          "median_seconds": 73.50269759999355,
+          "minimum_seconds": 62.50899199998821,
+          "maximum_seconds": 82.50069050001912,
+          "mean_seconds": 74.20135420000297,
+          "original_reported_summary": {
+            "samples": 5,
+            "median_seconds": 73.50269759999355,
+            "minimum_seconds": 62.50899199998821,
+            "maximum_seconds": 82.50069050001912
+          },
+          "five_second_threshold": 5.0,
+          "per_run_goal": [
+            {
+              "sample": 1,
+              "seconds": 82.50069050001912,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 2,
+              "seconds": 62.50899199998821,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 3,
+              "seconds": 72.25697000001674,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 4,
+              "seconds": 80.23742089999723,
+              "at_most_5_seconds": false
+            },
+            {
+              "sample": 5,
+              "seconds": 73.50269759999355,
+              "at_most_5_seconds": false
+            }
+          ],
+          "all_observed_runs_at_most_5_seconds": false,
+          "long_term_p95_estimated": false,
+          "reported_sample_count_matches": true
+        },
+        "median_change_seconds": -16.88937600000645,
+        "median_reduction_seconds": 16.88937600000645,
+        "median_reduction_percent": 18.68457634321429,
+        "paired_sample_count": 5,
+        "paired_runs_faster": 5,
+        "paired_changes_seconds": [
+          -21.393464499997208,
+          -9.878218800004106,
+          -4.382115699962014,
+          -16.61949030001415,
+          -16.88937600000645
+        ]
+      },
+      "warm_timing": {
+        "unit": "seconds",
+        "sample_count": 5,
+        "seconds": [
+          0.17088279998279177,
+          0.16340229997877032,
+          0.16238319998956285,
+          0.17139309999765828,
+          0.16687590000219643
+        ],
+        "median_seconds": 0.16687590000219643,
+        "minimum_seconds": 0.16238319998956285,
+        "maximum_seconds": 0.17139309999765828,
+        "mean_seconds": 0.16698745999019593,
+        "original_reported_summary": {
+          "samples": 5,
+          "median_seconds": 0.16687590000219643,
+          "minimum_seconds": 0.16238319998956285,
+          "maximum_seconds": 0.17139309999765828
+        },
+        "five_second_threshold": 5.0,
+        "per_run_goal": [
+          {
+            "sample": 1,
+            "seconds": 0.17088279998279177,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 2,
+            "seconds": 0.16340229997877032,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 3,
+            "seconds": 0.16238319998956285,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 4,
+            "seconds": 0.17139309999765828,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 5,
+            "seconds": 0.16687590000219643,
+            "at_most_5_seconds": true
+          }
+        ],
+        "all_observed_runs_at_most_5_seconds": true,
+        "long_term_p95_estimated": false,
+        "reported_sample_count_matches": true
+      },
+      "work": [
+        {
+          "pair": 1,
+          "side": "baseline",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 87.734375,
+          "phases": null
+        },
+        {
+          "pair": 1,
+          "side": "latest",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "materialized_error_read": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 77.796875,
+          "phases": null
+        },
+        {
+          "pair": 2,
+          "side": "latest",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "materialized_error_read": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 61.703125,
+          "phases": null
+        },
+        {
+          "pair": 2,
+          "side": "baseline",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 71.75,
+          "phases": null
+        },
+        {
+          "pair": 3,
+          "side": "baseline",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 76.203125,
+          "phases": null
+        },
+        {
+          "pair": 3,
+          "side": "latest",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "materialized_error_read": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 71.6875,
+          "phases": null
+        },
+        {
+          "pair": 4,
+          "side": "latest",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "materialized_error_read": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 77.890625,
+          "phases": null
+        },
+        {
+          "pair": 4,
+          "side": "baseline",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 92.515625,
+          "phases": null
+        },
+        {
+          "pair": 5,
+          "side": "baseline",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "error_records_rebuild": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 89.671875,
+          "phases": null
+        },
+        {
+          "pair": 5,
+          "side": "latest",
+          "run": null,
+          "work": {
+            "diagnosis_rebuild": 1,
+            "materialized_error_read": 3,
+            "mastery_fit": 1,
+            "grouping": 1,
+            "source_rebuild": 1
+          },
+          "process_cpu_seconds": 72.828125,
+          "phases": null
+        }
+      ],
+      "original_flags": {
+        "completed": null,
+        "complete_responses_equal": true,
+        "complete_outputs_equal": null,
+        "model_vectors_and_covariance_equal": true,
+        "same_database_inputs": true,
+        "unchanged_database_inputs": null,
+        "same_configuration": true,
+        "same_source_during_measurement": true,
+        "same_diagnosis_and_projection_sources": null
+      },
+      "source_summary": {
+        "recorded_code_file_count": 359,
+        "code_inventory_sha256": "9aecc8682f6207b2fae4da00f8fbb577db5ccac5211c9b054ebac15bf2d015ae",
+        "training_source_sha256": {
+          "question_bank/question_types.py": "fdee657af46d5300b325d861a4196a8ed60a33fbe20e6f335e2f39cbf1cc0777",
+          "question_bank/training_criteria/versioning.py": "80d54db686b1723576c7f35a50ea7858088f13634d59f349c24a01036db28d40",
+          "question_bank/training_criteria/analysis.py": "76b3014ed939e86c739249b78c467e59e18eb2a8b6bd1b3858ab615981d98277",
+          "question_bank/training_criteria/adapters.py": "ce0b772092a6b2d857e0badb55385b36262f349050a3731848ce14addd4ba414",
+          "question_bank/mastery/model.py": "0db3c72dd829c60f34199bba2a0ec74fe1e207ebbc2ff2a14b5b3848991462c5",
+          "question_bank/mastery/current.py": "d84c5b66974cd63b85a0d6751f6e102012107eedf2f417fff733eebe2b3f5309",
+          "question_bank/recommendation/personalized.py": "d7411fb64063009b5f80ab08c3b2770a8c0a27cf64f3f7268d1eeb0a9654c8d1",
+          "question_bank/recommendation/target_matching.py": "f7cc5355e7471d5d9a90d32fff839e2950e7c0a172aa2498aa1290d79d458fd3",
+          "integration/result_cache.py": "c5ee3c45b6dd8e8a59d9b7eff1226309d7a31caddf75cf35de4934d0bbd3f4ed",
+          "integration/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9",
+          "integration/diagnosis_profile_service.py": "98bc6e96c14810c25bf11e37fe61334331d5624f0cb5b4cbae80be9c0ef6ef50",
+          "integration/data_generation.py": "b793cd64eeb21f25600d061f2d279c58a719fafdc380b4a3c66641c23eebea51",
+          "question_bank/services/file_cache.py": "775549e1505a8003d091d18fdad16a00a714c80b4efe70b725eca2869e195c9f",
+          "backend/public_data.py": "9b87a6cfe45d88f63a22e597df59d69412b9617bc68e6a5f3319e537eedc51d4",
+          "backend/class_analysis.py": "2b218880ddb2b99d1fcdc5ae93c4f4a9201e85b2345dbdf3eadf65638ce3934f",
+          "question_bank/solution_evidence/repository.py": "1f088b124b41ffef6187eb211961c03f7b51c803d540ce58ff293c02108cf969",
+          "question_bank/solution_evidence/part_assessments.py": "1be981800424c39b79814ab409ebfa66e7029c7362689224f72abd250df36c7b",
+          "question_bank/solution_evidence/knowledge_links.py": "fdbd303f264450948096119c9da2432ed1412557593436ae7d61c90757bb6b82",
+          "backend/api/routers/training.py": "71f90840ea2a0ecdde865174ee130a0158db4310462aa37db2848b6349df8a41",
+          "backend/api/schemas/training.py": "15fd5ca363a9e5e810c3f4305509d4892b2980354623008bf7bed340e6c5ceec"
+        },
+        "source_snapshot_sha256": {},
+        "inventory_contains_all_training_sources": true,
+        "original_inventory_retained_in_input_report": true
+      },
+      "memory": {
+        "unit": "bytes",
+        "scope": "combined comparer process holding two loaded source universes; samples after routes and cumulative process peak, not isolated per-side peaks",
+        "sample_count": 10,
+        "samples": [
+          {
+            "pair": 1,
+            "run": null,
+            "side": "baseline",
+            "working_set_bytes": 801697792,
+            "process_peak_working_set_bytes": 1054715904
+          },
+          {
+            "pair": 1,
+            "run": null,
+            "side": "latest",
+            "working_set_bytes": 1489506304,
+            "process_peak_working_set_bytes": 1679593472
+          },
+          {
+            "pair": 2,
+            "run": null,
+            "side": "latest",
+            "working_set_bytes": 1494978560,
+            "process_peak_working_set_bytes": 1679593472
+          },
+          {
+            "pair": 2,
+            "run": null,
+            "side": "baseline",
+            "working_set_bytes": 1747914752,
+            "process_peak_working_set_bytes": 1909936128
+          },
+          {
+            "pair": 3,
+            "run": null,
+            "side": "baseline",
+            "working_set_bytes": 1816780800,
+            "process_peak_working_set_bytes": 1909936128
+          },
+          {
+            "pair": 3,
+            "run": null,
+            "side": "latest",
+            "working_set_bytes": 1821351936,
+            "process_peak_working_set_bytes": 1911635968
+          },
+          {
+            "pair": 4,
+            "run": null,
+            "side": "latest",
+            "working_set_bytes": 1594155008,
+            "process_peak_working_set_bytes": 1911635968
+          },
+          {
+            "pair": 4,
+            "run": null,
+            "side": "baseline",
+            "working_set_bytes": 1744941056,
+            "process_peak_working_set_bytes": 1911635968
+          },
+          {
+            "pair": 5,
+            "run": null,
+            "side": "baseline",
+            "working_set_bytes": 1661931520,
+            "process_peak_working_set_bytes": 1911635968
+          },
+          {
+            "pair": 5,
+            "run": null,
+            "side": "latest",
+            "working_set_bytes": 1760845824,
+            "process_peak_working_set_bytes": 1913987072
+          }
+        ],
+        "ranges": {
+          "baseline": {
+            "working_set_bytes": {
+              "minimum": 801697792,
+              "maximum": 1816780800
+            },
+            "process_peak_working_set_bytes": {
+              "minimum": 1054715904,
+              "maximum": 1911635968
+            }
+          },
+          "latest": {
+            "working_set_bytes": {
+              "minimum": 1489506304,
+              "maximum": 1821351936
+            },
+            "process_peak_working_set_bytes": {
+              "minimum": 1679593472,
+              "maximum": 1913987072
+            }
+          },
+          "all_recorded_samples": {
+            "working_set_bytes": {
+              "minimum": 801697792,
+              "maximum": 1821351936
+            },
+            "process_peak_working_set_bytes": {
+              "minimum": 1054715904,
+              "maximum": 1913987072
+            }
+          }
+        },
+        "independent_per_side_peak_claimed": false
+      },
+      "cache_state": "all logical result and parsed-file caches cleared; persistent result reads and writes disabled; OS file cache retained",
+      "surface": "formal route function; no HTTP, browser, or application lifespan",
+      "baseline_source": "baseline-code",
+      "chapters": [
+        1,
+        2
+      ],
+      "logical_processors": 16,
+      "activity_counts": {
+        "model_requests": 0,
+        "database_writes": 0,
+        "real_data_exports": 0,
+        "raw_student_exports": null
+      },
+      "units": {},
+      "one_actual_core_rebuild_per_recorded_cold_run": true,
+      "original_guards_all_true": true
+    }
+  },
+  "D4_actual_call_recheck": {
+    "timing": {
+      "baseline": {
+        "unit": "seconds",
+        "sample_count": 5,
+        "seconds": [
+          0.2206892000103835,
+          0.05584419998922385,
+          0.05658229999244213,
+          0.06035799998790026,
+          0.060385200020391494
+        ],
+        "median_seconds": 0.06035799998790026,
+        "minimum_seconds": 0.05584419998922385,
+        "maximum_seconds": 0.2206892000103835,
+        "mean_seconds": 0.09077178000006825,
+        "original_reported_summary": {
+          "samples": 5,
+          "median_seconds": 0.06035799998790026,
+          "minimum_seconds": 0.05584419998922385,
+          "maximum_seconds": 0.2206892000103835
+        },
+        "five_second_threshold": 5.0,
+        "per_run_goal": [
+          {
+            "sample": 1,
+            "seconds": 0.2206892000103835,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 2,
+            "seconds": 0.05584419998922385,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 3,
+            "seconds": 0.05658229999244213,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 4,
+            "seconds": 0.06035799998790026,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 5,
+            "seconds": 0.060385200020391494,
+            "at_most_5_seconds": true
+          }
+        ],
+        "all_observed_runs_at_most_5_seconds": true,
+        "long_term_p95_estimated": false,
+        "reported_sample_count_matches": true
+      },
+      "latest": {
+        "unit": "seconds",
+        "sample_count": 5,
+        "seconds": [
+          0.0005234999989625067,
+          0.0003425999893806875,
+          0.000384899991331622,
+          0.00020939999376423657,
+          0.00041760000749491155
+        ],
+        "median_seconds": 0.000384899991331622,
+        "minimum_seconds": 0.00020939999376423657,
+        "maximum_seconds": 0.0005234999989625067,
+        "mean_seconds": 0.00037559999618679284,
+        "original_reported_summary": {
+          "samples": 5,
+          "median_seconds": 0.000384899991331622,
+          "minimum_seconds": 0.00020939999376423657,
+          "maximum_seconds": 0.0005234999989625067
+        },
+        "five_second_threshold": 5.0,
+        "per_run_goal": [
+          {
+            "sample": 1,
+            "seconds": 0.0005234999989625067,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 2,
+            "seconds": 0.0003425999893806875,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 3,
+            "seconds": 0.000384899991331622,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 4,
+            "seconds": 0.00020939999376423657,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 5,
+            "seconds": 0.00041760000749491155,
+            "at_most_5_seconds": true
+          }
+        ],
+        "all_observed_runs_at_most_5_seconds": true,
+        "long_term_p95_estimated": false,
+        "reported_sample_count_matches": true
+      },
+      "median_change_seconds": -0.059973099996568635,
+      "median_reduction_seconds": 0.059973099996568635,
+      "median_reduction_percent": 99.36230492824683,
+      "paired_sample_count": 5,
+      "paired_runs_faster": 5,
+      "paired_changes_seconds": [
+        -0.220165700011421,
+        -0.055501599999843165,
+        -0.05619740000111051,
+        -0.06014859999413602,
+        -0.05996760001289658
+      ]
+    },
+    "complete_outputs_equal": true,
+    "selection_calls": null,
+    "version_calls_replayed": 2762,
+    "input_report": "matching-freeze-recheck.json",
+    "actual_captured_call_count_confirmed": true,
+    "unrechecked_second_batch_D4_measurement_excluded": true
+  },
+  "D2_current_local_trial": {
+    "timing": {
+      "baseline": {
+        "unit": "seconds",
+        "sample_count": 5,
+        "seconds": [
+          1.193171799997799,
+          1.2430839999869931,
+          1.029961699998239,
+          1.667161200020928,
+          1.8335695000132546
+        ],
+        "median_seconds": 1.2430839999869931,
+        "minimum_seconds": 1.029961699998239,
+        "maximum_seconds": 1.8335695000132546,
+        "mean_seconds": 1.3933896400034427,
+        "original_reported_summary": {
+          "samples": 5,
+          "median_seconds": 1.2430839999869931,
+          "minimum_seconds": 1.029961699998239,
+          "maximum_seconds": 1.8335695000132546
+        },
+        "five_second_threshold": 5.0,
+        "per_run_goal": [
+          {
+            "sample": 1,
+            "seconds": 1.193171799997799,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 2,
+            "seconds": 1.2430839999869931,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 3,
+            "seconds": 1.029961699998239,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 4,
+            "seconds": 1.667161200020928,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 5,
+            "seconds": 1.8335695000132546,
+            "at_most_5_seconds": true
+          }
+        ],
+        "all_observed_runs_at_most_5_seconds": true,
+        "long_term_p95_estimated": false,
+        "reported_sample_count_matches": true
+      },
+      "latest": {
+        "unit": "seconds",
+        "sample_count": 5,
+        "seconds": [
+          0.9692285999772139,
+          0.9175460000114981,
+          1.584080200002063,
+          1.7344826000044122,
+          1.260076200007461
+        ],
+        "median_seconds": 1.260076200007461,
+        "minimum_seconds": 0.9175460000114981,
+        "maximum_seconds": 1.7344826000044122,
+        "mean_seconds": 1.2930827200005297,
+        "original_reported_summary": {
+          "samples": 5,
+          "median_seconds": 1.260076200007461,
+          "minimum_seconds": 0.9175460000114981,
+          "maximum_seconds": 1.7344826000044122
+        },
+        "five_second_threshold": 5.0,
+        "per_run_goal": [
+          {
+            "sample": 1,
+            "seconds": 0.9692285999772139,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 2,
+            "seconds": 0.9175460000114981,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 3,
+            "seconds": 1.584080200002063,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 4,
+            "seconds": 1.7344826000044122,
+            "at_most_5_seconds": true
+          },
+          {
+            "sample": 5,
+            "seconds": 1.260076200007461,
+            "at_most_5_seconds": true
+          }
+        ],
+        "all_observed_runs_at_most_5_seconds": true,
+        "long_term_p95_estimated": false,
+        "reported_sample_count_matches": true
+      },
+      "median_change_seconds": 0.016992200020467862,
+      "median_reduction_seconds": -0.016992200020467862,
+      "median_reduction_percent": -1.3669390017605938,
+      "paired_sample_count": 5,
+      "paired_runs_faster": 3,
+      "paired_changes_seconds": [
+        -0.2239432000205852,
+        -0.32553799997549504,
+        0.554118500003824,
+        0.0673213999834843,
+        -0.5734933000057936
+      ]
+    },
+    "complete_outputs_equal": true,
+    "selection_calls": null,
+    "version_calls_replayed": null,
+    "input_report": "first-batch-local.json",
+    "conclusion": "The current local replay does not establish a clear reduction. Earlier prototype timing is not mixed into this implementation comparison."
+  },
+  "profiled_remaining_costs": {
+    "baseline": {
+      "input_report": "final-phases-baseline-profile.json",
+      "status": "available",
+      "profile_overhead_excluded_from_speed_claims": true,
+      "time_scope": "profiled inclusive costs; entries overlap and are not ordinary route latency",
+      "thread_scope": "cProfile costs cover the issuing thread; worker tracing additionally records executed source paths",
+      "executed_source_file_count": 108,
+      "executed_source_files": [
+        "backend/analytics/service.py",
+        "backend/api/routers/training.py",
+        "backend/api/schemas/training.py",
+        "backend/class_analysis.py",
+        "backend/config_generation/contract.py",
+        "backend/config_workspace/secure_fs.py",
+        "backend/config_workspace/sources.py",
+        "backend/document_parsing/question_blocks.py",
+        "backend/error_causes.py",
+        "backend/public_data.py",
+        "backend/question_id_contract.py",
+        "backend/reporting/report.py",
+        "backend/repositories/access.py",
+        "backend/repositories/base.py",
+        "backend/repositories/providers.py",
+        "backend/repositories/reporting.py",
+        "backend/repositories/results.py",
+        "backend/repositories/sessions.py",
+        "backend/repositories/students.py",
+        "backend/review/service.py",
+        "backend/scan_grading/answer_key_utils.py",
+        "backend/scan_grading/grading_completeness.py",
+        "backend/scan_grading/solution_answer_guard.py",
+        "backend/session_analysis.py",
+        "integration/data_generation.py",
+        "integration/diagnosis_profile_service.py",
+        "integration/evidence_scope.py",
+        "integration/persistent_entries.py",
+        "integration/question_tag_projection_service.py",
+        "integration/result_cache.py",
+        "output/TEST-training-performance-implementation-20261009/compare_runtime.py",
+        "output/TEST-training-performance-implementation-20261009/run_compare.py",
+        "path_manager.py",
+        "question_bank/canonical_hash.py",
+        "question_bank/current_knowledge.py",
+        "question_bank/importers/docx_importer.py",
+        "question_bank/mastery/current.py",
+        "question_bank/mastery/model.py",
+        "question_bank/models/question.py",
+        "question_bank/parsers/type_detector.py",
+        "question_bank/question_types.py",
+        "question_bank/recommendation/personalized.py",
+        "question_bank/recommendation/recommendation_engine.py",
+        "question_bank/recommendation/target_matching.py",
+        "question_bank/services/asset_path_service.py",
+        "question_bank/services/duplicate_analysis_copy_service.py",
+        "question_bank/services/error_pattern_service.py",
+        "question_bank/services/file_cache.py",
+        "question_bank/services/inline_math.py",
+        "question_bank/services/question_identity.py",
+        "question_bank/services/question_read_service.py",
+        "question_bank/services/rich_content_service.py",
+        "question_bank/services/similarity_service.py",
+        "question_bank/services/source_question_link_service.py",
+        "question_bank/services/standard_difficulty.py",
+        "question_bank/solution_evidence/contracts.py",
+        "question_bank/solution_evidence/evidence_snapshot.py",
+        "question_bank/solution_evidence/knowledge_links.py",
+        "question_bank/solution_evidence/part_assessments.py",
+        "question_bank/solution_evidence/repository.py",
+        "question_bank/taxonomy/curriculum_catalog.py",
+        "question_bank/taxonomy/snapshot.py",
+        "question_bank/training_criteria/adapters.py",
+        "question_bank/training_criteria/analysis.py",
+        "question_bank/training_criteria/versioning.py",
+        "runtime/python/Lib/site-packages/PIL/BmpImagePlugin.py",
+        "runtime/python/Lib/site-packages/PIL/GifImagePlugin.py",
+        "runtime/python/Lib/site-packages/PIL/Image.py",
+        "runtime/python/Lib/site-packages/PIL/ImageFile.py",
+        "runtime/python/Lib/site-packages/PIL/ImageMath.py",
+        "runtime/python/Lib/site-packages/PIL/JpegImagePlugin.py",
+        "runtime/python/Lib/site-packages/PIL/JpegPresets.py",
+        "runtime/python/Lib/site-packages/PIL/PngImagePlugin.py",
+        "runtime/python/Lib/site-packages/PIL/PpmImagePlugin.py",
+        "runtime/python/Lib/site-packages/PIL/_binary.py",
+        "runtime/python/Lib/site-packages/PIL/_util.py",
+        "runtime/python/Lib/site-packages/_distutils_hack/__init__.py",
+        "runtime/python/Lib/site-packages/docx/__init__.py",
+        "runtime/python/Lib/site-packages/docx/api.py",
+        "runtime/python/Lib/site-packages/docx/document.py",
+        "runtime/python/Lib/site-packages/docx/opc/oxml.py",
+        "runtime/python/Lib/site-packages/docx/opc/package.py",
+        "runtime/python/Lib/site-packages/docx/opc/packuri.py",
+        "runtime/python/Lib/site-packages/docx/opc/part.py",
+        "runtime/python/Lib/site-packages/docx/opc/phys_pkg.py",
+        "runtime/python/Lib/site-packages/docx/opc/pkgreader.py",
+        "runtime/python/Lib/site-packages/docx/opc/rel.py",
+        "runtime/python/Lib/site-packages/docx/opc/shared.py",
+        "runtime/python/Lib/site-packages/docx/oxml/ns.py",
+        "runtime/python/Lib/site-packages/docx/oxml/parser.py",
+        "runtime/python/Lib/site-packages/docx/oxml/xmlchemy.py",
+        "runtime/python/Lib/site-packages/docx/package.py",
+        "runtime/python/Lib/site-packages/docx/parts/document.py",
+        "runtime/python/Lib/site-packages/docx/parts/image.py",
+        "runtime/python/Lib/site-packages/docx/parts/settings.py",
+        "runtime/python/Lib/site-packages/docx/shared.py",
+        "runtime/python/Lib/site-packages/numpy/_core/__init__.py",
+        "runtime/python/Lib/site-packages/numpy/_core/_methods.py",
+        "runtime/python/Lib/site-packages/numpy/_core/_ufunc_config.py",
+        "runtime/python/Lib/site-packages/numpy/_core/fromnumeric.py",
+        "runtime/python/Lib/site-packages/numpy/_core/multiarray.py",
+        "runtime/python/Lib/site-packages/numpy/_core/numeric.py",
+        "runtime/python/Lib/site-packages/numpy/lib/_twodim_base_impl.py",
+        "runtime/python/Lib/site-packages/numpy/linalg/_linalg.py",
+        "runtime/python/Lib/site-packages/pydantic/_internal/_utils.py",
+        "runtime/python/Lib/site-packages/pydantic/main.py",
+        "runtime/python/Lib/site-packages/pydantic/type_adapter.py",
+        "runtime/python/Lib/site-packages/starlette/responses.py"
+      ],
+      "scan_identity_called": false,
+      "recorded_function_count": 1061,
+      "function_costs": [
+        {
+          "file": "backend/api/routers/training.py",
+          "line": 398,
+          "function": "build_training_diagnosis",
+          "calls": 1,
+          "self_seconds": 9.33e-05,
+          "inclusive_seconds": 147.9889206
+        },
+        {
+          "file": "backend/api/routers/training.py",
+          "line": 365,
+          "function": "_grouped_diagnosis_response_bytes",
+          "calls": 1,
+          "self_seconds": 0.0005526,
+          "inclusive_seconds": 147.9877135
+        },
+        {
+          "file": "backend/api/routers/training.py",
+          "line": 247,
+          "function": "_diagnosis_response_bytes",
+          "calls": 2,
+          "self_seconds": 0.0001116,
+          "inclusive_seconds": 147.7361792
+        },
+        {
+          "file": "integration/result_cache.py",
+          "line": 37,
+          "function": "get_or_compute",
+          "calls": 15123,
+          "self_seconds": 0.7386066,
+          "inclusive_seconds": 147.7103367
+        },
+        {
+          "file": "backend/api/routers/training.py",
+          "line": 255,
+          "function": "compute",
+          "calls": 2,
+          "self_seconds": 0.0044726,
+          "inclusive_seconds": 147.64819300000002
+        },
+        {
+          "file": "backend/api/routers/training.py",
+          "line": 374,
+          "function": "<lambda>",
+          "calls": 1,
+          "self_seconds": 0.0002503,
+          "inclusive_seconds": 112.6141498
+        },
+        {
+          "file": "backend/api/routers/training.py",
+          "line": 299,
+          "function": "_build_grouped_diagnosis",
+          "calls": 1,
+          "self_seconds": 9.580000000000001e-05,
+          "inclusive_seconds": 112.6100511
+        },
+        {
+          "file": "backend/api/routers/training.py",
+          "line": 320,
+          "function": "_grouping_compute",
+          "calls": 1,
+          "self_seconds": 0.0002258,
+          "inclusive_seconds": 112.30372630000001
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 1880,
+          "function": "chapter_groups",
+          "calls": 1,
+          "self_seconds": 0.13471840000000002,
+          "inclusive_seconds": 110.9005027
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 3463,
+          "function": "_source_snapshot",
+          "calls": 1,
+          "self_seconds": 2.9100000000000003e-05,
+          "inclusive_seconds": 33.8290127
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 3491,
+          "function": "<lambda>",
+          "calls": 1,
+          "self_seconds": 0.0009138000000000001,
+          "inclusive_seconds": 33.0440163
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 5018,
+          "function": "_persistent_source_snapshot",
+          "calls": 1,
+          "self_seconds": 0.0019933,
+          "inclusive_seconds": 33.0431025
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 3482,
+          "function": "compute",
+          "calls": 1,
+          "self_seconds": 9.600000000000001e-06,
+          "inclusive_seconds": 32.5309934
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 3495,
+          "function": "_source_snapshot_uncached",
+          "calls": 1,
+          "self_seconds": 0.2899931,
+          "inclusive_seconds": 32.4734147
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 2008,
+          "function": "_group_matching_pools",
+          "calls": 1,
+          "self_seconds": 0.0674048,
+          "inclusive_seconds": 30.642219200000003
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 1439,
+          "function": "_choose_practice_entries",
+          "calls": 176,
+          "self_seconds": 0.7157373,
+          "inclusive_seconds": 29.832324200000002
+        },
+        {
+          "file": "integration/diagnosis_profile_service.py",
+          "line": 176,
+          "function": "build_profiles",
+          "calls": 2,
+          "self_seconds": 2.29e-05,
+          "inclusive_seconds": 24.4946781
+        },
+        {
+          "file": "integration/diagnosis_profile_service.py",
+          "line": 315,
+          "function": "build_tag_profiles",
+          "calls": 2,
+          "self_seconds": 0.09361420000000001,
+          "inclusive_seconds": 24.4946552
+        },
+        {
+          "file": "question_bank/training_criteria/analysis.py",
+          "line": 2871,
+          "function": "question_content_hash",
+          "calls": 2974,
+          "self_seconds": 0.0177368,
+          "inclusive_seconds": 24.2399585
+        },
+        {
+          "file": "integration/diagnosis_profile_service.py",
+          "line": 450,
+          "function": "_compute_tag_profiles",
+          "calls": 1,
+          "self_seconds": 0.2958505,
+          "inclusive_seconds": 23.887295700000003
+        },
+        {
+          "file": "question_bank/training_criteria/analysis.py",
+          "line": 2846,
+          "function": "_reuse_source_content",
+          "calls": 2974,
+          "self_seconds": 0.0454871,
+          "inclusive_seconds": 21.672287800000003
+        },
+        {
+          "file": "integration/result_cache.py",
+          "line": 100,
+          "function": "cache_values",
+          "calls": 3384,
+          "self_seconds": 0.014010600000000002,
+          "inclusive_seconds": 21.245927100000003
+        },
+        {
+          "file": "integration/result_cache.py",
+          "line": 121,
+          "function": "convert",
+          "calls": 5408466,
+          "self_seconds": 6.2147386000000004,
+          "inclusive_seconds": 21.222049000000002
+        },
+        {
+          "file": "integration/result_cache.py",
+          "line": 148,
+          "function": "<genexpr>",
+          "calls": 1041188,
+          "self_seconds": 0.5141786,
+          "inclusive_seconds": 20.4423242
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 3138,
+          "function": "evaluate_candidates",
+          "calls": 13,
+          "self_seconds": 0.0816872,
+          "inclusive_seconds": 19.5627159
+        },
+        {
+          "file": "question_bank/training_criteria/analysis.py",
+          "line": 2679,
+          "function": "_word_content",
+          "calls": 15116,
+          "self_seconds": 0.17477230000000002,
+          "inclusive_seconds": 18.635420200000002
+        },
+        {
+          "file": "integration/result_cache.py",
+          "line": 145,
+          "function": "<genexpr>",
+          "calls": 5589239,
+          "self_seconds": 4.816836400000001,
+          "inclusive_seconds": 18.2542759
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 2807,
+          "function": "_candidate_entries",
+          "calls": 147,
+          "self_seconds": 4.4591879,
+          "inclusive_seconds": 18.035150700000003
+        },
+        {
+          "file": "question_bank/training_criteria/analysis.py",
+          "line": 298,
+          "function": "source_content_hash",
+          "calls": 499,
+          "self_seconds": 0.0107725,
+          "inclusive_seconds": 17.584741100000002
+        },
+        {
+          "file": "question_bank/training_criteria/analysis.py",
+          "line": 2728,
+          "function": "_block_content",
+          "calls": 2976,
+          "self_seconds": 0.18682290000000001,
+          "inclusive_seconds": 17.4385228
+        },
+        {
+          "file": "question_bank/training_criteria/analysis.py",
+          "line": 2880,
+          "function": "<lambda>",
+          "calls": 992,
+          "self_seconds": 0.045107,
+          "inclusive_seconds": 17.4366954
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 2042,
+          "function": "compute",
+          "calls": 1,
+          "self_seconds": 6.32e-05,
+          "inclusive_seconds": 17.3860072
+        },
+        {
+          "file": "question_bank/training_criteria/analysis.py",
+          "line": 2683,
+          "function": "<lambda>",
+          "calls": 14986,
+          "self_seconds": 0.28885700000000003,
+          "inclusive_seconds": 15.7197928
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 1568,
+          "function": "_improve_personal_selection",
+          "calls": 87,
+          "self_seconds": 1.7256388,
+          "inclusive_seconds": 15.669699900000001
+        },
+        {
+          "file": "question_bank/training_criteria/analysis.py",
+          "line": 2885,
+          "function": "_compute_question_content_hash",
+          "calls": 992,
+          "self_seconds": 0.0499976,
+          "inclusive_seconds": 15.349208800000001
+        },
+        {
+          "file": "question_bank/mastery/current.py",
+          "line": 111,
+          "function": "calculate",
+          "calls": 2,
+          "self_seconds": 1.0816011,
+          "inclusive_seconds": 11.9769754
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 3937,
+          "function": "_mastery_snapshot",
+          "calls": 1,
+          "self_seconds": 0.006733800000000001,
+          "inclusive_seconds": 10.965088900000001
+        },
+        {
+          "file": "question_bank/mastery/model.py",
+          "line": 227,
+          "function": "fit",
+          "calls": 1,
+          "self_seconds": 0.030125600000000002,
+          "inclusive_seconds": 7.2144649
+        },
+        {
+          "file": "question_bank/mastery/model.py",
+          "line": 131,
+          "function": "lbfgs",
+          "calls": 1,
+          "self_seconds": 0.36510390000000004,
+          "inclusive_seconds": 6.7051575
+        },
+        {
+          "file": "integration/diagnosis_profile_service.py",
+          "line": 926,
+          "function": "_merge_current_mastery",
+          "calls": 1,
+          "self_seconds": 1.2026222,
+          "inclusive_seconds": 1.6306011
+        },
+        {
+          "file": "integration/diagnosis_profile_service.py",
+          "line": 1505,
+          "function": "_projected_tag_evidence",
+          "calls": 1,
+          "self_seconds": 0.0647616,
+          "inclusive_seconds": 1.0069108
+        },
+        {
+          "file": "question_bank/mastery/model.py",
+          "line": 338,
+          "function": "result",
+          "calls": 41830,
+          "self_seconds": 0.18749310000000002,
+          "inclusive_seconds": 0.9860203000000001
+        },
+        {
+          "file": "question_bank/mastery/model.py",
+          "line": 295,
+          "function": "mastery",
+          "calls": 122194,
+          "self_seconds": 0.2903219,
+          "inclusive_seconds": 0.6371919
+        },
+        {
+          "file": "integration/diagnosis_profile_service.py",
+          "line": 1053,
+          "function": "_apply_governed_hierarchy",
+          "calls": 91,
+          "self_seconds": 0.0346457,
+          "inclusive_seconds": 0.1102241
+        }
+      ]
+    },
+    "latest": {
+      "input_report": "final-phases-latest-profile.json",
+      "status": "available",
+      "profile_overhead_excluded_from_speed_claims": true,
+      "time_scope": "profiled inclusive costs; entries overlap and are not ordinary route latency",
+      "thread_scope": "cProfile costs cover the issuing thread; worker tracing additionally records executed source paths",
+      "executed_source_file_count": 74,
+      "executed_source_files": [
+        "backend/analytics/service.py",
+        "backend/api/routers/training.py",
+        "backend/api/schemas/training.py",
+        "backend/class_analysis.py",
+        "backend/config_generation/contract.py",
+        "backend/public_data.py",
+        "backend/question_id_contract.py",
+        "backend/reporting/report.py",
+        "backend/repositories/access.py",
+        "backend/repositories/base.py",
+        "backend/repositories/providers.py",
+        "backend/repositories/reporting.py",
+        "backend/repositories/results.py",
+        "backend/repositories/sessions.py",
+        "backend/repositories/students.py",
+        "backend/review/service.py",
+        "backend/scan_grading/answer_key_utils.py",
+        "backend/scan_grading/grading_completeness.py",
+        "backend/scan_grading/solution_answer_guard.py",
+        "backend/session_analysis.py",
+        "integration/data_generation.py",
+        "integration/diagnosis_profile_service.py",
+        "integration/evidence_scope.py",
+        "integration/persistent_entries.py",
+        "integration/question_tag_projection_service.py",
+        "integration/result_cache.py",
+        "output/TEST-training-performance-implementation-20261009/compare_runtime.py",
+        "output/TEST-training-performance-implementation-20261009/run_compare.py",
+        "path_manager.py",
+        "question_bank/canonical_hash.py",
+        "question_bank/current_knowledge.py",
+        "question_bank/mastery/current.py",
+        "question_bank/mastery/model.py",
+        "question_bank/models/question.py",
+        "question_bank/parsers/type_detector.py",
+        "question_bank/question_types.py",
+        "question_bank/recommendation/personalized.py",
+        "question_bank/recommendation/recommendation_engine.py",
+        "question_bank/recommendation/target_matching.py",
+        "question_bank/services/asset_path_service.py",
+        "question_bank/services/duplicate_analysis_copy_service.py",
+        "question_bank/services/error_pattern_service.py",
+        "question_bank/services/file_cache.py",
+        "question_bank/services/question_identity.py",
+        "question_bank/services/question_read_service.py",
+        "question_bank/services/rich_content_service.py",
+        "question_bank/services/similarity_service.py",
+        "question_bank/services/source_question_link_service.py",
+        "question_bank/services/standard_difficulty.py",
+        "question_bank/solution_evidence/contracts.py",
+        "question_bank/solution_evidence/evidence_snapshot.py",
+        "question_bank/solution_evidence/knowledge_links.py",
+        "question_bank/solution_evidence/part_assessments.py",
+        "question_bank/solution_evidence/repository.py",
+        "question_bank/taxonomy/curriculum_catalog.py",
+        "question_bank/taxonomy/snapshot.py",
+        "question_bank/training_criteria/adapters.py",
+        "question_bank/training_criteria/analysis.py",
+        "question_bank/training_criteria/versioning.py",
+        "runtime/python/Lib/site-packages/_distutils_hack/__init__.py",
+        "runtime/python/Lib/site-packages/docx/oxml/ns.py",
+        "runtime/python/Lib/site-packages/docx/oxml/parser.py",
+        "runtime/python/Lib/site-packages/numpy/_core/__init__.py",
+        "runtime/python/Lib/site-packages/numpy/_core/_methods.py",
+        "runtime/python/Lib/site-packages/numpy/_core/_ufunc_config.py",
+        "runtime/python/Lib/site-packages/numpy/_core/fromnumeric.py",
+        "runtime/python/Lib/site-packages/numpy/_core/multiarray.py",
+        "runtime/python/Lib/site-packages/numpy/_core/numeric.py",
+        "runtime/python/Lib/site-packages/numpy/lib/_twodim_base_impl.py",
+        "runtime/python/Lib/site-packages/numpy/linalg/_linalg.py",
+        "runtime/python/Lib/site-packages/pydantic/_internal/_utils.py",
+        "runtime/python/Lib/site-packages/pydantic/main.py",
+        "runtime/python/Lib/site-packages/pydantic/type_adapter.py",
+        "runtime/python/Lib/site-packages/starlette/responses.py"
+      ],
+      "scan_identity_called": false,
+      "recorded_function_count": 947,
+      "function_costs": [
+        {
+          "file": "backend/api/routers/training.py",
+          "line": 401,
+          "function": "build_training_diagnosis",
+          "calls": 1,
+          "self_seconds": 0.0001226,
+          "inclusive_seconds": 135.2701409
+        },
+        {
+          "file": "backend/api/routers/training.py",
+          "line": 368,
+          "function": "_grouped_diagnosis_response_bytes",
+          "calls": 1,
+          "self_seconds": 0.0006484,
+          "inclusive_seconds": 135.26984230000002
+        },
+        {
+          "file": "backend/api/routers/training.py",
+          "line": 250,
+          "function": "_diagnosis_response_bytes",
+          "calls": 2,
+          "self_seconds": 0.000116,
+          "inclusive_seconds": 134.91931530000002
+        },
+        {
+          "file": "integration/result_cache.py",
+          "line": 37,
+          "function": "get_or_compute",
+          "calls": 7696,
+          "self_seconds": 0.7519228,
+          "inclusive_seconds": 134.8940863
+        },
+        {
+          "file": "backend/api/routers/training.py",
+          "line": 258,
+          "function": "compute",
+          "calls": 2,
+          "self_seconds": 0.0039866,
+          "inclusive_seconds": 134.8238143
+        },
+        {
+          "file": "backend/api/routers/training.py",
+          "line": 377,
+          "function": "<lambda>",
+          "calls": 1,
+          "self_seconds": 0.0005169,
+          "inclusive_seconds": 100.8449951
+        },
+        {
+          "file": "backend/api/routers/training.py",
+          "line": 302,
+          "function": "_build_grouped_diagnosis",
+          "calls": 1,
+          "self_seconds": 0.00010690000000000001,
+          "inclusive_seconds": 100.8377751
+        },
+        {
+          "file": "backend/api/routers/training.py",
+          "line": 323,
+          "function": "_grouping_compute",
+          "calls": 1,
+          "self_seconds": 0.0003466,
+          "inclusive_seconds": 100.36588830000001
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 1884,
+          "function": "chapter_groups",
+          "calls": 1,
+          "self_seconds": 0.2258715,
+          "inclusive_seconds": 98.262504
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 3485,
+          "function": "_source_snapshot",
+          "calls": 1,
+          "self_seconds": 2.68e-05,
+          "inclusive_seconds": 29.6428395
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 3513,
+          "function": "<lambda>",
+          "calls": 1,
+          "self_seconds": 0.000724,
+          "inclusive_seconds": 29.5765542
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 5040,
+          "function": "_persistent_source_snapshot",
+          "calls": 1,
+          "self_seconds": 0.0021592,
+          "inclusive_seconds": 29.575830200000002
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 3504,
+          "function": "compute",
+          "calls": 1,
+          "self_seconds": 9.3e-06,
+          "inclusive_seconds": 29.0585504
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 3517,
+          "function": "_source_snapshot_uncached",
+          "calls": 1,
+          "self_seconds": 0.3187131,
+          "inclusive_seconds": 29.004144200000002
+        },
+        {
+          "file": "integration/result_cache.py",
+          "line": 100,
+          "function": "cache_values",
+          "calls": 3384,
+          "self_seconds": 0.013891200000000001,
+          "inclusive_seconds": 24.4015908
+        },
+        {
+          "file": "integration/result_cache.py",
+          "line": 121,
+          "function": "convert",
+          "calls": 5408466,
+          "self_seconds": 7.705695400000001,
+          "inclusive_seconds": 24.3783113
+        },
+        {
+          "file": "integration/diagnosis_profile_service.py",
+          "line": 176,
+          "function": "build_profiles",
+          "calls": 2,
+          "self_seconds": 3.27e-05,
+          "inclusive_seconds": 23.6642358
+        },
+        {
+          "file": "integration/diagnosis_profile_service.py",
+          "line": 315,
+          "function": "build_tag_profiles",
+          "calls": 2,
+          "self_seconds": 0.16034520000000002,
+          "inclusive_seconds": 23.6642031
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 2012,
+          "function": "_group_matching_pools",
+          "calls": 1,
+          "self_seconds": 0.08332540000000001,
+          "inclusive_seconds": 23.603828
+        },
+        {
+          "file": "integration/result_cache.py",
+          "line": 148,
+          "function": "<genexpr>",
+          "calls": 1041188,
+          "self_seconds": 0.6092282,
+          "inclusive_seconds": 23.5886442
+        },
+        {
+          "file": "integration/diagnosis_profile_service.py",
+          "line": 450,
+          "function": "_compute_tag_profiles",
+          "calls": 1,
+          "self_seconds": 0.8375328000000001,
+          "inclusive_seconds": 22.8716964
+        },
+        {
+          "file": "integration/result_cache.py",
+          "line": 145,
+          "function": "<genexpr>",
+          "calls": 5589239,
+          "self_seconds": 4.2049279,
+          "inclusive_seconds": 21.4502506
+        },
+        {
+          "file": "question_bank/training_criteria/analysis.py",
+          "line": 2886,
+          "function": "question_content_hash",
+          "calls": 2974,
+          "self_seconds": 0.018508,
+          "inclusive_seconds": 20.6006508
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 1439,
+          "function": "_choose_practice_entries",
+          "calls": 176,
+          "self_seconds": 0.6847377,
+          "inclusive_seconds": 19.7940302
+        },
+        {
+          "file": "question_bank/training_criteria/analysis.py",
+          "line": 298,
+          "function": "source_content_hash",
+          "calls": 499,
+          "self_seconds": 0.011785,
+          "inclusive_seconds": 19.453097500000002
+        },
+        {
+          "file": "question_bank/recommendation/personalized.py",
+          "line": 3959,
+          "function": "_mastery_snapshot",
+          "calls": 1,
+          "self_seconds": 0.0152446,
+          "inclusive_seconds": 18.3795523
+        },
+        {
+          "file": "question_bank/training_criteria/analysis.py",
+          "line": 2796,
+          "function": "_source_content_reuse_key",
+          "calls": 2974,
+          "self_seconds": 0.0384151,
+          "inclusive_seconds": 17.319909600000003
+        },
+        {
+          "file": "question_bank/training_criteria/analysis.py",
+          "line": 2861,
+          "function": "_reuse_source_content",
+          "calls": 2974,
+          "self_seconds": 0.043829700000000006,
+          "inclusive_seconds": 16.0823775
+        },
+        {
+          "file": "question_bank/training_criteria/adapters.py",
+          "line": 480,
+          "function": "load",
+          "calls": 8,
+          "self_seconds": 0.0019301000000000001,
+          "inclusive_seconds": 15.7339546
+        },
+        {
+          "file": "question_bank/training_criteria/adapters.py",
+          "line": 662,
+          "function": "<lambda>",
+          "calls": 499,
+          "self_seconds": 0.0100525,
+          "inclusive_seconds": 15.5773299
+        },
+        {
+          "file": "question_bank/training_criteria/adapters.py",
+          "line": 656,
+          "function": "load_with_hashes",
+          "calls": 499,
+          "self_seconds": 0.0107574,
+          "inclusive_seconds": 15.5762689
+        },
+        {
+          "file": "question_bank/training_criteria/adapters.py",
+          "line": 632,
+          "function": "try_load_one",
+          "calls": 499,
+          "self_seconds": 0.0141647,
+          "inclusive_seconds": 15.576130800000001
+        },
+        {
+          "file": "integration/diagnosis_profile_service.py",
+          "line": 255,
+          "function": "semester_mastery",
+          "calls": 2,
+          "self_seconds": 0.00025590000000000004,
+          "inclusive_seconds": 15.567669500000001
+        },
+        {
+          "file": "question_bank/training_criteria/analysis.py",
+          "line": 2895,
+          "function": "<lambda>",
+          "calls": 498,
+          "self_seconds": 0.0310641,
+          "inclusive_seconds": 12.9628376
+        },
+        {
+          "file": "question_bank/mastery/current.py",
+          "line": 111,
+          "function": "calculate",
+          "calls": 2,
+          "self_seconds": 0.5722346,
+          "inclusive_seconds": 12.2690064
+        },
+        {
+          "file": "question_bank/mastery/model.py",
+          "line": 228,
+          "function": "fit",
+          "calls": 1,
+          "self_seconds": 0.0389542,
+          "inclusive_seconds": 7.5662542
+        },
+        {
+          "file": "question_bank/mastery/model.py",
+          "line": 132,
+          "function": "lbfgs",
+          "calls": 1,
+          "self_seconds": 0.4031368,
+          "inclusive_seconds": 6.9757321
+        },
+        {
+          "file": "integration/diagnosis_profile_service.py",
+          "line": 926,
+          "function": "_merge_current_mastery",
+          "calls": 1,
+          "self_seconds": 1.0143834,
+          "inclusive_seconds": 1.4303686
+        },
+        {
+          "file": "integration/diagnosis_profile_service.py",
+          "line": 1462,
+          "function": "_read_session_error_records",
+          "calls": 3,
+          "self_seconds": 0.0043593,
+          "inclusive_seconds": 1.2406502000000001
+        },
+        {
+          "file": "integration/diagnosis_profile_service.py",
+          "line": 1532,
+          "function": "_projected_tag_evidence",
+          "calls": 1,
+          "self_seconds": 0.0774823,
+          "inclusive_seconds": 1.1199985000000001
+        },
+        {
+          "file": "question_bank/mastery/model.py",
+          "line": 339,
+          "function": "result",
+          "calls": 41830,
+          "self_seconds": 0.19758320000000001,
+          "inclusive_seconds": 1.0016106
+        },
+        {
+          "file": "question_bank/mastery/model.py",
+          "line": 296,
+          "function": "mastery",
+          "calls": 122194,
+          "self_seconds": 0.2845591,
+          "inclusive_seconds": 0.6571767000000001
+        },
+        {
+          "file": "integration/diagnosis_profile_service.py",
+          "line": 1053,
+          "function": "_apply_governed_hierarchy",
+          "calls": 91,
+          "self_seconds": 0.0367404,
+          "inclusive_seconds": 0.11789390000000001
+        }
+      ]
+    }
+  },
+  "profiled_route_and_stage_work": {
+    "input_report": "final-phases.json",
+    "original_flags": {
+      "completed": null,
+      "complete_responses_equal": true,
+      "complete_outputs_equal": null,
+      "model_vectors_and_covariance_equal": true,
+      "same_database_inputs": true,
+      "unchanged_database_inputs": null,
+      "same_configuration": true,
+      "same_source_during_measurement": true,
+      "same_diagnosis_and_projection_sources": null
+    },
+    "measurements": [
+      {
+        "side": "baseline",
+        "pair": 1,
+        "process_cpu_seconds": 147.046875,
+        "phases": {
+          "error_records_rebuild": {
+            "calls": 3,
+            "inclusive_seconds": 3.56861720001325,
+            "exclusive_seconds": 3.56861720001325
+          },
+          "mastery_fit": {
+            "calls": 1,
+            "inclusive_seconds": 7.215142300003208,
+            "exclusive_seconds": 7.215142300003208
+          },
+          "mastery_expansion": {
+            "calls": 2,
+            "inclusive_seconds": 11.986417199979769,
+            "exclusive_seconds": 4.771274899976561
+          },
+          "diagnosis_rebuild": {
+            "calls": 1,
+            "inclusive_seconds": 23.916382099996554,
+            "exclusive_seconds": 9.374264999991283
+          },
+          "public_mapping": {
+            "calls": 2,
+            "inclusive_seconds": 6.620508200023323,
+            "exclusive_seconds": 6.620508200023323
+          },
+          "validation": {
+            "calls": 1,
+            "inclusive_seconds": 3.928520000015851,
+            "exclusive_seconds": 3.928520000015851
+          },
+          "freeze": {
+            "calls": 3383,
+            "inclusive_seconds": 20.9351054992876,
+            "exclusive_seconds": 20.9351054992876
+          },
+          "mastery_snapshot": {
+            "calls": 1,
+            "inclusive_seconds": 10.965899999981048,
+            "exclusive_seconds": 3.5589513999875635
+          },
+          "source_rebuild": {
+            "calls": 1,
+            "inclusive_seconds": 32.53092580000521,
+            "exclusive_seconds": 32.53092580000521
+          },
+          "matching": {
+            "calls": 1,
+            "inclusive_seconds": 30.64227920002304,
+            "exclusive_seconds": 16.653902100457344
+          },
+          "selection": {
+            "calls": 176,
+            "inclusive_seconds": 29.85339280005428,
+            "exclusive_seconds": 29.85339280005428
+          },
+          "grouping": {
+            "calls": 1,
+            "inclusive_seconds": 111.02262489998247,
+            "exclusive_seconds": 6.47743000020273
+          },
+          "route": {
+            "calls": 1,
+            "inclusive_seconds": 147.98893729998963,
+            "exclusive_seconds": 2.5009020999714267
+          }
+        }
+      },
+      {
+        "side": "latest",
+        "pair": 1,
+        "process_cpu_seconds": 134.609375,
+        "phases": {
+          "materialized_error_read": {
+            "calls": 3,
+            "inclusive_seconds": 1.2472098999714945,
+            "exclusive_seconds": 1.2472098999714945
+          },
+          "mastery_fit": {
+            "calls": 1,
+            "inclusive_seconds": 7.5668676999921445,
+            "exclusive_seconds": 7.5668676999921445
+          },
+          "mastery_expansion": {
+            "calls": 2,
+            "inclusive_seconds": 12.286162799980957,
+            "exclusive_seconds": 4.719295099988813
+          },
+          "diagnosis_rebuild": {
+            "calls": 1,
+            "inclusive_seconds": 22.902687199995853,
+            "exclusive_seconds": 11.041162400040776
+          },
+          "public_mapping": {
+            "calls": 2,
+            "inclusive_seconds": 8.691113100008806,
+            "exclusive_seconds": 8.691113100008806
+          },
+          "validation": {
+            "calls": 1,
+            "inclusive_seconds": 1.7449885999958497,
+            "exclusive_seconds": 1.7449885999958497
+          },
+          "freeze": {
+            "calls": 3383,
+            "inclusive_seconds": 24.04815279954346,
+            "exclusive_seconds": 24.04815279954346
+          },
+          "mastery_snapshot": {
+            "calls": 1,
+            "inclusive_seconds": 18.3805607999966,
+            "exclusive_seconds": 6.614536799985217
+          },
+          "source_rebuild": {
+            "calls": 1,
+            "inclusive_seconds": 29.058520899998257,
+            "exclusive_seconds": 29.058520899998257
+          },
+          "matching": {
+            "calls": 1,
+            "inclusive_seconds": 23.60388020001119,
+            "exclusive_seconds": 10.199595700396458
+          },
+          "selection": {
+            "calls": 176,
+            "inclusive_seconds": 19.811422800208675,
+            "exclusive_seconds": 19.811422800208675
+          },
+          "grouping": {
+            "calls": 1,
+            "inclusive_seconds": 98.39006320000044,
+            "exclusive_seconds": 6.985986299871001
+          },
+          "route": {
+            "calls": 1,
+            "inclusive_seconds": 135.2701664000051,
+            "exclusive_seconds": 3.54131430000416
+          }
+        }
+      }
+    ],
+    "profile_overhead_excluded_from_waiting_time_claims": true
+  },
+  "source_guard_coverage": {
+    "initial_snapshot_code_file_count": 360,
+    "measurement_guard_code_file_count": 359,
+    "guarded_directories": [
+      "backend",
+      "integration",
+      "question_bank"
+    ],
+    "excluded_from_measurement_guard": {
+      "path_manager.py": {
+        "initial_sha256": "0c1da353e7737bd6d18a32736733e7aaa26eb49852e9f9f93f926ac91fd309b8",
+        "final_observation_sha256": "0c1da353e7737bd6d18a32736733e7aaa26eb49852e9f9f93f926ac91fd309b8",
+        "same_at_outer_observations": true,
+        "included_in_measurement_period_guard": false
+      }
+    },
+    "continuous_or_per_run_guard_claimed_for_excluded_files": false
+  },
+  "first_batch_source_scope_review": {
+    "original_all_source_guard": false,
+    "original_guard_is_never_overridden": true,
+    "coordinator_end_comparison": {
+      "evidence_origin": "coordinator tool output retained in the implementation chat",
+      "compared_source_files": 360,
+      "changed_source_files": [
+        "backend/scan_grading/scan_identity.py"
+      ],
+      "reported_training_sources_unchanged": true,
+      "training_source_count": 20,
+      "reported_all_source_guard": false,
+      "reported_configuration_guard": true,
+      "reported_database_guard": true,
+      "full_ending_hash_inventory_persisted": false
+    },
+    "final_trace_scan_identity_not_called": true,
+    "limited_scope_review_confirmed": true,
+    "scope": "first-batch training computation only; raw whole-repository guard remains false",
+    "limitation": "The end comparison's full hashes were not saved. The 360-file comparison and its sole changed path are coordinator-reported tool evidence. Final traces provide an additional route-path check, not an invented historical end inventory."
+  },
+  "original_multi_scope_comparison": {
+    "status": "available",
+    "original_flags": {
+      "completed": false,
+      "complete_responses_equal": null,
+      "complete_outputs_equal": null,
+      "model_vectors_and_covariance_equal": null,
+      "same_database_inputs": null,
+      "unchanged_database_inputs": null,
+      "same_configuration": null,
+      "same_source_during_measurement": null,
+      "same_diagnosis_and_projection_sources": null
+    },
+    "source_guard_original_flags": {
+      "completed": true,
+      "complete_responses_equal": null,
+      "complete_outputs_equal": null,
+      "model_vectors_and_covariance_equal": null,
+      "same_database_inputs": null,
+      "unchanged_database_inputs": null,
+      "same_configuration": null,
+      "same_source_during_measurement": true,
+      "same_diagnosis_and_projection_sources": null
+    },
+    "source_guard_comparison_scope": "M1/M3 grouping/draft/member-selection equivalence with the same final D2/D4/D5 preparation; not full first-request timing",
+    "source_guard_snapshots": null,
+    "source_guard_summary": {
+      "recorded_code_file_count": 359,
+      "code_inventory_sha256": "9aecc8682f6207b2fae4da00f8fbb577db5ccac5211c9b054ebac15bf2d015ae",
+      "training_source_sha256": {
+        "question_bank/question_types.py": "fdee657af46d5300b325d861a4196a8ed60a33fbe20e6f335e2f39cbf1cc0777",
+        "question_bank/training_criteria/versioning.py": "80d54db686b1723576c7f35a50ea7858088f13634d59f349c24a01036db28d40",
+        "question_bank/training_criteria/analysis.py": "76b3014ed939e86c739249b78c467e59e18eb2a8b6bd1b3858ab615981d98277",
+        "question_bank/training_criteria/adapters.py": "ce0b772092a6b2d857e0badb55385b36262f349050a3731848ce14addd4ba414",
+        "question_bank/mastery/model.py": "0db3c72dd829c60f34199bba2a0ec74fe1e207ebbc2ff2a14b5b3848991462c5",
+        "question_bank/mastery/current.py": "d84c5b66974cd63b85a0d6751f6e102012107eedf2f417fff733eebe2b3f5309",
+        "question_bank/recommendation/personalized.py": "d7411fb64063009b5f80ab08c3b2770a8c0a27cf64f3f7268d1eeb0a9654c8d1",
+        "question_bank/recommendation/target_matching.py": "f7cc5355e7471d5d9a90d32fff839e2950e7c0a172aa2498aa1290d79d458fd3",
+        "integration/result_cache.py": "c5ee3c45b6dd8e8a59d9b7eff1226309d7a31caddf75cf35de4934d0bbd3f4ed",
+        "integration/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9",
+        "integration/diagnosis_profile_service.py": "98bc6e96c14810c25bf11e37fe61334331d5624f0cb5b4cbae80be9c0ef6ef50",
+        "integration/data_generation.py": "b793cd64eeb21f25600d061f2d279c58a719fafdc380b4a3c66641c23eebea51",
+        "question_bank/services/file_cache.py": "775549e1505a8003d091d18fdad16a00a714c80b4efe70b725eca2869e195c9f",
+        "backend/public_data.py": "9b87a6cfe45d88f63a22e597df59d69412b9617bc68e6a5f3319e537eedc51d4",
+        "backend/class_analysis.py": "2b218880ddb2b99d1fcdc5ae93c4f4a9201e85b2345dbdf3eadf65638ce3934f",
+        "question_bank/solution_evidence/repository.py": "1f088b124b41ffef6187eb211961c03f7b51c803d540ce58ff293c02108cf969",
+        "question_bank/solution_evidence/part_assessments.py": "1be981800424c39b79814ab409ebfa66e7029c7362689224f72abd250df36c7b",
+        "question_bank/solution_evidence/knowledge_links.py": "fdbd303f264450948096119c9da2432ed1412557593436ae7d61c90757bb6b82",
+        "backend/api/routers/training.py": "71f90840ea2a0ecdde865174ee130a0158db4310462aa37db2848b6349df8a41",
+        "backend/api/schemas/training.py": "15fd5ca363a9e5e810c3f4305509d4892b2980354623008bf7bed340e6c5ceec"
+      },
+      "source_snapshot_sha256": {},
+      "inventory_contains_all_training_sources": true,
+      "original_inventory_retained_in_input_report": true
+    },
+    "source_snapshot_summary": {
+      "recorded_code_file_count": null,
+      "code_inventory_sha256": null,
+      "training_source_sha256": {},
+      "source_snapshot_sha256": {},
+      "inventory_contains_all_training_sources": null,
+      "original_inventory_retained_in_input_report": true
+    },
+    "student_count": 91,
+    "diagnosis_seconds": 20.9646,
+    "mastery_seconds": 7.895,
+    "total_comparison_seconds": null,
+    "activity_counts": {
+      "model_requests": 0,
+      "database_writes": 0,
+      "real_data_exports": null,
+      "raw_student_exports": 0
+    },
+    "scopes": [
+      {
+        "chapters": [
+          1
+        ],
+        "group_count": 5,
+        "grouped_student_count": 44,
+        "complete_outputs_equal": true,
+        "grouping": {
+          "baseline": {
+            "cold_seconds": 26.8342,
+            "warm_seconds": 15.2056
+          },
+          "latest": {
+            "cold_seconds": 23.372,
+            "warm_seconds": 13.0321
+          }
+        },
+        "personal_drafts": {
+          "baseline": {
+            "seconds": 8.4135,
+            "single_mean_seconds": 0.3747
+          },
+          "latest": {
+            "seconds": 4.3792,
+            "single_mean_seconds": 0.4058
+          }
+        },
+        "selected_group_validation": {
+          "baseline": {
+            "seconds": 7.698,
+            "members": 24
+          },
+          "latest": {
+            "seconds": 3.6184,
+            "members": 24
+          }
+        },
+        "shared_drafts_seconds": {
+          "baseline": 2.3602,
+          "latest": 2.1834
+        }
+      },
+      {
+        "chapters": [
+          2
+        ],
+        "group_count": 5,
+        "grouped_student_count": 45,
+        "complete_outputs_equal": true,
+        "grouping": {
+          "baseline": {
+            "cold_seconds": 35.0664,
+            "warm_seconds": 25.6642
+          },
+          "latest": {
+            "cold_seconds": 35.4882,
+            "warm_seconds": 20.5206
+          }
+        },
+        "personal_drafts": {
+          "baseline": {
+            "seconds": 11.5588,
+            "single_mean_seconds": 0.5326
+          },
+          "latest": {
+            "seconds": 9.2962,
+            "single_mean_seconds": 0.511
+          }
+        },
+        "selected_group_validation": {
+          "baseline": {
+            "seconds": 17.4474,
+            "members": 27
+          },
+          "latest": {
+            "seconds": 4.7031,
+            "members": 27
+          }
+        },
+        "shared_drafts_seconds": {
+          "baseline": 4.3384,
+          "latest": 4.4723
+        }
+      }
+    ],
+    "timing_scope": "selection comparisons with shared prepared diagnosis and mastery; excludes full first-route input preparation",
+    "side_order_basis": "tools/compare_training_endpoints.py writes baseline followed by latest",
+    "all_recorded_scope_outputs_equal": true,
+    "full_scope_validation_accepted": false
+  },
+  "original_multi_scope_failure_reported_by_coordinator": {
+    "sqlite_error": "disk I/O error during the combined-chapter range",
+    "concurrent_windows_process_creation_error": 1455,
+    "error_context": "paging resource failure reported during the original multi-scope run",
+    "original_completed_flag_overridden": false
+  },
+  "scope_source_guard_original_boolean_evidence": {
+    "completed": true,
+    "same_source_during_measurement": true,
+    "same_source_across_fresh_processes": true,
+    "source_hashes": {},
+    "ranges": [
+      {
+        "completed": true,
+        "same_source_during_measurement": true,
+        "unchanged_database_inputs": true,
+        "full_outputs_equal": true
+      },
+      {
+        "completed": true,
+        "same_source_during_measurement": true,
+        "unchanged_database_inputs": true,
+        "full_outputs_equal": true
+      },
+      {
+        "completed": true,
+        "same_source_during_measurement": true,
+        "unchanged_database_inputs": true,
+        "full_outputs_equal": true
+      }
+    ],
+    "original_multi_range_failure_preserved": true
+  },
+  "fresh_range_supplement": {
+    "scope_reports": [
+      {
+        "status": "available",
+        "original_flags": {
+          "completed": true,
+          "complete_responses_equal": null,
+          "complete_outputs_equal": null,
+          "model_vectors_and_covariance_equal": null,
+          "same_database_inputs": null,
+          "unchanged_database_inputs": true,
+          "same_configuration": null,
+          "same_source_during_measurement": null,
+          "same_diagnosis_and_projection_sources": null
+        },
+        "source_guard_original_flags": {
+          "completed": true,
+          "complete_responses_equal": null,
+          "complete_outputs_equal": null,
+          "model_vectors_and_covariance_equal": null,
+          "same_database_inputs": null,
+          "unchanged_database_inputs": null,
+          "same_configuration": null,
+          "same_source_during_measurement": true,
+          "same_diagnosis_and_projection_sources": null
+        },
+        "source_guard_comparison_scope": "M1/M3 grouping/draft/member-selection equivalence with the same final D2/D4/D5 preparation; not full first-request timing",
+        "source_guard_snapshots": null,
+        "source_guard_summary": {
+          "recorded_code_file_count": 359,
+          "code_inventory_sha256": "9aecc8682f6207b2fae4da00f8fbb577db5ccac5211c9b054ebac15bf2d015ae",
+          "training_source_sha256": {
+            "question_bank/question_types.py": "fdee657af46d5300b325d861a4196a8ed60a33fbe20e6f335e2f39cbf1cc0777",
+            "question_bank/training_criteria/versioning.py": "80d54db686b1723576c7f35a50ea7858088f13634d59f349c24a01036db28d40",
+            "question_bank/training_criteria/analysis.py": "76b3014ed939e86c739249b78c467e59e18eb2a8b6bd1b3858ab615981d98277",
+            "question_bank/training_criteria/adapters.py": "ce0b772092a6b2d857e0badb55385b36262f349050a3731848ce14addd4ba414",
+            "question_bank/mastery/model.py": "0db3c72dd829c60f34199bba2a0ec74fe1e207ebbc2ff2a14b5b3848991462c5",
+            "question_bank/mastery/current.py": "d84c5b66974cd63b85a0d6751f6e102012107eedf2f417fff733eebe2b3f5309",
+            "question_bank/recommendation/personalized.py": "d7411fb64063009b5f80ab08c3b2770a8c0a27cf64f3f7268d1eeb0a9654c8d1",
+            "question_bank/recommendation/target_matching.py": "f7cc5355e7471d5d9a90d32fff839e2950e7c0a172aa2498aa1290d79d458fd3",
+            "integration/result_cache.py": "c5ee3c45b6dd8e8a59d9b7eff1226309d7a31caddf75cf35de4934d0bbd3f4ed",
+            "integration/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9",
+            "integration/diagnosis_profile_service.py": "98bc6e96c14810c25bf11e37fe61334331d5624f0cb5b4cbae80be9c0ef6ef50",
+            "integration/data_generation.py": "b793cd64eeb21f25600d061f2d279c58a719fafdc380b4a3c66641c23eebea51",
+            "question_bank/services/file_cache.py": "775549e1505a8003d091d18fdad16a00a714c80b4efe70b725eca2869e195c9f",
+            "backend/public_data.py": "9b87a6cfe45d88f63a22e597df59d69412b9617bc68e6a5f3319e537eedc51d4",
+            "backend/class_analysis.py": "2b218880ddb2b99d1fcdc5ae93c4f4a9201e85b2345dbdf3eadf65638ce3934f",
+            "question_bank/solution_evidence/repository.py": "1f088b124b41ffef6187eb211961c03f7b51c803d540ce58ff293c02108cf969",
+            "question_bank/solution_evidence/part_assessments.py": "1be981800424c39b79814ab409ebfa66e7029c7362689224f72abd250df36c7b",
+            "question_bank/solution_evidence/knowledge_links.py": "fdbd303f264450948096119c9da2432ed1412557593436ae7d61c90757bb6b82",
+            "backend/api/routers/training.py": "71f90840ea2a0ecdde865174ee130a0158db4310462aa37db2848b6349df8a41",
+            "backend/api/schemas/training.py": "15fd5ca363a9e5e810c3f4305509d4892b2980354623008bf7bed340e6c5ceec"
+          },
+          "source_snapshot_sha256": {},
+          "inventory_contains_all_training_sources": true,
+          "original_inventory_retained_in_input_report": true
+        },
+        "source_snapshot_summary": {
+          "recorded_code_file_count": 6,
+          "code_inventory_sha256": "56ec9929b3956750ecd2b5388f410a2134edae9776c700bbdf0ba822bbd43c9f",
+          "training_source_sha256": {},
+          "source_snapshot_sha256": {
+            "baseline/diagnosis_profile_service.py": "98bc6e96c14810c25bf11e37fe61334331d5624f0cb5b4cbae80be9c0ef6ef50",
+            "baseline/personalized.py": "28aa9b881933db22dbb44cf48b1065f46b4fd661c2e45464145158118ef00350",
+            "baseline/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9",
+            "latest/diagnosis_profile_service.py": "98bc6e96c14810c25bf11e37fe61334331d5624f0cb5b4cbae80be9c0ef6ef50",
+            "latest/personalized.py": "d7411fb64063009b5f80ab08c3b2770a8c0a27cf64f3f7268d1eeb0a9654c8d1",
+            "latest/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9"
+          },
+          "inventory_contains_all_training_sources": false,
+          "original_inventory_retained_in_input_report": true
+        },
+        "student_count": 91,
+        "diagnosis_seconds": 23.0683,
+        "mastery_seconds": 6.7446,
+        "total_comparison_seconds": 164.4926,
+        "activity_counts": {
+          "model_requests": 0,
+          "database_writes": 0,
+          "real_data_exports": null,
+          "raw_student_exports": 0
+        },
+        "scopes": [
+          {
+            "chapters": [
+              1
+            ],
+            "group_count": 5,
+            "grouped_student_count": 44,
+            "complete_outputs_equal": true,
+            "grouping": {
+              "baseline": {
+                "cold_seconds": 25.4077,
+                "warm_seconds": 15.2742
+              },
+              "latest": {
+                "cold_seconds": 29.163,
+                "warm_seconds": 19.6513
+              }
+            },
+            "personal_drafts": {
+              "baseline": {
+                "seconds": 11.2361,
+                "single_mean_seconds": 0.4008
+              },
+              "latest": {
+                "seconds": 5.6591,
+                "single_mean_seconds": 0.2821
+              }
+            },
+            "selected_group_validation": {
+              "baseline": {
+                "seconds": 9.4103,
+                "members": 24
+              },
+              "latest": {
+                "seconds": 4.2502,
+                "members": 24
+              }
+            },
+            "shared_drafts_seconds": {
+              "baseline": 2.9178,
+              "latest": 2.118
+            }
+          }
+        ],
+        "timing_scope": "selection comparisons with shared prepared diagnosis and mastery; excludes full first-route input preparation",
+        "side_order_basis": "tools/compare_training_endpoints.py writes baseline followed by latest",
+        "all_recorded_scope_outputs_equal": true,
+        "full_scope_validation_accepted": true,
+        "input_report": "scope-1/performance.json",
+        "expected_chapters": [
+          1
+        ],
+        "requested_scope_present": true,
+        "raw_range_verified": true
+      },
+      {
+        "status": "available",
+        "original_flags": {
+          "completed": true,
+          "complete_responses_equal": null,
+          "complete_outputs_equal": null,
+          "model_vectors_and_covariance_equal": null,
+          "same_database_inputs": null,
+          "unchanged_database_inputs": true,
+          "same_configuration": null,
+          "same_source_during_measurement": null,
+          "same_diagnosis_and_projection_sources": null
+        },
+        "source_guard_original_flags": {
+          "completed": true,
+          "complete_responses_equal": null,
+          "complete_outputs_equal": null,
+          "model_vectors_and_covariance_equal": null,
+          "same_database_inputs": null,
+          "unchanged_database_inputs": null,
+          "same_configuration": null,
+          "same_source_during_measurement": true,
+          "same_diagnosis_and_projection_sources": null
+        },
+        "source_guard_comparison_scope": "M1/M3 grouping/draft/member-selection equivalence with the same final D2/D4/D5 preparation; not full first-request timing",
+        "source_guard_snapshots": null,
+        "source_guard_summary": {
+          "recorded_code_file_count": 359,
+          "code_inventory_sha256": "9aecc8682f6207b2fae4da00f8fbb577db5ccac5211c9b054ebac15bf2d015ae",
+          "training_source_sha256": {
+            "question_bank/question_types.py": "fdee657af46d5300b325d861a4196a8ed60a33fbe20e6f335e2f39cbf1cc0777",
+            "question_bank/training_criteria/versioning.py": "80d54db686b1723576c7f35a50ea7858088f13634d59f349c24a01036db28d40",
+            "question_bank/training_criteria/analysis.py": "76b3014ed939e86c739249b78c467e59e18eb2a8b6bd1b3858ab615981d98277",
+            "question_bank/training_criteria/adapters.py": "ce0b772092a6b2d857e0badb55385b36262f349050a3731848ce14addd4ba414",
+            "question_bank/mastery/model.py": "0db3c72dd829c60f34199bba2a0ec74fe1e207ebbc2ff2a14b5b3848991462c5",
+            "question_bank/mastery/current.py": "d84c5b66974cd63b85a0d6751f6e102012107eedf2f417fff733eebe2b3f5309",
+            "question_bank/recommendation/personalized.py": "d7411fb64063009b5f80ab08c3b2770a8c0a27cf64f3f7268d1eeb0a9654c8d1",
+            "question_bank/recommendation/target_matching.py": "f7cc5355e7471d5d9a90d32fff839e2950e7c0a172aa2498aa1290d79d458fd3",
+            "integration/result_cache.py": "c5ee3c45b6dd8e8a59d9b7eff1226309d7a31caddf75cf35de4934d0bbd3f4ed",
+            "integration/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9",
+            "integration/diagnosis_profile_service.py": "98bc6e96c14810c25bf11e37fe61334331d5624f0cb5b4cbae80be9c0ef6ef50",
+            "integration/data_generation.py": "b793cd64eeb21f25600d061f2d279c58a719fafdc380b4a3c66641c23eebea51",
+            "question_bank/services/file_cache.py": "775549e1505a8003d091d18fdad16a00a714c80b4efe70b725eca2869e195c9f",
+            "backend/public_data.py": "9b87a6cfe45d88f63a22e597df59d69412b9617bc68e6a5f3319e537eedc51d4",
+            "backend/class_analysis.py": "2b218880ddb2b99d1fcdc5ae93c4f4a9201e85b2345dbdf3eadf65638ce3934f",
+            "question_bank/solution_evidence/repository.py": "1f088b124b41ffef6187eb211961c03f7b51c803d540ce58ff293c02108cf969",
+            "question_bank/solution_evidence/part_assessments.py": "1be981800424c39b79814ab409ebfa66e7029c7362689224f72abd250df36c7b",
+            "question_bank/solution_evidence/knowledge_links.py": "fdbd303f264450948096119c9da2432ed1412557593436ae7d61c90757bb6b82",
+            "backend/api/routers/training.py": "71f90840ea2a0ecdde865174ee130a0158db4310462aa37db2848b6349df8a41",
+            "backend/api/schemas/training.py": "15fd5ca363a9e5e810c3f4305509d4892b2980354623008bf7bed340e6c5ceec"
+          },
+          "source_snapshot_sha256": {},
+          "inventory_contains_all_training_sources": true,
+          "original_inventory_retained_in_input_report": true
+        },
+        "source_snapshot_summary": {
+          "recorded_code_file_count": 6,
+          "code_inventory_sha256": "56ec9929b3956750ecd2b5388f410a2134edae9776c700bbdf0ba822bbd43c9f",
+          "training_source_sha256": {},
+          "source_snapshot_sha256": {
+            "baseline/diagnosis_profile_service.py": "98bc6e96c14810c25bf11e37fe61334331d5624f0cb5b4cbae80be9c0ef6ef50",
+            "baseline/personalized.py": "28aa9b881933db22dbb44cf48b1065f46b4fd661c2e45464145158118ef00350",
+            "baseline/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9",
+            "latest/diagnosis_profile_service.py": "98bc6e96c14810c25bf11e37fe61334331d5624f0cb5b4cbae80be9c0ef6ef50",
+            "latest/personalized.py": "d7411fb64063009b5f80ab08c3b2770a8c0a27cf64f3f7268d1eeb0a9654c8d1",
+            "latest/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9"
+          },
+          "inventory_contains_all_training_sources": false,
+          "original_inventory_retained_in_input_report": true
+        },
+        "student_count": 91,
+        "diagnosis_seconds": 20.4232,
+        "mastery_seconds": 7.4735,
+        "total_comparison_seconds": 181.6092,
+        "activity_counts": {
+          "model_requests": 0,
+          "database_writes": 0,
+          "real_data_exports": null,
+          "raw_student_exports": 0
+        },
+        "scopes": [
+          {
+            "chapters": [
+              2
+            ],
+            "group_count": 5,
+            "grouped_student_count": 45,
+            "complete_outputs_equal": true,
+            "grouping": {
+              "baseline": {
+                "cold_seconds": 36.8352,
+                "warm_seconds": 20.7327
+              },
+              "latest": {
+                "cold_seconds": 26.5456,
+                "warm_seconds": 19.1686
+              }
+            },
+            "personal_drafts": {
+              "baseline": {
+                "seconds": 10.7034,
+                "single_mean_seconds": 0.3396
+              },
+              "latest": {
+                "seconds": 7.2573,
+                "single_mean_seconds": 0.3038
+              }
+            },
+            "selected_group_validation": {
+              "baseline": {
+                "seconds": 10.7939,
+                "members": 27
+              },
+              "latest": {
+                "seconds": 6.0042,
+                "members": 27
+              }
+            },
+            "shared_drafts_seconds": {
+              "baseline": 2.949,
+              "latest": 3.2909
+            }
+          }
+        ],
+        "timing_scope": "selection comparisons with shared prepared diagnosis and mastery; excludes full first-route input preparation",
+        "side_order_basis": "tools/compare_training_endpoints.py writes baseline followed by latest",
+        "all_recorded_scope_outputs_equal": true,
+        "full_scope_validation_accepted": true,
+        "input_report": "scope-2/performance.json",
+        "expected_chapters": [
+          2
+        ],
+        "requested_scope_present": true,
+        "raw_range_verified": true
+      },
+      {
+        "status": "available",
+        "original_flags": {
+          "completed": true,
+          "complete_responses_equal": null,
+          "complete_outputs_equal": null,
+          "model_vectors_and_covariance_equal": null,
+          "same_database_inputs": null,
+          "unchanged_database_inputs": true,
+          "same_configuration": null,
+          "same_source_during_measurement": null,
+          "same_diagnosis_and_projection_sources": null
+        },
+        "source_guard_original_flags": {
+          "completed": true,
+          "complete_responses_equal": null,
+          "complete_outputs_equal": null,
+          "model_vectors_and_covariance_equal": null,
+          "same_database_inputs": null,
+          "unchanged_database_inputs": null,
+          "same_configuration": null,
+          "same_source_during_measurement": true,
+          "same_diagnosis_and_projection_sources": null
+        },
+        "source_guard_comparison_scope": "M1/M3 grouping/draft/member-selection equivalence with the same final D2/D4/D5 preparation; not full first-request timing",
+        "source_guard_snapshots": null,
+        "source_guard_summary": {
+          "recorded_code_file_count": 359,
+          "code_inventory_sha256": "9aecc8682f6207b2fae4da00f8fbb577db5ccac5211c9b054ebac15bf2d015ae",
+          "training_source_sha256": {
+            "question_bank/question_types.py": "fdee657af46d5300b325d861a4196a8ed60a33fbe20e6f335e2f39cbf1cc0777",
+            "question_bank/training_criteria/versioning.py": "80d54db686b1723576c7f35a50ea7858088f13634d59f349c24a01036db28d40",
+            "question_bank/training_criteria/analysis.py": "76b3014ed939e86c739249b78c467e59e18eb2a8b6bd1b3858ab615981d98277",
+            "question_bank/training_criteria/adapters.py": "ce0b772092a6b2d857e0badb55385b36262f349050a3731848ce14addd4ba414",
+            "question_bank/mastery/model.py": "0db3c72dd829c60f34199bba2a0ec74fe1e207ebbc2ff2a14b5b3848991462c5",
+            "question_bank/mastery/current.py": "d84c5b66974cd63b85a0d6751f6e102012107eedf2f417fff733eebe2b3f5309",
+            "question_bank/recommendation/personalized.py": "d7411fb64063009b5f80ab08c3b2770a8c0a27cf64f3f7268d1eeb0a9654c8d1",
+            "question_bank/recommendation/target_matching.py": "f7cc5355e7471d5d9a90d32fff839e2950e7c0a172aa2498aa1290d79d458fd3",
+            "integration/result_cache.py": "c5ee3c45b6dd8e8a59d9b7eff1226309d7a31caddf75cf35de4934d0bbd3f4ed",
+            "integration/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9",
+            "integration/diagnosis_profile_service.py": "98bc6e96c14810c25bf11e37fe61334331d5624f0cb5b4cbae80be9c0ef6ef50",
+            "integration/data_generation.py": "b793cd64eeb21f25600d061f2d279c58a719fafdc380b4a3c66641c23eebea51",
+            "question_bank/services/file_cache.py": "775549e1505a8003d091d18fdad16a00a714c80b4efe70b725eca2869e195c9f",
+            "backend/public_data.py": "9b87a6cfe45d88f63a22e597df59d69412b9617bc68e6a5f3319e537eedc51d4",
+            "backend/class_analysis.py": "2b218880ddb2b99d1fcdc5ae93c4f4a9201e85b2345dbdf3eadf65638ce3934f",
+            "question_bank/solution_evidence/repository.py": "1f088b124b41ffef6187eb211961c03f7b51c803d540ce58ff293c02108cf969",
+            "question_bank/solution_evidence/part_assessments.py": "1be981800424c39b79814ab409ebfa66e7029c7362689224f72abd250df36c7b",
+            "question_bank/solution_evidence/knowledge_links.py": "fdbd303f264450948096119c9da2432ed1412557593436ae7d61c90757bb6b82",
+            "backend/api/routers/training.py": "71f90840ea2a0ecdde865174ee130a0158db4310462aa37db2848b6349df8a41",
+            "backend/api/schemas/training.py": "15fd5ca363a9e5e810c3f4305509d4892b2980354623008bf7bed340e6c5ceec"
+          },
+          "source_snapshot_sha256": {},
+          "inventory_contains_all_training_sources": true,
+          "original_inventory_retained_in_input_report": true
+        },
+        "source_snapshot_summary": {
+          "recorded_code_file_count": 6,
+          "code_inventory_sha256": "56ec9929b3956750ecd2b5388f410a2134edae9776c700bbdf0ba822bbd43c9f",
+          "training_source_sha256": {},
+          "source_snapshot_sha256": {
+            "baseline/diagnosis_profile_service.py": "98bc6e96c14810c25bf11e37fe61334331d5624f0cb5b4cbae80be9c0ef6ef50",
+            "baseline/personalized.py": "28aa9b881933db22dbb44cf48b1065f46b4fd661c2e45464145158118ef00350",
+            "baseline/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9",
+            "latest/diagnosis_profile_service.py": "98bc6e96c14810c25bf11e37fe61334331d5624f0cb5b4cbae80be9c0ef6ef50",
+            "latest/personalized.py": "d7411fb64063009b5f80ab08c3b2770a8c0a27cf64f3f7268d1eeb0a9654c8d1",
+            "latest/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9"
+          },
+          "inventory_contains_all_training_sources": false,
+          "original_inventory_retained_in_input_report": true
+        },
+        "student_count": 91,
+        "diagnosis_seconds": 21.1336,
+        "mastery_seconds": 5.9664,
+        "total_comparison_seconds": 225.2938,
+        "activity_counts": {
+          "model_requests": 0,
+          "database_writes": 0,
+          "real_data_exports": null,
+          "raw_student_exports": 0
+        },
+        "scopes": [
+          {
+            "chapters": [
+              1,
+              2
+            ],
+            "group_count": 12,
+            "grouped_student_count": 56,
+            "complete_outputs_equal": true,
+            "grouping": {
+              "baseline": {
+                "cold_seconds": 41.8566,
+                "warm_seconds": 23.3357
+              },
+              "latest": {
+                "cold_seconds": 35.8611,
+                "warm_seconds": 21.4463
+              }
+            },
+            "personal_drafts": {
+              "baseline": {
+                "seconds": 22.3714,
+                "single_mean_seconds": 0.8032
+              },
+              "latest": {
+                "seconds": 10.5172,
+                "single_mean_seconds": 0.543
+              }
+            },
+            "selected_group_validation": {
+              "baseline": {
+                "seconds": 10.7893,
+                "members": 21
+              },
+              "latest": {
+                "seconds": 4.1631,
+                "members": 21
+              }
+            },
+            "shared_drafts_seconds": {
+              "baseline": 6.9947,
+              "latest": 7.577
+            }
+          }
+        ],
+        "timing_scope": "selection comparisons with shared prepared diagnosis and mastery; excludes full first-route input preparation",
+        "side_order_basis": "tools/compare_training_endpoints.py writes baseline followed by latest",
+        "all_recorded_scope_outputs_equal": true,
+        "full_scope_validation_accepted": true,
+        "input_report": "scope-1-2/performance.json",
+        "expected_chapters": [
+          1,
+          2
+        ],
+        "requested_scope_present": true,
+        "raw_range_verified": true
+      }
+    ],
+    "supplemental_range_validation_passed": true,
+    "original_multi_scope_report_overridden": false
+  },
+  "single_version_cold_measurement": {
+    "input_report": "final-single-runtime.json",
+    "status": "available",
+    "replaces_paired_comparison": false,
+    "timing": {
+      "unit": "seconds",
+      "sample_count": 5,
+      "seconds": [
+        72.62601440001163,
+        61.47974269997212,
+        60.746444799995515,
+        66.64516169999843,
+        78.1051080999896
+      ],
+      "median_seconds": 66.64516169999843,
+      "minimum_seconds": 60.746444799995515,
+      "maximum_seconds": 78.1051080999896,
+      "mean_seconds": 67.92049433999345,
+      "original_reported_summary": {
+        "samples": 5,
+        "median_seconds": 66.64516169999843,
+        "minimum_seconds": 60.746444799995515,
+        "maximum_seconds": 78.1051080999896
+      },
+      "five_second_threshold": 5.0,
+      "per_run_goal": [
+        {
+          "sample": 1,
+          "seconds": 72.62601440001163,
+          "at_most_5_seconds": false
+        },
+        {
+          "sample": 2,
+          "seconds": 61.47974269997212,
+          "at_most_5_seconds": false
+        },
+        {
+          "sample": 3,
+          "seconds": 60.746444799995515,
+          "at_most_5_seconds": false
+        },
+        {
+          "sample": 4,
+          "seconds": 66.64516169999843,
+          "at_most_5_seconds": false
+        },
+        {
+          "sample": 5,
+          "seconds": 78.1051080999896,
+          "at_most_5_seconds": false
+        }
+      ],
+      "all_observed_runs_at_most_5_seconds": false,
+      "long_term_p95_estimated": false,
+      "reported_sample_count_matches": true
+    },
+    "work": [
+      {
+        "pair": null,
+        "side": null,
+        "run": 1,
+        "work": {
+          "diagnosis_rebuild": 1,
+          "materialized_error_read": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 71.765625,
+        "phases": null
+      },
+      {
+        "pair": null,
+        "side": null,
+        "run": 2,
+        "work": {
+          "diagnosis_rebuild": 1,
+          "materialized_error_read": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 61.359375,
+        "phases": null
+      },
+      {
+        "pair": null,
+        "side": null,
+        "run": 3,
+        "work": {
+          "diagnosis_rebuild": 1,
+          "materialized_error_read": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 60.765625,
+        "phases": null
+      },
+      {
+        "pair": null,
+        "side": null,
+        "run": 4,
+        "work": {
+          "diagnosis_rebuild": 1,
+          "materialized_error_read": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 65.171875,
+        "phases": null
+      },
+      {
+        "pair": null,
+        "side": null,
+        "run": 5,
+        "work": {
+          "diagnosis_rebuild": 1,
+          "materialized_error_read": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 73.796875,
+        "phases": null
+      }
+    ],
+    "scale": {
+      "students": 91,
+      "student_knowledge_items": 41830,
+      "groups": 12
+    },
+    "complete_responses_equal_across_runs": true,
+    "model_vectors_and_covariance_equal_across_runs": true,
+    "five_second_target_met_original": false,
+    "original_flags": {
+      "completed": null,
+      "complete_responses_equal": null,
+      "complete_outputs_equal": null,
+      "model_vectors_and_covariance_equal": null,
+      "same_database_inputs": true,
+      "unchanged_database_inputs": null,
+      "same_configuration": true,
+      "same_source_during_measurement": true,
+      "same_diagnosis_and_projection_sources": null
+    },
+    "source_before": {
+      "recorded_code_file_count": 359,
+      "code_inventory_sha256": "9aecc8682f6207b2fae4da00f8fbb577db5ccac5211c9b054ebac15bf2d015ae",
+      "training_source_sha256": {
+        "question_bank/question_types.py": "fdee657af46d5300b325d861a4196a8ed60a33fbe20e6f335e2f39cbf1cc0777",
+        "question_bank/training_criteria/versioning.py": "80d54db686b1723576c7f35a50ea7858088f13634d59f349c24a01036db28d40",
+        "question_bank/training_criteria/analysis.py": "76b3014ed939e86c739249b78c467e59e18eb2a8b6bd1b3858ab615981d98277",
+        "question_bank/training_criteria/adapters.py": "ce0b772092a6b2d857e0badb55385b36262f349050a3731848ce14addd4ba414",
+        "question_bank/mastery/model.py": "0db3c72dd829c60f34199bba2a0ec74fe1e207ebbc2ff2a14b5b3848991462c5",
+        "question_bank/mastery/current.py": "d84c5b66974cd63b85a0d6751f6e102012107eedf2f417fff733eebe2b3f5309",
+        "question_bank/recommendation/personalized.py": "d7411fb64063009b5f80ab08c3b2770a8c0a27cf64f3f7268d1eeb0a9654c8d1",
+        "question_bank/recommendation/target_matching.py": "f7cc5355e7471d5d9a90d32fff839e2950e7c0a172aa2498aa1290d79d458fd3",
+        "integration/result_cache.py": "c5ee3c45b6dd8e8a59d9b7eff1226309d7a31caddf75cf35de4934d0bbd3f4ed",
+        "integration/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9",
+        "integration/diagnosis_profile_service.py": "98bc6e96c14810c25bf11e37fe61334331d5624f0cb5b4cbae80be9c0ef6ef50",
+        "integration/data_generation.py": "b793cd64eeb21f25600d061f2d279c58a719fafdc380b4a3c66641c23eebea51",
+        "question_bank/services/file_cache.py": "775549e1505a8003d091d18fdad16a00a714c80b4efe70b725eca2869e195c9f",
+        "backend/public_data.py": "9b87a6cfe45d88f63a22e597df59d69412b9617bc68e6a5f3319e537eedc51d4",
+        "backend/class_analysis.py": "2b218880ddb2b99d1fcdc5ae93c4f4a9201e85b2345dbdf3eadf65638ce3934f",
+        "question_bank/solution_evidence/repository.py": "1f088b124b41ffef6187eb211961c03f7b51c803d540ce58ff293c02108cf969",
+        "question_bank/solution_evidence/part_assessments.py": "1be981800424c39b79814ab409ebfa66e7029c7362689224f72abd250df36c7b",
+        "question_bank/solution_evidence/knowledge_links.py": "fdbd303f264450948096119c9da2432ed1412557593436ae7d61c90757bb6b82",
+        "backend/api/routers/training.py": "71f90840ea2a0ecdde865174ee130a0158db4310462aa37db2848b6349df8a41",
+        "backend/api/schemas/training.py": "15fd5ca363a9e5e810c3f4305509d4892b2980354623008bf7bed340e6c5ceec"
+      },
+      "source_snapshot_sha256": {},
+      "inventory_contains_all_training_sources": true,
+      "original_inventory_retained_in_input_report": true
+    },
+    "source_after": {
+      "recorded_code_file_count": 359,
+      "code_inventory_sha256": "9aecc8682f6207b2fae4da00f8fbb577db5ccac5211c9b054ebac15bf2d015ae",
+      "training_source_sha256": {
+        "question_bank/question_types.py": "fdee657af46d5300b325d861a4196a8ed60a33fbe20e6f335e2f39cbf1cc0777",
+        "question_bank/training_criteria/versioning.py": "80d54db686b1723576c7f35a50ea7858088f13634d59f349c24a01036db28d40",
+        "question_bank/training_criteria/analysis.py": "76b3014ed939e86c739249b78c467e59e18eb2a8b6bd1b3858ab615981d98277",
+        "question_bank/training_criteria/adapters.py": "ce0b772092a6b2d857e0badb55385b36262f349050a3731848ce14addd4ba414",
+        "question_bank/mastery/model.py": "0db3c72dd829c60f34199bba2a0ec74fe1e207ebbc2ff2a14b5b3848991462c5",
+        "question_bank/mastery/current.py": "d84c5b66974cd63b85a0d6751f6e102012107eedf2f417fff733eebe2b3f5309",
+        "question_bank/recommendation/personalized.py": "d7411fb64063009b5f80ab08c3b2770a8c0a27cf64f3f7268d1eeb0a9654c8d1",
+        "question_bank/recommendation/target_matching.py": "f7cc5355e7471d5d9a90d32fff839e2950e7c0a172aa2498aa1290d79d458fd3",
+        "integration/result_cache.py": "c5ee3c45b6dd8e8a59d9b7eff1226309d7a31caddf75cf35de4934d0bbd3f4ed",
+        "integration/question_tag_projection_service.py": "b72bfb26728d4dc9e8eb15290b9362a9a2fb691cd5d1a3074e5467506848d6d9",
+        "integration/diagnosis_profile_service.py": "98bc6e96c14810c25bf11e37fe61334331d5624f0cb5b4cbae80be9c0ef6ef50",
+        "integration/data_generation.py": "b793cd64eeb21f25600d061f2d279c58a719fafdc380b4a3c66641c23eebea51",
+        "question_bank/services/file_cache.py": "775549e1505a8003d091d18fdad16a00a714c80b4efe70b725eca2869e195c9f",
+        "backend/public_data.py": "9b87a6cfe45d88f63a22e597df59d69412b9617bc68e6a5f3319e537eedc51d4",
+        "backend/class_analysis.py": "2b218880ddb2b99d1fcdc5ae93c4f4a9201e85b2345dbdf3eadf65638ce3934f",
+        "question_bank/solution_evidence/repository.py": "1f088b124b41ffef6187eb211961c03f7b51c803d540ce58ff293c02108cf969",
+        "question_bank/solution_evidence/part_assessments.py": "1be981800424c39b79814ab409ebfa66e7029c7362689224f72abd250df36c7b",
+        "question_bank/solution_evidence/knowledge_links.py": "fdbd303f264450948096119c9da2432ed1412557593436ae7d61c90757bb6b82",
+        "backend/api/routers/training.py": "71f90840ea2a0ecdde865174ee130a0158db4310462aa37db2848b6349df8a41",
+        "backend/api/schemas/training.py": "15fd5ca363a9e5e810c3f4305509d4892b2980354623008bf7bed340e6c5ceec"
+      },
+      "source_snapshot_sha256": {},
+      "inventory_contains_all_training_sources": true,
+      "original_inventory_retained_in_input_report": true
+    },
+    "memory": {
+      "unit": "bytes",
+      "scope": "one latest source universe with in-memory equality reference; samples after each cold route and cumulative process peak; not production HTTP process memory",
+      "sample_count": 5,
+      "samples": [
+        {
+          "pair": null,
+          "run": 1,
+          "side": null,
+          "working_set_bytes": 1045753856,
+          "process_peak_working_set_bytes": 1258250240
+        },
+        {
+          "pair": null,
+          "run": 2,
+          "side": null,
+          "working_set_bytes": 1066721280,
+          "process_peak_working_set_bytes": 1278693376
+        },
+        {
+          "pair": null,
+          "run": 3,
+          "side": null,
+          "working_set_bytes": 1077395456,
+          "process_peak_working_set_bytes": 1284620288
+        },
+        {
+          "pair": null,
+          "run": 4,
+          "side": null,
+          "working_set_bytes": 1053585408,
+          "process_peak_working_set_bytes": 1284620288
+        },
+        {
+          "pair": null,
+          "run": 5,
+          "side": null,
+          "working_set_bytes": 1038188544,
+          "process_peak_working_set_bytes": 1284620288
+        }
+      ],
+      "ranges": {
+        "baseline": {
+          "working_set_bytes": {
+            "minimum": null,
+            "maximum": null
+          },
+          "process_peak_working_set_bytes": {
+            "minimum": null,
+            "maximum": null
+          }
+        },
+        "latest": {
+          "working_set_bytes": {
+            "minimum": null,
+            "maximum": null
+          },
+          "process_peak_working_set_bytes": {
+            "minimum": null,
+            "maximum": null
+          }
+        },
+        "all_recorded_samples": {
+          "working_set_bytes": {
+            "minimum": 1038188544,
+            "maximum": 1077395456
+          },
+          "process_peak_working_set_bytes": {
+            "minimum": 1258250240,
+            "maximum": 1284620288
+          }
+        }
+      },
+      "independent_per_side_peak_claimed": false
+    },
+    "cache_state": "all logical result and parsed-file caches cleared; persistent result reads and writes disabled; OS file cache retained",
+    "surface": "formal route function with work counters and fitted-model capture; no HTTP, browser, or application lifespan",
+    "role": "supplemental single-version cold timing, not a replacement for paired baseline/latest measurements",
+    "logical_processors": 16,
+    "activity_counts": {
+      "model_requests": 0,
+      "database_writes": 0,
+      "real_data_exports": 0,
+      "raw_student_exports": null
+    },
+    "original_guards_all_true": true
+  },
+  "limits": [
+    "Ordinary route timings exclude HTTP, browser rendering and application lifespan.",
+    "Logical result and parsed-file caches are cleared; persistent results are disabled. Operating-system file cache remains.",
+    "Fitted-model parameters, covariance and complete outputs are compared in memory; individual results are not exported.",
+    "Local operation changes are never summed or subtracted from complete route latency.",
+    "Warm response timings are separate and never certify the first recomputation goal.",
+    "Profiled inclusive costs overlap and carry profiling overhead; they are not ordinary user waiting time.",
+    "Paired comparer memory holds two source universes and equality references. Its cumulative peak is not an independent per-side application peak.",
+    "Per-run source guards cover 359 files in backend, integration and question_bank. The initial 360-file inventory also includes path_manager.py, whose unchanged outer observations do not create a measurement-period guard.",
+    "Five repetitions describe observed ranges. A long-term P95 or machine-restart first-launch range is not established."
+  ],
+  "unverified_scope": [
+    "The original multi-scope comparison is incomplete and is retained as such.",
+    "Browser-visible latency and production HTTP process memory were not measured here.",
+    "Final acceptance by the original investigation chat is outside this consolidation."
+  ],
+  "summary_generation_runs_application": false
+}

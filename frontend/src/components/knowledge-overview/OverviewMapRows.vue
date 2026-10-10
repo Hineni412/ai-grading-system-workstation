@@ -4,7 +4,7 @@ import type { TrainingOverviewNode } from '../../api/training'
 import { shortNodeName } from './model'
 import { heatLevel, weakRate } from './metrics'
 import OverviewTierBar from './OverviewTierBar.vue'
-const props = defineProps<{ nodes: TrainingOverviewNode[]; catalog: TrainingOverviewNode[]; selectedKey: string; activeKeys: Set<string>; hasActive: boolean }>()
+const props = defineProps<{ nodes: TrainingOverviewNode[]; catalog: TrainingOverviewNode[]; selectedKey: string; activeKeys: Set<string>; hasActive: boolean; priorityRanks?: Map<string, number> }>()
 const emit = defineEmits<{ select: [node: TrainingOverviewNode, event: MouseEvent]; hover: [key: string] }>()
 // Type mode (typed release active): one "题型" column, types without exam
 // evidence stay hidden; chapters and sections aggregate as before.
@@ -46,6 +46,7 @@ function label(node: TrainingOverviewNode) {
               'is-related': hasActive && activeKeys.has(node.knowledge_key), 'is-dimmed': hasActive && !activeKeys.has(node.knowledge_key) }]"
             :data-knowledge="node.knowledge_key" :title="label(node)" :aria-label="label(node)" :aria-pressed="selectedKey === node.knowledge_key"
             @click="emit('select', node, $event)" @mouseenter="emit('hover', node.knowledge_key)" @mouseleave="emit('hover', '')">
+            <span v-if="priorityRanks?.has(node.knowledge_key)" class="mastery-map-priority">优先 {{ priorityRanks.get(node.knowledge_key) }}</span>
             <span class="mastery-map-node-name">{{ shortNodeName(node) }}</span>
             <b v-if="node.distribution.weak > 0" class="mastery-map-badge">{{ node.distribution.weak }}</b>
             <OverviewTierBar v-if="node.evidence_student_count > 0" :distribution="node.distribution" />

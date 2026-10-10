@@ -1,4 +1,5 @@
 import { apiClient } from './client'
+import { isStepDiagnosis, type StepDiagnosis } from './step-diagnosis'
 import { decodeJobResponse, type JobResponse } from './jobs'
 import {
   hasExactKeys,
@@ -139,6 +140,7 @@ export interface StudentExamResultItem {
   error_category: string | null
   error_summary: string | null
   evidence_url: string | null
+  step_diagnosis?: StepDiagnosis | null
 }
 
 export interface StudentExamResultSession {
@@ -178,7 +180,9 @@ function isStudentExamResultItem(value: unknown): value is StudentExamResultItem
     hasExactKeys(value, [
       'detail_id', 'question_id', 'bank_question_id', 'score_awarded', 'max_score',
       'deduction_amount', 'deduction_reason', 'error_category', 'error_summary', 'evidence_url',
+      ...('step_diagnosis' in value ? ['step_diagnosis'] : []),
     ]) &&
+    (value.step_diagnosis === undefined || value.step_diagnosis === null || isStepDiagnosis(value.step_diagnosis)) &&
     isInteger(value.detail_id, 1) &&
     typeof value.question_id === 'string' &&
     value.question_id.length > 0 &&

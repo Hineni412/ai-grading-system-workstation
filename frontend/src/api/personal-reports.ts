@@ -8,6 +8,7 @@ export interface PersonalReportState {
   status: PersonalReportStatus
   generated_at: string | null
   reason: string | null
+  read_error?: string | null
 }
 export interface PersonalReportExam {
   session_id: number
@@ -18,16 +19,22 @@ export interface PersonalReportExam {
   status: PersonalReportStatus
   generated_at: string | null
   reason: string | null
+  read_error?: string | null
 }
 export const reportStatusText: Record<PersonalReportStatus, string> = {
-  current: '已生成', stale: '需重新生成', old_prompt: '已生成', missing: '未生成', unavailable: '不可生成',
+  current: '已生成', stale: '已保存，可更新', old_prompt: '已生成', missing: '未生成', unavailable: '不可生成',
+}
+export function personalReportStatusText(state: Pick<PersonalReportState, 'status' | 'read_error'>): string {
+  return state.read_error && state.status === 'missing' ? '保存内容暂无法读取' : reportStatusText[state.status]
 }
 function positive(value: unknown): value is number { return Number.isSafeInteger(value) && Number(value) > 0 }
 function status(value: unknown): value is PersonalReportStatus { return ['current', 'stale', 'old_prompt', 'missing', 'unavailable'].includes(String(value)) }
 function decodeState(value: unknown): PersonalReportState {
   if (!isRecord(value) || !positive(value.student_id) || !status(value.status)
-    || !isNullableString(value.generated_at) || !isNullableString(value.reason)) throw new Error('Invalid personal report state')
-  return { student_id: value.student_id, status: value.status, generated_at: value.generated_at, reason: value.reason }
+    || !isNullableString(value.generated_at) || !isNullableString(value.reason)
+    || (value.read_error !== undefined && !isNullableString(value.read_error))) throw new Error('Invalid personal report state')
+  return { student_id: value.student_id, status: value.status, generated_at: value.generated_at, reason: value.reason,
+    read_error: typeof value.read_error === "string" ? value.read_error : null }
 }
 function ids(values: number[], limit: number): number[] {
   if (!values.length || values.length > limit || values.some(v => !positive(v))) throw new Error('Invalid report scope')
@@ -52,10 +59,12 @@ export const personalReportsApi = {
         if (!isRecord(item) || !positive(item.session_id) || typeof item.session_name !== 'string'
           || typeof item.graded_at !== 'string' || !status(item.status) || !isNullableString(item.reason)
           || !isNullableString(item.generated_at) || (item.score !== null && (typeof item.score !== 'number' || !Number.isFinite(item.score)))
-          || typeof item.max_score !== 'number' || !Number.isFinite(item.max_score)) throw new Error('Invalid report exam')
+          || typeof item.max_score !== 'number' || !Number.isFinite(item.max_score)
+          || (item.read_error !== undefined && !isNullableString(item.read_error))) throw new Error('Invalid report exam')
         return { session_id: item.session_id, session_name: item.session_name, graded_at: item.graded_at,
           score: item.score as number | null, max_score: item.max_score, status: item.status,
-          generated_at: item.generated_at, reason: item.reason }
+          generated_at: item.generated_at, reason: item.reason,
+          read_error: typeof item.read_error === "string" ? item.read_error : null }
       })
     } })
   },

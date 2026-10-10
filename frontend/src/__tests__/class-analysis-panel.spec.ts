@@ -262,7 +262,7 @@ describe('class analysis panel', () => {
     await vi.waitFor(() => expect(reopened.host.textContent).toContain('用水平边替换竖直绳段'))
   })
 
-  it('shows top-level cause categories and marks old-prompt results for per-question refresh', async () => {
+  it('shows saved cause categories and evidence without software-version notices', async () => {
     const result = makeAnalysis({ cause_analysis: { status: 'partial', pending_questions: 1,
       total_questions: 2, failed_questions: 0, question_states: { current: 1, stale: 0, old_prompt: 1, failed: 0 },
       stale: false, generated_at: '2026-09-09T10:00:00', origin: 'model' } })
@@ -283,25 +283,25 @@ describe('class analysis panel', () => {
     expect(host.querySelector('[data-kind="error"] > summary')!.textContent).toContain('审题与条件 1')
     expect(host.querySelector('[data-testid="cause-category-chips"]')).toBeNull()
     expect(host.querySelector('[data-kind="process"]')!.textContent).toContain('过程与依据')
-    expect(host.textContent).toContain('1 题用旧版提示词整理，可按题重新整理')
+    expect(host.textContent).not.toContain('旧版提示词')
     mounted.pop()!.unmount()
     host.remove()
 
-    // 题级 old_prompt 标记：仍按 kind 展示，提示按题重新整理。
+    // 旧存正文仍按实际错因展示。
     const legacy = makeAnalysis({ cause_analysis: { status: 'partial', pending_questions: 1,
       total_questions: 2, failed_questions: 0, question_states: { current: 1, stale: 0, old_prompt: 1, failed: 0 },
       stale: false, generated_at: '2026-09-01T10:00:00', origin: 'model' } })
     const legacyQuestion = legacy.data!.questions[0]!
     legacyQuestion.causes_grouped = true
-    legacyQuestion.state = 'old_prompt'
+    legacyQuestion.state = 'current'
     legacyQuestion.causes = [
       { kind: 'error', reason: '旧版归并的错因', count: 1,
         evidence: [{ text: '旧证据', student_ids: [31] }] },
     ]
     apiMock.getClassAnalysis.mockResolvedValue(legacy)
     const second = await mountPanel()
-    await vi.waitFor(() => expect(second.host.querySelector('[data-testid="cause-state"]')).not.toBeNull())
-    expect(second.host.querySelector('[data-testid="cause-state"]')!.textContent).toContain('用旧版提示词整理')
+    await vi.waitFor(() => expect(second.host.querySelector('[data-kind="error"]')).not.toBeNull())
+    expect(second.host.textContent).not.toContain('旧版提示词')
     expect(second.host.querySelector('[data-kind="error"]')!.textContent).toContain('旧版归并的错因')
     expect(second.host.querySelector('[data-testid="cause-category"]')).toBeNull()
   })
@@ -676,4 +676,50 @@ describe('class analysis panel', () => {
       .toContain('老师改过')
     expect(host.textContent).toContain('误认等腰梯形')
   })
+  it('opens key step hotspots and returns to the existing question diagnosis', async () => {
+    const result = makeAnalysis()
+    const data = result.data
+    if (!data) throw new Error('Missing synthetic analysis')
+    data.step_diagnosis = { students: 4, confirmed_ai_rows: 2, excluded_teacher_total_only: 1, hotspots: [{
+      key: 'sk_test', name: '列等量关系', independent: 2, observed: 4, carried: 1, blank: 1, uncertain: 0,
+      confirmed_ai: 1, questions: ['12(3)'], causes_status: 'ready',
+      causes: [{ reason: '漏列条件', category: '方法与思路', count: 2, questions: ['12(3)'], examples: ['TEST-没有列出等式'] }],
+      patterns: [{ pattern: '合成题库错法', actual: 0, question_id: 1 }],
+    }] }
+    const question = data.questions[0]
+    if (!question) throw new Error('Missing synthetic question')
+    question.key_steps = [{ step_id: 'S2', part_id: '12(3)', goal: '建立等量关系', score: 2,
+      key_steps: [{ key: 'sk_test', name: '列等量关系' }], counts: { independent: 2, carried: 1, blank: 1 } }]
+    apiMock.getClassAnalysis.mockResolvedValue(result)
+    const { host, router } = await mountPanel()
+    const sort = host.querySelector<HTMLButtonElement>('[data-testid="sort-step"]')
+    if (!sort) throw new Error('Missing key step sort')
+    sort.click()
+    await settle()
+    expect(host.querySelector('[data-testid="key-step-detail"]')?.textContent).toContain('独立失分 2 / 4 人')
+    expect(host.textContent).toContain('漏列条件')
+    expect(host.textContent).toContain('教师确认总分，步骤为 AI 判断')
+    const row = host.querySelector<HTMLButtonElement>('.key-step__question')
+    if (!row) throw new Error('Missing question link')
+    row.click()
+    await settle()
+    await vi.waitFor(() => expect(router.currentRoute.value.query.question).toBe('12(3)'))
+    expect(host.querySelector('[data-testid="key-step-detail"]')).toBeNull()
+    expect(host.textContent).toContain('满分 8 分')
+  })
+
+  it('shows saved causes without step classification as unclassified', async () => {
+    const result = makeAnalysis()
+    if (!result.data) throw new Error('Missing synthetic analysis')
+    result.data.step_diagnosis = { students: 4, confirmed_ai_rows: 0, excluded_teacher_total_only: 0, hotspots: [{
+      key: 'sk_test', name: '确认直角与斜边', independent: 2, observed: 4, carried: 0, blank: 0,
+      uncertain: 0, confirmed_ai: 0, questions: ['12(3)'], causes_status: 'unclassified', causes: [], patterns: [],
+    }] }
+    apiMock.getClassAnalysis.mockResolvedValue(result)
+    const { host } = await mountPanel()
+    host.querySelector<HTMLButtonElement>('[data-testid="sort-step"]')?.click()
+    await settle()
+    expect(host.querySelector('[data-testid="key-step-detail"]')?.textContent).toContain('未按步骤归类')
+  })
+
 })

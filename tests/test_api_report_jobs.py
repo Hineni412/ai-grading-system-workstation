@@ -3,6 +3,7 @@ from __future__ import annotations
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import json
 import sqlite3
 
 warnings.filterwarnings(
@@ -92,33 +93,24 @@ def client_with_db_and_manager(tmp_path):
             manager.shutdown()
 
 
-def test_session_report_export_uses_new_job_after_score_revision_changes(
-    client_with_db_and_manager,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_session_report_export_reuses_available_file_without_input_comparison(client_with_db_and_manager):
     client, db, manager = client_with_db_and_manager
-    session_id = db.sessions.create_grading_session("Exam A", "rubric.json", "answer.json")
+    session_id = db.sessions.create_grading_session('TEST-direct-read', 'rubric.json', 'answer.json')
     _seed_result(db, session_id)
-    revisions = iter(("a" * 64, "b" * 64))
-    monkeypatch.setattr(
-        "backend.api.routers.reports.score_revision",
-        lambda _db, _session_id: next(revisions),
-    )
+    first = client.post(f'/api/sessions/{session_id}/reports/export', json={'report_type': 'score_excel'})
+    manager.wait(first.json()['id'], timeout=5)
+    with sqlite3.connect(db.db_path) as connection:
+        connection.execute('UPDATE session_results SET student_score=76 WHERE session_id=?', (session_id,))
+    second = client.post(f'/api/sessions/{session_id}/reports/export', json={'report_type': 'score_excel'})
+    assert first.status_code == second.status_code == 202
+    assert second.json()['id'] == first.json()['id']
+    assert 'score_revision' not in second.json()['payload']
+    context = client.get(f'/api/sessions/{session_id}/reports/context')
+    assert context.status_code == 200
+    assert context.json()['jobs'][0]['file_status'] == 'available'
+    assert 'score_revision' not in context.json()
+    assert 'is_current_revision' not in context.json()['jobs'][0]
 
-    first = client.post(
-        f"/api/sessions/{session_id}/reports/export",
-        json={"report_type": "score_excel"},
-    )
-    manager.wait(first.json()["id"], timeout=5)
-    second = client.post(
-        f"/api/sessions/{session_id}/reports/export",
-        json={"report_type": "score_excel"},
-    )
-
-    assert first.status_code == 202
-    assert second.status_code == 202
-    assert second.json()["id"] != first.json()["id"]
-    assert second.json()["payload"]["score_revision"] == "b" * 64
 
 
 @pytest.fixture
@@ -213,7 +205,7 @@ def test_personal_summary_matches_current_stale_and_missing_list(personal_api):
                            (sid, papers[0]["student_id"]))
     files_before = {str(path): path.stat().st_mtime_ns for path in reports.rglob('*') if path.is_file()}
     summary = personal_report_summary(db, sid, reports)
-    assert summary == dict(current=1, stale=1, old_prompt=0, missing=0)
+    assert summary == dict(current=2, stale=0, old_prompt=0, missing=0)
     states = client.get(f"/api/sessions/{sid}/personal-reports").json()["students"]
     assert summary == {status: sum(item['status'] == status for item in states) for status in summary}
     assert {str(path): path.stat().st_mtime_ns for path in reports.rglob('*') if path.is_file()} == files_before
@@ -280,3 +272,208 @@ def test_personal_bundle_download_is_consumed_and_public_result_has_no_path(pers
     assert client.get(public["result"]["download_url"]).status_code == 200
     assert not target.exists()
     assert client.post("/api/personal-reports/bundles", json=dict(session_ids=[], student_ids=[1], scope_label="指定1人")).status_code == 422
+
+
+def test_saved_personal_report_can_open_and_export_without_current_grade_or_model(personal_api, monkeypatch):
+    from backend.report_results import PersonalReportStore
+    from tests.test_analysis_report import PERSONAL_NARRATIVE
+    client, db, sid, papers, reports, manager = personal_api
+    student_id = papers[0]['student_id']
+    store = PersonalReportStore(reports)
+    store.save(sid, student_id, narrative=PERSONAL_NARRATIVE,
+               source={'student_name': 'TEST-saved-name', 'session_name': 'TEST-saved-exam'})
+    with sqlite3.connect(db.db_path) as connection:
+        connection.execute("UPDATE session_attendance SET attendance_status='absent' WHERE session_id=? AND student_id=?", (sid, student_id))
+    monkeypatch.setattr('backend.model_profiles.content_generation.resolve_content_generation_settings',
+                        lambda: pytest.fail('读取和导出保存正文不得初始化模型配置'))
+    before = {path: path.read_bytes() for path in reports.rglob('*.json')}
+    state = client.get(f'/api/sessions/{sid}/personal-reports').json()['students']
+    assert next(row for row in state if row['student_id'] == student_id)['status'] == 'current'
+    html = client.get(f'/api/sessions/{sid}/personal-reports/{student_id}/html')
+    assert html.status_code == 200
+    assert '选择题全对，基础扎实' in html.text
+    assert 'TEST-saved-name' in html.text
+    assert '当前没有可展示的成绩' in html.text
+    exported = client.post(f'/api/sessions/{sid}/reports/export', json={'report_type': 'personal_analysis_html'})
+    assert exported.status_code == 202
+    manager.wait(exported.json()['id'], timeout=5)
+    assert before == {path: path.read_bytes() for path in reports.rglob('*.json')}
+
+
+def test_saved_class_report_keeps_original_class_and_table_after_rename(personal_api):
+    from backend.class_analysis import ClassAnalysisStateStore
+    from backend.session_analysis import assemble_session_analysis, split_session_analysis_by_class
+    from backend.reporting.analysis_report_exporter import build_class_page_data
+    from tests.test_analysis_report import CLASS_NARRATIVE
+    client, db, sid, _papers, reports, _manager = personal_api
+    group = next(iter(split_session_analysis_by_class(assemble_session_analysis(db, sid)).values()))
+    class_name = group.class_name
+    store = ClassAnalysisStateStore(reports)
+    store.save(sid, class_reports={class_name: dict(status='ready', narrative=CLASS_NARRATIVE,
+        source=build_class_page_data(group), generated_at='2026-01-01 00:00:00')})
+    with sqlite3.connect(db.db_path) as connection:
+        connection.execute("UPDATE students SET class_name='TEST-new-class'")
+    before = {path: path.read_bytes() for path in reports.rglob('*.json')}
+    overview = client.get(f'/api/sessions/{sid}/class-analysis', params={'class_name': class_name, 'view': 'narrative'})
+    assert overview.status_code == 200
+    assert class_name in overview.json()['class_names']
+    assert overview.json()['stale'] is True
+    assert overview.json()['generated_at'] == '2026-01-01 00:00:00'
+    assert overview.json()['narrative']['key_findings'][0]['title'] == '证明题得分率低'
+    html = client.get(f'/api/sessions/{sid}/class-analysis/report', params={'class_name': class_name})
+    assert html.status_code == 200
+    assert class_name in html.text
+    assert '按生成时保存的成绩展示' in html.text
+    assert '张三' in html.text and '李四' in html.text
+    assert before == {path: path.read_bytes() for path in reports.rglob('*.json')}
+
+
+def test_pipeline_update_flag_is_the_same_for_preflight_and_submit(personal_api, monkeypatch):
+    import backend.report_pipeline as pipeline
+    client, db, sid, _papers, _reports, manager = personal_api
+    manager.register('class_analysis_generate', lambda _context: {'status': 'ready'})
+    flags = []
+    original = pipeline.build_report_pipeline_status
+    def status(**kwargs):
+        flags.append(kwargs.get('regenerate_existing'))
+        return original(**kwargs)
+    monkeypatch.setattr(pipeline, 'build_report_pipeline_status', status)
+    monkeypatch.setattr(pipeline, 'pending_review_count', lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr('backend.model_profiles.content_generation.resolve_content_generation_settings', lambda: object())
+    preflight = client.get(f'/api/sessions/{sid}/report-pipeline', params={'regenerate_existing': 'true'})
+    assert preflight.status_code == 200
+    assert flags == [True]
+    submitted = client.post(f'/api/sessions/{sid}/report-pipeline', json={'regenerate_existing': True})
+    assert submitted.status_code == 202
+    assert submitted.json()['payload']['regenerate_existing'] is True
+    manager.wait(submitted.json()['id'], timeout=5)
+    invalid = client.post(f'/api/sessions/{sid}/report-pipeline', json={'regenerate_existing': True, 'unknown_option': True})
+    assert invalid.status_code == 422
+
+
+def test_class_summary_without_question_bank_keeps_current_grades_readable(personal_api, monkeypatch):
+    client, db, sid, _papers, _reports, _manager = personal_api
+    monkeypatch.setattr('backend.step_diagnosis.build_session_step_diagnosis',
+                        lambda *_args, **_kwargs: pytest.fail('没有题库时不应装配题库步骤诊断'))
+    response = client.get(f'/api/sessions/{sid}/class-analysis', params={'view': 'summary'})
+    assert response.status_code == 200
+    assert response.json()['status'] == 'ready'
+    assert response.json()['data']['present'] == 2
+
+
+def test_personal_read_error_is_not_missing_work_or_automatically_regenerated(personal_api):
+    from backend.personal_reports import personal_report_summary
+    from backend.report_results import PersonalReportStore
+    from backend.reporting.analysis_report_exporter import AnalysisReportGenerator, build_analysis_preflight
+    client, db, sid, papers, reports, _manager = personal_api
+    student_id = papers[0]['student_id']
+    target = PersonalReportStore(reports)._path(sid, student_id)
+    target.parent.mkdir(parents=True)
+    target.write_text('{TEST-bad-report', encoding='utf-8')
+    before = target.read_bytes()
+    states = client.get(f'/api/sessions/{sid}/personal-reports').json()['students']
+    state = next(row for row in states if row['student_id'] == student_id)
+    assert state['read_error'] and state['status'] == 'missing'
+    assert personal_report_summary(db, sid, reports)['missing'] == 1
+    exams = client.get(f'/api/students/{student_id}/personal-reports').json()['sessions']
+    assert next(row for row in exams if row['session_id'] == sid)['read_error']
+    response = client.get(f'/api/sessions/{sid}/personal-reports/{student_id}/html')
+    assert response.status_code == 409
+    assert response.json()['error']['code'] == 'personal_report_read_error'
+    assert client.get(f'/api/sessions/{sid}/personal-reports/{student_id}/html?narrative=none').status_code == 200
+    plan = build_analysis_preflight(db, sid, 'personal_analysis_html', reports_dir=reports,
+                                    student_ids={student_id}, include_causes=False)
+    assert plan['call_count'] == 0 and plan['cache_hits'] == 0
+    explicit = build_analysis_preflight(db, sid, 'personal_analysis_html', reports_dir=reports,
+                                        student_ids={student_id}, include_causes=False, regenerate_existing=True)
+    assert explicit['call_count'] == 1
+    generator = AnalysisReportGenerator(db, reports.parent / 'TEST-read-error-export', reports_dir=reports,
+        llm_client_factory=lambda: pytest.fail('读取失败不得触发模型客户端'))
+    generator.export_session(sid, 'personal_analysis_html', student_ids={student_id}, html_only=True)
+    assert generator.last_personal_summary == {'generated': 0, 'failed': 0, 'skipped': 1}
+    assert generator.last_personal_missing[0]['reason'] == state['read_error']
+    assert target.read_bytes() == before
+
+
+def test_personal_legacy_fallback_stays_readable_with_primary_read_error(personal_api):
+    import json
+    from backend.report_results import PersonalReportStore
+    from tests.test_analysis_report import PERSONAL_NARRATIVE
+    client, _db, sid, papers, reports, _manager = personal_api
+    student_id = papers[0]['student_id']
+    target = PersonalReportStore(reports)._path(sid, student_id)
+    target.parent.mkdir(parents=True)
+    target.write_text('TEST-corrupt-primary', encoding='utf-8')
+    index = reports / '.class_analysis' / f'{sid}.json'
+    index.parent.mkdir(parents=True)
+    index.write_text(json.dumps({'personal_index': {str(student_id): {'cache_key': 'TEST-old-body'}}}), encoding='utf-8')
+    cached = reports / '.cache' / 'TEST-old-body.json'
+    cached.parent.mkdir()
+    cached.write_text(json.dumps({'version': 99, 'narrative': PERSONAL_NARRATIVE}), encoding='utf-8')
+    before = {str(path): path.read_bytes() for path in reports.rglob('*') if path.is_file()}
+    state = next(row for row in client.get(f'/api/sessions/{sid}/personal-reports').json()['students']
+                 if row['student_id'] == student_id)
+    assert state['read_error'] and state['status'] == 'current'
+    response = client.get(f'/api/sessions/{sid}/personal-reports/{student_id}/html')
+    assert response.status_code == 200 and '选择题全对，基础扎实' in response.text
+    assert before == {str(path): path.read_bytes() for path in reports.rglob('*') if path.is_file()}
+
+
+def test_class_state_read_error_is_shown_without_moving_saved_file(personal_api):
+    from backend.class_analysis import ClassAnalysisStateStore
+    client, _db, sid, _papers, reports, _manager = personal_api
+    target = ClassAnalysisStateStore(reports)._path(sid)
+    target.parent.mkdir(parents=True)
+    target.write_text('TEST-unreadable-class-state', encoding='utf-8')
+    before = target.read_bytes()
+    response = client.get(f'/api/sessions/{sid}/class-analysis', params={'view': 'narrative'})
+    assert response.status_code == 200 and response.json()['read_error']
+    assert target.read_bytes() == before
+
+
+@pytest.mark.parametrize('owner_location', ['top', 'source'])
+def test_legacy_top_level_class_body_is_read_at_its_saved_owner_without_migration(personal_api, owner_location):
+    from backend.session_analysis import assemble_session_analysis, split_session_analysis_by_class
+    from backend.reporting.analysis_report_exporter import build_class_page_data
+    from tests.test_analysis_report import CLASS_NARRATIVE
+    client, db, sid, _papers, reports, _manager = personal_api
+    group = next(iter(split_session_analysis_by_class(assemble_session_analysis(db, sid)).values()))
+    owner = group.class_name
+    source = build_class_page_data(group)
+    legacy = dict(version=99, narrative=CLASS_NARRATIVE, source=source,
+                  generated_at='2026-01-01T00:00:00')
+    if owner_location == 'top':
+        legacy['class_name'] = owner
+    else:
+        source['exam']['class_name'] = owner
+    saved = reports / '.class_analysis' / f'{sid}.json'
+    saved.parent.mkdir(parents=True, exist_ok=True)
+    saved.write_text(json.dumps(legacy, ensure_ascii=False), encoding='utf-8')
+    with sqlite3.connect(db.db_path) as connection:
+        connection.execute("UPDATE students SET class_name='TEST-renamed-class'")
+    before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in reports.rglob('*') if path.is_file()}
+    response = client.get(f'/api/sessions/{sid}/class-analysis', params={'class_name': owner, 'view': 'narrative'})
+    assert response.status_code == 200
+    assert response.json()['selected_class'] == owner
+    assert response.json()['narrative']['key_findings'][0]['title'] == '证明题得分率低'
+    html = client.get(f'/api/sessions/{sid}/class-analysis/report', params={'class_name': owner})
+    assert html.status_code == 200
+    assert '证明题得分率低' in html.text and '按生成时保存的成绩展示' in html.text
+    assert '张三' in html.text and '李四' in html.text
+    assert before == {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in reports.rglob('*') if path.is_file()}
+
+
+@pytest.mark.parametrize('owner_fields', [{}, {'class_name': 'TEST-one', 'source': {'class_name': 'TEST-another'}}])
+def test_legacy_top_level_class_body_with_unknown_or_conflicting_owner_is_not_attached_to_current_class(personal_api, owner_fields):
+    from tests.test_analysis_report import CLASS_NARRATIVE
+    client, _db, sid, _papers, reports, _manager = personal_api
+    narrative = {**CLASS_NARRATIVE, 'key_findings': [{'title': 'TEST-unassigned-body', 'detail': 'TEST-old', 'severity': 'info'}]}
+    saved = reports / '.class_analysis' / f'{sid}.json'
+    saved.parent.mkdir(parents=True, exist_ok=True)
+    saved.write_text(json.dumps(dict(narrative=narrative, **owner_fields), ensure_ascii=False), encoding='utf-8')
+    before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in reports.rglob('*') if path.is_file()}
+    response = client.get(f'/api/sessions/{sid}/class-analysis', params={'view': 'narrative'})
+    assert response.status_code == 200 and response.json()['narrative'] is None
+    html = client.get(f'/api/sessions/{sid}/class-analysis/report')
+    assert html.status_code == 200 and 'TEST-unassigned-body' not in html.text
+    assert before == {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in reports.rglob('*') if path.is_file()}

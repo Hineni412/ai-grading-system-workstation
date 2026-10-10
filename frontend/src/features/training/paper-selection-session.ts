@@ -29,10 +29,11 @@ export interface AdoptedChapterGroup {
   memberIds: string[]
   targetKeys: string[]
   scopeKeys: string[]
-  sourceVersion: string
+  sourceVersion?: string
 }
 
 export interface PaperSelectionSession {
+  rangeSelectionVersion?: 1
   scopeMode?: 'comprehensive' | 'focused'
   rulesVersion?: number
   targetKeys: string[]
@@ -92,6 +93,7 @@ export function loadPaperSelectionSession(): PaperSelectionSession | null {
       return null
     }
     return {
+      rangeSelectionVersion: parsed.rangeSelectionVersion === 1 ? 1 : undefined,
       scopeMode: parsed.scopeMode === 'focused' ? 'focused' : 'comprehensive',
       targetKeys,
       rangeKeys,
@@ -122,6 +124,24 @@ export function loadPaperSelectionSession(): PaperSelectionSession | null {
   } catch {
     return null
   }
+}
+
+export function selectedPracticeRange(volume: CurriculumVolume | null, rangeKeys: string[]) {
+  const chosen = new Set(rangeKeys)
+  const chapters = [...(volume?.chapters ?? [])].sort((a, b) => a.order - b.order)
+  const keys: string[] = []
+  let progressId = ''
+  let completeChapters = 0
+  for (const chapter of chapters) {
+    const sections = chapter.sections.filter(section => chosen.has(section.knowledge_id))
+    const complete = chosen.has(chapter.knowledge_id)
+      || (chapter.sections.length > 0 && sections.length === chapter.sections.length)
+    if (complete) completeChapters += 1
+    if (chosen.has(chapter.knowledge_id)) keys.push(chapter.knowledge_id)
+    else keys.push(...sections.map(section => section.knowledge_id))
+    if (complete || sections.length) progressId = chapter.id
+  }
+  return { keys, progressId, fullVolume: chapters.length > 0 && completeChapters === chapters.length }
 }
 
 export function resolvePaperScope(volume: CurriculumVolume | null, diagnosis: TrainingReadDiagnosis | null,
@@ -165,7 +185,7 @@ function validEditor(value: unknown): value is ChapterGroupEditor {
 function validGroup(value: unknown): value is AdoptedChapterGroup {
   if (!value || typeof value !== 'object') return false
   const item = value as Partial<AdoptedChapterGroup>
-  return typeof item.groupId === 'string' && typeof item.sourceVersion === 'string'
+  return typeof item.groupId === 'string' && (item.sourceVersion === undefined || typeof item.sourceVersion === 'string')
     && strings(item.memberIds) && strings(item.targetKeys) && strings(item.scopeKeys)
 }
 
@@ -183,14 +203,14 @@ export function presetFocusedTraining({ targetKeys, rangeKeys }: { targetKeys: s
     targetKeys: [], rangeKeys: [],
   }
   savePaperSelectionSession({ ...previous, targetKeys: [...targetKeys], rangeKeys: [...rangeKeys],
-    purpose: 'training', scopeMode: 'focused', paperMode: 'individual', adoptedGroup: null, groupEditor: null })
+    purpose: 'training', rangeSelectionVersion: 1, scopeMode: 'focused', paperMode: 'individual', adoptedGroup: null, groupEditor: null })
 }
 
 export function presetWrongQuestionBook({ studentId, classId }: { studentId: string; classId: string | null }): void {
   const previous = loadPaperSelectionSession() ?? { ...DEFAULT_TRAINING_RULES, targetKeys: [], rangeKeys: [],
     excludeCurrentOriginals: true, paperMode: 'individual' as const }
   savePaperSelectionSession({ ...previous, selectedStudentIds: [studentId], purpose: 'wrong_book',
-    scopeMode: 'comprehensive', rangeKeys: [], adoptedGroup: null, groupEditor: null })
+    rangeSelectionVersion: undefined, scopeMode: 'comprehensive', rangeKeys: [], adoptedGroup: null, groupEditor: null })
   const evidence = loadEvidenceScope()
   saveEvidenceScope({ scope: classId ? { mode: 'class', class_ids: [classId] } : { mode: 'all' },
     exam_scope: evidence?.exam_scope ?? { mode: 'semester', curriculum_volume_id: '' } })

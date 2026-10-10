@@ -15,10 +15,6 @@ export type CriterionVersionStatus =
   | 'superseded'
   | 'stale'
 
-export type CriterionSchemaVersion =
-  | 'training-criteria-draft-v1'
-  | 'judgment-points-v1'
-
 export interface TrainingCriterionPoint {
   point_id: string
   target: string
@@ -29,7 +25,7 @@ export interface TrainingCriterionPoint {
 }
 
 export interface TrainingCriterionDraft {
-  schema_version: CriterionSchemaVersion
+  schema_version?: string | null
   question_id: number
   source_content_hash: string
   question_type: string
@@ -123,10 +119,6 @@ const VERSION_STATUSES = new Set([
   'superseded',
   'stale',
 ])
-const CRITERION_SCHEMAS = new Set([
-  'training-criteria-draft-v1',
-  'judgment-points-v1',
-])
 
 
 
@@ -153,7 +145,7 @@ function decodePoint(value: unknown): TrainingCriterionPoint {
 function decodeDraft(value: unknown): TrainingCriterionDraft {
   if (
     !isRecord(value)
-    || !CRITERION_SCHEMAS.has(String(value.schema_version))
+    || (value.schema_version !== undefined && !isNullableString(value.schema_version))
     || !isPositiveInteger(value.question_id)
     || typeof value.source_content_hash !== 'string'
     || typeof value.question_type !== 'string'
@@ -166,7 +158,7 @@ function decodeDraft(value: unknown): TrainingCriterionDraft {
     || (value.solution_evidence != null && !isRecord(value.solution_evidence))
   ) throw new Error('Invalid training criterion draft')
   return {
-    schema_version: value.schema_version as CriterionSchemaVersion,
+    ...(isNullableString(value.schema_version) ? { schema_version: value.schema_version } : {}),
     question_id: value.question_id,
     source_content_hash: value.source_content_hash,
     question_type: value.question_type,

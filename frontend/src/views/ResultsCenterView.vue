@@ -10,7 +10,7 @@ import type {
   ResultsScoreStatus,
   ResultsStudentStatus,
 } from '../api/results-center'
-import { personalReportsApi, reportStatusText, matchesReportStudent, type PersonalReportState } from '../api/personal-reports'
+import { personalReportsApi, personalReportStatusText, matchesReportStudent, type PersonalReportState } from '../api/personal-reports'
 import { useJobStore } from '../stores/jobs'
 import { TERMINAL_JOB_STATUSES } from '../api/jobs'
 import PersonalReportReader from '../components/results-center/PersonalReportReader.vue'
@@ -75,7 +75,7 @@ const tabs = [
 const DETAIL_FILTER_LABELS: Record<DetailFilter, string> = {
   all: '全部学生',
   attention: '待处理',
-  reports: '报告未生成或需重新生成',
+  reports: '报告未生成或可更新',
   complete: '成绩完整',
   needs_review: '待复核',
   incomplete: '未评分',
@@ -227,9 +227,9 @@ let personalController: AbortController | null = null
 function reportState(student: ResultsCenterStudent) { return personalStates.value.find(s => s.student_id === student.student_id) }
 function reportLabel(student: ResultsCenterStudent) {
   const state = reportState(student)
-  return `查看${student.student_name}的个人报告（${state ? (state.status === 'old_prompt' ? '用旧版提示词生成' : reportStatusText[state.status]) : '状态读取中'}）`
+  return `查看${student.student_name}的个人报告（${state ? personalReportStatusText(state) : '状态读取中'}）`
 }
-const reportsNeedGeneration = computed(() => studentsInClass.value.filter(s => ['missing', 'stale'].includes(reportState(s)?.status ?? '')).length)
+const reportsNeedGeneration = computed(() => studentsInClass.value.filter(s => !reportState(s)?.read_error && ['missing', 'stale'].includes(reportState(s)?.status ?? '')).length)
 async function refreshPersonalStates() {
   personalController?.abort()
   const sid = sessionStore.selectedSessionId
@@ -457,7 +457,7 @@ function matchesFilter(
   filter: DetailFilter,
 ): boolean {
   if (filter === 'all') return true
-  if (filter === 'reports') return ['missing', 'stale'].includes(reportState(student)?.status ?? '')
+  if (filter === 'reports') return !reportState(student)?.read_error && ['missing', 'stale'].includes(reportState(student)?.status ?? '')
   if (filter === 'attention') {
     return student.ungraded_count > 0
       || student.failed_count > 0
@@ -1041,7 +1041,7 @@ function closeStudentDrawer(restoreFocus = true): void {
               </button>
               <button type="button" class="results-filter-chip" :aria-pressed="activeFilter === 'reports'"
                 :class="{'is-active': activeFilter === 'reports'}" @click="selectDetailFilter('reports')">
-                报告未生成或需重新生成（{{ reportsNeedGeneration }}）
+                报告未生成或可更新（{{ reportsNeedGeneration }}）
               </button>
               <span>显示 {{ visibleStudents.length }} / {{ studentsInClass.length }} 人</span>
             </div>
@@ -1193,10 +1193,11 @@ function closeStudentDrawer(restoreFocus = true): void {
 
         <div class="personal-report-drawer">
           <b>个人报告</b>
+          <p v-if="reportState(selectedStudent)?.read_error">{{ reportState(selectedStudent)?.read_error }}</p>
           <template v-if="reportState(selectedStudent)?.status === 'current'"><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent)">查看个人报告 ›</AppButton></template>
-          <template v-else-if="reportState(selectedStudent)?.status === 'old_prompt'"><p>用旧版提示词生成。</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent)">查看个人报告 ›</AppButton></template>
-          <template v-else-if="reportState(selectedStudent)?.status === 'stale'"><p>成绩已变化，显示上次生成的 AI 分析。</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent)">查看个人报告（上次生成） ›</AppButton></template>
-          <template v-else-if="reportState(selectedStudent)?.status === 'missing'"><p>本场报告未生成</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent, true)">查看报告（数据版） ›</AppButton></template>
+          <template v-else-if="reportState(selectedStudent)?.status === 'old_prompt'"><p>已保存，可直接查看。</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent)">查看个人报告 ›</AppButton></template>
+          <template v-else-if="reportState(selectedStudent)?.status === 'stale'"><p>相关内容已修改，已保存报告仍可查看和导出。</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent)">查看已保存的个人报告 ›</AppButton></template>
+          <template v-else-if="reportState(selectedStudent)?.status === 'missing'"><p v-if="!reportState(selectedStudent)?.read_error">本场报告未生成</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent, true)">查看报告（数据版） ›</AppButton></template>
           <p v-else>{{ reportState(selectedStudent)?.reason ?? '正在读取报告状态…' }}</p>
         </div>
         <div class="results-drawer__items">

@@ -5,17 +5,16 @@ import { trainingTargetNodeKinds, trainingSourceReferenceCount, type TrainingRea
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 type Tier = 'weak' | 'unsteady' | 'stable' | 'insufficient'
-const props = defineProps<{ volume: CurriculumVolume | null; diagnosis: TrainingReadDiagnosis; mode: 'range' | 'select-one'; studentIds?: string[]; purpose?: 'training' | 'handout' | 'wrong_book'; progressId?: string }>()
+const props = defineProps<{ volume: CurriculumVolume | null; diagnosis: TrainingReadDiagnosis; mode: 'range' | 'select-one'; studentIds?: string[]; purpose?: 'training' | 'handout' | 'wrong_book'; progressId?: string; learnedKeys?: string[]; targetNames?: string[]; targetLabel?: string }>()
 const rangeKeys = defineModel<string[]>('rangeKeys', { default: () => [] })
-const scopeMode = defineModel<'comprehensive' | 'focused'>('scopeMode', { default: 'comprehensive' })
-const progress = defineModel<string>('teachingProgressChapterId', { default: '' })
+const emit = defineEmits<{ 'clear-target': [] }>()
 const chapterKey = defineModel<string>('chapterKey', { default: '' })
 const sectionKey = defineModel<string>('sectionKey', { default: '' })
 const expanded = ref<string[]>([])
 const labels: Record<Tier, string> = { weak: '明显薄弱', unsteady: '还不稳', stable: '较稳定', insufficient: '证据不足' }
 const tiers: Tier[] = ['weak', 'unsteady', 'stable', 'insufficient']
 const chapters = computed(() => [...(props.volume?.chapters ?? [])].sort((a, b) => a.order - b.order))
-const selectedProgress = computed(() => chapters.value.find(chapter => chapter.id === (progress.value || props.progressId)))
+const selectedProgress = computed(() => chapters.value.find(chapter => chapter.id === props.progressId))
 const selectedStudents = computed(() => props.studentIds === undefined ? props.diagnosis.students : props.diagnosis.students.filter(student => props.studentIds?.includes(student.student_id)))
 const statistics = computed(() => {
   const nodes = new Map((props.diagnosis.knowledge_catalog ?? []).map(node => [node.knowledge_key, node]))
@@ -67,35 +66,41 @@ function toggleSection(key: string) {
     : rangeKeys.value
   rangeKeys.value = keys.includes(key) ? keys.filter(item => item !== key) : [...new Set([...keys, key])]
 }
-function chapterChecked(chapter: CurriculumVolume['chapters'][number]) { return rangeKeys.value.includes(chapter.knowledge_id) || chapter.sections.every(section => rangeKeys.value.includes(section.knowledge_id)) }
+function chapterChecked(chapter: CurriculumVolume['chapters'][number]) { return rangeKeys.value.includes(chapter.knowledge_id) || (chapter.sections.length > 0 && chapter.sections.every(section => rangeKeys.value.includes(section.knowledge_id))) }
 function toggleChapter(chapter: CurriculumVolume['chapters'][number]) {
   const keys = chapter.sections.map(section => section.knowledge_id)
   const keep = rangeKeys.value.filter(key => key !== chapter.knowledge_id && !keys.includes(key))
-  rangeKeys.value = chapterChecked(chapter) ? keep : [...keep, ...keys]
+  rangeKeys.value = chapterChecked(chapter) ? keep : [...keep, chapter.knowledge_id]
 }
 function toggleExpanded(key: string) { expanded.value = expanded.value.includes(key) ? expanded.value.filter(item => item !== key) : [...expanded.value, key] }
-function unlearned(order: number) { return props.mode === 'range' && scopeMode.value === 'comprehensive' && selectedProgress.value && order > selectedProgress.value.order }
+function unlearned(order: number) { return props.mode === 'range' && order > (selectedProgress.value?.order ?? 0) }
+function selectLearned() {
+  rangeKeys.value = props.learnedKeys ? [...props.learnedKeys]
+    : chapters.value.filter(chapter => !unlearned(chapter.order)).map(chapter => chapter.knowledge_id)
+}
 </script>
 <template>
   <section class="practice-box knowledge-range-list" aria-label="章节与小节">
     <header class="practice-box-heading"><strong>{{ mode === 'range' ? '训练范围' : '章节与小节' }}</strong></header>
     <div v-if="mode === 'range'" class="range-tools">
-      <div class="app-segmented" aria-label="训练范围模式"><button type="button" :aria-pressed="scopeMode === 'comprehensive'" :class="{ 'is-active': scopeMode === 'comprehensive' }" @click="scopeMode = 'comprehensive'">综合</button><button type="button" :aria-pressed="scopeMode === 'focused'" :class="{ 'is-active': scopeMode === 'focused' }" @click="scopeMode = 'focused'">专项</button></div>
-      <label v-if="scopeMode === 'comprehensive'">已学到<select v-model="progress" class="app-input" aria-label="已学到的章节"><option value="">{{ selectedProgress?.label ?? '按所选学生的作答推断' }}</option><option v-for="chapter in chapters" :key="chapter.id" :value="chapter.id">{{ chapter.label }}</option></select></label>
+      <AppButton variant="ghost" @click="selectLearned">全选已学</AppButton>
+      <AppButton variant="ghost" :disabled="!rangeKeys.length" @click="rangeKeys = []">清空</AppButton>
+      <span class="range-stat-basis">未学章节也可勾选</span>
     </div>
-    <p v-if="purpose === 'wrong_book'" class="range-book-note">错题本：综合＝所选考试的全部错题；专项＝只收所勾章节的错题</p>
+    <p v-if="targetNames?.length" class="range-book-note">只练该{{ targetLabel || '训练目标' }}：{{ targetNames.join('、') }} <AppButton variant="ghost" @click="emit('clear-target')">改为整节</AppButton></p>
+    <p v-if="purpose === 'wrong_book'" class="range-book-note">勾满全册时收全部错题，包含未归属章节的原题；部分勾选时只收所选范围。</p>
     <div class="range-legend"><span v-for="tier in tiers" :key="tier"><i :class="tier" />{{ labels[tier] }}</span></div>
     <p class="range-stat-basis">{{ mode === 'range' ? '按已选学生统计，每人取本节最弱档位' : '按当前范围学生统计，每人取本节最弱档位' }}</p>
     <StatePanel v-if="mode === 'range' && !selectedStudents.length" kind="empty" compact title="勾选学生后显示" />
     <div v-for="chapter in chapters" :key="chapter.id" class="range-chapter" :class="{ 'is-unlearned': unlearned(chapter.order) }">
       <header>
-        <label v-if="mode === 'range' && scopeMode === 'focused'"><input type="checkbox" :aria-label="`选择${chapter.label}`" :checked="chapterChecked(chapter)" @change="toggleChapter(chapter)">{{ chapter.label }}</label>
+        <label v-if="mode === 'range'"><input type="checkbox" :aria-label="`选择${chapter.label}`" :checked="chapterChecked(chapter)" @change="toggleChapter(chapter)">{{ chapter.label }}</label>
         <button v-else-if="mode === 'select-one'" type="button" :class="{ 'is-active': chapterKey === chapter.knowledge_id && !sectionKey }" @click="select(chapter.knowledge_id)">{{ chapter.label }}</button>
         <strong v-else>{{ chapter.label }}</strong><span v-if="unlearned(chapter.order)" class="range-unlearned-label">未学</span>
       </header>
       <div v-for="section in [...chapter.sections].sort((a, b) => a.order - b.order)" :key="section.id" class="range-section">
         <div class="range-section-row">
-          <label v-if="mode === 'range' && scopeMode === 'focused'"><input type="checkbox" :aria-label="`选择${section.label}`" :checked="rangeKeys.includes(section.knowledge_id) || rangeKeys.includes(chapter.knowledge_id)" @change="toggleSection(section.knowledge_id)"><span>{{ section.label }}</span></label>
+          <label v-if="mode === 'range'"><input type="checkbox" :aria-label="`选择${section.label}`" :checked="rangeKeys.includes(section.knowledge_id) || rangeKeys.includes(chapter.knowledge_id)" @change="toggleSection(section.knowledge_id)"><span>{{ section.label }}</span></label>
           <button v-else-if="mode === 'select-one'" type="button" :class="{ 'is-active': sectionKey === section.knowledge_id }" @click="select(chapter.knowledge_id, section.knowledge_id)">{{ section.label }}</button>
           <span v-else>{{ section.label }}</span><AppButton type="button" :aria-label="`${expanded.includes(section.knowledge_id) ? '收起' : '展开'}${section.label}`" :aria-expanded="expanded.includes(section.knowledge_id)" variant="ghost" size="small" @click="toggleExpanded(section.knowledge_id)">{{ expanded.includes(section.knowledge_id) ? '▴' : '▾' }}</AppButton>
         </div>

@@ -108,6 +108,7 @@ class ClassAnalysisResponse(BaseModel):
     narrative_failed: bool
     generated_at: str | None
     stale: bool
+    read_error: str | None = None
     narrative_state: Literal["current", "stale", "old_prompt", "missing"] | None = None
     active_job_id: int | None
     class_names: list[str] = Field(default_factory=list)
@@ -144,6 +145,11 @@ class ClassAnalysisSettingsResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     auto_generate: bool
+
+
+class ReportPipelineRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    regenerate_existing: bool = False
 
 
 class ReportPipelineCausesStatus(BaseModel):
@@ -227,7 +233,6 @@ class ReportFileDeleteResponse(BaseModel):
 
 
 class ReportExportHistoryItem(JobResponse):
-    is_current_revision: bool
     file_status: Literal[
         "pending",
         "available",
@@ -241,7 +246,6 @@ class ReportExportHistoryItem(JobResponse):
 class ReportExportContextResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    score_revision: str
     has_results: bool
     jobs: list[ReportExportHistoryItem]
     total: int

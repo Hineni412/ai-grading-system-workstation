@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from datetime import UTC, datetime
+from dataclasses import fields
 from question_bank.mastery.model import week_of
 import os
 import pickle
@@ -16,16 +16,10 @@ from typing import Any, TypedDict
 
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.repositories.grading_database import open_grading_repositories
-from integration.data_generation import (
-    _database_file_state,
-    cached_content_revision,
-    commit_generation,
-    database_content_revision as _database_content_revision,
-    grading_content_revision,
-)
+from integration.data_generation import commit_generation, database_change_stamp
 from integration.evidence_scope import EvidenceScopeResolver
 from integration.persistent_entries import persistent_entry_store
-from integration.result_cache import ResultCache
+from integration.result_cache import ResultCache, cache_values
 from integration.question_tag_projection_service import (
     QuestionTagProjection,
     QuestionTagProjectionService,
@@ -56,8 +50,6 @@ _LOCAL_PROFILE_MAX_ENTRIES = 240
 _LOCAL_PROFILE_MAX_BYTES = 512 * 1024 * 1024
 _SESSION_ERROR_MAX_ENTRIES = 64
 _SESSION_ERROR_MAX_BYTES = 256 * 1024 * 1024
-_LOCAL_SOURCE_REVISIONS = ResultCache(2)
-_GRADING_SOURCE_REVISIONS = ResultCache(8)
 _MASTERY_INPUT_RESULTS = ResultCache(2)
 # Cached payloads are stored as pickle bytes: rebuilding a hit with
 # pickle.loads is far cheaper than deepcopy on large profiles, and bytes are
@@ -134,39 +126,9 @@ def _normalized_profile_scope(
     return normalized
 
 
-def _profile_calculation_state() -> tuple:
-    root = Path(__file__).resolve().parent.parent
-    files = {
-        *root.joinpath('question_bank').rglob('*.py'),
-        *root.joinpath('integration').glob('*.py'),
-        *root.joinpath('backend/repositories').glob('*.py'),
-        *root.joinpath('question_bank/taxonomy/catalogs').glob('*.json'),
-        root / "backend/api/routers/graph.py",
-        root / 'backend/api/routers/training.py', root / 'backend/api/schemas/training.py',
-        root / 'backend/public_data.py', root / 'backend/class_analysis.py',
-        root / 'backend/session_analysis.py', root / 'backend/repositories/db_manager.py',
-    }
-    return tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in sorted(files))
-
-
-# Bind code versions when this process imports the calculation. A still-running
-# old server must not label its results with newly edited source file versions;
-# a new process rejects its old cache. No repeated source-tree scan per request.
-_PROFILE_CALCULATION_STATE = _profile_calculation_state()
-
-
 def _profile_semantics() -> tuple:
-    """Running calculation versions, separate from database commits.
-
-    The persisted profile inputs only use the date through the Beijing week
-    (`week_of` for observations and mastery `as_of`); a calendar date would
-    invalidate every saved entry daily for no real input change."""
-    from question_bank.mastery.current import CURRENT_MASTERY_PARAMETERS
-    return (
-        str(week_of(datetime.now(UTC))),
-        CURRENT_MASTERY_PARAMETERS.version,
-        _PROFILE_CALCULATION_STATE,
-    )
+    """Only the calendar week changes time-weighted temporary summaries."""
+    return (str(week_of(datetime.now(UTC))),)
 
 
 class DiagnosisSnapshot(TypedDict, total=False):
@@ -237,15 +199,13 @@ class DiagnosisProfileService:
             *_path_generation(self.grading_db_path),
             *_path_generation(self.question_bank_db_path),
         )
-        source_identity = self._profile_source_identity(source_identity)
         source_identity = (*source_identity,
-            *_dir_generation(self.data_root / "reports" / ".class_analysis"),
+            *self._cause_changes(exam_scope),
             json.dumps(_profile_semantics(), default=str))
         return (
             "\u0000".join(source_identity),
-            "tag-profile-part-v11-effective-results-frozen-source",
+            "tag-profile",
             str(self.data_root),
-            CURRENT_MASTERY_PARAMETERS.version,
             str(week_of(datetime.now(UTC))),
             json.dumps(scope, ensure_ascii=False, sort_keys=True, default=str),
             json.dumps(exam_scope, ensure_ascii=False, sort_keys=True, default=str),
@@ -265,7 +225,7 @@ class DiagnosisProfileService:
     def semester_observations(self, exam_scope, *, supplied=None):
         from question_bank.mastery.model import build_exam_observations
         exam_scope = self.mastery_exam_scope(exam_scope)
-        key = (*self.tag_profile_cache_key(scope={"mode": "all", "use_historical_fallback": False}, exam_scope=exam_scope), "mastery-v3-exam-observations")
+        key = (*self.tag_profile_cache_key(scope={"mode": "all", "use_historical_fallback": False}, exam_scope=exam_scope), "exam-observations")
         cached = _claim_or_wait_tag_profile(key)
         if cached is not None:
             return pickle.loads(cached[0])
@@ -300,7 +260,9 @@ class DiagnosisProfileService:
         as_of = as_of or datetime.now(UTC)
         exam_scope = self.mastery_exam_scope(profile.get("exam_scope") or {})
         key = (*self.tag_profile_cache_key(scope={"mode": "all", "use_historical_fallback": False}, exam_scope=exam_scope),
-            "mastery-v3-population-slope", parameters.version, str(week_of(as_of)), ",".join(sorted(exclude_training_evidence_ids)))
+            "mastery", str(week_of(as_of)), ",".join(sorted(exclude_training_evidence_ids)),
+            tuple((item.name, getattr(parameters, item.name)) for item in fields(parameters)
+                  if "version" not in item.name))
         cached = _claim_or_wait_tag_profile(key)
         if cached is not None:
             if getattr(self, "persist_snapshots", False) and not exclude_training_evidence_ids:
@@ -324,18 +286,18 @@ class DiagnosisProfileService:
             resolver = CurrentKnowledgeResolver.from_active_database(self.question_bank_db_path)
             calculation_profile = {"exam_scope": exam_scope, "_mastery_observations": observations,
                                    "_mastery_session_times": self.mastery_session_times(exam_scope=exam_scope)}
-            # Grading descriptions invalidate the full diagnosis, but do not
-            # require another fit when every model input is byte-identical.
-            grading_origin = self.cache_identity[0] if self.cache_identity else str(self.grading_db_path)
-            input_key = (grading_origin, str(self.data_root), *_path_generation(self.question_bank_db_path),
-                         _database_file_state(self.question_bank_db_path), _profile_semantics(),
-                         resolver.release_id, parameters.version, week_of(as_of),
-                         tuple(sorted(exclude_training_evidence_ids)),
-                         hashlib.sha256(pickle.dumps(calculation_profile, pickle.HIGHEST_PROTOCOL)).digest())
+            origins = self.cache_identity or (
+                *_path_generation(self.grading_db_path),
+                *_path_generation(self.question_bank_db_path),
+            )
+            input_key = (origins[0], origins[3], tuple(origins[3:6]), key[-3:],
+                         cache_values(calculation_profile))
             values = _MASTERY_INPUT_RESULTS.get_or_compute(input_key, lambda:
-                CurrentMasteryCalculator(self.question_bank_db_path, resolver, parameters=parameters,
-                    clock=lambda: as_of, data_root=self.data_root).calculate(
-                        calculation_profile, exclude_training_evidence_ids=exclude_training_evidence_ids))
+                CurrentMasteryCalculator(
+                    self.question_bank_db_path, resolver, parameters=parameters,
+                    clock=lambda: as_of, data_root=self.data_root,
+                ).calculate(calculation_profile,
+                            exclude_training_evidence_ids=exclude_training_evidence_ids))
             entry = (pickle.dumps(values, pickle.HIGHEST_PROTOCOL), pickle.dumps({}, pickle.HIGHEST_PROTOCOL))
             with _TAG_PROFILE_CACHE_LOCK:
                 _TAG_PROFILE_CACHE[key] = entry
@@ -402,6 +364,15 @@ class DiagnosisProfileService:
         finally:
             _release_tag_profile_flight(cache_key, error)
 
+    def _cause_changes(self, exam_scope: Mapping[str, Any]) -> tuple[str, ...]:
+        directory = self.data_root / "reports" / ".class_analysis"
+        sessions = sorted(set(_safe_int(value) for value in exam_scope.get("session_ids", ())
+                              if _safe_int(value) > 0))
+        if not sessions:
+            return _dir_generation(directory)
+        return (str(directory), json.dumps([
+            _session_error_file_state(directory / f"{sid}.json") for sid in sessions]))
+
     def _local_profile_path(self) -> Path:
         return self.data_root / "reports" / ".training_diagnosis" / "entries"
 
@@ -416,49 +387,39 @@ class DiagnosisProfileService:
     def _local_profile_entry_path(self, cache_key: tuple[str, ...]) -> Path:
         return self._local_profile_store().entry_path(cache_key[1:])
 
-    def _profile_source_identity(self, origins, *, grading_path=None):
-        source_state = _database_file_state(Path(origins[0]))
-        revision = _GRADING_SOURCE_REVISIONS.get_or_compute((tuple(origins[:3]), source_state),
-            lambda: grading_content_revision(Path(grading_path or self.grading_db_path)))
-        return (*origins[:2], 'grading-input:' + revision, *origins[3:])
-
     def _local_profile_signature(self, cache_key: tuple[str, ...]) -> tuple | None:
         try:
+            # Every persisted result starts with the complete tag-profile key;
+            # its namespace and view parameters follow that shared prefix.
+            if len(cache_key) < 6 or cache_key[1] != "tag-profile" or not isinstance(cache_key[5], str):
+                return None
+            exam_scope = json.loads(cache_key[5])
+            if not isinstance(exam_scope, dict):
+                return None
             origins = self.cache_identity[:6] if self.cache_identity else ()
             paths = ((Path(origins[0]), Path(origins[3])) if len(origins) == 6
                      else (self.grading_db_path, self.question_bank_db_path))
             live = (*_path_generation(paths[0]), *_path_generation(paths[1]))
-            if origins and tuple(origins[3:]) != tuple(live[3:]):
+            if origins and tuple(origins) != tuple(live):
                 return None
-            semantic = self._profile_source_identity(live, grading_path=paths[0])
-            expected = "\u0000".join((*semantic,
-                *_dir_generation(self.data_root / "reports" / ".class_analysis"),
-                json.dumps(_profile_semantics(), default=str)))
+            causes = self._cause_changes(exam_scope)
+            expected = "\u0000".join((*live, *causes,
+                                     json.dumps(_profile_semantics(), default=str)))
             if cache_key[0] != expected:
-                return None  # A writer moved beyond the captured read transaction.
-            state = tuple(_database_file_state(path) for path in paths)
-            revisions = _LOCAL_SOURCE_REVISIONS.get_or_compute((live, state), lambda: (
-                semantic[2],
-                _database_content_revision(self.question_bank_db_path, self.question_bank_connection),
-            ))
+                return None
+            changes = tuple(database_change_stamp(path) for path in paths)
             if live != (*_path_generation(paths[0]), *_path_generation(paths[1])):
                 return None
-            return (1, revisions, _profile_semantics(),
-                    _dir_generation(self.data_root / "reports" / ".class_analysis"))
-        except (OSError, sqlite3.Error, AttributeError, ValueError):
+            return (changes, causes, _profile_semantics())
+        except (OSError, sqlite3.Error, AttributeError, ValueError, IndexError):
             return None
 
     def _read_local_profile(self, cache_key: tuple[str, ...]) -> tuple[bytes, bytes] | None:
-        def signature_for(stored: object) -> tuple | None:
-            # Cheap rejects run before the full signature, which serializes
-            # both databases; the stored shape itself must still be checked.
-            if (not isinstance(stored, tuple) or len(stored) != 4
-                    or stored[2] != _profile_semantics()
-                    or stored[3] != _dir_generation(self.data_root / 'reports' / '.class_analysis')):
-                return None
-            return self._local_profile_signature(cache_key)
         try:
-            entry = self._local_profile_store().get(cache_key[1:], signature_for)
+            changes = self._local_profile_signature(cache_key)
+            if changes is None:
+                return None
+            entry = self._local_profile_store().get(cache_key[1:], changes)
             if (not isinstance(entry, tuple) or len(entry) != 2
                     or not all(isinstance(part, bytes) for part in entry)):
                 return None
@@ -1329,7 +1290,7 @@ class DiagnosisProfileService:
                         totals[student] = totals.get(student, 0) + awarded
                         if awarded < maximum:
                             lost.add(student)
-                        records = causes.get((sid, int(student), qid)) if cause_status != "stale" else None
+                        records = causes.get((sid, int(student), qid))
                         for record in records or []:
                             if record.get("category") in members:
                                 members[record["category"]].add(student)
@@ -1339,7 +1300,6 @@ class DiagnosisProfileService:
                         per_class.append({"class_id": name, "student_count": len(values), "class_rate": round(class_rate_sum / len(values), 4)})
                     rate_sum += class_rate_sum
                 unclassified_reasons = Counter(
-                    "stale" if cause_status == "stale" else
                     availability.get("reasons_by_student", {}).get(int(student), "missing")
                     for student in lost - classified
                 )
@@ -1357,7 +1317,7 @@ class DiagnosisProfileService:
                         "status": cause_status,
                         "unclassified_by_reason": [
                             {"reason": reason, "count": unclassified_reasons[reason]}
-                            for reason in ("review", "carry_forward", "positive_only", "missing", "stale")
+                            for reason in ("review", "carry_forward", "positive_only", "missing")
                             if unclassified_reasons[reason]
                         ],
                     },
@@ -1381,12 +1341,12 @@ class DiagnosisProfileService:
         self,
         session_ids: Iterable[int],
     ) -> dict[tuple[int, str], dict[str, Any]]:
-        """组卷专用状态与非大类原因；每场一次装配，仍校验当前学生证据。"""
+        """按已保存归属展示组卷错因状态与待核对等非大类原因。"""
         from backend.class_analysis import (
-            ClassAnalysisStateStore, _cause_evidence, _evidence_hash, _evidence_key,
-            _saved_prompt_version, _step_units, assemble_cause_data, build_cause_inputs,
+            ClassAnalysisStateStore, _saved_evidence_members, _step_units,
+            assemble_cause_data,
         )
-        from backend.report_results import cause_input_digest, prompt_version, resolve_result_state
+        from backend.report_results import resolve_result_state
 
         store = ClassAnalysisStateStore(self.data_root / "reports")
         index: dict[tuple[int, str], dict[str, Any]] = {}
@@ -1397,30 +1357,17 @@ class DiagnosisProfileService:
             if not saved_questions:
                 continue
             data = assemble_cause_data(self.db, sid, data_root=self.data_root)
-            sources = {source["question_id"]: source for source in build_cause_inputs(data)}
             for qid, saved in saved_questions.items():
                 if not isinstance(saved, dict) or not isinstance(saved.get("result"), dict):
                     continue
-                source = sources.get(qid)
-                status = resolve_result_state(
-                    saved, cause_input_digest(source) if source is not None else "", "causes",
-                )["status"]
+                status = resolve_result_state(saved, "causes")["status"]
                 reasons: dict[int, str] = {}
                 index[(sid, str(qid))] = {"status": status, "reasons_by_student": reasons}
-                if status not in ("current", "old_prompt"):
+                source = saved.get("input")
+                if not isinstance(source, dict) or not isinstance(source.get("evidence"), list):
                     continue
-                saved_input = saved.get("input")
-                if not isinstance(saved_input, dict) or not isinstance(saved_input.get("evidence"), list):
-                    continue
-                by_step = _saved_prompt_version(saved) == prompt_version("causes")
-                hash_items = saved_input["evidence"] if by_step else [
-                    {key: value for key, value in item.items() if key != "failed_steps"}
-                    for item in saved_input["evidence"]
-                ]
-                evidence_ids = {
-                    _evidence_hash(_evidence_key(item)): item["id"] for item in hash_items
-                }
-                units = _step_units(saved_input)
+                members_by_evidence = _saved_evidence_members(data, source)
+                units = _step_units(source)
                 result = saved["result"]
                 members: dict[str, set[str]] = {
                     "review": set(), "carry_forward": set(), "positive_only": set(),
@@ -1437,17 +1384,10 @@ class DiagnosisProfileService:
                     members[reason].update(
                         units[ref][0] if ref in units else ref for ref in result.get(field) or []
                     )
-                for student in data.students:
-                    for record in student.records:
-                        if record.question_id != qid or not record.lost:
-                            continue
-                        digest = _evidence_hash(_evidence_key(
-                            _cause_evidence(student, record, data, by_step=by_step)))
-                        evidence_id = evidence_ids.get(digest)
-                        reason = next((name for name in ("review", "carry_forward", "positive_only")
-                                       if evidence_id in members[name]), None)
-                        if reason is not None:
-                            reasons[int(student.student_id)] = reason
+                for reason in ("positive_only", "carry_forward", "review"):
+                    for ref in members[reason]:
+                        for student_id in members_by_evidence.get(ref, ()):
+                            reasons[int(student_id)] = reason
         return index
 
     def _error_cause_index(
@@ -1456,7 +1396,7 @@ class DiagnosisProfileService:
     ) -> dict[tuple[int, int, str], list[dict[str, Any]]]:
         """{(session_id, student_id, question_id): [{category, pattern, kind}]}。
 
-        与报告共用证据校验；改分、改答案后的旧记录不进入诊断与训练。
+        与报告共用已存记录读取；已有归类继续参与统计。
         """
         reports_dir = self.data_root / "reports"
         if not reports_dir.is_dir():
@@ -1492,22 +1432,14 @@ class DiagnosisProfileService:
         session_id: int,
         reports_dir: Path,
     ) -> dict:
-        """session_error_records 的按场次复用；指纹覆盖不了任一输入时直接计算。
-
-        _prepare_error_sources 声明“不缓存学生证据，也不跨请求复用”；此处
-        允许复用，因为下面的指纹覆盖该次读取的全部输入（评分、场次行、
-        出勤、rubric/答案文件、状态文件、题库版本、上传来源与计算代码）。
-        """
-        from backend.class_analysis import session_error_records
-        fingerprint = self._session_error_fingerprint(session_id)
-        if fingerprint is None:
-            return session_error_records(
-                self.db, session_id, reports_dir, data_root=self.data_root,
-            )
+        """按场次复用已存归类；相关数据库提交或保存文件修改后刷新。"""
+        changes = self._session_error_change_stamp(session_id)
+        if changes is None:
+            return self._read_session_error_records(session_id, reports_dir)
         memo_key = (str(self.grading_db_path), str(self.data_root), session_id)
         with _SESSION_ERROR_LOCK:
             cached = _SESSION_ERROR_MEMO.get(memo_key)
-            if cached is not None and cached[0] == fingerprint:
+            if cached is not None and cached[0] == changes:
                 _SESSION_ERROR_MEMO.move_to_end(memo_key)
                 return cached[1]
         store = persistent_entry_store(
@@ -1515,104 +1447,69 @@ class DiagnosisProfileService:
             max_entries=_SESSION_ERROR_MAX_ENTRIES,
             max_bytes=_SESSION_ERROR_MAX_BYTES,
         )
-        pkey = ("session-error-records-v1", session_id, fingerprint)
-        records = store.get(pkey, fingerprint)
+        pkey = ("session-error-records", session_id)
+        records = store.get(pkey, changes)
         if not isinstance(records, dict):
-            records = session_error_records(
-                self.db, session_id, reports_dir, data_root=self.data_root,
-            )
-            store.put(pkey, fingerprint, records)
+            records = self._read_session_error_records(session_id, reports_dir)
+            store.put(pkey, changes, records)
         with _SESSION_ERROR_LOCK:
-            _SESSION_ERROR_MEMO[memo_key] = (fingerprint, records)
+            _SESSION_ERROR_MEMO[memo_key] = (changes, records)
             _SESSION_ERROR_MEMO.move_to_end(memo_key)
             while len(_SESSION_ERROR_MEMO) > _SESSION_ERROR_MAX_ENTRIES:
                 _SESSION_ERROR_MEMO.popitem(last=False)
         return records
 
-    def _session_error_fingerprint(self, session_id: int) -> tuple | None:
-        """Cover every input session_error_records reads for this session.
+    def _read_session_error_records(self, session_id: int, reports_dir: Path) -> dict:
+        from backend import class_analysis
+        try:
+            state = class_analysis.ClassAnalysisStateStore(reports_dir).load(session_id)
+            envelopes = (state or {}).get("error_records") or {}
+            cause = (state or {}).get("cause_analysis") or {}
+            questions = (cause.get("questions") or {}) if isinstance(cause, dict) else None
+            question_ids = (set(envelopes) | set(questions)
+                            if isinstance(envelopes, dict) and isinstance(questions, dict) else ())
+            if question_ids and not state.get("read_error") and all(
+                isinstance(envelopes.get(question_id), dict)
+                and isinstance(envelopes[question_id].get("records"), list)
+                for question_id in question_ids
+            ):
+                from backend.session_analysis import assemble_session_analysis
+                data = assemble_session_analysis(self.db, session_id, data_root=self.data_root,
+                    page_only=True, include_answer_evidence=False)
+                sources = []
+                prepared = class_analysis._index_saved_error_records(state, data, sources)
+                out = {}
+                for student in data.students:
+                    mapped = class_analysis.student_error_map(state, student, sources, data, _prepared=prepared)
+                    if mapped:
+                        out[int(student.student_id)] = mapped
+                class_analysis._enrich_error_record_skills(data, out, self.db)
+                return out
+        except Exception:
+            pass
+        return class_analysis.session_error_records(
+            self.db, session_id, reports_dir, data_root=self.data_root,
+        )
 
-        Returns None when any input cannot be fingerprinted; the caller then
-        computes without caching, preserving the previous behaviour.
-        """
+    def _session_error_change_stamp(self, session_id: int) -> tuple | None:
         try:
             from path_manager import resolve_stored_file_path
-            # 行内容哈希必须与读取它的数据库代次配对，否则一次提交会把旧
-            # 快照的哈希登记到新代次名下。
-            rows_hash = self._session_rows_hash(session_id)
+            origins = self.cache_identity or (
+                *_path_generation(self.grading_db_path),
+                *_path_generation(self.question_bank_db_path),
+            )
             session = self.db.sessions.get_grading_session(int(session_id)) or {}
             files = []
             for field in ("rubric_path", "answer_key_path"):
                 try:
-                    resolved = resolve_stored_file_path(
-                        session.get(field), data_root=self.data_root,
-                    )
+                    resolved = resolve_stored_file_path(session.get(field), data_root=self.data_root)
                 except (OSError, RuntimeError):
                     resolved = None
                 files.append(_session_error_file_state(resolved))
-            state_path = (
-                self.data_root / "reports" / ".class_analysis"
-                / f"{int(session_id)}.json"
-            )
-            bank_revision = cached_content_revision(self.question_bank_db_path)
-            source_state = _session_source_state(
-                self.data_root / "config" / "uploaded" / "config_sources"
-                / f"session-{int(session_id)}"
-            )
-            return (
-                rows_hash,
-                tuple(files),
-                _session_error_file_state(state_path),
-                bank_revision,
-                source_state,
-                _PROFILE_CALCULATION_STATE,
-                _SESSION_ERROR_CODE_STATE,
-            )
-        except (OSError, sqlite3.Error, TypeError, ValueError,
-                AttributeError, KeyError):
+            state = self.data_root / "reports" / ".class_analysis" / f"{int(session_id)}.json"
+            return (tuple(origins), tuple(files), _session_error_file_state(state))
+        except (OSError, sqlite3.Error, TypeError, ValueError, AttributeError, KeyError):
             return None
-
-    def _session_rows_hash(self, session_id: int) -> str:
-        """sha256 of this session's grading rows keyed by the state read.
-
-        A snapshot captured by request_read_context is frozen, so the rows
-        hash is safe to cache under the grading identity captured with it.
-        A live connection can observe a commit between the row reads, so
-        the hash is cached only while the generation holds still; on a move
-        the computed hash is returned without caching.
-        """
-        from backend.report_exports import score_revision
-        if self.cache_identity:
-            generation = tuple(self.cache_identity[:3])
-            stable = True
-        else:
-            # Monitor the real database path, not a request-scoped snapshot:
-            # the monitor keeps a long-lived connection that would pin a
-            # captured snapshot file open past request cleanup.
-            source_path = Path(getattr(self.db, "db_path", self.grading_db_path))
-            generation = _path_generation(source_path)
-            stable = False
-        key = (*generation, int(session_id))
-        with _SESSION_ERROR_LOCK:
-            hit = _SESSION_ERROR_ROW_HASHES.get(key)
-            if hit is not None:
-                _SESSION_ERROR_ROW_HASHES.move_to_end(key)
-                return hit
-        value = hashlib.sha256(json.dumps(
-            (
-                score_revision(self.db, int(session_id)),
-                self.db.sessions.get_grading_session(int(session_id)) or {},
-                self.db.sessions.get_session_attendance(int(session_id)),
-            ),
-            ensure_ascii=False, sort_keys=True, default=str,
-        ).encode()).hexdigest()
-        if stable or generation == _path_generation(source_path):
-            with _SESSION_ERROR_LOCK:
-                _SESSION_ERROR_ROW_HASHES[key] = value
-                _SESSION_ERROR_ROW_HASHES.move_to_end(key)
-                while len(_SESSION_ERROR_ROW_HASHES) > _SESSION_ERROR_ROW_LIMIT:
-                    _SESSION_ERROR_ROW_HASHES.popitem(last=False)
-        return value
 
     def _tag_projections(
         self,
@@ -1827,7 +1724,7 @@ def _path_generation(path: Path) -> tuple[str, ...]:
 
 
 def _dir_generation(path: Path) -> tuple[str, ...]:
-    """目录级缓存指纹：文件名集合 + 最新修改时间，用于 .class_analysis 状态目录。"""
+    """目录改动通知：文件名集合 + 最新修改时间，用于 .class_analysis 状态目录。"""
     source = Path(path).resolve(strict=False)
     try:
         entries = sorted(
@@ -1854,54 +1751,8 @@ def _session_error_file_state(path: Path | None) -> tuple:
         return (str(path), "missing")
 
 
-def _session_source_state(directory: Path) -> tuple:
-    """Recursive file stamp for one session's uploaded config-source tree."""
-    try:
-        if not directory.is_dir():
-            return (str(directory), "missing")
-        return (str(directory), tuple(sorted(
-            (str(item.relative_to(directory)), info.st_size, info.st_mtime_ns)
-            for item in directory.rglob("*")
-            if item.is_file() and (info := item.stat())
-        )))
-    except OSError:
-        return (str(directory), "unreadable")
-
-
-def _session_error_code_state() -> tuple:
-    """File stamps for the modules session_error_records depends on that
-    _PROFILE_CALCULATION_STATE does not already cover."""
-    root = Path(__file__).resolve().parent.parent
-    files = [
-        root / "backend" / "report_exports.py",
-        root / "backend" / "error_causes.py",
-        root / "backend" / "error_patterns.py",
-        root / "backend" / "review" / "service.py",
-        root / "backend" / "analytics" / "service.py",
-        root / "backend" / "config_workspace" / "sources.py",
-        root / "backend" / "document_parsing" / "question_blocks.py",
-        root / "backend" / "repositories" / "results.py",
-        root / "backend/scan_grading/solution_answer_guard.py",
-        root / "backend/question_id_contract.py",
-        root / "backend/scan_grading/grading_completeness.py",
-        root / "path_manager.py",
-    ]
-    return tuple(
-        (str(path), path.stat().st_mtime_ns, path.stat().st_size)
-        for path in files
-    )
-
-
-_SESSION_ERROR_CODE_STATE = _session_error_code_state()
-# 指纹通过才允许跨请求/重启复用；内存层与同进程共享条目库互为两级缓存。
 _SESSION_ERROR_MEMO: OrderedDict[tuple, tuple] = OrderedDict()
 _SESSION_ERROR_LOCK = threading.Lock()
-# 评分修订、场次行与出勤只读阅卷库；同一提交代次内结果不变，按代次复用，
-# 否则每次指纹都要重读全部行。代次变化（提交、文件替换、归档）即重读。
-# 键为 (路径, 文件标识, 提交代次, 场次)；直接连接（无请求快照）只在两次
-# 代次读取一致时才写入，避免把快照前的内容记到新代次名下。
-_SESSION_ERROR_ROW_HASHES: OrderedDict[tuple, str] = OrderedDict()
-_SESSION_ERROR_ROW_LIMIT = 128
 
 
 def _safe_int(value: object) -> int:

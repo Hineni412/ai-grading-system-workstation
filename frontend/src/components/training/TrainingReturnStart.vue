@@ -22,8 +22,8 @@ function submit() { emit('import', [...files.value], props.supplement ? undefine
     <h2 v-if="!supplement">回收答卷</h2>
     <p v-if="!frozen.length && !supplement">先生成 PDF 训练卷，再回收答卷。</p>
     <template v-else>
-      <div v-if="!supplement" class="return-start__count">本次回收 <b>{{ selectedIds.length }}</b> 份训练卷（每人最新版本）<AppButton variant="ghost" :aria-expanded="adjusting" @click="adjusting = !adjusting">调整 ▾</AppButton></div>
-      <fieldset v-if="adjusting && !supplement"><legend class="sr-only">选择回收训练卷</legend><label v-for="p in frozen" :key="p.paper_instance_id"><input v-model="selectedIds" type="checkbox" :value="p.paper_instance_id" :disabled="busy">{{ p.student_name || p.student_code || p.student_id }} · V{{ p.series_version }} · {{ p.pages.length }} 页</label></fieldset>
+      <div v-if="!supplement" class="return-start__count">本次回收 <b>{{ selectedIds.length }}</b> 份训练卷（每人最近生成的试卷）<AppButton variant="ghost" :aria-expanded="adjusting" @click="adjusting = !adjusting">调整 ▾</AppButton></div>
+      <fieldset v-if="adjusting && !supplement"><legend class="sr-only">选择回收训练卷</legend><label v-for="p in frozen" :key="p.paper_instance_id"><input v-model="selectedIds" type="checkbox" :value="p.paper_instance_id" :disabled="busy">{{ p.student_name || p.student_code || p.student_id }} · {{ p.created_at?.slice(0, 16) || '已保存' }} · {{ p.pages.length }} 页</label></fieldset>
       <label class="return-dropzone" @dragover.prevent @drop.prevent="drop"><strong>选择或拖入扫描文件</strong><span>PDF / JPG / PNG，可多选</span><input type="file" multiple accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" :disabled="busy" @change="choose"></label>
       <div v-if="files.length" class="return-files"><span>已选 {{ files.length }} 个文件</span><ul><li v-for="(file, i) in files" :key="i">{{ file.name }}</li></ul></div>
       <AppButton variant="primary" :disabled="busy || !files.length || (!supplement && !selectedIds.length)" @click="submit">{{ busy ? '正在识别归组…' : `导入并归组（${files.length} 个文件）` }}</AppButton>

@@ -1,0 +1,408 @@
+{
+  "date": "2026-10-10",
+  "role": "independent acceptance by original task",
+  "productionFilesChangedInThisAcceptance": 0,
+  "scope": {
+    "students": 91,
+    "student_knowledge_items": 41830,
+    "groups": 12
+  },
+  "fixedClock": "2026-10-10T01:17:08+08:00",
+  "fiveSecondTargetMet": false,
+  "syntheticTestsPassed": 297,
+  "paired": {
+    "timing": {
+      "baseline": {
+        "samples": 5,
+        "seconds": [
+          82.7852648999833,
+          82.85524099998293,
+          87.38408600000548,
+          72.53439010001603,
+          71.62040349998279
+        ],
+        "median_seconds": 82.7852648999833,
+        "minimum_seconds": 71.62040349998279,
+        "maximum_seconds": 87.38408600000548
+      },
+      "latest": {
+        "samples": 5,
+        "seconds": [
+          60.858660199999576,
+          60.939416300010635,
+          68.88956019998295,
+          62.38044259999879,
+          59.36140900000464
+        ],
+        "median_seconds": 60.939416300010635,
+        "minimum_seconds": 59.36140900000464,
+        "maximum_seconds": 68.88956019998295
+      }
+    },
+    "warm": {
+      "samples": 5,
+      "seconds": [
+        0.1976857999979984,
+        0.18654890000470914,
+        0.17569680002634414,
+        0.18052280001575127,
+        0.17871959999320097
+      ],
+      "median_seconds": 0.18052280001575127,
+      "minimum_seconds": 0.17569680002634414,
+      "maximum_seconds": 0.1976857999979984
+    },
+    "work": [
+      {
+        "pair": 1,
+        "side": "baseline",
+        "work": {
+          "diagnosis_rebuild": 1,
+          "error_records_rebuild": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 72.265625,
+        "phases": null
+      },
+      {
+        "pair": 1,
+        "side": "latest",
+        "work": {
+          "diagnosis_rebuild": 1,
+          "materialized_error_read": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 60.125,
+        "phases": null
+      },
+      {
+        "pair": 2,
+        "side": "latest",
+        "work": {
+          "diagnosis_rebuild": 1,
+          "materialized_error_read": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 59.421875,
+        "phases": null
+      },
+      {
+        "pair": 2,
+        "side": "baseline",
+        "work": {
+          "diagnosis_rebuild": 1,
+          "error_records_rebuild": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 80.75,
+        "phases": null
+      },
+      {
+        "pair": 3,
+        "side": "baseline",
+        "work": {
+          "diagnosis_rebuild": 1,
+          "error_records_rebuild": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 84.90625,
+        "phases": null
+      },
+      {
+        "pair": 3,
+        "side": "latest",
+        "work": {
+          "diagnosis_rebuild": 1,
+          "materialized_error_read": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 66.828125,
+        "phases": null
+      },
+      {
+        "pair": 4,
+        "side": "latest",
+        "work": {
+          "diagnosis_rebuild": 1,
+          "materialized_error_read": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 60.625,
+        "phases": null
+      },
+      {
+        "pair": 4,
+        "side": "baseline",
+        "work": {
+          "diagnosis_rebuild": 1,
+          "error_records_rebuild": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 72.09375,
+        "phases": null
+      },
+      {
+        "pair": 5,
+        "side": "baseline",
+        "work": {
+          "diagnosis_rebuild": 1,
+          "error_records_rebuild": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 71.46875,
+        "phases": null
+      },
+      {
+        "pair": 5,
+        "side": "latest",
+        "work": {
+          "diagnosis_rebuild": 1,
+          "materialized_error_read": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 59.515625,
+        "phases": null
+      }
+    ],
+    "completeResponsesEqual": true,
+    "modelVectorsAndCovarianceEqual": true,
+    "sameDatabaseInputs": true,
+    "sameConfiguration": true,
+    "sameSource": true,
+    "allInputFileMetadataGuarded": false,
+    "medianReductionPercent": 26.388571234706614
+  },
+  "single": {
+    "timing": {
+      "samples": 5,
+      "seconds": [
+        68.31047129997751,
+        75.58854379999684,
+        74.6907314999844,
+        72.4048194999923,
+        73.266191600007
+      ],
+      "median_seconds": 73.266191600007,
+      "minimum_seconds": 68.31047129997751,
+      "maximum_seconds": 75.58854379999684
+    },
+    "work": [
+      {
+        "run": 1,
+        "work": {
+          "diagnosis_rebuild": 1,
+          "materialized_error_read": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 66.578125
+      },
+      {
+        "run": 2,
+        "work": {
+          "diagnosis_rebuild": 1,
+          "materialized_error_read": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 71.921875
+      },
+      {
+        "run": 3,
+        "work": {
+          "diagnosis_rebuild": 1,
+          "materialized_error_read": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 73.46875
+      },
+      {
+        "run": 4,
+        "work": {
+          "diagnosis_rebuild": 1,
+          "materialized_error_read": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 72.25
+      },
+      {
+        "run": 5,
+        "work": {
+          "diagnosis_rebuild": 1,
+          "materialized_error_read": 3,
+          "mastery_fit": 1,
+          "grouping": 1,
+          "source_rebuild": 1
+        },
+        "process_cpu_seconds": 73.109375
+      }
+    ],
+    "completeResponsesEqual": true,
+    "modelVectorsAndCovarianceEqual": true,
+    "sameDatabaseInputs": true,
+    "sameConfiguration": true,
+    "sameSource": true,
+    "sameInputFileMetadata": true,
+    "inputFileCount": 18979
+  },
+  "scopes": [
+    {
+      "scope": "1",
+      "students": 91,
+      "groups": 5,
+      "groupedStudents": 44,
+      "selectedMembers": 24,
+      "completeEqual": true,
+      "filesStable": true
+    },
+    {
+      "scope": "2",
+      "students": 91,
+      "groups": 5,
+      "groupedStudents": 45,
+      "selectedMembers": 27,
+      "completeEqual": true,
+      "filesStable": true
+    },
+    {
+      "scope": "1-2",
+      "students": 91,
+      "groups": 12,
+      "groupedStudents": 56,
+      "selectedMembers": 21,
+      "completeEqual": true,
+      "filesStable": true
+    }
+  ],
+  "profile": {
+    "completed": true,
+    "excludedFromWaitTime": true,
+    "instrumentedSeconds": 160.67780099998345,
+    "work": {
+      "route": 1,
+      "diagnosis_rebuild": 1,
+      "materialized_error_read": 3,
+      "mastery_expansion": 2,
+      "mastery_fit": 1,
+      "public_mapping": 2,
+      "validation": 1,
+      "grouping": 1,
+      "mastery_snapshot": 1,
+      "freeze": 3383,
+      "source_rebuild": 1,
+      "matching": 1,
+      "selection": 176
+    },
+    "phases": {
+      "materialized_error_read": {
+        "calls": 3,
+        "inclusive_seconds": 1.479661200020928,
+        "exclusive_seconds": 1.479661200020928
+      },
+      "mastery_fit": {
+        "calls": 1,
+        "inclusive_seconds": 9.033042600000044,
+        "exclusive_seconds": 9.033042600000044
+      },
+      "mastery_expansion": {
+        "calls": 2,
+        "inclusive_seconds": 14.178028599970276,
+        "exclusive_seconds": 5.144985999970231
+      },
+      "diagnosis_rebuild": {
+        "calls": 1,
+        "inclusive_seconds": 28.376746699999785,
+        "exclusive_seconds": 14.093478199996753
+      },
+      "public_mapping": {
+        "calls": 2,
+        "inclusive_seconds": 8.709695199970156,
+        "exclusive_seconds": 8.709695199970156
+      },
+      "validation": {
+        "calls": 1,
+        "inclusive_seconds": 1.476146399974823,
+        "exclusive_seconds": 1.476146399974823
+      },
+      "freeze": {
+        "calls": 3383,
+        "inclusive_seconds": 28.41572539822664,
+        "exclusive_seconds": 28.41572539822664
+      },
+      "mastery_snapshot": {
+        "calls": 1,
+        "inclusive_seconds": 15.02235539999674,
+        "exclusive_seconds": 5.238138600019738
+      },
+      "source_rebuild": {
+        "calls": 1,
+        "inclusive_seconds": 35.05010799999582,
+        "exclusive_seconds": 35.05010799999582
+      },
+      "matching": {
+        "calls": 1,
+        "inclusive_seconds": 29.980010100000072,
+        "exclusive_seconds": 11.59758090111427
+      },
+      "selection": {
+        "calls": 176,
+        "inclusive_seconds": 27.498134700057562,
+        "exclusive_seconds": 27.498134700057562
+      },
+      "grouping": {
+        "calls": 1,
+        "inclusive_seconds": 116.97433689999161,
+        "exclusive_seconds": 7.800228000589414
+      },
+      "route": {
+        "calls": 1,
+        "inclusive_seconds": 158.63057569999364,
+        "exclusive_seconds": 3.093650500057265
+      }
+    },
+    "sameDatabaseInputs": true,
+    "sameConfiguration": true,
+    "sameSource": true,
+    "sameInputFileMetadata": true
+  },
+  "formalHttpAndBrowser": {
+    "checkedAt": "2026-10-10T01:46:33.4237032+08:00",
+    "port": 8035,
+    "listenerCount": 0,
+    "healthCheckSucceeded": false,
+    "serviceStartedOrRestarted": false,
+    "startupReadOnly": false,
+    "reason": "Normal launcher runs storage write probes, schema coordination and persistent prewarming; this acceptance keeps real data read-only."
+  },
+  "realDataWrites": 0,
+  "externalModelRequests": 0,
+  "realDataCopies": 0,
+  "operationScopeBasis": "The zero write, request and copy values record operations not performed in this acceptance. They are supported by read-only connections, runtime guards and execution-path review, not independent event counters.",
+  "productionSourceMatchesImplementation": true
+}

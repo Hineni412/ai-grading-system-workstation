@@ -7,8 +7,8 @@ import { trainingApi, type TrainingOverview, type TrainingOverviewNode } from '.
 import { createAppRouter } from '../router'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import { useMasteryOverviewStore } from '../stores/mastery-overview'
-import { heatLevel, overviewMetrics, relatedNodes, weakRate } from '../components/knowledge-overview/metrics'
-import KnowledgeGraphView from '../views/KnowledgeGraphView.vue'
+import { heatLevel, relatedNodes, weakRate } from '../components/knowledge-overview/metrics'
+import KnowledgeGraphView from '../views/KnowledgeOverviewView.vue'
 vi.mock('../api/students', async importOriginal => ({ ...await importOriginal<typeof import('../api/students')>(), fetchStudents: vi.fn() }))
 vi.mock('../api/training', async importOriginal => ({ ...await importOriginal<typeof import('../api/training')>(), trainingApi: { overview: vi.fn() } }))
 vi.mock('../api/assembly', async importOriginal => ({ ...await importOriginal<typeof import('../api/assembly')>(),
@@ -80,9 +80,8 @@ describe('knowledge mastery map', () => {
   it('uses overview, ignores old scope links, and excludes previous volumes from the header', async () => {
     const { host, router } = await mountView('/knowledge-graph?session=7&class=old')
     expect(trainingApi.overview).toHaveBeenCalledWith({ scope: { mode: 'all', student_ids: [], use_historical_fallback: false }, exam_scope: { mode: 'semester', curriculum_volume_id: 'bnu24-math-g8-upper', session_ids: [] } }, expect.any(AbortSignal))
-    const metrics = overviewMetrics(fixture())
-    expect(host.querySelector('.mastery-map-summary')?.textContent).toContain(`本册 ${metrics.total} 项 · 有证据 ${metrics.evidence} 项 · 有学生明显薄弱 ${metrics.weak} 项`)
-    expect(router.currentRoute.value.query).toEqual({})
+    expect(host.querySelector('.overview-summary-strip')).toBeNull()
+    expect(router.currentRoute.value.query).toEqual({ view: 'chapters' })
     expect(host.textContent).toContain('往届内容（本学期考试涉及 · 1 项）')
     expect(host.querySelector('.mastery-map-column[data-kind="topic"]')?.textContent).toContain('知识点 · 学什么')
     expect(host.querySelector('.mastery-map-column[data-kind="skill"]')?.textContent).toContain('技能 · 会做什么')
@@ -100,7 +99,7 @@ describe('knowledge mastery map', () => {
     expect(host.querySelectorAll('.mastery-map-node.is-skill')).toHaveLength(2)
     await router.replace('/knowledge-graph?filter=weak'); await settle()
     expect(button(host, 'unrelated')).toBeNull()
-    expect(host.querySelector('.mastery-map-summary')?.textContent).toContain('有学生明显薄弱 3 项')
+    expect(host.querySelector('.overview-summary-strip')).toBeNull()
   })
   it('opens details, highlights only associations, and restores the cell focus on Escape', async () => {
     const { host } = await mountView()
@@ -127,7 +126,7 @@ describe('knowledge mastery map', () => {
     await settle(); expect(button(host, 'unrelated').classList.contains('is-dimmed')).toBe(false)
     expect(relatedNodes(fixture(), 'topic').map(r => r.node.knowledge_key)).toEqual(['skill', 'skill2'])
   })
-  it('renders a single type column, hides unexamined types, and shows the typical question without students or links', async () => {
+  it('renders a single type column, hides unexamined types, and shows the typical question and weak students without links', async () => {
     vi.mocked(trainingApi.overview).mockImplementation(async () => typeFixture())
     const { host } = await mountView()
     expect(host.querySelector('.mastery-map-column[data-kind="type"]')?.textContent).toContain('题型 · 考什么')
@@ -147,7 +146,8 @@ describe('knowledge mastery map', () => {
     expect(drawer.textContent).toContain('期中考试 第12题 · 得分率 50%')
     expect(drawer.textContent).toContain('给明显薄弱的 1 人出训练卷')
     expect(drawer.textContent).not.toContain('相关知识点')
-    expect(drawer.querySelector('.student-tier-chips, [class*="tier-chip"]')).toBeNull()
+    expect(drawer.querySelectorAll('.student-tier-chip')).toHaveLength(1)
+    expect(drawer.querySelector('.student-tier-chip')?.textContent).toContain('测试甲')
   })
   it('retains cached results when moving from overview to map', async () => {
     const pinia = createPinia(); setActivePinia(pinia)

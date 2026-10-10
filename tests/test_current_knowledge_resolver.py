@@ -219,7 +219,8 @@ def test_training_target_volume_uses_resolver_parent_before_key_namespace():
 def test_chapter_targets_keep_old_volumes_and_mix_new_volume():
     from types import SimpleNamespace
     from question_bank.question_types import (
-        chapter_target_kind, chapter_target_kinds, is_training_target, training_keys,
+        chapter_target_kind, chapter_target_kinds, is_training_target,
+        target_kind_for_key, training_keys,
     )
     type_key = "kp_bnu24_math_g8_lower_1_1_t01"
     topic = "kp_bnu24_math_g8_lower_2_1_1"
@@ -239,6 +240,13 @@ def test_chapter_targets_keep_old_volumes_and_mix_new_volume():
     assert is_training_target(old_skill, resolver)
     assert training_keys((type_key, topic, current_skill), resolver) == {type_key, topic}
     assert chapter_target_kind(resolver, "bnu24-math-g7-upper") == "skill"
+    assert chapter_target_kind(resolver, "bnu24-math-g8-lower", "bnu24-math-g8-lower-c01") == "type"
+    assert target_kind_for_key(type_key, resolver) == "type"
+    assert target_kind_for_key(topic, resolver) == "knowledge"
+    assert target_kind_for_key("TEST-unknown-key", resolver, "bnu24-math-g8-lower") == "mixed"
+    assert target_kind_for_key(topic, resolver, "bnu24-math-g7-upper") == "skill"
+    assert target_kind_for_key("TEST-unknown-key", resolver) == "skill"
+    assert target_kind_for_key(type_key, resolver, "TEST-unknown-volume") == "skill"
 
 
 def test_chapter_target_mapping_reuses_work_without_sharing_results(monkeypatch):
@@ -250,6 +258,7 @@ def test_chapter_target_mapping_reuses_work_without_sharing_results(monkeypatch)
     volume = dict(module.curriculum_volume(volume_id=volume_id))
     expected = {str(chapter["knowledge_id"]): "type" for chapter in volume["chapters"]}
     iterations = 0
+    volume_lookups = 0
 
     class CountedChapters(list):
         def __iter__(self):
@@ -258,7 +267,13 @@ def test_chapter_target_mapping_reuses_work_without_sharing_results(monkeypatch)
             return super().__iter__()
 
     volume["chapters"] = CountedChapters(volume["chapters"])
-    monkeypatch.setattr(module, "curriculum_volume", lambda **_kwargs: volume)
+
+    def counted_volume(**_kwargs):
+        nonlocal volume_lookups
+        volume_lookups += 1
+        return volume
+
+    monkeypatch.setattr(module, "curriculum_volume", counted_volume)
     resolver = SimpleNamespace(
         release_id="TEST-reused-target-mapping", content_hash="content-v1", taxonomy_revision=11,
         nodes=[SimpleNamespace(stable_key="kp_bnu24_math_g8_upper_1_1_t01")],
@@ -267,8 +282,14 @@ def test_chapter_target_mapping_reuses_work_without_sharing_results(monkeypatch)
     assert first == expected
     first.clear()
     for _ in range(20):
-        assert module.chapter_target_kinds(copy.copy(resolver), volume_id) == expected
+        current = copy.copy(resolver)
+        assert module.chapter_target_kinds(current, volume_id) == expected
+        assert module.chapter_target_kind(current, volume_id, "bnu24-math-g8-upper-c02") == "type"
+        assert module.target_kind_for_key("kp_bnu24_math_g8_upper_1_1_t01", current) == "type"
+        assert module.is_training_target("kp_bnu24_math_g8_upper_1_1_t01", current)
+        assert module.type_keys_active(current, volume_id, "bnu24-math-g8-upper-c01")
     assert iterations == 1
+    assert volume_lookups == 1
 
 
 def test_chapter_target_cache_follows_release_and_content_version(monkeypatch):
@@ -282,12 +303,15 @@ def test_chapter_target_cache_follows_release_and_content_version(monkeypatch):
         nodes=[SimpleNamespace(stable_key="kp_bnu24_math_g8_upper_1_1_t01")],
     )
     assert module.chapter_target_kind(resolver, "bnu24-math-g8-upper") == "type"
+    assert module.target_kind_for_key("kp_bnu24_math_g8_upper_1_1_t01", resolver) == "type"
     resolver.content_hash = "content-v2"
     resolver.nodes = []
     assert module.chapter_target_kind(resolver, "bnu24-math-g8-upper") == "skill"
+    assert module.target_kind_for_key("kp_bnu24_math_g8_upper_1_1_t01", resolver) == "skill"
     resolver.release_id = "TEST-target-version-b"
     resolver.nodes = [SimpleNamespace(stable_key="kp_bnu24_math_g8_upper_1_1_t01")]
     assert module.chapter_target_kind(resolver, "bnu24-math-g8-upper") == "type"
+    assert module.target_kind_for_key("kp_bnu24_math_g8_upper_1_1_t01", resolver) == "type"
     assert len(module._TYPE_RELEASE_CACHE) == 1
     module._clear_type_cache_for_tests()
     resolver.nodes = []
@@ -305,16 +329,27 @@ def test_chapter_target_cache_respects_current_fallback_policy(monkeypatch):
     )
     volume_id = "bnu24-math-g7-upper"
     assert module.chapter_target_kind(resolver, volume_id) == "skill"
+    key = "sk_bnu24_math_g7_upper_1_1_01"
+    assert module.target_kind_for_key(key, resolver) == "skill"
     resolver.knowledge_target_volumes = (volume_id,)
     assert module.chapter_target_kind(resolver, volume_id) == "knowledge"
+    assert module.target_kind_for_key(key, resolver) == "knowledge"
     resolver.taxonomy_revision = 10
     assert module.chapter_target_kind(resolver, volume_id) == "skill"
     assert module.chapter_target_kind(resolver, "bnu24-math-g8-lower") == "skill"
+    assert module.target_kind_for_key(key, resolver) == "skill"
     resolver.taxonomy_revision = 11
     assert module.chapter_target_kind(resolver, volume_id) == "knowledge"
     assert module.chapter_target_kind(resolver, "bnu24-math-g8-lower") == "knowledge"
+    assert module.target_kind_for_key(key, resolver) == "knowledge"
     resolver.knowledge_target_volumes = ()
     assert module.chapter_target_kind(resolver, volume_id) == "skill"
+    assert module.target_kind_for_key(key, resolver) == "skill"
+    resolver.knowledge_target_volumes = ("TEST-unknown-volume",)
+    assert module.chapter_target_kinds(resolver, "TEST-unknown-volume") == {}
+    assert module.chapter_target_kind(resolver, "TEST-unknown-volume") == "skill"
+    assert module.target_kind_for_key(key, resolver, "TEST-unknown-volume") == "knowledge"
+    assert module.target_kind_for_key("TEST-unknown-key", resolver, "TEST-unknown-volume") == "skill"
 
 
 def test_chapter_target_mapping_does_not_cache_unversioned_resolvers(monkeypatch):
@@ -324,8 +359,10 @@ def test_chapter_target_mapping_does_not_cache_unversioned_resolvers(monkeypatch
     monkeypatch.setattr(module, "_TYPE_RELEASE_CACHE", {})
     resolver = SimpleNamespace(nodes=[], content_hash="content-v1", taxonomy_revision=11)
     assert module.chapter_target_kind(resolver, "bnu24-math-g8-upper") == "skill"
+    assert module.target_kind_for_key("kp_bnu24_math_g8_upper_1_1_t01", resolver) == "skill"
     resolver.nodes.append(SimpleNamespace(stable_key="kp_bnu24_math_g8_upper_1_1_t01"))
     assert module.chapter_target_kind(resolver, "bnu24-math-g8-upper") == "type"
+    assert module.target_kind_for_key("kp_bnu24_math_g8_upper_1_1_t01", resolver) == "type"
     assert module.chapter_target_kinds(resolver, "TEST-unknown-volume") == {}
     assert module.chapter_target_kinds(None, "TEST-unknown-volume") == {}
     assert not module._TYPE_RELEASE_CACHE

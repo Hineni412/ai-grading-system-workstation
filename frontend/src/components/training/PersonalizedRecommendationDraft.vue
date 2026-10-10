@@ -56,7 +56,6 @@ const props = defineProps<{
   difficultyMax?: number
   curriculumVolumeId?: string | null
   groupScopeKeys?: string[]
-  groupSourceVersion?: string
   trainingIntent?: 'remediation' | 'challenge'
   teachingProgressChapterId?: string
 }>()
@@ -184,10 +183,7 @@ const canDiscardDraft = computed(() => (
   && (!handoutRequestToken.value || Boolean(handoutJob.value && ['succeeded', 'failed', 'cancelled'].includes(handoutJob.value.status)))
 ))
 
-// 出卷设置指纹：设置一致时才恢复上次草稿，设置变了必须重新生成。
-// rulesVersion 随选题规则升级递增，避免恢复规则升级前的旧草稿。
-const settingsFingerprint = computed(() => JSON.stringify({
-  rulesVersion: props.paperMode === 'shared' ? 16 : 17,
+const requestSettings = computed(() => JSON.stringify({
   maxUnmeasuredQuestions: props.paperMode === 'shared' ? 0 : props.purpose === 'handout' ? props.maxUnmeasuredQuestions ?? 6 : 4,
   maxConsolidationQuestions: props.paperMode === 'shared' || props.purpose !== 'handout' ? 0 : props.maxConsolidationQuestions ?? 6,
   purpose: props.purpose ?? 'training',
@@ -209,7 +205,6 @@ const settingsFingerprint = computed(() => JSON.stringify({
 
 function rememberDraft(draftId: string): void {
   savePaperDraftSession({
-    fingerprint: settingsFingerprint.value,
     draftId,
     handoutRequestToken: handoutRequestToken.value || undefined,
   })
@@ -226,26 +221,8 @@ watch(() => props.initialDraftId, id => {
 })
 async function restoreDraft(): Promise<void> {
   if (restoring || draft.value || state.value !== 'idle') return
-  const stored = props.initialDraftId ? { draftId: props.initialDraftId, fingerprint: settingsFingerprint.value, requestToken: '', handoutRequestToken: '' } : loadPaperDraftSession()
+  const stored = props.initialDraftId ? { draftId: props.initialDraftId, requestToken: '', handoutRequestToken: '' } : loadPaperDraftSession()
   if (!stored) return
-  let previousRules = false
-  if (stored.fingerprint !== settingsFingerprint.value) {
-    try {
-      const previous = JSON.parse(stored.fingerprint)
-      previousRules = Number(previous.rulesVersion) < 11
-      if (!previousRules) return
-      previous.rulesVersion = 11
-      previous.purpose ??= 'training'
-      previous.maxQuestionsPerSkill ??= 1
-      previous.maxWrittenQuestions ??= 2
-      previous.recentActivityCount ??= 3
-      for (const key of ['trainingIntent', 'expectedMinutes', 'difficultyMin', 'stageRatios']) delete previous[key]
-      previous.teachingProgressChapterId ??= ''
-      previous.difficultyMax ??= difficultyMax.value
-      const current = JSON.parse(settingsFingerprint.value)
-      if (Object.keys(current).some(key => JSON.stringify(current[key]) !== JSON.stringify(previous[key]))) return
-    } catch { return }
-  }
   restoring = true
   if (stored.requestToken && !stored.draftId) {
     pendingRequestToken.value = stored.requestToken
@@ -268,14 +245,11 @@ async function restoreDraft(): Promise<void> {
     state.value = 'ready'
     await Promise.resolve()
     viewStep.value = instances.some(instance => instance.status === 'frozen') ? 'scan' : 'review'
-    actionMessage.value = previousRules
-      ? '已恢复原草稿，沿用保存时的设置、来源和限制；已生成训练卷仍可查看。'
-      : '已恢复上次生成的草稿，可继续审核。'
+    actionMessage.value = '已恢复保存的草稿，沿用当时的设置与题目；已生成试卷仍可查看。'
     if (handoutRequestToken.value) void recoverHandoutExport()
   } catch {
-    clearPaperDraftSession()
     state.value = 'idle'
-    actionMessage.value = '上次暂存的草稿已无法打开，已清除本地暂存；请重新生成草稿。'
+    actionMessage.value = '保存的草稿暂时无法打开，保存记录仍保留，可再次尝试。'
   } finally {
     restoring = false
   }
@@ -307,11 +281,11 @@ watch(() => props.difficultyMax, (value) => {
 })
 
 watch(
-  [settingsFingerprint, () => JSON.stringify([...(props.scope.student_ids ?? [])].sort())],
+  [requestSettings, () => JSON.stringify([...(props.scope.student_ids ?? [])].sort())],
   () => {
     // 草稿自带生成时的证据快照；重读同一批学生不清空草稿。
     if (props.initialDraftId && draft.value?.draft_id === props.initialDraftId) return
-    // 设置或成员变化才重置，生成与出卷仍由后端核对来源。
+    // 设置变化仅取消旧请求回调，已保存草稿仍按编号恢复。
     draft.value = null
     pendingRequestToken.value = ''
     selectedDraftStudentId.value = ''
@@ -331,7 +305,7 @@ watch(
 )
 
 watch(
-  [settingsFingerprint, () => props.diagnosis, () => props.initialDraftId],
+  [requestSettings, () => props.diagnosis, () => props.initialDraftId],
   () => {
     void restoreDraft()
   },
@@ -508,7 +482,7 @@ function safeError(error: unknown, fallback: string): string {
       return '题目、关系或判定点已经变化，请重新生成草稿和训练卷。'
     }
     if (error.code === 'personalized_paper_invalid') {
-      return '上传的 WPS 审核稿与本卷题目或顺序不一致，请使用本版本下载的审核稿。'
+      return '上传的 WPS 审核稿与本卷题目或顺序不一致，请使用这份试卷下载的审核稿。'
     }
   }
   return fallback
@@ -529,17 +503,17 @@ function acceptGeneratedDraft(value: PersonalizedRecommendationDraft): void {
 
 async function recoverPendingDraft(): Promise<void> {
   const token = pendingRequestToken.value
-  const fingerprint = settingsFingerprint.value
+  const submittedSettings = requestSettings.value
   if (!token) return
   state.value = 'loading'
   errorMessage.value = ''
   try {
     const recovered = await trainingApi.getPersonalizedDraftByRequest(token)
-    if (fingerprint !== settingsFingerprint.value || token !== pendingRequestToken.value) return
+    if (submittedSettings !== requestSettings.value || token !== pendingRequestToken.value) return
     acceptGeneratedDraft(recovered)
     actionMessage.value = '已取回上次请求生成的草稿，没有重复创建。'
   } catch {
-    if (fingerprint !== settingsFingerprint.value || token !== pendingRequestToken.value) return
+    if (submittedSettings !== requestSettings.value || token !== pendingRequestToken.value) return
     state.value = 'error'
     errorMessage.value = '暂未取得生成结果，后台可能仍在处理。请稍后核对生成结果；当前设置已保留，不会重复创建草稿。'
   }
@@ -553,9 +527,9 @@ async function generate(): Promise<void> {
   }
   if (!canGenerate.value) return
   const token = requestToken()
-  const fingerprint = settingsFingerprint.value
+  const submittedSettings = requestSettings.value
   pendingRequestToken.value = token
-  savePaperDraftSession({ fingerprint, draftId: '', requestToken: token })
+  savePaperDraftSession({ draftId: '', requestToken: token })
   state.value = 'loading'
   errorMessage.value = ''
   actionMessage.value = ''
@@ -580,12 +554,12 @@ async function generate(): Promise<void> {
       exclude_current_exam_originals: props.excludeCurrentExamOriginals,
       curriculum_volume_id: props.curriculumVolumeId ?? null,
       teaching_progress_chapter_id: props.teachingProgressChapterId ?? '',
-      ...(props.groupScopeKeys?.length ? { group_scope_keys: props.groupScopeKeys, group_source_version: props.groupSourceVersion } : {}),
+      ...(props.groupScopeKeys?.length ? { group_scope_keys: props.groupScopeKeys } : {}),
     })
-    if (fingerprint !== settingsFingerprint.value || token !== pendingRequestToken.value) return
+    if (submittedSettings !== requestSettings.value || token !== pendingRequestToken.value) return
     acceptGeneratedDraft(generated)
   } catch (error) {
-    if (fingerprint !== settingsFingerprint.value || token !== pendingRequestToken.value) return
+    if (submittedSettings !== requestSettings.value || token !== pendingRequestToken.value) return
     if (isAmbiguousWriteError(error) || (error instanceof ApiError && error.kind === 'contract')) {
       await recoverPendingDraft()
       return
@@ -660,8 +634,8 @@ async function recoverHandoutExport(): Promise<void> {
   if (!componentActive || !draft.value || !handoutRequestToken.value) return
   const draftId = draft.value.draft_id
   const token = handoutRequestToken.value
-  const fingerprint = settingsFingerprint.value
-  const stillCurrent = () => componentActive && token === handoutRequestToken.value && fingerprint === settingsFingerprint.value
+  const submittedSettings = requestSettings.value
+  const stillCurrent = () => componentActive && token === handoutRequestToken.value && submittedSettings === requestSettings.value
   paperBusy.value = 'handout'
   try {
     const job = await trainingApi.getHandoutExportByRequest(draftId, token)
@@ -687,17 +661,17 @@ async function exportHandout(): Promise<void> {
   actionMessage.value = ''
   handoutRequestToken.value = requestToken()
   const token = handoutRequestToken.value
-  const fingerprint = settingsFingerprint.value
+  const submittedSettings = requestSettings.value
   handoutJob.value = null
   rememberDraft(draft.value.draft_id)
   try {
     const job = await trainingApi.exportHandout(draft.value.draft_id, {
       expected_revision: draft.value.revision, request_token: token,
     })
-    if (!componentActive || token !== handoutRequestToken.value || fingerprint !== settingsFingerprint.value) return
+    if (!componentActive || token !== handoutRequestToken.value || submittedSettings !== requestSettings.value) return
     await trackHandoutJob(job)
   } catch (error) {
-    if (!componentActive || token !== handoutRequestToken.value || fingerprint !== settingsFingerprint.value) return
+    if (!componentActive || token !== handoutRequestToken.value || submittedSettings !== requestSettings.value) return
     if (isAmbiguousWriteError(error) || (error instanceof ApiError && error.kind === 'contract') || handoutJob.value) errorMessage.value = '导出请求结果暂未确认，请核对导出结果。'
     else {
       handoutRequestToken.value = ''
@@ -867,7 +841,7 @@ async function downloadPaper(
     anchor.click()
     URL.revokeObjectURL(url)
   } catch {
-    errorMessage.value = '文件暂时无法下载，请稍后重试；已保存的版本不会受影响。'
+    errorMessage.value = '文件暂时无法下载，请稍后重试；已保存的试卷仍然保留。'
   } finally {
     paperBusy.value = ''
   }
@@ -975,7 +949,7 @@ async function editItem(
           <div v-if="paperBatch" class="personalized-batch-result"><span>成功 {{ paperBatch.succeeded_count }} / {{ paperBatch.requested_count }} 人</span><AppButton v-if="paperBatch.failures.length" variant="secondary" :disabled="Boolean(paperBusy)" @click="retryFailedPaperBatch">{{ paperBusy === 'batch-retry' ? '正在重试失败学生…' : `只重试失败的 ${paperBatch.failures.length} 人` }}</AppButton><ul v-if="paperBatch.failures.length"><li v-for="failure in paperBatch.failures" :key="failure.student_id">{{ draft.students.find(student => student.student_id === failure.student_id)?.student_name || failure.student_id }}：生成失败</li></ul></div>
           <details v-if="hasPrintablePapers" class="print-more"><summary>其他导出与重新出卷</summary><AppButton v-if="paperBatch?.downloads.bundle" variant="secondary" :disabled="Boolean(paperBusy)" @click="downloadBatch('bundle')">下载 DOCX 版 ZIP</AppButton><AppButton variant="secondary" :disabled="Boolean(paperBusy) || !eligiblePaperCount" @click="createPaperBatch">{{ paperBusy === 'batch' ? '正在逐人生成 PDF…' : '重新生成全部 PDF' }}</AppButton></details>
         </section>
-        <div v-if="!isHandout && paperInstances.length" class="paper-download-list"><header><strong>学生试卷</strong><span>保留各版本，可分别下载</span></header><template v-for="student in draft.students" :key="student.student_id"><article v-for="instance in instancesForStudent(student.student_id)" :key="instance.paper_instance_id"><div><strong>{{ student.student_name || student.student_code || student.student_id }}</strong><span>V{{ instance.series_version }} · {{ instance.question_count }} 题 · {{ instance.pages.length }} 页</span></div><StatusBadge :tone="instance.status === 'frozen' ? 'success' : 'warning'" :label="instance.status === 'frozen' ? '可打印' : '待生成 PDF'" /><AppButton v-if="instance.downloads.frozen_pdf" variant="ghost" :disabled="Boolean(paperBusy)" @click="downloadPaper(instance, 'frozen_pdf')">下载 PDF 试卷</AppButton><AppButton v-if="instance.downloads.review_docx" variant="ghost" :disabled="Boolean(paperBusy)" @click="downloadPaper(instance, 'review_docx')">下载 DOCX</AppButton><p v-if="instance.formula_fallbacks?.length" class="formula-note">{{ instance.formula_fallbacks.length }} 处公式已保留原式或题图，打印前请预览核对。</p></article></template></div>
+        <div v-if="!isHandout && paperInstances.length" class="paper-download-list"><header><strong>学生试卷</strong><span>已生成的试卷可分别查看和下载</span></header><template v-for="student in draft.students" :key="student.student_id"><article v-for="instance in instancesForStudent(student.student_id)" :key="instance.paper_instance_id"><div><strong>{{ student.student_name || student.student_code || student.student_id }}</strong><span>{{ instance.created_at?.slice(0, 10) || '已保存' }} · {{ instance.question_count }} 题 · {{ instance.pages.length }} 页</span></div><StatusBadge :tone="instance.status === 'frozen' ? 'success' : 'warning'" :label="instance.status === 'frozen' ? '可打印' : '待生成 PDF'" /><AppButton v-if="instance.downloads.frozen_pdf" variant="ghost" :disabled="Boolean(paperBusy)" @click="downloadPaper(instance, 'frozen_pdf')">下载 PDF 试卷</AppButton><AppButton v-if="instance.downloads.review_docx" variant="ghost" :disabled="Boolean(paperBusy)" @click="downloadPaper(instance, 'review_docx')">下载 DOCX</AppButton><p v-if="instance.formula_fallbacks?.length" class="formula-note">{{ instance.formula_fallbacks.length }} 处公式已保留原式或题图，打印前请预览核对。</p></article></template></div>
         <FeedbackBanner v-if="actionMessage" role="status" tone="info" :description="actionMessage" />
       </section>
       <section v-if="!isHandout && hasPrintablePapers" v-show="viewStep === 'scan'" class="personalized-scan"><TrainingScanBatchPanel ref="returnPanel" :instances="paperInstances" :initial-focus="initialFocus" @focus-consumed="emit('focusConsumed')" @progress-change="scanProgress = $event" @open-draft="openNextDraft" /></section>

@@ -1,23 +1,7 @@
-"""班级分析（教师版）内嵌页面：状态存储、生成 job 与阅卷完成后的自动触发。
-
-- 每场次一个状态文件：受控 reports 目录下 `.class_analysis/{session_id}.json`，
-  原子写入；AI 叙述本体直接内嵌在 `class_reports` 条目中。
-- 页面数据（data）不落盘，GET 时按当前成绩实时装配；结果新鲜度统一由
-  backend.report_results 的 input_digest + prompt_version 判定。逐题错因归并
-  同存于该状态文件，保留批语映射及评分要求，读取时匹配当前输入并按所选班级
-  去重统计人数。
-  归并结果同时物化为学生×题错因记录（error_records），供个人报告按题读取。
-- 错因整理、班级叙述与个人叙述统一由 backend.report_pipeline 的
-  kind=pipeline 任务顺序执行；报告导出只复用已生成内容，不调用模型。
-- 自动生成挂钩点：阅卷 run 判定为 completed、该场次无未批完答卷且无待
-  复核条目时，由 default_handlers 里的 grading_run handler 调用
-  maybe_auto_generate_report_pipeline；复核页确认最后一个待复核条目时
-  也会再次检查触发。
-"""
+"""班级与个人报告共用的错因保存、读取和统计。"""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -41,8 +25,6 @@ from backend.repositories.grading_database import open_grading_repositories
 LOGGER = logging.getLogger(__name__)
 
 from backend.report_results import (
-    cause_input_digest,
-    prompt_version,
     resolve_result_state,
 )
 
@@ -50,11 +32,6 @@ CLASS_ANALYSIS_JOB_TYPE = "class_analysis_generate"
 CLASS_ANALYSIS_STATE_DIRNAME = ".class_analysis"
 CLASS_ANALYSIS_REPORT_KEY = "class:session"
 NARRATIVE_CACHE_DIRNAME = ".analysis_narrative_cache"
-# 提示词版本的唯一来源是 backend.report_results.prompt_version；此别名仅供
-# 既有调用方与测试辨认，不引入第二个字符串常量。
-CAUSE_ANALYSIS_VERSION = prompt_version("causes")
-# 迁移后仍可展示的旧提示词版本（按步骤拆分前的整理口径）。
-_CAUSE_PRE_STEP_PROMPT_VERSION = "class_error_causes_v3"
 CAUSE_KINDS = frozenset({"error", "process", "response_state", "carry_forward", "review"})
 
 CAUSE_ANALYSIS_PROMPT = """你是数学教师，依据本场考试的题目、参考解答、已有作答证据与批语整理失分情况，不重新评分。
@@ -202,25 +179,6 @@ def _evidence_key(evidence: dict[str, Any]) -> str:
     return json.dumps(item, ensure_ascii=False, sort_keys=True)
 
 
-def _evidence_hash(evidence_key: str) -> str:
-    return hashlib.sha256(evidence_key.encode("utf-8")).hexdigest()[:20]
-
-
-# 旧名保留为别名：整理输入指纹的唯一实现是 report_results.cause_input_digest。
-_cause_input_fingerprint = cause_input_digest
-
-
-def _saved_prompt_version(saved: dict[str, Any]) -> str:
-    """已存条目的提示词版本；兼容迁移前以 version 键存放的状态文件。"""
-    return str(saved.get("prompt_version") or saved.get("version") or "")
-
-
-def _saved_input_digest(saved: dict[str, Any], source: dict[str, Any]) -> str:
-    """已存条目的输入指纹；兼容迁移前的 input_fingerprint 键。"""
-    digest = str(saved.get("input_digest") or saved.get("input_fingerprint") or "")
-    if not digest and isinstance(saved.get("input"), dict):
-        digest = cause_input_digest(saved["input"])
-    return digest
 
 
 def _merge_known_patterns(*groups: Any) -> list[dict[str, Any]]:
@@ -494,7 +452,7 @@ def normalize_cause_result(payload: Any, source: dict[str, Any]) -> dict[str, An
 def student_error_records(
     data: Any, source: dict[str, Any], result: dict[str, Any], *, by_step: bool = True,
 ) -> list[dict[str, Any]]:
-    """把本题归并结果投影成学生×题错因记录；证据哈希供读取侧校验输入是否变化。
+    """把本题归并结果投影成学生×题错因记录，保存成员编号直接读取。
 
     按步骤整理的证据中，步骤单元成员各自物化一行（带判定点与证据版本）；
     整条证据成员仍物化为题级记录（step 字段为空）。by_step=False 按 v3
@@ -504,13 +462,7 @@ def student_error_records(
     from backend.session_analysis import parent_question_id
     from backend.scan_grading.solution_answer_guard import rubric_scoring_unit_steps
 
-    hash_items = source["evidence"] if by_step else [
-        {key: value for key, value in item.items() if key != "failed_steps"}
-        for item in source["evidence"]
-    ]
-    hash_to_id = {
-        _evidence_hash(_evidence_key(item)): item["id"] for item in hash_items
-    }
+    members = _saved_evidence_members(data, source, by_step=by_step)
     units = _step_units(source)
     rubric = getattr(data, "rubric", None)
     rubric_steps = rubric_scoring_unit_steps(
@@ -531,9 +483,8 @@ def student_error_records(
         for record in student.records:
             if record.question_id != source["question_id"] or not record.lost:
                 continue
-            digest = _evidence_hash(
-                _evidence_key(_cause_evidence(student, record, data, by_step=by_step)))
-            evidence_id = hash_to_id.get(digest)
+            evidence_id = next((key for key, values in members.items()
+                                if student.student_id in values), None)
             if evidence_id is None:
                 continue
             for group in result.get("groups") or []:
@@ -559,7 +510,7 @@ def student_error_records(
                 base = {
                     "student_id": student.student_id,
                     "question_id": source["question_id"],
-                    "evidence_hash": digest,
+                    "evidence_id": evidence_id,
                     "kind": group["kind"],
                     "category": group.get("category"),
                     "pattern": group["reason"],
@@ -567,11 +518,6 @@ def student_error_records(
                     "score": record.score,
                     "max_score": record.max_score,
                     "lost_points": record.lost_points,
-                    "version": (
-                        prompt_version("causes")
-                        if by_step
-                        else _CAUSE_PRE_STEP_PROMPT_VERSION
-                    ),
                 }
                 if bare_descriptions:
                     rows.append({**base,
@@ -594,26 +540,22 @@ def save_cause_result(
     store: Any, session_id: int, source: dict[str, Any], payload: Any,
     *, origin: str = "model", data: Any = None,
 ) -> dict[str, Any]:
-    """模型生成与本次助手归类共用同一校验、保存入口，逐题保存已完成结果。
-
-    传入 data 时同步把结果物化为学生错因记录（state.error_records），
-    供个人报告按题读取；不触发数据库迁移。
-    """
+    """校验成功后替换本题结果；保存学生归属，不保存内容指纹或分析版本。"""
     result = normalize_cause_result(payload, source)
+    result.pop("version", None)
     state = store.load(session_id) or {}
     current = state.get("cause_analysis") or {}
     questions = dict(current.get("questions") or {})
-    fingerprint = cause_input_digest(source)
+    saved_input = {**source, "by_step": True}
+    if data is not None:
+        saved_input["evidence_students"] = {
+            key: sorted(values) for key, values in _saved_evidence_members(data, source, by_step=True).items()
+        }
+    generated_at = _now_iso()
     questions[source["question_id"]] = {
-        "result": result,
-        # input 保留生成时的证据列表与 id，供 stale/old_prompt 结果按原证据展示。
-        "input": source,
-        "input_digest": fingerprint,
-        "prompt_version": prompt_version("causes"),
-        "generated_at": _now_iso(),
-        "origin": origin,
-        "failed": False,
-        "failed_input_digest": None,
+        "result": result, "input": saved_input,
+        "generated_at": generated_at, "origin": origin,
+        "failed": False, "needs_update": False,
     }
     fields: dict[str, Any] = {
         "cause_analysis": {
@@ -624,9 +566,8 @@ def save_cause_result(
     if data is not None:
         records = dict(state.get("error_records") or {})
         records[source["question_id"]] = {
-            "input_fingerprint": fingerprint,
-            "generated_at": _now_iso(),
-            "records": student_error_records(data, source, result),
+            "generated_at": generated_at,
+            "records": student_error_records(data, saved_input, result),
         }
         fields["error_records"] = records
     store.save(session_id, **fields)
@@ -638,13 +579,7 @@ def apply_cause_results(
     state: Any, *, session_id: int | None = None,
     question_bank_path: Path | None = None,
 ) -> dict[str, Any]:
-    """匹配当前作答证据后按班级投影；旧提示词/过期结果仍按原证据展示。
-
-    每题状态由 resolve_result_state 判定：current / stale / old_prompt /
-    missing；stale 与 old_prompt 的已存结果继续按生成时的 input 证据投影
-    （条目标记 state），missing 或整理失败的题只显示原始理由。
-    传入 session_id + 题库路径时，额外标注每题题库关联。
-    """
+    """按保存结果和学生归属投影到当前班级，更新提醒不阻止展示和统计。"""
     from backend.error_causes import CAUSE_CATEGORIES
     from backend.error_patterns import session_bank_context
     from backend.session_analysis import parent_question_id
@@ -655,26 +590,19 @@ def apply_cause_results(
         bank_context = session_bank_context(question_bank_path, int(session_id))
         bank_map = {parent: int(ctx["bank_id"]) for parent, ctx in bank_context.items()}
     sources = {source["question_id"]: source for source in all_inputs}
-    counts = {"current": 0, "stale": 0, "old_prompt": 0, "missing": 0, "failed": 0}
+    counts = {"current": 0, "stale": 0, "missing": 0, "failed": 0}
     times, origins = [], set()
     question_pages = {item["question_id"]: item for item in (page or {}).get("questions", [])}
+    prepared_records = _index_saved_error_records(state, data, all_inputs)
     for question_id, source in sources.items():
         saved = stored.get(question_id) or {}
         has_result = isinstance(saved.get("result"), dict)
-        question_state = resolve_result_state(
-            saved if has_result else None,
-            cause_input_digest(source),
-            "causes",
-        )["status"]
+        question_state = resolve_result_state(saved if has_result else None, "causes")["status"]
         counts[question_state] += 1
         if not has_result:
             counts["failed"] += int(bool(saved.get("failed")))
             continue
-        stored_version = _saved_prompt_version(saved)
-        # v1/v2 条目的成员按文本匹配（旧版没有证据 id 口径）。
-        text_match = stored_version not in (
-            prompt_version("causes"), _CAUSE_PRE_STEP_PROMPT_VERSION,
-        )
+        by_step = _saved_uses_step_evidence(saved)
         display_source = (
             saved["input"]
             if isinstance(saved.get("input"), dict) and saved["input"].get("evidence")
@@ -685,14 +613,7 @@ def apply_cause_results(
         question = question_pages.get(question_id)
         if question is None:
             continue
-        by_evidence: dict[str, set[int]] = {}
-        for student in data.students:
-            for record in student.records:
-                if record.question_id == question_id and record.lost:
-                    key = _cause_text(record) if text_match else _evidence_key(
-                        _cause_evidence(student, record, data,
-                                        by_step=stored_version == prompt_version("causes")))
-                    by_evidence.setdefault(key, set()).add(student.student_id)
+        members_by_id = _saved_evidence_members(data, display_source, by_step=by_step)
         evidence = {item["id"]: item for item in display_source["evidence"]}
         unit_parent = {
             unit["id"]: item["id"]
@@ -707,16 +628,24 @@ def apply_cause_results(
                 item = evidence.get(key) or evidence.get(unit_parent.get(key, ""))
                 if item is None:
                     continue
-                lookup = item["text"] if text_match else _evidence_key(item)
-                if members := by_evidence.get(lookup):
+                evidence_id = key if key in evidence else unit_parent.get(key, "")
+                if members := members_by_id.get(evidence_id, set()) & active_ids:
                     result.append({**{field: value for field, value in item.items() if field != "id"},
                                    "student_ids": sorted(members)})
             return result
 
+        saved_rows = prepared_records.get(question_id, {})
+        active_ids = {student.student_id for student in data.students
+                      if any(record.question_id == question_id and record.lost for record in student.records)}
         causes = []
         for group in saved["result"]["groups"]:
             items = details(group["evidence_ids"])
             members = {sid for item in items for sid in item["student_ids"]}
+            saved_members = {sid for sid, rows in saved_rows.items() if sid in active_ids
+                             and any(row.get("pattern") == group.get("reason")
+                                     and (not group.get("kind") or row.get("kind") == group.get("kind"))
+                                     for row in rows)}
+            members = saved_members or (members & active_ids)
             if members:
                 cause = {"reason": group["reason"], "count": len(members), "evidence": items}
                 if group.get("kind") is not None:
@@ -738,13 +667,13 @@ def apply_cause_results(
                 causes.append(cause)
         question["causes"] = sorted(causes, key=lambda item: -item["count"])
         category_members: dict[str, set[int]] = {}
-        for cause in question["causes"]:
-            category = str(cause.get("category") or "")
-            if not category:
+        for student_id, rows in saved_rows.items():
+            if student_id not in active_ids:
                 continue
-            bucket = category_members.setdefault(category, set())
-            for item in cause["evidence"]:
-                bucket.update(item.get("student_ids") or [])
+            for row in rows:
+                category = str(row.get("category") or "")
+                if category:
+                    category_members.setdefault(category, set()).add(student_id)
         category_order = {name: index for index, name in enumerate(CAUSE_CATEGORIES)}
         question["cause_category_counts"] = [
             {"category": category, "count": len(members)}
@@ -760,18 +689,17 @@ def apply_cause_results(
         }
         question["causes_grouped"] = True
         question["state"] = question_state
-        question["causes_legacy"] = stored_version == "class_error_causes_v1"
-        question["causes_by_step"] = stored_version == prompt_version("causes")
+        question["causes_legacy"] = any(not group.get("kind") for group in saved["result"].get("groups") or [])
+        question["causes_by_step"] = by_step
     total = len(sources)
-    displayable = counts["current"] + counts["stale"] + counts["old_prompt"]
-    return {"status": ("ready" if counts["current"] == total else
+    displayable = counts["current"] + counts["stale"]
+    return {"status": ("ready" if displayable == total else
                        "partial" if displayable or counts["failed"] else "not_generated"),
-            "pending_questions": total - counts["current"] - counts["old_prompt"],
+            "pending_questions": counts["missing"],
             "total_questions": total,
             "question_states": {
                 "current": counts["current"],
                 "stale": counts["stale"],
-                "old_prompt": counts["old_prompt"],
                 "failed": counts["failed"],
             },
             "failed_questions": counts["failed"],
@@ -782,23 +710,15 @@ def apply_cause_results(
 
 def _ensure_error_records(store: Any, session_id: int, state: Any,
                           source: dict[str, Any], saved: dict[str, Any], data: Any) -> None:
-    """已整理且输入未变的题：补齐早期任务未物化的学生错因记录。
-
-    物化输入取已存条目保存的 input（v3 条目保存的本来就是旧口径输入），
-    信封指纹沿用条目的 input_digest。
-    """
-    fingerprint = _saved_input_digest(saved, source)
-    by_step = _saved_prompt_version(saved) == prompt_version("causes")
-    match_source = saved.get("input") if isinstance(saved.get("input"), dict) else source
+    """明确整理操作中补存缺少的成员记录，不重算已有成功归类。"""
     records_state = dict(state.get("error_records") or {})
     envelope = records_state.get(source["question_id"]) or {}
-    if envelope.get("input_fingerprint") == fingerprint and isinstance(envelope.get("records"), list):
+    if isinstance(envelope.get("records"), list):
         return
+    match_source = saved.get("input") if isinstance(saved.get("input"), dict) else source
     records_state[source["question_id"]] = {
-        "input_fingerprint": fingerprint,
-        "generated_at": _now_iso(),
-        # 旧口径结果的组成员引用旧编号，物化时要用重排后的输入。
-        "records": student_error_records(data, match_source, saved["result"], by_step=by_step),
+        "generated_at": saved.get("generated_at") or _now_iso(),
+        "records": student_error_records(data, match_source, saved["result"], by_step=_saved_uses_step_evidence(saved)),
     }
     store.save(session_id, error_records=records_state)
 
@@ -835,6 +755,7 @@ def plan_cause_question(
     qtype: str, option_scope: bool, ctx: dict[str, Any],
     confirmed_by_bank: dict[int, list[dict[str, Any]]],
     question_bank_path: Path | None, retry_failed: bool,
+    regenerate_existing: bool = False,
 ) -> dict[str, Any]:
     """整理路径决策，任务执行与报告 preflight 共用同一口径。
 
@@ -851,7 +772,6 @@ def plan_cause_question(
         bank_question_row,
         find_option_analysis,
         merge_bank_triggers_into_patterns,
-        question_fingerprint,
         synthesize_answer_result,
     )
     from backend.session_analysis import parent_question_id
@@ -863,9 +783,9 @@ def plan_cause_question(
         )
         if len(letters) < 2 or not correct:
             return {"path": "v3", "needs_call": True}
-        fingerprint = question_fingerprint(text, correct)
+        source_input = {"question_text": text, "canonical_answer": correct}
         option = {"text": text, "letters": letters, "correct": correct,
-                  "fingerprint": fingerprint, "patterns": None,
+                  "source_input": source_input, "patterns": None,
                   "patterns_source": None, "bank_id": int(ctx["bank_id"])}
         bank_rows = _bank_pattern_rows(ctx, confirmed_by_bank)
         blocked = {
@@ -880,7 +800,7 @@ def plan_cause_question(
         option["required"] = sorted(required)
         option["blocked"] = sorted(blocked)
         entry = find_option_analysis(
-            store, session_id, parent, fingerprint, ctx.get("linked") or ())
+            store, session_id, parent, source_input, ctx.get("linked") or ()) if not regenerate_existing else None
         if entry and entry.get("analysis") and not entry.get("failed"):
             saved_patterns = {
                 key: dict(value) for key, value in entry["analysis"].items()
@@ -947,14 +867,12 @@ def _save_option_plan(
 ) -> None:
     """选项映射的持久化：诊断结果归档 + 错因结果保存；只在主线程调用。"""
     from backend.error_patterns import (
-        OPTION_ANALYSIS_VERSION,
         save_option_analysis,
         synthesize_option_result,
     )
 
     save_option_analysis(store, session_id, source["question_id"], {
-        "version": OPTION_ANALYSIS_VERSION,
-        "input_fingerprint": plan["fingerprint"],
+        "source_input": plan["source_input"],
         "bank_question_id": plan["bank_id"], "analysis": patterns,
         "source": source_label, "analyzed_at": _now_iso(), "failed": False,
     })
@@ -964,13 +882,9 @@ def _save_option_plan(
 
 
 def _option_failure_record(plan: dict[str, Any]) -> dict[str, Any]:
-    from backend.error_patterns import OPTION_ANALYSIS_VERSION
-
     return {
-        "version": OPTION_ANALYSIS_VERSION,
-        "input_fingerprint": plan["fingerprint"],
+        "source_input": plan["source_input"],
         "bank_question_id": plan["bank_id"], "failed": True,
-        "failed_input_fingerprint": plan["fingerprint"],
     }
 
 
@@ -980,7 +894,6 @@ def _run_option_plan(
 ) -> None:
     """执行选择题选项映射：patterns 缺失时调用一次模型做选项诊断。"""
     from backend.error_patterns import (
-        OPTION_ANALYSIS_VERSION,
         save_option_analysis,
         synthesize_option_result,
     )
@@ -1002,8 +915,7 @@ def _run_option_plan(
         return
     if plan.get("patterns_source") == "bank_confirmed":
         save_option_analysis(store, session_id, source["question_id"], {
-            "version": OPTION_ANALYSIS_VERSION,
-            "input_fingerprint": plan["fingerprint"],
+            "source_input": plan["source_input"],
             "bank_question_id": plan["bank_id"], "analysis": patterns,
             "source": "bank_confirmed", "analyzed_at": _now_iso(), "failed": False,
         })
@@ -1060,21 +972,11 @@ def run_cause_analysis(
     context: Any, *, db: Any, data_root: Path | None, store: Any,
     llm_client_factory: Callable[[], Any] | None,
     retry_failed: bool = True,
-    regenerate_old_prompt: bool = False,
+    regenerate_existing: bool = False,
     progress_band: tuple[float, float] = (0.0, 1.0),
     progress_stage: str = "class_analysis",
 ) -> dict[str, object]:
-    """各题并行整理错因；全部完成后再发一次很小的请求统一同义的错法名称。
-
-    retry_failed=False 用于个人报告导出的前置阶段：整理失败的题不自动重发，
-    报告照常生成、该题不显示错误类型。
-    current 与 old_prompt（提示词版本旧但输入未变）的结果都直接复用，不自动
-    重新生成；只有状态为 stale/missing 的题才调用模型。regenerate_old_prompt
-    保留给按题手动重生成入口（当前管线不置位）。
-
-    已关联题库的选择题先复用题库选项预测，缺项才补做选项诊断；填空题先查错误答案库，全覆盖零调用，
-    否则走 v3 整理并把新错法按规范化答案回写候选库。
-    """
+    """默认补缺失；明确选择更新时重整已有结果，成功才替换，失败保留原结果。"""
     from backend.error_causes import CAUSE_KIND_CATEGORIES
     from backend.error_patterns import (
         FILL_TYPES,
@@ -1087,6 +989,8 @@ def run_cause_analysis(
     from backend.session_analysis import parent_question_id, question_bank_db_path
 
     session_id = int(context.payload["session_id"])
+    if (state := store.load(session_id)) and state.get("read_error"):
+        raise ValueError(state["read_error"])
     option_scope = True
     question_bank_path = question_bank_db_path(Path(db.db_path))
     bank_context = session_bank_context(question_bank_path, session_id)
@@ -1124,19 +1028,11 @@ def run_cause_analysis(
         state = store.load(session_id) or {}
         old = ((state.get("cause_analysis") or {}).get("questions")) or {}
         saved = old.get(source["question_id"]) or {}
-        fingerprint = cause_input_digest(source)
         has_result = isinstance(saved.get("result"), dict)
-        saved_status = resolve_result_state(
-            saved if has_result else None, fingerprint, "causes"
-        )["status"]
-        if saved_status == "current" or (
-            saved_status == "old_prompt" and not regenerate_old_prompt
-        ):
+        if has_result and not regenerate_existing:
             _ensure_error_records(store, session_id, state, source, saved, data)
             continue
-        if (not retry_failed and saved.get("failed") and not has_result
-                and str(saved.get("failed_input_digest")
-                        or saved.get("failed_input_fingerprint") or "") == fingerprint):
+        if not retry_failed and saved.get("failed") and not has_result:
             continue
         context.report(
             lo + (hi - lo) * (index + 0.2) / max(1, len(sources)),
@@ -1149,6 +1045,7 @@ def run_cause_analysis(
                 store, session_id, source, qtype=qtype, option_scope=option_scope,
                 ctx=ctx, confirmed_by_bank=confirmed_by_bank,
                 question_bank_path=question_bank_path, retry_failed=retry_failed,
+                regenerate_existing=regenerate_existing,
             )
             if plan["path"] == "skip":
                 continue
@@ -1156,7 +1053,7 @@ def run_cause_analysis(
                 if plan.get("needs_call"):
                     specs.append({
                         "kind": "option", "source": source, "plan": plan["option"],
-                        "fingerprint": fingerprint, "saved": saved,
+                        "saved": saved,
                     })
                 else:
                     _run_option_plan(store=store, session_id=session_id,
@@ -1176,7 +1073,6 @@ def run_cause_analysis(
                 ),
                 "qtype": qtype,
                 "ctx": ctx,
-                "fingerprint": fingerprint,
                 "saved": saved,
             })
         except Exception:
@@ -1184,7 +1080,7 @@ def run_cause_analysis(
             failed += 1
             # 失败不重发；其他已完成题目继续可用，旧输入的结果仍由读取端判定是否过期。
             old[source["question_id"]] = {
-                **saved, "failed": True, "failed_input_digest": fingerprint,
+                **saved, "failed": True, "last_generation_failed": True,
             }
             store.save(session_id, cause_analysis={"questions": old})
     name_merges = 0
@@ -1275,7 +1171,7 @@ def run_cause_analysis(
                                      .get("questions")) or {}
                         questions[source["question_id"]] = {
                             **spec["saved"], "failed": True,
-                            "failed_input_digest": spec["fingerprint"],
+                            "last_generation_failed": True,
                         }
                         store.save(session_id,
                                    cause_analysis={"questions": questions})
@@ -1427,69 +1323,87 @@ def _apply_cause_name_merges(
     return len(recorded)
 
 
-def _prepare_error_sources(
-    state: Any, sources: list[dict[str, Any]],
-) -> tuple[dict[str, str], dict[str, bool]]:
-    """整场来源只校验一次；不缓存学生证据，也不在本函数内跨请求复用。
+def _saved_uses_step_evidence(saved: dict[str, Any]) -> bool:
+    source = saved.get("input") if isinstance(saved.get("input"), dict) else {}
+    if isinstance(source.get("by_step"), bool):
+        return source["by_step"]
+    return any(isinstance(item, dict) and item.get("failed_steps")
+               for item in source.get("evidence") or [])
 
-    诊断侧按场次复用本次返回的证据，其持久指纹覆盖此处读取的全部输入
-    （评分修订、场次行、出勤、rubric/答案文件、状态文件、题库版本、
-    上传来源与计算代码），任一输入变化即重新校验。
-    """
-    saved_questions = ((state or {}).get("cause_analysis") or {}).get("questions") or {}
-    fingerprints: dict[str, str] = {}
-    by_step: dict[str, bool] = {}
-    for source in sources:
-        saved = saved_questions.get(source["question_id"]) or {}
-        # 信封指纹与当前输入指纹比对：输入已变（stale）的题不展示记录；
-        # 证据哈希仍按学生证据逐条校验。
-        fingerprints[source["question_id"]] = cause_input_digest(source)
-        by_step[source["question_id"]] = (
-            _saved_prompt_version(saved) == prompt_version("causes")
-            if isinstance(saved.get("result"), dict)
-            else True
-        )
-    return fingerprints, by_step
+
+def _saved_evidence_members(
+    data: Any, source: dict[str, Any], *, by_step: bool | None = None,
+) -> dict[str, set[int]]:
+    """读保存的成员编号；早期输入仅按当时证据形状补对应，不校验新旧。"""
+    allowed = {student.student_id for student in data.students}
+    explicit = source.get("evidence_students")
+    if isinstance(explicit, dict):
+        return {str(key): {value for value in values if isinstance(value, int) and value in allowed}
+                for key, values in explicit.items() if isinstance(values, (list, tuple, set))}
+    evidence = [item for item in source.get("evidence") or [] if isinstance(item, dict)]
+    if by_step is None:
+        by_step = source.get("by_step") if isinstance(source.get("by_step"), bool) else any(item.get("failed_steps") for item in evidence)
+    out: dict[str, set[int]] = {str(item.get("id") or ""): set() for item in evidence}
+    question_id = str(source.get("question_id") or "")
+    for student in data.students:
+        for record in student.records:
+            if record.question_id != question_id or not record.lost:
+                continue
+            current = _cause_evidence(student, record, data, by_step=by_step)
+            for item in evidence:
+                saved = {key: value for key, value in item.items() if key not in ("id", "student_ids")}
+                if not by_step:
+                    saved.pop("failed_steps", None)
+                structured = any(key in saved for key in ("student_answer", "evidence_steps", "previous_answers"))
+                matches = _evidence_key(saved) == _evidence_key(current) if structured else saved.get("text") == _cause_text(record)
+                if matches:
+                    out[str(item.get("id") or "")].add(student.student_id)
+    return out
+
+
+def _index_saved_error_records(state: Any, data: Any, sources: list[dict[str, Any]]) -> dict:
+    envelopes = (state or {}).get("error_records") or {}
+    questions = ((state or {}).get("cause_analysis") or {}).get("questions") or {}
+    sources_by_id = {source["question_id"]: source for source in sources}
+    out: dict = {}
+    for question_id in set(envelopes) | set(questions):
+        envelope = envelopes.get(question_id) or {}
+        rows = envelope.get("records")
+        if not isinstance(rows, list):
+            saved = questions.get(question_id) or {}
+            source = saved.get("input") if isinstance(saved.get("input"), dict) else sources_by_id.get(question_id)
+            if not isinstance(saved.get("result"), dict) or not isinstance(source, dict):
+                continue
+            rows = student_error_records(data, source, saved["result"], by_step=_saved_uses_step_evidence(saved))
+        by_student: dict = {}
+        for row in rows:
+            if not isinstance(row, dict) or str(row.get("question_id") or question_id) != str(question_id):
+                continue
+            student_id = row.get("student_id")
+            if isinstance(student_id, int):
+                by_student.setdefault(student_id, []).append(row)
+        out[question_id] = by_student
+    return out
+
 
 
 def student_error_map(
     state: Any, student: Any, sources: list[dict[str, Any]], data: Any,
-    *, _prepared: tuple[dict[str, str], dict[str, bool], dict] | None = None,
+    *, _prepared: dict | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """{question_id: [错因记录]}：输入指纹与证据哈希都一致才返回，过期题不展示。
-
-    v3 兼容输入（按步骤拆分前）按其当时的口径计算证据哈希。
-    同一整场读取复用来源校验和记录索引；每名学生的证据仍独立校验。
-    """
-    envelopes = (state or {}).get("error_records") or {}
-    if _prepared is None:
-        fingerprints, by_step = _prepare_error_sources(state, sources)
-        record_index: dict = {}
-    else:
-        fingerprints, by_step, record_index = _prepared
+    """按学生与题目编号读取已存错因；改动提醒不排除旧归类。"""
+    index = _index_saved_error_records(state, data, sources) if _prepared is None else _prepared
     out: dict[str, list[dict[str, Any]]] = {}
     for record in student.records:
         if not record.lost:
             continue
-        envelope = envelopes.get(record.question_id) or {}
-        if envelope.get("input_fingerprint") != fingerprints.get(record.question_id):
-            continue
-        digest = _evidence_hash(_evidence_key(
-            _cause_evidence(student, record, data, by_step=by_step.get(record.question_id, True))))
-        if record.question_id not in record_index:
-            indexed: dict = {}
-            for row in envelope.get("records") or []:
-                key = (row.get("student_id"), row.get("evidence_hash"))
-                try:
-                    indexed.setdefault(key, []).append(row)
-                except TypeError:
-                    # JSON 容器不能匹配整数学生标识或字符串证据哈希。
-                    continue
-            record_index[record.question_id] = indexed
-        rows = [dict(row) for row in record_index[record.question_id].get(
-            (student.student_id, digest), ())]
+        rows = index.get(record.question_id, {}).get(student.student_id, [])
         if rows:
-            out[record.question_id] = rows
+            out[record.question_id] = [
+                {**row, "score": record.score, "max_score": record.max_score,
+                 "lost_points": record.lost_points}
+                for row in rows
+            ]
     return out
 
 
@@ -1497,7 +1411,7 @@ def collect_student_error_index(store: Any, session_ids: Iterable[int], *, db: A
                                 data_root: Path | None = None) -> dict[int, dict[str, dict[str, set[int]]]]:
     """跨场次历史错因索引：{student_id: {"categories": {大类: {场次id}}, "patterns": {错法名: {场次id}}}}。
 
-    历史场次同样校验当前答卷，避免更正后的旧错因继续进入报告。
+    历史场次同样直接读取已保存归类，按当前选择的学生和失分范围统计。
     """
     index: dict[int, dict[str, dict[str, set[int]]]] = {}
     for sid in session_ids:
@@ -1523,8 +1437,8 @@ def session_error_records(
 ) -> dict[int, dict[str, list[dict[str, Any]]]]:
     """本场全部学生的物化错因记录 {student_id: {question_id: [记录]}}。
 
-    证据指纹必须基于整场数据构建（按班级子集装配会让全部指纹失配）；
-    无状态文件或任何异常一律按无记录返回，报告与导出不受影响。
+    已存记录按稳定学生与题目编号归属；没有物化记录的旧输入在内存补对应。
+    读取不改写保存文件，也不比较题面、解析或分析版本。
     """
     try:
         state = ClassAnalysisStateStore(Path(reports_dir)).load(int(session_id))
@@ -1532,7 +1446,7 @@ def session_error_records(
             return {}
         data = assemble_cause_data(db, int(session_id), data_root=data_root)
         sources = build_cause_inputs(data)
-        prepared = (*_prepare_error_sources(state, sources), {})
+        prepared = _index_saved_error_records(state, data, sources)
         out: dict[int, dict[str, list[dict[str, Any]]]] = {}
         for student in data.students:
             mapped = student_error_map(state, student, sources, data, _prepared=prepared)
@@ -1704,11 +1618,9 @@ def edit_cause_pattern(
     state = store.load(session_id) or {}
     questions = dict(((state.get("cause_analysis") or {}).get("questions")) or {})
     saved = questions.get(question_id) or {}
-    if _saved_prompt_version(saved) not in (
-            prompt_version("causes"), _CAUSE_PRE_STEP_PROMPT_VERSION) \
-            or not isinstance(saved.get("result"), dict):
+    if not isinstance(saved.get("result"), dict):
         raise CausePatternEditError(
-            "cause_pattern_not_ready", "该题尚未完成新版错因整理，不能修改错法")
+            "cause_pattern_not_ready", "该题尚未保存错因整理结果，不能修改错法")
     group = next(
         (item for item in saved["result"].get("groups") or []
          if isinstance(item, dict)
@@ -1921,8 +1833,30 @@ def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _saved_class_reports(state: dict | None) -> dict:
+    """按保存归属读班级正文；旧顶层正文只有明确班级信息时才纳入。"""
+    if not isinstance(state, dict):
+        return {}
+    reports = dict(state.get('class_reports') or {}) if isinstance(state.get('class_reports'), dict) else {}
+    if not isinstance(state.get('narrative'), dict):
+        return reports
+    source = state.get('source') if isinstance(state.get('source'), dict) else {}
+    exam = source.get('exam') if isinstance(source.get('exam'), dict) else {}
+    owners = {name.strip() for name in (state.get('class_name'), source.get('class_name'), exam.get('class_name'))
+              if isinstance(name, str) and name.strip()}
+    if len(owners) != 1:
+        return reports
+    owner = next(iter(owners))
+    current = reports.get(owner)
+    if not isinstance(current, dict) or not isinstance(current.get('narrative'), dict):
+        reports[owner] = {key: state[key] for key in ('narrative', 'source', 'student_ids', 'generated_at', 'needs_update', 'status')
+                          if key in state}
+    return reports
+
+
+
 class ClassAnalysisStateStore:
-    """每场次一个状态 JSON 文件，原子写入，读取失败按不存在处理。"""
+    """每场次一个状态文件；旧格式原地读取，损坏时提示并保留原文件。"""
 
     def __init__(self, reports_dir: Path) -> None:
         self.state_dir = Path(reports_dir) / CLASS_ANALYSIS_STATE_DIRNAME
@@ -1933,9 +1867,6 @@ class ClassAnalysisStateStore:
     @staticmethod
     def _default() -> dict[str, Any]:
         return {
-            "version": 1,
-            # 报告结果格式：1 = 旧版（version/score_revision 口径），2 = digest 口径。
-            "results_version": 1,
             "auto_generate": True,
             "status": None,
             "generated_at": None,
@@ -1950,12 +1881,14 @@ class ClassAnalysisStateStore:
     def load(self, session_id: int) -> dict[str, Any] | None:
         try:
             payload = json.loads(self._path(session_id).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
+            return {**self._default(), "read_error": "保存的错因和报告文件无法读取，原文件已保留。"}
         if not isinstance(payload, dict):
-            return None
+            return {**self._default(), "read_error": "保存的错因和报告内容无法读取，原文件已保留。"}
         state = self._default()
-        state.update({key: payload[key] for key in state if key in payload})
+        state.update({key: value for key, value in payload.items() if key not in {"version", "results_version"}})
         if state["status"] not in _STATE_STATUSES:
             state["status"] = None
         state["auto_generate"] = bool(state["auto_generate"])
@@ -1965,6 +1898,8 @@ class ClassAnalysisStateStore:
         """合并写入（保留未提及字段，如 auto_generate 开关），原子替换。"""
         with _save_lock:
             state = self.load(session_id) or self._default()
+            if state.get("read_error"):
+                raise ValueError(state["read_error"])
             state.update(fields)
             self.state_dir.mkdir(parents=True, exist_ok=True)
             target = self._path(session_id)
@@ -1989,12 +1924,14 @@ def submit_class_analysis_generate(
     manager: JobManager,
     session_id: int,
     mode: str = "manual",
+    regenerate_existing: bool = False,
 ) -> JobRecord:
     """提交「AI 整理」管线 job；已有 queued/running 同类 job 时直接复用返回。"""
     payload = {
         "session_id": int(session_id),
         "kind": "pipeline",
         "mode": "auto" if mode == "auto" else "manual",
+        "regenerate_existing": bool(regenerate_existing) and mode != "auto",
     }
     try:
         return manager.submit_unique_active(CLASS_ANALYSIS_JOB_TYPE, payload)
@@ -2022,7 +1959,12 @@ def _class_narrative(*, client: Any, prompt: str) -> dict[str, Any] | None:
             "optional operation unavailable: _class_narrative (%s)", type(exc).__name__,
         )
         return None
-    return narrative if isinstance(narrative, dict) else None
+    if not isinstance(narrative, dict):
+        return None
+    lists = ("key_findings", "common_issues", "student_notes")
+    if any(key in narrative and not isinstance(narrative[key], list) for key in lists):
+        return None
+    return narrative if any(narrative.get(key) for key in (*lists, "grouping_advice")) else None
 
 
 def run_class_analysis_generate(
@@ -2034,10 +1976,7 @@ def run_class_analysis_generate(
     llm_client_factory: Callable[[], Any] | None,
     exporter_factory: Callable[..., Any] | None = None,
 ) -> dict[str, object]:
-    """class_analysis_generate job：错因整理 → 班级叙述 → 个人叙述的统一管线。
-
-    kind=pipeline：各段只补缺失/过期/失败的内容；未配置模型时写
-    not_configured 且不产生模型调用。"""
+    """错因、班级与个人报告的统一整理任务。"""
     if context.payload.get("session_id") is None:
         raise ValueError("session_id is required")
     if str(context.payload.get("kind") or "") != "pipeline":

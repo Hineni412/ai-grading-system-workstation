@@ -185,4 +185,44 @@ describe('ReportPipelineButton', () => {
     activeJob.value = job('succeeded')
     await vi.waitFor(() => expect(pipelineMock.getStatus).toHaveBeenCalledTimes(2))
   })
+  it('revalidates costs for the explicit update choice and submits the same choice', async () => {
+    pipelineMock.getStatus.mockResolvedValue(status({ complete: true }))
+    pipelineMock.start.mockResolvedValue(job('queued'))
+    jobsMock.getJob.mockResolvedValue(job('succeeded'))
+    const host = mountButton()
+    await vi.waitFor(() => expect(cachedPipelineStatus(7)).not.toBeNull())
+    openButton(host).click()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="pipeline-revalidating"]')).toBeNull())
+    const update = document.querySelector<HTMLInputElement>('[data-testid="pipeline-update-existing"] input')!
+    expect(update.checked).toBe(false)
+    const pending = deferred<ReportPipelineStatus>()
+    pipelineMock.getStatus.mockImplementation(() => pending.promise)
+    update.checked = true
+    update.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    const confirm = document.querySelector<HTMLButtonElement>('[data-testid="pipeline-confirm"]')!
+    expect(confirm.disabled).toBe(true)
+    expect(pipelineMock.start).not.toHaveBeenCalled()
+    expect(pipelineMock.getStatus).toHaveBeenLastCalledWith(7, expect.any(AbortSignal), true)
+    pending.resolve(status({ complete: false }))
+    await vi.waitFor(() => expect(confirm.disabled).toBe(false))
+    expect(openButton(host).textContent).toContain('· 10')
+    const cancel = [...document.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === '取消')!
+    cancel.click()
+    await nextTick()
+    expect(openButton(host).textContent).not.toContain('·')
+    expect(pipelineMock.start).not.toHaveBeenCalled()
+    openButton(host).click()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="pipeline-revalidating"]')).toBeNull())
+    const reopenedUpdate = document.querySelector<HTMLInputElement>('[data-testid="pipeline-update-existing"] input')!
+    expect(reopenedUpdate.checked).toBe(false)
+    reopenedUpdate.checked = true
+    reopenedUpdate.dispatchEvent(new Event('change', { bubbles: true }))
+    const reopenedConfirm = document.querySelector<HTMLButtonElement>('[data-testid="pipeline-confirm"]')!
+    await vi.waitFor(() => expect(reopenedConfirm.disabled).toBe(false))
+    reopenedConfirm.click()
+    await vi.waitFor(() => expect(pipelineMock.start).toHaveBeenCalledWith(7, undefined, true))
+  })
+
 })

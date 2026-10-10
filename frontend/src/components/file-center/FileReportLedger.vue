@@ -167,8 +167,7 @@ const fileCenter = useFileCenterStore()
           <AppButton variant="ghost"
             v-else-if="
               row.type !== 'personal_analysis_html' && (reportDisplayStatus(job) === 'expired'
-              || reportDisplayStatus(job) === 'unavailable'
-              || reportDisplayStatus(job) === 'stale')
+              || reportDisplayStatus(job) === 'unavailable')
             "
             :disabled="row.type === 'annotated_original_pdf' && originalsAvailable === false"
             @click="emit('generate', job.payload.report_type as ReportType, true)"
@@ -320,8 +319,7 @@ const fileCenter = useFileCenterStore()
                 <AppButton variant="ghost"
                   v-else-if="
                     row.type !== 'personal_analysis_html' && (reportDisplayStatus(job) === 'expired'
-                    || reportDisplayStatus(job) === 'unavailable'
-                    || reportDisplayStatus(job) === 'stale')
+                    || reportDisplayStatus(job) === 'unavailable')
                   "
                   :disabled="row.type === 'annotated_original_pdf' && originalsAvailable === false"
                   @click="emit('generate', job.payload.report_type as ReportType, true)"

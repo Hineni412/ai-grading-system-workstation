@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ResultsCenterStudent } from '../../api/results-center'
-import { personalReportsApi, reportStatusText, type PersonalReportExam } from '../../api/personal-reports'
+import { personalReportsApi, personalReportStatusText, type PersonalReportExam } from '../../api/personal-reports'
 import { TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import { useJobStore } from '../../stores/jobs'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
@@ -141,11 +141,12 @@ onBeforeUnmount(() => {
       <nav class="personal-reader__exams" aria-label="切换考试">
         <button v-for="item in exams" :key="item.session_id" :class="['personal-reader__exam', {active: reportSession === item.session_id}]"
           :aria-pressed="reportSession === item.session_id" @click="reportSession = item.session_id">
-          <b>{{ item.session_name }}</b><span>{{ item.score ?? '—' }} / {{ item.max_score }} · {{ reportStatusText[item.status] }}</span>
+          <b>{{ item.session_name }}</b><span>{{ item.score ?? '—' }} / {{ item.max_score }} · {{ personalReportStatusText(item) }}</span>
         </button>
       </nav>
-      <FeedbackBanner v-if="exam?.status === 'stale'" tone="info" description="成绩已变化，显示的是上次生成的 AI 分析；分数和班级数据为当前值。在成绩中心顶部点「AI 整理」可更新。" />
-      <FeedbackBanner v-else-if="exam?.status === 'missing'" tone="info" description="AI 分析部分尚未整理：复核完成后自动整理，或在成绩中心顶部点「AI 整理」。" />
+      <FeedbackBanner v-if="exam?.read_error" tone="info" :description="exam.read_error" />
+      <FeedbackBanner v-if="exam?.status === 'stale'" tone="info" description="相关内容已修改，这份报告仍可查看和导出。需要更新时，在成绩中心「AI 整理」中勾选「更新本场已保存结果」。" />
+      <FeedbackBanner v-else-if="exam?.status === 'missing' && !exam.read_error" tone="info" description="AI 分析部分尚未整理：复核完成后自动整理，或在成绩中心顶部点「AI 整理」。" />
       <FeedbackBanner v-if="message" role="status" tone="success" :description="message" />
       <FeedbackBanner v-if="error" role="alert" tone="info" :description="error" />
       <StatePanel v-if="loading" kind="loading" title="正在读取个人报告…" />

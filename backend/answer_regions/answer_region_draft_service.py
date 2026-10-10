@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
-from uuid import uuid4
 
 from backend.answer_regions.answer_region_session_lock import get_answer_region_session_lock
 
@@ -18,7 +15,7 @@ _SCHEMA_VERSION = 1
 class DraftLoadResult:
     status: DraftLoadStatus
     draft: dict[str, Any] | None = None
-    quarantined_path: Path | None = None
+    reason: str | None = None
 
 
 class DraftRevisionConflictError(RuntimeError):
@@ -69,11 +66,11 @@ class AnswerRegionDraftService:
         serialized = json.dumps(draft, ensure_ascii=False, indent=2)
         with self._lock:
             if expected_revision is not None:
-                current = self.load(expected_template_fingerprint=template_fingerprint)
+                current = self.load(expected_session_id=session_id)
                 if current.status == "incompatible":
-                    raise DraftTemplateMismatchError(
-                        "answer region draft template changed"
-                    )
+                    raise DraftTemplateMismatchError("answer region draft belongs to another session")
+                if current.status == "corrupt":
+                    raise ValueError("saved answer region draft cannot be read")
                 current_revision = (
                     int(current.draft.get("revision", 0))
                     if current.status == "compatible" and current.draft is not None
@@ -97,52 +94,48 @@ class AnswerRegionDraftService:
             self.temp_path.replace(self.draft_path)
         return self.draft_path
 
-    def load(self, *, expected_template_fingerprint: str) -> DraftLoadResult:
+    def load(
+        self, *, expected_template_fingerprint: str | None = None,
+        expected_session_id: int | None = None,
+    ) -> DraftLoadResult:
         with self._lock:
             try:
                 raw_draft = self.draft_path.read_text(encoding="utf-8")
             except FileNotFoundError:
                 return DraftLoadResult(status="missing")
-            except UnicodeDecodeError:
-                return self._quarantine()
-
+            except (OSError, UnicodeDecodeError):
+                return DraftLoadResult(status="corrupt", reason="草稿文件无法读取，原文件已保留。")
             try:
-                draft = json.loads(raw_draft)
-            except json.JSONDecodeError:
-                return self._quarantine()
-            if not _is_valid_draft(draft):
-                return self._quarantine()
-
-            status: DraftLoadStatus = (
-                "compatible"
-                if draft["template_fingerprint"] == expected_template_fingerprint
-                else "incompatible"
-            )
-            return DraftLoadResult(status=status, draft=draft)
+                draft = _normalize_saved_draft(json.loads(raw_draft))
+            except (ValueError, TypeError):
+                return DraftLoadResult(status="corrupt", reason="草稿内容无法解析，原文件已保留。")
+            if expected_session_id is not None and draft["session_id"] != expected_session_id:
+                return DraftLoadResult(status="incompatible", reason="草稿属于另一场考试，原文件已保留。")
+            return DraftLoadResult(status="compatible", draft=draft)
 
     def discard(self) -> None:
         with self._lock:
             self.draft_path.unlink(missing_ok=True)
             self.temp_path.unlink(missing_ok=True)
 
-    def _quarantine(self) -> DraftLoadResult:
-        with self._lock:
-            while True:
-                quarantined_path = self.draft_path.with_name(
-                    f"region_draft.corrupt-{_new_quarantine_suffix()}.json"
-                )
-                try:
-                    os.link(self.draft_path, quarantined_path)
-                except FileExistsError:
-                    continue
-                except (NotImplementedError, OSError):
-                    try:
-                        _copy_exclusively(self.draft_path, quarantined_path)
-                    except FileExistsError:
-                        continue
-                self.draft_path.unlink()
-                break
-            return DraftLoadResult(status="corrupt", quarantined_path=quarantined_path)
+
+def _normalize_saved_draft(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("draft must be an object")
+    draft = dict(value)
+    draft.setdefault("schema_version", _SCHEMA_VERSION)
+    draft.setdefault("template_fingerprint", "")
+    draft.setdefault("revision", 0)
+    draft.setdefault("updated_at", "")
+    if (
+        type(draft.get("session_id")) is not int or draft["session_id"] <= 0
+        or type(draft.get("revision")) is not int or draft["revision"] < 0
+        or not isinstance(draft.get("regions"), list)
+        or any(not isinstance(region, dict) or not _is_nonblank_string(region.get("region_uuid"))
+               for region in draft["regions"])
+    ):
+        raise ValueError("saved draft fields cannot be read")
+    return draft
 
 
 def _is_valid_draft(value: object) -> bool:
@@ -180,24 +173,5 @@ def _is_iso8601_timestamp(value: object) -> bool:
     return True
 
 
-def _copy_exclusively(source: Path, destination: Path) -> None:
-    destination_file = destination.open("xb")
-    try:
-        with destination_file:
-            with source.open("rb") as source_file:
-                shutil.copyfileobj(source_file, destination_file)
-    except BaseException:
-        try:
-            destination.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-
-
 def _lock_for(draft_path: Path) -> object:
     return get_answer_region_session_lock(draft_path.parent)
-
-
-def _new_quarantine_suffix() -> str:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    return f"{timestamp}-{uuid4().hex}"

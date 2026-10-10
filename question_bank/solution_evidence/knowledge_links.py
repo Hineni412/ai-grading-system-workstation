@@ -80,7 +80,24 @@ def load_point_links(
                 ids,
             )
         )
+        linked_ids = {str(row["evidence_version_id"]) for row in rows}
+        missing_ids = [identifier for identifier in ids if identifier not in linked_ids]
         active_release = _active_release_id(conn)
+        if missing_ids:
+            missing_marks = ",".join("?" for _ in missing_ids)
+            evidence_rows = _rows_as_dicts(conn.execute(
+                f"""SELECT evidence_version_id,question_id,evidence_json,status,graph_release_id
+                    FROM question_solution_evidence_versions WHERE question_id IN (
+                        SELECT question_id FROM question_solution_evidence_versions
+                        WHERE evidence_version_id IN ({missing_marks}))""", missing_ids))
+            metadata_rows = _rows_as_dicts(conn.execute(
+                f"""SELECT l.evidence_version_id,l.evidence_point_id,l.graph_release_id,l.role,l.term_id,
+                           l.stable_key,l.resolution_status,l.weight,l.source_kind,l.created_at,l.rowid AS link_order
+                    FROM evidence_point_knowledge_links l WHERE question_id IN (
+                        SELECT question_id FROM question_solution_evidence_versions
+                        WHERE evidence_version_id IN ({missing_marks}))""", missing_ids))
+            wanted = str(graph_release_id or active_release or "").strip()
+            rows.extend(_adopted_point_metadata(missing_ids, evidence_rows, metadata_rows, wanted))
     by_version: dict[str, dict[str, list[sqlite3.Row]]] = {}
     for row in rows:
         by_version.setdefault(str(row["evidence_version_id"]), {}).setdefault(
@@ -120,6 +137,58 @@ def load_point_links(
                 for row in (job_rows or point_rows)
             )
         result[version_id] = points
+    return result
+
+
+def _adopted_point_metadata(ids, evidence_rows, link_rows, wanted):
+    points = {}
+    questions = {}
+    records = {str(row["evidence_version_id"]): row for row in evidence_rows}
+    for row in evidence_rows:
+        version = str(row["evidence_version_id"])
+        questions[version] = int(row["question_id"])
+        try:
+            payload = json.loads(row["evidence_json"])
+            points[version] = {
+                str(point["evidence_point_id"]): {
+                    "part_id": part.get("part_id"), "response_mode": part.get("response_mode"),
+                    **{key: value for key, value in point.items() if key != "fine_term_links"},
+                }
+                for part in payload.get("parts", []) for point in part.get("evidence_points", [])
+            }
+        except (ValueError, TypeError, AttributeError, KeyError):
+            points[version] = {}
+    grouped = {}
+    rows_by_version = {}
+    for row in link_rows:
+        version = str(row["evidence_version_id"])
+        rows_by_version.setdefault(version, []).append(row)
+        grouped.setdefault((version, str(row["evidence_point_id"]),
+                            str(row["graph_release_id"])), []).append(row)
+    groups_by_question_point = {}
+    for (version, point_id, _release), group in grouped.items():
+        groups_by_question_point.setdefault((questions.get(version), point_id), []).append((version, group))
+    result = []
+    for identifier in ids:
+        own_rows = rows_by_version.get(identifier, [])
+        if own_rows:
+            result.extend(own_rows)
+            continue
+        for point_id, obligation in points.get(identifier, {}).items():
+            candidates = [group for version, group in groups_by_question_point.get(
+                          (questions.get(identifier), point_id), [])
+                          if records[version]["status"] in {"proposed", "approved"}
+                          and (not wanted or str(records[version]["graph_release_id"] or "") in {"", wanted})
+                          and points.get(version, {}).get(point_id) == obligation]
+            if not candidates:
+                continue
+            chosen = max(candidates, key=lambda group: (
+                str(group[0]["graph_release_id"]) == wanted,
+                any(row["source_kind"] == LINK_JOB_KIND for row in group),
+                max(str(row["created_at"]) for row in group),
+                max(int(row["link_order"]) for row in group),
+            ))
+            result.extend({**row, "evidence_version_id": identifier} for row in chosen)
     return result
 
 

@@ -27,6 +27,6 @@ const scopeLabel = computed(() => props.scope === 'all' ? '全部学生' : /^\d+
       </button>
       <p class="workbench-meta workbench-insight-total">本册 {{ metrics.total }} 项，{{ metrics.evidence }} 项有证据</p>
     </template>
-    <AppButton variant="ghost" class="workbench-footer-link" @click="$emit('open', '/knowledge-overview')">学情总览 →</AppButton>
+    <AppButton variant="ghost" class="workbench-footer-link" @click="$emit('open', '/knowledge-overview')">学情 →</AppButton>
   </section>
 </template>

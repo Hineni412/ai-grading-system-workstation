@@ -20,6 +20,7 @@ class _ReleaseTypeScope:
     nodes: dict[str, tuple[str, str]]
     typed_chapters: frozenset[str]
     typed_volumes: frozenset[str]
+    chapter_keys: dict[str, dict[str, str]] = field(default_factory=dict)
     chapter_kinds: dict[tuple[str, str], dict[str, str]] = field(default_factory=dict)
 
 
@@ -77,14 +78,24 @@ def _release_type_scope(resolver: Any) -> _ReleaseTypeScope:
     return result
 
 
-def _chapter_key(volume_id: str, chapter_id: object) -> str:
-    selected = str(chapter_id or "").strip()
-    volume = curriculum_volume(volume_id=volume_id)
-    if volume:
+def _chapter_keys(scope: _ReleaseTypeScope, volume_id: str) -> dict[str, str]:
+    keys = scope.chapter_keys.get(volume_id)
+    if keys is None:
+        volume = curriculum_volume(volume_id=volume_id)
+        if volume is None:
+            return {}
+        keys = {}
         for chapter in volume["chapters"]:
-            if selected in {str(chapter["id"]), str(chapter["knowledge_id"])}:
-                return str(chapter["knowledge_id"])
-    return selected
+            knowledge_id = str(chapter["knowledge_id"])
+            keys.setdefault(str(chapter["id"]), knowledge_id)
+            keys.setdefault(knowledge_id, knowledge_id)
+        scope.chapter_keys[volume_id] = keys
+    return keys
+
+
+def _chapter_key(scope: _ReleaseTypeScope, volume_id: str, chapter_id: object) -> str:
+    selected = str(chapter_id or "").strip()
+    return _chapter_keys(scope, volume_id).get(selected, selected)
 
 
 def _knowledge_fallback(resolver: Any, volume_id: str) -> bool:
@@ -97,30 +108,35 @@ def _knowledge_fallback(resolver: Any, volume_id: str) -> bool:
     return volume_id == "bnu24-math-g8-lower" or volume_id in explicit
 
 
-def chapter_target_kinds(resolver: Any, volume_id: object) -> dict[str, str]:
-    selected = str(volume_id or "").strip()
-    volume = curriculum_volume(volume_id=selected)
-    if volume is None:
+def _chapter_target_kinds(
+    resolver: Any, scope: _ReleaseTypeScope, selected: str,
+) -> dict[str, str]:
+    keys = _chapter_keys(scope, selected)
+    if not keys:
         return {}
-    scope = _release_type_scope(resolver)
     fallback = ("type" if selected == "bnu24-math-g8-upper" and selected in scope.typed_volumes
                 else "knowledge" if _knowledge_fallback(resolver, selected) else "skill")
     cache_key = selected, fallback
     kinds = scope.chapter_kinds.get(cache_key)
     if kinds is None:
-        kinds = {str(chapter["knowledge_id"]): (
-            "type" if str(chapter["knowledge_id"]) in scope.typed_chapters else fallback)
-            for chapter in volume["chapters"]}
+        kinds = {chapter: ("type" if chapter in scope.typed_chapters else fallback)
+                 for chapter in dict.fromkeys(keys.values())}
         scope.chapter_kinds[cache_key] = kinds
-    return dict(kinds)
+    return kinds
+
+
+def chapter_target_kinds(resolver: Any, volume_id: object) -> dict[str, str]:
+    selected = str(volume_id or "").strip()
+    return dict(_chapter_target_kinds(resolver, _release_type_scope(resolver), selected))
 
 
 def chapter_target_kind(resolver: Any, volume_id: object, chapter_id: object = "") -> str:
     """A chapter has one target kind; a mixed volume reports ``mixed``."""
     selected = str(volume_id or "").strip()
-    kinds = chapter_target_kinds(resolver, selected)
+    scope = _release_type_scope(resolver)
+    kinds = _chapter_target_kinds(resolver, scope, selected)
     if chapter_id:
-        return kinds.get(_chapter_key(selected, chapter_id),
+        return kinds.get(_chapter_key(scope, selected, chapter_id),
                          "knowledge" if _knowledge_fallback(resolver, selected) else "skill")
     values = set(kinds.values())
     if len(values) == 1:
@@ -133,9 +149,14 @@ def target_kind_for_key(key: object, resolver: Any, volume_id: object = "") -> s
     scope = _release_type_scope(resolver)
     volume, chapter = scope.nodes.get(clean_key) or _scope_for_key(clean_key, {})
     selected = str(volume_id or "").strip() or volume
+    kinds = _chapter_target_kinds(resolver, scope, selected)
     if selected and chapter:
-        return chapter_target_kind(resolver, selected, chapter)
-    return chapter_target_kind(resolver, selected)
+        return kinds.get(chapter,
+                         "knowledge" if _knowledge_fallback(resolver, selected) else "skill")
+    values = set(kinds.values())
+    if len(values) == 1:
+        return next(iter(values))
+    return "mixed" if values else "skill"
 
 
 def type_keys_active(resolver: Any, volume_id: object = "", chapter_id: object = "") -> bool:
@@ -143,7 +164,7 @@ def type_keys_active(resolver: Any, volume_id: object = "", chapter_id: object =
     scope = _release_type_scope(resolver)
     selected = str(volume_id or "").strip()
     if chapter_id:
-        return _chapter_key(selected, chapter_id) in scope.typed_chapters
+        return _chapter_key(scope, selected, chapter_id) in scope.typed_chapters
     if selected:
         return selected in scope.typed_volumes
     return bool(scope.typed_chapters)

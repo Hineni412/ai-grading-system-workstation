@@ -381,6 +381,15 @@ def get_student_exam_results(
     )
     total = len(ordered)
     offset = (page - 1) * page_size
+    from backend.step_diagnosis import build_session_step_diagnosis
+    for bucket in ordered[offset : offset + page_size]:
+        diagnosis = build_session_step_diagnosis(
+            db, bucket["session_id"], student_ids=[int(student_id)],
+            question_bank_path=question_bank_db_path,
+        )
+        items = diagnosis.students.get(int(student_id), {})
+        for item in bucket["items"]:
+            item.step_diagnosis = items.get(item.question_id)
     return StudentExamResultsResponse(
         student=_student_response(student_row),
         sessions=[

@@ -54,8 +54,8 @@ const sortExplanation = computed(() => ({
   weakness: '先看训练目标掌握度更低；相同时，依次看人数更多、组内差距更小。',
   similarity: '先看组内差距更小；相同时，依次看人数更多、训练目标掌握度更低。',
 })[sortMode.value])
-const chapterName = computed(() => knowledgeLeafLabel(props.diagnosis.knowledge_catalog?.find(
-  node => node.knowledge_key === props.settings.scope_keys[0])?.knowledge_point ?? '当前章节'))
+const chapterName = computed(() => props.settings.scope_keys.map(key => knowledgeLeafLabel(
+  props.diagnosis.knowledge_catalog?.find(node => node.knowledge_key === key)?.knowledge_point ?? key)).join('、') || '请勾选训练范围')
 const effectiveDiagnosis = computed(() => latestDiagnosis.value ?? props.diagnosis)
 const selectedMembers = computed(() => effectiveDiagnosis.value.students.filter(student => memberIds.value.includes(student.student_id)))
 const otherMembers = computed(() => effectiveDiagnosis.value.students.filter(student => !memberIds.value.includes(student.student_id)
@@ -151,7 +151,15 @@ function remember(): void {
 async function refresh(force = false): Promise<void> {
   controller?.abort()
   const current = ++revision
-  if (props.disabled || !props.settings.scope_keys[0]) { busy.value = false; stale.value = true; return }
+  if (!props.settings.scope_keys[0]) {
+    result.value = null
+    checked.value = null
+    latestDiagnosis.value = null
+    busy.value = false
+    stale.value = true
+    return
+  }
+  if (props.disabled) { busy.value = false; stale.value = true; return }
   const next = new AbortController()
   controller = next
   busy.value = true

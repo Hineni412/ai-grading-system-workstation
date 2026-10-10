@@ -1,6 +1,6 @@
 import { expect, type Page } from '@playwright/test'
 import { test } from './mock-fixtures'
-import type { PersonalizedPaperInstance, PersonalizedRecommendationDraft, TrainingAssessmentOutcome, TrainingAssessmentQuestion, TrainingScanBatch } from '../src/api/training'
+import type { TrainingGroup, TrainingGroupingRequest, PersonalizedPaperInstance, PersonalizedRecommendationDraft, TrainingAssessmentOutcome, TrainingAssessmentQuestion, TrainingScanBatch } from '../src/api/training'
 const volumeId = 'bnu24-math-g8-upper'
 const chapter = 'kp_test_c1', section = 'kp_test_c1_s1', skill = 'sk_test_skill'
 const catalog = { schema_version: 2, catalog_id: 'TEST-catalog', knowledge_standard_id: 'TEST-standard', publisher: 'TEST', subject: '数学', edition: '2024',
@@ -8,17 +8,28 @@ const catalog = { schema_version: 2, catalog_id: 'TEST-catalog', knowledge_stand
   volumes: [{ id: volumeId, order: 3, label: '合成八上', grade: '八年级', semester: '上学期', textbook_version: '北师大版2024', source: {},
     statistics: { raw_nodes: 3, excluded_nodes: 0, retained_nodes: 3 }, chapters: [{ id: 'TEST-c1', knowledge_id: chapter, order: 1, number: '1', title: '合成章', label: '第一章 合成章', kind: 'chapter', display_name: '合成册｜合成章',
       source_ref: { node_id: 'TEST', relative_url: '/TEST' }, exam_scope_values: ['TEST'], sections: [{ id: 'TEST-s1', knowledge_id: section, order: 1, number: '1', title: '合成节', label: '合成节', kind: 'lesson', display_name: '合成册｜合成章｜合成节', source_ref: { node_id: 'TEST', relative_url: '/TEST' }, knowledge_points: [] }] }] }] }
+catalog.volumes[0]!.chapters[0]!.sections.push({ ...catalog.volumes[0]!.chapters[0]!.sections[0]!,
+  id: 'TEST-s2', knowledge_id: chapter + '_s2', order: 2, number: '2', title: '合成节2', label: '合成节2', display_name: '合成册｜合成章｜合成节2' })
 catalog.volumes = Array.from({ length: 5 }, (_, index) => ({ ...catalog.volumes[0]!, id: index === 2 ? volumeId : `TEST-volume-${index}`, order: index + 1 }))
 const students = [1, 2, 3].map(id => ({ id, student_code: `TEST-${id}`, name: `合成学生${id}`, class_name: id === 3 ? '二班' : '一班', created_at: null }))
 const weak = { knowledge_key: skill, knowledge_point: '技能·合成技能', parent_knowledge_key: section, tier: 'weak', mastery: .4, score_sum: 4, full_score_sum: 10, deduction_count: 1, evidence_count: 1, observation_count: 1, exam_count: 1, source_question_refs: [], actionable_reasons: [], tag_context: {}, error_counts: {} }
-function diagnosis(body: { scope: { mode: string; class_ids?: string[]; student_ids?: string[] }; response_mode?: 'full' | 'display' }) {
+function diagnosis(body: { scope: { mode: string; class_ids?: string[]; student_ids?: string[] }; grouping?: TrainingGroupingRequest; response_mode?: 'full' | 'display' }) {
   const selected = students.filter(student => body.scope.mode === 'class' ? body.scope.class_ids?.includes(student.class_name) : body.scope.mode === 'selected' ? body.scope.student_ids?.includes(String(student.id)) : true)
   const full = { scope: body.scope, exam_scope: { mode: 'semester', curriculum_volume_id: volumeId, session_ids: [7, 8], sessions: [{ session_id: 7, session_name: 'TEST考试7' }, { session_id: 8, session_name: 'TEST考试8' }] },
     students: selected.map(student => ({ student_id: String(student.id), student_name: student.name, student_code: student.student_code, class_id: student.class_name, score_rate: .6, score_rate_source: 'current_exam', weak_points: [weak] })),
     knowledge_catalog: [{ knowledge_key: chapter, knowledge_point: '合成章', node_kind: 'chapter' }, { knowledge_key: section, knowledge_point: '合成节', node_kind: 'section', parent_knowledge_key: chapter }, { knowledge_key: skill, knowledge_point: '合成技能', node_kind: 'skill', parent_knowledge_key: section }],
     group_weak_points: [], knowledge_associations: [], coverage: { covered_items: 3, total_items: 3, missing_items: {} }, confirmed_concept_ids: [], suggested_terms: [], unmapped_terms: [], warnings: [], diagnosis_identity: 'question_tag' }
-  if (body.response_mode !== 'display') return full
-  return { ...full, response_mode: 'display', students: full.students.map(student => ({ ...student,
+  const members = selected.slice(0, 2).map(student => ({ student_id: String(student.id), student_name: student.name,
+    student_code: student.student_code, class_id: student.class_name, evidence_count: 1,
+    targets: [{ knowledge_key: skill, knowledge_point: '合成技能', mastery: .4, evidence_count: 1, source_question_refs: [] }] }))
+  const group: TrainingGroup = { group_id: 'TEST-group', source_version: 'b'.repeat(64), ready: true, issues: [], warnings: [],
+    reason: '合成小组', compatibility: 1, available_question_count: 10, recent_excluded_count: 0, members,
+    targets: [{ knowledge_key: skill, knowledge_point: '合成技能', min_mastery: .4, max_mastery: .4, median_mastery: .4,
+      evidence_count: 2, sparse_member_count: 0, target_difficulty: 5, available_question_count: 10, difficulty_unknown: false }] }
+  const grouped = body.grouping ? { ...full, grouping: { version: 'TEST', scope_keys: body.grouping.scope_keys,
+    groups: [group], selection: body.grouping.member_ids?.length ? group : null, unassigned: [], warnings: [] } } : full
+  if (body.response_mode !== 'display') return grouped
+  return { ...grouped, response_mode: 'display', students: full.students.map(student => ({ ...student,
     weak_points: student.weak_points.map(point => ({ knowledge_key: point.knowledge_key,
       knowledge_point: point.knowledge_point, mastery: point.mastery, tier: point.tier,
       observation_count: point.observation_count, evidence_count: point.evidence_count,
@@ -59,23 +70,23 @@ test('student selection, separate handout defaults, chapter layout, drawer focus
   const { calls, errors } = await install(page)
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/training?mode=student')
-  await expect(page.getByRole('heading', { name: '按学生训练', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '出训练', exact: true })).toBeVisible()
   await expect(page.getByLabel('选择合成学生1', { exact: true })).toBeVisible()
   await expect(page.getByText('已选 0 人', { exact: true })).toBeVisible()
   await expect(page.getByTestId('go-paper')).toBeDisabled()
-  await page.getByRole('button', { name: '合成学生1', exact: true }).click()
+  await page.getByRole('button', { name: '查看合成学生1概况', exact: true }).click()
   await expect(page.getByRole('dialog')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.getByRole('dialog')).toBeHidden()
-  await page.getByRole('button', { name: '全选本班', exact: true }).first().click()
+  await page.getByRole('button', { name: '勾选这 3 人', exact: true }).first().click()
   await page.getByRole('button', { name: '刷题讲义', exact: true }).click()
   await expect(page.getByLabel('每卷题数', { exact: true })).toHaveValue('30')
   await expect(page.getByLabel('同一技能最多', { exact: true })).toHaveValue('3')
   await expect(page.getByLabel('巩固题最多', { exact: true })).toHaveValue('6')
   const columns = await page.locator('.practice-layout').evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' '))
-  expect(columns).toHaveLength(3); expect(columns[0]).toBe('300px'); expect(columns[2]).toBe('340px')
+  expect(columns).toHaveLength(3); expect(columns[0]).toBe('330px'); expect(columns[2]).toBe('300px')
   expect(await page.locator('.paper-settings-panel').evaluate(element => getComputedStyle(element).position)).toBe('sticky')
-  await page.screenshot({ path: '../output/test_practice_implementation_20261003/practice-layout-synthetic.png', animations: 'disabled' })
+  await page.screenshot({ path: '../output/test_knowledge_training_merge_20261009/practice-layout-synthetic.png', animations: 'disabled' })
   await page.getByTestId('go-paper').click()
   await expect(page).toHaveURL(/mode=paper/)
   await expect(page.getByTestId('generate-paper-draft')).toBeEnabled()
@@ -85,10 +96,35 @@ test('student selection, separate handout defaults, chapter layout, drawer focus
   expect(calls.some(call => call.path === '/api/training/personalized-drafts' && Object.keys(call.body).length)).toBe(false)
   await page.goto('/training?mode=chapter')
   await expect(page.getByLabel('章节与小节')).toBeVisible()
-  await expect(page.getByTestId('go-paper')).toBeDisabled()
+  await expect(page.getByRole('button', { name: '推荐小组', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await page.setViewportSize({ width: 1100, height: 800 })
   expect(await page.locator('.practice-layout').evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(1)
   expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
+  expect(errors).toEqual([])
+})
+
+test('recommended groups use the selected range and release the adopted contract after roster edits', async ({ page }) => {
+  const { calls, errors } = await install(page)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/training?mode=chapter')
+  await page.getByRole('button', { name: '查看小组', exact: true }).click()
+  await page.getByRole('button', { name: '采用小组并核对出卷设置', exact: true }).click()
+  await expect(page.getByText('已选 2 人', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '多人同卷', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  expect(calls.filter(call => call.body.grouping).map(call => call.body.grouping)).toEqual(
+    expect.arrayContaining([expect.objectContaining({ scope_keys: [chapter] })]))
+  await page.screenshot({ path: '../output/test_knowledge_training_merge_20261009/groups-adopted-synthetic.png', animations: 'disabled' })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.getByRole('button', { name: '名单勾选', exact: true }).click()
+  await page.getByLabel('选择合成学生1', { exact: true }).uncheck()
+  await expect(page.getByText('已选 1 人', { exact: true })).toBeVisible()
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('ai-grading:personalized-paper-selection:v1')!))
+  expect(saved).toMatchObject({ adoptedGroup: null, targetKeys: [], paperMode: 'shared', selectedStudentIds: ['2'] })
+  await page.getByRole('button', { name: '推荐小组', exact: true }).click()
+  await expect(page.getByRole('button', { name: '查看小组', exact: true })).toBeVisible()
+  await page.getByLabel('选择第一章 合成章', { exact: true }).uncheck()
+  await expect(page.locator('.training-groups__candidate')).toHaveCount(0)
+  await expect(page.getByTestId('go-paper')).toBeDisabled()
   expect(errors).toEqual([])
 })
 
@@ -99,8 +135,14 @@ test('wrong book preview, scope filtering, options, export, and download', async
   await page.getByLabel('选择合成学生3', { exact: true }).check()
   await page.getByRole('button', { name: '错题本', exact: true }).click()
   await expect(page.getByText(/可导出 3 道错题/)).toBeVisible()
-  await page.getByRole('button', { name: '专项', exact: true }).click()
+  await expect.poll(() => calls.filter(call => call.path === '/api/students/wrong-question-books/preview').at(-1)?.body.scope_keys).toEqual([])
+  await page.locator('.knowledge-range-list').getByRole('button', { name: '清空', exact: true }).click()
   await page.getByLabel('选择合成节', { exact: true }).check()
+  await expect(page.getByText(/不在所选章节 1 道/)).toBeVisible()
+  await page.getByLabel('选择合成节2', { exact: true }).check()
+  await expect(page.getByText(/不在所选章节 1 道/)).toHaveCount(0)
+  await expect.poll(() => calls.filter(call => call.path === '/api/students/wrong-question-books/preview').at(-1)?.body.scope_keys).toEqual([])
+  await page.getByLabel('选择合成节2', { exact: true }).uncheck()
   await expect(page.getByText(/不在所选章节 1 道/)).toBeVisible()
   await page.getByLabel('每题标注来源（考试 · 题号）', { exact: true }).uncheck()
   await page.getByRole('button', { name: /导出错题本（2 份/ }).click()

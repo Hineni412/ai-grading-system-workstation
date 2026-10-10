@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -188,6 +188,7 @@ class StudentExamResultItem(BaseModel):
     error_category: str | None = None
     error_summary: str | None = None
     evidence_url: str | None
+    step_diagnosis: dict[str, Any] | None = None
 
 
 class StudentExamResultSession(BaseModel):

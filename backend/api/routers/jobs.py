@@ -358,7 +358,6 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
         for key in (
             "session_id",
             "report_type",
-            "score_revision",
             "review_note_count",
         ):
             if job.result.get(key) is not None:
@@ -407,8 +406,6 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
         allowed = (
             "session_id",
             "report_type",
-            "score_revision",
-            "report_options_fingerprint",
             "score_excel_options",
             "student_ids",
             "publish",

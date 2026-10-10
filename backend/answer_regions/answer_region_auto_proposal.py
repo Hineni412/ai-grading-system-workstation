@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from statistics import median
 from typing import Any
 from uuid import uuid4
@@ -15,6 +16,10 @@ from backend.question_id_contract import question_id_coordinates
 
 NAME_ID = "__student_name__"
 _NAME_FOLLOWING_LABELS = ("班级", "考号", "学号", "座号")
+_PAGE_HEADING = re.compile(
+    r"^(?:[一二三四五六七八九十\d]+[、.．])?"
+    r"(?:选择题|填空题|解答题|计算题|判断题|证明题|综合题)|^第\d+页"
+)
 
 
 def propose_answer_regions(
@@ -51,7 +56,7 @@ def propose_answer_regions(
                 source_size=(width, height), offset=(left, 0),
             )
             candidates.extend(printed_question_candidates(strip_lines, parents))
-        # Keep full-page text for column edges; narrow crops truncate ordinary text.
+        # Narrow crops truncate header text; retain the whole-page OCR for the name area.
         if page == "front" and not any("姓名" in line["text"] and line["confidence"] >= 0.55 for line in lines):
             lines.extend(read_ocr_lines(
                 image[:max(1, height // 4)].copy(), page=page, ocr_engine=ocr_engine,
@@ -73,30 +78,20 @@ def propose_answer_regions(
     anchors = _increasing_anchors(ordered_candidates)
     regions = []
     for page, data in pages.items():
-        width, height = data["size"]
-        margin = max(4, round(width * 0.012))
+        _, height = data["size"]
+        margin = max(12, round(height * 0.02))
         for column, (left, right) in enumerate(data["columns"]):
             group = [item for item in anchors if item["page"] == page and item["column"] == column]
             if not group:
                 continue
-            column_lines = [line for line in data["lines"] if left <= line["x"] < right
-                            and line["x"] + line["w"] <= right + margin]
-            x = max(left, min(item["x"] for item in group) - margin)
-            edge = min(right - margin, max(
-                (line["x"] + line["w"] for line in column_lines), default=right - margin,
-            ))
-            edge = max(x + MIN_REGION_SIZE, edge)
             for index, anchor in enumerate(group):
-                top = max(0, anchor["y"] - 4)
-                bottom = group[index + 1]["y"] if index + 1 < len(group) else max(
-                    height - margin,
-                    max((line["y"] + line["h"] for line in column_lines), default=0),
-                )
+                top = anchor["y"] - margin
+                bottom = group[index + 1]["y"] + margin if index + 1 < len(group) else height
                 regions.append(_region(anchor, bindings[anchor["question_id"]],
-                                       (x, top, edge, bottom), data["size"]))
+                                       (left, top, right, bottom), data["size"]))
 
     _append_cross_page_region(regions, anchors, pages, bindings)
-    name = _name_region(pages.get("front"))
+    name = _name_region(pages.get("front"), anchors)
     if name is not None and anchors:
         regions.insert(0, name)
     found = {item["mapped_question_id"] for item in regions}
@@ -161,7 +156,7 @@ def _region(anchor: dict[str, Any], binding: str, bounds: tuple[float, float, fl
     }
 
 
-def _name_region(data: dict[str, Any] | None) -> dict[str, Any] | None:
+def _name_region(data: dict[str, Any] | None, anchors: list[dict[str, Any]]) -> dict[str, Any] | None:
     if data is None:
         return None
     lines = data["lines"]
@@ -169,22 +164,27 @@ def _name_region(data: dict[str, Any] | None) -> dict[str, Any] | None:
     if not labels:
         return None
     label = min(labels, key=lambda line: (line["y"], -line["confidence"]))
-    text = label["text"]
-    start = text.index("姓名")
-    char_width = label["w"] / max(1, len(text))
-    x = label["x"] + start * char_width
-    following = [text.index(value, start + 2) for value in _NAME_FOLLOWING_LABELS
-                 if value in text[start + 2:]]
-    label_width = label["w"] if len(text.strip()) <= 4 else char_width * 3
-    edge = label["x"] + min(following) * char_width if following else x + label_width * 4
-    others = [line["x"] for line in lines if line is not label and line["x"] > x
-              and abs(line["y"] + line["h"] / 2 - label["y"] - label["h"] / 2)
-              <= max(line["h"], label["h"])
-              and any(value in line["text"] for value in _NAME_FOLLOWING_LABELS)]
-    if others:
-        edge = min(edge, min(others)) if following else min(others)
+    width, height = data["size"]
+    margin_y = max(12, label["h"])
+    margin_x = max(24, round(width * 0.04))
+    first_question_y = min((item["y"] for item in anchors if item["page"] == "front"),
+                           default=height)
+    label_bottom = label["y"] + label["h"]
+    header_stop = min(first_question_y, label_bottom + label["h"])
+    header = [line for line in lines if line["y"] < header_stop and line["confidence"] >= 0.55
+              and (line["y"] <= label_bottom
+                   or any(value in line["text"] for value in _NAME_FOLLOWING_LABELS))
+              and not _PAGE_HEADING.search(re.sub(r"\s+", "", line["text"]))]
+    header.append(label)
+    header_bottom = max(line["y"] + line["h"] for line in header)
+    bottom = header_bottom + margin_y
+    if first_question_y > header_bottom:
+        bottom = min(bottom, max(header_bottom, first_question_y - 4))
     return _region(label, NAME_ID,
-                   (x - 6, label["y"] - label["h"] / 2, edge - 3, label["y"] + label["h"] * 1.5),
+                   (min(line["x"] for line in header) - margin_x,
+                    min(line["y"] for line in header) - margin_y,
+                    max(line["x"] + line["w"] for line in header) + margin_x,
+                    bottom),
                    data["size"])
 
 
@@ -198,14 +198,16 @@ def _append_cross_page_region(regions: list[dict[str, Any]], anchors: list[dict[
     # A continuation may occupy the whole back page when it has no new number.
     column = first["column"] if first else 0
     left, right = back["columns"][column]
-    stop = first["y"] if first else back["size"][1] - 12
+    height = back["size"][1]
+    margin = max(12, round(height * 0.02))
+    stop = first["y"] if first else height
     lines = [line for line in back["lines"] if left <= line["x"] < right
              and line["y"] + line["h"] <= stop and line["y"] >= 12
-             and not any(value in line["text"] for value in ("姓名", *_NAME_FOLLOWING_LABELS))]
+             and not any(value in line["text"] for value in ("姓名", *_NAME_FOLLOWING_LABELS))
+             and not _PAGE_HEADING.search(re.sub(r"\s+", "", line["text"]))]
     if not lines:
         return
     last = front[-1]
-    x = max(left, min(line["x"] for line in lines) - 8)
-    edge = min(right - 8, max(line["x"] + line["w"] for line in lines))
     regions.append(_region(dict(last, page="back"), bindings[last["question_id"]],
-                           (x, min(line["y"] for line in lines) - 4, edge, stop), back["size"]))
+                           (left, min(line["y"] for line in lines) - margin, right, stop + margin),
+                           back["size"]))

@@ -1,357 +1,225 @@
-"""报告结果版本化：状态判定、输入指纹、个人结果存储与 v1→v2 迁移。"""
+"""保存报告直接读取、单份覆盖与旧目录只读兼容。"""
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from backend.repositories.grading_database import open_grading_repositories
-from backend.report_results import (
-    PersonalReportStore,
-    class_input_digest,
-    migrate_report_results,
-    personal_input_digest,
-    prompt_version,
-    resolve_result_state,
-)
+from backend.report_results import PersonalReportStore, resolve_result_state
 
 
-# ---------------------------------------------------------------------------
-# resolve_result_state
-# ---------------------------------------------------------------------------
+def _tree_contents(root: Path) -> dict:
+    return {str(path.relative_to(root)): (path.read_bytes(), path.stat().st_mtime_ns)
+            if path.is_file() else None for path in root.rglob('*')}
 
 
-def test_resolve_result_state_all_states():
-    stored = {
-        "result": {"groups": []},
-        "input_digest": "d1",
-        "prompt_version": prompt_version("causes"),
-        "generated_at": "2024-01-01T00:00:00",
-    }
-    assert resolve_result_state(stored, "d1", "causes")["status"] == "current"
-    assert resolve_result_state(stored, "d2", "causes")["status"] == "stale"
-    # 空指纹一律 stale（不能视为当前）。
-    assert resolve_result_state({**stored, "input_digest": ""}, "d1", "causes")[
-        "status"
-    ] == "stale"
-    old = {**stored, "prompt_version": "class_error_causes_v3"}
-    assert resolve_result_state(old, "d1", "causes")["status"] == "old_prompt"
-    assert resolve_result_state(None, "d1", "causes")["status"] == "missing"
-    assert resolve_result_state({"input_digest": "d1"}, "d1", "causes")[
-        "status"
-    ] == "missing"  # 无 result/narrative
-    # 叙述型结果同样判定。
-    narrative = {"narrative": {}, "input_digest": "d1",
-                 "prompt_version": prompt_version("personal_report")}
-    assert resolve_result_state(narrative, "d1", "personal_report")[
-        "status"
-    ] == "current"
+@pytest.mark.parametrize('kind,field', [('causes', 'result'), ('class_report', 'narrative'),
+                                      ('personal_report', 'narrative')])
+def test_saved_result_ignores_old_analysis_fields(kind, field):
+    stored = {field: {'summary': 'TEST-旧内容'}, 'input_digest': 'old-input',
+              'input_fingerprint': 'another-input', 'prompt_version': 'TEST-old-method',
+              'version': 99, 'generated_at': '2026-01-01T00:00:00'}
+    before = dict(stored)
+    state = resolve_result_state(stored, kind)
+    assert state['status'] == 'current'
+    assert state['needs_update'] is False
+    assert state['generated_at'] == stored['generated_at']
+    assert 'input_digest' not in state and 'prompt_version' not in state
+    assert stored == before
 
 
-# ---------------------------------------------------------------------------
-# 输入指纹：忽略多余列、对真实输入敏感
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize('generated,changed,expected', [
+    ('2026-01-01T00:00:00', '2026-01-02T00:00:00', 'stale'),
+    ('2026-01-01T00:00:00', '2026-01-01T00:00:00', 'current'),
+    ('2026-01-02T00:00:00', '2026-01-01T00:00:00', 'current'),
+    (None, '2026-01-02T00:00:00', 'current'),
+    ('TEST-unknown-time', '2026-01-02T00:00:00', 'current'),
+])
+def test_update_time_is_only_a_reminder(generated, changed, expected):
+    stored = {'narrative': {'summary': 'TEST-可读正文'}, 'generated_at': generated}
+    state = resolve_result_state(stored, 'personal_report', current_changed_at=changed)
+    assert state['status'] == expected
+    assert state['needs_update'] is (expected == 'stale')
+    assert stored['narrative'] == {'summary': 'TEST-可读正文'}
+    marked = resolve_result_state({**stored, 'needs_update': True}, 'personal_report')
+    assert marked['status'] == 'stale'
+    assert marked['generated_at'] == generated
 
 
-def test_class_digest_ignores_extra_fields_and_tracks_inputs():
-    records = [[1, "Q1", 30.0, 40.0]]
-    locks = [[1, "Q1", 30.0]]
-    base = class_input_digest(records=records, locks=locks, cause_digest="cd")
-    # 行内多余元素不参与指纹（指纹只认固定投影的列）。
-    extra = class_input_digest(
-        records=[[1, "Q1", 30.0, 40.0]],
-        locks=locks,
-        cause_digest="cd",
-    )
-    assert base == extra
-    # 多余列（行外字段）由调用方投影，不在 digest 层；行内值变化即变化。
-    assert class_input_digest(
-        records=[[1, "Q1", 31.0, 40.0]], locks=locks, cause_digest="cd"
-    ) != base
-    assert class_input_digest(
-        records=records, locks=[[1, "Q1", 31.0]], cause_digest="cd"
-    ) != base
-    assert class_input_digest(
-        records=records, locks=locks, cause_digest="other"
-    ) != base
-    # 确定性：行序不影响指纹。
-    two = [[1, "Q1", 30.0, 40.0], [1, "Q2", 50.0, 60.0]]
-    assert class_input_digest(records=two, locks=[], cause_digest="") == (
-        class_input_digest(records=list(reversed(two)), locks=[], cause_digest="")
-    )
+def test_missing_body_and_read_errors_do_not_become_saved_results():
+    assert resolve_result_state(None, 'personal_report')['status'] == 'missing'
+    assert resolve_result_state({'input_digest': 'legacy'}, 'causes')['status'] == 'missing'
+    error = {'narrative': None, 'read_error': 'TEST-读取失败'}
+    assert resolve_result_state(error, 'personal_report')['read_error'] == error['read_error']
+    assert resolve_result_state(error, 'personal_report')['status'] == 'missing'
+    with pytest.raises(ValueError):
+        resolve_result_state({'narrative': {}}, 'TEST-unknown-kind')
 
 
-def test_personal_digest_tracks_records_locks_errors_and_questions():
-    base = personal_input_digest(
-        records=[["Q1", 30.0, 40.0]],
-        locks=[["Q1", 30.0]],
-        error_records=[["Q1", "error", "概念理解", "旧错法"]],
-        questions=[["Q1", "题干", "解析"]],
-    )
-    assert personal_input_digest(
-        records=[["Q1", 31.0, 40.0]], locks=[["Q1", 30.0]],
-        error_records=[["Q1", "error", "概念理解", "旧错法"]],
-        questions=[["Q1", "题干", "解析"]],
-    ) != base
-    assert personal_input_digest(
-        records=[["Q1", 30.0, 40.0]], locks=[["Q1", 31.0]],
-        error_records=[["Q1", "error", "概念理解", "旧错法"]],
-        questions=[["Q1", "题干", "解析"]],
-    ) != base
-    assert personal_input_digest(
-        records=[["Q1", 30.0, 40.0]], locks=[["Q1", 30.0]],
-        error_records=[["Q1", "error", "概念理解", "新错法"]],
-        questions=[["Q1", "题干", "解析"]],
-    ) != base
-    assert personal_input_digest(
-        records=[["Q1", 30.0, 40.0]], locks=[["Q1", 30.0]],
-        error_records=[["Q1", "error", "概念理解", "旧错法"]],
-        questions=[["Q1", "改后题干", "解析"]],
-    ) != base
-
-
-# ---------------------------------------------------------------------------
-# PersonalReportStore
-# ---------------------------------------------------------------------------
-
-
-def test_personal_report_store_roundtrip_and_delete(tmp_path):
+def test_personal_report_store_success_replaces_one_file_and_keeps_other_students(tmp_path):
     store = PersonalReportStore(tmp_path)
     assert store.load(1, 2) is None
-    entry = store.save(
-        1, 2, narrative={"a": 1}, input_digest="d", prompt_version="p"
-    )
-    assert store.load(1, 2)["narrative"] == {"a": 1}
-    assert entry["generated_at"]
-    assert set(store.list(1)) == {2}
-    store.delete_session(1)
     assert store.list(1) == {}
-    assert store.load(1, 2) is None
+    assert not store.base_dir.exists()
+    source = {'student_name': 'TEST-学生'}
+    saved = store.save(1, 2, narrative={'summary': 'TEST-第一份'}, source=source,
+                       generated_at='2026-01-01T00:00:00')
+    store.save(1, 3, narrative={'summary': 'TEST-另一学生'})
+    other = store._path(1, 3).read_bytes()
+    assert store.load(1, 2) == saved
+    assert saved['generated_at'] == '2026-01-01T00:00:00'
+    assert saved['source'] == source
+    assert 'input_digest' not in saved and 'prompt_version' not in saved and 'version' not in saved
+    updated = store.save(1, 2, narrative={'summary': 'TEST-主动更新'}, generated_at='2026-01-02T00:00:00')
+    assert store.load(1, 2) == updated
+    assert store._path(1, 3).read_bytes() == other
+    assert set(store.list(1)) == {2, 3}
+    assert {path.name for path in store._session_dir(1).iterdir()} == {'2.json', '3.json'}
+    store.delete_session(1)
+    assert store.list(1) == {} and store.load(1, 2) is None
 
 
-# ---------------------------------------------------------------------------
-# v1 → v2 迁移
-# ---------------------------------------------------------------------------
+def test_concurrent_successful_saves_leave_one_complete_result_and_no_temporary_files(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    store = PersonalReportStore(tmp_path)
+    store.save(1, 2, narrative={'summary': 'TEST-previous'})
+    barrier = Barrier(2)
+    bodies = [{'summary': 'TEST-A', 'evidence': ['A'] * 20},
+              {'summary': 'TEST-B', 'evidence': ['B'] * 30}]
+    def save_together(body):
+        barrier.wait(timeout=5)
+        return store.save(1, 2, narrative=body)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(save_together, body) for body in bodies]
+        successes = [future.result(timeout=10) for future in futures]
+    assert len(successes) == 2
+    assert store.load(1, 2) in successes
+    assert store.load(1, 2)['narrative'] in bodies
+    assert {path.name for path in store._session_dir(1).iterdir()} == {'2.json'}
 
 
-def _seed_session(db, tmp_path: Path) -> int:
-    from tests.test_analysis_report import _seed_analysis_session
-
-    return _seed_analysis_session(db, tmp_path)
-
-
-@pytest.mark.parametrize("changed_input", ["score", "rubric", "answer", "error_records"])
-def test_personal_status_reuses_inputs_but_refreshes_results_and_changed_evidence(tmp_path, monkeypatch, changed_input):
-    import backend.personal_reports as reports
-    from backend.session_analysis import assemble_session_analysis, enrich_personal_questions
-
-    db = open_grading_repositories(tmp_path / "databases" / "TEST-grading.db")
-    db.initialize()
-    sid = _seed_session(db, tmp_path)
-    directory = tmp_path / "TEST-reports"
-    data = assemble_session_analysis(db, sid, data_root=tmp_path, page_only=True)
-    enrich_personal_questions(db, data, tmp_path)
-    digests = reports.student_report_digests(db, sid, data, reports_dir=directory)
-    student_id = data.students[0].student_id
-    calls = []
-    original = reports.assemble_session_analysis
-
-    def counted(*args, **kwargs):
-        calls.append(None)
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(reports, "assemble_session_analysis", counted)
-    first = reports.personal_report_states(db, sid, directory)
-    assert next(s for s in first["students"] if s["student_id"] == student_id)["status"] == "missing"
-    PersonalReportStore(directory).save(sid, student_id, narrative={"summary": "TEST"},
-                                       input_digest=digests[student_id], prompt_version=prompt_version("personal_report"))
-    ready = reports.personal_report_states(db, sid, directory)
-    assert next(s for s in ready["students"] if s["student_id"] == student_id)["status"] == "current"
-    assert len(calls) == 1
-    if changed_input == "score":
-        with sqlite3.connect(db.db_path) as connection:
-            connection.execute("UPDATE session_details SET score_awarded=score_awarded-1 WHERE question_id='Q1'")
-    elif changed_input in {"rubric", "answer"}:
-        session = db.sessions.get_grading_session(sid)
-        path = Path(session["rubric_path" if changed_input == "rubric" else "answer_key_path"])
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        payload["questions"][0]["question_text" if changed_input == "rubric" else "analysis"] = "TEST-changed-input"
-        path.write_text(json.dumps(payload), encoding="utf-8")
+@pytest.mark.parametrize('failure', ['no_result', 'replace_failed'])
+def test_unsuccessful_save_keeps_previous_success_and_leaves_no_temporary_file(tmp_path, monkeypatch, failure):
+    import backend.report_results as results
+    store = PersonalReportStore(tmp_path)
+    previous = store.save(1, 2, narrative={'summary': 'TEST-上次成功'}, needs_update=True)
+    before = _tree_contents(tmp_path)
+    if failure == 'no_result':
+        with pytest.raises(ValueError):
+            store.save(1, 2, narrative=None)
     else:
-        state_path = directory / ".class_analysis" / f"{sid}.json"
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(json.dumps({"error_records": {"Q1": {"records": [{
-            "student_id": student_id, "kind": "error", "category": "TEST", "pattern": "TEST-new-pattern",
-        }]}}}), encoding="utf-8")
-    refreshed = reports.personal_report_states(db, sid, directory)
-    assert next(s for s in refreshed["students"] if s["student_id"] == student_id)["status"] == "stale"
-    assert len(calls) == 2
-    assert refreshed == reports.personal_report_states(db, sid, directory, data=original(db, sid, data_root=tmp_path, page_only=True))
+        original = results.os.replace
+        def fail_selected(source, target):
+            if Path(target) == store._path(1, 2):
+                raise OSError('TEST-atomic-replace-failed')
+            return original(source, target)
+        monkeypatch.setattr(results.os, 'replace', fail_selected)
+        with pytest.raises(OSError):
+            store.save(1, 2, narrative={'summary': 'TEST-未采用的新内容'})
+    assert store.load(1, 2) == previous
+    assert _tree_contents(tmp_path) == before
 
 
-def _legacy_index_and_cache(reports_dir: Path, sid: int, students: list[int]) -> Path:
-    """旧式缓存：personal_index 列两个学生 + 键名文件；另有一个孤儿文件。"""
-    cache_dir = reports_dir / ".analysis_narrative_cache"
-    index_dir = cache_dir / "personal_index"
-    index_dir.mkdir(parents=True)
-    for student_id in students:
-        (cache_dir / f"key-{student_id}.json").write_text(
-            json.dumps({"version": 1, "narrative": {"s": student_id}},
-                       ensure_ascii=False),
-            encoding="utf-8",
-        )
-    (cache_dir / "orphan.json").write_text(
-        json.dumps({"version": 1, "narrative": {"s": 999}}, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    return index_dir
+def _write_legacy_results(root: Path, style: str, session_id: int = 7) -> dict[int, dict]:
+    if style == 'class_state':
+        cache = root / '.cache'
+        index = root / '.class_analysis' / f'{session_id}.json'
+        key = 'personal_index'
+    else:
+        cache = root / '.analysis_narrative_cache'
+        index = cache / 'personal_index' / f'session_{session_id}.json'
+        key = 'students'
+    cache.mkdir(parents=True, exist_ok=True)
+    index.parent.mkdir(parents=True, exist_ok=True)
+    narratives = {11: {'summary': 'TEST-旧缓存正文'}, 22: {'summary': 'TEST-旧内嵌正文'}}
+    (cache / 'TEST-key-11.json').write_text(json.dumps({'version': 99, 'narrative': narratives[11]}), encoding='utf-8')
+    (cache / 'TEST-orphan.json').write_text(json.dumps({'version': 1, 'narrative': {'summary': 'TEST-无归属正文'}}), encoding='utf-8')
+    index.write_text(json.dumps({'version': 99, key: {
+        '11': {'cache_key': 'TEST-key-11', 'student_revision': 'TEST-old-value', 'prompt_version': 'TEST-old-method',
+               'generated_at': '2026-01-01T00:00:00'},
+        '22': {'narrative': narratives[22], 'generated_at': '2026-01-02T00:00:00'},
+        'ignored-entry': {'cache_key': 'TEST-orphan'},
+    }}), encoding='utf-8')
+    return narratives
 
 
-def test_migrate_report_results_end_to_end(tmp_path):
-    from backend.class_analysis import (
-        ClassAnalysisStateStore,
-        _cause_input_fingerprint,
-        assemble_cause_data,
-        build_cause_inputs,
-        normalize_cause_result,
-        student_error_records,
-    )
-    from backend.personal_reports import (
-        personal_report_states,
-        student_report_digests,
-    )
-    from backend.report_exports import score_revision
-    from backend.report_results import _legacy_student_report_revision
-    from backend.session_analysis import (
-        assemble_session_analysis,
-        enrich_personal_questions,
-        split_session_analysis_by_class,
-    )
+@pytest.mark.parametrize('style', ['class_state', 'narrative_cache'])
+def test_legacy_reports_are_read_in_place_and_list_keeps_every_known_student(tmp_path, style):
+    reports = tmp_path / 'TEST-reports'
+    narratives = _write_legacy_results(reports, style)
+    store = PersonalReportStore(reports)
+    before = _tree_contents(reports)
+    for student_id, narrative in narratives.items():
+        saved = store.load(7, student_id)
+        assert saved['narrative'] == narrative
+        assert resolve_result_state(saved, 'personal_report')['status'] == 'current'
+    entries = store.list(7)
+    assert set(entries) == {11, 22}
+    assert {student_id: saved['narrative'] for student_id, saved in entries.items()} == narratives
+    assert _tree_contents(reports) == before
+    assert not store.base_dir.exists()
+    assert not (reports / 'backup').exists()
 
-    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
-    db.initialize()
-    sid = _seed_session(db, tmp_path)
-    reports_dir = tmp_path / "reports"
-    data = assemble_cause_data(db, sid, data_root=tmp_path)
-    sources = {s["question_id"]: s for s in build_cause_inputs(data)}
 
-    # 错因：Q1 v4（指纹匹配 → current）、Q2 v3（指纹匹配 → old_prompt）、
-    # 另造一题 v2（空指纹 → stale）。这里只断言状态机与文件行为。
-    def entry(version, source):
-        result = normalize_cause_result(
-            {"groups": [{"kind": "error", "category": "概念理解",
-                         "reason": "旧错法", "manifestation": "旧表现",
-                         "evidence_ids": [e["id"] for e in source["evidence"]]}]},
-            source,
-        )
-        return {
-            "version": version,
-            "input": source,
-            "input_fingerprint": _cause_input_fingerprint(source),
-            "result": result,
-            "generated_at": "2024-01-01T00:00:00",
-            "origin": "model",
-            "failed": False,
-            "history": [{"old": 1}],
-        }
+@pytest.mark.parametrize('style', ['class_state', 'narrative_cache'])
+def test_current_success_wins_without_erasing_legacy_sources(tmp_path, style):
+    reports = tmp_path / 'TEST-reports'
+    narratives = _write_legacy_results(reports, style)
+    store = PersonalReportStore(reports)
+    legacy_before = _tree_contents(reports)
+    saved = store.save(7, 11, narrative={'summary': 'TEST-当前采用正文'})
+    current_before = _tree_contents(reports)
+    assert store.load(7, 11) == saved
+    assert store.list(7)[22]['narrative'] == narratives[22]
+    assert set(store.list(7)) == {11, 22}
+    assert _tree_contents(reports) == current_before
+    assert all(_tree_contents(reports)[name] == value for name, value in legacy_before.items())
+    assert len(list(store._session_dir(7).glob('*.json'))) == 1
 
-    q1, q2 = sorted(sources)
-    questions = {
-        q1: entry("class_error_causes_v4", sources[q1]),
-        q2: entry("class_error_causes_v3", sources[q2]),
-        "Q9": {
-            "version": "class_error_causes_v2",
-            "input": {"question_id": "Q9", "evidence": []},
-            "result": {"groups": []},
-            "generated_at": "2024-01-01T00:00:00",
-            "origin": "model",
-            "failed": False,
-        },
-    }
-    # 班级：就绪叙述 + 旧口径 score_revision/rendition_version 与当前一致。
-    revision = score_revision(db, sid, include_question_bank=False)
-    reports_dir.mkdir(parents=True)
-    state_path = reports_dir / ".class_analysis"
-    state_path.mkdir()
-    (state_path / f"{sid}.json").write_text(
-        json.dumps({
-            "version": 1,
-            "status": "ready",
-            "generated_at": "2024-01-01T00:00:00",
-            "score_revision": revision,
-            "rendition_version": "class_analysis_page_v4_cause_payload",
-            "class_reports": {
-                "1 班": {
-                    "narrative": {"key_findings": ["x"]},
-                    "status": "ready",
-                    "generated_at": "2024-01-01T00:00:00",
-                }
-            },
-            "cause_analysis": {"questions": questions},
-            "error_records": {},
-        }, ensure_ascii=False),
-        encoding="utf-8",
-    )
 
-    # 个人索引：学生1 revision 匹配 → current；学生2 不匹配 → stale；孤儿不迁。
-    students = sorted(int(s.student_id) for s in data.students)
-    index_dir = _legacy_index_and_cache(reports_dir, sid, students)
-    revisions = {
-        str(students[0]): {
-            "cache_key": f"key-{students[0]}",
-            "student_revision": _legacy_student_report_revision(db, sid, students[0]),
-        },
-        str(students[1]): {
-            "cache_key": f"key-{students[1]}",
-            "student_revision": "outdated-revision",
-        },
-    }
-    (index_dir / f"session_{sid}.json").write_text(
-        json.dumps({"students": revisions}, ensure_ascii=False),
-        encoding="utf-8",
-    )
+@pytest.mark.parametrize('content', [b'{invalid', b'\xff', b'[]'])
+def test_bad_saved_file_stays_at_original_path_with_a_read_error(tmp_path, content):
+    store = PersonalReportStore(tmp_path)
+    target = store._path(1, 2)
+    target.parent.mkdir(parents=True)
+    target.write_bytes(content)
+    before = _tree_contents(tmp_path)
+    saved = store.load(1, 2)
+    assert saved['narrative'] is None and saved['read_error']
+    state = resolve_result_state(saved, 'personal_report')
+    assert state['status'] == 'missing' and state['read_error']
+    assert store.list(1)[2]['read_error']
+    assert _tree_contents(tmp_path) == before
 
-    summary = migrate_report_results(reports_dir, db)
-    assert summary["backup_dir"] and Path(summary["backup_dir"]).is_dir()
-    assert (Path(summary["backup_dir"]) / ".class_analysis" / f"{sid}.json").is_file()
-    assert not (reports_dir / ".analysis_narrative_cache").exists()
-    assert summary["cache_dir_deleted"] is True
 
-    state = ClassAnalysisStateStore(reports_dir).load(sid)
-    assert state["results_version"] == 2
-    qs = state["cause_analysis"]["questions"]
-    assert qs[q1]["prompt_version"] == "class_error_causes_v4"
-    assert qs[q1]["input_digest"] == _cause_input_fingerprint(sources[q1])
-    assert "version" not in qs[q1] and "history" not in qs[q1]
-    assert qs[q1]["input"]["evidence"]  # input 保留
-    assert qs[q2]["prompt_version"] == "class_error_causes_v3"
-    assert qs["Q9"]["input_digest"] == "" and qs["Q9"]["prompt_version"] == "class_error_causes_v2"
-    class_entry = state["class_reports"]["1 班"]
-    assert class_entry["narrative"] == {"key_findings": ["x"]}
-    assert class_entry["input_digest"]  # 旧修订一致 → 现算指纹 → current
+@pytest.mark.parametrize('style', ['class_state', 'narrative_cache'])
+def test_bad_primary_file_can_show_legacy_body_without_repairing_either_file(tmp_path, style):
+    reports = tmp_path / 'TEST-reports'
+    narratives = _write_legacy_results(reports, style)
+    store = PersonalReportStore(reports)
+    target = store._path(7, 11)
+    target.parent.mkdir(parents=True)
+    target.write_text('TEST-bad-json', encoding='utf-8')
+    before = _tree_contents(reports)
+    saved = store.load(7, 11)
+    assert saved['narrative'] == narratives[11] and saved['read_error']
+    assert resolve_result_state(saved, 'personal_report')['status'] == 'current'
+    assert store.list(7)[11]['narrative'] == narratives[11]
+    assert _tree_contents(reports) == before
 
-    store = PersonalReportStore(reports_dir)
-    first = store.load(sid, students[0])
-    assert first["narrative"] == {"s": students[0]}
-    pdata = assemble_session_analysis(db, sid, data_root=tmp_path)
-    enrich_personal_questions(db, pdata, tmp_path)
-    digests = student_report_digests(db, sid, pdata, reports_dir=reports_dir)
-    assert first["input_digest"] == digests[students[0]]
-    second = store.load(sid, students[1])
-    assert second["input_digest"] == ""  # 旧修订不一致 → stale
-    # 孤儿缓存文件不迁移。
-    assert store.list(sid).keys() == {students[0], students[1]}
 
-    # 迁移后的公开状态判定。
-    page_states = personal_report_states(db, sid, reports_dir)["students"]
-    by_id = {s["student_id"]: s["status"] for s in page_states}
-    assert by_id[students[0]] == "current"
-    assert by_id[students[1]] == "stale"
-
-    # 幂等：第二次运行不再迁移，也不重建缓存目录。
-    again = migrate_report_results(reports_dir, db)
-    assert again["sessions"] == {}
-    assert again["already_migrated"] == [sid]
+def test_list_combines_both_legacy_indexes_and_current_files_without_writing(tmp_path):
+    reports = tmp_path / 'TEST-reports'
+    _write_legacy_results(reports, 'class_state')
+    cache = reports / '.analysis_narrative_cache'
+    index = cache / 'personal_index' / 'session_7.json'
+    index.parent.mkdir(parents=True)
+    index.write_text(json.dumps({'students': {'44': {'narrative': {'summary': 'TEST-第二种旧目录'}}}}), encoding='utf-8')
+    store = PersonalReportStore(reports)
+    store.save(7, 33, narrative={'summary': 'TEST-当前目录'})
+    before = _tree_contents(reports)
+    assert set(store.list(7)) == {11, 22, 33, 44}
+    assert store.load(7, 44)['narrative']['summary'] == 'TEST-第二种旧目录'
+    assert _tree_contents(reports) == before

@@ -56,6 +56,22 @@ def load_snapshot(
     return payload
 
 
+def has_saved_exam_reference(upload_config_dir: Path, record_ids: tuple[str, ...]) -> bool:
+    identifiers = tuple(value.encode("utf-8") for value in record_ids if value)
+    if not identifiers:
+        return False
+    paths = list(Path(upload_config_dir).glob("evidence_snapshot-*.json"))
+    paths.extend(Path(upload_config_dir).glob("deferred_question_analysis_*.json"))
+    for path in paths:
+        try:
+            content = path.read_bytes()
+        except OSError:
+            return True
+        if any(identifier in content for identifier in identifiers):
+            return True
+    return False
+
+
 def build_session_snapshot(
     db_path: Path,
     *,

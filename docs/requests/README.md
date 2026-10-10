@@ -6,6 +6,9 @@
 |---|---|---|
 | 待办 | [未完成事项](open-items.md) | 汇总仍未完成或待核实的候选，不充当已实现功能说明 |
 | 页面与性能巡检 | [问题与根因记录](ui-performance-audit-20261007.md)、[概览](ui-performance-audit-20261007.html) | 九项修复完成，8035 三种桌面尺寸复测及同输入核心、实际接口核验通过；模型、改分、生成与恢复流程未执行 |
+| 首次分组与推荐计算 | [优化与调查记录](training-first-compute-audit-20261009.md)、[测量概览](training-first-compute-audit-20261009.html) | 进一步四步优化已实施；91 人两章同输入各 5 次完整重算，分组与掌握度精确一致，首次重算仍未达到 5 秒 |
+| 首次重算剩余空间 | [完整评价与实施交接](training-performance-remaining-handoff-20261009.md)、[实施与自测交接](training-performance-implementation-handoff-20261009.md)、[独立验收](training-performance-independent-acceptance-20261010.md) | 保留原 22 项评价与失败守护；实施 7 项，独立复跑 297 项测试及完整响应、掌握度和三范围组卷对照通过。独立同条件中位数降低 26.39%，当前单版本五次完整重算中位数 73.27 秒，首次 5 秒目标未达成；正式 HTTP、页面和真实改分后刷新未验收 |
+| 完整资料与题目素材复用 | [实施试验和取舍](training-two-hotspots-evaluation-20261010.md) | 四个候选均已比较，每个局部步骤各五次；完整匹配、素材快照和检查键一致，未证明稳定净收益，候选全部撤回。记录内存压力、失败样本与未验证范围；首次 5 秒目标未达成 |
 | 训练进入与切班性能 | [实施与验证](training-entry-performance-20261008.md)、[概览](training-entry-performance-20261008.html) | 正文复用、指定题读取、有限预取和显示精简已实施；同输入测量、页面检查与真实生成的验证范围分别说明 |
 | 题库结构简化 | [简化设计](question-bank-simplification-design-20261007.md) | 统一当前判定依据、内容摘要与升级协调已实现；保留设计取舍、兼容边界，以及未执行的真实转换、物理删表和实际旧机验收 |
 | 首次刷新 | [性能调查](backend-first-refresh-performance-investigation-20261003.md) | 合并首次刷新与两秒目标的证据边界；真实更新后的完整页面耗时待验收 |

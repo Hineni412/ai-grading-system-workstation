@@ -6,7 +6,7 @@ import type {
 import type { JobResponse, JobStatus } from '../../api/jobs'
 import { formatTime as formatTimeValue } from '../../lib/format'
 
-export type ReportDisplayStatus = ReportFileStatus | 'stale'
+export type ReportDisplayStatus = ReportFileStatus
 
 export interface ReportRow {
   type: ReportType
@@ -44,18 +44,17 @@ export function statusLabel(status: JobStatus): string {
 }
 
 export function reportDisplayStatus(job: ReportHistoryJob): ReportDisplayStatus {
-  return job.is_current_revision ? job.file_status : 'stale'
+  return job.file_status
 }
 
 export function fileStatusLabel(status: ReportDisplayStatus): string {
   return {
     pending: '正在准备',
     available: '可下载',
-    expired: '文件已过期，可重新生成',
+    expired: '文件已回收或不在本机，可重新导出',
     failed: '生成失败',
     cancelled: '已取消',
     unavailable: '文件暂不可用',
-    stale: '成绩已变化，需重新生成',
   }[status]
 }
 
@@ -65,7 +64,6 @@ export function statusTone(status: JobStatus | ReportDisplayStatus): string {
     status === 'failed'
     || status === 'expired'
     || status === 'unavailable'
-    || status === 'stale'
   ) return 'danger'
   if (status === 'cancelled') return 'muted'
   return 'progress'

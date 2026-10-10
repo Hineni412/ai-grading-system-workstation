@@ -11,7 +11,7 @@ import type {
 } from '../api/training'
 import { decodeTrainingDisplayDiagnosis } from '../api/training'
 import { ApiError } from '../api/errors'
-import { savePaperSelectionSession } from '../features/training/paper-selection-session'
+import { loadPaperSelectionSession, savePaperSelectionSession } from '../features/training/paper-selection-session'
 import { saveEvidenceScope } from '../features/evidence-scope/session'
 import { createAppRouter } from '../router'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
@@ -301,14 +301,67 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
+async function mountAdoptableGroup() {
+  const profiles = diagnosis.students.flatMap(student => [student, {
+    ...student, student_id: '22', student_code: 'S022', student_name: '匿名学生乙',
+    class_id: '七年级二班', score_rate: .85,
+  }])
+  fetchStudentsMock.mockResolvedValue(profiles.map(student => ({
+    id: Number(student.student_id), student_code: student.student_code, name: student.student_name,
+    class_name: student.class_id, created_at: null,
+  })))
+  const group: TrainingGroup = {
+    group_id: 'test-shared-group', source_version: 'b'.repeat(64), ready: true,
+    issues: [], warnings: [], reason: '合成同卷小组', compatibility: 1,
+    available_question_count: 10, recent_excluded_count: 0,
+    members: profiles.map(student => ({
+      student_id: student.student_id, student_name: student.student_name,
+      student_code: student.student_code, class_id: student.class_id, evidence_count: 1,
+      targets: [{ knowledge_key: 'sk_test_congruence', knowledge_point: '三角形全等',
+        mastery: .55, evidence_count: 1, source_question_refs: [] }],
+    })),
+    targets: [{ knowledge_key: 'sk_test_congruence', knowledge_point: '三角形全等',
+      min_mastery: .55, max_mastery: .55, median_mastery: .55, evidence_count: 2,
+      sparse_member_count: 0, target_difficulty: 5, available_question_count: 10, difficulty_unknown: false }],
+  }
+  let finishScope: (() => void) | undefined
+  let scopeReleased = false
+  trainingApiMock.diagnose.mockImplementation((body: TrainingDiagnosisRequest) => {
+    const narrowed = Boolean(body.scope.class_ids?.length || body.scope.score_rate_min)
+    const response: TrainingDiagnosis = {
+      ...diagnosis, scope: body.scope, exam_scope: { ...diagnosis.exam_scope, ...body.exam_scope },
+      students: profiles.filter(student => (!body.scope.class_ids?.length || body.scope.class_ids.includes(student.class_id))
+        && student.score_rate >= (body.scope.score_rate_min ?? 0)),
+      grouping: { version: 'TEST', scope_keys: ['kp_test_triangle'],
+        groups: narrowed ? [] : [group], selection: body.grouping?.member_ids && !narrowed ? group : null,
+        unassigned: [], warnings: [] },
+    }
+    if (narrowed && !scopeReleased) return new Promise<TrainingDiagnosis>(resolve => {
+      finishScope = () => { scopeReleased = true; resolve(response) }
+    })
+    return Promise.resolve(response)
+  })
+  const { host, router } = await mountView('/training?mode=chapter')
+  const findButton = (selector: string, label: string) => [...host.querySelectorAll<HTMLButtonElement>(selector)]
+    .find(button => button.textContent?.trim() === label)!
+  await vi.waitFor(() => expect(findButton('.training-groups button', '查看小组')?.disabled).toBe(false))
+  findButton('.training-groups button', '查看小组').click()
+  await settle()
+  findButton('.training-groups button', '采用小组并核对出卷设置').click()
+  const goPaper = () => host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!
+  await vi.waitFor(() => expect(goPaper().disabled).toBe(false))
+  expect(host.querySelector('.paper-settings-panel')?.textContent).toContain('2 人出')
+  return { host, router, findButton, goPaper, finishScope: () => finishScope?.(), pendingScope: () => finishScope }
+}
+
 describe('training recommendations view', () => {
   it('keeps the selected-scope entry and focused skill target without creating a draft', async () => {
     saveEvidenceScope({ scope: { mode: 'selected', student_ids: ['12'] }, exam_scope: { mode: 'semester', curriculum_volume_id: 'bnu24-math-g8-upper' } })
     savePaperSelectionSession({ targetKeys: ['sk_test_congruence'], rangeKeys: ['kp_test_triangle_s1'], scopeMode: 'focused',
       questionCount: 10, difficultyMax: 8, excludeCurrentOriginals: true, paperMode: 'individual' })
     const view = await mountView('/training?mode=student')
-    await vi.waitFor(() => expect(view.host.querySelector<HTMLInputElement>('[aria-label="选择匿名学生甲"]')?.checked).toBe(true))
-    expect(view.host.querySelector('.training-scope-bar [aria-pressed="true"]')?.textContent).toBe('七年级一班')
+    await vi.waitFor(() => expect(view.host.querySelector<HTMLInputElement>('input[aria-label="选择匿名学生甲"]')?.checked).toBe(true))
+    expect(view.host.querySelector('.student-picker-classes [aria-pressed="true"]')?.textContent).toBe('七年级一班')
     expect(trainingApiMock.createPersonalizedDraft).not.toHaveBeenCalled()
     view.host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
     await vi.waitFor(() => expect(view.router.currentRoute.value.query.mode).toBe('paper'))
@@ -319,6 +372,22 @@ describe('training recommendations view', () => {
     await vi.waitFor(() => expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledOnce())
     await vi.waitFor(() => expect(view.host.querySelector('.personalized-match__evidence')?.textContent).toContain('匿名阶段测验 · 第 Q1 题 · 得 6/10 分'))
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({ scope: expect.objectContaining({ mode: 'selected', student_ids: ['12'] }), target_keys: ['sk_test_congruence'], scope_keys: ['kp_test_triangle_s1'] }))
+  })
+
+  it('preserves the stored section when a legacy chapter address redirects to setup', async () => {
+    trainingApiMock.diagnose.mockImplementation(async (body: TrainingDiagnosisRequest) => ({
+      ...diagnosis, ...(body.grouping ? { grouping: { version: 'TEST', scope_keys: body.grouping.scope_keys,
+        groups: [], selection: null, unassigned: [], warnings: [] } } : {}),
+    }))
+    savePaperSelectionSession({ chapterKey: 'kp_test_triangle', sectionKey: 'kp_test_triangle_s1',
+      scopeMode: 'comprehensive', rangeKeys: [], targetKeys: [], questionCount: 10,
+      difficultyMax: 8, excludeCurrentOriginals: true, paperMode: 'shared' })
+    const { router } = await mountView('/training?mode=chapter')
+    await vi.waitFor(() => expect(loadPaperSelectionSession()?.rangeKeys).toEqual(['kp_test_triangle_s1']))
+    expect(router.currentRoute.value.query).toMatchObject({ mode: 'setup', pick: 'groups' })
+    await vi.waitFor(() => expect(trainingApiMock.diagnose.mock.calls.some(([body]) =>
+      JSON.stringify(body.grouping?.scope_keys) === JSON.stringify(['kp_test_triangle_s1']))).toBe(true))
+    expect(loadPaperSelectionSession()?.rangeSelectionVersion).toBe(1)
   })
 
   it('switches purpose-specific defaults and retains separately edited question counts', async () => {
@@ -352,7 +421,9 @@ describe('training recommendations view', () => {
       if (body.grouping && failGrouping) throw new Error('TEST grouping unavailable')
       return body.grouping ? full : base
     })
-    const view = await mountView('/training', pinia)
+    savePaperSelectionSession({ rangeSelectionVersion: 1, rangeKeys: [chapterKey], targetKeys: [],
+      questionCount: 10, difficultyMax: 8, excludeCurrentOriginals: true, paperMode: 'individual' })
+    const view = await mountView('/training?mode=chapter', pinia)
     await vi.waitFor(() => expect(useTrainingStore(pinia).analysisState).toBe('ready'))
     await settle()
     const current = useTrainingStore(pinia).diagnosis!
@@ -363,12 +434,12 @@ describe('training recommendations view', () => {
       failGrouping ? [[chapterKey], undefined, [chapterKey]] : [[chapterKey]])
     expect(current.grouping).toEqual(failGrouping ? undefined : full.grouping)
     const requestCount = trainingApiMock.diagnose.mock.calls.length
-    view.host.querySelector<HTMLButtonElement>('.training-scope-bar [aria-pressed="true"]')!.click()
+    view.host.querySelector<HTMLButtonElement>('.student-picker-classes [aria-pressed="true"]')!.click()
     await settle()
     expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(requestCount)
   })
 
-  it.each([['comprehensive', 'training'], ['focused', 'training'], ['focused', 'handout']] as const)('sends learned chapters for %s / %s and keeps the chosen rules on return', async (scopeMode, purpose) => {
+  it.each([['comprehensive', 'training', true], ['comprehensive', 'training', false], ['focused', 'training', true], ['focused', 'handout', true]] as const)('sends learned chapters for %s / %s with explicit progress %s and keeps rules on return', async (scopeMode, purpose, explicitProgress) => {
     const pinia = createPinia()
     const volumeId = 'bnu24-math-g8-upper'
     const chapterKeys = ['kp_bnu24_math_g8_upper_1', 'kp_bnu24_math_g8_upper_2']
@@ -383,10 +454,11 @@ describe('training recommendations view', () => {
     savePaperSelectionSession({ scopeMode, purpose, selectedStudentIds: ['12'], maxQuestionsPerSkill: purpose === 'handout' ? 20 : 1,
       maxWrittenQuestions: purpose === 'handout' ? 20 : 2, recentActivityCount: purpose === 'handout' ? 20 : 3,
       targetKeys: [], rangeKeys: [chapterKeys[1]!], questionCount: purpose === 'handout' ? 100 : 10,
-      difficultyMax: purpose === 'handout' ? 10 : 8, teachingProgressChapterId: `${volumeId}-c02`, excludeCurrentOriginals: true, paperMode: 'individual' })
+      difficultyMax: purpose === 'handout' ? 10 : 8, teachingProgressChapterId: explicitProgress ? `${volumeId}-c02` : '', excludeCurrentOriginals: true, paperMode: 'individual' })
     const view = await mountView('/training?mode=student', pinia)
     await vi.waitFor(() => expect(view.host.querySelector('[data-testid="go-paper"]')).not.toBeNull())
-    expect(view.host.querySelector('[aria-label="训练范围模式"] [aria-pressed="true"]')?.textContent).toBe(scopeMode === 'focused' ? '专项' : '综合')
+    expect(view.host.querySelector('[aria-label="训练范围模式"]')).toBeNull()
+    expect(view.host.querySelector<HTMLInputElement>('[aria-label="选择第二章 实数"]')?.checked).toBe(true)
     const countInput = view.host.querySelector<HTMLInputElement>('[aria-label="每卷题数"]')!
     expect(countInput.max).toBe(purpose === 'handout' ? '' : '12')
     expect(view.host.querySelector<HTMLInputElement>('[aria-label="近期原题排除次数"]')!.max).toBe('')
@@ -411,7 +483,8 @@ describe('training recommendations view', () => {
     }))
     await view.router.push('/training?mode=student')
     await settle()
-    expect(view.host.querySelector('[aria-label="训练范围模式"] [aria-pressed="true"]')?.textContent).toBe(scopeMode === 'focused' ? '专项' : '综合')
+    expect(view.host.querySelector('[aria-label="训练范围模式"]')).toBeNull()
+    expect(view.host.querySelector<HTMLInputElement>('[aria-label="选择第二章 实数"]')?.checked).toBe(true)
     expect(view.host.querySelector<HTMLInputElement>('[aria-label="每卷题数"]')!.value).toBe(purpose === 'handout' ? '100' : '10')
     expect(view.host.querySelector('[aria-label="出卷用途"] [aria-pressed="true"]')?.textContent).toBe(purpose === 'handout' ? '刷题讲义' : '训练卷')
   })
@@ -419,7 +492,7 @@ describe('training recommendations view', () => {
   it('sends the student score floor in diagnosis and restores it after leaving and returning', async () => {
     const first = await mountView('/training?mode=student')
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledOnce())
-    const floor = first.host.querySelector<HTMLInputElement>('input[aria-label="最低考试得分率"]')!
+    const floor = first.host.querySelector<HTMLInputElement>('input[aria-label="得分率下限"]')!
     expect(floor).toBeTruthy()
     floor.value = '20'; floor.dispatchEvent(new Event('input', { bubbles: true }))
     floor.dispatchEvent(new Event('blur'))
@@ -428,7 +501,7 @@ describe('training recommendations view', () => {
     mounted.splice(mounted.indexOf(first.app), 1); first.app.unmount(); first.host.remove()
     const second = await mountView('/training?mode=student')
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(3))
-    expect(second.host.querySelector<HTMLInputElement>('input[aria-label="最低考试得分率"]')!.value).toBe('20')
+    expect(second.host.querySelector<HTMLInputElement>('input[aria-label="得分率下限"]')!.value).toBe('20')
     expect(trainingApiMock.diagnose.mock.calls[2]?.[0].scope.score_rate_min).toBe(.2)
   })
 
@@ -469,12 +542,12 @@ describe('training recommendations view', () => {
     const { host } = await mountView('/training?mode=student')
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(1))
     const initialSignal = trainingApiMock.diagnose.mock.calls[0]?.[1]
-    host.querySelector<HTMLButtonElement>('.training-scope-bar [aria-pressed="true"]')!.click()
-    host.querySelector<HTMLButtonElement>('.training-scope-bar [aria-pressed="true"]')!.click()
+    host.querySelector<HTMLButtonElement>('.student-picker-classes [aria-pressed="true"]')!.click()
+    host.querySelector<HTMLButtonElement>('.student-picker-classes [aria-pressed="true"]')!.click()
     await settle()
     expect(trainingApiMock.diagnose).toHaveBeenCalledOnce()
     expect(initialSignal?.aborted).toBe(false)
-    ;[...host.querySelectorAll<HTMLButtonElement>('.training-scope-bar button')].find(item => item.textContent === '七年级二班')!.click()
+    ;[...host.querySelectorAll<HTMLButtonElement>('.student-picker-classes button')].find(item => item.textContent === '七年级二班')!.click()
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2))
     expect(initialSignal?.aborted).toBe(true)
     resolveFirst(diagnosis)
@@ -484,10 +557,10 @@ describe('training recommendations view', () => {
     expect(trainingApiMock.diagnose.mock.calls[1]?.[0]).toMatchObject({
       scope: { mode: 'class', class_ids: ['七年级二班'] },
     })
-    host.querySelector<HTMLButtonElement>('.training-scope-bar [aria-pressed="true"]')!.click()
+    host.querySelector<HTMLButtonElement>('.student-picker-classes [aria-pressed="true"]')!.click()
     await settle()
     expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2)
-    ;[...host.querySelectorAll<HTMLButtonElement>('.training-scope-bar button')].find(item => item.textContent === '全部学生')!.click()
+    ;[...host.querySelectorAll<HTMLButtonElement>('.student-picker-classes button')].find(item => item.textContent === '全部')!.click()
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(3))
     expect(trainingApiMock.diagnose.mock.calls[2]?.[0].scope.mode).toBe('all')
   })
@@ -500,7 +573,7 @@ describe('training recommendations view', () => {
     await expect(store.analyze()).rejects.toThrow('TEST diagnosis unavailable')
     expect(store.hasCurrentDiagnosis).toBe(false)
     await settle()
-    host.querySelector<HTMLButtonElement>('.training-scope-bar [aria-pressed="true"]')!.click()
+    host.querySelector<HTMLButtonElement>('.student-picker-classes [aria-pressed="true"]')!.click()
     await vi.waitFor(() => expect(store.hasCurrentDiagnosis).toBe(true))
     expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(3)
     await store.analyze()
@@ -532,7 +605,7 @@ describe('training recommendations view', () => {
     generate.click()
     await vi.waitFor(() => expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledOnce())
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(expect.objectContaining({
-      paper_mode: 'shared', scope: expect.objectContaining({ student_ids: ids }), group_source_version: 'b'.repeat(64),
+      paper_mode: 'shared', scope: expect.objectContaining({ student_ids: ids }),
     }))
     await vi.waitFor(() => expect(host.querySelector('.step-progress [aria-current="step"]')?.textContent).toBe('审核题目'))
     useTrainingStore(pinia).diagnosis = JSON.parse(JSON.stringify(data))
@@ -541,92 +614,58 @@ describe('training recommendations view', () => {
     expect(trainingApiMock.getPersonalizedDraft).not.toHaveBeenCalled()
   })
 
-  it.each(['class', 'score_floor'] as const)('blocks an adopted group outside the changed %s scope and allows restoring its range', async changedScope => {
-    const profiles = diagnosis.students.flatMap(student => [student, {
-      ...student, student_id: '22', student_code: 'S022', student_name: '匿名学生乙',
-      class_id: '七年级二班', score_rate: .85,
-    }])
-    fetchStudentsMock.mockResolvedValue(profiles.map(student => ({
-      id: Number(student.student_id), student_code: student.student_code, name: student.student_name,
-      class_name: student.class_id, created_at: null,
-    })))
-    const group: TrainingGroup = {
-      group_id: 'test-shared-group', source_version: 'b'.repeat(64), ready: true,
-      issues: [], warnings: [], reason: '合成同卷小组', compatibility: 1,
-      available_question_count: 10, recent_excluded_count: 0,
-      members: profiles.map(student => ({
-        student_id: student.student_id, student_name: student.student_name,
-        student_code: student.student_code, class_id: student.class_id, evidence_count: 1,
-        targets: [{ knowledge_key: 'sk_test_congruence', knowledge_point: '三角形全等',
-          mastery: .55, evidence_count: 1, source_question_refs: [] }],
-      })),
-      targets: [{ knowledge_key: 'sk_test_congruence', knowledge_point: '三角形全等',
-        min_mastery: .55, max_mastery: .55, median_mastery: .55, evidence_count: 2,
-        sparse_member_count: 0, target_difficulty: 5, available_question_count: 10, difficulty_unknown: false }],
-    }
-    let finishScope: (() => void) | undefined
-    let scopeReleased = false
-    trainingApiMock.diagnose.mockImplementation((body: TrainingDiagnosisRequest) => {
-      const narrowed = Boolean(body.scope.class_ids?.length || body.scope.score_rate_min)
-      const response: TrainingDiagnosis = {
-        ...diagnosis, scope: body.scope, exam_scope: { ...diagnosis.exam_scope, ...body.exam_scope },
-        students: profiles.filter(student => (!body.scope.class_ids?.length || body.scope.class_ids.includes(student.class_id))
-          && student.score_rate >= (body.scope.score_rate_min ?? 0)),
-        grouping: { version: 'TEST', scope_keys: ['kp_test_triangle'],
-          groups: narrowed ? [] : [group], selection: body.grouping?.member_ids && !narrowed ? group : null,
-          unassigned: [], warnings: [] },
-      }
-      if (narrowed && !scopeReleased) return new Promise<TrainingDiagnosis>(resolve => {
-        finishScope = () => { scopeReleased = true; resolve(response) }
-      })
-      return Promise.resolve(response)
-    })
-    const { host, router } = await mountView('/training')
-    const findButton = (selector: string, label: string) => [...host.querySelectorAll<HTMLButtonElement>(selector)]
-      .find(button => button.textContent?.trim() === label)!
-    await vi.waitFor(() => expect(findButton('.training-groups button', '查看小组')?.disabled).toBe(false))
-    findButton('.training-groups button', '查看小组').click()
-    await settle()
-    findButton('.training-groups button', '采用小组并核对出卷设置').click()
-    const goPaper = () => host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!
-    await vi.waitFor(() => expect(goPaper().disabled).toBe(false))
-    expect(host.querySelector('.paper-settings-panel')?.textContent).toContain('2 人出')
+  it.each(['class', 'score_floor'] as const)('drops the adopted contract when %s changes and keeps ordinary paper settings', async changedScope => {
+    const { host, router, findButton, goPaper, finishScope, pendingScope } = await mountAdoptableGroup()
 
     if (changedScope === 'class') {
-      findButton('.training-scope-bar button', '七年级一班').click()
+      findButton('.student-picker-classes button', '七年级一班').click()
     } else {
-      const floor = host.querySelector<HTMLInputElement>('[aria-label="最低考试得分率"]')!
+      const floor = host.querySelector<HTMLInputElement>('[aria-label="得分率下限"]')!
       floor.value = '60'
       floor.dispatchEvent(new Event('input', { bubbles: true }))
       floor.dispatchEvent(new Event('blur'))
     }
-    await vi.waitFor(() => expect(finishScope).toBeTypeOf('function'))
+    await vi.waitFor(() => expect(pendingScope()).toBeTypeOf('function'))
     expect(goPaper().disabled).toBe(true)
     goPaper().click()
     expect(router.currentRoute.value.query.mode).not.toBe('paper')
-    finishScope?.()
-    await vi.waitFor(() => expect(host.querySelector('.training-groups')?.textContent).toContain('来源范围已变化'))
-    expect(goPaper().disabled).toBe(true)
-    expect(host.querySelector('.paper-blocked')?.textContent).toContain('范围外学生')
-    expect(host.querySelector('.paper-blocked')?.textContent).toContain('恢复原范围或重新选择候选小组')
-    expect(host.querySelector('.paper-settings-panel')?.textContent).toContain('2 人出')
-    goPaper().click()
-    await settle()
-    expect(router.currentRoute.value.query.mode).not.toBe('paper')
+    finishScope()
+    await vi.waitFor(() => expect(loadPaperSelectionSession()?.adoptedGroup).toBeNull())
+    await vi.waitFor(() => expect(goPaper().disabled).toBe(false))
+    expect(loadPaperSelectionSession()?.selectedStudentIds).toHaveLength(1)
+    expect(loadPaperSelectionSession()?.targetKeys).toEqual([])
+    expect(loadPaperSelectionSession()?.paperMode).toBe('shared')
+    await vi.waitFor(() => expect(host.querySelector('.paper-blocked')).toBeNull())
     expect(trainingApiMock.createPersonalizedDraft).not.toHaveBeenCalled()
 
     if (changedScope === 'class') {
-      findButton('.training-scope-bar button', '全部学生').click()
+      findButton('.student-picker-classes button', '全部').click()
     } else {
-      const floor = host.querySelector<HTMLInputElement>('[aria-label="最低考试得分率"]')!
+      const floor = host.querySelector<HTMLInputElement>('[aria-label="得分率下限"]')!
       floor.value = ''
       floor.dispatchEvent(new Event('input', { bubbles: true }))
       floor.dispatchEvent(new Event('blur'))
     }
     await vi.waitFor(() => expect(goPaper().disabled).toBe(false))
-    expect(host.querySelector('.paper-blocked')).toBeNull()
+    await vi.waitFor(() => expect(host.querySelector('.paper-blocked')).toBeNull())
     goPaper().click()
     await vi.waitFor(() => expect(router.currentRoute.value.query.mode).toBe('paper'))
+    expect(trainingApiMock.createPersonalizedDraft).not.toHaveBeenCalled()
+  })
+
+  it.each(['members', 'range', 'individual'] as const)('drops an adopted group after changing %s', async changed => {
+    const { host, findButton } = await mountAdoptableGroup()
+    if (changed === 'members') {
+      findButton('[aria-label="选学生方式"] button', '名单勾选').click(); await settle()
+      host.querySelector<HTMLElement>('.student-picker-row')!.click()
+    } else if (changed === 'range') {
+      host.querySelector<HTMLInputElement>('[aria-label="选择第一章 三角形"]')!.click()
+    } else {
+      findButton('[aria-label="出卷方式"] button', '一人一卷').click()
+    }
+    await vi.waitFor(() => expect(loadPaperSelectionSession()?.adoptedGroup).toBeNull())
+    expect(loadPaperSelectionSession()?.targetKeys).toEqual([])
+    expect(loadPaperSelectionSession()?.paperMode).toBe(changed === 'individual' ? 'individual' : 'shared')
     expect(trainingApiMock.createPersonalizedDraft).not.toHaveBeenCalled()
   })
 
@@ -647,10 +686,10 @@ describe('training recommendations view', () => {
   it('restores selections and the draft after leaving the page and returning', async () => {
     trainingApiMock.getPersonalizedDraft.mockResolvedValue(paperDraft)
     const first = await mountView('/training?mode=student')
-    await vi.waitFor(() => expect(first.host.textContent).toContain('学生名单'))
+    await vi.waitFor(() => expect(first.host.textContent).toContain('选学生'))
     expect(first.host.querySelector('[aria-label="训练强度"]')).toBeNull()
     expect(first.host.textContent).not.toContain('预计用时')
-    first.host.querySelector<HTMLInputElement>('[aria-label="选择匿名学生甲"]')!.click()
+    first.host.querySelector<HTMLInputElement>('input[aria-label="选择匿名学生甲"]')!.click()
     await nextTick()
     first.host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
     await vi.waitFor(() => expect(first.router.currentRoute.value.query.mode).toBe('paper'))
@@ -667,12 +706,12 @@ describe('training recommendations view', () => {
     })
     const second = await mountView('/training?mode=paper')
     await vi.waitFor(() => expect(second.host.textContent).toContain('三角形全等'))
-    await vi.waitFor(() => expect(second.host.textContent).toContain('已恢复上次生成的草稿'))
+    await vi.waitFor(() => expect(second.host.textContent).toContain('已恢复保存的草稿'))
     await vi.waitFor(() => expect(second.host.querySelector('.step-progress [aria-current="step"]')?.textContent).toBe('审核题目'))
     expect(second.host.querySelector('.page-header h1')?.textContent).toBe('训练卷')
     expect(second.host.querySelector('.page-header__navigation')).toBeNull()
     expect(second.host.querySelector('.paper-review-bar')).toBeNull()
-    expect(second.host.querySelector('.app-back-button')?.textContent).toContain('返回按学生训练')
+    expect(second.host.querySelector('.app-back-button')?.textContent).toContain('返回出训练')
     expect(second.host.querySelector('.page-header__meta')?.textContent).toContain('自动保存 V1')
     second.host.querySelector<HTMLButtonElement>('.page-header [data-step-id="print"]')!.click()
     await settle()

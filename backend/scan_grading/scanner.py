@@ -1196,7 +1196,10 @@ _CLASS_TEXT = re.compile(r"(?:班级|班别)\s*[:：]?\s*([^\r\n,:：，]{1,30}?
 
 
 def _clean_student_name_text(value: object) -> str | None:
-    cleaned = _CLASS_TEXT.sub("", str(value or "")).strip().replace("\n", "")
+    text = str(value or "")
+    labeled = re.search(r"姓名\s*[:：]?\s*(.*)", text, re.S)
+    name_text = re.split(r"班级|班别|考号|学号|座号", labeled.group(1) if labeled else text, maxsplit=1)[0]
+    cleaned = _CLASS_TEXT.sub("", name_text).strip().replace("\n", "")
     for prefix in ["姓名", "学生", "考生", ":", "：", " "]:
         cleaned = cleaned.replace(prefix, "")
     cleaned = cleaned.strip("`\"' ：:，,。 ")

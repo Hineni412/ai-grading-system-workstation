@@ -1,12 +1,12 @@
 # 关键步骤诊断交接（2026-10-09）
 
-用途：把“技能改作失分步骤诊断”的已确认范围、口径、只读原型和实现入口交给后续代理。本文件是调查与交接，**全部功能尚未实现**；产品行为仍以根目录 README 索引的权威文档为准。开始实现前先读 `AGENTS.md`。
+用途：记录“技能改作失分步骤诊断”的已确认范围、统计口径、只读原型和正式入口，供实现核对与后续维护。当前产品规则以根目录 README 索引的权威文档为准。维护前先读 `AGENTS.md`。
 
 ## 1. 状态
 
-- 已完成：现状调查、只读原型（真实数据，学生匿名）、用户对定位与口径的确认。
-- 未开始：正式后端、正式页面、测试、权威文档修改。用户要求原型后先停，由后续代理实现。
-- 没有调用模型，没有写入任何数据库或已有数据文件。
+- 已实现：试题诊断按关键步骤查看、给分要点逐步人数、学生作答证据与个人报告步骤显示、错法按当前独立失分学生去重。诊断模块为 `backend/step_diagnosis.py`，不新建页面或诊断持久存储。
+- 已核对：第三、四周共 90 项热点指标与当前原型一致；现有后端三个文件的合成回归及文档检查通过。本机 8035 已由 `运行.bat` 启动，协调后的正式前端构建、健康检查和两场考试的真实页面只读验收均通过。
+- 诊断与验收只读使用真实考试数据，没有调用模型，没有直接修改真实数据库或已有考试数据文件。
 
 ## 2. 用户已确认的决定
 
@@ -36,10 +36,10 @@
 
 ## 4. 只读原型
 
-- 位置：`output/test_step_hotspot_prototype_20261009/`（`output/` 不入库，只在本机）。`index.html` + `app.js` 为页面，`data.js` 为生成的数据，`build_data.py` 为生成脚本。
-- 复现：在项目根目录执行 `$env:PYTHONIOENCODING='utf-8'; .\runtime\python\python.exe output\test_step_hotspot_prototype_20261009\build_data.py`。脚本借用 `tools/experiment_training_fit.py::readonly_runtime`，以只读方式打开原位置数据库并拒绝写入；不调用模型。查看时直接打开 `index.html`，或临时用 `python -m http.server` 在非 8035 端口提供。
+- 位置：`output/test_step_hotspot_prototype_20261009/`。该目录被 Git 忽略，只在本机，未提交。同机代理可直接读取；其他机器需要复制整个目录。页面为 `index.html`、`app.js`、`style.css`；匿名数据为 `data.js`、`causes.js`；生成脚本为 `build_data.py`、`fetch_causes.py`。
+- 复现：在项目根目录执行 `$env:PYTHONIOENCODING='utf-8'; .\runtime\python\python.exe output\test_step_hotspot_prototype_20261009\build_data.py`。脚本借用 `tools/experiment_training_fit.py::readonly_runtime`，以只读方式打开原位置数据库并拒绝写入；不调用模型。查看时须开本地服务。进入原型目录运行 `python -m http.server 8791 --bind 127.0.0.1`，打开 `http://127.0.0.1:8791/index.html`。直接双击 `index.html` 可能被浏览器拦截数据文件而显示空白。`fetch_causes.py` 通过本机 8035 服务的 GET 接口读取已保存错因，不调用模型。
 - `data.js` 含阅卷说明原文（学生作答片段），学生只以“学生甲／乙”出现。不要复制到 `docs/`、提交或写入日志。
-- 原型尚未包含第 2 节两项后定决定：锁分同 AI 分时使用 AI 步骤，以及按错因整理的典型错法名称合并常见写法。正式实现以第 2、3 节为准。
+- 原型已包含教师锁分同 AI 分时沿用 AI 步骤，以及按典型错法名称合并常见写法。第三周已保存的错因未按步骤归类，所以“按关键步骤”的错因区显示“未按步骤归类”；不将整题错因猜分给某一步。
 
 ## 5. 只读测量（2026-10-09，八上两场有逐步记录的考试）
 
@@ -47,12 +47,15 @@
 
 | 项目 | 第三周 | 第四周 |
 |---|---|---|
-| 有逐步记录的学生 | 80 | 88 |
-| 教师锁分、无逐步记录而被排除的记录 | 119（其中锁定分与 AI 分相同 53） | 245（其中相同 173） |
+| 有逐步记录的学生 | 84 | 88 |
+| 原型检查的教师同分记录，含没有 AI 步骤的记录 | 53 | 173 |
+| 其中有 AI 步骤、可用于正式解答题诊断的记录 | 18 | 110 |
+| 原型教师改分排除记录，含客观题 | 66 | 72 |
+| 其中正式解答题诊断排除的记录 | 51 | 64 |
 
-第四周热点（独立失分 / 分母；另列受前一步影响、整题未作答）：分母有理化 36/71，4，16；化简二次根式 37/82，1，6；实数与二次根式的混合运算 21/66，18，21；二次根式乘除 21/72，0，16；用乘法公式化简根式 15/69，0，13。第三周前三项：实景转为边长关系 21/50；确认直角与斜边 21/50；求整数与小数部分 23/79。
+第四周热点（独立失分 / 分母；另列受前一步影响、整题未作答）：分母有理化 41/73，8，14；化简二次根式 45/82，1，6；实数与二次根式的混合运算 29/68，20，19；二次根式乘除 30/76，0，12；用乘法公式化简根式 17/73，0，13。第三周前三项：实景转为边长关系 28/58；确认直角与斜边 28/58；求整数与小数部分 24/83。
 
-口径对结论影响很大：若把所有未完成步骤记录都算失分，“混合运算”为 352 条“学生 × 步骤”记录中失分 173 条（49%），按第 3 节口径只有 21 人独立失分。
+热点数字取自当前 `data.js`，已包含教师确认总分时沿用 AI 步骤的规则。原型脚本在确认有 AI 步骤之前就累计同分教师记录，第三、四周分别多计 35 条、63 条无 AI 步骤记录；原型排除数另含 15 条、8 条客观题记录。正式页面只统计解答题，在确认步骤存在后才计“沿用 AI 步骤”，表中保留原型总数并列出正式范围。两种范围的热点六项人数相同。按关键步骤跨题去重；不同状态可能来自同一学生的不同题，独立失分、受前一步影响和整题未作答人数不能直接相加。第三周 53 组已保存错因均无步骤归类，第四周 166 组中 108 组有步骤归类。正式错法合并按当前独立失分学生与已保存错因的成员取交集，同一学生同一错法去重；原型跨题相加的“人次”仅供布局参考。
 
 题库现状（活动标准 `kgr_bnu_math_curriculum_2026_10_v9`）：活动技能 143 个，实际挂到判定点 124 个，19 个未用，5 个只用在 1 道题；66 个技能出现在 6 个以上主题型中，适合做跨题共性诊断。判定点触发的典型错法已确认 117 条、候选 516 条，`skill_key` 全为空。原型中只有 7 个关键步骤有已确认步骤错法，全部来自这两场考试自身的题，每条 1 条实际作答记录，所以题库错法应折叠在后。第四周第 17 题 S1、S2、S4 在冻结快照中没有关键步骤，显示“未挂关键步骤”。
 
@@ -60,11 +63,11 @@
 
 | 功能 | 现有位置 | 说明 |
 |---|---|---|
-| 热点后端 | `GET /api/sessions/{id}/class-analysis`：`backend/api/routers/reports.py::get_class_analysis` → `backend/reporting/analysis_report_exporter.py::build_class_page_data`，错因经 `backend/class_analysis.py::apply_cause_results` 叠加 | 在同一响应中增加关键步骤汇总与逐题步骤计数；需要冻结快照与依赖时复用 `QuestionTagProjectionService.project_session`（取 `steps`、`evidence_points`）和原始快照 |
-| 热点页面 | `frontend/src/components/results-center/ClassAnalysisPanel.vue`（成绩中心“试题诊断”）；类型 `frontend/src/api/class-analysis.ts`（`failed_steps` 已有字段，页面未显示） | 顶部摘要 + 逐题展开，融入现有面板 |
-| 常见写法 | 已保存错因组 `question["causes"]`：`reason`（典型错法名称）、`step_ids`、`evidence[].student_ids`（`apply_cause_results` 第 716–739 行附近） | 按关键步骤合并人数；阅卷说明原文作为例子。注意错因输入步骤来自 `_independently_failed_steps`，不看 `depends_on`，且锁分题不用 AI 步骤，与第 3 节口径不完全一致，合并时须说明或对齐 |
-| 学生作答证据 | `frontend/src/views/StudentEvidenceView.vue`；接口 `GET /api/students/{id}/exam-results`（`backend/api/routers/students.py`） | 当前不返回逐步结果，需增加失分步骤（步骤要求、状态、关键步骤、阅卷说明） |
-| 个人报告 | `analysis_report_exporter.py::_render_personal_html`，失分题附录 `<dl class="kv">` | 新增显示不得让已有报告全部变成“需重新生成”；先核对 `personal_report_states` 的输入指纹是否会因此变化（尚未查证） |
+| 热点后端 | `GET /api/sessions/{id}/class-analysis`：`backend/api/routers/reports.py::get_class_analysis` → `backend/reporting/analysis_report_exporter.py::build_class_page_data`，错因经 `backend/class_analysis.py::apply_cause_results` 叠加 | 在同一响应中返回关键步骤汇总与逐题步骤计数；冻结快照与依赖复用 `QuestionTagProjectionService.project_session`（取 `steps`、`evidence_points`）和原始快照 |
+| 热点页面 | `frontend/src/components/results-center/ClassAnalysisPanel.vue`（成绩中心“试题诊断”）；类型 `frontend/src/api/class-analysis.ts`（`step_diagnosis` 汇总与逐题 `key_steps`） | 顶部摘要 + 逐题展开，融入现有面板 |
+| 常见写法 | 已保存错因组 `question["causes"]`：`reason`（典型错法名称）、`step_ids`、`evidence[].student_ids`（`apply_cause_results` 第 716–739 行附近） | 按关键步骤合并人数；阅卷说明原文作为例子。原保存错因输入口径保持不变；新显示按当前独立失分学生与保存错因成员取交集，依赖阻断、空白和未纳入教师记录不进入新错法人数 |
+| 学生作答证据 | `frontend/src/views/StudentEvidenceView.vue`；接口 `GET /api/students/{id}/exam-results`（`backend/api/routers/students.py`） | 原接口返回 `step_diagnosis`，含步骤要求、状态、关键步骤和阅卷说明 |
+| 个人报告 | `analysis_report_exporter.py::_render_personal_html`，失分题附录 `<dl class="kv">` | 在线与导出使用同一诊断映射；已保存正文继续复用，教师改分按现有时间与标记提醒更新，不新增正文指纹或提示词版本判断 |
 | 典型错法归类 | `question_bank/services/error_pattern_service.py::pattern_skill_index`、`_version_point_skills` | 只读复用；跨模块读取题库须经现有只读能力 |
 | 改称 | `QuestionAnnotationPanel.vue`（判定点编辑与错法“关联技能”文案）、`TrainingCriterionReview.vue` | 只改显示文字，稳定标识与数据不变 |
 
@@ -77,7 +80,7 @@
 
 ## 8. 完成标准
 
-- 用第三、四周两场真实考试只读核对：热点人数与第 5 节一致；如因锁分同分规则而变化，单独说明变化量与原因。
+- 用第三、四周两场真实考试只读核对：热点人数与第 5 节当前原型口径一致，已包含锁分同分时沿用 AI 步骤的规则。
 - 改动前后考试分数、排名、报告分数、教师最终分锁与掌握度结果不变（同输入对比）。
 - 在现有试题诊断、错因、学生证据和报告测试中补断言：独立失分、连带、空白、锁分同分／不同分、未挂关键步骤。
-- 同次提交更新权威文档：`CONTEXT.md` 的“技能”词条（关键步骤的含义与适用范围）、`docs/product/GRADING.md` 的试题诊断与个人报告、`docs/product/KNOWLEDGE_AND_TRAINING.md` 中技能的说明；数据流若有变化同步 `ARCHITECTURE.md`。完成后从本目录索引中移除或改写本文件状态。
+- 同次提交更新权威文档：`CONTEXT.md` 的“技能”词条（关键步骤的含义与适用范围）、`docs/product/GRADING.md` 的试题诊断与个人报告、`docs/product/KNOWLEDGE_AND_TRAINING.md` 中技能的说明；数据流若有变化同步 `ARCHITECTURE.md`。本文件保留原型复现与匿名测量依据；正式行为统一维护在上述权威文档。

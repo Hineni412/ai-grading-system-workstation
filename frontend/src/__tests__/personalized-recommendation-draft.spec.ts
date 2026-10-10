@@ -227,6 +227,35 @@ afterEach(() => {
 })
 
 describe('personalized recommendation draft', () => {
+  it.each([undefined, JSON.stringify({ rulesVersion: 7 }), 'old-settings'])('restores the saved draft id without a settings or rules check: %s', async (fingerprint) => {
+    localStorage.setItem('ai-grading:personalized-paper-draft:v1', JSON.stringify({ draftId: draft.draft_id, fingerprint }))
+    const host = document.createElement('div'); document.body.append(host)
+    const app = createApp(PersonalizedRecommendationDraftView, {
+      diagnosis: null, scope: { mode: 'all' }, examScope: { mode: 'current' },
+      questionCount: 10, excludeCurrentExamOriginals: true,
+    })
+    app.mount(host); mounted.push(app)
+    await vi.waitFor(() => expect(trainingApiMock.getPersonalizedDraft).toHaveBeenCalledWith(draft.draft_id))
+    await vi.waitFor(() => expect(host.textContent).toContain('已恢复保存的草稿'))
+    expect(trainingApiMock.createPersonalizedDraft).not.toHaveBeenCalled()
+    expect(JSON.parse(localStorage.getItem('ai-grading:personalized-paper-draft:v1') ?? '{}').draftId).toBe(draft.draft_id)
+  })
+
+  it('keeps the saved draft entry after a temporary read failure', async () => {
+    const saved = JSON.stringify({ draftId: draft.draft_id })
+    localStorage.setItem('ai-grading:personalized-paper-draft:v1', saved)
+    trainingApiMock.getPersonalizedDraft.mockRejectedValueOnce(new Error('TEST-temporary-read'))
+    const host = document.createElement('div'); document.body.append(host)
+    const app = createApp(PersonalizedRecommendationDraftView, {
+      diagnosis: null, scope: { mode: 'all' }, examScope: { mode: 'current' },
+      questionCount: 10, excludeCurrentExamOriginals: true,
+    })
+    app.mount(host); mounted.push(app)
+    await vi.waitFor(() => expect(host.textContent).toContain('保存记录仍保留'))
+    expect(localStorage.getItem('ai-grading:personalized-paper-draft:v1')).toBe(saved)
+    expect(trainingApiMock.createPersonalizedDraft).not.toHaveBeenCalled()
+  })
+
   it('opens a fixed class draft by its id and continues printing without automatic reselection', async () => {
     const fixed = {...draft,config:{...draft.config,paper_mode:'shared',assembly_source:{source:'班级组卷 · 全班',title:'TEST-班级练习'}},
       students:draft.students.map(s=>({...s,items:s.items.map(i=>({...i,locked:true}))}))}
@@ -381,7 +410,7 @@ describe('personalized recommendation draft', () => {
       }),
     )
     expect(host.textContent).toContain('已生成 1 份实名 PDF 试卷')
-    expect(host.textContent).toContain('V1')
+    expect(host.textContent).toContain('2026-07-30')
     expect(host.textContent).toContain('2 页')
     expect(host.textContent).toContain('可打印')
     expect(host.textContent).toContain('下载 PDF 试卷')
@@ -419,7 +448,7 @@ describe('personalized recommendation draft', () => {
     expect(contextChange).toHaveBeenCalledWith(expect.objectContaining({ mode: 'individual', studentCount: 1, questionCount: 8 }))
   })
 
-  it('ignores the saved draft when paper settings changed', async () => {
+  it('restores the saved draft when paper settings changed', async () => {
     const host1 = document.createElement('div')
     document.body.append(host1)
     const app1 = createApp(PersonalizedRecommendationDraftView, externalProps)
@@ -439,8 +468,8 @@ describe('personalized recommendation draft', () => {
     mounted.push(app2)
     await settle()
 
-    expect(trainingApiMock.getPersonalizedDraft).not.toHaveBeenCalled()
-    expect(host2.textContent).not.toContain('已恢复上次生成的草稿')
+    expect(trainingApiMock.getPersonalizedDraft).toHaveBeenCalledWith(draft.draft_id)
+    await vi.waitFor(() => expect(host2.textContent).toContain('已恢复保存的草稿'))
   })
 
 })

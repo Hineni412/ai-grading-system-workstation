@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import math
 import os
 import pickle
@@ -18,7 +17,6 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from functools import lru_cache
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, BinaryIO
 
@@ -447,10 +445,6 @@ _BROWSE_CACHE_LIMITS = {"skill_snapshot": 2, "skill_inventory": 2, "skill_page":
 _READ_RESULT_CACHE_LOCK = threading.Lock()
 _SKILL_SNAPSHOT_LOCK = threading.Lock()
 _SKILL_LOCAL_CACHE_MAX_BYTES = 16 * 1024 * 1024
-# Per-data-root memo of per-question source content checks, reusable while the
-# calculation revision, asset manifest and recorded file dependencies hold —
-# a database write alone does not invalidate them. Guarded by the lock above.
-_SKILL_SOURCE_MEMO: dict[str, dict[str, Any]] = {}
 _READ_RESULT_CACHE: OrderedDict[tuple[object, ...], object] = OrderedDict()
 _CACHE_MISS = object()
 # An index is shared across different target questions; no database-side index
@@ -499,7 +493,7 @@ class _ActiveQuestionReadScope:
     skill_snapshot: dict[str, Any] | None = None
     skill_inventory: dict[str, Any] | None = None
     analysis_materials: dict[str, dict[int, dict[str, bool]]] = field(default_factory=dict)
-    asset_generations: dict[str, tuple[str | None, dict | None]] = field(default_factory=dict)
+    asset_generations: dict[str, tuple[tuple | None, dict | None]] = field(default_factory=dict)
     skill_snapshot_key: tuple | None = None
     generation: tuple[object, ...] | None = None
 
@@ -1122,18 +1116,6 @@ def _rich_content_cache_put(
             _RICH_CONTENT_CACHE.popitem(last=False)
 
 
-@lru_cache(maxsize=1)
-def _skill_cache_calculation_revision() -> str:
-    # On restart, changed source or catalog files invalidate the derived data.
-    root = Path(__file__).resolve().parents[1]
-    digest = hashlib.sha256(b"question-bank-skill-read-v1")
-    for source in sorted([*root.rglob("*.py"), *(root / "taxonomy" / "catalogs").glob("*.json")]):
-        digest.update(str(source.relative_to(root)).encode("utf-8"))
-        digest.update(source.read_bytes())
-    digest.update((root.parent / "integration" / "data_generation.py").read_bytes())
-    return digest.hexdigest()
-
-
 def _skill_asset_manifest(root: Path) -> dict[str, tuple | None] | None:
     """Scan metadata, never bodies; reject links and unstable/unreadable trees."""
     from question_bank.services.file_cache import _file_read_identity
@@ -1175,15 +1157,14 @@ class QuestionBankReadService:
             else None
         )
 
-    def _asset_generation(self, *, refresh: bool = False) -> tuple[str | None, dict | None]:
+    def _asset_generation(self, *, refresh: bool = False) -> tuple[tuple | None, dict | None]:
         """Reuse safe asset metadata within a request; unsafe reads disable caching."""
         root = self._cache_data_root or str(self.db_path.parent.parent.resolve(strict=False))
         scope = _ACTIVE_READ_SCOPE.get()
         if not refresh and scope is not None and root in scope.asset_generations:
             return scope.asset_generations[root]
         manifest = _skill_asset_manifest(Path(root))
-        generation = (hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(",", ":"))
-                                    .encode("utf-8")).hexdigest() if manifest is not None else None)
+        generation = tuple(sorted(manifest.items())) if manifest is not None else None
         result = generation, manifest
         if not refresh and scope is not None:
             scope.asset_generations[root] = result
@@ -1226,9 +1207,7 @@ class QuestionBankReadService:
             failures: dict[int, str] = {}
             inputs = current_inputs(self.db_path, saved_ids, conn, data_root=self.data_root,
                                     load_failures=failures) if saved_ids else {}
-            profiles = {qid: retained[qid] for qid, question in inputs.items()
-                        if qid in retained and retained[qid].get("current_source_content_hash")
-                        == question.source_content_hash}
+            profiles = {qid: retained[qid] for qid in saved_ids if qid in retained}
             unchecked = [qid for qid in saved_ids if qid not in profiles]
             if unchecked:
                 profiles.update(load_profiles(self.db_path, unchecked, connection=conn,
@@ -1333,41 +1312,16 @@ class QuestionBankReadService:
             snapshot = self._read_local_skill_snapshot(generation, inventory, manifest, connection=conn) if manifest is not None else None
             if snapshot is None:
                 from question_bank.services.file_cache import capture_file_reads
-                source_entries: dict[int, Any] | None = None
-                base_dependencies: dict = {}
-                if manifest is not None:
-                    memo = _SKILL_SOURCE_MEMO.get(self._cache_data_root)
-                    if (memo is not None
-                            and memo["calculation"] == _skill_cache_calculation_revision()
-                            and memo["manifest"] == manifest
-                            and self._skill_dependencies_current(memo["dependencies"])):
-                        # Only changed question rows reload their content files.
-                        source_entries = dict(memo["entries"])
-                        base_dependencies = memo["dependencies"]
-                    else:
-                        persisted = self._read_local_source_hashes(manifest)
-                        if persisted is not None:
-                            source_entries, base_dependencies = persisted
-                        else:
-                            source_entries = {}
                 with capture_file_reads() if manifest is not None else nullcontext(None) as trace:
                     snapshot = build_skill_snapshot(conn, self.db_path, self.data_root,
-                                                    inventory=inventory, question_ids=ids,
-                                                    source_hashes=source_entries)
+                                                    inventory=inventory, question_ids=ids)
                 if manifest is not None:
-                    dependencies = {**base_dependencies, **(trace.paths if trace.usable else {})}
+                    dependencies = trace.paths if trace.usable else {}
                     if (trace.usable
                             and manifest == _skill_asset_manifest(Path(self._cache_data_root))
                             and self._skill_dependencies_current(dependencies)):
-                        entries = {qid: entry for qid, entry in (source_entries or {}).items()
-                                   if qid in inventory["questions"]}
-                        _SKILL_SOURCE_MEMO[self._cache_data_root] = {
-                            "calculation": _skill_cache_calculation_revision(),
-                            "manifest": manifest, "dependencies": dependencies, "entries": entries}
                         self._save_local_skill_snapshot(generation, manifest, dependencies,
-                                                        snapshot, connection=conn, source_hashes=entries)
-                    else:
-                        _SKILL_SOURCE_MEMO.pop(self._cache_data_root, None)
+                                                        snapshot, connection=conn)
             if scope is not None and full:
                 scope.skill_snapshot = snapshot
                 scope.skill_snapshot_key = key
@@ -1402,14 +1356,12 @@ class QuestionBankReadService:
             if len(encoded) > _SKILL_LOCAL_CACHE_MAX_BYTES:
                 return None
             entry = pickle.loads(encoded)
-            if (entry["calculation"] != _skill_cache_calculation_revision()
-                    or entry["manifest"] != manifest or not self._skill_dependencies_current(entry["dependencies"])
-                    or hashlib.sha256(entry["payload"]).hexdigest() != entry["digest"]):
+            if (entry["manifest"] != manifest
+                    or not self._skill_dependencies_current(entry["dependencies"])):
                 return None
-            if entry["generation"] != generation:
-                from integration.data_generation import database_content_revision
-                if entry["database_revision"] != database_content_revision(self.db_path, connection):
-                    return None
+            from integration.data_generation import database_change_stamp
+            if entry.get("database_change_stamp") != database_change_stamp(self.db_path):
+                return None
             snapshot = pickle.loads(entry["payload"])
             if (not isinstance(snapshot, dict)
                     or any(not isinstance(snapshot.get(key), dict) for key in (
@@ -1426,38 +1378,7 @@ class QuestionBankReadService:
         except (OSError, sqlite3.Error, pickle.PickleError, EOFError, KeyError, TypeError, ValueError, AttributeError, ImportError):
             return None
 
-    def _read_local_source_hashes(self, manifest):
-        """Persisted per-question content checks; safe across database writes.
-
-        Unlike the snapshot payload these do not depend on the generation or
-        database revision: each entry carries the question-row fingerprint it
-        was computed from, and callers recheck that per question.
-        """
-        try:
-            path = self._local_skill_path()
-            with path.open("rb") as saved:
-                encoded = saved.read(_SKILL_LOCAL_CACHE_MAX_BYTES + 1)
-            if len(encoded) > _SKILL_LOCAL_CACHE_MAX_BYTES:
-                return None
-            entry = pickle.loads(encoded)
-            if (entry["calculation"] != _skill_cache_calculation_revision()
-                    or entry["manifest"] != manifest
-                    or not self._skill_dependencies_current(entry["dependencies"])):
-                return None
-            raw = entry.get("source_hashes")
-            if raw is None:
-                return {}, entry["dependencies"]
-            if hashlib.sha256(raw).hexdigest() != entry.get("source_hashes_digest"):
-                return None
-            entries = pickle.loads(raw)
-            if not isinstance(entries, dict):
-                return None
-            return entries, entry["dependencies"]
-        except (OSError, sqlite3.Error, pickle.PickleError, EOFError, KeyError, TypeError, ValueError, AttributeError, ImportError):
-            return None
-
-    def _save_local_skill_snapshot(self, generation, manifest, dependencies, snapshot, *, connection,
-                                   source_hashes=None) -> None:
+    def _save_local_skill_snapshot(self, generation, manifest, dependencies, snapshot, *, connection) -> None:
         temporary = None
         try:
             if (generation != _source_generation_token(self.db_path)
@@ -1465,14 +1386,11 @@ class QuestionBankReadService:
                     or not self._skill_dependencies_current(dependencies)):
                 return
             payload = pickle.dumps(snapshot, protocol=pickle.HIGHEST_PROTOCOL)
-            hashes_payload = pickle.dumps(source_hashes or {}, protocol=pickle.HIGHEST_PROTOCOL)
-            from integration.data_generation import database_content_revision
-            encoded = pickle.dumps({"generation": generation, "calculation": _skill_cache_calculation_revision(),
-                "database_revision": database_content_revision(self.db_path, connection),
-                "manifest": manifest, "dependencies": dependencies, "payload": payload,
-                "digest": hashlib.sha256(payload).hexdigest(),
-                "source_hashes": hashes_payload,
-                "source_hashes_digest": hashlib.sha256(hashes_payload).hexdigest()}, protocol=pickle.HIGHEST_PROTOCOL)
+            from integration.data_generation import database_change_stamp
+            encoded = pickle.dumps({"generation": generation,
+                "database_change_stamp": database_change_stamp(self.db_path),
+                "manifest": manifest, "dependencies": dependencies, "payload": payload},
+                protocol=pickle.HIGHEST_PROTOCOL)
             if len(encoded) > _SKILL_LOCAL_CACHE_MAX_BYTES:
                 return
             if generation != _source_generation_token(self.db_path):

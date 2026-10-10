@@ -16,7 +16,6 @@ from typing import Any
 LOGGER = logging.getLogger(__name__)
 
 REVIEW_NOTES_DIRNAME = ".analysis_review_notes"
-REVIEW_NOTES_VERSION = 1
 
 
 def session_notes_path(reports_dir: Path, session_id: int) -> Path:
@@ -30,14 +29,13 @@ def load_session_notes(reports_dir: Path, session_id: int) -> dict[str, Any] | N
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict) or payload.get("version") != REVIEW_NOTES_VERSION:
+    if not isinstance(payload, dict):
         return None
     items = payload.get("items")
     if not isinstance(items, list):
         return None
     return {
         "session_id": int(payload.get("session_id") or session_id),
-        "score_revision": str(payload.get("score_revision") or ""),
         "generated_at": str(payload.get("generated_at") or ""),
         "items": [dict(item) for item in items if isinstance(item, dict)],
     }
@@ -47,7 +45,6 @@ def merge_session_notes(
     reports_dir: Path,
     session_id: int,
     *,
-    score_revision: str,
     items: list[dict[str, Any]],
     scoped_student_ids: set[int],
 ) -> int:
@@ -63,9 +60,7 @@ def merge_session_notes(
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_name(f".{target.stem}.tmp")
     payload = {
-        "version": REVIEW_NOTES_VERSION,
         "session_id": int(session_id),
-        "score_revision": str(score_revision or ""),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "items": merged,
     }

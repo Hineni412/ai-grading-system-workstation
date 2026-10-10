@@ -1699,6 +1699,7 @@
 
 .class-analysis__sort {
   display: flex;
+  flex-wrap: wrap;
   flex: none;
   overflow: hidden;
   border: var(--border-width) solid var(--color-border-strong);
@@ -1706,7 +1707,8 @@
 }
 
 .class-analysis__sort button {
-  flex: 1;
+  flex: 1 1 auto;
+  white-space: nowrap;
   min-height: var(--control-height-small);
   border: 0;
   background: transparent;
@@ -2373,3 +2375,14 @@ button.class-analysis__score-chip:focus-visible {
   border-radius: var(--border-radius);
   background: var(--color-bg-surface, #fff);
 }
+
+.key-step__questions { padding: var(--space-4); }
+.key-step__question { display: grid; gap: var(--space-2); width: 100%; padding: var(--space-3); border: 0; border-bottom: 1px solid var(--color-border-default); background: transparent; text-align: left; cursor: pointer; }
+.key-step__question:hover { background: var(--color-bg-subtle); }
+.key-step__question small { color: var(--color-text-muted); }
+.key-step__counts { display: grid; grid-template-columns: 1fr auto; gap: var(--space-2); }
+.key-step__counts dd { margin: 0; }
+
+.class-analysis__toolbar { flex-wrap: wrap; }
+.class-analysis__step-scope { flex: 1 0 100%; order: 1; margin: 0; color: var(--color-text-muted); font-size: var(--font-size-caption); white-space: normal; }
+.key-step__detail .class-analysis__note { color: var(--color-text-muted); }

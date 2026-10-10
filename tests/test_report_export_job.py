@@ -144,7 +144,7 @@ def test_report_export_handler_publishes_annotated_original_pdf(tmp_path) -> Non
     assert loaded.status == "succeeded"
     assert loaded.result["session_id"] == 42
     assert loaded.result["report_type"] == "annotated_original_pdf"
-    assert loaded.result["score_revision"] == "revision-1"
+    assert "score_revision" not in loaded.result
     assert loaded.result["filename"] == f"七年级期中_42_批注原卷_job-{job.id}.pdf"
     assert Path(loaded.result["file_path"]).read_bytes().startswith(b"%PDF")
 

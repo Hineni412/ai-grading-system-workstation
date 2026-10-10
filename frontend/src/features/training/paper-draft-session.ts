@@ -1,7 +1,8 @@
+import { isRecord } from '../../api/validation'
+
 const STORAGE_KEY = 'ai-grading:personalized-paper-draft:v1'
 
 export interface PaperDraftSession {
-  fingerprint: string
   draftId: string
   requestToken?: string
   handoutRequestToken?: string
@@ -11,16 +12,16 @@ export function loadPaperDraftSession(): PaperDraftSession | null {
   try {
     const raw = globalThis.localStorage?.getItem(STORAGE_KEY)
     if (!raw) return null
-    const parsed = JSON.parse(raw) as Partial<PaperDraftSession>
-    if (
-      typeof parsed.fingerprint !== 'string'
-      || typeof parsed.draftId !== 'string'
-      || !parsed.fingerprint
-      || (!parsed.draftId && !/^[0-9a-f]{32}$/.test(parsed.requestToken ?? ''))
-    ) {
-      return null
+    const parsed: unknown = JSON.parse(raw)
+    if (!isRecord(parsed) || typeof parsed.draftId !== 'string') return null
+    const requestToken = typeof parsed.requestToken === 'string' ? parsed.requestToken : ''
+    const handoutRequestToken = typeof parsed.handoutRequestToken === 'string' ? parsed.handoutRequestToken : ''
+    if (!parsed.draftId && !/^[0-9a-f]{32}$/.test(requestToken)) return null
+    return {
+      draftId: parsed.draftId,
+      requestToken: /^[0-9a-f]{32}$/.test(requestToken) ? requestToken : undefined,
+      handoutRequestToken: /^[0-9a-f]{32}$/.test(handoutRequestToken) ? handoutRequestToken : undefined,
     }
-    return { fingerprint: parsed.fingerprint, draftId: parsed.draftId, requestToken: parsed.requestToken, handoutRequestToken: /^[0-9a-f]{32}$/.test(parsed.handoutRequestToken ?? '') ? parsed.handoutRequestToken : undefined }
   } catch {
     return null
   }

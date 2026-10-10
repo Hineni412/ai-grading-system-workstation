@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -169,14 +170,16 @@ def evaluate_criterion_quality(
 
 
 def usable_training_criterion(
-    workspace: Mapping[str, Any],
+    workspace: Mapping[str, Any], *, verify_source: bool = True,
 ) -> dict[str, Any] | None:
-    """Return the criterion version allowed into training papers.
+    """Return a saved criterion for viewing, or a matching criterion for adoption.
 
     A still-matching approved version stays authoritative. If none exists, a
     quality-passed current draft is admitted without a separate teacher click.
     """
 
+    if not verify_source:
+        return _saved_criterion(workspace)
     if workspace.get("read_failure"):
         return None
     source_hash = str(workspace.get("current_source_hash") or "")
@@ -203,38 +206,81 @@ def usable_training_criterion(
     return None
 
 
+def _criterion_has_history_reference(connection, identifier: str, data_root: Path) -> bool:
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for table in ("personalized_paper_items", "training_question_results",
+                  "training_point_results", "training_evidence_records", "training_task_items"):
+        if table not in tables:
+            continue
+        columns = {row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')}
+        if "criterion_version_id" in columns and connection.execute(
+                f'SELECT 1 FROM "{table}" WHERE criterion_version_id=? LIMIT 1', (identifier,),
+        ).fetchone() is not None:
+            return True
+    if "training_criterion_backfill_items" in tables and connection.execute(
+            "SELECT 1 FROM training_criterion_backfill_items WHERE version_id=? LIMIT 1", (identifier,),
+    ).fetchone() is not None:
+        return True
+    if "training_evidence_outbox" in tables and connection.execute(
+            "SELECT 1 FROM training_evidence_outbox WHERE json_extract(payload_json,'$.criterion_version_id')=? LIMIT 1",
+            (identifier,),
+    ).fetchone() is not None:
+        return True
+    if connection.execute("SELECT 1 FROM training_criterion_versions WHERE parent_version_id=? LIMIT 1",
+                          (identifier,)).fetchone() is not None:
+        return True
+    metadata_tables = {"training_criterion_heads", "training_criterion_events", "training_criterion_backfill_items"}
+    for table in tables - metadata_tables:
+        quoted = '"' + str(table).replace('"', '""') + '"'
+        for reference in connection.execute(f"PRAGMA foreign_key_list({quoted})").fetchall():
+            if reference[2] != "training_criterion_versions":
+                continue
+            column = '"' + str(reference[3]).replace('"', '""') + '"'
+            if connection.execute(f"SELECT 1 FROM {quoted} WHERE {column}=? LIMIT 1", (identifier,)).fetchone():
+                return True
+    from question_bank.solution_evidence.evidence_snapshot import has_saved_exam_reference
+    return has_saved_exam_reference(Path(data_root) / "config" / "uploaded", (identifier,))
+
+
+def _saved_criterion(workspace: Mapping[str, Any]) -> dict[str, Any] | None:
+    if workspace.get("read_failure"):
+        return None
+    approved = workspace.get("approved_version")
+    if isinstance(approved, Mapping) and approved.get("status") in {"approved", "stale"}:
+        return dict(approved)
+    current = workspace.get("current_version")
+    if (isinstance(current, Mapping) and current.get("status") in {"proposed", "approved", "stale"}
+            and current.get("quality_status") == "passed"):
+        return dict(current)
+    return None
+
+
 class TrainingCriterionModule:
-    """Deep module for immutable criterion versions and teacher decisions."""
+    """Keep a current draft and protected teacher decisions or historical facts."""
 
     def __init__(self, db_path: Path, *, data_root: Path | None = None) -> None:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root) if data_root is not None else self.db_path.parent.parent
 
     def read(self, question: QuestionAnalysisInput) -> dict[str, Any]:
-        """Read-only workspace view; never writes or marks versions stale.
-
-        When the question content changed since the last write-path sync,
-        the returned view reports the live source hash so read consumers
-        (freeze, recommendations, backfill) keep rejecting outdated
-        criteria. The stale marking itself still happens only in
-        propose()/review().
-        """
+        """Read the saved workspace without changing it or comparing question content."""
         return self._with_current_source(self._workspace(question.question_id), question)
 
     def read_many(
         self, questions: Sequence[QuestionAnalysisInput],
         *, connection=None, profiles: Mapping[int, Mapping[str, Any]] | None = None,
+        verify_source: bool = False,
     ) -> dict[int, dict[str, Any]]:
-        """Read candidate workspaces together, preserving the live-content check."""
+        """Read saved workspaces; current-source checks are explicit for adoption."""
         by_id = {question.question_id: question for question in questions}
         ids = list(by_id)
         result: dict[int, dict[str, Any]] = {}
         from question_bank.solution_evidence.part_assessments import reading
         with reading(self.db_path, connection=connection) as connection:
             from question_bank.solution_evidence.part_assessments import load_profiles
-            if profiles is None:
+            if profiles is None or verify_source:
                 profiles = load_profiles(self.db_path, ids, connection=connection,
-                                         data_root=self.data_root, question_inputs=by_id)
+                                         data_root=self.data_root, question_inputs=by_id, verify_source=verify_source)
             for start in range(0, len(ids), 200):
                 batch = ids[start:start + 200]
                 placeholders = ", ".join("?" for _ in batch)
@@ -258,32 +304,37 @@ class TrainingCriterionModule:
                     workspace = self._workspace_view(
                         question_id, heads.get(question_id), versions.get(question_id, []),
                     )
-                    result[question_id] = self._with_current_source(workspace, by_id[question_id], profile=profiles.get(question_id), profile_loaded=True)
+                    result[question_id] = self._with_current_source(workspace, by_id[question_id], profile=profiles.get(question_id), profile_loaded=True, verify_source=verify_source)
         return result
 
     def _with_current_source(
         self, workspace: dict[str, Any], question: QuestionAnalysisInput, *,
         profile: Mapping[str, Any] | None = None, profile_loaded: bool = False,
+        verify_source: bool = False,
     ) -> dict[str, Any]:
-        source_hash = str(question.criterion_source_content_hash or "")
-        adjusted = dict(workspace, current_source_hash=source_hash,
-            compatible_source_hashes=list(compatible_source_content_hashes(question, kind="training_criteria")))
+        adjusted = dict(workspace)
+        source_hash = ""
+        if verify_source:
+            source_hash = str(question.criterion_source_content_hash or "")
+            adjusted.update(current_source_hash=source_hash,
+                compatible_source_hashes=list(compatible_source_content_hashes(question, kind="training_criteria")))
         if adjusted.get("read_failure"):
             return dict(adjusted, available=False, state="missing")
         if not profile_loaded:
             from question_bank.solution_evidence.part_assessments import load_profiles
             profile = load_profiles(self.db_path, [question.question_id], data_root=self.data_root,
-                question_inputs={question.question_id: question}).get(question.question_id)
+                question_inputs={question.question_id: question}, verify_source=verify_source).get(question.question_id)
         alias = str(profile.get("source_type_alias") or "") if profile and profile.get("available") else ""
-        if alias:
+        if alias and verify_source:
             from dataclasses import replace
             compatible_question = replace(question, tagging_context=replace(question.tagging_context, question_type=alias))
             adjusted["compatible_source_hashes"].extend(compatible_source_content_hashes(
                 compatible_question, kind="training_criteria"))
-        usable = usable_training_criterion(adjusted)
+        usable = (usable_training_criterion(adjusted) if verify_source
+                  else _saved_criterion(adjusted))
         current = adjusted.get("current_version")
         teacher_owned = usable is not None and usable.get("status") == "approved"
-        if isinstance(current, Mapping) and current.get("source_kind") in {"teacher_manual", "confirmed_rubric_adapter"}:
+        if verify_source and isinstance(current, Mapping) and current.get("source_kind") in {"teacher_manual", "confirmed_rubric_adapter"}:
             teacher_owned = teacher_owned or str(current.get("source_content_hash") or "") in {
                 source_hash, *adjusted["compatible_source_hashes"],
             }
@@ -305,7 +356,7 @@ class TrainingCriterionModule:
                         version for version in adjusted.get("versions", [])
                         if version["version_id"] != derived["version_id"]
                     )]
-                    usable = usable_training_criterion(adjusted)
+                    usable = usable_training_criterion(adjusted) if verify_source else _saved_criterion(adjusted)
         current = adjusted.get("current_version")
         adjusted["available"] = usable is not None
         adjusted["state"] = (
@@ -338,23 +389,20 @@ class TrainingCriterionModule:
         actor = _required_text(actor_ref, "actor_ref")
         clean_reason = _required_text(reason, "reason")
         quality = evaluate_criterion_quality(question, normalized)
+        if source in {"combined_model", "backfill"} and not quality.passed:
+            raise CriterionQualityError(quality.codes)
+        embedded_evidence = None
         if source in {"combined_model", "backfill"} and normalized.embedded_evidence_json and quality.passed:
             evidence = _evidence_from_payload(question, json.loads(normalized.embedded_evidence_json))
             from question_bank.training_criteria.analysis import training_criteria_from_solution_evidence
             projection = training_criteria_from_solution_evidence(evidence, question=question)
             if normalized.points == projection.points and normalized.auxiliary_rules == projection.auxiliary_rules:
-                from question_bank.solution_evidence.repository import SolutionEvidenceRepository
-                self._sync_source(question)
-                SolutionEvidenceRepository(self.db_path).save(
-                    evidence, source_kind=source, source_reference=reference, created_by=actor,
-                )
-                return self.read(question)
+                embedded_evidence = evidence
         criteria_json = _canonical_json(normalized.to_dict())
         criteria_hash = _sha256(criteria_json)
-        self._sync_source(question)
-
         with connect(self.db_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._sync_source(question, connection=connection)
             existing = connection.execute(
                 """
                 SELECT version_id, source_content_hash, criteria_hash
@@ -391,6 +439,22 @@ class TrainingCriterionModule:
             current_id = (
                 str(head["current_version_id"]) if head is not None else None
             )
+            if embedded_evidence is not None:
+                from question_bank.solution_evidence.repository import SolutionEvidenceRepository
+                replacement_id = None
+                if current_id and head["approved_version_id"] != current_id:
+                    current = connection.execute("SELECT * FROM training_criterion_versions WHERE version_id=?", (current_id,)).fetchone()
+                    if (current is not None and current["status"] in {"proposed", "stale"}
+                            and not current["decision_by"]
+                            and not _criterion_has_history_reference(connection, current_id, self.data_root)):
+                        replacement_id = current_id
+                SolutionEvidenceRepository(self.db_path, data_root=self.data_root).save(
+                    embedded_evidence, source_kind=source, source_reference=reference,
+                    created_by=actor, connection=connection, replacing_criterion_id=replacement_id,
+                )
+                if head is None:
+                    connection.commit()
+                    return self.read(question)
             parent_id = (
                 str(parent_version_id or "").strip().casefold()
                 or current_id
@@ -414,6 +478,36 @@ class TrainingCriterionModule:
                     or int(parent["question_id"]) != question.question_id
                 ):
                     raise CriterionVersionNotFound(parent_id)
+
+            current = connection.execute(
+                "SELECT * FROM training_criterion_versions WHERE version_id=?", (current_id,),
+            ).fetchone() if current_id else None
+            if (current is not None and current["status"] in {"proposed", "stale"}
+                    and current["source_kind"] in {"combined_model", "backfill", "teacher_manual"}
+                    and not current["decision_by"]
+                    and (head is None or head["approved_version_id"] != current_id)
+                    and not _criterion_has_history_reference(connection, current_id, self.data_root)):
+                connection.execute(
+                    """UPDATE training_criterion_versions
+                       SET source_content_hash=?,schema_version=?,status='proposed',source_kind=?,
+                           source_reference=?,criteria_json=?,criteria_hash=?,quality_status=?,
+                           quality_codes_json=?,created_by=?,updated_at=datetime('now','localtime')
+                       WHERE version_id=?""",
+                    (normalized.source_content_hash, normalized.schema_version, source, reference,
+                     criteria_json, criteria_hash, "passed" if quality.passed else "failed",
+                     _canonical_json(list(quality.codes)), actor, current_id),
+                )
+                next_revision = current_revision + 1
+                connection.execute(
+                    """UPDATE training_criterion_heads SET current_source_hash=?,revision=?,
+                           updated_at=datetime('now','localtime') WHERE question_id=?""",
+                    (normalized.source_content_hash, next_revision, question.question_id),
+                )
+                _event(connection, question_id=question.question_id, version_id=current_id,
+                       event_type="edited" if source == "teacher_manual" else "proposed",
+                       actor_ref=actor, reason=clean_reason, from_status=current["status"],
+                       to_status="proposed", revision=next_revision)
+                return self._workspace_after_commit(connection, question.question_id, current_id)
 
             version_number = int(
                 connection.execute(
@@ -446,7 +540,8 @@ class TrainingCriterionModule:
                     """,
                     (current_id,),
                 ).fetchone()
-                if current is not None and str(current["status"]) == "proposed":
+                if (current is not None and str(current["status"]) == "proposed"
+                        and not _criterion_has_history_reference(connection, current_id, self.data_root)):
                     connection.execute(
                         """
                         UPDATE training_criterion_versions
@@ -742,7 +837,7 @@ class TrainingCriterionModule:
     def _current_projection(self, question: QuestionAnalysisInput, *, connection) -> dict[str, Any] | None:
         from question_bank.solution_evidence.part_assessments import load_profiles
         profile = load_profiles(self.db_path, [question.question_id], connection=connection,
-            data_root=self.data_root, question_inputs={question.question_id: question}).get(question.question_id)
+            data_root=self.data_root, question_inputs={question.question_id: question}, verify_source=True).get(question.question_id)
         if profile is None or not profile.get("available"):
             return None
         return _version_from_profile(question, profile)
@@ -754,7 +849,7 @@ class TrainingCriterionModule:
         versions: list[dict[str, Any]] = []
         missing: list[int] = []
         for question in questions:
-            workspace = self.read(question)
+            workspace = self.read_many((question,), verify_source=True)[question.question_id]
             usable = usable_training_criterion(workspace)
             if usable is None:
                 missing.append(question.question_id)
@@ -1065,10 +1160,12 @@ class TrainingCriterionModule:
                 )
         return self.get_backfill_run(run_id)
 
-    def _sync_source(self, question: QuestionAnalysisInput) -> None:
+    def _sync_source(self, question: QuestionAnalysisInput, *, connection=None) -> None:
         source_hash = question.criterion_source_content_hash
-        with connect(self.db_path) as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        owns_connection = connection is None
+        with (connect(self.db_path) if owns_connection else nullcontext(connection)) as connection:
+            if owns_connection:
+                connection.execute("BEGIN IMMEDIATE")
             head = _head(connection, question.question_id)
             if head is None or source_content_hash_matches(
                 question, str(head["current_source_hash"]), kind="training_criteria",
@@ -1086,7 +1183,7 @@ class TrainingCriterionModule:
             for version_id in version_ids:
                 row = connection.execute(
                     """
-                    SELECT status, source_content_hash
+                    SELECT status, source_content_hash, decision_by
                     FROM training_criterion_versions
                     WHERE version_id = ?
                     """,
@@ -1096,6 +1193,8 @@ class TrainingCriterionModule:
                     row is None
                     or str(row["source_content_hash"]) == source_hash
                     or str(row["status"]) not in {"proposed", "approved"}
+                    or row["decision_by"]
+                    or _criterion_has_history_reference(connection, version_id, self.data_root)
                 ):
                     continue
                 from_status = str(row["status"])
@@ -1122,23 +1221,12 @@ class TrainingCriterionModule:
             connection.execute(
                 """
                 UPDATE training_criterion_heads
-                SET approved_version_id = CASE
-                        WHEN approved_version_id IN (
-                            SELECT version_id
-                            FROM training_criterion_versions
-                            WHERE status = 'approved'
-                              AND source_content_hash = ?
-                        )
-                        THEN approved_version_id
-                        ELSE NULL
-                    END,
-                    current_source_hash = ?,
+                SET current_source_hash = ?,
                     revision = ?,
                     updated_at = datetime('now','localtime')
                 WHERE question_id = ?
                 """,
                 (
-                    source_hash,
                     source_hash,
                     revision,
                     question.question_id,

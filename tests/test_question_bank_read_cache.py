@@ -20,10 +20,200 @@ from question_bank.services.question_read_service import (
 @pytest.fixture(autouse=True)
 def _clear_read_result_cache():
     read_module._READ_RESULT_CACHE.clear()
-    read_module._SKILL_SOURCE_MEMO.clear()
     yield
     read_module._READ_RESULT_CACHE.clear()
-    read_module._SKILL_SOURCE_MEMO.clear()
+
+
+def test_cache_values_preserves_nested_shapes_and_mixed_type_order():
+    from integration.result_cache import cache_values
+
+    opaque = object()
+    mutable_atom = bytearray(b"TEST")
+    mixed_set = {None, "TEST", 3, (1, 2)}
+    value = {
+        None: (b"TEST", 1 + 2j),
+        3: {2: mixed_set, "TEST-inner": [1, ("TEST",)]},
+        ("TEST-key",): frozenset(mixed_set),
+        "TEST-z": [True, None, 2.5, opaque, mutable_atom],
+    }
+    expected = (
+        ("TEST-z", (True, None, 2.5, opaque, mutable_atom)),
+        (("TEST-key",), ("TEST", (1, 2), 3, None)),
+        (3, (("TEST-inner", (1, ("TEST",))), (2, ("TEST", (1, 2), 3, None)))),
+        (None, (b"TEST", 1 + 2j)),
+    )
+    assert cache_values(value) == expected
+    assert cache_values(dict(reversed(list(value.items())))) == expected
+    assert cache_values(opaque) is opaque
+    assert cache_values(mutable_atom) is mutable_atom
+    assert cache_values([1, (2, 3)]) == cache_values((1, [2, 3])) == (1, (2, 3))
+    assert cache_values({"TEST": True}) == cache_values({"TEST": 1})
+
+
+def test_cache_values_shared_children_are_rechecked_on_each_ordinary_call():
+    from integration.result_cache import cache_values
+
+    child = {"TEST-points": [1, {"TEST-level": 2}], "TEST-set": {2, 1}}
+    value = [child, child, (child,)]
+    child_key = (("TEST-points", (1, (("TEST-level", 2),))), ("TEST-set", (1, 2)))
+    original = cache_values(value)
+    assert original == (child_key, child_key, (child_key,))
+    child["TEST-points"][1]["TEST-level"] = 4
+    child["TEST-points"].append(3)
+    child["TEST-set"].add(3)
+    changed_key = (("TEST-points", (1, (("TEST-level", 4),), 3)), ("TEST-set", (1, 2, 3)))
+    assert cache_values(value) == (changed_key, changed_key, (changed_key,))
+    assert original == (child_key, child_key, (child_key,))
+
+
+def test_cache_values_external_memo_caches_only_the_requested_outer_object():
+    from integration.result_cache import cache_values
+
+    child = [1]
+    value = {"TEST": child}
+    memo = {}
+    original = cache_values(value, _memo=memo)
+    assert original == (("TEST", (1,)),)
+    assert set(memo) == {id(value)}
+    assert memo[id(value)][0] is value and memo[id(value)][1] is original
+    child.append(2)
+    assert cache_values(value, _memo=memo) is original
+    assert cache_values(value) == (("TEST", (1, 2)),)
+    next_value = [child]
+    assert cache_values(next_value, _memo=memo) == ((1, 2),)
+    assert set(memo) == {id(value), id(next_value)}
+    memo[id(child)] = (child, ("TEST-stale-child",))
+    another_value = {"TEST-next": child}
+    assert cache_values(another_value, _memo=memo) == (("TEST-next", (1, 2)),)
+    memo[id(another_value)] = (value, ("TEST-wrong-object",))
+    assert cache_values(another_value, _memo=memo) == (("TEST-next", (1, 2)),)
+
+
+def test_cache_values_keeps_custom_iteration_and_opaque_types():
+    from integration.result_cache import cache_values
+
+    class CustomMapping(dict):
+        def items(self):
+            return [(3, [3]), ("TEST-first", [1])]
+
+    class CustomSequence(list):
+        def __iter__(self):
+            return iter((3, {"TEST": [1]}))
+
+    class CustomTuple(tuple):
+        def __iter__(self):
+            return iter((3, {"TEST": [1]}))
+
+    class CustomSet(set):
+        def __iter__(self):
+            return iter((3, "TEST", (1, 2)))
+
+    class CustomFrozenSet(frozenset):
+        def __iter__(self):
+            return iter((3, "TEST", (1, 2)))
+
+    class UnhashableType(type):
+        __hash__ = None
+
+        def __eq__(self, other):
+            raise AssertionError("TEST-type-equality-must-not-be-used")
+
+    class Opaque(metaclass=UnhashableType):
+        pass
+
+    class CustomInt(int):
+        pass
+
+    assert cache_values(CustomMapping()) == (("TEST-first", (1,)), (3, (3,)))
+    for value in (CustomSequence(), CustomTuple()):
+        assert cache_values(value) == (3, (("TEST", (1,)),))
+    for value in (CustomSet(), CustomFrozenSet()):
+        assert cache_values(value) == ("TEST", (1, 2), 3)
+    value = CustomInt(7)
+    assert cache_values(value) is value
+    with pytest.raises(TypeError, match="unhashable type"):
+        cache_values(Opaque())
+
+
+@pytest.mark.parametrize("custom_kind", ["mapping", "sequence"])
+def test_cache_values_custom_iteration_can_change_an_earlier_shared_child(custom_kind):
+    from collections import UserDict
+    from integration.result_cache import cache_values
+
+    child = [1]
+
+    class MutatingMapping(UserDict):
+        def items(self):
+            child.append(2)
+            return super().items()
+
+    class MutatingSequence(list):
+        def __iter__(self):
+            child.append(2)
+            return super().__iter__()
+
+    if custom_kind == "mapping":
+        custom = MutatingMapping({"TEST": 0})
+        custom_key = (("TEST", 0),)
+    else:
+        custom = MutatingSequence(["TEST"])
+        custom_key = ("TEST",)
+    assert cache_values([child, custom, child, custom, child]) == (
+        (1,), custom_key, (1, 2), custom_key, (1, 2, 2),
+    )
+
+
+@pytest.mark.parametrize("container_kind", ["mapping", "set", "frozenset"])
+@pytest.mark.parametrize("tuple_key", [False, True])
+def test_cache_values_sorting_repr_can_change_an_earlier_shared_child(container_kind, tuple_key):
+    from integration.result_cache import cache_values
+
+    child = [1]
+
+    class MutatingKey:
+        def __repr__(self):
+            child.append(2)
+            return "TEST-key"
+
+    key = MutatingKey()
+    if tuple_key:
+        key = (key,)
+    if container_kind == "mapping":
+        container = {key: "TEST"}
+        container_key = ((key, "TEST"),)
+    else:
+        container = {key} if container_kind == "set" else frozenset({key})
+        container_key = (key,)
+    assert cache_values([child, container, child]) == ((1,), container_key, (1, 2))
+
+
+@pytest.mark.parametrize("container_kind", ["mapping", "sequence"])
+def test_cache_values_retains_recursive_input_errors_without_external_memo_entries(container_kind):
+    from integration.result_cache import cache_values
+
+    if container_kind == "mapping":
+        value = {}
+        value["TEST"] = value
+    else:
+        value = []
+        value.append(value)
+    memo = {}
+    with pytest.raises(RecursionError):
+        cache_values(value, _memo=memo)
+    assert memo == {}
+
+
+def test_cache_values_retains_custom_mapping_errors():
+    from integration.result_cache import cache_values
+
+    class BrokenMapping(dict):
+        def items(self):
+            raise ValueError("TEST-items-failed")
+
+    memo = {}
+    with pytest.raises(ValueError, match="TEST-items-failed"):
+        cache_values([{"TEST": [1]}, BrokenMapping()], _memo=memo)
+    assert memo == {}
 
 
 def test_result_cache_byte_budget_replacement_eviction_and_private_values():
@@ -175,7 +365,7 @@ def _seed_skill_bank(tmp_path: Path, count: int = 6, *, taxonomy_revision: int =
                              (version, qid, point, 'kgr_TEST_old' if qid == 2 else release, key, key))
         if count == 6:
             conn.execute("UPDATE questions SET is_deleted=1 WHERE id=6")
-            # Source-changed evidence cannot supply a skill.
+            # 查看与统计沿用已有证据，题面变化不清空已存技能关联。
             conn.execute("UPDATE questions SET question_text='TEST-题面已经改变' WHERE id=5")
             # An older superseded version must never add a third skill.
             conn.execute("INSERT INTO question_solution_evidence_versions(evidence_version_id,question_id,source_content_hash,schema_version,content_hash,evidence_json,status,source_kind,source_reference,created_by,graph_release_id) "
@@ -296,10 +486,10 @@ def test_session_unlinked_count_reuses_skill_index_for_confirmed_live_questions(
     status = service.session_analysis_status(7)
     assert status["question_count"] == 5  # Unique canonical questions; deleted question excluded.
     index = service.skill_index('bnu24-math-g8-upper')
-    assert status["unlinked_skill_count"] == sum(index["unlinked"].values()) == 3
+    assert status["unlinked_skill_count"] == sum(index["unlinked"].values()) == 2
     with connect(db) as conn:
         conn.execute("UPDATE grading_question_links SET status='suggested' WHERE bank_question_id=3")
-    assert service.session_analysis_status(7)["unlinked_skill_count"] == 2
+    assert service.session_analysis_status(7)["unlinked_skill_count"] == 1
     assert service.session_analysis_status(999)["unlinked_skill_count"] == 0
 
 
@@ -311,14 +501,14 @@ def test_skill_index_current_versions_legacy_links_filters_and_cache(tmp_path, m
     skills = {row['stable_key']: row for chapter in index['chapters']
               for section in chapter['sections'] for row in section['skills']}
     assert index['question_count'] == 5
-    assert index['unlinked'] == {'no_usable_evidence': 2, 'no_skill_link': 1}
+    assert index['unlinked'] == {'no_usable_evidence': 1, 'no_skill_link': 1}
     from question_bank.services.knowledge_order import question_primary_skills, skill_placements
     with connect(db) as conn:
         assert question_primary_skills(conn, db, tmp_path, [1])[1] == keys[0]
         placement = skill_placements(conn, keys, 'bnu24-math-g8-upper')[keys[0]]
         assert placement.section_id and placement.chapter_id and placement.skill_name
-    assert [skills[key]['question_count'] for key in keys] == [2, 1, 0]
-    assert skills[keys[0]]['difficulty'] == {'min': 2.0, 'median': 2.5, 'max': 3.0}
+    assert [skills[key]['question_count'] for key in keys] == [3, 1, 0]
+    assert skills[keys[0]]['difficulty'] == {'min': 2.0, 'median': 3.0, 'max': 6.0}
     page = service.list_questions(QuestionReadFilters(skill_keys=(keys[1],), include_skills=True))
     assert [item['id'] for item in page.items] == [1]
     assert len(page.items[0]['skills']) == 2
@@ -329,9 +519,9 @@ def test_skill_index_current_versions_legacy_links_filters_and_cache(tmp_path, m
     other_page = service.list_questions(QuestionReadFilters(skill_keys=(keys[1],), include_skills=True, page_size=1))
     assert other_page.items[0]['skill_hits'] == [{'point_id': 'p2', 'point_label': '判定点 2：求解'}]
     assert service.list_facets(QuestionReadFilters(skill_keys=(keys[1],)))['question_types'] == [{'value': '解答题', 'count': 1}]
-    assert {item['id'] for item in service.list_questions(QuestionReadFilters(skill_unlinked=True)).items} == {3, 4, 5}
+    assert {item['id'] for item in service.list_questions(QuestionReadFilters(skill_unlinked=True)).items} == {3, 4}
     assert 'skills' not in service.list_questions(QuestionReadFilters()).items[0]
-    assert service.list_papers()[0]['skill_unlinked_question_count'] == 3
+    assert service.list_papers()[0]['skill_unlinked_question_count'] == 2
     with connect(db) as conn:
         conn.executemany(
             "INSERT INTO question_error_patterns(question_id,category,pattern,status,source) VALUES(?,?,?,?,?)",
@@ -345,7 +535,7 @@ def test_skill_index_current_versions_legacy_links_filters_and_cache(tmp_path, m
     with connect(db) as conn:
         conn.execute("UPDATE questions SET is_deleted=1 WHERE id=2")
     assert service.skill_index('bnu24-math-g8-upper')['question_count'] == 4
-    assert service.list_questions(QuestionReadFilters(skill_keys=(keys[0],))).total == 1
+    assert service.list_questions(QuestionReadFilters(skill_keys=(keys[0],))).total == 2
     from question_bank.services import question_skill_index
     from question_bank.taxonomy.curriculum_catalog import curriculum_volume
     other_volume = curriculum_volume(volume_id='bnu24-math-g9-upper')
@@ -486,7 +676,7 @@ print(hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest())
         read_module._READ_RESULT_CACHE.clear()
         clear_file_caches()
         assert restarted.skill_index('bnu24-math-g8-upper') == index
-        assert len(builds) == before_checkpoint
+        assert len(builds) == before_checkpoint + 1
     process = subprocess.run([sys.executable, '-c', script, str(service.db_path), str(tmp_path)],
                              capture_output=True, text=True, timeout=30)
     assert process.returncode == 0, process.stderr
@@ -505,7 +695,7 @@ print(hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest())
         count_before = len(builds)
         actual = restarted.skill_index('bnu24-math-g8-upper')
         assert len(builds) == count_before + 1
-        assert actual['unlinked']['no_usable_evidence'] == (1 if body is None else 2)
+        assert actual['unlinked']['no_usable_evidence'] == 1
         read_module._READ_RESULT_CACHE.clear()
         fresh = QuestionBankReadService(service.db_path, data_root=tmp_path, persist_skill_snapshots=False)
         assert fresh.skill_index('bnu24-math-g8-upper') == actual
@@ -523,12 +713,6 @@ print(hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest())
         assert restarted.skill_index('bnu24-math-g8-upper') == index
     assert len(builds) == count_before + 1
     assert cache_path.read_bytes() == before_cap
-    read_module._READ_RESULT_CACHE.clear()
-    count_before = len(builds)
-    with monkeypatch.context() as patch:
-        patch.setattr(read_module, '_skill_cache_calculation_revision', lambda: 'TEST-changed-calculation')
-        assert restarted.skill_index('bnu24-math-g8-upper') == index
-    assert len(builds) == count_before + 1
     with connect(service.db_path) as writer:
         writer.execute('UPDATE questions SET is_deleted=1 WHERE id=1')
     count_before = len(builds)
@@ -545,18 +729,6 @@ print(hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest())
     assert restarted.skill_index('bnu24-math-g8-upper')['question_count'] == 1499
     assert cache_path.read_bytes() == saved_bytes
     assert not list(cache_path.parent.glob('skill-read-*.tmp'))
-    # 内容版本读取暂不可用时，派生缓存仍不能阻断正常题目读取。
-    from integration import data_generation
-    for error_type in (AttributeError, ImportError):
-        with connect(service.db_path) as writer:
-            writer.execute('UPDATE questions SET reason=? WHERE id=2',
-                           (f'TEST-version-unavailable-{error_type.__name__}',))
-        def unavailable_version(*args, **kwargs):
-            raise error_type('TEST-cache-content-version-unavailable')
-        with monkeypatch.context() as patch:
-            patch.setattr(data_generation, 'database_content_revision', unavailable_version)
-            assert restarted.skill_index('bnu24-math-g8-upper')['question_count'] == 1499
-        assert cache_path.read_bytes() == saved_bytes
 
 
 def test_paged_duplicate_groups_refresh_after_relabelling_and_keep_occurrence_numbers(tmp_path):
@@ -819,7 +991,9 @@ def test_missing_only_repair_carries_forward_points_left_in_older_release(tmp_pa
     from question_bank.solution_evidence.repository import SolutionEvidenceRepository
     question = QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path).load([4])[0]
     assert SolutionEvidenceRepository(db).latest(4,
-        current_source_content_hash=question.source_content_hash)['evidence_version_id'] == version
+        current_source_content_hash=question.source_content_hash)['evidence_version_id'] == 'd' * 64
+    from question_bank.solution_evidence.part_assessments import load_profiles
+    assert load_profiles(db, [4], data_root=tmp_path, verify_source=True)[4]['evidence_version_id'] == version
     store = JobStore(tmp_path / 'TEST-repair-jobs.db')
     ids = [1, 4] if damage else [4]
     if damage == 'rich':
@@ -865,15 +1039,16 @@ def test_repair_preview_lists_each_missing_product_without_model_calls(tmp_path,
         sidecar.parent.mkdir(parents=True)
         sidecar.write_text('{TEST-corrupt', encoding='utf-8')
     preview = repair_preview(service, 'bnu24-math-g8-upper', 'skills')
-    assert [item['id'] for item in preview['items']] == [3, 4, 5]
+    assert [item['id'] for item in preview['items']] == [3, 4]
+    # Question 5 still has saved usable evidence and links after its text changes.
     assert preview['model_calls'] == 0
-    assert preview['counts']['skills'] == 3
-    assert preview['counts']['evidence'] == (3 if damaged_question else 2)
+    assert preview['counts']['skills'] == 2
+    assert preview['counts']['evidence'] == 1
     if damaged_question:
-        assert 'evidence' in preview['items'][1]['missing']
+        assert 'evidence' not in preview['items'][1]['missing']  # Saved evidence is readable.
         assert preview['items'][1]['blocked_reason_code'] == 'rich_content_invalid_json'
         assert '文件损坏' in preview['items'][1]['blocked_reason']
-        assert preview['repairable_count'] == 2
+        assert preview['repairable_count'] == 1
     else:
         assert 'evidence' not in preview['items'][1]['missing']
     assert len(preview['fingerprint']) == 64
@@ -899,8 +1074,8 @@ def test_repair_preview_lists_each_missing_product_without_model_calls(tmp_path,
             context=JobContext(record.id, record.job_type, record.payload, store),
             question_bank_db_path=db, data_root=tmp_path, tagging_runner=tagging,
             link_runner=no_links, ai_service_factory=lambda: None, link_gateway_factory=lambda: None)
-        assert calls == [[3, 5]]
-        assert result['requested_count'] == 3
+        assert calls == [[3]]
+        assert result['requested_count'] == 2
         assert result['completed_count'] == 0
         assert '文件损坏' in next(item for item in result['remaining'] if item['id'] == 4)['reason']
 
@@ -1174,11 +1349,11 @@ def test_analysis_material_cache_reuses_pages_and_rechecks_database_and_assets(t
     assert material([1])[1]['evidence_ready']
     with connect(db) as conn:
         conn.execute("UPDATE questions SET question_text='TEST-source-edited' WHERE id=1")
-    assert not material([1])[1]['evidence_ready']
+    assert material([1])[1]['evidence_ready']  # Saved evidence remains readable.
     sidecar = tmp_path / 'question_bank/rich_content/question_2.json'
     sidecar.parent.mkdir(parents=True, exist_ok=True)
     sidecar.write_text('{TEST-corrupt', encoding='utf-8')
-    assert not material([2])[2]['evidence_ready']
+    assert material([2])[2]['evidence_ready']  # A damaged current stem does not hide saved evidence.
     assert loaded == [(1, 2), (4,), (1,), (2,)]
 
 
@@ -1499,123 +1674,84 @@ def _fresh_skill_snapshot(db: Path, root: Path):
         return build_skill_snapshot(conn, db, root)
 
 
-def test_skill_snapshot_rebuild_reloads_only_changed_question_inputs(tmp_path, monkeypatch):
-    """数据库写入触发完整重建，但只有内容字段变化的题目重新读取文件。"""
+def test_skill_snapshot_refreshes_saved_data_without_reading_current_inputs(tmp_path, monkeypatch):
+    """统计随真实写入刷新，读取已有资料不校验当前题面与答案正文。"""
     from question_bank.database.schema import connect
     from question_bank.services.file_cache import clear_file_caches
-    from question_bank.training_criteria import (
-        QuestionAnalysisInputLoader, solution_evidence_source_content_hash,
-    )
 
     service, db, _keys = _seed_skill_bank(tmp_path)
     loaded = _spy_current_inputs(monkeypatch)
-    # 3 号题暂无可用证据，6 号题已删除；其余四题都有内容校验存项。
-    usable = {1, 2, 4, 5}
-    release = None
     with connect(db) as conn:
         release = conn.execute(
             "SELECT release_id FROM knowledge_graph_releases WHERE status='active'").fetchone()[0]
 
-    def insert_evidence(question_id: int, input_obj) -> None:
+    def insert_evidence(question_id):
         payload = {"parts": [{"part_id": "part-1", "evidence_points": [
             {"evidence_point_id": "p1", "target": "列式"}]}]}
-        version = f'TEST-v{question_id}'.ljust(64, '0')
+        identifier = f'TEST-v{question_id}'.ljust(64, '0')
         with connect(db) as conn:
             conn.execute("INSERT INTO question_solution_evidence_versions(evidence_version_id,question_id,source_content_hash,schema_version,content_hash,evidence_json,status,source_kind,source_reference,created_by,graph_release_id) "
                          "VALUES(?,?,?,'question-solution-evidence-v2',?,?,'approved','combined_model','TEST','TEST',?)",
-                         (version, question_id, solution_evidence_source_content_hash(input_obj),
-                          version, json.dumps(payload), release))
+                         (identifier, question_id, 'TEST-legacy-input'.ljust(64, '0'),
+                          identifier, json.dumps(payload), release))
 
-    def rebuild():
+    def assert_refreshed():
         loaded.clear()
-        return service._skill_snapshot(), list(loaded)
+        expected = _fresh_skill_snapshot(db, tmp_path)
+        snapshot = service._skill_snapshot()
+        assert snapshot == expected and loaded == []
+        return snapshot
 
-    # 首次构建没有任何存项，全部读取并写入备忘录。
-    expected = _fresh_skill_snapshot(db, tmp_path)
-    snapshot, ids = rebuild()
-    assert snapshot == expected
-    assert set(ids) == usable
+    initial = assert_refreshed()
+    assert 3 in initial['no_usable'] and 6 not in initial['by_question']
+    assert service._skill_snapshot() == initial and loaded == []
 
-    # 改写题面：只有该题重新读取。
+    # Changed wording keeps the saved evidence and its knowledge links visible.
     with connect(db) as conn:
         conn.execute("UPDATE questions SET question_text='TEST-改写题面' WHERE id=1")
-    expected = _fresh_skill_snapshot(db, tmp_path)
-    snapshot, ids = rebuild()
-    assert snapshot == expected and set(ids) == {1}
+    changed = assert_refreshed()
+    assert 1 in changed['by_question'] and 1 not in changed['no_usable']
 
-    # 新增可用证据版本：该题没有已存校验项，只读取它。
-    q3 = QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path).load([3])[0]
-    insert_evidence(3, q3)
-    usable.add(3)
-    expected = _fresh_skill_snapshot(db, tmp_path)
-    snapshot, ids = rebuild()
-    assert snapshot == expected and set(ids) == {3}
+    # New saved evidence changes the aggregate without checking current input.
+    insert_evidence(3)
+    added = assert_refreshed()
+    assert 3 not in added['no_usable'] and added != changed
 
-    # 链接行变化不属于题面输入：不读任何文件，结果仍与全新构建一致。
     with connect(db) as conn:
         conn.execute("UPDATE evidence_point_knowledge_links SET role='supporting_prerequisite' "
                      "WHERE question_id=1 AND role='direct'")
-    expected = _fresh_skill_snapshot(db, tmp_path)
-    snapshot, ids = rebuild()
-    assert snapshot == expected and ids == []
+    relinked = assert_refreshed()
+    assert relinked != added
 
-    # 删除的题不再读取，其存项也被裁掉。
     with connect(db) as conn:
         conn.execute("UPDATE questions SET is_deleted=1 WHERE id=2")
-    usable.discard(2)
-    expected = _fresh_skill_snapshot(db, tmp_path)
-    snapshot, ids = rebuild()
-    assert snapshot == expected and ids == []
-    memo = read_module._SKILL_SOURCE_MEMO[service._cache_data_root]
-    assert 2 not in memo["entries"]
-    assert set(memo["entries"]) <= usable
+    deleted = assert_refreshed()
+    assert 2 not in deleted['by_question'] and deleted != relinked
 
-    # 新题没有存项，只读取它。
     with connect(db) as conn:
         conn.execute("INSERT INTO questions(id,paper_id,question_number,question_text,question_type) "
                      "VALUES(7,1,'7','TEST-新增题','解答题')")
-    insert_evidence(7, QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path).load([7])[0])
-    usable.add(7)
-    expected = _fresh_skill_snapshot(db, tmp_path)
-    snapshot, ids = rebuild()
-    assert snapshot == expected and set(ids) == {7}
+    insert_evidence(7)
+    assert 7 in assert_refreshed()['by_question']
 
-    # 素材清单变化使整份校验作废：全部重新读取。文件侧改动不改变数据库
-    # 世代号，与重启后的首次读取一样先清掉进程内缓存再比对。
     sidecar = tmp_path / 'question_bank/rich_content/question_1.json'
     sidecar.parent.mkdir(parents=True, exist_ok=True)
-    sidecar.write_text(json.dumps({'version': 3, 'question_blocks': [
-        {'type': 'text', 'text': 'TEST-改写富文本'}]}), encoding='utf-8')
+    sidecar.write_text('{TEST-corrupt-current-content', encoding='utf-8')
     read_module._READ_RESULT_CACHE.clear()
     clear_file_caches()
-    expected = _fresh_skill_snapshot(db, tmp_path)
-    snapshot, ids = rebuild()
-    assert snapshot == expected and set(ids) == usable
+    assert 1 not in assert_refreshed()['no_usable']
 
-    # 历史题型别名只依赖已存散列：匹配旧类型的证据仍能复用，无需重读。
-    from dataclasses import replace
-    q4 = QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path).load([4])[0]
-    legacy_hash = solution_evidence_source_content_hash(
-        replace(q4, tagging_context=replace(q4.tagging_context, question_type='解答题（计算）')))
     with connect(db) as conn:
         conn.execute("UPDATE question_solution_evidence_versions SET source_content_hash=? "
-                     "WHERE question_id=4", (legacy_hash,))
-    expected = _fresh_skill_snapshot(db, tmp_path)
-    snapshot, ids = rebuild()
-    assert snapshot == expected and ids == []
-    assert 4 in snapshot['by_question'] and 4 not in snapshot['no_usable']
+                     "WHERE question_id=4", ('TEST-older-source'.ljust(64, '0'),))
+    assert 4 not in assert_refreshed()['no_usable']
 
-    # 重启（内存备忘录与读缓存清空）后，持久化校验项让改动题之外的输入不重读。
-    read_module._SKILL_SOURCE_MEMO.clear()
     read_module._READ_RESULT_CACHE.clear()
     clear_file_caches()
-    restarted = QuestionBankReadService(db, data_root=tmp_path)
+    service = QuestionBankReadService(db, data_root=tmp_path)
     with connect(db) as conn:
-        conn.execute("UPDATE questions SET question_text='TEST-重启后改写' WHERE id=5")
-    expected = _fresh_skill_snapshot(db, tmp_path)
-    loaded.clear()
-    snapshot = restarted._skill_snapshot()
-    assert snapshot == expected and set(loaded) == {5}
+        conn.execute("UPDATE questions SET difficulty=9 WHERE id=5")
+    assert float(assert_refreshed()['questions'][5]['difficulty']) == 9
 
 
 def test_missing_knowledge_adds_only_fine_links_and_keeps_original_evidence_and_skills(tmp_path):

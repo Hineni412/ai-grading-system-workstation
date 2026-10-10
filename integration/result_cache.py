@@ -12,7 +12,7 @@ from __future__ import annotations
 import pickle
 import threading
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 
@@ -95,3 +95,64 @@ class ResultCache:
         with self._lock:
             self._entries.clear()
             self._bytes = 0
+
+
+def cache_values(value: object, *, _memo: dict | None = None) -> tuple | object:
+    """Build an in-memory key from the requested values, without hashing content.
+
+    The supplied memo holds only this outer object. Child reuse is call-local.
+    """
+    if _memo is not None and id(value) in _memo and _memo[id(value)][0] is value:
+        return _memo[id(value)][1]
+    children: dict[int, tuple[object, tuple]] = {}
+    reuse_children = True
+
+    def sort_repr(item: object) -> str:
+        nonlocal reuse_children
+        item_type = type(item)
+        if not (item_type is str or item_type is int or item_type is float
+                or item_type is bool or item_type is bytes or item_type is complex
+                or item is None):
+            # Custom repr or iteration can mutate an already converted child.
+            reuse_children = False
+            children.clear()
+        return repr(item)
+
+    def convert(item: object) -> tuple | object:
+        nonlocal reuse_children
+        item_type = type(item)
+        if (item_type is str or item_type is int or item_type is float
+                or item_type is bool or item_type is bytes or item_type is complex
+                or item is None):
+            return item
+        if not (item_type is dict or item_type is list or item_type is tuple
+                or item_type is set or item_type is frozenset):
+            reuse_children = False
+            children.clear()
+            if isinstance(item, Mapping):
+                item_type = dict
+            elif isinstance(item, (list, tuple)):
+                item_type = list
+            elif isinstance(item, (set, frozenset)):
+                item_type = set
+            else:
+                return item
+        if reuse_children:
+            cached = children.get(id(item))
+            if cached is not None and cached[0] is item:
+                return cached[1]
+        if item_type is dict:
+            result = tuple((key, convert(child)) for key, child in sorted(
+                item.items(), key=lambda pair: sort_repr(pair[0])))
+        elif item_type is list or item_type is tuple:
+            result = tuple(convert(child) for child in item)
+        else:
+            result = tuple(sorted(item, key=sort_repr))
+        if reuse_children:
+            children[id(item)] = (item, result)
+        return result
+
+    result = convert(value)
+    if _memo is not None:
+        _memo[id(value)] = (value, result)
+    return result

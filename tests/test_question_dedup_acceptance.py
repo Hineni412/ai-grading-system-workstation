@@ -144,13 +144,14 @@ def test_identity_digests_persist_across_restart_and_refresh(tmp_path, monkeypat
     assert normalizations == [True]
     assert digests == [True]
 
-    # 计算代码版本不匹配时忽略旧文件，重新计算但身份结论不变。
+    # 兼容读取旧文件的版本字段；已存同题标识不因程序版本变化重算。
     restart()
-    monkeypatch.setattr(
-        identity, "_question_identity_version", lambda: ("TEST-other-version",)
-    )
+    import pickle
+    saved = pickle.loads(map_file.read_bytes())
+    saved["version"] = "TEST-older-software"
+    map_file.write_bytes(pickle.dumps(saved))
     assert key() == after_image
-    assert len(digests) == 2 and len(normalizations) == 2
+    assert digests == [True] and normalizations == [True]
 
 
 def test_duplicate_missing_analysis_never_enters_model_and_stays_pending_on_retry(

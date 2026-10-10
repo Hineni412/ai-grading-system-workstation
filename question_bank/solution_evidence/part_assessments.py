@@ -122,18 +122,13 @@ def current_inputs(db_path: Path, ids: Sequence[int], connection: sqlite3.Connec
 
 
 def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Connection | None = None,
-                  verify_source: bool = True, data_root: Path | None = None,
+                  verify_source: bool = False, data_root: Path | None = None,
                   question_inputs: Mapping[int, Any] | None = None,
                   source_hashes: MutableMapping[int, SourceHash] | None = None) -> dict[int, dict[str, Any]]:
-    """Latest usable evidence plus active formula difficulty per part.
+    """Read saved evidence and difficulty for the selected questions.
 
-    A record exists for every question whose newest proposed/approved evidence
-    version is present. ``parts[].difficulty`` is the active
-    ``question_part_difficulty_features`` formula score; it is ``None`` when the
-    part has no active row or the row's content fingerprint no longer matches
-    the current question (需重评). ``revision`` is a derived token identifying
-    the evidence version plus its current formula difficulties, not a stored
-    row number.
+    Source comparison is available only to explicit generation/adoption callers.
+    Ordinary reads retain the saved evidence after question material changes.
     """
     if not ids:
         return {}
@@ -297,11 +292,10 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
                 parts.append({"part_id": part.get("part_id"), "difficulty": difficulty,
                               "source": "formula", "rationale": rationale,
                               "formula_version": formula_version})
-            revision = hashlib.sha256(json.dumps(
-                [str(row["evidence_version_id"]),
-                 [(part["part_id"], part["difficulty"], part["formula_version"]) for part in parts]],
-                ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-            ).encode("utf-8")).hexdigest()[:16]
+            revision = ":".join([
+                str(row["evidence_version_id"]), str(row["updated_at"] or ""),
+                *(f"{part['part_id']}={part['difficulty']}:{part['formula_version']}" for part in parts),
+            ])
             available = alias is not None if verify_source else True
             result[question_id] = {
                 "question_id": question_id,
@@ -449,30 +443,35 @@ def training_part_observations(profile: Mapping[str, Any], criteria: Mapping[str
                                links: Mapping[str, Sequence[Any]]) -> list[dict[str, Any]] | None:
     """Read frozen, final step facts without changing the publication or its locks."""
     from question_bank.solution_evidence.knowledge_links import direct_links_for_part
-    from question_bank.training_criteria.analysis import TrainingCriterionPoint
-    if not profile.get("available"):
-        return []
-    try:
-        frozen = tuple(TrainingCriterionPoint.from_dict(p) for p in criteria.get("points", []))
-    except (ValueError, TypeError, KeyError):
-        return None
-    source_points = {p["evidence_point_id"]: p for part in profile["evidence"]["parts"] for p in part["evidence_points"]}
     embedded = criteria.get("solution_evidence") or {}
-    if embedded.get("source_content_hash") not in {profile.get("current_source_content_hash"), profile.get("evidence_source_hash")}:
+    if not isinstance(embedded, Mapping):
         return None
-    if not frozen or len(frozen) != len(source_points) or set(source_points) != {p.point_id for p in frozen}:
-        return None
-    for point in frozen:
-        original = source_points[point.point_id]
-        if any(getattr(point, key) != (tuple(original.get(key, [])) if key in {"equivalent_rules", "counterexamples", "depends_on"} else original.get(key, ""))
-               for key in ("target", "observable_evidence", "equivalent_rules", "counterexamples", "depends_on")):
+    if not embedded.get("parts"):
+        # Older saved criteria contain flat points. Use stored part metadata only
+        # when it describes those same obligations, without comparing source hashes.
+        saved = profile.get("evidence") or {}
+        if not isinstance(saved, Mapping) or not saved.get("parts"):
             return None
+        flat = {str(p.get("point_id")): p for p in criteria.get("points", [])}
+        saved_points = {str(p.get("evidence_point_id")): p for part in saved["parts"]
+                        for p in part.get("evidence_points", [])}
+        if not flat or set(flat) != set(saved_points):
+            return None
+        for point_id, point in flat.items():
+            if any(point.get(field) != saved_points[point_id].get(field)
+                   for field in ("target", "observable_evidence")):
+                return None
+        embedded = saved
+    source_points = {str(p["evidence_point_id"]): p for part in embedded["parts"]
+                     for p in part.get("evidence_points", [])}
+    if not source_points:
+        return None
     states = {str(p.get("point_id")): p.get("state") for p in final_points}
     if len(states) != len(final_points) or set(states) != set(source_points) or any(s not in {"met", "not_met"} for s in states.values()):
         return None
     estimates = {p["part_id"]: p for p in profile["parts"]}
     result = []
-    for part in profile["evidence"]["parts"]:
+    for part in embedded["parts"]:
         observed = []
         for point in part["evidence_points"]:
             # An unobserved dependent failure does not establish another deficit.
@@ -483,8 +482,11 @@ def training_part_observations(profile: Mapping[str, Any], criteria: Mapping[str
                 observed.append((point, targets))
         for point, targets in observed:
             for target in targets:
+                name = next((str(raw.get("fine_term_name") or "") for raw in point.get("fine_term_links", [])
+                             if target.stable_key in (raw.get("core_resolution") or {}).get("stable_keys", [])), "")
                 result.append({"part_id": part["part_id"], "point_id": point["evidence_point_id"],
-                               "stable_key": target.stable_key, "achieved": int(states[point["evidence_point_id"]] == "met"),
+                               "stable_key": target.stable_key, "display_name": name,
+                               "achieved": int(states[point["evidence_point_id"]] == "met"),
                                "weight": target.weight / len(observed),
                                "difficulty": estimates.get(part["part_id"], {}).get("difficulty")})
     return result

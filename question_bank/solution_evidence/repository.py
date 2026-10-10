@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -337,11 +338,55 @@ class FineTermCoreMappingRepository:
         return installed
 
 
-class SolutionEvidenceRepository:
-    """Store immutable evidence versions without changing approved criteria."""
+def _evidence_has_history_reference(connection, row, data_root: Path, replacing_criterion_id: str | None) -> bool:
+    from question_bank.training_criteria.versioning import _criterion_has_history_reference
+    from question_bank.solution_evidence.evidence_snapshot import has_saved_exam_reference
+    identifier = str(row["evidence_version_id"])
+    payload = json.loads(row["evidence_json"])
+    identifiers = tuple(dict.fromkeys((identifier, str(payload.get("version_id") or identifier))))
+    reference = str(row["source_reference"])
+    if reference.startswith("deferred-linked:"):
+        return True
+    if reference.startswith("analysis:"):
+        operation_id = reference[len("analysis:"):].rsplit(":", 1)[0]
+        if connection.execute("SELECT 1 FROM question_analysis_operations WHERE operation_id=?", (operation_id,)).fetchone():
+            return True
+    if any(_criterion_has_history_reference(connection, value, data_root) for value in identifiers):
+        return True
+    if has_saved_exam_reference(Path(data_root) / "config" / "uploaded", identifiers):
+        return True
+    placeholders = ",".join("?" for _ in identifiers)
+    criteria = connection.execute(
+        f"SELECT * FROM training_criterion_versions WHERE json_extract(criteria_json,'$.solution_evidence.version_id') IN ({placeholders})",
+        identifiers,
+    ).fetchall()
+    for criterion in criteria:
+        if (str(criterion["version_id"]) != replacing_criterion_id or criterion["status"] not in {"proposed", "stale"}
+                or criterion["decision_by"] or _criterion_has_history_reference(connection, criterion["version_id"], data_root)):
+            return True
+    for table in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+        name = str(table[0])
+        if name in {"evidence_point_knowledge_links", "question_part_assessment_profiles"}:
+            continue
+        quoted = '"' + name.replace('"', '""') + '"'
+        for reference in connection.execute(f"PRAGMA foreign_key_list({quoted})").fetchall():
+            if reference[2] != "question_solution_evidence_versions":
+                continue
+            column = '"' + str(reference[3]).replace('"', '""') + '"'
+            if connection.execute(f"SELECT 1 FROM {quoted} WHERE {column}=? LIMIT 1", (identifier,)).fetchone():
+                return True
+    if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='evidence_point_knowledge_links'").fetchone():
+        if connection.execute("SELECT 1 FROM evidence_point_knowledge_links WHERE evidence_version_id=? AND source_kind='teacher' LIMIT 1", (identifier,)).fetchone():
+            return True
+    return False
 
-    def __init__(self, db_path: Path) -> None:
+
+class SolutionEvidenceRepository:
+    """Store one current model result while preserving adopted evidence."""
+
+    def __init__(self, db_path: Path, *, data_root: Path | None = None) -> None:
         self.db_path = Path(db_path)
+        self.data_root = Path(data_root) if data_root is not None else (self.db_path.parent.parent if self.db_path.parent.name == "databases" else self.db_path.parent)
 
     def save(
         self,
@@ -351,6 +396,8 @@ class SolutionEvidenceRepository:
         source_reference: str,
         created_by: str,
         graph_release_id: str | None = None,
+        connection=None,
+        replacing_criterion_id: str | None = None,
     ) -> str:
         source = str(source_kind or "").strip().casefold()
         if source not in {"combined_model", "teacher_manual", "import", "backfill"}:
@@ -372,8 +419,10 @@ class SolutionEvidenceRepository:
         # separately editable source of truth.
         stored_payload.pop("whole_question_classification", None)
         payload_json = _canonical_json(stored_payload)
-        with connect(self.db_path) as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        owns_connection = connection is None
+        with (connect(self.db_path) if owns_connection else nullcontext(connection)) as connection:
+            if owns_connection:
+                connection.execute("BEGIN IMMEDIATE")
             existing_reference = connection.execute(
                 """
                 SELECT evidence_version_id, content_hash, source_content_hash,
@@ -404,6 +453,17 @@ class SolutionEvidenceRepository:
                 if str(existing_version["content_hash"]) != evidence.content_hash:
                     raise RuntimeError("solution evidence version collision")
                 return storage_version_id
+            replacement = None
+            if source in {"combined_model", "backfill"}:
+                candidate = connection.execute(
+                    """SELECT * FROM question_solution_evidence_versions WHERE question_id=?
+                       AND status='proposed' AND source_kind IN ('combined_model','backfill')
+                       AND decision_by IS NULL ORDER BY created_at DESC,rowid DESC LIMIT 1""",
+                    (evidence.question_id,),
+                ).fetchone()
+                if candidate is not None and not _evidence_has_history_reference(
+                        connection, candidate, self.data_root, replacing_criterion_id):
+                    replacement = str(candidate["evidence_version_id"])
             connection.execute(
                 """
                 INSERT INTO question_solution_evidence_versions (
@@ -426,6 +486,11 @@ class SolutionEvidenceRepository:
                     graph_id,
                 ),
             )
+            if replacement is not None:
+                for table in ("evidence_point_knowledge_links", "question_part_assessment_profiles"):
+                    if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                        connection.execute(f'DELETE FROM "{table}" WHERE evidence_version_id=?', (replacement,))
+                connection.execute("DELETE FROM question_solution_evidence_versions WHERE evidence_version_id=?", (replacement,))
             from question_bank.solution_evidence.knowledge_links import (
                 project_embedded_links,
                 refresh_question_scope_summary,
@@ -464,30 +529,15 @@ class SolutionEvidenceRepository:
         with reading(self.db_path) as connection:
             rows = connection.execute(
                 """
-                SELECT * FROM question_solution_evidence_versions
-                WHERE question_id = ?
-                ORDER BY status = 'approved' DESC, created_at DESC, rowid DESC
+                SELECT v.* FROM question_solution_evidence_versions v
+                WHERE v.question_id = ?
+                ORDER BY v.status='approved' DESC,v.created_at DESC,v.rowid DESC
                 """,
                 (int(question_id),),
             ).fetchall()
         if not rows:
             return None
-        current_hash = str(current_source_content_hash or "").strip().casefold()
-        compatible = {current_hash, *compatible_source_hashes}
-        row = next((item for item in rows if current_hash
-                    and item["status"] in {"proposed", "approved"}
-                    and str(item["source_content_hash"]) in compatible), rows[0])
-        stored_hash = str(row["source_content_hash"])
-        if current_hash and stored_hash not in compatible:
-            return {
-                "evidence_version_id": str(row["evidence_version_id"]),
-                "question_id": int(row["question_id"]),
-                "source_content_hash": stored_hash,
-                "content_hash": str(row["content_hash"]),
-                "status": "stale",
-                "graph_release_id": str(row["graph_release_id"] or ""),
-                "evidence": None,
-            }
+        row = rows[0]
         evidence_payload = json.loads(str(row["evidence_json"]))
         evidence_payload["whole_question_classification"] = (
             _classification_from_evidence_payload(evidence_payload)
@@ -498,6 +548,7 @@ class SolutionEvidenceRepository:
             "source_content_hash": str(row["source_content_hash"]),
             "content_hash": str(row["content_hash"]),
             "status": str(row["status"]),
+            "needs_update": str(row["status"]) == "stale",
             "graph_release_id": str(row["graph_release_id"] or ""),
             "evidence": evidence_payload,
         }
@@ -525,17 +576,19 @@ class SolutionEvidenceRepository:
         current = inputs.get(int(question_id))
         if current is not None and current.criterion_source_content_hash == source_content_hash:
             compatible = compatible_source_content_hashes(current, kind="solution_evidence")
-        latest = self.latest(
-            question_id,
-            current_source_content_hash=source_content_hash,
-            compatible_source_hashes=compatible,
-        )
-        if not isinstance(latest, dict) or latest.get("status") not in {
-            "proposed",
-            "approved",
-        }:
+        sources = tuple(dict.fromkeys((str(source_content_hash), *compatible)))
+        marks = ",".join("?" for _ in sources)
+        with reading(self.db_path) as connection:
+            row = connection.execute(
+                f"""SELECT evidence_json FROM question_solution_evidence_versions
+                    WHERE question_id=? AND source_content_hash IN ({marks})
+                      AND status IN ('proposed', 'approved')
+                    ORDER BY status='approved' DESC,created_at DESC,rowid DESC LIMIT 1""",
+                (int(question_id), *sources),
+            ).fetchone()
+        if row is None:
             return None
-        payload = latest.get("evidence")
+        payload = json.loads(str(row["evidence_json"]))
         if not isinstance(payload, dict):
             return None
         clean_payload = _model_evidence_payload(payload)

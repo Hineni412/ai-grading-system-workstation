@@ -363,7 +363,7 @@ class TrainingPrewarmWorker:
 
         try:
             payload = json.loads(self._recents_file().read_text(encoding="utf-8"))
-            if not isinstance(payload, dict) or payload.get("version") != 1:
+            if not isinstance(payload, dict):
                 return
             cutoff = datetime.now(timezone.utc) - _RECENTS_MAX_AGE
             loaded: list[dict[str, Any]] = []
@@ -421,7 +421,7 @@ class TrainingPrewarmWorker:
             with _RECENT_LOCK:
                 snapshot = list(_RECENT.values())
                 text = json.dumps(
-                    {"version": 1,
+                    {
                      "entries": [_recent_row(entry, now) for entry in snapshot]},
                     ensure_ascii=False, sort_keys=True, default=str)
             if text == self._persisted_recents:
@@ -485,7 +485,7 @@ class TrainingPrewarmWorker:
         seen: set[tuple[str, str, str, str]],
         targets: list | None = None,
     ) -> list[Callable[[], None]]:
-        diagnosis_params = {'include_student_detail': True, 'response_mode': 'display'}
+        diagnosis_params = {'include_student_detail': True, 'response_mode': 'display_shared'}
         if kind in {'diagnosis', 'grouped_diagnosis'}:
             diagnosis_params = {
                 'include_student_detail': params.get('include_student_detail', True),
@@ -591,13 +591,13 @@ class TrainingPrewarmWorker:
                 curriculum_volume_id=volume_id).model_dump()
         for scope in self._startup_scopes():
             defaults = [
-                ("diagnosis", {'include_student_detail': True, 'response_mode': 'display'}),
+                ("diagnosis", {'include_student_detail': True, 'response_mode': 'display_shared'}),
                 ("overview", {"volume_id": volume_id}),
                 ("graph", {"knowledge_keys": [], "prerequisite_depth": 1}),
             ]
             if grouping is not None:
                 defaults.append(('grouped_diagnosis', {'grouping': grouping,
-                    'include_student_detail': True, 'response_mode': 'display'}))
+                    'include_student_detail': True, 'response_mode': 'display_shared'}))
             for kind, params in defaults:
                 tasks.extend(self._tasks_for(kind, dict(scope), dict(exam_scope), params, seen))
         for class_name in self._class_names():

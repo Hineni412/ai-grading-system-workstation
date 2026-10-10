@@ -60,22 +60,23 @@ const stale = computed(() => analysis.value?.stale ?? false)
 
 const bannerText = computed(() => {
   if (generating.value) return 'AI 正在整理，完成后自动更新。'
+  if (analysis.value?.read_error) return analysis.value.read_error
   if (narrative.value === null) {
     if (contentUnconfigured.value) return '未配置内容生成模型，请前往 设置→模型配置 绑定后，在成绩中心点「AI 整理」。'
     if (narrativeFailed.value) return 'AI 整理未成功，可回到成绩中心点「AI 整理」重试。'
     return 'AI 讲评部分尚未整理：复核完成后自动整理，或回到成绩中心点「AI 整理」。'
   }
-  if (stale.value) return '成绩已更新或统计口径已调整，AI 分析可能与当前成绩不一致；回到成绩中心点「AI 整理」更新。'
+  if (stale.value) return '相关内容已修改，仍可查看这份报告。需要更新时，回到成绩中心在「AI 整理」中勾选「更新本场已保存结果」。'
   return ''
 })
 
 const reportUrl = computed(() => {
   const sessionId = sessionStore.selectedSessionId
-  // narrative 视图不返回 data；能否渲染只看场次是否有成绩数据。
+  // 保存正文或当前成绩存在时均可打开；narrative 视图不返回成绩数据。
   if (sessionId === null || !analysis.value || analysis.value.status === 'no_data') return ''
   const query = new URLSearchParams()
   if (selectedClass.value) query.set('class_name', selectedClass.value)
-  // generated_at 作为版本参数：重新生成后强制 iframe 重新读取。
+  // 使用保存时间刷新正文地址，不判断分析方法新旧。
   if (analysis.value?.generated_at) query.set('v', analysis.value.generated_at)
   return `/api/sessions/${sessionId}/class-analysis/report?${query.toString()}`
 })

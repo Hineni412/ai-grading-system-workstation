@@ -7,10 +7,9 @@ import { decodeTrainingDisplayDiagnosis, type TrainingDiagnosis, type TrainingRe
 import StudentPicker from '../components/knowledge-training/StudentPicker.vue'
 import StudentQuickView from '../components/knowledge-training/StudentQuickView.vue'
 import KnowledgeRangeList from '../components/knowledge-training/KnowledgeRangeList.vue'
-import TrainingScopeBar from '../components/knowledge-training/TrainingScopeBar.vue'
 import WrongQuestionBookExport from '../components/knowledge-training/WrongQuestionBookExport.vue'
 import { ApiError } from '../api/errors'
-import { DEFAULT_HANDOUT_RULES, DEFAULT_TRAINING_RULES, loadPaperSelectionSession, presetFocusedTraining, resolvePaperScope } from '../features/training/paper-selection-session'
+import { DEFAULT_HANDOUT_RULES, DEFAULT_TRAINING_RULES, loadPaperSelectionSession, presetFocusedTraining, resolvePaperScope, selectedPracticeRange } from '../features/training/paper-selection-session'
 
 const apps: App[] = []
 const wrongApi = vi.hoisted(() => ({ preview: vi.fn(), submit: vi.fn(), find: vi.fn(), download: vi.fn() }))
@@ -138,7 +137,7 @@ describe('学生和章节选择', () => {
     expect([...document.querySelectorAll('.practice-student-drawer li')].map(node => node.textContent)).toEqual(before)
   })
 
-  it('starts with no students, deduplicates weak leaves, and selects a whole class independently of search', async () => {
+  it('starts empty, deduplicates weak leaves, and selects only the filtered roster', async () => {
     const selected = ref<string[]>([]), show = vi.fn()
     const host = mount(defineComponent({ setup: () => () => h(StudentPicker, { diagnosis, modelValue: selected.value,
       'onUpdate:modelValue': value => { selected.value = value }, onShowStudent: show }) }))
@@ -148,9 +147,9 @@ describe('学生和章节选择', () => {
     expect(host.querySelectorAll('.student-picker-score.none')).toHaveLength(2)
     const search = host.querySelector<HTMLInputElement>('[aria-label="检索姓名或学号"]')!
     search.value = 'S012'; search.dispatchEvent(new Event('input', { bubbles: true })); await nextTick()
-    button(host, '全选本班').click(); await nextTick()
-    expect(selected.value).toEqual(['12', '13'])
-    button(host, '合成甲').click(); expect(show).toHaveBeenCalledWith(diagnosis.students[0])
+    button(host, '勾选这 1 人').click(); await nextTick()
+    expect(selected.value).toEqual(['12'])
+    button(host, '概况').click(); expect(show).toHaveBeenCalledWith(diagnosis.students[0])
     button(host, '清空').click(); await nextTick(); expect(selected.value).toEqual([])
     search.value = ''; search.dispatchEvent(new Event('input', { bubbles: true })); await nextTick()
     host.querySelector<HTMLInputElement>('.student-picker-tools input[type=checkbox]')!.click(); await nextTick()
@@ -169,34 +168,64 @@ describe('学生和章节选择', () => {
     expect(text).not.toContain('kp_c1')
   })
 
-  it('expands a stored whole chapter before unchecking a section and supports comprehensive progress', async () => {
-    const keys = ref(['kp_c1']), mode = ref<'comprehensive' | 'focused'>('focused'), progress = ref('TEST-c1')
+  it('keeps chapter selection, permits unlearned chapters, and restores the learned range', async () => {
+    const keys = ref(['kp_c1'])
     const host = mount(defineComponent({ setup: () => () => h(KnowledgeRangeList, { volume, diagnosis, mode: 'range', studentIds: [],
-      rangeKeys: keys.value, 'onUpdate:rangeKeys': value => { keys.value = value }, scopeMode: mode.value,
-      'onUpdate:scopeMode': value => { mode.value = value }, teachingProgressChapterId: progress.value }) }))
+      rangeKeys: keys.value, 'onUpdate:rangeKeys': value => { keys.value = value }, progressId: 'TEST-c1', learnedKeys: ['kp_c1'] }) }))
     expect(host.textContent).toContain('勾选学生后显示')
     host.querySelector<HTMLInputElement>('[aria-label="选择节1.1"]')!.click(); await nextTick()
     expect(keys.value).toEqual(['kp_c1_s2'])
     host.querySelector<HTMLInputElement>('[aria-label="选择第1章"]')!.click(); await nextTick()
-    expect(new Set(keys.value)).toEqual(new Set(['kp_c1_s1', 'kp_c1_s2']))
-    button(host, '综合').click(); await nextTick()
+    expect(keys.value).toEqual(['kp_c1'])
     expect(host.querySelectorAll('.is-unlearned')).toHaveLength(1)
-    expect(host.querySelector('input[type=checkbox]')).toBeNull()
+    host.querySelector<HTMLInputElement>('[aria-label="选择第2章"]')!.click(); await nextTick()
+    expect(keys.value).toEqual(['kp_c1', 'kp_c2'])
+    expect(selectedPracticeRange(volume, keys.value)).toEqual({ keys: ['kp_c1', 'kp_c2'], progressId: 'TEST-c2', fullVolume: true })
+    button(host, '全选已学').click(); await nextTick(); expect(keys.value).toEqual(['kp_c1'])
+    button(host, '清空').click(); await nextTick(); expect(keys.value).toEqual([])
+    expect(selectedPracticeRange(volume, []).fullVolume).toBe(false)
+    const sections = volume.chapters.flatMap(chapter => chapter.sections.map(section => section.knowledge_id))
+    expect(selectedPracticeRange(volume, sections)).toEqual({ keys: sections, progressId: 'TEST-c2', fullVolume: true })
+    expect(host.querySelector('[aria-label="训练范围模式"]')).toBeNull()
   })
 
-  it('commits score floor only on blur or Enter and selects one class', async () => {
-    const floor = ref<number | null>(null), apply = vi.fn(), select = vi.fn()
-    const host = mount(defineComponent({ setup: () => () => h(TrainingScopeBar, { volumeLabel: '合成册', sessionCount: 2,
-      classes: ['1', '2'], selectedClass: '', scoreFloor: floor.value, 'onSelect-class': select,
-      'onUpdate-score-floor': (value: number | null) => { floor.value = value; apply(value) } }) }))
-    const input = host.querySelector<HTMLInputElement>('input')!
-    input.value = '20'; input.dispatchEvent(new Event('input', { bubbles: true })); await nextTick()
+  it('commits a score interval on blur or Enter and rejects inverted limits', async () => {
+    const min = ref<number | null>(null), max = ref<number | null>(null), apply = vi.fn(), select = vi.fn()
+    const host = mount(defineComponent({ setup: () => () => h(StudentPicker, { diagnosis, modelValue: [],
+      classes: ['1', '2'], selectedClass: '', scoreMin: min.value, scoreMax: max.value, 'onSelect-class': select,
+      'onScore-range': (lower: number | null, upper: number | null) => { min.value = lower; max.value = upper; apply(lower, upper) } }) }))
+    const lower = host.querySelector<HTMLInputElement>('[aria-label="得分率下限"]')!
+    const upper = host.querySelector<HTMLInputElement>('[aria-label="得分率上限"]')!
+    lower.value = '20'; lower.dispatchEvent(new Event('input', { bubbles: true })); await nextTick()
     expect(apply).not.toHaveBeenCalled()
-    input.dispatchEvent(new Event('blur')); await nextTick(); expect(apply).toHaveBeenCalledExactlyOnceWith(.2)
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); expect(apply).toHaveBeenCalledExactlyOnceWith(.2)
-    input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true })); await nextTick()
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); await nextTick(); expect(apply).toHaveBeenLastCalledWith(null)
-    button(host, '2 班').click(); expect(select).toHaveBeenCalledWith('2')
+    lower.dispatchEvent(new Event('blur')); await nextTick(); expect(apply).toHaveBeenCalledExactlyOnceWith(.2, null)
+    upper.value = '60'; upper.dispatchEvent(new Event('input', { bubbles: true })); await nextTick()
+    upper.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); await nextTick()
+    expect(apply).toHaveBeenLastCalledWith(.2, .6)
+    lower.value = '80'; lower.dispatchEvent(new Event('input', { bubbles: true })); await nextTick(); lower.dispatchEvent(new Event('blur')); await nextTick()
+    expect(host.querySelector('[role=alert]')?.textContent).toContain('下限不能高于上限')
+    expect(apply).toHaveBeenCalledTimes(2)
+    button(host, '2班').click(); expect(select).toHaveBeenCalledWith('2')
+  })
+
+  it('sorts the roster and applies Shift selection and cancellation only to visible rows', async () => {
+    const selected = ref<string[]>([])
+    const host = mount(defineComponent({ setup: () => () => h(StudentPicker, { diagnosis, modelValue: selected.value,
+      'onUpdate:modelValue': value => { selected.value = value } }) }))
+    const rows = () => [...host.querySelectorAll<HTMLElement>('.student-picker-row')]
+    rows()[0]!.querySelector<HTMLElement>('strong')!.click(); await nextTick()
+    rows()[2]!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })); await nextTick()
+    expect(selected.value).toEqual(['12', '13', '22'])
+    rows()[0]!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })); await nextTick()
+    expect(selected.value).toEqual([])
+    const sorting = host.querySelector<HTMLSelectElement>('[aria-label="学生排序"]')!
+    sorting.value = 'scoreDesc'; sorting.dispatchEvent(new Event('change', { bubbles: true })); await nextTick()
+    expect(rows()[0]!.textContent).toContain('合成甲')
+    expect(rows()[2]!.querySelector('.student-picker-score')?.textContent).toBe('无成绩')
+    const search = host.querySelector<HTMLInputElement>('[aria-label="检索姓名或学号"]')!
+    search.value = 'S022'; search.dispatchEvent(new Event('input', { bubbles: true })); await nextTick()
+    button(host, '勾选这 1 人').click(); await nextTick(); expect(selected.value).toEqual(['22'])
+    button(host, '取消勾选这 1 人').click(); await nextTick(); expect(selected.value).toEqual([])
   })
 
   it.each(['training', 'handout'] as const)('migrates version 7 flat rules only into its %s purpose', purpose => {

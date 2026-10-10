@@ -35,11 +35,13 @@ from backend.api.schemas.reports import (
     ReportExportRequest,
     ReportFileDeleteResponse,
     ReportPipelineStatusResponse,
+    ReportPipelineRequest,
     PersonalReportBundleRequest,
 )
 from backend.class_analysis import (
     CLASS_ANALYSIS_JOB_TYPE,
     ClassAnalysisStateStore,
+    _saved_class_reports,
     submit_class_analysis_generate,
 )
 from backend.config_workspace.sources import ConfigSourceService
@@ -52,7 +54,6 @@ from backend.files.service import JobFileNotFound, JobFileService, JobFileUnavai
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.report_exports import (
     ANALYSIS_REPORT_TYPES,
-    score_revision,
     submit_report_export,
 )
 from backend.repositories.access import GradingRepositoryAccess
@@ -92,7 +93,7 @@ def get_personal_report_html(session_id: int, student_id: int,
         html = render_personal_report(db, session_id, student_id, reports_dir,
                                      narrative_mode=narrative, review_links=review_links)
     except ValueError as exc:
-        if str(exc) not in {"personal_report_missing", "personal_report_unavailable"}:
+        if str(exc) not in {"personal_report_missing", "personal_report_unavailable", "personal_report_read_error"}:
             raise
         states = personal_report_states(db, session_id, reports_dir)["students"]
         reason = next((s["reason"] for s in states if s["student_id"] == student_id), "本场没有该生成绩")
@@ -175,31 +176,24 @@ def export_session_report(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     file_service: JobFileService = Depends(get_job_file_service),
+    reports_dir: Path = Depends(get_reports_dir),
 ) -> JobResponse:
     _require_session(db.sessions, session_id)
     has_results = bool(db.results.get_session_results(int(session_id)))
     has_teacher_locks = bool(
         db.reviews.list_teacher_score_locks(int(session_id))
     )
-    if request is not None and not has_results and not has_teacher_locks:
+    has_saved_reports = False
+    if request is not None and request.report_type in ANALYSIS_REPORT_TYPES:
+        from backend.report_results import PersonalReportStore
+        entries = PersonalReportStore(reports_dir).list(session_id)
+        has_saved_reports = any(isinstance(entry.get('narrative'), dict) for entry in entries.values())
+    if request is not None and not has_results and not has_teacher_locks and not has_saved_reports:
         raise ApiError(
             409,
             "report_results_missing",
             "The exam has no grading results to export",
         )
-    if request is not None and request.report_type in ANALYSIS_REPORT_TYPES:
-        # 兜底校验：未配置内容生成模型时不得静默改用阅卷模型或空跑计费。
-        from backend.model_profiles.content_generation import (
-            resolve_content_generation_settings,
-        )
-
-        if resolve_content_generation_settings() is None:
-            raise ApiError(
-                422,
-                "content_generation_model_not_configured",
-                "Content generation model is not configured",
-                {"report_type": request.report_type},
-            )
     try:
         if request is None:
             job = manager.submit("report_export", {"session_id": int(session_id)})
@@ -209,7 +203,6 @@ def export_session_report(
                 file_service=file_service,
                 session_id=session_id,
                 report_type=request.report_type,
-                revision=score_revision(db, session_id),
                 force_regenerate=request.force_regenerate,
                 student_ids=request.student_ids,
                 publish=request.publish,
@@ -267,7 +260,6 @@ def get_session_report_context(
     file_service: JobFileService = Depends(get_job_file_service),
 ) -> ReportExportContextResponse:
     _require_session(db.sessions, session_id)
-    revision = score_revision(db, session_id)
     has_results = bool(db.results.get_session_results(int(session_id))) or bool(
         db.reviews.list_teacher_score_locks(int(session_id))
     )
@@ -285,14 +277,10 @@ def get_session_report_context(
     total = len(jobs)
     jobs = jobs[(page - 1) * page_size:page * page_size]
     return ReportExportContextResponse(
-        score_revision=revision,
         has_results=has_results,
         jobs=[
             ReportExportHistoryItem(
                 **_job_response(job).model_dump(),
-                is_current_revision=(
-                    str(job.payload.get("score_revision") or "") == revision
-                ),
                 file_status=_file_status(job, file_service),
             )
             for job in jobs
@@ -406,6 +394,8 @@ def get_analysis_review_notes(
 # ---------------------------------------------------------------------------
 
 
+
+
 @router.get(
     "/sessions/{session_id}/class-analysis",
     response_model=ClassAnalysisResponse,
@@ -444,13 +434,20 @@ def get_class_analysis(
         ),
     )
     groups = split_session_analysis_by_class(data)
-    class_names = list(groups)
+    reports = _saved_class_reports(state)
+    saved_names = [name for name, entry in reports.items()
+                   if isinstance(entry, dict) and isinstance(entry.get('narrative'), dict)]
+    class_names = list(dict.fromkeys([*groups, *saved_names]))
     # 空字符串明确表示全场合并；省略参数仍兼容原来的首班读取。
     selected_class = None if class_name == "" else (
-        class_name if class_name in groups else next(iter(groups), None)
+        class_name if class_name in class_names else next(iter(class_names), None)
     )
     if selected_class is not None:
-        data = groups[selected_class]
+        if selected_class in groups:
+            data = groups[selected_class]
+        else:
+            from dataclasses import replace
+            data = replace(data, class_name=selected_class, students=[])
     has_data = bool(data.students)
     active_jobs, _total = manager.list(
         session_id=int(session_id),
@@ -462,27 +459,16 @@ def get_class_analysis(
     selected = {}
     entry_state = "missing"
     if state is not None and view != "summary" and selected_class is not None:
-        reports = state.get("class_reports")
-        selected = reports.get(selected_class, {}) if isinstance(reports, dict) else {}
-        # 班级叙述的新鲜度由输入指纹判定：成绩行/教师锁/错因摘要任一变化 → stale。
-        from backend.class_analysis import session_error_records
-        from backend.report_pipeline import (
-            class_cause_digest,
-            class_report_input_digest,
-        )
+        selected = reports.get(selected_class, {})
         from backend.report_results import resolve_result_state
-
-        digest = class_report_input_digest(
-            db,
-            int(session_id),
-            data,
-            cause_digest=class_cause_digest(
-                session_error_records(db, int(session_id), Path(reports_dir)),
-                [student.student_id for student in data.students],
-            ),
-        )
-        entry_state = resolve_result_state(selected, digest, "class_report")["status"]
-    # 输入已变化 → 提示「成绩已更新，可重新生成」；旧结果（stale/old_prompt）仍展示。
+        from backend.personal_reports import _student_change_times
+        source = selected.get('source') if isinstance(selected.get('source'), dict) else {}
+        source_students = source.get('students') if isinstance(source.get('students'), list) else []
+        student_ids = selected.get('student_ids') or [item.get('student_id') for item in source_students if isinstance(item, dict)]
+        student_ids = student_ids or [student.student_id for student in data.students]
+        changed_at = _student_change_times(db, int(session_id))
+        latest_change = max((changed_at[student_id] for student_id in student_ids if student_id in changed_at), default=None)
+        entry_state = resolve_result_state(selected, 'class_report', current_changed_at=latest_change)['status']
     stale = view != "summary" and entry_state == "stale"
     narrative_state = (
         entry_state if view != "summary" and selected_class is not None else None
@@ -491,23 +477,36 @@ def get_class_analysis(
     narrative_failed = False
     if state is not None and view != "summary":
         narrative_failed = selected.get("status", state.get("status")) in {"failed", "not_configured"}
-        if selected.get("status") == "ready" and isinstance(selected.get("narrative"), dict):
+        if isinstance(selected.get("narrative"), dict):
             # 叙述中的 S1/S2… 代号在服务端映射回真实姓名（教师本人页面，不脱敏）。
-            narrative = class_narrative_with_student_names(
-                selected["narrative"],
-                data.students,
-            )
+            source = selected.get('source') if isinstance(selected.get('source'), dict) else {}
+            saved_students = source.get('students')
+            if isinstance(saved_students, list) and saved_students:
+                from types import SimpleNamespace
+                students = [SimpleNamespace(student_name=item['student_name'], student_code=item.get('student_code', ''))
+                            for item in saved_students if isinstance(item, dict) and item.get('student_name')]
+            else:
+                students = data.students
+            narrative = class_narrative_with_student_names(selected['narrative'], students)
     page_data = build_class_page_data(data, compact=view == "summary") if has_data and view != "narrative" else None
     cause_analysis = apply_cause_results(
         page_data, data, cause_inputs, state,
         session_id=int(session_id),
         question_bank_path=question_bank_db_path(Path(db.db_path)),
     )
+    bank_path = question_bank_db_path(Path(db.db_path))
+    if page_data is not None and bank_path is not None:
+        from backend.step_diagnosis import build_session_step_diagnosis, apply_step_diagnosis
+        step_diagnosis = build_session_step_diagnosis(
+            db, int(session_id), student_ids=[student.student_id for student in data.students],
+            include_patterns=True, question_bank_path=bank_path,
+        )
+        apply_step_diagnosis(page_data, step_diagnosis)
     return ClassAnalysisResponse(
         status=(
             "generating"
             if active_job_id is not None
-            else ("ready" if has_data else "no_data")
+            else ("ready" if has_data or narrative is not None else "no_data")
         ),
         auto_generate=bool(state.get("auto_generate", True)) if state else True,
         small_sample=data.small_sample if has_data else False,
@@ -516,9 +515,12 @@ def get_class_analysis(
         narrative=narrative,
         narrative_failed=narrative_failed,
         generated_at=(
-            (str(state.get("generated_at") or "") or None) if state else None
+            (str(selected.get('generated_at') or '') or None)
+            if view != 'summary' and selected_class is not None
+            else ((str(state.get('generated_at') or '') or None) if state else None)
         ),
         stale=stale,
+        read_error=(state or {}).get("read_error"),
         narrative_state=narrative_state,
         active_job_id=active_job_id,
         class_names=class_names,
@@ -600,25 +602,30 @@ def get_class_analysis_report(
     )
 
     _require_session(db.sessions, session_id)
+    state = ClassAnalysisStateStore(reports_dir).load(session_id)
+    reports = _saved_class_reports(state)
     data = assemble_session_analysis(db, int(session_id), page_only=True, include_knowledge=True)
     groups = split_session_analysis_by_class(data)
-    selected_class = class_name if class_name in groups else next(iter(groups), None)
+    saved_names = [name for name, entry in reports.items()
+                   if isinstance(entry, dict) and isinstance(entry.get('narrative'), dict)]
+    names = list(dict.fromkeys([*groups, *saved_names]))
+    selected_class = class_name if class_name in names else next(iter(names), None)
     if selected_class is None:
-        raise ApiError(
-            409,
-            "class_report_no_data",
-            "The exam has no graded results for a class report",
-        )
-    state = ClassAnalysisStateStore(reports_dir).load(session_id)
-    reports = state.get("class_reports") if isinstance(state, dict) else None
-    entry = reports.get(selected_class, {}) if isinstance(reports, dict) else {}
-    # 数据段先渲染；叙述未生成/失败的段落显示「AI 整理后在此显示」占位，
-    # 已有叙述（含成绩过期）照常展示。
-    ready_narrative = (
-        entry.get("status") == "ready" and isinstance(entry.get("narrative"), dict)
-    )
-    narrative = entry["narrative"] if ready_narrative else None
-    selected = groups[selected_class]
+        raise ApiError(409, 'class_report_no_data', '本场尚无班级成绩或已保存报告')
+    entry = reports.get(selected_class) or {}
+    narrative = entry.get('narrative') if isinstance(entry.get('narrative'), dict) else None
+    source = entry.get('source') if isinstance(entry.get('source'), dict) else None
+    if source is not None and isinstance(source.get('exam'), dict) and isinstance(source.get('score_distribution'), dict):
+        from dataclasses import replace
+        selected = replace(data, class_name=selected_class)
+        return HTMLResponse(render_class_html(selected, narrative, saved_page=source))
+    selected = groups.get(selected_class)
+    if selected is None or not selected.students:
+        if narrative is None:
+            raise ApiError(409, 'class_report_no_data', '该班尚无成绩或已保存报告')
+        from backend.reporting.analysis_report_exporter import render_saved_narrative
+        return HTMLResponse(render_saved_narrative(narrative, title='班级报告', owner=selected_class,
+                            session_name=data.session_name, generated_at=entry.get('generated_at')))
     enrich_personal_knowledge(db, selected, None)
     cause_counts = question_category_counts(
         session_error_records(db, session_id, reports_dir),
@@ -669,6 +676,7 @@ def put_class_analysis_settings(
 )
 def get_report_pipeline_status(
     session_id: int,
+    regenerate_existing: bool = Query(default=False),
     db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     reports_dir: Path = Depends(get_reports_dir),
@@ -703,6 +711,7 @@ def get_report_pipeline_status(
                 review_service=review_service,
             ),
             active_job_id=active_jobs[0].id if active_jobs else None,
+            regenerate_existing=regenerate_existing,
         )
     )
 
@@ -714,10 +723,11 @@ def get_report_pipeline_status(
 )
 def submit_report_pipeline(
     session_id: int,
+    request: ReportPipelineRequest | None = None,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
-    """手动触发「AI 整理」：补齐缺失、过期、失败与旧版的内容；进行中任务直接复用。"""
+    """手动触发「AI 整理」：补齐缺失、失败或显式需要更新的内容；复用进行中任务。"""
     _require_session(db.sessions, session_id)
     has_results = bool(db.results.get_session_results(int(session_id))) or bool(
         db.reviews.list_teacher_score_locks(int(session_id))
@@ -743,6 +753,7 @@ def submit_report_pipeline(
         manager=manager,
         session_id=int(session_id),
         mode="manual",
+        regenerate_existing=bool(request and request.regenerate_existing),
     )
     return _job_response(job)
 

@@ -1,5 +1,5 @@
-import type { TrainingOverview, TrainingOverviewNode, TrainingOverviewDistribution } from '../../api/training'
-import { shortNodeName } from './model'
+import type { TrainingOverview, TrainingOverviewNode, TrainingOverviewStudent } from '../../api/training'
+import { shortNodeName, tierOf } from './model'
 
 // Display thresholds only. Backend tiers are never inferred from these rates.
 export const WEAK_HEAT_THRESHOLDS = [0, .1, .2, .3, .4] as const
@@ -46,8 +46,23 @@ export function relatedNodes(data: TrainingOverview, key: string) {
     .sort((a, b) => Number(b.association.basis === 'same_part') - Number(a.association.basis === 'same_part')
       || b.association.question_count - a.association.question_count || a.node.knowledge_key.localeCompare(b.node.knowledge_key))
 }
-export function studentDistribution(student: TrainingOverview['students'][number]): TrainingOverviewDistribution {
-  const a = student.topics, b = student.skills
-  return { weak: a.weak + b.weak + (student.types?.weak ?? 0), unsteady: a.unsteady + b.unsteady + (student.types?.unsteady ?? 0),
-    stable: a.stable + b.stable + (student.types?.stable ?? 0), insufficient: a.insufficient + b.insufficient + (student.types?.insufficient ?? 0) }
+// Display-only threshold: students below it or without a score are not listed as opportunities.
+export const OPPORTUNITY_MIN_SCORE_RATE = 0.4
+export function scoreOpportunities(
+  students: TrainingOverviewStudent[],
+  targets: TrainingOverviewNode[],
+): Array<{ student: TrainingOverviewStudent; items: Array<{ node: TrainingOverviewNode; mastery: number }> }> {
+  return students
+    .filter(student => student.score_rate !== null && student.score_rate >= OPPORTUNITY_MIN_SCORE_RATE)
+    .map(student => ({
+      student,
+      items: targets.flatMap(node => {
+        const entry = node.students.find(item => item.student_id === student.student_id)
+        return entry && tierOf(entry.tier) === 'weak' ? [{ node, mastery: entry.mastery }] : []
+      }).sort((a, b) => a.mastery - b.mastery || a.node.knowledge_key.localeCompare(b.node.knowledge_key)),
+    }))
+    .filter(opportunity => opportunity.items.length > 0)
+    .sort((a, b) => (b.student.score_rate ?? 0) - (a.student.score_rate ?? 0)
+      || a.items.length - b.items.length
+      || a.student.student_code.localeCompare(b.student.student_code, 'zh'))
 }

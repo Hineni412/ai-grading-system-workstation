@@ -1318,8 +1318,8 @@ class ScanGradingWorkspace:
                 manifest = self._load_or_create_manifest(session_id)
             if manifest.get("state") != "frozen":
                 raise ScanGradingWorkspaceError("scan upload batch is not frozen")
-            analysis, identity = self._read_analysis(session_id)
-            state = self._read_decision_state(session_id, analysis, identity)
+            analysis, identity = self._read_analysis(session_id, manifest=manifest)
+            state = self._read_decision_state(session_id, analysis, identity, persist=not read_only)
             analysis_groups = [
                 item
                 for item in analysis.get("groups", [])
@@ -1831,7 +1831,9 @@ class ScanGradingWorkspace:
     ) -> Path:
         return self._batch_dir(session_id, manifest["batch_id"]) / "files" / item["storage_name"]
 
-    def _read_analysis(self, session_id: int) -> tuple[dict[str, Any], str]:
+    def _read_analysis(
+        self, session_id: int, *, manifest: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], str]:
         path = self._session_dir(session_id) / "scan_analysis_latest.json"
         if not path.exists():
             raise ScanGradingWorkspaceError("scan preflight is not available")
@@ -1839,7 +1841,7 @@ class ScanGradingWorkspace:
         payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, dict):
             raise ScanGradingWorkspaceError("scan preflight is invalid")
-        manifest = self._load_or_create_manifest(session_id)
+        manifest = manifest if manifest is not None else self._load_or_create_manifest(session_id)
         if str(payload.get("scan_batch_id") or "") != str(manifest["batch_id"]):
             raise ScanGradingWorkspaceError("scan preflight belongs to another batch")
         return payload, hashlib.sha256(raw).hexdigest()
@@ -1849,6 +1851,7 @@ class ScanGradingWorkspace:
         session_id: int,
         analysis: dict[str, Any],
         identity: str,
+        *, persist: bool = True,
     ) -> dict[str, Any]:
         path = self._decision_state_path(session_id)
         if path.exists():
@@ -1860,7 +1863,7 @@ class ScanGradingWorkspace:
                 if payload.get("analysis_identity") == identity:
                     return payload
                 return self._migrate_decision_state(
-                    session_id, payload, analysis, identity
+                    session_id, payload, analysis, identity, persist=persist
                 )
         return {
             "analysis_identity": identity,
@@ -1881,6 +1884,7 @@ class ScanGradingWorkspace:
         state: dict[str, Any],
         analysis: dict[str, Any],
         identity: str,
+        *, persist: bool = True,
     ) -> dict[str, Any]:
         public_decisions = state.get("public_decisions")
         internal_decisions = state.get("internal_decisions")
@@ -1930,11 +1934,12 @@ class ScanGradingWorkspace:
             "internal_decisions": carried_internal,
             "updated_at": self._now(),
         }
-        self._atomic_write_json(self._decision_state_path(session_id), migrated)
-        self._atomic_write_json(
-            self._session_dir(session_id) / "scan_manual_decisions_latest.json",
-            carried_internal,
-        )
+        if persist:
+            self._atomic_write_json(self._decision_state_path(session_id), migrated)
+            self._atomic_write_json(
+                self._session_dir(session_id) / "scan_manual_decisions_latest.json",
+                carried_internal,
+            )
         return migrated
 
     _INDEXED_ISSUE_ID = re.compile(r"^(image_orphan_|image_pair_|reduced_match_)")

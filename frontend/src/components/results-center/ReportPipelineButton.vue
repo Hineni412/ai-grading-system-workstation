@@ -24,6 +24,7 @@ const submitting = ref(false)
 const status = ref<ReportPipelineStatus | null>(null)
 const error = ref('')
 const settingsSaving = ref(false)
+const regenerateExisting = ref(false)
 let controller: AbortController | null = null
 
 const running = computed(() => (
@@ -52,11 +53,14 @@ const badgeCount = computed(() => {
 async function prefetchStatus(sessionId: number): Promise<void> {
   try {
     const value = await requestPipelineStatus(sessionId)
-    if (props.sessionId === sessionId) status.value = value
+    if (props.sessionId === sessionId && !regenerateExisting.value) status.value = value
   } catch { /* 预取失败不打扰用户，打开弹窗时再提示 */ }
 }
 
 watch(() => props.sessionId, (sessionId) => {
+  controller?.abort()
+  open.value = false
+  regenerateExisting.value = false
   status.value = cachedPipelineStatus(sessionId)
   void prefetchStatus(sessionId)
 }, { immediate: true })
@@ -69,21 +73,24 @@ watch(() => props.activeJob?.status, (value, previous) => {
 })
 
 async function openDialog() {
+  const sessionId = props.sessionId
   open.value = true
+  regenerateExisting.value = false
   error.value = ''
   const cached = cachedPipelineStatus(props.sessionId) ?? status.value
   status.value = cached
   loading.value = !cached
   revalidating.value = !!cached
   controller?.abort()
-  controller = new AbortController()
+  const next = new AbortController()
+  controller = next
   try {
-    const value = await requestPipelineStatus(props.sessionId)
-    if (!controller.signal.aborted) status.value = value
+    const value = await requestPipelineStatus(sessionId)
+    if (controller === next && props.sessionId === sessionId && !next.signal.aborted && !regenerateExisting.value) status.value = value
   } catch {
-    if (!controller.signal.aborted) error.value = 'AI 整理状态暂时无法读取，请重试。'
+    if (controller === next && props.sessionId === sessionId && !next.signal.aborted) error.value = 'AI 整理状态暂时无法读取，请重试。'
   } finally {
-    if (controller === null || !controller.signal.aborted) {
+    if (controller === next && !next.signal.aborted) {
       loading.value = false
       revalidating.value = false
     }
@@ -92,8 +99,36 @@ async function openDialog() {
 
 function close() {
   if (submitting.value) return
+  controller?.abort()
+  controller = null
+  if (regenerateExisting.value) status.value = cachedPipelineStatus(props.sessionId)
+  regenerateExisting.value = false
+  revalidating.value = false
   open.value = false
   error.value = ''
+}
+
+async function updateScope(event: Event) {
+  const input = event.target
+  if (!(input instanceof HTMLInputElement)) return
+  const sessionId = props.sessionId
+  regenerateExisting.value = input.checked
+  error.value = ''
+  revalidating.value = true
+  controller?.abort()
+  const next = new AbortController()
+  controller = next
+  try {
+    const value = await reportPipelineApi.getStatus(sessionId, next.signal, regenerateExisting.value)
+    if (controller === next && props.sessionId === sessionId && !next.signal.aborted) status.value = value
+  } catch {
+    if (controller === next && props.sessionId === sessionId && !next.signal.aborted) {
+      status.value = null
+      error.value = '更新范围的调用预估未能读取，请关闭后重试。'
+    }
+  } finally {
+    if (controller === next) revalidating.value = false
+  }
 }
 
 async function toggleAutoGenerate(event: Event) {
@@ -110,12 +145,14 @@ async function toggleAutoGenerate(event: Event) {
 }
 
 async function confirm() {
-  if (submitting.value || pipelineActive.value
+  if (loading.value || revalidating.value || submitting.value || pipelineActive.value
     || status.value?.configured !== true || status.value.complete) return
   submitting.value = true
   error.value = ''
   try {
-    const job = await reportPipelineApi.start(props.sessionId)
+    const job = regenerateExisting.value
+      ? await reportPipelineApi.start(props.sessionId, undefined, true)
+      : await reportPipelineApi.start(props.sessionId)
     jobs.track(job)
     open.value = false
     status.value = null
@@ -165,6 +202,13 @@ onBeforeUnmount(() => controller?.abort())
           未配置内容生成模型，请前往 设置→模型配置 绑定后重试。
         </p>
 
+        <label class="excel-settings-dialog__explanation" data-testid="pipeline-update-existing">
+          <input type="checkbox" :checked="regenerateExisting" :disabled="revalidating || submitting || pipelineActive" @change="updateScope">
+          更新本场已保存结果
+        </label>
+        <p class="excel-settings-dialog__explanation">
+          {{ regenerateExisting ? '本次重新整理本场错因、班级报告和个人报告。成功后替换原内容；失败保留上次成功内容。' : '本次只补尚未保存的内容，已有内容继续使用。' }}
+        </p>
         <div class="excel-settings-preview" aria-label="整理内容概览">
           <div>
             <span>目标服务</span>
@@ -195,7 +239,7 @@ onBeforeUnmount(() => controller?.abort())
           class="excel-settings-dialog__explanation"
           data-testid="pipeline-review-pending"
         >
-          还有 {{ status.review_pending }} 项待复核；复核改分后，对应学生和班级需要再补做。
+          还有 {{ status.review_pending }} 项待复核；建议先完成复核，再选择更新已保存结果。
         </p>
         <p
           v-if="status.complete"

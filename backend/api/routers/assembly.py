@@ -66,15 +66,6 @@ _ASSISTANT_CACHE = ResultCache(limit=16)
 # Exam evidence cache: the source-identity element of the diagnosis key covers
 # both database generations and the .class_analysis state the report writes.
 _EXAM_QUESTIONS_CACHE = ResultCache(limit=8)
-# Persisted results are tied to the code that produced them, like
-# _PROFILE_CALCULATION_STATE covers question_bank/** and integration/*.
-_ASSEMBLY_CODE_STATE = tuple(
-    (str(path), path.stat().st_mtime_ns, path.stat().st_size)
-    for path in (
-        Path(__file__).resolve(),
-        Path(__file__).resolve().parent.parent / "schemas" / "assembly.py",
-    )
-)
 
 
 def _uploaded_generation(service) -> tuple:
@@ -99,12 +90,12 @@ def _cached_exam_questions(
     key_fn = getattr(service, "tag_profile_cache_key", None)
     if not callable(key_fn):
         return service.assembly_exam_questions(class_ids=classes, volume_id=volume_id)
-    identity = key_fn(
+    diagnosis_key = key_fn(
         scope={"mode": "class", "class_ids": classes, "use_historical_fallback": False},
         exam_scope={"mode": "semester", "curriculum_volume_id": volume_id},
-    )[0]
+    )
     uploaded = _uploaded_generation(service)
-    pkey = (identity, "assembly-exam-questions-v2", *uploaded, _ASSEMBLY_CODE_STATE,
+    pkey = (*diagnosis_key, "assembly-exam-questions", *uploaded,
             tuple(classes), str(volume_id))
 
     def _compute() -> dict:
@@ -126,7 +117,7 @@ def _cached_exam_questions(
         return result
 
     return _EXAM_QUESTIONS_CACHE.get_or_compute(
-        ("assembly-exam-questions-v2", identity, *uploaded, tuple(classes), str(volume_id)),
+        ("assembly-exam-questions", diagnosis_key, *uploaded, tuple(classes), str(volume_id)),
         _compute,
     )
 
@@ -242,11 +233,9 @@ def compute_assistant_candidates(
         writer = getattr(diagnosis_service, "save_persistent_result", None)
         if diagnosis_key is not None:
             pkey = (
-                diagnosis_key[0],
-                "assistant-shortlist-persist-v2",
-                *diagnosis_key[1:],
+                *diagnosis_key,
+                "assistant-shortlist-persist",
                 *uploaded,
-                _ASSEMBLY_CODE_STATE,
                 tuple(class_ids), tuple(session_ids),
                 chapter_id,
                 teaching_progress_chapter_id,
@@ -295,10 +284,11 @@ def compute_assistant_candidates(
         return _compute()
     return _ASSISTANT_CACHE.get_or_compute(
         (
-            "assistant-shortlist-v6-direct-targets",
+            "assistant-shortlist",
             str(read_service.db_path.resolve(strict=False)),
             commit_generation(read_service.db_path),
             diagnosis_key,
+            uploaded,
             tuple(class_ids), tuple(session_ids),
             chapter_id,
             teaching_progress_chapter_id,

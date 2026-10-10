@@ -131,9 +131,9 @@ function patternSkillHint(item: QuestionErrorPattern): string {
   const labels = item.skill_labels?.length ? item.skill_labels : (item.skill_label ? [item.skill_label] : [])
   if (!labels.length) return ''
   const suffix = item.skill_source === 'teacher' ? '（教师设定）'
-    : item.skill_source === 'question' ? '（由本题唯一技能得出）'
+    : item.skill_source === 'question' ? '（由本题唯一关键步骤得出）'
     : '（由判定点得出）'
-  return `关联技能：${labels.join('、')}${suffix}`
+  return `关联关键步骤：${labels.join('、')}${suffix}`
 }
 
 function beginPatternEdit(item: QuestionErrorPattern): void {
@@ -202,7 +202,7 @@ const tagLabels: Record<string, string> = {
   exam_scope: '教材章节/考试范围',
   knowledge_point: '知识点',
   measured_skill_name: '测量技能',
-  skill: '技能',
+  skill: '关键步骤',
   method: '解题方法',
   thought: '数学思想',
   model: '模型',
@@ -521,9 +521,9 @@ watch(() => store.selectedQuestionId, () => { typeEditing.value = false; typeErr
               <h4>调整典型错法</h4>
               <label>错法名称<input class="app-input" v-model="patternName" maxlength="80"></label>
               <label>错误大类<select class="app-input" v-model="patternCategory"><option value="">请选择</option><option v-for="category in availableCategories" :key="category" :value="category">{{ category }}</option></select></label>
-              <label>关联技能<select class="app-input" v-model="patternSkill"><option value="">不关联</option><option v-for="skill in patternSkillOptions" :key="skill.key" :value="skill.key">{{ skill.label }}</option></select></label>
+              <label>关联关键步骤<select class="app-input" v-model="patternSkill"><option value="">不关联</option><option v-for="skill in patternSkillOptions" :key="skill.key" :value="skill.key">{{ skill.label }}</option></select></label>
               <p v-if="patternEdit.skill_source === 'criterion' && (patternEdit.skill_labels?.length || patternEdit.skill_label)" class="qb-help">
-                当前技能由判定点得出；选择其他技能将作为教师设定保存。
+                当前关键步骤由判定点得出；选择其他关键步骤将作为教师设定保存。
               </p>
               <div class="qb-patterns__actions">
                 <AppButton type="button" variant="ghost" size="small" @click="patternEdit = null">取消</AppButton>

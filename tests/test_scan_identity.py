@@ -102,10 +102,11 @@ def test_roster_scores_prefers_the_spelled_name() -> None:
     assert scores[0] - scores[1] > 5
 
 
-def test_roster_scores_strips_label_prefix_and_tail() -> None:
+@pytest.mark.parametrize("text", ["姓名：张三班", "姓名：张三班级："])
+def test_roster_scores_strips_label_prefix_and_tail(text: str) -> None:
     roster = [RosterEntry(1, "张三", "9"), RosterEntry(2, "李四", "9")]
     vocab = build_vocabulary(roster)
-    scores = roster_scores([_probs(vocab, "姓名：张三班")], roster, vocab)
+    scores = roster_scores([_probs(vocab, text)], roster, vocab)
     assert int(np.argmax(scores)) == 0
     assert scores[0] > -5
 
@@ -115,6 +116,7 @@ def test_roster_scores_strips_label_prefix_and_tail() -> None:
     [
         (["班级：809"], "", "9"),
         (["班级：8(10)"], "", "10"),
+        (["第3周学情反馈 姓名：张三 班级：809"], "", "9"),
         ([], "八（10）班", "10"),
         ([], "309", "9"),
         ([], "704", None),
@@ -181,12 +183,16 @@ def test_duplicate_roster_names_split_posterior_into_review() -> None:
 class _FakeIdentityOcr:
     """Stand-in for MineruOcr: character map + scripted line_probabilities."""
 
-    def __init__(self, scripted_lines: list[list[tuple[str, float, np.ndarray]]]) -> None:
+    def __init__(self, scripted_lines: list[list[tuple[str, float, np.ndarray]]], *, label_rows=None) -> None:
         self._lines = scripted_lines
+        self._label_rows = label_rows or []
         self.calls = 0
 
     def character_columns(self, chars: list[str]) -> dict[str, int]:
         return {char: index for index, char in enumerate(chars) if index > 0}
+
+    def __call__(self, image: np.ndarray):
+        return self._label_rows, 0.0
 
     def line_probabilities(
         self,
@@ -209,20 +215,29 @@ class _RecordingClient:
         raise AssertionError("remote model must not be called on the roster path")
 
 
+@pytest.mark.parametrize("wide_name_box", [False, True])
 def test_analyze_assigns_roster_identity_without_remote_model(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    wide_name_box: bool,
 ) -> None:
     roster = [RosterEntry(1, "张三", "9"), RosterEntry(2, "李四", "9")]
     vocab = build_vocabulary(roster)
     strong = _probs(vocab, "姓名：张三班")
     weak = np.full((12, len(vocab)), 1.0 / len(vocab))
-    fake = _FakeIdentityOcr([
-        [("张三", 0.9, strong)],          # paper 1 name box
-        [("9班", 0.8, np.zeros((2, 1)))],  # paper 1 class band
-        [("", 0.1, weak)],                # paper 2 name box
-        [("", 0.1, np.zeros((2, 1)))],    # paper 2 class band
-    ])
+    if wide_name_box:
+        fake = _FakeIdentityOcr([
+            [("第3周学情反馈", 0.9, weak), ("张三", 0.9, strong),
+             ("班级：809", 0.8, weak), ("第3周学情反馈 姓名：张三 班级：809", 0.1, weak)],
+            [("第3周学情反馈", 0.9, weak), ("班级：809", 0.8, weak), ("", 0.1, weak)],
+        ])
+    else:
+        fake = _FakeIdentityOcr([
+            [("张三", 0.9, strong)],
+            [("9班", 0.8, np.zeros((2, 1)))],
+            [("", 0.1, weak)],
+            [("", 0.1, np.zeros((2, 1)))],
+        ])
     fake_local_ocr = types.ModuleType("backend.document_parsing.local_ocr")
     fake_local_ocr.get_local_ocr = lambda: fake  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "backend.document_parsing.local_ocr", fake_local_ocr)
@@ -236,7 +251,8 @@ def test_analyze_assigns_roster_identity_without_remote_model(
         client,
         enhance_images=False,
         front_page_parity="odd",
-        name_region={"x": 50, "y": 50, "w": 200, "h": 40},
+        name_region=({"x": 0, "y": 20, "w": 800, "h": 160} if wide_name_box
+                     else {"x": 50, "y": 50, "w": 200, "h": 40}),
     )
     analysis = scanner.analyze(
         students=[
@@ -270,6 +286,73 @@ def test_analyze_assigns_roster_identity_without_remote_model(
     assert issue.suggested_students == [
         {"student_id": 2, "student_name": "李四", "class_name": "9", "score": pytest.approx(1.0)}
     ]
+
+
+@pytest.mark.parametrize("drift", [-18, 0, 18])
+@pytest.mark.parametrize("merged_labels", [False, True])
+def test_header_labels_focus_handwriting_without_title(
+    drift: int,
+    merged_labels: bool,
+) -> None:
+    roster = [RosterEntry(1, "张三", "9"), RosterEntry(2, "李四", "9")]
+    vocabulary = build_vocabulary(roster)
+    page = np.full((1100, 800, 3), 255, dtype=np.uint8)
+    page[45+drift:65+drift, 150+drift:600+drift] = (255, 0, 0)
+    page[86+drift:128+drift, 260+drift:410+drift] = (0, 255, 0)
+    class_height = 34 if merged_labels else 52
+    page[90+drift:90+drift+class_height, 485+drift:550+drift] = (0, 0, 255)
+
+    class FieldOcr(_FakeIdentityOcr):
+        def __call__(self, image):
+            # The padded header begins at (60, 8); detector coordinates are local.
+            def row(text, left, right, top=100, height=12):
+                return [[[left+drift-60, top+drift-8], [right+drift-60, top+drift-8],
+                         [right+drift-60, top+height+drift-8], [left+drift-60, top+height+drift-8]], text, 0.98]
+            return ([row("姓名：张三 班级：809", 220, 555)] if merged_labels else
+                    [row("姓名：", 220, 252), row("班级：", 420, 455, top=99, height=28)]), 0.0
+
+        def line_probabilities(self, image, columns, *, detect=True):
+            if len(columns) > 1:
+                name_pixels = np.all(image == (0, 255, 0), axis=2).sum()
+                title_pixels = np.all(image == (0, 0, 255), axis=2).sum()
+                if name_pixels == 42 * 150 and title_pixels == 0:
+                    return [("张三", 0.99, _probs(vocabulary, "张三"))]
+                return [("", 0.1, np.full((12, len(vocabulary)), 1/len(vocabulary)))]
+            class_pixels = np.all(image == (255, 0, 0), axis=2).sum()
+            return [("班级：809" if class_pixels == class_height * 65 else "", 0.9, np.zeros((2, 1)))]
+
+    evidence = scan_identity.extract_paper_evidence(
+        Image.fromarray(page), {"x": 100, "y": 30, "w": 500, "h": 150},
+        roster, vocabulary, key="paper", file_key="class.pdf", ocr=FieldOcr([]),
+    )
+    decision, = assign_identities([evidence], roster)
+    assert evidence.display_text == "张三"
+    assert evidence.class_name == "9"
+    assert decision.status == "auto"
+    assert decision.student_id == 1
+
+
+def test_unreadable_focused_class_reuses_original_right_band() -> None:
+    roster = [RosterEntry(1, "张三", "9"), RosterEntry(2, "李四", "9")]
+    vocabulary = build_vocabulary(roster)
+    ocr = _FakeIdentityOcr(
+        [[("张三", 0.99, _probs(vocabulary, "张三"))],
+         [("", 0.1, np.zeros((2, 1)))], [("809", 0.9, np.zeros((2, 1)))]],
+        label_rows=[
+            [[[160, 92], [192, 92], [192, 104], [160, 104]], "姓名：", 0.98],
+            [[[360, 92], [395, 92], [395, 104], [360, 104]], "班级：", 0.98],
+        ],
+    )
+    evidence = scan_identity.extract_paper_evidence(
+        Image.new("RGB", (800, 1100), "white"),
+        {"x": 100, "y": 30, "w": 500, "h": 150}, roster, vocabulary,
+        key="paper", file_key="class.pdf", ocr=ocr,
+    )
+    assert evidence.display_text == "张三"
+    assert evidence.class_name == "9"
+    decision, = assign_identities([evidence], roster)
+    assert decision.status == "auto"
+    assert decision.student_id == 1
 
 
 _UNSET = object()

@@ -29,17 +29,17 @@
 (() => {
  'use strict';
  const data = JSON.parse(document.getElementById('report-data').textContent);
- const adaptive = data.versions[1].includes('adaptive-new-practice');
- const versions = data.versions.map(version => version.match(/-v(\d+)/)?.[1] || version);
- document.querySelector('.intro').textContent = `比较 ${data.selection_settings?.baseline_remediation_only?'本次改进前的':'本任务首次评估的'} v${versions[0]} 与 v${versions[1]}。两版用同一批考试和题库重新生成。先检查题目难度，再检查失分目标与数学任务。未测目标新练习与补弱分别计数。`;
- if(data.intermediate_version){
+ const adaptive = String(data.versions?.[1] || '').includes('adaptive-new-practice');
+ const labels = ['改动前', '改动后'];
+ document.querySelector('.intro').textContent = `比较 ${data.selection_settings?.baseline_remediation_only?'本次改进前的':'本任务首次评估的'} ${labels[0]} 与 ${labels[1]}。两版用同一批考试和题库重新生成。先检查题目难度，再检查失分目标与数学任务。未测目标新练习与补弱分别计数。`;
+ if(data.intermediate_label || data.intermediate_version){
    document.querySelector('h1').textContent='训练卷：补弱优先与任务去重的改进前后';document.title='训练卷：本次改进前后对比';
    document.querySelector('.eyebrow').textContent='同一输入 · 分别检查两项改动';
    document.getElementById('group-rule').textContent='个人卷先补弱，再加至多 4 道未测目标新练习。小组卷保留共用卷用途，可含巩固与其他练习；两类卷均使用任务去重。小组覆盖较少属于共用卷的取舍，不据此设置覆盖门槛或自动拆组。';
  }
  if(adaptive){
    document.querySelector('h1').textContent='训练卷：未测目标核对与难度浮动';document.title='训练卷：难度浮动前后对比';
-   document.querySelector('.intro').textContent=`本页初版是改动前的 v${versions[0]}，终版是 v${versions[1]}。两版均先补弱，最多加入 4 道未测目标练习，并对同一批考试和题库重跑。先看新增题的难度与任务依据，再看补弱关联覆盖。`;
+   document.querySelector('.intro').textContent=`本页初版是改动前的 ${labels[0]}，终版是 ${labels[1]}。两版均先补弱，最多加入 4 道未测目标练习，并对同一批考试和题库重跑。先看新增题的难度与任务依据，再看补弱关联覆盖。`;
    document.querySelector('.eyebrow').textContent='同一输入 · 未测任务核对 · 得分率难度浮动';
    document.getElementById('group-rule').textContent='个人卷先补弱，再加至多 4 道未测目标新练习。小组卷保留共用卷用途；两类卷使用同一候选难度评价和任务去重。小组覆盖较少属于共用卷的取舍，不据此设置覆盖门槛或自动拆组。';
  }
@@ -156,7 +156,7 @@
  function renderMethod(){
    const first = data.historical_first_run?.find(row=>row.scope === scope.chapters.join('+'));
    const old = first?.native;
-   el('method').innerHTML = `<p>版本：${escape(data.versions[0])} → ${escape(data.versions[1])}。</p><p>固定条件：请求上限 10 题，公式难度上限 8，同技能最多 1 题，解答题最多 2 题，近期原题排除 3 次。章节范围使用整题规则，不拆小问打印。题库中此前获授权的 #786 和 #1474 难度修正，已同时用于本次两版重跑。</p><p>原始输入相同，证据资格是算法的一部分，因此两版识别的需要可以不同。本范围两版各自识别 ${scope.own_needs[0]} → ${scope.own_needs[1]} 项，并按各自旧口径标为已覆盖 ${scope.own_coverage[0]} → ${scope.own_coverage[1]} 项；这组数的分母和判断规则不同，上方主比较统一使用当前需要集合。</p>${old?`<p>本任务首次历史报告：${old.printed_slots} 个个人题位，初版自报覆盖 ${old.covered_need_count}/${old.need_count} 项，有需要却无补弱题 ${old.students_without_remediation} 人。该记录使用当时题库与证据口径，不是此次同输入配对结果。</p>`:''}<p>两版个人选题都与各自正式内存草稿的组卷函数核对一致。每个范围有效候选 ${scope.candidate_count} 道。全量纸面题目、判定版本准备与实际训练提交没有执行。</p><p>只读检查：原始成绩一致、近期记录一致、数据库读版本与内容指纹未改变。模型请求 ${data.model_requests} 次，数据库写入 ${data.database_writes} 次，原始学生数据导出 ${data.raw_student_exports} 次。</p><p>本次实验耗时 ${data.seconds.toFixed(1)} 秒。范围内的学生 × 知识主题与技能可能描述同一数学任务，覆盖项数不等于独立能力数。未知任务只能确认目标或环节练习，不用“完整覆盖”代替独立教师判断。</p><p class="note">尚未验证：独立教师对题面与学生水平的适合度、学生实际训练达成与学习收益。</p><p class="code">评分库指纹：${escape(data.input.grading)}<br>题库指纹：${escape(data.input.bank)}<br>考试配置：${data.input.exam_config_count} 份 · ${escape(data.input.exam_config_hash)}</p>`;
+   el('method').innerHTML = `<p>比较方案：${escape(labels[0])} → ${escape(labels[1])}。</p><p>固定条件：请求上限 10 题，公式难度上限 8，同技能最多 1 题，解答题最多 2 题，近期原题排除 3 次。章节范围使用整题规则，不拆小问打印。题库中此前获授权的 #786 和 #1474 难度修正，已同时用于本次两版重跑。</p><p>原始输入相同，证据资格是算法的一部分，因此两版识别的需要可以不同。本范围两版各自识别 ${scope.own_needs[0]} → ${scope.own_needs[1]} 项，并按各自旧口径标为已覆盖 ${scope.own_coverage[0]} → ${scope.own_coverage[1]} 项；这组数的分母和判断规则不同，上方主比较统一使用当前需要集合。</p>${old?`<p>本任务首次历史报告：${old.printed_slots} 个个人题位，初版自报覆盖 ${old.covered_need_count}/${old.need_count} 项，有需要却无补弱题 ${old.students_without_remediation} 人。该记录使用当时题库与证据口径，不是此次同输入配对结果。</p>`:''}<p>两版个人选题都与各自正式内存草稿的组卷函数核对一致。每个范围有效候选 ${scope.candidate_count} 道。全量纸面题目、判定版本准备与实际训练提交没有执行。</p><p>只读检查：原始成绩一致、近期记录一致、两端共用同一只读事务，比较期间数据库改动标记未改变。模型请求 ${data.model_requests} 次，数据库写入 ${data.database_writes} 次，原始学生数据导出 ${data.raw_student_exports} 次。</p><p>本次实验耗时 ${data.seconds.toFixed(1)} 秒。范围内的学生 × 知识主题与技能可能描述同一数学任务，覆盖项数不等于独立能力数。未知任务只能确认目标或环节练习，不用“完整覆盖”代替独立教师判断。</p><p class="note">尚未验证：独立教师对题面与学生水平的适合度、学生实际训练达成与学习收益。</p><p class="code">考试配置：${data.input.exam_config_count} 份，比较期间保持原样。</p>`;
  }
  function renderManual(){
    const cases=data.manual_review?.cases||[];

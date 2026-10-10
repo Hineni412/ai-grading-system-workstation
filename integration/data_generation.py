@@ -15,75 +15,16 @@ repeated reads of unchanged content keep the same generation.
 from __future__ import annotations
 
 import sqlite3
-import hashlib
-import pickle
 import threading
-from collections import OrderedDict
-from contextlib import closing
 from pathlib import Path
 from typing import Union
 
-from integration.result_cache import ResultCache
 
 _PATH_TYPE = Union[str, Path]
 
 
-def grading_content_revision(path: Path, connection: sqlite3.Connection | None = None) -> str:
-    """Hash grading inputs without unrelated jobs and their sequence counter.
-
-    Every other table and all schema definitions remain included. This is a
-    read-only derived identity, not a database schema or write-generation change.
-    """
-    if connection is None:
-        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as owned:
-            owned.execute("PRAGMA query_only = ON")
-            owned.execute("BEGIN DEFERRED")
-            return grading_content_revision(path, owned)
-    digest = hashlib.sha256(b"grading-input-without-job-progress-v1")
-    def include(value):
-        encoded = pickle.dumps(value, pickle.HIGHEST_PROTOCOL)
-        digest.update(len(encoded).to_bytes(8, 'big'))
-        digest.update(encoded)
-    tables = connection.execute(
-        "SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name"
-    ).fetchall()
-    for definition in connection.execute(
-        "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"
-    ):
-        include(tuple(definition))
-    for name, sql in tables:
-        include((name, sql))
-        if name == 'jobs':
-            continue
-        quoted = '"' + str(name).replace('"', '""') + '"'
-        columns = [row[1] for row in connection.execute(f'PRAGMA table_info({quoted})')]
-        order = ','.join('"' + str(column).replace('"', '""') + '"' for column in columns)
-        cursor = connection.execute(f'SELECT * FROM {quoted}' + (f' ORDER BY {order}' if order else ''))
-        for row in cursor:
-            if name == 'sqlite_sequence' and row[0] == 'jobs':
-                continue
-            include(tuple(row))
-    return digest.hexdigest()
-
-
-def database_content_revision(path: Path, connection: sqlite3.Connection | None = None) -> str:
-    """Hash read-only logical SQLite pages, preserving versions across checkpoints.
-
-    This is the existing diagnosis snapshot algorithm. Journal mode and
-    header bookkeeping are excluded; schema/data pages remain included.
-    """
-    if connection is None:
-        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as owned:
-            owned.execute("PRAGMA query_only = ON")
-            return database_content_revision(path, owned)
-    content = memoryview(connection.serialize())
-    digest = hashlib.sha256()
-    for start, end in ((0, 18), (20, 24), (28, 92), (100, len(content))):
-        digest.update(content[start:end])
-    return digest.hexdigest()
-
 def _database_file_state(path: Path) -> tuple:
-    """Cheap memo key; a changed state rechecks logical content, not results."""
+    """Database and journal metadata used only to refresh disposable caches."""
     stat = path.stat()
     wal = Path(f"{path}-wal")
     try:
@@ -101,38 +42,9 @@ def _database_file_state(path: Path) -> tuple:
             wal_state, index_state)
 
 
-# The full serialize-and-hash pass is expensive; the memo reuses it while the
-# cheap file state is unchanged, bounded to a handful of database paths.
-_CONTENT_REVISION_LOCK = threading.Lock()
-_CONTENT_REVISIONS: OrderedDict[str, tuple] = OrderedDict()
-_CONTENT_REVISION_PATH_LIMIT = 4
-_CONTENT_REVISION_FLIGHTS = ResultCache(8)
-
-
-def cached_content_revision(path: _PATH_TYPE) -> str:
-    """``database_content_revision`` memoized by the cheap database file state.
-
-    Repeated calls while the file, its WAL and its WAL-index header are
-    unchanged reuse the revision; concurrent misses for the same state share
-    one computation.
-    """
-    resolved = str(Path(path).resolve(strict=False))
-    state = _database_file_state(Path(resolved))
-    with _CONTENT_REVISION_LOCK:
-        hit = _CONTENT_REVISIONS.get(resolved)
-        if hit is not None and hit[0] == state:
-            _CONTENT_REVISIONS.move_to_end(resolved)
-            return hit[1]
-    revision = _CONTENT_REVISION_FLIGHTS.get_or_compute(
-        (resolved, state),
-        lambda: database_content_revision(Path(resolved)),
-    )
-    with _CONTENT_REVISION_LOCK:
-        _CONTENT_REVISIONS[resolved] = (state, revision)
-        _CONTENT_REVISIONS.move_to_end(resolved)
-        while len(_CONTENT_REVISIONS) > _CONTENT_REVISION_PATH_LIMIT:
-            _CONTENT_REVISIONS.popitem(last=False)
-    return revision
+def database_change_stamp(path: _PATH_TYPE) -> tuple:
+    """Read file metadata for a disposable cache, without reading database rows."""
+    return _database_file_state(Path(path).resolve(strict=False))
 
 
 _LOCK = threading.Lock()

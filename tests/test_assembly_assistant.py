@@ -231,7 +231,7 @@ def test_exam_question_rates_weight_students_and_preserve_missing_causes(client_
     service._error_cause_index = lambda ids: {(7,i,'Q1'): [{'category':'计算与化简'}, {'category':'计算与化简'}] for i in (1,2,3)} | {(7,1,'Q2'): [{'category':'审题与条件'}], (7,5,'Q4'): [{'category':'计算与化简'}], (7,1,'Q5'): [{'category':'概念理解'}], (7,3,'Q5'): [{'category':'概念理解'}]}
     service._assembly_cause_availability_index = lambda ids: {
         (7, 'Q1'): {'status': 'current'}, (7, 'Q2'): {'status': 'current'},
-        (8, 'Q1'): {'status': 'old_prompt'},
+        (8, 'Q1'): {'status': 'current'},
         (7, 'Q4'): {'status': 'current', 'reasons_by_student': {
             1: 'review', 2: 'carry_forward', 3: 'positive_only',
             5: 'review', 6: 'review', 7: 'review',
@@ -262,7 +262,7 @@ def test_exam_question_rates_weight_students_and_preserve_missing_causes(client_
         'status': 'current', 'unclassified_by_reason': [{'reason': 'missing', 'count': 1}]}
     assert exam['questions'][2]['cause_availability'] == {
         'status': 'missing', 'unclassified_by_reason': [{'reason': 'missing', 'count': 1}]}
-    assert single['questions'][0]['cause_availability']['status'] == 'old_prompt'
+    assert single['questions'][0]['cause_availability']['status'] == 'current'
 
     students.extend({'id': i, 'class_name': '合成10班'} for i in range(4, 9))
     rows.extend({'session_id': 7, 'student_id': i, 'question_id': 'Q4',
@@ -280,24 +280,23 @@ def test_exam_question_rates_weight_students_and_preserve_missing_causes(client_
             {'reason': 'review', 'count': 2}, {'reason': 'carry_forward', 'count': 1},
             {'reason': 'positive_only', 'count': 1}, {'reason': 'missing', 'count': 2}]}
     stale = questions['Q5']
-    assert stale['cause_category_counts'] is None
-    assert stale['cause_unclassified_count'] == 2
+    assert next(item['count'] for item in stale['cause_category_counts'] if item['category'] == '概念理解') == 2
+    assert stale['cause_unclassified_count'] == 0
     assert stale['cause_availability'] == {
-        'status': 'stale', 'unclassified_by_reason': [{'reason': 'stale', 'count': 2}]}
+        'status': 'stale', 'unclassified_by_reason': []}
     for question in questions.values():
         assert sum(r['count'] for r in question['cause_availability']['unclassified_by_reason']) == question['cause_unclassified_count']
 
 
 @pytest.mark.parametrize('saved_prompt', ['class_error_causes_v4', 'class_error_causes_v3'])
-def test_assembly_cause_availability_reuses_matched_members_and_rejects_changed_hash(
+def test_assembly_cause_availability_reads_saved_members_after_inputs_change(
     tmp_path, monkeypatch, saved_prompt,
 ):
     from types import SimpleNamespace as NS
     import backend.class_analysis as analysis
-    from backend.report_results import cause_input_digest, prompt_version
     from integration.diagnosis_profile_service import DiagnosisProfileService
 
-    stepped = saved_prompt == prompt_version('causes')
+    stepped = saved_prompt == 'class_error_causes_v4'
     students = [NS(student_id=i, records=[NS(
         question_id='Q1', lost=True, max_score=10,
         deduction_reason='', error_summary='', error_category='', teacher_comment='',
@@ -314,18 +313,15 @@ def test_assembly_cause_availability_reuses_matched_members_and_rejects_changed_
     }]}]})
     sources = analysis.build_cause_inputs(data)
     source = sources[0]
-    ids_by_hash = {
-        analysis._evidence_hash(analysis._evidence_key(item)): item['id']
-        for item in source['evidence']
-    }
-    evidence_ids = {student.student_id: ids_by_hash[analysis._evidence_hash(
-        analysis._evidence_key(analysis._cause_evidence(student, student.records[0], data)))]
-        for student in students}
+    ids_by_key = {analysis._evidence_key(item): item['id'] for item in source['evidence']}
+    evidence_ids = {student.student_id: ids_by_key[analysis._evidence_key(
+        analysis._cause_evidence(student, student.records[0], data))] for student in students}
+    source['evidence_students'] = {eid: [sid] for sid, eid in evidence_ids.items()}
     units = analysis._step_units(source)
     refs = {student: next((unit for unit, (parent, _) in units.items() if parent == eid), eid)
             for student, eid in evidence_ids.items()}
     saved = {
-        'input': source, 'input_digest': cause_input_digest(source), 'prompt_version': saved_prompt,
+        'input': source, 'input_digest': 'legacy-input', 'prompt_version': saved_prompt,
         'result': {'groups': [
             {'kind': 'review', 'manifestations': [{'evidence_ids': [refs[1]]}]},
             {'kind': 'carry_forward', 'evidence_ids': [refs[1], refs[2]]},
@@ -341,24 +337,23 @@ def test_assembly_cause_availability_reuses_matched_members_and_rejects_changed_
     service.db = NS()
     result = service._assembly_cause_availability_index([7])[(7, 'Q1')]
     assert result == {
-        'status': 'current' if stepped else 'old_prompt',
+        'status': 'current',
         'reasons_by_student': {1: 'review', 2: 'carry_forward', 3: 'positive_only', 5: 'review'},
     }
     assert calls == [7]
 
-    # Even when the whole-input lookup is unchanged, a changed student's hash
-    # cannot borrow the saved review or positive membership of the old answer.
+    # Saved memberships continue after later answer corrections.
     monkeypatch.setattr(analysis, 'build_cause_inputs', lambda _: sources)
     students[0].records[0].student_answer = 'TEST-changed-review-answer'
     students[2].records[0].student_answer = 'TEST-changed-positive-answer'
     changed = service._assembly_cause_availability_index([7])[(7, 'Q1')]
     assert changed['status'] == result['status']
-    assert changed['reasons_by_student'] == {2: 'carry_forward', 5: 'review'}
+    assert changed['reasons_by_student'] == result['reasons_by_student']
 
     changed_source = {**source, 'question_text': 'TEST-new-question-input'}
     monkeypatch.setattr(analysis, 'build_cause_inputs', lambda _: [changed_source])
     assert service._assembly_cause_availability_index([7])[(7, 'Q1')] == {
-        'status': 'stale', 'reasons_by_student': {}}
+        'status': 'current', 'reasons_by_student': result['reasons_by_student']}
     store.save(7, cause_analysis={'questions': {}})
     assert service._assembly_cause_availability_index([7]) == {}
 
@@ -841,7 +836,14 @@ def test_persistent_results_survive_restart_and_recompute_on_changes(client_and_
     uploaded = tmp_path / 'config' / 'uploaded'
     uploaded.mkdir(parents=True)
     (uploaded / 'TEST-new-input.json').write_text('{}', encoding='utf-8')
+    # File-only changes refresh the live memory cache before a restart as well.
     restored = Keyed(storage())
+    client.app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: restored
+    assert client.post('/api/question-assembly/assistant/exam-questions', json=evidence_body).status_code == 200
+    assert client.post('/api/question-assembly/assistant/candidates', json=request()).json() == first
+    assert len(calls) == 2 and len(exam_calls) == 2
+    restored.build_profiles = lambda **kwargs: pytest.fail('recomputed refreshed profiles')
+    restored.assembly_exam_questions = lambda **kwargs: pytest.fail('recomputed refreshed exam evidence')
     restart(restored)
     assert client.post('/api/question-assembly/assistant/exam-questions', json=evidence_body).status_code == 200
     assert exam_calls == [['合成9班'], ['合成9班']]

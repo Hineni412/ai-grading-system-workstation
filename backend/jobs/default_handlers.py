@@ -659,7 +659,6 @@ def _build_report_export_handler(
             *ANALYSIS_REPORT_TYPES,
         }:
             raise ValueError("report_type is not supported")
-        score_revision = str(context.payload.get("score_revision") or "").strip()
         reports_dir.mkdir(parents=True, exist_ok=True)
         context.raise_if_cancelled()
         context.report(0.05, "report_export", "starting")
@@ -700,7 +699,6 @@ def _build_report_export_handler(
                     exporter.export_session(
                         session_id,
                         report_type,
-                        score_revision=score_revision,
                         narrative_mode="cache_only",
                         **({"student_ids": set(context.payload["student_ids"])} if context.payload.get("student_ids") is not None else {}),
                         **({"html_only": True} if not context.payload.get("publish", True) else {}),
@@ -739,8 +737,6 @@ def _build_report_export_handler(
             }
             if explicit_report_type:
                 result["report_type"] = report_type
-            if score_revision:
-                result["score_revision"] = score_revision
             if report_type in ANALYSIS_REPORT_TYPES:
                 result["review_note_count"] = review_note_count
             return result

@@ -189,7 +189,7 @@ def _run_causes(db, session_id: int, data_root: Path, reports_dir: Path, client,
     )
 
 
-def test_cause_groups_persist_count_students_per_class_and_update_only_changed_questions(
+def test_saved_causes_count_by_class_and_update_only_on_request(
     class_analysis_api_client,
 ):
     from backend.class_analysis import ClassAnalysisStateStore
@@ -252,7 +252,7 @@ def test_cause_groups_persist_count_students_per_class_and_update_only_changed_q
         "questions"
     ]["Q2"]["result"]
     assert ClassAnalysisStateStore(reports_dir).load(sid).get("narrative") is None
-    # 普通读取、切班、再次整理都复用；改批语只重整受影响题目。
+    # 普通读取、切班、再次整理均复用已保存归类。
     _run_causes(db, sid, reports_dir.parent, reports_dir, fake)
     assert len(fake.calls) == 2
     with sqlite3.connect(db.db_path) as conn:
@@ -262,25 +262,30 @@ def test_cause_groups_persist_count_students_per_class_and_update_only_changed_q
     changed = client.get(
         f"/api/sessions/{sid}/class-analysis?view=summary&class_name="
     ).json()
-    assert changed["cause_analysis"]["stale"] is True
-    assert changed["cause_analysis"]["pending_questions"] == 1
-    # stale 结果仍按生成时的证据投影展示（界面文案"显示上次生成"）。
+    assert changed["cause_analysis"]["stale"] is False
+    assert changed["cause_analysis"]["pending_questions"] == 0
+    # 已保存归类继续展示，不因当前批语变化退出统计。
     assert next(
         q for q in changed["data"]["questions"] if q["question_id"] == "Q2"
     ).get("causes_grouped")
     _run_causes(db, sid, reports_dir.parent, reports_dir, fake)
-    assert len(fake.calls) == 3
-    # 图像编码不进入文本归并请求；实际评分要求变化会使该题归并过期。
+    assert len(fake.calls) == 2
+    _run_causes(db, sid, reports_dir.parent, reports_dir, fake, regenerate_existing=True)
+    assert len(fake.calls) == 4
+    # 输入变化仍复用旧结果；明确更新才按新输入整理。
     rubric_path = Path(db.sessions.get_grading_session(sid)["rubric_path"])
     rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
     rubric["questions"][1]["question_image_base64"] = "synthetic-image-payload"
     rubric["questions"][1]["proof_obligations"] = ["必须说明直角条件"]
     rubric_path.write_text(json.dumps(rubric, ensure_ascii=False), encoding="utf-8")
     changed = client.get(f"/api/sessions/{sid}/class-analysis?view=summary").json()
-    assert changed["cause_analysis"]["pending_questions"] == 1
+    assert changed["cause_analysis"]["pending_questions"] == 0
     _run_causes(db, sid, reports_dir.parent, reports_dir, fake)
     assert len(fake.calls) == 4
+    _run_causes(db, sid, reports_dir.parent, reports_dir, fake, regenerate_existing=True)
+    assert len(fake.calls) == 6
     assert "synthetic-image-payload" not in json.dumps(fake.calls[-1])
+
 
 
 def test_cause_model_failure_does_not_retry_or_replace_original_reasons(
@@ -300,7 +305,7 @@ def test_cause_model_failure_does_not_retry_or_replace_original_reasons(
     assert payload["data"]["questions"][0]["causes"]
 
 
-def test_cause_answer_context_survives_reentry_and_invalidates_without_feedback_change(
+def test_cause_answer_context_reuses_saved_result_and_preserves_it_on_failed_update(
     class_analysis_api_client,
 ):
     from backend.class_analysis import ClassAnalysisStateStore
@@ -390,8 +395,8 @@ def test_cause_answer_context_survives_reentry_and_invalidates_without_feedback_
     fake = CauseClient()
     holder["client"] = fake
 
-    def generate():
-        _run_causes(db, sid, reports_dir.parent, reports_dir, holder["client"])
+    def generate(**kwargs):
+        _run_causes(db, sid, reports_dir.parent, reports_dir, holder["client"], **kwargs)
 
     generate()
     source = next(s for s in fake.calls if s["question_id"] == "Q2")
@@ -413,13 +418,13 @@ def test_cause_answer_context_survives_reentry_and_invalidates_without_feedback_
     ).json()
     assert again == first
     reopened = ClassAnalysisStateStore(reports_dir).load(sid)
-    # 存储的 input 是不含动态 known_patterns 的输入快照（指纹判定也以它为准）。
+    # 保存当时的整理资料和学生归属；发送给模型的资料不含学生标识。
     stored_input = reopened["cause_analysis"]["questions"]["Q2"]["input"]
-    assert {k: v for k, v in stored_input.items() if k != "known_patterns"} == {
-        k: v for k, v in source.items() if k != "known_patterns"
+    assert {k: v for k, v in stored_input.items() if k not in {"known_patterns", "by_step", "evidence_students"}} == {
+        k: v for k, v in source.items() if k not in {"known_patterns", "by_step", "evidence_students"}
     }
     assert len(fake.calls) == 2
-    # 只改作答，不改批语，也必须更新；失败不丢失上次成功结果。
+    # 作答后来变化仍能读取旧归类；明确更新失败不丢失上次成功结果。
     with sqlite3.connect(db.db_path) as conn:
         raw = {
             "grading_completeness": {"status": "complete"},
@@ -432,9 +437,9 @@ def test_cause_answer_context_survives_reentry_and_invalidates_without_feedback_
             (json.dumps(raw), result_ids[0]),
         )
     changed = client.get(f"/api/sessions/{sid}/class-analysis?view=summary").json()
-    assert changed["cause_analysis"]["pending_questions"] == 1
+    assert changed["cause_analysis"]["pending_questions"] == 0
     holder["client"] = FakeLLMClient(error=TimeoutError("test"))
-    generate()
+    generate(regenerate_existing=True)
     assert (
         ClassAnalysisStateStore(reports_dir).load(sid)["cause_analysis"]["questions"][
             "Q2"
@@ -442,22 +447,23 @@ def test_cause_answer_context_survives_reentry_and_invalidates_without_feedback_
         == stored_input
     )
     holder["client"] = fake
-    generate()
+    generate(regenerate_existing=True)
     current = ClassAnalysisStateStore(reports_dir).load(sid)["cause_analysis"][
         "questions"
     ]["Q2"]
-    # history 已取消：重新生成直接覆盖 input 与指纹，不再累积历史。
+    # 明确更新成功才替换同一份结果。
     assert "history" not in current
     assert current["input"] != stored_input
-    # 参考解答改变也需要重新核对。
+    # 补齐参考解答不会隐式生成。
     answer_key["questions"][1]["analysis"] = "可接受等价分数，过程需完整。"
     answer_path.write_text(json.dumps(answer_key, ensure_ascii=False), encoding="utf-8")
     assert (
         client.get(f"/api/sessions/{sid}/class-analysis?view=summary").json()[
             "cause_analysis"
         ]["pending_questions"]
-        == 1
+        == 0
     )
+
 
 
 def test_class_analysis_switches_classes_and_persists_separate_narratives(
@@ -508,7 +514,7 @@ def test_report_pipeline_second_run_without_changes_makes_zero_model_calls(
 
     first = _pipeline_via_api(client, session_id)
     manager.wait(first["id"], timeout=10)
-    assert manager.get(first["id"]).status == "succeeded"
+    assert manager.get(first["id"]).status == "succeeded", manager.get(first["id"]).error
     assert fake.calls == 5  # 错因 2 + 班级 1 + 个人 2。
 
     # 无成绩/错因变化时再次触发：三个阶段全部幂等跳过，零模型调用。
@@ -574,7 +580,7 @@ def _cause_source(data, question_id: str) -> dict:
     )
 
 
-def test_student_error_records_materialize_and_invalidate_on_input_change(
+def test_saved_cause_records_survive_input_changes_but_filter_current_full_scores(
     tmp_path: Path,
 ) -> None:
     import backend.jobs
@@ -614,7 +620,8 @@ def test_student_error_records_materialize_and_invalidate_on_input_change(
     )
     state = store.load(sid)
     envelope = state["error_records"]["Q2"]
-    assert envelope["input_fingerprint"]
+    assert "input_fingerprint" not in envelope
+    assert all("evidence_hash" not in row and "version" not in row for row in envelope["records"])
     assert {row["category"] for row in envelope["records"]} == {"概念理解"}
     assert {row["student_id"] for row in envelope["records"]} == {
         student.student_id
@@ -630,7 +637,27 @@ def test_student_error_records_materialize_and_invalidate_on_input_change(
             "UPDATE session_details SET deduction_reason='复核后改判' WHERE question_id='Q2'"
         )
     changed = assemble_cause_data(db, sid, data_root=tmp_path)
-    assert student_error_map(state, lisi, build_cause_inputs(changed), changed) == {}
+    assert student_error_map(state, lisi, build_cause_inputs(changed), changed)["Q2"][0]["pattern"] == "垂直关系用错"
+
+    # Separate categories ensure a later full-score student's group cannot borrow another loss.
+    save_cause_result(store, sid, source, {"groups": [
+        {"kind": "error", "category": "概念理解", "reason": f"TEST-{evidence['id']}",
+         "manifestation": "TEST-saved", "evidence_ids": [evidence["id"]]}
+        for evidence in source["evidence"]
+    ]}, data=data)
+    state = store.load(sid)
+    preserved = state["error_records"]["Q2"]["records"]
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE session_details SET score_awarded=40 WHERE question_id='Q2' AND result_id=(SELECT id FROM session_results WHERE session_id=? AND student_id=?)", (sid, lisi.student_id))
+    current = assemble_cause_data(db, sid, data_root=tmp_path)
+    from backend.class_analysis import apply_cause_results
+    from backend.reporting.analysis_report_exporter import build_class_page_data
+    page = build_class_page_data(current, compact=True)
+    apply_cause_results(page, current, build_cause_inputs(current), state)
+    causes = next(q for q in page["questions"] if q["question_id"] == "Q2")["causes"]
+    assert len(causes) == 1 and causes[0]["count"] == 1
+    assert lisi.student_id not in {student for cause in causes for evidence in cause["evidence"] for student in evidence["student_ids"]}
+    assert store.load(sid)["error_records"]["Q2"]["records"] == preserved
 
 
 def test_choice_question_option_path_auto_bank_write_and_edit(
@@ -1029,16 +1056,9 @@ def test_session_error_records_and_category_counts(tmp_path: Path, monkeypatch) 
     expanded = replace(data, students=[*data.students, *[
         replace(data.students[0], student_id=9000 + index) for index in range(20)
     ]])
-    fingerprints = []
-    original_fingerprint = analysis._cause_input_fingerprint
-    def counted_fingerprint(*args, **kwargs):
-        fingerprints.append(True)
-        return original_fingerprint(*args, **kwargs)
     with monkeypatch.context() as patch:
         patch.setattr(analysis, "assemble_cause_data", lambda *args, **kwargs: expanded)
-        patch.setattr(analysis, "_cause_input_fingerprint", counted_fingerprint)
         assert session_error_records(db, sid, reports_dir) == records
-    assert len(fingerprints) <= 8 * len(build_cause_inputs(expanded))
     counts = question_category_counts(records)
     assert counts["Q2"] == [("概念理解", len(student_ids))]
     one = sorted(student_ids)[:1]
@@ -1547,23 +1567,20 @@ def test_step_aware_error_records_and_counts(tmp_path: Path) -> None:
     status = apply_cause_results(page, data, build_cause_inputs(data), state)
     q2 = next(q for q in page["questions"] if q["question_id"] == "Q2")
     assert status["pending_questions"] == 1
-    assert status["question_states"]["old_prompt"] == 0
     assert q2["causes_by_step"] is True
     assert {
         (cause["reason"], tuple(cause["step_ids"])) for cause in q2["causes"]
     } == {("缺少等量关系", ("S2",)), ("结论不规范", ("S4",))}
 
 
-def test_old_prompt_v3_results_display_then_regenerate_stale(tmp_path: Path) -> None:
-    """迁移后的 v3 结果：输入未变的题 old_prompt 仍展示不重发；输入口径已变的
-    题 stale 仍按原证据展示，整理时按当前输入重发。"""
+def test_legacy_whole_answer_causes_remain_in_statistics_and_are_reused(tmp_path: Path) -> None:
+    """旧格式归类不受现在的分步格式影响，默认不重新生成。"""
     import backend.jobs
     from types import SimpleNamespace
 
     from backend.reporting.analysis_report_exporter import build_class_page_data
     from backend.class_analysis import (
         ClassAnalysisStateStore,
-        _cause_input_fingerprint,
         apply_cause_results,
         assemble_cause_data,
         build_cause_inputs,
@@ -1593,7 +1610,7 @@ def test_old_prompt_v3_results_display_then_regenerate_stale(tmp_path: Path) -> 
             },
             old,
         )
-        fingerprint = _cause_input_fingerprint(old)
+        fingerprint = "legacy-input"
         questions[old["question_id"]] = {
             "prompt_version": "class_error_causes_v3", "input": old,
             "input_digest": fingerprint, "result": result,
@@ -1608,25 +1625,23 @@ def test_old_prompt_v3_results_display_then_regenerate_stale(tmp_path: Path) -> 
     store.save(sid, cause_analysis={"questions": questions},
                error_records=error_records)
 
-    # Q1 无评分步骤：v3 输入与 v4 相同 → old_prompt（仍展示、不重发）。
-    # Q2 有失败步骤：v3 输入口径不同 → stale（按生成时的证据展示、会重发）。
+    # 旧整题归类仍按保存时的学生记录参与统计。
     page = build_class_page_data(data, compact=True)
     status = apply_cause_results(page, data, sources, store.load(sid))
-    assert status["status"] == "partial"
-    assert status["question_states"]["old_prompt"] == 1
-    assert status["question_states"]["stale"] == 1
+    assert status["status"] == "ready"
+    assert status["question_states"]["current"] == 2
+    assert status["question_states"]["stale"] == 0
     by_id = {q["question_id"]: q for q in page["questions"]}
-    assert by_id["Q1"]["state"] == "old_prompt"
+    assert by_id["Q1"]["state"] == "current"
     assert by_id["Q1"]["causes_by_step"] is False
     assert by_id["Q1"]["causes"]  # old_prompt 结果照常显示
-    assert by_id["Q2"]["state"] == "stale"
+    assert by_id["Q2"]["state"] == "current"
     assert by_id["Q2"]["causes"]
     lisi = next(s for s in data.students if s.student_name == "李四")
     mapped = student_error_map(store.load(sid), lisi, sources, data)
-    # old_prompt（输入一致）的记录仍可物化展示；stale 的记录不展示。
+    # 两题的旧归类均继续参与统计。
     assert mapped["Q1"] and mapped["Q1"][0]["pattern"] == "旧错法"
-    assert mapped["Q1"][0]["version"] == "class_error_causes_v3"
-    assert "Q2" not in mapped
+    assert mapped["Q2"][0]["pattern"] == "旧错法"
 
     context = SimpleNamespace(
         payload={"session_id": sid},
@@ -1639,16 +1654,17 @@ def test_old_prompt_v3_results_display_then_regenerate_stale(tmp_path: Path) -> 
             "groups": [], "positive_ids": [], "uncertain_ids": [],
         }
     )
-    # 整理阶段：old_prompt 不重发，stale 的 Q2 按当前输入重发为 v4。
+    # 默认整理不重新生成已有结果。
     outcome = run_cause_analysis(
         context, db=db, data_root=tmp_path, store=store,
         llm_client_factory=lambda: client,
         retry_failed=False,
     )
-    assert outcome["status"] == "ready" and len(calls) == 1
+    assert outcome["status"] == "ready" and len(calls) == 0
     saved = store.load(sid)["cause_analysis"]["questions"]
-    assert saved["Q2"]["prompt_version"] == "class_error_causes_v4"
+    assert saved["Q2"]["prompt_version"] == "class_error_causes_v3"
     assert saved["Q1"]["prompt_version"] == "class_error_causes_v3"  # old_prompt 不重发
+
 
 
 def test_pre_step_source_dedupes_evidence_collapsed_by_step_split(
@@ -1661,7 +1677,6 @@ def test_pre_step_source_dedupes_evidence_collapsed_by_step_split(
     from backend.reporting.analysis_report_exporter import build_class_page_data
     from backend.class_analysis import (
         ClassAnalysisStateStore,
-        _cause_input_fingerprint,
         apply_cause_results,
         assemble_cause_data,
         build_cause_inputs,
@@ -1723,7 +1738,7 @@ def test_pre_step_source_dedupes_evidence_collapsed_by_step_split(
         }]},
         old,
     )
-    fingerprint = _cause_input_fingerprint(old)
+    fingerprint = "legacy-input"
     store = ClassAnalysisStateStore(tmp_path / "reports")
     store.save(
         sid,
@@ -1744,16 +1759,17 @@ def test_pre_step_source_dedupes_evidence_collapsed_by_step_split(
     status = apply_cause_results(page, data, [source], store.load(sid))
     # 输入口径已变（v3 合并证据 vs v4 分步证据）→ stale；stale 结果仍按
     # 生成时的证据投影展示。
-    assert status["question_states"]["stale"] == 1
+    assert status["question_states"]["current"] == 1
     q2 = next(q for q in page["questions"] if q["question_id"] == "Q2")
-    assert q2["state"] == "stale" and q2["causes"]
+    assert q2["state"] == "current" and q2["causes"]
 
     state = store.load(sid)
     for name in ("张三", "李四"):
         student = next(s for s in data.students if s.student_name == name)
         mapped = student_error_map(state, student, [source], data)
-        # stale 题的物化记录不再展示（证据已变化，不能按旧口径匹配）。
-        assert "Q2" not in mapped
+        # 原有学生的整题归类继续参与统计。
+        assert mapped["Q2"][0]["pattern"] == "旧错法"
+
 
 
 def test_session_error_record_skill_enrichment_is_nonfatal(
@@ -1884,7 +1900,7 @@ def test_report_pipeline_status_counts_then_complete(
 
     job = _pipeline_via_api(client, sid)
     manager.wait(job["id"], timeout=10)
-    assert manager.get(job["id"]).status == "succeeded"
+    assert manager.get(job["id"]).status == "succeeded", manager.get(job["id"]).error
 
     done = client.get(f"/api/sessions/{sid}/report-pipeline").json()
     assert done["complete"] is True
@@ -1971,14 +1987,13 @@ def test_report_pipeline_manual_retries_failed_causes_but_auto_does_not(
     assert manager.get(manual.json()["id"]).result["status"] == "ready"
 
 
-def test_report_pipeline_regenerates_stale_but_keeps_old_prompt(
+def test_report_pipeline_reuses_all_saved_causes_until_explicit_update(
     class_analysis_api_client, tmp_path: Path,
 ) -> None:
     """迁移后的 v3 结果：stale（输入口径已变）的题自动与手动都重发；
     old_prompt（输入未变）的题不随整理重发。"""
     from backend.class_analysis import (
         ClassAnalysisStateStore,
-        _cause_input_fingerprint,
         assemble_cause_data,
         build_cause_inputs,
         normalize_cause_result,
@@ -2009,7 +2024,7 @@ def test_report_pipeline_regenerates_stale_but_keeps_old_prompt(
             },
             old,
         )
-        fingerprint = _cause_input_fingerprint(old)
+        fingerprint = "legacy-input"
         questions[qid] = {
             "prompt_version": "class_error_causes_v3",
             "input": old,
@@ -2043,8 +2058,8 @@ def test_report_pipeline_regenerates_stale_but_keeps_old_prompt(
     manager.wait(auto.id, timeout=10)
     saved = store.load(sid)["cause_analysis"]["questions"]
     assert saved["Q1"]["prompt_version"] == "class_error_causes_v3"
-    assert saved["Q2"]["prompt_version"] == "class_error_causes_v4"
-    assert fake.kinds.count("cause") == 1  # 只有 stale 的 Q2
+    assert saved["Q2"]["prompt_version"] == "class_error_causes_v3"
+    assert fake.kinds.count("cause") == 0  # 只有 stale 的 Q2
 
     # 手动口径同样跳过 old_prompt：Q1 保持 v3，不再产生错因调用。
     fake.kinds.clear()
@@ -2052,11 +2067,20 @@ def test_report_pipeline_regenerates_stale_but_keeps_old_prompt(
     manager.wait(manual["id"], timeout=10)
     saved = store.load(sid)["cause_analysis"]["questions"]
     assert saved["Q1"]["prompt_version"] == "class_error_causes_v3"
-    assert saved["Q2"]["prompt_version"] == "class_error_causes_v4"
+    assert saved["Q2"]["prompt_version"] == "class_error_causes_v3"
     assert "cause" not in fake.kinds
 
+    fake.kinds.clear()
+    update = client.post(f"/api/sessions/{sid}/report-pipeline", json={"regenerate_existing": True})
+    assert update.status_code == 202, update.text
+    manager.wait(update.json()["id"], timeout=10)
+    assert fake.kinds.count("cause") == 2
+    saved = store.load(sid)["cause_analysis"]["questions"]
+    assert all("prompt_version" not in item and "input_digest" not in item for item in saved.values())
 
-def test_report_pipeline_personal_targets_only_missing_and_stale(
+
+
+def test_report_pipeline_reuses_outdated_personal_reports_until_explicit_update(
     class_analysis_api_client,
 ) -> None:
     """成绩变化只让受影响学生的个人报告过期；已当前的报告不再生成。"""
@@ -2076,6 +2100,7 @@ def test_report_pipeline_personal_targets_only_missing_and_stale(
         if s["status"] == "current"
     )
     with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE session_results SET graded_at='2099-01-01 00:00:00' WHERE session_id=? AND student_id=?", (sid,lisi_id))
         conn.execute(
             "UPDATE session_details SET score_awarded=score_awarded-5"
             " WHERE result_id=(SELECT id FROM session_results"
@@ -2106,8 +2131,14 @@ def test_report_pipeline_personal_targets_only_missing_and_stale(
     second = _pipeline_via_api(client, sid)
     manager.wait(second["id"], timeout=10)
     # 只有过期学生重新生成；已当前的学生保留原叙述。
-    assert captured["student_ids"] == {lisi_id}
-    assert fake.kinds.count("personal") == 1
+    assert captured == {}
+    assert "personal" not in fake.kinds
+    update = client.post(f"/api/sessions/{sid}/report-pipeline", json={"regenerate_existing": True})
+    assert update.status_code == 202
+    manager.wait(update.json()["id"], timeout=10)
+    assert captured["student_ids"] == set(by_status)
+    assert fake.kinds.count("personal") == len(by_status)
+
 
 
 def test_report_pipeline_not_configured_makes_zero_calls(
@@ -2184,7 +2215,7 @@ def test_report_pipeline_cancel_stops_between_units(
     assert manager.get(job["id"]).status == "cancelled"
 
 
-def test_class_cause_digest_invalidates_class_narrative(
+def test_cause_edit_retains_saved_reports_until_explicit_update(
     class_analysis_api_client,
 ) -> None:
     """错因变化 → 班级摘要变化 → 页面 stale，重整理重新生成叙述。"""
@@ -2200,7 +2231,7 @@ def test_class_cause_digest_invalidates_class_narrative(
     manager.wait(job["id"], timeout=10)
     entry = ClassAnalysisStateStore(reports_dir).load(sid)["class_reports"]["1 班"]
     # 错因摘要已并入 input_digest：不再单列 cause_digest 字段。
-    assert entry["status"] == "ready" and entry["input_digest"]
+    assert entry["status"] == "ready" and "input_digest" not in entry
     page = client.get(f"/api/sessions/{sid}/class-analysis").json()
     assert page["stale"] is False
 
@@ -2217,15 +2248,17 @@ def test_class_cause_digest_invalidates_class_narrative(
     )
     assert edit.status_code == 200, edit.text
     page = client.get(f"/api/sessions/{sid}/class-analysis").json()
-    assert page["stale"] is True
+    assert page["narrative"]["key_findings"] == entry["narrative"]["key_findings"]
+    assert ClassAnalysisStateStore(reports_dir).load(sid)["class_reports"]["1 班"]["narrative"] == entry["narrative"]
 
     fake.kinds.clear()
     second = _pipeline_via_api(client, sid)
     manager.wait(second["id"], timeout=10)
     # 错法名变化同时进入个人报告输入指纹：该班叙述与两名学生的报告都重生成。
-    assert fake.kinds == ["class", "personal", "personal"]
+    assert fake.kinds == []
     page = client.get(f"/api/sessions/{sid}/class-analysis").json()
     assert page["stale"] is False
+
 
 
 def test_class_narrative_store_hit_skips_model_call(
@@ -2236,32 +2269,12 @@ def test_class_narrative_store_hit_skips_model_call(
         class_analysis_api_client
     )
     from backend.class_analysis import ClassAnalysisStateStore
-    from backend.report_pipeline import (
-        class_cause_digest,
-        class_report_input_digest,
-    )
-    from backend.report_results import prompt_version
-    from backend.session_analysis import (
-        assemble_session_analysis,
-        split_session_analysis_by_class,
-    )
-
     _patch_configured(monkeypatch, True)
-    data = assemble_session_analysis(db, sid, data_root=reports_dir.parent)
-    group = split_session_analysis_by_class(data)["1 班"]
-    digest = class_report_input_digest(
-        db,
-        sid,
-        group,
-        cause_digest=class_cause_digest(
-            {}, [student.student_id for student in group.students]
-        ),
-    )
     store = ClassAnalysisStateStore(reports_dir)
     store.save(sid, class_reports={"1 班": {
         "narrative": dict(CLASS_NARRATIVE),
-        "input_digest": digest,
-        "prompt_version": prompt_version("class_report"),
+        "input_digest": "legacy-input",
+        "prompt_version": "legacy-class-report",
         "generated_at": "2024-01-01T00:00:00",
         "status": "ready",
     }})
@@ -2274,6 +2287,7 @@ def test_class_narrative_store_hit_skips_model_call(
     entry = store.load(sid)["class_reports"]["1 班"]
     assert entry["status"] == "ready"
     assert entry["narrative"]["key_findings"] == CLASS_NARRATIVE["key_findings"]
+
 
 
 def test_class_report_renders_data_with_placeholder_before_pipeline(
@@ -2437,3 +2451,187 @@ def test_auto_pipeline_trigger_closure_used_by_grading_run(
     manager.wait(jobs[0].id, timeout=10)
     assert manager.get(jobs[0].id).status == "succeeded"
 
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "invalid", "success"])
+def test_class_update_replaces_only_success_and_preserves_source_on_failure(class_analysis_api_client, outcome):
+    from types import SimpleNamespace
+    from backend.class_analysis import ClassAnalysisStateStore
+    from backend.report_pipeline import generate_session_class_reports
+    client, db, sid, reports_dir, manager, holder, monkeypatch = class_analysis_api_client
+    store = ClassAnalysisStateStore(reports_dir)
+    previous = {"narrative": dict(CLASS_NARRATIVE), "status": "ready", "generated_at": "2000-01-01T00:00:00",
+                "source": {"TEST-saved-table": True}, "student_ids": [1, 2]}
+    store.save(sid, class_reports={"1 班": previous})
+    context = SimpleNamespace(raise_if_cancelled=lambda: None, report=lambda *args: None)
+    fake = FakeLLMClient(error=TimeoutError("TEST-failed")) if outcome == "timeout" else FakeLLMClient(
+        narrative={"invalid": True} if outcome == "invalid" else CLASS_NARRATIVE)
+    args = dict(db=db, session_id=sid, reports_dir=reports_dir, data_root=reports_dir.parent, client=fake)
+    reused = generate_session_class_reports(context, **args)
+    assert reused["skipped"] == 1 and fake.calls == 0
+    result = generate_session_class_reports(context, **args, regenerate_existing=True)
+    saved = store.load(sid)["class_reports"]["1 班"]
+    if outcome == "success":
+        assert result["generated"] == 1 and result["failed"] == 0
+        assert saved["source"] != previous["source"]
+        assert saved["generated_at"] != previous["generated_at"]
+        assert "input_digest" not in saved and "prompt_version" not in saved
+    else:
+        assert result["generated"] == 0 and result["failed"] == 1
+        assert {key: saved[key] for key in previous} == previous
+        assert saved["last_generation_failed"] is True
+
+
+def test_corrupt_class_state_read_is_unchanged_and_generation_makes_no_calls(tmp_path):
+    from types import SimpleNamespace
+    from backend.class_analysis import ClassAnalysisStateStore, run_cause_analysis
+    from backend.report_pipeline import run_report_pipeline
+    directory = tmp_path / "TEST-reports"
+    store = ClassAnalysisStateStore(directory)
+    path = store._path(7)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"{TEST-corrupt-saved-report")
+    before = {item.relative_to(directory): item.read_bytes() for item in directory.rglob('*') if item.is_file()}
+    assert store.load(7)["read_error"]
+    calls = []
+    context = SimpleNamespace(payload={"session_id": 7}, raise_if_cancelled=lambda: None, report=lambda *args: None)
+    with pytest.raises(ValueError):
+        store.save(7, auto_generate=False)
+    with pytest.raises(ValueError):
+        run_cause_analysis(context, db=SimpleNamespace(db_path=tmp_path / "TEST.db"), data_root=tmp_path,
+                           store=store, llm_client_factory=lambda: calls.append(True))
+    with pytest.raises(ValueError):
+        run_report_pipeline(context, db_path=tmp_path / "TEST.db", reports_dir=directory, data_root=tmp_path,
+                            llm_client_factory=lambda: calls.append(True))
+    assert calls == []
+    assert before == {item.relative_to(directory): item.read_bytes() for item in directory.rglob('*') if item.is_file()}
+
+
+def test_key_step_states_keep_dependencies_uncertain_and_unlinked_points() -> None:
+    from types import SimpleNamespace
+    from backend.step_diagnosis import step_states
+    steps = tuple({"step_id": f"S{i}", "part_id": "Q1", "step_score": 2,
+                   "evidence_point_ids": [f"p{i}"]} for i in range(1, 6))
+    projected = SimpleNamespace(steps=steps,
+        evidence_points={f"p{i}": {"depends_on": ["p1"] if i in (2, 3) else []} for i in range(1, 6)},
+        point_links={})
+    records = [{"step_id": f"S{i}", "part_id": "Q1", "achievement": "none", "score_awarded": 0}
+               for i in range(1, 6)]
+    records[2]["carried_error_from"] = "S1"
+    records[3]["achievement"] = "uncertain"
+    assert step_states(projected, records) == {
+        "S1": "independent", "S2": "carried", "S3": "met", "S4": "uncertain", "S5": "independent",
+    }
+    assert step_states(projected, records[1:])["S1"] == "unknown"
+    assert step_states(projected, records[1:])["S2"] == "carried"
+
+
+def test_key_step_diagnosis_keeps_final_scores_and_deduplicates_saved_causes(tmp_path, question_bank_database) -> None:
+    from tests.test_analysis_report import _seed_report_knowledge
+    from backend.step_diagnosis import build_session_step_diagnosis, apply_step_diagnosis
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
+    db.initialize()
+    sid = _seed_analysis_session(db, tmp_path)
+    session = db.sessions.get_grading_session(sid)
+    rubric_path = Path(session["rubric_path"])
+    rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    rubric["questions"][0]["question_type"] = "calculation"
+    rubric_path.write_text(json.dumps(rubric), encoding="utf-8")
+    bank = _seed_report_knowledge((db, sid, tmp_path), question_bank_database, type_mode=True)
+    with sqlite3.connect(db.db_path) as conn:
+        students = conn.execute("SELECT student_id, id FROM session_results WHERE session_id=? ORDER BY student_id", (sid,)).fetchall()
+        for student_id, result_id in students:
+            details = conn.execute("SELECT question_id, score_awarded FROM session_details WHERE result_id=?", (result_id,)).fetchall()
+            metadata = {qid: {"step_assessments": [{"step_id": "S1", "part_id": qid,
+                "achievement": "full" if score == 60 else "partial", "score_awarded": score,
+                "missing_or_error": "合成错误"}]} for qid, score in details}
+            raw = {"grading_completeness": {"status": "complete"}, "detail_metadata": metadata}
+            conn.execute("UPDATE session_results SET raw_json=? WHERE id=?", (json.dumps(raw), result_id))
+        conn.execute("UPDATE session_details SET ai_score_awarded=score_awarded")
+        first_id = students[0][0]
+        conn.execute("INSERT INTO teacher_score_locks(session_id,scan_batch_id,student_id,question_id,score_awarded,max_score,source_target_type,source_target_id,revision) VALUES(?, 'test', ?, 'Q2', 30, 40, 'manual', 1, 1)", (sid, first_id))
+    ids = [row[0] for row in students]
+    before = db.results.get_active_assessment_evidence(student_ids=ids, session_ids=[sid])
+    diagnosis = build_session_step_diagnosis(db, sid, student_ids=ids, question_bank_path=bank.path)
+    hotspot = next(item for item in diagnosis.summary["hotspots"] if item["key"] == bank.skill_key)
+    assert (hotspot["independent"], hotspot["observed"], hotspot["confirmed_ai"]) == (2, 2, 1)
+    assert diagnosis.summary["confirmed_ai_rows"] == 1
+    assert diagnosis.students[first_id]["Q2"]["source"] == "teacher_confirmed_ai"
+    assert db.results.get_active_assessment_evidence(student_ids=ids, session_ids=[sid]) == before
+    page = {"questions": [{"question_id": qid, "causes": [{"reason": "同一合成错法", "category": "计算与化简", "step_ids": ["S1"],
+        "evidence": [{"student_ids": ids}]}]} for qid in ("Q1", "Q2")]}
+    for question in page["questions"]:
+        question["causes"].append({"reason": "整题未作答", "kind": "response_state", "category": "未作答", "evidence": [{"student_ids": ids}]})
+    apply_step_diagnosis(page, diagnosis)
+    assert hotspot["causes_status"] == "ready"
+    assert hotspot["causes"][0]["count"] == 2
+    assert hotspot["causes"][0]["questions"] == ["Q1", "Q2"]
+    for question in page["questions"]:
+        question["causes"][0]["step_ids"] = []
+    apply_step_diagnosis(page, diagnosis)
+    assert hotspot["causes_status"] == "unclassified" and not hotspot["causes"]
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE teacher_score_locks SET score_awarded=10 WHERE session_id=?", (sid,))
+    changed = build_session_step_diagnosis(db, sid, student_ids=ids, question_bank_path=bank.path)
+    assert changed.summary["excluded_teacher_total_only"] == 1
+    assert changed.students[first_id]["Q2"] == {"availability": "teacher_total_only", "source": None, "steps": []}
+    with sqlite3.connect(db.db_path) as conn:
+        row = conn.execute("SELECT raw_json FROM session_results WHERE id=?", (students[0][1],)).fetchone()
+        raw = json.loads(row[0])
+        raw["teacher_reviews"] = {"Q2": {"revision": 1, "scan_batch_id": "test", "score_awarded": 10,
+            "steps": [{"step_id": "S1", "part_id": "Q2", "score_awarded": 10, "max_score": 40,
+                       "evidence_point_ids": ["p1"], "deduction_source": "teacher", "teacher_note": "教师确认的缺项"}]}}
+        conn.execute("UPDATE session_results SET raw_json=? WHERE id=?", (json.dumps(raw), students[0][1]))
+    teacher = build_session_step_diagnosis(db, sid, student_ids=ids, question_bank_path=bank.path)
+    assert teacher.students[first_id]["Q2"]["source"] == "teacher"
+    assert teacher.students[first_id]["Q2"]["steps"][0]["reason"] == "教师确认的缺项"
+    with sqlite3.connect(db.db_path) as conn:
+        row = conn.execute("SELECT raw_json FROM session_results WHERE id=?", (students[1][1],)).fetchone()
+        raw = json.loads(row[0])
+        raw["detail_metadata"]["Q2"]["answer_is_blank_or_no_valid_work"] = True
+        conn.execute("UPDATE session_results SET raw_json=? WHERE id=?", (json.dumps(raw), students[1][1]))
+    blank = build_session_step_diagnosis(db, sid, student_ids=ids, question_bank_path=bank.path)
+    assert blank.students[students[1][0]]["Q2"]["steps"][0]["state"] == "blank"
+    assert blank.students[students[1][0]]["Q2"]["steps"][0]["reason"] == ""
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("UPDATE grading_sessions SET curriculum_volume_id='bnu24-math-g8-lower' WHERE id=?", (sid,))
+    rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    rubric["questions"][1]["steps"][0]["core_goal"] = "评分步骤摘要"
+    rubric_path.write_text(json.dumps(rubric), encoding="utf-8")
+    point_text = build_session_step_diagnosis(db, sid, student_ids=ids, question_bank_path=bank.path)
+    assert point_text.summary["hotspots"] == [] and point_text.questions == {}
+    assert point_text.students[first_id]["Q2"]["scope"] == "point_text"
+    assert point_text.students[first_id]["Q2"]["steps"][0]["key_steps"] == []
+    assert point_text.students[first_id]["Q2"]["steps"][0]["goal"] == "合成判定点"
+    rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    rubric["questions"][0]["question_type"] = "choice"
+    rubric_path.write_text(json.dumps(rubric), encoding="utf-8")
+    objective = build_session_step_diagnosis(db, sid, student_ids=ids, question_bank_path=bank.path)
+    assert all("Q1" not in items for items in objective.students.values())
+
+
+def test_legacy_class_body_is_reused_in_preflight_and_pipeline_without_rewriting(class_analysis_api_client):
+    from backend.class_analysis import ClassAnalysisStateStore
+    client, db, sid, reports_dir, manager, holder, monkeypatch = class_analysis_api_client
+    _patch_configured(monkeypatch, True)
+    fake = PipelineClient()
+    holder["client"] = fake
+    first = _pipeline_via_api(client, sid)
+    manager.wait(first["id"], timeout=10)
+    assert manager.get(first["id"]).status == "succeeded"
+    store = ClassAnalysisStateStore(reports_dir)
+    entry = store.load(sid)["class_reports"]["1 班"]
+    store.save(sid, class_reports={}, **entry)
+    path = store._path(sid)
+    before = path.read_bytes()
+    generated_at = entry["generated_at"]
+    fake.kinds.clear()
+    preflight = client.get(f"/api/sessions/{sid}/report-pipeline")
+    assert preflight.status_code == 200
+    assert preflight.json()["class_reports"] == {"pending": 0, "total": 1}
+    second = _pipeline_via_api(client, sid)
+    manager.wait(second["id"], timeout=10)
+    assert manager.get(second["id"]).status == "succeeded"
+    assert fake.kinds == []
+    assert path.read_bytes() == before
+    assert store.load(sid)["generated_at"] == generated_at

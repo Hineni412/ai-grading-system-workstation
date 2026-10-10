@@ -1081,6 +1081,16 @@ def test_group_matching_reuses_quotas_and_preserves_complete_fresh_output(direct
     from dataclasses import replace
     import question_bank.recommendation.personalized as engine
     from integration.result_cache import ResultCache
+    import pickle
+
+    first_key = engine._MatchingCacheValue(("TEST-profile", -1))
+    colliding_key = engine._MatchingCacheValue(("TEST-profile", -2))
+    assert hash(first_key) == hash(colliding_key) and first_key != colliding_key
+    assert len({first_key: "first", colliding_key: "second"}) == 2
+    expected_hash = hash(first_key)
+    object.__setattr__(first_key, "_value_hash", expected_hash ^ 1)
+    restored_key = pickle.loads(pickle.dumps(first_key))
+    assert restored_key == first_key and hash(restored_key) == expected_hash
 
     monkeypatch.setattr(engine, "_GROUP_MATCHING_CACHE", ResultCache(1, max_bytes=64 * 1024 * 1024))
     module = direct_module
@@ -1100,8 +1110,34 @@ def test_group_matching_reuses_quotas_and_preserves_complete_fresh_output(direct
         return original(**kwargs)
 
     monkeypatch.setattr(module, "evaluate_candidates", evaluate)
-    initial = module.chapter_groups(diagnosis=diagnosis, config=config, graded_activities=[])
+    profile_key_walks = []
+    cache_values = engine._cache_values
+
+    def track_profile_values(value, *, _memo=None):
+        if isinstance(value, dict) and "student_id" in value and _memo is not None:
+            retained = _memo.get(id(value))
+            if retained is None or retained[0] is not value:
+                profile_key_walks.append(value["student_id"])
+        return cache_values(value, _memo=_memo)
+
+    mastery_scans = []
+    original_mastery = module._mastery_snapshot
+
+    class TracedMastery(dict):
+        def items(self):
+            mastery_scans.append(len(self))
+            return super().items()
+
+    def mastery_snapshot(diagnosis):
+        return TracedMastery(original_mastery(diagnosis))
+
+    with monkeypatch.context() as tracking:
+        tracking.setattr(engine, "_cache_values", track_profile_values)
+        tracking.setattr(module, "_mastery_snapshot", mastery_snapshot)
+        initial = module.chapter_groups(diagnosis=diagnosis, config=config, graded_activities=[])
     assert initial["groups"] and initial["summary"]["grouped_student_count"] == 2
+    assert profile_key_walks == []
+    assert len(mastery_scans) == 3 and all(mastery_scans)
 
     def fresh_pools(**kwargs):
         return original(**kwargs, _borrow_inputs=True)["pools"]
@@ -1156,7 +1192,7 @@ def test_group_matching_reuses_quotas_and_preserves_complete_fresh_output(direct
     with monkeypatch.context() as knowledge:
         knowledge.setattr(module, "current_knowledge", deepcopy(module.current_knowledge))
         # The resolver uses a validated release; simulate its next immutable release identity.
-        knowledge.setattr(module.current_knowledge, "content_hash", "TEST-new-knowledge-content")
+        knowledge.setattr(module.current_knowledge, "release_id", "TEST-new-knowledge-release")
         module._group_matching_pools(**unchanged, config=individual, evaluation_memo={})
     assert len(evaluations) == before + 1
 
@@ -1354,13 +1390,13 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
     assert cached_eligibility_reads < len(source["students"])
     # The same profiles serve the first evaluation and the resulting cards.
     # Serialize them once per grouping request, even when revisited.
-    assert len(profile_hash_requests) > len(profile_serializations)
-    assert len(profile_serializations) == len(set(profile_hash_requests))
+    assert profile_hash_requests == []
+    assert profile_serializations == []
     original_entries = direct_module._candidate_entries
 
     def entries_without_reuse(**kwargs):
         kwargs.update(source_part_cache=None, target_match_cache=None, source_links=None, eligibility_cache=None,
-                      target_evaluation_cache=None, preference_cache=None, _input_hashes=None)
+                      target_evaluation_cache=None, preference_cache=None, _input_values=None)
         return original_entries(**kwargs)
 
     with monkeypatch.context() as uncached:
@@ -1411,9 +1447,6 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
             "max_questions_per_skill": 10,
             "target_keys": targets,
             "group_scope_keys": [BNU_CHAPTER4],
-            "group_source_version": checked.json()["grouping"]["selection"][
-                "source_version"
-            ],
         },
     )
     assert created.status_code == 200, created.text
@@ -1555,9 +1588,6 @@ def test_group_adopt_stores_activities_for_all_scope_students(
             "difficulty_max": 7,
             "target_keys": [BNU_TARGET],
             "group_scope_keys": [BNU_CHAPTER4],
-            "group_source_version": checked.json()["grouping"]["selection"][
-                "source_version"
-            ],
         },
     )
     assert created.status_code == 200, created.text
@@ -1758,6 +1788,11 @@ def test_legacy_embedded_activities_still_exclude_originals_on_edit(
 
 def test_concurrent_teacher_edits_allow_only_one_revision(direct_module):
     draft = _make_direct(direct_module)
+    assert not {"source_version", "result_version", "engine_version"}.intersection(draft)
+    assert draft["generated_at"] and draft["needs_update"] is False
+    with connect(direct_module.db_path) as conn:
+        conn.execute("UPDATE questions SET question_text=question_text || ' TEST-read-old' WHERE id=900")
+    assert direct_module.ensure_current(draft["draft_id"]) == draft
     item = draft["students"][0]["items"][0]
 
     def apply(token):
@@ -1782,6 +1817,20 @@ def test_concurrent_teacher_edits_allow_only_one_revision(direct_module):
         results = list(pool.map(apply, ("b", "c")))
     assert sorted(results) == ["applied", "conflict"]
     assert direct_module.get(draft["draft_id"])["revision"] == 2
+    # Compare real times, including SQLite's space-separated timestamps and
+    # the generated result's ISO timestamp. A same-day edit only adds a reminder.
+    with connect(direct_module.db_path) as conn:
+        conn.execute("UPDATE personalized_recommendation_drafts SET created_at=? WHERE draft_id=?",
+                     (draft["generated_at"], draft["draft_id"]))
+        conn.execute("UPDATE questions SET updated_at='2026-07-30 09:00:00' WHERE id=?",
+                     (item["question_id"],))
+    viewed = direct_module.ensure_current(draft["draft_id"])
+    assert viewed["needs_update"] is True and viewed["revision"] == 2
+    assert direct_module.get_by_request_token("a" * 32) == viewed
+    with connect(direct_module.db_path) as conn:
+        stored = json.loads(conn.execute("SELECT draft_json FROM personalized_recommendation_drafts WHERE draft_id=?",
+                                         (draft["draft_id"],)).fetchone()[0])
+    assert stored["needs_update"] is False
 
 
 def _selection_candidate(qid, text, key=BNU_TARGET, difficulty=5, **extra):
@@ -1961,15 +2010,21 @@ def test_personal_exchange_improves_coverage_with_original_paper_limits(blocker)
     assert [e["candidate"]["question_id"] for e, _ in shared] == [1, 2]
 
 
-@pytest.mark.parametrize("written_limit, similar", [(0, False), (2, False), (2, True)])
-def test_two_question_exchange_escapes_single_exchange_skill_conflict(written_limit, similar):
+@pytest.mark.parametrize("written_limit, similar, same_skill", [
+    (0, False, False), (1, False, False), (2, False, False),
+    (2, True, False), (2, False, True),
+])
+@pytest.mark.parametrize("use_pair_memo", [False, True])
+def test_two_question_exchange_escapes_single_exchange_skill_conflict(written_limit, similar, same_skill, use_pair_memo):
     from question_bank.recommendation.personalized import _choose_practice_entries, _improve_personal_selection
     groups = {}
     for qid, skills, needs in ((1, ["sk_x", "sk_y"], "abcd"), (2, ["sk_z"], "efg"),
                               (3, ["sk_x"], "abcd"), (4, ["sk_y", "sk_z"], "efgh")):
         candidate = _selection_candidate(qid, f"合成不同任务{chr(64+qid)}", stable_keys=skills)
-        if qid == 4 and written_limit == 0:
+        if (qid == 4 and written_limit == 0) or (qid in (3, 4) and written_limit == 1):
             candidate["question_type"] = "解答题"
+        if same_skill and qid in (3, 4):
+            candidate["stable_keys"].append("sk_TEST_shared")
         if similar and qid in (3, 4):
             candidate["question_text"] = "合成：选择适当方法求下列长度并写出过程"
             candidate["stable_keys"].append("kp_TEST_similarity")
@@ -1980,16 +2035,131 @@ def test_two_question_exchange_escapes_single_exchange_skill_conflict(written_li
     start = [(groups[qid][0], groups[qid]) for qid in (1, 2)]
     original = deepcopy(groups)
     audit = []
-    chosen = _improve_personal_selection(groups, start, 2, config, audit)
-    expected = {1, 2} if written_limit == 0 or similar else {3, 4}
-    assert {entry["candidate"]["question_id"] for entry, _ in chosen} == expected
+    pair_memo = {} if use_pair_memo else None
+    chosen = _improve_personal_selection(groups, start, 2, config, audit, pair_memo=pair_memo)
+    expected = [1, 2] if written_limit < 2 or similar or same_skill else [4, 3]
+    assert [entry["candidate"]["question_id"] for entry, _ in chosen] == expected
     assert groups == original
-    if audit:
-        assert audit[0]["removed_question_ids"] == [1, 2]
-        assert set(audit[0]["added_question_ids"]) == {3, 4}
-        assert (audit[0]["covered_before"], audit[0]["covered_after"]) == (7, 8)
-    selected = _choose_practice_entries([e for g in groups.values() for e in g], 2, config)
-    assert {e["candidate"]["question_id"] for e, _ in selected} == expected
+    expected_audit = [] if expected == [1, 2] else [{
+        "removed_question_id": 1, "added_question_id": 4,
+        "added_target_keys": ["h"], "removed_target_keys": [],
+        "covered_before": 7, "covered_after": 8,
+        "full_response_before": 7, "full_response_after": 8,
+        "removed_question_ids": [1, 2], "added_question_ids": [4, 3],
+    }]
+    assert audit == expected_audit
+    repeated_audit = []
+    assert _improve_personal_selection(groups, start, 2, config, repeated_audit, pair_memo=pair_memo) == chosen
+    assert repeated_audit == expected_audit
+    other_groups = deepcopy(groups)
+    for group in other_groups.values():
+        for entry in group:
+            entry["student_id"] = "TEST-OTHER"
+    other_start = [(other_groups[qid][0], other_groups[qid]) for qid in (1, 2)]
+    other_original = deepcopy(other_groups)
+    other_audit = []
+    other = _improve_personal_selection(other_groups, other_start, 2, config, other_audit, pair_memo=pair_memo)
+    assert [entry["candidate"]["question_id"] for entry, _ in other] == expected
+    assert other_audit == expected_audit
+    assert other_groups == other_original and groups == original
+    reduced_groups = deepcopy(groups)
+    for entry in reduced_groups[4]:
+        if entry["key"] == "h":
+            entry["practice_purpose"] = "consolidation"
+    reduced_start = [(reduced_groups[qid][0], reduced_groups[qid]) for qid in (1, 2)]
+    reduced_audit = []
+    reduced = _improve_personal_selection(reduced_groups, reduced_start, 2, config, reduced_audit)
+    assert [entry["candidate"]["question_id"] for entry, _ in reduced] == [1, 2]
+    assert reduced_audit == []
+    selected = _choose_practice_entries([e for g in groups.values() for e in g], 2, config, pair_memo=pair_memo)
+    assert [e["candidate"]["question_id"] for e, _ in selected] == expected
+
+
+@pytest.mark.parametrize("use_pair_memo", [False, True])
+def test_personal_exchange_layer_choices_follow_each_removed_position(use_pair_memo):
+    from question_bank.recommendation.personalized import _improve_personal_selection
+
+    groups = {}
+    for qid, skill, needs, radius in ((1, "sk_a", "ab", None), (2, "sk_b", "bc", None),
+                                      (3, "sk_c", "d", None), (4, "sk_b", "abce", 2),
+                                      (5, "sk_a", "abce", 1)):
+        candidate = _selection_candidate(qid, f"合成独立卷位置任务{qid}", stable_keys=[skill])
+        groups[qid] = [{"candidate": candidate, "student_id": "TEST", "key": key,
+            "selection_kind": "direct", "practice_purpose": "remediation", "practice_role": "full_response",
+            "distance": 0., "preference": 0., "match_level": 1,
+            **({"reference_radius": radius} if radius is not None else {})} for key in needs]
+    original = deepcopy(groups)
+    start = [(groups[qid][0], groups[qid]) for qid in (1, 2, 3)]
+    config = PersonalizedRecommendationConfig(remediation_only=True)
+    pair_memo = {} if use_pair_memo else None
+    audit = []
+    selected = _improve_personal_selection(groups, start, 3, config, audit, pair_memo=pair_memo)
+    assert [entry["candidate"]["question_id"] for entry, _ in selected] == [1, 4, 3]
+    assert audit == [{"removed_question_id": 2, "added_question_id": 4,
+        "added_target_keys": ["e"], "removed_target_keys": [],
+        "covered_before": 4, "covered_after": 5,
+        "full_response_before": 4, "full_response_after": 5}]
+    assert groups == original and [entry["candidate"]["question_id"] for entry, _ in start] == [1, 2, 3]
+
+
+@pytest.mark.parametrize("use_pair_memo", [False, True])
+@pytest.mark.parametrize("left_blocks_earlier", [False, True])
+def test_two_question_exchange_layers_include_first_addition_and_removed_groups(use_pair_memo, left_blocks_earlier):
+    from question_bank.recommendation.personalized import _improve_personal_selection
+
+    groups = {}
+    for qid, skills, needs, radius in (
+        (1, ["sk_x", "sk_y"], "abcd", 1), (2, ["sk_z"], "efg", 1),
+        (3, ["sk_x", *(["sk_z"] if left_blocks_earlier else [])], "abcdi", 1),
+        (4, ["sk_y"], "efgh", 2),
+    ):
+        candidate = _selection_candidate(qid, f"合成独立交换分层任务{qid}", stable_keys=skills)
+        groups[qid] = [{"candidate": candidate, "student_id": "TEST", "key": key,
+            "selection_kind": "direct", "practice_purpose": "remediation", "practice_role": "full_response",
+            "distance": 0., "preference": 0., "match_level": 1, "reference_radius": radius} for key in needs]
+    original = deepcopy(groups)
+    start = [(groups[qid][0], groups[qid]) for qid in (1, 2)]
+    config = PersonalizedRecommendationConfig(remediation_only=True)
+    pair_memo = {} if use_pair_memo else None
+    audit = []
+    selected = _improve_personal_selection(groups, start, 2, config, audit, pair_memo=pair_memo)
+    assert [entry["candidate"]["question_id"] for entry, _ in selected] == ([3, 4] if left_blocks_earlier else [3, 2])
+    expected_change = {"removed_question_id": 1, "added_question_id": 3,
+        "added_target_keys": ["h", "i"] if left_blocks_earlier else ["i"], "removed_target_keys": [],
+        "covered_before": 7, "covered_after": 9 if left_blocks_earlier else 8,
+        "full_response_before": 7, "full_response_after": 9 if left_blocks_earlier else 8}
+    if left_blocks_earlier:
+        expected_change.update(removed_question_ids=[1, 2], added_question_ids=[3, 4])
+    assert audit == [expected_change]
+    repeated_audit = []
+    assert _improve_personal_selection(groups, start, 2, config, repeated_audit, pair_memo=pair_memo) == selected
+    assert repeated_audit == audit and groups == original
+
+
+@pytest.mark.parametrize("use_pair_memo", [False, True])
+def test_personal_exchange_keeps_uncached_explicit_training_key_counting(use_pair_memo):
+    from question_bank.recommendation.personalized import _improve_personal_selection
+
+    groups = {}
+    for qid, stable, training, needs in (
+        (1, "sk_gate", "sk_other", "ab"), (2, "sk_second", "sk_second", "c"),
+        (3, "sk_gate", "sk_gate", "cd"),
+    ):
+        candidate = _selection_candidate(qid, f"合成独立兼容目标任务{qid}", stable_keys=[stable], training_target_keys=[training])
+        groups[qid] = [{"candidate": candidate, "student_id": "TEST", "key": key,
+            "selection_kind": "direct", "practice_purpose": "remediation", "practice_role": "full_response",
+            "distance": 0., "preference": 0., "match_level": 1} for key in needs]
+    original = deepcopy(groups)
+    start = [(groups[qid][0], groups[qid]) for qid in (1, 2)]
+    audit = []
+    selected = _improve_personal_selection(groups, start, 2,
+        PersonalizedRecommendationConfig(remediation_only=True), audit, pair_memo={} if use_pair_memo else None)
+    assert [entry["candidate"]["question_id"] for entry, _ in selected] == ([1, 3] if use_pair_memo else [1, 2])
+    assert audit == ([{"removed_question_id": 2, "added_question_id": 3,
+        "added_target_keys": ["d"], "removed_target_keys": [],
+        "covered_before": 3, "covered_after": 4,
+        "full_response_before": 3, "full_response_after": 4}] if use_pair_memo else [])
+    assert groups == original
 
 
 def test_task_need_ids_pair_each_loss_with_its_skill_once():
@@ -2360,7 +2530,7 @@ def _seed_targeted_snapshot_variants(module):
         conn.execute("INSERT INTO knowledge_graph_releases(release_id,schema_version,taxonomy_revision,content_hash,payload_json,status,source_reference,created_by) "
                      "VALUES('kgr_TEST_targeted_old','knowledge-graph-release-v1',1,?,'{}','retired','TEST','TEST')", ('f' * 64,))
     inputs = {question.question_id: question for question in QuestionAnalysisInputLoader(
-        db_path=module.db_path, data_root=module.data_root).load([100, 105, 106])}
+        db_path=module.db_path, data_root=module.data_root).load([100, 105, 106, 107])}
     with connect(module.db_path) as conn:
         criterion = json.loads(conn.execute("SELECT criteria_json FROM training_criterion_versions WHERE question_id=100").fetchone()[0])
         criterion["source_content_hash"] = inputs[100].criterion_source_content_hash
@@ -2368,17 +2538,23 @@ def _seed_targeted_snapshot_variants(module):
         conn.execute("UPDATE training_criterion_versions SET source_content_hash=?,criteria_json=?,criteria_hash=? WHERE question_id=100",
                      (inputs[100].criterion_source_content_hash, payload, hashlib.sha256(payload.encode()).hexdigest()))
         conn.execute("UPDATE training_criterion_heads SET current_source_hash=? WHERE question_id=100", (inputs[100].criterion_source_content_hash,))
-        for qid in (100, 105, 106):
+        for qid in (100, 105, 106, 107):
             row = dict(conn.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone())
             conn.execute("INSERT INTO question_part_difficulty_features(question_id,part_id,features_json,formula_difficulty,formula_version,source_content_hash,is_active) "
                          "VALUES(?,'part1','{}',7,'std-difficulty-v1',?,1)", (qid, _legacy_question_content_fingerprint(row)))
-        for qid in (105, 106):
-            evidence = {"version_id": f"TEST-semantic-{qid}", "parts": [{"part_id": "part1", "label": "TEST-part",
+        for qid in (105, 106, 107):
+            evidence = {"version_id": f"TEST-semantic-{qid}", "schema_version": "question-solution-evidence-v1",
+                "question_id": qid, "auxiliary_rules": [], "rationale": "TEST-projection", "confidence": 1.,
+                "parts": [{"part_id": "part1", "label": "TEST-part", "canonical_answer": "7",
+                "accepted_forms": [], "full_answer": "7", "proof_obligations": [], "visual_requirements": [],
+                "deduction_policy": ["TEST-answer-mismatch"], "allow_alternative_methods": True,
                 "response_mode": "exact_objective", "evidence_points": [{"evidence_point_id": "p1", "target": "TEST-compute",
-                "observable_evidence": "TEST-result", "fine_term_links": []}]}]}
+                "observable_evidence": "TEST-result", "fine_term_links": [], "equivalent_rules": [], "counterexamples": []}]}]}
             evidence_ids = {}
             for label, graph_id, created_at in (("current", module.current_knowledge.release_id, "2026-07-30 08:00:00"),
                                                  ("historical", "kgr_TEST_targeted_old", "2026-07-30 08:00:01")):
+                if qid == 107 and label == "historical":
+                    continue
                 if qid == 106:
                     graph_id = module.current_knowledge.release_id
                 version_id = hashlib.sha256(f"TEST-{qid}-{label}".encode()).hexdigest()
@@ -2399,6 +2575,8 @@ def _seed_targeted_snapshot_variants(module):
             payload = json.dumps(criterion, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             conn.execute("UPDATE training_criterion_versions SET criteria_json=?,criteria_hash=? WHERE question_id=?",
                          (payload, hashlib.sha256(payload.encode()).hexdigest(), qid))
+            if qid == 107:
+                conn.execute("UPDATE training_criterion_versions SET status='proposed',quality_status='failed',source_kind='combined_model' WHERE question_id=?", (qid,))
         template = conn.execute("SELECT * FROM training_criterion_versions WHERE question_id=100").fetchone()
         for qid in range(10000, 11000):
             _insert_bnu24_questions(conn, ((qid, str(qid), "填空题", f"TEST-outside-selection-{qid}", "7", BNU_TARGET),))
@@ -2420,20 +2598,54 @@ def test_targeted_source_snapshot_matches_full_read_and_bounds_all_initial_table
     ids = [*reversed(range(100, 112)), 100, 31, 32, 33, 99999]
     settings = dict(question_ids=ids, excluded_question_ids={103}, knowledge_keys=knowledge_keys,
                     candidate_config=PersonalizedRecommendationConfig(difficulty_min=1, difficulty_max=8))
-    with _capture_initial_source_reads(monkeypatch, set(ids), legacy=True) as before:
-        expected = direct_module._source_snapshot_uncached(**settings)
+    from contextlib import nullcontext
+    import question_bank.recommendation.personalized as personalized
+    from question_bank.solution_evidence import part_assessments
+    from question_bank.training_criteria import TrainingCriterionModule, analysis
+
+    computations, profile_reads = [], []
+    compute = analysis._compute_question_content_hash
+    load_profiles = part_assessments.load_profiles
+    read_many = TrainingCriterionModule.read_many
+
+    def counted_hash(question):
+        computations.append(question.question_id)
+        return compute(question)
+
+    def counted_profiles(*args, **kwargs):
+        profile_reads.append(tuple(args[1]))
+        return load_profiles(*args, **kwargs)
+
+    def read_without_profiles(module, questions, **kwargs):
+        kwargs.pop("profiles", None)
+        return read_many(module, questions, **kwargs)
+
+    monkeypatch.setattr(analysis, "_compute_question_content_hash", counted_hash)
+    monkeypatch.setattr(part_assessments, "load_profiles", counted_profiles)
+    with monkeypatch.context() as old_batch:
+        old_batch.setattr(personalized, "source_content_hash_reuse", nullcontext)
+        old_batch.setattr(TrainingCriterionModule, "read_many", read_without_profiles)
+        with _capture_initial_source_reads(monkeypatch, set(ids), legacy=True) as before:
+            expected = direct_module._source_snapshot_uncached(**settings)
+    old_computations, old_reads = len(computations), len(profile_reads)
+    computations.clear()
+    profile_reads.clear()
     with _capture_initial_source_reads(monkeypatch, set(ids)) as after:
         actual = direct_module._source_snapshot_uncached(**settings)
     assert actual == expected
+    assert len(computations) < old_computations
+    assert len(profile_reads) == old_reads - bool(knowledge_keys)
     candidates, relations, version = actual
-    assert relations and len(version) == 64
+    assert relations and version == ""
     by_id = {candidate["question_id"]: candidate for candidate in candidates}
     assert 100 in by_id and 105 in by_id
-    assert not {31, 32, 33, 101, 103, 104, 99999}.intersection(by_id)
+    assert 104 in by_id  # 已保存资料不因旧来源识别码被预览过滤。
+    assert not {31, 32, 33, 101, 103, 99999}.intersection(by_id)
     assert by_id[100]["image_identity"] and by_id[100]["difficulty_features"]
     assert by_id[100]["practice_tags"]["method"].count("TEST-first-method") == 1
     assert by_id[105]["stable_keys"] == [BNU_TARGET]
     assert by_id[106]["stable_keys"] == [BNU_TARGET]
+    assert by_id[107]["stable_keys"] == [BNU_TARGET]
     assert by_id[105]["part_assessment"] is not None
     assert [candidate["question_id"] for candidate in candidates] == sorted(by_id)
     assert {read["kind"] for read in after} == {"questions", "knowledge_tags", "skill_tags", "features", "evidence_versions", *(["criteria"] if knowledge_keys else [])}
@@ -2470,7 +2682,6 @@ def test_source_snapshot_pool_survives_restart_and_invalidates(
 
     import integration.persistent_entries as persistent_entries
     from integration import data_generation
-    from integration.diagnosis_profile_service import _PROFILE_CALCULATION_STATE
     from question_bank.recommendation import personalized
 
     def restart():
@@ -2522,22 +2733,39 @@ def test_source_snapshot_pool_survives_restart_and_invalidates(
     direct_module._source_snapshot()
     assert calls == [True, True]
 
-    # A code-state change also recomputes.
-    restart()
-    monkeypatch.setattr(
-        "integration.diagnosis_profile_service._PROFILE_CALCULATION_STATE",
-        (*_PROFILE_CALCULATION_STATE, ("TEST-code-change", 1, 1)),
-    )
-    direct_module._source_snapshot()
-    assert calls == [True, True, True]
-    monkeypatch.undo()
-    monkeypatch.setattr(direct_module, "_source_snapshot_uncached", tracked)
-
     # question_ids lookups never persist.
     restart()
     before = set(pool_dir.glob("*.entry"))
     direct_module._source_snapshot(question_ids=[100])
     assert set(pool_dir.glob("*.entry")) == before
+
+
+def test_create_reuses_large_diagnosis_json_and_encoded_event(direct_module, monkeypatch):
+    from question_bank.recommendation import personalized as engine
+    original_json = engine._json
+    calls = []
+
+    def record_json(value):
+        if isinstance(value, dict) and "diagnosis" in value:
+            calls.append("request")
+        elif isinstance(value, dict) and "students" in value and "config" not in value:
+            calls.append("diagnosis")
+        return original_json(value)
+
+    monkeypatch.setattr(engine, "_json", record_json)
+    diagnosis = _direct_diagnosis()
+    diagnosis["students"][0]["student_name"] = 'SYN名字"\\\\引号'
+    _make_direct(direct_module, token="0", max_questions_per_skill=1, diagnosis=diagnosis)
+    assert calls.count("diagnosis") == 1
+    assert calls.count("request") == 1
+    with connect(direct_module.db_path) as connection:
+        row = connection.execute("SELECT input_fingerprint,request_json FROM personalized_recommendation_drafts WHERE request_token=?",
+                                 ("0" * 32,)).fetchone()
+        event = connection.execute("SELECT command_hash FROM personalized_recommendation_events WHERE request_token=?",
+                                   ("0" * 32,)).fetchone()
+    request = json.loads(row["request_json"])
+    assert row["input_fingerprint"] == engine._hash_payload({"diagnosis": request["diagnosis"], "config": request["config"]})
+    assert event["command_hash"] == engine._hash_payload(request)
 
 
 def test_adjustable_rules_and_legacy_defaults(direct_module):
@@ -2800,7 +3028,7 @@ def test_type_group_preview_rechecks_actual_paper_against_individual_coverage(mo
         diagnosis={"students": profiles}, members=("A", "B"), targets=keys, needs=needs,
         config=PersonalizedRecommendationConfig(paper_mode="shared", scope_keys=("kp_bnu24_math_g8_upper_1",),
             question_count=8, max_questions_per_skill=8), candidates=(), relations=(),
-        recent={}, excluded=set(), source_version="TEST", metadata={}, mastery={},
+        recent={}, excluded=set(), metadata={}, mastery={},
         personal_coverage={sid: set(keys) for sid in ("A", "B")})
     assert summary["available_question_count"] == 8
     assert not summary["ready"]
@@ -2849,6 +3077,36 @@ def test_candidate_difficulty_gate_skips_task_expansion_and_keeps_warning_counts
     warning = next(value for value in result["warnings"]["A"] if "目标匹配后" in value)
     assert "目标匹配后 2 道" in warning
     assert "学生适合难度检查后 1 道" in warning
+    extra = deepcopy(accepted)
+    extra["question_id"] = 105
+    fixed_candidates = (rejected, extra, accepted)
+    profile = diagnosis["students"][0]
+    metadata = direct_module._source_practice_metadata(diagnosis)
+    arguments = dict(profile=profile, targets=result["targets"]["A"], candidates=fixed_candidates,
+        metadata=metadata, config=config, supplement_keys=(BNU_TARGET,), excluded=set(),
+        target_evaluation_cache=None, _borrow_inputs=True)
+    match_rows = {}
+    for recent in ({105}, {100}, set(), {100, 105}, {10000}):
+        indexed = direct_module._candidate_entries(**arguments, recent=recent,
+            target_match_cache=match_rows, fixed_candidate_inputs={})
+        fresh = direct_module._candidate_entries(**arguments, recent=recent,
+            target_match_cache=None, fixed_candidate_inputs={})
+        assert indexed == fresh
+        assert [entry["candidate"]["question_id"] for entry in indexed[0]] == [
+            qid for qid in (100, 105) if qid not in recent]
+
+    mutable = deepcopy(accepted)
+    mutable["target_facets"] = []
+    mutable["difficulty"] = 3.5
+    public_arguments = {**arguments, "profile": {"student_id": "A", "score_rate": .5, "weak_points": []},
+                        "targets": [{"stable_key": BNU_TARGET, "source_question_refs": []}],
+                        "candidates": (mutable,), "recent": set(), "_borrow_inputs": False}
+    public_rows = {}
+    assert direct_module._candidate_entries(**public_arguments, target_match_cache=public_rows)[0]
+    mutable["stable_keys"] = []
+    reread = direct_module._candidate_entries(**public_arguments, target_match_cache=public_rows)
+    assert reread == direct_module._candidate_entries(**public_arguments, target_match_cache=None)
+    assert reread[0] == []
 
 
 def test_failed_skill_plan_steps_back_or_caps_at_failed_difficulty():
@@ -3027,7 +3285,8 @@ def test_recent_originals_follow_purpose_in_generation_preview_and_edit(direct_m
                 config=PersonalizedRecommendationConfig(question_count=8, group_scope_keys=(BNU_CHAPTER4,),
                     target_keys=(BNU_TARGET,), purpose=purpose, **settings), member_ids=("A", "B"))["selection"]
             assert preview["available_question_count"] == 8
-            assert preview["source_version"]
+            assert preview["group_id"]
+            assert "source_version" not in preview
             # Reuse a broader individual evaluation, then apply the group's
             # recent-original union and a smaller target list. All warning
             # counts and entry order must equal a fresh shared evaluation.
@@ -3064,7 +3323,7 @@ def test_recent_originals_follow_purpose_in_generation_preview_and_edit(direct_m
             assert direct_module.evaluate_candidates(**expanded, config=restricted, evaluation_memo=memo) == (
                 direct_module.evaluate_candidates(**expanded, config=restricted))
             # A caller-owned evaluation memo is reusable with mutable inputs.
-            # It must never inherit the grouping call's identity fingerprints.
+            # It must never inherit the grouping call's cached input values.
             changing = deepcopy(prepared)
             mutable_memo = {}
             earlier = direct_module.evaluate_candidates(**changing, config=restricted, evaluation_memo=mutable_memo)
@@ -3072,7 +3331,14 @@ def test_recent_originals_follow_purpose_in_generation_preview_and_edit(direct_m
             changed = direct_module.evaluate_candidates(**changing, config=restricted, evaluation_memo=mutable_memo)
             assert changed == direct_module.evaluate_candidates(**changing, config=restricted)
             assert changed != earlier
-            assert "group_input_hashes" not in mutable_memo
+            removed = changing["mastery"].pop(("A", BNU_TARGET))
+            without_target = direct_module.evaluate_candidates(**changing, config=restricted, evaluation_memo=mutable_memo)
+            assert without_target == direct_module.evaluate_candidates(**changing, config=restricted)
+            assert without_target != changed
+            changing["mastery"][("A", BNU_TARGET)] = removed
+            assert direct_module.evaluate_candidates(**changing, config=restricted, evaluation_memo=mutable_memo) == changed
+            assert "group_input_values" not in mutable_memo
+            assert "group_mastery_by_student" not in mutable_memo
 
     # A later marked activity cannot change either stored exclusion snapshot.
     _record_legacy_training(direct_module, (1001,), name="SYN-LATER", occurred_at="2026-07-31")
@@ -3081,8 +3347,9 @@ def test_recent_originals_follow_purpose_in_generation_preview_and_edit(direct_m
     for purpose, request in requests.items():
         assert direct_module._request_recent(request, ("A", "B")) == {
             sid: set(ids) for sid, ids in request["recent_question_ids"].items()}
-        assert direct_module.get(drafts[purpose]["draft_id"]) == drafts[purpose]
-        assert direct_module.ensure_current(drafts[purpose]["draft_id"]) == drafts[purpose]
+        expected_saved = {**drafts[purpose], "needs_update": True}
+        assert direct_module.get(drafts[purpose]["draft_id"]) == expected_saved
+        assert direct_module.ensure_current(drafts[purpose]["draft_id"]) == expected_saved
 
     # For legacy requests without a frozen set, the saved purpose still applies.
     for purpose, request in requests.items():
@@ -3419,7 +3686,11 @@ def test_handout_100_exports_in_order_and_consumes_download_without_training(dir
                 expected_draft_revision=1, student_id="A", actor_ref="synthetic"))
         with connect(direct_module.db_path) as conn:
             conn.execute("UPDATE questions SET question_text=question_text || '已变化' WHERE id=1001")
-        assert client.post(url, json={"request_token": "0"*32, "expected_revision": 1}).status_code == 409
+        continued = client.post(url, json={"request_token": "0"*32, "expected_revision": 1})
+        assert continued.status_code == 202, continued.text
+        manager.wait(continued.json()["id"], timeout=30)
+        assert manager.store.get_job(continued.json()["id"]).status == "succeeded"
+        assert direct_module.ensure_current(draft["draft_id"])["draft_id"] == draft["draft_id"]
     finally:
         manager.shutdown()
 
@@ -3496,6 +3767,13 @@ def test_endpoint_report_rejects_identity_and_verifies_question_differences(tmp_
     destination.write_text(json.dumps(report), encoding="utf-8")
     build(tmp_path)
     assert (tmp_path / "training-comparison.html").is_file()
+    # New reports identify comparison pipelines and verify unchanged inputs;
+    # the previous report field remains a readable compatibility input.
+    report["input"].pop("same_read_versions")
+    report["input"]["unchanged_database_inputs"] = True
+    report["pipeline_labels"] = ["baseline", "latest"]
+    destination.write_text(json.dumps(report), encoding="utf-8")
+    build(tmp_path)
     report["scopes"][0]["papers"][0]["student_id"] = "SYN-ENDPOINT"
     destination.write_text(json.dumps(report), encoding="utf-8")
     with pytest.raises(AssertionError, match="Raw source field"):

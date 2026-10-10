@@ -20,7 +20,7 @@ warnings.filterwarnings(
 )
 
 
-def test_job_progress_preserves_diagnosis_key_and_durable_entry(tmp_path):
+def test_commit_notification_refreshes_temporary_diagnosis_without_table_hashes(tmp_path, monkeypatch):
     from backend.jobs.store import JobStore
     grade, bank = tmp_path/'grading.db', tmp_path/'question-bank.db'
     with sqlite3.connect(grade) as writer:
@@ -34,6 +34,18 @@ def test_job_progress_preserves_diagnosis_key_and_durable_entry(tmp_path):
     service.grading_db_path, service.question_bank_db_path = grade, bank
     service.question_bank_connection, service.cache_identity = None, None
     service.data_root = tmp_path
+    original_connect = sqlite3.connect
+    class MetadataOnlyConnection(sqlite3.Connection):
+        def serialize(self, *args, **kwargs):
+            pytest.fail('Temporary cache validation serialized the database')
+        def execute(self, sql, parameters=()):
+            text = sql.strip().upper()
+            if text.startswith('SELECT') and 'SQLITE_MASTER' not in text:
+                pytest.fail('Temporary cache validation read business table bodies')
+            return super().execute(sql, parameters)
+    def metadata_connection(*args, **kwargs):
+        return original_connect(*args, **dict(kwargs, factory=MetadataOnlyConnection))
+    monkeypatch.setattr(sqlite3, 'connect', metadata_connection)
     request = dict(scope={'mode':'all'}, exam_scope={'mode':'selected','session_ids':[1]})
     key = service.tag_profile_cache_key(**request)
     entry = (pickle.dumps({'TEST':True}), pickle.dumps({}))
@@ -41,11 +53,13 @@ def test_job_progress_preserves_diagnosis_key_and_durable_entry(tmp_path):
     job = JobStore.__new__(JobStore)
     job.db_path = grade
     job.update_progress(1, progress=.5, stage='TEST')
-    assert service.tag_profile_cache_key(**request) == key
+    key = service.tag_profile_cache_key(**request)
+    service._save_local_profile(key, entry)
     assert service._read_local_profile(key) == entry
     with sqlite3.connect(grade) as writer:
         writer.execute("INSERT INTO jobs(status) VALUES('queued')")
-    assert service.tag_profile_cache_key(**request) == key
+    key = service.tag_profile_cache_key(**request)
+    service._save_local_profile(key, entry)
     assert service._read_local_profile(key) == entry
     with sqlite3.connect(grade) as writer:
         writer.execute("UPDATE exam_marker SET value='changed'")
@@ -72,6 +86,7 @@ def test_persistent_entry_replaces_old_memory_versions_and_caps_large_payload(tm
     small.put('large', 1, payload)
     assert small.get('large', 1) == payload
     assert not small._snapshots and small._snapshot_bytes == 0
+    assert not small._saved and small._saved_bytes == 0
 
 from fastapi.testclient import TestClient
 
@@ -158,7 +173,6 @@ def _clear_profile_memory():
     from integration.data_generation import reset_commit_generations
     with profiles._TAG_PROFILE_CACHE_LOCK:
         profiles._TAG_PROFILE_CACHE.clear()
-    profiles._LOCAL_SOURCE_REVISIONS.clear()
     profiles._MASTERY_INPUT_RESULTS.clear()
     from backend.api.app import create_app
     from backend.api.routers.training import _DIAGNOSIS_RESPONSE_CACHE
@@ -183,6 +197,9 @@ def test_saved_profiles_survive_new_process_and_wal_checkpoint(training_services
         from backend.api.routers.training import _diagnosis_response_bytes
         public_digest = hashlib.sha256(_diagnosis_response_bytes(service, scope=scope, exam_scope=exams)).hexdigest()
         writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        assert service.build_profiles(scope=scope, exam_scope=exams) == expected
+        assert service.build_profiles(scope={"mode":"class", "class_id":"八年级1班"}, exam_scope=exams) == class_profile
+        assert hashlib.sha256(_diagnosis_response_bytes(service, scope=scope, exam_scope=exams)).hexdigest() == public_digest
     _clear_profile_memory()
     restored = DiagnosisProfileService(service.grading_db_path, service.question_bank_db_path)
     key = restored.tag_profile_cache_key(scope=scope, exam_scope=exams)
@@ -229,7 +246,7 @@ print(json.dumps({'digest':hashlib.sha256(pickle.dumps((d,s.latest_aggregated_ma
     assert json.loads(result.stdout) == {"digest": digest, "students": 2, "public_digest": public_digest}
 
 
-@pytest.mark.parametrize("change", ["teacher_score", "training_record", "knowledge", "parameters", "code", "cause", "corrupt"])
+@pytest.mark.parametrize("change", ["teacher_score", "training_record", "knowledge", "cause", "corrupt"])
 def test_local_profiles_refresh_changed_inputs_and_corrupt_cache(training_services, monkeypatch, change):
     from integration import diagnosis_profile_service as profiles
     service = training_services
@@ -256,14 +273,8 @@ def test_local_profiles_refresh_changed_inputs_and_corrupt_cache(training_servic
     elif change == "knowledge":
         with sqlite3.connect(service.question_bank_db_path) as writer:
             writer.execute("UPDATE question_tags SET tag_value='合成更新主题' WHERE question_id=101 AND tag_type='knowledge_point'")
-    elif change == "parameters":
-        old = profiles._profile_semantics()
-        monkeypatch.setattr(profiles, "_profile_semantics", lambda: (*old, "TEST-new-parameters"))
-    elif change == "code":
-        monkeypatch.setattr(profiles, "_PROFILE_CALCULATION_STATE",
-                            (*profiles._PROFILE_CALCULATION_STATE, ('TEST-rule-change', 1, 1)))
     elif change == "cause":
-        cause = service.data_root / "reports/.class_analysis/TEST-cause.json"
+        cause = service.data_root / "reports/.class_analysis/14.json"
         cause.parent.mkdir(parents=True, exist_ok=True)
         cause.write_text('{}', encoding='utf-8')
     else:
@@ -384,7 +395,7 @@ def test_session_error_cause_index_reuses_unchanged_sessions(training_services, 
             " WHERE result_id=14001 AND question_id='Q2'")
         writer.commit()
     rescored = service._error_cause_index([14, 15])
-    assert calls == [14]
+    assert calls == [14, 15]
     assert {key: rows for key, rows in rescored.items() if key[0] == 15} == {
         key: rows for key, rows in first.items() if key[0] == 15}
 
@@ -399,7 +410,7 @@ def test_session_error_cause_index_reuses_unchanged_sessions(training_services, 
     # 缓存结果与不经缓存的计算一致。
     calls.clear()
     monkeypatch.setattr(profiles.DiagnosisProfileService,
-                        "_session_error_fingerprint", lambda self, sid: None)
+                        "_session_error_change_stamp", lambda self, sid: None)
     uncached = service._error_cause_index([14, 15])
     monkeypatch.undo()
     calls = counted()
@@ -417,7 +428,89 @@ def test_session_error_cause_index_reuses_unchanged_sessions(training_services, 
     assert calls == []
 
 
-def test_session_error_rows_hash_tracks_the_captured_snapshot(training_services, monkeypatch):
+def test_materialized_session_errors_keep_current_loss_and_legacy_fallback(training_services, monkeypatch):
+    from backend import class_analysis
+    service = training_services
+    reports_dir = service.data_root / "reports"
+    state_file = reports_dir / ".class_analysis" / "14.json"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(service.grading_db_path) as writer:
+        writer.execute("INSERT INTO session_details (result_id,question_id,score_awarded,knowledge_ids,secondary_errors_json) "
+                       "VALUES (14001,'Q3',0,?,'[]')", (json.dumps(["UNKNOWN"]),))
+        writer.execute("INSERT INTO teacher_score_locks (session_id,scan_batch_id,student_id,question_id,"
+                       "score_awarded,max_score,deduction_reason,source_target_type,source_target_id,revision) "
+                       "VALUES (14,'TEST-batch',12,'Q1',6,10,'TEST-final','manual',1,1)")
+    state = {"cause_analysis": {"questions": {key: {} for key in ("Q1", "Q2", "Q3")}},
+             "error_records": {key: {"records": [
+                 {"student_id": 12, "question_id": key, "kind": "error", "category": "概念理解",
+                  "pattern": "TEST-first", "step_id": "TEST-S1", "skill_keys": ["sk_TEST-saved"]},
+                 {"student_id": 12, "question_id": key, "kind": "process", "category": "过程与依据",
+                  "pattern": "TEST-second", "step_id": "TEST-S2"},
+                 {"student_id": 15, "question_id": key, "kind": "error", "category": "概念理解",
+                  "pattern": "TEST-other-student"},
+             ]} for key in ("Q1", "Q2", "Q3")}}
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+    original = class_analysis.session_error_records
+    calls = []
+    def fallback(db, session_id, reports_dir, **kwargs):
+        calls.append(session_id)
+        return original(db, session_id, reports_dir, **kwargs)
+    monkeypatch.setattr(class_analysis, "session_error_records", fallback)
+
+    def light_result():
+        expected = original(service.db, 14, reports_dir, data_root=service.data_root)
+        before = state_file.read_bytes()
+        with monkeypatch.context() as patch:
+            patch.setattr(class_analysis, "assemble_cause_data", lambda *args, **kwargs: pytest.fail("materialized records rebuilt cause inputs"))
+            actual = service._read_session_error_records(14, reports_dir)
+        assert actual == expected
+        assert list(actual) == list(expected)
+        assert all(list(actual[key]) == list(expected[key]) for key in actual)
+        assert state_file.read_bytes() == before
+        assert calls == []
+        return actual
+
+    first = light_result()
+    assert set(first) == {12}
+    assert list(first[12]) == ["Q1", "Q3"]
+    assert [row["pattern"] for row in first[12]["Q1"]] == ["TEST-first", "TEST-second"]
+    assert first[12]["Q1"][0]["skill_keys"] == ["sk_TEST-saved"]
+    assert first[12]["Q1"][0]["score"] == 6
+    assert first[12]["Q1"][0]["max_score"] == 10
+    assert first[12]["Q1"][0]["lost_points"] == 4
+    data = class_analysis.assemble_cause_data(service.db, 14, data_root=service.data_root)
+    source = next(item for item in class_analysis.build_cause_inputs(data) if item["question_id"] == "Q1")
+    legacy = json.loads(json.dumps(state))
+    del legacy["error_records"]["Q1"]
+    legacy["cause_analysis"]["questions"]["Q1"] = {"input": source, "result": class_analysis.normalize_cause_result({"groups": [
+        {"kind": "error", "category": "概念理解", "reason": "TEST-legacy",
+         "manifestation": "TEST-legacy-fact", "evidence_ids": [item["id"] for item in source["evidence"]]}]}, source)}
+    malformed = json.loads(json.dumps(state))
+    malformed["error_records"]["Q1"]["records"] = {"TEST": "bad records"}
+    for saved in (legacy, malformed, {}):
+        state_file.write_text(json.dumps(saved), encoding="utf-8")
+        expected = original(service.db, 14, reports_dir, data_root=service.data_root)
+        before = state_file.read_bytes()
+        assert service._read_session_error_records(14, reports_dir) == expected
+        assert calls == [14]
+        assert state_file.read_bytes() == before
+        calls.clear()
+        if saved is legacy:
+            assert expected[12]["Q1"][0]["pattern"] == "TEST-legacy"
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+    with sqlite3.connect(service.grading_db_path) as writer:
+        writer.execute("UPDATE session_details SET score_awarded=10 WHERE result_id=14001 AND question_id='Q1'")
+        writer.execute("UPDATE teacher_score_locks SET score_awarded=10 WHERE session_id=14 AND question_id='Q1'")
+    assert list(light_result()[12]) == ["Q3"]
+    with sqlite3.connect(service.grading_db_path) as writer:
+        writer.execute("DELETE FROM session_details WHERE result_id=14001 AND question_id='Q3'")
+    assert light_result() == {}
+    state_file.write_text('{"error_records": ["TEST-bad structure"]}', encoding="utf-8")
+    assert service._read_session_error_records(14, reports_dir) == original(service.db, 14, reports_dir, data_root=service.data_root)
+    assert calls == [14]
+
+
+def test_session_error_cache_tracks_the_captured_snapshot(training_services, monkeypatch):
     # A commit landing between snapshot capture and the fingerprint call must
     # not register the old snapshot's row hash under the new generation.
     from backend import class_analysis
@@ -440,7 +533,7 @@ def test_session_error_rows_hash_tracks_the_captured_snapshot(training_services,
                 "UPDATE session_details SET score_awarded=4"
                 " WHERE result_id=14001 AND question_id='Q2'")
             writer.commit()
-        stale_fingerprint = ctx.diagnosis_service._session_error_fingerprint(14)
+        stale_fingerprint = ctx.diagnosis_service._session_error_change_stamp(14)
         ctx.diagnosis_service._error_cause_index([14])
     assert calls == [14]
 
@@ -448,7 +541,7 @@ def test_session_error_rows_hash_tracks_the_captured_snapshot(training_services,
     # the session is recomputed, and the output matches a live computation.
     calls.clear()
     with request_read_context(paths) as ctx:
-        fresh_fingerprint = ctx.diagnosis_service._session_error_fingerprint(14)
+        fresh_fingerprint = ctx.diagnosis_service._session_error_change_stamp(14)
         assert fresh_fingerprint != stale_fingerprint
         recomputed = ctx.diagnosis_service._error_cause_index([14])
     assert calls == [14]
@@ -498,7 +591,7 @@ def test_idle_prewarm_saves_local_profiles_without_blocking_grading(training_ser
     # the current panel never sends.
     assert kinds == ['diagnosis', 'overview', 'graph', 'grouped_diagnosis',
                      'assembly_exam', 'assembly_exam']
-    display_options = {'include_student_detail': True, 'response_mode': 'display'}
+    display_options = {'include_student_detail': True, 'response_mode': 'display_shared'}
     assert planned[0][3] == display_options
     group_params = next(item[3] for item in planned if item[0] == 'grouped_diagnosis')
     assert {key: group_params[key] for key in display_options} == display_options
@@ -529,6 +622,8 @@ def test_idle_prewarm_saves_local_profiles_without_blocking_grading(training_ser
 @pytest.mark.parametrize('response_options', [
     {}, {'include_student_detail': False}, {'response_mode': 'display'},
     {'response_mode': 'display', 'include_student_detail': False},
+    {'response_mode': 'display_shared'},
+    {'response_mode': 'display_shared', 'include_student_detail': False},
 ])
 @pytest.mark.parametrize('grouped', [False, True])
 def test_prewarm_replays_requested_diagnosis_bytes(
@@ -903,7 +998,7 @@ def test_local_profile_entries_evict_oldest_beyond_caps(training_services, monke
                                        exam_scope={'mode': 'current', 'session_ids': [14]})
     paths = []
     for index in range(3):
-        key = (base[0], f'TEST-evict-{index}')
+        key = (*base, f'TEST-evict-{index}')
         service._save_local_profile(key, (pickle.dumps({'index': index}), pickle.dumps({})))
         paths.append(service._local_profile_entry_path(key))
     # Real timestamps: Windows clamps invalid nanosecond mtimes to one value.
@@ -911,7 +1006,7 @@ def test_local_profile_entries_evict_oldest_beyond_caps(training_services, monke
         moment = time.time_ns() - (len(paths) - index) * 10**9
         os.utime(path, ns=(moment, moment))
     monkeypatch.setattr(profiles, '_LOCAL_PROFILE_MAX_ENTRIES', 2)
-    key = (base[0], 'TEST-evict-newest')
+    key = (*base, 'TEST-evict-newest')
     service._save_local_profile(key, (pickle.dumps({'index': 3}), pickle.dumps({})))
     paths.append(service._local_profile_entry_path(key))
     assert not paths[0].exists() and not paths[1].exists()
@@ -1156,6 +1251,180 @@ def training_client(training_services) -> TestClient:
     return TestClient(app)
 
 
+
+def _expand_shared_display(payload):
+    catalog = payload['weak_point_catalog']
+    def expand(point):
+        index, mastery, tier, observations, evidence, references = point
+        metadata = catalog[index]
+        return {'knowledge_key': metadata['knowledge_key'], 'knowledge_point': metadata['knowledge_point'],
+                **({'mastery': mastery} if mastery is not None else {}), 'tier': tier,
+                'observation_count': observations, 'evidence_count': evidence,
+                **({'parent_knowledge_key': metadata['parent_knowledge_key']}
+                   if 'parent_knowledge_key' in metadata else {}),
+                'source_reference_count': references}
+    return {**{key: value for key, value in payload.items() if key != 'weak_point_catalog'},
+            'response_mode': 'display',
+            'students': [{**student, 'weak_points': [expand(point) for point in student['weak_points']]}
+                         for student in payload['students']],
+            'group_weak_points': [expand(point) for point in payload['group_weak_points']]}
+
+
+def test_shared_display_preserves_complete_values_order_and_unobserved_points(training_services):
+    from copy import deepcopy
+    from backend.api.routers.training import _diagnosis_display, _public_training_mapping, _validated_diagnosis_json
+    from backend.api.schemas.training import TrainingDisplaySharedDiagnosisResponse
+    source = training_services.build_profiles(scope={'mode': 'student', 'student_ids': ['12']},
+        exam_scope={'mode': 'current', 'session_ids': [14]})
+    original = deepcopy(source)
+    base = {**deepcopy(source['students'][0]['weak_points'][0]), 'mastery': .4, 'tier': 'weak'}
+    unobserved = {**base, 'knowledge_key': 'TEST-unobserved', 'mastery': None, 'tier': 'insufficient',
+                  'observation_count': 0, 'evidence_count': 0, 'source_question_refs': []}
+    variants = [{**base, 'mastery': .5}, {**base, 'observation_count': base.get('observation_count', 0) + 1},
+                {**base, 'tier': 'stable'}, {**base, 'parent_knowledge_key': 'TEST-parent'},
+                {**base, 'knowledge_point': 'TEST-changed label'},
+                {**base, 'evidence_count': base['evidence_count'] + 1},
+                {**base, 'source_question_refs': [*base['source_question_refs'],
+                                                 deepcopy(base['source_question_refs'][0])]}]
+    other = {**base, 'mastery': .8, 'tier': 'stable',
+             'observation_count': base.get('observation_count', 0) + 7,
+             'evidence_count': base['evidence_count'] + 9, 'source_question_refs': []}
+    student = source['students'][0]
+    source['students'] = [{**student, 'weak_points': [base, unobserved, base, *variants]},
+                          {**student, 'student_id': 'TEST-other', 'weak_points': [unobserved, other]}]
+    source['group_weak_points'] = [variants[1], base, unobserved]
+    source['grouping'] = {'TEST-nested': {'local_path': 'C:/TEST-private', 'retained': 'TEST-public'}}
+    before = deepcopy(source)
+    public = _public_training_mapping({key: value for key, value in source.items() if not key.startswith('_')},
+                                      reject_nonfinite=True)
+    display_bytes = _validated_diagnosis_json(public, response_mode='display')
+    display = json.loads(display_bytes)
+    encoded = _validated_diagnosis_json(public, response_mode='display_shared')
+    shared = json.loads(encoded)
+    expanded = _expand_shared_display(shared)
+    assert expanded == display
+    assert json.dumps(expanded, ensure_ascii=False, allow_nan=False,
+                      separators=(',', ':')).encode('utf-8') == display_bytes
+    assert [point[0] for point in shared['students'][0]['weak_points']] == [0, 1, 0, 0, 0, 0, 2, 3, 0, 0]
+    assert [point[0] for point in shared['students'][1]['weak_points']] == [1, 0]
+    assert [point[0] for point in shared['group_weak_points']] == [0, 0, 1]
+    assert len(shared['weak_point_catalog']) == 4
+    assert all(set(point) <= {'knowledge_key', 'knowledge_point', 'parent_knowledge_key'}
+               for point in shared['weak_point_catalog'])
+    assert shared['students'][0]['weak_points'][1] == [1, None, 'insufficient', 0, 0, 0]
+    assert 'mastery' not in expanded['students'][0]['weak_points'][1]
+    assert b'TEST-private' not in encoded and b'local_path' not in encoded
+    assert source == before
+    assert original['students'][0]['weak_points'] != before['students'][0]['weak_points']
+    pair = {**public, 'students': [{**student, 'weak_points': [base]},
+                                  {**student, 'student_id': 'TEST-other', 'weak_points': [other]}],
+            'group_weak_points': []}
+    pair_shared = json.loads(_validated_diagnosis_json(pair, response_mode='display_shared'))
+    assert len(pair_shared['weak_point_catalog']) == 1
+    assert _expand_shared_display(pair_shared) == json.loads(_validated_diagnosis_json(pair, response_mode='display'))
+    invalid_points = [[index, .4, 'weak', 1, 1, 1]
+                      for index in [-1, 1.5, True, '0', len(shared['weak_point_catalog'])]]
+    invalid_points += [[0, value, 'weak', 1, 1, 1]
+                       for value in [float('nan'), float('inf'), 'NaN', 'Infinity', '0.4', -.1, 1.1, True]]
+    invalid_points += [[0, .4, 'unknown', 1, 1, 1], [0, .4, 'weak', 1, 1],
+                       [0, .4, 'weak', 1, 1, 1, 1], 0]
+    for position in (3, 4, 5):
+        for value in (-1, 1.5, True, '1'):
+            point = [0, .4, 'weak', 1, 1, 1]
+            point[position] = value
+            invalid_points.append(point)
+    for point in invalid_points:
+        invalid = deepcopy(shared)
+        invalid['students'][0]['weak_points'] = [point]
+        with pytest.raises(ValueError):
+            TrainingDisplaySharedDiagnosisResponse.model_validate(invalid)
+        invalid['students'][0]['weak_points'] = []
+        invalid['group_weak_points'] = [point]
+        with pytest.raises(ValueError):
+            TrainingDisplaySharedDiagnosisResponse.model_validate(invalid)
+    for value in [float('nan'), float('inf'), 'NaN', 'Infinity']:
+        invalid = deepcopy(public)
+        invalid['students'][0]['weak_points'][0]['mastery'] = value
+        with pytest.raises(ValueError):
+            _validated_diagnosis_json(_public_training_mapping(invalid, reject_nonfinite=True),
+                                     response_mode='display_shared')
+    empty = {**public, 'students': [], 'group_weak_points': []}
+    empty_display = json.loads(_validated_diagnosis_json(empty, response_mode='display'))
+    empty_shared = json.loads(_validated_diagnosis_json(empty, response_mode='display_shared'))
+    assert empty_shared['weak_point_catalog'] == []
+    assert _expand_shared_display(empty_shared) == empty_display
+    ordered_point = {'tier': 'weak', 'knowledge_point': 'TEST-order', 'evidence_count': 3,
+                     'mastery': .25, 'knowledge_key': 'TEST-order-key', 'observation_count': 2,
+                     'source_question_refs': []}
+    ordered = {**public, 'students': [{**student, 'weak_points': [ordered_point]}],
+               'knowledge_catalog': [{'node_kind': 'skill', 'knowledge_point': 'TEST-order',
+                                      'TEST-hidden': 'unused', 'knowledge_key': 'TEST-order-key'}]}
+    projected = _diagnosis_display(ordered)
+    assert list(projected['students'][0]['weak_points'][0]) == [
+        'tier', 'knowledge_point', 'evidence_count', 'mastery', 'knowledge_key',
+        'observation_count', 'source_reference_count']
+    assert list(projected['knowledge_catalog'][0]) == ['node_kind', 'knowledge_point', 'knowledge_key']
+    missing_refs = deepcopy(ordered)
+    del missing_refs['students'][0]['weak_points'][0]['source_question_refs']
+    with pytest.raises(KeyError, match='source_question_refs'):
+        _diagnosis_display(missing_refs)
+    hidden_nonfinite = deepcopy(public)
+    hidden_nonfinite['students'][0]['weak_points'][0]['diagnostic_hint'] = {'TEST-hidden': float('nan')}
+    with pytest.raises(ValueError, match='non-finite diagnosis number'):
+        _validated_diagnosis_json(_public_training_mapping(hidden_nonfinite, reject_nonfinite=True),
+                                 response_mode='display_shared')
+
+
+def test_shared_display_cache_rebuilds_corrupt_json_indices_and_private_fields(training_services, monkeypatch):
+    from copy import deepcopy
+    import gzip
+    from backend.api.routers import training as router
+    service = training_services
+    service.persist_snapshots = True
+    scope = {'mode': 'student', 'student_ids': ['12']}
+    exams = {'mode': 'current', 'session_ids': [14]}
+    expected = router._diagnosis_response_bytes(service, scope=scope, exam_scope=exams,
+                                                response_mode='display_shared')
+    payload = json.loads(expected)
+    key = (*service.tag_profile_cache_key(scope=scope, exam_scope=exams),
+           'api-diagnosis-json', None, True, 'display_shared')
+    invalid_index = deepcopy(payload)
+    invalid_index['students'][0]['weak_points'][0][0] = len(payload['weak_point_catalog'])
+    private = deepcopy(payload)
+    private['grouping'] = {'TEST-deep': {'items': [{'local_path': 'C:/TEST-private'}]}}
+    bad_number = deepcopy(payload)
+    bad_number['students'][0]['weak_points'][0][1] = 'NaN'
+    coerced_number = deepcopy(payload)
+    coerced_number['students'][0]['weak_points'][0][1] = '0.4'
+    boolean_count = deepcopy(payload)
+    boolean_count['students'][0]['weak_points'][0][4] = True
+    invalid_length = deepcopy(payload)
+    invalid_length['group_weak_points'] = [[0, .4, 'weak', 1, 1]]
+    old_shared = deepcopy(payload)
+    old_shared['weak_point_catalog'] = _expand_shared_display(payload)['students'][0]['weak_points']
+    old_shared['students'][0]['weak_points'] = list(range(len(old_shared['weak_point_catalog'])))
+    old_shared['group_weak_points'] = []
+    invalid_metadata = deepcopy(payload)
+    invalid_metadata['weak_point_catalog'][0]['knowledge_point'] = 123
+    values = [b'not-json', json.dumps({'response_mode': 'display'}).encode(),
+              json.dumps(invalid_index).encode(), json.dumps(private).encode(),
+              json.dumps(bad_number).encode(), json.dumps(coerced_number).encode(),
+              json.dumps(boolean_count).encode(), json.dumps(invalid_length).encode(),
+              json.dumps(old_shared).encode(), json.dumps(invalid_metadata).encode()]
+    calls = []
+    original_build = service.build_profiles
+    def counted_build(**kwargs):
+        calls.append(True)
+        return original_build(**kwargs)
+    monkeypatch.setattr(service, 'build_profiles', counted_build)
+    for index, encoded in enumerate(values, start=1):
+        service._save_local_profile(key, (pickle.dumps({'json_gzip': gzip.compress(encoded)}), pickle.dumps({})))
+        router._DIAGNOSIS_RESPONSE_CACHE.clear()
+        assert router._diagnosis_response_bytes(service, scope=scope, exam_scope=exams,
+                                                response_mode='display_shared') == expected
+        assert len(calls) == index
+
+
 def test_training_diagnosis_uses_question_tag_identity(
     training_client: TestClient,
     training_services, monkeypatch,
@@ -1277,12 +1546,19 @@ def test_training_diagnosis_uses_question_tag_identity(
             if k in {'knowledge_key', 'knowledge_point', 'parent_knowledge_key', 'node_kind'}}
             for node in full_payload['knowledge_catalog']]
         assert len(display.content) < len(compact.content)
+        shared_body = {**request_body, 'response_mode': 'display_shared'}
+        shared = training_client.post('/api/training/diagnosis', json=shared_body)
+        assert shared.status_code == 200, shared.text
+        assert _expand_shared_display(shared.json()) == displayed
+        assert training_client.post('/api/training/diagnosis', json={
+            **shared_body, 'include_student_detail': False}).content == shared.content
         with monkeypatch.context() as patch:
             patch.setattr(training_services, 'build_profiles',
                           lambda **kwargs: pytest.fail('recomputed cached response variant'))
             assert training_client.post('/api/training/diagnosis', json=compact_body).content == compact.content
             assert training_client.post('/api/training/diagnosis', json=request_body).content == full_response.content
             assert training_client.post('/api/training/diagnosis', json=display_body).content == display.content
+            assert training_client.post('/api/training/diagnosis', json=shared_body).content == shared.content
         assert training_client.post('/api/training/diagnosis', json={**display_body,
             'response_mode': 'unsupported'}).status_code == 422
     assert grouped_calls == [10]
@@ -1311,7 +1587,8 @@ def test_training_diagnosis_uses_question_tag_identity(
     assert saved == grouped.content
     saved_variants = []
     for variant in ({**grouped_body, 'include_student_detail': False},
-                    {**grouped_body, 'response_mode': 'display'}):
+                    {**grouped_body, 'response_mode': 'display'},
+                    {**grouped_body, 'response_mode': 'display_shared'}):
         variant_request = TrainingDiagnosisRequest.model_validate(variant)
         encoded = _grouped_diagnosis_response_bytes(training_services, grouping,
             scope=variant_request.scope.model_dump(exclude_none=True),

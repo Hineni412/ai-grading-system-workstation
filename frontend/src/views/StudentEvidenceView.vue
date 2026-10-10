@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { fetchGraphEvidence, type GraphEvidenceItem, type GraphQueryInput } from '../api/graph'
 import { formatScore } from '../lib/format'
+import { STEP_STATE_LABELS, STEP_SOURCE_LABELS } from '../api/step-diagnosis'
+import QuestionHtmlBlock from '../components/question-bank/QuestionHtmlBlock.vue'
 import {
   knowledgeLeafLabel,
   questionBankApi,
@@ -80,12 +82,12 @@ const backTarget = computed(() => (
     ? { name: 'knowledge-overview' }
     : {
       name: 'training',
-      query: { mode: route.query.from === 'student' ? 'student' : 'chapter' },
+      query: { mode: 'setup' },
     }
 ))
 const backDestination = computed(() => {
-  if (route.query.from === 'overview') return '学情总览'
-  return route.query.from === 'student' ? '按学生训练' : '按章节训练'
+  if (route.query.from === 'overview') return '学情'
+  return '出训练'
 })
 
 const student = ref<StudentSummary | null>(null)
@@ -97,7 +99,7 @@ const onlyDeducted = ref(true)
 function openWrongBook() {
   if (!student.value) return
   presetWrongQuestionBook({ studentId: String(student.value.id), classId: student.value.class_name })
-  void router.push({ name: 'training', query: { mode: 'student' } })
+  void router.push({ name: 'training', query: { mode: 'setup' } })
 }
 const loadState = ref<'loading' | 'ready' | 'error'>('loading')
 const loadingMore = ref(false)
@@ -560,7 +562,23 @@ onBeforeUnmount(() => {
                 <td>{{ item.question_id }}</td>
                 <td class="is-num">{{ formatScore(item.score_awarded) }} / {{ item.max_score === null ? '—' : formatScore(item.max_score) }}</td>
                 <td class="is-num">{{ item.deduction_amount === null ? '—' : formatScore(item.deduction_amount) }}</td>
-                <td>{{ reasonText(item) }}</td>
+                <td>
+                  {{ reasonText(item) }}
+                  <div v-if="item.step_diagnosis" class="student-evidence__steps" data-testid="student-key-steps">
+                    <template v-if="item.step_diagnosis.availability === 'available'">
+                      <strong>卡在哪一步</strong><small>{{ STEP_SOURCE_LABELS[item.step_diagnosis.source] }}</small>
+                      <div v-for="step in item.step_diagnosis.steps.filter(entry => entry.state !== 'met')" :key="step.step_id" class="student-evidence__step">
+                        <span>{{ STEP_STATE_LABELS[step.state] }} · {{ step.step_id }}</span>
+                        <QuestionHtmlBlock :text="step.goal" inline typeset-text />
+                        <small v-if="item.step_diagnosis.scope === 'key_steps'">{{ step.key_steps.map(target => target.name).join('、') || '未挂关键步骤' }}</small>
+                        <p v-if="step.reason">阅卷说明：<QuestionHtmlBlock :text="step.reason" inline typeset-text /></p>
+                      </div>
+                      <p v-if="item.step_diagnosis.steps.some(step => step.state === 'met')">已完成：{{ item.step_diagnosis.steps.filter(step => step.state === 'met').map(step => step.step_id).join('、') }}</p>
+                    </template>
+                    <p v-else-if="item.step_diagnosis.availability === 'teacher_total_only'">缺少与教师最终分相符的步骤记录，暂不能定位失分步骤。</p>
+                    <p v-else>未保存逐步记录，暂不能定位失分步骤。</p>
+                  </div>
+                </td>
                 <td>
                   <button
                     v-if="item.evidence_url"
@@ -700,6 +718,11 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.student-evidence__steps { display: grid; gap: var(--space-2); margin-top: var(--space-2); padding: var(--space-3); border-radius: var(--radius-sm); background: var(--color-bg-subtle); }
+.student-evidence__steps small { display: block; color: var(--color-text-muted); }
+.student-evidence__steps p { margin: var(--space-1) 0; }
+.student-evidence__step { padding-block: var(--space-1); }
+
 .student-evidence { padding-block-end: var(--page-inset-bottom); }
 .student-evidence > :not(.page-header):not(.page-header__sentinel) { margin-inline: var(--page-inset-x); }
 .student-evidence__meta-line { margin: 0; }

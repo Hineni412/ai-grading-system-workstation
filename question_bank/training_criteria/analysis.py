@@ -2753,6 +2753,20 @@ class _SourceContentHashReuse(threading.local):
     def __init__(self) -> None:
         self.values: OrderedDict[bytes, Any] = OrderedDict()
 
+    def merge_worker_values(self, workers: Iterable[Mapping[bytes, Any]]) -> None:
+        """Accept completed worker tables after their executor has stopped."""
+        values = self.values
+        seen: set[int] = set()
+        for worker in workers:
+            if worker is values or id(worker) in seen:
+                continue
+            seen.add(id(worker))
+            for key, result in worker.items():
+                values[key] = result
+                values.move_to_end(key)
+                while len(values) > _SOURCE_CONTENT_REUSE_LIMIT:
+                    values.popitem(last=False)
+
 
 _SOURCE_CONTENT_REUSE: ContextVar[_SourceContentHashReuse | None] = ContextVar(
     "source_content_hash_reuse", default=None,
@@ -2760,19 +2774,20 @@ _SOURCE_CONTENT_REUSE: ContextVar[_SourceContentHashReuse | None] = ContextVar(
 
 
 @contextmanager
-def source_content_hash_reuse() -> Iterator[None]:
+def source_content_hash_reuse() -> Iterator[_SourceContentHashReuse]:
     """Reuse immutable source checks only within this read batch.
 
     A copied context gives each asset-loading thread its own bounded table.
-    Worker tables disappear when the loader's executor shuts down.
+    Loaders can transfer completed worker values before the batch ends.
     """
-    if _SOURCE_CONTENT_REUSE.get() is not None:
-        yield
+    existing = _SOURCE_CONTENT_REUSE.get()
+    if existing is not None:
+        yield existing
         return
     reuse = _SourceContentHashReuse()
     token = _SOURCE_CONTENT_REUSE.set(reuse)
     try:
-        yield
+        yield reuse
     finally:
         reuse.values.clear()
         _SOURCE_CONTENT_REUSE.reset(token)

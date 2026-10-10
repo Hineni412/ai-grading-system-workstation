@@ -12,6 +12,7 @@ import {
   type ClassCause,
 } from '../../api/class-analysis'
 import type { ResultsCenterStudent } from '../../api/results-center'
+import type { KeyStepStats } from '../../api/step-diagnosis'
 import { ApiError } from '../../api/errors'
 import { jobApi, TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import { formatPercent, formatScore } from '../../lib/format'
@@ -43,7 +44,8 @@ const resultsStore = useResultsCenterStore()
 const analysis = ref<ClassAnalysisResponse | null>(null)
 const selectedClass = ref(props.initialClass ?? '')
 const listRoot = ref<HTMLElement | null>(null)
-const sortMode = ref<'rate' | 'number'>('rate')
+const sortMode = ref<'rate' | 'number' | 'step'>('rate')
+const selectedStepKey = ref<string | null>(null)
 const loadState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const errorMessage = ref('')
 let loadGeneration = 0
@@ -87,7 +89,6 @@ const causeStatusText = computed(() => {
   const organizeTip = '复核完成后自动整理，或点页面顶部「AI 整理」。'
   const questionStates = state?.question_states
   if (questionStates?.stale) return `${questionStates.stale} 题作答或批语已变化，显示上次整理结果；${organizeTip}`
-  if (questionStates?.old_prompt) return `${questionStates.old_prompt} 题用旧版提示词整理，可按题重新整理。`
   if (!state || state.status === 'not_generated') return state?.failed_questions
     ? `错因整理未完成，保留原始理由；${organizeTip}`
     : state?.stale ? `作答、批语或题目依据已变化；${organizeTip}` : `当前按原始表述合并；${organizeTip}整理后可结合真实作答。`
@@ -157,6 +158,28 @@ const sortedQuestions = computed(() => {
   )
 })
 
+const hotspots = computed(() => data.value?.step_diagnosis?.hotspots ?? [])
+const selectedHotspot = computed(() => hotspots.value.find((entry) => entry.key === selectedStepKey.value) ?? hotspots.value[0] ?? null)
+const hotspotQuestions = computed(() => {
+  const key = selectedHotspot.value?.key
+  const rows: { questionId: string; step: KeyStepStats }[] = []
+  for (const question of diagnosticQuestions.value) {
+    for (const step of question.key_steps ?? []) {
+      if (step.key_steps.some((target) => target.key === key)) rows.push({ questionId: question.question_id, step })
+    }
+  }
+  return rows.sort((a, b) => (b.step.counts.independent ?? 0) - (a.step.counts.independent ?? 0)
+    || a.questionId.localeCompare(b.questionId, 'zh-CN', { numeric: true })
+    || a.step.step_id.localeCompare(b.step.step_id, 'en', { numeric: true }))
+})
+function selectKeyStep(key: string): void {
+  selectedStepKey.value = key
+  sortMode.value = 'step'
+}
+function hotspotRate(independent: number, observed: number): string {
+  return formatPercent(observed ? independent / observed : 0)
+}
+
 const requestedQuestionId = computed(() => {
   const query = route.query.question
   return (typeof query === 'string' && query.length > 0 ? query : null) ?? props.focusQuestion ?? null
@@ -174,6 +197,7 @@ const selectedQuestion = computed(() => (
 ))
 
 function selectQuestion(questionId: string): void {
+  if (sortMode.value === 'step') sortMode.value = 'rate'
   if (questionId === selectedQuestionId.value && route.query.question === questionId) return
   void router.replace({ query: { ...route.query, question: questionId } })
 }
@@ -191,6 +215,19 @@ watch(selectedQuestionId, async (questionId) => {
 
 function onListKeydown(event: KeyboardEvent): void {
   if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+  if (sortMode.value === 'step') {
+    const list = hotspots.value
+    if (!list.length) return
+    event.preventDefault()
+    const index = list.findIndex((entry) => entry.key === selectedHotspot.value?.key)
+    const target = list[event.key === 'ArrowDown' ? Math.min(index + 1, list.length - 1) : Math.max(index - 1, 0)]
+    if (target) {
+      selectKeyStep(target.key)
+      void nextTick(() => [...(listRoot.value?.querySelectorAll<HTMLElement>('[data-step-key]') ?? [])]
+        .find((element) => element.dataset.stepKey === target.key)?.focus())
+    }
+    return
+  }
   const list = sortedQuestions.value
   if (!list.length) return
   event.preventDefault()
@@ -482,6 +519,10 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
               v-if="data.exam.graded_at"
             > · 批改完成 {{ formatShortDate(data.exam.graded_at) }}</template>
           </p>
+          <p v-if="data?.step_diagnosis" class="class-analysis__step-scope" data-testid="step-diagnosis-scope">
+            有逐步记录 {{ data.step_diagnosis.students }} 人 · 教师确认总分沿用 AI 步骤 {{ data.step_diagnosis.confirmed_ai_rows }} 条 ·
+            教师最终分无可用步骤未计入 {{ data.step_diagnosis.excluded_teacher_total_only }} 条。记录按学生与题计数。
+          </p>
           <p class="class-analysis__cause-status" data-testid="cause-analysis-status">{{ causeStatusText }}</p>
           <div class="class-analysis__toolbar-actions">
             <span class="class-analysis__privacy">含学生姓名，请勿直接外发</span>
@@ -538,8 +579,27 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
                   data-testid="sort-number"
                   @click="sortMode = 'number'"
                 >按题号</button>
+                <button
+                  v-if="data.step_diagnosis"
+                  type="button"
+                  :aria-pressed="sortMode === 'step'"
+                  :disabled="!hotspots.length"
+                  data-testid="sort-step"
+                  :title="hotspots.length ? '按独立失分比例查看关键步骤' : '本场没有可汇总的关键步骤记录'"
+                  @click="sortMode = 'step'"
+                >按关键步骤</button>
               </div>
-              <div class="class-analysis__list-items" role="listbox" aria-label="题目">
+              <div v-if="sortMode === 'step'" class="class-analysis__list-items" role="listbox" aria-label="关键步骤">
+                <button v-for="hotspot in hotspots" :key="hotspot.key" type="button" role="option"
+                  class="class-analysis__list-row" :class="{ 'is-selected': hotspot.key === selectedHotspot?.key }"
+                  :aria-selected="hotspot.key === selectedHotspot?.key" :data-step-key="hotspot.key"
+                  @click="selectKeyStep(hotspot.key)">
+                  <span class="class-analysis__list-head"><strong>{{ hotspot.name }}</strong><span>{{ hotspotRate(hotspot.independent, hotspot.observed) }}</span></span>
+                  <span class="class-analysis__ratebar class-analysis__ratebar--low" aria-hidden="true"><i :style="{ width: hotspotRate(hotspot.independent, hotspot.observed) }"></i></span>
+                  <span class="class-analysis__list-stem">独立失分 {{ hotspot.independent }}/{{ hotspot.observed }} 人 · {{ hotspot.questions.length }} 题</span>
+                </button>
+              </div>
+              <div v-else class="class-analysis__list-items" role="listbox" aria-label="题目">
                 <button
                   v-for="question in sortedQuestions"
                   :key="question.question_id"
@@ -574,7 +634,57 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
               </div>
             </aside>
 
-            <div v-if="selectedQuestion" class="class-analysis__detail" :data-question-id="selectedQuestion.question_id">
+            <div v-if="sortMode === 'step' && selectedHotspot" class="class-analysis__detail key-step__detail" data-testid="key-step-detail">
+              <header class="class-analysis__detail-header">
+                <strong>{{ selectedHotspot.name }}</strong><span>独立失分 {{ selectedHotspot.independent }} / {{ selectedHotspot.observed }} 人</span>
+                <span v-if="selectedHotspot.confirmed_ai">其中 {{ selectedHotspot.confirmed_ai }} 人为教师确认总分，步骤为 AI 判断</span>
+              </header>
+              <div class="class-analysis__detail-columns">
+                <section class="class-analysis__outcome-section key-step__questions" aria-label="涉及的步骤">
+                  <h3>涉及的步骤</h3>
+                  <button v-for="row in hotspotQuestions" :key="`${row.questionId}:${row.step.step_id}`" type="button"
+                    class="key-step__question" @click="selectQuestion(row.questionId)">
+                    <span><b>{{ row.questionId }}</b> · {{ row.step.step_id }} <QuestionHtmlBlock :text="row.step.goal" inline typeset-text /></span>
+                    <small>独立失分 {{ row.step.counts.independent ?? 0 }} 人 · 受前一步影响 {{ row.step.counts.carried ?? 0 }} 人 · 整题未作答 {{ row.step.counts.blank ?? 0 }} 人</small>
+                  </button>
+                </section>
+                <div class="class-analysis__outcome">
+                  <section class="class-analysis__outcome-section" aria-label="步骤失分情况">
+                    <h3>失分情况</h3>
+                    <dl class="key-step__counts">
+                      <dt>独立失分</dt><dd>{{ selectedHotspot.independent }} 人</dd>
+                      <dt>受前一步影响</dt><dd>{{ selectedHotspot.carried }} 人</dd>
+                      <dt>整题未作答</dt><dd>{{ selectedHotspot.blank }} 人</dd>
+                      <dt>完成且未独立失分</dt><dd>{{ selectedHotspot.observed - selectedHotspot.independent }} 人</dd>
+                      <dt>AI 判不准</dt><dd>{{ selectedHotspot.uncertain }} 人</dd>
+                    </dl>
+                    <p class="class-analysis__note">按学生计，同一学生在本关键步骤多次独立失分只算 1 人。分母只计独立失分或完成的学生。不同题的状态可能重叠，上述人数不相加。</p>
+                  </section>
+                  <section class="class-analysis__outcome-section" aria-label="关键步骤错因">
+                    <h3>错因</h3>
+                    <p v-if="selectedHotspot.causes_status === 'unclassified'" class="class-analysis__note">本场错因未按步骤归类。</p>
+                    <p v-else-if="selectedHotspot.causes_status === 'partial'" class="class-analysis__note">部分错因未按步骤归类；下列只统计已有步骤归类的错因。</p>
+                    <p v-if="selectedHotspot.causes.length" class="class-analysis__note">按已保存错因与当前独立失分学生合并，同一学生同一错法只计 1 人。</p>
+                    <p v-else-if="selectedHotspot.causes_status !== 'unclassified'" class="class-analysis__note">暂无可关联的已保存错因。</p>
+                    <ol class="class-analysis__causes">
+                      <li v-for="cause in selectedHotspot.causes" :key="cause.reason">
+                        <details class="class-analysis__cause-detail">
+                          <summary><span v-if="cause.category" class="class-analysis__cause-tag">{{ cause.category }}</span><QuestionHtmlBlock :text="cause.reason" inline typeset-text /><b>{{ cause.count }} 人</b></summary>
+                          <p class="class-analysis__note">涉及 {{ cause.questions.join('、') }}</p>
+                          <p v-for="example in cause.examples" :key="example"><strong>阅卷说明：</strong><QuestionHtmlBlock :text="example" inline typeset-text /></p>
+                        </details>
+                      </li>
+                    </ol>
+                    <details class="class-analysis__cause-category">
+                      <summary>题库里这一步的已确认典型错法 · {{ selectedHotspot.patterns.length }} 条</summary>
+                      <ol class="class-analysis__causes"><li v-for="(pattern, index) in selectedHotspot.patterns" :key="index"><QuestionHtmlBlock :text="pattern.pattern" inline typeset-text /><b>{{ pattern.actual ? `实际出现 ${pattern.actual} 次` : '仅预测' }}</b></li></ol>
+                      <p v-if="!selectedHotspot.patterns.length" class="class-analysis__note">暂无。</p>
+                    </details>
+                  </section>
+                </div>
+              </div>
+            </div>
+            <div v-else-if="selectedQuestion" class="class-analysis__detail" :data-question-id="selectedQuestion.question_id">
               <header class="class-analysis__detail-header">
                 <strong>{{ selectedQuestion.question_id }}</strong>
                 <span>满分 {{ formatScore(selectedQuestion.max_score) }} 分</span>
@@ -601,6 +711,8 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
                   :session-id="props.sessionId"
                   :question-id="selectedQuestion.question_id"
                   embedded
+                  :step-stats="selectedQuestion.key_steps"
+                  @select-key-step="selectKeyStep"
                   class="class-analysis__embedded-panel"
                 />
                 <div class="class-analysis__outcome">
@@ -694,7 +806,6 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
                       </AppButton>
                     </details>
                     <span v-if="selectedQuestion.state === 'stale'" class="class-analysis__note" data-testid="cause-state">作答或批语已变化 · 显示上次整理结果</span>
-                    <span v-else-if="selectedQuestion.state === 'old_prompt'" class="class-analysis__note" data-testid="cause-state">用旧版提示词整理 · 可按题重新整理</span>
                     <span v-if="!selectedQuestion.causeSections.length" class="class-analysis__note">{{ selectedQuestion.records.length ? (selectedQuestion.causes_grouped ? '没有可确认的共同错因，见下方原始证据' : '未记录具体错因') : '—' }}</span>
                     <details
                       v-if="!selectedQuestion.structuredCauses && selectedQuestion.cause_review?.uncertain.length"

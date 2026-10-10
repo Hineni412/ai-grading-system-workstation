@@ -8,7 +8,6 @@ from pathlib import Path
 
 from backend.class_analysis import ClassAnalysisStateStore
 from backend.error_patterns import (
-    OPTION_ANALYSIS_VERSION,
     additions_from_v3_result,
     find_answer_patterns,
     find_option_analysis,
@@ -107,8 +106,9 @@ def test_answer_pattern_library_roundtrip_and_absorb(tmp_path):
 def test_option_analysis_reuse_across_sessions(tmp_path):
     store = ClassAnalysisStateStore(tmp_path / "reports")
     entry = {
-        "version": OPTION_ANALYSIS_VERSION,
-        "input_fingerprint": "fp-abc",
+        "version": "legacy-option-layout",
+        "input_fingerprint": "legacy-input",
+        "source_input": {"question_text": "TEST-options", "canonical_answer": "B"},
         "analysis": {
             "C": {"category": "概念理解", "pattern": "漏负根", "explanation": ""}
         },
@@ -117,9 +117,9 @@ def test_option_analysis_reuse_across_sessions(tmp_path):
     save_option_analysis(store, 9, "Q1", entry)
     # 关联场次的同题分析可复用：同一题库题在场次9叫Q1、场次7叫Q3
     linked = {(9, "Q1")}
-    found = find_option_analysis(store, 7, "Q3", "fp-abc", linked)
+    found = find_option_analysis(store, 7, "Q3", entry["source_input"], linked)
     assert found is not None and found["analysis"]["C"]["pattern"] == "漏负根"
-    assert find_option_analysis(store, 7, "Q3", "fp-other", linked) is None
+    assert find_option_analysis(store, 7, "Q3", {"question_text": "TEST-changed", "canonical_answer": "B"}, linked) is None
 
 
 def _seed_pattern_question(qb_path: Path) -> int:
@@ -250,3 +250,15 @@ def test_rename_patterns_merges_old_and_writes_teacher_edit(tmp_path):
     assert total == 2
     assert listed[0]["category"] == "概念理解"
     assert listed[0]["source"] == "teacher_edit"
+
+
+def test_option_update_failure_preserves_saved_success(tmp_path):
+    store = ClassAnalysisStateStore(tmp_path / "TEST-reports")
+    previous = {"analysis": {"C": {"pattern": "TEST-saved"}}, "analyzed_at": "2026-01-01", "failed": False}
+    save_option_analysis(store, 9, "Q1", previous)
+    save_option_analysis(store, 9, "Q1", {"failed": True, "source_input": {"question_text": "TEST-new"}})
+    saved = store.load(9)["option_analysis"]["Q1"]
+    assert saved["analysis"] == previous["analysis"]
+    assert saved["analyzed_at"] == previous["analyzed_at"]
+    assert saved["last_generation_failed"] is True
+    assert saved["failed"] is False

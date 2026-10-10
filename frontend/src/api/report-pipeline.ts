@@ -98,18 +98,19 @@ function requireSessionId(sessionId: number): number {
 }
 
 export const reportPipelineApi = {
-  async getStatus(sessionId: number, signal?: AbortSignal): Promise<ReportPipelineStatus> {
+  async getStatus(sessionId: number, signal?: AbortSignal, regenerateExisting = false): Promise<ReportPipelineStatus> {
     const id = requireSessionId(sessionId)
-    return apiClient.request(`/api/sessions/${id}/report-pipeline`, {
+    return apiClient.request(`/api/sessions/${id}/report-pipeline${regenerateExisting ? "?regenerate_existing=true" : ""}`, {
       decode: decodeStatus,
       signal,
     })
   },
 
-  async start(sessionId: number, signal?: AbortSignal): Promise<JobResponse> {
+  async start(sessionId: number, signal?: AbortSignal, regenerateExisting = false): Promise<JobResponse> {
     const id = requireSessionId(sessionId)
     return apiClient.request(`/api/sessions/${id}/report-pipeline`, {
       method: 'POST',
+      body: { regenerate_existing: regenerateExisting },
       decode: decodeJobResponse,
       signal,
     })

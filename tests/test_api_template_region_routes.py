@@ -354,6 +354,7 @@ def test_draft_save_rejects_a_stale_revision_and_returns_no_internal_paths(
         "template_id": upload["template_id"],
         "template_fingerprint": upload["template_fingerprint"],
         "draft": {"revision": 1, "regions": [_region()]},
+        "reason": None,
     }
     assert str(tmp_path) not in first.text
     assert stale.status_code == 409
@@ -408,3 +409,30 @@ def test_pending_snapshot_can_be_retried_without_recommitting_regions(
     assert db.templates.list_answer_regions(session_id) == before_retry
     assert db.templates.get_session_template(session_id)["regions_snapshot_pending"] == 0
     assert str(tmp_path) not in retried.text
+
+
+def test_saved_draft_remains_visible_after_format_and_sample_change(tmp_path):
+    import json
+    client, db = _client_with_db(tmp_path)
+    session_id = _session(db)
+    pdf_bytes = _two_page_template_pdf()
+    uploaded = client.post(f"/api/sessions/{session_id}/template",
+        params={"first_page_role": "front"}, content=pdf_bytes,
+        headers=_upload_headers(pdf_bytes, "7" * 32, "TEST-saved-draft.pdf")).json()
+    path = tmp_path / "templates" / f"session_{session_id}" / "region_draft.json"
+    saved = {"session_id": session_id, "schema_version": 99, "revision": 7,
+             "template_fingerprint": "old-sample", "regions": [_region()]}
+    path.write_text(json.dumps(saved), encoding="utf-8")
+    before = path.read_bytes()
+    draft = client.get(f"/api/sessions/{session_id}/regions/draft")
+    assert draft.status_code == 200
+    assert draft.json()["draft"] == {"revision": 7, "regions": [_region()]}
+    workspace = client.get(f"/api/sessions/{session_id}/regions/workspace")
+    assert workspace.status_code == 200
+    assert workspace.json()["draft"]["regions"] == [_region()]
+    assert path.read_bytes() == before
+    assert list(path.parent.glob("region_draft.corrupt-*.json")) == []
+    path.write_text("{broken", encoding="utf-8")
+    broken = client.get(f"/api/sessions/{session_id}/regions/draft").json()
+    assert broken["status"] == "corrupt" and "已保留" in broken["reason"]
+    assert path.read_text(encoding="utf-8") == "{broken"

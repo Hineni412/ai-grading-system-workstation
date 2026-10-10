@@ -340,7 +340,7 @@ def test_llm_failure_degrades_to_data_only_report(analysis_db, tmp_path: Path) -
 
     zip_path = Path(
         generator.export_session(
-            session_id, "personal_analysis_html", score_revision="rev-1"
+            session_id, "personal_analysis_html"
         )
     )
 
@@ -539,7 +539,13 @@ def test_report_target_buckets_keep_final_scores_and_ranks(
     assert (payload["student"]["total_score"], payload["student"]["class_stats"]["rank"]) == (40, 2)
     question = next(question for question in payload["questions"] if question["question_id"] == "Q1")
     assert (question["score"], question["max_score"], question["grading_record"]["teacher_confirmed"]) == (10, 60, True)
-    report = BeautifulSoup(_render_personal_html(data, locked_student, None, {}), "html.parser")
+    from backend.step_diagnosis import build_session_step_diagnosis
+    diagnostics = build_session_step_diagnosis(db, session, student_ids=[student_id], question_bank_path=bank.path)
+    assert "Q1" not in diagnostics.students.get(student_id, {})
+    report = BeautifulSoup(_render_personal_html(data, locked_student, None, {},
+        step_diagnoses=diagnostics.students.get(student_id)), "html.parser")
+    assert "缺少与教师最终分相符的步骤记录" not in report.get_text()
+    assert build_personal_payload(data, locked_student) == payload
     assert report.select_one(".score-line .big").get_text() == "40"
     assert report.select_one(".stat3 .cell .v").get_text() == "2/2"
     assert data.knowledge_structure["target_kind"] == ("type" if type_mode else "skill")
@@ -686,7 +692,7 @@ def test_visual_reports_include_manual_students_and_keep_final_scores(
     client = FakeLLMClient()
     generator = _make_generator(db, tmp_path / "out", tmp_path / "cache", client)
     output = generator.export_session(
-        session_id, "personal_analysis_html", score_revision="manual-v1"
+        session_id, "personal_analysis_html"
     )
     assert _score_state(db.db_path) == before
     assert client.calls == 2
@@ -720,7 +726,7 @@ def test_visual_reports_include_manual_students_and_keep_final_scores(
             assert "未取得该生可读取的答卷图片" not in text
     # Re-entering export reuses the existing narrative; it does not regrade or call twice.
     generator.export_session(
-        session_id, "personal_analysis_html", score_revision="manual-v1"
+        session_id, "personal_analysis_html"
     )
     assert client.calls == 2
     assert _score_state(db.db_path) == before
@@ -731,68 +737,40 @@ def test_visual_reports_include_manual_students_and_keep_final_scores(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("legacy_version", ["personal_analysis_html_v11_parent_brief", "personal_analysis_html_v10_actions", "personal_analysis_html_v9_problem_refs", "personal_analysis_html_v8_parts"])
-def test_old_prompt_personal_reports_regenerate_and_store(analysis_db, tmp_path, legacy_version):
-    """输入一致的旧提示词结果（old_prompt）不命中生成缓存：导出重新生成并
-    把新叙述写回 PersonalReportStore。"""
-    from backend.personal_reports import student_report_digests
-    from backend.report_results import PersonalReportStore, prompt_version
-    from backend.session_analysis import (
-        assemble_session_analysis,
-        enrich_personal_questions,
-    )
-
+def test_old_prompt_personal_reports_are_reused_without_overwriting(analysis_db, tmp_path):
+    legacy_version = "personal_analysis_html_v8_parts"
+    from backend.report_results import PersonalReportStore
+    from backend.session_analysis import assemble_session_analysis
     db, session_id, root = analysis_db
-    reports_dir = tmp_path / "reports"
+    reports_dir = tmp_path / 'reports'
     data = assemble_session_analysis(db, session_id, data_root=root)
-    enrich_personal_questions(db, data, root)
-    digests = student_report_digests(
-        db, session_id, data, reports_dir=reports_dir
-    )
     store = PersonalReportStore(reports_dir)
     for student in data.students:
-        store.save(
-            session_id, student.student_id,
-            narrative=PERSONAL_NARRATIVE,
-            input_digest=digests[student.student_id],
-            prompt_version=legacy_version,
-        )
+        target = store._path(session_id, student.student_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(dict(narrative=PERSONAL_NARRATIVE, prompt_version=legacy_version,
+                                         input_digest='unrelated-old-input')), encoding='utf-8')
+    before = {p: p.read_bytes() for p in reports_dir.rglob('*.json')}
     client = FakeLLMClient()
-    generator = _make_generator(db, tmp_path / "out", reports_dir, client)
-    output = generator.export_session(session_id, "personal_analysis_html", html_only=True)
-    assert client.calls == len(data.students)
+    generator = _make_generator(db, tmp_path / 'out', reports_dir, client)
+    output = generator.export_session(session_id, 'personal_analysis_html', html_only=True)
+    assert client.calls == 0
+    assert len(list(output.glob('*.html'))) == len(data.students)
+    assert before == {p: p.read_bytes() for p in reports_dir.rglob('*.json')}
+    html = (output / '001_张三_个人报告.html').read_text(encoding='utf-8')
+    assert '选择题全对，基础扎实' in html
+    assert 'AI 分析保存时间：未记录' in html
 
-    # 旧提示词条目被新结果覆盖为当前版本。
-    for student in data.students:
-        entry = store.load(session_id, student.student_id)
-        assert entry["prompt_version"] == prompt_version("personal_report")
-        assert entry["input_digest"] == digests[student.student_id]
-    assert output.is_dir()
-    assert len(list(output.glob("*.html"))) == len(data.students)
-    assert all(path.suffix == ".html" for path in output.iterdir())
-    assert not list((tmp_path / "out").rglob("*.zip"))
-    assert not list((tmp_path / "out").rglob("*.pdf"))
-    for request in client.requests:
-        assert "knowledge_focus" in request["prompt"]
-    report = (output / "001_张三_个人报告.html").read_text(encoding="utf-8")
-    assert "先做：" in report and "检查：" in report
-    assert '<span class="when">本周</span>' in report
-    generator.export_session(session_id, "personal_analysis_html", html_only=True)
-    assert client.calls == len(data.students)
-
-def test_report_status_and_digests_share_the_same_inputs(analysis_db, monkeypatch):
-    from backend.personal_reports import personal_report_states, student_report_digests
+def test_personal_report_status_uses_saved_content_without_question_enrichment(analysis_db, monkeypatch):
+    from backend.personal_reports import personal_report_states
     from backend.session_analysis import assemble_session_analysis
     db, sid, root = analysis_db
     data = assemble_session_analysis(db, sid, data_root=root, page_only=True)
+    monkeypatch.setattr('backend.session_analysis.enrich_personal_questions',
+                        lambda *_args, **_kwargs: pytest.fail('读取报告状态不需要准备题面或计算识别码'))
     states = personal_report_states(db, sid, root / 'reports', data=data)
-    assert {s["student_id"] for s in states["students"]
-            if s["status"] != "unavailable"} == {s.student_id for s in data.students}
-    # 同一输入重复计算指纹一致且确定性输出。
-    reports_dir = root / 'reports'
-    digests = student_report_digests(db, sid, data, reports_dir=reports_dir)
-    assert student_report_digests(db, sid, data, reports_dir=reports_dir) == digests
-    assert set(digests) == {s.student_id for s in data.students}
+    assert {row['student_id'] for row in states['students'] if row['status'] != 'unavailable'} == {
+        student.student_id for student in data.students}
 
 
 def test_personal_context_cold_exam_does_not_block_cached_exam_and_shares_same_key(tmp_path, monkeypatch):
@@ -869,7 +847,7 @@ def test_personal_report_revision_keeps_peers_current_and_reads_stale_text(analy
     with sqlite3.connect(db.db_path) as conn:
         conn.execute("UPDATE session_details SET score_awarded=score_awarded-1 WHERE result_id IN (SELECT id FROM session_results WHERE student_id=?) AND question_id='Q2'", (current[0],))
     states = {s["student_id"]: s["status"] for s in personal_report_states(db, sid, reports)["students"]}
-    assert states[current[0]] == "stale"
+    assert states[current[0]] == "current"
     assert all(states[student_id] == "current" for student_id in current[1:])
     html = render_personal_report(db, sid, current[0], reports, review_links=True)
     assert "选择题全对，基础扎实" in html
@@ -882,9 +860,8 @@ def test_personal_cache_only_reads_store_without_client(analysis_db, tmp_path):
     """cache_only 导出只读 PersonalReportStore：不建模型客户端、不写存储。"""
     from backend.personal_reports import (
         personal_report_states,
-        student_report_digests,
     )
-    from backend.report_results import PersonalReportStore, prompt_version
+    from backend.report_results import PersonalReportStore
     from backend.reporting.analysis_report_exporter import AnalysisReportGenerator
     from backend.session_analysis import (
         assemble_session_analysis,
@@ -899,10 +876,6 @@ def test_personal_cache_only_reads_store_without_client(analysis_db, tmp_path):
     store = PersonalReportStore(reports_dir)
     store.save(
         sid, student.student_id, narrative=PERSONAL_NARRATIVE,
-        input_digest=student_report_digests(
-            db, sid, data, reports_dir=reports_dir
-        )[student.student_id],
-        prompt_version=prompt_version("personal_report"),
     )
 
     def forbidden():
@@ -912,13 +885,13 @@ def test_personal_cache_only_reads_store_without_client(analysis_db, tmp_path):
         reports_dir=reports_dir, llm_client_factory=forbidden)
     generator.export_session(sid, "personal_analysis_html", narrative_mode="cache_only", html_only=True)
     assert generator.last_personal_summary == dict(generated=1, failed=0, skipped=2)
-    assert {s["reason"] for s in generator.last_personal_missing} >= {"未生成", "缺考"}
+    assert {s["reason"] for s in generator.last_personal_missing} == {"未生成", "缺考"}
     assert store.load(sid, student.student_id)["narrative"] == PERSONAL_NARRATIVE
     assert not (reports_dir / ".analysis_review_notes").exists()
     assert personal_report_states(db, sid, reports_dir)["students"][0]["status"] == "current"
 
 
-def test_personal_online_and_offline_images_share_content_and_released_notice(analysis_db, monkeypatch):
+def test_personal_online_and_offline_images_share_content_and_released_notice(analysis_db, monkeypatch, question_bank_database):
     import re
     from backend.personal_reports import render_personal_report, RELEASED_SHOT_NOTE
     db, sid, root = analysis_db
@@ -926,10 +899,21 @@ def test_personal_online_and_offline_images_share_content_and_released_notice(an
     student_id = papers[0]["student_id"]
     from unittest.mock import Mock
     from backend.session_analysis import enrich_personal_knowledge
+    from backend.step_diagnosis import SessionStepDiagnosis
+    question_bank_database(root / "databases" / "question_bank.db")
+    diagnostic = {"availability": "available", "scope": "key_steps", "source": "teacher_confirmed_ai", "steps": [
+        {"step_id": "S1", "goal": "建立等量关系", "state": "independent", "key_steps": [{"key": "sk_test", "name": "列等量关系"}], "reason": "TEST-等式缺项"},
+        {"step_id": "S2", "goal": "求解方程", "state": "carried", "key_steps": [], "reason": "前一步尚未完成"},
+    ]}
+    monkeypatch.setattr("backend.step_diagnosis.build_session_step_diagnosis", lambda *_a, **_k:
+        SessionStepDiagnosis({}, {}, {student_id: {"Q2": diagnostic}}))
     prepare = Mock(wraps=enrich_personal_knowledge)
     monkeypatch.setattr('backend.session_analysis.enrich_personal_knowledge', prepare)
     online = render_personal_report(db, sid, student_id, root / "reports", narrative_mode="none")
     offline = render_personal_report(db, sid, student_id, root / "reports", narrative_mode="none", online=False)
+    for html in (online, offline):
+        assert "卡在哪一步" in html and "受前一步影响" in html
+        assert "教师确认总分，步骤为 AI 判断" in html and "TEST-等式缺项" in html
     assert f'/personal-reports/{student_id}/shots/Q2' in online
     assert 'data:image/jpeg' not in online
     assert 'data:image/jpeg' in offline
@@ -958,37 +942,29 @@ def test_personal_online_and_offline_images_share_content_and_released_notice(an
         assert '/shots/' not in html and 'data:image/jpeg' not in html
 
 
-def test_personal_report_teacher_lock_change_invalidates_input(analysis_db):
-    """教师最终分锁进入该生输入指纹：加锁使该生过期，其他学生不受影响。"""
-    from backend.personal_reports import personal_report_states, student_report_digests
-    from backend.session_analysis import (
-        assemble_session_analysis,
-        enrich_personal_questions,
-    )
-
+def test_personal_report_teacher_change_reminds_without_blocking_saved_content(analysis_db):
+    from backend.personal_reports import personal_report_states, render_personal_report
+    from backend.report_results import PersonalReportStore
+    from backend.session_analysis import assemble_session_analysis
     db, sid, root = analysis_db
-    reports_dir = root / "reports"
+    reports_dir = root / 'reports'
     data = assemble_session_analysis(db, sid, data_root=root)
-    enrich_personal_questions(db, data, root)
-    before = student_report_digests(db, sid, data, reports_dir=reports_dir)
-    from backend.report_results import PersonalReportStore, prompt_version
-    for saved_student_id, digest in before.items():
-        PersonalReportStore(reports_dir).save(sid, saved_student_id, narrative={"summary": "TEST-lock"},
-                                             input_digest=digest, prompt_version=prompt_version("personal_report"))
-    initial_states = personal_report_states(db, sid, reports_dir)
-    assert all(row["status"] == "current" for row in initial_states["students"] if row["student_id"] in before)
+    store = PersonalReportStore(reports_dir)
+    for student in data.students:
+        store.save(sid, student.student_id, narrative=PERSONAL_NARRATIVE)
     student = db.results.get_session_results(sid)[0]
-    student_id = student["student_id"]
+    student_id = student['student_id']
     with sqlite3.connect(db.db_path) as conn:
-        conn.execute("""INSERT INTO teacher_score_locks(session_id,scan_batch_id,student_id,question_id,score_awarded,max_score,deduction_reason,source_target_type,source_target_id)
-            VALUES (?,'test-personal',?,'Q2',29,40,'教师补充批语','exam_paper',?)""", (sid, student_id, db.results.get_result_context(student["result_id"])["paper_id"]))
-    after = student_report_digests(db, sid, data, reports_dir=reports_dir)
-    assert after[student_id] != before[student_id]
-    assert all(after[other] == before[other] for other in before if other != student_id)
-    refreshed = personal_report_states(db, sid, reports_dir)
-    assert next(row for row in refreshed["students"] if row["student_id"] == student_id)["status"] == "stale"
-    assert all(row["status"] == "current" for row in refreshed["students"]
-               if row["student_id"] in before and row["student_id"] != student_id)
+        conn.execute("""INSERT INTO teacher_score_locks(session_id,scan_batch_id,student_id,question_id,
+            score_awarded,max_score,deduction_reason,source_target_type,source_target_id,updated_at)
+            VALUES (?,'TEST-personal',?,'Q2',29,40,'教师补充批语','exam_paper',?,'2999-01-01 00:00:00')""",
+            (sid, student_id, db.results.get_result_context(student['result_id'])['paper_id']))
+    states = {row['student_id']: row['status'] for row in personal_report_states(db, sid, reports_dir)['students']}
+    assert states[student_id] == 'stale'
+    assert all(states[item.student_id] == 'current' for item in data.students if item.student_id != student_id)
+    before = {p: p.read_bytes() for p in reports_dir.rglob('*.json')}
+    assert '选择题全对，基础扎实' in render_personal_report(db, sid, student_id, reports_dir)
+    assert before == {p: p.read_bytes() for p in reports_dir.rglob('*.json')}
 
 
 @pytest.mark.parametrize("limit", [8, 1])
@@ -1024,7 +1000,7 @@ def test_personal_report_executor_follows_configured_concurrency(
     monkeypatch.setattr(exporter_module, "ThreadPoolExecutor", Recorder)
     generator = _make_generator(db, tmp_path / "out", tmp_path / "cache", client)
     generator.export_session(
-        session_id, "personal_analysis_html", score_revision="rev-1"
+        session_id, "personal_analysis_html"
     )
     assert captured == [limit]
 
@@ -1059,29 +1035,74 @@ def test_personal_store_writes_on_caller_thread_and_tolerates_corruption(analysi
     assert sum(1 for s in states if s["status"] == "current") == len(files) - 1
 
 
-def test_personal_freshness_tracks_linked_target_but_ignores_unrelated_bank_changes(analysis_db, question_bank_database):
-    from backend.personal_reports import personal_report_states, student_report_digests
-    from backend.report_results import PersonalReportStore, prompt_version
-    from backend.session_analysis import assemble_session_analysis, enrich_personal_questions
-
+def test_personal_saved_reports_remain_readable_after_linked_tags_change(analysis_db, question_bank_database):
+    from backend.personal_reports import personal_report_states, render_personal_report
+    from backend.report_results import PersonalReportStore
+    from backend.session_analysis import assemble_session_analysis
     db, session, root = analysis_db
     bank = _seed_report_knowledge(analysis_db, question_bank_database, type_mode=True)
     data = assemble_session_analysis(db, session, data_root=root)
-    enrich_personal_questions(db, data, root)
     reports_dir = root / 'reports'
-    before = student_report_digests(db, session, data, reports_dir=reports_dir)
-    for student_id, digest in before.items():
-        PersonalReportStore(reports_dir).save(session, student_id, narrative={'summary': 'TEST-target'},
-            input_digest=digest, prompt_version=prompt_version('personal_report'))
-    with sqlite3.connect(bank.path) as connection:
-        connection.execute("INSERT INTO questions(id,question_number,question_type,question_text) VALUES(3,'3','choice','TEST-unrelated')")
-        connection.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(3,'knowledge_point',?,'taxonomy')", (bank.type_key,))
-    assert student_report_digests(db, session, data, reports_dir=reports_dir) == before
-    assert all(row['status'] == 'current' for row in personal_report_states(db, session, reports_dir)['students'] if row['student_id'] in before)
+    store = PersonalReportStore(reports_dir)
+    for student in data.students:
+        store.save(session, student.student_id, narrative=PERSONAL_NARRATIVE)
+    before = {p: p.read_bytes() for p in reports_dir.rglob('*.json')}
     scores = _score_state(db.db_path)
     with sqlite3.connect(bank.path) as connection:
-        connection.execute("UPDATE question_tags SET tag_value=? WHERE question_id=1 AND tag_type='knowledge_point' AND tag_value=?", (bank.type_key[:-2]+'02', bank.type_key))
-    after = student_report_digests(db, session, data, reports_dir=reports_dir)
-    assert all(after[student_id] != before[student_id] for student_id in before)
-    assert all(row['status'] == 'stale' for row in personal_report_states(db, session, reports_dir)['students'] if row['student_id'] in before)
+        connection.execute("UPDATE question_tags SET tag_value=? WHERE question_id=1 AND tag_type='knowledge_point' AND tag_value=?",
+                           (bank.type_key[:-2]+'02', bank.type_key))
+    assert all(row['status'] == 'current' for row in personal_report_states(db, session, reports_dir)['students']
+               if row['student_id'] in {student.student_id for student in data.students})
+    assert '选择题全对，基础扎实' in render_personal_report(db, session, data.students[0].student_id, reports_dir)
+    assert before == {p: p.read_bytes() for p in reports_dir.rglob('*.json')}
     assert _score_state(db.db_path) == scores
+
+
+def test_personal_update_failure_keeps_the_only_saved_success_and_renders_it(analysis_db, tmp_path):
+    from backend.report_results import PersonalReportStore
+    from backend.session_analysis import assemble_session_analysis
+    db, sid, root = analysis_db
+    data = assemble_session_analysis(db, sid)
+    reports = root / 'reports'
+    store = PersonalReportStore(reports)
+    for student in data.students:
+        store.save(sid, student.student_id, narrative=PERSONAL_NARRATIVE, needs_update=True)
+    before = {path: path.read_bytes() for path in reports.rglob('*.json')}
+    client = FakeLLMClient(error=RuntimeError('TEST-model-failure'))
+    generator = _make_generator(db, tmp_path / 'TEST-failed-update', reports, client)
+    output = generator.export_session(sid, 'personal_analysis_html', html_only=True, regenerate_existing=True)
+    assert client.calls == len(data.students)
+    assert generator.last_personal_summary['failed'] == len(data.students)
+    assert before == {path: path.read_bytes() for path in reports.rglob('*.json')}
+    assert '选择题全对，基础扎实' in (output / '001_张三_个人报告.html').read_text(encoding='utf-8')
+
+
+def test_explicit_personal_update_matches_preflight_and_replaces_only_selected_saved_result(analysis_db, tmp_path):
+    from backend.report_results import PersonalReportStore
+    from backend.session_analysis import assemble_session_analysis
+    from backend.reporting.analysis_report_exporter import build_analysis_preflight
+    db, sid, root = analysis_db
+    data = assemble_session_analysis(db, sid)
+    reports = root / 'reports'
+    store = PersonalReportStore(reports)
+    for student in data.students:
+        store.save(sid, student.student_id, narrative=PERSONAL_NARRATIVE, needs_update=True)
+    target_id = data.students[0].student_id
+    before = {student.student_id: store._path(sid, student.student_id).read_bytes() for student in data.students}
+    default_plan = build_analysis_preflight(db, sid, 'personal_analysis_html', reports_dir=reports,
+                                           student_ids={target_id}, include_causes=False)
+    update_plan = build_analysis_preflight(db, sid, 'personal_analysis_html', reports_dir=reports,
+                                          student_ids={target_id}, include_causes=False, regenerate_existing=True)
+    assert (default_plan['call_count'], default_plan['cache_hits']) == (0, 1)
+    assert (update_plan['call_count'], update_plan['cache_hits']) == (1, 0)
+    updated = {**PERSONAL_NARRATIVE, 'strengths': ['TEST-主动更新成功']}
+    client = FakeLLMClient(narrative=updated)
+    generator = _make_generator(db, tmp_path / 'TEST-explicit-update', reports, client)
+    generator.export_session(sid, 'personal_analysis_html', html_only=True,
+                             student_ids={target_id}, regenerate_existing=True)
+    assert client.calls == update_plan['call_count']
+    assert store.load(sid, target_id)['narrative'] == updated
+    assert store.load(sid, target_id)['needs_update'] is False
+    assert all(store._path(sid, student_id).read_bytes() == content for student_id, content in before.items()
+               if student_id != target_id)
+    assert len(list(store._session_dir(sid).glob('*.json'))) == len(data.students)

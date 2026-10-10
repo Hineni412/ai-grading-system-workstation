@@ -318,7 +318,7 @@ class PersonalizedPaperModule:
             paper_batch_id = _hash_payload(
                 {
                     "draft_id": clean_draft_id,
-                    "draft_result_version": draft["result_version"],
+                    "draft_result_version": draft["draft_id"],
                 }
             )
             signing_secret = secrets.token_hex(32)
@@ -754,7 +754,7 @@ class PersonalizedPaperModule:
         })
         paper_batch_id = _hash_payload({
             "draft_id": clean_draft_id,
-            "draft_result_version": draft["result_version"],
+            "draft_result_version": draft["draft_id"],
         })
         self._reserve_batch(
             batch_run_id=batch_run_id,
@@ -1612,7 +1612,8 @@ class PersonalizedPaperModule:
                 "a recommended question is no longer available"
             ) from exc
         by_id = {item.question_id: item for item in loaded}
-        criteria = TrainingCriterionModule(self.db_path)
+        criteria = TrainingCriterionModule(self.db_path, data_root=self.data_root)
+        workspaces = criteria.read_many(loaded, verify_source=True)
         prepared: list[dict[str, Any]] = []
         for order, recommendation in enumerate(recommendations, start=1):
             question_id = int(recommendation["question_id"])
@@ -1621,7 +1622,7 @@ class PersonalizedPaperModule:
                 recommendation["criterion_version_id"]
             )
             try:
-                workspace = criteria.read(question)
+                workspace = workspaces[question_id]
             except (CriterionVersionNotFound, KeyError, ValueError) as exc:
                 raise PaperSourceChanged(
                     "a recommended criterion version is unavailable"
@@ -1784,7 +1785,7 @@ class PersonalizedPaperModule:
                     operation_fingerprint,
                     draft["draft_id"],
                     draft["revision"],
-                    draft["result_version"],
+                    draft["draft_id"],
                     paper_batch_id,
                     version,
                     command.student_id,
@@ -1840,9 +1841,6 @@ class PersonalizedPaperModule:
             "draft": {
                 "draft_id": draft["draft_id"],
                 "revision": draft["revision"],
-                "result_version": draft["result_version"],
-                "source_version": draft["source_version"],
-                "engine_version": draft["engine_version"],
                 "config": dict(draft.get("config") or {}),
             },
             "selection_mode": student.get("selection_mode"),

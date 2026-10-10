@@ -60,8 +60,8 @@ const statusCopy = computed(() => {
     if (current.value?.status === 'proposed' && replacingApproved.value) {
       return {
         tone: 'available',
-        label: '以后生成的训练卷可用',
-        detail: '当前已确认版本继续有效；核对后保存，新版会自动替换。',
+        label: '已保存，可查看',
+        detail: '已确认内容继续保留；核对并保存这份草稿后再采用。',
       }
     }
     if (current.value?.status === 'proposed') {
@@ -75,8 +75,8 @@ const statusCopy = computed(() => {
     }
     return {
       tone: 'available',
-      label: '以后生成的训练卷可用',
-      detail: '当前已确认版本已冻结，历史训练卷仍保留各自使用的旧版本。',
+      label: '已保存，可查看',
+      detail: '已确认内容已经保存；历史训练卷保留当时采用的判定内容。',
     }
   }
   const state = workspace.value?.state
@@ -89,27 +89,27 @@ const statusCopy = computed(() => {
         ? '质量检查未通过，请先按下方列出的问题修正。'
         : advisoryCodes.value.length > 0
           ? '判定点内容可用，保存即确认。题目配图当前不可用，只作提醒，不拦截确认。'
-          : '确认内容无误后点下方"保存"，该版本才会进入以后生成的训练卷。',
+          : '确认内容无误后点下方"保存"，再用于生成训练卷。',
     }
   }
   if (state === 'stale') {
     return {
       tone: 'blocked',
-      label: '题目已变化，旧版停用',
-      detail: '请重新生成或手动修订；旧版仍保留在历史记录中。',
+      label: '保存内容需要更新，仍可查看',
+      detail: '可重新生成或手动修订；保存内容仍可打开，历史训练结果保持原样。',
     }
   }
   if (state === 'rejected') {
     return {
       tone: 'blocked',
-      label: '当前版本已退回',
+      label: '当前内容已退回',
       detail: '可在下方修改后保存，或重新生成。',
     }
   }
   return {
     tone: 'missing',
     label: '尚无判定点',
-    detail: '可手动录入，或仅为这道题重新生成候选版本。',
+    detail: '可手动录入，或仅为这道题重新生成判定草稿。',
   }
 })
 
@@ -173,7 +173,7 @@ function userMessage(error: unknown): string {
     return '这道题的判定点刚被更新，请刷新后再操作。'
   }
   if (error.code === 'criterion_quality_failed') {
-    return '当前版本没有通过质量检查，修正后再保存一次即可确认。'
+    return '当前内容没有通过质量检查，修正后再保存一次即可确认。'
   }
   if (error.code === 'criterion_backfill_unavailable') {
     return '重新生成功能暂时不可用，手动编辑仍可继续。'
@@ -255,7 +255,7 @@ async function saveDraft(): Promise<boolean> {
   }
   const savedVersion = saved.current_version
   if (!savedVersion) {
-    message.value = '已保存为新版本，旧版本没有被覆盖。'
+    message.value = '已保存。'
     writeState.value = 'idle'
     return true
   }
@@ -268,7 +268,7 @@ async function saveDraft(): Promise<boolean> {
     })
     workspace.value = confirmed
     syncEditor(confirmed.current_version)
-    message.value = '已保存并确认，该版本可用于以后生成的训练卷。'
+    message.value = '已保存并确认，可用于以后生成的训练卷。'
     return true
   } catch (error) {
     message.value = error instanceof ApiError && error.code === 'criterion_quality_failed'
@@ -283,7 +283,7 @@ async function saveDraft(): Promise<boolean> {
 async function regenerate(): Promise<void> {
   const confirmed = await confirm({
     title: '为这道题重新生成判定点？',
-    message: '这可能调用已配置的 AI 服务并产生费用；当前已批准版本会继续有效，直到新版再次获批。',
+    message: '这可能调用已配置的 AI 服务并产生费用；已确认内容会保留，生成失败也不会清空原内容。',
     confirmLabel: '重新生成',
   })
   if (!confirmed) return
@@ -295,7 +295,7 @@ async function regenerate(): Promise<void> {
       token(),
       'regenerate',
     )
-    message.value = '已开始重新生成。完成后刷新这里即可核对新版本。'
+    message.value = '已开始重新生成。完成后刷新这里即可核对保存内容。'
   } catch (error) {
     message.value = userMessage(error)
   } finally {
@@ -326,7 +326,7 @@ defineExpose({ saveDraft, cancelDraft })
     </header>
 
     <div v-if="skillLabels?.length" class="criterion-skills">
-      <span class="criterion-skills__label">技能</span>
+      <span class="criterion-skills__label">关键步骤</span>
       <span
         v-for="label in skillLabels"
         :key="label"
@@ -346,7 +346,7 @@ defineExpose({ saveDraft, cancelDraft })
           <p>{{ statusCopy.detail }}</p>
         </div>
         <small v-if="current">
-          版本 {{ current.version_number }} · {{ currentSourceLabel }}
+          {{ current.updated_at.slice(0, 10) }} · {{ currentSourceLabel }}
         </small>
       </div>
 
@@ -464,22 +464,7 @@ defineExpose({ saveDraft, cancelDraft })
 
       <FeedbackBanner v-if="message" :class="{ 'is-error': message.includes('没有') || message.includes('不能') || message.includes('失败') }" role="status" tone="info" :description="message" />
 
-      <details v-if="workspace.versions.length" class="criterion-history">
-        <summary>查看版本记录（{{ workspace.versions.length }}）</summary>
-        <ol>
-          <li v-for="version in workspace.versions" :key="version.version_id">
-            <span>v{{ version.version_number }}</span>
-            <strong>{{ {
-              proposed: '待审核',
-              approved: '已批准',
-              rejected: '已退回',
-              superseded: '已被新版替代',
-              stale: '题目变化后停用',
-            }[version.status] }}</strong>
-            <small>{{ version.source_kind === 'teacher_manual' ? '教师修改' : '系统生成' }}</small>
-          </li>
-        </ol>
-      </details>
+
     </template>
   </section>
 </template>

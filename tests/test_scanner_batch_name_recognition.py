@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from backend.scan_grading.scanner import Scanner
+from backend.scan_grading.scanner import Scanner, _clean_student_name_text
 
 
 class _BatchClient:
@@ -53,3 +53,17 @@ def test_invalid_batch_response_splits_until_each_name_is_recoverable(
 
     assert names == ["学生1", "学生1", "学生1", "学生1"]
     assert len(client.calls) == 7
+
+
+def test_wide_header_extracts_name_before_class_and_number(tmp_path):
+    assert _clean_student_name_text("第3周学情反馈\n姓名：张三 班级：809 学号：123") == "张三"
+    assert _clean_student_name_text("张三 班级：809 学号：123") == "张三"
+    client = _BatchClient()
+    scanner = Scanner(tmp_path, client, enhance_images=False,
+                      name_region={"x": 0, "y": 0, "w": 800, "h": 220})
+    scanner._do_local_ocr = lambda _image: "第3周学情反馈 姓名：张三 班级：809"  # type: ignore[method-assign]
+    names = scanner._extract_student_names_batch(
+        _images(tmp_path, 1), {"张三": {"id": 1, "name": "张三", "class_name": "9"}},
+    )
+    assert names == ["张三"]
+    assert client.calls == []

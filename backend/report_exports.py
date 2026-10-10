@@ -1,120 +1,16 @@
 from __future__ import annotations
 
-import hashlib
-import json
-import sqlite3
 import threading
-from pathlib import Path
 
 from backend.file_access import ControlledFileError
 from backend.files.service import JobFileService
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobRecord
-from backend.repositories.access import GradingRepositoryAccess
 
 _submit_lock = threading.RLock()
-_REPORT_RENDITION_VERSIONS = {
-    "score_excel": "score_excel_print_v6_parts",
-    "annotated_original_pdf": "annotated_original_pdf_score_boxes_v3",
-    "personal_analysis_html": "personal_analysis_html_v15_parent_point_note",
-}
-
 # 考试分析报告（AI 叙述）导出类型：提交时不带 excel_options。
 # 班级分析已改为系统内嵌页面（backend/class_analysis.py），不再是导出类型。
 ANALYSIS_REPORT_TYPES = frozenset({"personal_analysis_html"})
-
-
-def report_rendition_version(report_type: str) -> str:
-    return _REPORT_RENDITION_VERSIONS.get(str(report_type), "unknown")
-
-
-def report_narrative_version(report_type: str) -> str:
-    """叙述提示词版本；唯一来源是 backend.report_results.prompt_version。"""
-    from backend.report_results import prompt_version
-
-    if report_type == "personal_analysis_html":
-        return prompt_version("personal_report")
-    return report_rendition_version(report_type)
-
-
-def _report_revision_inputs(db: GradingRepositoryAccess, session_id: int, *, include_question_bank: bool = True, student_ids=None) -> dict:
-    rows: list[dict[str, object]] = []
-    for result in db.results.get_session_results(int(session_id)):
-        if student_ids is not None and int(result.get('student_id') or 0) not in student_ids:
-            continue
-        result_id = int(result["result_id"])
-        rows.append(
-            {
-                "result": dict(result),
-                "details": [
-                    dict(detail)
-                    for detail in db.results.get_result_details(result_id)
-                ],
-            }
-        )
-    payload = {
-        "results": rows,
-        "locks": [
-            dict(lock)
-            for lock in db.reviews.list_teacher_score_locks(
-                int(session_id)
-            )
-        ],
-    }
-    if include_question_bank:
-        source = _question_bank_report_source(Path(db.db_path), int(session_id))
-        if source:
-            payload["question_bank_source"] = source
-    return payload
-
-
-def score_revision(db: GradingRepositoryAccess, session_id: int, *, include_question_bank: bool = True, _inputs=None) -> str:
-    payload = (_report_revision_inputs(db, session_id, include_question_bank=include_question_bank)
-               if _inputs is None else _inputs)
-    serialized = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(serialized).hexdigest()
-
-
-def _question_bank_report_source(grading_path: Path, session_id: int) -> dict[str, object]:
-    """Include linked knowledge/part revisions in the existing report cache key."""
-    from question_bank.solution_evidence.part_assessments import reading
-    root = grading_path.parent.parent if grading_path.parent.name == "databases" else grading_path.parent
-    path = root / "databases" / "question_bank.db"
-    if not path.is_file():
-        return {}
-    try:
-        with reading(path) as connection:
-            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            if "grading_question_links" not in tables:
-                return {}
-            links = [dict(row) for row in connection.execute(
-                "SELECT * FROM grading_question_links WHERE CAST(grading_session_id AS INTEGER)=? ORDER BY source_question_id", (session_id,),
-            )]
-            ids = sorted({int(row["bank_question_id"]) for row in links if row.get("bank_question_id")})
-            if not ids:
-                return {}
-            marks = ','.join('?' for _ in ids)
-            source: dict[str, object] = {"links": links}
-            for table, order in (("questions", "id"), ("question_tags", "id"),
-                                 ("question_part_difficulty_features", "id")):
-                if table in tables:
-                    key = "id" if table == "questions" else "question_id"
-                    source[table] = [dict(row) for row in connection.execute(
-                        f"SELECT * FROM {table} WHERE {key} IN ({marks}) ORDER BY {order}", ids,
-                    )]
-            if "question_solution_evidence_versions" in tables:
-                source["evidence"] = [dict(row) for row in connection.execute(
-                    f"SELECT evidence_version_id,status,content_hash FROM question_solution_evidence_versions WHERE question_id IN ({marks}) ORDER BY evidence_version_id", ids,
-                )]
-            return source
-    except (OSError, sqlite3.Error):
-        return {}
 
 
 def submit_report_export(
@@ -123,7 +19,6 @@ def submit_report_export(
     file_service: JobFileService,
     session_id: int,
     report_type: str,
-    revision: str,
     force_regenerate: bool,
     score_excel_options: dict[str, object] | None = None,
     student_ids: list[int] | None = None,
@@ -134,24 +29,12 @@ def submit_report_export(
         if report_type == "score_excel"
         else None
     )
-    options_fingerprint = _report_options_fingerprint(
-        report_type,
-        normalized_options,
-    )
-    if report_type == "personal_analysis_html":
-        student_ids = sorted(set(student_ids)) if student_ids is not None else None
-        options_fingerprint = hashlib.sha256(json.dumps(
-            [options_fingerprint, student_ids, publish], sort_keys=True).encode()).hexdigest()
-    payload = {
-        "session_id": int(session_id),
-        "report_type": str(report_type),
-        "score_revision": str(revision),
-        "report_options_fingerprint": options_fingerprint,
-    }
+    payload = {'session_id': int(session_id), 'report_type': str(report_type)}
     if normalized_options is not None:
-        payload["score_excel_options"] = normalized_options
-    if report_type == "personal_analysis_html":
-        payload.update(student_ids=student_ids, publish=publish)
+        payload['score_excel_options'] = normalized_options
+    if report_type == 'personal_analysis_html':
+        payload.update(student_ids=sorted(set(student_ids)) if student_ids is not None else None,
+                       publish=publish)
     with _submit_lock:
         if not force_regenerate:
             offset = 0
@@ -164,12 +47,14 @@ def submit_report_export(
                     offset=offset,
                 )
                 for job in jobs:
-                    if (
-                        job.payload.get("report_type") != report_type
-                        or job.payload.get("score_revision") != revision
-                        or job.payload.get("report_options_fingerprint")
-                        != options_fingerprint
-                    ):
+                    if job.payload.get('report_type', 'score_excel') != report_type:
+                        continue
+                    if report_type == 'score_excel' and _normalize_score_excel_options(
+                            job.payload.get('score_excel_options')) != normalized_options:
+                        continue
+                    if report_type == 'personal_analysis_html' and (
+                            job.payload.get('student_ids') != payload['student_ids']
+                            or job.payload.get('publish', True) != publish):
                         continue
                     if job.status in {"queued", "running"}:
                         return job
@@ -216,23 +101,3 @@ def _normalize_score_excel_options(
         "hide_bottom_n": hide_bottom_n,
         "manual_hidden_student_ids": student_ids,
     }
-
-
-def _report_options_fingerprint(
-    report_type: str,
-    score_excel_options: dict[str, object] | None,
-) -> str:
-    payload = {
-        "rendition_version": _REPORT_RENDITION_VERSIONS.get(
-            report_type,
-            "unknown",
-        ),
-        "score_excel_options": score_excel_options,
-    }
-    serialized = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(serialized).hexdigest()

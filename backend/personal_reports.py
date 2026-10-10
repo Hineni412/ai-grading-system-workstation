@@ -1,15 +1,7 @@
-"""个人报告的结果状态、输入指纹与只读在线上下文。
-
-叙述结果存放在 ``reports_dir/.personal_reports/session_<场次>/<学生>.json``
-（backend.report_results.PersonalReportStore），每生每场只保留最近一次结果；
-新鲜度由 input_digest（成绩、教师锁、错因记录、题面）+ prompt_version 判定，
-不再使用按指纹命名的缓存文件与 personal_index。
-"""
+"""按考试和学生读取一份已保存个人报告，页面准备只保留临时内存结果。"""
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 import threading
 from collections import OrderedDict
 from datetime import datetime
@@ -17,7 +9,6 @@ from pathlib import Path
 
 from backend.report_results import (
     PersonalReportStore,
-    personal_input_digest,
     resolve_result_state,
 )
 from backend.session_analysis import assemble_session_analysis, infer_data_root, split_session_analysis_by_class
@@ -68,147 +59,50 @@ def _cached_context(cache, key, compute):
         return result
 
 
-def _digest(value) -> str:
-    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
-                                    separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
-
-
-def student_report_digests(
-    repositories, session_id: int, data, *, reports_dir: Path,
-) -> dict[int, str]:
-    """每名学生的个人报告输入指纹：成绩行、教师锁、错因记录与题面。
-
-    data 需已 enrich_personal_questions（question_text/reference_analysis
-    参与指纹）。错因记录取状态文件里该生物化行的投影 [question_id, kind,
-    category, reason]，不做新鲜度过滤：重新整理后行内容变化即过期，其他学生
-    的成绩变化不会连带本场已物化记录。指纹包含本卷已确认题库关联的当前题型或知识点目标，不包含无关标准变化与提示词版本。
-    """
-    from backend.class_analysis import ClassAnalysisStateStore
-
-    state = ClassAnalysisStateStore(Path(reports_dir)).load(int(session_id)) or {}
-    envelopes = state.get("error_records") or {}
-    error_rows_by_student: dict[int, list[list[Any]]] = {}
-    for question_id, envelope in envelopes.items():
-        for row in (envelope or {}).get("records") or []:
-            if not isinstance(row, dict):
-                continue
-            student_key = row.get("student_id")
-            if not isinstance(student_key, int):
-                continue
-            error_rows_by_student.setdefault(student_key, []).append(
-                [question_id, row.get("kind"), row.get("category"), row.get("pattern")]
-            )
-    target_inputs = _current_report_targets(repositories, int(session_id))
-    locks_all = repositories.reviews.list_teacher_score_locks(int(session_id))
-    questions = [
-        [info.question_id, info.question_text, info.reference_analysis]
-        for info in data.questions
-    ]
-    digests: dict[int, str] = {}
-    for student in data.students:
-        records = [
-            [record.question_id, record.score, record.max_score]
-            for record in student.records
-        ]
-        locks = [
-            [str(lock.get("question_id") or ""), lock.get("score_awarded")]
-            for lock in locks_all
-            if int(lock.get("student_id") or 0) == student.student_id
-        ]
-        error_rows = error_rows_by_student.get(int(student.student_id), [])
-        digests[int(student.student_id)] = personal_input_digest(
-            records=records,
-            locks=locks,
-            error_records=error_rows,
-            questions=[*questions, *[row for row in target_inputs
-                       if row[0] in {record.question_id for record in student.records}
-                       or row[0] in {record.question_id.split('(')[0] for record in student.records}]],
-        )
-    return digests
-
-
-def _current_report_targets(repositories, session_id: int) -> list[list]:
-    from question_bank.current_knowledge import CurrentKnowledgeResolver, CurrentKnowledgeUnavailable
-    from question_bank.question_types import is_training_target, target_kind_for_key
-    from question_bank.solution_evidence.part_assessments import reading
-    from integration.question_tag_projection_service import QuestionTagProjectionService
-    from path_manager import resolve_stored_file_path
-    import sqlite3
-
-    root = infer_data_root(repositories.db_path)
-    bank = root / 'databases' / 'question_bank.db'
-    if not bank.is_file():
-        return []
-    session = repositories.sessions.get_grading_session(session_id) or {}
-    rubric_path = resolve_stored_file_path(session.get('rubric_path'), data_root=root)
-    try:
-        rubric = json.loads(rubric_path.read_text(encoding='utf-8'))
-        resolver = CurrentKnowledgeResolver.from_active_database(bank)
-        volume = str(session.get('curriculum_volume_id') or '')
-        with reading(bank) as connection:
-            projection = QuestionTagProjectionService(bank, external_connection=connection, data_root=root).project_session(
-                grading_session_id=session_id, rubric=rubric)
-        rows = []
-        for item in projection.items:
-            keys = sorted(str(key) for key in item.tags.get('knowledge_point', ())
-                          if is_training_target(key, resolver, volume)
-                          and target_kind_for_key(key, resolver, volume) in {'type', 'knowledge'})
-            if keys:
-                rows.append([item.item_ref, 'training_targets',
-                             [[key, target_kind_for_key(key, resolver, volume)] for key in keys]])
-        return rows
-    except (CurrentKnowledgeUnavailable, OSError, sqlite3.Error, ValueError, TypeError):
-        return []
-
-
-def _report_bank_generation(repositories):
-    from integration.data_generation import commit_generation
-    bank = infer_data_root(repositories.db_path) / 'databases' / 'question_bank.db'
-    return commit_generation(bank) if bank.is_file() else None
+def _student_change_times(repositories, session_id: int) -> dict[int, str]:
+    """只读取本场评分和教师确认时间，提醒不限制旧报告使用。"""
+    changed = {}
+    for row in [*repositories.results.get_session_results(int(session_id)),
+                *repositories.reviews.list_teacher_score_locks(int(session_id))]:
+        student_id = int(row.get('student_id') or 0)
+        timestamp = str(row.get('updated_at') or row.get('graded_at') or '').replace('T', ' ')
+        if student_id and timestamp:
+            changed[student_id] = max(changed.get(student_id, ''), timestamp)
+    return changed
 
 
 def personal_report_states(repositories, session_id: int, reports_dir: Path, *, data=None) -> dict:
-    from backend.session_analysis import enrich_personal_questions
+    """已存正文始终可读；没有正文时才按当前成绩说明能否生成。"""
     from integration.data_generation import commit_generation
-    from integration.diagnosis_profile_service import _session_error_file_state, _session_source_state
-    from path_manager import resolve_stored_file_path
 
-    root = infer_data_root(repositories.db_path)
-
-    def prepare(source=None):
-        source = source or assemble_session_analysis(repositories, session_id, data_root=root, page_only=True)
-        enrich_personal_questions(repositories, source, root, include_images=False, include_markup=False)
+    def prepare():
+        source = assemble_session_analysis(
+            repositories, int(session_id),
+            data_root=infer_data_root(repositories.db_path), page_only=True,
+        )
         return dict(student_ids=[student.student_id for student in source.students],
-                    skipped=source.skipped,
-                    digests=student_report_digests(repositories, int(session_id), source, reports_dir=reports_dir))
+                    skipped=source.skipped, changed_at=_student_change_times(repositories, session_id))
 
     if data is not None:
-        inputs = prepare(data)
+        inputs = dict(student_ids=[student.student_id for student in data.students], skipped=data.skipped,
+                      changed_at=_student_change_times(repositories, session_id))
     else:
-        session = repositories.sessions.get_grading_session(int(session_id)) or {}
-        key = (str(repositories.db_path), int(session_id), commit_generation(repositories.db_path),
-               _report_bank_generation(repositories),
-               tuple(_session_error_file_state(resolve_stored_file_path(session.get(field), data_root=root))
-                     for field in ("rubric_path", "answer_key_path")),
-               _session_error_file_state(Path(reports_dir) / ".class_analysis" / f"{int(session_id)}.json"),
-               _session_source_state(root / "config" / "uploaded" / "config_sources" / f"session-{int(session_id)}")
-               if root is not None else None)
+        key = (str(repositories.db_path), int(session_id), commit_generation(repositories.db_path))
         inputs = _cached_context(_status_inputs, key, prepare)
-    store = PersonalReportStore(Path(reports_dir))
+    saved = PersonalReportStore(Path(reports_dir)).list(int(session_id))
+    skipped = {int(item['student_id']): item for item in inputs['skipped']}
+    student_ids = dict.fromkeys([*inputs['student_ids'], *skipped, *saved])
     students = []
-    for student_id in inputs["student_ids"]:
-        entry = store.load(int(session_id), student_id)
-        state = resolve_result_state(
-            entry, inputs["digests"].get(student_id, ""), "personal_report"
-        )
-        students.append(dict(
-            student_id=student_id,
-            status=state["status"],
-            generated_at=state["generated_at"],
-            reason=None,
-        ))
-    students.extend(dict(student_id=int(s["student_id"]), status="unavailable", generated_at=None,
-                         reason=s["reason"]) for s in inputs["skipped"])
+    for student_id in student_ids:
+        state = resolve_result_state(saved.get(student_id), 'personal_report',
+                                     current_changed_at=inputs['changed_at'].get(student_id))
+        read_error = (saved.get(student_id) or {}).get('read_error')
+        reason = read_error or None
+        if state['status'] == 'missing' and student_id in skipped:
+            state = dict(status='unavailable', generated_at=None)
+            reason = skipped[student_id]['reason']
+        students.append(dict(student_id=student_id, status=state['status'],
+                             generated_at=state['generated_at'], reason=reason, read_error=read_error))
     return dict(session_id=session_id, students=students)
 
 
@@ -217,6 +111,8 @@ def personal_report_summary(repositories, session_id: int, reports_dir: Path) ->
     counts = dict(current=0, stale=0, old_prompt=0, missing=0)
     for student in personal_report_states(repositories, session_id, reports_dir)["students"]:
         status = student["status"]
+        if status == 'missing' and student.get('read_error'):
+            continue
         if status in counts:
             counts[status] += 1
     return counts
@@ -231,44 +127,39 @@ def _read_generation(repositories, root: Path, reports_dir: Path):
 
 
 def student_personal_report_exams(repositories, student_id: int, reports_dir: Path, volume_id=None) -> dict:
-    """缓存同学期的轻量成绩投影；叙述状态每次按当前输入指纹判定。"""
-    from backend.session_analysis import enrich_personal_questions
-
+    """历次考试按保存归属读取，当前成绩不可用也保留已存正文入口。"""
     root = infer_data_root(repositories.db_path)
     key = (str(repositories.db_path), volume_id, _read_generation(repositories, root, reports_dir))
     def prepare():
         summaries = []
         for row in repositories.sessions.list_grading_sessions():
-            if row.get("is_deleted") or (volume_id is not None and str(row.get("curriculum_volume_id") or "") != volume_id):
+            if row.get('is_deleted') or (volume_id is not None and str(row.get('curriculum_volume_id') or '') != volume_id):
                 continue
-            sid = int(row["id"])
+            sid = int(row['id'])
             data = assemble_session_analysis(repositories, sid, data_root=root, page_only=True)
-            enrich_personal_questions(repositories, data, None)
             summaries.append(dict(session_id=sid, session_name=data.session_name, graded_at=data.graded_at,
-                max_score=data.full_score, scores={s.student_id: s.student_score for s in data.students},
-                skipped={int(s["student_id"]): s["reason"] for s in data.skipped},
-                digests=student_report_digests(repositories, sid, data, reports_dir=reports_dir)))
+                max_score=data.full_score, scores={student.student_id: student.student_score for student in data.students},
+                skipped={int(item['student_id']): item['reason'] for item in data.skipped},
+                changed_at=_student_change_times(repositories, sid)))
         return summaries
 
-    summaries = _cached_context(_semester_summaries, key, prepare)
     store = PersonalReportStore(Path(reports_dir))
     items = []
-    for entry in summaries:
-        if student_id in entry["scores"]:
-            saved = store.load(entry["session_id"], student_id)
-            state = resolve_result_state(
-                saved, entry["digests"].get(student_id, ""), "personal_report"
-            )
-            score = entry["scores"][student_id]
-        elif student_id in entry["skipped"]:
-            state = dict(status="unavailable", generated_at=None)
-            score = None
-        else:
-            continue
-        items.append(dict(**{k: entry[k] for k in ("session_id", "session_name", "graded_at", "max_score")},
-                          score=score, status=state["status"],
-                          generated_at=state.get("generated_at"), reason=state.get("reason")))
-    items.sort(key=lambda s: (s["graded_at"] or "", s["session_id"]))
+    for entry in _cached_context(_semester_summaries, key, prepare):
+        saved = store.load(entry['session_id'], student_id)
+        state = resolve_result_state(saved, 'personal_report',
+                                     current_changed_at=entry['changed_at'].get(student_id))
+        score = entry['scores'].get(student_id)
+        if state['status'] == 'missing':
+            if student_id in entry['skipped']:
+                state = dict(status='unavailable', generated_at=None, reason=entry['skipped'][student_id])
+            elif student_id not in entry['scores']:
+                continue
+        items.append(dict(**{key: entry[key] for key in ('session_id', 'session_name', 'graded_at', 'max_score')},
+                          score=score, status=state['status'],
+                          generated_at=state.get('generated_at'), reason=(saved or {}).get('read_error') or state.get('reason'),
+                          read_error=(saved or {}).get('read_error')))
+    items.sort(key=lambda item: (item['graded_at'] or '', item['session_id']))
     return dict(student_id=student_id, sessions=items)
 
 
@@ -285,8 +176,16 @@ def personal_render_context(repositories, session_id: int, reports_dir: Path) ->
     # 原卷状态与其他场次成绩同样影响页面；读取不写缓存文件。
     from backend.files.session_originals import originals_state
     sessions = repositories.sessions.list_grading_sessions()
+    snapshot_stamp = None
+    if root is not None:
+        snapshot = root / "config" / "uploaded" / f"evidence_snapshot-{session_id}.json"
+        try:
+            snapshot_stat = snapshot.stat()
+            snapshot_stamp = (snapshot_stat.st_mtime_ns, snapshot_stat.st_size)
+        except OSError:
+            pass
     key = (str(repositories.db_path), session_id, mtime, originals_state(root, session_id),
-           _digest([dict(s) for s in sessions]), _read_generation(repositories, root, reports_dir))
+           tuple((s.get('id'), s.get('name'), s.get('graded_at'), s.get('is_deleted')) for s in sessions), _read_generation(repositories, root, reports_dir), snapshot_stamp)
     def prepare():
         data = assemble_session_analysis(repositories, session_id, data_root=root)
         enrich_personal_questions(repositories, data, root)
@@ -297,6 +196,15 @@ def personal_render_context(repositories, session_id: int, reports_dir: Path) ->
             regions=load_session_regions(repositories, session_id, data_root=root),
             error_state=store.load(session_id) or {}, error_sources=build_cause_inputs(data))
         context["error_histories"] = _load_personal_error_histories(repositories, context["histories"], session_id, reports_dir, root)
+        from backend.session_analysis import question_bank_db_path
+        bank_path = question_bank_db_path(Path(repositories.db_path))
+        context['step_diagnoses'] = {}
+        if bank_path is not None:
+            from backend.step_diagnosis import build_session_step_diagnosis
+            context['step_diagnoses'] = build_session_step_diagnosis(
+                repositories, session_id, student_ids=[student.student_id for student in data.students],
+                question_bank_path=bank_path,
+            ).students
         return context
 
     return _cached_context(_contexts, key, prepare)
@@ -333,20 +241,29 @@ def render_personal_report(repositories, session_id: int, student_id: int, repor
         capture_lost_question_shots)
     from backend.class_analysis import student_error_map
     from backend.files.session_originals import originals_state
+    saved = PersonalReportStore(Path(reports_dir)).load(session_id, student_id)
+    narrative = saved.get('narrative') if isinstance(saved, dict) else None
+    if narrative_mode == 'auto' and not isinstance(narrative, dict):
+        if isinstance(saved, dict) and saved.get('read_error'):
+            raise ValueError('personal_report_read_error')
+        raise ValueError('personal_report_missing')
     context = personal_render_context(repositories, session_id, reports_dir)
     matched = next(((g, s) for g in context["groups"].values()
                     for s in g.students if s.student_id == student_id), None)
     if matched is None:
+        if isinstance(narrative, dict) and narrative_mode == 'auto':
+            from backend.reporting.analysis_report_exporter import render_saved_narrative
+            source = saved.get('source') if isinstance(saved.get('source'), dict) else {}
+            session = repositories.sessions.get_grading_session(session_id) or {}
+            return render_saved_narrative(narrative, title='个人报告',
+                owner=source.get('student_name') or f'学生编号 {student_id}',
+                session_name=source.get('session_name') or session.get('name') or f'考试编号 {session_id}',
+                generated_at=saved.get('generated_at'))
         raise ValueError("personal_report_unavailable")
     group, student = matched
     # 其他学生只参与已经算出的匿名统计；单生渲染不复制全班步骤与历次证据。
     group = copy.deepcopy(group, {id(s): s for s in group.students})
     student = copy.deepcopy(student)
-    # 已存叙述（含 stale/old_prompt）照常展示；没有结果才视为未生成。
-    saved = PersonalReportStore(Path(reports_dir)).load(session_id, student_id)
-    narrative = saved.get("narrative") if isinstance(saved, dict) else None
-    if narrative_mode == "auto" and not isinstance(narrative, dict):
-        raise ValueError("personal_report_missing")
     released = originals_state(context["root"], session_id) in {"clearing", "cleared"}
     kwargs = dict(regions=context["regions"], data_root=context["root"])
     if released:
@@ -361,4 +278,6 @@ def render_personal_report(repositories, session_id: int, student_id: int, repor
     error_history = context["error_histories"].get(student_id)
     return _render_personal_html(group, student, narrative if narrative_mode == "auto" else None, shots,
         history=context["histories"].get(student_id, []), error_map=error_map, error_history=error_history,
-        online=online, review_links=review_links, originals_released=released)
+        online=online, review_links=review_links, originals_released=released,
+        step_diagnoses=context["step_diagnoses"].get(student_id),
+        narrative_saved_at=saved.get("generated_at") if isinstance(saved, dict) else None)

@@ -360,3 +360,25 @@ def test_teacher_question_type_decision_is_preserved_as_a_hard_fact(
                 )
             ],
         )
+
+
+def test_old_source_and_known_manifest_fields_remain_readable_after_replacement(tmp_path):
+    source_service = service(tmp_path)
+    original = asyncio.run(source_service.stage_and_parse(session_id=7, filename="TEST-original.pdf", chunks=chunks(_pdf_bytes())))
+    replacement = asyncio.run(source_service.stage_and_parse(session_id=7, filename="TEST-replacement.pdf", chunks=chunks(_pdf_bytes())))
+    assert replacement.source_id != original.source_id
+    manifest = json.loads(original.manifest_path.read_text(encoding="utf-8"))
+    manifest["version"] = 99
+    manifest["future_display_field"] = "TEST-compatible-fields"
+    original.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = original.manifest_path.read_bytes()
+    saved = source_service.load_public(session_id=7, source_id=original.source_id)
+    assert saved["source_id"] == original.source_id
+    assert saved["questions"]
+    content, media = source_service.read_asset(session_id=7, source_id=original.source_id,
+        question_id=original.questions[0].question_id, asset_kind="question")
+    assert content and media.startswith("image/")
+    assert original.manifest_path.read_bytes() == before
+    with pytest.raises(ConfigSourceChangedError):
+        source_service.load_for_generation(session_id=7, source_id=original.source_id,
+            source_revision=original.source_revision)

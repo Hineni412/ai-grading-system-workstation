@@ -64,7 +64,7 @@ const personalStates = ref<PersonalReportState[]>([])
 const personalStatesReady = ref(false)
 let personalController: AbortController | null = null
 const personalSummary = computed(() => personalStatesReady.value
-  ? `本场：已生成 ${personalStates.value.filter(s => s.status === 'current').length} · 需重新生成 ${personalStates.value.filter(s => s.status === 'stale').length} · 未生成 ${personalStates.value.filter(s => s.status === 'missing').length} · 不可生成 ${personalStates.value.filter(s => s.status === 'unavailable').length}（人）`
+  ? `本场：已生成 ${personalStates.value.filter(s => ['current', 'stale', 'old_prompt'].includes(s.status)).length} · 可更新 ${personalStates.value.filter(s => s.status === 'stale').length} · 未生成 ${personalStates.value.filter(s => s.status === 'missing' && !s.read_error).length} · 不可生成 ${personalStates.value.filter(s => s.status === 'unavailable').length} · 暂无法读取 ${personalStates.value.filter(s => s.status === 'missing' && s.read_error).length}（人）`
   : '正在读取个人报告状态…')
 const personalExamOptions = computed(() => sessionStore.sessions.filter(s => !s.is_deleted &&
   (sessionStore.currentSession?.curriculum_volume_id ? s.curriculum_volume_id === sessionStore.currentSession.curriculum_volume_id : s.id === sessionStore.selectedSessionId)))
@@ -214,7 +214,7 @@ function liveJobFor(type: ReportType): JobResponse | null {
 const reportRows = computed(() => reportDefinitions.map((definition) => {
   const jobs = [...reportJobs(definition.type)]
     .sort((left, right) => right.created_at.localeCompare(left.created_at))
-  const latest = jobs.find((job) => job.is_current_revision) ?? jobs[0] ?? null
+  const latest = jobs[0] ?? null
   return {
     ...definition,
     jobs,

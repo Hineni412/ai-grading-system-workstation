@@ -481,3 +481,267 @@ class SuccessfulTagWriter:
 class ReviewTagWriter:
     def write(self, *_args, **_kwargs) -> Mapping[str, Any]:
         raise TaxonomyProjectionReviewRequired("synthetic taxonomy review")
+
+
+def test_saved_evidence_is_visible_after_source_change_but_not_adopted(tmp_path):
+    from question_bank.database.schema import connect
+    from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
+    from question_bank.solution_evidence.knowledge_links import load_point_links
+    from question_bank.training_criteria.analysis import solution_evidence_source_content_hash
+    from tests.current_knowledge_support import install_current_knowledge
+    path = tmp_path / "TEST-read-saved-evidence.db"
+    initialize_database(path)
+    install_current_knowledge(path)
+    with connect(path) as conn:
+        conn.execute("INSERT INTO papers(id,title,import_status) VALUES(1,'TEST-saved-evidence','ready')")
+        conn.execute("INSERT INTO questions(id,paper_id,question_number,question_type,question_text,answer_text) VALUES(1,1,'1','解答题','TEST-current-question','TEST-current-answer')")
+    original = _question(1)
+    source = solution_evidence_source_content_hash(original)
+    evidence = QuestionSolutionEvidence.from_model_dict(_evidence_payload(1), question_id=1,
+        source_content_hash=source, resolver=Resolver())
+    repository = SolutionEvidenceRepository(path)
+    version = repository.save(evidence, source_kind="backfill", source_reference="TEST-history", created_by="test")
+    before = path.read_bytes()
+    visible = repository.latest(1, current_source_content_hash="f" * 64)
+    assert visible["evidence"]["parts"]
+    assert visible["status"] == "proposed"
+    assert repository.load_current(1, source_content_hash="f" * 64, resolver=Resolver()) is None
+    links = load_point_links(path, [version], None)[version]["step-1"]
+    assert [(link.stable_key, link.role, link.source_kind) for link in links] == [
+        ("kp_alg_linear_equation", "direct", "migrated_from_embedded"),
+        ("kp_alg_linear_equation", "supporting_prerequisite", "migrated_from_embedded"),
+    ]
+    assert path.read_bytes() == before
+
+
+class TrackedLinkRows(list):
+    def __init__(self, rows):
+        super().__init__(rows)
+        self.visits = 0
+
+    def __iter__(self):
+        for row in super().__iter__():
+            self.visits += 1
+            yield row
+
+
+@pytest.fixture
+def point_metadata_rows():
+    evidence_specs = [
+        ("own", 1, "rejected", "r-other", "original"),
+        ("missing-a", 1, "proposed", "r-current", "original"),
+        ("missing-b", 1, "approved", "r-current", "original"),
+        ("missing-q2", 2, "approved", "r-current", "original"),
+        ("unmatched", 1, "approved", "r-current", "unmatched"),
+        ("broken", 1, "approved", "r-current", None),
+        ("old-job", 1, "approved", "", "original"),
+        ("current-teacher", 1, "proposed", "r-current", "original"),
+        ("current-job-older", 1, "approved", "r-current", "original"),
+        ("current-job", 1, "approved", "r-current", "original"),
+        ("current-job-latest", 1, "approved", "r-current", "original"),
+        ("current-job-tie", 1, "approved", "r-current", "original"),
+        ("rejected", 1, "rejected", "r-current", "original"),
+        ("wrong-release", 1, "approved", "r-other", "original"),
+        ("changed", 1, "approved", "r-current", "changed"),
+        ("other-job", 2, "approved", "r-current", "original"),
+        ("second-point", 1, "approved", "r-current", "original"),
+    ]
+    versions = {
+        name: hashlib.sha256(f"TEST-point-links:{name}".encode()).hexdigest()
+        for name in [*(spec[0] for spec in evidence_specs), "unknown"]
+    }
+    evidence_rows = []
+    questions = {}
+    for name, question_id, status, release, target in evidence_specs:
+        questions[name] = question_id
+        payload = _evidence_payload(question_id)
+        part = payload["parts"][0]
+        part["evidence_points"][0]["target"] = target
+        part["evidence_points"][0]["fine_term_links"] = [{"fine_term_id": name}]
+        second = copy.deepcopy(part["evidence_points"][0])
+        second.update(evidence_point_id="step-2", target=f"second-{target}")
+        part["evidence_points"].append(second)
+        evidence_rows.append({
+            "evidence_version_id": versions[name],
+            "question_id": question_id,
+            "status": status,
+            "graph_release_id": release,
+            "evidence_json": json.dumps(payload) if target is not None else "not-json",
+        })
+    link_specs = [
+        ("own", "step-1", "own", "teacher", "r-other", "2035", 900),
+        ("old-job", "step-1", "old", "link_job", "r-old", "2030", 400),
+        ("current-teacher", "step-1", "teacher", "teacher", "r-current", "2026", 500),
+        ("current-job-older", "step-1", "job-older", "link_job", "r-current", "2024", 9),
+        ("current-job", "step-1", "job", "link_job", "r-current", "2025", 10),
+        ("current-job-latest", "step-1", "job-latest", "link_job", "r-current", "2025", 12),
+        ("current-job-tie", "step-1", "job-tie", "link_job", "r-current", "2025", 12),
+        ("current-job-latest", "step-1", "job-support", "link_job", "r-current", "2025", 11),
+        ("current-job-latest", "step-1", "teacher-in-job-group", "teacher", "r-current", "2025", 10),
+        ("rejected", "step-1", "rejected", "link_job", "r-current", "2036", 901),
+        ("wrong-release", "step-1", "wrong-release", "link_job", "r-current", "2028", 902),
+        ("changed", "step-1", "changed", "link_job", "r-current", "2037", 903),
+        ("other-job", "step-1", "other-question", "link_job", "r-current", "2038", 904),
+        ("second-point", "step-2", "second", "teacher", "r-current", "2025", 13),
+    ]
+    link_rows = []
+    for name, point_id, term, kind, release, year, order in link_specs:
+        supporting = term == "job-support"
+        link_rows.append({
+            "evidence_version_id": versions[name],
+            "question_id": questions[name],
+            "evidence_point_id": point_id,
+            "graph_release_id": release,
+            "role": "supporting_prerequisite" if supporting else "direct",
+            "term_id": term,
+            "stable_key": f"sk_TEST_{term}",
+            "resolution_status": "resolved",
+            "weight": 0.25 if supporting else 0.75,
+            "source_kind": kind,
+            "created_at": f"{year}-01-01T00:00:00",
+            "link_order": order,
+        })
+    return versions, evidence_rows, link_rows
+
+
+@pytest.mark.parametrize(
+    ("wanted", "excluded", "chosen_terms"),
+    [
+        ("r-current", (), ("job-latest", "job-support", "teacher-in-job-group")),
+        ("r-current", ("current-job-latest", "current-job-tie"), ("job",)),
+        ("r-current", ("current-job-latest", "current-job-tie", "current-job"), ("job-older",)),
+        ("r-current", ("current-job-latest", "current-job-tie", "current-job", "current-job-older"), ("teacher",)),
+        ("", (), ("old",)),
+    ],
+)
+def test_adopted_point_metadata_preserves_scope_priority_and_order(
+    point_metadata_rows, wanted, excluded, chosen_terms
+):
+    from question_bank.solution_evidence.knowledge_links import _adopted_point_metadata
+
+    versions, evidence_rows, link_rows = point_metadata_rows
+    excluded_ids = {versions[name] for name in excluded}
+    rows = TrackedLinkRows([
+        row for row in link_rows if row["evidence_version_id"] not in excluded_ids
+    ])
+    names = ["own", "missing-a", "missing-b", "missing-q2", "unmatched", "broken", "unknown", "missing-a"]
+    result = _adopted_point_metadata(
+        [versions[name] for name in names], evidence_rows, rows, wanted
+    )
+    by_term = {row["term_id"]: row for row in link_rows}
+    expected = [by_term["own"]]
+    for name in ("missing-a", "missing-b"):
+        expected.extend({**by_term[term], "evidence_version_id": versions[name]}
+                        for term in (*chosen_terms, "second"))
+    expected.append({**by_term["other-question"], "evidence_version_id": versions["missing-q2"]})
+    expected.extend({**by_term[term], "evidence_version_id": versions["missing-a"]}
+                    for term in (*chosen_terms, "second"))
+    assert result == expected
+    assert result[0] is by_term["own"]
+    assert rows.visits <= 2 * len(rows)
+
+
+def test_adopted_point_metadata_keeps_invalid_order_failure(point_metadata_rows):
+    from question_bank.solution_evidence.knowledge_links import _adopted_point_metadata
+
+    versions, evidence_rows, link_rows = point_metadata_rows
+    link_rows[5]["link_order"] = "invalid-order"
+    with pytest.raises(ValueError, match="invalid-order"):
+        _adopted_point_metadata([versions["missing-a"]], evidence_rows, link_rows, "r-current")
+
+
+def test_load_point_links_keeps_saved_and_fallback_links_without_repeated_row_scans(
+    tmp_path, monkeypatch, point_metadata_rows
+):
+    from question_bank.database.schema import connect
+    from question_bank.solution_evidence import knowledge_links
+    from question_bank.solution_evidence.knowledge_links import KnowledgeLink
+
+    versions, evidence_rows, link_rows = point_metadata_rows
+    path = tmp_path / "TEST-point-link-index.db"
+    initialize_database(path)
+    releases = {name: f"kgr_TEST_{name}" for name in ("r-current", "r-other", "r-old")}
+    current = releases["r-current"]
+    evidence_rows = [{**row, "graph_release_id": releases.get(row["graph_release_id"]),
+                      "evidence_json": "null" if row["evidence_json"] == "not-json" else row["evidence_json"]}
+                     for row in evidence_rows]
+    link_rows = [{**row, "graph_release_id": releases[row["graph_release_id"]]} for row in link_rows]
+    with connect(path) as conn:
+        conn.executemany(
+            """INSERT INTO knowledge_graph_releases(
+                release_id,schema_version,taxonomy_revision,content_hash,payload_json,status,source_reference,created_by)
+               VALUES(?,'knowledge-graph-release-v1',1,?,'{}','retired','TEST-point-links','test')""",
+            [(release, hashlib.sha256(release.encode()).hexdigest()) for release in releases.values()],
+        )
+        conn.execute("INSERT INTO papers(id,title,import_status) VALUES(1,'TEST-point-links','ready')")
+        conn.executemany(
+            """INSERT INTO questions(id,paper_id,question_number,question_type,question_text,answer_text)
+               VALUES(?,1,?,'解答题','TEST-question','TEST-answer')""",
+            [(question_id, str(question_id)) for question_id in (1, 2)],
+        )
+        conn.executemany(
+            """INSERT INTO question_solution_evidence_versions(
+                evidence_version_id,question_id,source_content_hash,schema_version,
+                content_hash,evidence_json,status,source_kind,source_reference,created_by,graph_release_id)
+               VALUES(?,? ,?,'question-solution-evidence-v1',?, ?,?,'backfill',?,'test',?)""",
+            [(
+                row["evidence_version_id"], row["question_id"], "a" * 64, "b" * 64,
+                row["evidence_json"], row["status"], f'TEST-{row["evidence_version_id"]}',
+                row["graph_release_id"],
+            ) for row in evidence_rows],
+        )
+        conn.executemany(
+            """INSERT INTO evidence_point_knowledge_links(
+                evidence_version_id,question_id,part_id,evidence_point_id,graph_release_id,
+                role,term_id,stable_key,resolution_status,weight,source_kind,created_at)
+               VALUES(?,?,'part-1',?,?,?,?,?,?,?,?,?)""",
+            [tuple(row[key] for key in (
+                "evidence_version_id", "question_id", "evidence_point_id", "graph_release_id",
+                "role", "term_id", "stable_key", "resolution_status", "weight", "source_kind", "created_at",
+            )) for row in link_rows],
+        )
+    before = path.read_bytes()
+    fetched = []
+    original_rows_as_dicts = knowledge_links._rows_as_dicts
+
+    def tracked_rows_as_dicts(cursor):
+        rows = TrackedLinkRows(original_rows_as_dicts(cursor))
+        fetched.append(rows)
+        return rows
+
+    monkeypatch.setattr(knowledge_links, "_rows_as_dicts", tracked_rows_as_dicts)
+    names = ["own", "current-teacher", "current-job-older", "current-job",
+             "current-job-latest", "current-job-tie", "missing-a", "missing-b",
+             "missing-q2", "unmatched", "broken", "unknown", "missing-a"]
+    result = knowledge_links.load_point_links(path, [versions[name] for name in names], current)
+    assert set(result) == {versions[name] for name in names if name not in {"unmatched", "broken", "unknown"}}
+    expected_point = (
+        KnowledgeLink("job-latest", "sk_TEST_job-latest", "direct", 0.75,
+                      source_kind="link_job", graph_release_id=current),
+        KnowledgeLink("job-support", "sk_TEST_job-support", "supporting_prerequisite", 0.25,
+                      source_kind="link_job", graph_release_id=current),
+    )
+    expected_second = (KnowledgeLink(
+        "second", "sk_TEST_second", "direct", 0.75,
+        source_kind="teacher", graph_release_id=current,
+    ),)
+    for name in ("missing-a", "missing-b"):
+        assert list(result[versions[name]]) == ["step-1", "step-2"]
+        assert result[versions[name]] == {"step-1": expected_point, "step-2": expected_second}
+    assert result[versions["own"]] == {"step-1": (KnowledgeLink(
+        "own", "sk_TEST_own", "direct", 0.75,
+        source_kind="teacher", graph_release_id=releases["r-other"],
+    ),)}
+    assert result[versions["missing-q2"]] == {"step-1": (KnowledgeLink(
+        "other-question", "sk_TEST_other-question", "direct", 0.75,
+        source_kind="link_job", graph_release_id=current,
+    ),)}
+    assert len(fetched) == 3
+    assert fetched[0].visits <= 2 * len(fetched[0])
+    assert fetched[2].visits <= 2 * len(fetched[2])
+    without_release = knowledge_links.load_point_links(path, [versions["missing-a"]], None)
+    assert without_release[versions["missing-a"]]["step-1"] == (KnowledgeLink(
+        "old", "sk_TEST_old", "direct", 0.75,
+        source_kind="link_job", graph_release_id=releases["r-old"],
+    ),)
+    assert path.read_bytes() == before

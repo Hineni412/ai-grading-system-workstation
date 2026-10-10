@@ -426,15 +426,13 @@ _DIGEST_MAPS_LIMIT = 16
 class PersistentDigestMap:
     """One pickle dict file of derived digests shared across restarts.
 
-    Entries survive process restarts; ``version`` must capture every input
-    besides the keyed file/text itself, so stale code ignores old entries.
+    Entries survive process restarts and refresh when their file/text inputs change.
     Writes flush atomically (temp file + ``os.replace``) when enough entries
     accumulated or enough time passed; ``flush()`` forces a write.
     """
 
-    def __init__(self, path: Path, *, version: Any) -> None:
+    def __init__(self, path: Path) -> None:
         self._path = Path(path)
-        self._version = version
         self._lock = threading.Lock()
         self._entries: OrderedDict | None = None
         self._identity: tuple | None = None
@@ -457,8 +455,7 @@ class PersistentDigestMap:
             with self._path.open("rb") as saved:
                 import pickle
                 data = pickle.load(saved)
-            if (isinstance(data, dict) and data.get("version") == self._version
-                    and isinstance(data.get("entries"), dict)):
+            if isinstance(data, dict) and isinstance(data.get("entries"), dict):
                 entries = OrderedDict(data["entries"])
         except Exception:
             entries = OrderedDict()
@@ -506,7 +503,7 @@ class PersistentDigestMap:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             data = pickle.dumps(
-                {"version": self._version, "entries": dict(self._entries)},
+                {"entries": dict(self._entries)},
                 pickle.HIGHEST_PROTOCOL,
             )
             with tempfile.NamedTemporaryFile(
@@ -528,14 +525,14 @@ class PersistentDigestMap:
                     pass
 
 
-def question_identity_map(data_root: Path, version: Any) -> PersistentDigestMap:
+def question_identity_map(data_root: Path) -> PersistentDigestMap:
     """Share the on-disk identity map for one data_root across callers."""
     path = Path(data_root) / "cache" / "question_identity.cache"
     key = str(path.resolve(strict=False))
     with _lock:
         cached = _DIGEST_MAPS.get(key)
         if cached is None:
-            cached = PersistentDigestMap(path, version=version)
+            cached = PersistentDigestMap(path)
             _DIGEST_MAPS[key] = cached
             _DIGEST_MAPS.move_to_end(key)
             _trim(_DIGEST_MAPS, _DIGEST_MAPS_LIMIT)

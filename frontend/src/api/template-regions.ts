@@ -24,14 +24,14 @@ export interface RegionIssue {
 }
 export interface RegionWorkspace {
   session_id: number; template: TemplateSummary; formal_regions: Region[]
-  draft: { status: 'missing' | 'compatible' | 'incompatible' | 'corrupt'; revision: number; regions: Region[] }
+  draft: { status: 'missing' | 'compatible' | 'incompatible' | 'corrupt'; revision: number; regions: Region[]; reason?: string | null }
   automatic_candidates: string[]
   manual_question_options: Array<{ value: string; label: string }>
   issues: RegionIssue[]; template_ready: boolean
 }
 export interface RegionDraftResponse {
   status: string; session_id: number; template_id: number; template_fingerprint: string
-  draft: { revision: number; regions: Region[] } | null
+  draft: { revision: number; regions: Region[] } | null; reason?: string | null
 }
 export interface RegionCommitResponse {
   committed: boolean; snapshot_pending: boolean; error: string | null
@@ -105,8 +105,9 @@ function decodeWorkspace(value: unknown): RegionWorkspace {
   if (!isRecord(value) || !exact(value, ['session_id', 'template', 'formal_regions', 'draft',
     'automatic_candidates', 'manual_question_options', 'issues', 'template_ready'])
     || !positive(value.session_id) || !Array.isArray(value.formal_regions) || !value.formal_regions.every(region)
-    || !isRecord(value.draft) || !exact(value.draft, ['status', 'revision', 'regions'])
+    || !isRecord(value.draft) || !exact(value.draft, ['status', 'revision', 'regions', ...('reason' in value.draft ? ['reason'] : [])])
     || !['missing', 'compatible', 'incompatible', 'corrupt'].includes(String(value.draft.status))
+    || (value.draft.reason != null && typeof value.draft.reason !== 'string')
     || !Number.isSafeInteger(value.draft.revision) || Number(value.draft.revision) < 0
     || !Array.isArray(value.draft.regions) || !value.draft.regions.every(region)
     || !Array.isArray(value.automatic_candidates) || !value.automatic_candidates.every((item) => typeof item === 'string')
@@ -120,6 +121,7 @@ function decodeWorkspace(value: unknown): RegionWorkspace {
 function decodeDraft(value: unknown): RegionDraftResponse {
   assertNoPathLikeKeys(value)
   if (!isRecord(value) || !exact(value, ['status', 'session_id', 'template_id', 'template_fingerprint', 'draft'])
+    || (value.reason != null && typeof value.reason !== 'string')
     || typeof value.status !== 'string' || !positive(value.session_id) || !positive(value.template_id)
     || !hash(value.template_fingerprint) || (value.draft !== null && (!isRecord(value.draft)
       || !exact(value.draft, ['revision', 'regions']) || !Number.isSafeInteger(value.draft.revision)

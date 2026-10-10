@@ -27,7 +27,7 @@ const groups = computed(() => classNames.value.map(name => ({ name,
   students: props.students.filter(s => (s.class_name || '未分班') === name && matchesReportStudent(s, query.value)) })).filter(g => g.students.length))
 const chosenExams = computed(() => props.sessions.filter(s => exams.value.includes(s.id)))
 const available = (sid: number) => selected.value.filter(s => states.value[sid]?.some(item =>
-  item.student_id === s.student_id && ['current', 'stale'].includes(item.status))).length
+  item.student_id === s.student_id && ['current', 'stale', 'old_prompt'].includes(item.status))).length
 const missingCount = computed(() => exams.value.reduce((sum, sid) => sum + selected.value.length - available(sid), 0))
 const scopeLabel = computed(() => mode.value === 'all' ? `全部_${selected.value.length}人`
   : mode.value === 'class' ? `${classes.value.join('、')}_${selected.value.length}人` : `指定${selected.value.length}人`)

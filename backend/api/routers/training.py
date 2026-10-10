@@ -51,7 +51,10 @@ from backend.api.schemas.training import (
     TrainingDiagnosisSummaryResponse,
     TrainingWeakPointSummary,
     TrainingDisplayDiagnosisResponse,
+    TrainingDisplaySharedDiagnosisResponse,
     TrainingDisplayWeakPoint,
+    TrainingDisplayPointMetadata,
+    TrainingDisplayPointValues,
     TrainingDisplayCatalogNode,
     TrainingEvidenceReplayRequest,
     TrainingEvidenceReplayResponse,
@@ -155,9 +158,12 @@ def _diagnosis_summary(public):
 
 
 def _diagnosis_display(public):
+    point_fields = TrainingDisplayWeakPoint.model_fields
+    node_fields = TrainingDisplayCatalogNode.model_fields
+
     def points(values):
         return [{**{key: value for key, value in point.items()
-                    if key in TrainingDisplayWeakPoint.model_fields},
+                    if key in point_fields},
                  'source_reference_count': len(point['source_question_refs'])}
                 for point in values]
     return {**public, 'response_mode': 'display',
@@ -165,20 +171,42 @@ def _diagnosis_display(public):
                          for student in public['students']],
             'group_weak_points': points(public.get('group_weak_points', [])),
             'knowledge_catalog': [{key: value for key, value in node.items()
-                                   if key in TrainingDisplayCatalogNode.model_fields}
+                                   if key in node_fields}
                                   for node in public.get('knowledge_catalog', [])],
             'knowledge_associations': []}
 
 
-def _validated_diagnosis_json(public, *, include_student_detail=True, response_mode='full') -> bytes:
-    if response_mode == 'display':
-        model = TrainingDisplayDiagnosisResponse.model_validate(_diagnosis_display(public))
-    else:
-        model = (TrainingDiagnosisResponse.model_validate(public) if include_student_detail
-                 else TrainingDiagnosisSummaryResponse.model_validate(_diagnosis_summary(public)))
-    # Preserve JSONResponse's rejection of NaN/Infinity, including a string
-    # converted to float by a typed response field. Untyped values were
-    # already checked during the public-data walk.
+def _diagnosis_display_shared(model: TrainingDisplayDiagnosisResponse) -> TrainingDisplaySharedDiagnosisResponse:
+    catalog: list[TrainingDisplayPointMetadata] = []
+    positions: dict[tuple[str, str, str | None], int] = {}
+
+    def values(points: list[TrainingDisplayWeakPoint]) -> list[TrainingDisplayPointValues]:
+        result = []
+        for point in points:
+            key = (point.knowledge_key, point.knowledge_point, point.parent_knowledge_key)
+            index = positions.get(key)
+            if index is None:
+                index = len(catalog)
+                positions[key] = index
+                catalog.append(TrainingDisplayPointMetadata(
+                    knowledge_key=point.knowledge_key, knowledge_point=point.knowledge_point,
+                    parent_knowledge_key=point.parent_knowledge_key))
+            result.append((index, point.mastery, point.tier, point.observation_count,
+                           point.evidence_count, point.source_reference_count))
+        return result
+
+    students = [{**student.model_dump(exclude={'weak_points'}),
+                 'weak_points': values(student.weak_points)} for student in model.students]
+    group_points = values(model.group_weak_points)
+    return TrainingDisplaySharedDiagnosisResponse.model_validate({
+        **model.model_dump(exclude={'response_mode', 'students', 'group_weak_points'}),
+        'response_mode': 'display_shared', 'students': students,
+        'group_weak_points': group_points, 'weak_point_catalog': catalog,
+    })
+
+
+def _reject_nonfinite_diagnosis_model(model: BaseModel) -> None:
+    # Typed fields can convert numeric strings after the public-data walk.
     pending = [model]
     while pending:
         for value in pending.pop().__dict__.values():
@@ -188,21 +216,44 @@ def _validated_diagnosis_json(public, *, include_student_detail=True, response_m
                 pending.append(value)
             elif isinstance(value, list):
                 pending.extend(item for item in value if isinstance(item, BaseModel))
+
+
+def _validated_diagnosis_json(public, *, include_student_detail=True, response_mode='full') -> bytes:
+    if response_mode in {'display', 'display_shared'}:
+        model = TrainingDisplayDiagnosisResponse.model_validate(_diagnosis_display(public))
+    else:
+        model = (TrainingDiagnosisResponse.model_validate(public) if include_student_detail
+                 else TrainingDiagnosisSummaryResponse.model_validate(_diagnosis_summary(public)))
+    _reject_nonfinite_diagnosis_model(model)
+    if response_mode == 'display_shared':
+        model = _diagnosis_display_shared(model)
     return model.__pydantic_serializer__.to_json(model, exclude_none=True)
+
+
+def _validate_shared_diagnosis_cache(encoded: bytes) -> None:
+    payload = json.loads(encoded)
+    if not isinstance(payload, dict) or payload.get('response_mode') != 'display_shared':
+        raise ValueError('invalid shared diagnosis cache')
+    if _public_training_mapping(payload, reject_nonfinite=True) != payload:
+        raise ValueError('non-public shared diagnosis cache')
+    points = payload.get('weak_point_catalog')
+    if not isinstance(points, list) or any(not isinstance(point, dict) for point in points):
+        raise ValueError('invalid shared diagnosis catalog')
+    model = TrainingDisplaySharedDiagnosisResponse.model_validate(payload)
+    _reject_nonfinite_diagnosis_model(model)
+    validated = model.model_dump(mode='json', exclude_none=True)
+    options = dict(ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(',', ':'))
+    if json.dumps(validated, **options) != json.dumps(payload, **options):
+        raise ValueError('non-canonical shared diagnosis cache')
 
 
 def _diagnosis_response_bytes(service: DiagnosisProfileService, *, scope, exam_scope,
                              diagnosis=None, grouping_cache_key=None, diagnosis_factory=None,
                              include_student_detail=True, response_mode='full') -> bytes:
     """Reuse a validated, complete response under the existing source contract."""
-    root = Path(__file__).resolve().parents[3]
-    files = (Path(__file__), root / 'backend/api/schemas/training.py',
-             root / 'backend/public_data.py', root / 'question_bank/services/rich_content_service.py',
-             root / 'question_bank/recommendation/personalized.py',
-             root / 'question_bank/taxonomy/curriculum_catalog.py')
-    semantics = tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in files)
     key = (*service.tag_profile_cache_key(scope=scope, exam_scope=exam_scope),
-           'api-diagnosis-json-v1', semantics, grouping_cache_key, include_student_detail, response_mode)
+           'api-diagnosis-json', grouping_cache_key,
+           True if response_mode == 'display_shared' else include_student_detail, response_mode)
 
     def compute():
         entry = service._read_local_profile(key)
@@ -210,9 +261,11 @@ def _diagnosis_response_bytes(service: DiagnosisProfileService, *, scope, exam_s
             try:
                 compressed = pickle.loads(entry[0])['json_gzip']
                 if isinstance(compressed, bytes):
-                    gzip.decompress(compressed)
+                    encoded = gzip.decompress(compressed)
+                    if response_mode == 'display_shared':
+                        _validate_shared_diagnosis_cache(encoded)
                     return compressed
-            except (KeyError, TypeError, OSError, EOFError, zlib.error):
+            except (KeyError, TypeError, ValueError, OSError, EOFError, zlib.error, pickle.UnpicklingError):
                 pass
         if grouping_cache_key is not None:
             # Grouping only adds the final field to this same source snapshot.
@@ -347,7 +400,7 @@ def _grouping_module(body: TrainingDiagnosisRequest) -> Callable[[], Personalize
 
 @router.post(
     "/diagnosis",
-    response_model=TrainingDiagnosisResponse | TrainingDiagnosisSummaryResponse | TrainingDisplayDiagnosisResponse,
+    response_model=TrainingDiagnosisResponse | TrainingDiagnosisSummaryResponse | TrainingDisplayDiagnosisResponse | TrainingDisplaySharedDiagnosisResponse,
     response_model_exclude_none=True,
     responses=TRAINING_DATABASE_RESPONSES,
 )
@@ -357,7 +410,7 @@ def build_training_diagnosis(
         get_request_diagnosis_profile_service
     ),
     grouping_module: PersonalizedRecommendationModule | Callable[[], PersonalizedRecommendationModule] | None = Depends(_grouping_module),
-) -> TrainingDiagnosisResponse | TrainingDiagnosisSummaryResponse | TrainingDisplayDiagnosisResponse | Response:
+) -> TrainingDiagnosisResponse | TrainingDiagnosisSummaryResponse | TrainingDisplayDiagnosisResponse | TrainingDisplaySharedDiagnosisResponse | Response:
     try:
         scope_dump = body.scope.model_dump(exclude_none=True)
         exam_scope_dump = body.exam_scope.model_dump(exclude_none=True)
@@ -378,6 +431,13 @@ def build_training_diagnosis(
         resolved_module = grouping_module() if callable(grouping_module) else grouping_module
         diagnosis = _build_grouped_diagnosis(service, resolved_module, scope_dump=scope_dump,
             exam_scope_dump=exam_scope_dump, grouping=body.grouping)
+        if body.response_mode == 'display_shared':
+            public = _public_training_mapping(
+                {k: v for k, v in diagnosis.items() if not str(k).startswith('_')}, reject_nonfinite=True)
+            if public.get('diagnosis_identity') != 'question_tag':
+                raise ValueError('unexpected diagnosis identity')
+            return Response(content=_validated_diagnosis_json(public, response_mode='display_shared'),
+                            media_type='application/json')
     except ValueError as exc:
         raise ApiError(
             422,
