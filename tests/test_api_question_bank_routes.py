@@ -378,7 +378,8 @@ def test_solution_evidence_route_returns_latest_point_level_union(
         other_root = db_path.parent / 'TEST-other-data-root'
         other_service = QuestionBankReadService(db_path, data_root=other_root)
         other_paper = next(item for item in other_service.list_papers() if item['id'] == 2)
-        assert other_paper['evidence_question_count'] == other_paper['criteria_question_count'] == 0
+        # Saved analysis state is keyed by database rows, not by the data root.
+        assert other_paper['evidence_question_count'] == other_paper['criteria_question_count'] == 1
         assert next(item for item in service.list_papers() if item['id'] == 2)['complete_analysis_count'] == 1
     # Browser and repair planning agree on actual usable material without writes.
     status = service.session_analysis_status(7)
@@ -449,32 +450,31 @@ def test_solution_evidence_route_returns_latest_point_level_union(
     if changed_content in {'rich_body', 'media_body'}:
         assert db_path.read_bytes() == unchanged_database
 
+    # 题面、答案或配图后来变化不改变已保存资料的可读口径；
+    # 失效标记只发生在写入与采用边界。
     stale = client.get("/api/question-bank/questions/1/solution-evidence")
     assert stale.status_code == 200
-    assert stale.json() == {
-        "question_id": 1,
-        "available": False,
-        "evidence_version_id": version_id,
-        "status": "stale",
-        "evidence": None,
-        "part_assessments": [],
-        "assessment_revision": None,
-    }
-    assert client.get('/api/question-bank/questions?analysis_status=complete').json()['total'] == 0
+    kept = stale.json()
+    assert kept["available"] is True
+    assert kept["evidence_version_id"] == version_id
+    assert kept["status"] == "proposed"
+    assert kept["evidence"]["parts"][0]["evidence_points"][0]["target"] == "求出方程的解"
+    assert client.get('/api/question-bank/questions?analysis_status=complete').json()['total'] == 1
     needs_review = client.get('/api/question-bank/questions?criteria_needs_review=true').json()
-    assert {item['id'] for item in needs_review['items']} == {1, 2}
+    assert {item['id'] for item in needs_review['items']} == {2}
     paper = next(item for item in client.get('/api/question-bank/papers').json()['items'] if item['id'] == 2)
-    assert paper['evidence_question_count'] == paper['criteria_question_count'] == paper['complete_analysis_count'] == 0
-    assert paper['criteria_needs_review_count'] == 2
-    assert client.get('/api/question-bank/question-refs?analysis_status=complete').json()['total'] == 0
+    assert paper['evidence_question_count'] == paper['criteria_question_count'] == paper['complete_analysis_count'] == 1
+    assert paper['criteria_needs_review_count'] == 1
+    assert client.get('/api/question-bank/question-refs?analysis_status=complete').json()['total'] == 1
     plain = client.get('/api/question-bank/questions').json()
-    assert next(item for item in plain['items'] if item['id'] == 1)['criteria_needs_review'] is True
-    assert client.get('/api/question-bank/facets?analysis_status=complete').json()['question_types'] == []
+    assert next(item for item in plain['items'] if item['id'] == 1)['criteria_needs_review'] is False
+    assert client.get('/api/question-bank/facets?analysis_status=complete').json()['question_types'] == [
+        {'value': '解答题', 'count': 1}]
     assert client.get('/api/question-bank/skill-index?curriculum_volume_id=bnu24-math-g8-upper').json()[
-        'unlinked']['no_usable_evidence'] == 3
-    assert 1 in service._skill_snapshot()['no_usable']
-    assert client.get('/api/question-bank/questions?analysis_status=complete').json()['total'] == 0
-    assert next(item for item in service.list_papers() if item['id'] == 2)['complete_analysis_count'] == 0
+        'unlinked']['no_usable_evidence'] == 2
+    assert 1 in service._skill_snapshot()['evidence_versions']
+    assert client.get('/api/question-bank/questions?analysis_status=complete').json()['total'] == 1
+    assert next(item for item in service.list_papers() if item['id'] == 2)['complete_analysis_count'] == 1
     if changed_content in {'rich_body', 'media_body'}:
         from question_bank.services import question_read_service as read_module
 
@@ -492,9 +492,9 @@ def test_solution_evidence_route_returns_latest_point_level_union(
                                        root=data_root / 'question_bank/rich_content')
         else:
             image.write_bytes(b'TEST-changed-image-content-again')
-        assert client.get('/api/question-bank/questions?analysis_status=complete').json()['total'] == 0
-        assert client.get('/api/question-bank/question-refs?analysis_status=complete').json()['total'] == 0
-        assert next(item for item in service.list_papers() if item['id'] == 2)['complete_analysis_count'] == 0
+        assert client.get('/api/question-bank/questions?analysis_status=complete').json()['total'] == 1
+        assert client.get('/api/question-bank/question-refs?analysis_status=complete').json()['total'] == 1
+        assert next(item for item in service.list_papers() if item['id'] == 2)['complete_analysis_count'] == 1
         assert db_path.read_bytes() == unchanged_database
 
 

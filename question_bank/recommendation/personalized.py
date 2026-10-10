@@ -3775,7 +3775,7 @@ class PersonalizedRecommendationModule:
             with source_content_hash_reuse():
                 ids = candidate_ids[start:start + 64]
                 load_failures: dict[int, str] = {}
-                questions = loader.load(ids, load_failures=load_failures)
+                questions = loader.load(ids, load_failures=load_failures, verify_content=False)
                 if pool_keys:
                     # Reuse this batch's image bodies for the live source check.
                     # Stored identities above only narrowed the read, not eligibility.

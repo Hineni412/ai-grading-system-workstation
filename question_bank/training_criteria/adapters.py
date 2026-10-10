@@ -484,6 +484,7 @@ class QuestionAnalysisInputLoader:
         taxonomy_contracts: Mapping[int, Mapping[str, Any]] | None = None,
         curriculum_volume_id: str | None = None,
         load_failures: MutableMapping[int, str] | None = None,
+        verify_content: bool = True,
     ) -> tuple[QuestionAnalysisInput, ...]:
         ids = tuple(dict.fromkeys(int(value) for value in question_ids))
         if not ids or any(value <= 0 for value in ids):
@@ -638,7 +639,10 @@ class QuestionAnalysisInputLoader:
                     return question_id, "question_text_unavailable"
             try:
                 question = load_one(question_id)
-                question.source_content_hash
+                # verify_content=False 的普通读取不主动算内容摘要，留给按需惰性计算；
+                # 写入与采用边界保持默认 True，仍在上游校验完整内容。
+                if verify_content:
+                    question.source_content_hash
                 return question
             except RichContentReadError as exc:
                 if load_failures is None:

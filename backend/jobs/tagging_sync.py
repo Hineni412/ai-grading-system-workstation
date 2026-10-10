@@ -35,7 +35,6 @@ from question_bank.training_criteria import (
     QuestionAnalysisWorkItem,
     TrainingCriterionModule,
     combined_analysis_retry_budget,
-    usable_training_criterion,
 )
 from question_bank.training_criteria.analysis import compatible_source_content_hashes
 
@@ -937,7 +936,6 @@ def _run_unified_tagging_analysis(
         requested_ids,
         data_root=data_root,
         curriculum_volume_id=curriculum_volume_id,
-        current_inputs=loaded_by_id,
     )
     persisted_source_current = _load_tag_source_currentness(
         db_path,
@@ -1313,7 +1311,6 @@ def _load_analysis_gaps(
     *,
     data_root: Path | None = None,
     curriculum_volume_id: str = "",
-    current_inputs: Mapping[int, Any] | None = None,
 ) -> dict[int, dict[str, bool]]:
     """Read which saved analysis projections can be reused.
 
@@ -1321,69 +1318,43 @@ def _load_analysis_gaps(
     point that failed or went stale after tags were saved.  The caller then
     requests only the missing projection; already-complete questions stay
     skipped, so one leftover question does not retag the rest of the paper.
+    Selection uses the same saved-state rule as the repair preview; content
+    is never reloaded or re-hashed here.
     """
+    from question_bank.solution_evidence.part_assessments import load_profiles
+    from question_bank.training_criteria.versioning import saved_analysis_states
 
     ids = [int(value) for value in question_ids]
     if not ids:
         return {}
     placeholders = ",".join("?" for _ in ids)
+    root = Path(data_root) if data_root is not None else Path(db_path).parent.parent
     with connect(db_path) as conn:
-        question_rows = conn.execute(
-            f"""
-            SELECT q.id
-            FROM questions q
-            WHERE q.id IN ({placeholders})
-              AND COALESCE(q.is_deleted, 0) = 0
-            ORDER BY q.id
-            """,
-            ids,
-        ).fetchall()
-        active_ids = [int(row["id"]) for row in question_rows]
+        active_ids = [
+            int(row["id"])
+            for row in conn.execute(
+                f"""
+                SELECT q.id
+                FROM questions q
+                WHERE q.id IN ({placeholders})
+                  AND COALESCE(q.is_deleted, 0) = 0
+                ORDER BY q.id
+                """,
+                ids,
+            ).fetchall()
+        ]
         if not active_ids:
             return {}
-        active_placeholders = ",".join("?" for _ in active_ids)
-        evidence_rows = conn.execute(
-            f"""
-            SELECT question_id, source_content_hash
-            FROM question_solution_evidence_versions
-            WHERE question_id IN ({active_placeholders})
-              AND status IN ('proposed', 'approved')
-            """,
-            active_ids,
-        ).fetchall()
-    evidence_hashes: dict[int, set[str]] = {}
-    for row in evidence_rows:
-        evidence_hashes.setdefault(int(row["question_id"]), set()).add(
-            str(row["source_content_hash"])
-        )
-    exact_inputs = {
-        int(question_id): value
-        for question_id, value in (current_inputs or {}).items()
-        if int(question_id) in set(active_ids)
-    }
-    missing_ids = [question_id for question_id in active_ids if question_id not in exact_inputs]
-    root = Path(data_root) if data_root is not None else Path(db_path).parent.parent
-    if missing_ids:
-        loaded = QuestionAnalysisInputLoader(db_path=db_path, data_root=root).load(
-            missing_ids, curriculum_volume_id=curriculum_volume_id, load_failures={})
-        exact_inputs.update({item.question_id: item for item in loaded})
-    workspaces = TrainingCriterionModule(db_path, data_root=root).read_many(tuple(exact_inputs.values()))
-
-    result: dict[int, dict[str, bool]] = {}
-    for question_id in active_ids:
-        current = exact_inputs.get(question_id)
-        if current is None:
-            evidence_ready = False
-            criteria_ready = False
-        else:
-            source_hashes = compatible_source_content_hashes(current, kind='solution_evidence')
-            evidence_ready = bool(source_hashes & evidence_hashes.get(question_id, set()))
-            criteria_ready = usable_training_criterion(workspaces.get(question_id, {})) is not None
-        result[question_id] = {
-            "evidence_ready": evidence_ready,
-            "criteria_ready": criteria_ready,
+        profiles = load_profiles(db_path, active_ids, connection=conn, data_root=root)
+        states = saved_analysis_states(conn, active_ids, profiles)
+    # Callers sum()/all() these flags, so the shape stays exactly two keys.
+    return {
+        question_id: {
+            "evidence_ready": state["evidence_ready"],
+            "criteria_ready": state["criteria_ready"],
         }
-    return result
+        for question_id, state in states.items()
+    }
 
 
 def _plan_taxonomy(

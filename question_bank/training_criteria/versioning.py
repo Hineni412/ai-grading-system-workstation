@@ -3,7 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
+import sqlite3
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -255,6 +256,113 @@ def _saved_criterion(workspace: Mapping[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def saved_criteria_states(
+    connection: sqlite3.Connection,
+    question_ids: Iterable[int],
+    profiles: Mapping[int, Mapping[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    """Classify criterion readiness from saved rows only.
+
+    Ordinary reads never reload or re-hash question content: a saved usable
+    criterion stays ready until a write boundary marks it stale, and a
+    question whose evidence profile can derive criteria counts as ready when
+    it has no saved criterion rows at all.
+    """
+    ids = list(dict.fromkeys(int(value) for value in question_ids))
+    result: dict[int, dict[str, Any]] = {}
+    for start in range(0, len(ids), 200):
+        batch = ids[start:start + 200]
+        if not batch:
+            continue
+        placeholders = ", ".join("?" for _ in batch)
+        heads = {
+            int(row["question_id"]): row
+            for row in connection.execute(
+                f"SELECT * FROM training_criterion_heads WHERE question_id IN ({placeholders})",
+                batch,
+            ).fetchall()
+        }
+        versions: dict[int, list[Any]] = {}
+        for row in connection.execute(
+            f"""
+            SELECT * FROM training_criterion_versions
+            WHERE question_id IN ({placeholders})
+            ORDER BY question_id, version_number DESC
+            """,
+            batch,
+        ).fetchall():
+            versions.setdefault(int(row["question_id"]), []).append(row)
+        for question_id in batch:
+            head = heads.get(question_id)
+            rows = versions.get(question_id, [])
+            workspace = TrainingCriterionModule._workspace_view(question_id, head, rows)
+            usable = _saved_criterion(workspace)
+            profile = profiles.get(question_id)
+            criteria_ready = (
+                usable is not None and str(usable.get("status") or "") != "stale"
+            ) or (head is None and not rows and bool(profile and profile.get("available")))
+            result[question_id] = {
+                "criteria_ready": criteria_ready,
+                "criteria_needs_review": not criteria_ready and bool(
+                    profile
+                    or workspace.get("current_version")
+                    or workspace.get("approved_version")
+                    or workspace.get("read_failure")
+                ),
+                "workspace": workspace,
+            }
+    return result
+
+
+def saved_analysis_states(
+    connection: sqlite3.Connection,
+    question_ids: Iterable[int],
+    profiles: Mapping[int, Mapping[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    """Saved evidence + criterion readiness shared by previews and repair jobs."""
+    states = saved_criteria_states(connection, question_ids, profiles)
+    return {
+        question_id: {
+            "evidence_ready": bool(
+                (profile := profiles.get(question_id)) and profile.get("available")
+            ),
+            "criteria_ready": state["criteria_ready"],
+            "criteria_needs_review": state["criteria_needs_review"],
+            "workspace": state["workspace"],
+        }
+        for question_id, state in states.items()
+    }
+
+
+def sync_criterion_source(
+    db_path: Path,
+    data_root: Path,
+    connection: sqlite3.Connection,
+    question_id: int,
+) -> None:
+    """Mark saved criteria stale inside the transaction that changed the question.
+
+    Runs under a savepoint so a mid-way failure leaves no partial stale/event/
+    head writes for the caller's save transaction to commit.
+    """
+    from question_bank.training_criteria.adapters import QuestionAnalysisInputLoader
+
+    connection.execute("SAVEPOINT criterion_source_sync")
+    try:
+        question = QuestionAnalysisInputLoader(
+            db_path=db_path,
+            data_root=data_root,
+            external_connection=connection,
+        ).load([int(question_id)])[0]
+        TrainingCriterionModule(db_path, data_root=data_root)._sync_source(
+            question, connection=connection)
+    except Exception:
+        connection.execute("ROLLBACK TO criterion_source_sync")
+        connection.execute("RELEASE criterion_source_sync")
+        raise
+    connection.execute("RELEASE criterion_source_sync")
+
+
 class TrainingCriterionModule:
     """Keep a current draft and protected teacher decisions or historical facts."""
 
@@ -338,7 +446,8 @@ class TrainingCriterionModule:
             teacher_owned = teacher_owned or str(current.get("source_content_hash") or "") in {
                 source_hash, *adjusted["compatible_source_hashes"],
             }
-        if profile and profile.get("available") and not teacher_owned:
+        if (profile and profile.get("available") and not teacher_owned
+                and (verify_source or usable is None)):
             rejected = False
             if isinstance(current, Mapping) and current.get("status") == "rejected":
                 rejected_evidence = current.get("criteria", {}).get("solution_evidence", {})
@@ -1611,5 +1720,8 @@ __all__ = [
     "TrainingCriterionModule",
     "blocking_quality_codes",
     "evaluate_criterion_quality",
+    "saved_analysis_states",
+    "saved_criteria_states",
+    "sync_criterion_source",
     "usable_training_criterion",
 ]

@@ -63,6 +63,9 @@ from question_bank.training_criteria.versioning import (
     TrainingCriterionModule,
     blocking_quality_codes,
     evaluate_criterion_quality,
+    saved_analysis_states,
+    saved_criteria_states,
+    sync_criterion_source,
     usable_training_criterion,
 )
 
@@ -121,7 +124,10 @@ __all__ = [
     "plan_analysis_batches",
     "gateway_parallel_limit",
     "rubric_skeleton_from_solution_evidence",
+    "saved_analysis_states",
+    "saved_criteria_states",
     "solution_evidence_source_content_hash",
+    "sync_criterion_source",
     "training_criteria_from_solution_evidence",
     "training_criterion_source_reference",
 ]

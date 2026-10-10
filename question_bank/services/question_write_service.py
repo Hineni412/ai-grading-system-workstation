@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
     from question_bank.taxonomy.governance import TaxonomyGovernance
 
 
+LOGGER = logging.getLogger(__name__)
 _REQUEST_LOCKS_GUARD = threading.Lock()
 _REQUEST_LOCKS: dict[str, threading.Lock] = {}
 # 八上重打方案：模型输出只剩这些整题维度。知识点、章与小节归属全部由
@@ -698,6 +700,20 @@ class QuestionBankWriteService:
                         (suggested, question_id),
                     )
                     audit["action"] = "applied"
+                    # 题型变化影响判定点来源摘要；同事务标记旧版本失效，
+                    # 单题输入读取失败不阻挡本次保存。
+                    try:
+                        from question_bank.training_criteria.versioning import (
+                            sync_criterion_source,
+                        )
+                        sync_criterion_source(
+                            self.db_path, self.data_root, conn, question_id,
+                        )
+                    except Exception:
+                        LOGGER.debug(
+                            "criterion source sync skipped for question %s",
+                            question_id, exc_info=True,
+                        )
                 if subtype is not None:
                     manual_subtype = conn.execute(
                         """

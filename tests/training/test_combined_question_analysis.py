@@ -879,6 +879,82 @@ def test_missing_type_repair_preserves_saved_analysis_only_when_other_products_a
                 "SELECT * FROM question_tags WHERE tag_type IN ('method','thought','ability','model','special_type') ORDER BY id")] != five_dimensions
 
 
+def test_repair_preview_and_paid_selection_share_saved_analysis_state(
+    tmp_path: Path,
+) -> None:
+    """补齐预览与付费选用按同一套已存状态口径取题。"""
+    from backend.jobs.question_bank_repair import repair_preview
+    from backend.jobs.tagging_sync import _load_analysis_gaps
+    from question_bank.training_criteria import QuestionAnalysisInputLoader, TrainingCriterionModule
+    from tests.test_question_bank_read_cache import _seed_skill_bank
+    from tests.training.test_training_criterion_versioning import _draft
+
+    volume = "bnu24-math-g8-upper"
+    service, db, _keys = _seed_skill_bank(tmp_path)
+    module = TrainingCriterionModule(db, data_root=tmp_path)
+    for question in QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path).load(
+            [1, 2], curriculum_volume_id=volume):
+        module.propose(
+            question=question, draft=_draft(question), source_kind="backfill",
+            source_reference=f"TEST-criterion-{question.question_id}",
+            actor_ref="TEST", reason="TEST",
+        )
+    with connect(db) as conn:
+        for qid in (1, 2, 3, 4, 5):
+            conn.executemany(
+                "INSERT INTO question_tags(question_id,tag_type,tag_value) VALUES(?,?,?)",
+                [(qid, "ability", "TEST-能力"), (qid, "knowledge_point", "TEST-知识点"),
+                 (qid, "exam_scope", "TEST-范围")],
+            )
+        # 题面后来变化：题 1 的已存判定按保存状态仍就绪，题 2 已标失效。
+        conn.execute("UPDATE questions SET question_text='TEST-题面变化但判定仍就绪' WHERE id=1")
+        conn.execute("UPDATE training_criterion_versions SET status='stale' WHERE question_id=2")
+
+    preview = repair_preview(service, volume, "analysis")
+    preview_ids = {item["id"] for item in preview["items"]}
+    gaps = _load_analysis_gaps(db, [1, 2, 3, 4, 5], data_root=tmp_path,
+                               curriculum_volume_id=volume)
+    gap_ids = {
+        qid for qid, gap in gaps.items()
+        if not (gap["evidence_ready"] and gap["criteria_ready"])
+    }
+    assert preview_ids == gap_ids == {2, 3}
+    assert gaps[1] == {"evidence_ready": True, "criteria_ready": True}
+    assert gaps[2] == {"evidence_ready": True, "criteria_ready": False}
+
+
+def test_question_type_change_marks_saved_criterion_stale(tmp_path: Path) -> None:
+    """题型写入在同一事务里把按旧题面保存的判定点标为失效。"""
+    from question_bank.services.question_write_service import QuestionBankWriteService
+    from question_bank.training_criteria import QuestionAnalysisInputLoader, TrainingCriterionModule
+    from question_bank.training_criteria.versioning import saved_criteria_states
+    from tests.training.test_training_criterion_versioning import _draft
+
+    database = tmp_path / "TEST-type-marking.db"
+    _seed_questions(database, 1)
+    question = QuestionAnalysisInputLoader(db_path=database, data_root=tmp_path).load(
+        [1], curriculum_volume_id="bnu24-math-g8-upper")[0]
+    module = TrainingCriterionModule(database, data_root=tmp_path)
+    module.propose(
+        question=question, draft=_draft(question), source_kind="backfill",
+        source_reference="TEST-criterion", actor_ref="TEST", reason="TEST",
+    )
+    service = QuestionBankWriteService(database, data_root=tmp_path)
+    audit = service.apply_question_type_suggestion(
+        1, suggested_type="填空题", question_type_confirmed=False,
+        reason="合成建议", model_name="TEST", operation_id="TEST-op",
+    )
+    assert audit["action"] == "applied"
+    with connect(database) as conn:
+        row = conn.execute(
+            "SELECT status FROM training_criterion_versions WHERE question_id=1"
+        ).fetchone()
+        assert row["status"] == "stale"
+        state = saved_criteria_states(conn, [1], {})[1]
+        assert state["criteria_ready"] is False
+        assert state["criteria_needs_review"] is True
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [(0, 1), (-5, 1), (8, 8), (100, 100), (101, 100), (999, 100),

@@ -133,6 +133,24 @@ class AnswerDraftService:
                 (text, int(question_id)),
             )
             applied = cursor.rowcount > 0
+            if applied:
+                # 答案正文变化后，同事务把按旧题面保存的判定点标记为失效；
+                # 单题输入读取失败不阻挡教师保存。
+                try:
+                    from question_bank.training_criteria.versioning import (
+                        sync_criterion_source,
+                    )
+                    sync_criterion_source(
+                        self.db_path,
+                        self.data_root or self.db_path.parent.parent,
+                        conn,
+                        question_id,
+                    )
+                except Exception:
+                    LOGGER.debug(
+                        "criterion source sync skipped for question %s",
+                        question_id, exc_info=True,
+                    )
         return applied
 
     def draft_for_questions(

@@ -1151,14 +1151,14 @@ def test_tag_source_currentness_tolerates_legacy_fingerprint_tag_writes(tmp_path
     item = next(i for i in repair_preview(service, 'bnu24-math-g8-upper', 'all')['items'] if i['id'] == 1)
     assert 'tags' not in item['missing']
 
-    # Legacy contract + content change: the evidence witness no longer
-    # matches, so the stale tag run must be reported again.
+    # Legacy contract + content change: the write-boundary currentness check
+    # still reports the drift, while the preview keeps reading saved tags.
     with connect(db) as conn:
         conn.execute("UPDATE questions SET question_text='TEST-题面已变' WHERE id=1")
     changed = load_input()
     assert _load_tag_source_currentness(db, current_inputs=[changed]) == {1: False}
     item = next(i for i in repair_preview(service, 'bnu24-math-g8-upper', 'all')['items'] if i['id'] == 1)
-    assert 'tags' in item['missing']
+    assert 'tags' not in item['missing']
 
 
 @pytest.mark.parametrize('stored_hash_kind', ['current', 'legacy_without_tags'])
@@ -1194,7 +1194,7 @@ def test_tag_source_currentness_new_hash_ignores_model_tag_writes(tmp_path, stor
         conn.execute("UPDATE questions SET question_text='TEST-题面再变' WHERE id=1")
     assert _load_tag_source_currentness(db, current_inputs=[load_input()]) == {1: False}
     item = next(i for i in repair_preview(service, 'bnu24-math-g8-upper', 'all')['items'] if i['id'] == 1)
-    assert 'tags' in item['missing']
+    assert 'tags' not in item['missing']
 
 
 @pytest.mark.parametrize("question_count", [3, 9])
@@ -1329,13 +1329,13 @@ def test_analysis_material_cache_reuses_pages_and_rechecks_database_and_assets(t
 
     service, db, _ = _seed_skill_bank(tmp_path)
     loaded = []
-    original = part_assessments.current_inputs
+    original = part_assessments.load_profiles
 
     def track(db_path, ids, *args, **kwargs):
         loaded.append(tuple(ids))
         return original(db_path, ids, *args, **kwargs)
 
-    monkeypatch.setattr(part_assessments, 'current_inputs', track)
+    monkeypatch.setattr(part_assessments, 'load_profiles', track)
 
     def material(ids):
         with read_module._read_connection(db) as conn:
@@ -1355,6 +1355,78 @@ def test_analysis_material_cache_reuses_pages_and_rechecks_database_and_assets(t
     sidecar.write_text('{TEST-corrupt', encoding='utf-8')
     assert material([2])[2]['evidence_ready']  # A damaged current stem does not hide saved evidence.
     assert loaded == [(1, 2), (4,), (1,), (2,)]
+
+
+def test_saved_criterion_stays_ready_after_later_content_change(tmp_path):
+    """题面后来变化不再让已通过的保存判定点回到缺失或需复核。"""
+    from backend.jobs.question_bank_repair import repair_preview
+    from question_bank.database.schema import connect
+    from question_bank.training_criteria import QuestionAnalysisInputLoader, TrainingCriterionModule
+    from tests.training.test_training_criterion_versioning import _draft
+
+    service, db, _ = _seed_skill_bank(tmp_path)
+    question = QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path).load(
+        [1], curriculum_volume_id='bnu24-math-g8-upper')[0]
+    module = TrainingCriterionModule(db, data_root=tmp_path)
+    proposed = module.propose(question=question, draft=_draft(question),
+        source_kind='backfill', source_reference='TEST-criterion',
+        actor_ref='TEST', reason='TEST')
+    assert proposed['current_version']['status'] == 'proposed'
+    # Direct writes keep the head's old source hash; only write-boundary
+    # marking (covered by the write services) updates criterion state.
+    with connect(db) as conn:
+        conn.execute("UPDATE questions SET question_text='TEST-题面与已存判定点不同' WHERE id=1")
+    preview = repair_preview(service, 'bnu24-math-g8-upper', 'all')
+    item = next(i for i in preview['items'] if i['id'] == 1)
+    assert 'criteria' not in item['missing']
+    with read_module._read_connection(db) as conn:
+        assert service._analysis_materials(conn, [1])[1] == {
+            'evidence_ready': True, 'criteria_ready': True, 'criteria_needs_review': False}
+        assert 1 not in service._criteria_needs_review_ids(conn, [1])
+
+
+def test_stale_saved_criterion_counts_as_needs_review(tmp_path):
+    """被写入边界标为失效的判定版本计入需复核，不再算就绪。"""
+    from backend.jobs.question_bank_repair import repair_preview
+    from question_bank.database.schema import connect
+    from question_bank.training_criteria import QuestionAnalysisInputLoader, TrainingCriterionModule
+    from tests.training.test_training_criterion_versioning import _draft
+
+    service, db, _ = _seed_skill_bank(tmp_path)
+    question = QuestionAnalysisInputLoader(db_path=db, data_root=tmp_path).load(
+        [1], curriculum_volume_id='bnu24-math-g8-upper')[0]
+    module = TrainingCriterionModule(db, data_root=tmp_path)
+    module.propose(question=question, draft=_draft(question),
+        source_kind='backfill', source_reference='TEST-criterion',
+        actor_ref='TEST', reason='TEST')
+    with connect(db) as conn:
+        conn.execute("UPDATE training_criterion_versions SET status='stale' WHERE question_id=1")
+    with read_module._read_connection(db) as conn:
+        material = service._analysis_materials(conn, [1])[1]
+        assert material['criteria_ready'] is False
+        assert material['criteria_needs_review'] is True
+        assert 1 in service._criteria_needs_review_ids(conn, [1])
+    preview = repair_preview(service, 'bnu24-math-g8-upper', 'all')
+    assert 'criteria' in next(i for i in preview['items'] if i['id'] == 1)['missing']
+
+
+def test_skill_index_and_analysis_materials_never_hash_question_content(tmp_path, monkeypatch):
+    """普通读取不装载题目输入，也不计算内容摘要。"""
+    from question_bank.training_criteria import adapters, analysis
+
+    service, db, _ = _seed_skill_bank(tmp_path)
+
+    def forbid(*args, **kwargs):
+        raise AssertionError('TEST-ordinary-read-touched-question-content')
+
+    monkeypatch.setattr(analysis, 'question_content_hash', forbid)
+    monkeypatch.setattr(adapters.QuestionAnalysisInputLoader, 'load', forbid)
+
+    assert service.skill_index('bnu24-math-g8-upper')['question_count'] == 5
+    with read_module._read_connection(db) as conn:
+        materials = service._analysis_materials(conn, [1, 2, 3])
+        assert service._criteria_needs_review_ids(conn, [1]) == set()
+    assert materials[1]['evidence_ready'] and not materials[3]['evidence_ready']
 
 
 @pytest.mark.parametrize('first_kind', ['all', 'analysis'])

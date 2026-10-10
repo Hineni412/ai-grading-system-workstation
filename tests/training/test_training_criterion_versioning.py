@@ -348,6 +348,7 @@ def test_reject_current_legacy_evidence_stays_unavailable(tmp_path):
     with pytest.raises(ApprovedCriterionMissing):
         module.freeze((question,))
 
+
     corrected = replace(evidence, parts=(replace(evidence.parts[0], evidence_points=(
         replace(evidence.parts[0].evidence_points[0], target="修正后的判定要求"),
     )),))
@@ -357,6 +358,46 @@ def test_reject_current_legacy_evidence_stays_unavailable(tmp_path):
     )
     assert module.read(question)["available"] is True
     assert module.freeze((question,))[0]["criteria"]["points"][0]["target"] == "修正后的判定要求"
+
+
+def test_saved_state_read_skips_profile_derivation_but_verify_source_keeps_it(tmp_path, monkeypatch):
+    """verify_source=False 且已有可用保存版本时不再从证据推导 current_version。"""
+    import question_bank.training_criteria.versioning as versioning
+
+    database = tmp_path / "TEST-saved-read.db"
+    _seed(database, 1)
+    question, _, _ = _current_evidence(database)
+    module = TrainingCriterionModule(database)
+    proposed = _propose(module, question)
+
+    derived: list[int] = []
+    original = versioning._version_from_profile
+
+    def spy(question_arg, profile):
+        derived.append(question_arg.question_id)
+        return original(question_arg, profile)
+
+    monkeypatch.setattr(versioning, "_version_from_profile", spy)
+
+    workspace = module.read_many((question,), verify_source=False)[1]
+    assert workspace["available"] is True
+    assert workspace["current_version"]["version_id"] == proposed["current_version"]["version_id"]
+    assert derived == []
+
+    # Without a usable saved criterion the profile still derives the view.
+    with connect(database) as connection:
+        connection.execute(
+            "UPDATE training_criterion_versions SET status='superseded' WHERE question_id=1")
+    workspace = module.read_many((question,), verify_source=False)[1]
+    assert derived == [1]
+    assert workspace["available"] is True
+
+    # verify_source=True keeps deriving the current source for adoption.
+    derived.clear()
+    _propose(module, question, reference="analysis:synthetic:2")
+    workspace = module.read_many((question,), verify_source=True)[1]
+    assert derived == [1]
+    assert workspace["available"] is True
 
 
 def _changed_saved_draft(question, label):

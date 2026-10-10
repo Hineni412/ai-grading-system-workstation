@@ -23,10 +23,10 @@ from question_bank.solution_evidence.part_assessments import load_profiles
 from question_bank.taxonomy.governance import TaxonomyGovernance, get_taxonomy_governance
 from question_bank.training_criteria import QuestionAnalysisInputLoader
 from question_bank.training_criteria.analysis import source_content_hash_reuse
-from question_bank.training_criteria.versioning import TrainingCriterionModule, usable_training_criterion
+from question_bank.training_criteria.versioning import saved_analysis_states
 
 from .manager import JobContext
-from .tagging_sync import _failure, _load_tag_source_currentness, _load_tagging_candidates, _plan_taxonomy
+from .tagging_sync import _failure, _load_tagging_candidates, _plan_taxonomy
 
 
 _REPAIR_PREVIEW_FLIGHTS = ResultCache(limit=1, max_bytes=0)
@@ -165,52 +165,55 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
             f'SELECT * FROM training_criterion_heads WHERE question_id IN ({marks})', ids)}
     items = []
     scanned_count = 0
-    module = TrainingCriterionModule(db, data_root=root)
     for start in range(0, len(ids), 64):
         batch = ids[start:start + 64]
-        with source_content_hash_reuse():
-            load_failures: dict[int, str] = {}
-            inputs = {q.question_id: q for q in loader.load(batch,
-                curriculum_volume_id=volume_id, load_failures=load_failures)}
-            retained = (retained_snapshot.get('profiles', {}) if retained_snapshot is not None
-                        and snapshot_generation == _source_generation_token(db) else {})
-            profiles = {qid: retained[qid] for qid, question in inputs.items()
-                        if qid in retained and retained[qid].get('current_source_content_hash')
-                        == question.source_content_hash}
-            unchecked = [qid for qid in batch if qid not in profiles]
-            if unchecked:
-                profiles.update(load_profiles(db, unchecked, data_root=root, question_inputs=inputs))
+        # Readiness comes from saved rows only; question content is loaded
+        # below only for the questions that actually land in the gap list.
+        retained = (retained_snapshot.get('profiles', {}) if retained_snapshot is not None
+                    and snapshot_generation == _source_generation_token(db) else {})
+        profiles = {qid: retained[qid] for qid in batch if qid in retained}
+        unchecked = [qid for qid in batch if qid not in profiles]
+        if unchecked:
+            profiles.update(load_profiles(db, unchecked, data_root=root))
+        with _read_connection(db) as conn:
             if retained_snapshot is not None and not unchecked:
                 snapshot = retained_snapshot
             else:
-                with _read_connection(db) as conn:
-                    snapshot = build_skill_snapshot(conn, db, root, inventory=inventory,
-                                                    question_ids=tuple(batch), profiles=profiles)
+                snapshot = build_skill_snapshot(conn, db, root, inventory=inventory,
+                                                question_ids=tuple(batch), profiles=profiles)
+            states = saved_analysis_states(conn, batch, profiles)
+        selected = [qid for qid in batch if kind != 'skills' or qid in snapshot['unlinked']]
+        scanned_count += len(selected)
+        pending: dict[int, list[str]] = {}
+        for qid in selected:
+            missing = []
+            if qid not in tags_ready:
+                missing.append('tags')
+            state = states[qid]
+            if not state['evidence_ready'] or not snapshot['point_counts'].get(qid):
+                missing.append('evidence')
+            if not state['criteria_ready']:
+                missing.append('criteria')
+            if qid in snapshot['unlinked']:
+                missing.append('skills')
+            if qid not in snapshot.get('primary_types', {}):
+                missing.append('types')
+            if not snapshot.get('knowledge_coverage_by_question', snapshot.get('knowledge_by_question', {})).get(qid):
+                missing.append('knowledge_points')
+            if not missing or (kind == 'skills' and 'skills' not in missing) or (kind == 'analysis' and not set(missing) & {'tags', 'evidence', 'criteria'}):
+                continue
+            pending[qid] = missing
+        if not pending:
+            continue
+        with source_content_hash_reuse():
+            load_failures: dict[int, str] = {}
+            inputs = {q.question_id: q for q in loader.load(sorted(pending),
+                curriculum_volume_id=volume_id, load_failures=load_failures)}
             type_questions = _with_type_contracts(
                 [question for qid, question in inputs.items() if qid not in snapshot.get('primary_types', {})], db)
             inputs.update({question.question_id: question for question in type_questions})
-            workspaces = module.read_many(list(inputs.values()), profiles=profiles)
-            tags_ready.difference_update(qid for qid, current in
-                _load_tag_source_currentness(db, current_inputs=list(inputs.values())).items() if not current)
-            selected = [qid for qid in batch if kind != 'skills' or qid in snapshot['unlinked']]
-            scanned_count += len(selected)
-            for qid in selected:
-                missing = []
-                if qid not in tags_ready:
-                    missing.append('tags')
+            for qid, missing in pending.items():
                 profile = profiles.get(qid, {})
-                if not profile.get('available') or not snapshot['point_counts'].get(qid):
-                    missing.append('evidence')
-                if usable_training_criterion(workspaces.get(qid, {})) is None:
-                    missing.append('criteria')
-                if qid in snapshot['unlinked']:
-                    missing.append('skills')
-                if qid not in snapshot.get('primary_types', {}):
-                    missing.append('types')
-                if not snapshot.get('knowledge_coverage_by_question', snapshot.get('knowledge_by_question', {})).get(qid):
-                    missing.append('knowledge_points')
-                if not missing or (kind == 'skills' and 'skills' not in missing) or (kind == 'analysis' and not set(missing) & {'tags', 'evidence', 'criteria'}):
-                    continue
                 row = rows[qid]
                 blocked = ''
                 if qid in load_failures:
@@ -221,7 +224,7 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
                     blocked = '当前技能标准不可用'
                 elif any(part in missing for part in ('skills', 'knowledge_points')) and str(profile.get('evidence_version_id', '')) in teacher:
                     blocked = '教师已确认关联，请打开题目人工核对'
-                if workspaces.get(qid, {}).get('state') == 'rejected':
+                if states[qid]['workspace'].get('state') == 'rejected':
                     blocked = '训练判定已拒绝，请先核对题面或人工修正'
                 type_pending = '本章题型尚未整理，暂时待归类' if 'types' in missing and qid in inputs and inputs[qid].taxonomy_contract.get('question_type_mode') is not True else ''
                 if 'types' in missing and qid in inputs and any(

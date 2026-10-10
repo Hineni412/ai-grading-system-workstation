@@ -1173,9 +1173,9 @@ class QuestionBankReadService:
     def _analysis_materials(
         self, conn: sqlite3.Connection, question_ids: Iterable[int],
     ) -> dict[int, dict[str, bool]]:
-        """Use the current evidence and criterion readers in this read snapshot."""
-        from question_bank.solution_evidence.part_assessments import current_inputs, load_profiles
-        from question_bank.training_criteria.versioning import TrainingCriterionModule
+        """Read saved evidence profiles and criterion rows; never re-hash content."""
+        from question_bank.solution_evidence.part_assessments import load_profiles
+        from question_bank.training_criteria.versioning import saved_analysis_states
 
         ids = list(dict.fromkeys(int(qid) for qid in question_ids if int(qid) > 0))
         scope = _ACTIVE_READ_SCOPE.get()
@@ -1198,35 +1198,18 @@ class QuestionBankReadService:
         retained = snapshot.get("profiles", {}) if isinstance(snapshot, dict) else {}
         for start in range(0, len(missing), 64):
             batch = missing[start:start + 64]
-            marks = ",".join("?" for _ in batch)
-            saved_ids = [int(row[0]) for row in conn.execute(
-                f"SELECT question_id FROM question_solution_evidence_versions "
-                f"WHERE status IN ('proposed', 'approved') AND question_id IN ({marks}) "
-                f"UNION SELECT question_id FROM training_criterion_versions WHERE question_id IN ({marks})",
-                [*batch, *batch])]
-            failures: dict[int, str] = {}
-            inputs = current_inputs(self.db_path, saved_ids, conn, data_root=self.data_root,
-                                    load_failures=failures) if saved_ids else {}
-            profiles = {qid: retained[qid] for qid in saved_ids if qid in retained}
-            unchecked = [qid for qid in saved_ids if qid not in profiles]
+            profiles = {qid: retained[qid] for qid in batch if qid in retained}
+            unchecked = [qid for qid in batch if qid not in profiles]
             if unchecked:
                 profiles.update(load_profiles(self.db_path, unchecked, connection=conn,
-                                              data_root=self.data_root, question_inputs=inputs))
-            module = TrainingCriterionModule(self.db_path, data_root=self.data_root)
-            workspaces = module.read_many(
-                list(inputs.values()), connection=conn, profiles=profiles)
-            for qid in failures:
-                workspaces[qid] = dict(module._workspace_query(conn, qid), available=False)
+                                              data_root=self.data_root))
+            states = saved_analysis_states(conn, batch, profiles)
             for qid in batch:
-                profile = profiles.get(qid)
-                workspace = workspaces.get(qid, {})
-                available = bool(workspace.get("available"))
+                state = states[qid]
                 known[qid] = {
-                    "evidence_ready": bool(profile and profile.get("available")),
-                    "criteria_ready": available,
-                    "criteria_needs_review": not available and bool(
-                        profile or workspace.get("current_version") or workspace.get("approved_version")
-                        or workspace.get("read_failure")),
+                    "evidence_ready": state["evidence_ready"],
+                    "criteria_ready": state["criteria_ready"],
+                    "criteria_needs_review": state["criteria_needs_review"],
                 }
         if (missing and cacheable and generation == _source_generation_token(self.db_path)
                 and asset_generation == self._asset_generation(refresh=True)[0]):

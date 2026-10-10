@@ -101,3 +101,104 @@ def test_apply_draft_never_overwrites_an_existing_answer(tmp_path: Path) -> None
     row = _answer_row(db_path, blank)
     assert row["answer_text"] == draft_text
     assert row["needs_review"] == 1
+
+
+def test_apply_draft_marks_saved_criterion_stale(tmp_path: Path) -> None:
+    """答案落库成功时，同一事务把按旧内容保存的判定点标为失效。"""
+    from question_bank.training_criteria import (
+        QuestionAnalysisInputLoader,
+        TrainingCriterionModule,
+    )
+    from question_bank.training_criteria.versioning import saved_criteria_states
+    from tests.training.test_training_criterion_versioning import _draft
+
+    db_path = _make_db(tmp_path)
+    question_id = _insert_question(db_path, question_number="1")
+    question = QuestionAnalysisInputLoader(
+        db_path=db_path, data_root=tmp_path
+    ).load([question_id])[0]
+    module = TrainingCriterionModule(db_path, data_root=tmp_path)
+    proposed = module.propose(
+        question=question,
+        draft=_draft(question),
+        source_kind="backfill",
+        source_reference="TEST-criterion",
+        actor_ref="TEST",
+        reason="TEST",
+    )
+    assert proposed["current_version"]["status"] == "proposed"
+
+    service = AnswerDraftService(
+        db_path, data_root=tmp_path, llm_client=FakeLLMClient()
+    )
+    assert service.apply_draft(question_id, "【AI 生成，待教师核对】\n答案：x=2") is True
+
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT status FROM training_criterion_versions WHERE question_id=?",
+            (question_id,),
+        ).fetchone()
+        assert row["status"] == "stale"
+        state = saved_criteria_states(conn, [question_id], {})[question_id]
+        assert state["criteria_ready"] is False
+        assert state["criteria_needs_review"] is True
+
+
+def test_apply_draft_save_survives_criterion_sync_load_failure(tmp_path: Path) -> None:
+    """判定点同步所需的题面读取失败不阻挡答案保存。"""
+    db_path = _make_db(tmp_path)
+    question_id = _insert_question(db_path, question_number="1", question_text="")
+    service = AnswerDraftService(
+        db_path, data_root=tmp_path, llm_client=FakeLLMClient()
+    )
+    assert service.apply_draft(question_id, "【AI 生成，待教师核对】\n答案：x=2") is True
+    assert _answer_row(db_path, question_id)["answer_text"].startswith("【AI 生成")
+
+
+def test_apply_draft_rolls_back_partial_criterion_sync(tmp_path: Path, monkeypatch) -> None:
+    """判定点同步中途失败时不留下半截失效标记，答案仍正常保存。"""
+    import question_bank.training_criteria.versioning as versioning
+    from question_bank.training_criteria import (
+        QuestionAnalysisInputLoader,
+        TrainingCriterionModule,
+    )
+    from tests.training.test_training_criterion_versioning import _draft
+
+    db_path = _make_db(tmp_path)
+    question_id = _insert_question(db_path, question_number="1")
+    question = QuestionAnalysisInputLoader(
+        db_path=db_path, data_root=tmp_path
+    ).load([question_id])[0]
+    module = TrainingCriterionModule(db_path, data_root=tmp_path)
+    module.propose(
+        question=question,
+        draft=_draft(question),
+        source_kind="backfill",
+        source_reference="TEST-criterion",
+        actor_ref="TEST",
+        reason="TEST",
+    )
+    with connect(db_path) as conn:
+        before = {
+            table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+            for table in (
+                "training_criterion_versions",
+                "training_criterion_heads",
+                "training_criterion_events",
+            )
+        }
+
+    def fail_event(*args, **kwargs):
+        raise RuntimeError("TEST-sync-write-failed")
+
+    # Fails after the version row is already updated, inside the caller's save.
+    monkeypatch.setattr(versioning, "_event", fail_event)
+    service = AnswerDraftService(
+        db_path, data_root=tmp_path, llm_client=FakeLLMClient()
+    )
+    assert service.apply_draft(question_id, "【AI 生成，待教师核对】\n答案：x=2") is True
+    assert _answer_row(db_path, question_id)["answer_text"].startswith("【AI 生成")
+    with connect(db_path) as conn:
+        for table, rows in before.items():
+            assert [tuple(row) for row in conn.execute(
+                f"SELECT * FROM {table} ORDER BY rowid")] == rows
