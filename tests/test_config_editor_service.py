@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import copy
 
+import pytest
 
 from backend.config_workspace.editor import (
     ConfigEditorEdit,
+    ConfigEditorValidationError,
     ManualQuestionPartInput,
     ManualStepInput,
     ReplaceQuestionStructureCommand,
@@ -148,6 +150,73 @@ def test_objective_edit_keeps_all_or_nothing_semantics() -> None:
     assert question["parts"][0]["answer_only_max_score"] == 4.0
     assert answer["partial_credit"] is False
     assert answer["parts"][0]["partial_credit"] is False
+
+
+def test_step_goal_and_equivalent_rules_edit_round_trip() -> None:
+    payload = _payload()
+    step_row = next(
+        row for row in project_config_editor(payload) if row.step_id == "S1"
+    )
+    updated = apply_config_editor_changes(
+        payload,
+        edits=(
+            ConfigEditorEdit(
+                row_id=step_row.row_id,
+                core_goal=" 证明三角形全等 ",
+                equivalent_rules=("用其他判定同样给分", "", "用其他判定同样给分"),
+            ),
+        ),
+        commands=(),
+    )
+    step = updated["rubric"]["questions"][0]["parts"][0]["steps"][0]
+    assert step["core_goal"] == "证明三角形全等"
+    assert step["equivalent_rules"] == ["用其他判定同样给分"]
+    projected = {row.row_id: row for row in project_config_editor(updated)}
+    assert projected[step_row.row_id].core_goal == "证明三角形全等"
+    assert projected[step_row.row_id].equivalent_rules == ("用其他判定同样给分",)
+
+
+def test_core_goal_blank_or_unsplit_row_rejected() -> None:
+    payload = _payload()
+    step_row = next(
+        row for row in project_config_editor(payload) if row.step_id == "S1"
+    )
+    with pytest.raises(ConfigEditorValidationError) as blank:
+        apply_config_editor_changes(
+            payload,
+            edits=(ConfigEditorEdit(row_id=step_row.row_id, core_goal="  "),),
+            commands=(),
+        )
+    assert blank.value.issues[0]["code"] == "missing_core_goal"
+
+    unsplit = _payload()
+    unsplit["rubric"]["questions"][0]["parts"][0]["steps"] = []
+    unsplit_row = next(
+        row for row in project_config_editor(unsplit) if row.step_id == "未拆评分点"
+    )
+    with pytest.raises(ConfigEditorValidationError) as rejected:
+        apply_config_editor_changes(
+            unsplit,
+            edits=(ConfigEditorEdit(row_id=unsplit_row.row_id, core_goal="新目标"),),
+            commands=(),
+        )
+    assert rejected.value.issues[0]["code"] == "core_goal_not_editable"
+
+    updated = apply_config_editor_changes(
+        unsplit,
+        edits=(
+            ConfigEditorEdit(
+                row_id=unsplit_row.row_id,
+                equivalent_rules=("等价写法同样给分",),
+            ),
+        ),
+        commands=(),
+    )
+    part = updated["rubric"]["questions"][0]["parts"][0]
+    assert part["equivalent_rules"] == ["等价写法同样给分"]
+    assert next(
+        row for row in project_config_editor(updated) if row.step_id == "未拆评分点"
+    ).equivalent_rules == ("等价写法同样给分",)
 
 
 def test_step_reorder_and_new_step_never_borrow_frozen_point_identity():

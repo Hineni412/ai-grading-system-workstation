@@ -210,6 +210,8 @@ export interface ConfigEditorResponse {
 export interface ConfigEditorEdit {
   row_id: string
   score?: number | null
+  core_goal?: string | null
+  equivalent_rules?: string[] | null
   standard_answer?: string | null
   accepted_answers?: string[] | null
   answer_only_max_score?: number | null

@@ -622,6 +622,7 @@ def _editor_edits(values: list[Any]) -> tuple[ConfigEditorEdit, ...]:
                         "required_elements",
                         "deduction_rules",
                         "part_deduction_rules",
+                        "equivalent_rules",
                     }
                     and value is not None
                     else value

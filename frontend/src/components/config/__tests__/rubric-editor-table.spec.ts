@@ -23,15 +23,17 @@ async function mountTable(options: {
   const host = document.createElement('div')
   document.body.append(host)
   const emitted: unknown[] = []
+  const validity: boolean[] = []
   const app = createApp(RubricEditorTable, {
     rows: options.rows ?? [row(), row({ row_id: 'row-q12-p1-s2', step_id: 'S2', score: 97 })],
     totalScore: options.totalScore ?? 100,
     issues: options.issues ?? [],
     onEdit: (edit: unknown) => emitted.push(edit),
+    onValidity: (valid: boolean) => validity.push(valid),
   })
   app.mount(host)
   await nextTick()
-  return { host, emitted, unmount: () => app.unmount() }
+  return { host, emitted, validity, unmount: () => app.unmount() }
 }
 
 describe('RubricEditorTable', () => {
@@ -58,14 +60,14 @@ describe('RubricEditorTable', () => {
     expect(preview.querySelector('.rubric-unit-card__preview-fields')).toBeNull()
     preview.click()
     await nextTick()
-    expect(mounted.host.querySelector('.rubric-unit-card__exceptions')?.hasAttribute('open')).toBe(false)
-    mounted.host.querySelector<HTMLButtonElement>('.rubric-unit-card__done')!.click()
+    expect(mounted.host.querySelector('.rubric-unit-card__exceptions')).toBeNull()
+    mounted.host.querySelector<HTMLButtonElement>('.rubric-unit-card__collapse')!.click()
     await nextTick()
     expect(mounted.emitted).toEqual([])
-    const evidence = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 证据要求/关键步骤"]')!
+    const evidence = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 判对条件"]')!
     evidence.value = '列式\n关键结论'
     evidence.dispatchEvent(new Event('change', { bubbles: true }))
-    const deductions = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 扣分规则"]')!
+    const deductions = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 不算达成"]')!
     deductions.value = '漏写过程扣 1 分'
     deductions.dispatchEvent(new Event('change', { bubbles: true }))
     const required = mounted.host.querySelector<HTMLInputElement>('[aria-label="Q12 P1 要求最终答案"]')!
@@ -115,6 +117,63 @@ describe('RubricEditorTable', () => {
       { row_id: 'fill-1a', score: 3 },
       { row_id: 'fill-1b', score: 2 },
     ])
+  })
+
+  it('shows the collapsed goal, conditions summary and rule counts', async () => {
+    const mounted = await mountTable({ rows: [
+      row({
+        core_goal: '证明全等',
+        required_elements: ['列出全等条件', '写出对应边相等'],
+        equivalent_rules: ['用其他判定同样给分'],
+        deduction_rules: ['漏写条件不得分', '只写结论不得分'],
+      }),
+    ] })
+    const preview = mounted.host.querySelector<HTMLButtonElement>('.rubric-unit-card__preview')!
+    expect(preview.textContent).toContain('怎样算达成：列出全等条件；写出对应边相等')
+    expect(preview.textContent).toContain('也算达成 1 条')
+    expect(preview.textContent).toContain('不算达成 2 条')
+    mounted.unmount()
+  })
+
+  it('collapses from the expanded header outside fields, not inside the goal textarea', async () => {
+    const mounted = await mountTable()
+    const card = mounted.host.querySelector<HTMLElement>('[data-row-id="row-q12-p1-s1"]')!
+    card.querySelector<HTMLButtonElement>('.rubric-unit-card__preview')!.click()
+    await nextTick()
+    const header = card.querySelector<HTMLElement>('.rubric-unit-card__editor-header')!
+    const goal = card.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 评分点"]')!
+    goal.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(card.querySelector<HTMLElement>('.rubric-unit-card__editor')!.style.display).not.toBe('none')
+    header.querySelector<HTMLElement>('.rubric-unit-card__identity')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(card.querySelector<HTMLElement>('.rubric-unit-card__editor')!.style.display).toBe('none')
+    mounted.unmount()
+  })
+
+  it('emits goal and equivalent-rule edits, rejects a blank goal', async () => {
+    const mounted = await mountTable()
+    mounted.host.querySelector<HTMLButtonElement>('.rubric-unit-card__preview')!.click()
+    await nextTick()
+    const goal = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 评分点"]')!
+    goal.value = '新的评分点'
+    goal.dispatchEvent(new Event('change', { bubbles: true }))
+    const equivalent = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 也算达成"]')!
+    equivalent.value = '等价写法一\n等价写法二'
+    equivalent.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(mounted.emitted).toEqual(expect.arrayContaining([
+      { row_id: 'row-q12-p1-s1', core_goal: '新的评分点' },
+      { row_id: 'row-q12-p1-s1', equivalent_rules: ['等价写法一', '等价写法二'] },
+    ]))
+
+    goal.value = '   '
+    goal.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(mounted.emitted).toHaveLength(2)
+    expect(mounted.host.textContent).toContain('评分点不能为空。')
+    expect(mounted.validity[mounted.validity.length - 1]).toBe(false)
+    mounted.unmount()
   })
 
 })

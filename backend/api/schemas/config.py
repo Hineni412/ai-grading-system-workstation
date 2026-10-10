@@ -368,6 +368,8 @@ class ConfigEditorEditRequest(BaseModel):
 
     row_id: str = Field(min_length=1, max_length=64)
     score: float | None = Field(default=None, allow_inf_nan=False)
+    core_goal: str | None = Field(default=None, max_length=20_000)
+    equivalent_rules: list[str] | None = Field(default=None, max_length=200)
     standard_answer: str | None = Field(default=None, max_length=20_000)
     accepted_answers: list[str] | None = Field(default=None, max_length=200)
     answer_only_max_score: float | None = Field(default=None, allow_inf_nan=False)

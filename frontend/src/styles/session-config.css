@@ -614,38 +614,55 @@
   font-size: var(--font-size-caption);
 }
 
-.rubric-unit-card__exceptions,
+.rubric-part:not(.rubric-part--objective) .rubric-unit-card__preview-conditions {
+  grid-column: 2;
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.rubric-part:not(.rubric-part--objective) .rubric-unit-card__preview-counts {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-3);
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
 .rubric-part__common-editor {
   min-width: 0;
   font-size: var(--font-size-dense);
 }
 
-.rubric-unit-card__exceptions > summary,
 .rubric-part__common-editor > summary {
   cursor: pointer;
   color: var(--color-text-secondary);
   font-size: var(--font-size-caption);
 }
 
-.rubric-unit-card__exceptions[open] > summary,
 .rubric-part__common-editor[open] > summary {
   margin-block-end: var(--space-2);
-}
-
-.rubric-unit-card__equivalent {
-  min-width: 0;
-  font-size: var(--font-size-caption);
-}
-
-.rubric-unit-card__equivalent > strong {
-  color: var(--color-text-secondary);
 }
 
 .rubric-unit-card__editor {
   display: grid;
   gap: var(--space-2);
-  padding: var(--space-3);
+  padding: var(--space-2);
   animation: rubric-editor-enter var(--duration-base) ease-out;
+}
+
+.rubric-unit-card__editor textarea.app-input {
+  field-sizing: content;
+  min-block-size: calc(2lh + var(--space-4));
+  max-block-size: calc(10lh + var(--space-4));
+  resize: vertical;
 }
 
 @keyframes rubric-editor-enter {
@@ -683,7 +700,7 @@
   grid-column: 1 / -1;
 }
 
-.rubric-unit-card__done {
+.rubric-unit-card__collapse {
   min-height: var(--control-height-small);
   padding-inline: var(--space-2);
   border: var(--border-width) solid var(--color-border-default);
@@ -697,19 +714,27 @@
   white-space: nowrap;
 }
 
-.rubric-unit-card__done:hover {
+.rubric-unit-card__collapse:hover {
   border-color: var(--color-accent);
   background: var(--color-accent-subtle);
 }
 
-.rubric-unit-card__done:focus-visible {
+.rubric-unit-card__collapse:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
 }
 
+.rubric-unit-card__editor-header .rubric-unit-card__goal--edit {
+  display: grid;
+  align-content: start;
+  gap: var(--space-1);
+  overflow: visible;
+  white-space: normal;
+}
+
 .rubric-unit-card__fields {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: var(--space-2);
 }
 

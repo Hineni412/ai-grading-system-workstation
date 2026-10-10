@@ -248,7 +248,12 @@ def test_put_saves_once_preserves_source_and_rejects_stale_revision(editor_env) 
         f"/api/sessions/{session_id}/config/editor",
         json={
             "revision": first["revision"],
-            "edits": [{"row_id": row["row_id"], "standard_answer": "Teacher answer"}],
+            "edits": [{
+                "row_id": row["row_id"],
+                "standard_answer": "Teacher answer",
+                "core_goal": "edited scoring target",
+                "equivalent_rules": ["alternative method"],
+            }],
             "commands": [],
         },
     )
@@ -256,6 +261,11 @@ def test_put_saves_once_preserves_source_and_rejects_stale_revision(editor_env) 
     body = saved.json()
     assert body["revision"] != first["revision"]
     assert body["save_result"]["config_saved"] is True
+    saved_row = next(
+        item for item in body["rows"] if item["question_id"] == "Q1"
+    )
+    assert saved_row["core_goal"] == "edited scoring target"
+    assert saved_row["equivalent_rules"] == ["alternative method"]
     current = db.sessions.get_grading_session(session_id)
     assert current["source_paper_path"] == "papers/original.docx"
     assert current["source_paper_sha256"] == "c" * 64
@@ -269,6 +279,9 @@ def test_put_saves_once_preserves_source_and_rejects_stale_revision(editor_env) 
     assert [
         question["parts"][0]["part_id"] for question in stored_rubric["questions"]
     ] == [f"Q{index}" for index in range(1, 7)]
+    stored_step = stored_rubric["questions"][0]["parts"][0]["steps"][0]
+    assert stored_step["core_goal"] == "edited scoring target"
+    assert stored_step["equivalent_rules"] == ["alternative method"]
     assert [
         question["parts"][0]["part_id"] for question in stored_answer_key["questions"]
     ] == [f"Q{index}" for index in range(1, 7)]

@@ -208,6 +208,8 @@ function isSourceChanged(error: unknown): boolean {
 
 const editableIssueFields = new Set([
   'score',
+  'core_goal',
+  'equivalent_rules',
   'standard_answer',
   'accepted_answers',
   'answer_only_max_score',

@@ -53,6 +53,8 @@ class ConfigEditorRow:
 class ConfigEditorEdit:
     row_id: str
     score: float | None = None
+    core_goal: str | None = None
+    equivalent_rules: tuple[str, ...] | None = None
     standard_answer: str | None = None
     accepted_answers: tuple[str, ...] | None = None
     answer_only_max_score: float | None = None
@@ -528,13 +530,29 @@ def _apply_edit(payload: dict[str, Any], row: ConfigEditorRow, edit: ConfigEdito
             if edit.answer_only_max_score is None
             else _valid_score(edit.answer_only_max_score, row.row_id)
         )
+    if edit.core_goal is not None:
+        if step is None:
+            raise ConfigEditorValidationError(
+                (_issue("core_goal_not_editable", "core_goal", "This scoring unit has no step target to edit.", row_id=row.row_id),)
+            )
+        core_goal = str(edit.core_goal).strip()
+        if not core_goal:
+            raise ConfigEditorValidationError(
+                (_issue("missing_core_goal", "core_goal", "Each scoring step needs a scoring target.", row_id=row.row_id),)
+            )
+        step["core_goal"] = core_goal
     if step is not None:
         if edit.required_elements is not None:
             step["required_elements"] = list(_unique_texts(edit.required_elements))
         if edit.deduction_rules is not None:
             step["deduction_rules"] = list(_unique_texts(edit.deduction_rules))
-    elif part is not None and edit.required_elements is not None:
-        part["required_elements"] = list(_unique_texts(edit.required_elements))
+        if edit.equivalent_rules is not None:
+            step["equivalent_rules"] = list(_unique_texts(edit.equivalent_rules))
+    elif part is not None:
+        if edit.required_elements is not None:
+            part["required_elements"] = list(_unique_texts(edit.required_elements))
+        if edit.equivalent_rules is not None:
+            part["equivalent_rules"] = list(_unique_texts(edit.equivalent_rules))
     if edit.part_deduction_rules is not None:
         policy_target = part if part is not None else question
         policy_target["deduction_policy"] = list(

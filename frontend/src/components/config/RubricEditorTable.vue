@@ -43,9 +43,13 @@ const toolbarHeight = ref(0)
 const scrollParent = computed(() => root.value?.closest<HTMLElement>('.main-workspace') ?? null)
 const scoreErrors = ref<Record<string, string>>({})
 const scoreDrafts = ref<Record<string, string>>({})
+const goalDrafts = ref<Record<string, string>>({})
 watch(() => props.rows, () => {
   for (const rowId of Object.keys(scoreDrafts.value)) {
     if (!scoreErrors.value[rowId]) delete scoreDrafts.value[rowId]
+  }
+  for (const rowId of Object.keys(goalDrafts.value)) {
+    if (!scoreErrors.value[`${rowId}:goal`]) delete goalDrafts.value[rowId]
   }
 }, { deep: true })
 const editingRowId = ref<string | null>(null)
@@ -201,6 +205,12 @@ function closeEditor(rowId: string): void {
   void nextTick(() => row?.querySelector<HTMLButtonElement>('.rubric-unit-card__preview')?.focus())
 }
 
+function editorHeaderClick(rowId: string, event: MouseEvent): void {
+  if (event.target instanceof HTMLElement
+    && event.target.closest('input, textarea, select, label, button')) return
+  closeEditor(rowId)
+}
+
 function editorId(index: string): string {
   return `rubric-unit-editor-${index}`
 }
@@ -235,9 +245,28 @@ function acceptedEdit(row: ConfigEditorRow, event: Event): void {
   emit('edit', { row_id: row.row_id, accepted_answers })
 }
 
+function goalEditable(row: ConfigEditorRow): boolean {
+  return row.step_id !== '整题' && row.step_id !== '未拆评分点'
+}
+
+function goalEdit(row: ConfigEditorRow, event: Event): void {
+  const target = event.currentTarget as HTMLTextAreaElement
+  if (event.type === 'input') goalDrafts.value[row.row_id] = target.value
+  const goal = target.value.trim()
+  if (!goal) {
+    scoreErrors.value[`${row.row_id}:goal`] = '评分点不能为空。'
+    emit('validity', false)
+    return
+  }
+  delete scoreErrors.value[`${row.row_id}:goal`]
+  emit('validity', Object.keys(scoreErrors.value).length === 0)
+  if (goal === row.core_goal.trim()) return
+  emit('edit', { row_id: row.row_id, core_goal: goal })
+}
+
 function listEdit(
   row: ConfigEditorRow,
-  field: 'required_elements' | 'deduction_rules' | 'part_deduction_rules',
+  field: 'required_elements' | 'deduction_rules' | 'part_deduction_rules' | 'equivalent_rules',
   event: Event,
 ): void {
   const values = (event.currentTarget as HTMLTextAreaElement).value
@@ -274,12 +303,14 @@ function policyRuleEdit(row: ConfigEditorRow, event: Event): void {
     final_answer_rule: (event.currentTarget as HTMLTextAreaElement).value })
 }
 
-type RenderedEditField = 'score' | 'standard_answer' | 'accepted_answers'
-  | 'required_elements' | 'deduction_rules' | 'part_deduction_rules' | 'answer_only_max_score'
-  | 'require_final_answer' | 'final_answer_rule'
+type RenderedEditField = 'score' | 'core_goal' | 'standard_answer' | 'accepted_answers'
+  | 'required_elements' | 'deduction_rules' | 'part_deduction_rules' | 'equivalent_rules'
+  | 'answer_only_max_score' | 'require_final_answer' | 'final_answer_rule'
 
 function fieldForIssue(issue: ConfigEditorIssue): RenderedEditField | null {
   if (issue.field === 'score') return 'score'
+  if (issue.field === 'core_goal') return 'core_goal'
+  if (issue.field === 'equivalent_rules') return 'equivalent_rules'
   if (issue.field === 'accepted_answers') return 'accepted_answers'
   if (issue.field === 'standard_answer') return 'standard_answer'
   if (issue.field === 'required_elements') return 'required_elements'
@@ -621,10 +652,10 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
         <div class="rubric-part__steps">
       <div class="rubric-part__col-head" aria-hidden="true">
         <span>{{ group.objective ? '题号' : '步骤' }}</span>
-        <span>目标</span>
+        <span>评分点</span>
         <span v-if="group.objective">标准答案</span>
         <span v-if="group.objective">接受答案</span>
-        <span v-if="group.objective">等价达成</span>
+        <span v-if="group.objective">也算达成</span>
         <span>分值</span>
       </div>
       <article
@@ -655,6 +686,15 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
             </span>
             <span v-if="row.answer_kind === 'conditions'" class="rubric-unit-card__answer-kind">按条件判对</span>
             <strong class="rubric-unit-card__score-badge">{{ group.objective ? '' : '最高 ' }}{{ row.score }} 分</strong>
+            <span
+              v-if="!group.objective && row.required_elements.length"
+              class="rubric-unit-card__preview-conditions"
+              :title="compactPreview(row.required_elements)"
+            >{{ row.answer_kind === 'conditions' ? '判对条件' : '怎样算达成' }}：{{ compactPreview(row.required_elements) }}</span>
+            <span
+              v-if="!group.objective && ((row.equivalent_rules?.length ?? 0) > 0 || row.deduction_rules.length > 0)"
+              class="rubric-unit-card__preview-counts"
+            ><span v-if="row.equivalent_rules?.length">也算达成 {{ row.equivalent_rules.length }} 条</span><span v-if="row.deduction_rules.length">不算达成 {{ row.deduction_rules.length }} 条</span></span>
           </span>
           <span v-if="group.objective" class="rubric-unit-card__preview-fields">
             <span
@@ -674,7 +714,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
               v-if="row.equivalent_rules?.length"
               class="rubric-unit-card__preview-field rubric-field--equiv"
             >
-              <span class="sr-only">等价达成</span>
+              <span class="sr-only">也算达成</span>
               <span :title="compactPreview(row.equivalent_rules ?? [])">
                 <QuestionHtmlBlock :text="compactPreview(row.equivalent_rules ?? [])" inline />
               </span>
@@ -689,13 +729,28 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
           :aria-label="`${identity(row)} 编辑区`"
           @keydown.esc.stop="closeEditor(row.row_id)"
         >
-          <header class="rubric-unit-card__editor-header">
+          <header class="rubric-unit-card__editor-header" @click="editorHeaderClick(row.row_id, $event)">
             <span class="rubric-unit-card__identity">
-              <strong>{{ row.question_id }}</strong>
+              <strong>{{ group.objective ? row.question_id : row.step_id }}</strong>
               <span>{{ row.part_label }}</span>
-              <span>{{ row.step_id }}</span>
             </span>
-            <span class="rubric-unit-card__goal" :title="compactPreview(row.core_goal, '未提供评分点')">
+            <label v-if="goalEditable(row)" class="rubric-unit-card__goal rubric-unit-card__goal--edit">
+              <span class="sr-only">评分点</span>
+              <textarea class="app-input"
+                rows="1"
+                data-edit-field="core_goal"
+                :aria-label="`${identity(row)} 评分点`"
+                :value="goalDrafts[row.row_id] ?? row.core_goal"
+                :aria-invalid="scoreErrors[`${row.row_id}:goal`] ? 'true' : 'false'"
+                :disabled="disabled"
+                @input="goalEdit(row, $event)"
+                @change="goalEdit(row, $event)"
+              />
+              <small v-if="scoreErrors[`${row.row_id}:goal`]" class="rubric-ledger__field-error" role="alert">
+                {{ scoreErrors[`${row.row_id}:goal`] }}
+              </small>
+            </label>
+            <span v-else class="rubric-unit-card__goal" :title="compactPreview(row.core_goal, '未提供评分点')">
               <QuestionHtmlBlock :text="row.core_goal || '未提供评分点'" inline typeset-text />
             </span>
             <label class="rubric-unit-card__score">
@@ -715,9 +770,13 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
                 {{ scoreErrors[row.row_id] }}
               </small>
             </label>
-            <button type="button" class="rubric-unit-card__done" @click="closeEditor(row.row_id)">
-              收起编辑
-            </button>
+            <button
+              type="button"
+              class="rubric-unit-card__collapse"
+              :aria-controls="editorId(row.row_id)"
+              aria-expanded="true"
+              @click="closeEditor(row.row_id)"
+            >收起 ▴</button>
           </header>
 
           <p v-if="row.answer_kind === 'conditions'" class="rubric-unit-card__answer-note">按条件判对，参考答案只是示例。满足全部条件即可得分。</p>
@@ -735,17 +794,41 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
               />
             </label>
             <label>
-              <span>{{ row.answer_kind === 'conditions' ? '判对条件' : '得分条件' }}</span>
+              <span>{{ row.answer_kind === 'conditions' ? '判对条件' : '怎样算达成' }}</span>
               <textarea class="app-input"
-                rows="3"
+                rows="2"
                 data-edit-field="required_elements"
-                :aria-label="`${identity(row)} 证据要求/关键步骤`"
+                :aria-label="`${identity(row)} ${row.answer_kind === 'conditions' ? '判对条件' : '怎样算达成'}`"
+                placeholder="卷面上写出什么就算做到这一步"
                 :value="row.required_elements.join('\n')"
                 :disabled="disabled"
                 @change="listEdit(row, 'required_elements', $event)"
               />
             </label>
-
+            <label>
+              <span>也算达成</span>
+              <textarea class="app-input"
+                rows="2"
+                data-edit-field="equivalent_rules"
+                :aria-label="`${identity(row)} 也算达成`"
+                placeholder="其他也给分的写法，每行一条"
+                :value="(row.equivalent_rules ?? []).join('\n')"
+                :disabled="disabled"
+                @change="listEdit(row, 'equivalent_rules', $event)"
+              />
+            </label>
+            <label>
+              <span>不算达成</span>
+              <textarea class="app-input"
+                rows="2"
+                data-edit-field="deduction_rules"
+                :aria-label="`${identity(row)} 不算达成`"
+                placeholder="看起来像但不给分的写法，每行一条"
+                :value="row.deduction_rules.join('\n')"
+                :disabled="disabled"
+                @change="listEdit(row, 'deduction_rules', $event)"
+              />
+            </label>
             <label v-if="group.objective && firstRowIds.has(row.row_id)">
               <span>等价答案（每行一个）</span>
               <textarea class="app-input"
@@ -769,27 +852,6 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
               />
             </label>
           </div>
-
-          <details class="rubric-unit-card__exceptions">
-            <summary>扣分例外与等价达成</summary>
-            <div class="rubric-unit-card__fields">
-              <label>
-                <span>扣分规则</span>
-                <textarea class="app-input"
-                  rows="3"
-                  data-edit-field="deduction_rules"
-                  :aria-label="`${identity(row)} 扣分规则`"
-                  :value="row.deduction_rules.join('\n')"
-                  :disabled="disabled"
-                  @change="listEdit(row, 'deduction_rules', $event)"
-                />
-              </label>
-              <div v-if="row.equivalent_rules?.length" class="rubric-unit-card__equivalent">
-                <strong>等价达成</strong>
-                <QuestionHtmlBlock v-for="rule in row.equivalent_rules" :key="rule" :text="rule" typeset-text />
-              </div>
-            </div>
-          </details>
 
           <div v-if="group.objective && firstRowIds.has(row.row_id)" class="rubric-ledger__policy">
             <div class="rubric-ledger__policy-heading">
