@@ -1069,3 +1069,190 @@ def test_tag_browser_default_routes_hit_prewarmed_read_caches(
     assert facets.status_code == 200
     assert facets.json()['primary_sections'] == [{'value': '', 'count': 1}]
     assert db_path.read_bytes() == before_read
+
+
+def _isolated_display_store(monkeypatch, directory: Path):
+    """Point the shared last-display store at an isolated directory."""
+    import integration.display_refresh as display_refresh
+    from integration.persistent_entries import persistent_entry_store
+
+    store = persistent_entry_store(
+        Path(directory), max_entries=128, max_bytes=256 * 1024 * 1024)
+    monkeypatch.setattr(display_refresh, '_store', lambda _root: store)
+    return store
+
+
+def _last_display_key(endpoint: str, request_key: dict) -> tuple:
+    import json as json_module
+
+    return (
+        endpoint,
+        json_module.dumps(
+            dict(request_key), sort_keys=True, ensure_ascii=False, default=str),
+    )
+
+
+def _seed_last_display(store, endpoint: str, request_key: dict, payload: bytes) -> None:
+    import gzip as gzip_module
+
+    store.put(_last_display_key(endpoint, request_key), 'last', gzip_module.compress(payload))
+
+
+def test_question_bank_display_refresh_routes_return_identical_bytes(question_bank_fixture):
+    """新展示路径必须与旧路由输出逐字节一致，且不带上刷新标记。"""
+    from fastapi.encoders import jsonable_encoder
+
+    from backend.jobs.question_bank_repair import repair_preview
+
+    service, db_path, _ = question_bank_fixture
+    client = _question_bank_client(service, question_bank_db_path=db_path)
+    volume = 'bnu24-math-g8-upper'
+    cases = [
+        ('/api/question-bank/skill-index', {'curriculum_volume_id': volume},
+         service.skill_index(volume)),
+        ('/api/question-bank/chapter-exam-profile', {'curriculum_volume_id': volume},
+         service.chapter_exam_profile(volume)),
+        ('/api/question-bank/repair-preview',
+         {'curriculum_volume_id': volume, 'kind': 'all'},
+         repair_preview(service, volume, 'all')),
+    ]
+    for path, params, expected in cases:
+        response = client.get(path, params=params)
+        assert response.status_code == 200, response.text
+        assert 'x-data-refreshing' not in response.headers
+        assert response.content == json.dumps(
+            jsonable_encoder(expected), ensure_ascii=False, allow_nan=False,
+            separators=(',', ':')).encode('utf-8')
+
+
+def test_skill_index_serves_last_result_while_refreshing(question_bank_fixture, monkeypatch, tmp_path):
+    """重算超过等待窗口时先回上次结果并带标记，算完后回到实时结果。"""
+    import gzip
+    import time
+
+    from backend.api.routers import question_bank as router
+    from integration import display_refresh
+
+    service, db_path, _ = question_bank_fixture
+    store = _isolated_display_store(monkeypatch, tmp_path / 'last_display')
+    client = _question_bank_client(service, question_bank_db_path=db_path)
+    volume = 'bnu24-math-g8-upper'
+    url = f'/api/question-bank/skill-index?curriculum_volume_id={volume}'
+
+    first = client.get(url)
+    assert first.status_code == 200 and 'x-data-refreshing' not in first.headers
+
+    marker = b'{"TEST_marker":"last-display"}'
+    request_key = {'curriculum_volume_id': volume}
+    _seed_last_display(store, 'question-bank-skill-index', request_key, marker)
+
+    original = router._skill_index_response_bytes
+    calls: list[int] = []
+
+    def slow_then_marker(db_path_arg, data_root, volume_id):
+        calls.append(1)
+        if len(calls) == 1:
+            time.sleep(1.6)
+            return b'{"TEST_marker":"fresh"}'
+        if len(calls) == 2:
+            # 第二次计算仍超时，这次回的是上一次后台计算刚保存的新结果。
+            time.sleep(1.6)
+        return original(db_path_arg, data_root, volume_id)
+
+    monkeypatch.setattr(router, '_skill_index_response_bytes', slow_then_marker)
+    stale = client.get(url)
+    assert stale.status_code == 200
+    assert stale.headers['x-data-refreshing'] == '1'
+    assert stale.content == marker
+    assert display_refresh.wait_idle(10)
+
+    stored_fresh = client.get(url)
+    assert stored_fresh.status_code == 200
+    assert stored_fresh.headers['x-data-refreshing'] == '1'
+    assert stored_fresh.content == b'{"TEST_marker":"fresh"}'
+    assert display_refresh.wait_idle(10)
+
+    restored = client.get(url)
+    assert 'x-data-refreshing' not in restored.headers
+    assert restored.content == first.content
+
+
+def test_skill_index_waits_for_first_result_without_marker(question_bank_fixture, monkeypatch, tmp_path):
+    """没有可回的上次结果时同步等待，不带刷新标记。"""
+    import time
+
+    from backend.api.routers import question_bank as router
+
+    service, db_path, _ = question_bank_fixture
+    _isolated_display_store(monkeypatch, tmp_path / 'last_display')
+    client = _question_bank_client(service, question_bank_db_path=db_path)
+    volume = 'bnu24-math-g8-upper'
+    url = f'/api/question-bank/skill-index?curriculum_volume_id={volume}'
+
+    original = router._skill_index_response_bytes
+
+    def slow(db_path_arg, data_root, volume_id):
+        time.sleep(1.6)
+        return original(db_path_arg, data_root, volume_id)
+
+    monkeypatch.setattr(router, '_skill_index_response_bytes', slow)
+    started = time.monotonic()
+    response = client.get(url)
+    assert response.status_code == 200
+    assert time.monotonic() - started >= 1.0
+    assert 'x-data-refreshing' not in response.headers
+    assert response.json()['model_calls'] == 0
+
+
+def test_skill_index_stale_result_survives_background_error(question_bank_fixture, monkeypatch, tmp_path):
+    """后台重算失败保留上次结果；无上次结果时同步错误与旧行为一致。"""
+    import gzip
+    import time
+
+    from backend.api.routers import question_bank as router
+    from integration import display_refresh
+
+    service, db_path, _ = question_bank_fixture
+    store = _isolated_display_store(monkeypatch, tmp_path / 'last_display')
+    client = _question_bank_client(service, question_bank_db_path=db_path)
+    volume = 'bnu24-math-g8-upper'
+    url = f'/api/question-bank/skill-index?curriculum_volume_id={volume}'
+
+    first = client.get(url)
+    assert first.status_code == 200 and 'x-data-refreshing' not in first.headers
+
+    def failing(*_args, **_kwargs):
+        time.sleep(1.6)
+        raise ValueError('TEST-refresh-failed')
+
+    monkeypatch.setattr(router, '_skill_index_response_bytes', failing)
+    stale = client.get(url)
+    assert stale.status_code == 200
+    assert stale.headers['x-data-refreshing'] == '1'
+    assert stale.content == first.content
+    assert display_refresh.wait_idle(10)
+    saved = store.get(
+        _last_display_key('question-bank-skill-index',
+                          {'curriculum_volume_id': volume}), 'last')
+    assert gzip.decompress(saved) == first.content
+
+    monkeypatch.undo()
+    restored = client.get(url)
+    assert restored.status_code == 200
+    assert 'x-data-refreshing' not in restored.headers
+    assert restored.content == first.content
+
+
+def test_skill_index_error_response_unchanged_without_last_result(question_bank_fixture, monkeypatch, tmp_path):
+    from backend.api.routers import question_bank as router
+
+    service, db_path, _ = question_bank_fixture
+    _isolated_display_store(monkeypatch, tmp_path / 'last_display')
+    client = _question_bank_client(service, question_bank_db_path=db_path)
+
+    monkeypatch.setattr(
+        router, '_skill_index_response_bytes',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError('TEST-broken')))
+    response = client.get(
+        '/api/question-bank/skill-index?curriculum_volume_id=bnu24-math-g8-upper')
+    assert response.status_code == 422

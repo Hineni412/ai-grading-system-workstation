@@ -300,4 +300,43 @@ describe('question bank store', () => {
     expect(store.detail?.tags).toEqual([])
   })
 
+  it('shows the served last result while refreshing and swaps in the fresh one', async () => {
+    const { useQuestionBankStore } = await import('../stores/question-bank')
+    const store = useQuestionBankStore()
+    const volume = 'TEST-volume'
+    const staleIndex: QuestionSkillIndex = {
+      curriculum_volume_id: volume, graph_release_id: null, model_calls: 0,
+      question_count: 2, unlinked: { no_usable_evidence: 0, no_skill_link: 0 }, chapters: [],
+    }
+    const freshIndex = { ...staleIndex, question_count: 3 }
+    let calls = 0
+    vi.spyOn(questionBankApi, 'skillIndex').mockImplementation(
+      (_id, _signal, onRefreshing) => {
+        calls += 1
+        onRefreshing?.(calls === 1)
+        return Promise.resolve(calls === 1 ? staleIndex : freshIndex)
+      },
+    )
+    const load = store.loadSkillIndex(volume)
+    await vi.waitFor(() => expect(store.skillIndexes.get(volume)).toEqual(staleIndex))
+    expect(store.refreshingReads.size).toBe(1)
+    await vi.waitFor(() => expect(store.refreshingReads.size).toBe(0), { timeout: 6000 })
+    await load
+    expect(store.skillIndexes.get(volume)).toEqual(freshIndex)
+    expect(calls).toBe(2)
+  })
+
+  it('stops polling after the attempt budget and reports the retry-later state', async () => {
+    const { requestWithRefresh } = await import('../api/display-refresh')
+    const reports: Array<[boolean, boolean]> = []
+    let calls = 0
+    await requestWithRefresh(
+      (onRefreshing) => { onRefreshing(true); calls += 1; return Promise.resolve(calls) },
+      { report: (refreshing, exhausted) => reports.push([refreshing, exhausted]) },
+      () => Promise.resolve(),
+    )
+    expect(calls).toBe(60)
+    expect(reports[reports.length - 1]).toEqual([true, true])
+  })
+
 })

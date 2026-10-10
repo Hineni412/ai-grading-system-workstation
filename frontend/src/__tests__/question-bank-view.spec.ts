@@ -457,7 +457,7 @@ describe('question bank workspace', () => {
     expect(document.body.textContent).not.toContain('TEST-只缺技能')
     const button = [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === '确认补齐 1 题')
     expect(button?.disabled).toBe(true)
-    expect(load).toHaveBeenCalledWith(all.curriculum_volume_id, 'analysis', expect.anything())
+    expect(load).toHaveBeenCalledWith(all.curriculum_volume_id, 'analysis', expect.anything(), expect.anything())
     rejectRead(new Error('TEST-复核失败'))
     await vi.waitFor(() => expect(document.body.textContent).toContain('无法核对最新状态，请重试。'))
     expect(button?.disabled).toBe(true)
@@ -915,7 +915,7 @@ describe('question bank workspace', () => {
     await vi.waitFor(() => expect(mastery.loadState).toBe('loading'))
     expect(summary()).toBe('学情读取中')
     expect(summary()).not.toContain('73%')
-    expect(overview).toHaveBeenLastCalledWith(expect.objectContaining({ scope: expect.objectContaining({ mode: 'class', class_id: '10班', class_ids: ['10班'] }) }), expect.anything())
+    expect(overview).toHaveBeenLastCalledWith(expect.objectContaining({ scope: expect.objectContaining({ mode: 'class', class_id: '10班', class_ids: ['10班'] }) }), expect.anything(), expect.anything())
     const selected = tagOverview()
     selected.nodes = selected.nodes.map(node => node.knowledge_key === 'TEST-c1' ? { ...node, group_mastery: .83, evidence_student_count: 2, distribution: { weak: 0, unsteady: 1, stable: 1, insufficient: 0 } } : node)
     selected.scope = { mode: 'class', class_id: '10班', class_ids: ['10班'], student_ids: ['3', '4'] }

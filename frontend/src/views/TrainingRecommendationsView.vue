@@ -568,6 +568,8 @@ onBeforeUnmount(() => { studentsController?.abort(); paperSourceController?.abor
     />
     <FeedbackBanner v-if="training.errorMessage" tone="error" :title="training.errorMessage" />
     <FeedbackBanner v-if="groupMessage" tone="info" :title="groupMessage" />
+    <FeedbackBanner v-if="training.refreshing || training.refreshMessage" tone="info"
+      :title="training.refreshMessage || '数据有更新，正在重新计算。当前显示上次结果，算完自动刷新。'" />
 
     <section v-if="trainingMode !== 'paper'" class="practice-workspace">
       <StatePanel v-if="!curriculumScope.selectedVolumeId" kind="empty" title="请先选择教学学期" description="在左侧栏“当前考试”中选择教学学期。" />
@@ -586,7 +588,7 @@ onBeforeUnmount(() => { studentsController?.abort(); paperSourceController?.abor
           <TrainingGroupRecommendations v-if="training.diagnosis" v-model:sort-mode="groupSort" :diagnosis="training.diagnosis"
             :scope="sourceStudentScope" :exam-scope="personalizedExamScope" :settings="groupingSettings"
             :editor="groupEditor" :adopted="adoptedGroup" :arrangements="arrangements"
-            :disabled="training.analysisState === 'loading' || !paperNumericSettingsValid"
+            :disabled="training.analysisState === 'loading' || !paperNumericSettingsValid || training.refreshing"
             @edit="groupEditor = $event" @adopt="adoptGroup" />
         </StudentPicker>
         <KnowledgeRangeList v-if="training.diagnosis" mode="range" :volume="curriculumScope.selectedVolume" :diagnosis="training.diagnosis"
@@ -630,7 +632,7 @@ onBeforeUnmount(() => { studentsController?.abort(); paperSourceController?.abor
               <span>{{ (draftContext?.purpose ?? purpose) === 'handout' ? '讲义 · 只打印' : '训练卷 · 可回收' }}</span>
               <details v-if="!draftContext" class="paper-settings-summary"><summary>选题细则</summary><p>同{{ targetLabel }}最多 {{ maxQuestionsPerSkill }} 道 · 解答题最多 {{ maxWrittenQuestions }} 道</p><p>{{ recentActivityCount === 0 ? '不排除近期原题' : purpose === 'handout' ? `排除最近 ${recentActivityCount} 次已批改考试原题 · 可复用历史训练题` : `排除最近 ${recentActivityCount} 次已批改考试与训练原题` }}</p></details>
               <RouterLink class="paper-review-bar__back" :to="paperBackTarget">调整出卷设置</RouterLink>
-              <AppButton v-if="workflowStage === 'diagnosis'" variant="primary" data-testid="generate-paper-draft" :disabled="(!draftNeedsCheck && (!paperSettingsValid || !paperDiagnosis)) || draftRequestState === 'loading' || groupChecking" @click="generatePaperDraft">{{ groupChecking ? '正在核对小组…' : draftRequestState === 'loading' ? '正在生成并核对…' : draftNeedsCheck ? '核对生成结果' : `生成 ${expectedPaperCount} 份草稿` }}</AppButton>
+              <AppButton v-if="workflowStage === 'diagnosis'" variant="primary" data-testid="generate-paper-draft" :disabled="(!draftNeedsCheck && (!paperSettingsValid || !paperDiagnosis)) || draftRequestState === 'loading' || groupChecking || training.refreshing" :title="training.refreshing ? '正在更新数据，请稍候' : undefined" @click="generatePaperDraft">{{ groupChecking ? '正在核对小组…' : draftRequestState === 'loading' ? '正在生成并核对…' : draftNeedsCheck ? '核对生成结果' : `生成 ${expectedPaperCount} 份草稿` }}</AppButton>
             </div>
             <p v-if="workflowStage === 'diagnosis' && !paperSettingsValid" class="paper-review-hint">
               {{ paperMode === 'shared'
@@ -662,7 +664,7 @@ onBeforeUnmount(() => { studentsController?.abort(); paperSourceController?.abor
               :scope-keys="paperMode === 'shared' && adoptedGroup ? [] : individualScope.keys"
               :group-scope-keys="paperMode === 'shared' ? adoptedGroup?.scopeKeys : undefined"
               :curriculum-volume-id="curriculumScope.selectedVolumeId"
-              :disabled="!paperSettingsValid || !paperDiagnosis"
+              :disabled="!paperSettingsValid || !paperDiagnosis || training.refreshing"
               @context-change="draftContext = $event"
               @workspace-change="draftWorkspace = $event"
               @focus-consumed="consumeReturnFocus"

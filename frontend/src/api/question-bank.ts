@@ -1,4 +1,4 @@
-import { apiClient } from './client'
+import { apiClient, refreshHeaderHandler } from './client'
 import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
 import { decodeJobResponse, type JobResponse } from './jobs'
 
@@ -2509,22 +2509,25 @@ export const questionBankApi = {
       body: { expected_revision: revision, primary_type_key: primaryTypeKey, secondary_type_keys: secondaryTypeKeys },
       decode: decodeQuestionWriteResult })
   },
-  repairPreview(volumeId: string, kind: QuestionRepairKind, signal?: AbortSignal): Promise<QuestionRepairPreview> {
+  repairPreview(volumeId: string, kind: QuestionRepairKind, signal?: AbortSignal,
+      onRefreshing?: (refreshing: boolean) => void): Promise<QuestionRepairPreview> {
     return apiClient.request(`/api/question-bank/repair-preview?curriculum_volume_id=${encodeURIComponent(volumeId)}&kind=${kind}`,
-      { decode: decodeRepairPreview, signal, timeoutMs: 60_000 })
+      { decode: decodeRepairPreview, signal, timeoutMs: 60_000, onResponseHeaders: refreshHeaderHandler(onRefreshing) })
   },
   submitRepair(preview: QuestionRepairPreview, ids: number[], token: string): Promise<JobResponse> {
     return apiClient.request('/api/question-bank/repair-jobs', { method: 'POST', decode: decodeJobResponse,
       body: { curriculum_volume_id: preview.curriculum_volume_id, kind: preview.kind,
         question_ids: normalizedQuestionIds(ids), fingerprint: preview.fingerprint, client_request_token: token } })
   },
-  skillIndex(curriculumVolumeId: string, signal?: AbortSignal): Promise<QuestionSkillIndex> {
+  skillIndex(curriculumVolumeId: string, signal?: AbortSignal,
+      onRefreshing?: (refreshing: boolean) => void): Promise<QuestionSkillIndex> {
     const parameters = new URLSearchParams({ curriculum_volume_id: curriculumVolumeId })
-    return apiClient.request(`/api/question-bank/skill-index?${parameters}`, { decode: decodeQuestionSkillIndex, signal, timeoutMs: 60_000 })
+    return apiClient.request(`/api/question-bank/skill-index?${parameters}`, { decode: decodeQuestionSkillIndex, signal, timeoutMs: 60_000, onResponseHeaders: refreshHeaderHandler(onRefreshing) })
   },
-  chapterExamProfile(curriculumVolumeId: string, signal?: AbortSignal): Promise<ChapterExamProfile> {
+  chapterExamProfile(curriculumVolumeId: string, signal?: AbortSignal,
+      onRefreshing?: (refreshing: boolean) => void): Promise<ChapterExamProfile> {
     const parameters = new URLSearchParams({ curriculum_volume_id: curriculumVolumeId })
-    return apiClient.request(`/api/question-bank/chapter-exam-profile?${parameters}`, { decode: decodeChapterExamProfile, signal, timeoutMs: 60_000 })
+    return apiClient.request(`/api/question-bank/chapter-exam-profile?${parameters}`, { decode: decodeChapterExamProfile, signal, timeoutMs: 60_000, onResponseHeaders: refreshHeaderHandler(onRefreshing) })
   },
   standardSummary(curriculumVolumeId: string, signal?: AbortSignal): Promise<QuestionStandardSummary> {
     const parameters = new URLSearchParams({ curriculum_volume_id: curriculumVolumeId })

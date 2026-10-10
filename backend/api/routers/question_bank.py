@@ -4,7 +4,7 @@ import errno
 from pathlib import Path
 from typing import Annotated, Any, Literal, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 
 from backend.api.app import ApiError, ErrorResponse
@@ -90,6 +90,7 @@ from backend.file_access import (
 )
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.jobs.question_bank_repair import repair_preview
+from integration.display_refresh import json_bytes, serve_with_refresh
 from backend.jobs.store import (
     JobRecord,
     SkillCandidateJobBusyError,
@@ -346,30 +347,81 @@ def get_standard_summary(
         _raise_question_snapshot_api_error(exc)
 
 
+def _read_service_data_root(service: QuestionBankReadService) -> Path:
+    if service.data_root is not None:
+        return Path(service.data_root)
+    return Path(service.db_path).parent.parent
+
+
+def _skill_index_response_bytes(
+    db_path: Path, data_root: Path | None, curriculum_volume_id: str
+) -> bytes:
+    service = QuestionBankReadService(db_path, data_root=data_root)
+    return json_bytes(service.skill_index(curriculum_volume_id))
+
+
+def _chapter_exam_profile_response_bytes(
+    db_path: Path, data_root: Path | None, curriculum_volume_id: str
+) -> bytes:
+    service = QuestionBankReadService(db_path, data_root=data_root)
+    return json_bytes(service.chapter_exam_profile(curriculum_volume_id))
+
+
+def _repair_preview_response_bytes(
+    db_path: Path,
+    data_root: Path | None,
+    curriculum_volume_id: str,
+    kind: str,
+) -> bytes:
+    service = QuestionBankReadService(db_path, data_root=data_root)
+    return json_bytes(repair_preview(service, curriculum_volume_id, kind))
+
+
+def _display_response(content: bytes, refreshing: bool) -> Response:
+    headers = {"X-Data-Refreshing": "1"} if refreshing else None
+    return Response(content=content, media_type="application/json", headers=headers)
+
+
 @router.get("/skill-index", responses=QUESTION_SNAPSHOT_ERROR_RESPONSES)
 def get_skill_index(
     curriculum_volume_id: Annotated[str, Query(min_length=1)],
     service: QuestionBankReadService = Depends(get_question_bank_read_service),
-) -> dict[str, Any]:
+) -> Response:
     try:
-        return service.skill_index(curriculum_volume_id)
+        content, refreshing = serve_with_refresh(
+            data_root=_read_service_data_root(service),
+            endpoint="question-bank-skill-index",
+            request_key={"curriculum_volume_id": curriculum_volume_id},
+            compute=lambda: _skill_index_response_bytes(
+                service.db_path, service.data_root, curriculum_volume_id
+            ),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except QuestionBankSnapshotError as exc:
         _raise_question_snapshot_api_error(exc)
+    return _display_response(content, refreshing)
 
 
 @router.get("/chapter-exam-profile", responses=QUESTION_SNAPSHOT_ERROR_RESPONSES)
 def get_chapter_exam_profile(
     curriculum_volume_id: Annotated[str, Query(min_length=1)],
     service: QuestionBankReadService = Depends(get_question_bank_read_service),
-) -> dict[str, Any]:
+) -> Response:
     try:
-        return service.chapter_exam_profile(curriculum_volume_id)
+        content, refreshing = serve_with_refresh(
+            data_root=_read_service_data_root(service),
+            endpoint="question-bank-chapter-exam-profile",
+            request_key={"curriculum_volume_id": curriculum_volume_id},
+            compute=lambda: _chapter_exam_profile_response_bytes(
+                service.db_path, service.data_root, curriculum_volume_id
+            ),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except QuestionBankSnapshotError as exc:
         _raise_question_snapshot_api_error(exc)
+    return _display_response(content, refreshing)
 
 
 @router.get("/skill-gaps", responses=SKILL_CANDIDATE_ERROR_RESPONSES)
@@ -1621,11 +1673,17 @@ def retry_question_import_job(
 
 @router.get('/repair-preview', responses=QUESTION_SNAPSHOT_ERROR_RESPONSES)
 def question_repair_preview(curriculum_volume_id: str, kind: Literal['skills', 'analysis', 'all'] = 'all',
-        service: QuestionBankReadService = Depends(get_question_bank_read_service)) -> dict[str, Any]:
+        service: QuestionBankReadService = Depends(get_question_bank_read_service)) -> Response:
     try:
-        return repair_preview(service, curriculum_volume_id, kind)
+        content, refreshing = serve_with_refresh(
+            data_root=_read_service_data_root(service),
+            endpoint='question-bank-repair-preview',
+            request_key={'curriculum_volume_id': curriculum_volume_id, 'kind': kind},
+            compute=lambda: _repair_preview_response_bytes(
+                service.db_path, service.data_root, curriculum_volume_id, kind))
     except ValueError as exc:
         raise ApiError(422, 'repair_scope_invalid', str(exc)) from exc
+    return _display_response(content, refreshing)
 
 
 @router.post('/repair-jobs', response_model=JobResponse, status_code=202, responses=QUESTION_JOB_RESPONSES)

@@ -1646,3 +1646,361 @@ print(hashlib.sha256(result).hexdigest())
     asset.write_text('{}', encoding='utf-8')
     assert training_client.post('/api/training/diagnosis', json=grouped_body).content == changed.content
     assert grouped_calls == [10, 8, 8]
+
+
+def _display_store_root(service) -> Path:
+    return Path(service.data_root) / 'reports' / '.training_diagnosis' / 'last_display'
+
+
+def _display_store(service):
+    from integration.persistent_entries import persistent_entry_store
+
+    return persistent_entry_store(
+        _display_store_root(service), max_entries=128, max_bytes=256 * 1024 * 1024)
+
+
+def _last_display_saved(service, endpoint: str, request_key: dict) -> bytes | None:
+    import gzip as gzip_module
+
+    saved = _display_store(service).get(
+        (endpoint, json.dumps(dict(request_key), sort_keys=True,
+                               ensure_ascii=False, default=str)), 'last')
+    return None if saved is None else gzip_module.decompress(saved)
+
+
+def test_training_diagnosis_display_refresh_round_trip(training_client, training_services, monkeypatch):
+    """诊断：先回上次结果并标记刷新，后台算完后同一请求回实时结果。"""
+    import time
+
+    from backend.api.routers import training as router
+    from backend.api.schemas.training import TrainingDiagnosisRequest
+    from integration import display_refresh
+
+    body = {
+        'scope': {'mode': 'student', 'student_ids': ['12']},
+        'exam_scope': {'mode': 'current', 'session_ids': [14]},
+    }
+    first = training_client.post('/api/training/diagnosis', json=body)
+    assert first.status_code == 200, first.text
+    assert 'x-data-refreshing' not in first.headers
+    # 逐字节对齐旧的同步路径输出。
+    expected = router._diagnosis_response_bytes(
+        training_services, scope=body['scope'], exam_scope=body['exam_scope'],
+        include_student_detail=True, response_mode='full')
+    assert first.content == expected
+
+    request = TrainingDiagnosisRequest.model_validate(body)
+    request_key = {
+        'scope': request.scope.model_dump(exclude_none=True),
+        'exam_scope': request.exam_scope.model_dump(exclude_none=True),
+        'include_student_detail': True,
+        'response_mode': 'full',
+    }
+    marker = b'{"TEST_marker":"fresh"}'
+    original = router._compute_diagnosis_bytes
+    calls: list[int] = []
+
+    def slow_then_marker(paths, **kwargs):
+        if not calls:
+            calls.append(1)
+            time.sleep(1.6)
+            return marker
+        return original(paths, **kwargs)
+
+    monkeypatch.setattr(router, '_compute_diagnosis_bytes', slow_then_marker)
+    stale = training_client.post('/api/training/diagnosis', json=body)
+    assert stale.status_code == 200
+    assert stale.headers['x-data-refreshing'] == '1'
+    assert stale.content == first.content
+    assert display_refresh.wait_idle(10)
+    assert _last_display_saved(training_services, 'training-diagnosis', request_key) == marker
+
+    fresh = training_client.post('/api/training/diagnosis', json=body)
+    assert fresh.status_code == 200
+    assert 'x-data-refreshing' not in fresh.headers
+    assert fresh.content == first.content
+
+
+def test_training_diagnosis_display_modes_share_refresh_bytes(training_client, training_services):
+    """display / display_shared 与摘要输出同样逐字节对齐。"""
+    from backend.api.routers.training import _diagnosis_response_bytes
+
+    base = {
+        'scope': {'mode': 'student', 'student_ids': ['12']},
+        'exam_scope': {'mode': 'current', 'session_ids': [14]},
+    }
+    for extra, options in [
+        ({'include_student_detail': False},
+         {'include_student_detail': False, 'response_mode': 'full'}),
+        ({'response_mode': 'display'},
+         {'include_student_detail': True, 'response_mode': 'display'}),
+        ({'response_mode': 'display_shared'},
+         {'include_student_detail': True, 'response_mode': 'display_shared'}),
+    ]:
+        response = training_client.post('/api/training/diagnosis', json={**base, **extra})
+        assert response.status_code == 200, response.text
+        assert 'x-data-refreshing' not in response.headers
+        assert response.content == _diagnosis_response_bytes(
+            training_services, scope=base['scope'], exam_scope=base['exam_scope'],
+            **options)
+
+
+def test_training_grouped_diagnosis_display_refresh(training_client, training_services, monkeypatch):
+    """分组诊断也走上次结果 + 后台重算路径。"""
+    import time
+    from datetime import UTC, datetime
+
+    from backend.api.routers import training as router
+    from backend.api.schemas.training import TrainingDiagnosisRequest
+    from integration import display_refresh
+
+    module = SimpleNamespace(
+        db_path=training_services.question_bank_db_path,
+        current_knowledge=SimpleNamespace(release_id='TEST-release'),
+        clock=lambda: datetime(2026, 10, 3, tzinfo=UTC),
+        chapter_groups=lambda **kwargs: {
+            'groups': [], 'selection': None, 'unassigned': [],
+            'warnings': ['TEST-grouped-refresh'],
+        })
+    training_client.app.dependency_overrides[router._grouping_module] = lambda: module
+    try:
+        body = {
+            'scope': {'mode': 'student', 'student_ids': ['12']},
+            'exam_scope': {'mode': 'current', 'session_ids': [14]},
+            'grouping': {
+                'scope_keys': ['kp_test_scope'],
+                'curriculum_volume_id': 'bnu24-math-g8-upper',
+                'question_count': 10, 'difficulty_max': 8,
+                'exclude_current_exam_originals': True,
+            },
+        }
+        first = training_client.post('/api/training/diagnosis', json=body)
+        assert first.status_code == 200, first.text
+        assert 'x-data-refreshing' not in first.headers
+        request = TrainingDiagnosisRequest.model_validate(body)
+        expected = router._grouped_diagnosis_response_bytes(
+            training_services, module,
+            scope=request.scope.model_dump(exclude_none=True),
+            exam_scope=request.exam_scope.model_dump(exclude_none=True),
+            grouping=request.grouping)
+        assert first.content == expected
+
+        calls: list[int] = []
+        original = router._compute_grouped_diagnosis_bytes
+
+        def slow(paths, grouping_module, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                time.sleep(1.6)
+            return original(paths, grouping_module, **kwargs)
+
+        monkeypatch.setattr(router, '_compute_grouped_diagnosis_bytes', slow)
+        stale = training_client.post('/api/training/diagnosis', json=body)
+        assert stale.status_code == 200
+        assert stale.headers['x-data-refreshing'] == '1'
+        assert stale.content == first.content
+        assert display_refresh.wait_idle(10)
+        fresh = training_client.post('/api/training/diagnosis', json=body)
+        assert fresh.status_code == 200
+        assert 'x-data-refreshing' not in fresh.headers
+        assert fresh.content == first.content
+    finally:
+        training_client.app.dependency_overrides.pop(router._grouping_module, None)
+
+
+def test_training_overview_display_refresh(training_client, training_services, monkeypatch):
+    """学情总览：字节一致 + 旧结果刷新标记。"""
+    import time
+
+    from backend.api.routers import training as router
+    from backend.api.schemas.training import TrainingOverviewRequest
+    from backend.api.schemas.training import TrainingOverviewResponse
+    from integration import display_refresh
+    from integration.mastery_overview import overview_payload
+
+    body = {
+        'scope': {'mode': 'all', 'use_historical_fallback': True},
+        'exam_scope': {
+            'mode': 'semester',
+            'curriculum_volume_id': 'bnu24-math-g8-upper',
+            'session_ids': [14],
+        },
+    }
+    first = training_client.post('/api/training/overview', json=body)
+    assert first.status_code == 200, first.text
+    assert 'x-data-refreshing' not in first.headers
+    expected_model = TrainingOverviewResponse.model_validate(overview_payload(
+        training_services,
+        scope={'mode': 'all', 'use_historical_fallback': True},
+        exam_scope={'mode': 'semester', 'curriculum_volume_id': 'bnu24-math-g8-upper',
+                    'session_ids': [14]},
+        volume_id='bnu24-math-g8-upper'))
+    assert first.content == json.dumps(
+        expected_model.model_dump(mode='json', by_alias=True),
+        ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode('utf-8')
+
+    calls: list[int] = []
+    original = router._compute_overview_bytes
+
+    def slow(paths, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            time.sleep(1.6)
+        return original(paths, **kwargs)
+
+    monkeypatch.setattr(router, '_compute_overview_bytes', slow)
+    stale = training_client.post('/api/training/overview', json=body)
+    assert stale.status_code == 200
+    assert stale.headers['x-data-refreshing'] == '1'
+    assert stale.content == first.content
+    assert display_refresh.wait_idle(10)
+    fresh = training_client.post('/api/training/overview', json=body)
+    assert 'x-data-refreshing' not in fresh.headers
+    assert fresh.content == first.content
+
+
+def test_training_diagnosis_refresh_errors(training_client, training_services, monkeypatch):
+    """后台失败不丢旧结果；同步失败保持 422 语义。"""
+    import time
+
+    from backend.api.routers import training as router
+    from backend.api.schemas.training import TrainingDiagnosisRequest
+    from integration import display_refresh
+
+    body = {
+        'scope': {'mode': 'student', 'student_ids': ['12']},
+        'exam_scope': {'mode': 'current', 'session_ids': [14]},
+    }
+    first = training_client.post('/api/training/diagnosis', json=body)
+    assert first.status_code == 200, first.text
+
+    def failing(*_args, **_kwargs):
+        time.sleep(1.6)
+        raise ValueError('TEST-refresh-failed')
+
+    monkeypatch.setattr(router, '_compute_diagnosis_bytes', failing)
+    stale = training_client.post('/api/training/diagnosis', json=body)
+    assert stale.status_code == 200
+    assert stale.headers['x-data-refreshing'] == '1'
+    assert stale.content == first.content
+    assert display_refresh.wait_idle(10)
+    request = TrainingDiagnosisRequest.model_validate(body)
+    assert _last_display_saved(training_services, 'training-diagnosis', {
+        'scope': request.scope.model_dump(exclude_none=True),
+        'exam_scope': request.exam_scope.model_dump(exclude_none=True),
+        'include_student_detail': True,
+        'response_mode': 'full',
+    }) == first.content
+
+    monkeypatch.setattr(router, '_compute_diagnosis_bytes',
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                            ValueError('TEST-broken')))
+    broken = training_client.post('/api/training/diagnosis', json={
+        'scope': {'mode': 'student', 'student_ids': ['15']},
+        'exam_scope': {'mode': 'current', 'session_ids': [14]},
+    })
+    assert broken.status_code == 422
+    assert broken.json()['error']['code'] == 'training_scope_invalid'
+
+
+def test_prewarm_waits_for_display_refresh_busy(training_services, monkeypatch):
+    """展示重算占用读路径时，预热批次同样让位。"""
+    import threading
+    import time
+
+    from integration import display_refresh
+    from integration.training_prewarm import (
+        TrainingPrewarmWorker, clear_recent_requests,
+    )
+
+    clear_recent_requests()
+    service = training_services
+    paths = SimpleNamespace(db_path=service.grading_db_path,
+                            qb_db_path=service.question_bank_db_path,
+                            data_root=service.data_root)
+    jobs = SimpleNamespace(list=lambda **kwargs: ([], 0), is_shutdown=False)
+    ran = []
+    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=30)
+    monkeypatch.setattr(worker, '_refresh_plan', lambda: [lambda: ran.append(True)])
+    gate = threading.Event()
+
+    def slow_compute():
+        gate.wait(5)
+        return b'{}'
+
+    try:
+        thread = threading.Thread(target=lambda: worker.tick(), daemon=True)
+        refresh_thread = threading.Thread(
+            target=lambda: display_refresh.serve_with_refresh(
+                data_root=service.data_root, endpoint='TEST-refresh',
+                request_key={'a': 1}, compute=slow_compute),
+            daemon=True)
+        refresh_thread.start()
+        while not display_refresh.busy():
+            time.sleep(0.01)
+        thread.start()
+        thread.join(timeout=3)
+        assert thread.is_alive() and ran == []
+        gate.set()
+        refresh_thread.join(timeout=10)
+        worker._stop.set()
+        thread.join(timeout=5)
+        assert ran == [] and worker.batches[-1][0] == 0
+    finally:
+        gate.set()
+        worker._stop.set()
+
+
+def test_prewarm_startup_waits_for_first_foreground_or_grace(training_services, monkeypatch):
+    """首次前台请求结束并静默后启动；无前台请求时到宽限时启动。"""
+    import threading
+    import time
+
+    from integration.training_prewarm import (
+        TrainingPrewarmWorker, foreground_request,
+    )
+
+    service = training_services
+    paths = SimpleNamespace(db_path=service.grading_db_path,
+                            qb_db_path=service.question_bank_db_path,
+                            data_root=service.data_root)
+    jobs = SimpleNamespace(list=lambda **kwargs: ([], 0), is_shutdown=False)
+
+    # 前台计数是进程级状态，同进程其他用例可能已留下痕迹。
+    import integration.training_prewarm as prewarm_module
+    monkeypatch.setattr(prewarm_module, '_FOREGROUND_ACTIVE', 0)
+    monkeypatch.setattr(prewarm_module, '_FOREGROUND_LAST_FINISH', 0.0)
+
+    # 无前台请求：宽限到期即开始（测试用极短宽限）。
+    quick = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0,
+                                  startup_max_seconds=0.05)
+    started = time.monotonic()
+    assert quick._wait_startup()
+    assert 0.03 <= time.monotonic() - started < 5
+
+    # 前台请求结束后满足静默窗口即开始，不等满宽限。
+    quiet = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0,
+                                  startup_max_seconds=60)
+    with foreground_request():
+        pass
+    started = time.monotonic()
+    assert quiet._wait_startup()
+    assert time.monotonic() - started < 5
+
+    # 前台请求仍在进行时不提前启动，结束后才放行。
+    slow = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0.3,
+                                 startup_max_seconds=60)
+    with foreground_request():
+        started = time.monotonic()
+        holder = []
+
+        def held():
+            holder.append(slow._wait_startup())
+
+        thread = threading.Thread(target=held, daemon=True)
+        thread.start()
+        thread.join(timeout=1)
+        assert thread.is_alive() and holder == []
+    thread.join(timeout=10)
+    assert holder == [True]
+    assert time.monotonic() - started >= 0.3

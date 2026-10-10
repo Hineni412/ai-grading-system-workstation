@@ -210,6 +210,11 @@ onBeforeUnmount(() => {
         action-label="重新加载"
         @action="store.load(curriculum.selectedVolumeId, true)"
       />
+      <FeedbackBanner
+        v-if="store.refreshing || store.refreshMessage"
+        tone="info"
+        :title="store.refreshMessage || '数据有更新，正在重新计算。当前显示上次结果，算完自动刷新。'"
+      />
       <div class="mastery-map-toolbar">
         <div class="app-segmented" role="group" aria-label="题型清单排列">
           <button type="button" :aria-pressed="arrangement === 'weak'" :class="{ 'is-active': arrangement === 'weak' }" @click="router.replace({ query: { ...queryFor(), view: 'weak' } })">薄弱优先</button>

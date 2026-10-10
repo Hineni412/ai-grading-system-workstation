@@ -189,6 +189,30 @@ def _main_candidate_path(connection: sqlite3.Connection) -> Path:
         ) from exc
 
 
+def service_source_paths(service: DiagnosisProfileService) -> _ReadPaths:
+    """Real database source paths for a standalone background compute.
+
+    A request-bound service is bound to captured snapshot copies whose temp
+    files die with the request; its ``cache_identity`` records the resolved
+    source paths the compute must reopen. Services built directly from paths
+    carry no identity, so their own paths are already the sources.
+    """
+
+    identity = service.cache_identity or ()
+    if len(identity) == 6:
+        db_path, qb_db_path = Path(identity[0]), Path(identity[3])
+    else:
+        db_path = Path(service.grading_db_path)
+        qb_db_path = Path(service.question_bank_db_path)
+
+    @dataclass(frozen=True, slots=True)
+    class _SourcePaths:
+        db_path: Path
+        qb_db_path: Path
+
+    return _SourcePaths(db_path=db_path, qb_db_path=qb_db_path)
+
+
 def _database_generation(path: Path) -> tuple[str, ...]:
     """Identity token for cache keys: resolved path, file identity, and the
     commit generation (``PRAGMA data_version`` monitor). Real commits bump
@@ -211,4 +235,5 @@ __all__ = [
     "RequestReadContext",
     "RequestReadContextCleanupError",
     "request_read_context",
+    "service_source_paths",
 ]

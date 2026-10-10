@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from integration.data_generation import commit_generation
+from integration.display_refresh import busy as display_refresh_busy
 
 _LOG = logging.getLogger(__name__)
 
@@ -220,11 +221,13 @@ class TrainingPrewarmWorker:
         *,
         poll_seconds: float = _POLL_SECONDS,
         foreground_quiet_seconds: float = _FOREGROUND_QUIET_SECONDS,
+        startup_max_seconds: float = 20.0,
     ) -> None:
         self._paths = paths
         self._job_manager = job_manager
         self._poll_seconds = poll_seconds
         self._foreground_quiet_seconds = foreground_quiet_seconds
+        self._startup_max_seconds = startup_max_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._seen_generations: tuple[int, int] | None = None
@@ -251,7 +254,7 @@ class TrainingPrewarmWorker:
             self._thread.join(timeout=10)
 
     def _run(self) -> None:
-        if self._stop.wait(2.0):
+        if not self._wait_startup():
             return
         while not self._stop.is_set():
             try:
@@ -334,9 +337,35 @@ class TrainingPrewarmWorker:
         except Exception:
             return True
 
+    def _wait_startup(self) -> bool:
+        """Delay the first pass until a foreground visit settles, or 20 s.
+
+        Starting after the first foreground request has finished and the
+        quiet window has elapsed lets the first page the teacher opens take
+        priority while still covering an idle cold start.
+        """
+
+        deadline = time.monotonic() + self._startup_max_seconds
+        while not self._stop.is_set():
+            with _FOREGROUND_LOCK:
+                foreground_active = _FOREGROUND_ACTIVE > 0
+                foreground_seen = _FOREGROUND_LAST_FINISH > 0.0
+                quiet_for = time.monotonic() - _FOREGROUND_LAST_FINISH
+            if (foreground_seen and not foreground_active
+                    and quiet_for >= self._foreground_quiet_seconds):
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            if self._stop.wait(min(0.2, remaining)):
+                return False
+        return False
+
     def _wait_for_idle(self) -> bool:
         """Wait while a foreground read is active or just finished.
 
+        A queued or running display-refresh compute competes with a prewarm
+        batch for the same read path, so it counts as foreground work.
         Returns False only when the worker is stopping, so the caller treats
         it as an interruption. Waiting itself does not interrupt the batch.
         """
@@ -345,7 +374,8 @@ class TrainingPrewarmWorker:
             with _FOREGROUND_LOCK:
                 busy = _FOREGROUND_ACTIVE > 0
                 quiet_for = time.monotonic() - _FOREGROUND_LAST_FINISH
-            if not busy and quiet_for >= self._foreground_quiet_seconds:
+            if (not busy and not display_refresh_busy()
+                    and quiet_for >= self._foreground_quiet_seconds):
                 return True
             if self._stop.wait(0.2):
                 return False

@@ -8,6 +8,7 @@ import {
   type TrainingExamScopeRequest,
   type TrainingStudentScopeRequest,
 } from '../api/training'
+import { requestWithRefresh } from '../api/display-refresh'
 
 export type TrainingRequestState =
   | 'idle'
@@ -43,6 +44,7 @@ export interface TrainingWorkflowApi {
   diagnoseDisplay(
     body: TrainingDiagnosisRequest,
     signal?: AbortSignal,
+    onRefreshing?: (refreshing: boolean) => void,
   ): Promise<TrainingReadDiagnosis>
 }
 
@@ -76,6 +78,9 @@ export const useTrainingStore = defineStore('training', () => {
   const diagnosis = shallowRef<TrainingReadDiagnosis | null>(null)
   const analysisState = ref<TrainingRequestState>('idle')
   const errorMessage = ref('')
+  // 服务端后台重算期间先展示上次结果；60 次轮询后提示稍后再看。
+  const refreshing = ref(false)
+  const refreshMessage = ref('')
 
   let generation = 0
   let diagnosisController: AbortController | null = null
@@ -179,6 +184,8 @@ export const useTrainingStore = defineStore('training', () => {
     diagnosisScopeKey.value = ''
     analysisState.value = 'idle'
     errorMessage.value = ''
+    refreshing.value = false
+    refreshMessage.value = ''
   }
 
   function setStudentScope(next: TrainingStudentScopeUpdate): void {
@@ -227,19 +234,35 @@ export const useTrainingStore = defineStore('training', () => {
     diagnosisScopeKey.value = ''
     analysisState.value = 'loading'
     errorMessage.value = ''
+    refreshing.value = false
+    refreshMessage.value = ''
+    const obsolete = () =>
+      controller.signal.aborted
+      || requestGeneration !== generation
+      || requestScopeKey !== scopeKey()
     try {
-      const next = await api.diagnoseDisplay(body, controller.signal)
-      if (
-        controller.signal.aborted
-        || requestGeneration !== generation
-        || requestScopeKey !== scopeKey()
-      ) return null
-      // Install the complete preview before publishing the diagnosis: the
-      // chapter component mounts in that update and would otherwise fetch
-      // the same evidence a second time. Adoption still re-reads the source.
-      if (initialGroupBody && next.grouping) {
-        rememberGroupDiagnosis(JSON.stringify({ ...initialGroupBody, response_mode: 'display' }), next, next)
-      }
+      const next = await requestWithRefresh(
+        onRefreshing => api.diagnoseDisplay(body, controller.signal, onRefreshing),
+        {
+          apply: value => {
+            // 服务端回的上次结果仍属于当前范围，按就绪处理以展示与出卷依据。
+            diagnosis.value = value
+            diagnosisScopeKey.value = requestScopeKey
+            analysisState.value = value.students.some(
+              (student) => student.weak_points.length > 0,
+            ) ? 'ready' : 'empty'
+            if (initialGroupBody && value.grouping) {
+              rememberGroupDiagnosis(JSON.stringify({ ...initialGroupBody, response_mode: 'display' }), value, value)
+            }
+          },
+          report: (value, exhausted) => {
+            refreshing.value = value
+            refreshMessage.value = exhausted ? '仍在后台计算，可稍后刷新页面' : ''
+          },
+          aborted: obsolete,
+        },
+      )
+      if (obsolete()) return null
       diagnosis.value = next
       diagnosisScopeKey.value = requestScopeKey
       analysisState.value = next.students.some(
@@ -256,7 +279,10 @@ export const useTrainingStore = defineStore('training', () => {
       errorMessage.value = '薄弱点诊断暂时无法完成，请保留当前范围后重试。'
       throw error
     } finally {
-      if (diagnosisController === controller) diagnosisController = null
+      if (diagnosisController === controller) {
+        diagnosisController = null
+        refreshing.value = false
+      }
     }
   }
 
@@ -284,6 +310,8 @@ export const useTrainingStore = defineStore('training', () => {
     diagnosis,
     analysisState,
     errorMessage,
+    refreshing,
+    refreshMessage,
     hasCurrentDiagnosis,
     cachedGroupDiagnosis,
     groupDiagnosisBasis,

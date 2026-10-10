@@ -2,12 +2,15 @@ import { defineStore } from 'pinia'
 import { ref, shallowRef } from 'vue'
 import { fetchStudents, type StudentSummary } from '../api/students'
 import { trainingApi, type TrainingOverview } from '../api/training'
+import { requestWithRefresh } from '../api/display-refresh'
 import { loadEvidenceScope, saveEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
 
 export const useMasteryOverviewStore = defineStore('mastery-overview', () => {
   const overview = shallowRef<TrainingOverview | null>(null)
   const loadState = ref<'idle' | 'loading' | 'ready' | 'error' | 'stale-error'>('idle')
   const errorMessage = ref('')
+  const refreshing = ref(false)
+  const refreshMessage = ref('')
   const scopeSelection = ref('all')
   const students = shallowRef<StudentSummary[]>([])
   const studentsError = ref(false)
@@ -20,6 +23,7 @@ export const useMasteryOverviewStore = defineStore('mastery-overview', () => {
   async function load(volumeId: string | null, force = false, persistScope = true): Promise<void> {
     if (!volumeId) {
       controller?.abort(); overview.value = null; loadState.value = 'idle'; resultKey = ''; requestKey = ''
+      refreshing.value = false; refreshMessage.value = ''
       return
     }
     const key = JSON.stringify([volumeId, scopeSelection.value])
@@ -36,18 +40,34 @@ export const useMasteryOverviewStore = defineStore('mastery-overview', () => {
     if (resultKey !== key) overview.value = null
     loadState.value = 'loading'
     errorMessage.value = ''
+    refreshing.value = false
+    refreshMessage.value = ''
     request = (async () => {
       try {
-        const result = await trainingApi.overview({ scope: { student_ids: [], ...query.scope },
-          exam_scope: { session_ids: [], ...query.exam_scope } }, current.signal)
+        await requestWithRefresh(
+          onRefreshing => trainingApi.overview(
+            { scope: { student_ids: [], ...query.scope },
+              exam_scope: { session_ids: [], ...query.exam_scope } },
+            current.signal, onRefreshing),
+          {
+            apply: value => { overview.value = value; resultKey = key; loadState.value = 'ready' },
+            report: (value, exhausted) => {
+              refreshing.value = value
+              refreshMessage.value = exhausted ? '仍在后台计算，可稍后刷新页面' : ''
+            },
+            aborted: () => current.signal.aborted,
+          })
         if (current.signal.aborted) return
-        overview.value = result; resultKey = key; loadState.value = 'ready'
+        loadState.value = 'ready'
       } catch {
         if (current.signal.aborted) return
         loadState.value = overview.value ? 'stale-error' : 'error'
         errorMessage.value = '学情总览暂时无法读取，请稍后重试。'
       } finally {
-        if (controller === current) { controller = null; request = null; requestKey = '' }
+        if (controller === current) {
+          controller = null; request = null; requestKey = ''
+          refreshing.value = false
+        }
       }
     })()
     return request
@@ -80,6 +100,6 @@ export const useMasteryOverviewStore = defineStore('mastery-overview', () => {
     scopeSelection.value = selection
     void load(volumeId)
   }
-  return { overview, loadState, errorMessage, scopeSelection, students, studentsError,
+  return { overview, loadState, errorMessage, refreshing, refreshMessage, scopeSelection, students, studentsError,
     load, loadStudents, peek, activate, selectScope }
 })

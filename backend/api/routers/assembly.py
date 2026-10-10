@@ -4,12 +4,13 @@ import pickle
 import re
 import sqlite3
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from fastapi.responses import FileResponse
 
 from backend.api.app import ApiError, ErrorResponse
+from backend.api.read_connections import RequestReadContextCleanupError
 from backend.api.dependencies import (
     get_assembly_workspace_service,
     get_job_manager,
@@ -38,8 +39,9 @@ from backend.api.schemas.training import RecommendationRulesRequest
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from integration.data_generation import commit_generation
 from integration.diagnosis_profile_service import DiagnosisProfileService
+from integration.display_refresh import json_bytes, serve_with_refresh
 from integration.result_cache import ResultCache
-from integration.training_prewarm import record_request, record_target
+from integration.training_prewarm import _background_replay, record_request, record_target
 from question_bank.recommendation.personalized import _candidate_training_keys
 from question_bank.recommendation.personalized import PersonalizedRecommendationModule, PersonalizedRecommendationError
 from question_bank.services.assembly_assistant import shortlist_candidates
@@ -122,6 +124,122 @@ def _cached_exam_questions(
     )
 
 
+def _display_root(service) -> Path:
+    data_root = getattr(service, "data_root", None)
+    if data_root is not None:
+        return Path(data_root)
+    return Path(service.question_bank_db_path).parent.parent
+
+
+def _display_response(content: bytes, refreshing: bool) -> Response:
+    headers = {"X-Data-Refreshing": "1"} if refreshing else None
+    return Response(content=content, media_type="application/json", headers=headers)
+
+
+def _record_assistant_request(body: AssemblyAssistantRequest) -> None:
+    # Mirror the normalization in compute_assistant_candidates so the recorded
+    # recent-request entry is identical whether or not the compute ran inline.
+    difficulty_min = float(body.difficulty_min)
+    difficulty_max = float(body.difficulty_max)
+    recent_activity_count = int(body.recent_activity_count)
+    if difficulty_min > difficulty_max:
+        raise ValueError("Difficulty range is reversed")
+    target_keys = (
+        [str(key) for key in body.target_keys]
+        if body.target_keys is not None else None
+    )
+    class_ids = sorted({str(item) for item in (body.class_ids or [body.class_id])})
+    session_ids = sorted({int(item) for item in (body.session_ids or [])})
+    scope = {"mode": "class", "class_ids": class_ids,
+             "use_historical_fallback": False}
+    exam_scope = {"mode": "manual" if session_ids else "semester", "session_ids": session_ids,
+                  "curriculum_volume_id": body.curriculum_volume_id}
+    record_request(
+        "assistant",
+        scope=scope,
+        exam_scope=exam_scope,
+        params={
+            "class_id": body.class_id,
+            "class_ids": class_ids,
+            "session_ids": session_ids,
+            "curriculum_volume_id": body.curriculum_volume_id,
+            "chapter_id": body.chapter_id,
+            "teaching_progress_chapter_id": body.teaching_progress_chapter_id,
+            "question_type": body.question_type,
+            "difficulty_min": difficulty_min,
+            "difficulty_max": difficulty_max,
+            "exclude_exam_originals": body.exclude_exam_originals,
+            "exclude_recent": body.exclude_recent,
+            "recent_activity_count": recent_activity_count, "purpose": body.purpose,
+        },
+    )
+    record_target(
+        "assistant",
+        scope=scope,
+        exam_scope=exam_scope,
+        target_keys=target_keys,
+    )
+
+
+def _compute_exam_questions_bytes(
+    service: DiagnosisProfileService,
+    *,
+    class_ids: list[str],
+    volume_id: str,
+) -> bytes:
+    from backend.api.read_connections import (
+        request_read_context,
+        service_source_paths,
+    )
+
+    with _background_replay(), request_read_context(service_source_paths(service)) as ctx:
+        standalone = ctx.diagnosis_service
+        standalone.persist_snapshots = True
+        result = _cached_exam_questions(
+            standalone, class_ids=class_ids, volume_id=volume_id)
+    return json_bytes(result)
+
+
+def _compute_candidates_bytes(
+    service: DiagnosisProfileService,
+    data_root: Path,
+    body: AssemblyAssistantRequest,
+) -> bytes:
+    from backend.api.read_connections import (
+        request_read_context,
+        service_source_paths,
+    )
+
+    paths = service_source_paths(service)
+    with _background_replay(), request_read_context(paths) as ctx:
+        standalone = ctx.diagnosis_service
+        standalone.persist_snapshots = True
+        result = compute_assistant_candidates(
+            diagnosis_service=standalone,
+            read_service=QuestionBankReadService(
+                paths.qb_db_path, data_root=data_root),
+            recommendations=PersonalizedRecommendationModule(
+                db_path=paths.qb_db_path, data_root=data_root,
+                semester_mastery=standalone.semester_mastery),
+            workspace=AssemblyWorkspaceService(data_root),
+            class_id=body.class_id,
+            class_ids=body.class_ids,
+            session_ids=body.session_ids,
+            curriculum_volume_id=body.curriculum_volume_id,
+            chapter_id=body.chapter_id,
+            teaching_progress_chapter_id=body.teaching_progress_chapter_id,
+            target_keys=body.target_keys,
+            question_type=body.question_type,
+            difficulty_min=body.difficulty_min,
+            difficulty_max=body.difficulty_max,
+            exclude_exam_originals=body.exclude_exam_originals,
+            exclude_recent=body.exclude_recent,
+            recent_activity_count=body.recent_activity_count, purpose=body.purpose,
+            record=False,
+        )
+    return json_bytes(AssemblyAssistantResponse.model_validate(result))
+
+
 @router.post("/assistant/candidates", response_model=AssemblyAssistantResponse)
 def get_assistant_candidates(
     body: AssemblyAssistantRequest,
@@ -129,7 +247,25 @@ def get_assistant_candidates(
     read_service: QuestionBankReadService = Depends(get_question_bank_read_service),
     recommendations: PersonalizedRecommendationModule = Depends(get_personalized_recommendation_module),
     workspace: AssemblyWorkspaceService = Depends(get_assembly_workspace_service),
-) -> AssemblyAssistantResponse:
+) -> AssemblyAssistantResponse | Response:
+    if isinstance(diagnosis_service, DiagnosisProfileService):
+        try:
+            _record_assistant_request(body)
+            content, refreshing = serve_with_refresh(
+                data_root=_display_root(diagnosis_service),
+                endpoint="question-assembly-candidates",
+                request_key=body.model_dump(),
+                compute=lambda: _compute_candidates_bytes(
+                    diagnosis_service,
+                    _display_root(diagnosis_service),
+                    body,
+                ),
+            )
+        except ValueError as exc:
+            raise ApiError(422, "assembly_assistant_scope_invalid", "Class evidence or candidate filters changed") from exc
+        except (OSError, sqlite3.Error, QuestionBankSnapshotError, RequestReadContextCleanupError) as exc:
+            raise ApiError(503, "assembly_assistant_unavailable", "Class evidence or question bank is temporarily unavailable") from exc
+        return _display_response(content, refreshing)
     try:
         result = compute_assistant_candidates(
             diagnosis_service=diagnosis_service,
@@ -306,7 +442,24 @@ def compute_assistant_candidates(
 def get_assistant_exam_questions(
     body: AssemblyExamQuestionsRequest,
     service: DiagnosisProfileService = Depends(get_request_diagnosis_profile_service),
-) -> dict:
+) -> Any:
+    if isinstance(service, DiagnosisProfileService):
+        try:
+            content, refreshing = serve_with_refresh(
+                data_root=_display_root(service),
+                endpoint="question-assembly-exam-questions",
+                request_key=body.model_dump(),
+                compute=lambda: _compute_exam_questions_bytes(
+                    service,
+                    class_ids=body.class_ids,
+                    volume_id=body.curriculum_volume_id,
+                ),
+            )
+        except ValueError as exc:
+            raise ApiError(422, "assembly_assistant_scope_invalid", "请确认班级与教学学期") from exc
+        except (OSError, sqlite3.Error, QuestionBankSnapshotError, RequestReadContextCleanupError) as exc:
+            raise ApiError(503, "assembly_assistant_unavailable", "考试依据暂时无法读取") from exc
+        return _display_response(content, refreshing)
     try:
         return _cached_exam_questions(service, class_ids=body.class_ids, volume_id=body.curriculum_volume_id)
     except ValueError as exc:

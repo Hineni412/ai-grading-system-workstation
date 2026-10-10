@@ -1045,3 +1045,139 @@ def test_class_weaknesses_in_knowledge_fallback_keep_point_targets():
     assert target["evidence_student_count"] == 1
     assert target["exam_score_rate"] == .2
     assert all(row["target_kind"] == "knowledge" and not row["knowledge_key"].startswith("sk_") for row in rows)
+
+
+@pytest.fixture
+def real_display_client(tmp_path):
+    """Real DiagnosisProfileService so the display-refresh path runs."""
+    from backend.repositories.db_manager import DBManager
+    from integration.diagnosis_profile_service import DiagnosisProfileService
+
+    db_dir = tmp_path / 'databases'
+    db_dir.mkdir()
+    grading_db = db_dir / 'grading.db'
+    bank_db = db_dir / 'bank.db'
+    DBManager(grading_db).initialize()
+    initialize_database(bank_db)
+    _install_release_with_skills(bank_db, revision=4, skill_parents=SKILL_PARENTS)
+    service = DiagnosisProfileService(grading_db, bank_db)
+    app = create_app()
+    app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: service
+    module = PersonalizedRecommendationModule(
+        db_path=bank_db, data_root=tmp_path,
+        semester_mastery=service.semester_mastery)
+    app.dependency_overrides[get_personalized_recommendation_module] = lambda: module
+    client = TestClient(app)
+    try:
+        yield client, service
+    finally:
+        client.close()
+
+
+def test_assembly_display_refresh_routes_return_identical_bytes(real_display_client):
+    """新展示路径与旧路由输出逐字节一致。"""
+    import json
+    from fastapi.encoders import jsonable_encoder
+
+    from backend.api.routers.assembly import (
+        _cached_exam_questions, compute_assistant_candidates)
+    from backend.api.schemas.assembly import AssemblyAssistantResponse
+    from question_bank.recommendation.personalized import (
+        PersonalizedRecommendationModule)
+
+    client, service = real_display_client
+    data_root = service.data_root
+    body = {'class_ids': ['一班'], 'curriculum_volume_id': VOLUME['id'],
+            'chapter_id': CHAPTER['id']}
+    result = compute_assistant_candidates(
+        diagnosis_service=service,
+        read_service=QuestionBankReadService(
+            service.question_bank_db_path, data_root=data_root),
+        recommendations=PersonalizedRecommendationModule(
+            db_path=service.question_bank_db_path, data_root=data_root,
+            semester_mastery=service.semester_mastery),
+        workspace=AssemblyWorkspaceService(data_root),
+        class_id='', class_ids=['一班'], session_ids=[],
+        curriculum_volume_id=VOLUME['id'], chapter_id=CHAPTER['id'],
+        teaching_progress_chapter_id='', target_keys=None, question_type='',
+        difficulty_min=1.0, difficulty_max=8.0, exclude_exam_originals=True,
+        exclude_recent=True, recent_activity_count=3, purpose='training',
+        record=False)
+    response = client.post('/api/question-assembly/assistant/candidates', json=body)
+    assert response.status_code == 200, response.text
+    assert 'x-data-refreshing' not in response.headers
+    assert response.content == json.dumps(
+        AssemblyAssistantResponse.model_validate(result).model_dump(
+            mode='json', by_alias=True),
+        ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode('utf-8')
+
+    exams = _cached_exam_questions(
+        service, class_ids=['一班'], volume_id=VOLUME['id'])
+    exam_response = client.post(
+        '/api/question-assembly/assistant/exam-questions',
+        json={'class_ids': ['一班'], 'curriculum_volume_id': VOLUME['id']})
+    assert exam_response.status_code == 200, exam_response.text
+    assert 'x-data-refreshing' not in exam_response.headers
+    assert exam_response.content == json.dumps(
+        jsonable_encoder(exams), ensure_ascii=False, allow_nan=False,
+        separators=(',', ':')).encode('utf-8')
+
+
+def test_assembly_exam_questions_serves_last_result_while_refreshing(
+        real_display_client, monkeypatch):
+    """慢重算时回上次结果并标记，完成后回实时结果；后台失败保留旧结果。"""
+    import time
+
+    from backend.api.routers import assembly as router
+    from integration import display_refresh
+
+    client, service = real_display_client
+    body = {'class_ids': ['一班'], 'curriculum_volume_id': VOLUME['id']}
+    first = client.post('/api/question-assembly/assistant/exam-questions', json=body)
+    assert first.status_code == 200 and 'x-data-refreshing' not in first.headers
+
+    calls: list[int] = []
+    original = router._compute_exam_questions_bytes
+
+    def slow(svc, *, class_ids, volume_id):
+        calls.append(1)
+        if len(calls) == 1:
+            time.sleep(1.6)
+        return original(svc, class_ids=class_ids, volume_id=volume_id)
+
+    monkeypatch.setattr(router, '_compute_exam_questions_bytes', slow)
+    stale = client.post('/api/question-assembly/assistant/exam-questions', json=body)
+    assert stale.status_code == 200
+    assert stale.headers['x-data-refreshing'] == '1'
+    assert stale.content == first.content
+    assert display_refresh.wait_idle(10)
+
+    def failing(*_args, **_kwargs):
+        time.sleep(1.6)
+        raise ValueError('TEST-refresh-failed')
+
+    monkeypatch.setattr(router, '_compute_exam_questions_bytes', failing)
+    stale_again = client.post('/api/question-assembly/assistant/exam-questions', json=body)
+    assert stale_again.status_code == 200
+    assert stale_again.headers['x-data-refreshing'] == '1'
+    assert stale_again.content == first.content
+    assert display_refresh.wait_idle(10)
+
+    monkeypatch.setattr(router, '_compute_exam_questions_bytes', original)
+    fresh = client.post('/api/question-assembly/assistant/exam-questions', json=body)
+    assert fresh.status_code == 200
+    assert 'x-data-refreshing' not in fresh.headers
+    assert fresh.content == first.content
+
+
+def test_assembly_candidates_sync_error_unchanged(real_display_client, monkeypatch):
+    """无可用上次结果时，同步错误保持旧错误响应。"""
+    from backend.api.routers import assembly as router
+
+    client, service = real_display_client
+    monkeypatch.setattr(
+        router, '_compute_candidates_bytes',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError('TEST-broken')))
+    response = client.post('/api/question-assembly/assistant/candidates', json=request())
+    assert response.status_code == 422
+    assert response.json()['error']['code'] == 'assembly_assistant_scope_invalid'

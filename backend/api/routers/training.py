@@ -6,6 +6,7 @@ import gzip
 import pickle
 import sqlite3
 import zlib
+from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import datetime, UTC
 from pathlib import Path
@@ -18,6 +19,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, TypeAdapter
 
 from backend.api.app import ApiError, ErrorResponse
+from backend.api.read_connections import RequestReadContextCleanupError
 from backend.api.dependencies import (
     get_diagnosis_profile_service,
     get_assembly_workspace_service,
@@ -91,9 +93,11 @@ from backend.training_assessment import (
 )
 from integration.data_generation import commit_generation
 from integration.diagnosis_profile_service import DiagnosisProfileService
+from integration.display_refresh import json_bytes, serve_with_refresh
 from integration.mastery_overview import build_mastery_overview, overview_payload
 from integration.result_cache import ResultCache
-from integration.training_prewarm import record_request
+from integration.training_prewarm import _background_replay, record_request
+from question_bank.services.question_read_service import QuestionBankSnapshotError
 from question_bank.personalized_papers import (
     CreatePaperCommand,
     FreezePaperCommand,
@@ -393,6 +397,96 @@ def _grouped_diagnosis_response_bytes(service, module, *, scope, exam_scope, gro
         response_mode=response_mode)
 
 
+def _service_paths(service: DiagnosisProfileService):
+    from backend.api.read_connections import service_source_paths
+
+    return service_source_paths(service)
+
+
+def _display_root(service: DiagnosisProfileService) -> Path:
+    data_root = getattr(service, "data_root", None)
+    if data_root is not None:
+        return Path(data_root)
+    return Path(service.question_bank_db_path).parent.parent
+
+
+def _display_response(content: bytes, refreshing: bool) -> Response:
+    headers = {"X-Data-Refreshing": "1"} if refreshing else None
+    return Response(content=content, media_type="application/json", headers=headers)
+
+
+def _compute_diagnosis_bytes(
+    paths,
+    *,
+    scope: Mapping[str, Any],
+    exam_scope: Mapping[str, Any],
+    include_student_detail: bool,
+    response_mode: str,
+) -> bytes:
+    from backend.api.read_connections import request_read_context
+
+    with _background_replay(), request_read_context(paths) as ctx:
+        service = ctx.diagnosis_service
+        service.persist_snapshots = True
+        return _diagnosis_response_bytes(
+            service, scope=scope, exam_scope=exam_scope,
+            include_student_detail=include_student_detail, response_mode=response_mode)
+
+
+def _compute_grouped_diagnosis_bytes(
+    paths,
+    grouping_module,
+    *,
+    scope: Mapping[str, Any],
+    exam_scope: Mapping[str, Any],
+    grouping,
+    include_student_detail: bool,
+    response_mode: str,
+) -> bytes:
+    from backend.api.read_connections import request_read_context
+
+    with _background_replay(), request_read_context(paths) as ctx:
+        service = ctx.diagnosis_service
+        service.persist_snapshots = True
+        return _grouped_diagnosis_response_bytes(
+            service, grouping_module, scope=scope, exam_scope=exam_scope,
+            grouping=grouping, include_student_detail=include_student_detail,
+            response_mode=response_mode)
+
+
+def _compute_overview_bytes(
+    paths,
+    *,
+    scope: Mapping[str, Any],
+    exam_scope: Mapping[str, Any],
+    volume_id: str,
+    include_student_detail: bool,
+) -> bytes:
+    from backend.api.read_connections import request_read_context
+
+    with _background_replay(), request_read_context(paths) as ctx:
+        service = ctx.diagnosis_service
+        service.persist_snapshots = True
+        overview = overview_payload(
+            service, scope=scope, exam_scope=exam_scope, volume_id=volume_id)
+    if not include_student_detail:
+        overview = {
+            **overview,
+            "associations": [],
+            "students": [],
+            "nodes": [{**node, "students": []} for node in overview.get("nodes", [])],
+        }
+    return json_bytes(TrainingOverviewResponse.model_validate(overview))
+
+
+def _grouped_record(scope: Mapping[str, Any], exam_scope: Mapping[str, Any],
+                    grouping, include_student_detail: bool, response_mode: str) -> None:
+    record_request('grouped_diagnosis', scope=scope, exam_scope=exam_scope,
+                   params={'grouping': grouping.model_dump(),
+                           'include_student_detail': include_student_detail,
+                           'response_mode': response_mode})
+
+
 def _grouping_module(body: TrainingDiagnosisRequest) -> Callable[[], PersonalizedRecommendationModule] | None:
     # A complete response hit needs source checks, not another resolver/module.
     return get_personalized_recommendation_module if body.grouping else None
@@ -418,16 +512,37 @@ def build_training_diagnosis(
                        params={'include_student_detail': body.include_student_detail,
                                'response_mode': body.response_mode})
         if body.grouping is None and isinstance(service, DiagnosisProfileService):
-            return Response(content=_diagnosis_response_bytes(service, scope=scope_dump,
-                            exam_scope=exam_scope_dump, include_student_detail=body.include_student_detail,
-                            response_mode=body.response_mode),
-                            media_type='application/json')
+            content, refreshing = serve_with_refresh(
+                data_root=_display_root(service),
+                endpoint='training-diagnosis',
+                request_key={'scope': scope_dump, 'exam_scope': exam_scope_dump,
+                             'include_student_detail': body.include_student_detail,
+                             'response_mode': body.response_mode},
+                compute=lambda: _compute_diagnosis_bytes(
+                    _service_paths(service), scope=scope_dump,
+                    exam_scope=exam_scope_dump,
+                    include_student_detail=body.include_student_detail,
+                    response_mode=body.response_mode),
+            )
+            return _display_response(content, refreshing)
         if body.grouping is not None and isinstance(service, DiagnosisProfileService):
             assert grouping_module is not None
-            return Response(content=_grouped_diagnosis_response_bytes(service, grouping_module,
-                scope=scope_dump, exam_scope=exam_scope_dump, grouping=body.grouping,
-                include_student_detail=body.include_student_detail, response_mode=body.response_mode),
-                media_type='application/json')
+            _grouped_record(scope_dump, exam_scope_dump, body.grouping,
+                            body.include_student_detail, body.response_mode)
+            content, refreshing = serve_with_refresh(
+                data_root=_display_root(service),
+                endpoint='training-diagnosis',
+                request_key={'scope': scope_dump, 'exam_scope': exam_scope_dump,
+                             'grouping': body.grouping.model_dump(),
+                             'include_student_detail': body.include_student_detail,
+                             'response_mode': body.response_mode},
+                compute=lambda: _compute_grouped_diagnosis_bytes(
+                    _service_paths(service), grouping_module, scope=scope_dump,
+                    exam_scope=exam_scope_dump, grouping=body.grouping,
+                    include_student_detail=body.include_student_detail,
+                    response_mode=body.response_mode),
+            )
+            return _display_response(content, refreshing)
         resolved_module = grouping_module() if callable(grouping_module) else grouping_module
         diagnosis = _build_grouped_diagnosis(service, resolved_module, scope_dump=scope_dump,
             exam_scope_dump=exam_scope_dump, grouping=body.grouping)
@@ -444,7 +559,7 @@ def build_training_diagnosis(
             "training_scope_invalid",
             "Training scope is invalid",
         ) from exc
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, sqlite3.Error, QuestionBankSnapshotError, RequestReadContextCleanupError) as exc:
         raise ApiError(
             503,
             "training_database_unavailable",
@@ -477,7 +592,7 @@ def build_training_overview(
     service: DiagnosisProfileService = Depends(
         get_request_diagnosis_profile_service
     ),
-) -> TrainingOverviewResponse:
+) -> TrainingOverviewResponse | Response:
     try:
         if body.exam_scope.mode != "semester":
             raise ValueError("overview requires a semester exam scope")
@@ -490,6 +605,19 @@ def build_training_overview(
             params={"volume_id": body.exam_scope.curriculum_volume_id or ""},
         )
         key_fn = getattr(service, "tag_profile_cache_key", None)
+        if isinstance(service, DiagnosisProfileService):
+            content, refreshing = serve_with_refresh(
+                data_root=_display_root(service),
+                endpoint='training-overview',
+                request_key={'scope': scope_dump, 'exam_scope': exam_scope_dump,
+                             'include_student_detail': body.include_student_detail},
+                compute=lambda: _compute_overview_bytes(
+                    _service_paths(service), scope=scope_dump,
+                    exam_scope=exam_scope_dump,
+                    volume_id=body.exam_scope.curriculum_volume_id or "",
+                    include_student_detail=body.include_student_detail),
+            )
+            return _display_response(content, refreshing)
         if callable(key_fn):
             overview = overview_payload(
                 service,
@@ -512,7 +640,7 @@ def build_training_overview(
             "training_scope_invalid",
             "Training scope is invalid",
         ) from exc
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, sqlite3.Error, QuestionBankSnapshotError, RequestReadContextCleanupError) as exc:
         raise ApiError(
             503,
             "training_database_unavailable",

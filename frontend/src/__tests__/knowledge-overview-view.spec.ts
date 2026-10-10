@@ -245,6 +245,7 @@ describe('knowledge overview view', () => {
         },
       },
       expect.any(AbortSignal),
+      expect.anything(),
     )
     const saved = JSON.parse(globalThis.localStorage!.getItem('p4-evidence-scope-v1')!)
     expect(saved.scope.mode).toBe('class')
@@ -454,7 +455,7 @@ describe('knowledge overview view', () => {
     input.value = 'S4'
     input.dispatchEvent(new Event('input'))
     await settle()
-    let matches = [...host.querySelectorAll<HTMLElement>('.overview-opportunity-student')]
+    const matches = [...host.querySelectorAll<HTMLElement>('.overview-opportunity-student')]
     expect(matches).toHaveLength(1)
     expect(matches[0]!.textContent).toContain('学生丁')
     expect(matches[0]!.textContent).toContain('未分班')

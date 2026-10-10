@@ -1,4 +1,4 @@
-import { apiClient } from './client'
+import { apiClient, refreshHeaderHandler } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
 import {
   assertNoPathLikeKeys,
@@ -1751,6 +1751,7 @@ export const trainingApi = {
   overview(
     body: TrainingOverviewRequest,
     signal?: AbortSignal,
+    onRefreshing?: (refreshing: boolean) => void,
   ): Promise<TrainingOverview> {
     return apiClient.request('/api/training/overview', {
       method: 'POST',
@@ -1758,12 +1759,14 @@ export const trainingApi = {
       decode: decodeTrainingOverview,
       signal,
       timeoutMs: 120_000,
+      onResponseHeaders: refreshHeaderHandler(onRefreshing),
     })
   },
 
   diagnose(
     body: TrainingDiagnosisRequest,
     signal?: AbortSignal,
+    onRefreshing?: (refreshing: boolean) => void,
   ): Promise<TrainingDiagnosis> {
     return apiClient.request('/api/training/diagnosis', {
       method: 'POST',
@@ -1772,15 +1775,18 @@ export const trainingApi = {
       signal,
       // Group analysis also evaluates the common question pool for the roster.
       timeoutMs: body.grouping ? 120_000 : 30_000,
+      onResponseHeaders: refreshHeaderHandler(onRefreshing),
     })
   },
 
-  diagnoseDisplay(body: TrainingDiagnosisRequest, signal?: AbortSignal): Promise<TrainingDisplayDiagnosis> {
+  diagnoseDisplay(body: TrainingDiagnosisRequest, signal?: AbortSignal,
+      onRefreshing?: (refreshing: boolean) => void): Promise<TrainingDisplayDiagnosis> {
     const request = { ...body }
     delete request.include_student_detail
     return apiClient.request('/api/training/diagnosis', {
       method: 'POST', body: { ...request, response_mode: 'display_shared' },
       decode: decodeTrainingDisplayDiagnosis, signal, timeoutMs: body.grouping ? 120_000 : 30_000,
+      onResponseHeaders: refreshHeaderHandler(onRefreshing),
     })
   },
 

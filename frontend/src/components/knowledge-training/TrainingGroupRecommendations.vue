@@ -9,6 +9,7 @@ import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
 import { ApiError } from '../../api/errors'
+import { requestWithRefresh } from '../../api/display-refresh'
 import { useTrainingStore } from '../../stores/training'
 
 const props = defineProps<{
@@ -38,6 +39,8 @@ const targetKeys = ref<string[]>([])
 const original = ref<ChapterGroupEditor | null>(null)
 const busy = ref(false)
 const stale = ref(false)
+const refreshing = ref(false)
+const refreshMessage = ref('')
 const message = ref('')
 const showAll = ref(false)
 const showAdd = ref(false)
@@ -71,7 +74,8 @@ const overlaps = computed(() => props.arrangements.filter(group => !(group.group
   && JSON.stringify([...group.targetKeys].sort()) === JSON.stringify([...targetKeys.value].sort()))
   && group.memberIds.some(id => memberIds.value.includes(id)) && group.targetKeys.some(key => targetKeys.value.includes(key))))
 const ready = computed(() => editing.value && checked.value?.ready && !busy.value && !stale.value
-  && !props.disabled && (!overlaps.value.length || overlapConfirmed.value) && targetKeys.value.length > 0 && memberIds.value.length >= 2)
+  && !refreshing.value && !props.disabled
+  && (!overlaps.value.length || overlapConfirmed.value) && targetKeys.value.length > 0 && memberIds.value.length >= 2)
 
 function percent(value: number | null): string { return value === null ? '—' : `${Math.round(value * 100)}%` }
 function targetDifficulty(group: TrainingGroup): string {
@@ -164,6 +168,8 @@ async function refresh(force = false): Promise<void> {
   controller = next
   busy.value = true
   message.value = ''
+  refreshing.value = false
+  refreshMessage.value = ''
   try {
     const base = { scope: props.scope, exam_scope: props.examScope, grouping: { ...props.settings },
       response_mode: 'display' }
@@ -180,7 +186,15 @@ async function refresh(force = false): Promise<void> {
         ...originalResult, grouping: { ...originalResult.grouping, selection },
       }
     }
-    const diagnosis = cached ?? await trainingApi.diagnoseDisplay(body, next.signal)
+    const diagnosis = cached ?? await requestWithRefresh(
+      onRefreshing => trainingApi.diagnoseDisplay(body, next.signal, onRefreshing),
+      {
+        report: (value, exhausted) => {
+          refreshing.value = value
+          refreshMessage.value = exhausted ? '仍在后台计算，可稍后刷新页面' : ''
+        },
+        aborted: () => current !== revision || next.signal.aborted,
+      })
     if (current !== revision) return
     if (!diagnosis.grouping) throw new Error('分组结果不可用')
     if (!cached) training.rememberGroupDiagnosis(key, props.diagnosis, diagnosis)
@@ -265,6 +279,7 @@ async function adopt(): Promise<void> {
 function closeEditor(): void {
   if (timer) clearTimeout(timer)
   controller?.abort(); revision += 1; busy.value = false
+  refreshing.value = false; refreshMessage.value = ''
   editing.value = false
   checked.value = null
   stale.value = false
@@ -296,7 +311,7 @@ watch([sourceKey, diagnosisBasis, () => props.disabled], (_value, previous) => {
   stale.value = true
   void refresh()
 }, { immediate: true })
-onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTimeout(timer) })
+onBeforeUnmount(() => { controller?.abort(); revision += 1; refreshing.value = false; refreshMessage.value = ''; if (timer) clearTimeout(timer) })
 </script>
 
 <template>
@@ -307,6 +322,8 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
     </header>
     <p v-if="scope.score_rate_min != null || scope.score_rate_max != null" class="training-groups__note">已启用辅助条件：在得分率 {{ Math.round((scope.score_rate_min ?? 0) * 100) }}%–{{ Math.round((scope.score_rate_max ?? 1) * 100) }}% 范围内推荐。</p>
     <FeedbackBanner v-if="message" role="alert" tone="warning" :description="message" />
+    <FeedbackBanner v-if="refreshing || refreshMessage" tone="info"
+      :description="refreshMessage || '数据有更新，正在重新计算。当前显示上次结果，算完自动刷新。'" />
     <StatePanel v-if="!result && busy" kind="loading" title="正在核对训练目标、证据和可用题目……" />
     <template v-if="!editing">
       <div v-if="result?.groups.length" class="training-groups__sorting">
@@ -374,7 +391,7 @@ onBeforeUnmount(() => { controller?.abort(); revision += 1; if (timer) clearTime
       <FeedbackBanner v-for="issue in checked?.issues ?? []" :key="issue" tone="warning" :description="issue" />
       <p v-for="warning in checked?.warnings ?? []" :key="warning" class="training-groups__note">{{ warning }}</p>
       <FeedbackBanner v-if="overlaps.length" tone="warning" description="与本页此前生成草稿的小组有成员及目标重合。请调整名单或目标；确需重复训练时，请先核对安排。"><label><input v-model="overlapConfirmed" type="checkbox">已核对重合，仍采用本组</label></FeedbackBanner>
-      <footer><span>{{ memberIds.length }} 人 · {{ targetKeys.length }} 个训练目标</span><AppButton variant="primary" :disabled="!ready" @click="adopt">采用小组并核对出卷设置</AppButton></footer>
+      <footer><span>{{ memberIds.length }} 人 · {{ targetKeys.length }} 个训练目标</span><AppButton variant="primary" :disabled="!ready" :title="refreshing ? '正在更新数据，请稍候' : undefined" @click="adopt">采用小组并核对出卷设置</AppButton></footer>
     </section>
     <details v-if="result?.unassigned.length" class="training-groups__unassigned"><summary>暂未推荐 {{ result.unassigned.length }} 人<span v-if="unassignedBreakdown">（{{ unassignedBreakdown }}）</span> · 查看原因</summary><p v-for="student in result.unassigned" :key="student.student_id"><strong>{{ student.student_name }} · {{ classLabel(student.class_id) }}</strong>：{{ student.reason }}</p></details>
     <details class="training-groups__explanation"><summary>分组与统计说明</summary><p v-if="result?.summary">范围内 {{ result.summary.student_count }} 人 · 有直接失分需要 {{ result.summary.students_with_needs }} 人<template v-if="result.summary.unlinked_loss_count"> · 另有 {{ result.summary.unlinked_loss_count }} 处失分的判定点未关联{{ targetLabel }}，不计入补弱</template> · 已编组 {{ result.summary.grouped_student_count }} 人（{{ result.summary.group_count }} 组） · 暂未推荐 {{ result.unassigned.length }} 人</p><p>无证据不推断薄弱；明显不同需求可安排个人训练。</p></details>

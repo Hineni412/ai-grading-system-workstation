@@ -1,4 +1,4 @@
-import { apiClient } from './client'
+import { apiClient, refreshHeaderHandler } from './client'
 import { CAUSE_RESULT_STATES, type CauseResultState, type ClassCauseKind } from './class-analysis'
 import { decodeJobResponse, type JobResponse } from './jobs'
 import {
@@ -176,9 +176,10 @@ function isExamQuestion(v: unknown): v is AssemblyExamQuestion {
     && isCount(v.cause_unclassified_count)
     && (v.cause_availability === undefined || isCauseAvailability(v.cause_availability, v.cause_unclassified_count))
 }
-export function fetchAssemblyExams(class_ids: string[], curriculum_volume_id: string, signal?: AbortSignal): Promise<AssemblyExamResult> {
+export function fetchAssemblyExams(class_ids: string[], curriculum_volume_id: string, signal?: AbortSignal, onRefreshing?: (refreshing: boolean) => void): Promise<AssemblyExamResult> {
   return apiClient.request('/api/question-assembly/assistant/exam-questions', {
     method: 'POST', body: { class_ids, curriculum_volume_id }, signal, timeoutMs: 120_000,
+    onResponseHeaders: refreshHeaderHandler(onRefreshing),
     decode: value => {
       if (!isRecord(value) || !isCount(value.student_count) || !Array.isArray(value.exams)
         || (value.target_kind !== undefined && !['skill', 'type', 'knowledge', 'mixed'].includes(String(value.target_kind)))
@@ -455,9 +456,10 @@ export function fetchAssemblyQuickDraft(body: AssemblyAssistantRequest & { quest
   })
 }
 
-export function fetchAssemblyCandidates(body: AssemblyAssistantRequest, signal?: AbortSignal): Promise<AssemblyAssistantResult> {
+export function fetchAssemblyCandidates(body: AssemblyAssistantRequest, signal?: AbortSignal, onRefreshing?: (refreshing: boolean) => void): Promise<AssemblyAssistantResult> {
   return apiClient.request('/api/question-assembly/assistant/candidates', {
     method: 'POST', body, decode: decodeAssemblyAssistant, signal, timeoutMs: 120_000,
+    onResponseHeaders: refreshHeaderHandler(onRefreshing),
   })
 }
 

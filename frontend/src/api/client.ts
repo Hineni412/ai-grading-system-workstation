@@ -11,6 +11,7 @@ export interface ApiRequestOptions<T> {
   decode: ResponseDecoder<T>
   signal?: AbortSignal
   timeoutMs?: number
+  onResponseHeaders?: (headers: Headers) => void
 }
 
 export interface ApiBinaryResponse {
@@ -21,6 +22,14 @@ export interface ApiBinaryResponse {
 export interface ApiBinaryRequestOptions {
   signal?: AbortSignal
   timeoutMs?: number
+}
+
+/** Map the server's X-Data-Refreshing marker to a boolean callback. */
+export function refreshHeaderHandler(
+  onRefreshing?: (refreshing: boolean) => void,
+): ((headers: Headers) => void) | undefined {
+  if (!onRefreshing) return undefined
+  return headers => onRefreshing(headers.get('x-data-refreshing') === '1')
 }
 
 export interface ApiClientDependencies {
@@ -228,6 +237,7 @@ export function createApiClient(
               throw error
             }
 
+            options.onResponseHeaders?.(response.headers)
             try {
               const decoded = options.decode(payload)
               if (pendingMutationKey) pendingMutationIds.delete(pendingMutationKey)

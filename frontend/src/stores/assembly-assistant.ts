@@ -2,6 +2,7 @@ import { computed, reactive, ref, shallowRef, onScopeDispose } from 'vue'
 import { defineStore } from 'pinia'
 import { assemblyApi, fetchAssemblyCandidates, fetchAssemblyExams, type AssemblyExamResult, type AssemblyAssistantRequest, type AssemblyAssistantResult, type AssemblyQuestion } from '../api/assembly'
 import { ApiError } from '../api/errors'
+import { requestWithRefresh } from '../api/display-refresh'
 
 const STORAGE_KEY = 'ai-grading:assembly-assistant-filters:v1'
 const PAGE_SIZE = 12
@@ -21,6 +22,9 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   const result = shallowRef<AssemblyAssistantResult | null>(null)
   const examResult = shallowRef<AssemblyExamResult | null>(null)
   const examState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  // 服务端按上次结果先返回并在后台重算；写操作在重算期间保持禁用。
+  const refreshing = ref(false)
+  const refreshMessage = ref('')
   const threshold = ref(70)
   const sort = ref<'loss' | 'chapter'>('loss')
   const includeTraining = ref(true)
@@ -64,6 +68,8 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     cancelScheduled()
     serial += 1
     stopPrefetch()
+    refreshing.value = false
+    refreshMessage.value = ''
     Object.assign(filters, patch, { target_keys: null })
     if (patch.class_ids) filters.class_id = patch.class_ids[0] ?? ''
     else if (patch.class_id !== undefined) filters.class_ids = patch.class_id ? [patch.class_id] : []
@@ -216,6 +222,8 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     state.value = 'ready'
     loadingMore.value = false
     waiting.value = true
+    refreshing.value = false
+    refreshMessage.value = ''
     scheduled = setTimeout(() => void search(true), delay)
   }
 
@@ -258,8 +266,39 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     const key = JSON.stringify(body)
     state.value = 'loading'
     message.value = ''
+    refreshing.value = false
+    refreshMessage.value = ''
+    const refreshAborted = () => {
+      const gone = signal.aborted || token !== serial
+      if (gone) refreshing.value = false
+      return gone
+    }
     try {
-      const next = await fetchAssemblyCandidates(body, signal)
+      const next = await requestWithRefresh(
+        onRefreshing => fetchAssemblyCandidates(body, signal, onRefreshing),
+        {
+          apply: value => {
+            if (refreshAborted()) return
+            rememberResult(body, value)
+            result.value = value
+            visibleCount.value = PAGE_SIZE
+            state.value = 'ready'
+            void (async () => {
+              try {
+                const resolved = await resolvePreviews(
+                  value.candidates.slice(0, PAGE_SIZE).map(item => item.question_id), signal)
+                if (!refreshAborted() && result.value === value) questions.value = resolved
+              } catch { /* The final pass resolves the same previews again. */ }
+            })()
+          },
+          report: (value, exhausted) => {
+            if (token !== serial) return
+            refreshing.value = value
+            refreshMessage.value = exhausted ? '仍在后台计算，可稍后刷新页面' : ''
+          },
+          aborted: refreshAborted,
+        },
+      )
       if (signal.aborted) return
       rememberResult(body, next)
       if (token !== serial) return
@@ -315,8 +354,29 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
     examResult.value = null
     if (!filters.class_ids?.length || !filters.curriculum_volume_id) { examState.value = 'idle'; return }
     examState.value = 'loading'
+    refreshing.value = false
+    refreshMessage.value = ''
     try {
-      const next = await fetchAssemblyExams(filters.class_ids, filters.curriculum_volume_id, examController.signal)
+      const examAborted = () => {
+        const gone = token !== examSerial
+        if (gone) refreshing.value = false
+        return gone
+      }
+      const next = await requestWithRefresh(
+        onRefreshing => fetchAssemblyExams(filters.class_ids!, filters.curriculum_volume_id,
+          examController!.signal, onRefreshing),
+        {
+          // 只先放数据；examState 仍在末尾置 ready，保持 changeScope 先于
+          // 面板“依据就绪即取候选”的联动顺序。
+          apply: value => { if (!examAborted()) examResult.value = value },
+          report: (value, exhausted) => {
+            if (token !== examSerial) return
+            refreshing.value = value
+            refreshMessage.value = exhausted ? '仍在后台计算，可稍后刷新页面' : ''
+          },
+          aborted: examAborted,
+        },
+      )
       if (token !== examSerial) return
       examResult.value = next
       const visible = new Set(next.exams.map(e => e.session_id))
@@ -327,5 +387,5 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   }
 
   return { filters, result, questions, state, message, isStale, canSearch, waiting, visibleCount, loadingMore, hasMore, selectedKey, changeScope, selectSkill, prefetch, stopPrefetch, scheduleSearch, search, loadMore, previewsFor,
-    examResult, examState, threshold, sort, includeTraining, loadExams }
+    examResult, examState, threshold, sort, includeTraining, loadExams, refreshing, refreshMessage }
 })

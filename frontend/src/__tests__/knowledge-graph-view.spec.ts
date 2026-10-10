@@ -79,7 +79,7 @@ afterEach(() => { for (const app of mounted.splice(0)) app.unmount(); document.b
 describe('knowledge mastery map', () => {
   it('uses overview, ignores old scope links, and excludes previous volumes from the header', async () => {
     const { host, router } = await mountView('/knowledge-graph?session=7&class=old')
-    expect(trainingApi.overview).toHaveBeenCalledWith({ scope: { mode: 'all', student_ids: [], use_historical_fallback: false }, exam_scope: { mode: 'semester', curriculum_volume_id: 'bnu24-math-g8-upper', session_ids: [] } }, expect.any(AbortSignal))
+    expect(trainingApi.overview).toHaveBeenCalledWith({ scope: { mode: 'all', student_ids: [], use_historical_fallback: false }, exam_scope: { mode: 'semester', curriculum_volume_id: 'bnu24-math-g8-upper', session_ids: [] } }, expect.any(AbortSignal), expect.anything())
     expect(host.querySelector('.overview-summary-strip')).toBeNull()
     expect(router.currentRoute.value.query).toEqual({ view: 'chapters' })
     expect(host.textContent).toContain('往届内容（本学期考试涉及 · 1 项）')

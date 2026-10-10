@@ -19,6 +19,7 @@ import {
   type QuestionRepairPreview,
 } from '../api/question-bank'
 import { ApiError } from '../api/errors'
+import { requestWithRefresh } from '../api/display-refresh'
 import type { PaperQuestionRef } from '../components/question-bank/paper-analysis-status'
 
 export type QuestionBankListState =
@@ -131,6 +132,8 @@ function safeMessage(): string {
   return '题库暂时无法更新，请稍后重试。'
 }
 
+export const REFRESH_EXHAUSTED_MESSAGE = '仍在后台计算，可稍后刷新页面'
+
 function copyDetail(value: QuestionBankDetail): QuestionBankDetail {
   return structuredClone(toRaw(value))
 }
@@ -142,6 +145,21 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
   const skillIndexRequests = new Map<string, Promise<QuestionSkillIndex>>()
   const chapterExamRequests = new Map<string, Promise<ChapterExamProfile>>()
   const listSnapshots = new Map<string, QuestionBankListResponse>()
+  // 服务端有更新时会先回上次结果再后台重算：每个作用域一份在途标记，
+  // 值为所属请求链，让旧链路的中止清理不会误删新链路的标记。
+  const refreshingReads = ref(new Map<string, Promise<unknown>>())
+  const refreshMessage = ref('')
+
+  function reportRefresh(key: string, owner: Promise<unknown>, refreshing: boolean, exhausted: boolean, stale: boolean): void {
+    if (stale) return
+    if (refreshing) {
+      refreshingReads.value.set(key, owner)
+      if (exhausted) refreshMessage.value = REFRESH_EXHAUSTED_MESSAGE
+    } else {
+      if (refreshingReads.value.get(key) === owner) refreshingReads.value.delete(key)
+      if (!refreshingReads.value.size) refreshMessage.value = ''
+    }
+  }
 
   function invalidateReadSnapshots(): void {
     readRevision.value += 1
@@ -150,6 +168,8 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     skillIndexRequests.clear()
     chapterExamRequests.clear()
     listSnapshots.clear()
+    refreshingReads.value.clear()
+    refreshMessage.value = ''
     cancelQuestionRead()
   }
 
@@ -157,12 +177,22 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     let request = skillIndexRequests.get(volumeId)
     if (!request) {
       const revision = readRevision.value
-      const created = questionBankApi.skillIndex(volumeId).then(value => {
+      const key = `skill-index:${volumeId}`
+      const created: Promise<QuestionSkillIndex> = requestWithRefresh(
+        onRefreshing => questionBankApi.skillIndex(volumeId, undefined, onRefreshing),
+        {
+          apply: value => skillIndexes.value.set(volumeId, value),
+          report: (refreshing, exhausted) => reportRefresh(
+            key, created, refreshing, exhausted, readRevision.value !== revision),
+          aborted: () => readRevision.value !== revision,
+        },
+      ).then(value => {
         if (readRevision.value !== revision) throw new DOMException('Aborted', 'AbortError')
-        skillIndexes.value.set(volumeId, value)
         return value
       }).finally(() => {
         if (skillIndexRequests.get(volumeId) === created) skillIndexRequests.delete(volumeId)
+        if (refreshingReads.value.get(key) === created) refreshingReads.value.delete(key)
+        if (!refreshingReads.value.size) refreshMessage.value = ''
       })
       skillIndexRequests.set(volumeId, created)
       request = created
@@ -174,12 +204,22 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     let request = chapterExamRequests.get(volumeId)
     if (!request) {
       const revision = readRevision.value
-      const created = questionBankApi.chapterExamProfile(volumeId).then(value => {
+      const key = `chapter-exam:${volumeId}`
+      const created: Promise<ChapterExamProfile> = requestWithRefresh(
+        onRefreshing => questionBankApi.chapterExamProfile(volumeId, undefined, onRefreshing),
+        {
+          apply: value => chapterExamProfiles.value.set(volumeId, value),
+          report: (refreshing, exhausted) => reportRefresh(
+            key, created, refreshing, exhausted, readRevision.value !== revision),
+          aborted: () => readRevision.value !== revision,
+        },
+      ).then(value => {
         if (readRevision.value !== revision) throw new DOMException('Aborted', 'AbortError')
-        chapterExamProfiles.value.set(volumeId, value)
         return value
       }).finally(() => {
         if (chapterExamRequests.get(volumeId) === created) chapterExamRequests.delete(volumeId)
+        if (refreshingReads.value.get(key) === created) refreshingReads.value.delete(key)
+        if (!refreshingReads.value.size) refreshMessage.value = ''
       })
       chapterExamRequests.set(volumeId, created)
       request = created
@@ -240,12 +280,20 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     let request = repairPreviewRequests.get(key)
     if (!request) {
       // 发起方的中止信号直接传给请求；加入在途请求的中止只结束自己的等待。
-      const created = questionBankApi.repairPreview(volumeId, kind, signal)
+      const created: Promise<QuestionRepairPreview> = requestWithRefresh(
+        onRefreshing => questionBankApi.repairPreview(volumeId, kind, signal, onRefreshing),
+        {
+          apply: value => repairPreviews.value.set(key, value),
+          report: (refreshing, exhausted) => reportRefresh(
+            `repair:${key}`, created, refreshing, exhausted,
+            signal?.aborted === true || repairPreviewRequests.get(key) !== created),
+          aborted: () => signal?.aborted === true || repairPreviewRequests.get(key) !== created,
+        },
+      )
         .then(value => {
           if (signal?.aborted || repairPreviewRequests.get(key) !== created) {
             throw new DOMException('Aborted', 'AbortError')
           }
-          repairPreviews.value.set(key, value)
           return value
         })
         .finally(() => {
@@ -253,6 +301,8 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
             repairPreviewRequests.delete(key)
             repairPreviewLoading.value.delete(key)
           }
+          if (refreshingReads.value.get(`repair:${key}`) === created) refreshingReads.value.delete(`repair:${key}`)
+          if (!refreshingReads.value.size) refreshMessage.value = ''
         })
       request = created
       repairPreviewRequests.set(key, request)
@@ -648,6 +698,8 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     skillIndexes,
     chapterExamProfiles,
     readRevision,
+    refreshingReads,
+    refreshMessage,
     loadSkillIndex,
     loadChapterExamProfile,
     invalidateReadSnapshots,

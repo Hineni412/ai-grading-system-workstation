@@ -1,4 +1,4 @@
-import { createApp, nextTick, type App } from 'vue';
+import { createApp, type App } from 'vue';
 import { createPinia } from 'pinia';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { decodeTrainingDisplayDiagnosis, type TrainingDiagnosis, type TrainingGroup } from '../api/training';
@@ -102,8 +102,7 @@ describe('章节小组的采用与失败恢复', () => {
     expect(submit.disabled).toBe(true)
     const checkbox = [...host.querySelectorAll('input')].find(input => input.parentElement?.textContent?.includes('已核对重合'))!
     checkbox.click()
-    await nextTick()
-    expect(submit.disabled).toBe(false)
+    await vi.waitFor(() => expect(submit.disabled).toBe(false))
     submit.click()
     await vi.waitFor(() => expect(adopted).toHaveBeenCalledOnce())
     expect(diagnose).toHaveBeenCalledTimes(2)

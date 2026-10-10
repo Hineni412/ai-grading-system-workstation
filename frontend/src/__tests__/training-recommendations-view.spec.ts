@@ -788,4 +788,27 @@ describe('training recommendations view', () => {
     expect(view.host.querySelector('.personalized-match__evidence')?.textContent).not.toContain('匿名阶段测验')
   })
 
+  it('shows the refresh notice and disables generation until the fresh result arrives', async () => {
+    let calls = 0
+    trainingApiMock.diagnoseDisplay.mockImplementation(async (body, signal, onRefreshing) => {
+      calls += 1
+      onRefreshing?.(calls === 1)
+      return displayFixture(await trainingApiMock.diagnose({ ...body, response_mode: 'display' }, signal))
+    })
+    savePaperSelectionSession({ selectedStudentIds: ['12'], targetKeys: ['sk_test_congruence'],
+      rangeKeys: ['kp_test_triangle_s1'], scopeMode: 'focused', questionCount: 10, difficultyMax: 7,
+      excludeCurrentOriginals: true, paperMode: 'individual' })
+    const view = await mountView('/training?mode=paper')
+    const store = useTrainingStore(view.pinia)
+    await vi.waitFor(() => expect(store.refreshing).toBe(true))
+    const generate = view.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')!
+    expect(generate.disabled).toBe(true)
+    expect(generate.title).toBe('正在更新数据，请稍候')
+    expect(view.host.textContent).toContain('数据有更新，正在重新计算。当前显示上次结果，算完自动刷新。')
+    // 下一次轮询拿到实时结果后解除刷新态。
+    await vi.waitFor(() => expect(store.refreshing).toBe(false), { timeout: 8000 })
+    await vi.waitFor(() => expect(generate.disabled).toBe(false))
+    expect(view.host.textContent).not.toContain('数据有更新，正在重新计算。当前显示上次结果，算完自动刷新。')
+  })
+
 })
