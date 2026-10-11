@@ -72,7 +72,6 @@ export interface TrainingCriterionWorkspace {
 export interface TrainingCriterionDraftInput {
   expected_revision: number
   parent_version_id: string | null
-  request_token: string
   reason: string
   points: TrainingCriterionPoint[]
   auxiliary_rules: string[]

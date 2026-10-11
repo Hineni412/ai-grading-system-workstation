@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -97,7 +98,6 @@ def test_taxonomy_review_route_maps_one_question_to_multiple_existing_chapters(
             "expected_revision": governance.list_proposals(status="pending")[
                 "revision"
             ],
-            "request_token": "2" * 32,
         },
     )
 
@@ -110,7 +110,7 @@ def test_taxonomy_review_route_maps_one_question_to_multiple_existing_chapters(
     assert body["application"]["status"] == "applied"
     assert body["application"]["applied_question_ids"] == [question_id]
     assert body["application_status"] == "applied"
-    assert body["application_token"] == "2" * 32
+    assert re.fullmatch(r"[0-9a-f]{32}", body["application_token"])
 
     with sqlite3.connect(governance.state_path.parent / "question-bank.db") as conn:
         rows = conn.execute(
@@ -149,7 +149,6 @@ def test_taxonomy_review_can_approve_without_writing_unselected_questions(
             "expected_revision": governance.list_proposals(status="pending")[
                 "revision"
             ],
-            "request_token": "3" * 32,
         },
     )
 

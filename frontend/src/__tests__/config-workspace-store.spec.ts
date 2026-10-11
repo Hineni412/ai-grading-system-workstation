@@ -78,7 +78,7 @@ beforeEach(() => {
 
 describe('configuration workspace Store', () => {
   it('restores safe submission guards without fetching exam data outside setup, then hydrates on demand', async () => {
-    const candidate = { sessionId: 7, phase: 'source', sourceId: 'd'.repeat(32), sourceRevision: 'b'.repeat(64), jobId: null, decisions: [], pendingUploadRequestToken: '2'.repeat(32) }
+    const candidate = { sessionId: 7, phase: 'source', sourceId: 'd'.repeat(32), sourceRevision: 'b'.repeat(64), jobId: null, decisions: [], pendingJobRequestToken: '2'.repeat(32), pendingJobRequestKind: 'retry' }
     localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, JSON.stringify(candidate))
     const store = useConfigWorkspaceStore()
     const loadSource = vi.fn(async () => source('d'.repeat(32)))
@@ -87,7 +87,7 @@ describe('configuration workspace Store', () => {
     expect(loadSource).not.toHaveBeenCalled()
     expect(loadEditor).not.toHaveBeenCalled()
     expect(store.source).toBeNull()
-    expect(store.pendingUploadRequestToken).toBe(candidate.pendingUploadRequestToken)
+    expect(store.pendingJobRequestToken).toBe(candidate.pendingJobRequestToken)
     expect(store.selectSession(9)).toBe(false)
     expect(JSON.parse(localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!)).toEqual(candidate)
     await store.hydrateSafeIndex([7], 7, { loadSource, loadEditor })
@@ -150,27 +150,19 @@ describe('configuration workspace Store', () => {
       .toEqual([])
   })
 
-  it('restores exact pending upload and job request tokens after a refresh', async () => {
-    const uploadToken = '1'.repeat(32)
+  it('restores the exact pending job request token after a refresh', async () => {
     const jobToken = '2'.repeat(32)
     const store = useConfigWorkspaceStore()
     store.selectSession(7)
     store.setSource(source('d'.repeat(32)))
     store.attachJob(31, store.captureGenerationContext())
-    store.markUploadSubmissionPending(uploadToken)
-
-    const uploadSaved = localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!
-    expect(JSON.parse(uploadSaved)).toMatchObject({
-      pendingUploadRequestToken: uploadToken,
-    })
 
     const jobSaved = {
-      ...JSON.parse(uploadSaved),
+      ...JSON.parse(localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!),
       pendingJobRequestToken: jobToken,
       pendingJobRequestKind: 'retry',
       generationSummary: { totalQuestions: 5, succeededQuestions: 3, failedQuestions: 2 },
     }
-    delete jobSaved.pendingUploadRequestToken
 
     setActivePinia(createPinia())
     localStorage.setItem(CONFIG_WORKSPACE_STORAGE_KEY, JSON.stringify(jobSaved))
@@ -181,7 +173,6 @@ describe('configuration workspace Store', () => {
       loadEditor: async () => ({ ...editor(''), configured: false, rows: [] }),
     })
 
-    expect(restored.pendingUploadRequestToken).toBeNull()
     expect(restored.pendingJobRequestToken).toBe(jobToken)
     expect(restored.pendingJobRequestKind).toBe('retry')
     expect(restored.generationSummary).toEqual({
@@ -195,7 +186,6 @@ describe('configuration workspace Store', () => {
     expect(store.markJobSubmissionPending('1'.repeat(32), 'retry')).toBe(true)
 
     expect(store.markJobSubmissionPending('2'.repeat(32), 'generate', 'batched')).toBe(false)
-    expect(store.markUploadSubmissionPending('3'.repeat(32))).toBe(false)
     expect(store.selectSession(9, true)).toBe(false)
     expect(store.selectSource('f'.repeat(32), true)).toBe(false)
     expect(store.clearWorkspace(true)).toBe(false)

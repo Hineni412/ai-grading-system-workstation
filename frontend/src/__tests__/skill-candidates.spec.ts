@@ -301,7 +301,6 @@ describe('审核面板', () => {
     const body = reviewSpy.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(body.decision).toBe('accept');
     expect(body.expected_revision).toBe(4);
-    expect(String(body.request_token)).toMatch(/^[0-9a-f]{32}$/);
     expect((body.edits as Record<string, unknown>).kind).toBe('new_skill');
     expect((body.edits as Record<string, unknown>).name).toBe('分步列式');
     expect(body.gap_keys).toBeUndefined();

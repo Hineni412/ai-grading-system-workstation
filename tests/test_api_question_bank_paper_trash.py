@@ -77,13 +77,11 @@ def test_active_paper_can_be_permanently_deleted_after_impact_confirmation(
         json={
             "selections": selections,
             "confirmation_phrase": "删除",
-            "request_token": "b" * 32,
         },
     )
     delete_body = {
         "selections": selections,
         "confirmation_phrase": "彻底删除 1 份试卷",
-        "request_token": "c" * 32,
     }
     deleted = client.post(
         "/api/question-bank/papers/permanent-delete",
@@ -102,6 +100,5 @@ def test_active_paper_can_be_permanently_deleted_after_impact_confirmation(
     assert deleted.status_code == 200
     assert deleted.json()["deleted_paper_ids"] == [paper_id]
     assert deleted.json()["deleted_analysis_record_count"] == 0
-    assert repeated.status_code == 200
-    assert repeated.json() == deleted.json()
+    assert repeated.status_code == 404
     assert client.get("/api/question-bank/papers").json()["items"] == []

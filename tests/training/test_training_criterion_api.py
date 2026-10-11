@@ -87,7 +87,6 @@ def _draft_body(*, revision: int, parent: str | None):
     return {
         "expected_revision": revision,
         "parent_version_id": parent,
-        "request_token": "1" * 32,
         "reason": "教师手工建立判定点",
         "points": [
             {

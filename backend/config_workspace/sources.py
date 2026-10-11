@@ -101,11 +101,6 @@ _IMAGE_FORMATS = {
 }
 _PARSE_LOCKS_GUARD = threading.Lock()
 _PARSE_LOCKS: dict[tuple[str, int], threading.Lock] = {}
-_PROCESS_TOKEN = uuid.uuid4().hex
-_ACTIVE_SUBMISSIONS_GUARD = threading.Lock()
-_ACTIVE_SUBMISSIONS: set[tuple[str, int, str]] = set()
-
-
 class ConfigSourceError(RuntimeError):
     pass
 
@@ -144,11 +139,6 @@ class ConfigSourceNotFoundError(ConfigSourceError):
 class ConfigSourceChangedError(ConfigSourceError):
     def __init__(self) -> None:
         super().__init__("config source has changed")
-
-
-class ConfigSourceSubmissionConflictError(ConfigSourceError):
-    def __init__(self) -> None:
-        super().__init__("config source submission token was reused")
 
 
 class ConfigAssetNotFoundError(ConfigSourceError):
@@ -402,14 +392,11 @@ class ConfigSourceService:
         session_id: int,
         filename: str,
         chunks: AsyncIterator[bytes],
-        source_id: str | None = None,
         activation_guard: Callable[[], ContextManager[None]] | None = None,
     ) -> ConfigSourceRecord:
         clean_session_id = _positive_session_id(session_id)
         safe_filename, suffix = _safe_filename(filename)
-        clean_source_id = str(source_id or uuid.uuid4().hex).strip()
-        if not _SOURCE_ID.fullmatch(clean_source_id):
-            raise ConfigSourceInvalidError()
+        clean_source_id = uuid.uuid4().hex
         source_dir = self._source_dir(clean_session_id, clean_source_id)
         self._prepare_source_dir(source_dir)
         temporary_path = source_dir / f".source.{uuid.uuid4().hex}.tmp"
@@ -573,231 +560,6 @@ class ConfigSourceService:
             {"source_id": source_id, "source_revision": source_revision},
         )
         return record
-
-    def begin_submission(
-        self,
-        *,
-        session_id: int,
-        request_token: str,
-        filename: str,
-        content_length: int | None,
-    ) -> str:
-        clean_session_id = _positive_session_id(session_id)
-        clean_token = _request_token(request_token)
-        request_fingerprint = _submission_request_fingerprint(
-            filename=filename,
-            content_length=content_length,
-        )
-        marker_path = self._submission_path(clean_session_id, clean_token)
-        self._prepare_source_dir(self._source_dir(clean_session_id, clean_token))
-        with session_config_lock(self.upload_config_dir, clean_session_id):
-            if marker_path.is_file():
-                marker = self._read_json_object(marker_path)
-                if marker.get("request_fingerprint") != request_fingerprint:
-                    raise ConfigSourceSubmissionConflictError()
-                state, _source = self._submission_result_locked(
-                    session_id=clean_session_id,
-                    request_token=clean_token,
-                    marker_path=marker_path,
-                    marker=marker,
-                )
-                return state
-            self._files.write_json_atomic(
-                marker_path,
-                {
-                    "status": "processing",
-                    "source_id": clean_token,
-                    "process_token": _PROCESS_TOKEN,
-                    "request_fingerprint": request_fingerprint,
-                },
-            )
-            self._set_submission_active(clean_session_id, clean_token, True)
-        return "started"
-
-    def finish_submission(
-        self,
-        *,
-        session_id: int,
-        request_token: str,
-        succeeded: bool,
-    ) -> None:
-        clean_session_id = _positive_session_id(session_id)
-        clean_token = _request_token(request_token)
-        marker_path = self._submission_path(clean_session_id, clean_token)
-        try:
-            with session_config_lock(self.upload_config_dir, clean_session_id):
-                marker = (
-                    self._read_json_object(marker_path)
-                    if marker_path.is_file()
-                    else {"source_id": clean_token}
-                )
-                source_state, _source = self._submission_source_result_locked(
-                    session_id=clean_session_id,
-                    request_token=clean_token,
-                )
-                final_state = source_state or ("succeeded" if succeeded else "failed")
-                next_marker = {
-                    "status": final_state,
-                    "source_id": clean_token,
-                }
-                fingerprint = str(marker.get("request_fingerprint") or "")
-                if _SHA256.fullmatch(fingerprint):
-                    next_marker["request_fingerprint"] = fingerprint
-                self._files.write_json_atomic(marker_path, next_marker)
-        finally:
-            self._set_submission_active(clean_session_id, clean_token, False)
-
-    def submission_public(self, *, session_id: int, request_token: str) -> dict[str, Any]:
-        clean_session_id = _positive_session_id(session_id)
-        clean_token = _request_token(request_token)
-        marker_path = self._submission_path(clean_session_id, clean_token)
-        if not marker_path.is_file():
-            raise ConfigSourceNotFoundError()
-        with session_config_lock(self.upload_config_dir, clean_session_id):
-            marker = self._read_json_object(marker_path)
-            if self._submission_state(marker_path, marker=marker) == "abandoned":
-                raise ConfigSourceNotFoundError()
-            state, source = self._submission_result_locked(
-                session_id=clean_session_id,
-                request_token=clean_token,
-                marker_path=marker_path,
-                marker=marker,
-            )
-        return {"status": state, "source": source}
-
-    def abandon_submission(self, *, session_id: int, request_token: str) -> None:
-        """Atomically reserve an unseen token so a late upload cannot start."""
-        clean_session_id = _positive_session_id(session_id)
-        clean_token = _request_token(request_token)
-        marker_path = self._submission_path(clean_session_id, clean_token)
-        self._prepare_source_dir(self._source_dir(clean_session_id, clean_token))
-        with session_config_lock(self.upload_config_dir, clean_session_id):
-            if marker_path.is_file():
-                marker = self._read_json_object(marker_path)
-                if self._submission_state(marker_path, marker=marker) == "abandoned":
-                    return
-                raise ConfigSourceSubmissionConflictError()
-            self._files.write_json_atomic(
-                marker_path,
-                {"status": "abandoned", "source_id": clean_token},
-            )
-
-    def _submission_result_locked(
-        self,
-        *,
-        session_id: int,
-        request_token: str,
-        marker_path: Path,
-        marker: dict[str, Any],
-    ) -> tuple[str, dict[str, Any] | None]:
-        self._submission_state(marker_path, marker=marker)
-        source_state, source = self._submission_source_result_locked(
-            session_id=session_id,
-            request_token=request_token,
-        )
-        if source_state is not None:
-            return source_state, source
-        state = str(marker.get("status") or "")
-        if state == "processing" and (
-            str(marker.get("process_token") or "") != _PROCESS_TOKEN
-            or not self._submission_is_active(session_id, request_token)
-        ):
-            state = "failed"
-            next_marker = {
-                "status": state,
-                "source_id": request_token,
-            }
-            fingerprint = str(marker.get("request_fingerprint") or "")
-            if _SHA256.fullmatch(fingerprint):
-                next_marker["request_fingerprint"] = fingerprint
-            try:
-                self._files.write_json_atomic(marker_path, next_marker)
-            except (OSError, SecureFilesystemError):
-                pass
-        elif state == "succeeded":
-            state = "failed"
-            next_marker = {
-                "status": state,
-                "source_id": request_token,
-            }
-            fingerprint = str(marker.get("request_fingerprint") or "")
-            if _SHA256.fullmatch(fingerprint):
-                next_marker["request_fingerprint"] = fingerprint
-            try:
-                self._files.write_json_atomic(marker_path, next_marker)
-            except (OSError, SecureFilesystemError):
-                pass
-        return state, None
-
-    def _submission_source_result_locked(
-        self,
-        *,
-        session_id: int,
-        request_token: str,
-    ) -> tuple[str | None, dict[str, Any] | None]:
-        try:
-            source = self.load_public(
-                session_id=session_id,
-                source_id=request_token,
-                require_active=True,
-            )
-            return "succeeded", source
-        except ConfigSourceChangedError:
-            try:
-                self.load_public(
-                    session_id=session_id,
-                    source_id=request_token,
-                    require_active=False,
-                )
-            except ConfigSourceError:
-                try:
-                    active_source_id, _active_revision = self._read_active(session_id)
-                except ConfigSourceError:
-                    return None, None
-                if active_source_id != request_token:
-                    return "replaced", None
-                return None, None
-            return "replaced", None
-        except ConfigSourceError:
-            return None, None
-
-    def _submission_key(self, session_id: int, request_token: str) -> tuple[str, int, str]:
-        return (
-            os.path.normcase(str(self.upload_config_dir)),
-            int(session_id),
-            str(request_token),
-        )
-
-    def _set_submission_active(
-        self,
-        session_id: int,
-        request_token: str,
-        active: bool,
-    ) -> None:
-        key = self._submission_key(session_id, request_token)
-        with _ACTIVE_SUBMISSIONS_GUARD:
-            if active:
-                _ACTIVE_SUBMISSIONS.add(key)
-            else:
-                _ACTIVE_SUBMISSIONS.discard(key)
-
-    def _submission_is_active(self, session_id: int, request_token: str) -> bool:
-        key = self._submission_key(session_id, request_token)
-        with _ACTIVE_SUBMISSIONS_GUARD:
-            return key in _ACTIVE_SUBMISSIONS
-
-    def _submission_state(
-        self,
-        marker_path: Path,
-        *,
-        marker: dict[str, Any] | None = None,
-    ) -> str:
-        marker = marker if marker is not None else self._read_json_object(marker_path)
-        state = str(marker.get("status") or "")
-        source_id = str(marker.get("source_id") or "")
-        if state not in {"processing", "succeeded", "failed", "replaced", "abandoned"} or not _SOURCE_ID.fullmatch(source_id):
-            raise ConfigSourceInvalidError()
-        return state
 
     def _parse_staged_source(
         self,
@@ -2009,10 +1771,6 @@ class ConfigSourceService:
     def _active_path(self, session_id: int) -> Path:
         return self._session_dir(session_id) / "active.json"
 
-    def _submission_path(self, session_id: int, request_token: str) -> Path:
-        return self._session_dir(session_id) / f"submission-{request_token}.json"
-
-
 def _positive_session_id(value: int) -> int:
     try:
         clean = int(value)
@@ -2021,41 +1779,6 @@ def _positive_session_id(value: int) -> int:
     if clean <= 0:
         raise ConfigSourceInvalidError()
     return clean
-
-
-def _request_token(value: str) -> str:
-    clean = str(value or "").strip()
-    if not _SOURCE_ID.fullmatch(clean):
-        raise ConfigSourceInvalidError()
-    return clean
-
-
-def _submission_request_fingerprint(
-    *,
-    filename: str,
-    content_length: int | None,
-) -> str:
-    safe_filename, suffix = _safe_filename(filename)
-    if content_length is None:
-        clean_length = None
-    else:
-        try:
-            clean_length = int(content_length)
-        except (TypeError, ValueError):
-            raise ConfigSourceInvalidError() from None
-        if clean_length < 0:
-            raise ConfigSourceInvalidError()
-    canonical = json.dumps(
-        {
-            "safe_filename": safe_filename,
-            "suffix": suffix,
-            "content_length": clean_length,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _safe_filename(filename: str) -> tuple[str, Literal[".docx", ".pdf"]]:
@@ -3273,7 +2996,6 @@ __all__ = [
     "ConfigAssetNotFoundError",
     "ConfigQuestionPreview",
     "ConfigSourceChangedError",
-    "ConfigSourceSubmissionConflictError",
     "ConfigSourceInvalidError",
     "ConfigSourceNotFoundError",
     "ConfigSourceRecord",

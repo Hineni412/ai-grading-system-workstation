@@ -149,18 +149,6 @@ class JobStore:
             raise RuntimeError(f"created job {job_id} could not be loaded")
         return loaded
 
-    def find_export_job_by_request_token(self, job_type: str, request_token: str) -> JobRecord | None:
-        if job_type not in {"wrong_question_export", "personalized_handout_export"}:
-            raise ValueError("unsupported token-based export")
-        token = _clean_request_token(request_token)
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM jobs WHERE job_type = ? AND json_valid(payload_json) = 1 "
-                "AND json_extract(payload_json, '$.client_request_token') = ? ORDER BY id LIMIT 1",
-                (job_type, token),
-            ).fetchone()
-        return _job_record(row) if row is not None else None
-
     def create_idempotent_export_job(self, job_type: str, payload: dict[str, Any]) -> tuple[JobRecord, bool]:
         if job_type not in {"wrong_question_export", "personalized_handout_export"}:
             raise ValueError("unsupported token-based export")

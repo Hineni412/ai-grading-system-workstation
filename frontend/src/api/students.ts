@@ -58,14 +58,10 @@ export function previewWrongQuestionBooks(body: {
 }
 
 export function submitWrongQuestionBooks(body: {
-  curriculum_volume_id: string; student_ids: number[]; session_ids: number[]; client_request_token: string
+  curriculum_volume_id: string; student_ids: number[]; session_ids: number[]
   scope_keys?: string[]; include_source_label?: boolean; include_answer_space?: boolean
 }): Promise<JobResponse> {
   return apiClient.request('/api/students/wrong-question-books', { method: 'POST', body, decode: decodeJobResponse })
-}
-
-export function findWrongQuestionBookRequest(token: string): Promise<JobResponse> {
-  return apiClient.request(`/api/students/wrong-question-books/by-request/${token}`, { decode: decodeJobResponse })
 }
 
 export interface StudentSummary {

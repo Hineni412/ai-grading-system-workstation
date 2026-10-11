@@ -97,7 +97,6 @@ const openMenuPaperId = ref<number | null>(null)
 const permanentDeleteImpact = ref<QuestionBankPaperPermanentDeleteImpact | null>(null)
 const permanentDeleteState = ref<'idle' | 'loading' | 'working' | 'error'>('idle')
 const permanentDeleteMessage = ref('')
-const permanentDeleteRequestToken = ref('')
 const formError = ref('')
 const retagBusyPaperId = ref<number | null>(null)
 const retagAllBusy = ref(false)
@@ -970,7 +969,6 @@ async function requestPermanentDelete(
   permanentDeleteState.value = 'loading'
   permanentDeleteMessage.value = ''
   deleteNotice.value = ''
-  permanentDeleteRequestToken.value = ''
   try {
     permanentDeleteImpact.value = await questionBankApi.previewPaperPermanentDelete(
       papers.map((paper) => ({
@@ -992,14 +990,7 @@ function cancelPermanentDelete(): void {
   pendingDeletePapers.value = []
   permanentDeleteImpact.value = null
   permanentDeleteMessage.value = ''
-  permanentDeleteRequestToken.value = ''
   permanentDeleteState.value = 'idle'
-}
-
-function requestToken(): string {
-  const bytes = new Uint8Array(16)
-  crypto.getRandomValues(bytes)
-  return [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('')
 }
 
 async function confirmPermanentDelete(): Promise<void> {
@@ -1008,9 +999,6 @@ async function confirmPermanentDelete(): Promise<void> {
   if (!impact || papers.length === 0 || !canConfirmPermanentDelete.value) return
   permanentDeleteState.value = 'working'
   permanentDeleteMessage.value = ''
-  if (!permanentDeleteRequestToken.value) {
-    permanentDeleteRequestToken.value = requestToken()
-  }
   try {
     const result = await questionBankApi.permanentlyDeletePapers(
       papers.map((paper) => ({
@@ -1018,12 +1006,10 @@ async function confirmPermanentDelete(): Promise<void> {
         expected_updated_at: paper.updated_at,
       })),
       impact.permanent_delete_phrase,
-      permanentDeleteRequestToken.value,
     )
     await store.loadPapers()
     pendingDeletePapers.value = []
     permanentDeleteImpact.value = null
-    permanentDeleteRequestToken.value = ''
     permanentDeleteState.value = 'idle'
     deleteNotice.value = `已删除 ${result.deleted_paper_ids.length} 份试卷、${result.deleted_question_count} 道题、${result.deleted_tag_count} 个标签和 ${result.deleted_analysis_record_count} 条分析记录。`
   } catch (error) {
@@ -1035,7 +1021,6 @@ async function confirmPermanentDelete(): Promise<void> {
     if (refreshConfirmedDeletion) {
       pendingDeletePapers.value = []
       permanentDeleteImpact.value = null
-      permanentDeleteRequestToken.value = ''
       permanentDeleteState.value = 'idle'
       deleteNotice.value = '服务器响应中断，但刷新后已确认试卷删除成功。'
       return
@@ -1048,8 +1033,8 @@ async function confirmPermanentDelete(): Promise<void> {
       return
     }
     permanentDeleteMessage.value = store.papersState === 'ready'
-      ? '删除结果尚不确定：未收到服务器确认，刷新核对后试卷仍在。请点击重试，系统会使用同一请求编号，不会重复删除。'
-      : '删除结果尚不确定：未收到服务器确认，刷新核对也暂时失败。请保留此窗口并点击重试；系统会使用同一请求编号，不会重复删除。'
+      ? '删除结果尚不确定：未收到服务器确认，刷新核对后试卷仍在。请重新预检并确认后重试。'
+      : '删除结果尚不确定：未收到服务器确认，刷新核对也暂时失败。请保留此窗口，稍后刷新核对后重试。'
   }
 }
 </script>

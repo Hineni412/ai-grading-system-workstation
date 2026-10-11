@@ -189,7 +189,6 @@ watch(focusLayout, syncFocusLayout, { flush: 'post' })
         :assignment-status="store.assignmentState"
         @upload="replaceTemplate"
         @assign="store.assignFirstPageRole"
-        @reconcile="store.reconcileUpload"
       />
       <TemplateRegionEditor
         v-if="store.editorReady"
@@ -221,6 +220,6 @@ watch(focusLayout, syncFocusLayout, { flush: 'post' })
       <AppButton type="button" variant="ghost" size="small" @click="router.push('/sessions')">返回评分依据</AppButton>
     </section>
     <TemplateUploadPanel v-else :template="null" :status="store.uploadState"
-      @upload="replaceTemplate" @reconcile="store.reconcileUpload" />
+      @upload="replaceTemplate" />
   </article>
 </template>

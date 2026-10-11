@@ -19,11 +19,10 @@ const emit = defineEmits<{ close: []; changed: []; openQuestion: [ref: { questio
 interface ReviewBody {
   decision: 'accept' | 'reject' | 'reopen'
   expected_revision: number
-  request_token: string
   edits?: SkillCandidateReviewEdits
   gap_keys?: string[]
 }
-interface ApprovedDraft { editing: boolean; name: string; include: string; exclude: string; examplesText: string; notice: string; token: string }
+interface ApprovedDraft { editing: boolean; name: string; include: string; exclude: string; examplesText: string; notice: string }
 
 const data = ref<SkillCandidateList | null>(null)
 const loading = ref(false)
@@ -103,7 +102,7 @@ async function send(suggestionId: string, body: ReviewBody) {
     await load()
   } catch (failure) {
     if (isAmbiguousWriteError(failure)) {
-      notices[suggestionId] = '提交结果尚未确认。重新提交会沿用原请求编号。'
+      notices[suggestionId] = '提交结果尚未确认。再次提交前请先核对这条候选的当前状态。'
     } else {
       delete pendingBodies[suggestionId]
       if (failure instanceof ApiError && failure.status === 409) {
@@ -117,7 +116,7 @@ async function send(suggestionId: string, body: ReviewBody) {
 }
 
 function buildBody(suggestion: SkillCandidateSuggestion, decision: ReviewBody['decision'], extra: Partial<ReviewBody> = {}): ReviewBody {
-  return { decision, expected_revision: data.value?.revision ?? 0, request_token: crypto.randomUUID().replace(/-/g, ''), ...extra }
+  return { decision, expected_revision: data.value?.revision ?? 0, ...extra }
 }
 function accept(suggestion: SkillCandidateSuggestion, payload: { edits: SkillCandidateReviewEdits | null; gapKeys: string[] | null }) {
   const extra: Partial<ReviewBody> = {}
@@ -133,25 +132,24 @@ const resubmit = (suggestion: SkillCandidateSuggestion) => {
 }
 
 function approvedDraft(skill: SkillCandidateApprovedSkill): ApprovedDraft {
-  return approvedDrafts[skill.skill_id] ??= { editing: false, name: skill.name, include: skill.include, exclude: skill.exclude, examplesText: skill.examples.join('\n'), notice: '', token: '' }
+  return approvedDrafts[skill.skill_id] ??= { editing: false, name: skill.name, include: skill.include, exclude: skill.exclude, examplesText: skill.examples.join('\n'), notice: '' }
 }
 async function saveApproved(skill: SkillCandidateApprovedSkill) {
   const draft = approvedDraft(skill)
-  if (!draft.token) draft.token = crypto.randomUUID().replace(/-/g, '')
   draft.notice = ''
   try {
     await questionBankApi.updateApprovedSkill(skill.skill_id, {
       name: draft.name.trim(), include: draft.include, exclude: draft.exclude,
       examples: draft.examplesText.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 3),
-      expected_revision: data.value?.revision ?? 0, request_token: draft.token,
+      expected_revision: data.value?.revision ?? 0,
     })
-    draft.editing = false; draft.token = ''
+    draft.editing = false
     emit('changed')
     await load()
   } catch (failure) {
-    if (isAmbiguousWriteError(failure)) draft.notice = '提交结果尚未确认。再次保存会沿用原请求编号。'
+    if (isAmbiguousWriteError(failure)) draft.notice = '提交结果尚未确认。再次保存前请先核对这条技能的当前内容。'
     else if (failure instanceof ApiError && failure.status === 409) { draft.notice = '内容已更新，请重新查看后再操作。'; await load() }
-    else { draft.notice = '保存失败，请重试。'; draft.token = '' }
+    else { draft.notice = '保存失败，请重试。' }
   }
 }
 

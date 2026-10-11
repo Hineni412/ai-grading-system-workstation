@@ -584,7 +584,6 @@ def test_accept_new_skill_assigns_sequential_ids(tmp_path: Path) -> None:
             suggestion_id,
             decision="accept",
             expected_revision=revision,
-            request_token=f"{index + 1:032d}",
         )
         revision = int(service.list_candidates(VOLUME_ID)["revision"])
         skill_id = str(result["result"]["approved_skill_id"])
@@ -627,7 +626,6 @@ def test_accept_new_skill_assigns_sequential_ids(tmp_path: Path) -> None:
         first_suggestion,
         decision="reopen",
         expected_revision=revision,
-        request_token="f" * 32,
     )
     assert reopened["suggestion"]["status"] == "pending"
     approved_after = service.list_candidates(VOLUME_ID)["approved_skills"]
@@ -681,7 +679,6 @@ def test_review_link_existing_keep_section_and_subset(tmp_path: Path) -> None:
             listing["suggestions"][0]["suggestion_id"],
             decision="accept",
             expected_revision=revision + 99,
-            request_token="9" * 32,
         )
 
     link_suggestion = _suggestion(
@@ -697,7 +694,6 @@ def test_review_link_existing_keep_section_and_subset(tmp_path: Path) -> None:
         str(link_suggestion["suggestion_id"]),
         decision="accept",
         expected_revision=revision,
-        request_token="e" * 32,
         gap_keys=[link_gap_keys[0]],
     )
     assert subset["suggestion"]["status"] == "accepted"
@@ -721,29 +717,19 @@ def test_review_link_existing_keep_section_and_subset(tmp_path: Path) -> None:
         if item["decision"] == "keep_section"
         and item["chapter_key"] == CHAPTER_B
     )
-    token = "d" * 32
     accepted = service.review(
         str(keep_suggestion["suggestion_id"]),
         decision="accept",
         expected_revision=revision,
-        request_token=token,
     )
     assert accepted["suggestion"]["status"] == "accepted"
-    # Same token + identical payload replays the stored result.
-    replay = service.review(
-        str(keep_suggestion["suggestion_id"]),
-        decision="accept",
-        expected_revision=revision,
-        request_token=token,
-    )
+    # Repeating a handled decision is rejected; only pending candidates review.
     revision = int(service.list_candidates(VOLUME_ID)["revision"])
-    assert replay["suggestion"]["status"] == "accepted"
-    with pytest.raises(SkillCandidateRequestConflict):
+    with pytest.raises(SkillCandidateInvalid):
         service.review(
             str(keep_suggestion["suggestion_id"]),
             decision="reject",
             expected_revision=revision,
-            request_token=token,
         )
     dismissed_key = keep_suggestion["gap_refs"][0]["gap_key"]
     preview = service.gap_preview(VOLUME_ID)
@@ -754,7 +740,6 @@ def test_review_link_existing_keep_section_and_subset(tmp_path: Path) -> None:
         str(keep_suggestion["suggestion_id"]),
         decision="reopen",
         expected_revision=revision,
-        request_token="b" * 32,
     )
     assert reopened["suggestion"]["status"] == "pending"
     preview = service.gap_preview(VOLUME_ID)
@@ -766,7 +751,6 @@ def test_review_link_existing_keep_section_and_subset(tmp_path: Path) -> None:
         str(keep_suggestion["suggestion_id"]),
         decision="reject",
         expected_revision=revision,
-        request_token="1" * 32,
     )
     preview = service.gap_preview(VOLUME_ID)
     assert dismissed_key in _ready_keys(preview)
@@ -800,13 +784,11 @@ def test_stale_suggestion_cannot_accept_new_skill(tmp_path: Path) -> None:
             str(suggestion["suggestion_id"]),
             decision="accept",
             expected_revision=revision,
-            request_token="8" * 32,
         )
     rejected = service.review(
         str(suggestion["suggestion_id"]),
         decision="reject",
         expected_revision=revision,
-        request_token="7" * 32,
     )
     assert rejected["suggestion"]["status"] == "rejected"
 
@@ -833,7 +815,6 @@ def test_merge_into_approved_rejects_other_volumes(tmp_path: Path) -> None:
         str(pending[0]["suggestion_id"]),
         decision="accept",
         expected_revision=revision,
-        request_token="6" * 32,
     )
     skill_id = str(accepted["result"]["approved_skill_id"])
     revision = int(service.list_candidates(VOLUME_ID)["revision"])
@@ -842,7 +823,6 @@ def test_merge_into_approved_rejects_other_volumes(tmp_path: Path) -> None:
         str(pending[1]["suggestion_id"]),
         decision="accept",
         expected_revision=revision,
-        request_token="5" * 32,
         edits={
             "kind": "merge_into_approved",
             "approved_skill_id": skill_id,
@@ -873,7 +853,6 @@ def test_merge_into_approved_rejects_other_volumes(tmp_path: Path) -> None:
             str(suggestion["suggestion_id"]),
             decision="accept",
             expected_revision=revision,
-            request_token="3" * 32,
             edits={
                 "kind": "merge_into_approved",
                 "approved_skill_id": skill_id,
@@ -1008,7 +987,6 @@ def test_api_skill_candidate_flow_and_job_idempotency(tmp_path: Path) -> None:
             json={
                 "decision": "accept",
                 "expected_revision": revision,
-                "request_token": "b" * 32,
             },
         )
         assert review.status_code == 200, review.text
@@ -1019,7 +997,6 @@ def test_api_skill_candidate_flow_and_job_idempotency(tmp_path: Path) -> None:
             json={
                 "decision": "accept",
                 "expected_revision": revision + 99,
-                "request_token": "c" * 32,
             },
         )
         assert bad_revision.status_code == 409

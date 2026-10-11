@@ -257,7 +257,7 @@ def test_wrong_question_books_preview_export_replay_download_and_read_only(tmp_p
         assert selected["question_count"] == 3
         assert selected["missing_items"] == []
         assert selected['session_wrong_counts'] == preview['session_wrong_counts']
-        body = {"curriculum_volume_id": scope["curriculum_volume_id"], "student_ids": [row["id"] for row in students], "session_ids": list(reversed(sessions)), "client_request_token": "a" * 32}
+        body = {"curriculum_volume_id": scope["curriculum_volume_id"], "student_ids": [row["id"] for row in students], "session_ids": list(reversed(sessions))}
         submitted = client.post("/api/students/wrong-question-books", json=body)
         assert submitted.status_code == 202, submitted.text
         job_id = submitted.json()["id"]
@@ -282,27 +282,26 @@ def test_wrong_question_books_preview_export_replay_download_and_read_only(tmp_p
             assert "________________" not in text
             assert doc.tables  # Default answer space reserves handwriting rows.
             assert "测试早期考试" in doc.sections[0].header.paragraphs[0].text
-        assert client.post("/api/students/wrong-question-books", json=body).json()["id"] == job_id
+        # Free local export: each submission is a new job; the store still
+        # deduplicates a replayed identical payload.
+        again = client.post("/api/students/wrong-question-books", json=body)
+        assert again.status_code == 202 and again.json()["id"] != job_id
+        manager.wait(again.json()["id"], timeout=30)
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=4) as pool:
             repeated = list(pool.map(lambda _: manager.submit_idempotent_export("wrong_question_export", job.payload), range(4)))
         assert all(item.id == job_id and not created for item, created in repeated)
-        assert client.get(f"/api/students/wrong-question-books/by-request/{'a' * 32}").json()["id"] == job_id
-        assert client.post("/api/students/wrong-question-books", json=dict(body, session_ids=[sessions[0]])).status_code == 409
-        assert client.post('/api/students/wrong-question-books', json=dict(body, include_source_label=False)).status_code == 409
-        assert client.post('/api/students/wrong-question-books', json=dict(body, include_answer_space=False)).status_code == 409
-        assert client.post('/api/students/wrong-question-books', json=dict(body, scope_keys=['kp_TEST'])).status_code == 409
         public = client.get(f"/api/jobs/{job_id}").json()["result"]
         assert public["file_path"] == str(path) and public["download_url"]
         assert client.get(public["download_url"]).status_code == 200
         assert not path.exists()
         assert not manager.get(job_id).result.get("file_path")
         assert client.get(public["download_url"]).status_code == 410
-        single_body = dict(body, student_ids=[students[0]["id"]], client_request_token="b" * 32)
+        single_body = dict(body, student_ids=[students[0]["id"]])
         single_id = client.post("/api/students/wrong-question-books", json=single_body).json()["id"]
         manager.wait(single_id, timeout=30)
         assert manager.get(single_id).result["filename"] == "TEST001_测试学生甲_错题本.docx"
-        empty_body = dict(body, student_ids=[students[1]["id"]], client_request_token="c" * 32)
+        empty_body = dict(body, student_ids=[students[1]["id"]])
         empty_id = client.post("/api/students/wrong-question-books", json=empty_body).json()["id"]
         manager.wait(empty_id, timeout=30)
         assert manager.get(empty_id).result["empty_students"][0]["student_id"] == students[1]["id"]

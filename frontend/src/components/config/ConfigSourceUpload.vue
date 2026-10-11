@@ -1,17 +1,12 @@
 <script setup lang="ts">
-import AppButton from '../design-system/AppButton.vue'
 import { computed, ref } from 'vue'
 
 import {
-  abandonConfigSourceSubmission,
-  createClientRequestToken,
   fetchActiveConfigSource,
-  fetchConfigSourceSubmission,
   uploadConfigSource,
   type ConfigSource,
-  type ConfigSourceSubmission,
 } from '../../api/config-workspace'
-import { isAmbiguousWriteError, isAuthoritativeNotFoundError } from '../../api/errors'
+import { isAmbiguousWriteError } from '../../api/errors'
 import { useConfigWorkspaceStore } from '../../stores/config-workspace'
 import { useJobStore } from '../../stores/jobs'
 import { formatBytes } from '../../lib/format'
@@ -21,17 +16,13 @@ const MAX_SOURCE_BYTES = 200 * 1024 * 1024
 const props = withDefaults(defineProps<{
   sessionId: number
   source?: ConfigSource | null
-  uploader?: (sessionId: number, file: File, requestToken: string) => Promise<ConfigSource>
+  uploader?: (sessionId: number, file: File) => Promise<ConfigSource>
   beforeUpload?: () => boolean | Promise<boolean>
-  submissionLoader?: (sessionId: number, requestToken: string) => Promise<ConfigSourceSubmission>
-  submissionAbandoner?: (sessionId: number, requestToken: string) => Promise<void>
   activeSourceLoader?: (sessionId: number) => Promise<ConfigSource>
 }>(), {
   source: null,
   uploader: uploadConfigSource,
   beforeUpload: () => true,
-  submissionLoader: fetchConfigSourceSubmission,
-  submissionAbandoner: abandonConfigSourceSubmission,
   activeSourceLoader: fetchActiveConfigSource,
 })
 
@@ -45,7 +36,6 @@ const uploading = ref(false)
 const errorMessage = ref('')
 const configStore = useConfigWorkspaceStore()
 const jobStore = useJobStore()
-const submissionUnknown = computed(() => configStore.pendingUploadRequestToken !== null)
 const selectedFileInvalid = computed(() => selectedFile.value === null
   || validateFile(selectedFile.value) !== '')
 const selectedFileDescription = computed(() => selectedFile.value === null
@@ -60,46 +50,10 @@ const activeGeneration = computed(() => {
 const workspaceLocked = computed(() => configStore.hasPendingSubmission || activeGeneration.value)
 
 function acceptSource(source: ConfigSource): void {
-  configStore.clearUploadSubmissionPending()
   emit('uploaded', source)
   selectedFile.value = null
   if (fileInput.value) fileInput.value.value = ''
   errorMessage.value = ''
-}
-
-async function reconcileUpload(): Promise<void> {
-  const token = configStore.pendingUploadRequestToken
-  if (token === null || uploading.value) return
-  uploading.value = true
-  errorMessage.value = '正在核对这次上传的结果…'
-  try {
-    const submission = await props.submissionLoader(props.sessionId, token)
-    if (submission.status === 'succeeded' && submission.source !== null) {
-      acceptSource(submission.source)
-    } else if (submission.status === 'replaced') {
-      const activeSource = await props.activeSourceLoader(props.sessionId)
-      acceptSource(activeSource)
-    } else if (submission.status === 'failed') {
-      configStore.clearUploadSubmissionPending()
-      errorMessage.value = '这次上传没有成功，可以重新选择文件上传。'
-    } else {
-      errorMessage.value = '这次上传仍在处理中，请稍后再次核对。'
-    }
-  } catch (error) {
-    if (isAuthoritativeNotFoundError(error, 'config_source_not_found')) {
-      try {
-        await props.submissionAbandoner(props.sessionId, token)
-        configStore.clearUploadSubmissionPending()
-        errorMessage.value = '服务器确认未收到这次上传，可以重新提交。'
-      } catch {
-        errorMessage.value = '原上传可能仍在到达服务器，当前继续锁定。请稍后再次核对。'
-      }
-    } else {
-      errorMessage.value = '暂时无法核对这次上传。为避免重复接收，请稍后再次核对。'
-    }
-  } finally {
-    uploading.value = false
-  }
 }
 
 function validateFile(file: File): string {
@@ -135,19 +89,25 @@ async function submit(): Promise<void> {
     return
   }
   if (!await props.beforeUpload()) return
-  const requestToken = createClientRequestToken()
-  if (!configStore.markUploadSubmissionPending(requestToken)) return
   uploading.value = true
   errorMessage.value = ''
   try {
-    const accepted = await props.uploader(props.sessionId, file, requestToken)
+    const accepted = await props.uploader(props.sessionId, file)
     acceptSource(accepted)
   } catch (error) {
     if (isAmbiguousWriteError(error)) {
-      uploading.value = false
-      await reconcileUpload()
+      try {
+        const active = await props.activeSourceLoader(props.sessionId)
+        if (active.source_id !== props.source?.source_id
+          || active.source_revision !== props.source?.source_revision) {
+          acceptSource(active)
+          return
+        }
+      } catch {
+        // Fall through to the unconfirmed-result message below.
+      }
+      errorMessage.value = '上传结果尚未确认，请刷新页面核对当前试卷来源后再决定是否重新上传。'
     } else {
-      configStore.clearUploadSubmissionPending()
       errorMessage.value = props.source === null
         ? '文件未接收成功。请选择文件后重新上传。'
         : '新文件未接收成功，当前试卷来源已保留。'
@@ -213,12 +173,6 @@ async function submit(): Promise<void> {
       <span>正在上传并拆题，请保持页面打开…</span>
     </div>
     <p v-if="errorMessage" class="config-source__error" role="alert">{{ errorMessage }}</p>
-    <AppButton
-      v-if="submissionUnknown"
-      type="button"
-      :disabled="uploading"
-      variant="ghost" size="small" @click="reconcileUpload"
-    >重新核对上传结果</AppButton>
 
     <p v-if="source && source.questions.length === 0" class="config-source__empty" role="status">
       未识别到题目。当前来源已接收，可以选择更换文件。

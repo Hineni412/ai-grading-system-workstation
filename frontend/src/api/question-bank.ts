@@ -2556,7 +2556,6 @@ export const questionBankApi = {
   reviewSkillCandidate(suggestionId: string, body: {
     decision: 'accept' | 'reject' | 'reopen'
     expected_revision: number
-    request_token: string
     edits?: SkillCandidateReviewEdits
     gap_keys?: string[]
   }): Promise<SkillCandidateReviewResult> {
@@ -2568,7 +2567,6 @@ export const questionBankApi = {
     exclude?: string
     examples?: string[]
     expected_revision: number
-    request_token: string
   }): Promise<Record<string, unknown>> {
     return apiClient.request(`/api/question-bank/skill-candidates/approved/${encodeURIComponent(skillId)}`, { method: 'PATCH',
       decode: (value) => (isRecord(value) ? value : (() => { throw new Error('技能候选更新结果格式不正确') })()), body })
@@ -2658,7 +2656,6 @@ export const questionBankApi = {
   permanentlyDeletePapers(
     selections: QuestionBankPaperPermanentDeleteSelection[],
     confirmationPhrase: string,
-    requestToken: string,
     signal?: AbortSignal,
   ): Promise<QuestionBankPaperPermanentDeleteResult> {
     return apiClient.request('/api/question-bank/papers/permanent-delete', {
@@ -2667,7 +2664,6 @@ export const questionBankApi = {
       body: {
         selections,
         confirmation_phrase: confirmationPhrase,
-        request_token: requestToken,
       },
       decode: decodeQuestionBankPaperPermanentDeleteResult,
       signal,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import itertools
 import json
 import warnings
@@ -92,14 +91,10 @@ def _two_page_template_pdf() -> bytes:
         document.close()
 
 
-def _upload_headers(
-    pdf_bytes: bytes, request_token: str, filename: str
-) -> dict[str, str]:
+def _upload_headers(filename: str) -> dict[str, str]:
     return {
         "content-type": "application/pdf",
         "x-upload-filename": filename,
-        "x-client-request-token": request_token,
-        "x-content-sha256": hashlib.sha256(pdf_bytes).hexdigest(),
     }
 
 
@@ -234,7 +229,7 @@ def test_current_template_page_assignment_swaps_regions_and_is_idempotent(
         f"/api/sessions/{session_id}/template",
         params={"first_page_role": "front"},
         content=pdf_bytes,
-        headers=_upload_headers(pdf_bytes, "0" * 32, "anonymous-sample.pdf"),
+        headers=_upload_headers("anonymous-sample.pdf"),
     ).json()
     draft_region = _region()
     saved_draft = client.put(
@@ -332,7 +327,7 @@ def test_draft_save_rejects_a_stale_revision_and_returns_no_internal_paths(
         f"/api/sessions/{session_id}/template",
         params={"first_page_role": "front"},
         content=pdf_bytes,
-        headers=_upload_headers(pdf_bytes, "5" * 32, "anonymous-sample.pdf"),
+        headers=_upload_headers("anonymous-sample.pdf"),
     ).json()
     first_request = {
         "expected_template_fingerprint": upload["template_fingerprint"],
@@ -418,7 +413,7 @@ def test_saved_draft_remains_visible_after_format_and_sample_change(tmp_path):
     pdf_bytes = _two_page_template_pdf()
     uploaded = client.post(f"/api/sessions/{session_id}/template",
         params={"first_page_role": "front"}, content=pdf_bytes,
-        headers=_upload_headers(pdf_bytes, "7" * 32, "TEST-saved-draft.pdf")).json()
+        headers=_upload_headers("TEST-saved-draft.pdf")).json()
     path = tmp_path / "templates" / f"session_{session_id}" / "region_draft.json"
     saved = {"session_id": session_id, "schema_version": 99, "revision": 7,
              "template_fingerprint": "old-sample", "regions": [_region()]}

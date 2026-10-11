@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -69,17 +70,6 @@ def preview_wrong_question_books(
     return {key: value for key, value in plan.items() if key != "books"}
 
 
-@router.get("/students/wrong-question-books/by-request/{request_token}", response_model=JobResponse)
-def find_wrong_question_export(request_token: str, manager: JobManager = Depends(get_job_manager)) -> JobResponse:
-    try:
-        job = manager.store.find_export_job_by_request_token("wrong_question_export", request_token)
-    except ValueError as exc:
-        raise ApiError(422, "wrong_question_token_invalid", "请求令牌无效") from exc
-    if job is None:
-        raise ApiError(404, "wrong_question_request_not_found", "尚未查到此次导出请求，请稍后再次查询")
-    return _job_response(job)
-
-
 @router.post("/students/wrong-question-books", response_model=JobResponse, status_code=202)
 def submit_wrong_question_books(
     body: WrongQuestionBookSubmitRequest,
@@ -89,11 +79,7 @@ def submit_wrong_question_books(
 ) -> JobResponse:
     # Replay the exact submitted scope even if marks/roster changed after submission.
     payload = body.model_dump()
-    existing = manager.store.find_export_job_by_request_token("wrong_question_export", body.client_request_token)
-    if existing is not None:
-        if existing.payload != payload:
-            raise ApiError(409, "wrong_question_request_conflict", "该请求令牌已用于另一份导出")
-        return _job_response(existing)
+    payload["client_request_token"] = uuid.uuid4().hex
     try:
         build_wrong_question_books(db, question_bank_db_path, body.student_ids,
                                    body.curriculum_volume_id, body.session_ids, body.scope_keys)

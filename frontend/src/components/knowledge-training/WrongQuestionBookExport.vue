@@ -7,7 +7,7 @@ const sessionIds = defineModel<number[] | null>('sessionIds', { default: null })
 const includeSourceLabel = defineModel<boolean>('includeSourceLabel', { default: true })
 const includeAnswerSpace = defineModel<boolean>('includeAnswerSpace', { default: true })
 const { preview, loading, submitting, downloading, downloaded, message, job, jobs, busy, result,
-  missing, emptyStudents, failedStudents, canSelect, loadPreview, recover, submit, download, reset } = useWrongQuestionBookExport(
+  missing, emptyStudents, failedStudents, canSelect, loadPreview, submit, download, reset } = useWrongQuestionBookExport(
     () => ({ studentIds: props.studentIds, volumeId: props.volumeId, scopeKeys: props.scopeKeys }), sessionIds, includeSourceLabel, includeAnswerSpace)
 </script>
 <template>
@@ -28,7 +28,6 @@ const { preview, loading, submitting, downloading, downloaded, message, job, job
     <p v-if="message" role="alert">{{ message }}</p><p v-if="downloaded" role="status">下载已完成，本机临时导出文件已清除。</p><StatePanel v-if="!valid" kind="empty" compact :title="blockedReason || '当前不可导出'" />
     <footer><AppButton v-if="canSelect && !preview && !loading && valid" @click="loadPreview">重新加载</AppButton>
       <AppButton v-if="canSelect" variant="primary" :disabled="!valid || loading || !sessionIds?.length || !preview?.question_count" :loading="submitting" @click="submit">{{ studentIds.length === 1 ? '导出错题本（Word）' : `导出错题本（${Math.max(0, (preview?.students.length ?? 0) - (preview?.empty_students.length ?? 0))} 份 Word · ZIP）` }}</AppButton>
-      <AppButton v-else-if="!job" :loading="submitting" @click="recover">查询此次提交</AppButton>
       <AppButton v-if="job?.status === 'succeeded' && result.download_url && !downloaded" variant="primary" :loading="downloading" @click="download">下载{{ String(result.filename).endsWith('.zip') ? '全部错题本' : '错题本' }}</AppButton><AppButton v-if="job && !busy" :disabled="downloading" @click="reset">重新选择导出</AppButton>
     </footer>
   </div>

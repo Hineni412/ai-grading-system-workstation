@@ -43,11 +43,6 @@ class TemplateUploadResponse(BaseModel):
     regions_snapshot_pending: bool
 
 
-class TemplateUploadSubmissionResponse(BaseModel):
-    status: Literal["processing", "succeeded", "failed", "replaced", "abandoned"]
-    template: TemplateUploadResponse | None = None
-
-
 class TemplatePageAssignmentRequest(BaseModel):
     first_page_role: Literal["front", "back"]
     expected_template_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")

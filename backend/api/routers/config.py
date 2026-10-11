@@ -31,7 +31,6 @@ from backend.api.schemas.config import (
     ConfigSourceDuplicatesResponse,
     ConfigSourceGenerationRequest,
     ConfigSourceResponse,
-    ConfigSourceSubmissionResponse,
     SessionConfigRequest,
     SessionConfigResponse,
 )
@@ -67,7 +66,6 @@ from backend.config_workspace.sources import (
     ConfigSourceNotFoundError,
     ConfigSourceParseError,
     ConfigSourceService,
-    ConfigSourceSubmissionConflictError,
     ConfigSourceTooLargeError,
     ConfigSourceTypeUnsupportedError,
     QuestionDecision,
@@ -131,12 +129,6 @@ def _source_api_error(exc: ConfigSourceError) -> ApiError:
         )
     if isinstance(exc, ConfigSourceChangedError):
         return ApiError(409, "config_source_changed", "Config source has changed")
-    if isinstance(exc, ConfigSourceSubmissionConflictError):
-        return ApiError(
-            409,
-            "config_source_submission_conflict",
-            "Config source submission token was reused for a different upload",
-        )
     if isinstance(exc, ConfigAssetNotFoundError):
         return ApiError(404, "config_asset_not_found", "Config asset not found")
     if isinstance(exc, ConfigSourceNotFoundError):
@@ -178,41 +170,6 @@ async def upload_config_source(
     except ConfigSourceError as exc:
         raise _source_api_error(exc) from None
 
-    request_token = str(request.headers.get("x-client-request-token") or "").strip()
-    submission_started = False
-    if request_token:
-        try:
-            submission_state = source_service.begin_submission(
-                session_id=session_id,
-                request_token=request_token,
-                filename=filename,
-                content_length=content_length,
-            )
-            if submission_state == "succeeded":
-                raise ApiError(
-                    409,
-                    "config_source_upload_already_submitted",
-                    "Config source upload was already submitted; query its result",
-                )
-            if submission_state == "replaced":
-                raise ApiError(
-                    409,
-                    "config_source_upload_replaced",
-                    "Config source upload was replaced by a newer source",
-                )
-            if submission_state in {"processing", "failed"}:
-                raise ApiError(
-                    409,
-                    "config_source_upload_in_progress"
-                    if submission_state == "processing"
-                    else "config_source_upload_failed",
-                    "Config source upload is still processing"
-                    if submission_state == "processing"
-                    else "Config source upload failed",
-                )
-        except ConfigSourceError as exc:
-            raise _source_api_error(exc) from None
-        submission_started = submission_state == "started"
     try:
         source_service.cleanup_inactive(
             session_id=session_id,
@@ -224,35 +181,10 @@ async def upload_config_source(
             session_id=session_id,
             filename=filename,
             chunks=request.stream(),
-            source_id=request_token or None,
             activation_guard=lambda: _source_activation_guard(manager, session_id),
         )
-        if request_token:
-            try:
-                source_service.finish_submission(
-                    session_id=session_id,
-                    request_token=request_token,
-                    succeeded=True,
-                )
-            except BaseException:
-                recovered = source_service.submission_public(
-                    session_id=session_id,
-                    request_token=request_token,
-                )
-                if recovered["status"] == "succeeded" and recovered["source"]:
-                    return dict(recovered["source"])
-                raise
         return record.public_snapshot()
     except BaseException as exc:
-        if request_token and submission_started:
-            try:
-                source_service.finish_submission(
-                    session_id=session_id,
-                    request_token=request_token,
-                    succeeded=False,
-                )
-            except BaseException:
-                pass
         if isinstance(exc, (TypeError, ValueError)):
             raise _source_api_error(ConfigSourceInvalidError()) from None
         if isinstance(exc, ConfigSourceActivationBusyError):
@@ -260,48 +192,6 @@ async def upload_config_source(
         if isinstance(exc, ConfigSourceError):
             raise _source_api_error(exc) from None
         raise
-
-
-@router.get(
-    "/sessions/{session_id}/config/sources/submissions/{request_token}",
-    response_model=ConfigSourceSubmissionResponse,
-    responses=CONFIG_SOURCE_ERROR_RESPONSES,
-)
-def get_config_source_submission(
-    session_id: int,
-    request_token: str,
-    db: GradingRepositoryAccess = Depends(get_grading_db),
-    source_service: ConfigSourceService = Depends(get_config_source_service),
-) -> dict[str, Any]:
-    _require_session(db.sessions, session_id)
-    try:
-        return source_service.submission_public(
-            session_id=session_id,
-            request_token=request_token,
-        )
-    except ConfigSourceError as exc:
-        raise _source_api_error(exc) from None
-
-
-@router.post(
-    "/sessions/{session_id}/config/sources/submissions/{request_token}/abandon",
-    responses={409: {"model": ErrorResponse, "description": "Submission already exists"}},
-)
-def abandon_config_source_submission(
-    session_id: int,
-    request_token: str,
-    db: GradingRepositoryAccess = Depends(get_grading_db),
-    source_service: ConfigSourceService = Depends(get_config_source_service),
-) -> dict[str, str]:
-    _require_active_session(db, session_id)
-    try:
-        source_service.abandon_submission(
-            session_id=session_id,
-            request_token=request_token,
-        )
-    except ConfigSourceError as exc:
-        raise _source_api_error(exc) from None
-    return {"status": "abandoned"}
 
 
 @router.get(

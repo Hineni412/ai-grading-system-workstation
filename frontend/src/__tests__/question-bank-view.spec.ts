@@ -2493,10 +2493,6 @@ describe('question bank workspace', () => {
     await vi.waitFor(() => expect(deleteAttempts).toBe(2))
     await vi.waitFor(() => expect(document.body.textContent).not.toContain('确认彻底删除？'))
 
-    expect(deleteBodies[0]?.request_token).toBe(deleteBodies[1]?.request_token)
-    expect(deleteBodies[0]?.request_token).toEqual(
-      expect.stringMatching(/^[0-9a-f]{32}$/),
-    )
     expect(deleteBodies[0]?.confirmation_phrase).toBe('彻底删除 1 份试卷')
   })
 
@@ -2568,7 +2564,6 @@ describe('question bank workspace', () => {
       const pending = questionBankApi.permanentlyDeletePapers(
         [{ id: paper.id, expected_updated_at: paper.updated_at }],
         '彻底删除 1 份试卷',
-        'a'.repeat(32),
       )
       await vi.advanceTimersByTimeAsync(15_001)
       expect(requestSignal?.aborted).toBe(false)

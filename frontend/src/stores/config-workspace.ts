@@ -40,7 +40,6 @@ export interface PersistedConfigWorkspace {
   pendingGenerationMode?: GenerationMode
   pendingJobRequestToken?: string
   pendingJobRequestKind?: 'generate' | 'retry' | 'refine'
-  pendingUploadRequestToken?: string
 }
 
 export interface ConfigGenerationSummary {
@@ -162,7 +161,7 @@ function parsePersisted(raw: string | null): PersistedConfigWorkspace | null {
     const requiredKeys = ['sessionId', 'phase', 'sourceId', 'sourceRevision', 'jobId', 'decisions']
     const allowedKeys = new Set([
       ...requiredKeys, 'generationSummary', 'pendingGenerationMode',
-      'pendingJobRequestToken', 'pendingJobRequestKind', 'pendingUploadRequestToken',
+      'pendingJobRequestToken', 'pendingJobRequestKind',
       'assetDecisions',
     ])
     if (!requiredKeys.every((key) => key in item)
@@ -183,8 +182,6 @@ function parsePersisted(raw: string | null): PersistedConfigWorkspace | null {
         && !/^[0-9a-f]{32}$/.test(String(item.pendingJobRequestToken)))
       || ('pendingJobRequestKind' in item
         && !['generate', 'retry', 'refine'].includes(String(item.pendingJobRequestKind)))
-      || ('pendingUploadRequestToken' in item
-        && !/^[0-9a-f]{32}$/.test(String(item.pendingUploadRequestToken)))
       || ('generationSummary' in item && !validGenerationSummary(item.generationSummary))) return null
     if (('pendingJobRequestToken' in item) !== ('pendingJobRequestKind' in item)) return null
     if ((item.sourceId === null) !== (item.sourceRevision === null)) return null
@@ -265,7 +262,6 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   const pendingGenerationMode = ref<GenerationMode | null>(null)
   const pendingJobRequestToken = ref<string | null>(null)
   const pendingJobRequestKind = ref<'generate' | 'retry' | 'refine' | null>(null)
-  const pendingUploadRequestToken = ref<string | null>(null)
   const sourceLoading = ref(false)
   const sourceError = ref('')
   const sourceDuplicates = ref<ConfigSourceDuplicateItem[]>([])
@@ -278,8 +274,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   let requestedSourceId: string | null = null
 
   const hasDirtyEditor = computed(() => editorDirty.value)
-  const hasPendingSubmission = computed(() => pendingJobRequestToken.value !== null
-    || pendingUploadRequestToken.value !== null)
+  const hasPendingSubmission = computed(() => pendingJobRequestToken.value !== null)
   const effectiveEditorRows = computed(() => {
     const edits = new Map(editorEdits.value.map((edit) => [edit.row_id, edit]))
     return (editor.value?.rows ?? []).map((row) => {
@@ -339,9 +334,6 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       snapshot.pendingJobRequestToken = pendingJobRequestToken.value
       snapshot.pendingJobRequestKind = pendingJobRequestKind.value
     }
-    if (pendingUploadRequestToken.value !== null) {
-      snapshot.pendingUploadRequestToken = pendingUploadRequestToken.value
-    }
     return snapshot
   }
 
@@ -381,7 +373,6 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     pendingGenerationMode.value = null
     pendingJobRequestToken.value = null
     pendingJobRequestKind.value = null
-    pendingUploadRequestToken.value = null
     decisions.value = []
     assetDecisions.value = []
     phase.value = 'draft'
@@ -411,7 +402,6 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     pendingGenerationMode.value = null
     pendingJobRequestToken.value = null
     pendingJobRequestKind.value = null
-    pendingUploadRequestToken.value = null
     decisions.value = []
     assetDecisions.value = []
     phase.value = 'draft'
@@ -437,7 +427,6 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     pendingGenerationMode.value = null
     pendingJobRequestToken.value = null
     pendingJobRequestKind.value = null
-    pendingUploadRequestToken.value = null
     decisions.value = []
     assetDecisions.value = []
     editor.value = null
@@ -496,7 +485,6 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     pendingGenerationMode.value = null
     pendingJobRequestToken.value = null
     pendingJobRequestKind.value = null
-    pendingUploadRequestToken.value = null
     decisions.value = []
     assetDecisions.value = []
     editor.value = null
@@ -679,19 +667,6 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     persistSafeIndex()
   }
 
-  function markUploadSubmissionPending(token: string): boolean {
-    if (!/^[0-9a-f]{32}$/.test(token)) throw new Error('Invalid client request token')
-    if (hasPendingSubmission.value) return false
-    pendingUploadRequestToken.value = token
-    persistSafeIndex()
-    return true
-  }
-
-  function clearUploadSubmissionPending(): void {
-    pendingUploadRequestToken.value = null
-    persistSafeIndex()
-  }
-
   function sourceRequest(
     mode: GenerationMode,
     syncToQuestionBank = false,
@@ -839,7 +814,6 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     pendingGenerationMode.value = candidate.pendingGenerationMode ?? null
     pendingJobRequestToken.value = candidate.pendingJobRequestToken ?? null
     pendingJobRequestKind.value = candidate.pendingJobRequestKind ?? null
-    pendingUploadRequestToken.value = candidate.pendingUploadRequestToken ?? null
     if (!loadWorkspace) {
       // Restore only safe metadata and submission guards outside exam setup.
       sourceId.value = candidate.sourceId
@@ -1095,7 +1069,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     sessionId, phase, sourceId, sourceRevision, jobId, decisions, assetDecisions,
     source, questionStates, editor, editorEdits, editorCommands, serverIssues, generationSummary,
     pendingGenerationMode, pendingJobRequestToken, pendingJobRequestKind,
-    pendingUploadRequestToken, sourceLoading, sourceError,
+    sourceLoading, sourceError,
     sourceDuplicates, duplicatesUnavailable, loadSourceDuplicates,
     saveStatus, mappingStatus, hasDirtyEditor, hasPendingSubmission,
     effectiveEditorRows, effectiveTotalScore,
@@ -1105,7 +1079,6 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     setEditor, captureGenerationContext, attachJob, detachJob, sourceRequest,
     setQuestionStates,
     markJobSubmissionPending, clearGenerationSubmissionPending,
-    markUploadSubmissionPending, clearUploadSubmissionPending,
     reloadEditorForGeneration, loadSelectedSessionWorkspace,
     updateEditor, addEditorCommand, captureEditorContext,
     isEditorContextCurrent, recordServerIssues, noteSaveFailed, noteSaveUnknown,

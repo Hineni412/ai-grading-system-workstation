@@ -115,7 +115,6 @@ class QuestionPaperPermanentDeleteImpactResponse(_QuestionBankModel):
 
 class QuestionPaperPermanentDeleteRequest(QuestionPaperPermanentDeleteImpactRequest):
     confirmation_phrase: str = Field(min_length=1, max_length=80)
-    request_token: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
 class QuestionPaperPermanentDeleteResponse(_QuestionBankModel):
@@ -668,7 +667,6 @@ class TrainingCriterionDraftWriteRequest(_QuestionBankModel):
         default=None,
         pattern=r"^[0-9a-f]{64}$",
     )
-    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     reason: str = Field(min_length=1, max_length=500)
     points: list[TrainingCriterionPointSchema] = Field(
         min_length=1,
@@ -817,7 +815,6 @@ class TaxonomyProposalReviewRequest(_QuestionBankModel):
         max_length=500,
     )
     expected_revision: int = Field(ge=0)
-    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
 
 
 class TaxonomyProposalApplicationFailure(_QuestionBankModel):
@@ -861,7 +858,6 @@ class TaxonomyProposalReviewResponse(_QuestionBankModel):
 
 class TaxonomyProposalApplicationRetryRequest(_QuestionBankModel):
     application_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
-    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     question_ids: list[int] | None = Field(
         default=None,
         min_length=1,
@@ -977,7 +973,6 @@ class TaxonomySuggestionBatchManualDecision(_QuestionBankModel):
 
 class TaxonomySuggestionBatchApplyRequest(_QuestionBankModel):
     base_revision: int = Field(ge=0)
-    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     policy_version: str = Field(default="strict-exact-v1", max_length=80)
     accepted_manual_decisions: list[TaxonomySuggestionBatchManualDecision] = Field(
         default_factory=list,
@@ -1014,7 +1009,6 @@ class TaxonomyReviewOperationResponse(_QuestionBankModel):
 
 class TaxonomyReviewOperationUndoRequest(_QuestionBankModel):
     expected_revision: int = Field(ge=0)
-    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
 
 
 class SkillCandidateRunCreateRequest(_QuestionBankModel):
@@ -1046,7 +1040,6 @@ class SkillCandidateReviewEdits(_QuestionBankModel):
 class SkillCandidateReviewRequest(_QuestionBankModel):
     decision: Literal["accept", "reject", "reopen"]
     expected_revision: int = Field(ge=0)
-    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     edits: SkillCandidateReviewEdits | None = None
     gap_keys: list[str] | None = Field(default=None, max_length=200)
 
@@ -1057,4 +1050,3 @@ class SkillCandidateApprovedUpdateRequest(_QuestionBankModel):
     exclude: str = Field(default="", max_length=2000)
     examples: list[str] = Field(default_factory=list, max_length=8)
     expected_revision: int = Field(ge=0)
-    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")

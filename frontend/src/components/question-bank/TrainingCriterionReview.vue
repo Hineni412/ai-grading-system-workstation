@@ -232,7 +232,6 @@ async function saveDraft(): Promise<boolean> {
     saved = await questionBankCriteriaApi.saveDraft(props.questionId, {
       expected_revision: workspace.value.revision,
       parent_version_id: current.value?.version_id ?? null,
-      request_token: token(),
       reason: '教师核对与调整',
       points: editorPoints.value.map((point) => ({
         point_id: point.point_id.trim(),

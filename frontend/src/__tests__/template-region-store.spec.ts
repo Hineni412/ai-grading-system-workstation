@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api/errors'
 import * as api from '../api/template-regions'
 import {
-  TEMPLATE_REGION_UPLOAD_STORAGE_KEY,
   useTemplateRegionStore,
 } from '../stores/template-regions'
 
@@ -12,7 +11,6 @@ vi.mock('../api/template-regions', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/template-regions')>(),
   fetchRegionReadiness: vi.fn(), fetchRegionWorkspace: vi.fn(), fetchRegionAutoProposal: vi.fn(), saveRegionDraft: vi.fn(), uploadTemplate: vi.fn(),
   assignTemplatePageRole: vi.fn(),
-  fetchTemplateSubmission: vi.fn(), abandonTemplateSubmission: vi.fn(),
   discardRegionDraft: vi.fn(), commitRegions: vi.fn(), retryRegionSnapshot: vi.fn(),
 }))
 
@@ -175,25 +173,19 @@ describe('template region store', () => {
     expect(store.editorState.regions[0]?.region_uuid).toBe('local')
   })
 
-  it('restores an unknown upload token after the page store is recreated', async () => {
+  it('shows an error and refreshes state after an ambiguous upload failure', async () => {
     vi.mocked(api.fetchRegionReadiness).mockResolvedValue({ session_id: 7,
       scoring_configured: true, template_present: false, template_ready: false })
     vi.mocked(api.uploadTemplate).mockRejectedValue(new ApiError({ kind: 'server', status: 500,
       code: 'template_upload_failed', message: 'failed', details: {},
       requestId: 'rid-upload', retryable: true }))
-    const firstStore = useTemplateRegionStore()
-    await firstStore.load(7)
-    await firstStore.upload(new File(['%PDF'], 'sample.pdf', { type: 'application/pdf' }), 'front')
-    const token = firstStore.pendingUploadToken
+    const store = useTemplateRegionStore()
+    await store.load(7)
+    await store.upload(new File(['%PDF'], 'sample.pdf', { type: 'application/pdf' }), 'front')
 
-    setActivePinia(createPinia())
-    const restoredStore = useTemplateRegionStore()
-    await restoredStore.load(7)
-
-    expect(restoredStore.uploadState).toBe('unknown')
-    expect(restoredStore.pendingUploadToken).toBe(token)
-    expect(JSON.parse(localStorage.getItem(TEMPLATE_REGION_UPLOAD_STORAGE_KEY) ?? '{}'))
-      .toEqual({ sessionId: 7, requestToken: token })
+    expect(store.uploadState).toBe('error')
+    expect(store.errorMessage).toContain('尚未确认')
+    expect(api.fetchRegionReadiness).toHaveBeenCalledTimes(2)
   })
 
 })

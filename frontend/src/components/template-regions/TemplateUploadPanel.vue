@@ -6,12 +6,11 @@ import type { PageRole, TemplateSummary } from '../../api/template-regions'
 
 const props = withDefaults(defineProps<{
   template: TemplateSummary | null
-  status: 'idle' | 'uploading' | 'unknown' | 'error'
+  status: 'idle' | 'uploading' | 'error'
   assignmentStatus?: 'idle' | 'saving' | 'error'
 }>(), { assignmentStatus: 'idle' })
 const emit = defineEmits<{
   upload: [file: File, firstPageRole: PageRole]
-  reconcile: []
   assign: [firstPageRole: PageRole]
 }>()
 const file = ref<File | null>(null)
@@ -56,7 +55,7 @@ function assignCurrent(): void {
         type="button" variant="secondary"
         data-action="swap-current-pages"
         aria-label="交换当前正反面。题框坐标保持不变，已确认题框会回到待确认状态"
-        :disabled="assignmentStatus === 'saving' || status === 'uploading' || status === 'unknown'"
+        :disabled="assignmentStatus === 'saving' || status === 'uploading'"
         @click="assignCurrent"
       >
         {{ assignmentStatus === 'saving' ? '正在交换…' : '交换当前正反面' }}
@@ -93,11 +92,8 @@ function assignCurrent(): void {
               <output class="template-upload__assignment" aria-live="polite">{{ assignmentCopy }}</output>
               <small>该选择只作用于这次新上传的 PDF。</small>
             </fieldset>
-            <AppButton type="submit" :disabled="!file || status === 'uploading' || status === 'unknown'" variant="primary">
+            <AppButton type="submit" :disabled="!file || status === 'uploading'" variant="primary">
               {{ status === 'uploading' ? '正在上传…' : '确认更换样卷' }}
-            </AppButton>
-            <AppButton v-if="status === 'unknown'" type="button" variant="secondary" @click="emit('reconcile')">
-              核对本次上传
             </AppButton>
           </form>
         </div>
@@ -128,11 +124,8 @@ function assignCurrent(): void {
           <output class="template-upload__assignment" aria-live="polite">{{ assignmentCopy }}</output>
           <small>该选择只作用于这次新上传的 PDF。</small>
         </fieldset>
-        <AppButton type="submit" :disabled="!file || status === 'uploading' || status === 'unknown'" variant="primary">
+        <AppButton type="submit" :disabled="!file || status === 'uploading'" variant="primary">
           {{ status === 'uploading' ? '正在上传…' : '上传并打开画框' }}
-        </AppButton>
-        <AppButton v-if="status === 'unknown'" type="button" variant="secondary" @click="emit('reconcile')">
-          核对本次上传
         </AppButton>
       </form>
     </details>

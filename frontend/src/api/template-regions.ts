@@ -1,5 +1,4 @@
 import { apiClient } from './client'
-import { createClientRequestToken } from './config-workspace'
 import { isRecord } from './validation'
 
 export type PageRole = 'front' | 'back'
@@ -36,9 +35,6 @@ export interface RegionDraftResponse {
 export interface RegionCommitResponse {
   committed: boolean; snapshot_pending: boolean; error: string | null
   issues: RegionIssue[]; region_count: number
-}
-export interface TemplateSubmission {
-  status: 'processing' | 'succeeded' | 'failed' | 'replaced' | 'abandoned'; template: TemplateSummary | null
 }
 export interface TemplatePageAssignment {
   changed: boolean
@@ -148,11 +144,6 @@ function decodePageAssignment(value: unknown): TemplatePageAssignment {
   }
 }
 function sessionId(value: number): number { if (!positive(value)) throw new Error('Invalid session id'); return value }
-function token(value: string): string { if (!/^[0-9a-f]{32}$/.test(value)) throw new Error('Invalid request token'); return value }
-async function fileSha256(file: File): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
-}
 
 export function fetchRegionWorkspace(id: number, signal?: AbortSignal): Promise<RegionWorkspace> {
   return apiClient.request(`/api/sessions/${sessionId(id)}/regions/workspace`, { decode: decodeWorkspace, signal })
@@ -182,14 +173,11 @@ export function fetchRegionReadiness(id: number, signal?: AbortSignal): Promise<
     },
   })
 }
-export async function uploadTemplate(id: number, file: File, firstPageRole: PageRole,
-  requestToken = createClientRequestToken()): Promise<TemplateSummary> {
+export async function uploadTemplate(id: number, file: File, firstPageRole: PageRole): Promise<TemplateSummary> {
   if (!(file instanceof File) || file.type !== 'application/pdf' || !file.name.toLowerCase().endsWith('.pdf')) throw new Error('Invalid PDF')
-  const contentSha256 = await fileSha256(file)
   return apiClient.request(`/api/sessions/${sessionId(id)}/template?first_page_role=${firstPageRole}`, {
     method: 'POST', rawBody: file, timeoutMs: 10 * 60_000, decode: decodeTemplate,
-    headers: { 'content-type': 'application/pdf', 'x-upload-filename': encodeURIComponent(file.name),
-      'x-client-request-token': token(requestToken), 'x-content-sha256': contentSha256 },
+    headers: { 'content-type': 'application/pdf', 'x-upload-filename': encodeURIComponent(file.name) },
   })
 }
 export function assignTemplatePageRole(
@@ -205,20 +193,6 @@ export function assignTemplatePageRole(
       expected_template_fingerprint: expectedTemplateFingerprint,
     },
     decode: decodePageAssignment,
-  })
-}
-export function fetchTemplateSubmission(id: number, requestToken: string): Promise<TemplateSubmission> {
-  return apiClient.request(`/api/sessions/${sessionId(id)}/template/submissions/${token(requestToken)}`, {
-    decode(value) {
-      if (!isRecord(value) || !exact(value, ['status', 'template'])
-        || !['processing', 'succeeded', 'failed', 'replaced', 'abandoned'].includes(String(value.status))) throw new Error('Invalid submission')
-      return { status: value.status, template: value.template === null ? null : decodeTemplate(value.template) } as TemplateSubmission
-    },
-  })
-}
-export async function abandonTemplateSubmission(id: number, requestToken: string): Promise<void> {
-  await apiClient.request(`/api/sessions/${sessionId(id)}/template/submissions/${token(requestToken)}/abandon`, {
-    method: 'POST', decode(value) { if (!isRecord(value) || !exact(value, ['status']) || value.status !== 'abandoned') throw new Error('Invalid abandon response') },
   })
 }
 export function saveRegionDraft(id: number, request: { revision: number; regions: Region[];

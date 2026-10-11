@@ -12,9 +12,9 @@ import { ApiError } from '../api/errors'
 import { DEFAULT_HANDOUT_RULES, DEFAULT_TRAINING_RULES, loadPaperSelectionSession, presetFocusedTraining, resolvePaperScope, selectedPracticeRange } from '../features/training/paper-selection-session'
 
 const apps: App[] = []
-const wrongApi = vi.hoisted(() => ({ preview: vi.fn(), submit: vi.fn(), find: vi.fn(), download: vi.fn() }))
+const wrongApi = vi.hoisted(() => ({ preview: vi.fn(), submit: vi.fn(), download: vi.fn() }))
 vi.mock('../api/students', async original => ({ ...await original<typeof import('../api/students')>(),
-  previewWrongQuestionBooks: wrongApi.preview, submitWrongQuestionBooks: wrongApi.submit, findWrongQuestionBookRequest: wrongApi.find }))
+  previewWrongQuestionBooks: wrongApi.preview, submitWrongQuestionBooks: wrongApi.submit }))
 vi.mock('../api/exports', () => ({ exportsApi: { downloadJobFile: wrongApi.download } }))
 const volume: CurriculumVolume = {
   id: 'TEST-volume', order: 1, label: '合成册', grade: '八年级', semester: '上学期', textbook_version: '北师大版', source: {},
@@ -289,32 +289,20 @@ describe('错题本批量导出', () => {
     view.host.querySelector<HTMLButtonElement>('footer button')!.click()
     await vi.waitFor(() => expect(view.host.textContent).toContain('已完成'))
     expect(wrongApi.submit).toHaveBeenCalledWith(expect.objectContaining({ student_ids: [12, 13], scope_keys: ['kp_c1'],
-      session_ids: [7, 8], include_source_label: false, include_answer_space: false, client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/) }))
+      session_ids: [7, 8], include_source_label: false, include_answer_space: false }))
     expect(view.host.textContent).toContain('全对学生 · 没有错题')
     button(view.host, '下载全部错题本').click()
     await vi.waitFor(() => expect(view.host.textContent).toContain('本机临时导出文件已清除'))
     expect(wrongApi.download).toHaveBeenCalledOnce()
-    expect(JSON.parse(localStorage.getItem('ai-grading:wrong-question-book:v2')!)).toMatchObject({ downloaded: true })
     anchor.mockRestore()
   })
 
-  it('recovers an uncertain submission only for the identical fingerprint and never resubmits automatically', async () => {
+  it('shows an unconfirmed message after an ambiguous submit and does not retry automatically', async () => {
     wrongApi.submit.mockRejectedValue(new ApiError({ kind: 'timeout', status: null, code: 'request_timeout', message: 'TEST timeout', details: {}, requestId: 'TEST', retryable: false }))
-    wrongApi.find.mockRejectedValue(new Error('TEST pending'))
     const view = mountExport()
     await vi.waitFor(() => expect(view.host.textContent).toContain('可导出 3 道错题'))
     view.host.querySelector<HTMLButtonElement>('footer button')!.click()
-    await vi.waitFor(() => expect(view.host.textContent).toContain('不会自动重复导出'))
-    const token = wrongApi.submit.mock.calls[0]![0].client_request_token
-    apps.splice(0).forEach(app => app.unmount()); document.body.innerHTML = ''
-    wrongApi.find.mockResolvedValue(exportJob())
-    const restored = mountExport(ref(['12', '13']), ref([7, 8]))
-    await vi.waitFor(() => expect(restored.host.textContent).toContain('已完成'))
-    expect(wrongApi.find).toHaveBeenLastCalledWith(token); expect(wrongApi.submit).toHaveBeenCalledOnce()
-    apps.splice(0).forEach(app => app.unmount()); document.body.innerHTML = ''
-    wrongApi.find.mockClear()
-    mountExport(ref(['12', '13']), ref([7, 8]), ref(false))
-    await new Promise(resolve => setTimeout(resolve, 350))
-    expect(wrongApi.find).not.toHaveBeenCalled(); expect(wrongApi.submit).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(view.host.textContent).toContain('未能确认'))
+    expect(wrongApi.submit).toHaveBeenCalledOnce()
   })
 })

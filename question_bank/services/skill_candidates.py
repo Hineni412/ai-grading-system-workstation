@@ -1204,39 +1204,15 @@ class SkillCandidateService:
         *,
         decision: str,
         expected_revision: int,
-        request_token: str,
         edits: Mapping[str, Any] | None = None,
         gap_keys: Sequence[str] | None = None,
     ) -> dict[str, Any]:
-        token = _request_token(request_token)
         sid = str(suggestion_id or "").strip()
         normalized = str(decision or "").strip()
         if normalized not in {"accept", "reject", "reopen"}:
             raise SkillCandidateInvalid("审核操作只能是接受、拒绝或撤回")
-        command = {
-            "suggestion_id": sid,
-            "decision": normalized,
-            "edits": _clean_edits_input(edits),
-            "gap_keys": sorted(
-                str(key) for key in (gap_keys or []) if str(key or "").strip()
-            )
-            if gap_keys is not None
-            else None,
-            "expected_revision": int(expected_revision),
-        }
-        fingerprint = _sha256(command)
         with _STATE_LOCK:
             state = self._read_state_unlocked()
-            remembered = state["requests"].get(token)
-            if remembered is not None:
-                if (
-                    remembered.get("kind") != "review"
-                    or remembered.get("fingerprint") != fingerprint
-                ):
-                    raise SkillCandidateRequestConflict(
-                        "Request token was already used for another command"
-                    )
-                return copy.deepcopy(remembered["result"])
             if int(state["revision"]) != int(expected_revision):
                 raise SkillCandidateRevisionConflict(
                     "Skill candidate state changed; refresh and retry"
@@ -1256,11 +1232,6 @@ class SkillCandidateService:
             payload = {
                 "suggestion": self._public_suggestion(suggestion),
                 "result": result,
-            }
-            state["requests"][token] = {
-                "kind": "review",
-                "fingerprint": fingerprint,
-                "result": copy.deepcopy(payload),
             }
             self._write_state_unlocked(state)
             return payload
@@ -1641,31 +1612,10 @@ class SkillCandidateService:
         exclude: str,
         examples: Sequence[str],
         expected_revision: int,
-        request_token: str,
     ) -> dict[str, Any]:
-        token = _request_token(request_token)
         key = str(skill_id or "").strip()
-        command = {
-            "skill_id": key,
-            "name": str(name or ""),
-            "include": str(include or ""),
-            "exclude": str(exclude or ""),
-            "examples": [str(item) for item in examples],
-            "expected_revision": int(expected_revision),
-        }
-        fingerprint = _sha256(command)
         with _STATE_LOCK:
             state = self._read_state_unlocked()
-            remembered = state["requests"].get(token)
-            if remembered is not None:
-                if (
-                    remembered.get("kind") != "update_approved"
-                    or remembered.get("fingerprint") != fingerprint
-                ):
-                    raise SkillCandidateRequestConflict(
-                        "Request token was already used for another command"
-                    )
-                return copy.deepcopy(remembered["result"])
             if int(state["revision"]) != int(expected_revision):
                 raise SkillCandidateRevisionConflict(
                     "Skill candidate state changed; refresh and retry"
@@ -1705,11 +1655,6 @@ class SkillCandidateService:
                     **copy.deepcopy(skill),
                     "published": False,
                 }
-            }
-            state["requests"][token] = {
-                "kind": "update_approved",
-                "fingerprint": fingerprint,
-                "result": copy.deepcopy(payload),
             }
             self._write_state_unlocked(state)
             return payload

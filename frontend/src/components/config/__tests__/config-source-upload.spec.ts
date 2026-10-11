@@ -2,7 +2,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, nextTick } from 'vue';
 
-import type { ConfigSource, ConfigSourceSubmission } from '../../../api/config-workspace';
+import type { ConfigSource } from '../../../api/config-workspace';
 import { ApiError } from '../../../api/errors';
 
 import { useConfigWorkspaceStore } from '../../../stores/config-workspace';
@@ -37,11 +37,9 @@ async function settle(): Promise<void> {
 
 async function mountUpload(options: {
   accepted?: ConfigSource | null
-  uploader?: (sessionId: number, file: File, requestToken: string) => Promise<ConfigSource>
+  uploader?: (sessionId: number, file: File) => Promise<ConfigSource>
   onUploaded?: (value: ConfigSource) => void
   beforeUpload?: () => boolean
-  submissionLoader?: (sessionId: number, requestToken: string) => Promise<ConfigSourceSubmission>
-  submissionAbandoner?: (sessionId: number, requestToken: string) => Promise<void>
   activeSourceLoader?: (sessionId: number) => Promise<ConfigSource>
 } = {}) {
   const host = document.createElement('div')
@@ -53,8 +51,6 @@ async function mountUpload(options: {
     source: options.accepted ?? null,
     uploader,
     beforeUpload: options.beforeUpload,
-    submissionLoader: options.submissionLoader,
-    submissionAbandoner: options.submissionAbandoner,
     activeSourceLoader: options.activeSourceLoader,
     onUploaded,
   })
@@ -78,42 +74,37 @@ beforeEach(() => {
 
 describe('ConfigSourceUpload', () => {
 
-  it('reconciles an ambiguous replacement before offering another upload', async () => {
+  it('accepts the refreshed active source after an ambiguous upload result', async () => {
     const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
       message: 'timeout', details: {}, requestId: 'safe', retryable: false })
-    const submissionLoader = vi.fn(async () => ({ status: 'processing', source: null } as const))
-    const mounted = await mountUpload({ accepted: source(),
-      uploader: vi.fn(async () => { throw timeout }), submissionLoader })
+    const uploaded = source({ source_id: 'd'.repeat(32), source_revision: 'e'.repeat(64) })
+    const activeSourceLoader = vi.fn(async () => uploaded)
+    const onUploaded = vi.fn()
+    const mounted = await mountUpload({ accepted: source(), onUploaded,
+      uploader: vi.fn(async () => { throw timeout }), activeSourceLoader })
     await choose(mounted.host, new File(['%PDF'], 'replacement.pdf'))
     mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
     await settle()
 
-    expect(submissionLoader).toHaveBeenCalledExactlyOnceWith(7, expect.stringMatching(/^[0-9a-f]{32}$/))
-    expect(mounted.host.textContent).toContain('核对')
-    expect(mounted.host.textContent).not.toContain('新文件未接收成功')
+    expect(activeSourceLoader).toHaveBeenCalledExactlyOnceWith(7)
+    expect(onUploaded).toHaveBeenCalledExactlyOnceWith(uploaded)
+    expect(mounted.host.textContent).not.toContain('尚未确认')
   })
 
-  it('keeps upload locked when the missing token cannot be atomically abandoned', async () => {
+  it('reports an unconfirmed result when the active source did not change', async () => {
     const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
       message: 'timeout', details: {}, requestId: 'safe', retryable: false })
-    const notFound = new ApiError({ kind: 'not_found', status: 404,
-      code: 'config_source_not_found', message: 'missing', details: {},
-      requestId: 'safe-404', retryable: false })
-    const conflict = new ApiError({ kind: 'conflict', status: 409,
-      code: 'config_source_submission_conflict', message: 'late request', details: {},
-      requestId: 'safe-409', retryable: false })
-    const mounted = await mountUpload({
+    const onUploaded = vi.fn()
+    const mounted = await mountUpload({ accepted: source(), onUploaded,
       uploader: vi.fn(async () => { throw timeout }),
-      submissionLoader: vi.fn(async () => { throw notFound }),
-      submissionAbandoner: vi.fn(async () => { throw conflict }),
-    })
+      activeSourceLoader: vi.fn(async () => source()) })
     await choose(mounted.host, new File(['%PDF'], 'retry.pdf'))
 
     mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
     await settle()
 
-    expect(useConfigWorkspaceStore().pendingUploadRequestToken).not.toBeNull()
-    expect(mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true)
+    expect(onUploaded).not.toHaveBeenCalled()
+    expect(mounted.host.textContent).toContain('尚未确认')
   })
 
   it('clears generation and editor context only after a replacement is accepted', () => {

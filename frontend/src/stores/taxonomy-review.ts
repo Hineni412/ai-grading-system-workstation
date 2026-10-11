@@ -121,7 +121,6 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
   const reviewOperation = ref<TaxonomyReviewOperation | null>(null)
   const batchState = ref<'idle' | 'loading' | 'saving' | 'error'>('idle')
   const batchMessage = ref('')
-  let batchRequestToken: string | null = null
 
   let loadGeneration = 0
   let loadController: AbortController | null = null
@@ -246,7 +245,6 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
       const result = await api.reviewProposal(proposalId, {
         ...action,
         expected_revision: expectedRevision,
-        request_token: globalThis.crypto.randomUUID().replace(/-/g, ''),
       })
       revision.value = result.revision
       const index = proposals.value.findIndex(({ id }) => id === proposalId)
@@ -507,18 +505,15 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
     api: TaxonomyReviewApi = questionBankTaxonomyApi,
   ): Promise<boolean> {
     if (!suggestionRun.value || !batchPreview.value || batchState.value === 'saving') return false
-    batchRequestToken ??= globalThis.crypto.randomUUID().replace(/-/g, '')
     batchState.value = 'saving'
     try {
       reviewOperation.value = await api.applySuggestionBatch(
         suggestionRun.value.run_id,
         {
           base_revision: batchPreview.value.base_revision,
-          request_token: batchRequestToken,
           accepted_manual_decisions: decisions,
         },
       )
-      batchRequestToken = null
       revision.value = reviewOperation.value.taxonomy_revision
       batchState.value = 'idle'
       batchMessage.value = reviewOperation.value.application?.failures.length
@@ -529,7 +524,7 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
     } catch (error) {
       batchState.value = 'error'
       batchMessage.value = isAmbiguousWriteError(error)
-        ? '保存结果尚未确认；再次保存会核对同一收据，不会重复写入。'
+        ? '保存结果尚未确认；请先核对这批决定是否已生效，再决定是否重新保存。'
         : '本批决定没有保存，请保留当前选择后重试。'
       return false
     }
@@ -543,7 +538,6 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
       reviewOperation.value = await api.undoReviewOperation(
         reviewOperation.value.operation_id,
         reviewOperation.value.taxonomy_revision,
-        globalThis.crypto.randomUUID().replace(/-/g, ''),
       )
       revision.value = reviewOperation.value.undo_taxonomy_revision
         ?? reviewOperation.value.taxonomy_revision

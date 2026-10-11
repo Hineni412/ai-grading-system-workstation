@@ -37,7 +37,6 @@ class WrongQuestionBookSubmitRequest(WrongQuestionBookPreviewRequest):
     session_ids: list[int] = Field(min_length=1)
     include_source_label: bool = True
     include_answer_space: bool = True
-    client_request_token: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
 class StudentUpsertItem(BaseModel):

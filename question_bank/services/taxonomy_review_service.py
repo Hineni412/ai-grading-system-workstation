@@ -35,10 +35,6 @@ _DIMENSION_TAG_TYPES = {
 _STATE_LOCK = threading.RLock()
 
 
-class TaxonomyReviewRequestConflict(RuntimeError):
-    """The same request token was reused for a different command."""
-
-
 class TaxonomyReviewSelectionInvalid(ValueError):
     """Selected questions are not part of the proposal evidence."""
 
@@ -201,9 +197,6 @@ class TaxonomyReviewService:
             ],
         }
         fingerprint = _fingerprint(command)
-        replay = self._receipt_replay(token, fingerprint)
-        if replay is not None:
-            return self._resume_receipt(replay)
         preview = self.preview_suggestion_batch(
             run,
             base_revision=base_revision,
@@ -343,9 +336,6 @@ class TaxonomyReviewService:
             "question_ids": selected_input,
         }
         fingerprint = _fingerprint(command)
-        replay = self._receipt_replay(token, fingerprint)
-        if replay is not None:
-            return replay
 
         proposal = self.governance.get_proposal(proposal_id)
         if proposal is None:
@@ -434,9 +424,6 @@ class TaxonomyReviewService:
             "question_ids": selected,
         }
         fingerprint = _fingerprint(command)
-        replay = self._receipt_replay(retry_token, fingerprint)
-        if replay is not None:
-            return replay
 
         terms = [
             dict(item)
@@ -872,26 +859,6 @@ class TaxonomyReviewService:
             "failures": failures,
         }
 
-    def _receipt_replay(
-        self,
-        token: str,
-        fingerprint: str,
-    ) -> dict[str, Any] | None:
-        state = self._read_state()
-        receipt = state["receipts"].get(token)
-        if receipt is None:
-            return None
-        if receipt.get("fingerprint") != fingerprint:
-            raise TaxonomyReviewRequestConflict(
-                "Request token was already used for a different review command"
-            )
-        result = receipt.get("result")
-        if not isinstance(result, Mapping):
-            raise TaxonomyReviewRequestConflict(
-                "Stored review receipt is incomplete"
-            )
-        return copy.deepcopy(dict(result))
-
     def _remember_receipt(
         self,
         token: str,
@@ -902,13 +869,6 @@ class TaxonomyReviewService:
     ) -> None:
         with _STATE_LOCK:
             state = self._read_state_unlocked()
-            existing = state["receipts"].get(token)
-            if existing is not None:
-                if existing.get("fingerprint") != fingerprint:
-                    raise TaxonomyReviewRequestConflict(
-                        "Request token was already used for a different review command"
-                    )
-                return
             state["receipts"][token] = {
                 "fingerprint": fingerprint,
                 "command": copy.deepcopy(dict(command)),

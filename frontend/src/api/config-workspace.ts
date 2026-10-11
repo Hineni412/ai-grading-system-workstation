@@ -86,11 +86,6 @@ export interface ConfigSource {
   assets?: ConfigSourceAsset[]
 }
 
-export interface ConfigSourceSubmission {
-  status: 'processing' | 'succeeded' | 'failed' | 'replaced'
-  source: ConfigSource | null
-}
-
 export interface ConfigQuestionGenerationState {
   question_id: string
   state: 'pending' | 'running' | 'passed' | 'blocked' | 'failed'
@@ -450,7 +445,7 @@ export function createClientRequestToken(): string {
 }
 
 export async function uploadConfigSource(
-  sessionId: number, file: File, requestToken = createClientRequestToken(),
+  sessionId: number, file: File,
 ): Promise<ConfigSource> {
   const id = requireSessionId(sessionId)
   if (!(file instanceof File) || !file.name.trim()) throw new Error('Invalid source file')
@@ -459,48 +454,10 @@ export async function uploadConfigSource(
     headers: {
       'content-type': 'application/octet-stream',
       'x-upload-filename': encodeURIComponent(file.name),
-      'x-client-request-token': requireRequestToken(requestToken),
     },
     timeoutMs: 10 * 60 * 1_000,
     decode: decodeConfigSource,
   })
-}
-
-export async function fetchConfigSourceSubmission(
-  sessionId: number, requestToken: string,
-): Promise<ConfigSourceSubmission> {
-  const id = requireSessionId(sessionId)
-  return apiClient.request(
-    `/api/sessions/${id}/config/sources/submissions/${requireRequestToken(requestToken)}`,
-    {
-      decode: (value) => {
-        if (!isRecord(value) || !hasExactKeys(value, ['status', 'source'])
-          || !['processing', 'succeeded', 'failed', 'replaced'].includes(String(value.status))) {
-          throw new Error('Invalid source submission response')
-        }
-        if (value.source === null) {
-          return { status: value.status, source: null } as ConfigSourceSubmission
-        }
-        return { status: value.status, source: decodeConfigSource(value.source) } as ConfigSourceSubmission
-      },
-    },
-  )
-}
-
-function decodeAbandoned(value: unknown): void {
-  if (!isRecord(value) || !hasExactKeys(value, ['status']) || value.status !== 'abandoned') {
-    throw new Error('Invalid abandoned submission response')
-  }
-}
-
-export async function abandonConfigSourceSubmission(
-  sessionId: number, requestToken: string,
-): Promise<void> {
-  const id = requireSessionId(sessionId)
-  await apiClient.request(
-    `/api/sessions/${id}/config/sources/submissions/${requireRequestToken(requestToken)}/abandon`,
-    { method: 'POST', decode: decodeAbandoned },
-  )
 }
 
 export async function fetchConfigSource(
@@ -635,6 +592,12 @@ export async function fetchConfigGenerationJobByToken(
     `/api/sessions/${id}/config/generation-jobs/requests/${requireRequestToken(requestToken)}`,
     { decode: decodeStrictJob },
   )
+}
+
+function decodeAbandoned(value: unknown): void {
+  if (!isRecord(value) || !hasExactKeys(value, ['status']) || value.status !== 'abandoned') {
+    throw new Error('Invalid abandoned submission response')
+  }
 }
 
 export async function abandonConfigGenerationRequest(

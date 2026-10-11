@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import logging
-import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -47,7 +45,6 @@ from backend.api.schemas.templates import (
     TemplatePageAssignmentResponse,
     TemplateUpdateRequest,
     TemplateUploadResponse,
-    TemplateUploadSubmissionResponse,
 )
 from backend.config_workspace.publish import load_editor_config
 from backend.exam_intake import exam_intake_blocks_progress
@@ -60,7 +57,6 @@ from backend.exam_intake.template_upload_service import (
     TemplateUploadError,
     TemplateUploadInProgressError,
     TemplateUploadService,
-    TemplateUploadSubmissionConflictError,
     TemplateUploadTooLargeError,
 )
 
@@ -89,31 +85,6 @@ def _region_lock_timeout_error(session_id: int) -> ApiError:
         {"session_id": int(session_id)},
         headers={"Retry-After": "1"},
     )
-
-
-def _finish_template_submission_best_effort(
-    service: TemplateUploadService,
-    *,
-    session_id: int,
-    request_token: str,
-    succeeded: bool,
-    template: dict[str, object] | None = None,
-) -> None:
-    try:
-        service.finish_submission(
-            session_id=session_id,
-            request_token=request_token,
-            succeeded=succeeded,
-            template=template,
-        )
-    except Exception:
-        # Activation and its manifest are authoritative. A receipt failure must
-        # not rewrite an already activated template as a failed upload.
-        LOGGER.warning(
-            "template_upload_submission_receipt_failed session_id=%s succeeded=%s",
-            int(session_id),
-            succeeded,
-        )
 
 
 def _upload_response(result: Any) -> TemplateUploadResponse:
@@ -163,18 +134,6 @@ def _public_regions(regions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     openapi_extra={
         "parameters": [
             {
-                "name": "X-Client-Request-Token",
-                "in": "header",
-                "required": True,
-                "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{32}$"},
-            },
-            {
-                "name": "X-Content-SHA256",
-                "in": "header",
-                "required": True,
-                "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
-            },
-            {
                 "name": "X-Upload-Filename",
                 "in": "header",
                 "required": True,
@@ -217,47 +176,6 @@ async def upload_session_template(
         raise ApiError(422, "template_upload_invalid", "Template upload is invalid") from None
     if content_length is not None and content_length > service.max_upload_bytes:
         raise ApiError(413, "template_upload_too_large", "Template upload is too large")
-    request_token = str(request.headers.get("x-client-request-token") or "").strip()
-    content_sha256 = str(request.headers.get("x-content-sha256") or "").strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", content_sha256):
-        raise ApiError(422, "template_upload_invalid", "Template upload is invalid")
-    try:
-        submission_state = service.begin_submission(
-            session_id=session_id,
-            request_token=request_token,
-            filename=filename,
-            content_length=content_length,
-            first_page_role=first_page_role,
-            content_sha256=content_sha256,
-            db=db,
-        )
-    except TemplateUploadInProgressError:
-        raise ApiError(
-            409,
-            "template_upload_in_progress",
-            "Another template upload is already active for this session",
-        ) from None
-    except TemplateUploadSubmissionConflictError:
-        raise ApiError(
-            409,
-            "template_upload_token_conflict",
-            "Template upload token was used for another request",
-        ) from None
-    except TemplateUploadError:
-        raise ApiError(422, "template_upload_invalid", "Template upload is invalid") from None
-    if submission_state != "started":
-        if submission_state == "abandoned":
-            raise ApiError(
-                409,
-                "template_upload_abandoned",
-                "Template upload request was abandoned",
-            )
-        raise ApiError(
-            409,
-            "template_upload_already_submitted",
-            "Template upload was already submitted; query its result",
-        )
-    response: TemplateUploadResponse | None = None
     try:
         chunks: list[bytes] = []
         size = 0
@@ -267,33 +185,27 @@ async def upload_session_template(
                 raise TemplateUploadTooLargeError("template upload is too large")
             chunks.append(chunk)
         pdf_bytes = b"".join(chunks)
-        if hashlib.sha256(pdf_bytes).hexdigest() != content_sha256:
-            raise TemplateUploadError("template upload content digest does not match")
         result = service.upload(
             db=db,
             session_id=session_id,
             pdf_bytes=pdf_bytes,
             first_page_role=first_page_role,
-            request_token=request_token,
         )
-        response = _upload_response(result)
+        return _upload_response(result)
     except TemplateUploadTooLargeError:
         raise ApiError(413, "template_upload_too_large", "Template upload is too large") from None
+    except TemplateUploadInProgressError:
+        raise ApiError(
+            409,
+            "template_upload_in_progress",
+            "Another template upload is already active for this session",
+        ) from None
+    except TimeoutError:
+        raise _region_lock_timeout_error(session_id) from None
     except TemplateUploadError:
         raise ApiError(422, "template_upload_invalid", "Template upload is invalid") from None
     except Exception:
         raise ApiError(500, "template_upload_failed", "Template upload failed") from None
-    finally:
-        _finish_template_submission_best_effort(
-            service,
-            session_id=session_id,
-            request_token=request_token,
-            succeeded=response is not None,
-            template=response.model_dump(mode="json") if response is not None else None,
-        )
-    if response is None:
-        raise RuntimeError("template upload response is missing")
-    return response
 
 
 @router.put(
@@ -368,52 +280,6 @@ def get_region_readiness(
         template_present=db.templates.get_session_template(int(session_id)) is not None,
         template_ready=db.templates.is_template_ready(int(session_id)),
     )
-
-
-@router.get(
-    "/sessions/{session_id}/template/submissions/{request_token}",
-    response_model=TemplateUploadSubmissionResponse,
-)
-def get_template_upload_submission(
-    session_id: int,
-    request_token: str,
-    db: GradingRepositoryAccess = Depends(get_grading_db),
-    service: TemplateUploadService = Depends(get_template_upload_service),
-) -> dict[str, object]:
-    _require_session(db.sessions, session_id)
-    try:
-        return service.submission_public(
-            session_id=session_id, request_token=request_token, db=db
-        )
-    except FileNotFoundError:
-        raise ApiError(
-            404, "template_upload_not_found", "Template upload submission not found"
-        ) from None
-    except TemplateUploadError:
-        raise ApiError(422, "template_upload_invalid", "Template upload is invalid") from None
-
-
-@router.post("/sessions/{session_id}/template/submissions/{request_token}/abandon")
-def abandon_template_upload_submission(
-    session_id: int,
-    request_token: str,
-    db: GradingRepositoryAccess = Depends(get_grading_db),
-    service: TemplateUploadService = Depends(get_template_upload_service),
-) -> dict[str, str]:
-    _require_session(db.sessions, session_id)
-    try:
-        service.abandon_submission(
-            session_id=session_id, request_token=request_token, db=db
-        )
-    except TemplateUploadSubmissionConflictError:
-        raise ApiError(
-            409,
-            "template_upload_already_submitted",
-            "Template upload was already submitted",
-        ) from None
-    except TemplateUploadError:
-        raise ApiError(422, "template_upload_invalid", "Template upload is invalid") from None
-    return {"status": "abandoned"}
 
 
 @router.get(

@@ -67,7 +67,6 @@ export interface TaxonomyReviewInput {
   target_term_ids?: string[]
   question_ids?: number[]
   expected_revision: number
-  request_token: string
 }
 
 export interface TaxonomyReviewApplication {
@@ -780,7 +779,6 @@ export const questionBankTaxonomyApi = {
     runId: string,
     input: {
       base_revision: number
-      request_token: string
       accepted_manual_decisions: TaxonomyBatchManualDecision[]
     },
     signal?: AbortSignal,
@@ -809,14 +807,13 @@ export const questionBankTaxonomyApi = {
   undoReviewOperation(
     operationId: string,
     expectedRevision: number,
-    requestToken: string,
     signal?: AbortSignal,
   ): Promise<TaxonomyReviewOperation> {
     return apiClient.request(
       `/api/question-bank/taxonomy/review-operations/${encodeURIComponent(operationId)}/undo`,
       {
         method: 'POST',
-        body: { expected_revision: expectedRevision, request_token: requestToken },
+        body: { expected_revision: expectedRevision },
         decode: decodeReviewOperation,
         signal,
       },

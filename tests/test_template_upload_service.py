@@ -12,7 +12,6 @@ from backend.repositories.db_manager import DBManager
 from backend.exam_intake.template_upload_service import (
     TemplateUploadService,
     TemplateUploadInProgressError,
-    TemplateUploadSubmissionConflictError,
 )
 
 from backend.repositories.grading_database import open_grading_repositories
