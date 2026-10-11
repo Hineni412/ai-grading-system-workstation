@@ -320,7 +320,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
       if (token !== serial) return
       state.value = 'error'
       message.value = error instanceof ApiError && error.code === 'assembly_assistant_scope_invalid'
-        ? '请确认已学到的章节或专项范围，再重新查看班级知识与技能。'
+        ? '请确认已学到的章节或专项范围，再重新查看班级学情。'
         : '暂时无法取得班级学情或候选题，当前选择已保留，请稍后重试。'
     }
   }

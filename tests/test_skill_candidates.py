@@ -34,10 +34,8 @@ OLD_RELEASE = "kgr_TEST_old_v1"
 @pytest.fixture(autouse=True)
 def _clear_read_result_cache():
     read_module._READ_RESULT_CACHE.clear()
-    read_module._SKILL_SOURCE_MEMO.clear()
     yield
     read_module._READ_RESULT_CACHE.clear()
-    read_module._SKILL_SOURCE_MEMO.clear()
 
 
 def _skill_keys(db: Path, prefix: str = "sk_bnu24_math_g8_upper_1_1_"):
@@ -1044,6 +1042,29 @@ def test_api_skill_candidate_flow_and_job_idempotency(tmp_path: Path) -> None:
             },
         )
         assert generic.status_code in {400, 404, 409, 422}
+
+        # Volumes without an active key-step vocabulary refuse candidate work
+        # before any paid request can be planned.
+        free_preview = client.get(
+            "/api/question-bank/skill-gaps",
+            params={"curriculum_volume_id": "bnu24-math-g9-upper"},
+        )
+        assert free_preview.status_code == 422, free_preview.text
+        free_run = client.post(
+            "/api/question-bank/skill-candidate-runs",
+            json={
+                "curriculum_volume_id": "bnu24-math-g9-upper",
+                "fingerprint": "e" * 64,
+                "client_request_token": "e" * 32,
+            },
+        )
+        assert free_run.status_code == 422, free_run.text
+        with pytest.raises(SkillCandidateInvalid, match="本册不使用关键步骤"):
+            service.create_run(
+                curriculum_volume_id="bnu24-math-g9-upper",
+                fingerprint="e" * 64,
+                request_token="f" * 32,
+            )
     finally:
         manager.shutdown()
 

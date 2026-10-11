@@ -29,6 +29,7 @@ from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.services.question_skill_index import (
     short_node_name,
     skill_anchor_ids,
+    volume_uses_key_steps,
 )
 from question_bank.services.skill_gaps import (
     gap_items,
@@ -106,6 +107,13 @@ class SkillCandidateService:
         if volume is None:
             raise SkillCandidateInvalid("请选择有效的教学学期")
         return volume
+
+    def _require_key_steps(self, volume_id: str) -> None:
+        # Candidate runs send paid requests; volumes without a key-step
+        # vocabulary must not generate a vocabulary.
+        with sqlite3.connect(self.db_path) as conn:
+            if not volume_uses_key_steps(conn, volume_id):
+                raise SkillCandidateInvalid("本册不使用关键步骤，不整理候选")
 
     def _gap_items(
         self,
@@ -234,6 +242,7 @@ class SkillCandidateService:
 
     def gap_preview(self, curriculum_volume_id: str) -> dict[str, Any]:
         volume = self._volume(curriculum_volume_id)
+        self._require_key_steps(curriculum_volume_id)
         snapshot = self._snapshot(curriculum_volume_id)
         items = self._gap_items(curriculum_volume_id, snapshot, volume)
         with _STATE_LOCK:
@@ -432,6 +441,7 @@ class SkillCandidateService:
     ) -> dict[str, Any]:
         token = _request_token(request_token)
         volume = self._volume(curriculum_volume_id)
+        self._require_key_steps(curriculum_volume_id)
         command = {
             "curriculum_volume_id": curriculum_volume_id,
             "fingerprint": str(fingerprint or ""),

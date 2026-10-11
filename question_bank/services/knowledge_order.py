@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlite3
 
 from question_bank.current_knowledge import CurrentKnowledgeResolver
-from question_bank.question_types import is_training_target
+from question_bank.question_types import is_training_target, is_type_key
 from question_bank.services.question_skill_index import (
     build_skill_snapshot, short_node_name, skill_anchor_ids,
 )
@@ -42,6 +42,16 @@ class KnowledgeSection:
     title: str
     section_id: str | None
     question_ids: list[int]
+
+
+def target_label(key: str) -> str:
+    """Display label for a primary training target: 题型/知识点/技能 by key kind."""
+    clean = str(key or "")
+    if is_type_key(clean):
+        return "题型"
+    if clean.startswith("sk_"):
+        return "技能"
+    return "知识点" if clean.strip() else ""
 
 
 def _volume_placements(volume) -> dict[str, Placement]:

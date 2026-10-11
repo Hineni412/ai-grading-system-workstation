@@ -182,18 +182,18 @@ describe('学期标准块', () => {
     });
     const host = document.createElement('div');
     document.body.append(host);
-    const app = createApp(QuestionBankStandardSummary, { volumeId: VOLUME });
+    const app = createApp(QuestionBankStandardSummary, { volumeId: VOLUME, skillsRequired: true });
     app.mount(host);
     await flush();
 
-    expect(document.body.textContent).toContain('当前技能标准 2026 春季标准 · 2026-02-01 启用');
+    expect(document.body.textContent).toContain('当前知识标准 2026 春季标准 · 2026-02-01 启用');
     expect(document.body.textContent).toContain('开学启用');
     expect(document.body.textContent).toContain('历次版本（2）');
-    expect(document.body.textContent).toContain('本学期技能 42');
-    expect(document.body.textContent).toContain('未挂技能题 7');
-    expect(document.body.textContent).toContain('技能缺口判定点 5');
+    expect(document.body.textContent).toContain('本学期关键步骤 42');
+    expect(document.body.textContent).toContain('未挂关键步骤题 7');
+    expect(document.body.textContent).toContain('关键步骤缺口 5 个判定点');
     expect(document.body.textContent).toContain('待整理 3');
-    expect(document.body.textContent).toContain('有 3 个技能缺口判定点尚未整理');
+    expect(document.body.textContent).toContain('有 3 个关键步骤缺口判定点尚未整理');
     expect(document.body.textContent).toContain('查看这些信息不调用模型。');
     expect(fetchSpy.mock.calls.every((call) => String(call[1]?.method ?? 'GET') !== 'POST')).toBe(true);
     app.unmount();
@@ -206,11 +206,26 @@ describe('学期标准块', () => {
     );
     const host = document.createElement('div');
     document.body.append(host);
-    const app = createApp(QuestionBankStandardSummary, { volumeId: VOLUME });
+    const app = createApp(QuestionBankStandardSummary, { volumeId: VOLUME, skillsRequired: true });
     app.mount(host);
     await flush();
-    expect(document.body.textContent).toContain('有 2 项已批准的新技能等待发布');
+    expect(document.body.textContent).toContain('有 2 项已批准的新关键步骤等待发布');
     expect(document.body.textContent).not.toContain('尚未整理');
+    app.unmount();
+  });
+
+  it('skips candidate data and key-step counts when the volume does not use key steps', async () => {
+    vi.spyOn(questionBankApi, 'standardSummary').mockResolvedValue(standardFixture);
+    const candidateSpy = vi.spyOn(questionBankApi, 'skillCandidateSummary');
+    const host = document.createElement('div');
+    document.body.append(host);
+    const app = createApp(QuestionBankStandardSummary, { volumeId: VOLUME, skillsRequired: false });
+    app.mount(host);
+    await flush();
+    expect(candidateSpy).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain('当前知识标准 2026 春季标准');
+    expect(document.body.textContent).not.toContain('本学期关键步骤');
+    expect(document.body.textContent).not.toContain('关键步骤缺口');
     app.unmount();
   });
 });

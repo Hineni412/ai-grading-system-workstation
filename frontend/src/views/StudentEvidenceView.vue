@@ -313,7 +313,6 @@ interface QuestionPanelTagGroupView {
 
 const questionPanelTagGroupDefs: { type: QuestionBankTagType; label: string; tone: string }[] = [
   { type: 'knowledge_point', label: '知识点', tone: 'accent' },
-  { type: 'skill', label: '技能', tone: 'accent' },
   { type: 'method', label: '解题方法', tone: 'info' },
   { type: 'thought', label: '数学思想', tone: 'success' },
   { type: 'ability', label: '能力', tone: 'warning' },
@@ -322,7 +321,6 @@ const questionPanelTagGroupDefs: { type: QuestionBankTagType; label: string; ton
   { type: 'error_type', label: '错误类型', tone: 'danger' },
   { type: 'exam_scope', label: '教材章节/考试范围', tone: 'teal' },
   { type: 'prerequisite', label: '前置知识', tone: 'accent' },
-  { type: 'sub_skill', label: '子技能', tone: 'teal' },
   { type: 'teaching_stage', label: '教学阶段', tone: 'purple' },
 ]
 
@@ -343,7 +341,7 @@ const questionPanelTagGroups = computed<QuestionPanelTagGroupView[]>(() => {
         .filter((tag) => tag.tag_type === def.type)
         .map((tag) => ({
           value: tag.tag_value,
-          display: def.type === 'knowledge_point' || def.type === 'skill' ? knowledgeLeafLabel(tag.tag_value) : tag.tag_value,
+          display: def.type === 'knowledge_point' ? knowledgeLeafLabel(tag.tag_value) : tag.tag_value,
         }))
         .filter((tag) => isReadableTagValue(tag.display)),
     }))

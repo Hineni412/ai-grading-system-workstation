@@ -16,7 +16,6 @@ export interface SessionQuestionBankAnalysisStatus {
   criteria_count: number
   complete_count: number
   pending_taxonomy_count: number
-  unlinked_skill_count: number
   incomplete_question_ids: number[]
   incomplete_source_refs: string[]
 }
@@ -31,9 +30,8 @@ function isStatus(value: unknown): value is SessionQuestionBankAnalysisStatus {
     item.criteria_count,
     item.complete_count,
     item.pending_taxonomy_count,
-    item.unlinked_skill_count,
   ]
-  return Object.keys(item).length === 9
+  return Object.keys(item).length === 8
     && counts.every((count) => Number.isSafeInteger(count) && Number(count) >= 0)
     && Array.isArray(item.incomplete_question_ids)
     && item.incomplete_question_ids.every((id) => Number.isSafeInteger(id) && id > 0)

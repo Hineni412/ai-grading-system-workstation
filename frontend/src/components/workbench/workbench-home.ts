@@ -69,11 +69,6 @@ export function buildTodoRows({ sessionId, overview, readiness, analysis, jobs, 
     need.push(row('bank', `补齐本场 ${analysis.incomplete_question_ids.length} 道题的题库资料`,
       '难度、标签、解题证据或判定点未完成', '去补齐', '/question-bank?tab=todo', '题库', 'ai'))
   }
-  if (analysis && analysis.unlinked_skill_count > 0) {
-    need.push(row('unlinked', `本场 ${analysis.unlinked_skill_count} 道题未挂技能`,
-      '这些题目缺少可用判定版本或直接技能链接，暂不能形成技能掌握度证据',
-      '去挂技能', '/question-bank?tab=todo', '题库', 'ai'))
-  }
   need.push(...trainingRows)
   if (p && p.graded_papers > 0) {
     continued.push(row('walkthrough', '看卷 10 分钟', `${overview.current_session.name} · 已批改 ${p.graded_papers}/${p.matched_papers} 份`,

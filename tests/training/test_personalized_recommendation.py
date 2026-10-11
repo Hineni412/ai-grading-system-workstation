@@ -3604,19 +3604,24 @@ def test_zero_consolidation_retries_every_old_request_fingerprint(direct_module,
 
 
 def test_handout_knowledge_order_and_edit_keep_chapter_and_skill_notes(direct_module, monkeypatch):
-    from question_bank.services.knowledge_order import Placement
+    from question_bank.services.knowledge_order import Placement, target_label
+    assert target_label('kp_bnu24_math_g8_upper_1_1_t01') == '题型'
+    assert target_label('sk_bnu24_math_g8_upper_1_1_101') == '技能'
+    assert target_label('kp_bnu24_math_g8_lower_1_1') == '知识点'
+    assert target_label('') == ''
     def placements(items, candidates, config):
         if config.purpose != 'handout':
             return None
         return {item['question_id']: Placement('ch', 1, 'TEST第一章', 's', 1, 'TEST第一节',
-            'sk_test', 'TEST技能') for item in items}
+            'kp_bnu24_math_g8_upper_1_1_t01', 'TEST题型') for item in items}
     monkeypatch.setattr(direct_module, '_handout_placements', placements)
     draft = direct_module.create(request_token='c1' * 16, diagnosis=_direct_diagnosis(),
         config=PersonalizedRecommendationConfig(purpose='handout', scope_keys=(BNU_CHAPTER4,), question_count=4),
         actor_ref='synthetic')
     items = draft['students'][0]['items']
     assert items and all(item['knowledge_section']['title'] == 'TEST第一章 · TEST第一节' for item in items)
-    assert all(item['primary_skill_name'] == 'TEST技能' for item in items)
+    assert all(item['primary_skill_name'] == 'TEST题型' for item in items)
+    assert all(item['primary_target_label'] == '题型' for item in items)
     edited = direct_module.edit(draft['draft_id'], RecommendationEditCommand(request_token='c2' * 16,
         expected_revision=1, action='exclude', student_id='A', item_id=items[0]['item_id'],
         actor_ref='synthetic', reason='TEST删除题目'))

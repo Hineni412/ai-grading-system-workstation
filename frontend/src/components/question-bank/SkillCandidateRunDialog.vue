@@ -64,7 +64,7 @@ async function loadPreview() {
     preview.value = value
     state.value = wasAmbiguous ? 'ambiguous' : 'ready'
   } catch {
-    if (!request.signal.aborted) { state.value = 'error'; message.value = '技能缺口暂时无法统计，请重试。' }
+    if (!request.signal.aborted) { state.value = 'error'; message.value = '关键步骤缺口暂时无法统计，请重试。' }
   }
 }
 
@@ -114,7 +114,7 @@ async function start() {
     clearPending()
     if (error instanceof ApiError && error.status === 409) {
       if (error.code === 'skill_candidate_revision_conflict') {
-        message.value = '技能缺口已变化，请重新统计后确认。'
+        message.value = '关键步骤缺口已变化，请重新统计后确认。'
         void loadPreview()
         return
       }
@@ -214,11 +214,11 @@ onBeforeUnmount(() => { controller?.abort(); stopPoll() })
     <div v-if="open" class="qb-modal-layer" @click.self="emit('close')">
       <DialogContent class="qb-skill-run-dialog qb-import-dialog" @close-auto-focus="restoreFocus">
         <header>
-          <DialogTitle as="h2">整理成技能候选</DialogTitle>
+          <DialogTitle as="h2">整理成关键步骤候选</DialogTitle>
           <button class="qb-link" aria-label="关闭整理面板" @click="emit('close')">关闭</button>
         </header>
-        <DialogDescription>把挂不上技能的判定点整理成候选，供你逐一审核。</DialogDescription>
-        <p v-if="state === 'loading'" role="status">正在统计技能缺口，此步骤不调用模型…</p>
+        <DialogDescription>把挂不上关键步骤的判定点整理成候选，供你逐一审核。</DialogDescription>
+        <p v-if="state === 'loading'" role="status">正在统计关键步骤缺口，此步骤不调用模型…</p>
         <p v-if="message" role="alert" class="qb-feedback is-error">{{ message }}</p>
 
         <template v-if="state === 'ambiguous' && run && !preview">

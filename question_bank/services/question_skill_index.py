@@ -10,7 +10,7 @@ from statistics import median
 from typing import Any
 from question_bank.current_knowledge import CurrentKnowledgeResolver, CurrentKnowledgeUnavailable
 
-from question_bank.question_types import is_type_key
+from question_bank.question_types import chapter_target_kinds, is_type_key
 from question_bank.solution_evidence.knowledge_links import load_point_links
 from question_bank.solution_evidence.part_assessments import SourceHash, load_profiles
 from question_bank.taxonomy.curriculum_catalog import (
@@ -48,6 +48,31 @@ def skill_anchor_ids(node_row, volume: dict[str, Any]) -> list[str]:
         if anchor not in anchors:
             anchors.append(anchor)
     return anchors
+
+
+def volume_uses_key_steps(conn: sqlite3.Connection, volume_id: object) -> bool:
+    """Whether this volume keeps an active key-step (sk_) vocabulary.
+
+    True only when the active standard anchors at least one active sk_ node in
+    this volume and its chapters train on something other than pure knowledge
+    points (type or skill rules). Repair previews and skill-candidate runs must
+    not offer key-step gaps or candidates outside these volumes.
+    """
+    volume = curriculum_volume(volume_id=str(volume_id or "").strip())
+    if volume is None:
+        return False
+    try:
+        resolver = CurrentKnowledgeResolver.from_connection(conn)
+    except (CurrentKnowledgeUnavailable, sqlite3.Error):
+        return False
+    kinds = chapter_target_kinds(resolver, volume["id"])
+    if not kinds or not any(kind != "knowledge" for kind in kinds.values()):
+        return False
+    rows = conn.execute(
+        "SELECT curriculum_anchors_json FROM knowledge_graph_node_profiles "
+        "WHERE release_id=(SELECT release_id FROM knowledge_graph_releases WHERE status='active') "
+        "AND status='active' AND stable_key LIKE 'sk\\_%' ESCAPE '\\'")
+    return any(skill_anchor_ids({"curriculum_anchors_json": row[0]}, volume) for row in rows)
 
 
 def load_skill_inventory(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -100,22 +125,26 @@ def build_skill_snapshot(
                                  source_hashes=source_hashes)
     usable = {qid: profile for qid, profile in profiles.items() if profile.get("available")}
     links = load_point_links(db_path, [profile["evidence_version_id"] for profile in usable.values()], release, connection=conn)
-    by_type: dict[str, set[int]] = defaultdict(set)
-    knowledge_by_question: dict[int, set[str]] = defaultdict(set)
-    knowledge_coverage_by_question: dict[int, set[str]] = defaultdict(set)
-    type_hits: dict[int, dict[str, list[dict[str, str]]]] = {}
-    point_counts: dict[int, int] = {}
-    by_skill: dict[str, set[int]] = defaultdict(set)
-    by_question: dict[int, dict[str, list[dict[str, str]]]] = {}
-    evidence_versions: dict[int, str] = {}
-    gap_points: dict[int, list[dict[str, Any]]] = {}
+    parts = _profile_parts(usable, links)
+    tag_aggregates = _tag_aggregates(conn, set(questions), nodes)
+    return _assemble_skill_snapshot(inventory, questions, members, volumes,
+                                    profiles, usable, parts, tag_aggregates)
+
+
+def _profile_parts(
+    usable: dict[int, Any],
+    links: dict[str, Any],
+) -> dict[int, dict[str, Any]]:
+    """每题证据投影：技能命中、题型命中、判定点数、缺口、知识点覆盖。"""
+    parts: dict[int, dict[str, Any]] = {}
     for qid, profile in usable.items():
         skills: dict[str, list[dict[str, str]]] = {}
         types: dict[str, list[dict[str, str]]] = {}
         point_links = links.get(profile["evidence_version_id"], {})
-        evidence_versions[qid] = str(profile["evidence_version_id"])
         number = 0
         gaps: list[dict[str, Any]] = []
+        knowledge: set[str] = set()
+        coverage: set[str] = set()
         for part in profile["evidence"].get("parts", []):
             part_id = str(part.get("part_id") or "")
             for point in part.get("evidence_points", []):
@@ -129,20 +158,19 @@ def build_skill_snapshot(
                             and not link.stable_key.startswith('sk_') and not is_type_key(link.stable_key)):
                         fine = curriculum_knowledge_node(link.stable_key)
                         if fine and fine['level'] == 3:
-                            knowledge_coverage_by_question[qid].add(link.stable_key)
+                            coverage.add(link.stable_key)
                     if link.role == 'direct' and link.resolution_status == 'resolved':
                         if is_type_key(link.stable_key):
                             types.setdefault(link.stable_key, []).append({'point_id': point_id, 'point_label': str(point.get('target') or '')})
                         elif not link.stable_key.startswith('sk_'):
                             anchor = curriculum_knowledge_node(link.stable_key)
                             if anchor and anchor['level'] == 3:
-                                knowledge_by_question[qid].add(link.stable_key)
+                                knowledge.add(link.stable_key)
                     if link.role == "direct" and link.resolution_status == "resolved" and link.stable_key.startswith("sk_"):
                         has_skill_link = True
                         hit = {"point_id": point_id, "point_label": f"判定点 {number}：{point.get('target', '')}"}
                         if hit not in skills.setdefault(link.stable_key, []):
                             skills[link.stable_key].append(hit)
-                        by_skill[link.stable_key].add(qid)
                 if not has_skill_link:
                     gaps.append({"point_id": point_id, "part_id": part_id, "number": number,
                                  "target": str(point.get("target") or ""),
@@ -150,14 +178,22 @@ def build_skill_snapshot(
                                  "direct_keys": [link.stable_key for link in point_link_rows
                                                  if link.role == "direct" and link.resolution_status == "resolved"
                                                  and link.stable_key and not link.stable_key.startswith("sk_")]})
-        point_counts[qid] = number
-        by_question[qid] = skills
-        type_hits[qid] = types
-        if gaps:
-            gap_points[qid] = gaps
+        parts[qid] = {"skills": skills, "types": types, "point_count": number,
+                      "gaps": gaps, "evidence_version_id": str(profile["evidence_version_id"]),
+                      "knowledge": knowledge, "coverage": coverage}
+    return parts
+
+
+def _tag_aggregates(
+    conn: sqlite3.Connection,
+    questions: set[int],
+    nodes: dict[str, Any],
+) -> dict[str, Any]:
+    """question_tags 派生的聚合：题型归属、主题、章节。标签扫描本身很轻。"""
     topics: dict[str, set[int]] = defaultdict(set)
     topic_keys: dict[str, str] = {}
     sections: dict[str, set[int]] = defaultdict(set)
+    by_type: dict[str, set[int]] = defaultdict(set)
     try:
         resolver = CurrentKnowledgeResolver.from_connection(conn)
     except CurrentKnowledgeUnavailable:
@@ -196,16 +232,58 @@ def build_skill_snapshot(
                 topics[value].add(qid)
         else:
             sections[str(row["tag_value"])].add(qid)
+    return {"primary_types": primary_types, "secondary_types": dict(secondary_types),
+            "by_type": dict(by_type), "topics": dict(topics), "topic_keys": topic_keys,
+            "sections": dict(sections)}
+
+
+def _assemble_skill_snapshot(
+    inventory: dict[str, Any],
+    questions: dict[int, Any],
+    members: dict[Any, set[int]],
+    volumes: dict[Any, set[int]],
+    profiles: dict[int, Any],
+    usable: dict[int, Any],
+    parts: dict[int, dict[str, Any]],
+    tag_aggregates: dict[str, Any],
+) -> dict[str, Any]:
+    """由每题投影还原聚合并按原构建顺序落位。"""
+    by_skill: dict[str, set[int]] = defaultdict(set)
+    by_question: dict[int, dict[str, list[dict[str, str]]]] = {}
+    type_hits: dict[int, dict[str, list[dict[str, str]]]] = {}
+    point_counts: dict[int, int] = {}
+    gap_points: dict[int, list[dict[str, Any]]] = {}
+    evidence_versions: dict[int, str] = {}
+    knowledge_by_question: dict[int, set[str]] = {}
+    knowledge_coverage_by_question: dict[int, set[str]] = {}
+    for qid in usable:
+        part = parts[qid]
+        by_question[qid] = part["skills"]
+        type_hits[qid] = part["types"]
+        point_counts[qid] = part["point_count"]
+        evidence_versions[qid] = part["evidence_version_id"]
+        if part["gaps"]:
+            gap_points[qid] = part["gaps"]
+        if part["knowledge"]:
+            knowledge_by_question[qid] = part["knowledge"]
+        if part["coverage"]:
+            knowledge_coverage_by_question[qid] = part["coverage"]
+        for skill_key in part["skills"]:
+            by_skill[skill_key].add(qid)
+    release, nodes = inventory["release"], inventory["nodes"]
     return {"release": release, "nodes": nodes, "questions": questions, "members": dict(members),
             "volumes": dict(volumes), "by_skill": dict(by_skill), "by_question": by_question,
             "point_counts": point_counts, "no_usable": set(questions) - set(usable),
             "unlinked": {qid for qid in questions if not by_question.get(qid)},
             "evidence_versions": evidence_versions, "gap_points": gap_points,
-            "primary_types": primary_types, "secondary_types": dict(secondary_types), "by_type": dict(by_type), "type_hits": type_hits,
-            "knowledge_by_question": dict(knowledge_by_question),
-            "knowledge_coverage_by_question": dict(knowledge_coverage_by_question),
+            "primary_types": tag_aggregates["primary_types"],
+            "secondary_types": tag_aggregates["secondary_types"],
+            "by_type": tag_aggregates["by_type"], "type_hits": type_hits,
+            "knowledge_by_question": knowledge_by_question,
+            "knowledge_coverage_by_question": knowledge_coverage_by_question,
             "profiles": profiles,
-            "topics": dict(topics), "topic_keys": topic_keys, "sections": dict(sections)}
+            "topics": tag_aggregates["topics"], "topic_keys": tag_aggregates["topic_keys"],
+            "sections": tag_aggregates["sections"]}
 
 
 def skill_index(snapshot: dict[str, Any], volume_id: str, review_ids: set[int]) -> dict[str, Any]:

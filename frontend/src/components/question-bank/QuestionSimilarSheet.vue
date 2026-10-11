@@ -79,7 +79,7 @@ async function toggleBasket(questionId: number): Promise<void> {
 const SIMILAR_REASON_KIND_LABELS: Partial<Record<SimilarityReasonKind, string>> = {
   type: '同题型',
   knowledge_point: '同知识点',
-  skill: '同技能',
+  skill: '同关键步骤',
   method: '同解法',
   model: '同模型',
 }

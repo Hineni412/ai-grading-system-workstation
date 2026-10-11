@@ -1849,7 +1849,6 @@ class QuestionBankReadService:
             ).fetchall()
             materials = self._analysis_materials(conn, [int(row["id"]) for row in rows])
             items = [dict(row, **materials[int(row["id"])]) for row in rows]
-            snapshot = self._skill_snapshot(question_ids=tuple(int(item["id"]) for item in items)) if items else None
         incomplete = [
             item
             for item in items
@@ -1862,7 +1861,6 @@ class QuestionBankReadService:
         ]
         return {
             "question_count": len(items),
-            "unlinked_skill_count": len(snapshot["unlinked"]) if snapshot else 0,
             "tagged_count": sum(
                 bool(item["difficulty_ready"]) and bool(item["tags_ready"])
                 for item in items

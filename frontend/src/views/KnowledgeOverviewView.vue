@@ -300,8 +300,7 @@ onBeforeUnmount(() => {
               <ul class="mastery-map-others"><li v-for="item in selected.other_questions" :key="`${item.session_name}|${item.question_label}`">{{ item.session_name }} 第{{ item.question_label }}题 · 得分率 {{ formatPercent(item.class_rate) }}</li></ul>
             </template>
           </section>
-          <section v-if="!typeMode" class="mastery-map-related"><h3>{{ selected.kind === 'skill' ? '相关知识点' : '相关技能' }}</h3>
-            <StatePanel v-if="!related.length" kind="empty" compact title="题库暂无关联。" />
+          <section v-if="!typeMode && related.length" class="mastery-map-related"><h3>{{ selected.kind === 'skill' ? '相关知识点' : '相关技能' }}</h3>
             <button v-for="item in related" :key="item.node.knowledge_key" type="button" @click="select(item.node)">
               <i :class="`heat-${heatLevel(item.node)}`" /><span><strong>{{ shortNodeName(item.node) }}</strong><small>明显薄弱 {{ item.node.distribution.weak }} 人 · {{ item.association.basis === 'same_part' ? `同一小问 ${item.association.same_part_question_count} 题` : `仅同题出现 ${item.association.question_count} 题（虚线）` }}</small></span>
             </button>

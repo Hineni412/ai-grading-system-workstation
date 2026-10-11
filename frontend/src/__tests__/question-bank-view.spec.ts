@@ -115,6 +115,7 @@ function prepareInitialQuestionBank() {
   const preview = vi.spyOn(questionBankApi, 'repairPreview').mockResolvedValue({
     curriculum_volume_id: scope.selectedVolumeId, kind: 'all', fingerprint: 'a'.repeat(64),
     scanned_count: 1, question_count: 0, repairable_count: 0, model_calls: 0, items: [],
+    skills_required: true,
     counts: { tags: 0, evidence: 0, criteria: 0, skills: 0, types: 0, knowledge_points: 0 },
   })
   return { host, pinia, router, bank, index, profile, preview }
@@ -400,6 +401,7 @@ describe('question bank workspace', () => {
     const pinia = createPinia()
     const preview = { curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'skills' as const,
       fingerprint: 'a'.repeat(64), scanned_count: 100, question_count: 2, repairable_count: 1, model_calls: 0,
+      skills_required: true,
       counts: { types: 0, knowledge_points: 0, tags: 0, evidence: 1, criteria: 1, skills: 2 }, items: [
         { id: 17, question_number: '1', paper_title: 'TEST-试卷', missing: ['skills' as const], blocked_reason: '', revision: 'b'.repeat(64) },
         { id: 18, question_number: '2', paper_title: 'TEST-试卷', missing: ['evidence' as const, 'criteria' as const, 'skills' as const], blocked_reason: '题目内容或图片无法读取', revision: 'c'.repeat(64) },
@@ -434,6 +436,7 @@ describe('question bank workspace', () => {
     const all: QuestionRepairPreview = {
       curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'all', fingerprint: 'a'.repeat(64),
       scanned_count: 20, question_count: 4, repairable_count: 3, model_calls: 0,
+      skills_required: true,
       counts: { tags: 1, evidence: 1, criteria: 0, skills: 2, types: 1, knowledge_points: 0 },
       items: [
         { id: 17, question_number: '1', paper_title: 'TEST-缺分析', missing: ['tags', 'skills'], blocked_reason: '', revision: 'b'.repeat(64) },
@@ -452,7 +455,7 @@ describe('question bank workspace', () => {
     await nextTick()
     expect(document.body.textContent).toContain('发现 2 道缺失题；本次可处理 1 道。')
     expect(document.body.textContent).toContain('题型 · 0 题缺失')
-    expect(document.body.textContent).toContain('技能关联 · 1 题缺失')
+    expect(document.body.textContent).toContain('关键步骤关联 · 1 题缺失')
     expect(document.body.textContent).not.toContain('TEST-只缺题型')
     expect(document.body.textContent).not.toContain('TEST-只缺技能')
     const button = [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === '确认补齐 1 题')
@@ -470,6 +473,7 @@ describe('question bank workspace', () => {
     const host = document.createElement('div'); document.body.append(host)
     const preview = { curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'skills' as const,
       fingerprint: 'a'.repeat(64), scanned_count: 1, question_count: 1, repairable_count: 1, model_calls: 0,
+      skills_required: true,
       counts: { types: 0, knowledge_points: 0, tags: 0, evidence: 0, criteria: 0, skills: 1 }, items: [
         { id: 17, question_number: '1', paper_title: 'TEST-当前清单', missing: ['skills' as const], blocked_reason: '', revision: 'b'.repeat(64) },
       ] }
@@ -1691,6 +1695,7 @@ describe('question bank workspace', () => {
   const todoPreview = {
     curriculum_volume_id: 'bnu24-math-g8-upper', kind: 'all' as const,
     fingerprint: 'a'.repeat(64), scanned_count: 4, question_count: 4, repairable_count: 4, model_calls: 0,
+    skills_required: true,
     counts: { types: 1, knowledge_points: 1, tags: 1, evidence: 1, criteria: 1, skills: 2 },
     items: [
       { id: 21, question_number: '3', paper_title: 'TEST-缺标签卷', missing: ['tags' as const, 'evidence' as const], blocked_reason: '', revision: 'b'.repeat(64) },
@@ -1722,12 +1727,36 @@ describe('question bank workspace', () => {
     expect(articles).toHaveLength(2)
     expect(articles[0]?.textContent).toContain('缺题目标签')
     expect(articles[1]?.textContent).toContain('缺判定点')
-    expect(articles[1]?.textContent).toContain('缺技能关联')
+    expect(articles[1]?.textContent).toContain('缺关键步骤')
     articles[0]?.querySelector<HTMLButtonElement>('button')?.click()
     expect(openQuestion).toHaveBeenCalledWith({ questionId: 21, paperId: null })
     host.querySelector<HTMLButtonElement>('.qb-todo-filter-action button')?.click()
     expect(repair).toHaveBeenCalledWith('analysis')
     expect(preview).toHaveBeenCalledTimes(1); expect(list).toHaveBeenCalledTimes(1)
+  })
+
+  it('hides the key-step filter and gap maintenance when the volume has no key-step vocabulary', async () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const pinia = createPinia(); useCurriculumScopeStore(pinia).selectedVolumeId = 'bnu24-math-g8-lower'
+    vi.spyOn(questionBankApi, 'listQuestions').mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20, total_pages: 0 })
+    vi.spyOn(questionBankApi, 'repairPreview').mockResolvedValue({ ...todoPreview,
+      curriculum_volume_id: 'bnu24-math-g8-lower', skills_required: false,
+      question_count: 1, repairable_count: 1, items: [todoPreview.items[0]!] })
+    const candidates = vi.spyOn(questionBankApi, 'skillCandidateSummary')
+    const app = createApp({ render: () => h(QuestionBankTodo, { index: null, pendingCount: 0 }) })
+    app.use(pinia).mount(host); mounted.push(app)
+    await vi.waitFor(() => expect(host.querySelector('.qb-todo-overview h2')?.textContent).toBe('待补齐 1 题'))
+    expect([...host.querySelectorAll<HTMLButtonElement>('.qb-todo-filters button')].map(button => button.textContent).join())
+      .not.toContain('缺关键步骤')
+    const maintenance = [...host.querySelectorAll<HTMLDetailsElement>('.qb-todo-fold')]
+      .find(details => details.textContent?.includes('辅助维护'))!
+    expect(maintenance.querySelector('summary')?.textContent).toContain('标准与新词')
+    maintenance.open = true
+    maintenance.dispatchEvent(new Event('toggle'))
+    await nextTick()
+    await vi.waitFor(() => expect(candidates).not.toHaveBeenCalled())
+    expect(maintenance.textContent).not.toContain('关键步骤缺口')
+    expect(maintenance.textContent).not.toContain('题量少的关键步骤')
   })
 
   it('keeps the repair list usable when the independent review list fails', async () => {

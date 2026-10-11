@@ -169,8 +169,7 @@ async function installSyntheticApi(
     if (/^\/api\/sessions\/\d+\/question-bank-status$/.test(pathname)) {
       if (options.bankFailure) { await route.fulfill({ status: 503, body: 'TEST-bank-failure' }); return }
       await fulfillJson(route, { question_count: 1, tagged_count: 0, evidence_count: 0, criteria_count: 0, complete_count: 0,
-        pending_taxonomy_count: 0, unlinked_skill_count: options.phaseTwo ? 1 : 0,
-        incomplete_question_ids: [1], incomplete_source_refs: ['Q1'] })
+        pending_taxonomy_count: 0, incomplete_question_ids: [1], incomplete_source_refs: ['Q1'] })
       return
     }
     if (pathname === '/api/training/pending-summary') {
@@ -301,7 +300,7 @@ test('second phase keeps units, report status and training draft entry visible',
   await expect(page.locator('.workbench-todo')).toContainText('证据 1 份')
   await expect(page.locator('[data-todo="reports"]')).toContainText('3 人需重新生成')
   await expect(page.locator('[data-todo="reports"]')).toContainText('8 人已是最新')
-  await expect(page.locator('[data-todo="unlinked"]')).toContainText('本场 1 道题未挂技能')
+  await expect(page.locator('[data-todo="bank"]')).toContainText('补齐本场 1 道题的题库资料')
   await expect(page.locator('.workbench-todo [data-variant="primary"]')).toHaveCount(1)
   await expectNoHorizontalOverflow(page)
   await captureVisualEvidence(page, testInfo, 1024)

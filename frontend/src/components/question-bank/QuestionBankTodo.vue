@@ -23,26 +23,28 @@ const reviewOpen = ref(false)
 const gapActive = computed(() => !!candidateSummary.value?.active_run)
 const reviewDisabled = computed(() => !candidateSummary.value || (!candidateSummary.value.pending_suggestion_count && !candidateSummary.value.approved_unpublished_skill_count))
 const repairPreview = computed(() => scope.selectedVolumeId ? bank.repairPreviews.get(`${scope.selectedVolumeId}:all`) ?? null : null)
+const skillsRequired = computed(() => repairPreview.value?.skills_required === true)
 const previewFailed = ref(false)
 const previewLoading = ref(false)
 const itemLimit = ref(20)
 const analysisParts: QuestionRepairPart[] = ['tags', 'evidence', 'criteria']
-const partLabels: Record<QuestionRepairPart, string> = { tags: '题目标签', evidence: '解题证据', criteria: '判定点', skills: '技能关联', types: '题型', knowledge_points: '知识点关联' }
+const partLabels: Record<QuestionRepairPart, string> = { tags: '题目标签', evidence: '解题证据', criteria: '判定点', skills: '关键步骤', types: '题型', knowledge_points: '知识点关联' }
 const filterDefinitions = [
   { key: 'all', label: '全部' },
   { key: 'analysis', label: '分析未完成' },
   { key: 'types', label: '缺题型' },
   { key: 'knowledge_points', label: '缺知识点' },
-  { key: 'skills', label: '缺技能关联' },
+  { key: 'skills', label: '缺关键步骤' },
 ] as const
 const filter = ref<typeof filterDefinitions[number]['key']>('all')
 function matches(missing: QuestionRepairPart[], key: typeof filter.value): boolean {
   return key === 'all' || (key === 'analysis' ? missing.some(part => analysisParts.includes(part)) : missing.includes(key))
 }
-const filters = computed(() => filterDefinitions.map(definition => ({ ...definition, count: repairPreview.value?.items.filter(item => matches(item.missing, definition.key)).length ?? null })))
+const filters = computed(() => filterDefinitions.filter(definition => definition.key !== 'skills' || skillsRequired.value).map(definition => ({ ...definition, count: repairPreview.value?.items.filter(item => matches(item.missing, definition.key)).length ?? null })))
 const items = computed(() => (repairPreview.value?.items ?? []).filter(item => matches(item.missing, filter.value)))
 const repairKind = computed<QuestionRepairKind>(() => filter.value === 'analysis' ? 'analysis' : filter.value === 'skills' ? 'skills' : 'all')
-const repairLabel = computed(() => repairKind.value === 'analysis' ? 'AI 补齐分析' : repairKind.value === 'skills' ? 'AI 补挂技能' : 'AI 补齐')
+const repairLabel = computed(() => repairKind.value === 'analysis' ? 'AI 补齐分析' : repairKind.value === 'skills' ? 'AI 补挂关键步骤' : 'AI 补齐')
+watch(skillsRequired, required => { if (!required && filter.value === 'skills') filter.value = 'all' })
 watch(filter, () => { itemLimit.value = 20 })
 
 const review = ref<Awaited<ReturnType<typeof questionBankApi.listQuestions>> | null>(null)
@@ -156,17 +158,19 @@ onBeforeUnmount(() => { previewSequence++; reviewController?.abort() })
           </template>
         </details>
         <details :key="scope.selectedVolumeId" class="qb-todo-group qb-todo-fold" @toggle="openMaintenance">
-          <summary><ChevronDown class="qb-caret" aria-hidden="true" /><strong>辅助维护</strong><span>技能缺口、标准与新词</span></summary>
+          <summary><ChevronDown class="qb-caret" aria-hidden="true" /><strong>辅助维护</strong><span>{{ skillsRequired ? '关键步骤缺口、标准与新词' : '标准与新词' }}</span></summary>
           <template v-if="maintenanceLoaded">
-            <p>技能缺口按涉及题数展示。一道题可有多个缺口判定点，此处题数不与待补齐题数相加。</p>
-            <section class="qb-todo-maintenance">
-              <header><h2>技能缺口</h2><span v-if="candidateSummary" class="qb-todo-count">{{ candidateSummary.gap_question_count }} 题</span></header>
-              <p v-if="candidateSummary">涉及 {{ candidateSummary.gap_question_count }} 题、{{ candidateSummary.counts.ready + candidateSummary.counts.pending_review }} 个判定点。AI 补挂后仍无法归入技能，需要整理并审核。</p>
-              <div class="qb-todo-maintenance-actions"><button v-if="candidateSummary" class="qb-link" :disabled="gapActive || !candidateSummary.counts.ready" @click="runDialogOpen = true">{{ gapActive ? '正在整理…' : '整理成技能候选' }}</button><button v-if="candidateSummary" class="qb-link" :disabled="reviewDisabled" @click="reviewOpen = true">审核技能候选 · {{ candidateSummary.pending_suggestion_count }} 项</button></div>
-            </section>
-            <QuestionBankStandardSummary ref="summaryRef" :volume-id="scope.selectedVolumeId" @candidate="candidateSummary = $event" />
+            <template v-if="skillsRequired">
+              <p>关键步骤缺口按涉及题数展示。一道题可有多个缺口判定点，此处题数不与待补齐题数相加。</p>
+              <section class="qb-todo-maintenance">
+                <header><h2>关键步骤缺口</h2><span v-if="candidateSummary" class="qb-todo-count">{{ candidateSummary.gap_question_count }} 题</span></header>
+                <p v-if="candidateSummary">涉及 {{ candidateSummary.gap_question_count }} 题、{{ candidateSummary.counts.ready + candidateSummary.counts.pending_review }} 个判定点。AI 补挂后仍无法归入关键步骤，需要整理并审核。</p>
+                <div class="qb-todo-maintenance-actions"><button v-if="candidateSummary" class="qb-link" :disabled="gapActive || !candidateSummary.counts.ready" @click="runDialogOpen = true">{{ gapActive ? '正在整理…' : '整理成关键步骤候选' }}</button><button v-if="candidateSummary" class="qb-link" :disabled="reviewDisabled" @click="reviewOpen = true">审核关键步骤候选 · {{ candidateSummary.pending_suggestion_count }} 项</button></div>
+              </section>
+            </template>
+            <QuestionBankStandardSummary ref="summaryRef" :volume-id="scope.selectedVolumeId" :skills-required="skillsRequired" @candidate="candidateSummary = $event" />
             <section class="qb-todo-maintenance"><header><h2>新词例外</h2><span>{{ pendingCount }} 条</span><button class="qb-link" @click="emit('taxonomy')">去处理 →</button></header><p>分析中遇到的未收录表述，确认后归入知识点或细条目。</p></section>
-            <details class="qb-todo-maintenance"><summary>题量少技能 · {{ underused.length }} 项</summary><p>当前题量少于 5 道的技能。</p><article v-for="skill in underused.slice(0, underusedLimit)" :key="skill.stable_key"><span>{{ skill.display_name }} · {{ skill.question_count }} 题</span><AppButton variant="secondary" @click="emit('skill', skill.stable_key)">查看题目 →</AppButton></article><button v-if="underusedLimit < underused.length" class="qb-link" @click="underusedLimit += 20">查看更多</button></details>
+            <details v-if="skillsRequired" class="qb-todo-maintenance"><summary>题量少的关键步骤 · {{ underused.length }} 项</summary><p>当前题量少于 5 道的关键步骤。</p><article v-for="skill in underused.slice(0, underusedLimit)" :key="skill.stable_key"><span>{{ skill.display_name }} · {{ skill.question_count }} 题</span><AppButton variant="secondary" @click="emit('skill', skill.stable_key)">查看题目 →</AppButton></article><button v-if="underusedLimit < underused.length" class="qb-link" @click="underusedLimit += 20">查看更多</button></details>
           </template>
         </details>
       </div>

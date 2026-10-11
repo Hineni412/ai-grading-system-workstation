@@ -142,6 +142,7 @@ export interface PersonalizedRecommendationRelation {
 export interface PersonalizedRecommendationItem {
   knowledge_section?: { id: string | null; title: string }
   primary_skill_name?: string
+  primary_target_label?: string
   practice_purpose?: 'remediation' | 'consolidation' | 'new'
   difficulty_basis?: string
   evidence_confidence?: 'repeated' | 'sparse' | 'auxiliary' | 'unknown'

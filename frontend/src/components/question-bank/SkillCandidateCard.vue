@@ -54,8 +54,8 @@ function init() {
 }
 
 const decisionLabels: Record<string, string> = {
-  link_existing: '归入已有技能',
-  new_skill: '新技能',
+  link_existing: '归入已有关键步骤',
+  new_skill: '新关键步骤',
   keep_section: '保持只归小节',
 }
 const skills = computed(() => {
@@ -83,7 +83,7 @@ const newSkillEdited = computed(() => (
   || examples.value.join('\n') !== props.suggestion.new_skill.examples.join('\n')
 ))
 const explanation = computed(() => draft.choice === 'link_existing'
-  ? '采纳后立即为这些判定点挂上该技能，会影响掌握度和推荐。'
+  ? '采纳后立即为这些判定点挂上该关键步骤，会影响失分步骤诊断；仍按技能规则的章节还会影响掌握度和推荐。'
   : draft.choice === 'new_skill' || draft.choice === 'merge_into_approved'
     ? '采纳后进入“已批准待发布”，暂不影响掌握度和推荐。'
     : '')
@@ -122,11 +122,11 @@ function submit() {
       </li>
     </ul>
     <fieldset class="sc-card__choices" :disabled="busy">
-      <label><input v-model="draft.choice" type="radio" value="link_existing" :disabled="suggestion.stale"> 归入已有技能</label>
+      <label><input v-model="draft.choice" type="radio" value="link_existing" :disabled="suggestion.stale"> 归入已有关键步骤</label>
       <select v-if="draft.choice === 'link_existing'" v-model="draft.skillKey" class="app-input">
         <option v-for="skill in skills" :key="skill.stable_key" :value="skill.stable_key">{{ skill.display_name }}</option>
       </select>
-      <label><input v-model="draft.choice" type="radio" value="new_skill" :disabled="suggestion.stale"> 作为新技能</label>
+      <label><input v-model="draft.choice" type="radio" value="new_skill" :disabled="suggestion.stale"> 作为新关键步骤</label>
       <div v-if="draft.choice === 'new_skill'" class="sc-card__fields">
         <label>名称 <input v-model="draft.name" class="app-input" maxlength="120"></label>
         <label>所属小节 <select v-model="draft.sectionKey" class="app-input">
@@ -136,7 +136,7 @@ function submit() {
         <label>不包括（排除）<textarea v-model="draft.exclude" class="app-input" rows="2" /></label>
         <label>典型表现（每行一条，最多 3 条）<textarea v-model="draft.examplesText" class="app-input" rows="3" /></label>
       </div>
-      <label><input v-model="draft.choice" type="radio" value="merge_into_approved" :disabled="suggestion.stale || !approved.length"> 并入已批准的新技能</label>
+      <label><input v-model="draft.choice" type="radio" value="merge_into_approved" :disabled="suggestion.stale || !approved.length"> 并入已批准的新关键步骤</label>
       <select v-if="draft.choice === 'merge_into_approved'" v-model="draft.approvedSkillId" class="app-input">
         <option v-for="skill in approved" :key="skill.skill_id" :value="skill.skill_id">{{ skill.name }}</option>
       </select>

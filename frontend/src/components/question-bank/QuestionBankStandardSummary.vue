@@ -6,7 +6,7 @@ import {
   type SkillCandidateSummary,
 } from '../../api/question-bank'
 
-const props = defineProps<{ volumeId: string }>()
+const props = defineProps<{ volumeId: string; skillsRequired?: boolean }>()
 const emit = defineEmits<{ candidate: [summary: SkillCandidateSummary | null] }>()
 
 const standard = ref<QuestionStandardSummary | null>(null)
@@ -23,10 +23,10 @@ const hint = computed(() => {
   const summary = candidate.value
   if (!summary) return ''
   if (summary.approved_unpublished_skill_count > 0) {
-    return `有 ${summary.approved_unpublished_skill_count} 项已批准的新技能等待发布。新技能在学期标准修订时统一发布，发布前会单独征得你的同意并先备份。`
+    return `有 ${summary.approved_unpublished_skill_count} 项已批准的新关键步骤等待发布。新关键步骤在学期标准修订时统一发布，发布前会单独征得你的同意并先备份。`
   }
   if (summary.counts.ready > 0) {
-    return `有 ${summary.counts.ready} 个技能缺口判定点尚未整理，可在下方“技能缺口”中整理成技能候选。`
+    return `有 ${summary.counts.ready} 个关键步骤缺口判定点尚未整理，可在下方“关键步骤缺口”中整理成关键步骤候选。`
   }
   return ''
 })
@@ -45,7 +45,9 @@ async function refresh() {
   failed.value = false
   const [standardResult, candidateResult] = await Promise.allSettled([
     questionBankApi.standardSummary(props.volumeId, request.signal),
-    questionBankApi.skillCandidateSummary(props.volumeId, request.signal),
+    props.skillsRequired
+      ? questionBankApi.skillCandidateSummary(props.volumeId, request.signal)
+      : Promise.resolve(null),
   ])
   if (request.signal.aborted) return
   loading.value = false
@@ -55,7 +57,7 @@ async function refresh() {
   emit('candidate', candidate.value)
 }
 
-watch(() => props.volumeId, () => void refresh(), { immediate: true })
+watch(() => [props.volumeId, props.skillsRequired], () => void refresh(), { immediate: true })
 onBeforeUnmount(() => controller?.abort())
 defineExpose({ refresh })
 </script>
@@ -65,7 +67,7 @@ defineExpose({ refresh })
     <p v-if="loading" role="status">正在读取学期标准…</p>
     <template v-else-if="standard">
       <p v-if="standard.active_release" class="qb-standard-line">
-        当前技能标准 <strong>{{ standard.active_release.label }}</strong>
+        当前知识标准 <strong>{{ standard.active_release.label }}</strong>
         <template v-if="standard.active_release.activated_at">
           · {{ datePart(standard.active_release.activated_at) }} 启用
         </template>
@@ -73,7 +75,7 @@ defineExpose({ refresh })
           · {{ standard.active_release.reason }}
         </template>
       </p>
-      <p v-else class="qb-standard-line">当前没有可用的技能标准。</p>
+      <p v-else class="qb-standard-line">当前没有可用的知识标准。</p>
       <details v-if="standard.versions.length" class="qb-standard-history">
         <summary>历次版本（{{ standard.versions.length }}）</summary>
         <ul>
@@ -87,14 +89,14 @@ defineExpose({ refresh })
           </li>
         </ul>
       </details>
-      <p class="qb-standard-counts">
-        <span>本学期技能 <strong>{{ standard.skill_count }}</strong> 项</span>
-        <span>未挂技能题 <strong>{{ standard.unlinked_question_count }}</strong> 题</span>
-        <span>技能缺口 <strong>{{ standard.gap_point_count }}</strong> 个判定点</span>
+      <p v-if="skillsRequired" class="qb-standard-counts">
+        <span>本学期关键步骤 <strong>{{ standard.skill_count }}</strong> 项</span>
+        <span>未挂关键步骤题 <strong>{{ standard.unlinked_question_count }}</strong> 题</span>
+        <span>关键步骤缺口 <strong>{{ standard.gap_point_count }}</strong> 个判定点</span>
       </p>
       <p v-if="candidate" class="qb-standard-breakdown">
         待整理 {{ candidate.counts.ready }} 个判定点 · 待审核 {{ candidate.counts.pending_review }} 个判定点
-        · 已批准待发布 {{ candidate.approved_unpublished_skill_count }} 项技能
+        · 已批准待发布 {{ candidate.approved_unpublished_skill_count }} 项关键步骤
         · 保持只归小节 {{ candidate.counts.dismissed }} 个判定点 · 未定位小节 {{ candidate.counts.unlocated }} 个判定点
       </p>
       <p v-if="hint" class="qb-standard-hint">{{ hint }}</p>

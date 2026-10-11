@@ -21,7 +21,7 @@ vi.mock('../api/template-regions', () => ({ fetchRegionReadiness: vi.fn() }))
 vi.mock('../api/session-question-bank-sync', () => ({ getSessionQuestionBankAnalysisStatus: vi.fn() }))
 const ready = { session_id: 7, scoring_configured: true, template_present: true, template_ready: true }
 const bank = { question_count: 2, tagged_count: 1, evidence_count: 1, criteria_count: 1, complete_count: 1,
-  pending_taxonomy_count: 0, unlinked_skill_count: 0, incomplete_question_ids: [1], incomplete_source_refs: ['Q1'] }
+  pending_taxonomy_count: 0, incomplete_question_ids: [1], incomplete_source_refs: ['Q1'] }
 beforeEach(() => {
   vi.restoreAllMocks()
   vi.clearAllMocks()
@@ -183,15 +183,16 @@ afterEach(() => {
 
 
 describe('workbench second phase', () => {
-  it('adds separate training units, unlinked questions and stale reports with one primary action', async () => {
+  it('adds separate training units, incomplete-bank and stale reports with one primary action', async () => {
     vi.mocked(trainingApi.getPendingSummary).mockResolvedValue(pendingTraining)
-    vi.mocked(getSessionQuestionBankAnalysisStatus).mockResolvedValue({ ...bank, unlinked_skill_count: 1 })
+    vi.mocked(getSessionQuestionBankAnalysisStatus).mockResolvedValue(bank)
     const { host, router } = await mountView({ overviewValue: { ...overview,
       personal_reports: { current: 8, stale: 3, missing: 1 } } })
     await vi.waitFor(() => expect(host.textContent).toContain('核对 2 页训练卷扫描'))
     expect(host.textContent).toContain('判定 3 份')
     expect(host.textContent).toContain('证据 1 份')
-    expect(host.textContent).toContain('本场 1 道题未挂技能')
+    expect(host.textContent).toContain('补齐本场 1 道题的题库资料')
+    expect(host.textContent).not.toContain('未挂技能')
     expect(host.textContent).toContain('8 人已是最新')
     expect(host.querySelectorAll('.workbench-todo [data-variant="primary"]')).toHaveLength(1)
     clickButton(host, '去查看')

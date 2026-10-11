@@ -792,7 +792,11 @@ class DiagnosisProfileService:
             for item in knowledge_catalog:
                 item["node_kind"] = facets_index.get(item["knowledge_key"], {}).get("kind", "topic")
                 item["target_kind"] = target_kind_for_key(item["knowledge_key"], resolver, profile_volume)
-            if include_source_details:
+            if include_source_details and "skill" in chapter_target_kinds(
+                    resolver, profile_volume
+                ).values():
+                # Skill-knowledge edges only feed skill-rule chapters; type and
+                # knowledge volumes drop them through is_training_target anyway.
                 knowledge_associations = knowledge_skill_associations(
                     load_question_facets(self.question_bank_db_path, resolver)
                 )

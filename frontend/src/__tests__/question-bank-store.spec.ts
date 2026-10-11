@@ -191,7 +191,7 @@ describe('question bank store', () => {
     const key = `${volumeId}:all`
     const before: QuestionRepairPreview = {
       curriculum_volume_id: volumeId, kind: 'all', fingerprint: 'a'.repeat(64),
-      scanned_count: 1, question_count: 1, repairable_count: 1, model_calls: 0,
+      scanned_count: 1, question_count: 1, repairable_count: 1, model_calls: 0, skills_required: true,
       counts: { tags: 1, evidence: 0, criteria: 0, skills: 0, types: 0, knowledge_points: 0 },
       items: [{ id: 1, question_number: '1', paper_title: 'TEST-补齐前', missing: ['tags'], blocked_reason: '', revision: 'b'.repeat(64) }],
     }

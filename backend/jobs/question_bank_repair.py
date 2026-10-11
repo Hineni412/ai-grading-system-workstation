@@ -155,14 +155,16 @@ def _preview_kind(preview: dict[str, Any], kind: str) -> dict[str, Any]:
         return preview
     items = [item for item in preview['items']
              if set(item['missing']) & {'tags', 'evidence', 'criteria'}]
-    return _preview(preview['curriculum_volume_id'], kind, items, preview['scanned_count'])
+    return _preview(preview['curriculum_volume_id'], kind, items, preview['scanned_count'],
+                    skills_required=preview.get('skills_required', False))
 
 
 def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, kind: str,
                    question_ids: list[int] | None = None) -> dict[str, Any]:
     if kind not in {'skills', 'analysis', 'all'}:
         raise ValueError('请选择有效的补齐范围')
-    from question_bank.services.question_skill_index import build_skill_snapshot, load_skill_inventory
+    from question_bank.services.question_skill_index import (
+        build_skill_snapshot, load_skill_inventory, volume_uses_key_steps)
     from question_bank.taxonomy.curriculum_catalog import curriculum_volume
     if curriculum_volume(volume_id=volume_id) is None:
         raise ValueError('请选择有效的教学学期')
@@ -176,11 +178,14 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
     retained_snapshot = cached if isinstance(cached, dict) else None
     with _read_connection(db) as conn:
         inventory = load_skill_inventory(conn)
+        skills_required = volume_uses_key_steps(conn, volume_id)
         if (retained_snapshot is None and service.persist_skill_snapshots
                 and service._cache_data_root and snapshot_generation is not None
                 and asset_generation is not None):
             retained_snapshot = service._read_local_skill_snapshot(
                 snapshot_generation, inventory, asset_manifest, connection=conn)
+    if kind == 'skills' and not skills_required:
+        return _preview(volume_id, kind, [], 0, skills_required=False)
     scoped = set(inventory['volumes'].get(volume_id, ()))
     if question_ids is not None:
         if not set(question_ids).issubset(scoped):
@@ -190,7 +195,7 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
         scoped.intersection_update(retained_snapshot['unlinked'])
     ids = sorted(scoped)
     if not ids:
-        return _preview(volume_id, kind, [], 0)
+        return _preview(volume_id, kind, [], 0, skills_required=skills_required)
     loader = QuestionAnalysisInputLoader(db_path=db, data_root=root)
     _, tag_complete, _ = _load_tagging_candidates(db, ids, curriculum_volume_id=volume_id, require_difficulty=True)
     tags_ready = set(tag_complete)
@@ -242,7 +247,7 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
                 missing.append('evidence')
             if not state['criteria_ready']:
                 missing.append('criteria')
-            if qid in snapshot['unlinked']:
+            if skills_required and qid in snapshot['unlinked']:
                 missing.append('skills')
             if qid not in snapshot.get('primary_types', {}):
                 missing.append('types')
@@ -273,7 +278,7 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
                 elif qid not in inputs or not inputs[qid].has_required_images:
                     blocked = '题目内容或图片无法读取，请先检查原题'
                 elif not snapshot['release']:
-                    blocked = '当前技能标准不可用'
+                    blocked = '当前知识标准不可用'
                 elif any(part in missing for part in ('skills', 'knowledge_points')) and str(profile.get('evidence_version_id', '')) in teacher:
                     blocked = '教师已确认关联，请打开题目人工核对'
                 if pending_states[qid]['workspace'].get('state') == 'rejected':
@@ -297,13 +302,15 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
                             type_reviews.get(qid, ())]
                 item['revision'] = sha256(json.dumps(revision, sort_keys=True, default=str).encode()).hexdigest()
                 items.append(item)
-    return _preview(volume_id, kind, items, scanned_count)
+    return _preview(volume_id, kind, items, scanned_count, skills_required=skills_required)
 
 
-def _preview(volume: str, kind: str, items: list[dict[str, Any]], scanned_count: int) -> dict[str, Any]:
+def _preview(volume: str, kind: str, items: list[dict[str, Any]], scanned_count: int,
+             *, skills_required: bool) -> dict[str, Any]:
     digest = sha256(json.dumps([volume, kind, items], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     return {'curriculum_volume_id': volume, 'kind': kind, 'fingerprint': digest,
             'scanned_count': scanned_count, 'question_count': len(items),
+            'skills_required': skills_required,
             'repairable_count': sum(not item['blocked_reason'] for item in items),
             'counts': {part: sum(part in item['missing'] for item in items)
                        for part in ('tags', 'evidence', 'criteria', 'skills', 'types', 'knowledge_points')},

@@ -205,9 +205,9 @@ it('renders all linked skills with their derivation source', async () => {
 
   const section = document.body.querySelector<HTMLElement>('.qb-patterns')!
   // 判定点触发的错法列出全部直达技能，标注由判定点得出。
-  expect(section.textContent).toContain('关联技能：求平方根、验根（由判定点得出）')
-  expect(section.textContent).toContain('关联技能：求平方根（教师设定）')
-  expect(section.textContent).toContain('关联技能：识别图形（由本题唯一技能得出）')
+  expect(section.textContent).toContain('关联关键步骤：求平方根、验根（由判定点得出）')
+  expect(section.textContent).toContain('关联关键步骤：求平方根（教师设定）')
+  expect(section.textContent).toContain('关联关键步骤：识别图形（由本题唯一关键步骤得出）')
 
   // 编辑面板保留教师改选入口；判定点来源给出提示。
   const stepRow = [...section.querySelectorAll<HTMLElement>('.qb-patterns__item')]

@@ -148,7 +148,7 @@ export const knowledgeOverviewRouteDefinition = {
   label: '知识与训练',
   path: '/knowledge-overview',
   title: '知识与训练',
-  description: '总览本学期知识点、技能与学生的掌握状况',
+  description: '总览本学期题型、知识点与学生的掌握状况',
   breadcrumb: '知识与训练',
   icon: 'graph',
 } as const satisfies WorkspaceRouteDefinition

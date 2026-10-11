@@ -61,7 +61,7 @@ def run_wrong_question_export(
                         config=ExportConfig(answer_key_position="end"),
                         include_answer_space=context.payload.get('include_answer_space', True), include_student_fields=False,
                         question_notes={qid: note if context.payload.get('include_source_label', True)
-                                        else note.split(' · 来源：', 1)[0] if note.startswith('技能：') else ''
+                                        else note.split(' · 来源：', 1)[0] if note.startswith(('题型：', '知识点：', '技能：')) else ''
                                         for qid, note in book['notes'].items()},
                         page_header_text=f"{plan['semester_label']} · 考试范围：{exam_range}",
                     ))

@@ -20,7 +20,7 @@ const message = ref('')
 const activeJobId = ref<number | null>(null)
 const job = computed(() => activeJobId.value ? jobs.jobs[activeJobId.value] : undefined)
 const targetIds = computed(() => preview.value?.items.filter(item => !item.blocked_reason).slice(0, 500).map(item => item.id) ?? [])
-const labels: Record<QuestionRepairPart, string> = { tags: '题目标签', evidence: '解题证据', criteria: '判定点', skills: '技能关联', types: '题型', knowledge_points: '知识点关联' }
+const labels: Record<QuestionRepairPart, string> = { tags: '题目标签', evidence: '解题证据', criteria: '判定点', skills: '关键步骤关联', types: '题型', knowledge_points: '知识点关联' }
 const remaining = computed(() => (job.value?.result.remaining ?? []) as { id: number; question_number: string; missing: QuestionRepairPart[]; reason: string }[])
 let controller: AbortController | undefined
 let returnTarget: HTMLElement | null = null
@@ -141,7 +141,7 @@ onBeforeUnmount(() => controller?.abort())
   <AppDialog
     :open="open"
     title="只补缺失部分"
-    :description="`${volumeLabel} · ${kind === 'skills' ? '未挂技能题目' : kind === 'analysis' ? '分析未完成题目' : '有缺失的题目'}`"
+    :description="`${volumeLabel} · ${kind === 'skills' ? '未挂关键步骤题目' : kind === 'analysis' ? '分析未完成题目' : '有缺失的题目'}`"
     class="qb-repair-dialog"
     @update:open="(value: boolean) => { if (!value) emit('close') }"
     @close-auto-focus="restoreFocus"

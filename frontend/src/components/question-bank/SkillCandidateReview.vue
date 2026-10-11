@@ -56,7 +56,7 @@ function sectionLabel(sectionKey: string) {
 function outcomeOf(suggestion: SkillCandidateSuggestion): string {
   if (suggestion.status === 'rejected') return '已驳回'
   const result = suggestion.result ?? {}
-  if (Array.isArray(result.linked)) return `已采纳 · 归入已有技能（${result.linked.length} 个判定点）`
+  if (Array.isArray(result.linked)) return `已采纳 · 归入已有关键步骤（${result.linked.length} 个判定点）`
   if (typeof result.approved_skill_id === 'string') {
     const name = approved.value.find((skill) => skill.skill_id === result.approved_skill_id)?.name
     return `已采纳 · 已批准待发布${name ? `「${name}」` : ''}`
@@ -81,7 +81,7 @@ async function load() {
   try {
     const value = await questionBankApi.skillCandidates(props.volumeId, request.signal)
     if (!request.signal.aborted) data.value = value
-  } catch { if (!request.signal.aborted) error.value = '技能候选暂时无法读取，请重试。' }
+  } catch { if (!request.signal.aborted) error.value = '关键步骤候选暂时无法读取，请重试。' }
   finally { if (!request.signal.aborted) loading.value = false }
 }
 
@@ -171,7 +171,7 @@ onBeforeUnmount(() => controller?.abort())
     <div v-if="open" class="qb-modal-layer" @click.self="emit('close')">
       <DialogContent class="sc-review qb-import-dialog" :aria-describedby="undefined" @close-auto-focus="restoreFocus">
         <header class="sc-review__header">
-          <DialogTitle as="h2">审核技能候选</DialogTitle>
+          <DialogTitle as="h2">审核关键步骤候选</DialogTitle>
           <button class="qb-link" aria-label="关闭审核面板" @click="emit('close')">关闭</button>
         </header>
         <nav class="sc-review__tabs" aria-label="候选分组">
@@ -179,12 +179,12 @@ onBeforeUnmount(() => controller?.abort())
           <button type="button" :class="{ 'is-active': tab === 'approved' }" @click="tab = 'approved'">已批准待发布 ({{ approved.length }})</button>
           <button type="button" :class="{ 'is-active': tab === 'handled' }" @click="tab = 'handled'">已处理</button>
         </nav>
-        <p v-if="loading" role="status">正在读取技能候选…</p>
+        <p v-if="loading" role="status">正在读取关键步骤候选…</p>
         <p v-if="globalNotice" role="status" class="sc-review__note">{{ globalNotice }}</p>
         <p v-if="error" role="alert" class="qb-feedback is-error">{{ error }} <button class="qb-link" @click="load">重试</button></p>
         <div v-if="data" class="sc-review__body">
           <template v-if="tab === 'pending'">
-            <p v-if="!pending.length" class="sc-review__empty">当前没有待审核的技能候选。</p>
+            <p v-if="!pending.length" class="sc-review__empty">当前没有待审核的关键步骤候选。</p>
             <SkillCandidateCard v-for="suggestion in pending" :key="suggestion.suggestion_id"
               :suggestion="suggestion" :chapter="chapterOf(suggestion)" :approved="unpublished"
               :busy="busyIds.has(suggestion.suggestion_id)" :notice="notices[suggestion.suggestion_id] || ''"
@@ -193,14 +193,14 @@ onBeforeUnmount(() => controller?.abort())
               @open-question="emit('openQuestion', $event)" />
           </template>
           <template v-else-if="tab === 'approved'">
-            <p class="sc-review__note">这些新技能会在学期标准修订时统一发布。</p>
-            <p v-if="!approved.length" class="sc-review__empty">还没有已批准的新技能。</p>
+            <p class="sc-review__note">这些新关键步骤会在学期标准修订时统一发布。</p>
+            <p v-if="!approved.length" class="sc-review__empty">还没有已批准的新关键步骤。</p>
             <article v-for="skill in approved" :key="skill.skill_id" class="sc-card">
               <header class="sc-card__head"><strong>{{ skill.name }}</strong>
                 <span class="sc-badge">{{ sectionLabel(skill.section_key) }}</span>
                 <span v-if="skill.published" class="sc-badge is-done">已发布</span>
               </header>
-              <p class="sc-card__reason">{{ skill.gap_refs.length }} 个判定点将归入此技能。</p>
+              <p class="sc-card__reason">{{ skill.gap_refs.length }} 个判定点将归入此关键步骤。</p>
               <template v-if="approvedDraft(skill).editing">
                 <div class="sc-card__fields">
                   <label>名称 <input v-model="approvedDraft(skill).name" class="app-input" maxlength="120"></label>

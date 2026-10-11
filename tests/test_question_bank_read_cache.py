@@ -476,7 +476,7 @@ def test_filter_query_join_params_precede_where_params(tmp_path):
     assert [int(row[0]) for row in rows] == [1]
 
 
-def test_session_unlinked_count_reuses_skill_index_for_confirmed_live_questions(tmp_path):
+def test_session_analysis_status_counts_confirmed_live_questions(tmp_path):
     from question_bank.database.schema import connect
     service, db, _keys = _seed_skill_bank(tmp_path)
     with connect(db) as conn:
@@ -488,12 +488,11 @@ def test_session_unlinked_count_reuses_skill_index_for_confirmed_live_questions(
             "VALUES ('7','duplicate',1,'TEST','confirmed')")
     status = service.session_analysis_status(7)
     assert status["question_count"] == 5  # Unique canonical questions; deleted question excluded.
-    index = service.skill_index('bnu24-math-g8-upper')
-    assert status["unlinked_skill_count"] == sum(index["unlinked"].values()) == 2
+    assert "unlinked_skill_count" not in status
     with connect(db) as conn:
         conn.execute("UPDATE grading_question_links SET status='suggested' WHERE bank_question_id=3")
-    assert service.session_analysis_status(7)["unlinked_skill_count"] == 1
-    assert service.session_analysis_status(999)["unlinked_skill_count"] == 0
+    assert service.session_analysis_status(7)["question_count"] == 4
+    assert service.session_analysis_status(999)["question_count"] == 0
 
 
 def test_skill_index_current_versions_legacy_links_filters_and_cache(tmp_path, monkeypatch):
@@ -1084,6 +1083,48 @@ def test_repair_preview_lists_each_missing_product_without_model_calls(tmp_path,
         assert '文件损坏' in next(item for item in result['remaining'] if item['id'] == 4)['reason']
 
 
+def test_repair_preview_only_marks_skill_gaps_for_key_step_volumes(tmp_path):
+    """不使用关键步骤的册不标缺关键步骤，kind='skills' 的清单为空；
+    有活动词表的册照常报告缺关键步骤。"""
+    from backend.jobs.question_bank_repair import repair_preview
+    from question_bank.database.schema import connect
+    from question_bank.services.question_skill_index import volume_uses_key_steps
+    from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+    service, db, _keys = _seed_skill_bank(tmp_path)
+    preview = repair_preview(service, 'bnu24-math-g8-upper', 'skills')
+    assert preview['skills_required'] is True
+    assert [item['id'] for item in preview['items']] == [3, 4]
+    assert all('skills' in item['missing'] for item in preview['items'])
+
+    # 九上在合成标准里没有锚定的 sk_ 节点：题目缺链接也不进补齐清单。
+    volume = curriculum_volume(volume_id='bnu24-math-g9-upper')
+    with connect(db) as conn:
+        assert volume_uses_key_steps(conn, 'bnu24-math-g8-upper') is True
+        assert volume_uses_key_steps(conn, 'bnu24-math-g9-upper') is False
+        conn.execute("INSERT INTO papers(id,title,grade,semester,textbook_version,import_status) "
+                     "VALUES(2,'TEST-g9-upper',?,?,?,'success')",
+                     (volume['grade'], volume['semester'], volume['textbook_version']))
+        conn.execute("INSERT INTO questions(id,paper_id,question_number,question_text,question_type) "
+                     "VALUES(8,2,'8','TEST-g9-题','解答题')")
+    upper_free = repair_preview(service, 'bnu24-math-g9-upper', 'all')
+    assert upper_free['skills_required'] is False
+    assert upper_free['items'] and all('skills' not in item['missing'] for item in upper_free['items'])
+    free_skills = repair_preview(service, 'bnu24-math-g9-upper', 'skills')
+    assert free_skills['skills_required'] is False
+    assert free_skills['items'] == []
+
+    # 新标准下八下全是知识点章：即使词表里残留一个锚定的 sk_ 节点，
+    # 这册也不做关键步骤补齐。
+    lower_dir = tmp_path / 'lower'
+    lower_dir.mkdir()
+    lower_service, lower_db, _ = _seed_skill_bank(lower_dir, taxonomy_revision=11)
+    with connect(lower_db) as conn:
+        assert volume_uses_key_steps(conn, 'bnu24-math-g8-lower') is False
+    lower_skills = repair_preview(lower_service, 'bnu24-math-g8-lower', 'skills')
+    assert lower_skills['skills_required'] is False
+    assert lower_skills['items'] == []
+
+
 def _seed_tagged_question(db):
     """Give question 1 a complete tag set and pin its evidence created_at
     before the tag-item timestamps used by the currentness tests."""
@@ -1530,7 +1571,7 @@ def test_repair_preview_shares_scan_but_keeps_analysis_question_scope(tmp_path, 
 
     def compute(service, volume, kind, ids):
         calls.append(kind)
-        return repair._preview(volume, kind, items, 20)
+        return repair._preview(volume, kind, items, 20, skills_required=True)
 
     monkeypatch.setattr(repair, '_compute_repair_preview', compute)
     repair.repair_preview(service, 'bnu24-math-g8-upper', first_kind)
@@ -1588,7 +1629,7 @@ def test_repair_preview_concurrent_entry_points_share_one_scan(tmp_path, monkeyp
         return repair._preview(volume, kind, [
             {'id': 1, 'missing': ['tags'], 'blocked_reason': ''},
             {'id': 2, 'missing': ['types'], 'blocked_reason': ''},
-        ], 5)
+        ], 5, skills_required=True)
 
     monkeypatch.setattr(repair, '_compute_repair_preview', compute)
     with ThreadPoolExecutor(max_workers=2) as pool:

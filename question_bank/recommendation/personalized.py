@@ -44,7 +44,7 @@ from question_bank.recommendation.target_matching import (
     topic_keys,
 )
 from question_bank.services import standard_difficulty
-from question_bank.services.knowledge_order import OrderEntry, knowledge_sections, skill_placements, section_placements
+from question_bank.services.knowledge_order import OrderEntry, knowledge_sections, skill_placements, section_placements, target_label
 from question_bank.services.question_identity import (
     question_identities,
     same_question,
@@ -1406,6 +1406,7 @@ def _order_practice_items(items: list[dict[str, Any]], placements=None) -> None:
                 item['knowledge_section'] = {'id': section.section_id, 'title': section.title}
                 placement = placements.get(qid)
                 item['primary_skill_name'] = placement.skill_name if placement else ''
+                item['primary_target_label'] = target_label(placement.skill_key) if placement and placement.skill_name else ''
                 ordered.append(item)
         items[:] = ordered
     for order, item in enumerate(items, 1):
@@ -3318,7 +3319,8 @@ class PersonalizedRecommendationModule:
                 items[:] = [own_by_id[value['question_id']] for value in first]
                 for order, (value, original) in enumerate(zip(items, first), 1):
                     value.update(item_order=order, knowledge_section=deepcopy(original['knowledge_section']),
-                                 primary_skill_name=original['primary_skill_name'])
+                                 primary_skill_name=original['primary_skill_name'],
+                                 primary_target_label=original.get('primary_target_label', ''))
             missing = config.question_count - len(items)
             warnings = warnings_by_student[sid]
             if config.remediation_only and config.paper_mode == "individual":
@@ -3339,8 +3341,8 @@ class PersonalizedRecommendationModule:
                                if _loss_refs(target) and not any(need[1] == target["stable_key"] for need in covered)]
             if missing_targets:
                 names = "、".join(str(target.get("display_name") or target["stable_key"]) for target in missing_targets)
-                target_label = "失分题型" if any(is_type_key(t.get("stable_key")) for t in missing_targets) else "失分知识点"
-                warnings.append(f"以下{target_label}尚未获得直接练习或任务匹配练习：{names}。补充练习不计作这些目标的覆盖。")
+                missing_label = "失分题型" if any(is_type_key(t.get("stable_key")) for t in missing_targets) else "失分知识点"
+                warnings.append(f"以下{missing_label}尚未获得直接练习或任务匹配练习：{names}。补充练习不计作这些目标的覆盖。")
             students.append({"student_id": sid, "student_code": str(profile.get("student_code") or ""),
                              "student_name": str(profile.get("student_name") or ""), "class_id": str(profile.get("class_id") or ""),
                              "selection_mode": "mastery_targeted", "targets": deepcopy(targets_by_student[sid]), "items": items,

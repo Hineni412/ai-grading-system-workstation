@@ -12,7 +12,7 @@ const names: Record<string, string> = {
   individual_report: '生成学生个人报告', question_bank_sync: '考试试题入库与分析',
   question_import: '试卷导入', tagging_sync: '题目标签与判定点分析',
   criterion_backfill: '补齐题目判定点', question_bank_repair: '补齐题库资料',
-  knowledge_link: '关联知识与技能', taxonomy_suggestion: '整理知识标准建议',
+  knowledge_link: '关联知识点与关键步骤', taxonomy_suggestion: '整理知识标准建议',
   assembly_export: '导出组卷', wrong_question_export: '导出错题本',
   personalized_handout_export: '导出训练讲义', answer_draft: '生成答案草稿',
   ai_assembly_spec: '生成组卷要求',

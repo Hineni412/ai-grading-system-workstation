@@ -34,6 +34,7 @@ export interface QuestionRepairPreview {
   question_count: number
   repairable_count: number
   model_calls: number
+  skills_required: boolean
   counts: Record<QuestionRepairPart, number>
   items: { id: number; question_number: string; paper_title: string; missing: QuestionRepairPart[]; blocked_reason: string; type_pending_reason?: string; revision: string }[]
 }
@@ -51,7 +52,8 @@ function decodeRepairPreview(value: unknown): QuestionRepairPreview {
     throw new Error('Invalid repair preview')
   }
   assertNoPathLikeKeys(value)
-  return value as unknown as QuestionRepairPreview
+  // 缺失时按 false，兼容旧缓存响应。
+  return { ...value, skills_required: value.skills_required === true } as unknown as QuestionRepairPreview
 }
 
 export interface QuestionBankTag {

@@ -320,13 +320,18 @@ def test_wrong_question_books_cross_class_scope_order_and_merged_sources(tmp_pat
     import sqlite3
     from backend.students.wrong_question_book import build_wrong_question_books
     from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+    from tests.current_knowledge_support import install_current_knowledge
     db, qb_path, students, sessions, ids = _seed_wrong_question_books(tmp_path)
+    install_current_knowledge(qb_path, taxonomy_revision=11)
     volume = curriculum_volume(volume_id='bnu24-math-g8-upper')
     chapter = volume['chapters'][0]
     first, second = chapter['sections'][:2]
     with sqlite3.connect(qb_path) as conn:
         conn.executemany("INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(?,'curriculum_section',?,'TEST')",
                          [(ids[0], second['display_name']), (ids[1], first['display_name']), (ids[2], first['display_name'])])
+        # 八上题型章：知识点标签挂题型键时，错题本注记以“题型：”开头。
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value,source) "
+                     "VALUES(?,'knowledge_point','kp_bnu24_math_g8_upper_1_1_t01','TEST')", (ids[2],))
         conn.executemany('UPDATE questions SET difficulty=? WHERE id=?', [('5', ids[0]), ('4', ids[1]), ('2', ids[2])])
     with sqlite3.connect(db.db_path) as conn:
         conn.execute("UPDATE students SET class_name='测试其他班' WHERE id=?", (students[2]['id'],))
@@ -339,6 +344,8 @@ def test_wrong_question_books_cross_class_scope_order_and_merged_sources(tmp_pat
         assert book['sections'][0]['question_ids'] == [ids[2], ids[1]]
         assert [source['session_id'] for source in book['sources'][ids[0]]] == sessions
         assert book['notes'][ids[0]] == '来源：测试早期考试 第1题、测试后期考试 第1题'
+        assert book['notes'][ids[2]].startswith('题型：')
+        assert '来源：测试早期考试 第10题' in book['notes'][ids[2]]
         filtered = build_wrong_question_books(db, qb_path, selected_ids, volume['id'], sessions, [second['knowledge_id']])
         assert filtered['question_count'] == 1 and filtered['out_of_scope_count'] == 3
         assert filtered['empty_students'] == [dict(student_id=students[2]['id'], student_name=students[2]['name'],

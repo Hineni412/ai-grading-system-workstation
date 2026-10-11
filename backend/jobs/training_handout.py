@@ -57,7 +57,7 @@ def run_training_handout_export(*, context: JobContext, question_bank_db_path: P
                     if not sections or sections[-1].title != title:
                         sections.append(SectionSpec(title=title, question_ids=[]))
                     sections[-1].question_ids.append(int(item["question_id"]))
-            notes = {int(item["question_id"]): f"技能：{item['primary_skill_name']}"
+            notes = {int(item["question_id"]): f"{item.get('primary_target_label') or '训练目标'}：{item['primary_skill_name']}"
                      for item in items if item.get("primary_skill_name")}
             path = export_question_paper_docx(question_bank_db_path, ids, student_root,
                 title=f"{label} 讲义", include_answer=True, grouped_by_type=False,

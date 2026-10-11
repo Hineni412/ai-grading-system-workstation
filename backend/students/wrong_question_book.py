@@ -12,7 +12,7 @@ from question_bank.taxonomy.curriculum_catalog import curriculum_volume
 from question_bank.document_pipeline.legacy_exports import data_root_for_database
 from question_bank.services.knowledge_order import (
     OrderEntry, knowledge_sections, parsed_difficulty, question_primary_skills,
-    section_placements, skill_placements,
+    section_placements, skill_placements, target_label,
 )
 from backend.question_id_contract import question_id_coordinates
 
@@ -117,7 +117,7 @@ def build_wrong_question_books(
         book['sections'] = [asdict(section) for section in knowledge_sections(entries, placements)]
         for qid, sources in book['sources'].items():
             placement = placements.get(qid)
-            skill_note = f"技能：{placement.skill_name} · " if placement and placement.skill_name else ''
+            skill_note = f"{target_label(placement.skill_key)}：{placement.skill_name} · " if placement and placement.skill_name else ''
             source_note = '、'.join(f"{source['session_name']} {source['question_label']}" for source in sources)
             book['notes'][qid] = f"{skill_note}来源：{source_note}"
         if not entries:
