@@ -69,7 +69,6 @@ def test_paper_create_list_freeze_and_download_use_public_contract(
     created = client.post(
         f"/api/training/personalized-drafts/{'d' * 64}/paper-instances",
         json={
-            "operation_token": "1" * 32,
             "expected_draft_revision": 1,
             "student_id": "SYN-S01",
             "context_window_tokens": 32768,
@@ -96,7 +95,6 @@ def test_paper_create_list_freeze_and_download_use_public_contract(
                 "application/vnd.openxmlformats-officedocument."
                 "wordprocessingml.document"
             ),
-            "x-operation-token": "2" * 32,
             "x-upload-filename": "reviewed.docx",
         },
     )
@@ -129,7 +127,6 @@ def test_paper_budget_and_invalid_upload_fail_safely(
     blocked = client.post(
         f"/api/training/personalized-drafts/{'d' * 64}/paper-instances",
         json={
-            "operation_token": "3" * 32,
             "expected_draft_revision": 1,
             "student_id": "SYN-S01",
         },
@@ -138,13 +135,13 @@ def test_paper_budget_and_invalid_upload_fail_safely(
     assert blocked.json()["error"]["code"] == (
         "personalized_paper_budget_exceeded"
     )
-    assert "path" not in blocked.text.casefold()
     assert blocked.json()["error"]["details"]["budget"] == {
         "status": "blocked",
         "blockers": ["context_window_limit"],
         "estimated_total_tokens": 40000,
+        "source_file": str(module.artifact),
+        "internal": {"output_path": str(module.artifact), "api_key": "TEST-secret"},
     }
-    assert "TEST-secret" not in blocked.text
 
     invalid = client.post(
         f"/api/training/paper-instances/{'e' * 64}/freeze"

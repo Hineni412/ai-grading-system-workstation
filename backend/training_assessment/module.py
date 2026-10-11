@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sqlite3
 import threading
@@ -343,39 +344,12 @@ class TrainingAssessmentModule:
         clean_id = _identifier(submission_id)
         clean_revision = _positive_revision(submission_revision)
         initialize_database(self.db_path)
-        fingerprint = stable_hash(
-            {
-                "kind": "training-point-review-v1",
-                "submission_id": clean_id,
-                "submission_revision": clean_revision,
-                "command": {
-                    "expected_review_revision": (
-                        command.expected_review_revision
-                    ),
-                    "task_item_code": command.task_item_code,
-                    "point_id": command.point_id,
-                    "final_state": command.final_state,
-                    "teacher_evidence": command.teacher_evidence,
-                    "teacher_reason": command.teacher_reason,
-                    "actor_ref": command.actor_ref,
-                },
-            }
-        )
+        fingerprint = hashlib.sha256(
+            command.operation_token.encode("utf-8")
+        ).hexdigest()
         now = self._now()
         with connect(self.db_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            repeated = self._repeated_event(
-                connection,
-                command.operation_token,
-                fingerprint,
-            )
-            if repeated is not None:
-                connection.commit()
-                return self._require_outcome(repeated)
-            self._reject_attempt_token(
-                connection,
-                command.operation_token,
-            )
             run = self._reviewable_run(
                 connection,
                 clean_id,

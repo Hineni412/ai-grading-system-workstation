@@ -24,7 +24,6 @@ const trainingApiMock = vi.hoisted(() => ({
   diagnoseDisplay: vi.fn(),
   createPersonalizedDraft: vi.fn(),
   getPersonalizedDraft: vi.fn(),
-  getPersonalizedDraftByRequest: vi.fn(),
   editPersonalizedDraft: vi.fn(),
   listPaperInstances: vi.fn(),
   listPaperBatches: vi.fn(),
@@ -725,10 +724,9 @@ describe('training recommendations view', () => {
     expect(second.host.querySelector('.draft-workflow-heading')).toBeNull()
   })
 
-  it('recovers an unknown request with the same token after full evidence loading fails', async () => {
+  it('shows an error when the draft request outcome is unknown', async () => {
     trainingApiMock.createPersonalizedDraft.mockRejectedValueOnce(new ApiError({ kind: 'timeout', status: null,
       code: 'TEST-unknown', message: 'TEST outcome unknown', details: {}, requestId: 'TEST-request', retryable: true }))
-    trainingApiMock.getPersonalizedDraftByRequest.mockRejectedValue(new Error('TEST still pending'))
     savePaperSelectionSession({ selectedStudentIds: ['12'], targetKeys: ['sk_test_congruence'],
       rangeKeys: ['kp_test_triangle_s1'], scopeMode: 'focused', questionCount: 10, difficultyMax: 8,
       excludeCurrentOriginals: true, paperMode: 'individual' })
@@ -737,23 +735,7 @@ describe('training recommendations view', () => {
     first.host.querySelector<HTMLButtonElement>('[data-testid="go-paper"]')!.click()
     await vi.waitFor(() => expect(first.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')?.disabled).toBe(false))
     first.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')!.click()
-    await vi.waitFor(() => expect(first.host.textContent).toContain('不会重复创建草稿'))
-    const token = trainingApiMock.createPersonalizedDraft.mock.calls[0]?.[0].request_token
-    expect(trainingApiMock.getPersonalizedDraftByRequest).toHaveBeenLastCalledWith(token)
-    mounted.splice(mounted.indexOf(first.app), 1); first.app.unmount(); first.host.remove()
-    trainingApiMock.diagnose.mockImplementation(async body => {
-      if (body.response_mode !== 'display') throw new Error('TEST full unavailable')
-      return diagnosis
-    })
-    const second = await mountView('/training?mode=paper')
-    await vi.waitFor(() => expect(second.host.textContent).toContain('完整出卷依据暂时无法读取'))
-    await vi.waitFor(() => expect(second.host.textContent).toContain('不会重复创建草稿'))
-    const check = second.host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')!
-    expect(check.disabled).toBe(false)
-    trainingApiMock.getPersonalizedDraftByRequest.mockResolvedValueOnce(paperDraft)
-    check.click()
-    await vi.waitFor(() => expect(second.host.textContent).toContain('已取回上次请求生成的草稿，没有重复创建'))
-    expect(trainingApiMock.getPersonalizedDraftByRequest).toHaveBeenLastCalledWith(token)
+    await vi.waitFor(() => expect(first.host.textContent).toContain('个性化草稿暂时无法生成'))
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledOnce()
   })
 

@@ -62,7 +62,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   stageChange: [stage: 'diagnosis' | 'draft' | 'wps' | 'scan']
   stateChange: [state: RequestState]
-  recoveryChange: [pending: boolean]
   contextChange: [context: { mode: 'individual' | 'shared'; studentCount: number; questionCount: number; difficultyMax: number; purpose: 'training' | 'handout' } | null]
   workspaceChange: [value: { steps: StepProgressStep[]; current: string; revision: number } | null]
   focusConsumed: []
@@ -75,7 +74,6 @@ const selectedTargets = ref<string[]>([])
 const editReason = ref('教师根据课堂安排调整推荐草稿')
 const state = ref<RequestState>('idle')
 const draft = ref<PersonalizedRecommendationDraft | null>(null)
-const pendingRequestToken = ref('')
 const selectedDraftStudentId = ref('')
 const confirmDiscard = ref(false)
 const errorMessage = ref('')
@@ -84,7 +82,6 @@ const paperInstances = ref<PersonalizedPaperInstance[]>([])
 const returnPanel = ref<InstanceType<typeof TrainingScanBatchPanel> | null>(null)
 function focusReturnPoint() { void returnPanel.value?.focusPending() }
 const handoutJob = ref<JobResponse | null>(null)
-const handoutRequestToken = ref('')
 const viewStep = ref<'review' | 'print' | 'scan'>('review')
 const scanProgress = ref({ received: 0, total: 0, completed: false })
 const effectivePaperMode = computed(() => (draft.value?.config.paper_mode ?? props.paperMode ?? 'individual') === 'shared' ? 'shared' : 'individual')
@@ -180,7 +177,7 @@ const canDiscardDraft = computed(() => (
   && !paperInstances.value.length
   && !paperBatch.value
   && !paperBusy.value
-  && (!handoutRequestToken.value || Boolean(handoutJob.value && ['succeeded', 'failed', 'cancelled'].includes(handoutJob.value.status)))
+  && !handoutJob.value
 ))
 
 const requestSettings = computed(() => JSON.stringify({
@@ -204,10 +201,7 @@ const requestSettings = computed(() => JSON.stringify({
 }))
 
 function rememberDraft(draftId: string): void {
-  savePaperDraftSession({
-    draftId,
-    handoutRequestToken: handoutRequestToken.value || undefined,
-  })
+  savePaperDraftSession({ draftId })
 }
 
 let restoring = false
@@ -221,15 +215,9 @@ watch(() => props.initialDraftId, id => {
 })
 async function restoreDraft(): Promise<void> {
   if (restoring || draft.value || state.value !== 'idle') return
-  const stored = props.initialDraftId ? { draftId: props.initialDraftId, requestToken: '', handoutRequestToken: '' } : loadPaperDraftSession()
+  const stored = props.initialDraftId ? { draftId: props.initialDraftId } : loadPaperDraftSession()
   if (!stored) return
   restoring = true
-  if (stored.requestToken && !stored.draftId) {
-    pendingRequestToken.value = stored.requestToken
-    await recoverPendingDraft()
-    restoring = false
-    return
-  }
   state.value = 'loading'
   try {
     const restored = await trainingApi.getPersonalizedDraft(stored.draftId)
@@ -241,12 +229,10 @@ async function restoreDraft(): Promise<void> {
     paperInstances.value = instances
     paperBatch.value = batches[0] ?? null
     selectedDraftStudentId.value = restored.students[0]?.student_id ?? ''
-    handoutRequestToken.value = stored.handoutRequestToken ?? ''
     state.value = 'ready'
     await Promise.resolve()
     viewStep.value = instances.some(instance => instance.status === 'frozen') ? 'scan' : 'review'
     actionMessage.value = '已恢复保存的草稿，沿用当时的设置与题目；已生成试卷仍可查看。'
-    if (handoutRequestToken.value) void recoverHandoutExport()
   } catch {
     state.value = 'idle'
     actionMessage.value = '保存的草稿暂时无法打开，保存记录仍保留，可再次尝试。'
@@ -264,7 +250,6 @@ function discardDraft(): void {
   paperBusy.value = ''
   paperBatch.value = null
   handoutJob.value = null
-  handoutRequestToken.value = ''
   handoutPollGeneration += 1
   paperBatchPollGeneration += 1
   state.value = 'idle'
@@ -275,7 +260,6 @@ function discardDraft(): void {
 
 watch(workflowStage, (stage) => emit('stageChange', stage), { immediate: true })
 watch(state, (nextState) => emit('stateChange', nextState), { immediate: true })
-watch(pendingRequestToken, value => emit('recoveryChange', Boolean(value)), { immediate: true })
 watch(() => props.difficultyMax, (value) => {
   if (value !== undefined) difficultyMax.value = value
 })
@@ -287,7 +271,6 @@ watch(
     if (props.initialDraftId && draft.value?.draft_id === props.initialDraftId) return
     // 设置变化仅取消旧请求回调，已保存草稿仍按编号恢复。
     draft.value = null
-    pendingRequestToken.value = ''
     selectedDraftStudentId.value = ''
     state.value = 'idle'
     errorMessage.value = ''
@@ -296,7 +279,6 @@ watch(
     paperBusy.value = ''
     paperBatch.value = null
     handoutJob.value = null
-    handoutRequestToken.value = ''
     handoutPollGeneration += 1
     paperBatchPollGeneration += 1
     selectedTargets.value = [...(props.targetKeys ?? [])]
@@ -311,14 +293,6 @@ watch(
   },
   { immediate: true },
 )
-
-function requestToken(): string {
-  const bytes = new Uint8Array(16)
-  globalThis.crypto.getRandomValues(bytes)
-  return [...bytes]
-    .map((value) => value.toString(16).padStart(2, '0'))
-    .join('')
-}
 
 function stageLabel(stage: TrainingStage): string {
   return {
@@ -490,7 +464,6 @@ function safeError(error: unknown, fallback: string): string {
 
 function acceptGeneratedDraft(value: PersonalizedRecommendationDraft): void {
   draft.value = value
-  pendingRequestToken.value = ''
   paperInstances.value = []
   selectedDraftStudentId.value = value.students[0]?.student_id ?? ''
   state.value = 'ready'
@@ -501,41 +474,14 @@ function acceptGeneratedDraft(value: PersonalizedRecommendationDraft): void {
   rememberDraft(value.draft_id)
 }
 
-async function recoverPendingDraft(): Promise<void> {
-  const token = pendingRequestToken.value
-  const submittedSettings = requestSettings.value
-  if (!token) return
-  state.value = 'loading'
-  errorMessage.value = ''
-  try {
-    const recovered = await trainingApi.getPersonalizedDraftByRequest(token)
-    if (submittedSettings !== requestSettings.value || token !== pendingRequestToken.value) return
-    acceptGeneratedDraft(recovered)
-    actionMessage.value = '已取回上次请求生成的草稿，没有重复创建。'
-  } catch {
-    if (submittedSettings !== requestSettings.value || token !== pendingRequestToken.value) return
-    state.value = 'error'
-    errorMessage.value = '暂未取得生成结果，后台可能仍在处理。请稍后核对生成结果；当前设置已保留，不会重复创建草稿。'
-  }
-}
-
 async function generate(): Promise<void> {
-  if (pendingRequestToken.value) {
-    if (state.value === 'loading' || state.value === 'editing') return
-    await recoverPendingDraft()
-    return
-  }
   if (!canGenerate.value) return
-  const token = requestToken()
   const submittedSettings = requestSettings.value
-  pendingRequestToken.value = token
-  savePaperDraftSession({ draftId: '', requestToken: token })
   state.value = 'loading'
   errorMessage.value = ''
   actionMessage.value = ''
   try {
     const generated = await trainingApi.createPersonalizedDraft({
-      request_token: token,
       scope: props.scope,
       exam_scope: props.examScope,
       question_count: props.questionCount,
@@ -556,16 +502,10 @@ async function generate(): Promise<void> {
       teaching_progress_chapter_id: props.teachingProgressChapterId ?? '',
       ...(props.groupScopeKeys?.length ? { group_scope_keys: props.groupScopeKeys } : {}),
     })
-    if (submittedSettings !== requestSettings.value || token !== pendingRequestToken.value) return
+    if (submittedSettings !== requestSettings.value) return
     acceptGeneratedDraft(generated)
   } catch (error) {
-    if (submittedSettings !== requestSettings.value || token !== pendingRequestToken.value) return
-    if (isAmbiguousWriteError(error) || (error instanceof ApiError && error.kind === 'contract')) {
-      await recoverPendingDraft()
-      return
-    }
-    pendingRequestToken.value = ''
-    clearPaperDraftSession()
+    if (submittedSettings !== requestSettings.value) return
     state.value = 'error'
     errorMessage.value = safeError(
       error,
@@ -625,57 +565,26 @@ async function trackHandoutJob(job: JobResponse): Promise<void> {
       : '讲义已导出，请下载后打印；不会产生训练证据。'
   } else {
     errorMessage.value = '讲义导出未完成，请重新核对草稿来源后再导出。'
-    handoutRequestToken.value = ''
   }
-  if (draft.value) rememberDraft(draft.value.draft_id)
-}
-
-async function recoverHandoutExport(): Promise<void> {
-  if (!componentActive || !draft.value || !handoutRequestToken.value) return
-  const draftId = draft.value.draft_id
-  const token = handoutRequestToken.value
-  const submittedSettings = requestSettings.value
-  const stillCurrent = () => componentActive && token === handoutRequestToken.value && submittedSettings === requestSettings.value
-  paperBusy.value = 'handout'
-  try {
-    const job = await trainingApi.getHandoutExportByRequest(draftId, token)
-    if (!stillCurrent()) return
-    await trackHandoutJob(job)
-  } catch (error) {
-    if (!stillCurrent()) return
-    if (error instanceof ApiError && error.status === 404) {
-      handoutRequestToken.value = ''
-      rememberDraft(draft.value.draft_id)
-      actionMessage.value = '未找到导出任务，可以重新导出讲义。'
-    } else errorMessage.value = '暂时无法核对导出结果，请稍后再次核对。'
-  } finally { if (stillCurrent()) paperBusy.value = '' }
 }
 
 async function exportHandout(): Promise<void> {
   if (!draft.value || !isHandout.value || paperBusy.value) return
-  if (handoutRequestToken.value && (!handoutJob.value || ['queued', 'running'].includes(handoutJob.value.status))) {
-    await recoverHandoutExport(); return
-  }
   paperBusy.value = 'handout'
   errorMessage.value = ''
   actionMessage.value = ''
-  handoutRequestToken.value = requestToken()
-  const token = handoutRequestToken.value
   const submittedSettings = requestSettings.value
   handoutJob.value = null
-  rememberDraft(draft.value.draft_id)
   try {
     const job = await trainingApi.exportHandout(draft.value.draft_id, {
-      expected_revision: draft.value.revision, request_token: token,
+      expected_revision: draft.value.revision,
     })
-    if (!componentActive || token !== handoutRequestToken.value || submittedSettings !== requestSettings.value) return
+    if (!componentActive || submittedSettings !== requestSettings.value) return
     await trackHandoutJob(job)
   } catch (error) {
-    if (!componentActive || token !== handoutRequestToken.value || submittedSettings !== requestSettings.value) return
-    if (isAmbiguousWriteError(error) || (error instanceof ApiError && error.kind === 'contract') || handoutJob.value) errorMessage.value = '导出请求结果暂未确认，请核对导出结果。'
+    if (!componentActive || submittedSettings !== requestSettings.value) return
+    if (isAmbiguousWriteError(error) || (error instanceof ApiError && error.kind === 'contract') || handoutJob.value) errorMessage.value = '导出请求结果暂未确认，请稍后查看任务结果后重试。'
     else {
-      handoutRequestToken.value = ''
-      rememberDraft(draft.value.draft_id)
       errorMessage.value = safeError(error, '讲义暂时无法导出，请重新核对草稿来源。')
     }
   } finally { paperBusy.value = '' }
@@ -716,7 +625,6 @@ async function createPaperBatch(): Promise<void> {
     const createPromise = trainingApi.createPaperBatch(
       draft.value.draft_id,
       {
-        operation_token: requestToken(),
         expected_draft_revision: draft.value.revision,
         student_ids: studentIds,
         context_window_tokens: PAPER_CONTEXT_WINDOW,
@@ -765,7 +673,6 @@ async function cancelPaperBatch(): Promise<void> {
   try {
     paperBatch.value = await trainingApi.cancelPaperBatch(
       paperBatch.value.batch_run_id,
-      requestToken(),
     )
     actionMessage.value = '已停止尚未开始的学生；已经生成的单人卷仍然保留。'
   } catch {
@@ -860,7 +767,6 @@ async function editItem(
     draft.value = await trainingApi.editPersonalizedDraft(
       draft.value.draft_id,
       {
-        request_token: requestToken(),
         expected_revision: draft.value.revision,
         action,
         student_id: studentId,
@@ -893,7 +799,7 @@ async function editItem(
       <fieldset v-if="targetOptions.length && targetKeys === undefined" class="personalized-targets"><legend>本次训练目标</legend><label v-for="target in targetOptions" :key="target.key"><input v-model="selectedTargets" type="checkbox" :value="target.key">{{ trainingTargetLabelForKey(diagnosis, target.key) }} · {{ target.label }}</label><p v-if="!selectedTargets.length">请勾选至少一个{{ typeMode ? '题型' : '知识点' }}。</p></fieldset>
       <fieldset v-else-if="targetOptions.length" class="personalized-targets"><legend>已选目标</legend><span v-for="(target, index) in selectedTargetLabels" :key="target">{{ trainingTargetLabelForKey(diagnosis, selectedTargets[index] ?? '') }} · {{ knowledgeLeafLabel(target) }}</span><p v-if="!selectedTargets.length">请在知识结构中选择目标。</p></fieldset>
       <p v-else class="training-empty is-compact">当前范围暂无可用掌握证据。</p>
-      <AppButton variant="primary" data-testid="generate-personalized-draft" :disabled="pendingRequestToken ? state === 'loading' || state === 'editing' : !canGenerate" @click="generate">{{ state === 'loading' ? '正在生成并核对…' : pendingRequestToken ? '核对生成结果' : '生成个性化草稿' }}</AppButton>
+      <AppButton variant="primary" data-testid="generate-personalized-draft" :disabled="!canGenerate" @click="generate">{{ state === 'loading' ? '正在生成并核对…' : '生成个性化草稿' }}</AppButton>
     </section></details>
     <p v-if="errorMessage" class="training-feedback is-warning" role="alert">{{ errorMessage }}</p>
 
@@ -939,7 +845,7 @@ async function editItem(
       </section>
 
       <section v-show="viewStep === 'print'" class="personalized-print">
-        <section v-if="isHandout" class="personalized-batch-panel" aria-label="讲义导出"><div><h3>{{ effectivePaperMode === 'shared' ? '小组讲义' : '一人一份讲义' }}</h3><p>讲义只打印，不回收、不更新掌握度。</p></div><AppButton variant="primary" data-testid="export-handout" :disabled="Boolean(paperBusy) || !eligiblePaperCount" @click="exportHandout">{{ paperBusy === 'handout' ? '正在导出讲义…' : handoutRequestToken && (!handoutJob || ['queued', 'running'].includes(handoutJob.status)) ? '核对导出结果' : '导出讲义' }}</AppButton><p v-if="handoutJob && ['queued', 'running'].includes(handoutJob.status)" role="status">正在导出讲义 · {{ Math.round(handoutJob.progress * 100) }}%</p><AppButton v-if="handoutJob?.result.download_url" variant="secondary" :disabled="Boolean(paperBusy)" @click="downloadHandout">下载讲义 {{ effectivePaperMode === 'shared' ? 'Word' : 'ZIP' }}</AppButton></section>
+        <section v-if="isHandout" class="personalized-batch-panel" aria-label="讲义导出"><div><h3>{{ effectivePaperMode === 'shared' ? '小组讲义' : '一人一份讲义' }}</h3><p>讲义只打印，不回收、不更新掌握度。</p></div><AppButton variant="primary" data-testid="export-handout" :disabled="Boolean(paperBusy) || !eligiblePaperCount" @click="exportHandout">{{ paperBusy === 'handout' ? '正在导出讲义…' : '导出讲义' }}</AppButton><p v-if="handoutJob && ['queued', 'running'].includes(handoutJob.status)" role="status">正在导出讲义 · {{ Math.round(handoutJob.progress * 100) }}%</p><AppButton v-if="handoutJob?.result.download_url" variant="secondary" :disabled="Boolean(paperBusy)" @click="downloadHandout">下载讲义 {{ effectivePaperMode === 'shared' ? 'Word' : 'ZIP' }}</AppButton></section>
         <section v-else class="personalized-batch-panel" aria-labelledby="personalized-batch-title">
           <div><h3 id="personalized-batch-title">{{ hasPrintablePapers ? `${paperBatch?.succeeded_count ?? paperInstances.filter(item => item.status === 'frozen').length} 份 PDF 试卷已就绪` : effectivePaperMode === 'shared' ? `生成 ${draft.students.length} 份实名同题卷` : `生成 ${draft.students.length} 份个人训练卷` }}</h3></div>
           <AppButton v-if="!hasPrintablePapers" variant="primary" :disabled="Boolean(paperBusy) || !eligiblePaperCount" @click="createPaperBatch">{{ paperBusy === 'batch' ? '正在逐人生成 PDF…' : '生成全部 PDF 试卷（可直接打印）' }}</AppButton>

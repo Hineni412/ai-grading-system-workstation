@@ -8,9 +8,7 @@ import { ApiError } from '../api/errors';
 const trainingApiMock = vi.hoisted(() => ({
   createPersonalizedDraft: vi.fn(),
   exportHandout: vi.fn(),
-  getHandoutExportByRequest: vi.fn(),
   getPersonalizedDraft: vi.fn(),
-  getPersonalizedDraftByRequest: vi.fn(),
   editPersonalizedDraft: vi.fn(),
   listPaperInstances: vi.fn(),
   listPaperBatches: vi.fn(),
@@ -275,7 +273,7 @@ describe('personalized recommendation draft', () => {
     { response: 'success', paperMode: 'individual' as const, skipped: 1 },
     { response: 'uncertain response', paperMode: 'individual' as const, skipped: 1 },
     { response: 'success', paperMode: 'shared' as const, skipped: 0 },
-  ])('exports a 100 question $paperMode handout and restores it after $response without creating a training paper', async ({ response, paperMode, skipped }) => {
+  ])('exports a 100 question $paperMode handout after a $response without creating a training paper', async ({ response, paperMode, skipped }) => {
     const emptyStudent = { ...draft.students[0]!, student_id: 'SYN-S02', student_name: '合成空卷', items: [] }
     const handout = { ...draft, config: { purpose: 'handout', question_count: 100, paper_mode: paperMode, remediation_only: paperMode === 'individual' },
       students: (skipped ? [...draft.students, emptyStudent] : draft.students).map(student => ({ ...student,
@@ -289,7 +287,6 @@ describe('personalized recommendation draft', () => {
       kind: 'contract', status: 202, code: 'invalid_response', message: '合成异常响应',
       details: {}, requestId: 'synthetic', retryable: false,
     }))
-    trainingApiMock.getHandoutExportByRequest.mockResolvedValue(job)
     const props = { diagnosis, scope: diagnosis.scope, examScope: { mode: 'current' as const, session_ids: [7] },
       questionCount: 100, purpose: 'handout', maxQuestionsPerSkill: 20, maxWrittenQuestions: 20,
       recentActivityCount: 0, difficultyMax: 10, excludeCurrentExamOriginals: true,
@@ -318,14 +315,12 @@ describe('personalized recommendation draft', () => {
     await settle()
     expect(trainingApiMock.exportHandout).toHaveBeenCalledExactlyOnceWith(draft.draft_id, expect.objectContaining({ expected_revision: 1 }))
     expect(trainingApiMock.createPaperBatch).not.toHaveBeenCalled()
-    const token = trainingApiMock.exportHandout.mock.calls[0]![1].request_token
-    mounted.splice(mounted.indexOf(app), 1); app.unmount()
-    const returning = createApp(PersonalizedRecommendationDraftView, props)
-    mounted.push(returning); returning.mount(host)
-    await vi.waitFor(() => expect(trainingApiMock.getHandoutExportByRequest).toHaveBeenCalledWith(draft.draft_id, token))
-    await vi.waitFor(() => expect(host.textContent?.includes('已跳过空卷')).toBe(skipped > 0))
-    expect(host.textContent?.includes('1 名学生暂无可配补弱题，已跳过空卷')).toBe(skipped > 0)
-    expect(trainingApiMock.exportHandout).toHaveBeenCalledExactlyOnceWith(draft.draft_id, expect.objectContaining({ expected_revision: 1 }))
+    if (response === 'uncertain response') {
+      await vi.waitFor(() => expect(host.textContent).toContain('导出请求结果暂未确认'))
+    } else {
+      await vi.waitFor(() => expect(host.textContent?.includes('已跳过空卷')).toBe(skipped > 0))
+      expect(host.textContent?.includes('1 名学生暂无可配补弱题，已跳过空卷')).toBe(skipped > 0)
+    }
   })
 
   it('lets the teacher select a target, generate, explain and lock an item', async () => {
@@ -428,24 +423,20 @@ describe('personalized recommendation draft', () => {
     targetKeys: ['knowledge_point:一元一次方程'],
   }
 
-  it('remembers an uncertain request on a return visit and only checks its saved result', async () => {
+  it('shows an error when the generation response is uncertain and does not recover on a return visit', async () => {
     trainingApiMock.createPersonalizedDraft.mockRejectedValueOnce(new ApiError({ kind: 'timeout', status: null,
       code: 'request_timeout', message: 'timeout', details: {}, requestId: 'synthetic', retryable: false }))
-    const recoveredDraft = { ...draft, config: { paper_mode: 'individual', question_count: 8 } }
-    trainingApiMock.getPersonalizedDraftByRequest.mockRejectedValueOnce(new Error('not saved yet')).mockResolvedValueOnce(recoveredDraft)
     const host = document.createElement('div'); document.body.append(host)
     const first = createApp(PersonalizedRecommendationDraftView, externalProps)
     const view = first.mount(host) as unknown as { generate: () => Promise<void> }
     await settle(); await view.generate(); await settle()
-    expect(host.textContent).toContain('后台可能仍在处理')
+    expect(host.textContent).toContain('个性化草稿暂时无法生成')
     first.unmount()
-    const contextChange = vi.fn()
-    const second = createApp(PersonalizedRecommendationDraftView, { ...externalProps, onContextChange: contextChange })
+    const second = createApp(PersonalizedRecommendationDraftView, externalProps)
     mounted.push(second); second.mount(host)
-    await vi.waitFor(() => expect(host.textContent).toContain('已取回上次请求生成的草稿'))
+    await settle()
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledOnce()
-    expect(trainingApiMock.getPersonalizedDraftByRequest).toHaveBeenCalledTimes(2)
-    expect(contextChange).toHaveBeenCalledWith(expect.objectContaining({ mode: 'individual', studentCount: 1, questionCount: 8 }))
+    expect(trainingApiMock.getPersonalizedDraft).not.toHaveBeenCalled()
   })
 
   it('restores the saved draft when paper settings changed', async () => {

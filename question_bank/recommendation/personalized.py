@@ -2428,12 +2428,6 @@ class PersonalizedRecommendationModule:
                     result.append(match.stable_key)
         return tuple(result)
 
-    def get_by_request_token(self, request_token: str) -> dict[str, Any]:
-        result = self._by_request_token(_request_token(request_token))
-        if result is None:
-            raise RecommendationDraftNotFound(request_token)
-        return self.get(str(result["draft_id"]))
-
     def get(self, draft_id: str) -> dict[str, Any]:
         clean_id = _draft_id(draft_id)
         with connect(self.db_path) as connection:
@@ -2470,27 +2464,12 @@ class PersonalizedRecommendationModule:
         command: RecommendationEditCommand,
     ) -> dict[str, Any]:
         clean_id = _draft_id(draft_id)
-        command_payload = {
-            **asdict(command),
-            "replacement_question_id": command.replacement_question_id,
-        }
-        command_hash = _hash_payload(command_payload)
-        with connect(self.db_path) as connection:
-            repeated = connection.execute(
-                """
-                SELECT command_hash, resulting_draft_json
-                FROM personalized_recommendation_events
-                WHERE draft_id = ? AND request_token = ?
-                """,
-                (clean_id, command.request_token),
-            ).fetchone()
-        if repeated is not None:
-            if str(repeated["command_hash"]) != command_hash:
-                raise RecommendationRequestConflict(
-                    "recommendation edit token was reused"
-                )
-            return json.loads(str(repeated["resulting_draft_json"]))
-
+        command_hash = _hash_payload(
+            {
+                **asdict(command),
+                "replacement_question_id": command.replacement_question_id,
+            }
+        )
         with connect(self.db_path) as connection:
             source_row = connection.execute(
                 """
@@ -2517,21 +2496,6 @@ class PersonalizedRecommendationModule:
         )
         with connect(self.db_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            repeated = connection.execute(
-                """
-                SELECT command_hash, resulting_draft_json
-                FROM personalized_recommendation_events
-                WHERE draft_id = ? AND request_token = ?
-                """,
-                (clean_id, command.request_token),
-            ).fetchone()
-            if repeated is not None:
-                if str(repeated["command_hash"]) != command_hash:
-                    raise RecommendationRequestConflict(
-                        "recommendation edit token was reused"
-                    )
-                return json.loads(str(repeated["resulting_draft_json"]))
-
             row = connection.execute(
                 """
                 SELECT *

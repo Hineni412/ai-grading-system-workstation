@@ -92,7 +92,6 @@ def test_scan_batch_upload_resolution_cancel_and_preview_contract(
     created = client.post(
         "/api/training/scan-batches",
         json={
-            "operation_token": "1" * 32,
             "paper_instance_ids": ["a" * 64],
         },
     )
@@ -106,7 +105,6 @@ def test_scan_batch_upload_resolution_cancel_and_preview_contract(
         content=content,
         headers={
             "content-type": "image/png",
-            "x-operation-token": "2" * 32,
             "x-upload-filename": "scan.png",
         },
     )
@@ -117,7 +115,6 @@ def test_scan_batch_upload_resolution_cancel_and_preview_contract(
     resolved = client.post(
         f"/api/training/scan-batches/{batch_id}/pages/{page_id}/resolve",
         json={
-            "operation_token": "3" * 32,
             "expected_revision": 2,
             "action": "replace",
             "paper_instance_id": "a" * 64,
@@ -130,7 +127,6 @@ def test_scan_batch_upload_resolution_cancel_and_preview_contract(
     cancelled = client.post(
         f"/api/training/submissions/{submission_id}/cancel",
         json={
-            "operation_token": "4" * 32,
             "expected_revision": 3,
             "reason": "合成取消",
         },

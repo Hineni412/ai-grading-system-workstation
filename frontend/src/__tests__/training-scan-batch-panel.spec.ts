@@ -262,7 +262,7 @@ describe('training scan return workspace', () => {
     expect(host.textContent).toContain('本次回收 1 份训练卷')
     expect(host.textContent).not.toContain('建立扫描批次')
     await chooseFile(host); button('导入并归组（1 个文件）', host).click(); await settle()
-    expect(trainingApiMock.createTrainingScanBatch).toHaveBeenCalledWith([paper.paper_instance_id], expect.any(String))
+    expect(trainingApiMock.createTrainingScanBatch).toHaveBeenCalledWith([paper.paper_instance_id])
     expect(trainingApiMock.uploadTrainingScan).toHaveBeenCalledOnce()
     expect(host.querySelector('.return-summary')).not.toBeNull()
     expect(host.textContent).toContain('已有归组结果保持不变')

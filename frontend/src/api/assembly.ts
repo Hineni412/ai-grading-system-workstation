@@ -52,7 +52,7 @@ export interface AssemblyContext {
   sources: Record<string, { key: string; label: string; skill_keys: string[]; original?: boolean }>
 }
 export const defaultPaperRules = (): PaperRules => ({ purpose: 'handout', question_count: 10, difficulty_max: 8, max_questions_per_skill: 1, max_written_questions: 2, recent_activity_count: 3 })
-export function createTrainingFromAssembly(body: { request_token: string; class_ids: string[]; draft_revision: string; rules: PaperRules }): Promise<{ draft_id: string }> {
+export function createTrainingFromAssembly(body: { class_ids: string[]; draft_revision: string; rules: PaperRules }): Promise<{ draft_id: string }> {
   return apiClient.request('/api/training/personalized-drafts/from-assembly', { method: 'POST', body, timeoutMs: 120_000,
     decode: value => { if (!isRecord(value) || !isRevision(value.draft_id)) throw new Error('Invalid training draft'); return { draft_id: value.draft_id } },
   })

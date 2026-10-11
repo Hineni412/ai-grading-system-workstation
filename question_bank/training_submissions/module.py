@@ -6,7 +6,7 @@ import os
 import re
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -209,10 +209,9 @@ class TrainingSubmissionModule:
 
     def create_batch(self, command: CreateScanBatchCommand) -> dict[str, Any]:
         initialize_database(self.db_path)
-        fingerprint = _payload_hash(asdict(command))
-        repeated = self._event_batch(command.operation_token, fingerprint)
-        if repeated is not None:
-            return repeated
+        fingerprint = hashlib.sha256(
+            command.operation_token.encode("utf-8")
+        ).hexdigest()
         instances = [self.paper_module.get(value) for value in command.paper_instance_ids]
         if any(item["status"] != "frozen" for item in instances):
             raise InvalidSubmissionUpload("all expected papers must be frozen")
@@ -228,13 +227,6 @@ class TrainingSubmissionModule:
         )
         now = self._now()
         with _batch_lock(batch_id), connect(self.db_path) as connection:
-            repeated = self._event_batch(
-                command.operation_token,
-                fingerprint,
-                connection=connection,
-            )
-            if repeated is not None:
-                return repeated
             connection.execute(
                 """
                 INSERT INTO training_scan_batches (
@@ -304,15 +296,9 @@ class TrainingSubmissionModule:
         digest = hashlib.sha256(content).hexdigest()
         if not _has_file_signature(content, command.media_type):
             raise InvalidSubmissionUpload("scan file signature is invalid")
-        fingerprint = _payload_hash(
-            {
-                "batch_id": clean_batch_id,
-                **asdict(command),
-            }
-        )
-        repeated = self._event_batch(command.operation_token, fingerprint)
-        if repeated is not None:
-            return repeated
+        fingerprint = hashlib.sha256(
+            command.operation_token.encode("utf-8")
+        ).hexdigest()
         with _batch_lock(clean_batch_id):
             batch = self._batch_row(clean_batch_id)
             self._require_revision(batch, command.expected_revision)
@@ -457,10 +443,9 @@ class TrainingSubmissionModule:
     ) -> dict[str, Any]:
         clean_batch_id = _identifier(batch_id)
         initialize_database(self.db_path)
-        fingerprint = _payload_hash({"batch_id": clean_batch_id, **asdict(command)})
-        repeated = self._event_batch(command.operation_token, fingerprint)
-        if repeated is not None:
-            return repeated
+        fingerprint = hashlib.sha256(
+            command.operation_token.encode("utf-8")
+        ).hexdigest()
         with _batch_lock(clean_batch_id), connect(self.db_path) as connection:
             batch = self._batch_row(clean_batch_id, connection=connection)
             self._require_revision(batch, command.expected_revision)
@@ -635,12 +620,9 @@ class TrainingSubmissionModule:
         if submission is None:
             raise SubmissionNotFound(clean_id)
         batch_id = str(submission["batch_id"])
-        fingerprint = _payload_hash(
-            {"submission_id": clean_id, **asdict(command)}
-        )
-        repeated = self._event_batch(command.operation_token, fingerprint)
-        if repeated is not None:
-            return repeated
+        fingerprint = hashlib.sha256(
+            command.operation_token.encode("utf-8")
+        ).hexdigest()
         with _batch_lock(batch_id), connect(self.db_path) as connection:
             batch = self._batch_row(batch_id, connection=connection)
             self._require_revision(batch, command.expected_revision)
@@ -1150,33 +1132,6 @@ class TrainingSubmissionModule:
         if row is None:
             raise SubmissionNotFound(batch_id)
         return row
-
-    def _event_batch(
-        self,
-        operation_token: str,
-        fingerprint: str,
-        *,
-        connection: Any | None = None,
-    ) -> dict[str, Any] | None:
-        def lookup(conn: Any) -> Any:
-            return conn.execute(
-                """
-                SELECT batch_id, operation_fingerprint
-                FROM training_submission_events WHERE operation_token = ?
-                """,
-                (operation_token,),
-            ).fetchone()
-
-        if connection is None:
-            with connect(self.db_path) as own:
-                event = lookup(own)
-        else:
-            event = lookup(connection)
-        if event is None:
-            return None
-        if str(event["operation_fingerprint"]) != fingerprint:
-            raise SubmissionRequestConflict("operation token was reused")
-        return self.get_batch(str(event["batch_id"]))
 
     @staticmethod
     def _require_revision(row: Mapping[str, Any], expected: int) -> None:

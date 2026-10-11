@@ -245,8 +245,11 @@ def test_class_change_between_waves_preserves_finished_students(paper_workspace,
         # already marks running students cancelled, so their completion cannot
         # be counted as a successful item in the cancelled batch.
         def cancel_after_wave():
-            current = module._batch_by_operation("f" * 32)
-            module.cancel_batch(current["batch_run_id"])
+            with connect(db_path) as connection:
+                current = connection.execute(
+                    "SELECT batch_run_id FROM personalized_paper_batches"
+                ).fetchone()
+            module.cancel_batch(str(current["batch_run_id"]))
 
         barrier = threading.Barrier(4, action=cancel_after_wave, timeout=15)
         original_finish = module._finish_batch_item
@@ -294,13 +297,13 @@ def test_freeze_stamps_every_page_and_rejects_identity_tampering(
         command,
         BytesIO(payload),
     )
-    repeated = module.freeze(
-        instance["paper_instance_id"],
-        command,
-        BytesIO(b""),
-    )
+    with pytest.raises(PaperRevisionConflict):
+        module.freeze(
+            instance["paper_instance_id"],
+            command,
+            BytesIO(b""),
+        )
 
-    assert repeated == frozen
     assert frozen["status"] == "frozen"
     assert frozen["revision"] == 2
     assert frozen["pages"] == [

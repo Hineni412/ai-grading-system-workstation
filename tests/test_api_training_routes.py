@@ -151,7 +151,7 @@ def test_create_draft_consolidation_cap_is_only_for_personal_handout(purpose, mo
             return {'draft_id': 'd' * 64, 'revision': 1, 'config': request['config'].to_dict(),
                 'status': 'draft', 'result_version': 'a' * 64, 'source_version': 'b' * 64,
                 'engine_version': 'TEST-engine', 'students': [], 'warnings': [], 'history': []}
-    body = PersonalizedRecommendationCreateRequest(request_token='a' * 32, purpose=purpose,
+    body = PersonalizedRecommendationCreateRequest(purpose=purpose,
         paper_mode=mode, question_count=10, max_consolidation_questions=2, max_unmeasured_questions=0,
         scope_keys=['kp_bnu24_math_g7_lower_4'], target_keys=[],
         scope={'mode': 'all'}, exam_scope={'mode': 'current', 'session_ids': [1]})

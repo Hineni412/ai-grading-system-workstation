@@ -1330,13 +1330,10 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
     assert checked.json()['grouping']['groups'] == []
     assert checked.json()['grouping']['unassigned'] == []
     # Adopting a checked group must only validate its members, without rebuilding
-    # every automatic group. The source-version and request-token checks remain.
-    request_url = "/api/training/personalized-drafts/by-request/" + "8" * 32
-    assert client.get(request_url).status_code == 404
+    # every automatic group. The source-version checks remain.
     created = client.post(
         "/api/training/personalized-drafts",
         json={
-            "request_token": "8" * 32,
             "scope": {"mode": "selected", "student_ids": members},
             "exam_scope": exams,
             "paper_mode": "shared",
@@ -1360,10 +1357,6 @@ def test_semester_group_of_seventeen_creates_one_shared_paper_through_api(
         client.get(f"/api/training/personalized-drafts/{draft['draft_id']}").json()
         == draft
     )
-    recovered = client.get(request_url)
-    assert recovered.status_code == 200
-    assert recovered.json() == draft
-    assert "_input_fingerprint" not in recovered.json()
     with connect(direct_module.db_path) as conn:
         assert (
             conn.execute(
@@ -1476,7 +1469,6 @@ def test_group_adopt_stores_activities_for_all_scope_students(
     created = client.post(
         "/api/training/personalized-drafts",
         json={
-            "request_token": "5" * 32,
             # IDLE-01 stays in scope but is filtered out for lack of weak
             # points; the stored activities must still cover all scope students.
             "scope": {"mode": "all"},
@@ -1503,7 +1495,7 @@ def test_group_adopt_stores_activities_for_all_scope_students(
     assert "_graded_activities" not in stored["diagnosis"]
 
 
-def test_saved_lock_replace_exclude_and_idempotent_retry(direct_module):
+def test_saved_lock_replace_exclude_and_revision_guard(direct_module):
     draft = _make_direct(direct_module, difficulty_max=10)
     item = next(
         q for q in draft["students"][0]["items"] if q["question_id"] in range(100, 114)
@@ -1523,7 +1515,8 @@ def test_saved_lock_replace_exclude_and_idempotent_retry(direct_module):
 
     lock = command("lock", "b", 1)
     locked = direct_module.edit(draft["draft_id"], lock)
-    assert direct_module.edit(draft["draft_id"], lock) == locked
+    with pytest.raises(RecommendationRevisionConflict):
+        direct_module.edit(draft["draft_id"], lock)
     with pytest.raises(RecommendationEditInvalid):
         direct_module.edit(draft["draft_id"], command("replace", "c", 2))
     direct_module.edit(draft["draft_id"], command("unlock", "d", 2))
@@ -1724,7 +1717,6 @@ def test_concurrent_teacher_edits_allow_only_one_revision(direct_module):
                      (item["question_id"],))
     viewed = direct_module.ensure_current(draft["draft_id"])
     assert viewed["needs_update"] is True and viewed["revision"] == 2
-    assert direct_module.get_by_request_token("a" * 32) == viewed
     with connect(direct_module.db_path) as conn:
         stored = json.loads(conn.execute("SELECT draft_json FROM personalized_recommendation_drafts WHERE draft_id=?",
                                          (draft["draft_id"],)).fetchone()[0])
@@ -2836,7 +2828,7 @@ def test_adjustable_rules_and_legacy_defaults(direct_module):
         max_questions_per_skill=20, max_written_questions=20, recent_activity_count=20, difficulty_max=10)
     assert PersonalizedRecommendationConfig(**_config_constructor(handout.to_dict())) == handout
     for cls, extra in ((TrainingGroupingRequest, {"scope_keys": [BNU_CHAPTER4]}),
-        (PersonalizedRecommendationCreateRequest, {"request_token": "e" * 32,
+        (PersonalizedRecommendationCreateRequest, {
          "scope": {"mode": "all"}, "exam_scope": {"mode": "semester"}})):
         body = cls(**extra, purpose="handout", question_count=100, max_questions_per_skill=20,
                    max_written_questions=20, recent_activity_count=20, difficulty_max=10)
@@ -3164,11 +3156,6 @@ def test_fixed_class_assembly_preserves_all_members_order_and_idempotency(direct
         config=config, actor_ref='test', assembly_snapshot=snapshot, graded_activities=[])
     first = create('1')
     assert create('1') == create('2') == first
-    assert direct_module.get_by_request_token('2'*32) == first
-    from question_bank.recommendation.personalized import RecommendationRequestConflict
-    with pytest.raises(RecommendationRequestConflict):
-        direct_module.create(request_token='2'*32,diagnosis=diagnosis,config=config,actor_ref='test',
-            assembly_snapshot={**snapshot,'revision':'b'*64},graded_activities=[])
     assert {s['student_id'] for s in first['students']} == {'A', 'NO-EVIDENCE'}
     assert first['config']['assembly_source'] == snapshot
     for student in first['students']:
@@ -3192,13 +3179,13 @@ def test_fixed_class_assembly_preserves_all_members_order_and_idempotency(direct
     app.dependency_overrides[get_personalized_recommendation_module] = lambda: direct_module
     app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: SimpleNamespace(build_profiles=lambda **_:diagnosis, graded_activities=lambda _:[])
     client = TestClient(app)
-    body = {'request_token':'3'*32,'class_ids':['合成班'],'draft_revision':saved.revision,'rules':saved.practice_rules}
+    body = {'class_ids':['合成班'],'draft_revision':saved.revision,'rules':saved.practice_rules}
     response = client.post('/api/training/personalized-drafts/from-assembly', json=body)
     assert response.status_code == 200, response.text
     result = response.json()
     assert {s['student_id'] for s in result['students']} == {'A','NO-EVIDENCE'}
     assert [i['question_id'] for i in result['students'][0]['items']] == order
-    assert client.post('/api/training/personalized-drafts/from-assembly', json={**body,'request_token':'4'*32}).json() == result
+    assert client.post('/api/training/personalized-drafts/from-assembly', json=body).json() == result
     assert client.post('/api/training/personalized-drafts/from-assembly', json={**body,'draft_revision':'0'*64}).status_code == 409
     client.close()
 
@@ -3623,13 +3610,12 @@ def test_handout_100_exports_in_order_and_consumes_download_without_training(dir
     app.dependency_overrides[get_personalized_recommendation_module] = lambda: direct_module
     client = TestClient(app)
     url = f"/api/training/personalized-drafts/{draft['draft_id']}/handout-exports"
-    body = {"request_token": "b"*32, "expected_revision": 1}
+    body = {"expected_revision": 1}
     try:
         assert client.post(url, json={**body, "expected_revision": 2}).status_code == 409
         response = client.post(url, json=body)
         assert response.status_code == 202, response.text
         job_id = response.json()["id"]
-        assert client.post(url, json=body).json()["id"] == job_id
         assert client.post(url, json={**body, "expected_revision": 2}).status_code == 409
         manager.wait(job_id, timeout=60)
         job = manager.store.get_job(job_id)
@@ -3672,7 +3658,7 @@ def test_handout_100_exports_in_order_and_consumes_download_without_training(dir
             config=PersonalizedRecommendationConfig(purpose="handout", paper_mode="shared", question_count=8,
                 target_keys=(BNU_TARGET,), max_written_questions=5, recent_activity_count=0), actor_ref="synthetic")
         shared_url = f"/api/training/personalized-drafts/{shared['draft_id']}/handout-exports"
-        response = client.post(shared_url, json={"request_token": "f"*32, "expected_revision": 1})
+        response = client.post(shared_url, json={"expected_revision": 1})
         assert response.status_code == 202, response.text
         manager.wait(response.json()["id"], timeout=30)
         job = manager.store.get_job(response.json()["id"])
@@ -3683,7 +3669,7 @@ def test_handout_100_exports_in_order_and_consumes_download_without_training(dir
                 expected_draft_revision=1, student_id="A", actor_ref="synthetic"))
         with connect(direct_module.db_path) as conn:
             conn.execute("UPDATE questions SET question_text=question_text || '已变化' WHERE id=1001")
-        continued = client.post(url, json={"request_token": "0"*32, "expected_revision": 1})
+        continued = client.post(url, json={"expected_revision": 1})
         assert continued.status_code == 202, continued.text
         manager.wait(continued.json()["id"], timeout=30)
         assert manager.store.get_job(continued.json()["id"]).status == "succeeded"

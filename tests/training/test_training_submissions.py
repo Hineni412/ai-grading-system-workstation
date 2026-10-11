@@ -60,7 +60,7 @@ class VariablePagePdfConverter:
             document.close()
 
 
-def test_shuffled_pages_group_by_signed_identity_and_survive_restart(
+def test_shuffled_pages_group_by_page_identity_and_survive_restart(
     paper_workspace,
 ) -> None:
     paper, draft, db_path, data_root = paper_workspace
@@ -441,7 +441,6 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
     # the completed paper and its saved feedback remain unchanged.
     fresh = create_personalized_recommendation_draft(
         PersonalizedRecommendationCreateRequest(
-            request_token="e" * 32,
             scope=scope,
             exam_scope=exam_scope,
             question_count=8,
@@ -662,7 +661,7 @@ def test_duplicate_conflict_external_and_manual_replacement_are_explicit(
     assert batch["status"] == "ready"
 
 
-def test_blur_crop_and_invalid_signature_stay_in_manual_review(
+def test_blur_crop_and_invalid_identity_stay_in_manual_review(
     paper_workspace,
 ) -> None:
     paper, draft, db_path, data_root = paper_workspace

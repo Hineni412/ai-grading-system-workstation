@@ -4,7 +4,6 @@ from question_bank.atomic_files import replace_with_retry
 from question_bank.canonical_hash import canonical_hash, canonical_json
 
 import hashlib
-import hmac
 import json
 import math
 import os
@@ -53,7 +52,6 @@ from .rendering import (
     append_scratch_page,
     decode_page_identity,
     inspect_docx,
-    page_signature,
     pdf_page_count,
     prepare_identity_font,
     render_review_docx,
@@ -72,6 +70,7 @@ ArtifactKind = Literal["review-docx", "reviewed-docx", "frozen-pdf"]
 
 _TOKEN_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_UNUSED_SIGNING_SECRET = "0" * 64
 _INSTANCE_PATTERN = _HASH_PATTERN
 _LOCKS_GUARD = threading.Lock()
 _LOCKS: dict[str, threading.Lock] = {}
@@ -84,10 +83,6 @@ _GOVERNED_IMAGE_REFERENCE = re.compile(r"^sha256:([0-9a-f]{64})$")
 
 
 class PersonalizedPaperError(RuntimeError):
-    pass
-
-
-class PaperRequestConflict(PersonalizedPaperError):
     pass
 
 
@@ -226,15 +221,9 @@ class PersonalizedPaperModule:
         """Create one review instance after the caller prepared the database."""
 
         clean_draft_id = _identifier(draft_id, "draft_id")
-        fingerprint = _hash_payload(
-            {
-                "draft_id": clean_draft_id,
-                **asdict(command),
-            }
-        )
-        repeated = self._event_result(command.operation_token, fingerprint)
-        if repeated is not None:
-            return repeated
+        fingerprint = hashlib.sha256(
+            command.operation_token.encode("utf-8")
+        ).hexdigest()
         paper_instance_id = _hash_payload(
             {
                 "kind": "personalized-paper-instance",
@@ -244,24 +233,10 @@ class PersonalizedPaperModule:
             }
         )
         with _instance_lock(paper_instance_id):
-            repeated = self._event_result(
-                command.operation_token,
-                fingerprint,
-            )
-            if repeated is not None:
-                return repeated
-            existing = self._instance_by_operation(command.operation_token)
+            existing = self._instance_by_id(paper_instance_id)
             if existing is not None:
-                if str(existing["operation_fingerprint"]) != fingerprint:
-                    raise PaperRequestConflict(
-                        "paper operation token was reused"
-                    )
                 if str(existing["status"]) in {"review_pending", "frozen"}:
-                    return self._finish_missing_create_event(
-                        existing,
-                        command=command,
-                        fingerprint=fingerprint,
-                    )
+                    return self._public_instance(existing)
                 snapshot = self._snapshot_for_resume(
                     existing,
                     command=command,
@@ -316,7 +291,6 @@ class PersonalizedPaperModule:
                     "draft_result_version": draft["draft_id"],
                 }
             )
-            signing_secret = secrets.token_hex(32)
             series_version = self._reserve_instance(
                 paper_instance_id=paper_instance_id,
                 operation_token=command.operation_token,
@@ -326,7 +300,6 @@ class PersonalizedPaperModule:
                 paper_batch_id=paper_batch_id,
                 command=command,
                 budget=initial_budget,
-                signing_secret=signing_secret,
             )
             snapshot = self._build_snapshot(
                 paper_instance_id=paper_instance_id,
@@ -359,22 +332,10 @@ class PersonalizedPaperModule:
     ) -> dict[str, Any]:
         clean_id = _identifier(paper_instance_id, "paper_instance_id")
         initialize_database(self.db_path)
-        fingerprint = _hash_payload(
-            {
-                "paper_instance_id": clean_id,
-                **asdict(command),
-            }
-        )
-        repeated = self._event_result(command.operation_token, fingerprint)
-        if repeated is not None:
-            return repeated
+        fingerprint = hashlib.sha256(
+            command.operation_token.encode("utf-8")
+        ).hexdigest()
         with _instance_lock(clean_id):
-            repeated = self._event_result(
-                command.operation_token,
-                fingerprint,
-            )
-            if repeated is not None:
-                return repeated
             row = self._instance_row(clean_id)
             current_revision = int(row["revision"])
             if command.expected_revision != current_revision:
@@ -451,19 +412,9 @@ class PersonalizedPaperModule:
             filename="review.docx",
             actor_ref=command.actor_ref,
         )
-        fingerprint = _hash_payload(
-            {
-                "paper_instance_id": paper_instance_id,
-                "content_sha256": str(row["review_docx_sha256"]),
-                **asdict(freeze_command),
-            }
-        )
-        repeated = self._event_result(
-            freeze_command.operation_token,
-            fingerprint,
-        )
-        if repeated is not None:
-            return repeated
+        fingerprint = hashlib.sha256(
+            freeze_command.operation_token.encode("utf-8")
+        ).hexdigest()
         with _instance_lock(paper_instance_id):
             row = self._instance_row(paper_instance_id)
             if str(row["status"]) == "frozen":
@@ -585,13 +536,10 @@ class PersonalizedPaperModule:
                     converted,
                     stamped,
                     paper_instance_id=clean_id,
-                    paper_batch_id=str(row["paper_batch_id"]),
                     series_version=int(row["series_version"]),
                     student_name=str(row["student_name_snapshot"] or ""),
                     student_code=str(row["student_code_snapshot"] or ""),
                     class_id=str(row["class_id_snapshot"] or ""),
-                    signing_secret=str(row["signing_secret"]),
-                    reviewed_docx_sha256=reviewed_hash,
                     layout_version=str(row["layout_version"]),
                     identity_font_buffer=identity_font_buffer,
                 )
@@ -696,21 +644,9 @@ class PersonalizedPaperModule:
         requested = tuple(dict.fromkeys(
             str(value or "").strip() for value in student_ids if str(value or "").strip()
         ))
-        fingerprint = _hash_payload({
-            "kind": "personalized-paper-review-batch",
-            "draft_id": clean_draft_id,
-            "draft_revision": int(expected_draft_revision),
-            "requested_student_ids": list(requested),
-            "actor_ref": _required_text(actor_ref, "actor_ref", 100),
-            "context_window_tokens": int(context_window_tokens),
-            "direct_freeze": bool(direct_freeze),
-        })
-        existing = self._batch_by_operation(clean_token)
-        if existing is not None:
-            if str(existing["operation_fingerprint"]) != fingerprint:
-                raise PaperRequestConflict("paper batch operation token was reused")
-            if str(existing["status"]) != "creating":
-                return self._public_batch(str(existing["batch_run_id"]))
+        fingerprint = hashlib.sha256(
+            clean_token.encode("utf-8")
+        ).hexdigest()
         recommendation = PersonalizedRecommendationModule(
             db_path=self.db_path,
             data_root=self.data_root,
@@ -762,6 +698,13 @@ class PersonalizedPaperModule:
             }),
         )
         with connect(self.db_path) as connection:
+            existing_status = connection.execute(
+                """
+                SELECT status FROM personalized_paper_batches
+                WHERE batch_run_id = ?
+                """,
+                (batch_run_id,),
+            ).fetchone()
             saved_items = connection.execute(
                 """
                 SELECT * FROM personalized_paper_batch_items
@@ -769,6 +712,8 @@ class PersonalizedPaperModule:
                 """,
                 (batch_run_id,),
             ).fetchall()
+        if existing_status is not None and str(existing_status["status"]) != "creating":
+            return self._public_batch(batch_run_id)
         identity_font_buffer = None
         if direct_freeze:
             with _PDF_FINALIZE_LOCK:
@@ -1079,16 +1024,6 @@ class PersonalizedPaperModule:
             ).fetchall()
         return tuple(self._public_batch(str(row["batch_run_id"])) for row in rows)
 
-    def _batch_by_operation(self, operation_token: str) -> Mapping[str, Any] | None:
-        with connect(self.db_path) as connection:
-            return connection.execute(
-                """
-                SELECT * FROM personalized_paper_batches
-                WHERE operation_token = ?
-                """,
-                (operation_token,),
-            ).fetchone()
-
     def _batch_is_cancelled(self, batch_run_id: str) -> bool:
         with connect(self.db_path) as connection:
             row = connection.execute(
@@ -1161,14 +1096,12 @@ class PersonalizedPaperModule:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 """
-                SELECT * FROM personalized_paper_batches
-                WHERE operation_token = ?
+                SELECT batch_run_id FROM personalized_paper_batches
+                WHERE batch_run_id = ?
                 """,
-                (operation_token,),
+                (batch_run_id,),
             ).fetchone()
             if existing is not None:
-                if str(existing["operation_fingerprint"]) != operation_fingerprint:
-                    raise PaperRequestConflict("paper batch operation token was reused")
                 return
             connection.execute(
                 """
@@ -1543,19 +1476,6 @@ class PersonalizedPaperModule:
             or int(row["page_count"] or 0) != decoded["total_pages"]
         ):
             raise PaperInvalid("page identity does not match a frozen paper")
-        expected = page_signature(
-            signing_secret=str(row["signing_secret"]),
-            paper_batch_id=str(row["paper_batch_id"]),
-            paper_instance_id=str(row["paper_instance_id"]),
-            series_version=int(row["series_version"]),
-            page_number=int(decoded["page_number"]),
-            total_pages=int(decoded["total_pages"]),
-            reviewed_docx_sha256=str(row["reviewed_docx_sha256"]),
-            layout_version=str(row["layout_version"]),
-            identity_version=str(decoded["identity_version"]),
-        )
-        if not hmac.compare_digest(expected, str(decoded["page_signature"])):
-            raise PaperInvalid("page identity signature is invalid")
         with connect(self.db_path) as connection:
             page = connection.execute(
                 """
@@ -1568,10 +1488,7 @@ class PersonalizedPaperModule:
                     decoded["page_number"],
                 ),
             ).fetchone()
-        if page is None or not hmac.compare_digest(
-            str(page["page_identity"]),
-            str(value),
-        ):
+        if page is None or str(page["page_identity"]) != str(value):
             raise PaperInvalid("page identity is not registered")
         return {
             **decoded,
@@ -1724,26 +1641,18 @@ class PersonalizedPaperModule:
         paper_batch_id: str,
         command: CreatePaperCommand,
         budget: Mapping[str, Any],
-        signing_secret: str,
     ) -> int:
         with connect(self.db_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 """
-                SELECT *
+                SELECT series_version
                 FROM personalized_paper_instances
-                WHERE operation_token = ?
+                WHERE paper_instance_id = ?
                 """,
-                (operation_token,),
+                (paper_instance_id,),
             ).fetchone()
             if existing is not None:
-                if (
-                    str(existing["operation_fingerprint"])
-                    != operation_fingerprint
-                ):
-                    raise PaperRequestConflict(
-                        "paper operation token was reused"
-                    )
                 return int(existing["series_version"])
             version = int(
                 connection.execute(
@@ -1785,7 +1694,7 @@ class PersonalizedPaperModule:
                     LAYOUT_VERSION,
                     BUDGET_VERSION,
                     _json(budget),
-                    signing_secret,
+                    _UNUSED_SIGNING_SECRET,
                     command.actor_ref,
                 ),
             )
@@ -2068,36 +1977,6 @@ class PersonalizedPaperModule:
                 ) from exc
             raise
 
-    def _finish_missing_create_event(
-        self,
-        row,
-        *,
-        command: CreatePaperCommand,
-        fingerprint: str,
-    ) -> dict[str, Any]:
-        with connect(self.db_path) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            result = self._public_instance_from_connection(
-                connection,
-                str(row["paper_instance_id"]),
-            )
-            self._insert_event(
-                connection,
-                paper_instance_id=str(row["paper_instance_id"]),
-                operation_token=command.operation_token,
-                operation_fingerprint=fingerprint,
-                event_type="created",
-                actor_ref=command.actor_ref,
-                expected_revision=0,
-                resulting_revision=int(result["revision"]),
-                details={
-                    "review_docx_sha256": row["review_docx_sha256"],
-                    "student_id": command.student_id,
-                },
-                result=result,
-            )
-        return result
-
     def _commit_frozen(
         self,
         *,
@@ -2116,20 +1995,6 @@ class PersonalizedPaperModule:
         next_revision = int(row["revision"]) + 1
         with connect(self.db_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            repeated = connection.execute(
-                """
-                SELECT operation_fingerprint, resulting_instance_json
-                FROM personalized_paper_events
-                WHERE operation_token = ?
-                """,
-                (command.operation_token,),
-            ).fetchone()
-            if repeated is not None:
-                if str(repeated["operation_fingerprint"]) != fingerprint:
-                    raise PaperRequestConflict(
-                        "paper operation token was reused"
-                    )
-                return json.loads(str(repeated["resulting_instance_json"]))
             current_snapshot = json.loads(str(row["snapshot_json"]))
             current_snapshot["budget"] = dict(budget)
             if render_info is not None:
@@ -2228,35 +2093,15 @@ class PersonalizedPaperModule:
             )
         return result
 
-    def _event_result(
-        self,
-        operation_token: str,
-        fingerprint: str,
-    ) -> dict[str, Any] | None:
-        with connect(self.db_path) as connection:
-            row = connection.execute(
-                """
-                SELECT operation_fingerprint, resulting_instance_json
-                FROM personalized_paper_events
-                WHERE operation_token = ?
-                """,
-                (operation_token,),
-            ).fetchone()
-        if row is None:
-            return None
-        if str(row["operation_fingerprint"]) != fingerprint:
-            raise PaperRequestConflict("paper operation token was reused")
-        return json.loads(str(row["resulting_instance_json"]))
-
-    def _instance_by_operation(self, operation_token: str):
+    def _instance_by_id(self, paper_instance_id: str):
         with connect(self.db_path) as connection:
             return connection.execute(
                 """
                 SELECT *
                 FROM personalized_paper_instances
-                WHERE operation_token = ?
+                WHERE paper_instance_id = ?
                 """,
-                (operation_token,),
+                (paper_instance_id,),
             ).fetchone()
 
     def _instance_row(self, paper_instance_id: str):
@@ -2409,17 +2254,13 @@ class PersonalizedPaperModule:
     ) -> None:
         existing = connection.execute(
             """
-            SELECT operation_fingerprint
+            SELECT event_type
             FROM personalized_paper_events
             WHERE operation_token = ?
             """,
             (operation_token,),
         ).fetchone()
         if existing is not None:
-            if str(existing["operation_fingerprint"]) != operation_fingerprint:
-                raise PaperRequestConflict(
-                    "paper operation token was reused"
-                )
             return
         connection.execute(
             """
@@ -2732,7 +2573,6 @@ __all__ = [
     "PaperInvalid",
     "PersonalizedPaperError",
     "PaperRenderUnavailable",
-    "PaperRequestConflict",
     "PaperRevisionConflict",
     "PaperSourceChanged",
     "PersonalizedPaperModule",

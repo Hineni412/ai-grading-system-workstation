@@ -226,7 +226,6 @@ def test_assessment_review_evidence_feedback_and_replay_contract(
     reviewed = client.post(
         f"/api/training/submissions/{SUBMISSION_ID}/assessment/reviews",
         json={
-            "operation_token": "1" * 32,
             "submission_revision": 1,
             "expected_review_revision": 1,
             "task_item_code": "P4-SYN-Q01",

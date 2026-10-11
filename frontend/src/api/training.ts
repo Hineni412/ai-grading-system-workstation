@@ -95,7 +95,6 @@ export interface TrainingGrouping {
 
 export interface PersonalizedRecommendationCreateRequest
   extends TrainingDiagnosisRequest {
-  request_token: string
   remediation_only?: boolean
   max_unmeasured_questions?: number
   max_consolidation_questions?: number
@@ -120,7 +119,6 @@ export interface PersonalizedRecommendationCreateRequest
 }
 
 export interface PersonalizedRecommendationEditRequest {
-  request_token: string
   expected_revision: number
   action: 'lock' | 'unlock' | 'exclude' | 'replace'
   student_id: string
@@ -1719,14 +1717,9 @@ export const trainingApi = {
       return value as unknown as TrainingPendingSummary
     } })
   },
-  exportHandout(draftId: string, body: { expected_revision: number; request_token: string }): Promise<JobResponse> {
+  exportHandout(draftId: string, body: { expected_revision: number }): Promise<JobResponse> {
     return apiClient.request(`/api/training/personalized-drafts/${draftId}/handout-exports`, {
       method: 'POST', body, decode: decodeJobResponse,
-    })
-  },
-  getHandoutExportByRequest(draftId: string, token: string): Promise<JobResponse> {
-    return apiClient.request(`/api/training/personalized-drafts/${draftId}/handout-exports/by-request/${token}`, {
-      decode: decodeJobResponse,
     })
   },
   overview(
@@ -1784,17 +1777,6 @@ export const trainingApi = {
     })
   },
 
-  getPersonalizedDraftByRequest(
-    requestToken: string,
-    signal?: AbortSignal,
-  ): Promise<PersonalizedRecommendationDraft> {
-    return apiClient.request(`/api/training/personalized-drafts/by-request/${requestToken}`, {
-      decode: decodePersonalizedRecommendationDraft,
-      signal,
-      timeoutMs: 30_000,
-    })
-  },
-
   getPersonalizedDraft(
     draftId: string,
     signal?: AbortSignal,
@@ -1823,7 +1805,6 @@ export const trainingApi = {
   createPaperInstance(
     draftId: string,
     body: {
-      operation_token: string
       expected_draft_revision: number
       student_id: string
       context_window_tokens: 32768 | 65536 | 128000
@@ -1843,7 +1824,6 @@ export const trainingApi = {
   createPaperBatch(
     draftId: string,
     body: {
-      operation_token: string
       expected_draft_revision: number
       student_ids: string[]
       context_window_tokens: 32768 | 65536 | 128000
@@ -1876,13 +1856,12 @@ export const trainingApi = {
 
   cancelPaperBatch(
     batchRunId: string,
-    operationToken: string,
   ): Promise<PersonalizedPaperBatch> {
     return apiClient.request(
       `/api/training/paper-batches/${batchRunId}/cancel`,
       {
         method: 'POST',
-        body: { operation_token: operationToken },
+        body: {},
         decode: decodePersonalizedPaperBatch,
         timeoutMs: 30_000,
       },
@@ -1920,7 +1899,6 @@ export const trainingApi = {
   async freezePaperInstance(
     instance: PersonalizedPaperInstance,
     file: File,
-    operationToken: string,
   ): Promise<PersonalizedPaperInstance> {
     return apiClient.request(
       `/api/training/paper-instances/${instance.paper_instance_id}/freeze`
@@ -1933,7 +1911,6 @@ export const trainingApi = {
             'application/vnd.openxmlformats-officedocument.'
             + 'wordprocessingml.document'
           ),
-          'x-operation-token': operationToken,
           'x-upload-filename': encodeURIComponent(file.name),
         },
         decode: decodePersonalizedPaperInstance,
@@ -1956,12 +1933,10 @@ export const trainingApi = {
 
   createTrainingScanBatch(
     paperInstanceIds: string[],
-    operationToken: string,
   ): Promise<TrainingScanBatch> {
     return apiClient.request('/api/training/scan-batches', {
       method: 'POST',
       body: {
-        operation_token: operationToken,
         paper_instance_ids: paperInstanceIds,
       },
       decode: decodeTrainingScanBatch,
@@ -1979,7 +1954,6 @@ export const trainingApi = {
   async uploadTrainingScan(
     batch: TrainingScanBatch,
     file: File,
-    operationToken: string,
   ): Promise<TrainingScanBatch> {
     const suffix = file.name.toLocaleLowerCase()
     const mediaType = file.type || (
@@ -1997,7 +1971,6 @@ export const trainingApi = {
         rawBody: file,
         headers: {
           'content-type': mediaType,
-          'x-operation-token': operationToken,
           'x-upload-filename': encodeURIComponent(file.name),
         },
         decode: decodeTrainingScanBatch,
@@ -2010,7 +1983,6 @@ export const trainingApi = {
     batch: TrainingScanBatch,
     page: TrainingScanPage,
     body: {
-      operation_token: string
       action: 'match' | 'replace' | 'dismiss'
       paper_instance_id?: string
       page_number?: number
@@ -2034,14 +2006,12 @@ export const trainingApi = {
   cancelTrainingSubmission(
     batch: TrainingScanBatch,
     submissionId: string,
-    operationToken: string,
   ): Promise<TrainingScanBatch> {
     return apiClient.request(
       `/api/training/submissions/${submissionId}/cancel`,
       {
         method: 'POST',
         body: {
-          operation_token: operationToken,
           expected_revision: batch.revision,
           reason: '教师确认本次不提交该训练卷',
         },
@@ -2083,7 +2053,6 @@ export const trainingApi = {
   reviewTrainingPoint(
     assessment: TrainingAssessmentOutcome,
     body: {
-      operation_token: string
       task_item_code: string
       point_id: string
       final_state: TrainingPointState

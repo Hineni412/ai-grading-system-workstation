@@ -32,7 +32,7 @@ async function primary(){
  if(rules.value.purpose==='handout'){emit('edit');return}
  generating.value=true
  try{
-  const draft=await createTrainingFromAssembly({request_token:crypto.randomUUID().replace(/-/g,''),class_ids:props.context.class_ids,draft_revision:assembly.draft.revision,rules:rules.value})
+  const draft=await createTrainingFromAssembly({class_ids:props.context.class_ids,draft_revision:assembly.draft.revision,rules:rules.value})
   assembly.rememberTrainingDraft(draft.draft_id)
   await router.push({path:'/training',query:{mode:'paper',draft:draft.draft_id}})
  }catch{message.value='训练卷未生成，请核对试卷与出卷设置后重试。'}finally{generating.value=false}

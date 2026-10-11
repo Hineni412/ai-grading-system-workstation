@@ -5,6 +5,7 @@ import math
 import gzip
 import pickle
 import sqlite3
+import uuid
 import zlib
 from collections.abc import Mapping
 from dataclasses import asdict
@@ -31,7 +32,6 @@ from backend.api.dependencies import (
     get_training_submission_module,
 )
 from backend.api.schemas.training import (
-    PersonalizedPaperBatchCancelRequest,
     PersonalizedPaperBatchCreateRequest,
     PersonalizedPaperBatchListResponse,
     PersonalizedPaperBatchResponse,
@@ -106,7 +106,6 @@ from question_bank.personalized_papers import (
     PaperInstanceNotFound,
     PaperInvalid,
     PaperRenderUnavailable,
-    PaperRequestConflict,
     PaperRevisionConflict,
     PaperSourceChanged,
     PersonalizedPaperError,
@@ -673,7 +672,7 @@ def build_training_overview(
     responses={
         409: {
             "model": ErrorResponse,
-            "description": "Recommendation request conflicts with an existing draft",
+            "description": "Recommendation sources changed",
         },
         422: {
             "model": ErrorResponse,
@@ -715,7 +714,7 @@ def create_personalized_recommendation_draft(
                 "no students with evidence were selected for a recommendation draft"
             )
         draft = module.create(
-            request_token=body.request_token.lower(),
+            request_token=uuid.uuid4().hex,
             diagnosis=diagnosis,
             config=PersonalizedRecommendationConfig(
                 paper_mode=body.paper_mode,
@@ -772,24 +771,6 @@ def create_personalized_recommendation_draft(
     )
 
 
-@router.get("/personalized-drafts/by-request/{request_token}",
-            response_model=PersonalizedRecommendationDraftResponse,
-            responses={404: {"model": ErrorResponse}, **TRAINING_DATABASE_RESPONSES})
-def get_personalized_draft_by_request(
-    request_token: str,
-    module: PersonalizedRecommendationModule = Depends(get_personalized_recommendation_module),
-) -> PersonalizedRecommendationDraftResponse:
-    try:
-        draft = module.get_by_request_token(request_token)
-    except (RecommendationDraftNotFound, ValueError) as exc:
-        raise ApiError(404, "personalized_recommendation_not_found",
-                       "No saved draft was found for this request") from exc
-    except (OSError, sqlite3.Error) as exc:
-        raise ApiError(503, "training_database_unavailable",
-                       "Training data is temporarily unavailable") from exc
-    return PersonalizedRecommendationDraftResponse.model_validate(_public_training_mapping(draft))
-
-
 @router.post('/personalized-drafts/from-assembly', response_model=PersonalizedRecommendationDraftResponse)
 def create_training_from_assembly(
     body: TrainingFromAssemblyRequest,
@@ -819,7 +800,7 @@ def create_training_from_assembly(
         targets = tuple(sorted({key for q in descriptors for key in q['stable_keys']}))
         if not targets:
             raise ValueError('所选题目没有有效知识或技能资料，请返回组卷页调整。')
-        result = module.create(request_token=body.request_token.lower(), diagnosis=diagnosis,
+        result = module.create(request_token=uuid.uuid4().hex, diagnosis=diagnosis,
             config=PersonalizedRecommendationConfig(paper_mode='shared', target_keys=targets, curriculum_volume_id=context['curriculum_volume_id'], **rules),
             actor_ref='teacher', assembly_snapshot=snapshot,
             graded_activities=diagnosis_service.graded_activities([str(s['student_id']) for s in diagnosis['students']]))
@@ -898,7 +879,7 @@ def edit_personalized_recommendation_draft(
         draft = module.edit(
             draft_id,
             RecommendationEditCommand(
-                request_token=body.request_token.lower(),
+                request_token=uuid.uuid4().hex,
                 expected_revision=body.expected_revision,
                 action=body.action,
                 student_id=body.student_id,
@@ -927,12 +908,6 @@ def edit_personalized_recommendation_draft(
             "personalized_recommendation_source_changed",
             "Recommendation sources changed; generate a new draft",
         ) from exc
-    except RecommendationRequestConflict as exc:
-        raise ApiError(
-            409,
-            "personalized_recommendation_request_conflict",
-            "This recommendation edit token was already used",
-        ) from exc
     except (RecommendationEditInvalid, TypeError, ValueError) as exc:
         raise ApiError(
             422,
@@ -957,13 +932,9 @@ def export_personalized_handout(
     manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
     payload = {"draft_id": draft_id, "expected_revision": body.expected_revision,
-               "client_request_token": body.request_token.lower()}
+               "client_request_token": uuid.uuid4().hex}
     try:
-        existing = manager.store.find_export_job_by_request_token("personalized_handout_export", body.request_token.lower())
-        if existing is not None and existing.payload != payload:
-            raise ApiError(409, "personalized_handout_request_conflict", "本次请求编号已用于其他导出，请重新发起。")
-        if existing is None:
-            checked_handout_draft(module, draft_id, body.expected_revision)
+        checked_handout_draft(module, draft_id, body.expected_revision)
         job, _created = manager.submit_idempotent_export("personalized_handout_export", payload)
     except RecommendationDraftNotFound as exc:
         raise ApiError(404, "personalized_recommendation_not_found", "讲义草稿不存在。") from exc
@@ -976,18 +947,6 @@ def export_personalized_handout(
         raise ApiError(422, "personalized_handout_invalid", str(exc)) from exc
     except (OSError, sqlite3.Error) as exc:
         raise ApiError(503, "training_database_unavailable", "训练数据暂时不可用。") from exc
-    return _job_response(job)
-
-
-@router.get("/personalized-drafts/{draft_id}/handout-exports/by-request/{request_token}", response_model=JobResponse)
-def get_handout_export_by_request(draft_id: str, request_token: str,
-    manager: JobManager = Depends(get_job_manager)) -> JobResponse:
-    try:
-        job = manager.store.find_export_job_by_request_token("personalized_handout_export", request_token.lower())
-    except ValueError as exc:
-        raise ApiError(422, "personalized_handout_invalid", "请求编号无效。") from exc
-    if job is None or job.payload.get("draft_id") != draft_id:
-        raise ApiError(404, "personalized_handout_not_found", "未找到本次讲义导出任务。")
     return _job_response(job)
 
 
@@ -1013,7 +972,7 @@ def create_personalized_paper_instance(
         instance = module.create_review_instance(
             draft_id,
             CreatePaperCommand(
-                operation_token=body.operation_token.lower(),
+                operation_token=uuid.uuid4().hex,
                 expected_draft_revision=body.expected_draft_revision,
                 student_id=body.student_id,
                 actor_ref="local_teacher",
@@ -1051,7 +1010,7 @@ def create_personalized_paper_batch(
     try:
         result = module.create_review_batch(
             draft_id,
-            operation_token=body.operation_token.lower(),
+            operation_token=uuid.uuid4().hex,
             expected_draft_revision=body.expected_draft_revision,
             student_ids=body.student_ids,
             actor_ref="local_teacher",
@@ -1116,7 +1075,6 @@ def get_personalized_paper_batch(
 )
 def cancel_personalized_paper_batch(
     batch_run_id: str,
-    _body: PersonalizedPaperBatchCancelRequest,
     module: PersonalizedPaperModule = Depends(get_personalized_paper_module),
 ) -> PersonalizedPaperBatchResponse:
     try:
@@ -1216,12 +1174,6 @@ def get_personalized_paper_instance(
     openapi_extra={
         "parameters": [
             {
-                "name": "X-Operation-Token",
-                "in": "header",
-                "required": True,
-                "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{32}$"},
-            },
-            {
                 "name": "X-Upload-Filename",
                 "in": "header",
                 "required": True,
@@ -1274,9 +1226,7 @@ async def freeze_personalized_paper_instance(
         )
     try:
         command = FreezePaperCommand(
-            operation_token=str(
-                request.headers.get("x-operation-token") or ""
-            ).lower(),
+            operation_token=uuid.uuid4().hex,
             expected_revision=expected_revision,
             filename=unquote(
                 str(request.headers.get("x-upload-filename") or "")
@@ -1437,7 +1387,7 @@ def create_training_scan_batch(
     try:
         result = module.create_batch(
             CreateScanBatchCommand(
-                operation_token=body.operation_token.lower(),
+                operation_token=uuid.uuid4().hex,
                 paper_instance_ids=tuple(body.paper_instance_ids),
                 actor_ref="local_teacher",
             )
@@ -1493,12 +1443,6 @@ def get_training_scan_batch(
     openapi_extra={
         "parameters": [
             {
-                "name": "X-Operation-Token",
-                "in": "header",
-                "required": True,
-                "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{32}$"},
-            },
-            {
                 "name": "X-Upload-Filename",
                 "in": "header",
                 "required": True,
@@ -1541,9 +1485,7 @@ async def ingest_training_scan_upload(
         )
     try:
         command = IngestUploadCommand(
-            operation_token=str(
-                request.headers.get("x-operation-token") or ""
-            ).lower(),
+            operation_token=uuid.uuid4().hex,
             expected_revision=expected_revision,
             filename=unquote(
                 str(request.headers.get("x-upload-filename") or "")
@@ -1598,7 +1540,7 @@ def resolve_training_scan_page(
         result = module.resolve_page(
             batch_id,
             ResolvePageCommand(
-                operation_token=body.operation_token.lower(),
+                operation_token=uuid.uuid4().hex,
                 expected_revision=body.expected_revision,
                 scan_page_id=scan_page_id,
                 action=body.action,
@@ -1637,7 +1579,7 @@ def cancel_training_submission(
         result = module.cancel_submission(
             submission_id,
             CancelSubmissionCommand(
-                operation_token=body.operation_token.lower(),
+                operation_token=uuid.uuid4().hex,
                 expected_revision=body.expected_revision,
                 actor_ref="local_teacher",
                 reason=body.reason,
@@ -1773,7 +1715,7 @@ def review_training_assessment_point(
             submission_id,
             body.submission_revision,
             ReviewPointCommand(
-                operation_token=body.operation_token.lower(),
+                operation_token=uuid.uuid4().hex,
                 expected_review_revision=body.expected_review_revision,
                 task_item_code=body.task_item_code,
                 point_id=body.point_id,
@@ -1998,12 +1940,6 @@ def _raise_paper_api_error(exc: Exception) -> NoReturn:
             409,
             "personalized_paper_source_changed",
             "Recommendation sources changed; generate a new paper version",
-        ) from exc
-    if isinstance(exc, PaperRequestConflict):
-        raise ApiError(
-            409,
-            "personalized_paper_request_conflict",
-            "This paper operation token was already used",
         ) from exc
     if isinstance(exc, PaperBudgetExceeded):
         raise ApiError(

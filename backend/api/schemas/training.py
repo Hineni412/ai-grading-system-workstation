@@ -129,7 +129,6 @@ class TrainingOverviewRequest(_TrainingModel):
 
 
 class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest, RecommendationRulesRequest):
-    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     remediation_only: bool = True
     max_unmeasured_questions: int = Field(default=4, ge=0)
     max_consolidation_questions: int = Field(default=0, ge=0)
@@ -199,11 +198,9 @@ class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest, Recommen
 
 class PersonalizedHandoutExportRequest(_TrainingModel):
     expected_revision: int = Field(ge=1)
-    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
 
 
 class PersonalizedRecommendationEditRequest(_TrainingModel):
-    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     expected_revision: int = Field(ge=1)
     action: Literal["lock", "unlock", "exclude", "replace"]
     student_id: str = Field(min_length=1, max_length=100)
@@ -213,7 +210,6 @@ class PersonalizedRecommendationEditRequest(_TrainingModel):
 
 
 class TrainingFromAssemblyRequest(_TrainingModel):
-    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     class_ids: list[str] = Field(min_length=1, max_length=100)
     draft_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
     rules: RecommendationRulesRequest
@@ -236,7 +232,6 @@ class PersonalizedRecommendationDraftResponse(_TrainingModel):
 
 
 class PersonalizedPaperCreateRequest(_TrainingModel):
-    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     expected_draft_revision: int = Field(ge=1)
     student_id: str = Field(min_length=1, max_length=100)
     context_window_tokens: Literal[32768, 65536, 128000] = 32768
@@ -244,7 +239,6 @@ class PersonalizedPaperCreateRequest(_TrainingModel):
 
 
 class PersonalizedPaperBatchCreateRequest(_TrainingModel):
-    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     expected_draft_revision: int = Field(ge=1)
     student_ids: list[str] = Field(default_factory=list, max_length=500)
     context_window_tokens: Literal[32768, 65536, 128000] = 32768
@@ -254,10 +248,6 @@ class PersonalizedPaperBatchCreateRequest(_TrainingModel):
     @classmethod
     def normalize_students(cls, values: list[str]) -> list[str]:
         return TrainingScopeRequest.normalize_student_ids(values)
-
-
-class PersonalizedPaperBatchCancelRequest(_TrainingModel):
-    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
 
 
 class PersonalizedPaperBatchRetryRequest(_TrainingModel):
@@ -318,7 +308,6 @@ class PersonalizedPaperBatchListResponse(_TrainingModel):
 
 
 class TrainingScanBatchCreateRequest(_TrainingModel):
-    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     paper_instance_ids: list[str] = Field(min_length=1, max_length=200)
 
     @field_validator("paper_instance_ids")
@@ -345,7 +334,6 @@ class TrainingScanBatchListResponse(_TrainingModel):
 
 
 class TrainingScanPageResolveRequest(_TrainingModel):
-    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     expected_revision: int = Field(ge=1)
     action: Literal["match", "replace", "dismiss"]
     paper_instance_id: str | None = Field(
@@ -364,7 +352,6 @@ class TrainingScanPageResolveRequest(_TrainingModel):
 
 
 class TrainingSubmissionCancelRequest(_TrainingModel):
-    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     expected_revision: int = Field(ge=1)
     reason: str = Field(min_length=1, max_length=500)
 
@@ -388,7 +375,6 @@ class TrainingAssessmentStartRequest(_TrainingModel):
 
 
 class TrainingAssessmentReviewRequest(_TrainingModel):
-    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     submission_revision: int = Field(ge=1)
     expected_review_revision: int = Field(ge=1)
     task_item_code: str = Field(min_length=1, max_length=100)

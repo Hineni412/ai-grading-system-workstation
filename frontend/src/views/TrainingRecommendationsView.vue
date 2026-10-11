@@ -101,7 +101,6 @@ let paperSourceController: AbortController | null = null
 const draftContext = ref<{ mode: 'individual' | 'shared'; studentCount: number; questionCount: number; difficultyMax: number; purpose: 'training' | 'handout' } | null>(null)
 const workflowStage = ref<'diagnosis' | 'draft' | 'wps' | 'scan'>('diagnosis')
 const draftRequestState = ref<'idle' | 'loading' | 'ready' | 'error' | 'editing'>('idle')
-const draftNeedsCheck = ref(false)
 const paperDraft = ref<{ generate: () => Promise<void>; selectWorkspaceStep: (id: string) => void; focusReturnPoint: () => void } | null>(null)
 const draftWorkspace = ref<{ steps: StepProgressStep[]; current: string; revision: number } | null>(null)
 const draftOpen = computed(() => trainingMode.value === 'paper' && draftContext.value !== null)
@@ -314,7 +313,6 @@ async function applyEvidenceScope(query: GraphQueryInput): Promise<void> {
 async function generatePaperDraft(): Promise<void> {
   if (groupChecking.value) return
   groupMessage.value = ''
-  if (draftNeedsCheck.value) { await paperDraft.value?.generate(); return }
   if (!paperDiagnosis.value) return
   if (paperMode.value === 'shared' && adoptedGroup.value) {
     groupChecking.value = true
@@ -632,7 +630,7 @@ onBeforeUnmount(() => { studentsController?.abort(); paperSourceController?.abor
               <span>{{ (draftContext?.purpose ?? purpose) === 'handout' ? '讲义 · 只打印' : '训练卷 · 可回收' }}</span>
               <details v-if="!draftContext" class="paper-settings-summary"><summary>选题细则</summary><p>同{{ targetLabel }}最多 {{ maxQuestionsPerSkill }} 道 · 解答题最多 {{ maxWrittenQuestions }} 道</p><p>{{ recentActivityCount === 0 ? '不排除近期原题' : purpose === 'handout' ? `排除最近 ${recentActivityCount} 次已批改考试原题 · 可复用历史训练题` : `排除最近 ${recentActivityCount} 次已批改考试与训练原题` }}</p></details>
               <RouterLink class="paper-review-bar__back" :to="paperBackTarget">调整出卷设置</RouterLink>
-              <AppButton v-if="workflowStage === 'diagnosis'" variant="primary" data-testid="generate-paper-draft" :disabled="(!draftNeedsCheck && (!paperSettingsValid || !paperDiagnosis)) || draftRequestState === 'loading' || groupChecking || training.refreshing" :title="training.refreshing ? '正在更新数据，请稍候' : undefined" @click="generatePaperDraft">{{ groupChecking ? '正在核对小组…' : draftRequestState === 'loading' ? '正在生成并核对…' : draftNeedsCheck ? '核对生成结果' : `生成 ${expectedPaperCount} 份草稿` }}</AppButton>
+              <AppButton v-if="workflowStage === 'diagnosis'" variant="primary" data-testid="generate-paper-draft" :disabled="!paperSettingsValid || !paperDiagnosis || draftRequestState === 'loading' || groupChecking || training.refreshing" :title="training.refreshing ? '正在更新数据，请稍候' : undefined" @click="generatePaperDraft">{{ groupChecking ? '正在核对小组…' : draftRequestState === 'loading' ? '正在生成并核对…' : `生成 ${expectedPaperCount} 份草稿` }}</AppButton>
             </div>
             <p v-if="workflowStage === 'diagnosis' && !paperSettingsValid" class="paper-review-hint">
               {{ paperMode === 'shared'
@@ -670,7 +668,6 @@ onBeforeUnmount(() => { studentsController?.abort(); paperSourceController?.abor
               @focus-consumed="consumeReturnFocus"
               @stage-change="onPaperStageChange"
               @state-change="draftRequestState = $event"
-              @recovery-change="draftNeedsCheck = $event"
             />
           </div>
         </div>

@@ -156,14 +156,14 @@ export function useTrainingReturn(instances: Ref<PersonalizedPaperInstance[]>, f
     const v = version; busy.value = true; errorMessage.value = ''; message.value = ''
     try {
       if (!batch.value && ids?.length) {
-        const created = await trainingApi.createTrainingScanBatch(ids, requestToken())
+        const created = await trainingApi.createTrainingScanBatch(ids)
         if (!valid(v)) return
         batch.value = created
         batches.value.unshift({ ...created, submission_count: created.submissions.length })
       }
       for (const file of files) {
         if (!valid(v) || !batch.value) return
-        const updated = await trainingApi.uploadTrainingScan(batch.value, file, requestToken())
+        const updated = await trainingApi.uploadTrainingScan(batch.value, file)
         if (!valid(v)) return
         batch.value = updated
       }
@@ -181,7 +181,7 @@ export function useTrainingReturn(instances: Ref<PersonalizedPaperInstance[]>, f
     const v = version; busy.value = true; errorMessage.value = ''
     try {
       const updated = await trainingApi.resolveTrainingScanPage(batch.value, page, {
-        operation_token: requestToken(), action,
+        action,
         paper_instance_id: action === 'dismiss' ? undefined : paperId,
         page_number: action === 'dismiss' ? undefined : pageNumber,
       })
@@ -194,7 +194,7 @@ export function useTrainingReturn(instances: Ref<PersonalizedPaperInstance[]>, f
     if (!batch.value || busy.value) return
     const v = version; busy.value = true
     try {
-      await acceptBatch(await trainingApi.cancelTrainingSubmission(batch.value, s.submission_id, requestToken()), v)
+      await acceptBatch(await trainingApi.cancelTrainingSubmission(batch.value, s.submission_id), v)
       if (valid(v)) message.value = '已取消这一个学生的本次提交，其他训练卷不受影响。'
     } catch (error) { if (valid(v)) errorMessage.value = safeError(error) }
     finally { if (valid(v)) busy.value = false }
@@ -203,7 +203,7 @@ export function useTrainingReturn(instances: Ref<PersonalizedPaperInstance[]>, f
     const r = records.value[submissionKey(s)]
     if (!r?.assessment || r.busy || r.waiting || r.loading || r.assessment.status === 'running' || (p.state === final && !(!p.teacher_locked && ['uncertain', 'unreadable'].includes(final)))) return
     const v = version, key = pointKey(s, q, p)
-    const body = reviewBody(q, p, final, notes.value[key] ?? '', requestToken())
+    const body = reviewBody(q, p, final, notes.value[key] ?? '')
     r.busy = key; r.error = ''
     try {
       const a = await trainingApi.reviewTrainingPoint(r.assessment, body)

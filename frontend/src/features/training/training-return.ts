@@ -100,11 +100,11 @@ export function summaryActions(rows: ReturnRow[]) {
 export function stateLabel(state?: TrainingPointState | null): string {
   return state ? { met: '达成', not_met: '未达成', uncertain: '不确定', unreadable: '无法辨认' }[state] : '未判定'
 }
-export function reviewBody(q: TrainingAssessmentQuestion, p: TrainingAssessmentPoint, final: TrainingPointState, note: string, token: string) {
+export function reviewBody(q: TrainingAssessmentQuestion, p: TrainingAssessmentPoint, final: TrainingPointState, note: string) {
   const candidate = p.candidate_state
   const reason = `${candidate ? `AI ${stateLabel(candidate)}` : 'AI 未判定'} → 教师${stateLabel(final)}`
   const clean = note.trim()
-  return { task_item_code: q.task_item_code, point_id: p.point_id, final_state: final, operation_token: token,
+  return { task_item_code: q.task_item_code, point_id: p.point_id, final_state: final,
     teacher_reason: `${reason}${clean ? `；${clean}` : ''}`.slice(0, 500),
     teacher_evidence: (clean || (final === candidate && p.evidence ? p.evidence : '教师查看原始训练答卷后判定')).slice(0, 500) }
 }
@@ -114,7 +114,7 @@ export function requestToken(): string {
   return [...bytes].map(v => v.toString(16).padStart(2, '0')).join('')
 }
 export function issueLabel(issue?: TrainingScanIssue | null): string {
-  return issue ? { identity_unreadable: '页面身份无法读取', invalid_identity: '页面身份或签名无效', unexpected_paper: '不属于本扫描批次', duplicate_page: '检测到重复页面', page_content_conflict: '同一页码出现不同图像', image_blurry: '页面疑似明显模糊', severe_crop: '页面疑似严重裁切' }[issue] : ''
+  return issue ? { identity_unreadable: '页面身份无法读取', invalid_identity: '页面身份无效', unexpected_paper: '不属于本扫描批次', duplicate_page: '检测到重复页面', page_content_conflict: '同一页码出现不同图像', image_blurry: '页面疑似明显模糊', severe_crop: '页面疑似严重裁切' }[issue] : ''
 }
 export function batchLabel(item: { created_at: string; status: string; submission_count: number }): string {
   return `${new Date(item.created_at).toLocaleString('zh-CN', { hour12: false })} · ${item.submission_count} 人 · ${item.status === 'ready' ? '归组完成' : item.status === 'cancelled' ? '已取消' : '需要检查'}`

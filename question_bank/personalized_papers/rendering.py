@@ -3,7 +3,6 @@ from __future__ import annotations
 from question_bank.atomic_files import replace_with_retry
 
 import hashlib
-import hmac
 import json
 import os
 import re
@@ -367,13 +366,10 @@ def stamp_frozen_pdf(
     output_pdf: Path,
     *,
     paper_instance_id: str,
-    paper_batch_id: str,
     series_version: int,
     student_name: str,
     student_code: str,
     class_id: str,
-    signing_secret: str,
-    reviewed_docx_sha256: str,
     layout_version: str = LAYOUT_VERSION,
     identity_font_buffer: bytes | None = None,
 ) -> tuple[dict[str, Any], ...]:
@@ -384,15 +380,11 @@ def stamp_frozen_pdf(
         total_pages = source.page_count
         pages: list[dict[str, Any]] = []
         for page_number, page in enumerate(source, start=1):
-            signature = page_signature(
-                signing_secret=signing_secret,
-                paper_batch_id=paper_batch_id,
+            signature = page_code(
                 paper_instance_id=paper_instance_id,
                 series_version=series_version,
                 page_number=page_number,
                 total_pages=total_pages,
-                reviewed_docx_sha256=reviewed_docx_sha256,
-                layout_version=layout_version,
             )
             identity = page_identity(
                 paper_instance_id=paper_instance_id,
@@ -546,34 +538,16 @@ def page_identity(
     )
 
 
-def page_signature(
+def page_code(
     *,
-    signing_secret: str,
-    paper_batch_id: str,
     paper_instance_id: str,
     series_version: int,
     page_number: int,
     total_pages: int,
-    reviewed_docx_sha256: str,
-    layout_version: str,
-    identity_version: str = PAGE_IDENTITY_VERSION,
 ) -> str:
-    message = "|".join(
-        (
-            identity_version,
-            paper_batch_id,
-            paper_instance_id,
-            str(int(series_version)),
-            str(int(page_number)),
-            str(int(total_pages)),
-            reviewed_docx_sha256,
-            layout_version,
-        )
-    )
-    return hmac.new(
-        bytes.fromhex(signing_secret),
-        message.encode("utf-8"),
-        hashlib.sha256,
+    """Deterministic, secret-free page marker stored under ``page_signature``."""
+    return hashlib.sha256(
+        f"{paper_instance_id}|{series_version}|{page_number}|{total_pages}".encode()
     ).hexdigest()[:32]
 
 
@@ -1028,7 +1002,7 @@ __all__ = [
     "PdfConversionAdapter",
     "decode_page_identity",
     "inspect_docx",
-    "page_signature",
+    "page_code",
     "pdf_page_count",
     "render_review_docx",
     "stamp_frozen_pdf",
