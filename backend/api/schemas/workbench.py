@@ -22,6 +22,7 @@ class WorkbenchAnomalySummary(BaseModel):
 class RecentSessionSummary(BaseModel):
     session: SessionSummary
     progress: SessionProgress
+    review: WorkbenchReviewSummary
 
 
 class PersonalReportSummary(BaseModel):

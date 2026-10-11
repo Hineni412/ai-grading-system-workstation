@@ -161,7 +161,7 @@ async function selectExam(id: number, results: boolean) {
           <WorkbenchCurrentExam :overview="workbenchStore.overview" :state="workbenchStore.overviewState" :session-id="sessionStore.selectedSessionId" :steps="steps" :current="currentStep" @open="openPath" @select="selectStep" @retry="loadExam" />
           <WorkbenchSemesterInsight :overview="mastery.overview" :state="mastery.loadState" :volume-id="curriculumScope.selectedVolumeId" :term-label="currentTermLabel" :scope="mastery.scopeSelection" @open="openPath" @retry="mastery.load(curriculumScope.selectedVolumeId, true, false)" />
         </aside>
-        <WorkbenchRecentExams :items="workbenchStore.overview?.recent_sessions ?? []" :session-id="sessionStore.selectedSessionId" :review-count="workbenchStore.overview?.review?.item_count ?? null" :loading="workbenchStore.overviewState === 'loading'" :error="workbenchStore.overviewState === 'error'" @select="selectExam" @create="openPath('/sessions')" />
+        <WorkbenchRecentExams :items="workbenchStore.overview?.recent_sessions ?? []" :session-id="sessionStore.selectedSessionId" :loading="workbenchStore.overviewState === 'loading'" :error="workbenchStore.overviewState === 'error'" @select="selectExam" @create="openPath('/sessions')" />
       </div>
     </div>
   </section>

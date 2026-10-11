@@ -11,7 +11,8 @@ import { useWorkbenchStore, type ResourceState } from '../stores/workbench'
 import WorkbenchView from '../views/WorkbenchView.vue'
 import { fetchRegionReadiness } from '../api/template-regions'
 import { getSessionQuestionBankAnalysisStatus } from '../api/session-question-bank-sync'
-import { trainingApi } from '../api/training'
+import { trainingApi, type TrainingOverview } from '../api/training'
+import WorkbenchSemesterInsight from '../components/workbench/WorkbenchSemesterInsight.vue'
 import { buildTodoRows, buildExamSteps, type HomeInputs } from '../components/workbench/workbench-home'
 import { useJobStore } from '../stores/jobs'
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
@@ -77,6 +78,7 @@ const overview: WorkbenchOverview = {
       created_at: '2026-07-12T08:00:00Z',
       updated_at: '2026-07-13T10:00:00Z',
     },
+    review: { question_count: 0, item_count: 0 },
     progress: {
       total_papers: 40,
       matched_papers: 40,
@@ -224,6 +226,54 @@ describe('workbench second phase', () => {
 })
 
 describe('workbench view', () => {
+  it('keeps exam review badges stable across selection and retains actual pending items', async () => {
+    const data = structuredClone(overview)
+    data.recent_sessions = [7, 8, 9].map(id => ({
+      session: { ...overview.current_session!, id, name: `TEST-exam-${id}`, status: 'completed' },
+      progress: { ...overview.progress!, needs_human_review: 5 },
+      review: { question_count: id === 9 ? 1 : 0, item_count: id === 9 ? 2 : 0 },
+    }))
+    const { host, sessionStore } = await mountView({ overviewValue: data })
+    for (const selected of [7, 8, 9, 7]) {
+      sessionStore.selectedSessionId = selected
+      await settleUi()
+      expect([...host.querySelectorAll('.workbench-recent tbody tr')]
+        .map(row => row.textContent?.includes('有待复核'))).toEqual([false, false, true])
+    }
+  })
+
+  it('summarizes current type targets and opens the target without counting legacy topics', () => {
+    const base = { target_kind: 'type' as const, kind: 'type' as const, chapter_key: '', section_key: '',
+      group_mastery: .4, evidence_student_count: 10, students: [],
+      distribution: { weak: 4, unsteady: 2, stable: 4, insufficient: 0 } }
+    const data: TrainingOverview = { target_kind: 'type',
+      scope: { mode: 'all', student_ids: [] },
+      exam_scope: { mode: 'semester', curriculum_volume_id: 'TEST-volume', session_ids: [7], sessions: [] },
+      warnings: [], students: [], nodes: [
+        { ...base, knowledge_key: 'type-1', display_name: '册｜章｜列等式' },
+        { ...base, knowledge_key: 'type-2', display_name: '暂无证据题型', evidence_student_count: 0,
+          distribution: { weak: 0, unsteady: 0, stable: 0, insufficient: 10 } },
+        { ...base, knowledge_key: 'old-topic', display_name: '兼容知识点', kind: 'topic' },
+        { ...base, knowledge_key: 'outside-type', display_name: '其他册题型', in_volume: false },
+      ], summary: { student_count: 10, evidence_student_count: 10, exam_student_count: 10, exam_score_rate: .5,
+        topic_count: 1, skill_count: 0, weak_topic_count: 1, weak_skill_count: 0, type_count: 3, weak_type_count: 2 } }
+    const opened = vi.fn()
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(WorkbenchSemesterInsight, { overview: data, state: 'ready', volumeId: 'TEST-volume',
+      termLabel: 'TEST-学期', scope: 'all', onOpen: opened })
+    app.mount(host)
+    mountedApps.push(app)
+    expect(host.textContent).toContain('1/2 题型')
+    expect(host.textContent).toContain('需关注题型')
+    expect(host.textContent).toContain('6/10')
+    expect(host.textContent).toContain('人需关注')
+    expect(host.textContent).not.toContain('没有明显薄弱的技能')
+    expect(host.querySelectorAll('[data-knowledge]')).toHaveLength(1)
+    clickButton(host, '列等式')
+    expect(opened).toHaveBeenCalledWith('/knowledge-overview?focus=type-1')
+  })
+
   it('shows ordered actions, one primary button, separate anomaly units and vertical hints', async () => {
     const { host, router } = await mountView()
     expect([...host.querySelectorAll('[data-todo]')].map(el => el.getAttribute('data-todo')))

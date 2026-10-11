@@ -18,7 +18,6 @@ from backend.api.schemas.workbench import (
     WorkbenchOverviewResponse,
 )
 from backend.repositories.access import GradingRepositoryAccess
-from backend.review.manual_context import current_manual_context
 from backend.scan_grading.workspace import ScanGradingWorkspace
 from backend.workbench.service import WorkbenchService
 
@@ -35,12 +34,10 @@ def get_workbench_overview(
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
     reports_dir: Path = Depends(get_reports_dir),
 ) -> WorkbenchOverviewResponse:
-    manual_context = None
     if session_id is not None:
         _require_session(db.sessions, session_id)
-        manual_context = current_manual_context(session_id, workspace)
     return WorkbenchOverviewResponse(
-        **service.overview(session_id, recent_limit, manual_context=manual_context,
+        **service.overview(session_id, recent_limit, workspace=workspace,
                            curriculum_volume_id=curriculum_volume_id, reports_dir=reports_dir)
     )
 

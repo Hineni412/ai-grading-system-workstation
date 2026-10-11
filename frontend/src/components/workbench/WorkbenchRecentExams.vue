@@ -4,7 +4,7 @@ import StatusBadge, { type StatusTone } from '../design-system/StatusBadge.vue'
 import type { RecentSessionSummary } from '../../api/workbench'
 import { formatSessionDate } from '../../lib/session-date'
 import { sessionStatusLabel } from '../../lib/session-status'
-defineProps<{ items: RecentSessionSummary[]; sessionId: number | null; reviewCount: number | null; loading: boolean; error: boolean }>()
+defineProps<{ items: RecentSessionSummary[]; sessionId: number | null; loading: boolean; error: boolean }>()
 defineEmits<{ select: [id: number, results: boolean]; create: [] }>()
 function tone(status: string): StatusTone {
   return status === 'completed' ? 'success' : status === 'grading' ? 'info' : status === 'failed' ? 'danger' : 'neutral'
@@ -22,7 +22,7 @@ function tone(status: string): StatusTone {
         <td class="workbench-exams-name"><button type="button" :title="item.session.name" @click="$emit('select', item.session.id, false)">{{ item.session.name }}</button><StatusBadge v-if="item.session.id === sessionId" tone="neutral" label="当前" /></td>
         <td>{{ formatSessionDate(item.session.created_at) || '日期未知' }}</td><td class="is-num">{{ item.progress.total_papers }} 份</td>
         <td class="is-num"><span class="workbench-table-progress"><span class="workbench-bar" aria-hidden="true"><i :style="{ width: `${item.progress.matched_papers ? Math.min(100, item.progress.graded_papers / item.progress.matched_papers * 100) : 0}%` }" /></span><span>{{ item.progress.graded_papers }}/{{ item.progress.matched_papers }}</span></span></td>
-        <td><div class="workbench-exams-status"><StatusBadge :tone="tone(item.session.status)" :label="sessionStatusLabel(item.session.status)" /><StatusBadge v-if="item.session.id === sessionId ? (reviewCount ?? 0) > 0 : item.progress.needs_human_review > 0" tone="warning" label="有待复核" /></div></td>
+        <td><div class="workbench-exams-status"><StatusBadge :tone="tone(item.session.status)" :label="sessionStatusLabel(item.session.status)" /><StatusBadge v-if="item.review.item_count > 0" tone="warning" label="有待复核" /></div></td>
         <td><AppButton v-if="item.session.id !== sessionId" variant="ghost" @click="$emit('select', item.session.id, true)">看成绩</AppButton></td>
       </tr></tbody>
     </table>

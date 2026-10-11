@@ -100,23 +100,16 @@
 
 .app-sidebar__brand-mark {
   display: grid;
-  width: 31px;
-  height: 31px;
+  width: 34px;
+  height: 34px;
   flex: none;
   place-items: center;
-  border-radius: 9px;
-  background: var(--sidebar-brand-mark);
-  color: var(--sidebar-ink-1);
 }
 
-.app-sidebar__brand-mark svg {
-  width: 25px;
-  height: 25px;
-  fill: currentcolor;
-}
-
-.app-sidebar__brand-accent {
-  fill: var(--sidebar-active-ink);
+.app-sidebar__brand-mark img {
+  display: block;
+  width: 34px;
+  height: 34px;
 }
 
 .app-sidebar__brand-copy {

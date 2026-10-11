@@ -11,13 +11,15 @@ from backend.jobs.manager import JobManager
 from backend.public_data import sanitize_public_diagnostic_text
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.review.service import ReviewApplicationService
+from backend.review.manual_context import current_manual_context
+from backend.scan_grading.workspace import ScanGradingWorkspace
 from backend.session_analysis import infer_data_root
 from integration.data_generation import commit_generation, data_version_token
 from integration.diagnosis_profile_service import _session_error_file_state
 from integration.result_cache import ResultCache
 from path_manager import resolve_stored_file_path
 
-_REVIEW_SUMMARIES = ResultCache(2, max_bytes=256 * 1024)
+_REVIEW_SUMMARIES = ResultCache(20, max_bytes=256 * 1024)
 
 
 class WorkbenchService:
@@ -36,7 +38,7 @@ class WorkbenchService:
         session_id: int | None,
         recent_limit: int,
         *,
-        manual_context: dict[str, Any] | None = None,
+        workspace: ScanGradingWorkspace | None = None,
         curriculum_volume_id: str | None = None,
         reports_dir: Path | None = None,
     ) -> dict[str, Any]:
@@ -52,6 +54,7 @@ class WorkbenchService:
                 {
                     "session": _session_summary(session),
                     "progress": self.db.papers.get_session_progress(int(session["id"])),
+                    "review": self._review_summary(int(session["id"]), session, workspace),
                 }
             )
 
@@ -66,7 +69,10 @@ class WorkbenchService:
             if session is not None:
                 current_session = _session_summary(session)
                 progress = self.db.papers.get_session_progress(int(session_id))
-                review = self._review_summary(int(session_id), session, manual_context)
+                review = next((row["review"] for row in recent_sessions
+                               if row["session"]["id"] == session_id), None)
+                if review is None:
+                    review = self._review_summary(int(session_id), session, workspace)
                 anomalies = {
                     "unmatched_papers": progress["unmatched_papers"],
                     "scan_issue_students": progress["scan_issue_students"],
@@ -96,7 +102,10 @@ class WorkbenchService:
             "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
 
-    def _review_summary(self, session_id: int, session: dict[str, Any], manual_context) -> dict[str, int]:
+    def _review_summary(
+        self, session_id: int, session: dict[str, Any], workspace: ScanGradingWorkspace | None,
+    ) -> dict[str, int]:
+        manual_context = current_manual_context(session_id, workspace, read_only=True) if workspace is not None else None
         rubric_path = resolve_stored_file_path(session.get("rubric_path"), data_root=infer_data_root(self.db.db_path))
         key = (str(self.db.db_path), session_id,
                data_version_token(self.db.db_path, "results") or commit_generation(self.db.db_path),

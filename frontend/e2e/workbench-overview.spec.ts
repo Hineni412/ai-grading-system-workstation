@@ -56,7 +56,7 @@ function progress(sessionId: number) {
     graded_papers: completed ? 40 : 12,
     failed_papers: completed ? 0 : 1,
     grading_papers: completed ? 0 : 2,
-    needs_human_review: completed ? 0 : 3,
+    needs_human_review: completed ? 9 : 3,
     absent_students: 0,
     scan_issue_students: completed ? 0 : 1,
     progress_percent: completed ? 100 : 33.33,
@@ -76,7 +76,8 @@ function overview(sessionId: number) {
     recent_jobs: [],
     recent_sessions: sessions
       .slice()
-      .map((item) => ({ session: item, progress: progress(item.id) })),
+      .map((item) => ({ session: item, progress: progress(item.id),
+        review: item.id === 8 ? { question_count: 0, item_count: 0 } : { question_count: 2, item_count: 3 } })),
     updated_at: sessionId === 8 ? '2026-07-15T10:05:00Z' : '2026-07-15T09:35:00Z',
   }
 }
@@ -181,11 +182,11 @@ async function installSyntheticApi(
     if (pathname === '/api/training/overview') {
       await fulfillJson(route, { scope: { mode: 'all', student_ids: [] },
         exam_scope: { mode: 'semester', curriculum_volume_id: 'volume-1', session_ids: [7], sessions: [{ session_id: 7, session_name: 'TEST-home' }] },
-        warnings: [], nodes: [{ knowledge_key: 'skill-1', display_name: '册｜第一章｜技能·列等式', kind: 'skill',
+        target_kind: 'type', warnings: [], nodes: [{ knowledge_key: 'type-1', display_name: '册｜第一章｜列等式', kind: 'type', target_kind: 'type',
           chapter_key: '', section_key: '', group_mastery: .4, evidence_student_count: 10,
           distribution: { weak: 4, unsteady: 2, stable: 4, insufficient: 0 }, students: [] }], students: [],
         summary: { student_count: 10, evidence_student_count: 10, exam_student_count: 10, exam_score_rate: .5,
-          topic_count: 0, skill_count: 1, weak_topic_count: 0, weak_skill_count: 1 } })
+          topic_count: 0, skill_count: 0, weak_topic_count: 0, weak_skill_count: 0, type_count: 1, weak_type_count: 1 } })
       return
     }
     if (pathname === '/api/jobs') {
@@ -274,7 +275,7 @@ for (const viewport of viewports) {
     await expect(page.locator('[data-todo="bank"]')).toBeVisible()
     await expect(page.locator('.workbench-todo [data-variant="primary"]')).toHaveCount(1)
     await expect(page.locator('.workbench-current')).toContainText('36 份答卷')
-    await expect(page.locator('.workbench-insight')).toContainText('4/10 人明显薄弱')
+    await expect(page.locator('.workbench-insight')).toContainText(/6\/10\s*人需关注/)
     await expect(page.locator('.workbench-recent tbody tr')).toHaveCount(2)
     await expect(page.locator('.workbench-recent tr.is-current')).toContainText('当前')
     await expect(page.locator('.step-progress--vertical')).toContainText('3 项待复核')
@@ -328,9 +329,19 @@ test('training source failure preserves exam panels', async ({ page }) => {
 test('recent exam name switches the current exam and preserves the home route', async ({ page }) => {
   const requests = await installSyntheticApi(page)
   await openWorkbench(page)
+  const reviewed = page.locator('.workbench-recent tbody tr').filter({ hasText: '八年级物理' })
+  const pending = page.locator('.workbench-recent tbody tr').filter({ hasText: '七年级数学' })
+  await expect(reviewed).not.toContainText('有待复核')
+  await expect(pending).toContainText('有待复核')
   await page.locator('.workbench-exams-name button').filter({ hasText: '八年级物理' }).click()
   await expect(page.locator('.workbench-current')).toContainText('八年级物理')
   await expect(page.locator('[data-todo="assembly"]')).toBeVisible()
+  await expect(reviewed).not.toContainText('有待复核')
+  await expect(pending).toContainText('有待复核')
+  await page.locator('.workbench-exams-name button').filter({ hasText: '七年级数学' }).click()
+  await expect(page.locator('.workbench-current')).toContainText('七年级数学')
+  await expect(reviewed).not.toContainText('有待复核')
+  await expect(pending).toContainText('有待复核')
   await expect(page).toHaveURL(/\/workbench$/)
   expectReadOnlyRequests(requests)
 })
@@ -341,14 +352,14 @@ test('source errors show retries and preserve unrelated panels', async ({ page }
   await expect(page.locator('.workbench-todo')).toContainText('题库资料状态暂时无法读取')
   await expect(page.locator('[data-todo="bank"]')).toHaveCount(0)
   await expect(page.locator('[data-todo="review"]')).toBeVisible()
-  await expect(page.locator('.workbench-insight')).toContainText('4/10 人明显薄弱')
+  await expect(page.locator('.workbench-insight')).toContainText(/6\/10\s*人需关注/)
 })
 
 test('failed overview and no exam give accurate empty and failure states', async ({ page }) => {
   await installSyntheticApi(page, { overviewFailure: true })
   await openWorkbench(page)
   await expect(page.locator('.workbench-content > .feedback-banner')).toContainText('考试概况暂时无法读取')
-  await expect(page.locator('.workbench-insight')).toContainText('4/10 人明显薄弱')
+  await expect(page.locator('.workbench-insight')).toContainText(/6\/10\s*人需关注/)
   await page.unroute(/^https?:\/\/[^/]+\/api\//)
   await installSyntheticApi(page, { empty: true })
   await page.evaluate(() => localStorage.removeItem('ai-grading:selected-session:v1'))

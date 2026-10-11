@@ -36,15 +36,21 @@ export interface JobSummary {
   finished_at: string | null
 }
 
+export interface WorkbenchReviewSummary {
+  question_count: number
+  item_count: number
+}
+
 export interface RecentSessionSummary {
   session: SessionSummary
   progress: SessionProgress
+  review: WorkbenchReviewSummary
 }
 
 export interface WorkbenchOverview {
   current_session: SessionSummary | null
   progress: SessionProgress | null
-  review: { question_count: number; item_count: number } | null
+  review: WorkbenchReviewSummary | null
   anomalies: {
     unmatched_papers: number
     scan_issue_students: number
@@ -140,9 +146,11 @@ function isJobSummary(value: unknown): value is JobSummary {
 function isRecentSessionSummary(value: unknown): value is RecentSessionSummary {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['session', 'progress']) &&
+    hasExactKeys(value, ['session', 'progress', 'review']) &&
     isStrictSessionSummary(value.session) &&
-    isSessionProgress(value.progress)
+    isSessionProgress(value.progress) &&
+    value.review !== null &&
+    isNullableSummary(value.review, ['question_count', 'item_count'])
   )
 }
 
