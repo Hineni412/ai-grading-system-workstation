@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../ui/sheet'
+import AppDialog from '../design-system/AppDialog.vue'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import { useStudentRosterStore } from '../../stores/students'
@@ -28,27 +28,28 @@ async function save() {
 }
 </script>
 <template>
-  <Sheet :open="Boolean(roster.selectedStudent)" @update:open="value => { if (!value) close() }">
-    <SheetContent class="settings-drawer" :aria-describedby="undefined" @interact-outside="event => { if (busy) event.preventDefault() }" @escape-key-down="event => { if (busy) event.preventDefault() }">
-      <SheetHeader class="settings-drawer__header"><SheetTitle>编辑学生</SheetTitle></SheetHeader>
-      <form v-if="roster.selectedStudent" class="settings-drawer__form" @submit.prevent="save">
-        <div class="settings-drawer__body">
-          <label class="settings-field"><span>学号</span><input v-model.trim="form.student_code" class="app-input" name="student-code" required :disabled="busy"></label>
-          <label class="settings-field"><span>姓名</span><input v-model.trim="form.name" class="app-input" name="student-name" required :disabled="busy"></label>
-          <label class="settings-field"><span>班级</span><input v-model.trim="form.class_name" class="app-input" name="student-class" placeholder="选填" :disabled="busy"></label>
-          <section class="student-danger" aria-label="删除学生">
-            <h3>删除学生</h3>
-            <AppButton v-if="roster.deletionState === 'idle' || roster.deletionState === 'error'" variant="ghost" class="settings-danger-ghost" data-action="review-deletion" @click="roster.loadDeletionImpact()">删除这名学生…</AppButton>
-            <p v-else-if="roster.deletionState === 'loading'" role="status">正在核对关联记录…</p>
-            <template v-if="roster.deletionImpact">
-              <p>将删除 {{ roster.deletionImpact.counts.deleted_results }} 份成绩、{{ roster.deletionImpact.counts.deleted_details }} 条评分明细、{{ roster.deletionImpact.counts.deleted_annotations }} 条批注记录和 {{ roster.deletionImpact.counts.deleted_attendance }} 条考勤记录，并解除 {{ roster.deletionImpact.counts.unlinked_papers }} 份答卷与该生的关联。删除前会自动备份。</p>
-              <label class="settings-field"><span>输入学号 {{ roster.selectedStudent.student_code }} 确认</span><input v-model="deleteConfirmation" class="app-input" name="delete-confirmation" autocomplete="off" :disabled="busy"></label>
-              <AppButton variant="danger" data-action="delete-student" :disabled="!canDelete || busy" @click="roster.deleteSelected()">{{ roster.deletionState === 'deleting' ? '正在备份并删除…' : '备份并删除' }}</AppButton>
-            </template>
-          </section><FeedbackBanner v-if="roster.errorMessage" role="alert" tone="error" :description="roster.errorMessage" />
-        </div>
-        <footer class="settings-drawer__footer"><AppButton variant="secondary" :disabled="busy" @click="close">取消</AppButton><AppButton variant="primary" type="submit" data-action="save-student" :disabled="!form.student_code || !form.name || busy">{{ saving ? '正在保存…' : '保存' }}</AppButton></footer>
-      </form>
-    </SheetContent>
-  </Sheet>
+  <AppDialog :open="Boolean(roster.selectedStudent)" title="编辑学生" class="student-edit-dialog" :dismissible="!busy" @update:open="value => { if (!value) close() }">
+    <form v-if="roster.selectedStudent" id="student-edit-form" class="student-edit-dialog__form" @submit.prevent="save">
+      <div class="student-edit-dialog__fields">
+        <label class="settings-field"><span>学号</span><input v-model.trim="form.student_code" class="app-input" name="student-code" required :disabled="busy"></label>
+        <label class="settings-field"><span>班级</span><input v-model.trim="form.class_name" class="app-input" name="student-class" placeholder="选填" :disabled="busy"></label>
+        <label class="settings-field student-edit-dialog__name"><span>姓名</span><input v-model.trim="form.name" class="app-input" name="student-name" required :disabled="busy"></label>
+      </div>
+      <section class="student-danger" aria-label="删除学生">
+        <h3>删除学生</h3>
+        <AppButton v-if="roster.deletionState === 'idle' || roster.deletionState === 'error'" variant="ghost" class="settings-danger-ghost" data-action="review-deletion" @click="roster.loadDeletionImpact()">删除这名学生…</AppButton>
+        <p v-else-if="roster.deletionState === 'loading'" role="status">正在核对关联记录…</p>
+        <template v-if="roster.deletionImpact">
+          <p>将删除 {{ roster.deletionImpact.counts.deleted_results }} 份成绩、{{ roster.deletionImpact.counts.deleted_details }} 条评分明细、{{ roster.deletionImpact.counts.deleted_annotations }} 条批注记录和 {{ roster.deletionImpact.counts.deleted_attendance }} 条考勤记录，并解除 {{ roster.deletionImpact.counts.unlinked_papers }} 份答卷与该生的关联。删除前会自动备份。</p>
+          <label class="settings-field"><span>输入学号 {{ roster.selectedStudent.student_code }} 确认</span><input v-model="deleteConfirmation" class="app-input" name="delete-confirmation" autocomplete="off" :disabled="busy"></label>
+          <AppButton variant="danger" data-action="delete-student" :disabled="!canDelete || busy" @click="roster.deleteSelected()">{{ roster.deletionState === 'deleting' ? '正在备份并删除…' : '备份并删除' }}</AppButton>
+        </template>
+      </section>
+      <FeedbackBanner v-if="roster.errorMessage" role="alert" tone="error" :description="roster.errorMessage" />
+    </form>
+    <template #footer>
+      <AppButton variant="secondary" :disabled="busy" @click="close">取消</AppButton>
+      <AppButton variant="primary" type="submit" form="student-edit-form" data-action="save-student" :disabled="!form.student_code || !form.name || busy">{{ saving ? '正在保存…' : '保存' }}</AppButton>
+    </template>
+  </AppDialog>
 </template>

@@ -170,9 +170,15 @@ onBeforeUnmount(() => controller.abort())
         <p v-if="storage?.unreadable_count" class="settings-note">有 {{ storage.unreadable_count }} 处文件暂时无法读取，空间统计未包含这些文件。</p>
         <p v-if="!storage" class="settings-note">{{ loading ? '正在统计空间…' : '空间占用暂时无法读取' }}</p>
         <template v-else>
-          <p class="settings-space-total">本机数据共 {{ formatBytes(storage.total_bytes) }}</p>
+          <p class="settings-space-total">业务数据共 {{ formatBytes(storage.total_bytes) }}</p>
+          <p class="settings-note settings-space-scope">仅统计业务数据，不含程序和开发临时文件。</p>
           <div class="settings-space-bar" aria-hidden="true"><i v-for="(category, index) in storage.categories" :key="category.key" :style="{ width: `${storage.total_bytes ? category.bytes / storage.total_bytes * 100 : 0}%`, background: colors[index] }" /></div>
-          <table class="settings-space-legend"><tbody><tr v-for="(category, index) in storage.categories" :key="category.key"><td><i :style="{ background: colors[index] }" />{{ category.label }}</td><td>{{ formatBytes(category.bytes) }}</td></tr></tbody></table>
+          <dl class="settings-space-legend">
+            <div v-for="(category, index) in storage.categories" :key="category.key" class="settings-space-legend__item">
+              <dt><i aria-hidden="true" :style="{ background: colors[index] }" />{{ category.label }}</dt>
+              <dd>{{ formatBytes(category.bytes) }}</dd>
+            </div>
+          </dl>
           <div v-if="storage.legacy_annotations.bytes" class="settings-inline settings-legacy"><span class="settings-note">旧批注图 {{ formatBytes(storage.legacy_annotations.bytes) }} · 可随时重新生成</span><AppButton variant="ghost" :disabled="busy" @click="dialog = 'legacy'">清理</AppButton></div>
         </template>
       </div>

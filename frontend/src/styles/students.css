@@ -1,14 +1,13 @@
 .student-ledger { width: 100%; container-type: inline-size; }
-.student-roster-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); }
-.student-roster-entry { min-width: 0; display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--color-border-subtle); border-right: 1px solid var(--color-border-subtle); }
+.student-roster-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); }
+.student-roster-entry { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--color-border-subtle); border-right: 1px solid var(--color-border-subtle); }
 .student-roster-entry:hover { background: var(--color-bg-subtle); }
-.student-roster-entry__identity { min-width: 0; flex: 1; display: grid; gap: 3px; }
-.student-roster-entry__identity strong { font-size: var(--font-size-body); font-weight: var(--font-weight-medium); line-height: 1.4; overflow-wrap: anywhere; }
-.student-roster-entry__identity > span { font-size: var(--font-size-caption); line-height: 1.4; color: var(--color-text-muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.student-roster-entry__class { font-size: var(--font-size-caption); color: var(--color-text-secondary); max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.student-roster-entry > button { flex-shrink: 0; }
-@container (max-width: 860px) { .student-roster-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .student-roster-entry:nth-child(2n) { border-right: 0; } }
-@container (max-width: 520px) { .student-roster-grid { grid-template-columns: minmax(0, 1fr); } .student-roster-entry { border-right: 0 !important; } .student-ledger__toolbar > input { flex: 1; min-width: 180px; } }
+.student-roster-entry__identity { min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; column-gap: 8px; }
+.student-roster-entry__identity strong { min-width: 0; max-width: 100%; font-size: var(--font-size-body); font-weight: var(--font-weight-medium); line-height: 1.4; overflow-wrap: anywhere; }
+.student-roster-entry__identity > span { min-width: 0; max-width: 100%; font-size: var(--font-size-caption); line-height: 1.4; color: var(--color-text-muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.student-roster-entry__class { font-size: var(--font-size-caption); color: var(--color-text-secondary); max-width: 72px; overflow-wrap: anywhere; }
+.student-roster-entry > button { white-space: nowrap; }
+@container (max-width: 520px) { .student-roster-entry { border-right: 0; } .student-ledger__toolbar > input { flex: 1; min-width: 0; } }
 .student-ledger__toolbar { display: flex; align-items: center; gap: 8px; padding: 9px 15px; border-bottom: 1px solid var(--color-border-subtle); flex-wrap: wrap; }
 .student-ledger__toolbar > input { width: 210px; }
 .student-ledger__toolbar > select { width: auto; max-width: 150px; }
@@ -28,4 +27,15 @@
 .student-import__preview { margin-top: 10px; max-height: 330px; overflow: auto; border: 1px solid var(--color-border-default); border-radius: 8px; }
 .student-import__preview thead { position: sticky; top: 0; background: var(--color-bg-surface); }
 .student-import__preview td { max-width: 180px; overflow-wrap: anywhere; }
-
+.app-dialog.student-edit-dialog { width: min(440px, calc(100vw - 2 * var(--space-5))); --app-control-height: var(--control-height-small); --app-control-padding: 11px; --app-control-font: var(--font-size-dense); }
+.student-edit-dialog .app-dialog__body { padding: 14px 16px; }
+.student-edit-dialog .app-dialog__header { padding: 12px 16px; }
+.student-edit-dialog .app-dialog__footer { padding: 12px 16px; border-top: 1px solid var(--color-border-subtle); }
+.student-edit-dialog__form { display: grid; gap: 14px; }
+.student-edit-dialog__fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.student-edit-dialog__name { grid-column: 1 / -1; }
+.student-edit-dialog .app-input.app-input.app-input { --app-control-height: var(--control-height-default); min-height: var(--control-height-default); height: var(--control-height-default); padding: 0 10px; font-size: var(--font-size-dense); }
+.student-edit-dialog .app-dialog__footer .app-button { --app-control-height: var(--control-height-default); --app-control-padding: 14px; --app-control-font: var(--font-size-dense); }
+.student-edit-dialog .student-danger { margin-top: 0; padding-top: 12px; gap: 8px; }
+.student-edit-dialog .student-danger .settings-field { width: 100%; }
+@media (max-width: 360px) { .student-edit-dialog__fields { grid-template-columns: minmax(0, 1fr); } }
