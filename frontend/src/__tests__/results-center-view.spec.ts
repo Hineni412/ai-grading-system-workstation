@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { decodeResultsCenterResponse, fetchResultsCenter, type ResultsCenterItem, type ResultsCenterResponse } from '../api/results-center'
 import { fetchReviewItems, fetchReviewQuestions, fetchReviewRubric, type ResolvedReviewItem } from '../api/review'
+import { fetchRegionWorkspace, type Region, type RegionWorkspace } from '../api/template-regions'
+import { resetRegionWorkspaceCache } from '../components/results-center/student-paper'
 import { useSessionStore } from '../stores/session'
 import { useResultsCenterStore } from '../stores/results-center'
 import { useJobStore } from '../stores/jobs'
@@ -76,6 +78,11 @@ const classAnalysisMock = vi.hoisted(() => ({
 vi.mock('../api/class-analysis', async (original) => ({
   ...await original<typeof import('../api/class-analysis')>(),
   classAnalysisApi: classAnalysisMock,
+}))
+
+vi.mock('../api/template-regions', async (original) => ({
+  ...await original<typeof import('../api/template-regions')>(),
+  fetchRegionWorkspace: vi.fn(),
 }))
 
 const exportsMock = vi.hoisted(() => ({
@@ -151,16 +158,45 @@ function reviewItems(qid: string): ResolvedReviewItem[] {
     })))
 }
 
+function region(uuid: string, qid: string, page: Region['page'] = 'front'): Region {
+  return {
+    region_uuid: uuid, page, region_order: 0, x: 40, y: 60, w: 400, h: 200,
+    mapped_question_id: qid, mapping_status: 'mapped',
+    is_confirmed: true, multi_region_confirmed: false,
+  }
+}
+
+function workspaceFixture(regions: Region[] = [region('r-q1', 'Q1'), region('r-q2', 'Q2')]): RegionWorkspace {
+  return {
+    session_id: 7,
+    template: {
+      session_id: 7, template_id: 1, template_fingerprint: 'a'.repeat(64),
+      first_page_role: 'front',
+      pages: {
+        front: { url: '/api/sessions/7/template/pages/front', width: 1000, height: 1400 },
+        back: { url: '/api/sessions/7/template/pages/back', width: 1000, height: 1400 },
+      },
+      is_confirmed: true, regions_snapshot_pending: false,
+    },
+    formal_regions: regions,
+    draft: { status: 'missing', revision: 0, regions: [], reason: null },
+    automatic_candidates: [], manual_question_options: [], issues: [], template_ready: true,
+  }
+}
+
 async function mountView(tab: string | null = 'details', analysis?: ClassAnalysisResponse, open = '',
-    statuses?: [string, number][], readErrors: Readonly<Record<number, string>> = {}) {
+    statuses?: [string, number][], readErrors: Readonly<Record<number, string>> = {},
+    resultsData?: ResultsCenterResponse) {
   localStorage.clear()
+  resetRegionWorkspaceCache()
+  vi.mocked(fetchRegionWorkspace).mockReset().mockResolvedValue(workspaceFixture())
   pipelineMock.getStatus.mockClear()
   pipelineMock.start.mockClear()
   jobsMock.getJob.mockClear().mockImplementation(jobsMock.defaultJob)
   personalMock.states.mockResolvedValue((statuses ?? [['current', 1], ['stale', 2], ['missing', 3], ['unavailable', 4]]).map(([status, id]) => ({student_id: id, status, generated_at: '2026-10-03', reason: status === 'unavailable' ? '缺考' : null, read_error: readErrors[id] ?? null})))
   personalMock.exams.mockImplementation(async (id: number) => [{session_id: 7, session_name: '合成成绩验证', graded_at: '2026-10-03', score: 8, max_score: 10,
     status: id === 1 ? 'current' : id === 2 ? 'stale' : id === 3 ? 'missing' : 'unavailable', generated_at: '2026-10-03', reason: id === 4 ? '缺考' : null, read_error: readErrors[id] ?? null}])
-  vi.mocked(fetchResultsCenter).mockReset().mockResolvedValue(fixture())
+  vi.mocked(fetchResultsCenter).mockReset().mockResolvedValue(resultsData ?? fixture())
   classAnalysisMock.getClassAnalysis.mockReset().mockRejectedValue(new Error('合成环境不读班级分析'))
   invalidateClassAnalysis(7)
   vi.mocked(fetchReviewQuestions).mockReset().mockResolvedValue([])
@@ -750,6 +786,47 @@ describe('personal report reading and review return', () => {
     await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/grading'))
     await router.push('/results?tab=details&session=7')
     await vi.waitFor(() => expect(document.querySelector('iframe')?.getAttribute('src')).toContain('narrative=none'))
+  })
+  it('shows paper marks on the original sheet and opens review from a deducted row', async () => {
+    const data = fixture()
+    const subItems = [
+      item(1, 'Q12(P1)', 3), item(1, 'Q12(P2)', 0),
+      item(1, 'Q12(P3)', 3), item(1, 'Q12(P4)', 3),
+    ].map((entry) => ({ ...entry, max_score: 3 }))
+    data.students[0] = { ...data.students[0]!, current_score: 9, max_score: 12, items: subItems }
+    const { host, router } = await mountView('details', undefined, '', undefined, undefined, data)
+    vi.mocked(fetchRegionWorkspace).mockReset().mockResolvedValue(
+      workspaceFixture([region('r-q12', 'Q12')]),
+    )
+    const row0 = [...host.querySelectorAll<HTMLTableRowElement>('.results-matrix tbody tr')]
+      .find((element) => element.textContent?.includes('合成甲'))!
+    row0.querySelector<HTMLButtonElement>('th > button')!.click()
+    await vi.waitFor(() => expect(document.querySelectorAll('.paper-mark')).toHaveLength(1))
+    expect(document.querySelector('.paper-mark')!.textContent).toContain('Q12 9/12')
+    const deducted: ResolvedReviewItem = {
+      ...reviewItems('Q1')[0]!,
+      review_item_id: subItems[1]!.review_item_id,
+      detail_id: subItems[1]!.detail_id,
+      question_id: 'Q12(P2)',
+      score_awarded: 0, max_score: 3,
+      deduction_reason: '未写出换算过程',
+    }
+    vi.mocked(fetchReviewItems).mockImplementationOnce(async () => [deducted])
+    const row = [...document.querySelectorAll<HTMLButtonElement>('.paper-list__row')]
+      .find((element) => element.textContent?.includes('Q12(P2)'))!
+    row.click()
+    await vi.waitFor(() => expect(
+      document.querySelector('.paper-list__detail')?.textContent,
+    ).toContain('未写出换算过程'))
+    document.querySelector<HTMLButtonElement>('.paper-list__detail button')!.click()
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/grading'))
+    expect(router.currentRoute.value.query).toMatchObject({
+      session: '7',
+      question: 'Q12(P2)',
+      item: subItems[1]!.review_item_id,
+      student: '1',
+      entry: 'results',
+    })
   })
   it('keeps name and score actions and restores the last viewed student drawer with Escape', async () => {
     const { host } = await mountView()

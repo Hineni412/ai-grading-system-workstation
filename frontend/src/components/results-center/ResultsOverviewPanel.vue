@@ -531,18 +531,93 @@ const ranksExpandable = computed(() => (
 
 const crossings = computed(() => lineCrossings(rankEntries.value))
 
-const crossGroups = computed(() => ([
-  { key: 'passGained', title: '新达及格', up: true, rows: crossings.value.passGained },
-  { key: 'passLost', title: '跌破及格', up: false, rows: crossings.value.passLost },
-  { key: 'excellentGained', title: '新进优秀', up: true, rows: crossings.value.excellentGained },
-  { key: 'excellentLost', title: '跌出优秀', up: false, rows: crossings.value.excellentLost },
-]))
-
 function crossText(entry: LineCrossing): string {
   return sameFullScore.value
     ? `${formatScore(entry.previousScore)} → ${formatScore(entry.student.current_score)} 分`
     : `${formatRate(entry.previousRate)} → ${formatRate(entry.currentRate)}`
 }
+
+const SCATTER_W = 340
+const SCATTER_H = 320
+const SCATTER_PAD = { left: 46, right: 12, top: 24, bottom: 38 }
+const SCATTER_LINES = [0.6, 0.85]
+
+function scatterBand(rate: number): 0 | 1 | 2 {
+  return rate >= 0.85 ? 2 : rate >= 0.6 ? 1 : 0
+}
+
+const scatterPlot = computed(() => {
+  const points = crossings.value.points
+  const rates = points.flatMap((point) => [point.previousRate, point.currentRate])
+  const lo = rates.length
+    ? Math.min(0.5, Math.floor(Math.min(...rates) * 10) / 10)
+    : 0.5
+  const width = SCATTER_W - SCATTER_PAD.left - SCATTER_PAD.right
+  const height = SCATTER_H - SCATTER_PAD.top - SCATTER_PAD.bottom
+  const x = (rate: number) => (
+    SCATTER_PAD.left + ((rate - lo) / (1 - lo)) * width
+  )
+  const y = (rate: number) => (
+    SCATTER_PAD.top + ((1 - rate) / (1 - lo)) * height
+  )
+  const edges = [lo, ...SCATTER_LINES, 1]
+  const counts = new Map<string, number>()
+  for (const point of points) {
+    const key = `${scatterBand(point.previousRate)}|${scatterBand(point.currentRate)}`
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  const cells = []
+  for (let prev = 0; prev <= 2; prev += 1) {
+    for (let curr = 0; curr <= 2; curr += 1) {
+      cells.push({
+        key: `${prev}|${curr}`,
+        x: x(edges[prev]!),
+        y: y(edges[curr + 1]!),
+        width: x(edges[prev + 1]!) - x(edges[prev]!),
+        height: y(edges[curr]!) - y(edges[curr + 1]!),
+        tint: curr > prev ? 'is-up' : curr < prev ? 'is-down' : '',
+        count: counts.get(`${prev}|${curr}`) ?? 0,
+      })
+    }
+  }
+  return { lo, x, y, cells }
+})
+
+const scatterPoints = computed(() => {
+  const gained = new Set([
+    ...crossings.value.passGained,
+    ...crossings.value.excellentGained,
+  ].map((entry) => entry.student.student_id))
+  const lost = new Set([
+    ...crossings.value.passLost,
+    ...crossings.value.excellentLost,
+  ].map((entry) => entry.student.student_id))
+  const plot = scatterPlot.value
+  return crossings.value.points.map((entry) => {
+    const id = entry.student.student_id
+    const isGained = gained.has(id)
+    const isLost = lost.has(id)
+    return {
+      entry,
+      cx: plot.x(entry.previousRate),
+      cy: plot.y(entry.currentRate),
+      crossing: isGained || isLost,
+      className: isGained ? 'is-up' : isLost ? 'is-down' : '',
+      label: `${entry.student.student_name}${scope.value === null
+        ? ` ${classDisplayLabel(entry.student.class_name)}` : ''} · 上次 ${crossText(entry)}`,
+    }
+  })
+})
+
+const scatterTicks = computed(() => {
+  const plot = scatterPlot.value
+  return [plot.lo, ...SCATTER_LINES, 1].map((rate) => ({
+    rate,
+    x: plot.x(rate),
+    y: plot.y(rate),
+    label: `${Math.round(rate * 100)}%`,
+  }))
+})
 
 /** 名次→横轴位置：第 1 名在右端，最后一名在左端；范围外按边缘截断。 */
 function rankFraction(rank: number, size: number): number {
@@ -1093,39 +1168,107 @@ onMounted(() => {
         <p class="overview__tile-sub">
           较「{{ comparisonName }}」，两场都有完整成绩且同班的 {{ crossings.comparedCount }} 人
         </p>
-        <div class="overview__cross-body">
-          <div
-            v-for="group in crossGroups"
-            :key="group.key"
-            class="overview__critical-group"
+        <figure class="overview__scatter">
+          <svg
+            :viewBox="`0 0 ${SCATTER_W} ${SCATTER_H}`"
+            role="img"
+            :aria-label="`与「${comparisonName}」的得分率分布，横轴上次、纵轴本次`"
           >
-            <h3 class="overview__critical-title">{{ group.title }} {{ group.rows.length }} 人</h3>
-            <ul
-              v-if="group.rows.length"
-              class="overview__notes-list overview__critical-list"
-            >
-              <li
-                v-for="entry in group.rows"
-                :key="entry.student.student_id"
-                class="overview__notes-item"
-              >
-                <button
-                  type="button"
-                  class="overview__link overview__notes-student"
-                  @click="emit('open-student', entry.student.student_id)"
-                >
-                  {{ entry.student.student_name }}<small v-if="scope === null">
-                    {{ classDisplayLabel(entry.student.class_name) }}
-                  </small>
-                </button>
-                <span
-                  class="overview__notes-text"
-                  :class="group.up ? 'is-up' : 'is-down'"
-                >{{ crossText(entry) }}</span>
-              </li>
-            </ul>
-          </div>
-        </div>
+            <rect
+              v-for="cell in scatterPlot.cells"
+              :key="cell.key"
+              class="overview__scatter-cell"
+              :class="cell.tint"
+              :x="cell.x"
+              :y="cell.y"
+              :width="cell.width"
+              :height="cell.height"
+            />
+            <line
+              class="overview__scatter-diag"
+              :x1="scatterPlot.x(scatterPlot.lo)"
+              :y1="scatterPlot.y(scatterPlot.lo)"
+              :x2="scatterPlot.x(1)"
+              :y2="scatterPlot.y(1)"
+            />
+            <line
+              v-for="tick in scatterTicks"
+              :key="`x${tick.rate}`"
+              class="overview__scatter-axis"
+              :x1="tick.x"
+              :y1="SCATTER_PAD.top"
+              :x2="tick.x"
+              :y2="SCATTER_H - SCATTER_PAD.bottom"
+            />
+            <line
+              v-for="tick in scatterTicks"
+              :key="`y${tick.rate}`"
+              class="overview__scatter-axis"
+              :x1="SCATTER_PAD.left"
+              :y1="tick.y"
+              :x2="SCATTER_W - SCATTER_PAD.right"
+              :y2="tick.y"
+            />
+            <text
+              v-for="tick in scatterTicks"
+              :key="`xl${tick.rate}`"
+              class="overview__scatter-tick"
+              :x="tick.x"
+              :y="SCATTER_H - SCATTER_PAD.bottom + 14"
+              :text-anchor="tick.rate === 1 ? 'end' : 'middle'"
+            >{{ tick.label }}</text>
+            <text
+              v-for="tick in scatterTicks"
+              :key="`yl${tick.rate}`"
+              class="overview__scatter-tick"
+              :x="SCATTER_PAD.left - 5"
+              :y="tick.y + 3"
+              text-anchor="end"
+            >{{ tick.label }}</text>
+            <text
+              class="overview__scatter-caption"
+              :x="SCATTER_PAD.left + (SCATTER_W - SCATTER_PAD.left - SCATTER_PAD.right) / 2"
+              :y="SCATTER_H - 4"
+              text-anchor="middle"
+            >上次得分率</text>
+            <text
+              class="overview__scatter-caption"
+              :x="SCATTER_PAD.left"
+              :y="10"
+              text-anchor="start"
+            >本次得分率</text>
+            <circle
+              v-for="point in scatterPoints"
+              :key="point.entry.student.student_id"
+              class="overview__scatter-dot"
+              :class="point.className"
+              :cx="point.cx"
+              :cy="point.cy"
+              r="4"
+              :tabindex="point.crossing ? 0 : undefined"
+              :role="point.crossing ? 'button' : undefined"
+              :aria-label="point.crossing ? point.label : undefined"
+              @click="emit('open-student', point.entry.student.student_id)"
+              @keydown.enter.prevent="emit('open-student', point.entry.student.student_id)"
+              @keydown.space.prevent="emit('open-student', point.entry.student.student_id)"
+            ><title>{{ point.label }}</title></circle>
+            <text
+              v-for="cell in scatterPlot.cells"
+              v-show="cell.count > 0"
+              :key="`c${cell.key}`"
+              class="overview__scatter-count"
+              :x="cell.x + 4"
+              :y="cell.y + 12"
+            >{{ cell.count }}人</text>
+          </svg>
+          <figcaption class="overview__scatter-legend">
+            新达及格 <b class="is-up">{{ crossings.passGained.length }}</b>
+            · 跌破及格 <b class="is-down">{{ crossings.passLost.length }}</b>
+            · 新进优秀 <b class="is-up">{{ crossings.excellentGained.length }}</b>
+            · 跌出优秀 <b class="is-down">{{ crossings.excellentLost.length }}</b>
+            <small>虚线为两次持平；同一人可同时计入跌出优秀与跌破及格</small>
+          </figcaption>
+        </figure>
       </template>
     </section>
     </div>

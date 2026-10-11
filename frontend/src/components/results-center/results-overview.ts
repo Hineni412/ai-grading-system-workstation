@@ -414,6 +414,8 @@ export interface LineCrossing {
 export interface LineCrossings {
   /** 参与比较的学生数：两场都完整、同班且两场满分都 >0 */
   comparedCount: number
+  /** 参与比较的每一名学生，按 student_id 排序 */
+  points: LineCrossing[]
   /** 上次 <60%、本次 ≥60% */
   passGained: LineCrossing[]
   /** 上次 ≥60%、本次 <60% */
@@ -430,6 +432,7 @@ export function lineCrossings(
 ): LineCrossings {
   const result: LineCrossings = {
     comparedCount: 0,
+    points: [],
     passGained: [],
     passLost: [],
     excellentGained: [],
@@ -445,6 +448,7 @@ export function lineCrossings(
       previousRate: entry.previousScore / entry.previousMax,
       currentRate: entry.student.current_score / entry.student.max_score,
     }
+    result.points.push(item)
     const wasPass = item.previousRate >= 0.6
     const isPass = item.currentRate >= 0.6
     const wasExcellent = item.previousRate >= 0.85
@@ -458,6 +462,9 @@ export function lineCrossings(
     Math.abs(right.currentRate - right.previousRate)
       - Math.abs(left.currentRate - left.previousRate)
     || left.student.student_id - right.student.student_id
+  )
+  result.points.sort(
+    (left, right) => left.student.student_id - right.student.student_id,
   )
   result.passGained.sort(byMagnitude)
   result.passLost.sort(byMagnitude)

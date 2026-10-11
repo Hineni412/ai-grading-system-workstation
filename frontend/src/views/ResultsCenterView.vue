@@ -17,15 +17,12 @@ import PersonalReportReader from '../components/results-center/PersonalReportRea
 import ReportPipelineButton from '../components/results-center/ReportPipelineButton.vue'
 import ClassAnalysisPanel from '../components/results-center/ClassAnalysisPanel.vue'
 import ResultsOverviewPanel from '../components/results-center/ResultsOverviewPanel.vue'
+import StudentPaperPanel from '../components/results-center/StudentPaperPanel.vue'
 import { invalidateClassAnalysis } from '../components/results-center/class-analysis-cache'
-import { loadComparisonResults } from '../components/results-center/comparison-results-cache'
-import { unexpectedLosses } from '../components/results-center/paper-walkthrough'
+import { scoreStatusLabel } from '../components/results-center/student-paper'
 import {
   classRanksOf,
-  defaultComparison,
   formatScore,
-  isCompleteStudent,
-  rankChanges,
 } from '../components/results-center/results-overview'
 import AppButton from '../components/design-system/AppButton.vue'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
@@ -36,7 +33,6 @@ import { Input } from '../components/ui/input'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet'
 import { useResultsCenterStore, type ResultsViewState } from '../stores/results-center'
 import { useSessionStore } from '../stores/session'
-import { translateGradingReason } from '../utils/grading-reasons'
 import FileCenterView from './FileCenterView.vue'
 
 type ResultsTab = 'overview' | 'details' | 'analysis'
@@ -527,16 +523,6 @@ function scrollToTop(): void {
   resultsPage.value?.parentElement?.scrollTo({ top: 0, behavior })
 }
 
-function scoreStatusLabel(status: ResultsScoreStatus): string {
-  return {
-    ungraded: '未评分',
-    failed: '处理失败',
-    ai_review: 'AI 待复核',
-    ai_ready: 'AI 已评分',
-    teacher_final: '教师已确认',
-  }[status]
-}
-
 function shortScoreStatusLabel(status: ResultsScoreStatus): string {
   return {
     ungraded: '未评',
@@ -674,12 +660,6 @@ function itemFor(
   return studentItemIndex.value.get(student.student_id)?.get(questionId) ?? null
 }
 
-function confidenceLabel(value: number | null): string | null {
-  if (value === null) return null
-  const percent = value <= 1 ? value * 100 : value
-  return `置信度 ${Math.round(percent)}%`
-}
-
 function navigateToReview(item: ResultsCenterItem, student: ResultsCenterStudent): void {
   const sessionId = sessionStore.selectedSessionId
   if (sessionId === null) return
@@ -698,6 +678,12 @@ function navigateToReview(item: ResultsCenterItem, student: ResultsCenterStudent
       entry: 'results',
     },
   })
+}
+
+function reviewFromPaperPanel(item: ResultsCenterItem): void {
+  const student = selectedStudent.value
+  if (!student) return
+  navigateToReview(item, student)
 }
 
 function openStudentDrawer(
@@ -721,61 +707,6 @@ function openStudentById(studentId: number): void {
   )
   if (student) openStudentDrawer(student)
 }
-
-// 学生抽屉补充行：较默认对比考试的分差/名次 + 本次意外失分题
-const drawerComparisonStudents = ref<ResultsCenterStudent[] | null>(null)
-let drawerComparisonRequest = 0
-
-const drawerComparisonSession = computed(() => defaultComparison(
-  sessionStore.currentSession,
-  sessionStore.sessions,
-))
-
-watch(
-  [selectedStudent, drawerComparisonSession],
-  async ([student, comparison]) => {
-    drawerComparisonRequest += 1
-    const request = drawerComparisonRequest
-    drawerComparisonStudents.value = null
-    if (!student || !comparison) return
-    try {
-      const data = await loadComparisonResults(comparison.id)
-      if (request === drawerComparisonRequest) {
-        drawerComparisonStudents.value = data.students
-      }
-    } catch { /* 对比考试加载失败时省略该行 */ }
-  },
-  { immediate: true },
-)
-
-const drawerCompareLine = computed(() => {
-  const student = selectedStudent.value
-  if (!student) return null
-  if (!drawerComparisonSession.value) return '暂无可对比考试'
-  if (drawerComparisonStudents.value === null) return null
-  const entry = rankChanges(
-    results.value?.students ?? [],
-    drawerComparisonStudents.value,
-  ).find((e) => e.student.student_id === student.student_id)
-  if (!entry) return null
-  const diff = student.current_score - entry.previousScore
-  const sign = diff >= 0 ? '+' : ''
-  return `较上次 ${sign}${formatScore(diff)} 分 · 班内名次 ${entry.previousRank} → ${entry.currentRank}`
-})
-
-const drawerLossLine = computed(() => {
-  const student = selectedStudent.value
-  if (!student) return null
-  const peers = (results.value?.students ?? []).filter(
-    (peer) => (peer.class_name ?? '') === (student.class_name ?? '')
-      && isCompleteStudent(peer),
-  )
-  const losses = unexpectedLosses(student, peers).slice(0, 2)
-  if (!losses.length) return null
-  return `这次意外失分：${losses.map((loss) => (
-    `${loss.questionId}（本班 ${Math.round(loss.fullFraction * 100)}% 满分，本题 ${formatScore(loss.score)}/${formatScore(loss.maxScore)}）`
-  )).join('、')}`
-})
 
 function openQuestionInAnalysis(
   questionId: string,
@@ -1151,32 +1082,22 @@ function closeStudentDrawer(restoreFocus = true): void {
     >
       <template v-if="selectedStudent">
         <SheetHeader class="results-drawer__header">
-          <div>
+          <div class="results-drawer__headline">
             <SheetTitle as="h2" id="student-result-title">{{ selectedStudent.student_name }}</SheetTitle>
             <p>
               {{ selectedStudent.student_code || '未填写学号' }}
               <template v-if="selectedStudent.class_name"> · {{ selectedStudent.class_name }}</template>
             </p>
           </div>
-        </SheetHeader>
-
-        <div class="results-drawer__total">
-          <span>{{ currentTotalPrefix(selectedStudent) }}总分</span>
-          <strong>
-            {{ formatScore(selectedStudent.current_score) }}
-            <small>/ {{ formatScore(selectedStudent.max_score) }}</small>
-          </strong>
-          <em>{{ studentIssueText(selectedStudent) }}</em>
-        </div>
-
-        <p v-if="drawerCompareLine" class="results-drawer__cmp">
-          {{ drawerCompareLine }}
-        </p>
-        <p v-if="drawerLossLine" class="results-drawer__cmp">
-          {{ drawerLossLine }}
-        </p>
-
-        <div class="personal-report-drawer">
+          <div class="results-drawer__total">
+            <span>{{ currentTotalPrefix(selectedStudent) }}总分</span>
+            <strong>
+              {{ formatScore(selectedStudent.current_score) }}
+              <small>/ {{ formatScore(selectedStudent.max_score) }}</small>
+            </strong>
+            <em>{{ studentIssueText(selectedStudent) }}</em>
+          </div>
+          <div class="personal-report-drawer">
           <b>个人报告</b>
           <p v-if="reportState(selectedStudent)?.read_error">{{ reportState(selectedStudent)?.read_error }}</p>
           <template v-if="reportState(selectedStudent)?.status === 'current'"><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent)">查看个人报告 ›</AppButton></template>
@@ -1184,29 +1105,16 @@ function closeStudentDrawer(restoreFocus = true): void {
           <template v-else-if="reportState(selectedStudent)?.status === 'stale'"><p>相关内容已修改，已保存报告仍可查看和导出。</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent)">查看已保存的个人报告 ›</AppButton></template>
           <template v-else-if="reportState(selectedStudent)?.status === 'missing'"><p v-if="!reportState(selectedStudent)?.read_error">本场报告未生成</p><AppButton variant="ghost" size="small" @click="openPersonalReport(selectedStudent, true)">查看报告（数据版） ›</AppButton></template>
           <p v-else>{{ reportState(selectedStudent)?.reason ?? '正在读取报告状态…' }}</p>
-        </div>
-        <div class="results-drawer__items">
-          <button
-            v-for="item in orderedDrawerItems"
-            :key="item.review_item_id"
-            type="button"
-            :data-status="item.score_status"
-            @click="navigateToReview(item, selectedStudent)"
-          >
-            <span class="results-drawer__question">{{ item.question_id }}</span>
-            <span class="results-drawer__item-score">
-              <strong>{{ formatScore(item.score_awarded) }}</strong>
-              / {{ formatScore(item.max_score) }}
-            </span>
-            <span class="results-status" :data-status="item.score_status">
-              {{ scoreStatusLabel(item.score_status) }}
-            </span>
-            <span class="results-drawer__reason">
-              {{ item.review_reason ? translateGradingReason(item.review_reason) : confidenceLabel(item.confidence_score) || '点击查看答卷与评分依据' }}
-            </span>
-            <span aria-hidden="true">›</span>
-          </button>
-        </div>
+          </div>
+        </SheetHeader>
+        <StudentPaperPanel
+          v-if="results"
+          :session-id="results.session_id"
+          :results="results"
+          :student="selectedStudent"
+          :items="orderedDrawerItems"
+          @review="reviewFromPaperPanel"
+        />
       </template>
     </SheetContent>
   </Sheet>
@@ -1220,15 +1128,5 @@ function closeStudentDrawer(restoreFocus = true): void {
 .personal-report-status{display:inline-flex!important;width:26px!important;min-width:26px;height:26px;align-items:center;justify-content:center;vertical-align:top;margin-left:6px;border-radius:5px!important;font-size:var(--font-size-body)!important;padding:0!important}
 .results-matrix tbody .results-matrix__identity > button:not(.personal-report-status){display:inline-grid;width:calc(100% - 32px);vertical-align:top}
 .personal-report-status--current,.personal-report-status--old_prompt{color:#368260!important;background:#edf7ef!important}.personal-report-status--stale{color:#aa7b22!important;background:#fff3d8!important}.personal-report-status--missing{color:#87929c!important;background:#f2f4f6!important}
-.personal-report-unavailable{font-size:var(--font-size-caption);color:#84919e;margin-left:4px}.personal-report-help{color:#7b8b98;font-size:var(--font-size-caption);margin:5px 20px 12px}.personal-report-highlight{outline:2px solid #6c9bb3;outline-offset:-2px}.personal-report-drawer{padding:16px 0;margin-top:12px;border-top:1px solid #e0e7ed}.personal-report-drawer b{display:block;font-size:var(--font-size-body)}.personal-report-drawer p{color:#778490;font-size:var(--font-size-caption);margin:8px 0}
-
-.results-drawer__cmp {
-  margin: 0;
-  padding: var(--space-2) var(--space-4);
-  font-size: var(--font-size-caption);
-  color: var(--muted-foreground);
-}
-.results-drawer__cmp + .results-drawer__cmp {
-  padding-top: 0;
-}
+.personal-report-unavailable{font-size:var(--font-size-caption);color:#84919e;margin-left:4px}.personal-report-help{color:#7b8b98;font-size:var(--font-size-caption);margin:5px 20px 12px}.personal-report-highlight{outline:2px solid #6c9bb3;outline-offset:-2px}.personal-report-drawer{display:flex;align-items:center;gap:6px;flex:none;min-width:0;margin-inline-start:auto;padding:0}.personal-report-drawer b{font-size:var(--font-size-dense);white-space:nowrap}.personal-report-drawer p{color:#778490;font-size:var(--font-size-caption);margin:0;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </style>

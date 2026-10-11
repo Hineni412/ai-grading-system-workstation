@@ -248,6 +248,7 @@ describe('results overview pure helpers', () => {
       rows.map((row) => row.student.student_id)
     )
     expect(crossings.comparedCount).toBe(6)
+    expect(crossings.points).toHaveLength(crossings.comparedCount)
     expect(ids(crossings.passGained)).toEqual([6, 1])
     expect(ids(crossings.passLost)).toEqual([4, 2])
     expect(ids(crossings.excellentGained)).toEqual([3])
