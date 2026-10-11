@@ -163,6 +163,8 @@ def lbfgs(objective, initial, iterations=600, memory=10, *, loss=None):
             step *= 0.5
         else:
             break
+        if new_value >= value and step < 1.0:
+            break
         s, y = candidate - x, new_grad - grad
         if y @ s > 1e-12:
             history = (history + [(s, y)])[-memory:]

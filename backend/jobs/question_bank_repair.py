@@ -165,6 +165,10 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
             f'SELECT * FROM training_criterion_heads WHERE question_id IN ({marks})', ids)}
     items = []
     scanned_count = 0
+    pending: dict[int, list[str]] = {}
+    pending_snapshots: dict[int, dict] = {}
+    pending_states: dict[int, dict] = {}
+    profiles_all: dict[int, dict] = {}
     for start in range(0, len(ids), 64):
         batch = ids[start:start + 64]
         # Readiness comes from saved rows only; question content is loaded
@@ -175,6 +179,7 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
         unchecked = [qid for qid in batch if qid not in profiles]
         if unchecked:
             profiles.update(load_profiles(db, unchecked, data_root=root))
+        profiles_all.update(profiles)
         with _read_connection(db) as conn:
             if retained_snapshot is not None and not unchecked:
                 snapshot = retained_snapshot
@@ -184,7 +189,6 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
             states = saved_analysis_states(conn, batch, profiles)
         selected = [qid for qid in batch if kind != 'skills' or qid in snapshot['unlinked']]
         scanned_count += len(selected)
-        pending: dict[int, list[str]] = {}
         for qid in selected:
             missing = []
             if qid not in tags_ready:
@@ -203,17 +207,21 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
             if not missing or (kind == 'skills' and 'skills' not in missing) or (kind == 'analysis' and not set(missing) & {'tags', 'evidence', 'criteria'}):
                 continue
             pending[qid] = missing
-        if not pending:
-            continue
+            pending_snapshots[qid] = snapshot
+            pending_states[qid] = states[qid]
+    if pending:
+        # Contracts and inputs are shared across the whole preview; batching
+        # them per 64 questions would rebuild the taxonomy catalogue each time.
         with source_content_hash_reuse():
             load_failures: dict[int, str] = {}
             inputs = {q.question_id: q for q in loader.load(sorted(pending),
                 curriculum_volume_id=volume_id, load_failures=load_failures)}
             type_questions = _with_type_contracts(
-                [question for qid, question in inputs.items() if qid not in snapshot.get('primary_types', {})], db)
+                [question for qid, question in inputs.items() if 'types' in pending[qid]], db)
             inputs.update({question.question_id: question for question in type_questions})
             for qid, missing in pending.items():
-                profile = profiles.get(qid, {})
+                snapshot = pending_snapshots[qid]
+                profile = profiles_all.get(qid, {})
                 row = rows[qid]
                 blocked = ''
                 if qid in load_failures:
@@ -224,7 +232,7 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
                     blocked = '当前技能标准不可用'
                 elif any(part in missing for part in ('skills', 'knowledge_points')) and str(profile.get('evidence_version_id', '')) in teacher:
                     blocked = '教师已确认关联，请打开题目人工核对'
-                if states[qid]['workspace'].get('state') == 'rejected':
+                if pending_states[qid]['workspace'].get('state') == 'rejected':
                     blocked = '训练判定已拒绝，请先核对题面或人工修正'
                 type_pending = '本章题型尚未整理，暂时待归类' if 'types' in missing and qid in inputs and inputs[qid].taxonomy_contract.get('question_type_mode') is not True else ''
                 if 'types' in missing and qid in inputs and any(

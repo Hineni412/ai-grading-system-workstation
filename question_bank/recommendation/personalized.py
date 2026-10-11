@@ -27,7 +27,7 @@ from question_bank.mastery.current import (
     CURRENT_MASTERY_PARAMETERS,
     CurrentMasteryCalculator,
 )
-from question_bank.mastery.model import sigmoid
+from question_bank.mastery.model import sigmoid, week_of
 from question_bank.question_types import (
     is_training_target,
     is_type_key,
@@ -1885,7 +1885,7 @@ class PersonalizedRecommendationModule:
         self, *, diagnosis: Mapping[str, Any], config: PersonalizedRecommendationConfig,
         member_ids: Sequence[str] = (), target_keys: Sequence[str] = (),
         graded_activities: Sequence[Mapping[str, Any]] | None = None,
-        _selection_only: bool = False,
+        _selection_only: bool = False, diagnosis_identity: object = None,
     ) -> dict[str, Any]:
         """Read-only preview using the same source and eligibility rules as drafts."""
         students = diagnosis.get("students", [])
@@ -1908,7 +1908,8 @@ class PersonalizedRecommendationModule:
         governed = {node.stable_key for node in self.current_knowledge.nodes}
         if not leaves or not set(leaves) <= governed:
             raise ValueError("grouping requires a current chapter or section")
-        mastery = self._mastery_snapshot(normalized)
+        mastery = (self._mastery_snapshot(normalized, diagnosis_identity=diagnosis_identity)
+                   if diagnosis_identity is not None else self._mastery_snapshot(normalized))
         mastery_by_student: dict[str, dict[str, Any]] = {}
         for (sid, key), point in mastery.items():
             mastery_by_student.setdefault(sid, {})[key] = point
@@ -3170,7 +3171,8 @@ class PersonalizedRecommendationModule:
                             evaluation_memo: dict | None = None,
                             direct_only: bool = False,
                             core_only: bool = False,
-                            _borrow_inputs: bool = False) -> dict[str, Any]:
+                            _borrow_inputs: bool = False,
+                            diagnosis_identity: object = None) -> dict[str, Any]:
         """One public read-only matching operation for all three selection flows."""
         config = resolve_practice_scope(config, diagnosis, self.current_knowledge)
         scope = self._candidate_scope(diagnosis, config)
@@ -3181,7 +3183,8 @@ class PersonalizedRecommendationModule:
             candidates = tuple(candidate for candidate in candidates
                                if selected.intersection(candidate["stable_keys"]))
         if mastery is None:
-            mastery = self._mastery_snapshot(dict(diagnosis))
+            mastery = (self._mastery_snapshot(dict(diagnosis), diagnosis_identity=diagnosis_identity)
+                       if diagnosis_identity is not None else self._mastery_snapshot(dict(diagnosis)))
         if recent is None:
             recent = self._recent_question_ids(tuple(str(p["student_id"]) for p in diagnosis["students"]), diagnosis=diagnosis, graded_activities=graded_activities, recent_activity_count=config.recent_activity_count, purpose=config.purpose)
         excluded = set(excluded or ())
@@ -3964,6 +3967,8 @@ class PersonalizedRecommendationModule:
     def _mastery_snapshot(
         self,
         diagnosis: dict[str, Any],
+        *,
+        diagnosis_identity: object = None,
     ) -> dict[tuple[str, str], dict[str, Any]]:
         generation = (
             data_version_token(
@@ -3980,9 +3985,18 @@ class PersonalizedRecommendationModule:
         calculated = calculator.calculate(diagnosis)
         # Include the actual population-model output, not only the visible
         # students: a changed population may change their shared parameters.
-        key = ("recommendation-mastery-v1", str(self.db_path.resolve()),
-               str(self.data_root.resolve()), self.current_knowledge.release_id,
-               generation, _cache_values(diagnosis), tuple(calculated.items()))
+        if diagnosis_identity is not None:
+            # The caller's tag-profile key already pins the diagnosis contents,
+            # replacing the deep conversion; the calculated items still pin the
+            # calculator-side inputs (week, parameters, injected mastery).
+            key = ("recommendation-mastery-v2", str(self.db_path.resolve()),
+                   str(self.data_root.resolve()), self.current_knowledge.release_id,
+                   generation, diagnosis_identity, str(week_of(self.clock())),
+                   CURRENT_MASTERY_PARAMETERS.version, tuple(calculated.items()))
+        else:
+            key = ("recommendation-mastery-v1", str(self.db_path.resolve()),
+                   str(self.data_root.resolve()), self.current_knowledge.release_id,
+                   generation, _cache_values(diagnosis), tuple(calculated.items()))
         return _MASTERY_SNAPSHOT_CACHE.get_or_compute(key, lambda: self._prepare_mastery_snapshot(
             diagnosis, calculated, calculator))
 
@@ -5052,15 +5066,15 @@ def _persistent_source_snapshot(module, key: tuple, compute) -> tuple:
     from integration.persistent_entries import persistent_entry_store
 
     versions = data_versions(module.db_path)
-    manifest = None
-    if versions is None:
-        from question_bank.services.question_read_service import _skill_asset_manifest
-        manifest = _skill_asset_manifest(Path(module.data_root))
-        if manifest is None:
-            return compute()
+    from question_bank.services.question_read_service import _skill_asset_manifest
+    # Pool eligibility depends on loaded image bodies, so asset files stay in
+    # the signature even when database versions cover the tables.
+    manifest = _skill_asset_manifest(Path(module.data_root))
+    if manifest is None:
+        return compute()
     pkey = tuple(part for index, part in enumerate(key) if index not in (1, 4))
     if versions is not None:
-        changes = (("dv", tuple(sorted(versions.items()))),)
+        changes = (("dv", tuple(sorted(versions.items()))), tuple(sorted(manifest.items())))
     else:
         changes = (database_change_stamp(module.db_path), tuple(sorted(manifest.items())))
     store = persistent_entry_store(Path(module.data_root) / "cache" / "recommendation_pools",
@@ -5069,13 +5083,14 @@ def _persistent_source_snapshot(module, key: tuple, compute) -> tuple:
     if isinstance(payload, tuple) and len(payload) == 3:
         return payload
     result = compute()
+    after_manifest = _skill_asset_manifest(Path(module.data_root))
     if versions is not None:
         after_versions = data_versions(module.db_path)
-        after = (("dv", tuple(sorted(after_versions.items()))),) if after_versions is not None else None
+        after = (("dv", tuple(sorted(after_versions.items()))),
+                 tuple(sorted((after_manifest or {}).items()))) if after_versions is not None else None
     else:
-        from question_bank.services.question_read_service import _skill_asset_manifest
         after = (database_change_stamp(module.db_path),
-                 tuple(sorted((_skill_asset_manifest(Path(module.data_root)) or {}).items())))
+                 tuple(sorted((after_manifest or {}).items())))
     if after is not None and after == changes:
         store.put(pkey, changes, result)
     return result

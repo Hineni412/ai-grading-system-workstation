@@ -325,12 +325,17 @@ def _build_grouped_diagnosis(service, grouping_module, *, scope_dump, exam_scope
         )
 
         def _grouping_compute() -> dict[str, Any]:
+            key_fn = getattr(service, "tag_profile_cache_key", None)
             return grouping_module.chapter_groups(
                 diagnosis=diagnosis,
                 config=grouping_config,
                 member_ids=grouping.member_ids,
                 target_keys=grouping.target_keys,
                 _selection_only=bool(grouping.member_ids),
+                diagnosis_identity=(
+                    key_fn(scope=scope_dump, exam_scope=exam_scope_dump)
+                    if callable(key_fn) else None
+                ),
                 graded_activities=service.graded_activities(
                     tuple(
                         str(item["student_id"])
@@ -2166,17 +2171,24 @@ def _public_training_mapping(value: dict[str, object], *, reject_nonfinite=False
     key_decisions: dict[str, tuple[bool, bool]] = {}
     text_checks: dict[str, bool] = {}
     score_texts: dict[tuple[str, str], str] = {}
+    subtrees: dict[int, Any] = {}
+    isfinite = math.isfinite
+    scalar_types = (int, float, bool)
 
     def public(item: Any) -> Any:
-        if item is None or type(item) in (int, float, bool):
-            if reject_nonfinite and isinstance(item, float) and not math.isfinite(item):
+        if item is None or type(item) in scalar_types:
+            if reject_nonfinite and type(item) is float and not isfinite(item):
                 raise ValueError('non-finite diagnosis number')
             return item
         if isinstance(item, str) and item in text_checks:
             return _OMIT if text_checks[item] else item
         if isinstance(item, dict):
+            marker = id(item)
+            if marker in subtrees:
+                return subtrees[marker]
             result = {}
             retained = 0
+            subtrees[marker] = result
             for key, child in item.items():
                 name = str(key)
                 decision = key_decisions.get(name)
@@ -2194,15 +2206,32 @@ def _public_training_mapping(value: dict[str, object], *, reject_nonfinite=False
                     if score_key not in score_texts:
                         score_texts[score_key] = strip_question_source_score(child, question_number=score_key[0])
                     child = score_texts[score_key]
+                if child is None or type(child) in scalar_types:
+                    if reject_nonfinite and type(child) is float and not isfinite(child):
+                        raise ValueError('non-finite diagnosis number')
+                    result[name] = child
+                    continue
                 cleaned = public(child)
                 if cleaned is not _OMIT:
                     result[name] = cleaned
             # 原先先移除训练字段，再清理公共数据。仅训练字段的容器
             # 保持为空；仍有公共待清理字段的空容器按原规则省略。
-            return _OMIT if retained and not result else result
+            if retained and not result:
+                subtrees[marker] = _OMIT
+                return _OMIT
+            return result
         if isinstance(item, (list, tuple)):
+            marker = id(item)
+            if marker in subtrees:
+                return subtrees[marker]
             result = []
+            subtrees[marker] = result
             for child in item:
+                if child is None or type(child) in scalar_types:
+                    if reject_nonfinite and type(child) is float and not isfinite(child):
+                        raise ValueError('non-finite diagnosis number')
+                    result.append(child)
+                    continue
                 cleaned = public(child)
                 if cleaned is not _OMIT:
                     result.append(cleaned)

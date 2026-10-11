@@ -148,6 +148,89 @@ def test_lbfgs_scalar_loss_skips_rejected_gradients_with_identical_steps(reject_
         assert np.array_equal(actual, initial)
 
 
+def _uncapped_lbfgs(objective, initial, iterations=600, memory=10, *, loss=None):
+    """The optimizer as it ran before accepted no-progress steps stopped it."""
+    import numpy as np
+    x = initial.copy()
+    value, grad = objective(x)
+    history = []
+    for _ in range(iterations):
+        if np.max(np.abs(grad), initial=0) < 1e-6:
+            break
+        q, alphas = grad.copy(), []
+        for s, y in reversed(history):
+            alpha = (s @ q) / (y @ s)
+            alphas.append(alpha)
+            q -= alpha * y
+        if history:
+            s, y = history[-1]
+            q *= (s @ y) / (y @ y)
+        for (s, y), alpha in zip(history, reversed(alphas)):
+            q += s * (alpha - (y @ q) / (y @ s))
+        direction, step = -q, 1.0
+        if grad @ direction >= 0:
+            direction, history = -grad, []
+        for _ in range(40):
+            candidate = x + step * direction
+            if loss is None:
+                new_value, new_grad = objective(candidate)
+            else:
+                new_value = loss(candidate)
+            if new_value <= value + 1e-4 * step * (grad @ direction):
+                if loss is not None:
+                    new_value, new_grad = objective(candidate)
+                break
+            step *= 0.5
+        else:
+            break
+        s, y = candidate - x, new_grad - grad
+        if y @ s > 1e-12:
+            history = (history + [(s, y)])[-memory:]
+        x, value, grad = candidate, new_value, new_grad
+    return x
+
+
+def test_lbfgs_stall_stops_early_and_matches_uncapped_reference():
+    import numpy as np
+    from question_bank.mastery.model import lbfgs
+    # A stalled problem: the loss is float-frozen while the reported gradient
+    # stays above the tolerance, so the line search halves until the Armijo
+    # bound underflows and accepts a step that cannot move x or the loss.
+    initial = np.array([1e15, -1e15])
+    evaluations = []
+
+    def objective(x):
+        evaluations.append(x.copy())
+        return 5.0, np.array([2e-6, -2e-6])
+
+    def loss(x):
+        return 5.0
+
+    actual = lbfgs(objective, initial, loss=loss)
+    reference = _uncapped_lbfgs(objective, initial, loss=loss)
+    assert len(evaluations) == 601 + 2  # uncapped ran every iteration, capped stopped at the first stall
+    assert np.allclose(actual, reference, atol=1e-12, rtol=0)
+    assert np.array_equal(actual, initial)
+
+
+def test_current_mastery_pickle_round_trip_preserves_every_field():
+    import pickle
+    from dataclasses import fields
+    from question_bank.mastery.current import CurrentMastery
+    item = CurrentMastery(
+        stable_key='sk_TEST', display_name='TEST-技能', status='available', value=.5,
+        evidence_count=3, effective_weight=2., parameter_version='TEST-v', reason='TEST-r',
+        contributing_student_count=2, exam_evidence_count=1, training_evidence_count=1,
+        evidence_contributions=(('e', .5, 1.),), direct_evidence_count=1,
+        precise_training_evidence_count=1, interval_low=.1, interval_high=.9,
+        tier='stable', observation_count=3, full_correct_count=2, recent_trend='TEST-t',
+        tier_counts=(('stable', 1),), logit_mean=.2, logit_sd=.3, difficulty_slope=.4)
+    clone = pickle.loads(pickle.dumps(item, pickle.HIGHEST_PROTOCOL))
+    assert clone == item
+    assert {field.name: getattr(clone, field.name) for field in fields(item)} == \
+           {field.name: getattr(item, field.name) for field in fields(item)}
+
+
 def test_exam_observations_keep_point_weight_and_exclude_ineligible_missing():
     from types import SimpleNamespace
     from question_bank.mastery.model import build_exam_observations

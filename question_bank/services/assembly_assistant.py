@@ -137,7 +137,8 @@ def shortlist_candidates(
         return output
     config = replace(config, paper_mode='shared', target_keys=tuple(selected))
     evaluated = module.evaluate_candidates(diagnosis=diagnosis, config=config, excluded=excluded_question_ids,
-                                           graded_activities=graded_activities, core_only=True)
+                                           graded_activities=graded_activities, core_only=True,
+                                           diagnosis_identity=cache_scope)
     groups = defaultdict(list)
     for entries in evaluated["pools"].values():
         for entry in entries:

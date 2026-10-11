@@ -190,6 +190,35 @@ class DiagnosisProfileService:
         return self.build_tag_profiles(scope=scope, exam_scope=exam_scope,
                                        include_source_details=False)
 
+    @staticmethod
+    def _summary_tag_profile_snapshot(result: DiagnosisSnapshot) -> DiagnosisSnapshot:
+        """Strip the per-question source details a summary view never shows.
+
+        The summary variant shares the detailed snapshot's evidence scan and
+        mastery merge; only the fields guarded by ``include_source_details``
+        in ``_compute_tag_profiles`` differ, and each maps to a fixed value.
+        """
+        summary = dict(result)
+        summary.pop("_type_class_question_totals", None)
+        summary["knowledge_associations"] = []
+        students = []
+        for student in result.get("students") or ():
+            students.append({
+                **student,
+                "weak_points": [{
+                    **point,
+                    "error_categories": [],
+                    "error_patterns": [],
+                    "source_question_refs": [
+                        {key: ({} if key == "assessment" else value)
+                         for key, value in reference.items() if key != "causes"}
+                        for reference in point.get("source_question_refs") or ()
+                    ],
+                } for point in student.get("weak_points") or ()],
+            })
+        summary["students"] = students
+        return summary
+
     def tag_profile_cache_key(
         self,
         *,
@@ -342,11 +371,17 @@ class DiagnosisProfileService:
         try:
             local = self._read_local_profile(cache_key)
             if local is None:
-                kwargs = {'include_source_details': False} if not include_source_details else {}
-                result, aggregated = self._compute_tag_profiles(
-                    scope=_normalized_profile_scope(scope, exam_scope),
-                    exam_scope=exam_scope, **kwargs,
-                )
+                if include_source_details:
+                    result, aggregated = self._compute_tag_profiles(
+                        scope=_normalized_profile_scope(scope, exam_scope),
+                        exam_scope=exam_scope,
+                    )
+                else:
+                    # One evidence scan serves both views: strip the detailed
+                    # snapshot's source-only fields instead of scanning twice.
+                    full = self.build_tag_profiles(scope=scope, exam_scope=exam_scope)
+                    result = self._summary_tag_profile_snapshot(full)
+                    aggregated = dict(self.latest_aggregated_mastery or {})
             else:
                 result, aggregated = pickle.loads(local[0]), pickle.loads(local[1])
         except BaseException as exc:

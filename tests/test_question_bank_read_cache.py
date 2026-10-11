@@ -1117,6 +1117,42 @@ def _insert_tag_run(db, stored_hash, *, contract,
         )
 
 
+def test_repair_preview_builds_one_taxonomy_governance_for_multi_batch_gaps(tmp_path, monkeypatch):
+    """Gaps spanning several 64-question batches share one governance and one
+    taxonomy plan; per-question planning produces the identical preview."""
+    from backend.jobs import question_bank_repair as repair
+    service, db, _ = _seed_skill_bank(tmp_path, count=70)
+    governances, plans = [], []
+    real_governance, real_plan = repair.TaxonomyGovernance, repair._plan_taxonomy
+
+    def counted_governance(*args, **kwargs):
+        governances.append(True)
+        return real_governance(*args, **kwargs)
+
+    def counted_plan(runner, governance, *, contexts):
+        plans.append(contexts)
+        return real_plan(runner, governance, contexts=contexts)
+
+    monkeypatch.setattr(repair, 'TaxonomyGovernance', counted_governance)
+    monkeypatch.setattr(repair, '_plan_taxonomy', counted_plan)
+    preview = repair._compute_repair_preview(service, 'bnu24-math-g8-upper', 'all')
+    pending = {item['id'] for item in preview['items']}
+    assert len(pending) > 64  # Classification spans several 64-question batches.
+    assert governances == [True]
+    assert len(plans) == 1
+    assert set(plans[0]) == {item['id'] for item in preview['items'] if 'types' in item['missing']}
+
+    def split_plan(runner, governance, *, contexts):
+        merged, revision = {}, None
+        for qid, context in contexts.items():
+            contracts, revision = real_plan(runner, governance, contexts={qid: context})
+            merged.update(contracts)
+        return merged, revision
+
+    monkeypatch.setattr(repair, '_plan_taxonomy', split_plan)
+    assert repair._compute_repair_preview(service, 'bnu24-math-g8-upper', 'all') == preview
+
+
 def test_tag_source_currentness_tolerates_legacy_fingerprint_tag_writes(tmp_path):
     """combined-v2/tag-only-v1 rows mixed model-written special_type into the
     stored hash; a retag must not invalidate its own record."""

@@ -2216,6 +2216,29 @@ def test_mastery_snapshot_cache_tracks_model_source_and_private_returns(direct_m
     assert len(calls) == 4
 
 
+def test_mastery_snapshot_identity_key_invalidates_on_covered_tokens(direct_module, monkeypatch):
+    import question_bank.recommendation.personalized as recommendation
+    recommendation._MASTERY_SNAPSHOT_CACHE.clear()
+    prepared = direct_module._prepare_mastery_snapshot
+    calls = []
+    def counted(*args):
+        calls.append(1)
+        return prepared(*args)
+    monkeypatch.setattr(direct_module, "_prepare_mastery_snapshot", counted)
+    diagnosis = _direct_diagnosis()
+    first = direct_module._mastery_snapshot(diagnosis, diagnosis_identity=("scope", 1))
+    assert direct_module._mastery_snapshot(diagnosis, diagnosis_identity=("scope", 1)) == first
+    assert len(calls) == 1
+    # A changed caller identity must recompute even for identical contents.
+    direct_module._mastery_snapshot(diagnosis, diagnosis_identity=("scope", 2))
+    assert len(calls) == 2
+    # A covered source token change must invalidate under the same identity.
+    with connect(direct_module.db_path) as conn:
+        conn.execute("UPDATE questions SET question_text=question_text || ' TEST-CACHE-EDIT' WHERE id=900")
+    direct_module._mastery_snapshot(diagnosis, diagnosis_identity=("scope", 2))
+    assert len(calls) == 3
+
+
 def test_latest_mastery_changes_priority_without_erasing_historical_loss(monkeypatch):
     from question_bank.recommendation.personalized import _choose_practice_entries, _loss_refs
     def entry(qid, key, mastery):

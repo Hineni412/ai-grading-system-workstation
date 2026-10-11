@@ -63,6 +63,20 @@ class CurrentMastery:
     logit_sd: float | None = None
     difficulty_slope: float | None = None
 
+    def __reduce__(self):
+        # Positional construction beats the per-field dataclass pickle protocol;
+        # this object is serialized tens of thousands of times per snapshot.
+        return (CurrentMastery, (
+            self.stable_key, self.display_name, self.status, self.value,
+            self.evidence_count, self.effective_weight, self.parameter_version,
+            self.reason, self.contributing_student_count, self.exam_evidence_count,
+            self.training_evidence_count, self.evidence_contributions,
+            self.direct_evidence_count, self.precise_training_evidence_count,
+            self.interval_low, self.interval_high, self.tier,
+            self.observation_count, self.full_correct_count, self.recent_trend,
+            self.tier_counts, self.logit_mean, self.logit_sd, self.difficulty_slope,
+        ))
+
     def to_dict(self) -> dict[str, object]:
         return {
             "display_name": self.display_name,
