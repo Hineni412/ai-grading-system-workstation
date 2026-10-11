@@ -25,6 +25,7 @@ AUTHORITY_DOCUMENT_PATHS = (
     "docs/maintenance/storage-policy.md",
     "docs/maintenance/packaging.md",
     "docs/maintenance/source-setup.md",
+    "docs/maintenance/training-experiments.md",
     ".github/CONTRIBUTING.md",
     "docs/testing/README.md",
     "docs/ui/STYLE.md",
