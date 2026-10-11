@@ -24,8 +24,8 @@ class OpsArchiveTooLarge(OpsArchiveInvalid):
 class OpsArchivePolicy:
     max_upload_bytes: int = 200 * 1024 * 1024
     max_members: int = 10_000
-    max_expanded_bytes: int = 1024 * 1024 * 1024
-    max_member_bytes: int = 256 * 1024 * 1024
+    max_expanded_bytes: int = 16 * 1024 * 1024 * 1024
+    max_member_bytes: int = 4 * 1024 * 1024 * 1024
     max_compression_ratio: float = 100.0
 
 

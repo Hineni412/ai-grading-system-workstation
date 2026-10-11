@@ -19,7 +19,7 @@ from backend.api.schemas.graph import (
     CurrentGraphResponse,
     GraphQueryRequest,
 )
-from integration.data_generation import commit_generation
+from integration.data_generation import commit_generation, data_version_token
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from integration.result_cache import ResultCache
 from integration.training_prewarm import record_request
@@ -76,7 +76,12 @@ def _cached_current_graph_service(db_path: Path) -> CurrentKnowledgeGraphQuerySe
         identity = f"{stat.st_dev}:{stat.st_ino}"
     except OSError:
         identity = "missing"
-    key = (str(source), identity, f"commits:{commit_generation(source)}")
+    key = (
+        str(source),
+        identity,
+        data_version_token(source, "materials")
+        or f"commits:{commit_generation(source)}",
+    )
     with _GRAPH_SERVICE_CACHE_LOCK:
         if _GRAPH_SERVICE_CACHE is not None and _GRAPH_SERVICE_CACHE[0] == key:
             return _GRAPH_SERVICE_CACHE[1]

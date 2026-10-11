@@ -4,6 +4,7 @@
     "CREATE TABLE authoring_reviews (\n    review_id          TEXT PRIMARY KEY,\n    work_id            TEXT NOT NULL REFERENCES authoring_works(work_id),\n    version_no         INTEGER NOT NULL,\n    status             TEXT NOT NULL\n        CHECK (status IN ('running', 'succeeded', 'failed', 'unknown')),\n    operation_token    TEXT UNIQUE,\n    result_json        TEXT\n        CHECK (result_json IS NULL OR json_valid(result_json)),\n    error_category     TEXT,\n    model_summary_json TEXT\n        CHECK (model_summary_json IS NULL OR json_valid(model_summary_json)),\n    created_at         TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),\n    finished_at        TEXT\n)",
     "CREATE TABLE authoring_work_versions (\n    work_id         TEXT NOT NULL REFERENCES authoring_works(work_id),\n    version_no      INTEGER NOT NULL CHECK (version_no > 0),\n    content_json    TEXT NOT NULL CHECK (json_valid(content_json)),\n    operation_token TEXT UNIQUE,\n    created_at      TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),\n    PRIMARY KEY (work_id, version_no)\n)",
     "CREATE TABLE authoring_works (\n    work_id              TEXT PRIMARY KEY,\n    kind                 TEXT NOT NULL\n        CHECK (kind IN ('decompose', 'adapt')),\n    source_question_id   INTEGER REFERENCES questions(id),\n    source_snapshot_json TEXT NOT NULL CHECK (json_valid(source_snapshot_json)),\n    task_card_json       TEXT NOT NULL DEFAULT '{}'\n        CHECK (json_valid(task_card_json)),\n    title                TEXT NOT NULL DEFAULT '',\n    current_version      INTEGER NOT NULL DEFAULT 0\n        CHECK (current_version >= 0),\n    is_deleted           INTEGER NOT NULL DEFAULT 0\n        CHECK (is_deleted IN (0, 1)),\n    create_token         TEXT UNIQUE,\n    created_at           TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),\n    updated_at           TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))\n)",
+    "CREATE TABLE data_versions (\n    domain  TEXT PRIMARY KEY,\n    version INTEGER NOT NULL DEFAULT 0\n)",
     "CREATE TABLE evidence_point_knowledge_links (\n    evidence_version_id TEXT NOT NULL\n        REFERENCES question_solution_evidence_versions(evidence_version_id),\n    question_id         INTEGER NOT NULL\n        REFERENCES questions(id),\n    part_id             TEXT NOT NULL,\n    evidence_point_id   TEXT NOT NULL,\n    graph_release_id    TEXT NOT NULL\n        REFERENCES knowledge_graph_releases(release_id),\n    role                TEXT NOT NULL\n        CHECK (role IN ('direct', 'supporting_prerequisite')),\n    term_id             TEXT NOT NULL,\n    stable_key          TEXT,\n    resolution_status   TEXT NOT NULL\n        CHECK (resolution_status IN ('resolved', 'unresolved')),\n    weight              REAL NOT NULL DEFAULT 1.0,\n    source_kind         TEXT NOT NULL\n        CHECK (source_kind IN ('link_job', 'migrated_from_embedded', 'teacher')),\n    source_reference    TEXT NOT NULL DEFAULT '',\n    created_at          TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),\n    PRIMARY KEY (\n        evidence_version_id, evidence_point_id,\n        graph_release_id, role, term_id\n    )\n)",
     "CREATE TABLE fine_term_core_mapping_events (\n    event_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    mapping_id TEXT NOT NULL,\n    event_type TEXT NOT NULL\n        CHECK (event_type IN ('suggested', 'confirmed', 'rejected', 'retired', 'restored')),\n    from_status TEXT\n        CHECK (\n            from_status IS NULL\n            OR from_status IN ('suggested', 'confirmed', 'rejected', 'retired')\n        ),\n    to_status TEXT NOT NULL\n        CHECK (to_status IN ('suggested', 'confirmed', 'rejected', 'retired')),\n    actor_kind TEXT NOT NULL\n        CHECK (actor_kind IN ('system', 'model', 'teacher', 'import')),\n    actor_ref TEXT NOT NULL,\n    reason TEXT NOT NULL,\n    expected_revision INTEGER NOT NULL CHECK (expected_revision >= 0),\n    resulting_revision INTEGER NOT NULL CHECK (resulting_revision >= 1),\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    CHECK (TRIM(actor_ref) <> ''),\n    CHECK (TRIM(reason) <> ''),\n    UNIQUE(mapping_id, resulting_revision),\n    FOREIGN KEY(mapping_id) REFERENCES fine_term_core_mappings(mapping_id)\n        ON DELETE RESTRICT\n)",
     "CREATE TABLE fine_term_core_mappings (\n    mapping_id TEXT PRIMARY KEY,\n    fine_term_id TEXT NOT NULL,\n    stable_key TEXT NOT NULL,\n    status TEXT NOT NULL DEFAULT 'suggested'\n        CHECK (status IN ('suggested', 'confirmed', 'rejected', 'retired')),\n    source_kind TEXT NOT NULL\n        CHECK (source_kind IN ('builtin', 'synthetic', 'model', 'teacher', 'import')),\n    source_reference TEXT NOT NULL,\n    rationale TEXT NOT NULL,\n    model_name TEXT,\n    model_version TEXT,\n    decision_by TEXT,\n    decision_note TEXT,\n    decided_at TEXT,\n    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), graph_release_id TEXT\n    REFERENCES knowledge_graph_releases(release_id), mapping_role TEXT NOT NULL DEFAULT 'primary'\n    CHECK (mapping_role IN ('primary', 'secondary', 'context_only')), disposition TEXT NOT NULL DEFAULT 'maps_to_core'\n    CHECK (disposition IN ('direct_core', 'maps_to_core', 'maps_to_many')),\n    CHECK (length(mapping_id) = 64),\n    CHECK (TRIM(fine_term_id) <> ''),\n    CHECK (TRIM(source_reference) <> ''),\n    CHECK (TRIM(rationale) <> ''),\n    CHECK (\n        source_kind <> 'model'\n        OR (\n            model_name IS NOT NULL AND TRIM(model_name) <> ''\n            AND model_version IS NOT NULL AND TRIM(model_version) <> ''\n        )\n    ),\n    CHECK (\n        (status = 'suggested' AND decision_by IS NULL AND decided_at IS NULL)\n        OR (\n            status <> 'suggested'\n            AND decision_by IS NOT NULL AND TRIM(decision_by) <> ''\n            AND decided_at IS NOT NULL\n        )\n    ),\n    UNIQUE(fine_term_id, stable_key),\n    FOREIGN KEY(stable_key) REFERENCES knowledge_tag_identities(stable_key)\n)",
@@ -91,8 +92,269 @@
     "CREATE TABLE training_variants (\n            id INTEGER PRIMARY KEY AUTOINCREMENT,\n            task_id INTEGER NOT NULL,\n            variant_key TEXT NOT NULL,\n            variant_type TEXT NOT NULL\n                CHECK (variant_type IN ('individual', 'group')),\n            grouping_reason_json TEXT NOT NULL DEFAULT '{}',\n            diagnosis_snapshot_json TEXT NOT NULL DEFAULT '{}',\n            shortages_json TEXT NOT NULL DEFAULT '[]',\n            warnings_json TEXT NOT NULL DEFAULT '[]',\n            status TEXT NOT NULL DEFAULT 'ready'\n                CHECK (status IN ('ready', 'exporting', 'completed', 'failed')),\n            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n            updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n            UNIQUE(task_id, variant_key),\n            FOREIGN KEY(task_id) REFERENCES training_tasks(id)\n        )",
     "CREATE TABLE variant_students (\n            variant_id INTEGER NOT NULL,\n            student_id TEXT NOT NULL,\n            student_name_snapshot TEXT,\n            class_id_snapshot TEXT,\n            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n            PRIMARY KEY(variant_id, student_id),\n            FOREIGN KEY(variant_id) REFERENCES training_variants(id)\n        )",
     "CREATE VIEW knowledge_active_relations AS\nSELECT\n    relation.relation_id,\n    relation.source_key,\n    source_identity.display_name AS source_name,\n    relation.target_key,\n    target_identity.display_name AS target_name,\n    relation.relation_type,\n    relation.rationale,\n    relation.revision,\n    relation.updated_at\nFROM knowledge_relations relation\nJOIN knowledge_tag_identities source_identity\n  ON source_identity.stable_key = relation.source_key\nJOIN knowledge_tag_identities target_identity\n  ON target_identity.stable_key = relation.target_key\nJOIN knowledge_graph_releases current_release\n  ON current_release.release_id = relation.graph_release_id\n AND current_release.status = 'active'\nWHERE relation.status = 'confirmed'\n  AND source_identity.status = 'active'\n  AND target_identity.status = 'active'",
+    "INSERT INTO \"data_versions\" (\"domain\", \"version\") VALUES ('materials', 0)",
+    "INSERT INTO \"data_versions\" (\"domain\", \"version\") VALUES ('training_ops', 0)",
+    "INSERT INTO \"data_versions\" (\"domain\", \"version\") VALUES ('training_records', 0)",
     "INSERT INTO \"mastery_v2_rollout_state\" (\"singleton_id\", \"enabled\", \"active_parameter_version\", \"approved_evaluation_id\", \"revision\", \"updated_by\", \"reason\") VALUES (1, 0, NULL, NULL, 1, NULL, NULL)",
     "INSERT INTO sqlite_sequence (name, seq) VALUES ('question_tags', 0)",
+    "CREATE TRIGGER dv_authoring_assets_del AFTER DELETE ON authoring_assets FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_authoring_assets_ins AFTER INSERT ON authoring_assets FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_authoring_assets_upd AFTER UPDATE ON authoring_assets FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_authoring_reviews_del AFTER DELETE ON authoring_reviews FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_authoring_reviews_ins AFTER INSERT ON authoring_reviews FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_authoring_reviews_upd AFTER UPDATE ON authoring_reviews FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_authoring_work_versions_del AFTER DELETE ON authoring_work_versions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_authoring_work_versions_ins AFTER INSERT ON authoring_work_versions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_authoring_work_versions_upd AFTER UPDATE ON authoring_work_versions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_authoring_works_del AFTER DELETE ON authoring_works FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_authoring_works_ins AFTER INSERT ON authoring_works FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_authoring_works_upd AFTER UPDATE ON authoring_works FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_evidence_point_knowledge_links_del AFTER DELETE ON evidence_point_knowledge_links FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_evidence_point_knowledge_links_ins AFTER INSERT ON evidence_point_knowledge_links FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_evidence_point_knowledge_links_upd AFTER UPDATE ON evidence_point_knowledge_links FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_fine_term_core_mapping_events_del AFTER DELETE ON fine_term_core_mapping_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_fine_term_core_mapping_events_ins AFTER INSERT ON fine_term_core_mapping_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_fine_term_core_mapping_events_upd AFTER UPDATE ON fine_term_core_mapping_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_fine_term_core_mappings_del AFTER DELETE ON fine_term_core_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_fine_term_core_mappings_ins AFTER INSERT ON fine_term_core_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_fine_term_core_mappings_upd AFTER UPDATE ON fine_term_core_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_grading_question_links_del AFTER DELETE ON grading_question_links FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_grading_question_links_ins AFTER INSERT ON grading_question_links FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_grading_question_links_upd AFTER UPDATE ON grading_question_links FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_fine_term_dispositions_del AFTER DELETE ON knowledge_graph_fine_term_dispositions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_fine_term_dispositions_ins AFTER INSERT ON knowledge_graph_fine_term_dispositions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_fine_term_dispositions_upd AFTER UPDATE ON knowledge_graph_fine_term_dispositions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_node_profiles_del AFTER DELETE ON knowledge_graph_node_profiles FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_node_profiles_ins AFTER INSERT ON knowledge_graph_node_profiles FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_node_profiles_upd AFTER UPDATE ON knowledge_graph_node_profiles FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_release_events_del AFTER DELETE ON knowledge_graph_release_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_release_events_ins AFTER INSERT ON knowledge_graph_release_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_release_events_upd AFTER UPDATE ON knowledge_graph_release_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_release_mappings_del AFTER DELETE ON knowledge_graph_release_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_release_mappings_ins AFTER INSERT ON knowledge_graph_release_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_release_mappings_upd AFTER UPDATE ON knowledge_graph_release_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_release_relations_del AFTER DELETE ON knowledge_graph_release_relations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_release_relations_ins AFTER INSERT ON knowledge_graph_release_relations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_release_relations_upd AFTER UPDATE ON knowledge_graph_release_relations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_releases_del AFTER DELETE ON knowledge_graph_releases FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_releases_ins AFTER INSERT ON knowledge_graph_releases FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_graph_releases_upd AFTER UPDATE ON knowledge_graph_releases FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_identity_replacements_del AFTER DELETE ON knowledge_identity_replacements FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_identity_replacements_ins AFTER INSERT ON knowledge_identity_replacements FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_identity_replacements_upd AFTER UPDATE ON knowledge_identity_replacements FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_amendment_events_del AFTER DELETE ON knowledge_relation_amendment_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_amendment_events_ins AFTER INSERT ON knowledge_relation_amendment_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_amendment_events_upd AFTER UPDATE ON knowledge_relation_amendment_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_audit_events_del AFTER DELETE ON knowledge_relation_audit_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_audit_events_ins AFTER INSERT ON knowledge_relation_audit_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_audit_events_upd AFTER UPDATE ON knowledge_relation_audit_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_evidence_del AFTER DELETE ON knowledge_relation_evidence FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_evidence_ins AFTER INSERT ON knowledge_relation_evidence FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_evidence_upd AFTER UPDATE ON knowledge_relation_evidence FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_suggestion_items_del AFTER DELETE ON knowledge_relation_suggestion_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_suggestion_items_ins AFTER INSERT ON knowledge_relation_suggestion_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_suggestion_items_upd AFTER UPDATE ON knowledge_relation_suggestion_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_suggestion_requests_del AFTER DELETE ON knowledge_relation_suggestion_requests FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_suggestion_requests_ins AFTER INSERT ON knowledge_relation_suggestion_requests FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_suggestion_requests_upd AFTER UPDATE ON knowledge_relation_suggestion_requests FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_suggestion_runs_del AFTER DELETE ON knowledge_relation_suggestion_runs FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_suggestion_runs_ins AFTER INSERT ON knowledge_relation_suggestion_runs FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relation_suggestion_runs_upd AFTER UPDATE ON knowledge_relation_suggestion_runs FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relations_del AFTER DELETE ON knowledge_relations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relations_ins AFTER INSERT ON knowledge_relations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_relations_upd AFTER UPDATE ON knowledge_relations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_tag_aliases_del AFTER DELETE ON knowledge_tag_aliases FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_tag_aliases_ins AFTER INSERT ON knowledge_tag_aliases FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_tag_aliases_upd AFTER UPDATE ON knowledge_tag_aliases FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_tag_identities_del AFTER DELETE ON knowledge_tag_identities FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_tag_identities_ins AFTER INSERT ON knowledge_tag_identities FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_tag_identities_upd AFTER UPDATE ON knowledge_tag_identities FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_tag_identity_mappings_del AFTER DELETE ON knowledge_tag_identity_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_tag_identity_mappings_ins AFTER INSERT ON knowledge_tag_identity_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_knowledge_tag_identity_mappings_upd AFTER UPDATE ON knowledge_tag_identity_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_evaluation_items_del AFTER DELETE ON mastery_v2_evaluation_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_evaluation_items_ins AFTER INSERT ON mastery_v2_evaluation_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_evaluation_items_upd AFTER UPDATE ON mastery_v2_evaluation_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_evaluations_del AFTER DELETE ON mastery_v2_evaluations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_evaluations_ins AFTER INSERT ON mastery_v2_evaluations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_evaluations_upd AFTER UPDATE ON mastery_v2_evaluations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_parameter_versions_del AFTER DELETE ON mastery_v2_parameter_versions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_parameter_versions_ins AFTER INSERT ON mastery_v2_parameter_versions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_parameter_versions_upd AFTER UPDATE ON mastery_v2_parameter_versions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_rollout_events_del AFTER DELETE ON mastery_v2_rollout_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_rollout_events_ins AFTER INSERT ON mastery_v2_rollout_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_rollout_events_upd AFTER UPDATE ON mastery_v2_rollout_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_rollout_state_del AFTER DELETE ON mastery_v2_rollout_state FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_rollout_state_ins AFTER INSERT ON mastery_v2_rollout_state FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_rollout_state_upd AFTER UPDATE ON mastery_v2_rollout_state FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_spot_checks_del AFTER DELETE ON mastery_v2_spot_checks FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_spot_checks_ins AFTER INSERT ON mastery_v2_spot_checks FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_mastery_v2_spot_checks_upd AFTER UPDATE ON mastery_v2_spot_checks FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_paper_question_occurrences_del AFTER DELETE ON paper_question_occurrences FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_paper_question_occurrences_ins AFTER INSERT ON paper_question_occurrences FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_paper_question_occurrences_upd AFTER UPDATE ON paper_question_occurrences FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_papers_del AFTER DELETE ON papers FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_papers_ins AFTER INSERT ON papers FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_papers_upd AFTER UPDATE ON papers FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_batch_items_del AFTER DELETE ON personalized_paper_batch_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_batch_items_ins AFTER INSERT ON personalized_paper_batch_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_batch_items_upd AFTER UPDATE ON personalized_paper_batch_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_batches_del AFTER DELETE ON personalized_paper_batches FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_batches_ins AFTER INSERT ON personalized_paper_batches FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_batches_upd AFTER UPDATE ON personalized_paper_batches FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_events_del AFTER DELETE ON personalized_paper_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_events_ins AFTER INSERT ON personalized_paper_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_events_upd AFTER UPDATE ON personalized_paper_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_instances_del AFTER DELETE ON personalized_paper_instances FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_instances_ins AFTER INSERT ON personalized_paper_instances FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_instances_upd AFTER UPDATE ON personalized_paper_instances FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_items_del AFTER DELETE ON personalized_paper_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_items_ins AFTER INSERT ON personalized_paper_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_items_upd AFTER UPDATE ON personalized_paper_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_pages_del AFTER DELETE ON personalized_paper_pages FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_pages_ins AFTER INSERT ON personalized_paper_pages FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_paper_pages_upd AFTER UPDATE ON personalized_paper_pages FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_recommendation_drafts_del AFTER DELETE ON personalized_recommendation_drafts FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_recommendation_drafts_ins AFTER INSERT ON personalized_recommendation_drafts FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_recommendation_drafts_upd AFTER UPDATE ON personalized_recommendation_drafts FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_recommendation_events_del AFTER DELETE ON personalized_recommendation_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_recommendation_events_ins AFTER INSERT ON personalized_recommendation_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_recommendation_events_upd AFTER UPDATE ON personalized_recommendation_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_question_analysis_items_del AFTER DELETE ON question_analysis_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_analysis_items_ins AFTER INSERT ON question_analysis_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_analysis_items_upd AFTER UPDATE ON question_analysis_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_analysis_operations_del AFTER DELETE ON question_analysis_operations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_analysis_operations_ins AFTER INSERT ON question_analysis_operations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_analysis_operations_upd AFTER UPDATE ON question_analysis_operations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_analysis_requests_del AFTER DELETE ON question_analysis_requests FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_analysis_requests_ins AFTER INSERT ON question_analysis_requests FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_analysis_requests_upd AFTER UPDATE ON question_analysis_requests FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_content_index_del AFTER DELETE ON question_content_index FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_content_index_ins AFTER INSERT ON question_content_index FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_content_index_upd AFTER UPDATE ON question_content_index FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_content_revisions_del AFTER DELETE ON question_content_revisions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_content_revisions_ins AFTER INSERT ON question_content_revisions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_content_revisions_upd AFTER UPDATE ON question_content_revisions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_document_items_del AFTER DELETE ON question_document_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_document_items_ins AFTER INSERT ON question_document_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_document_items_upd AFTER UPDATE ON question_document_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_document_publication_outbox_del AFTER DELETE ON question_document_publication_outbox FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_document_publication_outbox_ins AFTER INSERT ON question_document_publication_outbox FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_document_publication_outbox_upd AFTER UPDATE ON question_document_publication_outbox FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_document_publications_del AFTER DELETE ON question_document_publications FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_document_publications_ins AFTER INSERT ON question_document_publications FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_document_publications_upd AFTER UPDATE ON question_document_publications FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_duplicate_links_del AFTER DELETE ON question_duplicate_links FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_duplicate_links_ins AFTER INSERT ON question_duplicate_links FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_duplicate_links_upd AFTER UPDATE ON question_duplicate_links FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_error_patterns_del AFTER DELETE ON question_error_patterns FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_error_patterns_ins AFTER INSERT ON question_error_patterns FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_error_patterns_upd AFTER UPDATE ON question_error_patterns FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_part_difficulty_features_del AFTER DELETE ON question_part_difficulty_features FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_part_difficulty_features_ins AFTER INSERT ON question_part_difficulty_features FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_part_difficulty_features_upd AFTER UPDATE ON question_part_difficulty_features FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_previews_del AFTER DELETE ON question_previews FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_previews_ins AFTER INSERT ON question_previews FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_previews_upd AFTER UPDATE ON question_previews FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_scope_summary_del AFTER DELETE ON question_scope_summary FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_scope_summary_ins AFTER INSERT ON question_scope_summary FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_scope_summary_upd AFTER UPDATE ON question_scope_summary FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_solution_evidence_versions_del AFTER DELETE ON question_solution_evidence_versions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_solution_evidence_versions_ins AFTER INSERT ON question_solution_evidence_versions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_solution_evidence_versions_upd AFTER UPDATE ON question_solution_evidence_versions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_tags_del AFTER DELETE ON question_tags FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_tags_ins AFTER INSERT ON question_tags FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_question_tags_upd AFTER UPDATE ON question_tags FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_questions_del AFTER DELETE ON questions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_questions_ins AFTER INSERT ON questions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_questions_upd AFTER UPDATE ON questions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_taxonomy_review_applications_del AFTER DELETE ON taxonomy_review_applications FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_taxonomy_review_applications_ins AFTER INSERT ON taxonomy_review_applications FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_taxonomy_review_applications_upd AFTER UPDATE ON taxonomy_review_applications FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_assessment_attempts_del AFTER DELETE ON training_assessment_attempts FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_assessment_attempts_ins AFTER INSERT ON training_assessment_attempts FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_assessment_attempts_upd AFTER UPDATE ON training_assessment_attempts FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_assessment_events_del AFTER DELETE ON training_assessment_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_assessment_events_ins AFTER INSERT ON training_assessment_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_assessment_events_upd AFTER UPDATE ON training_assessment_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_assessment_runs_del AFTER DELETE ON training_assessment_runs FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_assessment_runs_ins AFTER INSERT ON training_assessment_runs FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_assessment_runs_upd AFTER UPDATE ON training_assessment_runs FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_attempts_del AFTER DELETE ON training_attempts FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_attempts_ins AFTER INSERT ON training_attempts FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_attempts_upd AFTER UPDATE ON training_attempts FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_criterion_backfill_items_del AFTER DELETE ON training_criterion_backfill_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_criterion_backfill_items_ins AFTER INSERT ON training_criterion_backfill_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_criterion_backfill_items_upd AFTER UPDATE ON training_criterion_backfill_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_criterion_backfill_runs_del AFTER DELETE ON training_criterion_backfill_runs FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_criterion_backfill_runs_ins AFTER INSERT ON training_criterion_backfill_runs FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_criterion_backfill_runs_upd AFTER UPDATE ON training_criterion_backfill_runs FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_criterion_events_del AFTER DELETE ON training_criterion_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_criterion_events_ins AFTER INSERT ON training_criterion_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_criterion_events_upd AFTER UPDATE ON training_criterion_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_criterion_heads_del AFTER DELETE ON training_criterion_heads FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_criterion_heads_ins AFTER INSERT ON training_criterion_heads FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_criterion_heads_upd AFTER UPDATE ON training_criterion_heads FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_criterion_versions_del AFTER DELETE ON training_criterion_versions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_criterion_versions_ins AFTER INSERT ON training_criterion_versions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_criterion_versions_upd AFTER UPDATE ON training_criterion_versions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
+    "CREATE TRIGGER dv_training_evidence_outbox_del AFTER DELETE ON training_evidence_outbox FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_evidence_outbox_ins AFTER INSERT ON training_evidence_outbox FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_evidence_outbox_upd AFTER UPDATE ON training_evidence_outbox FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_evidence_records_del AFTER DELETE ON training_evidence_records FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_evidence_records_ins AFTER INSERT ON training_evidence_records FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_evidence_records_upd AFTER UPDATE ON training_evidence_records FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_evidence_sync_events_del AFTER DELETE ON training_evidence_sync_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_evidence_sync_events_ins AFTER INSERT ON training_evidence_sync_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_evidence_sync_events_upd AFTER UPDATE ON training_evidence_sync_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_exports_del AFTER DELETE ON training_exports FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_exports_ins AFTER INSERT ON training_exports FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_exports_upd AFTER UPDATE ON training_exports FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_feedback_snapshots_del AFTER DELETE ON training_feedback_snapshots FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_feedback_snapshots_ins AFTER INSERT ON training_feedback_snapshots FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_feedback_snapshots_upd AFTER UPDATE ON training_feedback_snapshots FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_point_locks_del AFTER DELETE ON training_point_locks FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_point_locks_ins AFTER INSERT ON training_point_locks FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_point_locks_upd AFTER UPDATE ON training_point_locks FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_point_results_del AFTER DELETE ON training_point_results FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_point_results_ins AFTER INSERT ON training_point_results FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_point_results_upd AFTER UPDATE ON training_point_results FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_question_results_del AFTER DELETE ON training_question_results FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_question_results_ins AFTER INSERT ON training_question_results FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_question_results_upd AFTER UPDATE ON training_question_results FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_scan_batches_del AFTER DELETE ON training_scan_batches FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_scan_batches_ins AFTER INSERT ON training_scan_batches FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_scan_batches_upd AFTER UPDATE ON training_scan_batches FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_set_items_del AFTER DELETE ON training_set_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_set_items_ins AFTER INSERT ON training_set_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_set_items_upd AFTER UPDATE ON training_set_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_sets_del AFTER DELETE ON training_sets FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_sets_ins AFTER INSERT ON training_sets FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_sets_upd AFTER UPDATE ON training_sets FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_submission_events_del AFTER DELETE ON training_submission_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_submission_events_ins AFTER INSERT ON training_submission_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_submission_events_upd AFTER UPDATE ON training_submission_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_submission_pages_del AFTER DELETE ON training_submission_pages FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_submission_pages_ins AFTER INSERT ON training_submission_pages FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_submission_pages_upd AFTER UPDATE ON training_submission_pages FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_submission_uploads_del AFTER DELETE ON training_submission_uploads FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_submission_uploads_ins AFTER INSERT ON training_submission_uploads FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_submission_uploads_upd AFTER UPDATE ON training_submission_uploads FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_submissions_del AFTER DELETE ON training_submissions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_submissions_ins AFTER INSERT ON training_submissions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_submissions_upd AFTER UPDATE ON training_submissions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_training_task_items_del AFTER DELETE ON training_task_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_task_items_ins AFTER INSERT ON training_task_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_task_items_upd AFTER UPDATE ON training_task_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_tasks_del AFTER DELETE ON training_tasks FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_tasks_ins AFTER INSERT ON training_tasks FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_tasks_upd AFTER UPDATE ON training_tasks FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_variants_del AFTER DELETE ON training_variants FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_variants_ins AFTER INSERT ON training_variants FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_training_variants_upd AFTER UPDATE ON training_variants FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_variant_students_del AFTER DELETE ON variant_students FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_variant_students_ins AFTER INSERT ON variant_students FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dv_variant_students_upd AFTER UPDATE ON variant_students FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
     "CREATE INDEX idx_authoring_assets_work\n    ON authoring_assets(work_id)",
     "CREATE INDEX idx_authoring_reviews_work\n    ON authoring_reviews(work_id, version_no)",
     "CREATE INDEX idx_authoring_works_kind_updated\n    ON authoring_works(kind, is_deleted, updated_at DESC)",
@@ -378,6 +640,10 @@
     [
       "046_add_authoring_practice",
       "eb341315b69911e3a4f938c2bf05cde9"
+    ],
+    [
+      "047_data_version_triggers",
+      "d8019a98abdc72e4a45cfe227462a2d6"
     ]
   ],
   "schema": {
@@ -861,6 +1127,1296 @@
         "index",
         "uq_paper_question_occurrences",
         "create unique index uq_paper_question_occurrences on paper_question_occurrences(paper_id, question_number)"
+      ],
+      [
+        "trigger",
+        "dv_authoring_assets_del",
+        "create trigger dv_authoring_assets_del after delete on authoring_assets for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_authoring_assets_ins",
+        "create trigger dv_authoring_assets_ins after insert on authoring_assets for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_authoring_assets_upd",
+        "create trigger dv_authoring_assets_upd after update on authoring_assets for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_authoring_reviews_del",
+        "create trigger dv_authoring_reviews_del after delete on authoring_reviews for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_authoring_reviews_ins",
+        "create trigger dv_authoring_reviews_ins after insert on authoring_reviews for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_authoring_reviews_upd",
+        "create trigger dv_authoring_reviews_upd after update on authoring_reviews for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_authoring_work_versions_del",
+        "create trigger dv_authoring_work_versions_del after delete on authoring_work_versions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_authoring_work_versions_ins",
+        "create trigger dv_authoring_work_versions_ins after insert on authoring_work_versions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_authoring_work_versions_upd",
+        "create trigger dv_authoring_work_versions_upd after update on authoring_work_versions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_authoring_works_del",
+        "create trigger dv_authoring_works_del after delete on authoring_works for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_authoring_works_ins",
+        "create trigger dv_authoring_works_ins after insert on authoring_works for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_authoring_works_upd",
+        "create trigger dv_authoring_works_upd after update on authoring_works for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_evidence_point_knowledge_links_del",
+        "create trigger dv_evidence_point_knowledge_links_del after delete on evidence_point_knowledge_links for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_evidence_point_knowledge_links_ins",
+        "create trigger dv_evidence_point_knowledge_links_ins after insert on evidence_point_knowledge_links for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_evidence_point_knowledge_links_upd",
+        "create trigger dv_evidence_point_knowledge_links_upd after update on evidence_point_knowledge_links for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_fine_term_core_mapping_events_del",
+        "create trigger dv_fine_term_core_mapping_events_del after delete on fine_term_core_mapping_events for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_fine_term_core_mapping_events_ins",
+        "create trigger dv_fine_term_core_mapping_events_ins after insert on fine_term_core_mapping_events for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_fine_term_core_mapping_events_upd",
+        "create trigger dv_fine_term_core_mapping_events_upd after update on fine_term_core_mapping_events for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_fine_term_core_mappings_del",
+        "create trigger dv_fine_term_core_mappings_del after delete on fine_term_core_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_fine_term_core_mappings_ins",
+        "create trigger dv_fine_term_core_mappings_ins after insert on fine_term_core_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_fine_term_core_mappings_upd",
+        "create trigger dv_fine_term_core_mappings_upd after update on fine_term_core_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_grading_question_links_del",
+        "create trigger dv_grading_question_links_del after delete on grading_question_links for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_grading_question_links_ins",
+        "create trigger dv_grading_question_links_ins after insert on grading_question_links for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_grading_question_links_upd",
+        "create trigger dv_grading_question_links_upd after update on grading_question_links for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_fine_term_dispositions_del",
+        "create trigger dv_knowledge_graph_fine_term_dispositions_del after delete on knowledge_graph_fine_term_dispositions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_fine_term_dispositions_ins",
+        "create trigger dv_knowledge_graph_fine_term_dispositions_ins after insert on knowledge_graph_fine_term_dispositions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_fine_term_dispositions_upd",
+        "create trigger dv_knowledge_graph_fine_term_dispositions_upd after update on knowledge_graph_fine_term_dispositions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_node_profiles_del",
+        "create trigger dv_knowledge_graph_node_profiles_del after delete on knowledge_graph_node_profiles for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_node_profiles_ins",
+        "create trigger dv_knowledge_graph_node_profiles_ins after insert on knowledge_graph_node_profiles for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_node_profiles_upd",
+        "create trigger dv_knowledge_graph_node_profiles_upd after update on knowledge_graph_node_profiles for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_release_events_del",
+        "create trigger dv_knowledge_graph_release_events_del after delete on knowledge_graph_release_events for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_release_events_ins",
+        "create trigger dv_knowledge_graph_release_events_ins after insert on knowledge_graph_release_events for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_release_events_upd",
+        "create trigger dv_knowledge_graph_release_events_upd after update on knowledge_graph_release_events for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_release_mappings_del",
+        "create trigger dv_knowledge_graph_release_mappings_del after delete on knowledge_graph_release_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_release_mappings_ins",
+        "create trigger dv_knowledge_graph_release_mappings_ins after insert on knowledge_graph_release_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_release_mappings_upd",
+        "create trigger dv_knowledge_graph_release_mappings_upd after update on knowledge_graph_release_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_release_relations_del",
+        "create trigger dv_knowledge_graph_release_relations_del after delete on knowledge_graph_release_relations for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_release_relations_ins",
+        "create trigger dv_knowledge_graph_release_relations_ins after insert on knowledge_graph_release_relations for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_release_relations_upd",
+        "create trigger dv_knowledge_graph_release_relations_upd after update on knowledge_graph_release_relations for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_releases_del",
+        "create trigger dv_knowledge_graph_releases_del after delete on knowledge_graph_releases for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_releases_ins",
+        "create trigger dv_knowledge_graph_releases_ins after insert on knowledge_graph_releases for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_graph_releases_upd",
+        "create trigger dv_knowledge_graph_releases_upd after update on knowledge_graph_releases for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_identity_replacements_del",
+        "create trigger dv_knowledge_identity_replacements_del after delete on knowledge_identity_replacements for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_identity_replacements_ins",
+        "create trigger dv_knowledge_identity_replacements_ins after insert on knowledge_identity_replacements for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_identity_replacements_upd",
+        "create trigger dv_knowledge_identity_replacements_upd after update on knowledge_identity_replacements for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_amendment_events_del",
+        "create trigger dv_knowledge_relation_amendment_events_del after delete on knowledge_relation_amendment_events for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_amendment_events_ins",
+        "create trigger dv_knowledge_relation_amendment_events_ins after insert on knowledge_relation_amendment_events for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_amendment_events_upd",
+        "create trigger dv_knowledge_relation_amendment_events_upd after update on knowledge_relation_amendment_events for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_audit_events_del",
+        "create trigger dv_knowledge_relation_audit_events_del after delete on knowledge_relation_audit_events for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_audit_events_ins",
+        "create trigger dv_knowledge_relation_audit_events_ins after insert on knowledge_relation_audit_events for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_audit_events_upd",
+        "create trigger dv_knowledge_relation_audit_events_upd after update on knowledge_relation_audit_events for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_evidence_del",
+        "create trigger dv_knowledge_relation_evidence_del after delete on knowledge_relation_evidence for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_evidence_ins",
+        "create trigger dv_knowledge_relation_evidence_ins after insert on knowledge_relation_evidence for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_evidence_upd",
+        "create trigger dv_knowledge_relation_evidence_upd after update on knowledge_relation_evidence for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_suggestion_items_del",
+        "create trigger dv_knowledge_relation_suggestion_items_del after delete on knowledge_relation_suggestion_items for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_suggestion_items_ins",
+        "create trigger dv_knowledge_relation_suggestion_items_ins after insert on knowledge_relation_suggestion_items for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_suggestion_items_upd",
+        "create trigger dv_knowledge_relation_suggestion_items_upd after update on knowledge_relation_suggestion_items for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_suggestion_requests_del",
+        "create trigger dv_knowledge_relation_suggestion_requests_del after delete on knowledge_relation_suggestion_requests for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_suggestion_requests_ins",
+        "create trigger dv_knowledge_relation_suggestion_requests_ins after insert on knowledge_relation_suggestion_requests for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_suggestion_requests_upd",
+        "create trigger dv_knowledge_relation_suggestion_requests_upd after update on knowledge_relation_suggestion_requests for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_suggestion_runs_del",
+        "create trigger dv_knowledge_relation_suggestion_runs_del after delete on knowledge_relation_suggestion_runs for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_suggestion_runs_ins",
+        "create trigger dv_knowledge_relation_suggestion_runs_ins after insert on knowledge_relation_suggestion_runs for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relation_suggestion_runs_upd",
+        "create trigger dv_knowledge_relation_suggestion_runs_upd after update on knowledge_relation_suggestion_runs for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relations_del",
+        "create trigger dv_knowledge_relations_del after delete on knowledge_relations for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relations_ins",
+        "create trigger dv_knowledge_relations_ins after insert on knowledge_relations for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_relations_upd",
+        "create trigger dv_knowledge_relations_upd after update on knowledge_relations for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_tag_aliases_del",
+        "create trigger dv_knowledge_tag_aliases_del after delete on knowledge_tag_aliases for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_tag_aliases_ins",
+        "create trigger dv_knowledge_tag_aliases_ins after insert on knowledge_tag_aliases for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_tag_aliases_upd",
+        "create trigger dv_knowledge_tag_aliases_upd after update on knowledge_tag_aliases for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_tag_identities_del",
+        "create trigger dv_knowledge_tag_identities_del after delete on knowledge_tag_identities for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_tag_identities_ins",
+        "create trigger dv_knowledge_tag_identities_ins after insert on knowledge_tag_identities for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_tag_identities_upd",
+        "create trigger dv_knowledge_tag_identities_upd after update on knowledge_tag_identities for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_tag_identity_mappings_del",
+        "create trigger dv_knowledge_tag_identity_mappings_del after delete on knowledge_tag_identity_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_tag_identity_mappings_ins",
+        "create trigger dv_knowledge_tag_identity_mappings_ins after insert on knowledge_tag_identity_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_knowledge_tag_identity_mappings_upd",
+        "create trigger dv_knowledge_tag_identity_mappings_upd after update on knowledge_tag_identity_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_evaluation_items_del",
+        "create trigger dv_mastery_v2_evaluation_items_del after delete on mastery_v2_evaluation_items for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_evaluation_items_ins",
+        "create trigger dv_mastery_v2_evaluation_items_ins after insert on mastery_v2_evaluation_items for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_evaluation_items_upd",
+        "create trigger dv_mastery_v2_evaluation_items_upd after update on mastery_v2_evaluation_items for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_evaluations_del",
+        "create trigger dv_mastery_v2_evaluations_del after delete on mastery_v2_evaluations for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_evaluations_ins",
+        "create trigger dv_mastery_v2_evaluations_ins after insert on mastery_v2_evaluations for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_evaluations_upd",
+        "create trigger dv_mastery_v2_evaluations_upd after update on mastery_v2_evaluations for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_parameter_versions_del",
+        "create trigger dv_mastery_v2_parameter_versions_del after delete on mastery_v2_parameter_versions for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_parameter_versions_ins",
+        "create trigger dv_mastery_v2_parameter_versions_ins after insert on mastery_v2_parameter_versions for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_parameter_versions_upd",
+        "create trigger dv_mastery_v2_parameter_versions_upd after update on mastery_v2_parameter_versions for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_rollout_events_del",
+        "create trigger dv_mastery_v2_rollout_events_del after delete on mastery_v2_rollout_events for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_rollout_events_ins",
+        "create trigger dv_mastery_v2_rollout_events_ins after insert on mastery_v2_rollout_events for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_rollout_events_upd",
+        "create trigger dv_mastery_v2_rollout_events_upd after update on mastery_v2_rollout_events for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_rollout_state_del",
+        "create trigger dv_mastery_v2_rollout_state_del after delete on mastery_v2_rollout_state for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_rollout_state_ins",
+        "create trigger dv_mastery_v2_rollout_state_ins after insert on mastery_v2_rollout_state for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_rollout_state_upd",
+        "create trigger dv_mastery_v2_rollout_state_upd after update on mastery_v2_rollout_state for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_spot_checks_del",
+        "create trigger dv_mastery_v2_spot_checks_del after delete on mastery_v2_spot_checks for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_spot_checks_ins",
+        "create trigger dv_mastery_v2_spot_checks_ins after insert on mastery_v2_spot_checks for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_mastery_v2_spot_checks_upd",
+        "create trigger dv_mastery_v2_spot_checks_upd after update on mastery_v2_spot_checks for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_paper_question_occurrences_del",
+        "create trigger dv_paper_question_occurrences_del after delete on paper_question_occurrences for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_paper_question_occurrences_ins",
+        "create trigger dv_paper_question_occurrences_ins after insert on paper_question_occurrences for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_paper_question_occurrences_upd",
+        "create trigger dv_paper_question_occurrences_upd after update on paper_question_occurrences for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_papers_del",
+        "create trigger dv_papers_del after delete on papers for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_papers_ins",
+        "create trigger dv_papers_ins after insert on papers for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_papers_upd",
+        "create trigger dv_papers_upd after update on papers for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_batch_items_del",
+        "create trigger dv_personalized_paper_batch_items_del after delete on personalized_paper_batch_items for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_batch_items_ins",
+        "create trigger dv_personalized_paper_batch_items_ins after insert on personalized_paper_batch_items for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_batch_items_upd",
+        "create trigger dv_personalized_paper_batch_items_upd after update on personalized_paper_batch_items for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_batches_del",
+        "create trigger dv_personalized_paper_batches_del after delete on personalized_paper_batches for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_batches_ins",
+        "create trigger dv_personalized_paper_batches_ins after insert on personalized_paper_batches for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_batches_upd",
+        "create trigger dv_personalized_paper_batches_upd after update on personalized_paper_batches for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_events_del",
+        "create trigger dv_personalized_paper_events_del after delete on personalized_paper_events for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_events_ins",
+        "create trigger dv_personalized_paper_events_ins after insert on personalized_paper_events for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_events_upd",
+        "create trigger dv_personalized_paper_events_upd after update on personalized_paper_events for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_instances_del",
+        "create trigger dv_personalized_paper_instances_del after delete on personalized_paper_instances for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_instances_ins",
+        "create trigger dv_personalized_paper_instances_ins after insert on personalized_paper_instances for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_instances_upd",
+        "create trigger dv_personalized_paper_instances_upd after update on personalized_paper_instances for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_items_del",
+        "create trigger dv_personalized_paper_items_del after delete on personalized_paper_items for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_items_ins",
+        "create trigger dv_personalized_paper_items_ins after insert on personalized_paper_items for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_items_upd",
+        "create trigger dv_personalized_paper_items_upd after update on personalized_paper_items for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_pages_del",
+        "create trigger dv_personalized_paper_pages_del after delete on personalized_paper_pages for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_pages_ins",
+        "create trigger dv_personalized_paper_pages_ins after insert on personalized_paper_pages for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_paper_pages_upd",
+        "create trigger dv_personalized_paper_pages_upd after update on personalized_paper_pages for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_recommendation_drafts_del",
+        "create trigger dv_personalized_recommendation_drafts_del after delete on personalized_recommendation_drafts for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_recommendation_drafts_ins",
+        "create trigger dv_personalized_recommendation_drafts_ins after insert on personalized_recommendation_drafts for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_recommendation_drafts_upd",
+        "create trigger dv_personalized_recommendation_drafts_upd after update on personalized_recommendation_drafts for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_recommendation_events_del",
+        "create trigger dv_personalized_recommendation_events_del after delete on personalized_recommendation_events for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_recommendation_events_ins",
+        "create trigger dv_personalized_recommendation_events_ins after insert on personalized_recommendation_events for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_recommendation_events_upd",
+        "create trigger dv_personalized_recommendation_events_upd after update on personalized_recommendation_events for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_analysis_items_del",
+        "create trigger dv_question_analysis_items_del after delete on question_analysis_items for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_analysis_items_ins",
+        "create trigger dv_question_analysis_items_ins after insert on question_analysis_items for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_analysis_items_upd",
+        "create trigger dv_question_analysis_items_upd after update on question_analysis_items for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_analysis_operations_del",
+        "create trigger dv_question_analysis_operations_del after delete on question_analysis_operations for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_analysis_operations_ins",
+        "create trigger dv_question_analysis_operations_ins after insert on question_analysis_operations for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_analysis_operations_upd",
+        "create trigger dv_question_analysis_operations_upd after update on question_analysis_operations for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_analysis_requests_del",
+        "create trigger dv_question_analysis_requests_del after delete on question_analysis_requests for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_analysis_requests_ins",
+        "create trigger dv_question_analysis_requests_ins after insert on question_analysis_requests for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_analysis_requests_upd",
+        "create trigger dv_question_analysis_requests_upd after update on question_analysis_requests for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_content_index_del",
+        "create trigger dv_question_content_index_del after delete on question_content_index for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_content_index_ins",
+        "create trigger dv_question_content_index_ins after insert on question_content_index for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_content_index_upd",
+        "create trigger dv_question_content_index_upd after update on question_content_index for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_content_revisions_del",
+        "create trigger dv_question_content_revisions_del after delete on question_content_revisions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_content_revisions_ins",
+        "create trigger dv_question_content_revisions_ins after insert on question_content_revisions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_content_revisions_upd",
+        "create trigger dv_question_content_revisions_upd after update on question_content_revisions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_document_items_del",
+        "create trigger dv_question_document_items_del after delete on question_document_items for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_document_items_ins",
+        "create trigger dv_question_document_items_ins after insert on question_document_items for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_document_items_upd",
+        "create trigger dv_question_document_items_upd after update on question_document_items for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_document_publication_outbox_del",
+        "create trigger dv_question_document_publication_outbox_del after delete on question_document_publication_outbox for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_document_publication_outbox_ins",
+        "create trigger dv_question_document_publication_outbox_ins after insert on question_document_publication_outbox for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_document_publication_outbox_upd",
+        "create trigger dv_question_document_publication_outbox_upd after update on question_document_publication_outbox for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_document_publications_del",
+        "create trigger dv_question_document_publications_del after delete on question_document_publications for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_document_publications_ins",
+        "create trigger dv_question_document_publications_ins after insert on question_document_publications for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_document_publications_upd",
+        "create trigger dv_question_document_publications_upd after update on question_document_publications for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_duplicate_links_del",
+        "create trigger dv_question_duplicate_links_del after delete on question_duplicate_links for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_duplicate_links_ins",
+        "create trigger dv_question_duplicate_links_ins after insert on question_duplicate_links for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_duplicate_links_upd",
+        "create trigger dv_question_duplicate_links_upd after update on question_duplicate_links for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_error_patterns_del",
+        "create trigger dv_question_error_patterns_del after delete on question_error_patterns for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_error_patterns_ins",
+        "create trigger dv_question_error_patterns_ins after insert on question_error_patterns for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_error_patterns_upd",
+        "create trigger dv_question_error_patterns_upd after update on question_error_patterns for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_part_difficulty_features_del",
+        "create trigger dv_question_part_difficulty_features_del after delete on question_part_difficulty_features for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_part_difficulty_features_ins",
+        "create trigger dv_question_part_difficulty_features_ins after insert on question_part_difficulty_features for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_part_difficulty_features_upd",
+        "create trigger dv_question_part_difficulty_features_upd after update on question_part_difficulty_features for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_previews_del",
+        "create trigger dv_question_previews_del after delete on question_previews for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_previews_ins",
+        "create trigger dv_question_previews_ins after insert on question_previews for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_previews_upd",
+        "create trigger dv_question_previews_upd after update on question_previews for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_scope_summary_del",
+        "create trigger dv_question_scope_summary_del after delete on question_scope_summary for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_scope_summary_ins",
+        "create trigger dv_question_scope_summary_ins after insert on question_scope_summary for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_scope_summary_upd",
+        "create trigger dv_question_scope_summary_upd after update on question_scope_summary for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_solution_evidence_versions_del",
+        "create trigger dv_question_solution_evidence_versions_del after delete on question_solution_evidence_versions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_solution_evidence_versions_ins",
+        "create trigger dv_question_solution_evidence_versions_ins after insert on question_solution_evidence_versions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_solution_evidence_versions_upd",
+        "create trigger dv_question_solution_evidence_versions_upd after update on question_solution_evidence_versions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_tags_del",
+        "create trigger dv_question_tags_del after delete on question_tags for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_tags_ins",
+        "create trigger dv_question_tags_ins after insert on question_tags for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_question_tags_upd",
+        "create trigger dv_question_tags_upd after update on question_tags for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_questions_del",
+        "create trigger dv_questions_del after delete on questions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_questions_ins",
+        "create trigger dv_questions_ins after insert on questions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_questions_upd",
+        "create trigger dv_questions_upd after update on questions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_taxonomy_review_applications_del",
+        "create trigger dv_taxonomy_review_applications_del after delete on taxonomy_review_applications for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_taxonomy_review_applications_ins",
+        "create trigger dv_taxonomy_review_applications_ins after insert on taxonomy_review_applications for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_taxonomy_review_applications_upd",
+        "create trigger dv_taxonomy_review_applications_upd after update on taxonomy_review_applications for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_assessment_attempts_del",
+        "create trigger dv_training_assessment_attempts_del after delete on training_assessment_attempts for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_assessment_attempts_ins",
+        "create trigger dv_training_assessment_attempts_ins after insert on training_assessment_attempts for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_assessment_attempts_upd",
+        "create trigger dv_training_assessment_attempts_upd after update on training_assessment_attempts for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_assessment_events_del",
+        "create trigger dv_training_assessment_events_del after delete on training_assessment_events for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_assessment_events_ins",
+        "create trigger dv_training_assessment_events_ins after insert on training_assessment_events for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_assessment_events_upd",
+        "create trigger dv_training_assessment_events_upd after update on training_assessment_events for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_assessment_runs_del",
+        "create trigger dv_training_assessment_runs_del after delete on training_assessment_runs for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_assessment_runs_ins",
+        "create trigger dv_training_assessment_runs_ins after insert on training_assessment_runs for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_assessment_runs_upd",
+        "create trigger dv_training_assessment_runs_upd after update on training_assessment_runs for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_attempts_del",
+        "create trigger dv_training_attempts_del after delete on training_attempts for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_attempts_ins",
+        "create trigger dv_training_attempts_ins after insert on training_attempts for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_attempts_upd",
+        "create trigger dv_training_attempts_upd after update on training_attempts for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_criterion_backfill_items_del",
+        "create trigger dv_training_criterion_backfill_items_del after delete on training_criterion_backfill_items for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_criterion_backfill_items_ins",
+        "create trigger dv_training_criterion_backfill_items_ins after insert on training_criterion_backfill_items for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_criterion_backfill_items_upd",
+        "create trigger dv_training_criterion_backfill_items_upd after update on training_criterion_backfill_items for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_criterion_backfill_runs_del",
+        "create trigger dv_training_criterion_backfill_runs_del after delete on training_criterion_backfill_runs for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_criterion_backfill_runs_ins",
+        "create trigger dv_training_criterion_backfill_runs_ins after insert on training_criterion_backfill_runs for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_criterion_backfill_runs_upd",
+        "create trigger dv_training_criterion_backfill_runs_upd after update on training_criterion_backfill_runs for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_criterion_events_del",
+        "create trigger dv_training_criterion_events_del after delete on training_criterion_events for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_criterion_events_ins",
+        "create trigger dv_training_criterion_events_ins after insert on training_criterion_events for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_criterion_events_upd",
+        "create trigger dv_training_criterion_events_upd after update on training_criterion_events for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_criterion_heads_del",
+        "create trigger dv_training_criterion_heads_del after delete on training_criterion_heads for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_criterion_heads_ins",
+        "create trigger dv_training_criterion_heads_ins after insert on training_criterion_heads for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_criterion_heads_upd",
+        "create trigger dv_training_criterion_heads_upd after update on training_criterion_heads for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_criterion_versions_del",
+        "create trigger dv_training_criterion_versions_del after delete on training_criterion_versions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_criterion_versions_ins",
+        "create trigger dv_training_criterion_versions_ins after insert on training_criterion_versions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_criterion_versions_upd",
+        "create trigger dv_training_criterion_versions_upd after update on training_criterion_versions for each row begin update data_versions set version = version + 1 where domain = 'materials'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_evidence_outbox_del",
+        "create trigger dv_training_evidence_outbox_del after delete on training_evidence_outbox for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_evidence_outbox_ins",
+        "create trigger dv_training_evidence_outbox_ins after insert on training_evidence_outbox for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_evidence_outbox_upd",
+        "create trigger dv_training_evidence_outbox_upd after update on training_evidence_outbox for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_evidence_records_del",
+        "create trigger dv_training_evidence_records_del after delete on training_evidence_records for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_evidence_records_ins",
+        "create trigger dv_training_evidence_records_ins after insert on training_evidence_records for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_evidence_records_upd",
+        "create trigger dv_training_evidence_records_upd after update on training_evidence_records for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_evidence_sync_events_del",
+        "create trigger dv_training_evidence_sync_events_del after delete on training_evidence_sync_events for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_evidence_sync_events_ins",
+        "create trigger dv_training_evidence_sync_events_ins after insert on training_evidence_sync_events for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_evidence_sync_events_upd",
+        "create trigger dv_training_evidence_sync_events_upd after update on training_evidence_sync_events for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_exports_del",
+        "create trigger dv_training_exports_del after delete on training_exports for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_exports_ins",
+        "create trigger dv_training_exports_ins after insert on training_exports for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_exports_upd",
+        "create trigger dv_training_exports_upd after update on training_exports for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_feedback_snapshots_del",
+        "create trigger dv_training_feedback_snapshots_del after delete on training_feedback_snapshots for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_feedback_snapshots_ins",
+        "create trigger dv_training_feedback_snapshots_ins after insert on training_feedback_snapshots for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_feedback_snapshots_upd",
+        "create trigger dv_training_feedback_snapshots_upd after update on training_feedback_snapshots for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_point_locks_del",
+        "create trigger dv_training_point_locks_del after delete on training_point_locks for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_point_locks_ins",
+        "create trigger dv_training_point_locks_ins after insert on training_point_locks for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_point_locks_upd",
+        "create trigger dv_training_point_locks_upd after update on training_point_locks for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_point_results_del",
+        "create trigger dv_training_point_results_del after delete on training_point_results for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_point_results_ins",
+        "create trigger dv_training_point_results_ins after insert on training_point_results for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_point_results_upd",
+        "create trigger dv_training_point_results_upd after update on training_point_results for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_question_results_del",
+        "create trigger dv_training_question_results_del after delete on training_question_results for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_question_results_ins",
+        "create trigger dv_training_question_results_ins after insert on training_question_results for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_question_results_upd",
+        "create trigger dv_training_question_results_upd after update on training_question_results for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_scan_batches_del",
+        "create trigger dv_training_scan_batches_del after delete on training_scan_batches for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_scan_batches_ins",
+        "create trigger dv_training_scan_batches_ins after insert on training_scan_batches for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_scan_batches_upd",
+        "create trigger dv_training_scan_batches_upd after update on training_scan_batches for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_set_items_del",
+        "create trigger dv_training_set_items_del after delete on training_set_items for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_set_items_ins",
+        "create trigger dv_training_set_items_ins after insert on training_set_items for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_set_items_upd",
+        "create trigger dv_training_set_items_upd after update on training_set_items for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_sets_del",
+        "create trigger dv_training_sets_del after delete on training_sets for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_sets_ins",
+        "create trigger dv_training_sets_ins after insert on training_sets for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_sets_upd",
+        "create trigger dv_training_sets_upd after update on training_sets for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_submission_events_del",
+        "create trigger dv_training_submission_events_del after delete on training_submission_events for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_submission_events_ins",
+        "create trigger dv_training_submission_events_ins after insert on training_submission_events for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_submission_events_upd",
+        "create trigger dv_training_submission_events_upd after update on training_submission_events for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_submission_pages_del",
+        "create trigger dv_training_submission_pages_del after delete on training_submission_pages for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_submission_pages_ins",
+        "create trigger dv_training_submission_pages_ins after insert on training_submission_pages for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_submission_pages_upd",
+        "create trigger dv_training_submission_pages_upd after update on training_submission_pages for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_submission_uploads_del",
+        "create trigger dv_training_submission_uploads_del after delete on training_submission_uploads for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_submission_uploads_ins",
+        "create trigger dv_training_submission_uploads_ins after insert on training_submission_uploads for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_submission_uploads_upd",
+        "create trigger dv_training_submission_uploads_upd after update on training_submission_uploads for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_submissions_del",
+        "create trigger dv_training_submissions_del after delete on training_submissions for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_submissions_ins",
+        "create trigger dv_training_submissions_ins after insert on training_submissions for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_submissions_upd",
+        "create trigger dv_training_submissions_upd after update on training_submissions for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_task_items_del",
+        "create trigger dv_training_task_items_del after delete on training_task_items for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_task_items_ins",
+        "create trigger dv_training_task_items_ins after insert on training_task_items for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_task_items_upd",
+        "create trigger dv_training_task_items_upd after update on training_task_items for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_tasks_del",
+        "create trigger dv_training_tasks_del after delete on training_tasks for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_tasks_ins",
+        "create trigger dv_training_tasks_ins after insert on training_tasks for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_tasks_upd",
+        "create trigger dv_training_tasks_upd after update on training_tasks for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_variants_del",
+        "create trigger dv_training_variants_del after delete on training_variants for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_variants_ins",
+        "create trigger dv_training_variants_ins after insert on training_variants for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_training_variants_upd",
+        "create trigger dv_training_variants_upd after update on training_variants for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_variant_students_del",
+        "create trigger dv_variant_students_del after delete on variant_students for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_variant_students_ins",
+        "create trigger dv_variant_students_ins after insert on variant_students for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dv_variant_students_upd",
+        "create trigger dv_variant_students_upd after update on variant_students for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
       ]
     ],
     "tables": {
@@ -1205,6 +2761,34 @@
           [
             [
               "work_id"
+            ],
+            0
+          ]
+        ]
+      },
+      "data_versions": {
+        "checks": [],
+        "columns": {
+          "domain": [
+            "text",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "version": [
+            "integer",
+            1,
+            "0",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [],
+        "unique_constraints": [
+          [
+            [
+              "domain"
             ],
             0
           ]

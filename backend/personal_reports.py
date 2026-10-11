@@ -73,7 +73,7 @@ def _student_change_times(repositories, session_id: int) -> dict[int, str]:
 
 def personal_report_states(repositories, session_id: int, reports_dir: Path, *, data=None) -> dict:
     """已存正文始终可读；没有正文时才按当前成绩说明能否生成。"""
-    from integration.data_generation import commit_generation
+    from integration.data_generation import commit_generation, data_version_token
 
     def prepare():
         source = assemble_session_analysis(
@@ -87,7 +87,9 @@ def personal_report_states(repositories, session_id: int, reports_dir: Path, *, 
         inputs = dict(student_ids=[student.student_id for student in data.students], skipped=data.skipped,
                       changed_at=_student_change_times(repositories, session_id))
     else:
-        key = (str(repositories.db_path), int(session_id), commit_generation(repositories.db_path))
+        key = (str(repositories.db_path), int(session_id),
+               data_version_token(repositories.db_path, "results")
+               or commit_generation(repositories.db_path))
         inputs = _cached_context(_status_inputs, key, prepare)
     saved = PersonalReportStore(Path(reports_dir)).list(int(session_id))
     skipped = {int(item['student_id']): item for item in inputs['skipped']}
@@ -119,11 +121,19 @@ def personal_report_summary(repositories, session_id: int, reports_dir: Path) ->
 
 
 def _read_generation(repositories, root: Path, reports_dir: Path):
-    from integration.data_generation import commit_generation
+    from integration.data_generation import commit_generation, data_version_token
     from integration.diagnosis_profile_service import _dir_generation
     bank = root / "databases" / "question_bank.db"
-    return (commit_generation(repositories.db_path), commit_generation(bank) if bank.is_file() else None,
-            _dir_generation(reports_dir / ".class_analysis"), datetime.now().date().isoformat())
+    return (
+        data_version_token(repositories.db_path, "results")
+        or commit_generation(repositories.db_path),
+        (
+            data_version_token(bank, "materials", "training_records", "training_ops")
+            or commit_generation(bank)
+        )
+        if bank.is_file()
+        else None,
+        _dir_generation(reports_dir / ".class_analysis"), datetime.now().date().isoformat())
 
 
 def student_personal_report_exams(repositories, student_id: int, reports_dir: Path, volume_id=None) -> dict:

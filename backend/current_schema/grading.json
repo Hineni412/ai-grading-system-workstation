@@ -3,6 +3,7 @@
     "CREATE TABLE annotated_results (\n                    id INTEGER PRIMARY KEY AUTOINCREMENT,\n                    session_id INTEGER NOT NULL,\n                    result_id INTEGER NOT NULL UNIQUE,\n                    annotated_front_path TEXT,\n                    annotated_back_path TEXT,\n                    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n                    FOREIGN KEY(session_id) REFERENCES grading_sessions(id),\n                    FOREIGN KEY(result_id) REFERENCES session_results(id)\n                )",
     "CREATE TABLE \"answer_regions\" (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    region_uuid TEXT,\n    session_id INTEGER NOT NULL,\n    template_id INTEGER NOT NULL,\n    page TEXT NOT NULL,\n    region_order INTEGER NOT NULL,\n    x INTEGER NOT NULL,\n    y INTEGER NOT NULL,\n    w INTEGER NOT NULL,\n    h INTEGER NOT NULL,\n    detected_question_id TEXT,\n    mapped_question_id TEXT,\n    confidence REAL NOT NULL DEFAULT 0,\n    is_confirmed INTEGER NOT NULL DEFAULT 0,\n    mapping_status TEXT NOT NULL DEFAULT 'unbound'\n        CHECK (mapping_status IN ('unbound', 'auto', 'manual')),\n    multi_region_confirmed INTEGER NOT NULL DEFAULT 0,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    FOREIGN KEY(session_id) REFERENCES grading_sessions(id),\n    FOREIGN KEY(template_id) REFERENCES session_templates(id)\n)",
     "CREATE TABLE app_settings (\n                    setting_key TEXT PRIMARY KEY,\n                    setting_value TEXT NOT NULL,\n                    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))\n                )",
+    "CREATE TABLE data_versions (\n    domain  TEXT PRIMARY KEY,\n    version INTEGER NOT NULL DEFAULT 0\n)",
     "CREATE TABLE \"exam_papers\" (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    session_id INTEGER NOT NULL,\n    front_image TEXT NOT NULL,\n    back_image TEXT NOT NULL,\n    ocr_name TEXT,\n    student_id INTEGER,\n    match_status TEXT NOT NULL\n        CHECK (match_status IN ('matched', 'unmatched', 'student_deleted')),\n    processing_status TEXT NOT NULL DEFAULT 'pending'\n        CHECK (\n            processing_status IN (\n                'pending', 'grading', 'graded', 'failed', 'skipped'\n            )\n        ),\n    error_message TEXT,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    FOREIGN KEY(session_id) REFERENCES grading_sessions(id),\n    FOREIGN KEY(student_id) REFERENCES students(id)\n)",
     "CREATE TABLE grading_run_items (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    run_id INTEGER NOT NULL,\n    paper_id INTEGER,\n    student_id INTEGER NOT NULL,\n    source_label TEXT NOT NULL,\n    paper_fingerprint TEXT NOT NULL,\n    config_fingerprint TEXT NOT NULL,\n    status TEXT NOT NULL CHECK (\n        status IN (\n            'pending','grading','graded','failed',\n            'skipped_existing','skipped_duplicate','conflict'\n        )\n    ),\n    disposition_reason TEXT,\n    result_id INTEGER,\n    attempt_count INTEGER NOT NULL DEFAULT 0,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    UNIQUE(run_id, source_label),\n    FOREIGN KEY(run_id) REFERENCES grading_runs(id),\n    FOREIGN KEY(paper_id) REFERENCES exam_papers(id),\n    FOREIGN KEY(student_id) REFERENCES students(id),\n    FOREIGN KEY(result_id) REFERENCES session_results(id)\n)",
     "CREATE TABLE grading_runs (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    run_token TEXT NOT NULL UNIQUE,\n    session_id INTEGER NOT NULL,\n    config_fingerprint TEXT NOT NULL,\n    grading_mode TEXT NOT NULL,\n    state TEXT NOT NULL CHECK (\n        state IN ('running','pause_requested','paused','completed','failed')\n    ),\n    started_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    finished_at TEXT,\n    FOREIGN KEY(session_id) REFERENCES grading_sessions(id)\n)",
@@ -17,12 +18,52 @@
     "CREATE TABLE teacher_score_locks (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    session_id INTEGER NOT NULL,\n    scan_batch_id TEXT NOT NULL\n        CHECK (TRIM(scan_batch_id) <> ''),\n    student_id INTEGER NOT NULL,\n    question_id TEXT NOT NULL\n        CHECK (TRIM(question_id) <> ''),\n    score_awarded REAL NOT NULL\n        CHECK (\n            typeof(score_awarded) IN ('integer', 'real')\n            AND score_awarded >= 0\n            AND score_awarded <= max_score\n        ),\n    max_score REAL NOT NULL\n        CHECK (\n            typeof(max_score) IN ('integer', 'real')\n            AND max_score > 0\n        ),\n    deduction_reason TEXT,\n    source_target_type TEXT NOT NULL\n        CHECK (TRIM(source_target_type) <> ''),\n    source_target_id INTEGER NOT NULL\n        CHECK (\n            typeof(source_target_id) = 'integer'\n            AND source_target_id > 0\n        ),\n    revision INTEGER NOT NULL DEFAULT 1\n        CHECK (\n            typeof(revision) = 'integer'\n            AND revision >= 1\n        ),\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    UNIQUE(session_id, scan_batch_id, student_id, question_id),\n    FOREIGN KEY(session_id) REFERENCES grading_sessions(id),\n    FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE\n)",
     "CREATE TABLE workspace_ai_handoffs (\n    handoff_id TEXT PRIMARY KEY CHECK (TRIM(handoff_id) <> ''),\n    task_id TEXT NOT NULL REFERENCES workspace_ai_tasks(task_id) ON DELETE CASCADE,\n    work_item_id TEXT NOT NULL CHECK (TRIM(work_item_id) <> ''),\n    module TEXT NOT NULL CHECK (module IN ('teaching_prep', 'class_teacher')),\n    intent TEXT NOT NULL CHECK (intent IN ('create', 'append', 'follow_up', 'plan', 'review')),\n    handling_mode TEXT NOT NULL CHECK (handling_mode IN ('record', 'plan_calendar', 'sop')),\n    destination_key TEXT NOT NULL CHECK (TRIM(destination_key) <> ''),\n    subject_refs_json TEXT NOT NULL DEFAULT '[]',\n    draft_ref_id TEXT NOT NULL CHECK (TRIM(draft_ref_id) <> ''),\n    draft_revision TEXT NOT NULL CHECK (TRIM(draft_revision) <> ''),\n    adoption_state TEXT NOT NULL DEFAULT 'pending'\n        CHECK (adoption_state IN (\n            'pending', 'opened', 'adoption_started', 'adopted',\n            'discarded', 'stale'\n        )),\n    prefill_keys_json TEXT NOT NULL DEFAULT '[]',\n    missing_fields_json TEXT NOT NULL DEFAULT '[]',\n    source_turn_id TEXT,\n    return_destination_key TEXT NOT NULL,\n    return_focus_ref TEXT,\n    expires_on_source_change INTEGER NOT NULL DEFAULT 1\n        CHECK (expires_on_source_change IN (0, 1)),\n    adoption_id TEXT UNIQUE,\n    target_revision TEXT,\n    adopted_object_ref TEXT,\n    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    UNIQUE(task_id, work_item_id)\n)",
     "CREATE TABLE workspace_ai_tasks (\n    task_id TEXT PRIMARY KEY CHECK (TRIM(task_id) <> ''),\n    operation_id TEXT NOT NULL UNIQUE CHECK (TRIM(operation_id) <> ''),\n    module TEXT NOT NULL CHECK (module IN ('teaching_prep', 'class_teacher')),\n    task_kind TEXT NOT NULL CHECK (TRIM(task_kind) <> ''),\n    source_kind TEXT NOT NULL CHECK (TRIM(source_kind) <> ''),\n    source_ref_id TEXT NOT NULL CHECK (TRIM(source_ref_id) <> ''),\n    source_revision TEXT NOT NULL CHECK (TRIM(source_revision) <> ''),\n    context_refs_json TEXT NOT NULL DEFAULT '[]',\n    prompt_contract_version TEXT NOT NULL CHECK (TRIM(prompt_contract_version) <> ''),\n    request_fingerprint TEXT NOT NULL CHECK (LENGTH(request_fingerprint) = 64),\n    model_destination_fingerprint TEXT NOT NULL\n        CHECK (LENGTH(model_destination_fingerprint) = 64),\n    return_target TEXT NOT NULL CHECK (TRIM(return_target) <> ''),\n    status TEXT NOT NULL DEFAULT 'prepared'\n        CHECK (status IN (\n            'prepared', 'queued', 'running', 'needs_input', 'proposal_ready',\n            'failed_before_dispatch', 'failed', 'result_unknown',\n            'invalid_result', 'cancelled_before_dispatch', 'discarded'\n        )),\n    phase TEXT NOT NULL DEFAULT 'prepared'\n        CHECK (phase IN (\n            'prepared', 'queued', 'claimed', 'send_attempt_reserved',\n            'validating', 'handoff_ready', 'finished'\n        )),\n    progress REAL NOT NULL DEFAULT 0 CHECK (progress >= 0 AND progress <= 1),\n    send_attempt_count INTEGER NOT NULL DEFAULT 0\n        CHECK (send_attempt_count IN (0, 1)),\n    dispatch_evidence TEXT NOT NULL DEFAULT 'not_started'\n        CHECK (dispatch_evidence IN (\n            'not_started', 'may_have_started', 'response_persisted'\n        )),\n    cancel_requested INTEGER NOT NULL DEFAULT 0\n        CHECK (cancel_requested IN (0, 1)),\n    proposal_ref_id TEXT,\n    proposal_revision TEXT,\n    job_id INTEGER UNIQUE REFERENCES jobs(id),\n    error_code TEXT,\n    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    finished_at TEXT\n)",
+    "INSERT INTO \"data_versions\" (\"domain\", \"version\") VALUES ('results', 0)",
     "INSERT INTO sqlite_sequence (name, seq) VALUES ('answer_regions', 0)",
     "INSERT INTO sqlite_sequence (name, seq) VALUES ('exam_papers', 0)",
     "INSERT INTO sqlite_sequence (name, seq) VALUES ('grading_sessions', 0)",
     "INSERT INTO sqlite_sequence (name, seq) VALUES ('session_details', 0)",
     "CREATE TRIGGER answer_regions_region_uuid_required_insert\nBEFORE INSERT ON answer_regions\nWHEN NEW.region_uuid IS NULL OR TRIM(NEW.region_uuid) = ''\nBEGIN\n    SELECT RAISE(ABORT, 'answer_regions.region_uuid must be nonblank');\nEND",
     "CREATE TRIGGER answer_regions_region_uuid_required_update\nBEFORE UPDATE OF region_uuid ON answer_regions\nWHEN NEW.region_uuid IS NULL OR TRIM(NEW.region_uuid) = ''\nBEGIN\n    SELECT RAISE(ABORT, 'answer_regions.region_uuid must be nonblank');\nEND",
+    "CREATE TRIGGER dv_annotated_results_del AFTER DELETE ON annotated_results FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_annotated_results_ins AFTER INSERT ON annotated_results FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_annotated_results_upd AFTER UPDATE ON annotated_results FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_answer_regions_del AFTER DELETE ON answer_regions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_answer_regions_ins AFTER INSERT ON answer_regions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_answer_regions_upd AFTER UPDATE ON answer_regions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_app_settings_del AFTER DELETE ON app_settings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_app_settings_ins AFTER INSERT ON app_settings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_app_settings_upd AFTER UPDATE ON app_settings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_exam_papers_del AFTER DELETE ON exam_papers FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_exam_papers_ins AFTER INSERT ON exam_papers FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_exam_papers_upd AFTER UPDATE ON exam_papers FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_grading_run_items_del AFTER DELETE ON grading_run_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_grading_run_items_ins AFTER INSERT ON grading_run_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_grading_run_items_upd AFTER UPDATE ON grading_run_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_grading_runs_del AFTER DELETE ON grading_runs FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_grading_runs_ins AFTER INSERT ON grading_runs FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_grading_runs_upd AFTER UPDATE ON grading_runs FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_grading_sessions_del AFTER DELETE ON grading_sessions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_grading_sessions_ins AFTER INSERT ON grading_sessions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_grading_sessions_upd AFTER UPDATE ON grading_sessions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_session_attendance_del AFTER DELETE ON session_attendance FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_session_attendance_ins AFTER INSERT ON session_attendance FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_session_attendance_upd AFTER UPDATE ON session_attendance FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_session_details_del AFTER DELETE ON session_details FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_session_details_ins AFTER INSERT ON session_details FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_session_details_upd AFTER UPDATE ON session_details FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_session_results_del AFTER DELETE ON session_results FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_session_results_ins AFTER INSERT ON session_results FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_session_results_upd AFTER UPDATE ON session_results FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_session_templates_del AFTER DELETE ON session_templates FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_session_templates_ins AFTER INSERT ON session_templates FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_session_templates_upd AFTER UPDATE ON session_templates FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_students_del AFTER DELETE ON students FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_students_ins AFTER INSERT ON students FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_students_upd AFTER UPDATE ON students FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_teacher_score_locks_del AFTER DELETE ON teacher_score_locks FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_teacher_score_locks_ins AFTER INSERT ON teacher_score_locks FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
+    "CREATE TRIGGER dv_teacher_score_locks_upd AFTER UPDATE ON teacher_score_locks FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'results';\nEND",
     "CREATE UNIQUE INDEX idx_answer_regions_region_uuid_unique\nON answer_regions(region_uuid)",
     "CREATE INDEX idx_exam_papers_session_status\nON exam_papers(session_id, processing_status)",
     "CREATE INDEX idx_exam_papers_student\nON exam_papers(student_id)",
@@ -104,6 +145,10 @@
     [
       "013_dual_track_ai_scores",
       "bcb218d22f3b86bac28a606be8852a4e"
+    ],
+    [
+      "014_data_version_triggers",
+      "f642c39e6df2550a1fbd40e301f4139b"
     ]
   ],
   "schema": {
@@ -217,6 +262,201 @@
         "trigger",
         "answer_regions_region_uuid_required_update",
         "create trigger answer_regions_region_uuid_required_update before update of region_uuid on answer_regions when new.region_uuid is null or trim(new.region_uuid) = '' begin select raise(abort, 'answer_regions.region_uuid must be nonblank'); end"
+      ],
+      [
+        "trigger",
+        "dv_annotated_results_del",
+        "create trigger dv_annotated_results_del after delete on annotated_results for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_annotated_results_ins",
+        "create trigger dv_annotated_results_ins after insert on annotated_results for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_annotated_results_upd",
+        "create trigger dv_annotated_results_upd after update on annotated_results for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_answer_regions_del",
+        "create trigger dv_answer_regions_del after delete on answer_regions for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_answer_regions_ins",
+        "create trigger dv_answer_regions_ins after insert on answer_regions for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_answer_regions_upd",
+        "create trigger dv_answer_regions_upd after update on answer_regions for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_app_settings_del",
+        "create trigger dv_app_settings_del after delete on app_settings for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_app_settings_ins",
+        "create trigger dv_app_settings_ins after insert on app_settings for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_app_settings_upd",
+        "create trigger dv_app_settings_upd after update on app_settings for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_exam_papers_del",
+        "create trigger dv_exam_papers_del after delete on exam_papers for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_exam_papers_ins",
+        "create trigger dv_exam_papers_ins after insert on exam_papers for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_exam_papers_upd",
+        "create trigger dv_exam_papers_upd after update on exam_papers for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_grading_run_items_del",
+        "create trigger dv_grading_run_items_del after delete on grading_run_items for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_grading_run_items_ins",
+        "create trigger dv_grading_run_items_ins after insert on grading_run_items for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_grading_run_items_upd",
+        "create trigger dv_grading_run_items_upd after update on grading_run_items for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_grading_runs_del",
+        "create trigger dv_grading_runs_del after delete on grading_runs for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_grading_runs_ins",
+        "create trigger dv_grading_runs_ins after insert on grading_runs for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_grading_runs_upd",
+        "create trigger dv_grading_runs_upd after update on grading_runs for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_grading_sessions_del",
+        "create trigger dv_grading_sessions_del after delete on grading_sessions for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_grading_sessions_ins",
+        "create trigger dv_grading_sessions_ins after insert on grading_sessions for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_grading_sessions_upd",
+        "create trigger dv_grading_sessions_upd after update on grading_sessions for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_session_attendance_del",
+        "create trigger dv_session_attendance_del after delete on session_attendance for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_session_attendance_ins",
+        "create trigger dv_session_attendance_ins after insert on session_attendance for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_session_attendance_upd",
+        "create trigger dv_session_attendance_upd after update on session_attendance for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_session_details_del",
+        "create trigger dv_session_details_del after delete on session_details for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_session_details_ins",
+        "create trigger dv_session_details_ins after insert on session_details for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_session_details_upd",
+        "create trigger dv_session_details_upd after update on session_details for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_session_results_del",
+        "create trigger dv_session_results_del after delete on session_results for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_session_results_ins",
+        "create trigger dv_session_results_ins after insert on session_results for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_session_results_upd",
+        "create trigger dv_session_results_upd after update on session_results for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_session_templates_del",
+        "create trigger dv_session_templates_del after delete on session_templates for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_session_templates_ins",
+        "create trigger dv_session_templates_ins after insert on session_templates for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_session_templates_upd",
+        "create trigger dv_session_templates_upd after update on session_templates for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_students_del",
+        "create trigger dv_students_del after delete on students for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_students_ins",
+        "create trigger dv_students_ins after insert on students for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_students_upd",
+        "create trigger dv_students_upd after update on students for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_teacher_score_locks_del",
+        "create trigger dv_teacher_score_locks_del after delete on teacher_score_locks for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_teacher_score_locks_ins",
+        "create trigger dv_teacher_score_locks_ins after insert on teacher_score_locks for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
+      ],
+      [
+        "trigger",
+        "dv_teacher_score_locks_upd",
+        "create trigger dv_teacher_score_locks_upd after update on teacher_score_locks for each row begin update data_versions set version = version + 1 where domain = 'results'; end"
       ],
       [
         "trigger",
@@ -498,6 +738,34 @@
           [
             [
               "setting_key"
+            ],
+            0
+          ]
+        ]
+      },
+      "data_versions": {
+        "checks": [],
+        "columns": {
+          "domain": [
+            "text",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "version": [
+            "integer",
+            1,
+            "0",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [],
+        "unique_constraints": [
+          [
+            [
+              "domain"
             ],
             0
           ]

@@ -1,6 +1,7 @@
 """Background refresher for the diagnosis/overview/graph read caches.
 
-A single daemon thread polls the commit generations of both databases.  When
+A single daemon thread polls the per-category data versions of both
+databases (commit generations when trigger coverage is absent).  When
 they changed (and once at startup) — and only while no job is queued or
 running — it recomputes the most recently requested keys plus the startup
 batch (latest semester volume: all students + each class, diagnosis,
@@ -27,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from integration.data_generation import commit_generation
+from integration.data_generation import commit_generation, data_version_token
 from integration.display_refresh import busy as display_refresh_busy
 
 _LOG = logging.getLogger(__name__)
@@ -54,6 +55,13 @@ _FOREGROUND_LOCK = threading.Lock()
 _FOREGROUND_ACTIVE = 0
 _FOREGROUND_LAST_FINISH = 0.0
 _FOREGROUND_QUIET_SECONDS = 2.0
+
+
+def _source_token(path: Path, *domains: str) -> object:
+    """Change signal for one database: a compact per-domain version token
+    when trigger coverage exists, else the broad commit generation."""
+
+    return data_version_token(path, *domains) or commit_generation(path)
 
 
 @contextmanager
@@ -230,12 +238,12 @@ class TrainingPrewarmWorker:
         self._startup_max_seconds = startup_max_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._seen_generations: tuple[int, int] | None = None
+        self._seen_generations: tuple[object, object] | None = None
         self._startup_done = False
         self._seen_day: str | None = None
         self._seen_group_day: str | None = None
         self._seen_recent_generation: int | None = None
-        self._seen_qb_browse_generation: int | None = None
+        self._seen_qb_browse_generation: object = None
         self._recents_loaded = False
         self._persisted_recents: str | None = None
         self.batches: list[tuple[int, float]] = []
@@ -272,8 +280,9 @@ class TrainingPrewarmWorker:
             self._load_recents()
         self._persist_recents()
         generations = (
-            commit_generation(Path(self._paths.db_path)),
-            commit_generation(Path(self._paths.qb_db_path)),
+            _source_token(Path(self._paths.db_path), "results"),
+            _source_token(Path(self._paths.qb_db_path),
+                          "materials", "training_records", "training_ops"),
         )
         day = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
         group_day = datetime.now(timezone.utc).date().isoformat()
@@ -484,7 +493,10 @@ class TrainingPrewarmWorker:
         tasks: list[Callable[[], None]] = []
         # The latest actual request takes priority over generic browse work.
         # With no recent scope, keep the original question-bank-first order.
-        qb_generation = commit_generation(Path(self._paths.qb_db_path))
+        qb_generation = _source_token(
+            Path(self._paths.qb_db_path),
+            "materials", "training_records", "training_ops",
+        )
         browse_task = lambda generation=qb_generation: self._warm_question_bank(generation)
         seen: set[tuple[str, str, str, str]] = set()
         entries = list(reversed(recent_requests()))
@@ -704,7 +716,7 @@ class TrainingPrewarmWorker:
             return None
         return str(row[0]).strip() if row else None
 
-    def _warm_question_bank(self, generation: int) -> None:
+    def _warm_question_bank(self, generation: object) -> None:
         """Warm the tag browser's unfiltered first page and facet caches."""
 
         from question_bank.services.question_read_service import (

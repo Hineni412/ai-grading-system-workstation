@@ -11,7 +11,12 @@ from backend.performance.metrics import instrument_sqlite_connection
 from backend.repositories.access import GradingRepositoryAccess
 from backend.repositories.grading_database import open_grading_repositories
 from integration.data_generation import commit_generation
-from integration.diagnosis_profile_service import DiagnosisProfileService
+from integration.diagnosis_profile_service import (
+    _GRADING_VERSION_DOMAINS,
+    _QB_VERSION_DOMAINS,
+    DiagnosisProfileService,
+    _path_generation,
+)
 from question_bank.services.question_read_service import (
     QuestionBankSnapshotBusy,
     QuestionBankSnapshotUnavailable,
@@ -67,6 +72,10 @@ def request_read_context(paths: _ReadPaths) -> Iterator[RequestReadContext]:
                 *_database_generation(Path(paths.db_path)),
                 *_database_generation(Path(paths.qb_db_path)),
             )
+            cache_identity = (
+                *_path_generation(Path(paths.db_path), _GRADING_VERSION_DOMAINS),
+                *_path_generation(Path(paths.qb_db_path), _QB_VERSION_DOMAINS),
+            )
             grading_connection = stack.enter_context(
                 captured_sqlite_read_connection(
                     Path(paths.db_path),
@@ -96,7 +105,7 @@ def request_read_context(paths: _ReadPaths) -> Iterator[RequestReadContext]:
                 grading_db=grading_db,
                 question_bank_connection=question_bank_connection,
                 data_root=Path(paths.qb_db_path).parent.parent,
-                cache_identity=captured_identity,
+                cache_identity=cache_identity,
             )
             yield RequestReadContext(
                 grading_candidate=grading_candidate,

@@ -12,7 +12,7 @@ from backend.public_data import sanitize_public_diagnostic_text
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.review.service import ReviewApplicationService
 from backend.session_analysis import infer_data_root
-from integration.data_generation import commit_generation
+from integration.data_generation import commit_generation, data_version_token
 from integration.diagnosis_profile_service import _session_error_file_state
 from integration.result_cache import ResultCache
 from path_manager import resolve_stored_file_path
@@ -98,7 +98,9 @@ class WorkbenchService:
 
     def _review_summary(self, session_id: int, session: dict[str, Any], manual_context) -> dict[str, int]:
         rubric_path = resolve_stored_file_path(session.get("rubric_path"), data_root=infer_data_root(self.db.db_path))
-        key = (str(self.db.db_path), session_id, commit_generation(self.db.db_path), _session_error_file_state(rubric_path),
+        key = (str(self.db.db_path), session_id,
+               data_version_token(self.db.db_path, "results") or commit_generation(self.db.db_path),
+               _session_error_file_state(rubric_path),
                hashlib.sha256(json.dumps(manual_context, sort_keys=True, separators=(",", ":")).encode()).digest())
 
         def compute():

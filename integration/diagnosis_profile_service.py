@@ -16,7 +16,11 @@ from typing import Any, TypedDict
 
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.repositories.grading_database import open_grading_repositories
-from integration.data_generation import commit_generation, database_change_stamp
+from integration.data_generation import (
+    commit_generation,
+    database_change_stamp,
+    data_versions,
+)
 from integration.evidence_scope import EvidenceScopeResolver
 from integration.persistent_entries import persistent_entry_store
 from integration.result_cache import ResultCache, cache_values
@@ -197,7 +201,7 @@ class DiagnosisProfileService:
         scope = _normalized_profile_scope(scope, exam_scope)
         source_identity = self.cache_identity or (
             *_path_generation(self.grading_db_path),
-            *_path_generation(self.question_bank_db_path),
+            *_path_generation(self.question_bank_db_path, _QB_VERSION_DOMAINS),
         )
         source_identity = (*source_identity,
             *self._cause_changes(exam_scope),
@@ -288,7 +292,7 @@ class DiagnosisProfileService:
                                    "_mastery_session_times": self.mastery_session_times(exam_scope=exam_scope)}
             origins = self.cache_identity or (
                 *_path_generation(self.grading_db_path),
-                *_path_generation(self.question_bank_db_path),
+                *_path_generation(self.question_bank_db_path, _QB_VERSION_DOMAINS),
             )
             input_key = (origins[0], origins[3], tuple(origins[3:6]), key[-3:],
                          cache_values(calculation_profile))
@@ -399,7 +403,7 @@ class DiagnosisProfileService:
             origins = self.cache_identity[:6] if self.cache_identity else ()
             paths = ((Path(origins[0]), Path(origins[3])) if len(origins) == 6
                      else (self.grading_db_path, self.question_bank_db_path))
-            live = (*_path_generation(paths[0]), *_path_generation(paths[1]))
+            live = (*_path_generation(paths[0]), *_path_generation(paths[1], _QB_VERSION_DOMAINS))
             if origins and tuple(origins) != tuple(live):
                 return None
             causes = self._cause_changes(exam_scope)
@@ -407,8 +411,8 @@ class DiagnosisProfileService:
                                      json.dumps(_profile_semantics(), default=str)))
             if cache_key[0] != expected:
                 return None
-            changes = tuple(database_change_stamp(path) for path in paths)
-            if live != (*_path_generation(paths[0]), *_path_generation(paths[1])):
+            changes = tuple(_path_change_signature(path) for path in paths)
+            if live != (*_path_generation(paths[0]), *_path_generation(paths[1], _QB_VERSION_DOMAINS)):
                 return None
             return (changes, causes, _profile_semantics())
         except (OSError, sqlite3.Error, AttributeError, ValueError, IndexError):
@@ -1496,7 +1500,7 @@ class DiagnosisProfileService:
             from path_manager import resolve_stored_file_path
             origins = self.cache_identity or (
                 *_path_generation(self.grading_db_path),
-                *_path_generation(self.question_bank_db_path),
+                *_path_generation(self.question_bank_db_path, _QB_VERSION_DOMAINS),
             )
             session = self.db.sessions.get_grading_session(int(session_id)) or {}
             files = []
@@ -1705,12 +1709,26 @@ class DiagnosisProfileService:
             for student in students
         }
 
-def _path_generation(path: Path) -> tuple[str, ...]:
-    """Cache identity for a database file: resolved path, file identity, and
-    the commit generation (``PRAGMA data_version`` monitor) so real commits
+_GRADING_VERSION_DOMAINS = ("results",)
+_QB_VERSION_DOMAINS = ("materials", "training_records")
+
+
+def _path_generation(path: Path, domains: tuple[str, ...] = _GRADING_VERSION_DOMAINS) -> tuple[str, ...]:
+    """Cache identity for a database file: resolved path plus per-category
+    data versions when triggers cover the schema, else file identity and the
+    commit generation (``PRAGMA data_version`` monitor) so real commits
     invalidate while read-only opens and checkpoints do not."""
 
     source = Path(path).resolve(strict=False)
+    versions = data_versions(source)
+    if versions is not None:
+        return (
+            str(source),
+            "dv",
+            ";".join(
+                f"{domain}:{int(versions.get(domain, 0))}" for domain in domains
+            ),
+        )
     try:
         stat = source.stat()
         identity = f"{stat.st_dev}:{stat.st_ino}"
@@ -1721,6 +1739,16 @@ def _path_generation(path: Path) -> tuple[str, ...]:
         f"identity:{identity}",
         f"commits:{commit_generation(source)}",
     )
+
+
+def _path_change_signature(path: Path) -> object:
+    """Persisted-entry change marker: every domain version when covered,
+    else the file stamp it replaces."""
+
+    versions = data_versions(Path(path).resolve(strict=False))
+    if versions is not None:
+        return ("dv", tuple(sorted(versions.items())))
+    return database_change_stamp(path)
 
 
 def _dir_generation(path: Path) -> tuple[str, ...]:

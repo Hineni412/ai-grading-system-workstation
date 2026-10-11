@@ -16,7 +16,7 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Literal
 
-from integration.data_generation import commit_generation
+from integration.data_generation import commit_generation, data_version_token
 from integration.result_cache import ResultCache, cache_values as _cache_values
 from question_bank.current_knowledge import (
     CurrentKnowledgeResolver,
@@ -2025,7 +2025,10 @@ class PersonalizedRecommendationModule:
         methods = (self.evaluate_candidates, self._candidate_entries)
         source_identity = (
             str(self.db_path.resolve()), str(self.data_root.resolve()),
-            self.current_knowledge.release_id, commit_generation(self.db_path),
+            self.current_knowledge.release_id,
+            data_version_token(
+                self.db_path, "materials", "training_records", "training_ops"
+            ) or commit_generation(self.db_path),
             tuple(id(getattr(method, "__func__", method)) for method in methods),
         )
         # Compare values, not pickle's object-alias layout: a snapshot restored
@@ -3466,7 +3469,9 @@ class PersonalizedRecommendationModule:
             str(Path(self.db_path).resolve(strict=False)),
             str(Path(self.data_root).resolve(strict=False)),
             str(self.current_knowledge.release_id),
-            f"commits:{commit_generation(self.db_path)}",
+            data_version_token(
+                self.db_path, "materials", "training_records", "training_ops"
+            ) or f"commits:{commit_generation(self.db_path)}",
             tuple(sorted(int(qid) for qid in (excluded_question_ids or ()))),
             tuple(sorted(str(item) for item in knowledge_keys)),
             tuple(sorted(set(question_ids))),
@@ -3960,7 +3965,11 @@ class PersonalizedRecommendationModule:
         self,
         diagnosis: dict[str, Any],
     ) -> dict[tuple[str, str], dict[str, Any]]:
-        generation = commit_generation(self.db_path)
+        generation = (
+            data_version_token(
+                self.db_path, "materials", "training_records", "training_ops"
+            ) or commit_generation(self.db_path)
+        )
         calculator = CurrentMasteryCalculator(
             self.db_path,
             self.current_knowledge,
@@ -5038,25 +5047,36 @@ def _apply_diagnosis_mastery(
 
 
 def _persistent_source_snapshot(module, key: tuple, compute) -> tuple:
-    """Reuse one temporary pool by its read constraints and file modification times."""
-    from integration.data_generation import database_change_stamp
+    """Reuse one temporary pool by its read constraints and source revisions."""
+    from integration.data_generation import database_change_stamp, data_versions
     from integration.persistent_entries import persistent_entry_store
-    from question_bank.services.question_read_service import _skill_asset_manifest
 
-    manifest = _skill_asset_manifest(Path(module.data_root))
-    if manifest is None:
-        return compute()
+    versions = data_versions(module.db_path)
+    manifest = None
+    if versions is None:
+        from question_bank.services.question_read_service import _skill_asset_manifest
+        manifest = _skill_asset_manifest(Path(module.data_root))
+        if manifest is None:
+            return compute()
     pkey = tuple(part for index, part in enumerate(key) if index not in (1, 4))
-    changes = (database_change_stamp(module.db_path), tuple(sorted(manifest.items())))
+    if versions is not None:
+        changes = (("dv", tuple(sorted(versions.items()))),)
+    else:
+        changes = (database_change_stamp(module.db_path), tuple(sorted(manifest.items())))
     store = persistent_entry_store(Path(module.data_root) / "cache" / "recommendation_pools",
                                    max_entries=16, max_bytes=512 * 1024 * 1024)
     payload = store.get(pkey, changes)
     if isinstance(payload, tuple) and len(payload) == 3:
         return payload
     result = compute()
-    after = (database_change_stamp(module.db_path),
-             tuple(sorted((_skill_asset_manifest(Path(module.data_root)) or {}).items())))
-    if after == changes:
+    if versions is not None:
+        after_versions = data_versions(module.db_path)
+        after = (("dv", tuple(sorted(after_versions.items()))),) if after_versions is not None else None
+    else:
+        from question_bank.services.question_read_service import _skill_asset_manifest
+        after = (database_change_stamp(module.db_path),
+                 tuple(sorted((_skill_asset_manifest(Path(module.data_root)) or {}).items())))
+    if after is not None and after == changes:
         store.put(pkey, changes, result)
     return result
 

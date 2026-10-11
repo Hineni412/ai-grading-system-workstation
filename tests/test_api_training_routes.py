@@ -200,6 +200,13 @@ def test_saved_profiles_survive_new_process_and_wal_checkpoint(training_services
         assert service.build_profiles(scope=scope, exam_scope=exams) == expected
         assert service.build_profiles(scope={"mode":"class", "class_id":"八年级1班"}, exam_scope=exams) == class_profile
         assert hashlib.sha256(_diagnosis_response_bytes(service, scope=scope, exam_scope=exams)).hexdigest() == public_digest
+        # 任务表在版本化模式下不属于 results 域：jobs 进度写入不影响诊断缓存。
+        jobs_key = service.tag_profile_cache_key(scope=scope, exam_scope=exams)
+        writer.execute("INSERT INTO jobs(job_type, status) VALUES('TEST-job','running')")
+        writer.commit()
+        assert service.tag_profile_cache_key(scope=scope, exam_scope=exams) == jobs_key
+        assert service.build_profiles(scope=scope, exam_scope=exams) == expected
+        assert service._local_profile_signature(jobs_key) is not None
     _clear_profile_memory()
     restored = DiagnosisProfileService(service.grading_db_path, service.question_bank_db_path)
     key = restored.tag_profile_cache_key(scope=scope, exam_scope=exams)

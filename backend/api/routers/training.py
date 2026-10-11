@@ -91,7 +91,7 @@ from backend.training_assessment import (
     TrainingAssessmentModule,
     TrainingEvidenceError,
 )
-from integration.data_generation import commit_generation
+from integration.data_generation import commit_generation, data_version_token
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from integration.display_refresh import json_bytes, serve_with_refresh
 from integration.mastery_overview import build_mastery_overview, overview_payload
@@ -354,7 +354,10 @@ def _build_grouped_diagnosis(service, grouping_module, *, scope_dump, exam_scope
                 json.dumps(asdict(grouping_config), sort_keys=True, default=str),
                 tuple(grouping.member_ids),
                 tuple(grouping.target_keys),
-                commit_generation(grouping_module.db_path),
+                data_version_token(
+                    _service_paths(service).qb_db_path,
+                    "materials", "training_records", "training_ops",
+                ) or commit_generation(_service_paths(service).qb_db_path),
                 grouping_release,
                 # _recent_question_ids depends on the current day.
                 str(grouping_module.clock().date()),
@@ -374,14 +377,15 @@ def _grouped_diagnosis_response_bytes(service, module, *, scope, exam_scope, gro
     record_request('grouped_diagnosis', scope=scope, exam_scope=exam_scope,
                    params={'grouping': grouping.model_dump(),
                            'include_student_detail': include_student_detail, 'response_mode': response_mode})
-    # Reuse the existing complete asset manifest. Database signatures alone do
-    # not detect edits to rich content, image fallbacks or preview files.
+    # Reuse the existing complete asset manifest. Database versions do not
+    # detect edits to rich content, image fallbacks or preview files.
     from question_bank.services.question_read_service import _skill_asset_manifest
     manifest = _skill_asset_manifest(service.data_root)
-    factory = lambda: _build_grouped_diagnosis(service, module() if callable(module) else module, scope_dump=scope,
-        exam_scope_dump=exam_scope, grouping=grouping,
-        asset_state=tuple(sorted(manifest.items())) if manifest is not None else None)
-    if manifest is None:
+    asset_state = tuple(sorted(manifest.items())) if manifest is not None else None
+    factory = lambda: _build_grouped_diagnosis(service, module() if callable(module) else module,
+        scope_dump=scope, exam_scope_dump=exam_scope, grouping=grouping,
+        asset_state=asset_state)
+    if asset_state is None:
         public = _public_training_mapping({k: v for k, v in factory().items() if not str(k).startswith('_')},
                                           reject_nonfinite=True)
         return _validated_diagnosis_json(public, include_student_detail=include_student_detail,
@@ -391,7 +395,7 @@ def _grouped_diagnosis_response_bytes(service, module, *, scope, exam_scope, gro
     # process-local counters must not appear again in this persistent suffix.
     day = datetime.now(UTC).date() if callable(module) else module.clock().date()
     key = ('grouping-public-v2', json.dumps(grouping.model_dump(), sort_keys=True), str(day),
-           tuple(sorted(manifest.items())))
+           asset_state)
     return _diagnosis_response_bytes(service, scope=scope, exam_scope=exam_scope,
         grouping_cache_key=key, diagnosis_factory=factory, include_student_detail=include_student_detail,
         response_mode=response_mode)

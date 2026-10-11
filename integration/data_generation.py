@@ -14,13 +14,94 @@ repeated reads of unchanged content keep the same generation.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Union
 
 
 _PATH_TYPE = Union[str, Path]
+
+# 每类数据一个版本号：读缓存只看自己依赖的那几类，其余写入不再失效缓存。
+# 类别归属在迁移 SQL 与运行时覆盖检查中共用这一份映射。
+GRADING_VERSION_UNTRACKED_TABLES = frozenset(
+    {
+        "jobs",
+        "workspace_ai_tasks",
+        "workspace_ai_handoffs",
+        "schema_migrations",
+        "data_versions",
+    }
+)
+
+QUESTION_BANK_VERSION_UNTRACKED_TABLES = frozenset(
+    {
+        # question_frequency_cache/question_fingerprints 没有任何写入路径；
+        # paper_permanent_delete_receipts 只在删除题目的同一事务中写入。
+        # question_scope_summary 与 question_content_index 按 materials 跟踪：
+        # 读缓存直接消费它们，而存在不伴随 materials 写入的独立重建/补齐路径。
+        "question_frequency_cache",
+        "question_fingerprints",
+        "paper_permanent_delete_receipts",
+        "schema_migrations",
+        "data_versions",
+    }
+)
+
+QUESTION_BANK_VERSION_DOMAIN_TABLES: dict[str, frozenset[str]] = {
+    "training_ops": frozenset(
+        {
+            "personalized_paper_batch_items",
+            "personalized_paper_batches",
+            "personalized_paper_events",
+            "personalized_paper_instances",
+            "personalized_paper_items",
+            "personalized_paper_pages",
+            "personalized_recommendation_drafts",
+            "personalized_recommendation_events",
+            "training_exports",
+            "training_scan_batches",
+            "training_submission_events",
+            "training_submission_pages",
+            "training_submission_uploads",
+            "training_submissions",
+            "training_assessment_attempts",
+            "training_assessment_events",
+            "training_assessment_runs",
+            "training_feedback_snapshots",
+        }
+    ),
+    "training_records": frozenset(
+        {
+            "training_evidence_outbox",
+            "training_evidence_records",
+            "training_evidence_sync_events",
+            "training_point_results",
+            "training_question_results",
+            "training_point_locks",
+            "training_attempts",
+            "training_tasks",
+            "training_task_items",
+            "training_sets",
+            "training_set_items",
+            "training_variants",
+            "variant_students",
+            "mastery_v2_evaluation_items",
+            "mastery_v2_evaluations",
+            "mastery_v2_parameter_versions",
+            "mastery_v2_rollout_events",
+            "mastery_v2_rollout_state",
+            "mastery_v2_spot_checks",
+        }
+    ),
+}
+
+# 未单独列出的表：题库归 materials，阅卷归 results。
+DATA_VERSION_UNTRACKED_TABLES = (
+    GRADING_VERSION_UNTRACKED_TABLES | QUESTION_BANK_VERSION_UNTRACKED_TABLES
+)
 
 
 def _database_file_state(path: Path) -> tuple:
@@ -124,21 +205,28 @@ class _GenerationMonitor:
             return None
         return connection
 
-    def generation(self) -> int:
+    def versions_connection(self) -> sqlite3.Connection | None:
+        """The long-lived read-only connection, or None when unavailable."""
+
         identity = _file_identity(self._path)
         if identity is None or identity != self._identity:
             self._close()
             self._seen_version = None
             if identity is None:
-                self._counter += 1
-                return self._counter
+                return None
             self._connection = self._open()
             if self._connection is None:
-                self._counter += 1
-                return self._counter
+                return None
             self._identity = identity
+        return self._connection
+
+    def generation(self) -> int:
+        connection = self.versions_connection()
+        if connection is None:
+            self._counter += 1
+            return self._counter
         try:
-            row = self._connection.execute("PRAGMA data_version").fetchone()
+            row = connection.execute("PRAGMA data_version").fetchone()
             version = int(row[0])
         except sqlite3.Error:
             self._close()
@@ -182,5 +270,126 @@ def reset_commit_generations() -> None:
     with _LOCK:
         monitors = list(_MONITORS.values())
         _MONITORS.clear()
+        _COVERAGE.clear()
     for monitor in monitors:
         monitor._close()
+
+
+_COVERAGE: dict[tuple[object, ...], bool] = {}
+_COVERAGE_LIMIT = 64
+_COVERAGE_DOMAIN_RE = re.compile(r"domain\s*=\s*'([^']+)'")
+
+
+def _versions_coverage(connection: sqlite3.Connection) -> bool:
+    """True when every tracked table carries its three dv_* triggers.
+
+    The set is checked against live sqlite objects, so a future table added
+    without triggers disables versions instead of silently missing writes.
+    """
+
+    try:
+        objects = connection.execute(
+            "SELECT name, type, sql FROM sqlite_master "
+            "WHERE type IN ('table', 'trigger')"
+        ).fetchall()
+    except sqlite3.Error:
+        return False
+    tables = {
+        str(name)
+        for name, kind, _sql in objects
+        if kind == "table" and not str(name).startswith("sqlite_")
+    }
+    if "data_versions" not in tables:
+        return False
+    if "questions" in tables:
+        untracked = QUESTION_BANK_VERSION_UNTRACKED_TABLES
+    elif "jobs" in tables or "students" in tables:
+        untracked = GRADING_VERSION_UNTRACKED_TABLES
+    else:
+        return False
+    triggers = {
+        str(name): str(sql or "")
+        for name, kind, sql in objects
+        if kind == "trigger"
+    }
+    domains: set[str] = set()
+    for table in tables - untracked:
+        for suffix in ("ins", "upd", "del"):
+            sql = triggers.get(f"dv_{table}_{suffix}")
+            if sql is None:
+                return False
+            match = _COVERAGE_DOMAIN_RE.search(sql)
+            if match is not None:
+                domains.add(match.group(1))
+    try:
+        have = {
+            str(row[0])
+            for row in connection.execute("SELECT domain FROM data_versions")
+        }
+    except sqlite3.Error:
+        return False
+    return domains <= have
+
+
+def data_versions(db_path: _PATH_TYPE) -> Mapping[str, int] | None:
+    """Per-category data version numbers, or None when coverage is absent.
+
+    Reads through the shared monitor connection. None means callers must
+    keep their existing change detection (file stamps, commit generations,
+    asset manifests). Coverage is evaluated once per resolved path, file
+    identity and ``PRAGMA schema_version``.
+    """
+
+    resolved = str(Path(db_path).resolve(strict=False))
+    with _LOCK:
+        monitor = _MONITORS.get(resolved)
+        if monitor is None:
+            if len(_MONITORS) >= _MONITOR_LIMIT:
+                stale = list(_MONITORS.values())
+                _MONITORS.clear()
+                for item in stale:
+                    item._close()
+            monitor = _GenerationMonitor(Path(resolved))
+            _MONITORS[resolved] = monitor
+        connection = monitor.versions_connection()
+        if connection is None:
+            return None
+        try:
+            schema_version = int(
+                connection.execute("PRAGMA schema_version").fetchone()[0]
+            )
+        except (sqlite3.Error, TypeError, ValueError):
+            return None
+        coverage_key = (resolved, monitor._identity, schema_version)
+        covered = _COVERAGE.get(coverage_key)
+        if covered is None:
+            covered = _versions_coverage(connection)
+            while len(_COVERAGE) >= _COVERAGE_LIMIT:
+                _COVERAGE.pop(next(iter(_COVERAGE)))
+            _COVERAGE[coverage_key] = covered
+        if not covered:
+            return None
+        try:
+            return {
+                str(domain): int(version)
+                for domain, version in connection.execute(
+                    "SELECT domain, version FROM data_versions"
+                )
+            }
+        except sqlite3.Error:
+            return None
+
+
+def data_version_token(
+    db_path: _PATH_TYPE, *domains: str
+) -> tuple[object, ...] | None:
+    """Cache-key token for ``domains``, or None without version coverage."""
+
+    versions = data_versions(db_path)
+    if versions is None:
+        return None
+    wanted = domains or tuple(versions)
+    return (
+        str(Path(db_path).resolve(strict=False)),
+        *tuple(f"{domain}:{int(versions.get(domain, 0))}" for domain in wanted),
+    )

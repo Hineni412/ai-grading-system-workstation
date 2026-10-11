@@ -675,13 +675,14 @@ print(hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest())
         writer.execute('PRAGMA wal_checkpoint(TRUNCATE)')
         read_module._READ_RESULT_CACHE.clear()
         clear_file_caches()
+        # 归档后的落盘快照按 materials 版本校验仍然有效，直接恢复。
         assert restarted.skill_index('bnu24-math-g8-upper') == index
-        assert len(builds) == before_checkpoint + 1
+        assert len(builds) == before_checkpoint
     process = subprocess.run([sys.executable, '-c', script, str(service.db_path), str(tmp_path)],
                              capture_output=True, text=True, timeout=30)
     assert process.returncode == 0, process.stderr
     assert process.stdout.strip() == expected_digest
-    # 新增、改写、删除正文，即使没有改数据库，也不能恢复旧投影。
+    # 版本覆盖下，资产文件只能随题库表写入变化；单独增删改文件不再失效快照。
     sidecar = tmp_path / 'question_bank/rich_content/question_1.json'
     sidecar.parent.mkdir(parents=True, exist_ok=True)
     for body in ('TEST-new-sidecar', 'TEST-edited-sidecar', None):
@@ -694,8 +695,8 @@ print(hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest())
         clear_file_caches()
         count_before = len(builds)
         actual = restarted.skill_index('bnu24-math-g8-upper')
-        assert len(builds) == count_before + 1
-        assert actual['unlinked']['no_usable_evidence'] == 1
+        assert len(builds) == count_before
+        assert actual == index
         read_module._READ_RESULT_CACHE.clear()
         fresh = QuestionBankReadService(service.db_path, data_root=tmp_path, persist_skill_snapshots=False)
         assert fresh.skill_index('bnu24-math-g8-upper') == actual
@@ -1313,14 +1314,12 @@ def test_repair_preview_whole_volume_result_is_cached_until_a_write(tmp_path, mo
     fourth = repair.repair_preview(service, 'bnu24-math-g8-upper', 'all')
     assert len(calls) == 3 and fourth['fingerprint'] != first['fingerprint']
     # File edits can change readiness without a database write.
+    # 版本覆盖下，资产文件只能随题库表写入变化；文件本身的改动不再使预览失效。
     sidecar = tmp_path / 'question_bank/rich_content/question_1.json'
     sidecar.parent.mkdir(parents=True, exist_ok=True)
     sidecar.write_text('{TEST-corrupt', encoding='utf-8')
     changed = repair.repair_preview(service, 'bnu24-math-g8-upper', 'all')
-    assert len(calls) == 4
-    item = next(item for item in changed['items'] if item['id'] == 1)
-    assert item['blocked_reason_code'] == 'rich_content_invalid_json'
-    assert changed['fingerprint'] != fourth['fingerprint']
+    assert len(calls) == 3 and changed == fourth
 
 
 def test_analysis_material_cache_reuses_pages_and_rechecks_database_and_assets(tmp_path, monkeypatch):
@@ -1611,8 +1610,14 @@ def _prewarm_worker(db: Path, tmp_path: Path):
 
 
 def test_question_bank_browse_prewarm_follows_current_scope_and_replans_on_write(tmp_path, monkeypatch):
-    from integration.data_generation import commit_generation
+    from integration.data_generation import commit_generation, data_version_token
     from integration.training_prewarm import clear_recent_requests, record_request
+
+    def qb_token(path: Path):
+        return (
+            data_version_token(path, "materials", "training_records", "training_ops")
+            or commit_generation(path)
+        )
 
     _service, db, _keys = _seed_skill_bank(tmp_path)
     worker = _prewarm_worker(db, tmp_path)
@@ -1623,7 +1628,7 @@ def test_question_bank_browse_prewarm_follows_current_scope_and_replans_on_write
     plan = worker._refresh_plan()
     assert plan
     plan[0]()
-    assert warmed == [commit_generation(db)]
+    assert warmed == [qb_token(db)]
     for task in plan[1:]:
         task()
     # An unchanged generation does not plan the browse task again.
@@ -1638,7 +1643,7 @@ def test_question_bank_browse_prewarm_follows_current_scope_and_replans_on_write
         writer.commit()
     plan = worker._refresh_plan()
     plan[0]()
-    assert warmed == [commit_generation(db)]
+    assert warmed == [qb_token(db)]
     # When a teacher has used a scope, finish its full grouping first, then
     # browse, and only then spend time on older scopes.
     planned = []
@@ -1654,7 +1659,7 @@ def test_question_bank_browse_prewarm_follows_current_scope_and_replans_on_write
     for task in worker._refresh_plan():
         task()
     assert planned == [('diagnosis', current_scope), ('grouped_diagnosis', current_scope),
-                       ('browse', commit_generation(db)), ('diagnosis', {'mode': 'all'})]
+                       ('browse', qb_token(db)), ('diagnosis', {'mode': 'all'})]
     clear_recent_requests()
     # A failed run leaves the generation unseen, so the next plan built for
     # any trigger re-plans the browse task.
@@ -1670,7 +1675,7 @@ def test_question_bank_browse_prewarm_follows_current_scope_and_replans_on_write
     monkeypatch.setattr(worker, '_warm_question_bank', warmed.append)
     plan = worker._refresh_plan()
     plan[0]()
-    assert warmed == [commit_generation(db)]
+    assert warmed == [qb_token(db)]
 
 
 @pytest.mark.parametrize(('revision', 'volume'), [
@@ -1932,3 +1937,78 @@ def test_type_index_section_ids_follow_curriculum_anchors(tmp_path):
     node['curriculum_anchors_json'] = json.dumps([chapter['knowledge_id']])
     rows = {row['value']: row for row in skill_index(snapshot, volume_id, set())['types']}
     assert rows[key]['section_id'] == chapter['knowledge_id']
+
+
+def test_skill_index_versioned_cache_survives_training_ops_and_monitor_reset(
+    tmp_path, monkeypatch,
+):
+    from integration.data_generation import data_versions, reset_commit_generations
+    from question_bank.services import question_skill_index
+
+    service, db, _keys = _seed_skill_bank(tmp_path)
+    (tmp_path / 'question_bank').mkdir(exist_ok=True)
+    reset_commit_generations()
+    assert data_versions(db) is not None
+    builds = []
+    original_build = question_skill_index.build_skill_snapshot
+
+    def build(*args, **kwargs):
+        builds.append(1)
+        return original_build(*args, **kwargs)
+
+    monkeypatch.setattr(question_skill_index, 'build_skill_snapshot', build)
+    index = service.skill_index('bnu24-math-g8-upper')
+    assert len(builds) == 1
+
+    # 训练作业写入只 bump training_ops：题库读缓存与落盘快照都不失效。
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO personalized_recommendation_drafts("
+            "draft_id, request_token, input_fingerprint, result_version,"
+            "engine_version, source_version, request_json, draft_json,"
+            "status, revision, created_by) "
+            "VALUES (?, ?, ?, ?, 'e', ?, '{}', '{}', 'draft', 1, 'TEST')",
+            ("d" * 64, "r" * 32, "f" * 64, "v" * 64, "s" * 64),
+        )
+    reset_commit_generations()
+    read_module._READ_RESULT_CACHE.clear()
+    assert service.skill_index('bnu24-math-g8-upper') == index
+    assert len(builds) == 1
+
+    # 换一个服务实例并复位监视器：未变的 materials 版本让落盘快照直接复用。
+    read_module._READ_RESULT_CACHE.clear()
+    reset_commit_generations()
+    restarted = QuestionBankReadService(db, data_root=tmp_path)
+    assert restarted.skill_index('bnu24-math-g8-upper') == index
+    assert len(builds) == 1
+
+    # materials 域写入（题目标签）按预期失效并重建。
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO question_tags(question_id, tag_type, tag_value) "
+            "VALUES (1, 'probe', 'TEST')"
+        )
+    reset_commit_generations()
+    read_module._READ_RESULT_CACHE.clear()
+    assert restarted.skill_index('bnu24-math-g8-upper')['question_count'] == index['question_count']
+    assert len(builds) == 2
+
+
+def test_skill_index_versioned_cache_falls_back_when_coverage_broken(
+    tmp_path, monkeypatch,
+):
+    from integration.data_generation import data_versions, reset_commit_generations
+    from question_bank.services import question_skill_index
+
+    service, db, _keys = _seed_skill_bank(tmp_path)
+    (tmp_path / 'question_bank').mkdir(exist_ok=True)
+    reset_commit_generations()
+    assert data_versions(db) is not None
+    first = service.skill_index('bnu24-math-g8-upper')
+    with sqlite3.connect(db) as conn:
+        conn.execute("DROP TRIGGER dv_question_tags_ins")
+    reset_commit_generations()
+    assert data_versions(db) is None
+    # 覆盖不完整时回到既有文件态/清单行为，读取仍然可用。
+    read_module._READ_RESULT_CACHE.clear()
+    assert service.skill_index('bnu24-math-g8-upper') == first

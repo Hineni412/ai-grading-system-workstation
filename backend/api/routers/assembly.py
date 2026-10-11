@@ -37,7 +37,7 @@ from backend.api.schemas.assembly import (
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.training import RecommendationRulesRequest
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
-from integration.data_generation import commit_generation
+from integration.data_generation import commit_generation, data_version_token
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from integration.display_refresh import json_bytes, serve_with_refresh
 from integration.result_cache import ResultCache
@@ -371,6 +371,8 @@ def compute_assistant_candidates(
             pkey = (
                 *diagnosis_key,
                 "assistant-shortlist-persist",
+                data_version_token(read_service.db_path, "training_ops")
+                or commit_generation(read_service.db_path),
                 *uploaded,
                 tuple(class_ids), tuple(session_ids),
                 chapter_id,
@@ -422,7 +424,10 @@ def compute_assistant_candidates(
         (
             "assistant-shortlist",
             str(read_service.db_path.resolve(strict=False)),
-            commit_generation(read_service.db_path),
+            data_version_token(
+                read_service.db_path,
+                "materials", "training_records", "training_ops",
+            ) or commit_generation(read_service.db_path),
             diagnosis_key,
             uploaded,
             tuple(class_ids), tuple(session_ids),

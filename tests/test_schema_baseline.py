@@ -307,3 +307,219 @@ def test_current_baseline_creation_rolls_back_without_successful_tracking_on_fai
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
         ).fetchall() == []
+
+
+@pytest.mark.parametrize("target", ["grading", "question_bank"])
+def test_data_version_mapping_covers_every_schema_table(target: str) -> None:
+    """每张表要么有 dv_ 触发器，要么在显式不跟踪清单里；映射不得含过期表名。"""
+    import json
+
+    from backend.schema_contracts import current_schema_contract_path
+    from integration.data_generation import (
+        GRADING_VERSION_UNTRACKED_TABLES,
+        QUESTION_BANK_VERSION_DOMAIN_TABLES,
+        QUESTION_BANK_VERSION_UNTRACKED_TABLES,
+    )
+
+    contract = json.loads(current_schema_contract_path(target).read_text(encoding="utf-8"))
+    tables = set(contract["schema"]["tables"])
+    triggers = {
+        str(entry[1])
+        for entry in contract["schema"]["indexes_and_triggers"]
+        if entry[0] == "trigger"
+    }
+    if target == "grading":
+        untracked = GRADING_VERSION_UNTRACKED_TABLES
+        explicit: set[str] = set()
+    else:
+        untracked = QUESTION_BANK_VERSION_UNTRACKED_TABLES
+        explicit = set().union(*QUESTION_BANK_VERSION_DOMAIN_TABLES.values())
+
+    # 映射里的每个名字都必须仍是真实表（schema_migrations 由迁移机制自建，
+    # 不进入契约表清单），防止改名后映射悄悄失效。
+    assert not ((untracked | explicit) - tables - {"schema_migrations"})
+    assert "data_versions" in tables
+    assert explicit <= tables
+    tracked = tables - untracked
+    assert tracked and explicit <= tracked
+    for table in tracked:
+        for suffix in ("ins", "upd", "del"):
+            assert f"dv_{table}_{suffix}" in triggers, table
+    for table in tables & untracked:
+        assert not any(name.startswith(f"dv_{table}_") for name in triggers), table
+
+
+def _business_row_dump(database: Path) -> dict[str, list[tuple]]:
+    with closing(sqlite3.connect(database)) as connection:
+        tables = [
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name NOT LIKE 'sqlite_%' "
+                "AND name NOT IN ('schema_migrations', 'data_versions')"
+            )
+        ]
+        return {
+            table: sorted(
+                connection.execute(f'SELECT * FROM "{table}"').fetchall(), key=repr
+            )
+            for table in tables
+        }
+
+
+@pytest.mark.parametrize("target", ["grading", "question_bank"])
+def test_data_version_migration_preserves_rows_and_adds_triggers(
+    tmp_path: Path,
+    target: str,
+) -> None:
+    import shutil
+
+    from backend.schema_migrations import ensure_schema_current
+    from update_tools.migrate_db import run_migrations
+
+    source_dir = _PROJECT_ROOT / "migrations" / target
+    newest = sorted(source_dir.glob("*.sql"))[-1]
+    legacy_dir = tmp_path / "TEST-legacy-sql" / target
+    legacy_dir.mkdir(parents=True)
+    for file in source_dir.glob("*.sql"):
+        if file != newest:
+            shutil.copy2(file, legacy_dir / file.name)
+    database = tmp_path / f"TEST-{target}.db"
+    ensure_schema_current(target, database, migrations_dir=legacy_dir)
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'data_versions'"
+        ).fetchone() is None
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'dv_%'"
+        ).fetchall() == []
+    before = _business_row_dump(database)
+
+    report = run_migrations(
+        target,
+        db_path=database,
+        migrations_dir=source_dir,
+        backup_dir_override=tmp_path / "TEST-backups",
+    )
+    assert report.error is None, report.error
+
+    assert _business_row_dump(database) == before
+    from integration.data_generation import (
+        GRADING_VERSION_UNTRACKED_TABLES,
+        QUESTION_BANK_VERSION_UNTRACKED_TABLES,
+    )
+
+    untracked = (
+        GRADING_VERSION_UNTRACKED_TABLES
+        if target == "grading"
+        else QUESTION_BANK_VERSION_UNTRACKED_TABLES
+    )
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        domains = {
+            row[0]
+            for row in connection.execute("SELECT domain FROM data_versions")
+        }
+        assert domains == (
+            {"results"}
+            if target == "grading"
+            else {"materials", "training_records", "training_ops"}
+        )
+        objects = connection.execute(
+            "SELECT name, tbl_name FROM sqlite_master WHERE type = 'trigger'"
+        ).fetchall()
+        dv_tables = {tbl for name, tbl in objects if str(name).startswith("dv_")}
+        all_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        assert dv_tables == all_tables - untracked
+
+
+def test_question_bank_data_version_domain_bumps(tmp_path: Path) -> None:
+    from backend.schema_migrations import ensure_schema_current
+    from integration.data_generation import data_versions, reset_commit_generations
+
+    database = tmp_path / "TEST-qb-bumps.db"
+    ensure_schema_current("question_bank", database)
+    reset_commit_generations()
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "INSERT INTO papers (id, title, import_status) VALUES (1, 'T', 'success')"
+        )
+        connection.execute(
+            "INSERT INTO questions(id, paper_id, question_number, question_text) "
+            "VALUES (1, 1, '1', 'TEST')"
+        )
+        connection.execute(
+            "INSERT INTO personalized_recommendation_drafts("
+            "draft_id, request_token, input_fingerprint, result_version,"
+            "engine_version, source_version, request_json, draft_json,"
+            "status, revision, created_by) "
+            "VALUES (?, ?, ?, ?, 'e', ?, '{}', '{}', 'draft', 1, 'TEST')",
+            ("d" * 64, "r" * 32, "f" * 64, "v" * 64, "s" * 64),
+        )
+        connection.execute(
+            "INSERT INTO question_tags(question_id, tag_type, tag_value) "
+            "VALUES (1, 'probe', 'TEST')"
+        )
+        connection.commit()
+    reset_commit_generations()
+    assert data_versions(database) == {
+        "materials": 3,
+        "training_records": 0,
+        "training_ops": 1,
+    }
+
+
+def test_grading_data_versions_jobs_untracked_results_bumps(tmp_path: Path) -> None:
+    from backend.schema_migrations import ensure_schema_current
+    from integration.data_generation import data_versions, reset_commit_generations
+
+    database = tmp_path / "TEST-grading-bumps.db"
+    ensure_schema_current("grading", database)
+    reset_commit_generations()
+    before = data_versions(database)
+    assert before == {"results": 0}
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "INSERT INTO jobs(job_type, status) VALUES ('probe', 'queued')"
+        )
+        connection.commit()
+    reset_commit_generations()
+    assert data_versions(database) == before
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "INSERT INTO session_results("
+            "session_id, student_id, paper_id, needs_human_review,"
+            "raw_json, student_score, total_score) "
+            "VALUES (0, 0, 0, 0, '{}', 0, 0)"
+        )
+        connection.execute(
+            "UPDATE session_results SET student_score = 1 WHERE id = 1"
+        )
+        connection.commit()
+    reset_commit_generations()
+    assert data_versions(database) == {"results": 2}
+
+
+def test_data_versions_none_when_trigger_coverage_incomplete(tmp_path: Path) -> None:
+    from backend.schema_migrations import ensure_schema_current
+    from integration.data_generation import data_versions, reset_commit_generations
+
+    database = tmp_path / "TEST-coverage.db"
+    ensure_schema_current("question_bank", database)
+    reset_commit_generations()
+    assert data_versions(database) is not None
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("DROP TRIGGER dv_question_tags_ins")
+        connection.commit()
+    assert data_versions(database) is None
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("DROP TABLE data_versions")
+        connection.commit()
+    reset_commit_generations()
+    assert data_versions(database) is None

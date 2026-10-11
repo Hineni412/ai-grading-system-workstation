@@ -1002,6 +1002,12 @@ def _source_generation_token(db_path: Path) -> tuple[object, ...] | None:
     journal = Path(f"{source}-journal")
     if journal.exists():
         return None
+    from integration.data_generation import data_versions
+    versions = data_versions(source)
+    materials = versions.get("materials") if versions is not None else None
+    if materials is not None:
+        # 触发器按类别记数：训练草稿与作业簿记不再使题库读缓存失效。
+        return (str(source), "dv", int(materials))
     token: list[object] = [str(source)]
     for candidate in (source, Path(f"{source}-wal")):
         try:
@@ -1163,9 +1169,17 @@ class QuestionBankReadService:
         scope = _ACTIVE_READ_SCOPE.get()
         if not refresh and scope is not None and root in scope.asset_generations:
             return scope.asset_generations[root]
-        manifest = _skill_asset_manifest(Path(root))
-        generation = tuple(sorted(manifest.items())) if manifest is not None else None
-        result = generation, manifest
+        from integration.data_generation import data_versions
+        versions = data_versions(self.db_path)
+        materials = versions.get("materials") if versions is not None else None
+        if materials is not None:
+            # 资源文件只能随题库写入变化；materials 版本覆盖扫描结果，跳过目录扫描。
+            result = (("dv", str(self.db_path.resolve(strict=False)),
+                       int(materials)), None)
+        else:
+            manifest = _skill_asset_manifest(Path(root))
+            generation = tuple(sorted(manifest.items())) if manifest is not None else None
+            result = generation, manifest
         if not refresh and scope is not None:
             scope.asset_generations[root] = result
         return result
@@ -1290,9 +1304,13 @@ class QuestionBankReadService:
                     return cached
             # The full projection is already shared in memory. Persist only
             # that existing projection, with its exact source dependencies.
-            manifest = (asset_manifest if asset_generation is not None
+            versioned = (asset_manifest is None and asset_generation is not None
+                         and full and self.persist_skill_snapshots
+                         and self._cache_data_root and generation is not None)
+            manifest = (asset_manifest if asset_manifest is not None
                         and full and self.persist_skill_snapshots and self._cache_data_root and generation is not None else None)
-            snapshot = self._read_local_skill_snapshot(generation, inventory, manifest, connection=conn) if manifest is not None else None
+            snapshot = (self._read_local_skill_snapshot(generation, inventory, manifest, connection=conn)
+                        if versioned or manifest is not None else None)
             if snapshot is None:
                 from question_bank.services.file_cache import capture_file_reads
                 with capture_file_reads() if manifest is not None else nullcontext(None) as trace:
@@ -1305,6 +1323,9 @@ class QuestionBankReadService:
                             and self._skill_dependencies_current(dependencies)):
                         self._save_local_skill_snapshot(generation, manifest, dependencies,
                                                         snapshot, connection=conn)
+                elif versioned:
+                    self._save_local_skill_snapshot(generation, None, None,
+                                                    snapshot, connection=conn)
             if scope is not None and full:
                 scope.skill_snapshot = snapshot
                 scope.skill_snapshot_key = key
@@ -1339,12 +1360,19 @@ class QuestionBankReadService:
             if len(encoded) > _SKILL_LOCAL_CACHE_MAX_BYTES:
                 return None
             entry = pickle.loads(encoded)
-            if (entry["manifest"] != manifest
-                    or not self._skill_dependencies_current(entry["dependencies"])):
-                return None
-            from integration.data_generation import database_change_stamp
-            if entry.get("database_change_stamp") != database_change_stamp(self.db_path):
-                return None
+            from integration.data_generation import data_versions
+            versions = data_versions(self.db_path)
+            if manifest is None and versions is not None:
+                # 版本化签名：materials 版本即完整来源凭证，跳过清单/依赖/文件戳校验。
+                if entry.get("materials_version") != int(versions["materials"]):
+                    return None
+            else:
+                if (entry["manifest"] != manifest
+                        or not self._skill_dependencies_current(entry["dependencies"])):
+                    return None
+                from integration.data_generation import database_change_stamp
+                if entry.get("database_change_stamp") != database_change_stamp(self.db_path):
+                    return None
             snapshot = pickle.loads(entry["payload"])
             if (not isinstance(snapshot, dict)
                     or any(not isinstance(snapshot.get(key), dict) for key in (
@@ -1355,7 +1383,9 @@ class QuestionBankReadService:
                 return None
             if any(snapshot[key] != inventory[key] for key in ("release", "nodes", "questions", "members", "volumes")):
                 return None
-            if generation != _source_generation_token(self.db_path) or manifest != _skill_asset_manifest(Path(self._cache_data_root)):
+            if generation != _source_generation_token(self.db_path):
+                return None
+            if versions is None and manifest != _skill_asset_manifest(Path(self._cache_data_root)):
                 return None
             return snapshot
         except (OSError, sqlite3.Error, pickle.PickleError, EOFError, KeyError, TypeError, ValueError, AttributeError, ImportError):
@@ -1364,16 +1394,27 @@ class QuestionBankReadService:
     def _save_local_skill_snapshot(self, generation, manifest, dependencies, snapshot, *, connection) -> None:
         temporary = None
         try:
-            if (generation != _source_generation_token(self.db_path)
-                    or manifest != _skill_asset_manifest(Path(self._cache_data_root))
-                    or not self._skill_dependencies_current(dependencies)):
+            if generation != _source_generation_token(self.db_path):
                 return
             payload = pickle.dumps(snapshot, protocol=pickle.HIGHEST_PROTOCOL)
-            from integration.data_generation import database_change_stamp
-            encoded = pickle.dumps({"generation": generation,
-                "database_change_stamp": database_change_stamp(self.db_path),
-                "manifest": manifest, "dependencies": dependencies, "payload": payload},
-                protocol=pickle.HIGHEST_PROTOCOL)
+            if manifest is None:
+                from integration.data_generation import data_versions
+                versions = data_versions(self.db_path)
+                if versions is None or versions.get("materials") is None:
+                    return
+                encoded = pickle.dumps({"generation": generation,
+                    "materials_version": int(versions["materials"]),
+                    "payload": payload},
+                    protocol=pickle.HIGHEST_PROTOCOL)
+            else:
+                if (manifest != _skill_asset_manifest(Path(self._cache_data_root))
+                        or not self._skill_dependencies_current(dependencies)):
+                    return
+                from integration.data_generation import database_change_stamp
+                encoded = pickle.dumps({"generation": generation,
+                    "database_change_stamp": database_change_stamp(self.db_path),
+                    "manifest": manifest, "dependencies": dependencies, "payload": payload},
+                    protocol=pickle.HIGHEST_PROTOCOL)
             if len(encoded) > _SKILL_LOCAL_CACHE_MAX_BYTES:
                 return
             if generation != _source_generation_token(self.db_path):
