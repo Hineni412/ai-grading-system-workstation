@@ -60,6 +60,10 @@ withDefaults(defineProps<{
       <path d="m12 3 8.5 4.5L12 12 3.5 7.5z" />
       <path d="m5 11 7 3.8 7-3.8M5 15l7 3.8 7-3.8" />
     </g>
+    <g v-else-if="name === 'research'">
+      <path d="M5 3.5h10l4 4v13H5zM15 3.5v4h4M8 16l3-4 3 2 3-4" />
+      <path d="M8 8h3" />
+    </g>
     <g v-else-if="name === 'graph'">
       <circle cx="6" cy="6" r="2.2" />
       <circle cx="18" cy="7" r="2.2" />

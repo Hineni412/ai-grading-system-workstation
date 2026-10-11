@@ -1,0 +1,135 @@
+.paper-review { --pr-accent:#176b75; --pr-muted:#657176; --pr-border:#e4e9e5; --pr-subtle:#f3f3ef; color:#202a30; background:#faf9f6; min-width:0; width:100%; padding-bottom:28px; font-size:14px; }
+.paper-review * { box-sizing:border-box; }
+.paper-review button, .paper-review select { font:inherit; color:inherit; }
+.paper-review button { cursor:pointer; }
+.paper-review button:disabled { cursor:default; opacity:.65; }
+.paper-review button:focus-visible, .paper-review tr:focus-visible { outline:2px solid var(--pr-accent); outline-offset:2px; }
+.paper-review h2 { margin:0; font-size:17px; font-weight:600; }
+.paper-review h3 { margin:0 0 10px; font-size:14px; font-weight:600; }
+.paper-review p { margin:8px 0; }
+.paper-review a { color:var(--pr-accent); }
+.paper-review .pr-page-tab { display:block; color:var(--pr-accent); border-bottom:2px solid var(--pr-accent); padding:4px 0 10px; font-weight:600; }
+.paper-review .pr-toolbar { display:flex; align-items:center; gap:16px; padding:10px 24px; flex-wrap:wrap; background:white; border-bottom:1px solid var(--pr-border); }
+.paper-review .pr-toolbar > .pr-hint { margin-left:auto; }
+.paper-review .pr-toolbar label { display:flex; align-items:center; gap:8px; }
+.paper-review select { min-height:34px; border:1px solid var(--pr-border); border-radius:8px; background:white; padding:0 8px; max-width:300px; }
+.paper-review .pr-content { padding:14px 24px 0; display:grid; gap:14px; }
+.paper-review .pr-hint { color:var(--pr-muted); font-size:12px; }
+.paper-review .pr-center { text-align:center; }
+.paper-review .pr-card { background:white; border:1px solid var(--pr-border); border-radius:12px; box-shadow:0 1px 2px rgba(32,42,48,.04); min-width:0; }
+.paper-review .pr-card > header { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding:10px 16px; border-bottom:1px solid var(--pr-border); }
+.paper-review .pr-card > header .pr-hint { margin-left:auto; }
+.paper-review .pr-card > header h3 { margin:0; }
+.paper-review .pr-seg { display:inline-flex; gap:2px; padding:2px; border-radius:8px; background:var(--pr-subtle); }
+.paper-review .pr-seg button, .paper-review .pr-filters button { border:0; background:none; padding:4px 12px; border-radius:6px; color:#59656b; }
+.paper-review .pr-seg .on, .paper-review .pr-filters .on { background:white; color:var(--pr-accent); font-weight:600; box-shadow:0 1px 2px #dfe4e1; }
+.paper-review .pr-hero { display:flex; align-items:stretch; gap:18px; padding:14px 20px; }
+.paper-review .pr-radar { width:300px; flex:none; }
+.paper-review .pr-radar svg { width:100%; height:auto; }
+.paper-review .pr-axis { cursor:pointer; }
+.paper-review .pr-total { width:195px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; text-align:center; padding:0 10px; border-left:1px solid var(--pr-border); border-right:1px solid var(--pr-border); }
+.paper-review .pr-total p { margin:0; font-size:12px; color:#59656b; }
+.paper-review .pr-total-num { font-size:54px; font-weight:700; line-height:1; font-variant-numeric:tabular-nums; }
+.paper-review .pr-total-num small { font-size:18px; font-weight:500; color:var(--pr-muted); }
+.paper-review .pr-chip { display:inline-block; padding:2px 8px; font-size:12px; border:1px solid transparent; border-radius:6px; margin:2px; }
+.paper-review .good { color:#2f7d5c; }
+.paper-review .amber { color:#a5772d; }
+.paper-review .red { color:#b3402a; }
+.paper-review .na { color:#8a9492; }
+.paper-review .pr-chip.good { background:#eef5ef; }
+.paper-review .pr-chip.amber { background:#faf3e9; }
+.paper-review .pr-chip.red { background:#f9eeeb; }
+.paper-review .pr-chip.na { background:var(--pr-subtle); }
+.paper-review .pr-dim-grid { flex:1; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; min-width:0; }
+.paper-review .pr-dim-card { background:white; text-align:left; border:1px solid var(--pr-border); border-radius:10px; padding:8px 12px; min-width:0; }
+.paper-review .pr-dim-card:hover, .paper-review .pr-dim-card.on { border-color:var(--pr-accent); }
+.paper-review .pr-dim-card.on { box-shadow:0 0 0 2px #e5f0ef; }
+.paper-review .pr-dim-head { display:flex; gap:6px; align-items:baseline; }
+.paper-review .pr-dim-head b { font-size:14px; white-space:nowrap; }
+.paper-review .pr-dim-head small { margin-left:auto; color:var(--pr-muted); font-size:11px; white-space:nowrap; }
+.paper-review .pr-dim-score { display:block; font-size:25px; font-weight:700; }
+.paper-review .pr-dim-score.na { font-size:15px; padding:7px 0; }
+.paper-review .pr-bar { display:block; height:6px; background:var(--pr-subtle); border-radius:4px; position:relative; }
+.paper-review .pr-bar i { display:block; height:100%; background:var(--pr-accent); border-radius:4px; }
+.paper-review .pr-bar.good i { background:#2f7d5c; }
+.paper-review .pr-bar.amber i { background:#d0a24e; }
+.paper-review .pr-bar.red i { background:#d08a76; }
+.paper-review .pr-dim-line { display:block; margin-top:5px; font-size:12px; color:#59656b; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.paper-review .pr-dim-panel { position:relative; padding:14px 18px; }
+.paper-review .pr-close { position:absolute; right:10px; top:6px; font-size:22px; border:0; background:none; color:var(--pr-muted); }
+.paper-review .pr-cov-row { display:grid; grid-template-columns:150px 160px 44px minmax(0,1fr); align-items:center; gap:10px; margin:7px 0; font-size:13px; }
+.paper-review .pr-cov-row .pr-bar { height:12px; }
+.paper-review .pr-gauge { position:relative; margin:24px 10px 42px; height:12px; border-radius:6px; background:linear-gradient(90deg,#e4f0e7 11.1%,#fbefd9 11.1%,#fbefd9 88.9%,#f7dfd8 88.9%); }
+.paper-review .pr-gauge-pointer { position:absolute; top:-20px; transform:translateX(-50%); white-space:nowrap; font-size:12px; font-weight:600; }
+.paper-review .pr-gauge-label { position:absolute; top:16px; font-size:11px; color:var(--pr-muted); transform:translateX(-50%); }
+.paper-review .pr-hist { width:100%; max-width:640px; display:block; }
+.paper-review .pr-mini-gauges { display:flex; gap:22px; margin-top:10px; }
+.paper-review .pr-mini-gauges > div { width:130px; }
+.paper-review .pr-mini-gauges b { float:right; }
+.paper-review .pr-mini-gauges .pr-bar { margin-top:4px; }
+.paper-review .pr-watch { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.paper-review .pr-watch-list { padding:12px 16px; display:grid; gap:8px; }
+.paper-review .pr-watch-row { display:flex; align-items:center; gap:10px; border:1px solid var(--pr-border); border-radius:8px; padding:8px 10px; min-width:0; cursor:pointer; }
+.paper-review .pr-watch-row:hover { background:var(--pr-subtle); }
+.paper-review .pr-watch-row > b { font-size:12px; white-space:nowrap; }
+.paper-review .pr-watch-rate { width:68px; flex:none; }
+.paper-review .pr-watch-rate small { font-size:11px; color:var(--pr-muted); }
+.paper-review .pr-watch-reason { min-width:0; flex:1; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.paper-review .pr-dots { display:inline-flex; gap:3px; white-space:nowrap; margin-right:5px; }
+.paper-review .pr-dots i { width:6px; height:6px; border-radius:50%; background:#dde4df; }
+.paper-review .pr-dots .filled { background:var(--pr-accent); }
+.paper-review .pr-marks { display:inline-flex; gap:4px; flex:none; }
+.paper-review .pr-marks button { border:1px solid #d9e0db; background:white; border-radius:5px; padding:2px 6px; font-size:12px; }
+.paper-review .pr-marks .active { color:var(--pr-accent); border-color:var(--pr-accent); background:#eaf3f1; }
+.paper-review .pr-scatter-body { display:grid; grid-template-columns:minmax(0,1fr) 220px; padding:14px 16px; gap:20px; align-items:center; }
+.paper-review .pr-scatter { width:100%; height:auto; overflow:visible; }
+.paper-review .pr-scatter-point { cursor:pointer; }
+.paper-review .pr-scatter-point:hover circle { stroke:#202a30; stroke-width:2px; }
+.paper-review .pr-legend > div { margin:10px 0; }
+.paper-review .pr-legend b { font-size:13px; }
+.paper-review .pr-legend p { font-size:12px; color:var(--pr-muted); margin:3px 0; }
+.paper-review .pr-filters { display:flex; flex-wrap:wrap; gap:5px; padding:10px 16px; background:#f8f9f6; }
+.paper-review .pr-table-scroll { overflow-x:auto; }
+.paper-review table { border-collapse:collapse; width:100%; font-size:13px; min-width:790px; }
+.paper-review th { text-align:left; color:var(--pr-muted); background:#fafbf8; font-size:12px; padding:9px 12px; font-weight:500; }
+.paper-review th small { display:block; font-size:10px; }
+.paper-review td { padding:9px 12px; border-top:1px solid var(--pr-border); }
+.paper-review tbody tr:not(.pr-detail-row) { cursor:pointer; }
+.paper-review tbody tr:not(.pr-detail-row):hover { background:#f5f8f4; }
+.paper-review .pr-group-row { background:#f7f8f5; }
+.paper-review .pr-part-row td:first-child { padding-left:28px; color:var(--pr-muted); }
+.paper-review .pr-rate { display:flex; gap:8px; align-items:center; white-space:nowrap; }
+.paper-review .pr-rate .pr-bar { width:100px; flex:none; height:9px; }
+.paper-review .pr-rate .pr-bar b { position:absolute; top:-3px; height:15px; width:2px; background:#8c9b94; }
+.paper-review .pr-quad { border-radius:5px; padding:2px 6px; font-size:12px; white-space:nowrap; }
+.paper-review .pr-quad.good { color:#2f7d5c; background:#edf5ef; }
+.paper-review .pr-quad.high { color:#496579; background:#edf3f7; }
+.paper-review .pr-quad.free { color:#727e78; background:#f0f3ee; }
+.paper-review .pr-quad.suspect { color:#b3402a; background:#f9eeeb; }
+.paper-review .pr-red-dot { display:inline-block; width:6px; height:6px; background:#b3402a; border-radius:50%; vertical-align:middle; }
+.paper-review .pr-item-detail { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(0,1fr); gap:28px; padding:10px; background:#fafbf8; line-height:1.6; }
+.paper-review .pr-item-detail ol { padding-left:20px; }
+.paper-review .pr-item-detail li { margin:6px 0; }
+.paper-review .pr-table-note { padding:2px 16px 10px; font-size:12px; color:var(--pr-muted); }
+.paper-review .pr-coverage { display:grid; gap:10px; }
+.paper-review .pr-coverage > .pr-hint { margin:0; }
+.paper-review .pr-coverage-tiles { display:flex; flex-wrap:wrap; gap:8px; padding:12px 16px; }
+.paper-review .pr-type-tile { display:flex; flex-direction:column; gap:5px; border-radius:8px; border:1px solid var(--pr-border); padding:8px 10px; max-width:100%; }
+.paper-review .pr-type-tile.selected { background:#eaf2ee; border-color:#a2c1b5; }
+.paper-review .pr-type-tile.secondary { background:linear-gradient(90deg,#eaf2ee 55%,white 55%); border-color:#a2c1b5; }
+.paper-review .pr-type-tile.skipped { background:#fffaf4; border-color:#d3aa67; color:#7c5a24; }
+.paper-review .pr-type-tile.hard { border-style:dashed; border-color:#c3ccc8; color:#808e86; }
+.paper-review .pr-type-title { border:0; padding:0; background:none; text-align:left; font-size:13px; color:inherit; }
+.paper-review .pr-type-title:disabled { opacity:1; }
+.paper-review .pr-type-meta { color:var(--pr-muted); font-size:11px; }
+.paper-review .pr-type-meta b { margin-left:5px; font-weight:500; }
+.paper-review .pr-type-ids { display:flex; gap:4px; }
+.paper-review .pr-type-ids button { border:0; background:#f8fbf7; border-radius:4px; color:var(--pr-accent); font-size:11px; padding:1px 5px; }
+.paper-review .pr-hidden-types { margin:0 16px 14px; color:var(--pr-muted); font-size:12px; }
+.paper-review summary { cursor:pointer; }
+.paper-review .pr-footer { color:var(--pr-muted); font-size:12px; padding:8px 0; }
+.paper-review .pr-footer li { margin:6px 0; line-height:1.7; }
+.paper-review .pr-empty { padding:10px; text-align:center; color:var(--pr-muted); font-size:13px; }
+@media (max-width:1280px) { .paper-review .pr-hero { flex-wrap:wrap; } .paper-review .pr-dim-grid { flex-basis:100%; } .paper-review .pr-watch { grid-template-columns:1fr; } .paper-review .pr-radar { width:340px; } }
+@media (max-width:1050px) { .paper-review .pr-scatter-body { grid-template-columns:1fr; } .paper-review .pr-legend { display:grid; grid-template-columns:1fr 1fr; gap:5px 20px; } .paper-review .pr-cov-row { grid-template-columns:130px 130px 40px; } .paper-review .pr-cov-row > span:last-child { grid-column:1 / -1; } }
+@media (max-width:800px) { .paper-review .pr-content { padding:12px; } .paper-review .pr-dim-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .paper-review .pr-radar { width:min(100%,340px); } .paper-review .pr-total { border:0; width:100%; } .paper-review .pr-item-detail { grid-template-columns:1fr; } }

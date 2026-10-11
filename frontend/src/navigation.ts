@@ -6,6 +6,7 @@ export type WorkspaceRouteId =
   | 'question-assembly'
   | 'training'
   | 'knowledge-overview'
+  | 'teaching-research'
   | 'knowledge-graph'
   | 'results'
   | 'files'
@@ -22,6 +23,7 @@ export type WorkspaceNavigationIcon =
   | 'files'
   | 'question-bank'
   | 'assembly'
+  | 'research'
   | 'graph'
   | 'training'
   | 'students'
@@ -153,6 +155,16 @@ export const knowledgeOverviewRouteDefinition = {
   icon: 'graph',
 } as const satisfies WorkspaceRouteDefinition
 
+export const teachingResearchRouteDefinition = {
+  id: 'teaching-research',
+  label: '教研提升',
+  path: '/teaching-research',
+  title: '教研提升',
+  description: '回看已批改试卷，评价命题效果',
+  breadcrumb: '教研提升',
+  icon: 'research',
+} satisfies WorkspaceRouteDefinition
+
 export const knowledgeGraphRouteDefinition = {
   id: 'knowledge-graph',
   label: '知识与训练',
@@ -236,6 +248,7 @@ export const navigationGroups: readonly WorkspaceNavigationGroup[] = [
     label: '教学分析',
     items: [
       knowledgeOverviewRouteDefinition,
+      teachingResearchRouteDefinition,
     ],
   },
 ] as const

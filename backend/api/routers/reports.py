@@ -28,6 +28,9 @@ from backend.api.schemas.reports import (
     CausePatternEditRequest,
     CausePatternEditResponse,
     ClassAnalysisResponse,
+    PaperReviewResponse,
+    PaperReviewMarkRequest,
+    PaperReviewMarksResponse,
     ClassAnalysisSettingsRequest,
     ClassAnalysisSettingsResponse,
     ReportExportContextResponse,
@@ -690,3 +693,34 @@ def delete_retained_report_file(
         deleted=freed is not None,
         freed_bytes=freed or 0,
     )
+
+@router.get("/sessions/{session_id}/paper-review", response_model=PaperReviewResponse)
+def get_paper_review(
+    session_id: int,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    reports_dir: Path = Depends(get_reports_dir),
+) -> PaperReviewResponse:
+    from backend.reporting.paper_review import build_paper_review
+
+    _require_session(db.sessions, session_id)
+    return PaperReviewResponse(**build_paper_review(db, session_id, reports_dir))
+
+
+@router.put("/sessions/{session_id}/paper-review/marks/{parent_question_id}", response_model=PaperReviewMarksResponse)
+def put_paper_review_mark(
+    session_id: int,
+    parent_question_id: str,
+    request: PaperReviewMarkRequest,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    reports_dir: Path = Depends(get_reports_dir),
+) -> PaperReviewMarksResponse:
+    from backend.reporting.paper_review import save_paper_review_mark
+
+    _require_session(db.sessions, session_id)
+    try:
+        result = save_paper_review_mark(db, session_id, parent_question_id, request.mark, reports_dir)
+    except ValueError as exc:
+        raise ApiError(422, "invalid_paper_review_parent", str(exc)) from exc
+    except OSError as exc:
+        raise ApiError(409, "paper_review_mark_save_failed", str(exc)) from exc
+    return PaperReviewMarksResponse(**result)

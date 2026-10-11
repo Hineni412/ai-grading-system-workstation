@@ -13,6 +13,7 @@ import {
   gradingRunRouteDefinition,
   knowledgeGraphRouteDefinition,
   knowledgeOverviewRouteDefinition,
+  teachingResearchRouteDefinition,
   reviewRouteDefinition,
   workbenchRouteDefinition,
   modelProfilesRouteDefinition,
@@ -127,6 +128,16 @@ const routes: RouteRecordRaw[] = [
       title: knowledgeOverviewRouteDefinition.title,
       description: knowledgeOverviewRouteDefinition.description,
       breadcrumb: knowledgeOverviewRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: teachingResearchRouteDefinition.path,
+    name: teachingResearchRouteDefinition.id,
+    component: () => import('../views/TeachingResearchView.vue'),
+    meta: {
+      title: teachingResearchRouteDefinition.title,
+      description: teachingResearchRouteDefinition.description,
+      breadcrumb: teachingResearchRouteDefinition.breadcrumb,
     },
   },
   {

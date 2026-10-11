@@ -240,3 +240,33 @@ class ReportExportContextResponse(BaseModel):
     page: int
     page_size: int
     total_pages: int
+
+class PaperReviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["ready", "no_data"]
+    session_id: int
+    title: str
+    graded_at: str | None
+    full_score: float
+    students: int
+    classes: dict[str, int]
+    small_sample: bool
+    total: int | None
+    dimensions: list[dict[str, Any]]
+    items: list[dict[str, Any]]
+    groups: list[dict[str, Any]]
+    coverage_types: dict[str, dict[str, Any]]
+    unlinked_sections: int = 0
+    review_lists: dict[str, list[dict[str, str]]]
+    marks: dict[str, Literal["keep", "fix"]]
+
+
+class PaperReviewMarkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mark: Literal["keep", "fix"] | None
+
+
+class PaperReviewMarksResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    marks: dict[str, Literal["keep", "fix"]]
