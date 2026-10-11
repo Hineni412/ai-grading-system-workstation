@@ -10,18 +10,18 @@ import {
   compareByClassGap,
   compareByRate,
   compareByZeroShare,
+  consecutiveRankChanges,
   criticalStudents,
   displayAnswer,
   medianOf,
   questionRatesFor,
-  rankChangeGroups,
   rankChanges,
+  rankTierChanges,
   scoreStructureFor,
   subQuestionLabelFor,
   subQuestionOf,
   summarizeStudents,
   zeroShareOf,
-  type RankChange,
   type SortableQuestionEntry,
 } from '../results-overview';
 import { buildWalkthroughDeck, type WalkthroughCard } from '../paper-walkthrough';
@@ -219,28 +219,126 @@ describe('results overview pure helpers', () => {
     expect(changes[0]!.change).toBe(1)
   })
 
-  it('groups rank changes by direction with threshold 5 and the requested limit', () => {
-    const entry = (id: number, change: number): RankChange => ({
-      student: student(id, 80, 100),
-      previousScore: 70,
-      previousMax: 100,
-      currentRank: 1,
-      previousRank: 1 + change,
-      currentSize: 10,
-      change,
+  // order[0] = 班内第 1 名：按给定的名次顺序生成一场考试
+  const examOrder = (order: number[], klass = '9'): ResultsCenterStudent[] =>
+    order.map((id, index) => student(id, 1000 - index, 100, klass))
+
+  const tierIds = (entries: { student: ResultsCenterStudent }[]) =>
+    entries.map((entry) => entry.student.student_id)
+
+  it('assigns tier boundaries with k = ceil(size/4) for 45 students', () => {
+    // k=12：前层 rank≤12（12 在、13 不在）；后层 rank>33（33 不在、34 在）
+    const previous = examOrder(Array.from({ length: 45 }, (_, i) => i + 1))
+    const order = Array.from({ length: 45 }, (_, i) => i + 1)
+    for (const [a, b] of [[12, 13], [33, 34]] as const) {
+      ;[order[a - 1], order[b - 1]] = [order[b - 1]!, order[a - 1]!]
+    }
+    const result = rankTierChanges(examOrder(order), previous)
+    expect(tierIds(result.enteringTop)).toEqual([13])
+    expect(tierIds(result.leavingTop)).toEqual([12])
+    expect(tierIds(result.enteringBottom)).toEqual([33])
+    expect(tierIds(result.leavingBottom)).toEqual([34])
+  })
+
+  it('uses each exam own cohort size for the tier boundaries', () => {
+    // 上次 40 人（k=10：前层 ≤10、后层 >30），本次 45 人（k=12：前层 ≤12、后层 >33）
+    const previous = examOrder(Array.from({ length: 40 }, (_, i) => i + 1))
+    const order = Array.from({ length: 45 }, (_, i) => i + 1)
+    // id 15 升到第 11 名真正进入前层；id 11–14 顺移，其余名次不变
+    order.splice(10, 0, order.splice(14, 1)[0]!)
+    const result = rankTierChanges(examOrder(order), previous)
+    expect(tierIds(result.enteringTop)).toEqual([15])
+    // id 31–33 名次没变，仅因后层边界从 >30 移到 >33，不算走出后层
+    expect(result.leavingBottom).toHaveLength(0)
+    expect(result.leavingTop).toHaveLength(0)
+    expect(result.enteringBottom).toHaveLength(0)
+  })
+
+  it('lets one student appear in both the top and bottom transitions', () => {
+    // 四组不互斥：第 5 名跌到第 40 名，同时“跌出前 1/4”与“跌入后 1/4”
+    const previous = examOrder(Array.from({ length: 45 }, (_, i) => i + 1))
+    const order = Array.from({ length: 45 }, (_, i) => i + 1).filter((id) => id !== 5)
+    order.splice(39, 0, 5)
+    const result = rankTierChanges(examOrder(order), previous)
+    expect(tierIds(result.leavingTop)).toEqual([5])
+    expect(tierIds(result.enteringBottom)).toEqual([5])
+  })
+
+  it('treats tied students as the same rank for tier membership', () => {
+    // 8 人班（k=2）：id3 与 id2 同分并列第 2 → 进入前层
+    const scores = [100, 90, 89, 80, 70, 60, 50, 40]
+    const previous = scores.map((score, index) => student(index + 1, score, 100, '8'))
+    const current = scores.map((score, index) => student(
+      index + 1, index === 2 ? 90 : score, 100, '8',
+    ))
+    const result = rankTierChanges(current, previous)
+    expect(tierIds(result.enteringTop)).toEqual([3])
+  })
+
+  it('excludes students who changed class or are incomplete from tier changes', () => {
+    const previous = examOrder(Array.from({ length: 8 }, (_, i) => i + 1))
+    const current = Array.from({ length: 8 }, (_, i) => {
+      const id = i + 1
+      if (id === 1) {
+        return student(1, 100, 100, '9', { ungraded_count: 1, status: 'incomplete' })
+      }
+      if (id === 2) return student(2, 95, 100, '10')
+      return student(id, 1000 - id, 100, '9')
     })
-    const improved = Array.from({ length: 12 }, (_, index) => entry(100 + index, 5 + index))
-    const groups = rankChangeGroups([
-      ...improved,
-      entry(1, 4),
-      entry(2, -6),
-      entry(3, -5),
-    ], 5, 10)
-    expect(groups.improved).toHaveLength(10)
-    expect(groups.improved[0]!.change).toBe(16)
-    expect(groups.improved.every((row) => row.change >= 5)).toBe(true)
-    expect(groups.declined.map((row) => row.student.student_id)).toEqual([2, 3])
-    expect(groups.declined.every((row) => row.change <= -5)).toBe(true)
+    const result = rankTierChanges(current, previous)
+    expect(tierIds(result.enteringTop)).not.toContain(1)
+    expect(tierIds(result.enteringTop)).not.toContain(2)
+    expect(tierIds(result.enteringBottom)).not.toContain(1)
+    expect(tierIds(result.enteringBottom)).not.toContain(2)
+  })
+
+  it('detects consecutive improvement and decline only when both legs reach the step', () => {
+    const earlier = examOrder([10, 9, 6, 5, 4, 3, 7, 8, 2, 1,
+      11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
+    const previous = examOrder([5, 3, 6, 7, 8, 1, 2, 9, 4, 10,
+      11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
+    const current = examOrder([5, 1, 2, 6, 7, 8, 9, 10, 3, 11,
+      12, 13, 4, 14, 15, 16, 17, 18, 19, 20, 21])
+    const result = consecutiveRankChanges(current, previous, earlier)
+    // id1：10→6→2 两段各 4 名 → 连续进步；id4：5→9→13 两段各退 4 名 → 连续退步
+    expect(result.improving.map((entry) => entry.student.student_id)).toEqual([1])
+    expect(result.improving[0]).toMatchObject({
+      earlierRank: 10, previousRank: 6, currentRank: 2, totalChange: 8,
+    })
+    expect(result.declining.map((entry) => entry.student.student_id)).toEqual([4])
+    // id2：9→7 第一段只有 2 名；id3：6→2→9 方向相反；id21：第三场无记录
+    expect(tierIds(result.improving)).not.toContain(2)
+    expect(tierIds(result.improving)).not.toContain(3)
+    expect(tierIds(result.improving)).not.toContain(21)
+    expect(tierIds(result.declining)).not.toContain(2)
+    expect(tierIds(result.declining)).not.toContain(3)
+    expect(tierIds(result.declining)).not.toContain(21)
+  })
+
+  it('excludes students who changed class or are incomplete in any of the three exams', () => {
+    // id1：10→6→2 本应连续进步；任一场换班或未完成都不计入
+    const earlier = examOrder([10, 9, 6, 5, 4, 3, 7, 8, 2, 1])
+    const previous = examOrder([5, 3, 6, 7, 8, 1, 2, 9, 4, 10])
+    const current = examOrder([5, 1, 2, 6, 7, 8, 9, 10, 3, 11])
+    const improvingIds = (
+      prev: ResultsCenterStudent[],
+      early: ResultsCenterStudent[],
+    ) => consecutiveRankChanges(current, prev, early)
+      .improving.map((entry) => entry.student.student_id)
+    const otherClass = previous.map((entry) => (
+      entry.student_id === 1 ? { ...entry, class_name: '10' } : entry
+    ))
+    expect(improvingIds(otherClass, earlier)).not.toContain(1)
+    const movedEarly = earlier.map((entry) => (
+      entry.student_id === 1 ? { ...entry, class_name: '10' } : entry
+    ))
+    expect(improvingIds(previous, movedEarly)).not.toContain(1)
+    const incomplete = previous.map((entry) => (
+      entry.student_id === 1
+        ? { ...entry, ungraded_count: 1, status: 'incomplete' as const }
+        : entry
+    ))
+    expect(improvingIds(incomplete, earlier)).not.toContain(1)
   })
 
   it('groups critical students by gap to the pass and excellent lines', () => {

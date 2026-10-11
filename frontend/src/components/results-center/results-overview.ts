@@ -344,8 +344,10 @@ export interface RankChange {
   previousMax: number
   previousRank: number
   currentRank: number
-  /** 本次班内参与排名的完整学生数，用于名次轨道比例。 */
+  /** 本次班内参与排名的完整学生数。 */
   currentSize: number
+  /** 上次班内参与排名的完整学生数。 */
+  previousSize: number
   /** 上次名次 − 本次名次；正数为进步 */
   change: number
 }
@@ -376,31 +378,135 @@ export function rankChanges(
       previousRank: previousEntry.rank,
       currentRank: currentEntry.rank,
       currentSize: currentEntry.size,
+      previousSize: previousEntry.size,
       change: previousEntry.rank - currentEntry.rank,
     })
   }
   return entries
 }
 
-export function rankChangeGroups(
-  entries: readonly RankChange[],
-  minChange = 5,
-  limit = 8,
-): { improved: RankChange[]; declined: RankChange[] } {
-  const byChange = (left: RankChange, right: RankChange) => (
+export interface RankTierEntry {
+  student: ResultsCenterStudent
+  previousRank: number
+  currentRank: number
+  /** 上次名次 − 本次名次；正数为进步 */
+  change: number
+}
+
+export interface RankTierChanges {
+  /** 上次不在前 1/4、本次在前 1/4 */
+  enteringTop: RankTierEntry[]
+  /** 上次在前 1/4、本次不在 */
+  leavingTop: RankTierEntry[]
+  /** 上次在后 1/4、本次不在 */
+  leavingBottom: RankTierEntry[]
+  /** 上次不在后 1/4、本次在后 1/4 */
+  enteringBottom: RankTierEntry[]
+}
+
+/** 班内名次按各场各班 ceil(size/4) 分前后两层，比较两场间的进层/出层；组间不互斥。 */
+export function rankTierChanges(
+  current: readonly ResultsCenterStudent[],
+  previous: readonly ResultsCenterStudent[],
+): RankTierChanges {
+  const groups: RankTierChanges = {
+    enteringTop: [],
+    leavingTop: [],
+    leavingBottom: [],
+    enteringBottom: [],
+  }
+  for (const entry of rankChanges(current, previous)) {
+    const item: RankTierEntry = {
+      student: entry.student,
+      previousRank: entry.previousRank,
+      currentRank: entry.currentRank,
+      change: entry.change,
+    }
+    const topBefore = entry.previousRank <= Math.ceil(entry.previousSize / 4)
+    const topNow = entry.currentRank <= Math.ceil(entry.currentSize / 4)
+    const bottomBefore = entry.previousRank
+      > entry.previousSize - Math.ceil(entry.previousSize / 4)
+    const bottomNow = entry.currentRank
+      > entry.currentSize - Math.ceil(entry.currentSize / 4)
+    if (!topBefore && topNow && entry.change > 0) groups.enteringTop.push(item)
+    if (topBefore && !topNow && entry.change < 0) groups.leavingTop.push(item)
+    if (bottomBefore && !bottomNow && entry.change > 0) groups.leavingBottom.push(item)
+    if (!bottomBefore && bottomNow && entry.change < 0) groups.enteringBottom.push(item)
+  }
+  const byMagnitude = (left: RankTierEntry, right: RankTierEntry) => (
     Math.abs(right.change) - Math.abs(left.change)
     || left.student.student_id - right.student.student_id
   )
-  return {
-    improved: entries
-      .filter((entry) => entry.change >= minChange)
-      .sort(byChange)
-      .slice(0, limit),
-    declined: entries
-      .filter((entry) => entry.change <= -minChange)
-      .sort(byChange)
-      .slice(0, limit),
+  groups.enteringTop.sort(byMagnitude)
+  groups.leavingTop.sort(byMagnitude)
+  groups.leavingBottom.sort(byMagnitude)
+  groups.enteringBottom.sort(byMagnitude)
+  return groups
+}
+
+export interface ConsecutiveRankEntry {
+  student: ResultsCenterStudent
+  earlierRank: number
+  previousRank: number
+  currentRank: number
+  /** 第三场名次 − 本场名次；正数为进步 */
+  totalChange: number
+}
+
+/** 三场考试同班且都完整的学生中，两段名次变化同向且各 ≥ minStep。 */
+export function consecutiveRankChanges(
+  current: readonly ResultsCenterStudent[],
+  previous: readonly ResultsCenterStudent[],
+  earlier: readonly ResultsCenterStudent[],
+  minStep = 3,
+): { improving: ConsecutiveRankEntry[]; declining: ConsecutiveRankEntry[] } {
+  const currentRanks = classRanksOf(current)
+  const previousRanks = classRanksOf(previous)
+  const earlierRanks = classRanksOf(earlier)
+  const previousById = new Map(
+    previous.map((student) => [student.student_id, student] as const),
+  )
+  const earlierById = new Map(
+    earlier.map((student) => [student.student_id, student] as const),
+  )
+  const improving: ConsecutiveRankEntry[] = []
+  const declining: ConsecutiveRankEntry[] = []
+  for (const student of current) {
+    const before = previousById.get(student.student_id)
+    const first = earlierById.get(student.student_id)
+    if (!before || !first) continue
+    if (!isCompleteStudent(student)
+      || !isCompleteStudent(before)
+      || !isCompleteStudent(first)) continue
+    const klass = student.class_name ?? ''
+    if ((before.class_name ?? '') !== klass
+      || (first.class_name ?? '') !== klass) continue
+    const earlierEntry = earlierRanks.get(student.student_id)
+    const previousEntry = previousRanks.get(student.student_id)
+    const currentEntry = currentRanks.get(student.student_id)
+    if (!earlierEntry || !previousEntry || !currentEntry) continue
+    const entry: ConsecutiveRankEntry = {
+      student,
+      earlierRank: earlierEntry.rank,
+      previousRank: previousEntry.rank,
+      currentRank: currentEntry.rank,
+      totalChange: earlierEntry.rank - currentEntry.rank,
+    }
+    if (earlierEntry.rank - previousEntry.rank >= minStep
+      && previousEntry.rank - currentEntry.rank >= minStep) {
+      improving.push(entry)
+    } else if (previousEntry.rank - earlierEntry.rank >= minStep
+      && currentEntry.rank - previousEntry.rank >= minStep) {
+      declining.push(entry)
+    }
   }
+  const byMagnitude = (left: ConsecutiveRankEntry, right: ConsecutiveRankEntry) => (
+    Math.abs(right.totalChange) - Math.abs(left.totalChange)
+    || left.student.student_id - right.student.student_id
+  )
+  improving.sort(byMagnitude)
+  declining.sort(byMagnitude)
+  return { improving, declining }
 }
 
 /** 同一学期卷别下可作对比的其他已完成考试，按创建时间从近到远。 */
