@@ -745,3 +745,41 @@ def test_load_point_links_keeps_saved_and_fallback_links_without_repeated_row_sc
         source_kind="link_job", graph_release_id=releases["r-old"],
     ),)
     assert path.read_bytes() == before
+
+
+def test_load_point_links_memo_tracks_materials_version_and_bypasses_without_versions(
+    monkeypatch,
+):
+    """The per-process memo follows the materials data-version token; without
+    version coverage every call reads again, as before."""
+    from question_bank.solution_evidence import knowledge_links
+
+    calls = []
+    monkeypatch.setattr(
+        knowledge_links,
+        "_load_point_links",
+        lambda db_path, ids, release, **kw: calls.append(tuple(ids)) or {"v": {}},
+    )
+    token = {"value": ("db", "dv", 1)}
+    monkeypatch.setattr(
+        knowledge_links,
+        "data_version_token",
+        lambda *args, **kwargs: token["value"],
+    )
+    knowledge_links._POINT_LINKS_CACHE._entries.clear()
+
+    knowledge_links.load_point_links("db", ["e1"], "r1")
+    knowledge_links.load_point_links("db", ["e1"], "r1")
+    assert len(calls) == 1
+    knowledge_links.load_point_links("db", ["e1"], "r2")
+    assert len(calls) == 2
+
+    token["value"] = ("db", "dv", 2)
+    knowledge_links.load_point_links("db", ["e1"], "r1")
+    assert len(calls) == 3
+
+    token["value"] = None
+    knowledge_links.load_point_links("db", ["e1"], "r1")
+    knowledge_links.load_point_links("db", ["e1"], "r1")
+    assert len(calls) == 5
+    knowledge_links._POINT_LINKS_CACHE._entries.clear()

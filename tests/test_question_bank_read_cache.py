@@ -20,8 +20,11 @@ from question_bank.services.question_read_service import (
 @pytest.fixture(autouse=True)
 def _clear_read_result_cache():
     read_module._READ_RESULT_CACHE.clear()
+    from backend.jobs import question_bank_repair as repair_module
+    repair_module._TYPE_CONTRACT_CACHE.clear()
     yield
     read_module._READ_RESULT_CACHE.clear()
+    repair_module._TYPE_CONTRACT_CACHE.clear()
 
 
 def test_cache_values_preserves_nested_shapes_and_mixed_type_order():
@@ -1151,6 +1154,56 @@ def test_repair_preview_builds_one_taxonomy_governance_for_multi_batch_gaps(tmp_
 
     monkeypatch.setattr(repair, '_plan_taxonomy', split_plan)
     assert repair._compute_repair_preview(service, 'bnu24-math-g8-upper', 'all') == preview
+
+
+def test_type_contracts_replan_only_changed_questions(tmp_path, monkeypatch):
+    """Repeated contract planning serves unchanged questions from the per-era
+    cache and re-plans only those whose source content moved."""
+    from dataclasses import dataclass, field, replace as dataclass_replace
+    from backend.jobs import question_bank_repair as repair
+
+    @dataclass(frozen=True)
+    class _Question:
+        question_id: int
+        source_content_hash: str
+        tagging_context: object = None
+        taxonomy_contract: object = field(default_factory=dict)
+
+    plans = []
+
+    def counted_plan(runner, governance, *, contexts):
+        plans.append(set(contexts))
+        return {qid: {'contract': qid} for qid in contexts}, 1
+
+    monkeypatch.setattr(repair, '_plan_taxonomy', counted_plan)
+    monkeypatch.setattr(repair, '_taxonomy_generation_token', lambda: ('tax', 1))
+    monkeypatch.setattr(repair, 'data_version_token', lambda *a, **k: ('db', 'dv', 1))
+    monkeypatch.setattr(
+        repair, 'TaxonomyGovernance',
+        lambda **kwargs: SimpleNamespace(state_path='TEST-governance'),
+    )
+    questions = [_Question(1, 'hash-1'), _Question(2, 'hash-2'), _Question(3, 'hash-3')]
+
+    planned = repair._with_type_contracts(questions, tmp_path / 'bank.db')
+    assert plans == [{1, 2, 3}]
+    assert [question.taxonomy_contract for question in planned] == [
+        {'contract': 1}, {'contract': 2}, {'contract': 3}]
+
+    assert repair._with_type_contracts(questions, tmp_path / 'bank.db') == planned
+    assert plans == [{1, 2, 3}]  # All hits: no re-planning at all.
+
+    changed = [questions[0], dataclass_replace(questions[1], source_content_hash='hash-2b'), questions[2]]
+    replanned = repair._with_type_contracts(changed, tmp_path / 'bank.db')
+    assert plans == [{1, 2, 3}, {2}]  # Only the changed question re-planned.
+    assert [question.taxonomy_contract for question in replanned] == [
+        {'contract': 1}, {'contract': 2}, {'contract': 3}]
+
+    monkeypatch.setattr(repair, 'data_version_token', lambda *a, **k: None)
+    monkeypatch.setattr(repair, 'commit_generation', lambda *a, **k: ('fallback', 1))
+    fresh = [_Question(9, 'hash-9')]
+    repair._with_type_contracts(fresh, tmp_path / 'bank.db')
+    repair._with_type_contracts(fresh, tmp_path / 'bank.db')
+    assert plans[-1] == {9}  # Commit-generation fallback still memoizes per era.
 
 
 def test_tag_source_currentness_tolerates_legacy_fingerprint_tag_writes(tmp_path):

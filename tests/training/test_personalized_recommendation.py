@@ -2739,12 +2739,21 @@ def test_source_snapshot_pool_survives_restart_and_invalidates(
 
     monkeypatch.setattr(direct_module, "_source_snapshot_uncached", tracked)
 
-    # A question-bank commit changes the content revision → recompute.
+    # A non-materials-domain commit leaves every pool input unchanged → reuse.
     restart()
     with connect(direct_module.db_path) as conn:
         conn.execute(
             "INSERT INTO training_tasks(task_code,status)"
             " VALUES('TEST-pool-invalidation','completed')")
+    direct_module._source_snapshot()
+    assert calls == []
+
+    # A materials-domain write changes the read revision → recompute.
+    restart()
+    with connect(direct_module.db_path) as conn:
+        conn.execute(
+            "UPDATE questions SET question_text = question_text || 'x'"
+            " WHERE id = 100")
     direct_module._source_snapshot()
     assert calls == [True]
 

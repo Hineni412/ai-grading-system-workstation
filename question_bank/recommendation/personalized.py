@@ -3472,8 +3472,10 @@ class PersonalizedRecommendationModule:
             str(Path(self.db_path).resolve(strict=False)),
             str(Path(self.data_root).resolve(strict=False)),
             str(self.current_knowledge.release_id),
+            # The snapshot reads only materials tables; the excluded ids it
+            # consumes are already explicit inputs below.
             data_version_token(
-                self.db_path, "materials", "training_records", "training_ops"
+                self.db_path, "materials"
             ) or f"commits:{commit_generation(self.db_path)}",
             tuple(sorted(int(qid) for qid in (excluded_question_ids or ()))),
             tuple(sorted(str(item) for item in knowledge_keys)),
@@ -3483,7 +3485,11 @@ class PersonalizedRecommendationModule:
             (
                 candidate_config.difficulty_min, candidate_config.difficulty_max,
                 tuple(sorted(candidate_config.scope_keys)),
-                _allowed_keys_for_config(candidate_config, self.current_knowledge),
+                # A frozenset pickles in arbitrary order; the persisted pool
+                # name would change every process. Sort for a stable key.
+                tuple(sorted(allowed))
+                if (allowed := _allowed_keys_for_config(
+                    candidate_config, self.current_knowledge)) is not None else None,
                 _progress_chapter(candidate_config, self.current_knowledge) is not None,
             )
             if candidate_config is not None
@@ -5074,7 +5080,9 @@ def _persistent_source_snapshot(module, key: tuple, compute) -> tuple:
         return compute()
     pkey = tuple(part for index, part in enumerate(key) if index not in (1, 4))
     if versions is not None:
-        changes = (("dv", tuple(sorted(versions.items()))), tuple(sorted(manifest.items())))
+        # The snapshot reads only materials tables; excluded ids and scope are
+        # already explicit key inputs.
+        changes = (("dv", ("materials", versions.get("materials"))), tuple(sorted(manifest.items())))
     else:
         changes = (database_change_stamp(module.db_path), tuple(sorted(manifest.items())))
     store = persistent_entry_store(Path(module.data_root) / "cache" / "recommendation_pools",
@@ -5086,7 +5094,7 @@ def _persistent_source_snapshot(module, key: tuple, compute) -> tuple:
     after_manifest = _skill_asset_manifest(Path(module.data_root))
     if versions is not None:
         after_versions = data_versions(module.db_path)
-        after = (("dv", tuple(sorted(after_versions.items()))),
+        after = (("dv", ("materials", after_versions.get("materials"))),
                  tuple(sorted((after_manifest or {}).items()))) if after_versions is not None else None
     else:
         after = (database_change_stamp(module.db_path),

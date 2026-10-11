@@ -366,3 +366,49 @@ def test_chapter_target_mapping_does_not_cache_unversioned_resolvers(monkeypatch
     assert module.chapter_target_kinds(resolver, "TEST-unknown-volume") == {}
     assert module.chapter_target_kinds(None, "TEST-unknown-volume") == {}
     assert not module._TYPE_RELEASE_CACHE
+
+
+def test_active_database_memo_tracks_materials_version_and_bypasses_unversioned(
+    tmp_path, monkeypatch,
+) -> None:
+    """Repeated active-database reads share one resolver while the materials
+    version is stable; a version bump reopens, and missing coverage means no
+    memoization at all."""
+    import integration.data_generation as data_generation
+    from question_bank import current_knowledge as current_module
+
+    database = tmp_path / "question_bank.db"
+    initialize_database(database)
+    ensure_checked_in_current_standard(database)
+    current_module._clear_resolver_cache_for_tests()
+
+    calls = []
+    original = CurrentKnowledgeResolver._open_active_database
+
+    def counted(cls, path, **kwargs):
+        calls.append(str(path))
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(
+        CurrentKnowledgeResolver, "_open_active_database", classmethod(counted)
+    )
+    token = {"value": ("db", "dv", 1)}
+    monkeypatch.setattr(
+        data_generation, "data_version_token", lambda *args, **kwargs: token["value"]
+    )
+
+    first = CurrentKnowledgeResolver.from_active_database(database)
+    second = CurrentKnowledgeResolver.from_active_database(database)
+    assert second is first and len(calls) == 1
+
+    token["value"] = ("db", "dv", 2)
+    third = CurrentKnowledgeResolver.from_active_database(database)
+    # The version bump reopens the database; the release-identity resolver
+    # cache may still return the same immutable object.
+    assert len(calls) == 2 and third.release_id == first.release_id
+
+    token["value"] = None
+    fourth = CurrentKnowledgeResolver.from_active_database(database)
+    assert len(calls) == 3
+    CurrentKnowledgeResolver.from_active_database(database)
+    assert len(calls) == 4

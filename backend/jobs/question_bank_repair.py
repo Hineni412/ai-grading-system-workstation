@@ -1,12 +1,15 @@
 """Explicit, previewed question-bank gaps; never submit the whole library."""
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
+import threading
 from typing import Any, Callable
 
+from integration.data_generation import commit_generation, data_version_token
 from integration.result_cache import ResultCache
 from question_bank.database.schema import connect
 from question_bank.services.question_read_service import (
@@ -32,11 +35,52 @@ from .tagging_sync import _failure, _load_tagging_candidates, _plan_taxonomy
 _REPAIR_PREVIEW_FLIGHTS = ResultCache(limit=1, max_bytes=0)
 
 
+_TYPE_CONTRACT_CACHE_LIMIT = 256
+_TYPE_CONTRACT_CACHE_LOCK = threading.Lock()
+# Snapshots are deeply immutable, so hits share the object directly.
+_TYPE_CONTRACT_CACHE: OrderedDict[tuple, tuple[Any, int]] = OrderedDict()
+
+
 def _with_type_contracts(questions, db_path: Path, governance=None):
     governance = governance or TaxonomyGovernance(
         state_path=get_taxonomy_governance().state_path, knowledge_graph_db_path=db_path)
-    contracts, _revision = _plan_taxonomy(None, governance,
-        contexts={question.question_id: question.tagging_context for question in questions})
+    taxonomy_token = _taxonomy_generation_token()
+    generation = data_version_token(db_path, "materials") or commit_generation(db_path)
+    state_path = str(getattr(governance, "state_path", "") or "")
+    keys: dict[int, tuple] = {}
+    contracts: dict[int, Any] = {}
+    revisions: set[int] = set()
+    missing = []
+    for question in questions:
+        key = ("type-contract-v1", int(question.question_id),
+               str(getattr(question, "source_content_hash", "") or ""),
+               taxonomy_token, generation, state_path)
+        keys[question.question_id] = key
+        with _TYPE_CONTRACT_CACHE_LOCK:
+            entry = _TYPE_CONTRACT_CACHE.get(key)
+            if entry is not None:
+                _TYPE_CONTRACT_CACHE.move_to_end(key)
+        if entry is None:
+            missing.append(question)
+            continue
+        snapshot, revision = entry
+        contracts[question.question_id] = snapshot
+        revisions.add(revision)
+    if missing:
+        # Contracts are planned per question from one shared snapshot, so only
+        # questions whose content or taxonomy era changed are re-planned.
+        planned, revision = _plan_taxonomy(None, governance,
+            contexts={question.question_id: question.tagging_context for question in missing})
+        revisions.add(revision)
+        with _TYPE_CONTRACT_CACHE_LOCK:
+            for question_id, snapshot in planned.items():
+                contracts[question_id] = snapshot
+                _TYPE_CONTRACT_CACHE[keys[question_id]] = (snapshot, revision)
+                _TYPE_CONTRACT_CACHE.move_to_end(keys[question_id])
+            while len(_TYPE_CONTRACT_CACHE) > _TYPE_CONTRACT_CACHE_LIMIT:
+                _TYPE_CONTRACT_CACHE.popitem(last=False)
+    if len(revisions) > 1:
+        raise ValueError("per-question taxonomy plans do not share one revision")
     return [replace(question, taxonomy_contract=contracts.get(question.question_id, {}))
             for question in questions]
 

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,6 +15,8 @@ from question_bank.taxonomy.curriculum_catalog import (
 TYPE_KEY_PATTERN = r"^kp_[a-z0-9_]+_t\d{2}$"
 _TYPE_KEY = re.compile(TYPE_KEY_PATTERN)
 _TYPE_RELEASE_CACHE_LIMIT = 16
+_LOOKUP_MEMO_LIMIT = 8192
+_lookup_memo_lock = threading.Lock()
 
 
 @dataclass
@@ -25,6 +29,40 @@ class _ReleaseTypeScope:
 
 
 _TYPE_RELEASE_CACHE: dict[tuple[str, str], _ReleaseTypeScope] = {}
+# Per-release lookup answers: release identity fully determines every input
+# (resolver scope and the bundled curriculum catalog are both immutable).
+_kind_memo: OrderedDict[tuple, str] = OrderedDict()
+_target_memo: OrderedDict[tuple, bool] = OrderedDict()
+
+
+def _release_identity(resolver: Any) -> tuple | None:
+    release_id = str(getattr(resolver, "release_id", "") or "")
+    if not release_id:
+        return None
+    # The knowledge-target fallback reads resolver policy attributes beyond
+    # the release payload; both belong to the memo identity.
+    return (
+        release_id,
+        str(getattr(resolver, "content_hash", "") or ""),
+        getattr(resolver, "taxonomy_revision", None),
+        tuple(getattr(resolver, "knowledge_target_volumes", ()) or ()),
+    )
+
+
+def _memoized(memo: OrderedDict, memo_key: tuple, compute) -> Any:
+    with _lookup_memo_lock:
+        cached = memo.get(memo_key)
+        if cached is not None:
+            memo.move_to_end(memo_key)
+    if cached is not None:
+        return cached
+    value = compute()
+    with _lookup_memo_lock:
+        memo[memo_key] = value
+        memo.move_to_end(memo_key)
+        while len(memo) > _LOOKUP_MEMO_LIMIT:
+            memo.popitem(last=False)
+    return value
 
 
 def is_type_key(key: object) -> bool:
@@ -146,17 +184,25 @@ def chapter_target_kind(resolver: Any, volume_id: object, chapter_id: object = "
 
 def target_kind_for_key(key: object, resolver: Any, volume_id: object = "") -> str:
     clean_key = str(key or "").strip()
-    scope = _release_type_scope(resolver)
-    volume, chapter = scope.nodes.get(clean_key) or _scope_for_key(clean_key, {})
-    selected = str(volume_id or "").strip() or volume
-    kinds = _chapter_target_kinds(resolver, scope, selected)
-    if selected and chapter:
-        return kinds.get(chapter,
-                         "knowledge" if _knowledge_fallback(resolver, selected) else "skill")
-    values = set(kinds.values())
-    if len(values) == 1:
-        return next(iter(values))
-    return "mixed" if values else "skill"
+    selected_arg = str(volume_id or "").strip()
+
+    def compute() -> str:
+        scope = _release_type_scope(resolver)
+        volume, chapter = scope.nodes.get(clean_key) or _scope_for_key(clean_key, {})
+        selected = selected_arg or volume
+        kinds = _chapter_target_kinds(resolver, scope, selected)
+        if selected and chapter:
+            return kinds.get(chapter,
+                             "knowledge" if _knowledge_fallback(resolver, selected) else "skill")
+        values = set(kinds.values())
+        if len(values) == 1:
+            return next(iter(values))
+        return "mixed" if values else "skill"
+
+    identity = _release_identity(resolver)
+    if identity is None:
+        return compute()
+    return _memoized(_kind_memo, (clean_key, identity, selected_arg), compute)
 
 
 def type_keys_active(resolver: Any, volume_id: object = "", chapter_id: object = "") -> bool:
@@ -172,15 +218,23 @@ def type_keys_active(resolver: Any, volume_id: object = "", chapter_id: object =
 
 def is_training_target(key: object, resolver: Any, volume_id: object = "", chapter_id: object = "") -> bool:
     clean_key = str(key or "").strip()
-    kind = (chapter_target_kind(resolver, volume_id, chapter_id) if chapter_id
-            else target_kind_for_key(clean_key, resolver, volume_id))
-    if kind == "type":
-        return is_type_key(clean_key)
-    if kind == "knowledge":
-        node = curriculum_knowledge_node(clean_key)
-        return bool(node and int(node["level"]) == 3
-                    and (not volume_id or node["volume_id"] == str(volume_id)))
-    return clean_key.startswith("sk_")
+
+    def compute() -> bool:
+        kind = (chapter_target_kind(resolver, volume_id, chapter_id) if chapter_id
+                else target_kind_for_key(clean_key, resolver, volume_id))
+        if kind == "type":
+            return is_type_key(clean_key)
+        if kind == "knowledge":
+            node = curriculum_knowledge_node(clean_key)
+            return bool(node and int(node["level"]) == 3
+                        and (not volume_id or node["volume_id"] == str(volume_id)))
+        return clean_key.startswith("sk_")
+
+    identity = _release_identity(resolver)
+    if identity is None:
+        return compute()
+    return _memoized(_target_memo, (clean_key, identity, str(volume_id or "").strip(),
+                                    str(chapter_id or "").strip()), compute)
 
 
 def training_keys(keys: object, resolver: Any = None, volume_id: object = "") -> frozenset[str]:
@@ -202,6 +256,8 @@ def question_type_key(knowledge_point_tags: object) -> str:
 
 def _clear_type_cache_for_tests() -> None:
     _TYPE_RELEASE_CACHE.clear()
+    _kind_memo.clear()
+    _target_memo.clear()
 
 
 __all__ = ["TYPE_KEY_PATTERN", "chapter_target_kind", "chapter_target_kinds", "is_training_target",

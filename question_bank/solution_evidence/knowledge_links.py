@@ -17,6 +17,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from integration.data_generation import data_version_token
+from integration.result_cache import ResultCache
 from question_bank.question_types import is_type_key
 from question_bank.solution_evidence.part_assessments import reading
 
@@ -66,6 +68,27 @@ def load_point_links(
     ]
     if not ids:
         return {}
+    if connection is None:
+        # Rows live only in materials-domain tables, so the version token
+        # fully covers this read; callers get unpickled copies on each hit.
+        token = data_version_token(db_path, "materials")
+        if token is not None:
+            return _POINT_LINKS_CACHE.get_or_compute(
+                ("point-links", token, str(graph_release_id or "").strip(), tuple(ids)),
+                lambda: _load_point_links(db_path, ids, graph_release_id))
+    return _load_point_links(db_path, ids, graph_release_id, connection=connection)
+
+
+_POINT_LINKS_CACHE = ResultCache(4)
+
+
+def _load_point_links(
+    db_path: Path,
+    ids: Sequence[str],
+    graph_release_id: str | None,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, dict[str, tuple[KnowledgeLink, ...]]]:
     marks = ",".join("?" for _ in ids)
     with reading(Path(db_path), connection) as conn:
         rows = _rows_as_dicts(

@@ -221,6 +221,35 @@ class CurrentKnowledgeResolver:
         path = Path(db_path)
         if not path.is_file():
             raise CurrentKnowledgeUnavailable("current_knowledge_database_missing")
+        if taxonomy_catalog is None:
+            from integration.data_generation import data_version_token
+            token = data_version_token(path, "materials")
+            if token is not None:
+                # Repeated active-release reads share the resolver; a
+                # materials write bumps the version and reopens the database.
+                key = ("active-knowledge", token)
+                with _ACTIVE_DB_CACHE_LOCK:
+                    cached = _ACTIVE_DB_CACHE.get(key)
+                    if cached is not None:
+                        _ACTIVE_DB_CACHE.move_to_end(key)
+                if cached is not None:
+                    return cached
+                resolver = cls._open_active_database(path)
+                with _ACTIVE_DB_CACHE_LOCK:
+                    _ACTIVE_DB_CACHE[key] = resolver
+                    _ACTIVE_DB_CACHE.move_to_end(key)
+                    while len(_ACTIVE_DB_CACHE) > _ACTIVE_DB_CACHE_LIMIT:
+                        _ACTIVE_DB_CACHE.popitem(last=False)
+                return resolver
+        return cls._open_active_database(path, taxonomy_catalog=taxonomy_catalog)
+
+    @classmethod
+    def _open_active_database(
+        cls,
+        path: Path,
+        *,
+        taxonomy_catalog: Mapping[str, Any] | None = None,
+    ) -> CurrentKnowledgeResolver:
         try:
             uri = path.resolve(strict=True).as_uri() + "?mode=ro"
             connection = sqlite3.connect(uri, uri=True)
@@ -500,11 +529,16 @@ _RESOLVER_CACHE: OrderedDict[
     tuple[str, str, int],
     CurrentKnowledgeResolver,
 ] = OrderedDict()
+_ACTIVE_DB_CACHE_LIMIT = 4
+_ACTIVE_DB_CACHE_LOCK = threading.Lock()
+_ACTIVE_DB_CACHE: OrderedDict[tuple, CurrentKnowledgeResolver] = OrderedDict()
 
 
 def _clear_resolver_cache_for_tests() -> None:
     with _RESOLVER_CACHE_LOCK:
         _RESOLVER_CACHE.clear()
+    with _ACTIVE_DB_CACHE_LOCK:
+        _ACTIVE_DB_CACHE.clear()
 
 
 def ensure_checked_in_current_standard(db_path: Path) -> str:
