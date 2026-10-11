@@ -13,7 +13,10 @@ import {
   classAnalysisApi,
   type ClassAnalysisResponse,
 } from '../../api/class-analysis'
-import type { ResultsCenterResponse } from '../../api/results-center'
+import type {
+  ResultsCenterResponse,
+  ResultsCenterStudent,
+} from '../../api/results-center'
 import { exportsApi } from '../../api/exports'
 import { useJobStore } from '../../stores/jobs'
 import { useSessionStore } from '../../stores/session'
@@ -38,13 +41,13 @@ import {
   compareByRate,
   compareByZeroShare,
   comparisonCandidates,
-  criticalStudents,
   defaultComparison,
   displayAnswer,
   formatRate,
   formatScore,
   isCompleteStudent,
   lineCrossings,
+  nearLineGroups,
   questionRatesFor,
   rankChangeGroups,
   rankChanges,
@@ -54,8 +57,8 @@ import {
   zeroShareOf,
   type ClassDelta,
   type ClassSummary,
-  type CriticalStudentEntry,
   type LineCrossing,
+  type NearLineEntry,
   type OverviewBand,
   type QuestionSort,
   type RankChange,
@@ -310,27 +313,23 @@ const scopeAnalysisQuestions = computed(() => (
     : null
 ))
 
-const critical = computed(() => criticalStudents(studentsInScope.value))
-
-const criticalGroups = computed(() => {
-  const maxScore = props.results.summary.max_score
-  const groups: { key: string; title: string; rows: CriticalStudentEntry[] }[] = []
-  if (critical.value.passing.length > 0) {
-    groups.push({
-      key: 'passing',
-      title: `差 5 分内及格（及格线 ${formatScore(maxScore * 0.6)} 分）`,
-      rows: critical.value.passing,
-    })
-  }
-  if (critical.value.excellent.length > 0) {
-    groups.push({
-      key: 'excellent',
-      title: `差 5 分内优秀（优秀线 ${formatScore(maxScore * 0.85)} 分）`,
-      rows: critical.value.excellent,
-    })
-  }
-  return groups
-})
+const nearLineView = computed(() => (
+  nearLineGroups(studentsInScope.value, props.results.summary.max_score)
+    .filter((group) => group.below.length > 0 || group.above.length > 0)
+    .map((group) => ({
+      ...group,
+      rows: Array.from({ length: 10 }, (_, index) => {
+        const bucket = 4 - index
+        const entries = [...group.below, ...group.above]
+          .filter((entry) => Math.floor(entry.offset) === bucket)
+          .sort((left, right) => (
+            right.offset - left.offset
+            || left.student.student_id - right.student.student_id
+          ))
+        return { bucket, entries, tick: formatScore(group.lineScore + bucket) }
+      }),
+    }))
+))
 
 interface QuestionRow {
   questionId: string
@@ -537,10 +536,53 @@ function crossText(entry: LineCrossing): string {
     : `${formatRate(entry.previousRate)} → ${formatRate(entry.currentRate)}`
 }
 
+const previousByStudent = computed(() => new Map(
+  rankEntries.value.map((entry) => [entry.student.student_id, entry] as const),
+))
+
+function nearLineDelta(
+  student: ResultsCenterStudent,
+): { arrow: string; direction: string; text: string } | null {
+  if (previousState.value !== 'ready') return null
+  const entry = previousByStudent.value.get(student.student_id)
+  if (!entry) return null
+  const delta = sameFullScore.value
+    ? student.current_score - entry.previousScore
+    : (entry.previousMax > 0 && student.max_score > 0
+      ? student.current_score / student.max_score
+        - entry.previousScore / entry.previousMax
+      : 0)
+  if (delta === 0) return null
+  const amount = sameFullScore.value
+    ? `${formatScore(Math.abs(delta))} 分`
+    : `${Math.abs(Math.round(delta * 100))}%`
+  return {
+    arrow: delta > 0 ? '↑' : '↓',
+    direction: delta > 0 ? 'is-up' : 'is-down',
+    text: `${delta > 0 ? '+' : '−'}${amount}`,
+  }
+}
+
+function nearLineChipTitle(entry: NearLineEntry): string {
+  const parts = [
+    scope.value === null
+      ? `${entry.student.student_name} ${classDisplayLabel(entry.student.class_name)}`
+      : entry.student.student_name,
+    `${formatScore(entry.student.current_score)} 分`,
+    entry.offset < 0
+      ? `差 ${formatScore(Math.abs(entry.offset))} 分`
+      : `过线 ${formatScore(entry.offset)} 分`,
+  ]
+  const delta = nearLineDelta(entry.student)
+  if (delta !== null) parts.push(`较上次 ${delta.text}`)
+  return parts.join(' · ')
+}
+
 const SCATTER_W = 340
 const SCATTER_H = 320
 const SCATTER_PAD = { left: 46, right: 12, top: 24, bottom: 38 }
 const SCATTER_LINES = [0.6, 0.85]
+const SCATTER_BAND_LABELS = ['<60%', '60–85%', '≥85%']
 
 function scatterBand(rate: number): 0 | 1 | 2 {
   return rate >= 0.85 ? 2 : rate >= 0.6 ? 1 : 0
@@ -569,6 +611,7 @@ const scatterPlot = computed(() => {
   const cells = []
   for (let prev = 0; prev <= 2; prev += 1) {
     for (let curr = 0; curr <= 2; curr += 1) {
+      const count = counts.get(`${prev}|${curr}`) ?? 0
       cells.push({
         key: `${prev}|${curr}`,
         x: x(edges[prev]!),
@@ -576,7 +619,8 @@ const scatterPlot = computed(() => {
         width: x(edges[prev + 1]!) - x(edges[prev]!),
         height: y(edges[curr]!) - y(edges[curr + 1]!),
         tint: curr > prev ? 'is-up' : curr < prev ? 'is-down' : '',
-        count: counts.get(`${prev}|${curr}`) ?? 0,
+        count,
+        ariaLabel: `上次 ${SCATTER_BAND_LABELS[prev]}、本次 ${SCATTER_BAND_LABELS[curr]}：${count} 人`,
       })
     }
   }
@@ -618,6 +662,97 @@ const scatterTicks = computed(() => {
     label: `${Math.round(rate * 100)}%`,
   }))
 })
+
+const scatterQuery = ref('')
+const scatterCellKey = ref<string | null>(null)
+const scatterHotId = ref<number | null>(null)
+
+function toggleScatterCell(key: string): void {
+  scatterCellKey.value = scatterCellKey.value === key ? null : key
+}
+
+const scatterSearch = computed(() => {
+  const query = scatterQuery.value.trim().toLowerCase()
+  if (!query) return null
+  return crossings.value.points.filter((entry) => [
+    entry.student.student_name,
+    entry.student.pinyin_initials,
+    entry.student.pinyin_full,
+  ].some((value) => value.toLowerCase().includes(query)))
+})
+
+const scatterMatchIds = computed(() => (
+  scatterSearch.value === null
+    ? null
+    : new Set(scatterSearch.value.map((entry) => entry.student.student_id))
+))
+
+function byDeltaDesc(left: LineCrossing, right: LineCrossing): number {
+  return Math.abs(right.currentRate - right.previousRate)
+      - Math.abs(left.currentRate - left.previousRate)
+    || left.student.student_id - right.student.student_id
+}
+
+const crossingEntries = computed(() => {
+  const seen = new Map<number, LineCrossing>()
+  for (const group of [
+    crossings.value.passGained,
+    crossings.value.passLost,
+    crossings.value.excellentGained,
+    crossings.value.excellentLost,
+  ]) {
+    for (const entry of group) seen.set(entry.student.student_id, entry)
+  }
+  return [...seen.values()].sort(byDeltaDesc)
+})
+
+const selectedScatterCell = computed(() => {
+  if (scatterSearch.value !== null || scatterCellKey.value === null) return null
+  const [prev, curr] = scatterCellKey.value.split('|').map(Number)
+  return { prev: prev!, curr: curr! }
+})
+
+const scatterRows = computed(() => {
+  if (scatterSearch.value !== null) {
+    return [...scatterSearch.value].sort(byDeltaDesc)
+  }
+  if (selectedScatterCell.value !== null) {
+    const { prev, curr } = selectedScatterCell.value
+    return crossings.value.points
+      .filter((entry) => (
+        scatterBand(entry.previousRate) === prev
+        && scatterBand(entry.currentRate) === curr
+      ))
+      .sort(byDeltaDesc)
+  }
+  return crossingEntries.value
+})
+
+const scatterListHeader = computed(() => {
+  const count = scatterRows.value.length
+  if (scatterSearch.value !== null) {
+    return `搜索：${scatterQuery.value.trim()} · ${count} 人`
+  }
+  if (selectedScatterCell.value !== null) {
+    const { prev, curr } = selectedScatterCell.value
+    return `上次 ${SCATTER_BAND_LABELS[prev]} → 本次 ${SCATTER_BAND_LABELS[curr]} · ${count} 人`
+  }
+  return `跨线学生 · ${count} 人`
+})
+
+function scatterDelta(entry: LineCrossing): { text: string; cls: string } {
+  const delta = sameFullScore.value
+    ? entry.student.current_score - entry.previousScore
+    : entry.currentRate - entry.previousRate
+  if (delta === 0) return { text: '±0', cls: '' }
+  const amount = sameFullScore.value
+    ? formatScore(Math.abs(delta))
+    : `${Math.abs(Math.round(delta * 100))}%`
+  return {
+    text: `${delta > 0 ? '+' : '−'}${amount}`,
+    cls: delta > 0 ? 'is-up' : 'is-down',
+  }
+}
 
 /** 名次→横轴位置：第 1 名在右端，最后一名在左端；范围外按边缘截断。 */
 function rankFraction(rank: number, size: number): number {
@@ -1034,41 +1169,60 @@ onMounted(() => {
       </p>
     </section>
       <section
-        class="overview__section overview__critical-card"
-        aria-labelledby="overview-critical-title"
-        data-testid="critical-students"
+        class="overview__section overview__nearline-card"
+        aria-labelledby="overview-nearline-title"
+        data-testid="near-line"
       >
-        <h2 id="overview-critical-title" class="overview__title">临界学生</h2>
-        <div class="overview__critical-body">
+        <h2 id="overview-nearline-title" class="overview__title">分数线附近</h2>
+        <p class="overview__tile-sub">
+          按本次分数，线下与刚过线各 5 分内<template
+            v-if="previousState === 'ready' && comparisonName !== null"
+          >；↑↓ 为较「{{ comparisonName }}」</template>
+        </p>
+        <div class="overview__nearline-body">
           <div
-            v-for="group in criticalGroups"
-            :key="group.key"
-            class="overview__critical-group"
+            v-for="group in nearLineView"
+            :key="group.line"
+            class="overview__nl-group"
           >
-            <h3 class="overview__critical-title">{{ group.title }}</h3>
-            <ul class="overview__notes-list overview__critical-list">
-              <li
-                v-for="entry in group.rows"
-                :key="entry.student.student_id"
-                class="overview__notes-item"
-              >
-                <button
-                  type="button"
-                  class="overview__link overview__notes-student"
-                  @click="emit('open-student', entry.student.student_id)"
+            <h3 class="overview__nl-title">
+              {{ group.line === 'pass' ? '及格线' : '优秀线' }}
+              {{ formatScore(group.lineScore) }} 分 · 差 5 分内 {{ group.below.length }} 人
+              · 刚过线 {{ group.above.length }} 人
+            </h3>
+            <div class="overview__nl-rows">
+              <template v-for="row in group.rows" :key="row.bucket">
+                <div v-if="row.bucket === -1" class="overview__nl-line">
+                  <b>{{ group.line === 'pass' ? '及格线' : '优秀线' }}
+                    {{ formatScore(group.lineScore) }}</b>
+                </div>
+                <div
+                  class="overview__nl-row"
+                  :class="row.bucket >= 0 ? 'is-above' : 'is-below'"
                 >
-                  {{ entry.student.student_name }}<small v-if="scope === null">
-                    {{ classDisplayLabel(entry.student.class_name) }}
-                  </small>
-                </button>
-                <span class="overview__notes-text">
-                  {{ formatScore(entry.student.current_score) }} 分 · 差 {{ formatScore(entry.gap) }} 分
-                </span>
-              </li>
-            </ul>
+                  <span class="overview__nl-tick">{{ row.tick }}</span>
+                  <span class="overview__nl-chips">
+                    <button
+                      v-for="entry in row.entries"
+                      :key="entry.student.student_id"
+                      type="button"
+                      class="overview__nl-chip"
+                      :class="entry.offset < 0 ? 'is-below' : 'is-above'"
+                      :title="nearLineChipTitle(entry)"
+                      :aria-label="nearLineChipTitle(entry)"
+                      @click="emit('open-student', entry.student.student_id)"
+                    >{{ entry.student.student_name }}<i
+                      v-if="nearLineDelta(entry.student) !== null"
+                      class="overview__nl-arrow"
+                      :class="nearLineDelta(entry.student)!.direction"
+                    >{{ nearLineDelta(entry.student)!.arrow }}</i></button>
+                  </span>
+                </div>
+              </template>
+            </div>
           </div>
-          <p v-if="criticalGroups.length === 0" class="overview__tile-sub">
-            没有差 5 分内及格或优秀的学生
+          <p v-if="nearLineView.length === 0" class="overview__tile-sub">
+            分数线两侧 5 分内没有学生
           </p>
         </div>
       </section>
@@ -1152,7 +1306,17 @@ onMounted(() => {
       aria-labelledby="overview-cross-title"
       data-testid="line-crossings"
     >
-      <h2 id="overview-cross-title" class="overview__title">及格线、优秀线进出</h2>
+      <div class="overview__section-head">
+        <h2 id="overview-cross-title" class="overview__title">及格线、优秀线进出</h2>
+        <input
+          v-if="previousState === 'ready'"
+          v-model="scatterQuery"
+          type="search"
+          class="overview__scatter-search"
+          placeholder="搜姓名"
+          aria-label="在散点图中搜索学生"
+        >
+      </div>
       <p v-if="!comparisonOptions.length" class="overview__tile-sub">
         没有可对比的上一场考试
       </p>
@@ -1178,11 +1342,18 @@ onMounted(() => {
               v-for="cell in scatterPlot.cells"
               :key="cell.key"
               class="overview__scatter-cell"
-              :class="cell.tint"
+              :class="[cell.tint, { 'is-selected': selectedScatterCell !== null
+                && scatterCellKey === cell.key }]"
               :x="cell.x"
               :y="cell.y"
               :width="cell.width"
               :height="cell.height"
+              tabindex="0"
+              role="button"
+              :aria-label="cell.ariaLabel"
+              @click="toggleScatterCell(cell.key)"
+              @keydown.enter.prevent="toggleScatterCell(cell.key)"
+              @keydown.space.prevent="toggleScatterCell(cell.key)"
             />
             <line
               class="overview__scatter-diag"
@@ -1241,7 +1412,10 @@ onMounted(() => {
               v-for="point in scatterPoints"
               :key="point.entry.student.student_id"
               class="overview__scatter-dot"
-              :class="point.className"
+              :class="[point.className, {
+                'is-hot': scatterHotId === point.entry.student.student_id,
+                'is-match': scatterMatchIds?.has(point.entry.student.student_id),
+              }]"
               :cx="point.cx"
               :cy="point.cy"
               r="4"
@@ -1249,9 +1423,20 @@ onMounted(() => {
               :role="point.crossing ? 'button' : undefined"
               :aria-label="point.crossing ? point.label : undefined"
               @click="emit('open-student', point.entry.student.student_id)"
+              @mouseenter="scatterHotId = point.entry.student.student_id"
+              @mouseleave="scatterHotId = null"
               @keydown.enter.prevent="emit('open-student', point.entry.student.student_id)"
               @keydown.space.prevent="emit('open-student', point.entry.student.student_id)"
             ><title>{{ point.label }}</title></circle>
+            <template v-for="point in scatterPoints" :key="`n${point.entry.student.student_id}`">
+              <text
+                v-if="scatterMatchIds !== null
+                  && scatterMatchIds.has(point.entry.student.student_id)"
+                class="overview__scatter-name"
+                :x="point.cx + 6"
+                :y="point.cy + 3"
+              >{{ point.entry.student.student_name }}</text>
+            </template>
             <text
               v-for="cell in scatterPlot.cells"
               v-show="cell.count > 0"
@@ -1261,6 +1446,46 @@ onMounted(() => {
               :y="cell.y + 12"
             >{{ cell.count }}人</text>
           </svg>
+          <p class="overview__scatter-list-head">
+            {{ scatterListHeader }}
+            <button
+              v-if="selectedScatterCell !== null"
+              type="button"
+              class="overview__link"
+              @click="scatterCellKey = null"
+            >显示全部跨线学生</button>
+          </p>
+          <ol v-if="scatterRows.length" class="overview__scatter-list">
+            <li
+              v-for="row in scatterRows"
+              :key="row.student.student_id"
+            >
+              <button
+                type="button"
+                class="overview__scatter-row"
+                :class="{ 'is-hot': scatterHotId === row.student.student_id }"
+                @mouseenter="scatterHotId = row.student.student_id"
+                @mouseleave="scatterHotId = null"
+                @focus="scatterHotId = row.student.student_id"
+                @blur="scatterHotId = null"
+                @click="emit('open-student', row.student.student_id)"
+              >
+                <span class="overview__scatter-rowname">
+                  {{ row.student.student_name }}<small v-if="scope === null">
+                    {{ classDisplayLabel(row.student.class_name) }}
+                  </small>
+                </span>
+                <span class="overview__scatter-rowscore">{{ crossText(row) }}</span>
+                <b
+                  class="overview__scatter-rowdelta"
+                  :class="scatterDelta(row).cls"
+                >{{ scatterDelta(row).text }}</b>
+              </button>
+            </li>
+          </ol>
+          <p v-else class="overview__scatter-empty">
+            {{ scatterSearch !== null ? '没有匹配的学生' : '没有学生' }}
+          </p>
           <figcaption class="overview__scatter-legend">
             新达及格 <b class="is-up">{{ crossings.passGained.length }}</b>
             · 跌破及格 <b class="is-down">{{ crossings.passLost.length }}</b>

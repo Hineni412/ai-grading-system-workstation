@@ -78,6 +78,13 @@ export function paperMarks(
   return marks
 }
 
+export function itemMarkState(item: ResultsCenterItem): PaperMarkState {
+  const score = resolvedItemScore(item)
+  if (score === null) return 'pending'
+  if (score >= item.max_score) return 'full'
+  return score === 0 ? 'zero' : 'partial'
+}
+
 export function resultIdOf(student: ResultsCenterStudent): number | null {
   const counts = new Map<number, number>()
   for (const item of student.items) {

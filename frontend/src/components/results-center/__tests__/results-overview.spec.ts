@@ -10,10 +10,10 @@ import {
   compareByClassGap,
   compareByRate,
   compareByZeroShare,
-  criticalStudents,
   displayAnswer,
   medianOf,
   lineCrossings,
+  nearLineGroups,
   questionRatesFor,
   rankChangeGroups,
   rankChanges,
@@ -279,47 +279,56 @@ describe('results overview pure helpers', () => {
     expect(groups.declined.every((row) => row.change <= -5)).toBe(true)
   })
 
-  it('groups critical students by gap to the pass and excellent lines', () => {
-    // 满分 100：及格线 60、优秀线 85；恰好在线上不算未达线。
-    const result = criticalStudents([
-      student(1, 60, 100),
-      student(2, 55, 100),
-      student(3, 54.5, 100),
-      student(4, 85, 100),
-      student(5, 80, 100),
-      student(6, 79.4, 100),
-      student(7, 40, 100),
-      student(8, 50, 100, '9', { ungraded_count: 1, status: 'incomplete' }),
-      student(9, 30, 0),
-    ])
-    expect(result.passing.map((entry) => entry.student.student_id)).toEqual([2])
-    expect(result.passing[0]!.gap).toBe(5)
-    expect(result.excellent.map((entry) => entry.student.student_id)).toEqual([5])
-    expect(result.total).toBe(2)
+  it('groups students within 5 points on both sides of the pass and excellent lines', () => {
+    // 满分 100：及格线 60、优秀线 85；恰好在线上算刚过线。
+    const result = nearLineGroups([
+      student(1, 55, 100),
+      student(2, 59.5, 100),
+      student(3, 60, 100),
+      student(4, 64.9, 100),
+      student(5, 65, 100),
+      student(6, 50, 100),
+      student(7, 85, 100),
+      student(8, 80, 100),
+      student(9, 58, 100, '9', { ungraded_count: 1, status: 'incomplete' }),
+      student(10, 57, 0),
+    ], 100)
+    const [pass, excellent] = result
+    expect(pass!.lineScore).toBe(60)
+    expect(excellent!.lineScore).toBe(85)
+    expect(pass!.below.map((entry) => entry.student.student_id)).toEqual([2, 1])
+    expect(pass!.below[0]!.offset).toBeCloseTo(-0.5)
+    expect(pass!.below[1]!.offset).toBe(-5)
+    expect(pass!.above.map((entry) => entry.student.student_id)).toEqual([3, 4])
+    expect(pass!.above[0]!.offset).toBe(0)
+    expect(excellent!.above.map((entry) => entry.student.student_id)).toEqual([7])
+    expect(excellent!.below.map((entry) => entry.student.student_id)).toEqual([8])
+    expect(excellent!.below[0]!.offset).toBe(-5)
   })
 
-  it('uses the exam full score for the critical lines and keeps the groups mutually exclusive', () => {
-    // 满分 120：及格线 72、优秀线 102；不及格学生只进及格组。
-    const result = criticalStudents([
-      student(1, 67, 120),
-      student(2, 72, 120),
-      student(3, 97, 120),
-      student(4, 102, 120),
-      student(5, 60, 120),
-    ])
-    expect(result.passing.map((entry) => entry.student.student_id)).toEqual([1])
-    expect(result.excellent.map((entry) => entry.student.student_id)).toEqual([3])
-    expect(result.passing.some((entry) => entry.student.student_id === 5)).toBe(false)
-    expect(result.excellent.some((entry) => entry.student.student_id === 5)).toBe(false)
-  })
-
-  it('orders critical students by gap then student id', () => {
-    const result = criticalStudents([
+  it('orders near-line entries by distance to the line then student id', () => {
+    const result = nearLineGroups([
       student(3, 56, 100),
       student(1, 58, 100),
       student(2, 58, 100),
-    ])
-    expect(result.passing.map((entry) => entry.student.student_id)).toEqual([1, 2, 3])
+      student(4, 61, 100),
+      student(5, 63, 100),
+    ], 100)
+    expect(result[0]!.below.map((entry) => entry.student.student_id)).toEqual([1, 2, 3])
+    expect(result[0]!.above.map((entry) => entry.student.student_id)).toEqual([4, 5])
+  })
+
+  it('keeps a student only in the nearer window when the two lines overlap', () => {
+    // 满分 20：及格线 12、优秀线 17；14.6 距及格 +2.6、距优秀 −2.4 → 优秀组。
+    const result = nearLineGroups([student(1, 14.6, 20)], 20)
+    expect(result[0]!.below).toHaveLength(0)
+    expect(result[0]!.above).toHaveLength(0)
+    expect(result[1]!.below.map((entry) => entry.student.student_id)).toEqual([1])
+    expect(result[1]!.below[0]!.offset).toBeCloseTo(-2.4)
+    // 平局归及格线：14.5 距两线各 2.5。
+    const tie = nearLineGroups([student(1, 14.5, 20)], 20)
+    expect(tie[0]!.above.map((entry) => entry.student.student_id)).toEqual([1])
+    expect(tie[1]!.below).toHaveLength(0)
   })
 
   it('compares rates but not the average when the full scores differ', () => {
