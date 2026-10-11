@@ -2,7 +2,6 @@ import { apiClient } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
 import { decodeChapterTypePlan, type ChapterTypePlan, type ChapterTypeAuthorization, type QuestionBankRichContent } from './question-bank'
 import {
-  assertNoPathLikeKeys,
   hasExactKeys,
   isFiniteNumber,
   isNullableString,
@@ -350,7 +349,6 @@ function isSourceAsset(value: unknown): value is ConfigSourceAsset {
 }
 
 function decodeConfigSource(value: unknown): ConfigSource {
-  assertNoPathLikeKeys(value)
   const baseKeys = [
     'session_id', 'source_id', 'source_revision', 'safe_filename', 'suffix', 'size_bytes',
     'sha256_prefix', 'parse_state', 'questions',
@@ -410,7 +408,6 @@ function isEditorSource(value: unknown): value is ConfigEditorSource {
 }
 
 function decodeEditor(value: unknown): ConfigEditorResponse {
-  assertNoPathLikeKeys(value)
   if (!isRecord(value) || !hasExactKeys(value, [
     'session_id', 'configured', 'revision', 'rows', 'total_score', 'issues', 'source',
   ]) || !isPositiveInteger(value.session_id) || typeof value.configured !== 'boolean'
@@ -424,7 +421,6 @@ function decodeEditor(value: unknown): ConfigEditorResponse {
 }
 
 function decodeStrictJob(value: unknown): JobResponse {
-  assertNoPathLikeKeys(value)
   if (!isRecord(value) || !hasExactKeys(value, [
     'id', 'job_type', 'payload', 'result', 'status', 'progress', 'stage', 'detail', 'error',
     'cancel_requested', 'created_at', 'started_at', 'updated_at', 'finished_at',
@@ -478,7 +474,6 @@ export async function fetchConfigSourceSubmission(
     `/api/sessions/${id}/config/sources/submissions/${requireRequestToken(requestToken)}`,
     {
       decode: (value) => {
-        assertNoPathLikeKeys(value)
         if (!isRecord(value) || !hasExactKeys(value, ['status', 'source'])
           || !['processing', 'succeeded', 'failed', 'replaced'].includes(String(value.status))) {
           throw new Error('Invalid source submission response')
@@ -493,7 +488,6 @@ export async function fetchConfigSourceSubmission(
 }
 
 function decodeAbandoned(value: unknown): void {
-  assertNoPathLikeKeys(value)
   if (!isRecord(value) || !hasExactKeys(value, ['status']) || value.status !== 'abandoned') {
     throw new Error('Invalid abandoned submission response')
   }
@@ -554,7 +548,6 @@ function isDuplicateItem(value: unknown): value is ConfigSourceDuplicateItem {
 }
 
 function decodeConfigSourceDuplicates(value: unknown): ConfigSourceDuplicates {
-  assertNoPathLikeKeys(value)
   if (!isRecord(value)
     || !hasExactKeys(value, ['source_id', 'source_revision', 'items'])
     || !validDuplicateSourceId(value.source_id)
@@ -612,7 +605,6 @@ export async function fetchConfigGenerationQuestionStates(
     `/api/sessions/${id}/config/generation-jobs/${jobId}/question-states`,
     {
       decode: (value) => {
-        assertNoPathLikeKeys(value)
         if (!isRecord(value) || !hasExactKeys(value, ['job_id', 'questions'])
           || value.job_id !== jobId || !Array.isArray(value.questions)) {
           throw new Error('Invalid config question states response')

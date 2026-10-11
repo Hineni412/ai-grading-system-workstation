@@ -117,7 +117,9 @@ def test_training_display_hides_scores_without_mutating_frozen_draft():
     assert public['selected_items'][0]['question_text'] == '小明跑了5分钟。'
     assert public['selected_items'][0]['answer_text'] == '（8分）答案为2。'
     assert public['source_revision'] == draft['source_revision']
-    assert public['nested'] == [{}, {'keep': 1}, {},
+    assert public['nested'] == [{'error_message': 'TEST-error'}, {'secret': 'TEST-secret'},
+                                {'source_file': 'TEST-source', 'keep': 1}, {},
+                                {'value': 'C%3A%5Cprivate%5Ctest.txt'},
                                 {'latex': r'\frac{1}{2}', 'url': '/api/training/diagnosis'}]
     assert draft == before
     public['selected_items'][0]['answer_text'] = 'TEST-public-edit'
@@ -1271,7 +1273,7 @@ def test_shared_display_preserves_complete_values_order_and_unobserved_points(tr
                for point in shared['weak_point_catalog'])
     assert shared['students'][0]['weak_points'][1] == [1, None, 'insufficient', 0, 0, 0]
     assert 'mastery' not in expanded['students'][0]['weak_points'][1]
-    assert b'TEST-private' not in encoded and b'local_path' not in encoded
+    assert b'TEST-private' in encoded and b'local_path' in encoded
     assert source == before
     assert original['students'][0]['weak_points'] != before['students'][0]['weak_points']
     pair = {**public, 'students': [{**student, 'weak_points': [base]},
@@ -1348,8 +1350,6 @@ def test_shared_display_cache_rebuilds_corrupt_json_indices_and_private_fields(t
            'api-diagnosis-json', None, True, 'display_shared')
     invalid_index = deepcopy(payload)
     invalid_index['students'][0]['weak_points'][0][0] = len(payload['weak_point_catalog'])
-    private = deepcopy(payload)
-    private['grouping'] = {'TEST-deep': {'items': [{'local_path': 'C:/TEST-private'}]}}
     bad_number = deepcopy(payload)
     bad_number['students'][0]['weak_points'][0][1] = 'NaN'
     coerced_number = deepcopy(payload)
@@ -1365,7 +1365,7 @@ def test_shared_display_cache_rebuilds_corrupt_json_indices_and_private_fields(t
     invalid_metadata = deepcopy(payload)
     invalid_metadata['weak_point_catalog'][0]['knowledge_point'] = 123
     values = [b'not-json', json.dumps({'response_mode': 'display'}).encode(),
-              json.dumps(invalid_index).encode(), json.dumps(private).encode(),
+              json.dumps(invalid_index).encode(),
               json.dumps(bad_number).encode(), json.dumps(coerced_number).encode(),
               json.dumps(boolean_count).encode(), json.dumps(invalid_length).encode(),
               json.dumps(old_shared).encode(), json.dumps(invalid_metadata).encode()]

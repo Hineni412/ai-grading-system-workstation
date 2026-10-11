@@ -1,7 +1,6 @@
 import { apiClient, refreshHeaderHandler } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
 import {
-  assertNoPathLikeKeys,
   isFiniteNumber,
   isInteger,
   isRecord,
@@ -904,7 +903,6 @@ function isCoverage(value: unknown): value is TrainingDiagnosis['coverage'] {
 }
 
 export function decodeTrainingDiagnosis(value: unknown): TrainingDiagnosis {
-  assertNoPathLikeKeys(value)
   const pointDecoder = isRecord(value) && value.include_student_detail === false
     ? isWeakPointSummary : isWeakPoint
   if (
@@ -1055,7 +1053,6 @@ function isDisplaySharedDiagnosis(value: unknown): value is TrainingDisplayShare
 }
 
 export function decodeTrainingDisplayDiagnosis(value: unknown): TrainingDisplayDiagnosis {
-  assertNoPathLikeKeys(value)
   if (isDisplayDiagnosis(value)) return value
   if (!isDisplaySharedDiagnosis(value)) throw new Error('Invalid training display diagnosis')
   const { weak_point_catalog, ...diagnosis } = value
@@ -1182,7 +1179,6 @@ function isOverviewSummary(value: unknown): value is TrainingOverviewSummary {
 }
 
 export function decodeTrainingOverview(value: unknown): TrainingOverview {
-  assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
     || !isNormalizedScope(value.scope)
@@ -1300,7 +1296,6 @@ function isRecommendationStudent(
 export function decodePersonalizedRecommendationDraft(
   value: unknown,
 ): PersonalizedRecommendationDraft {
-  assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
     || !/^[0-9a-f]{64}$/.test(String(value.draft_id || ''))
@@ -1352,7 +1347,6 @@ function isPersonalizedPaperBudget(
 export function decodePersonalizedPaperInstance(
   value: unknown,
 ): PersonalizedPaperInstance {
-  assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
     || !/^[0-9a-f]{64}$/.test(String(value.paper_instance_id || ''))
@@ -1407,7 +1401,6 @@ function decodePersonalizedPaperList(
 }
 
 function decodePersonalizedPaperBatch(value: unknown): PersonalizedPaperBatch {
-  assertNoPathLikeKeys(value)
   if (!isRecord(value)
     || !/^[0-9a-f]{64}$/.test(String(value.batch_run_id || ''))
     || !/^[0-9a-f]{64}$/.test(String(value.paper_batch_id || ''))
@@ -1459,7 +1452,6 @@ function decodeTrainingScanBatchList(value: unknown): { items: TrainingScanBatch
 }
 
 function decodeTrainingScanBatch(value: unknown): TrainingScanBatch {
-  assertNoPathLikeKeys(value)
   const submissionIsValid = (item: unknown): boolean => (
     isRecord(item)
     && /^[0-9a-f]{64}$/.test(String(item.submission_id || ''))
@@ -1526,7 +1518,6 @@ function decodeTrainingScanBatch(value: unknown): TrainingScanBatch {
 function decodeTrainingAssessment(
   value: unknown,
 ): TrainingAssessmentOutcome {
-  assertNoPathLikeKeys(value)
   const pointStateIsValid = (state: unknown): boolean => (
     state === null
     || state === undefined
@@ -1637,7 +1628,6 @@ function decodeTrainingAssessment(
 }
 
 function decodeTrainingFeedback(value: unknown): TrainingFeedback {
-  assertNoPathLikeKeys(value)
   const changesExamScore = isRecord(value) && isRecord(value.safety)
     ? value.safety.changes_exam_score ?? value.safety.changes_v1
     : undefined

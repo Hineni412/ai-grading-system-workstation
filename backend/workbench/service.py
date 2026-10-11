@@ -8,7 +8,6 @@ import sqlite3
 from typing import Any
 
 from backend.jobs.manager import JobManager
-from backend.public_data import sanitize_public_diagnostic_text
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.review.service import ReviewApplicationService
 from backend.review.manual_context import current_manual_context
@@ -120,12 +119,10 @@ class WorkbenchService:
         return _REVIEW_SUMMARIES.get_or_compute(key, compute)
 
     def list_anomalies(self, session_id: int) -> list[dict[str, Any]]:
-        """Return sanitized stable anomaly rows."""
+        """Return stable anomaly rows."""
         items: list[dict[str, Any]] = []
         for row in self.db.papers.list_session_anomalies(int(session_id)):
-            item = dict(row)
-            item["detail"] = sanitize_public_diagnostic_text(item.get("detail"))
-            items.append(item)
+            items.append(dict(row))
         return items
 
 
@@ -143,7 +140,7 @@ def _session_summary(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _job_summary(job: Any) -> dict[str, Any]:
-    detail = sanitize_public_diagnostic_text(job.detail) or ""
+    detail = str(job.detail or "")
     return {
         "id": int(job.id),
         "job_type": str(job.job_type),

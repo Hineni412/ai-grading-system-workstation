@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { fetchPreflight, removeScan, supplementGrading, uploadScan } from '../api/scan-grading';
-import { assertNoPathLikeKeys } from '../api/validation';
 
 function response(value: unknown): Response {
   return new Response(JSON.stringify(value), {
@@ -80,12 +79,6 @@ describe('scan grading API contract', () => {
 
     expect(check.identity).toBeNull()
     expect(check.appended_file_count).toBe(2)
-  })
-
-  it('keeps rejecting file paths beside appended file counts', () => {
-    expect(() => assertNoPathLikeKeys({
-      appended_file_count: 2, detail: { file_path: '/test/scan.pdf' },
-    })).toThrow('Path-like response key')
   })
 
   it('rejects a malformed preflight identity', async () => {

@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { trainingApi, decodePersonalizedRecommendationDraft, decodeTrainingDiagnosis, decodeTrainingDisplayDiagnosis } from '../api/training'
 import { createPinia, setActivePinia } from 'pinia'
 import { useTrainingStore } from '../stores/training'
-import { assertNoPathLikeKeys } from '../api/validation'
 import { previewWrongQuestionBooks } from '../api/students'
 
 it('uses the batch wrong-book preview contract and rejects incomplete counts', async () => {
@@ -231,10 +230,6 @@ describe('training group diagnosis api', () => {
       { ...staticPoint, source_question_refs: [] }, { ...staticPoint, source_reference_count: 2 }]) {
       expect(() => decodeTrainingDisplayDiagnosis({ ...wire, weak_point_catalog: [point] })).toThrow()
     }
-    expect(() => decodeTrainingDisplayDiagnosis({ ...wire,
-      grouping: { TEST: { nested: [{ local_path: 'C:/TEST-private' }] } } })).toThrow('Path-like response key')
-    expect(() => decodeTrainingDisplayDiagnosis({ ...wire,
-      weak_point_catalog: [{ ...staticPoint, TEST: { local_path: 'C:/TEST-private' } }] })).toThrow('Path-like response key')
     const empty = { ...wire, weak_point_catalog: [], students: [{ ...first, weak_points: [] }], group_weak_points: [] }
     expect(decodeTrainingDisplayDiagnosis(empty)).toEqual({ ...metadata, response_mode: 'display',
       students: [{ ...first, weak_points: [] }], group_weak_points: [] })
@@ -302,18 +297,6 @@ describe('training group diagnosis api', () => {
 describe('training assessment api', () => {
 
   it('rejects inconsistent point identities and teacher-lock metadata', async () => {
-    const repeated = Array.from({ length: 1000 }, () => ({
-      assessment: { point_id: 'TEST', evidence: '合成证据', nested: [{ safe_filename: 'TEST.txt',
-        file_status: 'ready', file_count: 1, directory_evidence: [] }] },
-    }))
-    expect(() => assertNoPathLikeKeys(repeated)).not.toThrow()
-    for (const key of ['sourcePath', 'HTTPRoot', 'nested_file', 'x-dir', 'ROOT']) {
-      expect(() => assertNoPathLikeKeys([...repeated, { assessment: { [key]: 'TEST' } }])).toThrow('Path-like response key')
-    }
-    // Rechecking a response must still inspect new nested data under a key
-    // accepted in a previous call.
-    expect(() => assertNoPathLikeKeys({ assessment: { point_id: 'TEST' } })).not.toThrow()
-    expect(() => assertNoPathLikeKeys({ assessment: { point_id: { sourcePath: 'TEST' } } })).toThrow()
     const question = payload.questions[0]!
     const point = question.review_points[0]!
     stubAssessmentResponse({

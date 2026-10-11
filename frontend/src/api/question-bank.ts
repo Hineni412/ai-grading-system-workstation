@@ -1,5 +1,5 @@
 import { apiClient, refreshHeaderHandler } from './client'
-import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
+import { isNullableString, isRecord } from './validation'
 import { decodeJobResponse, type JobResponse } from './jobs'
 
 export const QUESTION_BANK_TAG_TYPES = [
@@ -51,7 +51,6 @@ function decodeRepairPreview(value: unknown): QuestionRepairPreview {
         && Array.isArray(item.missing) && item.missing.every(part => ['tags', 'evidence', 'criteria', 'skills', 'types', 'knowledge_points'].includes(String(part))))) {
     throw new Error('Invalid repair preview')
   }
-  assertNoPathLikeKeys(value)
   // 缺失时按 false，兼容旧缓存响应。
   return { ...value, skills_required: value.skills_required === true } as unknown as QuestionRepairPreview
 }
@@ -1604,7 +1603,6 @@ function isQuestionSolutionEvidence(value: unknown): boolean {
 export function decodeQuestionSolutionEvidenceResponse(
   value: unknown,
 ): QuestionSolutionEvidenceResponse {
-  assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
     || !hasExactKeys(value, [
@@ -2199,7 +2197,6 @@ function decodeQuestionStandardSummary(value: unknown): QuestionStandardSummary 
       .every((key) => typeof value[key] === 'number' && Number.isInteger(value[key]) && value[key] >= 0)) {
     throw new Error('标准版本信息格式不正确')
   }
-  assertNoPathLikeKeys(value)
   return value as unknown as QuestionStandardSummary
 }
 
@@ -2389,7 +2386,6 @@ function decodeSkillGapPreview(value: unknown): SkillGapPreview {
       && typeof item.target === 'string')) {
     throw new Error('技能缺口统计格式不正确')
   }
-  assertNoPathLikeKeys(value)
   return value as unknown as SkillGapPreview
 }
 
@@ -2406,7 +2402,6 @@ function decodeSkillCandidateRun(value: unknown): SkillCandidateRunInfo {
       .every((key) => isNonnegativeInteger((value.progress as Record<string, unknown>)[key]))) {
     throw new Error('技能候选任务格式不正确')
   }
-  assertNoPathLikeKeys(value)
   return value as unknown as SkillCandidateRunInfo
 }
 
@@ -2421,7 +2416,6 @@ function decodeSkillCandidateSummary(value: unknown): SkillCandidateSummary {
       && typeof value.active_run.run_id === 'string' && typeof value.active_run.status === 'string'))) {
     throw new Error('技能候选统计格式不正确')
   }
-  assertNoPathLikeKeys(value)
   return value as unknown as SkillCandidateSummary
 }
 
@@ -2452,7 +2446,6 @@ function decodeSkillCandidateList(value: unknown): SkillCandidateList {
     || !isRecord(value.summary)) {
     throw new Error('技能候选清单格式不正确')
   }
-  assertNoPathLikeKeys(value)
   return {
     ...(value as unknown as SkillCandidateList),
     summary: decodeSkillCandidateSummary(value.summary),
@@ -2468,7 +2461,6 @@ function decodeSkillCandidateReview(value: unknown): SkillCandidateReviewResult 
   if (!isRecord(value) || !isSuggestion(value.suggestion) || !isRecord(value.result)) {
     throw new Error('技能候选审核结果格式不正确')
   }
-  assertNoPathLikeKeys(value)
   return value as unknown as SkillCandidateReviewResult
 }
 
@@ -2604,7 +2596,6 @@ export const questionBankApi = {
     return apiClient.request(`/api/question-bank/task-context/${jobId}`, {
       signal,
       decode(value: unknown) {
-        assertNoPathLikeKeys(value)
         if (!isRecord(value) || !hasExactKeys(value, ['papers', 'source_filename'])
           || !isNullableString(value.source_filename) || !Array.isArray(value.papers)
           || !value.papers.every(paper => isRecord(paper) && hasExactKeys(paper, ['id', 'title'])

@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from backend.public_data import sanitize_public_mapping
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.repositories.results import RubricUnreadableError
 from backend.repositories.review import ReviewAdjustmentOwnershipError
@@ -1371,46 +1370,42 @@ def _detail_metadata_for_qid(raw_json: dict[str, Any], question_id: str) -> dict
     if not isinstance(direct, dict):
         direct = {}
 
-    metadata = sanitize_public_mapping(
-        {
-            key: direct[key]
-            for key in (
-                "question_id",
-                "presentation_deduction",
-                "final_answer_simplification",
-                "need_review",
-                "needs_human_review",
-                "review_reason",
-                "evidence_steps",
-                "missing_steps",
-                "step_assessments",
-                "step_assessments_error",
-                "score_contract_error",
-                "answer_only_correct",
-                "alternative_solution_detected",
-                "alternative_solution_summary",
-                "answer_is_blank_or_no_valid_work",
-                "answer_discarded_by_smudge",
-            )
-            if key in direct
-        }
-    )
+    metadata = {
+        key: direct[key]
+        for key in (
+            "question_id",
+            "presentation_deduction",
+            "final_answer_simplification",
+            "need_review",
+            "needs_human_review",
+            "review_reason",
+            "evidence_steps",
+            "missing_steps",
+            "step_assessments",
+            "step_assessments_error",
+            "score_contract_error",
+            "answer_only_correct",
+            "alternative_solution_detected",
+            "alternative_solution_summary",
+            "answer_is_blank_or_no_valid_work",
+            "answer_discarded_by_smudge",
+        )
+        if key in direct
+    }
     teacher_reviews = raw_json.get("teacher_reviews")
     if isinstance(teacher_reviews, dict) and isinstance(teacher_reviews.get(question_id), dict):
-        metadata["teacher_review"] = sanitize_public_mapping(teacher_reviews[question_id])
+        metadata["teacher_review"] = dict(teacher_reviews[question_id])
     raw_candidates = direct.get("candidate_scores")
     if isinstance(raw_candidates, list):
         candidates = []
         for item in raw_candidates:
             if not isinstance(item, dict):
                 continue
-            candidate = sanitize_public_mapping(
-                {
-                    key: item[key]
-                    for key in ("score", "confidence", "reason")
-                    if key in item
-                }
-            )
+            candidate = {
+                key: item[key]
+                for key in ("score", "confidence", "reason")
+                if key in item
+            }
             if candidate:
                 candidates.append(candidate)
         metadata["candidate_scores"] = candidates

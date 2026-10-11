@@ -1,6 +1,6 @@
 import { apiClient } from './client'
 import { createClientRequestToken } from './config-workspace'
-import { assertNoPathLikeKeys, isRecord } from './validation'
+import { isRecord } from './validation'
 
 export type PageRole = 'front' | 'back'
 export interface TemplatePage { url: string; width: number; height: number }
@@ -62,7 +62,6 @@ function page(value: unknown): value is TemplatePage {
     && safeUrl(value.url) && positive(value.width) && positive(value.height)
 }
 function decodeTemplate(value: unknown): TemplateSummary {
-  assertNoPathLikeKeys(value)
   if (!isRecord(value) || !exact(value, ['session_id', 'template_id', 'template_fingerprint',
     'first_page_role', 'pages', 'is_confirmed', 'regions_snapshot_pending'])
     || !positive(value.session_id) || !positive(value.template_id) || !hash(value.template_fingerprint)
@@ -101,7 +100,6 @@ function issue(value: unknown): value is RegionIssue {
     && (value.question_id === null || typeof value.question_id === 'string')
 }
 function decodeWorkspace(value: unknown): RegionWorkspace {
-  assertNoPathLikeKeys(value)
   if (!isRecord(value) || !exact(value, ['session_id', 'template', 'formal_regions', 'draft',
     'automatic_candidates', 'manual_question_options', 'issues', 'template_ready'])
     || !positive(value.session_id) || !Array.isArray(value.formal_regions) || !value.formal_regions.every(region)
@@ -119,7 +117,6 @@ function decodeWorkspace(value: unknown): RegionWorkspace {
   return { ...value, template: decodeTemplate(value.template) } as unknown as RegionWorkspace
 }
 function decodeDraft(value: unknown): RegionDraftResponse {
-  assertNoPathLikeKeys(value)
   if (!isRecord(value) || !exact(value, ['status', 'session_id', 'template_id', 'template_fingerprint', 'draft'])
     || (value.reason != null && typeof value.reason !== 'string')
     || typeof value.status !== 'string' || !positive(value.session_id) || !positive(value.template_id)
@@ -131,7 +128,6 @@ function decodeDraft(value: unknown): RegionDraftResponse {
   return value as unknown as RegionDraftResponse
 }
 function decodeCommit(value: unknown): RegionCommitResponse {
-  assertNoPathLikeKeys(value)
   if (!isRecord(value) || !exact(value, ['committed', 'snapshot_pending', 'error', 'issues', 'region_count'])
     || typeof value.committed !== 'boolean' || typeof value.snapshot_pending !== 'boolean'
     || (value.error !== null && typeof value.error !== 'string') || !Array.isArray(value.issues)
@@ -141,7 +137,6 @@ function decodeCommit(value: unknown): RegionCommitResponse {
   return value as unknown as RegionCommitResponse
 }
 function decodePageAssignment(value: unknown): TemplatePageAssignment {
-  assertNoPathLikeKeys(value)
   if (!isRecord(value) || !exact(value, ['changed', 'draft_sync_pending', 'template'])
     || typeof value.changed !== 'boolean' || typeof value.draft_sync_pending !== 'boolean') {
     throw new Error('Invalid template page assignment response')
@@ -166,7 +161,6 @@ export function fetchRegionAutoProposal(id: number, signal?: AbortSignal): Promi
   return apiClient.request(`/api/sessions/${sessionId(id)}/regions/auto-proposal`, {
     signal, timeoutMs: 5 * 60_000,
     decode(value) {
-      assertNoPathLikeKeys(value)
       if (!isRecord(value) || !exact(value, ['regions', 'missing_question_ids', 'template_fingerprint'])
         || !Array.isArray(value.regions) || !value.regions.every(region)
         || !Array.isArray(value.missing_question_ids)
@@ -180,7 +174,6 @@ export function fetchRegionReadiness(id: number, signal?: AbortSignal): Promise<
   return apiClient.request(`/api/sessions/${sessionId(id)}/regions/readiness`, {
     signal,
     decode(value) {
-      assertNoPathLikeKeys(value)
       if (!isRecord(value) || !exact(value, ['session_id', 'scoring_configured', 'template_present', 'template_ready'])
         || !positive(value.session_id) || typeof value.scoring_configured !== 'boolean'
         || typeof value.template_present !== 'boolean'
@@ -217,7 +210,6 @@ export function assignTemplatePageRole(
 export function fetchTemplateSubmission(id: number, requestToken: string): Promise<TemplateSubmission> {
   return apiClient.request(`/api/sessions/${sessionId(id)}/template/submissions/${token(requestToken)}`, {
     decode(value) {
-      assertNoPathLikeKeys(value)
       if (!isRecord(value) || !exact(value, ['status', 'template'])
         || !['processing', 'succeeded', 'failed', 'replaced', 'abandoned'].includes(String(value.status))) throw new Error('Invalid submission')
       return { status: value.status, template: value.template === null ? null : decodeTemplate(value.template) } as TemplateSubmission

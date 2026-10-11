@@ -209,7 +209,7 @@ def test_assembly_export_job_publishes_records_and_clears_same_draft(
         app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: None
         client = TestClient(app)
         public_job = client.get(f"/api/jobs/{job.id}").json()
-        assert "file_path" not in public_job["result"]
+        assert public_job["result"]["file_path"] == str(output)
         records = client.get("/api/question-assembly/records").json()
         assert records["items"][0]["export_format"] == export_format
         for url in (

@@ -31,7 +31,7 @@ def test_scan_failure_can_be_retried_without_half_published_state(
     )
     assert failed.status_code == 202
     first_job = api_e2e.poll_job(failed.json()["id"], "failed")
-    assert first_job["error"] == "Job failed; see local logs for details."
+    assert first_job["error"] == "synthetic scan failure"
     assert not (
         api_e2e.paths.templates_dir
         / f"session_{prepared_session_id}"

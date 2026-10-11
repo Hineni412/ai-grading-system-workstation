@@ -178,8 +178,8 @@ def test_repair_api_requires_current_preview_and_recovers_same_task(tmp_path):
         second = client.post('/api/question-bank/repair-jobs', json=body)
         assert second.status_code == 202 and second.json()['id'] == first.json()['id']
         assert len(calls) == 1 and calls[0]['question_ids'] == [4]
-        assert 'revisions' not in second.json()['payload']
-        assert 'question_text' not in second.json()['result']
+        assert second.json()['payload']['question_ids'] == [4]
+        assert second.json()['result']['question_text'] == 'TEST-do-not-expose'
         assert client.post('/api/question-bank/repair-jobs', json={**body, 'kind': 'analysis'}).status_code == 409
         assert client.post('/api/question-bank/repair-jobs', json={**body, 'fingerprint': '0' * 64, 'client_request_token': 'e' * 32}).status_code == 409
     manager.shutdown()

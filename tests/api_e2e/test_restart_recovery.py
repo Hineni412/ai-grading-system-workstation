@@ -60,12 +60,8 @@ def test_restart_marks_inflight_jobs_failed_and_preserves_terminal(
         stored_running = restarted.get(running.id)
         assert stored_running is not None
         assert stored_running.error == "interrupted by process restart"
-        public_error = "Job failed; see local logs for details."
         for response in (queued_response, running_response):
-            exposed_error = response.json()["error"]
-            assert exposed_error == public_error
-            assert str(tmp_path) not in exposed_error
-            assert stored_running.error not in exposed_error
+            assert response.json()["error"] == stored_running.error
         assert ops_factory_calls == 0
     finally:
         restarted.shutdown()

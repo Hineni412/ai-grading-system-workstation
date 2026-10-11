@@ -1,6 +1,6 @@
 import { apiClient } from './client'
 import { JOB_STATUSES, decodeJobResponse, type JobResponse, type JobStatus } from './jobs'
-import { assertNoPathLikeKeys, hasExactKeys, isRecord } from './validation'
+import { hasExactKeys, isRecord } from './validation'
 
 export type UploadBatchState = 'draft' | 'frozen'
 export type GradingMode = 'ai' | 'manual' | 'full_paper' | 'hybrid_batch'
@@ -259,7 +259,6 @@ export function decodeGradingWorkspace(value: unknown): GradingWorkspace {
 }
 
 function decodePreflight(value: unknown): ScanPreflight {
-  assertNoPathLikeKeys(value)
   if (!isRecord(value) || !finiteInteger(value.revision)
     || !Array.isArray(value.groups) || !Array.isArray(value.issues)
     || !Array.isArray(value.absent_students) || !Array.isArray(value.warnings)
@@ -351,7 +350,6 @@ function decodePlanIssue(value: unknown, index: number): GradingPlanIssue {
 }
 
 export function decodeGradingPlan(value: unknown): GradingPlan {
-  assertNoPathLikeKeys(value)
   if (!isRecord(value)
     || !isGradingMode(value.mode)
     || (value.status !== 'ready' && value.status !== 'blocked')
@@ -491,7 +489,6 @@ export function saveScanDecisions(sessionId: number, revision: number, decisions
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan/preflight/decisions`, {
     method: 'PUT', body: { expected_revision: revision, decisions, allow_partial_matches: allowPartialMatches },
     decode(value) {
-      assertNoPathLikeKeys(value)
       if (!isRecord(value) || !finiteInteger(value.revision) || !Array.isArray(value.decisions)
         || !finiteInteger(value.pending_issue_count) || !finiteInteger(value.ready_to_grade)) {
         throw new Error('Invalid scan decisions')

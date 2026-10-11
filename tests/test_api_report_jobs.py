@@ -234,7 +234,7 @@ def test_personal_preflight_filters_students_and_generation_fingerprint(personal
     assert len({j["id"] for j in jobs}) == 3
     assert jobs[0]["payload"]["publish"] is False
     assert jobs[0]["payload"]["student_ids"] == [student_ids[0]]
-    assert 'file_path' not in client.get(f"/api/jobs/{jobs[0]['id']}").json()["result"]
+    assert client.get(f"/api/jobs/{jobs[0]['id']}").json()["result"]["generated"] == 1
     context = client.get(f"/api/sessions/{sid}/reports/context").json()
     assert all(j["payload"].get("publish", True) for j in context["jobs"])
     assert context['total'] == len(context['jobs']) == 1
@@ -258,7 +258,7 @@ def test_personal_student_exams_include_later_same_volume_only(personal_api):
     assert client.get(f"/api/students/{student_id}/personal-reports?curriculum_volume_id=another-volume").json()["sessions"] == []
 
 
-def test_personal_bundle_download_is_consumed_and_public_result_has_no_path(personal_api):
+def test_personal_bundle_download_is_consumed_and_result_shows_path(personal_api):
     client, _db, sid, papers, reports, manager = personal_api
     reports.mkdir(exist_ok=True)
     target = reports / "test-personal-download.html"
@@ -267,7 +267,7 @@ def test_personal_bundle_download_is_consumed_and_public_result_has_no_path(pers
     assert response.status_code == 202
     manager.wait(response.json()["id"], timeout=5)
     public = client.get(f"/api/jobs/{response.json()['id']}").json()
-    assert 'file_path' not in public["result"]
+    assert public["result"]["file_path"] == str(target)
     assert public["result"]["download_url"]
     assert client.get(public["result"]["download_url"]).status_code == 200
     assert not target.exists()

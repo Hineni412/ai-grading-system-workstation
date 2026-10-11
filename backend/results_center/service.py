@@ -6,7 +6,6 @@ from typing import Any
 
 from backend.error_causes import display_error_category
 from backend.name_pinyin import student_name_initials, student_name_pinyin
-from backend.public_data import contains_filesystem_reference
 from backend.review.service import ReviewApplicationService, ReviewItem
 
 
@@ -207,10 +206,7 @@ def _review_reason(item: ReviewItem) -> str | None:
         item.deduction_reason,
     ):
         reason = _clean_text(value)
-        if (
-            reason is not None
-            and not contains_filesystem_reference(reason)
-        ):
+        if reason is not None:
             return reason
     if item.score_status == "ungraded":
         return "尚未评分"

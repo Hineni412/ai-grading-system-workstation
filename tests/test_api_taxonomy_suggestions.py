@@ -180,11 +180,8 @@ def test_suggestion_start_is_idempotent_persistent_and_never_auto_applies(
 
     job = client.get(f"/api/jobs/{job_id}")
     assert job.status_code == 200
-    assert job.json()["payload"] == {
-        "run_id": run_id,
-        "operation": "process",
-    }
-    assert "client_request_token" not in job.text
+    assert job.json()["payload"]["run_id"] == run_id
+    assert job.json()["payload"]["operation"] == "process"
     assert job.json()["result"]["run_id"] == run_id
 
     direct = client.post(

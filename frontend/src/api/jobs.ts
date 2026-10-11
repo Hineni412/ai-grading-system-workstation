@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
+import { isNullableString, isRecord } from './validation'
 
 export const JOB_STATUSES = [
   'queued',
@@ -91,7 +91,6 @@ function isJobStatus(value: unknown): value is JobStatus {
 }
 
 export function decodeJobResponse(value: unknown): JobResponse {
-  assertNoPathLikeKeys(value)
   if (
     !isRecord(value) ||
     !Number.isSafeInteger(value.id) ||
@@ -125,7 +124,6 @@ function requireJobId(id: number): number {
 }
 
 function decodeJobStatusBatch(value: unknown): JobStatusBatchItem[] {
-  assertNoPathLikeKeys(value)
   if (!isRecord(value) || !Array.isArray(value.items)) {
     throw new Error('Invalid job status batch response')
   }
@@ -149,7 +147,6 @@ function decodeJobStatusBatch(value: unknown): JobStatusBatchItem[] {
 }
 
 function decodeJobIdList(value: unknown): JobIdListResponse {
-  assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
     || !Array.isArray(value.items)

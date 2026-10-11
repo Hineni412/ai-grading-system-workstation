@@ -2143,15 +2143,8 @@ def _raise_assessment_api_error(exc: Exception) -> NoReturn:
 
 
 def _public_training_mapping(value: dict[str, object], *, reject_nonfinite=False) -> dict[str, object]:
-    from backend.public_data import (
-        _OMIT, _sanitize_public_value, is_path_public_key, is_sensitive_public_key,
-    )
     from question_bank.services.rich_content_service import strip_question_source_score
 
-    excluded = {"error_message", "source_file", "paper_source_file", "output_path"}
-    key_checks: dict[str, bool] = {}
-    key_decisions: dict[str, tuple[bool, bool]] = {}
-    text_checks: dict[str, bool] = {}
     score_texts: dict[tuple[str, str], str] = {}
     subtrees: dict[int, Any] = {}
     isfinite = math.isfinite
@@ -2162,27 +2155,14 @@ def _public_training_mapping(value: dict[str, object], *, reject_nonfinite=False
             if reject_nonfinite and type(item) is float and not isfinite(item):
                 raise ValueError('non-finite diagnosis number')
             return item
-        if isinstance(item, str) and item in text_checks:
-            return _OMIT if text_checks[item] else item
         if isinstance(item, dict):
             marker = id(item)
             if marker in subtrees:
                 return subtrees[marker]
             result = {}
-            retained = 0
             subtrees[marker] = result
             for key, child in item.items():
                 name = str(key)
-                decision = key_decisions.get(name)
-                if decision is None:
-                    decision = (name.casefold() in excluded,
-                                is_sensitive_public_key(name) or is_path_public_key(name))
-                    key_decisions[name] = decision
-                if decision[0]:
-                    continue
-                retained += 1
-                if decision[1]:
-                    continue
                 if name == "question_text" and isinstance(child, str):
                     score_key = (str(item.get("question_number") or ""), child)
                     if score_key not in score_texts:
@@ -2193,14 +2173,7 @@ def _public_training_mapping(value: dict[str, object], *, reject_nonfinite=False
                         raise ValueError('non-finite diagnosis number')
                     result[name] = child
                     continue
-                cleaned = public(child)
-                if cleaned is not _OMIT:
-                    result[name] = cleaned
-            # 原先先移除训练字段，再清理公共数据。仅训练字段的容器
-            # 保持为空；仍有公共待清理字段的空容器按原规则省略。
-            if retained and not result:
-                subtrees[marker] = _OMIT
-                return _OMIT
+                result[name] = public(child)
             return result
         if isinstance(item, (list, tuple)):
             marker = id(item)
@@ -2214,11 +2187,9 @@ def _public_training_mapping(value: dict[str, object], *, reject_nonfinite=False
                         raise ValueError('non-finite diagnosis number')
                     result.append(child)
                     continue
-                cleaned = public(child)
-                if cleaned is not _OMIT:
-                    result.append(cleaned)
+                result.append(public(child))
             return result
-        return _sanitize_public_value(item, key_checks=key_checks, text_checks=text_checks)
+        return item
 
     cleaned = public(value)
     return cleaned if isinstance(cleaned, dict) else {}

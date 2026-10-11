@@ -1,7 +1,6 @@
 import { apiClient } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
 import {
-  assertNoPathLikeKeys,
   isNonnegativeInteger,
   isNullableString,
   isRecord,
@@ -44,7 +43,6 @@ function decodeActiveJobId(value: unknown): number | null {
 }
 
 function decodeStatus(value: unknown): ReportPipelineStatus {
-  assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
     || typeof value.auto_generate !== 'boolean'

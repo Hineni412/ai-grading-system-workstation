@@ -18,58 +18,32 @@ from backend.api.schemas.jobs import (
 )
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.jobs.store import JobRecord
-from backend.public_data import (
-    contains_sensitive_key,
-    sanitize_public_diagnostic_text,
-    sanitize_public_mapping,
-)
+from backend.public_data import contains_sensitive_key
 
 router = APIRouter(prefix="/api", tags=["jobs"])
 
-_SOURCE_CONFIG_PUBLIC_DETAILS = {
-    "queued": "Waiting to generate grading configuration.",
-    "running": "Generating grading configuration.",
-    "config_generation": "Generating grading configuration.",
-    "Split paper": "Preparing source questions.",
-    "Submit per-question requests": "Generating grading configuration.",
-    "Parse question": "Generating grading configuration.",
-    "Assemble rubric": "Finalizing grading configuration.",
-    "AI 赋分": "Finalizing grading configuration.",
-    "AI 赋分完成": "Finalizing grading configuration.",
-    "AI 赋分失败，使用本地均分兜底": "Finalizing grading configuration.",
-    "Word 整卷单次请求": "Generating grading configuration.",
-    "旧版整卷生成": "Generating grading configuration.",
-    "旧版整卷修复": "Generating grading configuration.",
-    "PDF 整卷视觉单次请求": "Generating grading configuration.",
-    "并行生成评分标准": "正在并行生成评分依据批次。",
-    "AI 统一配分": "评分依据批次已完成，正在统一配分。",
-    "AI 统一配分失败": "模型已返回或调用已结束，但统一配分校验未通过。",
-    "本地统一配分": "评分依据批次已完成，正在本地统一配分。",
-    "本地统一配分失败": "评分依据批次已完成，但本地统一配分校验未通过。",
+_DOWNLOADABLE_JOB_TYPES = {
+    "personalized_handout_export",
+    "ops_backup",
+    "ops_transfer_export",
+    "personal_report_bundle",
+    "wrong_question_export",
+    "assembly_export",
+    "report_export",
 }
-_CONFIG_TRUNCATION_PUBLIC_ERRORS = {
-    "模型因输出长度上限停止": (
-        "模型因输出长度上限停止，当前批次结果不完整；未发布配置，也未自动重试。"
-        "请手动重试失败批次；已经成功的批次不会重复请求。"
-    ),
-    "模型返回的 JSON 结构未闭合": (
-        "模型返回的 JSON 结构未闭合，当前批次结果疑似被截断；"
-        "未发布配置，也未自动重试。请手动重试失败批次；"
-        "已经成功的批次不会重复请求。"
-    ),
-}
+
 
 def _job_response(job: JobRecord) -> JobResponse:
     return JobResponse(
         id=job.id,
         job_type=job.job_type,
-        payload=public_job_payload(job),
-        result=public_job_result(job),
+        payload=dict(job.payload),
+        result=_job_result(job),
         status=job.status,
         progress=job.progress,
         stage=job.stage,
-        detail=public_job_detail(job),
-        error=public_job_error(job),
+        detail=job.detail,
+        error=job.error or None,
         cancel_requested=job.cancel_requested,
         created_at=job.created_at,
         started_at=job.started_at,
@@ -78,443 +52,35 @@ def _job_response(job: JobRecord) -> JobResponse:
     )
 
 
-def _job_summary_response(job: JobRecord) -> JobSummaryResponse:
-    detail = sanitize_public_diagnostic_text(public_job_detail(job)) or ""
-    return JobSummaryResponse(
-        id=job.id,
-        job_type=job.job_type,
-        status=job.status,
-        progress=job.progress,
-        stage=job.stage,
-        detail=str(detail),
-        created_at=job.created_at,
-        started_at=job.started_at,
-        updated_at=job.updated_at,
-        finished_at=job.finished_at,
-    )
-
-
-def public_job_detail(job: JobRecord) -> str:
-    if job.job_type.startswith("workspace_ai."):
-        details = {
-            "queued": "工作台 AI 任务已排队。",
-            "workspace_ai": "工作台 AI 任务正在处理。",
-        }
-        if job.status == "succeeded":
-            return "工作台 AI 任务的本地处理已结束。"
-        if job.status == "failed":
-            return "工作台 AI 任务没有完成；请从任务抽屉查看安全说明。"
-        if job.status == "cancelled":
-            return "工作台 AI 任务的本地后续处理已停止。"
-        return details.get(job.stage, "")
+def _job_result(job: JobRecord) -> dict[str, Any]:
+    result = dict(job.result)
     if (
-        job.job_type == "config_generation"
-        and str(job.payload.get("source_id") or "").strip()
-    ):
-        if job.status == "succeeded":
-            if job.result.get("exam_intake_complete") is False:
-                return "题库入库未完成，统一赋分尚未开始；已完成的分析保存在本机。"
-            if job.result.get("outcome") == "partial":
-                return "评分依据生成流程已结束，但本地校验尚未全部通过，未发布正式版本。"
-            return "Grading configuration generated."
-        return _SOURCE_CONFIG_PUBLIC_DETAILS.get(job.stage, "")
-    return job.detail
-
-
-def public_job_result(job: JobRecord) -> dict[str, Any]:
-    if job.job_type == 'question_bank_repair':
-        return sanitize_public_mapping({key: job.result[key] for key in
-            ('requested_count', 'analysis_count', 'skill_count', 'completed_count', 'remaining', 'outcome')
-            if key in job.result})
-    if job.job_type == "personalized_handout_export":
-        result = {key: job.result[key] for key in ("format", "question_count", "paper_count") if key in job.result}
-        if job.status == "succeeded" and str(job.result.get("file_path") or "").strip():
-            result["filename"] = _safe_filename(job.result.get("filename"))
-            result["download_url"] = f"/api/jobs/{job.id}/download"
-        return result
-    if job.job_type.startswith("workspace_ai."):
-        allowed = ("task_id", "status")
-        return sanitize_public_mapping(
-            {key: job.result[key] for key in allowed if key in job.result}
-        )
-    if job.job_type.startswith("ops_"):
-        allowed = (
-            "operation_id",
-            "operation",
-            "outcome",
-            "filename",
-            "file_count",
-            "backup_filename",
-            "target",
-        )
-        result = {key: job.result[key] for key in allowed if key in job.result}
-        if (
-            job.job_type in {"ops_backup", "ops_transfer_export"}
-            and job.status == "succeeded"
-            and str(job.result.get("file_path") or "").strip()
-        ):
-            filename = _safe_filename(
-                job.result.get("filename") or job.result.get("file_path")
-            )
-            if filename:
-                result["filename"] = filename
-            result["download_url"] = f"/api/jobs/{job.id}/download"
-        return sanitize_public_mapping(result)
-    if job.job_type == "personal_report_bundle":
-        result = {k: job.result[k] for k in ("generated", "failed", "skipped", "missing_items", "filename") if k in job.result}
-        if job.status == "succeeded" and job.result.get("file_path"):
-            result["download_url"] = f"/api/jobs/{job.id}/download"
-        return sanitize_public_mapping(result)
-    if job.job_type == "wrong_question_export":
-        result = {key: job.result[key] for key in (
-            "generated_students", "empty_students", "failed_students", "missing_items", "question_count",
-        ) if key in job.result}
-        if job.status == "succeeded" and job.result.get("file_path"):
-            result["filename"] = _safe_filename(job.result.get("filename"))
-            result["download_url"] = f"/api/jobs/{job.id}/download"
-        return sanitize_public_mapping(result)
-    if job.job_type == "assembly_export":
-        result = {
-            key: job.result[key]
-            for key in (
-                "record_id",
-                "format",
-                "question_count",
-                "draft_cleared",
-            )
-            if key in job.result
-        }
-        if (
-            job.status == "succeeded"
-            and str(job.result.get("file_path") or "").strip()
-        ):
-            filename = _safe_filename(
-                job.result.get("filename") or job.result.get("file_path")
-            )
-            if filename:
-                result["filename"] = filename
-            result["download_url"] = f"/api/jobs/{job.id}/download"
-        return sanitize_public_mapping(result)
-    if job.job_type == 'chapter_type_organize':
-        allowed = ('outcome', 'volume_id', 'release_id', 'chapter_summaries',
-                   'published_count', 'model_calls', 'retryable', 'reason')
-        return sanitize_public_mapping({key: job.result[key] for key in allowed if key in job.result})
-    if job.job_type in {"question_import", "tagging_sync"}:
-        allowed = (
-            "request_id",
-            "outcome",
-            "imported_papers",
-            "question_count",
-            "requested_count",
-            "skipped_complete_count",
-            "chapter_type_job_id",
-            "chapter_type_state",
-            "tagged_count",
-            "complete_tagged_count",
-            "evidence_count",
-            "evidence_succeeded_question_ids",
-            "evidence_failed_question_ids",
-            "criteria_count",
-            "criteria_succeeded_question_ids",
-            "criteria_failed_question_ids",
-            "criteria_needs_review_count",
-            "criteria_needs_review_question_ids",
-            "analysis_contract",
-            "failed_count",
-            "successful_question_ids",
-            "failed_question_ids",
-            "taxonomy_review_count",
-            "taxonomy_review_question_ids",
-            "taxonomy_review_source_refs",
-            "review_count",
-            "review_question_ids",
-            "proposal_ids",
-            "failure_category",
-            "failures",
-            "retryable",
-            "restore_required",
-            "restore_paper_id",
-            "exact_duplicate_count",
-            "analysis_reused_count",
-            "exact_duplicates",
-            "near_duplicate_hints",
-            "duplicate_papers",
-        )
-        return sanitize_public_mapping(
-            {key: job.result[key] for key in allowed if key in job.result}
-        )
-    if job.job_type == "criterion_backfill":
-        allowed = (
-            "run_id",
-            "status",
-            "successful_question_ids",
-            "failed_question_ids",
-            "retryable",
-        )
-        return sanitize_public_mapping(
-            {key: job.result[key] for key in allowed if key in job.result}
-        )
-    if job.job_type == "question_bank_sync":
-        allowed = (
-            "session_id",
-            "outcome",
-            "imported_count",
-            "question_count",
-            "chapter_type_job_id",
-            "chapter_type_state",
-            "tagged_count",
-            "complete_tagged_count",
-            "evidence_count",
-            "criteria_count",
-            "criteria_failed_question_ids",
-            "linked_count",
-            "failed_count",
-            "successful_question_ids",
-            "failed_question_ids",
-            "unresolved_question_ids",
-            "review_count",
-            "proposal_ids",
-            "taxonomy_review_count",
-            "taxonomy_review_question_ids",
-            "taxonomy_review_source_refs",
-            "failure_category",
-            "retryable",
-        )
-        return sanitize_public_mapping(
-            {key: job.result[key] for key in allowed if key in job.result}
-        )
-    if job.job_type == "taxonomy_suggestion":
-        allowed = (
-            "run_id",
-            "status",
-            "taxonomy_revision",
-            "progress",
-            "stale",
-            "retryable",
-        )
-        return sanitize_public_mapping(
-            {key: job.result[key] for key in allowed if key in job.result}
-        )
-    if job.job_type == "skill_candidate":
-        allowed = (
-            "run_id",
-            "status",
-            "curriculum_volume_id",
-            "progress",
-            "stale",
-            "retryable",
-        )
-        return sanitize_public_mapping(
-            {key: job.result[key] for key in allowed if key in job.result}
-        )
-    if job.job_type == "config_generation":
-        allowed = (
-            "session_id",
-            "outcome",
-            "total_questions",
-            "generated_questions",
-            "total_batch_count",
-            "failed_count",
-            "failed_question_ids",
-            "failed_batch_count",
-            "failed_batches",
-            "uncertain_count",
-            "uncertain_question_ids",
-            "needs_teacher_resolution",
-            "taxonomy_review_count",
-            "taxonomy_review_question_ids",
-            "local_json_repairs",
-            "local_structure_repairs",
-            "score_allocation_pending",
-            "score_allocation_failed",
-            "score_allocation_error",
-            "score_allocation_failure_category",
-            "question_bank_sync_requested",
-            "question_bank_sync_state",
-            "question_bank_sync_job_id",
-            "question_bank_sync_error",
-            "question_bank_imported_count",
-            "question_bank_tagged_count",
-            "question_bank_criteria_count",
-            "exam_intake_complete",
-            "exam_intake_category",
-            "exam_intake_error",
-            "exam_intake_failed_question_ids",
-            "exam_intake_retryable",
-            "config_revision",
-            "retryable",
-            "mapping_status",
-            "mapping_message",
-        )
-        return sanitize_public_mapping(
-            {key: job.result[key] for key in allowed if key in job.result}
-        )
-    if (
-        job.job_type == "report_export"
+        job.job_type in _DOWNLOADABLE_JOB_TYPES
         and job.status == "succeeded"
         and str(job.result.get("file_path") or "").strip()
     ):
-        result: dict[str, Any] = {}
-        for key in (
-            "session_id",
-            "report_type",
-            "review_note_count",
-        ):
-            if job.result.get(key) is not None:
-                result[key] = job.result[key]
         filename = _safe_filename(
             job.result.get("filename") or job.result.get("file_path")
         )
         if filename:
             result["filename"] = filename
         result["download_url"] = f"/api/jobs/{job.id}/download"
-        return result
-    if job.job_type == "ai_assembly_spec":
-        # 只暴露细目表与模型名；prompt 与题库概况原文不进 result。
-        allowed = ("spec", "model_name")
-        return sanitize_public_mapping(
-            {key: job.result[key] for key in allowed if key in job.result}
-        )
-    return sanitize_public_mapping(job.result)
+    return result
 
 
-def public_job_error(job: JobRecord) -> str | None:
-    if not job.error:
-        return None
-    if job.job_type.startswith("workspace_ai."):
-        return "工作台 AI 任务没有完成；请从任务抽屉查看安全说明。"
-    if job.job_type == "config_generation" and job.status == "failed":
-        for prefix, public_error in _CONFIG_TRUNCATION_PUBLIC_ERRORS.items():
-            if job.error.startswith(prefix):
-                return public_error
-    if job.status == "failed":
-        return "Job failed; see local logs for details."
-    return "Job ended with an internal error; see local logs for details."
-
-
-def public_job_payload(job: JobRecord) -> dict[str, Any]:
-    if job.job_type == 'question_bank_repair':
-        return {key: job.payload[key] for key in ('question_ids', 'curriculum_volume_id', 'kind') if key in job.payload}
-    if job.job_type == "personalized_handout_export":
-        return {key: job.payload[key] for key in ("draft_id", "expected_revision", "client_request_token") if key in job.payload}
-    if job.job_type.startswith("workspace_ai."):
-        task_id = job.payload.get("task_id")
-        return sanitize_public_mapping(
-            {"task_id": task_id} if task_id is not None else {}
-        )
-    if job.job_type == "report_export":
-        allowed = (
-            "session_id",
-            "report_type",
-            "score_excel_options",
-            "student_ids",
-            "publish",
-            "retry_of_job_id",
-        )
-        return sanitize_public_mapping(
-            {key: job.payload[key] for key in allowed if key in job.payload}
-        )
-    if job.job_type == "assembly_export":
-        allowed = (
-            "draft_revision",
-            "format",
-            "question_count",
-            "source",
-            "retry_of_job_id",
-        )
-        return sanitize_public_mapping(
-            {key: job.payload[key] for key in allowed if key in job.payload}
-        )
-    if job.job_type == "ai_assembly_spec":
-        # 脱敏红线：不暴露 prompt、题库概况、口语与新指令原文。
-        raw_request = job.payload.get("request")
-        request = raw_request if isinstance(raw_request, dict) else {}
-        raw_type_counts = request.get("type_counts")
-        locked_ids = request.get("locked_question_ids")
-        template_paper_id = request.get("template_paper_id")
-        public: dict[str, Any] = {
-            "type_counts": (
-                {
-                    str(key): value
-                    for key, value in raw_type_counts.items()
-                }
-                if isinstance(raw_type_counts, dict)
-                else {}
-            ),
-            "has_free_text": bool(str(request.get("free_text") or "").strip()),
-            "locked_count": (
-                len(locked_ids) if isinstance(locked_ids, (list, tuple)) else 0
-            ),
-        }
-        if template_paper_id is not None:
-            public["template_paper_id"] = template_paper_id
-        return sanitize_public_mapping(public)
-    if job.job_type.startswith("ops_"):
-        allowed = ("operation_id", "operation")
-        return sanitize_public_mapping(
-            {key: job.payload[key] for key in allowed if key in job.payload}
-        )
-    if job.job_type == "question_import":
-        allowed = ("request_id", "retry_of_job_id")
-        return sanitize_public_mapping(
-            {key: job.payload[key] for key in allowed if key in job.payload}
-        )
-    if job.job_type == "tagging_sync":
-        allowed = (
-            "question_ids",
-            "curriculum_volume_id",
-            "source_job_id",
-            "retry_of_job_id",
-            "retry_evidence_question_ids",
-            "force_retag_question_ids",
-            "client_request_token",
-        )
-        return sanitize_public_mapping(
-            {key: job.payload[key] for key in allowed if key in job.payload}
-        )
-    if job.job_type == 'chapter_type_organize':
-        return {'source_job_id': job.payload.get('source_job_id')}
-    if job.job_type == "criterion_backfill":
-        allowed = ("run_id", "retry_of_run_id")
-        return sanitize_public_mapping(
-            {key: job.payload[key] for key in allowed if key in job.payload}
-        )
-    if job.job_type == "question_bank_sync":
-        allowed = (
-            "session_id",
-            "mode",
-            "config_revision",
-            "curriculum_volume_id",
-            "retry_of_job_id",
-            "question_ids",
-        )
-        return sanitize_public_mapping(
-            {key: job.payload[key] for key in allowed if key in job.payload}
-        )
-    if job.job_type == "taxonomy_suggestion":
-        allowed = ("run_id", "operation", "retry_of_job_id")
-        return sanitize_public_mapping(
-            {key: job.payload[key] for key in allowed if key in job.payload}
-        )
-    if job.job_type == "skill_candidate":
-        allowed = ("run_id", "operation", "retry_of_job_id")
-        return sanitize_public_mapping(
-            {key: job.payload[key] for key in allowed if key in job.payload}
-        )
-    if job.job_type == "config_generation":
-        allowed = ("session_id", "mode")
-        if str(job.payload.get("source_id") or "").strip():
-            allowed += (
-                "generation_mode",
-                "source_id",
-                "source_revision",
-                "sync_to_question_bank",
-                "curriculum_volume_id",
-            )
-        return sanitize_public_mapping(
-            {key: job.payload[key] for key in allowed if key in job.payload}
-        )
-    return sanitize_public_mapping(job.payload)
+def _job_summary_response(job: JobRecord) -> JobSummaryResponse:
+    return JobSummaryResponse(
+        id=job.id,
+        job_type=job.job_type,
+        status=job.status,
+        progress=job.progress,
+        stage=job.stage,
+        detail=job.detail,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        updated_at=job.updated_at,
+        finished_at=job.finished_at,
+    )
 
 
 def _safe_filename(value: object) -> str:

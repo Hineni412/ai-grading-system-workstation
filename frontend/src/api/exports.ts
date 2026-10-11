@@ -3,7 +3,7 @@ import {
   decodeJobResponse,
   type JobResponse,
 } from './jobs'
-import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
+import { isNullableString, isRecord } from './validation'
 
 export const REPORT_TYPES = [
   'score_excel',
@@ -102,7 +102,6 @@ function isReportFileStatus(value: unknown): value is ReportFileStatus {
 }
 
 export function decodeReportFileDelete(value: unknown): ReportFileDeleteResult {
-  assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
     || !Number.isSafeInteger(value.job_id)
@@ -121,7 +120,6 @@ export function decodeReportFileDelete(value: unknown): ReportFileDeleteResult {
 }
 
 export function decodeAnalysisPreflight(value: unknown): AnalysisPreflight {
-  assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
     || typeof value.report_type !== 'string'
@@ -159,7 +157,6 @@ export function decodeAnalysisPreflight(value: unknown): AnalysisPreflight {
 }
 
 function decodeReportHistoryJob(value: unknown): ReportHistoryJob {
-  assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
     || !isReportFileStatus(value.file_status)
@@ -174,7 +171,6 @@ function decodeReportHistoryJob(value: unknown): ReportHistoryJob {
 }
 
 export function decodeReportContext(value: unknown): ReportContext {
-  assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
     || typeof value.has_results !== 'boolean'
@@ -228,7 +224,6 @@ async function downloadJobFile(jobId: number): Promise<DownloadedJobFile> {
 }
 
 function decodeAnalysisReviewNoteItem(value: unknown): AnalysisReviewNoteItem {
-  assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
     || !Number.isSafeInteger(value.student_id)
@@ -262,7 +257,6 @@ function decodeAnalysisReviewNoteItem(value: unknown): AnalysisReviewNoteItem {
 }
 
 export function decodeAnalysisReviewNotes(value: unknown): AnalysisReviewNotes {
-  assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
     || !Number.isSafeInteger(value.session_id)

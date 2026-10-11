@@ -336,7 +336,9 @@ def test_scan_analysis_uses_frozen_server_batch_and_rejects_client_paths(
 
         created = client.post(f"/api/sessions/{session_id}/scan/analyze", json={})
         assert created.status_code == 202
-        assert "exams_dir" not in created.json()["payload"]
+        assert str(created.json()["payload"]["exams_dir"]).startswith(
+            str(tmp_path / "exams")
+        )
         internal = manager.get(created.json()["id"])
         assert internal is not None
         assert str(internal.payload["exams_dir"]).startswith(str(tmp_path / "exams"))

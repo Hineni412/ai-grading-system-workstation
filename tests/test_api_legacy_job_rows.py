@@ -75,10 +75,8 @@ def test_legacy_unsupported_job_row_lists_and_details_without_crash(
         assert detail.status_code == 200
         body = detail.json()
         assert body["job_type"] == _LEGACY_JOB_TYPE
-        # 脱敏红线对历史行仍生效：result 只剩细目表与模型名，payload 不原文外泄。
-        assert set(body["result"]) == {"spec", "model_name"}
-        assert "不要暴露的口语描述" not in repr(body)
-        assert "bank_profile" not in repr(body)
+        assert body["result"] == _LEGACY_RESULT
+        assert body["payload"] == _LEGACY_PAYLOAD
     finally:
         manager.shutdown()
 

@@ -1,7 +1,6 @@
 import { apiClient } from './client'
 import { decodeKeyStepStats, decodeStepDiagnosisSummary, type KeyStepStats, type StepDiagnosisSummary } from './step-diagnosis'
 import {
-  assertNoPathLikeKeys,
   isFiniteNumber,
   isNonnegativeInteger,
   isNullableString,
@@ -491,7 +490,6 @@ function decodeActiveJobId(value: unknown): number | null | undefined {
 }
 
 export function decodeClassAnalysisResponse(value: unknown): ClassAnalysisResponse {
-  assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
     || !CLASS_ANALYSIS_STATUSES.some((status) => status === value.status)
@@ -521,7 +519,6 @@ export function decodeClassAnalysisResponse(value: unknown): ClassAnalysisRespon
 }
 
 export function decodeClassAnalysisSettings(value: unknown): ClassAnalysisSettings {
-  assertNoPathLikeKeys(value)
   if (!isRecord(value) || typeof value.auto_generate !== 'boolean') {
     throw new Error('Invalid class analysis settings')
   }
@@ -557,7 +554,6 @@ export const classAnalysisApi = {
     return apiClient.request(`/api/sessions/${id}/class-analysis/questions/${encodeURIComponent(questionId)}/preview`, {
       signal,
       decode(value) {
-        assertNoPathLikeKeys(value)
         if (!isRecord(value) || typeof value.question_id !== 'string'
           || typeof value.parent_question_id !== 'string' || typeof value.text !== 'string'
           || typeof value.notice !== 'string' || !isConfigRichContent(value.rich_content)) {
@@ -601,7 +597,6 @@ export const classAnalysisApi = {
       body: payload,
       signal,
       decode(value) {
-        assertNoPathLikeKeys(value)
         if (!isRecord(value) || value.ok !== true) {
           throw new Error('Invalid cause pattern edit response')
         }

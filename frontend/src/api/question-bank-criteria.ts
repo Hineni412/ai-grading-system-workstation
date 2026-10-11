@@ -1,7 +1,6 @@
 import { apiClient } from './client'
 import { decodeJobResponse, type JobResponse } from './jobs'
 import {
-  assertNoPathLikeKeys,
   isNullableString,
   isPositiveInteger,
   isRecord,
@@ -203,7 +202,6 @@ function decodeVersion(value: unknown): TrainingCriterionVersion {
 }
 
 export function decodeTrainingCriterionWorkspace(value: unknown): TrainingCriterionWorkspace {
-  assertNoPathLikeKeys(value)
   if (
     !isRecord(value)
     || !isPositiveInteger(value.question_id)
@@ -253,7 +251,6 @@ function decodeBackfillRun(value: unknown): TrainingCriterionBackfillRun {
 }
 
 function decodeBackfillStart(value: unknown): TrainingCriterionBackfillStart {
-  assertNoPathLikeKeys(value)
   if (!isRecord(value)) throw new Error('Invalid training criterion backfill start')
   return {
     run: decodeBackfillRun(value.run),

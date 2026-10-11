@@ -18,7 +18,6 @@ from backend.ops.write_service import (
 from backend.ops.journal import OpsOperationBusy
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
-from backend.public_data import contains_filesystem_reference
 from backend.schema_migrations import ensure_schema_current
 from update_tools.backup_core import preview_backup
 

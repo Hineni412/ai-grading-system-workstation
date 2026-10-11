@@ -293,7 +293,7 @@ def test_wrong_question_books_preview_export_replay_download_and_read_only(tmp_p
         assert client.post('/api/students/wrong-question-books', json=dict(body, include_answer_space=False)).status_code == 409
         assert client.post('/api/students/wrong-question-books', json=dict(body, scope_keys=['kp_TEST'])).status_code == 409
         public = client.get(f"/api/jobs/{job_id}").json()["result"]
-        assert "file_path" not in public and public["download_url"]
+        assert public["file_path"] == str(path) and public["download_url"]
         assert client.get(public["download_url"]).status_code == 200
         assert not path.exists()
         assert not manager.get(job_id).result.get("file_path")

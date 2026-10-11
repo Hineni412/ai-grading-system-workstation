@@ -481,10 +481,6 @@ def _iter_strings(value: Any) -> Iterator[str]:
             yield from _iter_strings(item)
 
 
-def _normalized_public_text(value: str) -> str:
-    return value.replace("\\", "/").casefold()
-
-
 class ApiE2EHarness:
     TERMINAL = {"succeeded", "failed", "cancelled"}
 
@@ -514,13 +510,7 @@ class ApiE2EHarness:
             response = self.client.get(f"/api/jobs/{job_id}")
             assert response.status_code == 200
             last = response.json()
-            normalized_data_root = _normalized_public_text(
-                str(self.paths.data_root)
-            ).rstrip("/")
             for value in _iter_strings(last):
-                assert normalized_data_root not in _normalized_public_text(value), (
-                    "job response exposed the temporary data root"
-                )
                 assert "api_key" not in value.casefold(), (
                     "job response exposed an API key field or value"
                 )

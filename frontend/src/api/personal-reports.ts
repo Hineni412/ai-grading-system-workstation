@@ -1,6 +1,6 @@
 import { apiClient } from './client'
 import { decodeJobResponse } from './jobs'
-import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
+import { isNullableString, isRecord } from './validation'
 
 export type PersonalReportStatus = 'current' | 'stale' | 'old_prompt' | 'missing' | 'unavailable'
 export interface PersonalReportState {
@@ -44,7 +44,6 @@ export const personalReportsApi = {
   async states(sessionId: number, signal?: AbortSignal): Promise<PersonalReportState[]> {
     if (!positive(sessionId)) throw new Error('Invalid session')
     return apiClient.request(`/api/sessions/${sessionId}/personal-reports`, { signal, timeoutMs: 60_000, decode(value) {
-      assertNoPathLikeKeys(value)
       if (!isRecord(value) || value.session_id !== sessionId || !Array.isArray(value.students)) throw new Error('Invalid report states')
       return value.students.map(decodeState)
     } })
@@ -53,7 +52,6 @@ export const personalReportsApi = {
     if (!positive(studentId)) throw new Error('Invalid student')
     const query = volume ? `?curriculum_volume_id=${encodeURIComponent(volume)}` : ''
     return apiClient.request(`/api/students/${studentId}/personal-reports${query}`, { signal, timeoutMs: 60_000, decode(value) {
-      assertNoPathLikeKeys(value)
       if (!isRecord(value) || value.student_id !== studentId || !Array.isArray(value.sessions)) throw new Error('Invalid report exams')
       return value.sessions.map(item => {
         if (!isRecord(item) || !positive(item.session_id) || typeof item.session_name !== 'string'

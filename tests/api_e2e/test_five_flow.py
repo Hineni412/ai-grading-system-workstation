@@ -242,13 +242,14 @@ def test_api_five_flow_persists_reviewed_score_in_downloaded_report(
     report_job = api_e2e.poll_job(exported.json()["id"], "succeeded")
     assert report_job["result"] == {
         "session_id": session_id,
+        "file_path": report_job["result"]["file_path"],
         "filename": report_job["result"]["filename"],
         "download_url": f"/api/jobs/{report_job['id']}/download",
     }
     assert Path(report_job["result"]["filename"]).name == report_job["result"][
         "filename"
     ]
-    assert str(api_e2e.paths.data_root) not in str(report_job["result"])
+    assert str(api_e2e.paths.data_root) in str(report_job["result"]["file_path"])
 
     download = api_e2e.client.get(report_job["result"]["download_url"])
     assert download.status_code == 200
