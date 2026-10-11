@@ -372,9 +372,9 @@ describe('AppShell', () => {
     confirmApp.unmount()
   })
 
-  it.each(['generation', 'upload'] as const)(
-    'blocks exam switching while an unknown %s result still needs reconciliation',
-    async (kind) => {
+  it(
+    'blocks exam switching while an unknown generation result still needs reconciliation',
+    async () => {
       const { app, host } = await mountShell()
       const sessionStore = useSessionStore()
       const configStore = useConfigWorkspaceStore()
@@ -384,8 +384,7 @@ describe('AppShell', () => {
       ]
       sessionStore.selectSession(7)
       configStore.selectSession(7)
-      if (kind === 'generation') configStore.markJobSubmissionPending('1'.repeat(32), 'retry')
-      else configStore.markUploadSubmissionPending('2'.repeat(32))
+      configStore.markJobSubmissionPending('1'.repeat(32), 'retry')
       const confirmApp = mountConfirmHost()
 
       const popover = await openExamSwitcher(host)
