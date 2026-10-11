@@ -3525,8 +3525,17 @@ class PersonalizedRecommendationModule:
                 question_ids=question_ids,
             )
 
+        def compute_stored(ids: Sequence[int] = (), eligible_out: dict | None = None) -> tuple:
+            return self._source_snapshot_uncached(
+                excluded_question_ids=excluded_question_ids,
+                knowledge_keys=knowledge_keys,
+                candidate_config=candidate_config,
+                question_ids=ids,
+                eligible_out=eligible_out,
+            )
+
         produce = compute if question_ids else (
-            lambda: _persistent_source_snapshot(self, key, compute)
+            lambda: _persistent_source_snapshot(self, key, compute, compute_stored)
         )
         return _SOURCE_SNAPSHOT_CACHE.get_or_compute(key, produce)
 
@@ -3537,6 +3546,7 @@ class PersonalizedRecommendationModule:
         knowledge_keys: Sequence[str] = (),
         candidate_config: PersonalizedRecommendationConfig | None = None,
         question_ids: Sequence[int] = (),
+        eligible_out: dict | None = None,
     ) -> tuple[
         tuple[dict[str, Any], ...],
         tuple[dict[str, Any], ...],
@@ -3966,6 +3976,10 @@ class PersonalizedRecommendationModule:
             }
             for relation in self.current_knowledge.relations
         )
+        if eligible_out is not None:
+            # 去重前的全部合格候选按题入图，供持久化条目做按题增量合并。
+            for candidate in candidates:
+                eligible_out[int(candidate["question_id"])] = candidate
         distinct: dict[str, dict[str, Any]] = {}
         for candidate in sorted(candidates, key=lambda item: int(item["question_id"])):
             distinct.setdefault(candidate["duplicate_identity"], candidate)
@@ -5068,33 +5082,136 @@ def _apply_diagnosis_mastery(
                 }
 
 
-def _persistent_source_snapshot(module, key: tuple, compute) -> tuple:
-    """Reuse one temporary pool by its read constraints and source revisions."""
-    from integration.data_generation import database_change_stamp, data_versions
+def _persistent_source_snapshot(module, key: tuple, compute, compute_stored=None) -> tuple:
+    """Reuse one temporary pool by its read constraints and source revisions.
+
+    持久化条目在按题版本可用时存 ``(result, eligible)``：result 是去重后的
+    三元组，eligible 是去重前全部合格候选的 {题号: 条目}。按题版本变化只重算
+    变化的题，未变题沿用存储条目，再按题号排序去重——与全量重算同序同结果。
+    """
+    from integration.data_generation import (
+        LAST_INCREMENTAL,
+        QuestionVersionState,
+        database_change_stamp,
+        data_versions,
+        question_version_state,
+    )
     from integration.persistent_entries import persistent_entry_store
 
     versions = data_versions(module.db_path)
+    state = question_version_state(module.db_path) if versions is not None else None
     from question_bank.services.question_read_service import _skill_asset_manifest
     # Pool eligibility depends on loaded image bodies, so asset files stay in
     # the signature even when database versions cover the tables.
     manifest = _skill_asset_manifest(Path(module.data_root))
     if manifest is None:
         return compute()
+    manifest_key = tuple(sorted(manifest.items()))
     pkey = tuple(part for index, part in enumerate(key) if index not in (1, 4))
-    if versions is not None:
+    version_map = tuple(sorted((int(qid), int(ver)) for qid, ver in state.versions.items())) if state is not None else None
+    if state is not None:
+        changes = (("qgv", state.materials_global, version_map), manifest_key)
+    elif versions is not None:
         # The snapshot reads only materials tables; excluded ids and scope are
         # already explicit key inputs.
-        changes = (("dv", ("materials", versions.get("materials"))), tuple(sorted(manifest.items())))
+        changes = (("dv", ("materials", versions.get("materials"))), manifest_key)
     else:
-        changes = (database_change_stamp(module.db_path), tuple(sorted(manifest.items())))
+        changes = (database_change_stamp(module.db_path), manifest_key)
     store = persistent_entry_store(Path(module.data_root) / "cache" / "recommendation_pools",
                                    max_entries=16, max_bytes=512 * 1024 * 1024)
-    payload = store.get(pkey, changes)
+    captured: dict[str, Any] = {}
+
+    def signature(stored):
+        if stored == changes:
+            return changes
+        # 旧签名仍是同一请求的条目时，先取出再按题版本差分决定是否复用。
+        if (state is not None and compute_stored is not None
+                and isinstance(stored, tuple) and len(stored) == 2
+                and isinstance(stored[0], tuple) and len(stored[0]) == 3
+                and stored[0][0] == "qgv" and stored[1] == manifest_key):
+            _, stored_global, stored_map = stored[0]
+            captured["state"] = QuestionVersionState(
+                int(stored_global), {int(qid): int(ver) for qid, ver in stored_map})
+            return stored
+        return None
+
+    payload = store.get(pkey, signature)
     if isinstance(payload, tuple) and len(payload) == 3:
+        # 旧版载荷：只有签名完全一致才能原样返回（此时不会走到这里）。
         return payload
-    result = compute()
+    if (isinstance(payload, tuple) and len(payload) == 2
+            and isinstance(payload[0], tuple) and len(payload[0]) == 3
+            and isinstance(payload[1], dict)):
+        result, stored_eligible = payload
+        stored_state = captured.get("state")
+        if stored_state is None:
+            return result
+        changed = state.changed_since(stored_state)
+        if changed is not None:
+            # None 分支意味着共享输入已变；按题变化走合并。
+            if not changed:
+                return result
+            sub_eligible: dict[int, Any] = {}
+            sub_result = compute_stored(tuple(sorted(changed)), sub_eligible)
+            eligible = {qid: item for qid, item in stored_eligible.items()
+                        if qid not in changed}
+            eligible.update(sub_eligible)
+            distinct: dict[str, dict[str, Any]] = {}
+            for item in sorted(eligible.values(), key=lambda row: int(row["question_id"])):
+                distinct.setdefault(item["duplicate_identity"], item)
+            merged = (tuple(distinct.values()), sub_result[1], "")
+            result = merged
+            eligible_for_put = eligible
+            # 计算期间又有写入则合并结果作废，按新状态全量重算。
+            if question_version_state(module.db_path) != state:
+                eligible_for_put = {}
+                result = compute_stored((), eligible_for_put)
+                LAST_INCREMENTAL["candidate_pool"] = {
+                    "mode": "full",
+                    "recomputed": frozenset(int(item["question_id"]) for item in result[0])}
+            else:
+                LAST_INCREMENTAL["candidate_pool"] = {
+                    "mode": "incremental", "recomputed": frozenset(changed)}
+        else:
+            # 共享输入（全局版本）已变：全量重算，仍收集去重前条目以便下次增量。
+            eligible_for_put = {}
+            if compute_stored is not None:
+                result = compute_stored((), eligible_for_put)
+            else:
+                result = compute()
+            LAST_INCREMENTAL["candidate_pool"] = {
+                "mode": "full",
+                "recomputed": frozenset(int(item["question_id"]) for item in result[0])}
+        # 落盘前仍按签名校验：期间变化则不保存（与既有口径一致）。
+        after_manifest = _skill_asset_manifest(Path(module.data_root))
+        after_state = question_version_state(module.db_path)
+        after_map = (tuple(sorted((int(qid), int(ver)) for qid, ver in after_state.versions.items()))
+                     if after_state is not None else None)
+        after = ((("qgv", after_state.materials_global, after_map),
+                  tuple(sorted((after_manifest or {}).items())))
+                 if after_state is not None else None)
+        if after is not None and after == changes:
+            store.put(pkey, changes, (result, eligible_for_put))
+        return result
+    eligible_out: dict[int, Any] = {}
+    if compute_stored is not None and state is not None:
+        result = compute_stored((), eligible_out)
+        payload_out = (result, eligible_out)
+    else:
+        result = compute()
+        payload_out = result
+    LAST_INCREMENTAL["candidate_pool"] = {
+        "mode": "full",
+        "recomputed": frozenset(int(item["question_id"]) for item in result[0])}
     after_manifest = _skill_asset_manifest(Path(module.data_root))
-    if versions is not None:
+    if state is not None:
+        after_state = question_version_state(module.db_path)
+        after_map = (tuple(sorted((int(qid), int(ver)) for qid, ver in after_state.versions.items()))
+                     if after_state is not None else None)
+        after = ((("qgv", after_state.materials_global, after_map),
+                  tuple(sorted((after_manifest or {}).items())))
+                 if after_state is not None else None)
+    elif versions is not None:
         after_versions = data_versions(module.db_path)
         after = (("dv", ("materials", after_versions.get("materials"))),
                  tuple(sorted((after_manifest or {}).items()))) if after_versions is not None else None
@@ -5102,7 +5219,7 @@ def _persistent_source_snapshot(module, key: tuple, compute) -> tuple:
         after = (database_change_stamp(module.db_path),
                  tuple(sorted((after_manifest or {}).items())))
     if after is not None and after == changes:
-        store.put(pkey, changes, result)
+        store.put(pkey, changes, payload_out)
     return result
 
 

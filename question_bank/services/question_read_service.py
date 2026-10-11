@@ -1305,17 +1305,59 @@ class QuestionBankReadService:
             # The full projection is already shared in memory. Persist only
             # that existing projection, with its exact source dependencies.
             versioned = (asset_manifest is None and asset_generation is not None
-                         and full and self.persist_skill_snapshots
+                         and self.persist_skill_snapshots
                          and self._cache_data_root and generation is not None)
             manifest = (asset_manifest if asset_manifest is not None
                         and full and self.persist_skill_snapshots and self._cache_data_root and generation is not None else None)
-            snapshot = (self._read_local_skill_snapshot(generation, inventory, manifest, connection=conn)
-                        if versioned or manifest is not None else None)
+            stored = (self._read_local_skill_snapshot(generation, inventory, manifest, connection=conn)
+                      if versioned or manifest is not None else None)
+            snapshot = None
+            merged_state = None
+            if stored is not None and stored["state"] is not None:
+                # 按题增量：仅重算版本变化的题，未变题投影原样合并。
+                from integration.data_generation import LAST_INCREMENTAL, question_version_state
+                state = question_version_state(self.db_path)
+                if state is not None:
+                    changed = state.changed_since(stored["state"])
+                    if changed is not None:
+                        if not changed and full:
+                            # 版本全部未动：整库快照直接复用（跳过重组装）。
+                            snapshot = stored["snapshot"]
+                            LAST_INCREMENTAL["skill_snapshot"] = {
+                                "mode": "incremental",
+                                "recomputed": frozenset(),
+                            }
+                        else:
+                            from question_bank.services.question_skill_index import (
+                                merge_skill_snapshot,
+                            )
+                            merged = merge_skill_snapshot(
+                                conn, self.db_path, self.data_root,
+                                previous=stored["snapshot"],
+                                contrib=stored["contrib"],
+                                inventory=inventory, changed=changed,
+                                selected=None if full else set(ids))
+                            if merged is not None and question_version_state(self.db_path) == state:
+                                snapshot = merged
+                                merged_state = state
+                                LAST_INCREMENTAL["skill_snapshot"] = {
+                                    "mode": "incremental",
+                                    "recomputed": frozenset(changed & set(inventory["questions"])),
+                                }
+            elif stored is not None:
+                # 精确命中（签名未变、无按题版本）：整库快照原样复用。
+                if full:
+                    snapshot = stored["snapshot"]
             if snapshot is None:
                 from question_bank.services.file_cache import capture_file_reads
                 with capture_file_reads() if manifest is not None else nullcontext(None) as trace:
                     snapshot = build_skill_snapshot(conn, self.db_path, self.data_root,
                                                     inventory=inventory, question_ids=ids)
+                from integration.data_generation import LAST_INCREMENTAL
+                LAST_INCREMENTAL["skill_snapshot"] = {
+                    "mode": "full",
+                    "recomputed": frozenset(inventory["questions"] if full else selected),
+                }
                 if manifest is not None:
                     dependencies = trace.paths if trace.usable else {}
                     if (trace.usable
@@ -1323,9 +1365,21 @@ class QuestionBankReadService:
                             and self._skill_dependencies_current(dependencies)):
                         self._save_local_skill_snapshot(generation, manifest, dependencies,
                                                         snapshot, connection=conn)
-                elif versioned:
-                    self._save_local_skill_snapshot(generation, None, None,
-                                                    snapshot, connection=conn)
+                elif versioned and full:
+                    from integration.data_generation import question_version_state
+                    from question_bank.services.question_skill_index import _profile_order_keys
+                    save_state = question_version_state(self.db_path)
+                    self._save_local_skill_snapshot(
+                        generation, None, None, snapshot, connection=conn,
+                        contrib=_profile_order_keys(conn, snapshot["profiles"].keys()),
+                        state=save_state)
+            elif merged_state is not None and full and versioned:
+                # 合并结果同样持久化：后续请求直接命中最新版本状态。
+                from question_bank.services.question_skill_index import _profile_order_keys
+                self._save_local_skill_snapshot(
+                    generation, None, None, snapshot, connection=conn,
+                    contrib=_profile_order_keys(conn, snapshot["profiles"].keys()),
+                    state=merged_state)
             if scope is not None and full:
                 scope.skill_snapshot = snapshot
                 scope.skill_snapshot_key = key
@@ -1353,6 +1407,11 @@ class QuestionBankReadService:
         return True
 
     def _read_local_skill_snapshot(self, generation, inventory, manifest, *, connection):
+        """Return {"snapshot", "contrib", "state"} for reuse/merge, or None.
+
+        contrib = {qid: (approved, created_at, rowid)} profile order keys;
+        state = stored QuestionVersionState (v2 entries only).
+        """
         try:
             path = self._local_skill_path()
             with path.open("rb") as saved:
@@ -1362,10 +1421,22 @@ class QuestionBankReadService:
             entry = pickle.loads(encoded)
             from integration.data_generation import data_versions
             versions = data_versions(self.db_path)
+            incremental = False
             if manifest is None and versions is not None:
                 # 版本化签名：materials 版本即完整来源凭证，跳过清单/依赖/文件戳校验。
-                if entry.get("materials_version") != int(versions["materials"]):
-                    return None
+                # materials_global 经 dvg_ 触发器与 materials 同步变化；条目
+                # 若记录过它则一并比对。
+                same_materials = entry.get("materials_version") == int(versions["materials"])
+                same_global = (
+                    entry.get("materials_global") is None
+                    or int(entry["materials_global"]) == int(versions.get("materials_global", 0))
+                )
+                if not (same_materials and same_global):
+                    # materials 已变：仅 v2 条目（带按题版本）可增量合并。
+                    qv = entry.get("question_versions")
+                    if not isinstance(qv, dict) or entry.get("materials_global") is None:
+                        return None
+                    incremental = True
             else:
                 if (entry["manifest"] != manifest
                         or not self._skill_dependencies_current(entry["dependencies"])):
@@ -1381,17 +1452,41 @@ class QuestionBankReadService:
                         "evidence_versions", "gap_points"))
                     or any(not isinstance(snapshot.get(key), set) for key in ("no_usable", "unlinked"))):
                 return None
-            if any(snapshot[key] != inventory[key] for key in ("release", "nodes", "questions", "members", "volumes")):
+            if not incremental:
+                if any(snapshot[key] != inventory[key] for key in ("release", "nodes", "questions", "members", "volumes")):
+                    return None
+                if generation != _source_generation_token(self.db_path):
+                    return None
+                if versions is None and manifest != _skill_asset_manifest(Path(self._cache_data_root)):
+                    return None
+                stored_state = None
+                if isinstance(entry.get("question_versions"), dict) and entry.get("materials_global") is not None:
+                    from integration.data_generation import QuestionVersionState
+                    stored_state = QuestionVersionState(
+                        int(entry["materials_global"]),
+                        {int(qid): int(ver) for qid, ver in entry["question_versions"].items()},
+                    )
+                return {"snapshot": snapshot,
+                        "contrib": {int(qid): key for qid, key in (entry.get("contrib") or {}).items()},
+                        "state": stored_state}
+            # 增量合并由调用方完成；inventory 差异由按题版本差异覆盖，
+            # 本层只校验快照形状并交回存储状态。
+            if snapshot["release"] != inventory["release"]:
                 return None
-            if generation != _source_generation_token(self.db_path):
-                return None
-            if versions is None and manifest != _skill_asset_manifest(Path(self._cache_data_root)):
-                return None
-            return snapshot
+            from integration.data_generation import QuestionVersionState
+            return {
+                "snapshot": snapshot,
+                "contrib": {int(qid): key for qid, key in (entry.get("contrib") or {}).items()},
+                "state": QuestionVersionState(
+                    int(entry["materials_global"]),
+                    {int(qid): int(ver) for qid, ver in entry["question_versions"].items()},
+                ),
+            }
         except (OSError, sqlite3.Error, pickle.PickleError, EOFError, KeyError, TypeError, ValueError, AttributeError, ImportError):
             return None
 
-    def _save_local_skill_snapshot(self, generation, manifest, dependencies, snapshot, *, connection) -> None:
+    def _save_local_skill_snapshot(self, generation, manifest, dependencies, snapshot, *,
+                                   connection, contrib=None, state=None) -> None:
         temporary = None
         try:
             if generation != _source_generation_token(self.db_path):
@@ -1402,9 +1497,19 @@ class QuestionBankReadService:
                 versions = data_versions(self.db_path)
                 if versions is None or versions.get("materials") is None:
                     return
+                extra = {}
+                if state is not None and contrib is not None:
+                    # v2：按题版本与次序键，供跨重启的增量合并。
+                    extra = {
+                        "materials_global": int(state.materials_global),
+                        "question_versions": {
+                            int(qid): int(ver) for qid, ver in state.versions.items()
+                        },
+                        "contrib": dict(contrib),
+                    }
                 encoded = pickle.dumps({"generation": generation,
                     "materials_version": int(versions["materials"]),
-                    "payload": payload},
+                    "payload": payload, **extra},
                     protocol=pickle.HIGHEST_PROTOCOL)
             else:
                 if (manifest != _skill_asset_manifest(Path(self._cache_data_root))

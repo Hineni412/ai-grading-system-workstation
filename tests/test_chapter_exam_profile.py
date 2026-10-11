@@ -667,3 +667,53 @@ def test_primary_type_statistics_keep_paper_groups_rates_and_difficulty(profile_
     assert 1 in next(row for row in section['skills'] if row['key'] == types['sk_b'])['cells']['midterm']['basic']
     assert 1 not in next(row for row in section['skills'] if row['key'] == types['sk_a'])['cells']['midterm']['basic']
     conn.close()
+
+
+def test_near_duplicates_incremental_matches_full_recompute(profile_db, monkeypatch):
+    """按题增量：改一道题只重算其邻接，合并结果与全量重算一致。"""
+    import question_bank.services.chapter_exam_profile as cep
+    from integration import data_generation
+
+    first = _build(profile_db)
+    with sqlite3.connect(profile_db) as conn:
+        conn.execute(
+            "UPDATE questions SET question_text='TEST-完全不同的新题面文本'"
+            " WHERE id=101")
+    merged = _build(profile_db)
+    record = data_generation.LAST_INCREMENTAL["near_duplicates"]
+    assert record["mode"] == "incremental"
+    assert 101 in record["recomputed"]
+    # 清空增量缓存后全量重算，应与合并结果完全一致。
+    cep._DUP_CACHE.clear()
+    cep._GRAM_MEMO.clear()
+    assert _build(profile_db) == merged
+    # 删除候选集中的一题同样增量。
+    with sqlite3.connect(profile_db) as conn:
+        conn.execute("UPDATE questions SET is_deleted=1 WHERE id=102")
+    cep._DUP_CACHE.clear()
+    cep._GRAM_MEMO.clear()
+    expected_after_delete = _build(profile_db)
+    # 重建：先恢复题再删，让增量缓存持有旧集。
+    with sqlite3.connect(profile_db) as conn:
+        conn.execute("UPDATE questions SET is_deleted=0 WHERE id=102")
+    cep._DUP_CACHE.clear()
+    cep._GRAM_MEMO.clear()
+    _build(profile_db)
+    with sqlite3.connect(profile_db) as conn:
+        conn.execute("UPDATE questions SET is_deleted=1 WHERE id=102")
+    deleted = _build(profile_db)
+    assert deleted == expected_after_delete
+    record = data_generation.LAST_INCREMENTAL["near_duplicates"]
+    assert record["mode"] == "incremental"
+    # 共享输入（全局版本）变化 → 全量。
+    with sqlite3.connect(profile_db) as conn:
+        conn.execute(
+            "UPDATE data_versions SET version=version+1"
+            " WHERE domain='materials_global'")
+    _build(profile_db)
+    assert data_generation.LAST_INCREMENTAL["near_duplicates"]["mode"] == "full"
+    # 按题版本覆盖不可用 → 全量。
+    monkeypatch.setattr(
+        data_generation, "question_version_state", lambda *a, **k: None)
+    _build(profile_db)
+    assert data_generation.LAST_INCREMENTAL["near_duplicates"]["mode"] == "full"

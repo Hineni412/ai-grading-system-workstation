@@ -378,12 +378,22 @@ def test_data_version_migration_preserves_rows_and_adds_triggers(
     from update_tools.migrate_db import run_migrations
 
     source_dir = _PROJECT_ROOT / "migrations" / target
-    newest = sorted(source_dir.glob("*.sql"))[-1]
+    # 题库的数据版本由 047 引入，其后的 048 只加按题版本，不属于本测试目标。
+    newest = (
+        source_dir / "047_data_version_triggers.sql"
+        if target == "question_bank"
+        else sorted(source_dir.glob("*.sql"))[-1]
+    )
     legacy_dir = tmp_path / "TEST-legacy-sql" / target
     legacy_dir.mkdir(parents=True)
+    pending_dir = tmp_path / "TEST-pending-sql" / target
+    pending_dir.mkdir(parents=True)
     for file in source_dir.glob("*.sql"):
+        if file.name > newest.name:
+            continue
         if file != newest:
             shutil.copy2(file, legacy_dir / file.name)
+        shutil.copy2(file, pending_dir / file.name)
     database = tmp_path / f"TEST-{target}.db"
     ensure_schema_current(target, database, migrations_dir=legacy_dir)
     with closing(sqlite3.connect(database)) as connection:
@@ -398,7 +408,7 @@ def test_data_version_migration_preserves_rows_and_adds_triggers(
     report = run_migrations(
         target,
         db_path=database,
-        migrations_dir=source_dir,
+        migrations_dir=pending_dir,
         backup_dir_override=tmp_path / "TEST-backups",
     )
     assert report.error is None, report.error
@@ -470,6 +480,7 @@ def test_question_bank_data_version_domain_bumps(tmp_path: Path) -> None:
     reset_commit_generations()
     assert data_versions(database) == {
         "materials": 3,
+        "materials_global": 0,
         "training_records": 0,
         "training_ops": 1,
     }
@@ -523,3 +534,267 @@ def test_data_versions_none_when_trigger_coverage_incomplete(tmp_path: Path) -> 
         connection.commit()
     reset_commit_generations()
     assert data_versions(database) is None
+
+
+# ── 按题版本跟踪（048_question_versions）────────────────────────────────────
+
+def _qv_state(database: Path):
+    from integration.data_generation import question_version_state
+
+    return question_version_state(database)
+
+
+def test_question_version_mapping_covers_every_materials_table(
+    tmp_path: Path,
+) -> None:
+    """materials 域每张表恰好归入一类；其他域表不得混入任一类别。"""
+    from backend.schema_migrations import ensure_schema_current
+    from integration.data_generation import (
+        DATA_VERSION_UNTRACKED_TABLES,
+        QUESTION_BANK_VERSION_GLOBAL_TABLES,
+        QUESTION_BANK_VERSION_JSON_TABLES,
+        QUESTION_BANK_VERSION_PAPER_TABLES,
+        QUESTION_BANK_VERSION_QUESTION_TABLES,
+    )
+
+    classes = [
+        set(QUESTION_BANK_VERSION_QUESTION_TABLES),
+        set(QUESTION_BANK_VERSION_JSON_TABLES),
+        set(QUESTION_BANK_VERSION_PAPER_TABLES),
+        set(QUESTION_BANK_VERSION_GLOBAL_TABLES),
+    ]
+    for left in range(len(classes)):
+        for right in range(left + 1, len(classes)):
+            assert not classes[left] & classes[right], "类别重复"
+    classified = set().union(*classes)
+
+    database = tmp_path / "TEST-qv-mapping.db"
+    ensure_schema_current("question_bank", database)
+    with closing(sqlite3.connect(database)) as connection:
+        domains: dict[str, str] = {}
+        for name, sql in connection.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger'"
+        ):
+            name = str(name)
+            if not name.startswith("dv_") or not name.endswith("_ins"):
+                continue
+            match = re.search(r"domain\s*=\s*'([^']+)'", str(sql))
+            assert match, name
+            domains[name[3:-4]] = match.group(1)
+        all_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+    assert set(domains) == all_tables - set(DATA_VERSION_UNTRACKED_TABLES)
+    assert {t for t, d in domains.items() if d == "materials"} == classified
+    assert not ({t for t, d in domains.items() if d != "materials"} & classified)
+
+
+def test_question_version_migration_preserves_rows(tmp_path: Path) -> None:
+    """在已含数据的库上单独重放 048，行数据不变且状态可用。"""
+    import shutil
+
+    from backend.schema_migrations import ensure_schema_current  # noqa: F401
+    from integration.data_generation import reset_commit_generations
+    from migrate_db import run_migrations
+
+    migrations_source = _PROJECT_ROOT / "migrations" / "question_bank"
+    migrations_root = tmp_path / "migrations"
+    migrations_root.mkdir()
+    for path in sorted(migrations_source.glob("*.sql")):
+        if not path.name.startswith("048"):
+            shutil.copy2(path, migrations_root / path.name)
+
+    database = tmp_path / "TEST-qv-replay.db"
+    report = run_migrations(
+        "question_bank",
+        db_path=database,
+        migrations_dir=migrations_root,
+        backup_dir_override=tmp_path / "backups",
+    )
+    assert report.error is None
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("INSERT INTO papers (title) VALUES ('p')")
+        connection.execute(
+            "INSERT INTO questions (paper_id, question_number, question_text) "
+            "VALUES (1, '1', 'seed question')"
+        )
+        connection.execute(
+            "INSERT INTO question_tags (question_id, tag_type, tag_value) "
+            "VALUES (1, 'knowledge_point', 'seed-tag')"
+        )
+        connection.commit()
+        rows_before = {
+            table: connection.execute(
+                f'SELECT COUNT(*) FROM "{table}"'
+            ).fetchone()[0]
+            for (table,) in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        integrity_before = connection.execute(
+            "PRAGMA integrity_check"
+        ).fetchone()[0]
+    assert integrity_before == "ok"
+    reset_commit_generations()
+    assert _qv_state(database) is None  # 迁移前覆盖不完整
+
+    shutil.copy2(migrations_source / "048_question_versions.sql", migrations_root)
+    report = run_migrations(
+        "question_bank",
+        db_path=database,
+        migrations_dir=migrations_root,
+        backup_dir_override=tmp_path / "backups",
+    )
+    assert report.error is None
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        rows_after = {
+            table: connection.execute(
+                f'SELECT COUNT(*) FROM "{table}"'
+            ).fetchone()[0]
+            for (table,) in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name NOT LIKE 'sqlite_%' "
+                "AND name != 'question_versions'"
+            )
+        }
+    # schema_migrations 记录 048 本身；data_versions 新增 materials_global 行。
+    for housekeeping in ("schema_migrations", "data_versions"):
+        rows_after.pop(housekeeping, None)
+        rows_before.pop(housekeeping, None)
+    assert rows_after == rows_before
+    reset_commit_generations()
+    assert _qv_state(database) is not None
+
+
+def test_question_version_state_tracks_sample_writes(tmp_path: Path) -> None:
+    from backend.schema_migrations import ensure_schema_current
+    from integration.data_generation import reset_commit_generations
+
+    database = tmp_path / "TEST-qv-writes.db"
+    ensure_schema_current("question_bank", database)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("INSERT INTO papers (title) VALUES ('p1'), ('p2')")
+        connection.execute(
+            "INSERT INTO questions (paper_id, question_number, question_text) "
+            "VALUES (1, '1', 'a'), (1, '2', 'b'), (2, '1', 'c')"
+        )
+        connection.commit()
+    reset_commit_generations()
+    state = _qv_state(database)
+    assert state is not None
+    assert state.materials_global == 0
+
+    def bump(write: str, params: tuple = ()) -> frozenset[int]:
+        nonlocal state
+        with closing(sqlite3.connect(database)) as connection:
+            connection.execute(write, params)
+            connection.commit()
+        new_state = _qv_state(database)
+        assert new_state is not None
+        changed = new_state.changed_since(state)
+        state = new_state
+        return changed
+
+    # 题目标签写入只 bump 该题
+    assert bump(
+        "INSERT INTO question_tags (question_id, tag_type, tag_value) "
+        "VALUES (1, 'knowledge_point', 'v')"
+    ) == frozenset({1})
+    # 重复题链 UPDATE 同时 bump 旧、新两侧题号
+    bump(
+        "INSERT INTO question_duplicate_links "
+        "(question_id, duplicate_of_question_id, signature) VALUES (1, 2, 's')"
+    )
+    assert bump(
+        "UPDATE question_duplicate_links SET duplicate_of_question_id = 3 "
+        "WHERE question_id = 1"
+    ) == frozenset({1, 2, 3})
+    # 试卷标题更新 bump 该卷全部题目
+    assert bump("UPDATE papers SET title = 'p1x' WHERE id = 1") == frozenset(
+        {1, 2}
+    )
+    # 合法 JSON 列表 bump 列出的题号
+    h64 = "h" * 64
+    assert bump(
+        "INSERT INTO question_analysis_requests (request_id, operation_id, "
+        "projection, batch_hash, question_ids_json, status) "
+        "VALUES (?, 'o', 'tag', ?, '[1, 3]', 'succeeded')",
+        (h64, h64),
+    ) == frozenset({1, 3})
+    # 训练/任务域写入不 bump 题目版本
+    assert (
+        bump(
+            "INSERT INTO personalized_recommendation_drafts("
+            "draft_id, request_token, input_fingerprint, result_version,"
+            "engine_version, source_version, request_json, draft_json,"
+            "status, revision, created_by) "
+            "VALUES (?, ?, ?, ?, 'e', ?, '{}', '{}', 'draft', 1, 'TEST')",
+            ("d" * 64, "r" * 32, "f" * 64, "v" * 64, "s" * 64),
+        )
+        == frozenset()
+    )
+
+
+def test_question_version_state_global_and_fallback(tmp_path: Path) -> None:
+    from backend.schema_migrations import ensure_schema_current
+    from integration.data_generation import reset_commit_generations
+
+    database = tmp_path / "TEST-qv-global.db"
+    ensure_schema_current("question_bank", database)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("INSERT INTO papers (title) VALUES ('p1')")
+        connection.execute(
+            "INSERT INTO questions (paper_id, question_number, question_text) "
+            "VALUES (1, '1', 'a')"
+        )
+        connection.commit()
+    reset_commit_generations()
+    state = _qv_state(database)
+    assert state is not None
+    assert state.changed_since(None) is None
+
+    # 知识图谱发布写入只 bump materials_global -> changed_since 返回 None
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "INSERT INTO knowledge_graph_releases (release_id, schema_version, "
+            "taxonomy_revision, content_hash, payload_json, source_reference, "
+            "created_by, status) VALUES ('kgr_r1', 'knowledge-graph-release-v1', "
+            "1, ?, '{}', 's', 'u', 'candidate')",
+            ("h" * 64,),
+        )
+        connection.commit()
+    moved = _qv_state(database)
+    assert moved.materials_global == state.materials_global + 1
+    assert moved.changed_since(state) is None
+    state = moved
+
+    # 畸形 JSON：表的 json_valid CHECK 正常拦住；放宽约束后触发器仍不失败，
+    # 而是 bump materials_global。
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "INSERT INTO question_analysis_requests (request_id, operation_id, "
+            "projection, batch_hash, question_ids_json, status) "
+            "VALUES (?, 'o', 'tag', ?, 'oops', 'succeeded')",
+            ("r" * 64, "h" * 64),
+        )
+        connection.commit()
+    moved = _qv_state(database)
+    assert moved.materials_global == state.materials_global + 1
+    assert moved.changed_since(state) is None
+
+    # 覆盖不完整 -> None
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("DROP TRIGGER qv_question_tags_ins")
+        connection.commit()
+    assert _qv_state(database) is None
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("DROP TABLE question_versions")
+        connection.commit()
+    assert _qv_state(database) is None

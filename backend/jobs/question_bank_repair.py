@@ -9,7 +9,12 @@ from pathlib import Path
 import threading
 from typing import Any, Callable
 
-from integration.data_generation import commit_generation, data_version_token
+from integration.data_generation import (
+    LAST_INCREMENTAL,
+    commit_generation,
+    data_version_token,
+    question_version_state,
+)
 from integration.result_cache import ResultCache
 from question_bank.database.schema import connect
 from question_bank.services.question_read_service import (
@@ -45,16 +50,25 @@ def _with_type_contracts(questions, db_path: Path, governance=None):
     governance = governance or TaxonomyGovernance(
         state_path=get_taxonomy_governance().state_path, knowledge_graph_db_path=db_path)
     taxonomy_token = _taxonomy_generation_token()
-    generation = data_version_token(db_path, "materials") or commit_generation(db_path)
+    qv_state = question_version_state(db_path)
+    generation = (None if qv_state is not None
+                  else data_version_token(db_path, "materials") or commit_generation(db_path))
     state_path = str(getattr(governance, "state_path", "") or "")
     keys: dict[int, tuple] = {}
     contracts: dict[int, Any] = {}
     revisions: set[int] = set()
     missing = []
     for question in questions:
-        key = ("type-contract-v1", int(question.question_id),
-               str(getattr(question, "source_content_hash", "") or ""),
-               taxonomy_token, generation, state_path)
+        if qv_state is not None:
+            key = ("type-contract-v2", int(question.question_id),
+                   str(getattr(question, "source_content_hash", "") or ""),
+                   qv_state.versions.get(int(question.question_id), 0),
+                   qv_state.materials_global,
+                   taxonomy_token, state_path)
+        else:
+            key = ("type-contract-v1", int(question.question_id),
+                   str(getattr(question, "source_content_hash", "") or ""),
+                   taxonomy_token, generation, state_path)
         keys[question.question_id] = key
         with _TYPE_CONTRACT_CACHE_LOCK:
             entry = _TYPE_CONTRACT_CACHE.get(key)
@@ -66,6 +80,10 @@ def _with_type_contracts(questions, db_path: Path, governance=None):
         snapshot, revision = entry
         contracts[question.question_id] = snapshot
         revisions.add(revision)
+    LAST_INCREMENTAL["type_contracts"] = {
+        "mode": "incremental" if qv_state is not None else "full",
+        "recomputed": frozenset(q.question_id for q in missing),
+    }
     if missing:
         # Contracts are planned per question from one shared snapshot, so only
         # questions whose content or taxonomy era changed are re-planned.

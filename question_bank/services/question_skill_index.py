@@ -286,6 +286,120 @@ def _assemble_skill_snapshot(
             "sections": tag_aggregates["sections"]}
 
 
+def _profile_order_keys(
+    conn: sqlite3.Connection,
+    question_ids,
+) -> dict[int, tuple[int, Any, int]]:
+    """每题在 load_profiles 输出中的次序键（选中版本行的 (approved, created_at, rowid)）。"""
+    ids = sorted(int(qid) for qid in question_ids)
+    keys: dict[int, tuple[int, Any, int]] = {}
+    for start in range(0, len(ids), 500):
+        batch = ids[start:start + 500]
+        marks = ",".join("?" for _ in batch)
+        for row in conn.execute(
+            "SELECT question_id, status = 'approved', created_at, rowid "
+            "FROM question_solution_evidence_versions "
+            "WHERE status IN ('proposed', 'approved') "
+            f"AND question_id IN ({marks})",
+            batch,
+        ):
+            key = (int(row[1]), row[2] if row[2] is not None else "", int(row[3]))
+            qid = int(row["question_id"])
+            if qid not in keys or key > keys[qid]:
+                keys[qid] = key
+    return keys
+
+
+def _snapshot_parts(snapshot: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """从已组装快照还原每题投影（与 _profile_parts 输出同构）。"""
+    parts: dict[int, dict[str, Any]] = {}
+    for qid, skills in snapshot["by_question"].items():
+        qid = int(qid)
+        parts[qid] = {
+            "skills": skills,
+            "types": snapshot["type_hits"].get(qid, {}),
+            "point_count": snapshot["point_counts"].get(qid, 0),
+            "gaps": snapshot["gap_points"].get(qid, []),
+            "evidence_version_id": snapshot["evidence_versions"].get(qid, ""),
+            "knowledge": snapshot["knowledge_by_question"].get(qid, set()),
+            "coverage": snapshot["knowledge_coverage_by_question"].get(qid, set()),
+        }
+    return parts
+
+
+def merge_skill_snapshot(
+    conn: sqlite3.Connection,
+    db_path: Path,
+    data_root: Path | None,
+    *,
+    previous: dict[str, Any],
+    contrib: dict[int, tuple[int, Any, int]],
+    inventory: dict[str, Any],
+    changed: frozenset[int],
+    selected: set[int] | None = None,
+) -> dict[str, Any] | None:
+    """按题增量合并：复用未变题的投影，重算 changed 中属于目标集的题。
+
+    返回与 build_skill_snapshot 同构的快照；无法安全合并时返回 None。
+    顺序一致性：profiles/usable 的迭代序按 (approved, created_at, rowid)
+    降序重放，与 load_profiles 的去重输出序一致。
+    """
+
+    all_questions = inventory["questions"]
+    if selected is None:
+        questions = dict(all_questions)
+    else:
+        questions = {qid: all_questions[qid]
+                     for qid in sorted(selected) if qid in all_questions}
+    target = set(questions)
+    members = {key: ids & target for key, ids in inventory["members"].items()}
+    volumes = {key: ids & target for key, ids in inventory["volumes"].items()}
+
+    prev_parts = _snapshot_parts(previous)
+    prev_profiles: dict[int, Any] = previous.get("profiles") or {}
+    recompute = sorted(set(changed) & target)
+    order_keys: dict[int, tuple[int, Any, int]] = {}
+    profiles: dict[int, Any] = {}
+    for qid, profile in prev_profiles.items():
+        qid = int(qid)
+        if qid not in target or qid in changed:
+            continue
+        key = contrib.get(qid)
+        if key is None:
+            return None  # 次序键缺失：无法安全重放，退全量
+        order_keys[qid] = key
+        profiles[qid] = profile
+    parts = {qid: prev_parts[qid] for qid in prev_parts
+             if qid in target and qid not in changed and qid in profiles}
+    if recompute:
+        partial = build_skill_snapshot(
+            conn, db_path, data_root, inventory=inventory,
+            question_ids=tuple(recompute))
+        partial_keys = _profile_order_keys(conn, recompute)
+        for qid, profile in partial["profiles"].items():
+            qid = int(qid)
+            if qid not in partial_keys:
+                return None  # 次序不可判定，退全量
+            profiles[qid] = profile
+            order_keys[qid] = partial_keys[qid]
+        for qid, part in _snapshot_parts(partial).items():
+            parts[qid] = part
+    # 快照里仍引用但已不属于目标集合的题必须移除（删除/移出清单）。
+    profiles = {qid: profile for qid, profile in profiles.items() if qid in target}
+    parts = {qid: part for qid, part in parts.items() if qid in target}
+    if any(qid not in order_keys for qid in profiles):
+        return None
+    ordered = sorted(profiles, key=lambda qid: order_keys[qid], reverse=True)
+    profiles = {qid: profiles[qid] for qid in ordered}
+    usable = {qid: profiles[qid] for qid in ordered if profiles[qid].get("available")}
+    parts = {qid: parts[qid] for qid in usable if qid in parts}
+    if len(parts) != len(usable):
+        return None  # usable 却缺投影：数据不一致，退全量
+    tag_aggregates = _tag_aggregates(conn, target, inventory["nodes"])
+    return _assemble_skill_snapshot(inventory, questions, members, volumes,
+                                    profiles, usable, parts, tag_aggregates)
+
+
 def skill_index(snapshot: dict[str, Any], volume_id: str, review_ids: set[int]) -> dict[str, Any]:
     volume = curriculum_volume(volume_id=volume_id)
     if volume is None:

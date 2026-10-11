@@ -60,6 +60,7 @@
     "CREATE TABLE question_scope_summary (\n    question_id                 INTEGER PRIMARY KEY\n        REFERENCES questions(id),\n    evidence_version_id         TEXT NOT NULL DEFAULT '',\n    graph_release_id            TEXT NOT NULL DEFAULT '',\n    primary_section_id          TEXT NOT NULL DEFAULT '',\n    direct_section_ids_json     TEXT NOT NULL DEFAULT '[]',\n    supporting_max_volume_order INTEGER NOT NULL DEFAULT 0,\n    has_cross_chapter_direct    INTEGER NOT NULL DEFAULT 0,\n    updated_at                  TEXT NOT NULL\n        DEFAULT (datetime('now', 'localtime'))\n)",
     "CREATE TABLE \"question_solution_evidence_versions\" (\n    evidence_version_id TEXT PRIMARY KEY,\n    question_id INTEGER NOT NULL,\n    source_content_hash TEXT NOT NULL,\n    schema_version TEXT NOT NULL\n        CHECK (\n            schema_version IN (\n                'question-solution-evidence-v1',\n                'question-solution-evidence-v2'\n            )\n        ),\n    content_hash TEXT NOT NULL,\n    evidence_json TEXT NOT NULL,\n    status TEXT NOT NULL DEFAULT 'proposed'\n        CHECK (status IN ('proposed', 'approved', 'rejected', 'superseded', 'stale')),\n    source_kind TEXT NOT NULL\n        CHECK (source_kind IN ('combined_model', 'teacher_manual', 'import', 'backfill')),\n    source_reference TEXT NOT NULL,\n    created_by TEXT NOT NULL,\n    decision_by TEXT,\n    decision_note TEXT,\n    decided_at TEXT,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    graph_release_id TEXT REFERENCES knowledge_graph_releases(release_id),\n    CHECK (length(evidence_version_id) = 64),\n    CHECK (length(source_content_hash) = 64),\n    CHECK (length(content_hash) = 64),\n    CHECK (json_valid(evidence_json)),\n    CHECK (TRIM(source_reference) <> ''),\n    CHECK (TRIM(created_by) <> ''),\n    UNIQUE(question_id, source_kind, source_reference),\n    FOREIGN KEY(question_id) REFERENCES questions(id) ON DELETE RESTRICT\n)",
     "CREATE TABLE question_tags (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                question_id INTEGER NOT NULL,\n                tag_type TEXT NOT NULL,\n                tag_value TEXT NOT NULL,\n                confidence REAL,\n                source TEXT,\n                model_name TEXT,\n                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n                FOREIGN KEY(question_id) REFERENCES questions(id)\n            )",
+    "CREATE TABLE question_versions (\n    question_id INTEGER PRIMARY KEY,\n    version INTEGER NOT NULL DEFAULT 0\n)",
     "CREATE TABLE questions (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                paper_id INTEGER,\n                question_number TEXT NOT NULL,\n                question_type TEXT,\n                question_text TEXT NOT NULL,\n                answer_text TEXT,\n                source_file TEXT,\n                page_range TEXT,\n                image_paths TEXT NOT NULL DEFAULT '[]',\n                difficulty TEXT,\n                typicality TEXT,\n                reason TEXT,\n                needs_review INTEGER NOT NULL DEFAULT 0,\n                has_images INTEGER NOT NULL DEFAULT 0,\n                needs_image_review INTEGER NOT NULL DEFAULT 0,\n                is_deleted INTEGER NOT NULL DEFAULT 0,\n                deleted_at TEXT,\n                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), paper_delete_operation_id TEXT,\n                FOREIGN KEY(paper_id) REFERENCES papers(id)\n            )",
     "CREATE TABLE schema_migrations (\n            id          INTEGER PRIMARY KEY AUTOINCREMENT,\n            migration_name TEXT NOT NULL UNIQUE,\n            applied_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n            checksum    TEXT,\n            success     INTEGER NOT NULL DEFAULT 1\n        )",
     "CREATE TABLE taxonomy_review_applications (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    operation_id TEXT NOT NULL,\n    proposal_id TEXT NOT NULL,\n    question_id INTEGER NOT NULL,\n    question_tag_id INTEGER,\n    tag_type TEXT NOT NULL,\n    tag_value TEXT NOT NULL,\n    preexisting INTEGER NOT NULL DEFAULT 0 CHECK (preexisting IN (0, 1)),\n    before_revision TEXT,\n    after_revision TEXT,\n    write_status TEXT NOT NULL,\n    undo_status TEXT NOT NULL,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    UNIQUE(operation_id, proposal_id, question_id, tag_type, tag_value),\n    FOREIGN KEY(question_id) REFERENCES questions(id),\n    FOREIGN KEY(question_tag_id) REFERENCES question_tags(id) ON DELETE SET NULL\n)",
@@ -93,6 +94,7 @@
     "CREATE TABLE variant_students (\n            variant_id INTEGER NOT NULL,\n            student_id TEXT NOT NULL,\n            student_name_snapshot TEXT,\n            class_id_snapshot TEXT,\n            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n            PRIMARY KEY(variant_id, student_id),\n            FOREIGN KEY(variant_id) REFERENCES training_variants(id)\n        )",
     "CREATE VIEW knowledge_active_relations AS\nSELECT\n    relation.relation_id,\n    relation.source_key,\n    source_identity.display_name AS source_name,\n    relation.target_key,\n    target_identity.display_name AS target_name,\n    relation.relation_type,\n    relation.rationale,\n    relation.revision,\n    relation.updated_at\nFROM knowledge_relations relation\nJOIN knowledge_tag_identities source_identity\n  ON source_identity.stable_key = relation.source_key\nJOIN knowledge_tag_identities target_identity\n  ON target_identity.stable_key = relation.target_key\nJOIN knowledge_graph_releases current_release\n  ON current_release.release_id = relation.graph_release_id\n AND current_release.status = 'active'\nWHERE relation.status = 'confirmed'\n  AND source_identity.status = 'active'\n  AND target_identity.status = 'active'",
     "INSERT INTO \"data_versions\" (\"domain\", \"version\") VALUES ('materials', 0)",
+    "INSERT INTO \"data_versions\" (\"domain\", \"version\") VALUES ('materials_global', 0)",
     "INSERT INTO \"data_versions\" (\"domain\", \"version\") VALUES ('training_ops', 0)",
     "INSERT INTO \"data_versions\" (\"domain\", \"version\") VALUES ('training_records', 0)",
     "INSERT INTO \"mastery_v2_rollout_state\" (\"singleton_id\", \"enabled\", \"active_parameter_version\", \"approved_evaluation_id\", \"revision\", \"updated_by\", \"reason\") VALUES (1, 0, NULL, NULL, 1, NULL, NULL)",
@@ -355,6 +357,78 @@
     "CREATE TRIGGER dv_variant_students_del AFTER DELETE ON variant_students FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
     "CREATE TRIGGER dv_variant_students_ins AFTER INSERT ON variant_students FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
     "CREATE TRIGGER dv_variant_students_upd AFTER UPDATE ON variant_students FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_records';\nEND",
+    "CREATE TRIGGER dvg_authoring_assets_del AFTER DELETE ON authoring_assets FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_authoring_assets_ins AFTER INSERT ON authoring_assets FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_authoring_assets_upd AFTER UPDATE ON authoring_assets FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_authoring_reviews_del AFTER DELETE ON authoring_reviews FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_authoring_reviews_ins AFTER INSERT ON authoring_reviews FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_authoring_reviews_upd AFTER UPDATE ON authoring_reviews FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_authoring_work_versions_del AFTER DELETE ON authoring_work_versions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_authoring_work_versions_ins AFTER INSERT ON authoring_work_versions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_authoring_work_versions_upd AFTER UPDATE ON authoring_work_versions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_fine_term_core_mapping_events_del AFTER DELETE ON fine_term_core_mapping_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_fine_term_core_mapping_events_ins AFTER INSERT ON fine_term_core_mapping_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_fine_term_core_mapping_events_upd AFTER UPDATE ON fine_term_core_mapping_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_fine_term_core_mappings_del AFTER DELETE ON fine_term_core_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_fine_term_core_mappings_ins AFTER INSERT ON fine_term_core_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_fine_term_core_mappings_upd AFTER UPDATE ON fine_term_core_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_fine_term_dispositions_del AFTER DELETE ON knowledge_graph_fine_term_dispositions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_fine_term_dispositions_ins AFTER INSERT ON knowledge_graph_fine_term_dispositions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_fine_term_dispositions_upd AFTER UPDATE ON knowledge_graph_fine_term_dispositions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_node_profiles_del AFTER DELETE ON knowledge_graph_node_profiles FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_node_profiles_ins AFTER INSERT ON knowledge_graph_node_profiles FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_node_profiles_upd AFTER UPDATE ON knowledge_graph_node_profiles FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_release_events_del AFTER DELETE ON knowledge_graph_release_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_release_events_ins AFTER INSERT ON knowledge_graph_release_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_release_events_upd AFTER UPDATE ON knowledge_graph_release_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_release_mappings_del AFTER DELETE ON knowledge_graph_release_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_release_mappings_ins AFTER INSERT ON knowledge_graph_release_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_release_mappings_upd AFTER UPDATE ON knowledge_graph_release_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_release_relations_del AFTER DELETE ON knowledge_graph_release_relations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_release_relations_ins AFTER INSERT ON knowledge_graph_release_relations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_release_relations_upd AFTER UPDATE ON knowledge_graph_release_relations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_releases_del AFTER DELETE ON knowledge_graph_releases FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_releases_ins AFTER INSERT ON knowledge_graph_releases FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_graph_releases_upd AFTER UPDATE ON knowledge_graph_releases FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_identity_replacements_del AFTER DELETE ON knowledge_identity_replacements FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_identity_replacements_ins AFTER INSERT ON knowledge_identity_replacements FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_identity_replacements_upd AFTER UPDATE ON knowledge_identity_replacements FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_amendment_events_del AFTER DELETE ON knowledge_relation_amendment_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_amendment_events_ins AFTER INSERT ON knowledge_relation_amendment_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_amendment_events_upd AFTER UPDATE ON knowledge_relation_amendment_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_audit_events_del AFTER DELETE ON knowledge_relation_audit_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_audit_events_ins AFTER INSERT ON knowledge_relation_audit_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_audit_events_upd AFTER UPDATE ON knowledge_relation_audit_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_evidence_del AFTER DELETE ON knowledge_relation_evidence FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_evidence_ins AFTER INSERT ON knowledge_relation_evidence FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_evidence_upd AFTER UPDATE ON knowledge_relation_evidence FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_suggestion_items_del AFTER DELETE ON knowledge_relation_suggestion_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_suggestion_items_ins AFTER INSERT ON knowledge_relation_suggestion_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_suggestion_items_upd AFTER UPDATE ON knowledge_relation_suggestion_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_suggestion_requests_del AFTER DELETE ON knowledge_relation_suggestion_requests FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_suggestion_requests_ins AFTER INSERT ON knowledge_relation_suggestion_requests FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_suggestion_requests_upd AFTER UPDATE ON knowledge_relation_suggestion_requests FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_suggestion_runs_del AFTER DELETE ON knowledge_relation_suggestion_runs FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_suggestion_runs_ins AFTER INSERT ON knowledge_relation_suggestion_runs FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relation_suggestion_runs_upd AFTER UPDATE ON knowledge_relation_suggestion_runs FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relations_del AFTER DELETE ON knowledge_relations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relations_ins AFTER INSERT ON knowledge_relations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_relations_upd AFTER UPDATE ON knowledge_relations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_tag_aliases_del AFTER DELETE ON knowledge_tag_aliases FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_tag_aliases_ins AFTER INSERT ON knowledge_tag_aliases FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_tag_aliases_upd AFTER UPDATE ON knowledge_tag_aliases FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_tag_identities_del AFTER DELETE ON knowledge_tag_identities FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_tag_identities_ins AFTER INSERT ON knowledge_tag_identities FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_tag_identities_upd AFTER UPDATE ON knowledge_tag_identities FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_tag_identity_mappings_del AFTER DELETE ON knowledge_tag_identity_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_tag_identity_mappings_ins AFTER INSERT ON knowledge_tag_identity_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_knowledge_tag_identity_mappings_upd AFTER UPDATE ON knowledge_tag_identity_mappings FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_question_analysis_operations_del AFTER DELETE ON question_analysis_operations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_question_analysis_operations_ins AFTER INSERT ON question_analysis_operations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_question_analysis_operations_upd AFTER UPDATE ON question_analysis_operations FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_question_document_publication_outbox_del AFTER DELETE ON question_document_publication_outbox FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_question_document_publication_outbox_ins AFTER INSERT ON question_document_publication_outbox FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER dvg_question_document_publication_outbox_upd AFTER UPDATE ON question_document_publication_outbox FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
     "CREATE INDEX idx_authoring_assets_work\n    ON authoring_assets(work_id)",
     "CREATE INDEX idx_authoring_reviews_work\n    ON authoring_reviews(work_id, version_no)",
     "CREATE INDEX idx_authoring_works_kind_updated\n    ON authoring_works(kind, is_deleted, updated_at DESC)",
@@ -448,6 +522,90 @@
     "CREATE INDEX idx_training_tasks_status\n            ON training_tasks(status, created_at)",
     "CREATE INDEX idx_training_variants_task\n            ON training_variants(task_id, status)",
     "CREATE INDEX idx_variant_students_student\n            ON variant_students(student_id, variant_id)",
+    "CREATE TRIGGER qv_authoring_works_del AFTER DELETE ON authoring_works FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.source_question_id, 1 WHERE OLD.source_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_authoring_works_ins AFTER INSERT ON authoring_works FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.source_question_id, 1 WHERE NEW.source_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_authoring_works_upd AFTER UPDATE ON authoring_works FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.source_question_id, 1 WHERE OLD.source_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.source_question_id, 1 WHERE NEW.source_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_evidence_point_knowledge_links_del AFTER DELETE ON evidence_point_knowledge_links FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_evidence_point_knowledge_links_ins AFTER INSERT ON evidence_point_knowledge_links FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_evidence_point_knowledge_links_upd AFTER UPDATE ON evidence_point_knowledge_links FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_grading_question_links_del AFTER DELETE ON grading_question_links FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.bank_question_id, 1 WHERE OLD.bank_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_grading_question_links_ins AFTER INSERT ON grading_question_links FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.bank_question_id, 1 WHERE NEW.bank_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_grading_question_links_upd AFTER UPDATE ON grading_question_links FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.bank_question_id, 1 WHERE OLD.bank_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.bank_question_id, 1 WHERE NEW.bank_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_paper_question_occurrences_del AFTER DELETE ON paper_question_occurrences FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_paper_question_occurrences_ins AFTER INSERT ON paper_question_occurrences FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_paper_question_occurrences_upd AFTER UPDATE ON paper_question_occurrences FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_papers_del AFTER DELETE ON papers FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT id, 1 FROM questions WHERE paper_id = OLD.id AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_papers_ins AFTER INSERT ON papers FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT id, 1 FROM questions WHERE paper_id = NEW.id AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_papers_upd AFTER UPDATE ON papers FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT id, 1 FROM questions WHERE paper_id = OLD.id AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT id, 1 FROM questions WHERE paper_id = NEW.id AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_analysis_items_del AFTER DELETE ON question_analysis_items FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_analysis_items_ins AFTER INSERT ON question_analysis_items FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_analysis_items_upd AFTER UPDATE ON question_analysis_items FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_analysis_requests_del AFTER DELETE ON question_analysis_requests FOR EACH ROW WHEN json_valid(OLD.question_ids_json) BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT CAST(value AS INTEGER), 1 FROM json_each(OLD.question_ids_json) WHERE true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_analysis_requests_ins AFTER INSERT ON question_analysis_requests FOR EACH ROW WHEN json_valid(NEW.question_ids_json) BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT CAST(value AS INTEGER), 1 FROM json_each(NEW.question_ids_json) WHERE true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_analysis_requests_upd AFTER UPDATE ON question_analysis_requests FOR EACH ROW WHEN json_valid(NEW.question_ids_json) AND json_valid(OLD.question_ids_json) BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT CAST(value AS INTEGER), 1 FROM json_each(OLD.question_ids_json) WHERE true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT CAST(value AS INTEGER), 1 FROM json_each(NEW.question_ids_json) WHERE true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_content_index_del AFTER DELETE ON question_content_index FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_content_index_ins AFTER INSERT ON question_content_index FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_content_index_upd AFTER UPDATE ON question_content_index FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_content_revisions_del AFTER DELETE ON question_content_revisions FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_content_revisions_ins AFTER INSERT ON question_content_revisions FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_content_revisions_upd AFTER UPDATE ON question_content_revisions FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_document_items_del AFTER DELETE ON question_document_items FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.bank_question_id, 1 WHERE OLD.bank_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_document_items_ins AFTER INSERT ON question_document_items FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.bank_question_id, 1 WHERE NEW.bank_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_document_items_upd AFTER UPDATE ON question_document_items FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.bank_question_id, 1 WHERE OLD.bank_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.bank_question_id, 1 WHERE NEW.bank_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_document_publications_del AFTER DELETE ON question_document_publications FOR EACH ROW WHEN json_valid(OLD.question_ids_json) BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT CAST(value AS INTEGER), 1 FROM json_each(OLD.question_ids_json) WHERE true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_document_publications_ins AFTER INSERT ON question_document_publications FOR EACH ROW WHEN json_valid(NEW.question_ids_json) BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT CAST(value AS INTEGER), 1 FROM json_each(NEW.question_ids_json) WHERE true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_document_publications_upd AFTER UPDATE ON question_document_publications FOR EACH ROW WHEN json_valid(NEW.question_ids_json) AND json_valid(OLD.question_ids_json) BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT CAST(value AS INTEGER), 1 FROM json_each(OLD.question_ids_json) WHERE true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT CAST(value AS INTEGER), 1 FROM json_each(NEW.question_ids_json) WHERE true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_duplicate_links_del AFTER DELETE ON question_duplicate_links FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.duplicate_of_question_id, 1 WHERE OLD.duplicate_of_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_duplicate_links_ins AFTER INSERT ON question_duplicate_links FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.duplicate_of_question_id, 1 WHERE NEW.duplicate_of_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_duplicate_links_upd AFTER UPDATE ON question_duplicate_links FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.duplicate_of_question_id, 1 WHERE OLD.duplicate_of_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.duplicate_of_question_id, 1 WHERE NEW.duplicate_of_question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_error_patterns_del AFTER DELETE ON question_error_patterns FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_error_patterns_ins AFTER INSERT ON question_error_patterns FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_error_patterns_upd AFTER UPDATE ON question_error_patterns FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_part_difficulty_features_del AFTER DELETE ON question_part_difficulty_features FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_part_difficulty_features_ins AFTER INSERT ON question_part_difficulty_features FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_part_difficulty_features_upd AFTER UPDATE ON question_part_difficulty_features FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_previews_del AFTER DELETE ON question_previews FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_previews_ins AFTER INSERT ON question_previews FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_previews_upd AFTER UPDATE ON question_previews FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_scope_summary_del AFTER DELETE ON question_scope_summary FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_scope_summary_ins AFTER INSERT ON question_scope_summary FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_scope_summary_upd AFTER UPDATE ON question_scope_summary FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_solution_evidence_versions_del AFTER DELETE ON question_solution_evidence_versions FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_solution_evidence_versions_ins AFTER INSERT ON question_solution_evidence_versions FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_solution_evidence_versions_upd AFTER UPDATE ON question_solution_evidence_versions FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_tags_del AFTER DELETE ON question_tags FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_tags_ins AFTER INSERT ON question_tags FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_question_tags_upd AFTER UPDATE ON question_tags FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_questions_del AFTER DELETE ON questions FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.id, 1 WHERE OLD.id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_questions_ins AFTER INSERT ON questions FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.id, 1 WHERE NEW.id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_questions_upd AFTER UPDATE ON questions FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.id, 1 WHERE OLD.id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.id, 1 WHERE NEW.id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_taxonomy_review_applications_del AFTER DELETE ON taxonomy_review_applications FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_taxonomy_review_applications_ins AFTER INSERT ON taxonomy_review_applications FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_taxonomy_review_applications_upd AFTER UPDATE ON taxonomy_review_applications FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_training_criterion_backfill_items_del AFTER DELETE ON training_criterion_backfill_items FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_training_criterion_backfill_items_ins AFTER INSERT ON training_criterion_backfill_items FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_training_criterion_backfill_items_upd AFTER UPDATE ON training_criterion_backfill_items FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_training_criterion_backfill_runs_del AFTER DELETE ON training_criterion_backfill_runs FOR EACH ROW WHEN json_valid(OLD.question_ids_json) BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT CAST(value AS INTEGER), 1 FROM json_each(OLD.question_ids_json) WHERE true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_training_criterion_backfill_runs_ins AFTER INSERT ON training_criterion_backfill_runs FOR EACH ROW WHEN json_valid(NEW.question_ids_json) BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT CAST(value AS INTEGER), 1 FROM json_each(NEW.question_ids_json) WHERE true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_training_criterion_backfill_runs_upd AFTER UPDATE ON training_criterion_backfill_runs FOR EACH ROW WHEN json_valid(NEW.question_ids_json) AND json_valid(OLD.question_ids_json) BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT CAST(value AS INTEGER), 1 FROM json_each(OLD.question_ids_json) WHERE true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT CAST(value AS INTEGER), 1 FROM json_each(NEW.question_ids_json) WHERE true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_training_criterion_events_del AFTER DELETE ON training_criterion_events FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_training_criterion_events_ins AFTER INSERT ON training_criterion_events FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_training_criterion_events_upd AFTER UPDATE ON training_criterion_events FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_training_criterion_heads_del AFTER DELETE ON training_criterion_heads FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_training_criterion_heads_ins AFTER INSERT ON training_criterion_heads FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_training_criterion_heads_upd AFTER UPDATE ON training_criterion_heads FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_training_criterion_versions_del AFTER DELETE ON training_criterion_versions FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_training_criterion_versions_ins AFTER INSERT ON training_criterion_versions FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qv_training_criterion_versions_upd AFTER UPDATE ON training_criterion_versions FOR EACH ROW BEGIN\n    INSERT INTO question_versions (question_id, version)\n        SELECT OLD.question_id, 1 WHERE OLD.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\n    INSERT INTO question_versions (question_id, version)\n        SELECT NEW.question_id, 1 WHERE NEW.question_id IS NOT NULL AND true\n        ON CONFLICT(question_id) DO UPDATE SET version = version + 1;\nEND",
+    "CREATE TRIGGER qvg_question_analysis_requests_del AFTER DELETE ON question_analysis_requests FOR EACH ROW WHEN NOT json_valid(OLD.question_ids_json) BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER qvg_question_analysis_requests_ins AFTER INSERT ON question_analysis_requests FOR EACH ROW WHEN NOT json_valid(NEW.question_ids_json) BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER qvg_question_analysis_requests_upd AFTER UPDATE ON question_analysis_requests FOR EACH ROW WHEN NOT json_valid(NEW.question_ids_json) OR NOT json_valid(OLD.question_ids_json) BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER qvg_question_document_publications_del AFTER DELETE ON question_document_publications FOR EACH ROW WHEN NOT json_valid(OLD.question_ids_json) BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER qvg_question_document_publications_ins AFTER INSERT ON question_document_publications FOR EACH ROW WHEN NOT json_valid(NEW.question_ids_json) BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER qvg_question_document_publications_upd AFTER UPDATE ON question_document_publications FOR EACH ROW WHEN NOT json_valid(NEW.question_ids_json) OR NOT json_valid(OLD.question_ids_json) BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER qvg_training_criterion_backfill_runs_del AFTER DELETE ON training_criterion_backfill_runs FOR EACH ROW WHEN NOT json_valid(OLD.question_ids_json) BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER qvg_training_criterion_backfill_runs_ins AFTER INSERT ON training_criterion_backfill_runs FOR EACH ROW WHEN NOT json_valid(NEW.question_ids_json) BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER qvg_training_criterion_backfill_runs_upd AFTER UPDATE ON training_criterion_backfill_runs FOR EACH ROW WHEN NOT json_valid(NEW.question_ids_json) OR NOT json_valid(OLD.question_ids_json) BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
     "CREATE UNIQUE INDEX uq_knowledge_active_pair\nON knowledge_relations(\n    graph_release_id,\n    CASE WHEN source_key < target_key THEN source_key ELSE target_key END,\n    CASE WHEN source_key < target_key THEN target_key ELSE source_key END\n)\nWHERE status = 'confirmed' AND graph_release_id IS NOT NULL",
     "CREATE UNIQUE INDEX uq_knowledge_graph_active_release\nON knowledge_graph_releases((1))\nWHERE status = 'active'",
     "CREATE UNIQUE INDEX uq_paper_question_occurrences\n    ON paper_question_occurrences(paper_id, question_number)"
@@ -644,6 +802,10 @@
     [
       "047_data_version_triggers",
       "d8019a98abdc72e4a45cfe227462a2d6"
+    ],
+    [
+      "048_question_versions",
+      "f77007b25a9c698dc268cad62b86eca3"
     ]
   ],
   "schema": {
@@ -2417,6 +2579,786 @@
         "trigger",
         "dv_variant_students_upd",
         "create trigger dv_variant_students_upd after update on variant_students for each row begin update data_versions set version = version + 1 where domain = 'training_records'; end"
+      ],
+      [
+        "trigger",
+        "dvg_authoring_assets_del",
+        "create trigger dvg_authoring_assets_del after delete on authoring_assets for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_authoring_assets_ins",
+        "create trigger dvg_authoring_assets_ins after insert on authoring_assets for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_authoring_assets_upd",
+        "create trigger dvg_authoring_assets_upd after update on authoring_assets for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_authoring_reviews_del",
+        "create trigger dvg_authoring_reviews_del after delete on authoring_reviews for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_authoring_reviews_ins",
+        "create trigger dvg_authoring_reviews_ins after insert on authoring_reviews for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_authoring_reviews_upd",
+        "create trigger dvg_authoring_reviews_upd after update on authoring_reviews for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_authoring_work_versions_del",
+        "create trigger dvg_authoring_work_versions_del after delete on authoring_work_versions for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_authoring_work_versions_ins",
+        "create trigger dvg_authoring_work_versions_ins after insert on authoring_work_versions for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_authoring_work_versions_upd",
+        "create trigger dvg_authoring_work_versions_upd after update on authoring_work_versions for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_fine_term_core_mapping_events_del",
+        "create trigger dvg_fine_term_core_mapping_events_del after delete on fine_term_core_mapping_events for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_fine_term_core_mapping_events_ins",
+        "create trigger dvg_fine_term_core_mapping_events_ins after insert on fine_term_core_mapping_events for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_fine_term_core_mapping_events_upd",
+        "create trigger dvg_fine_term_core_mapping_events_upd after update on fine_term_core_mapping_events for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_fine_term_core_mappings_del",
+        "create trigger dvg_fine_term_core_mappings_del after delete on fine_term_core_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_fine_term_core_mappings_ins",
+        "create trigger dvg_fine_term_core_mappings_ins after insert on fine_term_core_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_fine_term_core_mappings_upd",
+        "create trigger dvg_fine_term_core_mappings_upd after update on fine_term_core_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_fine_term_dispositions_del",
+        "create trigger dvg_knowledge_graph_fine_term_dispositions_del after delete on knowledge_graph_fine_term_dispositions for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_fine_term_dispositions_ins",
+        "create trigger dvg_knowledge_graph_fine_term_dispositions_ins after insert on knowledge_graph_fine_term_dispositions for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_fine_term_dispositions_upd",
+        "create trigger dvg_knowledge_graph_fine_term_dispositions_upd after update on knowledge_graph_fine_term_dispositions for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_node_profiles_del",
+        "create trigger dvg_knowledge_graph_node_profiles_del after delete on knowledge_graph_node_profiles for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_node_profiles_ins",
+        "create trigger dvg_knowledge_graph_node_profiles_ins after insert on knowledge_graph_node_profiles for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_node_profiles_upd",
+        "create trigger dvg_knowledge_graph_node_profiles_upd after update on knowledge_graph_node_profiles for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_release_events_del",
+        "create trigger dvg_knowledge_graph_release_events_del after delete on knowledge_graph_release_events for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_release_events_ins",
+        "create trigger dvg_knowledge_graph_release_events_ins after insert on knowledge_graph_release_events for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_release_events_upd",
+        "create trigger dvg_knowledge_graph_release_events_upd after update on knowledge_graph_release_events for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_release_mappings_del",
+        "create trigger dvg_knowledge_graph_release_mappings_del after delete on knowledge_graph_release_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_release_mappings_ins",
+        "create trigger dvg_knowledge_graph_release_mappings_ins after insert on knowledge_graph_release_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_release_mappings_upd",
+        "create trigger dvg_knowledge_graph_release_mappings_upd after update on knowledge_graph_release_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_release_relations_del",
+        "create trigger dvg_knowledge_graph_release_relations_del after delete on knowledge_graph_release_relations for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_release_relations_ins",
+        "create trigger dvg_knowledge_graph_release_relations_ins after insert on knowledge_graph_release_relations for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_release_relations_upd",
+        "create trigger dvg_knowledge_graph_release_relations_upd after update on knowledge_graph_release_relations for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_releases_del",
+        "create trigger dvg_knowledge_graph_releases_del after delete on knowledge_graph_releases for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_releases_ins",
+        "create trigger dvg_knowledge_graph_releases_ins after insert on knowledge_graph_releases for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_graph_releases_upd",
+        "create trigger dvg_knowledge_graph_releases_upd after update on knowledge_graph_releases for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_identity_replacements_del",
+        "create trigger dvg_knowledge_identity_replacements_del after delete on knowledge_identity_replacements for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_identity_replacements_ins",
+        "create trigger dvg_knowledge_identity_replacements_ins after insert on knowledge_identity_replacements for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_identity_replacements_upd",
+        "create trigger dvg_knowledge_identity_replacements_upd after update on knowledge_identity_replacements for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_amendment_events_del",
+        "create trigger dvg_knowledge_relation_amendment_events_del after delete on knowledge_relation_amendment_events for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_amendment_events_ins",
+        "create trigger dvg_knowledge_relation_amendment_events_ins after insert on knowledge_relation_amendment_events for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_amendment_events_upd",
+        "create trigger dvg_knowledge_relation_amendment_events_upd after update on knowledge_relation_amendment_events for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_audit_events_del",
+        "create trigger dvg_knowledge_relation_audit_events_del after delete on knowledge_relation_audit_events for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_audit_events_ins",
+        "create trigger dvg_knowledge_relation_audit_events_ins after insert on knowledge_relation_audit_events for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_audit_events_upd",
+        "create trigger dvg_knowledge_relation_audit_events_upd after update on knowledge_relation_audit_events for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_evidence_del",
+        "create trigger dvg_knowledge_relation_evidence_del after delete on knowledge_relation_evidence for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_evidence_ins",
+        "create trigger dvg_knowledge_relation_evidence_ins after insert on knowledge_relation_evidence for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_evidence_upd",
+        "create trigger dvg_knowledge_relation_evidence_upd after update on knowledge_relation_evidence for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_suggestion_items_del",
+        "create trigger dvg_knowledge_relation_suggestion_items_del after delete on knowledge_relation_suggestion_items for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_suggestion_items_ins",
+        "create trigger dvg_knowledge_relation_suggestion_items_ins after insert on knowledge_relation_suggestion_items for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_suggestion_items_upd",
+        "create trigger dvg_knowledge_relation_suggestion_items_upd after update on knowledge_relation_suggestion_items for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_suggestion_requests_del",
+        "create trigger dvg_knowledge_relation_suggestion_requests_del after delete on knowledge_relation_suggestion_requests for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_suggestion_requests_ins",
+        "create trigger dvg_knowledge_relation_suggestion_requests_ins after insert on knowledge_relation_suggestion_requests for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_suggestion_requests_upd",
+        "create trigger dvg_knowledge_relation_suggestion_requests_upd after update on knowledge_relation_suggestion_requests for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_suggestion_runs_del",
+        "create trigger dvg_knowledge_relation_suggestion_runs_del after delete on knowledge_relation_suggestion_runs for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_suggestion_runs_ins",
+        "create trigger dvg_knowledge_relation_suggestion_runs_ins after insert on knowledge_relation_suggestion_runs for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relation_suggestion_runs_upd",
+        "create trigger dvg_knowledge_relation_suggestion_runs_upd after update on knowledge_relation_suggestion_runs for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relations_del",
+        "create trigger dvg_knowledge_relations_del after delete on knowledge_relations for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relations_ins",
+        "create trigger dvg_knowledge_relations_ins after insert on knowledge_relations for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_relations_upd",
+        "create trigger dvg_knowledge_relations_upd after update on knowledge_relations for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_tag_aliases_del",
+        "create trigger dvg_knowledge_tag_aliases_del after delete on knowledge_tag_aliases for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_tag_aliases_ins",
+        "create trigger dvg_knowledge_tag_aliases_ins after insert on knowledge_tag_aliases for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_tag_aliases_upd",
+        "create trigger dvg_knowledge_tag_aliases_upd after update on knowledge_tag_aliases for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_tag_identities_del",
+        "create trigger dvg_knowledge_tag_identities_del after delete on knowledge_tag_identities for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_tag_identities_ins",
+        "create trigger dvg_knowledge_tag_identities_ins after insert on knowledge_tag_identities for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_tag_identities_upd",
+        "create trigger dvg_knowledge_tag_identities_upd after update on knowledge_tag_identities for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_tag_identity_mappings_del",
+        "create trigger dvg_knowledge_tag_identity_mappings_del after delete on knowledge_tag_identity_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_tag_identity_mappings_ins",
+        "create trigger dvg_knowledge_tag_identity_mappings_ins after insert on knowledge_tag_identity_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_knowledge_tag_identity_mappings_upd",
+        "create trigger dvg_knowledge_tag_identity_mappings_upd after update on knowledge_tag_identity_mappings for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_question_analysis_operations_del",
+        "create trigger dvg_question_analysis_operations_del after delete on question_analysis_operations for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_question_analysis_operations_ins",
+        "create trigger dvg_question_analysis_operations_ins after insert on question_analysis_operations for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_question_analysis_operations_upd",
+        "create trigger dvg_question_analysis_operations_upd after update on question_analysis_operations for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_question_document_publication_outbox_del",
+        "create trigger dvg_question_document_publication_outbox_del after delete on question_document_publication_outbox for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_question_document_publication_outbox_ins",
+        "create trigger dvg_question_document_publication_outbox_ins after insert on question_document_publication_outbox for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "dvg_question_document_publication_outbox_upd",
+        "create trigger dvg_question_document_publication_outbox_upd after update on question_document_publication_outbox for each row begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "qv_authoring_works_del",
+        "create trigger qv_authoring_works_del after delete on authoring_works for each row begin insert into question_versions (question_id, version) select old.source_question_id, 1 where old.source_question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_authoring_works_ins",
+        "create trigger qv_authoring_works_ins after insert on authoring_works for each row begin insert into question_versions (question_id, version) select new.source_question_id, 1 where new.source_question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_authoring_works_upd",
+        "create trigger qv_authoring_works_upd after update on authoring_works for each row begin insert into question_versions (question_id, version) select old.source_question_id, 1 where old.source_question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.source_question_id, 1 where new.source_question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_evidence_point_knowledge_links_del",
+        "create trigger qv_evidence_point_knowledge_links_del after delete on evidence_point_knowledge_links for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_evidence_point_knowledge_links_ins",
+        "create trigger qv_evidence_point_knowledge_links_ins after insert on evidence_point_knowledge_links for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_evidence_point_knowledge_links_upd",
+        "create trigger qv_evidence_point_knowledge_links_upd after update on evidence_point_knowledge_links for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_grading_question_links_del",
+        "create trigger qv_grading_question_links_del after delete on grading_question_links for each row begin insert into question_versions (question_id, version) select old.bank_question_id, 1 where old.bank_question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_grading_question_links_ins",
+        "create trigger qv_grading_question_links_ins after insert on grading_question_links for each row begin insert into question_versions (question_id, version) select new.bank_question_id, 1 where new.bank_question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_grading_question_links_upd",
+        "create trigger qv_grading_question_links_upd after update on grading_question_links for each row begin insert into question_versions (question_id, version) select old.bank_question_id, 1 where old.bank_question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.bank_question_id, 1 where new.bank_question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_paper_question_occurrences_del",
+        "create trigger qv_paper_question_occurrences_del after delete on paper_question_occurrences for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_paper_question_occurrences_ins",
+        "create trigger qv_paper_question_occurrences_ins after insert on paper_question_occurrences for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_paper_question_occurrences_upd",
+        "create trigger qv_paper_question_occurrences_upd after update on paper_question_occurrences for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_papers_del",
+        "create trigger qv_papers_del after delete on papers for each row begin insert into question_versions (question_id, version) select id, 1 from questions where paper_id = old.id and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_papers_ins",
+        "create trigger qv_papers_ins after insert on papers for each row begin insert into question_versions (question_id, version) select id, 1 from questions where paper_id = new.id and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_papers_upd",
+        "create trigger qv_papers_upd after update on papers for each row begin insert into question_versions (question_id, version) select id, 1 from questions where paper_id = old.id and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select id, 1 from questions where paper_id = new.id and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_analysis_items_del",
+        "create trigger qv_question_analysis_items_del after delete on question_analysis_items for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_analysis_items_ins",
+        "create trigger qv_question_analysis_items_ins after insert on question_analysis_items for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_analysis_items_upd",
+        "create trigger qv_question_analysis_items_upd after update on question_analysis_items for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_analysis_requests_del",
+        "create trigger qv_question_analysis_requests_del after delete on question_analysis_requests for each row when json_valid(old.question_ids_json) begin insert into question_versions (question_id, version) select cast(value as integer), 1 from json_each(old.question_ids_json) where true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_analysis_requests_ins",
+        "create trigger qv_question_analysis_requests_ins after insert on question_analysis_requests for each row when json_valid(new.question_ids_json) begin insert into question_versions (question_id, version) select cast(value as integer), 1 from json_each(new.question_ids_json) where true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_analysis_requests_upd",
+        "create trigger qv_question_analysis_requests_upd after update on question_analysis_requests for each row when json_valid(new.question_ids_json) and json_valid(old.question_ids_json) begin insert into question_versions (question_id, version) select cast(value as integer), 1 from json_each(old.question_ids_json) where true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select cast(value as integer), 1 from json_each(new.question_ids_json) where true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_content_index_del",
+        "create trigger qv_question_content_index_del after delete on question_content_index for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_content_index_ins",
+        "create trigger qv_question_content_index_ins after insert on question_content_index for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_content_index_upd",
+        "create trigger qv_question_content_index_upd after update on question_content_index for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_content_revisions_del",
+        "create trigger qv_question_content_revisions_del after delete on question_content_revisions for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_content_revisions_ins",
+        "create trigger qv_question_content_revisions_ins after insert on question_content_revisions for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_content_revisions_upd",
+        "create trigger qv_question_content_revisions_upd after update on question_content_revisions for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_document_items_del",
+        "create trigger qv_question_document_items_del after delete on question_document_items for each row begin insert into question_versions (question_id, version) select old.bank_question_id, 1 where old.bank_question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_document_items_ins",
+        "create trigger qv_question_document_items_ins after insert on question_document_items for each row begin insert into question_versions (question_id, version) select new.bank_question_id, 1 where new.bank_question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_document_items_upd",
+        "create trigger qv_question_document_items_upd after update on question_document_items for each row begin insert into question_versions (question_id, version) select old.bank_question_id, 1 where old.bank_question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.bank_question_id, 1 where new.bank_question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_document_publications_del",
+        "create trigger qv_question_document_publications_del after delete on question_document_publications for each row when json_valid(old.question_ids_json) begin insert into question_versions (question_id, version) select cast(value as integer), 1 from json_each(old.question_ids_json) where true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_document_publications_ins",
+        "create trigger qv_question_document_publications_ins after insert on question_document_publications for each row when json_valid(new.question_ids_json) begin insert into question_versions (question_id, version) select cast(value as integer), 1 from json_each(new.question_ids_json) where true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_document_publications_upd",
+        "create trigger qv_question_document_publications_upd after update on question_document_publications for each row when json_valid(new.question_ids_json) and json_valid(old.question_ids_json) begin insert into question_versions (question_id, version) select cast(value as integer), 1 from json_each(old.question_ids_json) where true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select cast(value as integer), 1 from json_each(new.question_ids_json) where true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_duplicate_links_del",
+        "create trigger qv_question_duplicate_links_del after delete on question_duplicate_links for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select old.duplicate_of_question_id, 1 where old.duplicate_of_question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_duplicate_links_ins",
+        "create trigger qv_question_duplicate_links_ins after insert on question_duplicate_links for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.duplicate_of_question_id, 1 where new.duplicate_of_question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_duplicate_links_upd",
+        "create trigger qv_question_duplicate_links_upd after update on question_duplicate_links for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select old.duplicate_of_question_id, 1 where old.duplicate_of_question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.duplicate_of_question_id, 1 where new.duplicate_of_question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_error_patterns_del",
+        "create trigger qv_question_error_patterns_del after delete on question_error_patterns for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_error_patterns_ins",
+        "create trigger qv_question_error_patterns_ins after insert on question_error_patterns for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_error_patterns_upd",
+        "create trigger qv_question_error_patterns_upd after update on question_error_patterns for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_part_difficulty_features_del",
+        "create trigger qv_question_part_difficulty_features_del after delete on question_part_difficulty_features for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_part_difficulty_features_ins",
+        "create trigger qv_question_part_difficulty_features_ins after insert on question_part_difficulty_features for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_part_difficulty_features_upd",
+        "create trigger qv_question_part_difficulty_features_upd after update on question_part_difficulty_features for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_previews_del",
+        "create trigger qv_question_previews_del after delete on question_previews for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_previews_ins",
+        "create trigger qv_question_previews_ins after insert on question_previews for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_previews_upd",
+        "create trigger qv_question_previews_upd after update on question_previews for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_scope_summary_del",
+        "create trigger qv_question_scope_summary_del after delete on question_scope_summary for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_scope_summary_ins",
+        "create trigger qv_question_scope_summary_ins after insert on question_scope_summary for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_scope_summary_upd",
+        "create trigger qv_question_scope_summary_upd after update on question_scope_summary for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_solution_evidence_versions_del",
+        "create trigger qv_question_solution_evidence_versions_del after delete on question_solution_evidence_versions for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_solution_evidence_versions_ins",
+        "create trigger qv_question_solution_evidence_versions_ins after insert on question_solution_evidence_versions for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_solution_evidence_versions_upd",
+        "create trigger qv_question_solution_evidence_versions_upd after update on question_solution_evidence_versions for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_tags_del",
+        "create trigger qv_question_tags_del after delete on question_tags for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_tags_ins",
+        "create trigger qv_question_tags_ins after insert on question_tags for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_question_tags_upd",
+        "create trigger qv_question_tags_upd after update on question_tags for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_questions_del",
+        "create trigger qv_questions_del after delete on questions for each row begin insert into question_versions (question_id, version) select old.id, 1 where old.id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_questions_ins",
+        "create trigger qv_questions_ins after insert on questions for each row begin insert into question_versions (question_id, version) select new.id, 1 where new.id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_questions_upd",
+        "create trigger qv_questions_upd after update on questions for each row begin insert into question_versions (question_id, version) select old.id, 1 where old.id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.id, 1 where new.id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_taxonomy_review_applications_del",
+        "create trigger qv_taxonomy_review_applications_del after delete on taxonomy_review_applications for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_taxonomy_review_applications_ins",
+        "create trigger qv_taxonomy_review_applications_ins after insert on taxonomy_review_applications for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_taxonomy_review_applications_upd",
+        "create trigger qv_taxonomy_review_applications_upd after update on taxonomy_review_applications for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_training_criterion_backfill_items_del",
+        "create trigger qv_training_criterion_backfill_items_del after delete on training_criterion_backfill_items for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_training_criterion_backfill_items_ins",
+        "create trigger qv_training_criterion_backfill_items_ins after insert on training_criterion_backfill_items for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_training_criterion_backfill_items_upd",
+        "create trigger qv_training_criterion_backfill_items_upd after update on training_criterion_backfill_items for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_training_criterion_backfill_runs_del",
+        "create trigger qv_training_criterion_backfill_runs_del after delete on training_criterion_backfill_runs for each row when json_valid(old.question_ids_json) begin insert into question_versions (question_id, version) select cast(value as integer), 1 from json_each(old.question_ids_json) where true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_training_criterion_backfill_runs_ins",
+        "create trigger qv_training_criterion_backfill_runs_ins after insert on training_criterion_backfill_runs for each row when json_valid(new.question_ids_json) begin insert into question_versions (question_id, version) select cast(value as integer), 1 from json_each(new.question_ids_json) where true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_training_criterion_backfill_runs_upd",
+        "create trigger qv_training_criterion_backfill_runs_upd after update on training_criterion_backfill_runs for each row when json_valid(new.question_ids_json) and json_valid(old.question_ids_json) begin insert into question_versions (question_id, version) select cast(value as integer), 1 from json_each(old.question_ids_json) where true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select cast(value as integer), 1 from json_each(new.question_ids_json) where true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_training_criterion_events_del",
+        "create trigger qv_training_criterion_events_del after delete on training_criterion_events for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_training_criterion_events_ins",
+        "create trigger qv_training_criterion_events_ins after insert on training_criterion_events for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_training_criterion_events_upd",
+        "create trigger qv_training_criterion_events_upd after update on training_criterion_events for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_training_criterion_heads_del",
+        "create trigger qv_training_criterion_heads_del after delete on training_criterion_heads for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_training_criterion_heads_ins",
+        "create trigger qv_training_criterion_heads_ins after insert on training_criterion_heads for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_training_criterion_heads_upd",
+        "create trigger qv_training_criterion_heads_upd after update on training_criterion_heads for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_training_criterion_versions_del",
+        "create trigger qv_training_criterion_versions_del after delete on training_criterion_versions for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_training_criterion_versions_ins",
+        "create trigger qv_training_criterion_versions_ins after insert on training_criterion_versions for each row begin insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qv_training_criterion_versions_upd",
+        "create trigger qv_training_criterion_versions_upd after update on training_criterion_versions for each row begin insert into question_versions (question_id, version) select old.question_id, 1 where old.question_id is not null and true on conflict(question_id) do update set version = version + 1; insert into question_versions (question_id, version) select new.question_id, 1 where new.question_id is not null and true on conflict(question_id) do update set version = version + 1; end"
+      ],
+      [
+        "trigger",
+        "qvg_question_analysis_requests_del",
+        "create trigger qvg_question_analysis_requests_del after delete on question_analysis_requests for each row when not json_valid(old.question_ids_json) begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "qvg_question_analysis_requests_ins",
+        "create trigger qvg_question_analysis_requests_ins after insert on question_analysis_requests for each row when not json_valid(new.question_ids_json) begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "qvg_question_analysis_requests_upd",
+        "create trigger qvg_question_analysis_requests_upd after update on question_analysis_requests for each row when not json_valid(new.question_ids_json) or not json_valid(old.question_ids_json) begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "qvg_question_document_publications_del",
+        "create trigger qvg_question_document_publications_del after delete on question_document_publications for each row when not json_valid(old.question_ids_json) begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "qvg_question_document_publications_ins",
+        "create trigger qvg_question_document_publications_ins after insert on question_document_publications for each row when not json_valid(new.question_ids_json) begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "qvg_question_document_publications_upd",
+        "create trigger qvg_question_document_publications_upd after update on question_document_publications for each row when not json_valid(new.question_ids_json) or not json_valid(old.question_ids_json) begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "qvg_training_criterion_backfill_runs_del",
+        "create trigger qvg_training_criterion_backfill_runs_del after delete on training_criterion_backfill_runs for each row when not json_valid(old.question_ids_json) begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "qvg_training_criterion_backfill_runs_ins",
+        "create trigger qvg_training_criterion_backfill_runs_ins after insert on training_criterion_backfill_runs for each row when not json_valid(new.question_ids_json) begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "qvg_training_criterion_backfill_runs_upd",
+        "create trigger qvg_training_criterion_backfill_runs_upd after update on training_criterion_backfill_runs for each row when not json_valid(new.question_ids_json) or not json_valid(old.question_ids_json) begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
       ]
     ],
     "tables": {
@@ -8619,6 +9561,27 @@
             "NO ACTION"
           ]
         ],
+        "unique_constraints": []
+      },
+      "question_versions": {
+        "checks": [],
+        "columns": {
+          "question_id": [
+            "integer",
+            0,
+            "none",
+            1,
+            0
+          ],
+          "version": [
+            "integer",
+            1,
+            "0",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [],
         "unique_constraints": []
       },
       "questions": {

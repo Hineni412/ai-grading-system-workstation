@@ -16,7 +16,9 @@ import json
 import re
 import sqlite3
 import statistics
-from collections import defaultdict
+import threading
+from collections import OrderedDict, defaultdict
+from pathlib import Path
 from typing import Any
 
 from question_bank.question_types import is_type_key
@@ -88,18 +90,164 @@ def _near_duplicates(gram_sets: dict[int, frozenset[str]]) -> dict[int, set[int]
     }
     neighbors: dict[int, set[int]] = {qid: set() for qid in gram_sets}
     for qid, grams_list in kept.items():
-        shared: dict[int, int] = {}
-        for gram in grams_list:
-            for other in postings[gram]:
-                if other != qid:
-                    shared[other] = shared.get(other, 0) + 1
-        for other, count in shared.items():
-            # 候选上界按保留片段估算，再用完整片段 Dice 确认。
-            if 2 * count < CANDIDATE_DICE_FLOOR * (len(grams_list) + len(kept[other])):
-                continue
-            if dice(gram_sets[qid], gram_sets[other]) >= SAME_QUESTION:
-                neighbors[qid].add(other)
-                neighbors[other].add(qid)
+        _near_duplicates_around(qid, gram_sets, postings, kept, neighbors)
+    return neighbors
+
+
+def _near_duplicates_around(
+    qid: int,
+    gram_sets: dict[int, frozenset[str]],
+    postings: dict[str, list[int]],
+    kept: dict[int, list[str]],
+    neighbors: dict[int, set[int]],
+) -> None:
+    """重算一题的近重复邻接（与原全量算法逐对同价）。"""
+    shared: dict[int, int] = {}
+    grams_list = kept[qid]
+    for gram in grams_list:
+        for other in postings[gram]:
+            if other != qid:
+                shared[other] = shared.get(other, 0) + 1
+    for other, count in shared.items():
+        # 候选上界按保留片段估算，再用完整片段 Dice 确认。
+        if 2 * count < CANDIDATE_DICE_FLOOR * (len(grams_list) + len(kept[other])):
+            continue
+        if dice(gram_sets[qid], gram_sets[other]) >= SAME_QUESTION:
+            neighbors[qid].add(other)
+            neighbors[other].add(qid)
+
+
+# 按题片段/模板签名缓存：键 = (库路径, 题号, 按题版本)。题面不变即片段不变。
+_GRAM_MEMO_LIMIT = 8192
+_GRAM_MEMO_LOCK = threading.Lock()
+_GRAM_MEMO: OrderedDict[tuple, tuple[frozenset[str], frozenset[str]]] = OrderedDict()
+
+# 近重复邻接增量缓存：键 = (库路径, 册标识)；存上次题集、版本、邻接表。
+_DUP_CACHE_LIMIT = 8
+_DUP_CACHE_LOCK = threading.Lock()
+_DUP_CACHE: OrderedDict[tuple, dict[str, Any]] = OrderedDict()
+
+
+def _gram_tpl_sets(
+    rows: dict[int, dict[str, Any]],
+    db_file: Path | None,
+    versions: dict[int, int] | None,
+) -> tuple[dict[int, frozenset[str]], dict[int, frozenset[str]]]:
+    gram_sets: dict[int, frozenset[str]] = {}
+    tpl_sets: dict[int, frozenset[str]] = {}
+    path_key = str(db_file) if db_file is not None else None
+    for qid, row in rows.items():
+        cache_key = (path_key, qid, versions.get(qid, 0)) if versions is not None else None
+        hit = None
+        if cache_key is not None:
+            with _GRAM_MEMO_LOCK:
+                hit = _GRAM_MEMO.get(cache_key)
+                if hit is not None:
+                    _GRAM_MEMO.move_to_end(cache_key)
+        if hit is None:
+            text = row["question_text"]
+            hit = (grams(clean_text(text)), _template_grams(text))
+            if cache_key is not None:
+                with _GRAM_MEMO_LOCK:
+                    _GRAM_MEMO[cache_key] = hit
+                    while len(_GRAM_MEMO) > _GRAM_MEMO_LIMIT:
+                        _GRAM_MEMO.popitem(last=False)
+        gram_sets[qid], tpl_sets[qid] = hit
+    return gram_sets, tpl_sets
+
+
+def _dup_neighbors(
+    db_file: Path | None,
+    scope_key: object,
+    gram_sets: dict[int, frozenset[str]],
+    state,
+) -> dict[int, set[int]]:
+    """近重复邻接：按题版本增量重算受影响题的对，其余沿用上次结果。"""
+    from integration.data_generation import LAST_INCREMENTAL
+
+    if db_file is None or state is None:
+        neighbors = _near_duplicates(gram_sets)
+        LAST_INCREMENTAL["near_duplicates"] = {
+            "mode": "full", "recomputed": frozenset(gram_sets)}
+        return neighbors
+    key = (str(db_file), scope_key)
+    with _DUP_CACHE_LOCK:
+        prev = _DUP_CACHE.get(key)
+        if prev is not None:
+            _DUP_CACHE.move_to_end(key)
+    if prev is None or prev["materials_global"] != state.materials_global:
+        neighbors = _near_duplicates(gram_sets)
+        LAST_INCREMENTAL["near_duplicates"] = {
+            "mode": "full", "recomputed": frozenset(gram_sets)}
+        with _DUP_CACHE_LOCK:
+            _DUP_CACHE[key] = {
+                "materials_global": state.materials_global,
+                "versions": {qid: state.versions.get(qid, 0) for qid in gram_sets},
+                "gram_sets": gram_sets, "neighbors": neighbors,
+            }
+            while len(_DUP_CACHE) > _DUP_CACHE_LIMIT:
+                _DUP_CACHE.popitem(last=False)
+        return neighbors
+    prev_grams: dict[int, frozenset[str]] = prev["gram_sets"]
+    prev_versions: dict[int, int] = prev["versions"]
+    changed = {qid for qid in gram_sets
+               if qid not in prev_grams
+               or prev_versions.get(qid, 0) != state.versions.get(qid, 0)}
+    changed |= set(prev_grams) - set(gram_sets)
+    # 片段倒排是全局的：与变化题共享片段的未变题也需重判候选界。
+    gram_diff = {
+        qid for qid in changed
+        if gram_sets.get(qid) != prev_grams.get(qid)
+    }
+    touched_grams: set[str] = set()
+    for qid in gram_diff:
+        touched_grams |= prev_grams.get(qid, frozenset())
+        touched_grams |= gram_sets.get(qid, frozenset())
+    postings: dict[str, list[int]] = defaultdict(list)
+    for qid, grams_set in gram_sets.items():
+        for gram in grams_set:
+            postings[gram].append(qid)
+    affected = set(changed) & set(gram_sets)
+    for gram in touched_grams:
+        affected.update(postings.get(gram, ()))
+    neighbors = {
+        qid: set(adj) & set(gram_sets)
+        for qid, adj in prev["neighbors"].items()
+        if qid in gram_sets
+    }
+    kept = {
+        qid: [gram for gram in grams_set if len(postings[gram]) <= GRAM_POSTING_LIMIT]
+        for qid, grams_set in gram_sets.items()
+    }
+    for qid in affected:
+        if qid not in gram_sets:
+            continue
+        entry = neighbors.setdefault(qid, set())
+        for other in list(entry):
+            neighbors[other].discard(qid)
+        entry.clear()
+        _near_duplicates_around(qid, gram_sets, postings, kept, neighbors)
+    from integration.data_generation import question_version_state
+    after = question_version_state(db_file)
+    if after != state:
+        # 计算期间又有写入：结果与新状态不一致，按新状态全量重算。
+        neighbors = _near_duplicates(gram_sets)
+        LAST_INCREMENTAL["near_duplicates"] = {
+            "mode": "full", "recomputed": frozenset(gram_sets)}
+        if after is None:
+            return neighbors
+        state = after
+    else:
+        LAST_INCREMENTAL["near_duplicates"] = {
+            "mode": "incremental", "recomputed": frozenset(affected)}
+    with _DUP_CACHE_LOCK:
+        _DUP_CACHE[key] = {
+            "materials_global": state.materials_global,
+            "versions": {qid: state.versions.get(qid, 0) for qid in gram_sets},
+            "gram_sets": gram_sets, "neighbors": neighbors,
+        }
+        while len(_DUP_CACHE) > _DUP_CACHE_LIMIT:
+            _DUP_CACHE.popitem(last=False)
     return neighbors
 
 
@@ -388,15 +536,13 @@ def _prepare(
         referenced = [qid for qid in raw_paper_q[pid]
                       if qid in questions and questions[qid]["paper_id"] != pid]
         paper_q[pid] = originals + referenced
-    gram_sets = {
-        qid: grams(clean_text(row["question_text"]))
-        for qid, row in questions.items()
-    }
-    tpl_sets = {
-        qid: _template_grams(row["question_text"])
-        for qid, row in questions.items()
-    }
-    neighbors = _near_duplicates(gram_sets)
+    from integration.data_generation import question_version_state
+    db_row = conn.execute("PRAGMA database_list").fetchone()
+    db_file = Path(db_row[2]) if db_row is not None and db_row[2] else None
+    state = question_version_state(db_file) if db_file is not None else None
+    versions = {qid: state.versions.get(qid, 0) for qid in questions} if state is not None else None
+    gram_sets, tpl_sets = _gram_tpl_sets(questions, db_file, versions)
+    neighbors = _dup_neighbors(db_file, volume["id"], gram_sets, state)
 
     # 同源卷合并：同阶段内，较小一份卷中至少六成题能在另一份找到近乎相同的题。
     parent = {pid: pid for pid in paper_ids}

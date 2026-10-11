@@ -2719,7 +2719,10 @@ def test_source_snapshot_pool_survives_restart_and_invalidates(
     assert len(entries) == 1
     saved = pickle.loads(entries[0].read_bytes())
     assert pickle.loads(pickle.dumps(saved["payload"])) == saved["payload"]
-    assert saved["payload"] == first
+    # v2 载荷：(去重结果, 去重前每题条目)；按题版本增量合并需要后者。
+    # 无按题版本覆盖的库仍存旧三元组。
+    payload = saved["payload"]
+    assert (payload[0] if len(payload) == 2 else payload) == first
 
     # Restart: the snapshot reloads from disk without recomputing.
     restart()
@@ -2772,7 +2775,67 @@ def test_source_snapshot_pool_survives_restart_and_invalidates(
     assert set(pool_dir.glob("*.entry")) == before
 
 
-def test_create_reuses_large_diagnosis_json_and_encoded_event(direct_module, monkeypatch):
+def test_source_snapshot_pool_incremental_merges_changed_questions(
+    direct_module, monkeypatch,
+):
+    """按题增量：题库内容单点变化只重算该题，合并结果与全量重算一致。"""
+    import integration.persistent_entries as persistent_entries
+    from integration import data_generation
+    from question_bank.recommendation import personalized
+
+    def restart():
+        personalized._SOURCE_SNAPSHOT_CACHE.clear()
+        data_generation.reset_commit_generations()
+        with persistent_entries._STORES_LOCK:
+            persistent_entries._STORES.clear()
+
+    first = direct_module._source_snapshot()
+    restart()
+    calls = []
+    original = direct_module._source_snapshot_uncached
+
+    def tracked(**kwargs):
+        calls.append(set(kwargs.get("question_ids") or ()))
+        return original(**kwargs)
+
+    monkeypatch.setattr(direct_module, "_source_snapshot_uncached", tracked)
+
+    # 单题写入：按题版本只标记该题，增量合并与全量重算逐条一致。
+    with connect(direct_module.db_path) as conn:
+        conn.execute(
+            "UPDATE questions SET question_text = question_text || 'x'"
+            " WHERE id = 100")
+    merged = direct_module._source_snapshot()
+    assert calls == [{100}]
+    record = data_generation.LAST_INCREMENTAL["candidate_pool"]
+    assert record["mode"] == "incremental"
+    assert record["recomputed"] == {100}
+    assert merged == original()
+
+    # 共享输入（全局版本）变化 → 回退全量。
+    restart()
+    calls.clear()
+    with connect(direct_module.db_path) as conn:
+        conn.execute(
+            "UPDATE data_versions SET version = version + 1"
+            " WHERE domain = 'materials_global'")
+    refull = direct_module._source_snapshot()
+    assert calls == [set()]
+    assert data_generation.LAST_INCREMENTAL["candidate_pool"]["mode"] == "full"
+    assert refull == original()
+
+    # 按题版本覆盖不可用时退化为整库签名，仍可正确失效与复用。
+    restart()
+    calls.clear()
+    monkeypatch.setattr(data_generation, "question_version_state", lambda *a, **k: None)
+    assert direct_module._source_snapshot() == refull
+    assert calls == [set()]
+    assert data_generation.LAST_INCREMENTAL["candidate_pool"]["mode"] == "full"
+    calls.clear()
+    restart()
+    assert direct_module._source_snapshot() == refull
+    assert calls == []
+
     from question_bank.recommendation import personalized as engine
     original_json = engine._json
     calls = []

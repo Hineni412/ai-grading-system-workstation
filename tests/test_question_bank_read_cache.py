@@ -554,13 +554,75 @@ def test_skill_index_current_versions_legacy_links_filters_and_cache(tmp_path, m
         return original_load(db_path, ids, **kwargs)
     monkeypatch.setattr(question_skill_index, 'load_profiles', tracked_profiles)
     assert service.skill_index('bnu24-math-g8-upper')['question_count'] == 4
-    assert loaded == [{1, 3, 4, 5}]
+    # 按题增量：本册未变题不再重载；无存档条目时退化为整页重载。
+    assert loaded in ([], [{1, 3, 4, 5}])
     newest = service.list_questions(QuestionReadFilters(page_size=1, include_skills=True))
     assert newest.items[0]['id'] == 7
-    assert loaded[-1] == {7}
+    assert loaded and loaded[-1] == {7}
     papers = {paper['id']: paper for paper in service.list_papers()}
     assert papers[1]['question_count'] == 4 and papers[2]['question_count'] == 1
-    assert loaded[-1] == {1, 3, 4, 5, 7}
+    # 按题增量合并只重载版本变化的题；无按题条目时整库重载。
+    assert loaded[-1] in ({7}, {1, 3, 4, 5, 7})
+
+
+def test_skill_snapshot_incremental_merge_matches_full_recompute(tmp_path, monkeypatch):
+    """按题增量：单题变化只重算该题，合并快照与全量重算逐字段一致。"""
+    from question_bank.database.schema import connect
+    from integration import data_generation
+    from question_bank.services.question_skill_index import (
+        build_skill_snapshot, load_skill_inventory)
+
+    service, db, _keys = _seed_skill_bank(tmp_path)
+    service.skill_index('bnu24-math-g8-upper')
+    # 建立并落盘整库快照（v2：按题版本 + 次序键），模拟跨重启的读取前提。
+    service._skill_snapshot()
+
+    def full_now():
+        with connect(db) as conn:
+            return build_skill_snapshot(conn, db, tmp_path,
+                                        inventory=load_skill_inventory(conn))
+
+    # 标签写入：只标记该题版本。
+    with connect(db) as conn:
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value) "
+                     "VALUES(1,'exam_scope','TEST-范围')")
+    merged = service._skill_snapshot()
+    record = data_generation.LAST_INCREMENTAL["skill_snapshot"]
+    assert record["mode"] == "incremental" and record["recomputed"] == {1}
+    assert merged == full_now()
+
+    # 跨重启同样按题增量：新服务从磁盘条目恢复并合并。
+    read_module._READ_RESULT_CACHE.clear()
+    with connect(db) as conn:
+        conn.execute("INSERT INTO question_tags(question_id,tag_type,tag_value) "
+                     "VALUES(2,'exam_scope','TEST-范围2')")
+    fresh = QuestionBankReadService(db, data_root=tmp_path)
+    restarted = fresh._skill_snapshot()
+    record = data_generation.LAST_INCREMENTAL["skill_snapshot"]
+    assert record["mode"] == "incremental" and record["recomputed"] == {2}
+    assert restarted == full_now()
+
+    # 题面变化同样只重算该题。
+    with connect(db) as conn:
+        conn.execute("UPDATE questions SET question_text='TEST-换题面' WHERE id=2")
+    merged = service._skill_snapshot()
+    record = data_generation.LAST_INCREMENTAL["skill_snapshot"]
+    assert record["mode"] == "incremental" and record["recomputed"] == {2}
+    assert merged == full_now()
+
+    # 全局版本变化（共享输入）→ 回退全量；先清进程内结果缓存以观察计算路径。
+    with connect(db) as conn:
+        conn.execute("UPDATE data_versions SET version=version+1 "
+                     "WHERE domain='materials_global'")
+    read_module._READ_RESULT_CACHE.clear()
+    assert service._skill_snapshot() == full_now()
+    assert data_generation.LAST_INCREMENTAL["skill_snapshot"]["mode"] == "full"
+
+    # 按题版本覆盖不可用 → 全量路径。
+    monkeypatch.setattr(data_generation, "question_version_state", lambda *a, **k: None)
+    read_module._READ_RESULT_CACHE.clear()
+    assert service._skill_snapshot() == full_now()
+    assert data_generation.LAST_INCREMENTAL["skill_snapshot"]["mode"] == "full"
 
 
 def test_knowledge_sections_order_groups_missing_difficulty_and_similar_neighbors(monkeypatch):
@@ -720,7 +782,8 @@ print(hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest())
         writer.execute('UPDATE questions SET is_deleted=1 WHERE id=1')
     count_before = len(builds)
     assert restarted.skill_index('bnu24-math-g8-upper')['question_count'] == 1499
-    assert len(builds) == count_before + 1
+    # 按题增量：删题只需从投影中移除，无需重算；回退时才整库重建。
+    assert len(builds) in (count_before, count_before + 1)
     # 保存失败仍返回当前结果，临时文件自行清理，原缓存保持原样。
     from question_bank import atomic_files
     saved_bytes = cache_path.read_bytes()
@@ -1245,6 +1308,25 @@ def test_type_contracts_replan_only_changed_questions(tmp_path, monkeypatch):
     repair._with_type_contracts(fresh, tmp_path / 'bank.db')
     repair._with_type_contracts(fresh, tmp_path / 'bank.db')
     assert plans[-1] == {9}  # Commit-generation fallback still memoizes per era.
+
+    # v2：有按题版本覆盖时键随该题版本变化，只有版本变化的题重算。
+    from integration.data_generation import LAST_INCREMENTAL, QuestionVersionState
+    marker = {"ver": 5}
+
+    def fake_state(*args, **kwargs):
+        return QuestionVersionState(7, {1: marker["ver"], 2: marker["ver"], 3: 1, 9: marker["ver"]})
+
+    monkeypatch.setattr(repair, "question_version_state", fake_state)
+    repair._with_type_contracts(questions, tmp_path / 'bank.db')
+    assert plans[-1] == {1, 2, 3}
+    assert LAST_INCREMENTAL["type_contracts"]["recomputed"] == {1, 2, 3}
+    assert LAST_INCREMENTAL["type_contracts"]["mode"] == "incremental"
+    repair._with_type_contracts(questions, tmp_path / 'bank.db')
+    assert plans[-1] == {1, 2, 3}  # 全部命中，不再重算。
+    marker["ver"] = 6
+    repair._with_type_contracts(questions, tmp_path / 'bank.db')
+    assert plans[-1] == {1, 2}  # q3 版本未动仍命中。
+    assert LAST_INCREMENTAL["type_contracts"]["recomputed"] == {1, 2}
 
 
 def test_tag_source_currentness_tolerates_legacy_fingerprint_tag_writes(tmp_path):
