@@ -38,7 +38,6 @@ function status(overrides: Partial<ReportPipelineStatus> = {}): ReportPipelineSt
     active_job_id: null,
     review_pending: 0,
     causes: { pending_questions: 2, total_questions: 4, call_count: 3, estimated_tokens: 12000 },
-    class_reports: { pending: 2, total: 2 },
     personal_reports: { pending: 3, total: 4, call_count: 5, cache_hits: 1, estimated_tokens: 34000 },
     complete: false,
     ...overrides,
@@ -108,9 +107,9 @@ describe('ReportPipelineButton', () => {
     await vi.waitFor(() => expect(pipelineMock.getStatus).toHaveBeenCalledWith(7))
     await vi.waitFor(() => expect(cachedPipelineStatus(7)).not.toBeNull())
     const button = openButton(host)
-    await vi.waitFor(() => expect(button.textContent).toContain('· 10'))
+    await vi.waitFor(() => expect(button.textContent).toContain('· 8'))
     expect(button.textContent).toContain('AI 整理')
-    expect(button.title).toBe('预计调用模型 10 次')
+    expect(button.title).toBe('预计调用模型 8 次')
     expect(button.dataset.variant).toBe('secondary')
   })
 
@@ -119,7 +118,6 @@ describe('ReportPipelineButton', () => {
     ['未配置模型', status({ configured: false })],
     ['没有待办', status({
       causes: { pending_questions: 0, total_questions: 4, call_count: 0, estimated_tokens: 0 },
-      class_reports: { pending: 0, total: 2 },
       personal_reports: { pending: 0, total: 4, call_count: 0, cache_hits: 0, estimated_tokens: 0 },
     })],
   ])('hides the badge when %s', async (_name, value) => {
@@ -206,7 +204,7 @@ describe('ReportPipelineButton', () => {
     expect(pipelineMock.getStatus).toHaveBeenLastCalledWith(7, expect.any(AbortSignal), true)
     pending.resolve(status({ complete: false }))
     await vi.waitFor(() => expect(confirm.disabled).toBe(false))
-    expect(openButton(host).textContent).toContain('· 10')
+    expect(openButton(host).textContent).toContain('· 8')
     const cancel = [...document.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent === '取消')!
     cancel.click()

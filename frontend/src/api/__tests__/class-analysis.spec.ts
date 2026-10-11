@@ -64,30 +64,7 @@ const analysisPayload = {
       },
     ],
   },
-  narrative: {
-    key_findings: [
-      { title: '两极分化严重', detail: '出现 47 分断层', severity: 'high' },
-    ],
-    common_issues: [
-      {
-        title: '证明题书写能力断层',
-        evidence: '第 11(3)、12(2)(3) 问得分率 25%',
-        teaching_action: '用第 12 题整题做板书示范',
-      },
-    ],
-    student_notes: [
-      {
-        alias: 'S1',
-        note: '会做的题完成质量高',
-        suggestion: '压轴小问不要轻易放弃',
-        flags: ['保持'],
-      },
-    ],
-    grouping_advice: '高分组布置压轴变式，低分组重做基础题。',
-  },
-  narrative_failed: false,
   generated_at: '2026-08-30T10:00:00Z',
-  stale: false,
   active_job_id: null,
 } as const
 
@@ -96,23 +73,21 @@ afterEach(() => vi.restoreAllMocks())
 describe('class analysis API contract', () => {
 
   it('reads legacy method states as saved results without exposing a version state', () => {
-    const payload = { ...analysisPayload, narrative_state: 'old_prompt',
+    const payload = { ...analysisPayload,
       cause_analysis: { status: 'ready', pending_questions: 0, total_questions: 2,
         failed_questions: 0, question_states: { current: 1, stale: 0, old_prompt: 1, failed: 0 },
         stale: false, generated_at: null, origin: 'model' },
       data: { ...analysisPayload.data, questions: [{ ...analysisPayload.data.questions[0], state: 'old_prompt' }] },
     }
     const parsed = decodeClassAnalysisResponse(payload)
-    expect(parsed.narrative_state).toBe('current')
     expect(parsed.data?.questions[0]?.state).toBe('current')
     expect(parsed.cause_analysis?.question_states).toEqual({ current: 2, stale: 0, failed: 0 })
   })
 
-  it('preserves a read warning without dropping saved narrative and accepts omitted legacy warnings', () => {
+  it('preserves a read warning and accepts omitted legacy warnings', () => {
     const warning = '保存文件暂无法读取，仍可查看兼容正文。'
     const parsed = decodeClassAnalysisResponse({ ...analysisPayload, read_error: warning })
     expect(parsed.read_error).toBe(warning)
-    expect(parsed.narrative).toEqual(analysisPayload.narrative)
     expect(decodeClassAnalysisResponse(analysisPayload).read_error).toBeNull()
     expect(() => decodeClassAnalysisResponse({ ...analysisPayload, read_error: false })).toThrow()
   })

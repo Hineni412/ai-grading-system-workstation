@@ -4,10 +4,15 @@ import type { ClassAnalysisQuestion, ClassCause } from '../../../api/class-analy
 import type { ResultsCenterItem, ResultsCenterStudent, ResultsScoreStatus } from '../../../api/results-center';
 import {
   bandOfRate,
-  blankCountsByStudent,
-  buildOverviewTiles,
+  classDelta,
+  classRateGapOf,
   classRanksOf,
+  compareByClassGap,
+  compareByRate,
+  compareByZeroShare,
+  criticalStudents,
   displayAnswer,
+  lowTailSummary,
   medianOf,
   questionRatesFor,
   rankChangeGroups,
@@ -16,7 +21,9 @@ import {
   subQuestionLabelFor,
   subQuestionOf,
   summarizeStudents,
+  zeroShareOf,
   type RankChange,
+  type SortableQuestionEntry,
 } from '../results-overview';
 import { buildWalkthroughDeck, type WalkthroughCard } from '../paper-walkthrough';
 
@@ -136,34 +143,6 @@ describe('results overview pure helpers', () => {
     expect(ten.get('Q2')).toBeCloseTo(0.8)
   })
 
-  it('counts blanks per student from response_state evidence only', () => {
-    const counts = blankCountsByStudent([
-      question('Q1', {
-        causes: [
-          {
-            kind: 'response_state', reason: '未作答', count: 2,
-            evidence: [{ text: '空白', student_ids: [1, 2] }],
-          },
-          {
-            kind: 'error', reason: '化简错误', count: 1,
-            evidence: [{ text: '错', student_ids: [3] }],
-          },
-        ],
-      }),
-      question('Q2', {
-        causes: [
-          {
-            kind: 'response_state', reason: '未作答', count: 1,
-            evidence: [{ text: '空白', student_ids: [1] }],
-          },
-        ],
-      }),
-    ])
-    expect(counts.get(1)).toBe(2)
-    expect(counts.get(2)).toBe(1)
-    expect(counts.get(3)).toBeUndefined()
-  })
-
   it('parses sub-question ids', () => {
     expect(subQuestionOf('Q14(P8)')).toEqual({ parentId: 'Q14', index: 8 })
     expect(subQuestionOf('Q12')).toBeNull()
@@ -265,105 +244,116 @@ describe('results overview pure helpers', () => {
     expect(groups.declined.every((row) => row.change <= -5)).toBe(true)
   })
 
-  it('builds low-tail, weak-question and zero-share tiles only when their data exists', () => {
-    const scopeStudents = [
-      student(1, 90, 100),
-      student(2, 90, 100),
-      student(3, 30, 100),
-    ]
-    const classes = [summarizeStudents(scopeStudents, '9')]
-    const tiles = buildOverviewTiles({
-      scopeKey: null,
-      scopeStudents,
-      classes,
-      questionRates: new Map([['Q1', 0.3], ['Q2', 0.9], ['Q3', 0.5], ['Q4', 0.8]]),
-      analysisQuestions: null,
-      scoreStructure: new Map([
-        ['Q1', { full: 1, partial: 0, zero: 3, resolved: 4 }],
-        ['Q2', { full: 4, partial: 0, zero: 0, resolved: 4 }],
-      ]),
-    })
-    const ids = tiles.map((tile) => tile.id)
-    expect(ids).toEqual(['low-tail', 'weak-questions', 'zero-share'])
-    const lowTail = tiles[0]!
-    expect(lowTail.id === 'low-tail' && lowTail.count).toBe(1)
-    expect(lowTail.id === 'low-tail' && lowTail.medianGap).toEqual({ average: 70, median: 90 })
-    const weak = tiles[1]!
-    expect(weak.id === 'weak-questions' && weak.rows.map((row) => row.questionId))
-      .toEqual(['Q1', 'Q3', 'Q4', 'Q2'])
-    const zero = tiles[2]!
-    expect(zero.id === 'zero-share' && zero.top.questionId).toBe('Q1')
-    expect(zero.id === 'zero-share' && zero.top.share).toBeCloseTo(0.75)
-    expect(zero.id === 'zero-share' && zero.topIds).toEqual(['Q1'])
-
-    const quiet = buildOverviewTiles({
-      scopeKey: null,
-      scopeStudents: [student(1, 90, 100)],
-      classes: [summarizeStudents([student(1, 90, 100)], '9')],
-      questionRates: new Map(),
-      analysisQuestions: null,
-      scoreStructure: new Map(),
-    })
-    expect(quiet).toEqual([])
-  })
-
-  it('builds the class-gap tile only when averages differ by at least 5', () => {
-    const build = (lowAverage: number) => buildOverviewTiles({
-      scopeKey: null,
-      scopeStudents: [],
-      classes: [
-        summarizeStudents([student(1, 70, 100)], '9'),
-        summarizeStudents([student(2, lowAverage, 100, '10')], '10'),
-      ],
-      questionRates: new Map(),
-      classQuestionRates: new Map([
-        ['9', new Map([['Q1', 0.7]])],
-        ['10', new Map([['Q1', 0.4]])],
-      ]),
-      analysisQuestions: null,
-      scoreStructure: new Map(),
-    })
-    const gap = build(50).find((tile) => tile.id === 'class-gap')
-    expect(gap).toBeTruthy()
-    expect(gap?.id === 'class-gap' && gap.gap).toBe(20)
-    expect(gap?.id === 'class-gap' && gap.widest?.questionId).toBe('Q1')
-    expect(gap?.id === 'class-gap' && gap.lowLabel).toBe('10班')
-    expect(build(66).some((tile) => tile.id === 'class-gap')).toBe(false)
-    const scoped = buildOverviewTiles({
-      scopeKey: '9',
-      scopeStudents: [],
-      classes: [
-        summarizeStudents([student(1, 70, 100)], '9'),
-        summarizeStudents([student(2, 50, 100, '10')], '10'),
-      ],
-      questionRates: new Map(),
-      analysisQuestions: null,
-      scoreStructure: new Map(),
-    })
-    expect(scoped.some((tile) => tile.id === 'class-gap')).toBe(false)
-  })
-
-  it('builds the cause-category tile only from structured causes', () => {
-    const build = (causes: ClassAnalysisQuestion['causes']) => buildOverviewTiles({
-      scopeKey: null,
-      scopeStudents: [],
-      classes: [],
-      questionRates: new Map(),
-      analysisQuestions: [question('Q1', { causes })],
-      scoreStructure: new Map(),
-    })
-    const structured = build([
-      { kind: 'error', reason: '化简错', count: 4, category: '计算与化简' },
-      { kind: 'response_state', reason: '未作答', count: 9, category: '未作答' },
+  it('summarizes the low tail with the per-student zero-question average', () => {
+    const summary = lowTailSummary([
+      student(1, 30, 100, '9', { items: [item('Q1', 0), item('Q2', 0)] }),
+      student(2, 39, 100, '9', { items: [item('Q1', 0)] }),
+      student(3, 40, 100), // 40% 不算低分
+      student(4, 20, 100, '9', { ungraded_count: 1, status: 'incomplete' }),
+      student(5, 0, 0), // 无满分 → 无得分率
     ])
-    const tile = structured.find((entry) => entry.id === 'cause-categories')
-    expect(tile?.id === 'cause-categories' && tile.total).toBe(4)
-    expect(
-      tile?.id === 'cause-categories'
-      && tile.segments.map((seg) => seg.category),
-    ).toEqual(['计算与化简'])
-    expect(build([{ reason: '旧错因', count: 3 }])
-      .some((entry) => entry.id === 'cause-categories')).toBe(false)
+    expect(summary.count).toBe(2)
+    expect(summary.zeroAverage).toBeCloseTo(1.5)
+    expect(lowTailSummary([student(1, 60, 100)])).toEqual({ count: 0, zeroAverage: 0 })
+  })
+
+  it('groups critical students by gap to the pass and excellent lines', () => {
+    // 满分 100：及格线 60、优秀线 85；恰好在线上不算未达线。
+    const result = criticalStudents([
+      student(1, 60, 100),
+      student(2, 55, 100),
+      student(3, 54.5, 100),
+      student(4, 85, 100),
+      student(5, 80, 100),
+      student(6, 79.4, 100),
+      student(7, 40, 100),
+      student(8, 50, 100, '9', { ungraded_count: 1, status: 'incomplete' }),
+      student(9, 30, 0),
+    ])
+    expect(result.passing.map((entry) => entry.student.student_id)).toEqual([2])
+    expect(result.passing[0]!.gap).toBe(5)
+    expect(result.excellent.map((entry) => entry.student.student_id)).toEqual([5])
+    expect(result.total).toBe(2)
+  })
+
+  it('uses the exam full score for the critical lines and keeps the groups mutually exclusive', () => {
+    // 满分 120：及格线 72、优秀线 102；不及格学生只进及格组。
+    const result = criticalStudents([
+      student(1, 67, 120),
+      student(2, 72, 120),
+      student(3, 97, 120),
+      student(4, 102, 120),
+      student(5, 60, 120),
+    ])
+    expect(result.passing.map((entry) => entry.student.student_id)).toEqual([1])
+    expect(result.excellent.map((entry) => entry.student.student_id)).toEqual([3])
+    expect(result.passing.some((entry) => entry.student.student_id === 5)).toBe(false)
+    expect(result.excellent.some((entry) => entry.student.student_id === 5)).toBe(false)
+  })
+
+  it('orders critical students by gap then student id', () => {
+    const result = criticalStudents([
+      student(3, 56, 100),
+      student(1, 58, 100),
+      student(2, 58, 100),
+    ])
+    expect(result.passing.map((entry) => entry.student.student_id)).toEqual([1, 2, 3])
+  })
+
+  it('compares rates but not the average when the full scores differ', () => {
+    const current = summarizeStudents([student(1, 70, 100), student(2, 90, 100)], '9')
+    const previous = summarizeStudents([student(1, 50, 120), student(2, 100, 120)], '9')
+    const delta = classDelta(current, previous, false)!
+    expect(delta.average).toBeNull()
+    expect(delta.passRate).toBeCloseTo(0.5)
+    expect(delta.excellentRate).toBeCloseTo(0.5)
+  })
+
+  it('compares the average only when full scores match and skips missing classes', () => {
+    const current = summarizeStudents([student(1, 70, 100), student(2, 90, 100)], '9')
+    const same = classDelta(current, summarizeStudents([student(1, 60, 100)], '9'), true)!
+    expect(same.average).toBeCloseTo(20)
+    expect(same.passRate).toBeCloseTo(0)
+    expect(classDelta(current, null, true)).toBeNull()
+    const noComplete = summarizeStudents([
+      student(1, 50, 100, '9', { ungraded_count: 1, status: 'incomplete' }),
+    ], '9')
+    expect(classDelta(current, noComplete, true)).toBeNull()
+  })
+
+  it('computes zero share and class-rate gap with null fallbacks', () => {
+    expect(zeroShareOf({ full: 1, partial: 1, zero: 2, resolved: 4 })).toBe(0.5)
+    expect(zeroShareOf({ full: 0, partial: 0, zero: 0, resolved: 0 })).toBeNull()
+    expect(classRateGapOf([0.5, null, 0.8])).toBeCloseTo(0.3)
+    expect(classRateGapOf([0.5])).toBeNull()
+    expect(classRateGapOf([null, null])).toBeNull()
+  })
+
+  it('sorts question rows by rate ascending and keeps unresolved rates last', () => {
+    const rows: SortableQuestionEntry[] = [
+      { rate: 0.8, zeroShare: 0.1, classRateGap: 0.2 },
+      { rate: null, zeroShare: null, classRateGap: null },
+      { rate: 0.4, zeroShare: 0.5, classRateGap: 0.1 },
+      { rate: 0.8, zeroShare: 0.3, classRateGap: 0.4 },
+    ]
+    const byRate = [...rows].sort(compareByRate)
+    expect(byRate.map((row) => row.rate)).toEqual([0.4, 0.8, 0.8, null])
+    // 平局保持卷面顺序
+    expect(byRate[1]).toBe(rows[0])
+    expect(byRate[2]).toBe(rows[3])
+  })
+
+  it('sorts question rows by zero share and class gap descending', () => {
+    const rows: SortableQuestionEntry[] = [
+      { rate: 0.8, zeroShare: 0.1, classRateGap: 0.2 },
+      { rate: null, zeroShare: null, classRateGap: null },
+      { rate: 0.4, zeroShare: 0.5, classRateGap: 0.1 },
+      { rate: 0.8, zeroShare: 0.3, classRateGap: 0.4 },
+    ]
+    expect([...rows].sort(compareByZeroShare).map((row) => row.zeroShare))
+      .toEqual([0.5, 0.3, 0.1, null])
+    expect([...rows].sort(compareByClassGap).map((row) => row.classRateGap))
+      .toEqual([0.4, 0.2, 0.1, null])
   })
 
 })

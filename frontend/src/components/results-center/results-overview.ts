@@ -1,4 +1,3 @@
-import type { ClassAnalysisQuestion } from '../../api/class-analysis'
 import type {
   ResultsCenterItem,
   ResultsCenterStudent,
@@ -46,64 +45,149 @@ export interface ScoreStructure {
   resolved: number
 }
 
-export interface LowTailTile {
-  id: 'low-tail'
+export interface LowTailSummary {
   count: number
-  perClass: { label: string; count: number }[]
-  zeroAverage: number | null
-  /** 中位数高出平均 ≥5 分时给出 */
-  medianGap: { average: number; median: number } | null
+  /** 低分学生人均 0 分题数 */
+  zeroAverage: number
 }
 
-export interface WeakQuestionsTile {
-  id: 'weak-questions'
-  rows: { questionId: string; rate: number }[]
+export function lowTailSummary(
+  students: readonly ResultsCenterStudent[],
+): LowTailSummary {
+  const low = students
+    .filter(isCompleteStudent)
+    .filter((student) => {
+      const rate = studentRate(student)
+      return rate !== null && rate < 0.4
+    })
+  return {
+    count: low.length,
+    zeroAverage: low.length
+      ? low.reduce((total, student) => total + zeroScoreCount(student), 0)
+        / low.length
+      : 0,
+  }
 }
 
-export interface ZeroShareTile {
-  id: 'zero-share'
-  top: { questionId: string; share: number }
-  topIds: string[]
-  bars: { questionId: string; share: number }[]
-}
+/** 临界名单的最大分差：距及格线/优秀线 5 分内入组。 */
+export const CRITICAL_GAP = 5
 
-export interface ClassGapTile {
-  id: 'class-gap'
+export interface CriticalStudentEntry {
+  student: ResultsCenterStudent
+  /** 距对应分数线的分差（正数，≤ CRITICAL_GAP） */
   gap: number
-  lowLabel: string
-  lowAverage: number
-  highLabel: string
-  highAverage: number
-  widest: { questionId: string; lowRate: number; highRate: number } | null
 }
 
-export interface CauseCategoriesTile {
-  id: 'cause-categories'
-  segments: { category: string; count: number }[]
+export interface CriticalStudents {
+  /** 距及格线（满分×60%）5 分内的未及格学生 */
+  passing: CriticalStudentEntry[]
+  /** 距优秀线（满分×85%）5 分内的未优秀学生；与及格组互斥 */
+  excellent: CriticalStudentEntry[]
   total: number
 }
 
-export type OverviewTile =
-  | LowTailTile
-  | WeakQuestionsTile
-  | ZeroShareTile
-  | ClassGapTile
-  | CauseCategoriesTile
+export function criticalStudents(
+  students: readonly ResultsCenterStudent[],
+): CriticalStudents {
+  const byGap = (left: CriticalStudentEntry, right: CriticalStudentEntry) => (
+    left.gap - right.gap
+    || left.student.student_id - right.student.student_id
+  )
+  const passing: CriticalStudentEntry[] = []
+  const excellent: CriticalStudentEntry[] = []
+  for (const student of students) {
+    if (!isCompleteStudent(student) || student.max_score <= 0) continue
+    const rate = studentRate(student)
+    if (rate === null) continue
+    if (rate < 0.6) {
+      const gap = student.max_score * 0.6 - student.current_score
+      if (gap <= CRITICAL_GAP + 1e-9) passing.push({ student, gap })
+      continue
+    }
+    if (rate < 0.85) {
+      const gap = student.max_score * 0.85 - student.current_score
+      if (gap <= CRITICAL_GAP + 1e-9) excellent.push({ student, gap })
+    }
+  }
+  passing.sort(byGap)
+  excellent.sort(byGap)
+  return { passing, excellent, total: passing.length + excellent.length }
+}
 
-export interface OverviewTilesInput {
-  /** null = 全部班级合并 */
-  scopeKey: string | null
-  scopeStudents: readonly ResultsCenterStudent[]
-  /** 全部班级的逐班汇总（scope=全部 时用于低分分布与班级差） */
-  classes: readonly ClassSummary[]
-  /** 当前范围各题得分率，按卷面题号顺序 */
-  questionRates: ReadonlyMap<string, number | null>
-  /** classKey → questionId → rate，仅 class-gap 需要 */
-  classQuestionRates?: ReadonlyMap<string, ReadonlyMap<string, number | null>>
-  /** 当前范围的 class-analysis 题目（含错因）；null 表示尚未加载 */
-  analysisQuestions: readonly ClassAnalysisQuestion[] | null
-  /** 当前范围各题分数结构，按卷面题号顺序 */
-  scoreStructure: ReadonlyMap<string, ScoreStructure>
+export interface ClassDelta {
+  /** 平均分变化（分）；满分不同或任一侧无完整学生时为 null */
+  average: number | null
+  /** 及格率 / 优秀率变化（比率差；展示时换算百分点） */
+  passRate: number | null
+  excellentRate: number | null
+}
+
+export function classDelta(
+  current: ClassSummary,
+  previous: ClassSummary | null,
+  sameMaxScore: boolean,
+): ClassDelta | null {
+  if (previous === null || previous.completeCount === 0) return null
+  return {
+    average: sameMaxScore
+      && current.average !== null && previous.average !== null
+      ? current.average - previous.average
+      : null,
+    passRate: current.passRate !== null && previous.passRate !== null
+      ? current.passRate - previous.passRate
+      : null,
+    excellentRate: current.excellentRate !== null
+      && previous.excellentRate !== null
+      ? current.excellentRate - previous.excellentRate
+      : null,
+  }
+}
+
+export type QuestionSort = 'rate' | 'number' | 'zero' | 'gap'
+
+export interface SortableQuestionEntry {
+  rate: number | null
+  /** 已给分学生中的 0 分占比；无已给分学生为 null */
+  zeroShare: number | null
+  /** 各班得分率 max−min；不足两个班级得分率为 null */
+  classRateGap: number | null
+}
+
+export function zeroShareOf(structure: ScoreStructure): number | null {
+  return structure.resolved > 0 ? structure.zero / structure.resolved : null
+}
+
+export function classRateGapOf(
+  rates: readonly (number | null)[],
+): number | null {
+  const valid = rates.filter((rate): rate is number => rate !== null)
+  if (valid.length < 2) return null
+  return Math.max(...valid) - Math.min(...valid)
+}
+
+/* 排序保持传入顺序作平局次序：调用方按卷面题序传入。 */
+export function compareByRate(
+  left: SortableQuestionEntry, right: SortableQuestionEntry,
+): number {
+  if (left.rate === null) return right.rate === null ? 0 : 1
+  if (right.rate === null) return -1
+  return left.rate - right.rate
+}
+
+export function compareByZeroShare(
+  left: SortableQuestionEntry, right: SortableQuestionEntry,
+): number {
+  if (left.zeroShare === null) return right.zeroShare === null ? 0 : 1
+  if (right.zeroShare === null) return -1
+  return right.zeroShare - left.zeroShare
+}
+
+export function compareByClassGap(
+  left: SortableQuestionEntry, right: SortableQuestionEntry,
+): number {
+  if (left.classRateGap === null) return right.classRateGap === null ? 0 : 1
+  if (right.classRateGap === null) return -1
+  return right.classRateGap - left.classRateGap
 }
 
 export function isCompleteStudent(student: ResultsCenterStudent): boolean {
@@ -215,38 +299,6 @@ export function questionRatesFor(
   )
 }
 
-export function blankCountsByStudent(
-  questions: readonly ClassAnalysisQuestion[],
-): Map<number, number> {
-  const counts = new Map<number, number>()
-  for (const question of questions) {
-    const ids = new Set<number>()
-    for (const cause of question.causes ?? []) {
-      if (cause.kind !== 'response_state') continue
-      for (const item of cause.evidence ?? []) {
-        for (const id of item.student_ids) ids.add(id)
-      }
-    }
-    for (const id of ids) counts.set(id, (counts.get(id) ?? 0) + 1)
-  }
-  return counts
-}
-
-/** 总览只使用新版结构化错因（带 kind）；旧版归并结果按 'legacy' 区分展示。 */
-export type TopCause = { label: string; count: number } | 'legacy' | null
-
-export function topCauseOf(question: ClassAnalysisQuestion): TopCause {
-  const causes = question.causes ?? []
-  const top = causes
-    .filter((cause) => cause.kind !== undefined)
-    .sort((a, b) => b.count - a.count)[0]
-  if (!top) return causes.length > 0 ? 'legacy' : null
-  return {
-    label: top.kind === 'response_state' ? '未作答' : top.reason,
-    count: top.count,
-  }
-}
-
 export { formatScore }
 
 export function formatRate(value: number | null): string {
@@ -277,136 +329,6 @@ export function scoreStructureFor(
     }
   }
   return sums
-}
-
-export function buildOverviewTiles(input: OverviewTilesInput): OverviewTile[] {
-  const tiles: OverviewTile[] = []
-  const complete = input.scopeStudents.filter(isCompleteStudent)
-  const rated = complete
-    .map((student) => ({ student, rate: studentRate(student) }))
-    .filter((entry): entry is { student: ResultsCenterStudent; rate: number } => (
-      entry.rate !== null
-    ))
-  const low = rated.filter((entry) => entry.rate < 0.4)
-
-  if (low.length > 0) {
-    const scores = complete.map((student) => student.current_score)
-    const median = medianOf(scores)
-    const average = scores.length
-      ? scores.reduce((total, score) => total + score, 0) / scores.length
-      : null
-    tiles.push({
-      id: 'low-tail',
-      count: low.length,
-      perClass: input.scopeKey === null
-        ? input.classes
-          .filter((entry) => entry.bandCounts.low > 0)
-          .map((entry) => ({ label: entry.label, count: entry.bandCounts.low }))
-        : [],
-      zeroAverage: low.reduce(
-        (total, entry) => total + zeroScoreCount(entry.student), 0,
-      ) / low.length,
-      medianGap: median !== null && average !== null && median - average >= 5
-        ? { average, median }
-        : null,
-    })
-  }
-
-  const weakest = [...input.questionRates.entries()]
-    .filter((entry): entry is [string, number] => entry[1] !== null)
-    .sort((left, right) => left[1] - right[1])
-    .slice(0, 5)
-  if (weakest.length > 0) {
-    tiles.push({
-      id: 'weak-questions',
-      rows: weakest.map(([questionId, rate]) => ({ questionId, rate })),
-    })
-  }
-
-  const zeroBars = [...input.scoreStructure.entries()]
-    .filter((entry) => entry[1].resolved > 0 && entry[1].zero > 0)
-    .map(([questionId, structure]) => ({
-      questionId,
-      share: structure.zero / structure.resolved,
-    }))
-  if (zeroBars.length > 0) {
-    const topIds = [...zeroBars]
-      .sort((left, right) => right.share - left.share)
-      .slice(0, 3)
-      .map((bar) => bar.questionId)
-    tiles.push({
-      id: 'zero-share',
-      top: zeroBars.find((bar) => bar.questionId === topIds[0])!,
-      topIds,
-      bars: zeroBars,
-    })
-  }
-
-  if (input.scopeKey === null && input.classes.length >= 2) {
-    const ranked = input.classes
-      .filter((entry) => entry.average !== null)
-      .sort((left, right) => left.average! - right.average!)
-    if (ranked.length >= 2) {
-      const lowClass = ranked[0]!
-      const highClass = ranked[ranked.length - 1]!
-      const gap = highClass.average! - lowClass.average!
-      if (gap >= 5) {
-        const lowRates = lowClass.key === null
-          ? undefined
-          : input.classQuestionRates?.get(lowClass.key)
-        const highRates = highClass.key === null
-          ? undefined
-          : input.classQuestionRates?.get(highClass.key)
-        let widest: ClassGapTile['widest'] = null
-        if (lowRates && highRates) {
-          let widestGap = 0
-          for (const [questionId, lowRate] of lowRates) {
-            const highRate = highRates.get(questionId)
-            if (lowRate === null || highRate === null || highRate === undefined) continue
-            const rateGap = Math.abs(highRate - lowRate)
-            if (rateGap > widestGap) {
-              widestGap = rateGap
-              widest = { questionId, lowRate, highRate }
-            }
-          }
-        }
-        tiles.push({
-          id: 'class-gap',
-          gap,
-          lowLabel: lowClass.label,
-          lowAverage: lowClass.average!,
-          highLabel: highClass.label,
-          highAverage: highClass.average!,
-          widest,
-        })
-      }
-    }
-  }
-
-  if (input.analysisQuestions !== null) {
-    const categories = new Map<string, number>()
-    for (const question of input.analysisQuestions) {
-      for (const cause of question.causes ?? []) {
-        if (cause.kind === undefined || cause.kind === 'response_state') continue
-        const category = cause.category ?? ''
-        if (category === '' || category === '未作答') continue
-        categories.set(category, (categories.get(category) ?? 0) + cause.count)
-      }
-    }
-    const segments = [...categories.entries()]
-      .sort((left, right) => right[1] - left[1])
-      .slice(0, 4)
-      .map(([category, count]) => ({ category, count }))
-    if (segments.length > 0) {
-      tiles.push({
-        id: 'cause-categories',
-        segments,
-        total: segments.reduce((total, segment) => total + segment.count, 0),
-      })
-    }
-  }
-
-  return tiles
 }
 
 /** 子题参考答案展示：首个「 或 」后若仍是大段内容，只保留首选写法，全文放 title。 */

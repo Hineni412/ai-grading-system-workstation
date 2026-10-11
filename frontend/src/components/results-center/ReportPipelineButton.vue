@@ -35,7 +35,6 @@ const pipelineActive = computed(() => (
 ))
 const totalCalls = computed(() => (
   (status.value?.causes.call_count ?? 0)
-  + (status.value?.class_reports.pending ?? 0)
   + (status.value?.personal_reports.call_count ?? 0)
 ))
 const totalTokens = computed(() => (
@@ -46,7 +45,7 @@ const totalTokens = computed(() => (
 const badgeCount = computed(() => {
   const value = status.value
   if (!value || !value.configured || value.complete) return 0
-  return value.causes.call_count + value.class_reports.pending + value.personal_reports.call_count
+  return value.causes.call_count + value.personal_reports.call_count
 })
 
 // 预取：挂载、切换考试或整理任务进入终态后，先备好缓存，弹窗打开即显示。
@@ -181,7 +180,7 @@ onBeforeUnmount(() => controller?.abort())
   <AppDialog
     v-if="open"
     open
-    title="AI 整理（错因、班级与个人报告）"
+    title="AI 整理（错因与个人报告）"
     width="wide"
     :dismissible="!submitting"
     data-testid="report-pipeline-dialog"
@@ -207,7 +206,7 @@ onBeforeUnmount(() => controller?.abort())
           更新本场已保存结果
         </label>
         <p class="excel-settings-dialog__explanation">
-          {{ regenerateExisting ? '本次重新整理本场错因、班级报告和个人报告。成功后替换原内容；失败保留上次成功内容。' : '本次只补尚未保存的内容，已有内容继续使用。' }}
+          {{ regenerateExisting ? '本次重新整理本场错因和个人报告。成功后替换原内容；失败保留上次成功内容。' : '本次只补尚未保存的内容，已有内容继续使用。' }}
         </p>
         <div class="excel-settings-preview" aria-label="整理内容概览">
           <div>
@@ -230,7 +229,6 @@ onBeforeUnmount(() => controller?.abort())
 
         <p class="excel-settings-dialog__explanation" data-testid="pipeline-breakdown">
           错因整理 {{ status.causes.pending_questions }} 题（约 {{ status.causes.call_count }} 次调用）；
-          班级报告 {{ status.class_reports.pending }} 个班（共 {{ status.class_reports.total }} 个）；
           个人报告 {{ status.personal_reports.pending }} 人（其中 {{ status.personal_reports.cache_hits }}
           份复用已生成内容）。
         </p>

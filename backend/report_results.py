@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 RESULT_STATES = ("current", "stale", "missing")
-_RESULT_KINDS = frozenset({"causes", "class_report", "personal_report"})
+_RESULT_KINDS = frozenset({"causes", "personal_report"})
 PERSONAL_REPORTS_DIRNAME = ".personal_reports"
 _PERSONAL_REPORT_REPLACE_LOCK = threading.Lock()
 

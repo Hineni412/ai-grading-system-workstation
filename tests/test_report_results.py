@@ -14,8 +14,7 @@ def _tree_contents(root: Path) -> dict:
             if path.is_file() else None for path in root.rglob('*')}
 
 
-@pytest.mark.parametrize('kind,field', [('causes', 'result'), ('class_report', 'narrative'),
-                                      ('personal_report', 'narrative')])
+@pytest.mark.parametrize('kind,field', [('causes', 'result'), ('personal_report', 'narrative')])
 def test_saved_result_ignores_old_analysis_fields(kind, field):
     stored = {field: {'summary': 'TEST-旧内容'}, 'input_digest': 'old-input',
               'input_fingerprint': 'another-input', 'prompt_version': 'TEST-old-method',

@@ -1,7 +1,6 @@
-"""个人报告生成与只读导出，班级报告页面装配。
+"""个人报告生成与只读导出，班级分析页面装配。
 
 每生每场保存一份成功正文。导出读取已保存内容，不初始化模型配置。
-班级正文与保存时的成绩副本共用现有报告模板；没有副本的旧正文仍可查看。
 """
 
 from __future__ import annotations
@@ -25,7 +24,6 @@ from typing import Any
 from PIL import Image
 
 from backend.reporting.analysis_report_prompts import (
-    CLASS_ALIAS_PREFIX,
     PERSONAL_STUDENT_ALIAS,
     PERSONAL_SYSTEM_PROMPT,
     personal_output_token_limit,
@@ -224,173 +222,6 @@ def record_type_label(
     return str(info.question_type if info is not None else "") or ""
 
 
-def build_class_payload(
-    data: SessionAnalysisData,
-    error_records: dict[int, dict[str, list[dict[str, Any]]]] | None = None,
-) -> dict[str, Any]:
-    aliases = {
-        student.student_id: f"{CLASS_ALIAS_PREFIX}{index}"
-        for index, student in enumerate(data.students, start=1)
-    }
-    bands = {
-        band["label"].replace(" ", ""): band["count"] for band in data.stats["bands"]
-    }
-    # 已归类的错因记录（错因整理结果）：{question_id: {student_id: [rows]}}，
-    # 只保留本班学生；有归类的题目改用大类/错法，不再给旧的 error_category。
-    organized: dict[str, dict[int, list[dict[str, Any]]]] = {}
-    if error_records:
-        class_student_ids = {student.student_id for student in data.students}
-        for raw_sid, by_question in error_records.items():
-            try:
-                sid = int(raw_sid)
-            except (TypeError, ValueError):
-                continue
-            if sid not in class_student_ids:
-                continue
-            for qid, rows in (by_question or {}).items():
-                if rows:
-                    organized.setdefault(str(qid), {})[sid] = list(rows)
-    students_payload: list[dict[str, Any]] = []
-    for student in data.students:
-        students_payload.append(
-            {
-                "alias": aliases[student.student_id],
-                "total": student.student_score,
-                "needs_review": student.needs_review,
-                "lost": [
-                    {
-                        "question_id": record.question_id,
-                        "lost_points": round(record.lost_points, 2),
-                        "record": _record_brief_text(record),
-                    }
-                    for record in student.records
-                    if record.lost
-                ],
-            }
-        )
-    records_by_question: dict[str, list[dict[str, Any]]] = {}
-    for student in data.students:
-        for record in student.records:
-            if not record.lost:
-                continue
-            entry: dict[str, Any] = {
-                "alias": aliases[student.student_id],
-                "score": record.score,
-                "deduction_reason": record.deduction_reason or None,
-            }
-            question_causes = organized.get(str(record.question_id))
-            if question_causes is None:
-                entry["error_category"] = (
-                    display_error_category(record.error_category) or None
-                )
-            else:
-                cause = _organized_record_cause(question_causes.get(student.student_id))
-                if cause:
-                    entry["cause"] = cause
-            records_by_question.setdefault(record.question_id, []).append(entry)
-    questions_payload = []
-    for info in data.questions:
-        item: dict[str, Any] = {
-            "question_id": info.question_id,
-            "max_score": info.max_score,
-            "class_rate": (
-                round(info.class_rate, 4) if info.class_rate is not None else None
-            ),
-            "stem_summary": info.stem_summary or info.question_id,
-            "canonical_answer": info.canonical_answer,
-            "records": records_by_question.get(info.question_id, []),
-        }
-        question_causes = organized.get(str(info.question_id))
-        if question_causes:
-            item["causes"] = _question_cause_groups(question_causes, aliases)
-        questions_payload.append(item)
-    return {
-        "exam": {
-            "title": data.session_name,
-            "subject": data.subject,
-            "full_score": data.full_score,
-            "class_name": data.class_name,
-            "present": data.present,
-            "roster_absent": data.roster_absent,
-        },
-        "score_distribution": {
-            "avg": data.stats["avg"],
-            "median": data.stats["median"],
-            "max": data.stats["max"],
-            "min": data.stats["min"],
-            "pass_rate": data.stats["pass_rate"],
-            "bands": bands,
-        },
-        "students": students_payload,
-        "questions": questions_payload,
-    }
-
-
-def _organized_record_cause(
-    rows: list[dict[str, Any]] | None,
-) -> list[dict[str, Any]]:
-    """该生本题已归类的错因 {category, pattern} 列表，去重保序。"""
-    seen: set[tuple[str | None, str | None]] = set()
-    out: list[dict[str, Any]] = []
-    for row in rows or []:
-        category = str(row.get("category") or "").strip() or None
-        pattern = str(row.get("pattern") or "").strip() or None
-        if category is None and pattern is None:
-            continue
-        key = (category, pattern)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({"category": category, "pattern": pattern})
-    return out
-
-
-def _question_cause_groups(
-    by_student: dict[int, list[dict[str, Any]]],
-    aliases: dict[int, str],
-) -> list[dict[str, Any]]:
-    """本题按 (大类, 错法) 聚合的归类结果，含各组学生代号；高频在前。"""
-    groups: dict[tuple[str | None, str | None], list[str]] = {}
-    for sid, rows in by_student.items():
-        alias = aliases.get(sid)
-        if alias is None:
-            continue
-        for cause in _organized_record_cause(rows):
-            key = (cause["category"], cause["pattern"])
-            members = groups.setdefault(key, [])
-            if alias not in members:
-                members.append(alias)
-
-    def _alias_order(alias: str) -> tuple[int, str]:
-        suffix = alias[len(CLASS_ALIAS_PREFIX):]
-        return (0, f"{int(suffix):06d}") if suffix.isdigit() else (1, alias)
-
-    return [
-        {
-            "category": category,
-            "pattern": pattern,
-            "students": sorted(members, key=_alias_order),
-        }
-        for (category, pattern), members in sorted(
-            groups.items(),
-            key=lambda item: (-len(item[1]), item[0][0] or "", item[0][1] or ""),
-        )
-    ]
-
-
-def _record_brief_text(record: StudentQuestionRecord) -> str:
-    parts = [
-        text
-        for text in (
-            record.deduction_reason,
-            display_error_category(record.error_category),
-            record.error_summary,
-        )
-        if text
-    ]
-    return "；".join(parts) or "未作答或无批改记录"
-
-
 # ---------------------------------------------------------------------------
 # 班级分析内嵌页面的出参装配（教师本人页面，学生用真实姓名，不脱敏）
 # ---------------------------------------------------------------------------
@@ -534,45 +365,6 @@ def build_class_page_data(data: SessionAnalysisData, *, compact: bool = False) -
         "students": students,
         "skipped": data.skipped,
     }
-
-
-def class_narrative_with_student_names(
-    narrative: dict[str, Any],
-    students: list[StudentReportData],
-) -> dict[str, Any]:
-    """保留结构中的 alias 键，把正文里的学生代号映射回本班姓名。"""
-    alias_to_student = {
-        f"{CLASS_ALIAS_PREFIX}{index}": student
-        for index, student in enumerate(students, start=1)
-    }
-    # 中文紧邻 S1 时也应识别代号；Unicode 的 \b 会把中文和数字都视为单词字符。
-    alias_pattern = re.compile(r"(?<![A-Za-z0-9_])S\d+(?![A-Za-z0-9_])")
-
-    def map_text(value: Any) -> Any:
-        if isinstance(value, str):
-            return alias_pattern.sub(
-                lambda match: alias_to_student[match[0]].student_name
-                if match[0] in alias_to_student else match[0], value,
-            )
-        if isinstance(value, list):
-            return [map_text(item) for item in value]
-        if isinstance(value, dict):
-            return {key: item if key == "alias" else map_text(item) for key, item in value.items()}
-        return value
-
-    mapped = map_text(narrative)
-    notes: list[dict[str, Any]] = []
-    for item in _narrative_items(mapped, "student_notes"):
-        if not isinstance(item, dict):
-            continue
-        entry = dict(item)
-        student = alias_to_student.get(_narrative_text(item.get("alias")))
-        if student is not None:
-            entry["student_name"] = student.student_name
-            entry["student_code"] = student.student_code
-        notes.append(entry)
-    mapped["student_notes"] = notes
-    return mapped
 
 
 def build_report_prompt(
@@ -1300,62 +1092,9 @@ def _personal_knowledge_view(data: SessionAnalysisData, student: StudentReportDa
             'note': snapshot.get('note') or '当前掌握度暂不可用；以下保留本卷考查范围与得分，不以得分率代替掌握度。'}
 
 
-def _class_knowledge_view(data: SessionAnalysisData) -> dict[str, Any]:
-    """Aggregate students' independent mastery; missing evidence is not a zero."""
-    nodes: dict[str, dict[str, Any]] = {}
-    for student in data.students:
-        for item in _personal_knowledge_view(data, student)['nodes']:
-            node = nodes.setdefault(item['key'], {
-                **item, 'score': 0.0, 'full': 0.0, 'questions': {}, 'step_questions': set(),
-            })
-            node['score'] += item['score']
-            node['full'] += item['full']
-            node['step_questions'].update(item['step_questions'])
-            for question in item['questions']:
-                bucket = node['questions'].setdefault(question['id'], {
-                    'id': question['id'], 'label': question['label'],
-                    'score': 0.0, 'full': 0.0, 'count': 0,
-                })
-                bucket['score'] += question['score']
-                bucket['full'] += question['full']
-                bucket['count'] += 1
-    for node in nodes.values():
-        records = [student.knowledge_mastery.get(node['key'], {}) for student in data.students]
-        known = [row for row in records if int(row.get('observation_count', row.get('evidence_count')) or 0) > 0
-                 and isinstance(row.get('mastery'), (int, float)) and math.isfinite(row['mastery']) and 0 <= row['mastery'] <= 1]
-        node['mastery'] = statistics.mean(row['mastery'] for row in known) if known else None
-        node['coverage'] = len(known)
-        node['student_count'] = len(data.students)
-        node['distribution'] = {tier: sum((row.get('tier') or 'insufficient') == tier for row in known)
-                                for tier in ('weak', 'unsteady', 'stable', 'insufficient')}
-        node['tier'] = max(node['distribution'], key=node['distribution'].get) if known else 'insufficient'
-        node['missing_count'] = len(data.students)-len(known)
-        node['parent_references'] = []
-        for field in ('interval_low', 'interval_high'):
-            bounds = [row.get(field) for row in known]
-            node[field] = statistics.mean(bounds) if bounds and all(isinstance(v, (int, float)) for v in bounds) else None
-        node['observation_count'] = sum(int(row.get('observation_count') or 0) for row in known)
-        node['full_correct_count'] = sum(int(row.get('full_correct_count') or 0) for row in known)
-        node['recent_trend'] = None
-        node['step_questions'] = sorted(node['step_questions'])
-        node.pop('evidence_count', None)
-        node['questions'] = [{**question,
-                              'score': question['score'] / question['count'],
-                              'full': question['full'] / question['count']}
-                             for question in node['questions'].values()]
-    snapshot = data.knowledge_structure
-    return {'mode': 'class', 'student_count': len(data.students), 'nodes': list(nodes.values()),
-            'target_kind': snapshot.get('target_kind') or 'skill',
-            'edges': [dict(edge) for edge in snapshot.get('associations', [])
-                      if edge.get('topic_key') in nodes and edge.get('skill_key') in nodes],
-            'as_of': snapshot.get('as_of') or datetime.now().strftime('%Y-%m-%d %H:%M'),
-            'note': snapshot.get('note') or '当前掌握度暂不可用；保留本卷考查范围与得分，不以得分率代替掌握度。'}
-
-
 def _knowledge_view_html(view: dict[str, Any]) -> str:
     if not view['nodes']:
         return ''
-    class_mode = view.get('mode') == 'class'
     chapters: dict[str, list[dict[str, Any]]] = {}
     for node in view['nodes']:
         chapters.setdefault(node['chapter'], []).append(node)
@@ -1370,19 +1109,12 @@ def _knowledge_view_html(view: dict[str, Any]) -> str:
         percent = '证据不足' if value is None else f'{fmt_num(math.floor(value * 1000) / 10)}%'
         status = {'missing': '证据不足', 'low': '明显薄弱', 'mid': '还不稳', 'good': '较稳定'}[band]
         detail = f'本卷 {fmt_num(node["score"])} / {fmt_num(node["full"])} 分'
-        distribution = ''
-        if class_mode:
-            detail = f'有证据 {node["coverage"]} / {node["student_count"]} 人'
-            distribution = '<span class="kn-distribution">' + ''.join(
-                f'<span class="kn-{bands[key]}"><i class="kn-dot"></i>{label} {node["distribution"][key]}</span>'
-                for key, label in [('weak', '明显薄弱'), ('unsteady', '还不稳'), ('stable', '较稳定'), ('insufficient', '证据不足')]
-            ) + '</span>'
-        value_label = '有证据学生平均掌握度' if class_mode else f'当前掌握度：{status}'
+        value_label = f'当前掌握度：{status}'
         return (f'<button type="button" class="kn-node kn-{band}" data-key="{esc(node["key"])}" aria-pressed="false">'
                 f'<span class="kn-node-top"><span class="kn-name">{esc(node["label"])}</span>'
                 f'<strong class="kn-value" title="{value_label}">{percent}</strong></span>'
                 f'<span class="kn-node-meta">{esc(node["section"])}<span>{detail}</span></span>'
-                f'{distribution}</button>')
+                f'</button>')
 
     type_mode = view.get('target_kind') == 'type'
     for chapter, nodes in chapters.items():
@@ -1408,21 +1140,15 @@ def _knowledge_view_html(view: dict[str, Any]) -> str:
                       '<svg class="kn-lines" aria-hidden="true"></svg>' + ''.join(columns) + '</div></div>')
     data_json = json.dumps(view, ensure_ascii=False, separators=(',', ':')).replace('<', r'\u003c').replace('>', r'\u003e').replace('&', r'\u0026')
     item_label = {'type': '题型', 'knowledge': '知识点', 'mixed': '训练目标'}.get(view.get('target_kind'), '知识与技能')
-    title = f'班级{item_label}掌握图' if class_mode else f'{item_label}掌握图'
-    scope_note = (f'统计本班 {view["student_count"]} 名已有成绩的学生；缺考及未形成有效成绩者不计入。'
-                  '节点百分比仅对有证据学生取平均；各档只统计有观测学生，无观测人数单列，不参与平均或分档。') if class_mode else ''
-    footnote = ('节点颜色表示有证据学生中人数最多的档位；备课时同时查看各档人数，避免平均值掩盖差异。'
-                f'“本卷得分率”为相关小问整体得分率，不是{"题型" if type_mode else "技能"}独立得分。') if class_mode else (
-                '节点百分比为参考难度步骤做对的可能性，详情附 80% 把握区间；“本卷”分数为相关小问的整体得分，不能直接归因到其中每一步。')
+    title = f'{item_label}掌握图'
+    footnote = ('节点百分比为参考难度步骤做对的可能性，详情附 80% 把握区间；“本卷”分数为相关小问的整体得分，不能直接归因到其中每一步。')
     help_text = ('点选训练目标，查看本卷表现。' if view.get('target_kind') in {'type', 'knowledge', 'mixed'} else
                  '点选知识点或技能点，查看关联与本卷表现。实线：有同小问依据；虚线：仅同题出现。关联不表示掌握度相同。')
     return (f'<section class="knowledge-map" id="knowledge-map"><div class="kn-heading"><h2>{title}</h2>'
             f'<span class="kn-date">截至 {esc(view["as_of"])}</span></div>'
             f'<p class="kn-intro">{esc(view["note"])}</p>'
-            + (f'<p class="kn-scope">{scope_note}</p>' if scope_note else '')
             + '<p class="kn-thresholds">较稳定 / 还不稳 / 明显薄弱 / 证据不足，档位综合估计值与把握程度</p>'
             + '<div class="kn-legend">'
-            + ('<span>按人数最多档位：</span>' if class_mode else '')
             + ''.join(f'<span><i class="kn-dot kn-{band}"></i>{label} <b>{counts[band]} 项</b></span>'
                       for band, label in [('low', '明显薄弱'), ('mid', '还不稳'), ('good', '较稳定'), ('missing', '证据不足')])
             + f'</div><p class="kn-help">{help_text}</p>'
@@ -2970,126 +2696,6 @@ def render_saved_narrative(narrative: dict[str, Any], *, title: str, owner: str,
             f'生成时间：{esc(str(generated_at or "未记录"))}。</p>{content(narrative)}</body></html>')
 
 
-def render_class_html(
-    data: SessionAnalysisData,
-    narrative: dict[str, Any] | None,
-    cause_counts: dict[str, list[tuple[str, int]]] | None = None,
-    *,
-    ai_placeholder: bool = False,
-    saved_page: dict[str, Any] | None = None,
-) -> str:
-    """班级报告自包含 HTML；ai_placeholder 时叙述缺失的段落显示「AI 整理后在此显示」。"""
-    page = saved_page if saved_page is not None else build_class_page_data(data)
-    class_name = data.class_name or "未分班"
-    class_label = class_name if class_name.endswith("班") else f"{class_name}班"
-    failed = narrative is None
-    pending = narrative is None and ai_placeholder
-    if saved_page is not None:
-        from types import SimpleNamespace
-        students = [SimpleNamespace(student_name=item['student_name'], student_code=item.get('student_code', ''))
-                    for item in page['students']]
-    else:
-        students = data.students
-    narrative = class_narrative_with_student_names(narrative, students) if narrative is not None else {}
-    analyzed = len(page["students"]) if page["students"] else int(page["present"])
-    fmt = lambda value: fmt_num(value) if value is not None else '—'
-    math_text = lambda value: _report_inline_math(str(value))
-    aliases = {f'S{i}': student['student_name'] for i, student in enumerate(page['students'], 1)}
-    stats = page['score_distribution']
-    metrics = [('参考人数', page['present']), ('平均分', fmt(stats['avg'])),
-               ('中位数', fmt(stats['median'])), ('最高 / 最低', fmt(stats['max'])+' / '+fmt(stats['min'])),
-               ('及格率', f"{stats['pass_rate']*100:.1f}%")]
-    metric_html = ''.join(f'<div><small>{esc(label)}</small><strong>{esc(str(value))}</strong></div>'
-                          for label, value in metrics)
-    findings = ''.join(f'<article><h3>{math_text(item["title"])}</h3>{_report_paragraphs(item["detail"])}</article>'
-                       for item in narrative.get('key_findings', []))
-    if pending:
-        findings = '<p class="muted">AI 整理后在此显示。</p>'
-    elif failed:
-        findings = f'<p>{esc(AI_FAILED_NOTE)}</p>'
-    issues = ''.join(f'<article><h3>{math_text(item["title"])}</h3>{_report_paragraphs(item["evidence"])}'
-                     f'<div class="action">{_report_paragraphs(item["teaching_action"])}</div></article>'
-                     for item in narrative.get('common_issues', []))
-    if pending:
-        issues = '<p class="muted">AI 整理后在此显示。</p>'
-    bands = ''.join(f'<div class="band"><span>{esc(label)}</span><div class="track">'
-                    f'<i style="width:{count/max(1,analyzed)*100:.2f}%"></i></div><b>{count}人</b></div>'
-                    for label, count in stats['bands'].items())
-    def _cause_text(question_id: str) -> str:
-        counts = (cause_counts or {}).get(str(question_id)) or []
-        return '；'.join(f'{category} {count}人' for category, count in counts[:3]) or '—'
-
-    questions = ''.join(
-        f'<tr class="qrow" id="score-{esc(q["question_id"])}"><td>{_question_display_label(q["question_id"])}</td>'
-        f'<td>{fmt(q["max_score"])}</td><td>{fmt(q["class_avg"])}</td>'
-        f'<td><div class="rate"><i style="width:{q["class_rate"]*100:.2f}%"></i>'
-        f'<span>{q["class_rate"]*100:.1f}%</span></div></td><td>{len(q["records"])}人</td>'
-        f'<td>{esc(_cause_text(q["question_id"]))}</td>'
-        + (f'<td class="answer"><details><summary>查看答案</summary><div>{math_text(q["canonical_answer"])}</div></details></td></tr>'
-           if q['canonical_answer'] else '<td class="answer">—</td></tr>')
-        for q in page['questions'] if q['class_avg'] is not None)
-    roster = ''.join(f'<tr><td>{student["rank"]}</td><td>{esc(student["student_name"])}</td>'
-                     f'<td>{fmt(student["total_score"])}</td>'
-                     f'<td>{esc("、".join(_question_display_label(r["question_id"]) for r in student["lost"]) or "无")}</td></tr>'
-                     for student in page['students'])
-    notes = ''.join(f'<article><h3>{esc(aliases.get(item["alias"], item["alias"]))}</h3>'
-                    f'{_report_paragraphs(item["note"])}<div class="action">{_report_paragraphs(item["suggestion"])}</div></article>'
-                    for item in narrative.get('student_notes', []))
-    if pending:
-        notes = '<p class="muted">AI 整理后在此显示。</p>'
-    knowledge_html = _knowledge_view_html(_class_knowledge_view(data)) if saved_page is None else str(saved_page.get("knowledge_html") or "")
-    if not knowledge_html:
-        target_label = {'type': '题型', 'knowledge': '知识点', 'mixed': '训练目标'}.get(data.knowledge_structure.get('target_kind'), '知识与技能')
-        knowledge_html = (f'<section id="knowledge-map"><h2>班级{target_label}掌握图</h2>'
-                          f'<p class="muted">' + ('这份报告未保存掌握图，逐题成绩仍可查看。' if saved_page is not None else f'本卷尚无可可靠匹配的{target_label}标签，暂不展示掌握图；逐题成绩仍可查看。') + '</p></section>')
-    source_note = '按生成时保存的成绩展示，教师复核分优先' if saved_page is not None else (
-        '成绩表使用当前成绩；AI 分析使用已保存的正文，教师复核分优先' if narrative else '按本班当前成绩统计，教师复核分优先')
-    knowledge_css, knowledge_js = _report_knowledge_assets()
-    styles = """
-    *{box-sizing:border-box}body{margin:0;background:#f2f5f9;color:#24354b;font:15px/1.8 "Microsoft YaHei",sans-serif}
-    main{max-width:1080px;margin:auto;padding:40px 28px}header{border-bottom:3px solid #527eb0;padding-bottom:22px}
-    h1{font-size:28px;line-height:1.45;margin:8px 0}h2{font-size:20px;margin:0 0 18px}h3{font-size:16px;margin:0 0 6px}
-    p{margin:5px 0 12px}small,.muted{color:#63758a}section{background:white;border:1px solid #e1e7ef;border-radius:14px;padding:26px;margin:24px 0}
-    .metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-top:24px}.metrics div{background:#fff;border-radius:10px;padding:14px}
-    .metrics small{display:block}.metrics strong{display:block;font-size:24px}
-    .band{display:grid;grid-template-columns:135px 1fr 50px;align-items:center;gap:12px;margin:10px 0}
-    .track,.rate{height:20px;border-radius:5px;background:#edf2f8;overflow:hidden}.track i,.rate i{display:block;height:100%;background:#6f94c5}
-    .rate{position:relative;min-width:100px;height:26px}.rate span{position:absolute;inset:0;text-align:center;color:#173153;font-size:13px;line-height:26px}.rate i{background:#c0d3ea}
-    .table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{border-bottom:1px solid #e4eaf0;text-align:left;padding:10px}
-    th{background:#f5f8fb;color:#52677f}th:not(:last-child),td:not(:last-child){white-space:nowrap}.answer{min-width:120px;max-width:290px;overflow-wrap:anywhere}
-    article{border-left:3px solid #8aabc9;padding:0 0 0 16px;margin:20px 0}.action{color:#395e86;background:#f4f8fc;padding:10px 14px;border-radius:7px}.action p:last-child{margin-bottom:0}
-    summary{cursor:pointer;font-size:19px;font-weight:bold}.answer summary{font-size:12px;font-weight:400;color:#30567f}.answer details>div{padding-top:8px}.roster td:last-child{font-size:12px;color:#617188}
-    .qm{display:inline-block;max-width:100%;vertical-align:baseline;padding:3px 2px 6px}.qm-display{display:block;text-align:center;margin:8px 0}.qm-error{color:#9a3412}
-    article p,article h3,.answer{overflow-x:auto;overflow-y:hidden;overflow-wrap:anywhere}.katex{font-size:1.05em}footer{color:#69788a;font-size:12px}
-    @media(max-width:600px){main{padding:22px 14px}section{padding:18px 14px}.metrics{grid-template-columns:repeat(2,1fr)}h1{font-size:23px}.band{grid-template-columns:116px 1fr 36px;font-size:12px;gap:5px}th,td{padding:8px 6px;font-size:12px}}
-    @media print{body{background:white}main{padding:0}article,.kn-node{break-inside:avoid}h2,h3{break-after:avoid}details:not([open])>*:not(summary){display:block}footer{margin-top:20px}}
-    """
-    math_js = """
-    document.querySelectorAll('.qm[data-latex]').forEach(el => {
-      try { katex.render(el.dataset.latex, el, {throwOnError:true, output:'htmlAndMathml', displayMode:el.dataset.display === 'true'}); }
-      catch (_) { el.classList.add('qm-error'); el.title = '公式格式需核对，已保留原文'; }
-    });
-    """
-    return (
-        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-        f'<title>{esc(class_label)} · 班级报告</title>{_report_math_assets()}<style>{styles}{knowledge_css}</style></head><body><main>'
-        f'<header><small>讲评课参考 · 教师版</small><h1>{math_text(page["exam"]["title"])}<br>{esc(class_label)} · 班级报告</h1>'
-        f'<p class="muted">{esc(source_note)} · 满分{fmt(page["exam"]["full_score"])}分</p></header>'
-        f'<div class="metrics">{metric_html}</div><section><h2>本次最值得关注的结果</h2>{findings}</section>'
-        f'<section><h2>分数分布</h2>{bands}<p class="muted">各分数段互不重叠，参与统计{analyzed}人。</p></section>'
-        '<section><h2>逐题得分</h2><div class="table-wrap"><table><thead><tr><th>题目</th><th>满分</th><th>均分</th>'
-        f'<th>得分率</th><th>未得满分</th><th>主要错误</th><th>参考答案</th></tr></thead><tbody>{questions}</tbody></table></div></section>'
-        f'{knowledge_html}<section><h2>下一节讲评课</h2>{issues}<h3>分层安排</h3>'
-        + ('<p class="muted">AI 整理后在此显示。</p>' if pending else _report_paragraphs(narrative.get("grouping_advice", "")))
-        + '</section>'
-        f'<section><h2>个别跟进</h2>{notes}</section><section><details><summary>全班成绩与失分题目（{analyzed}人）</summary>'
-        '<div class="table-wrap"><table class="roster"><thead><tr><th>名次</th><th>姓名</th><th>成绩</th><th>失分题目</th></tr></thead>'
-        f'<tbody>{roster}</tbody></table></div></details></section>'
-        f'<footer>AI 分析 · 仅供参考。{esc(source_note)}；错因依据作答证据与批改记录，不据分数推断学生态度或作答时间。</footer>'
-        f'</main><script>{math_js}{knowledge_js}</script></body></html>'
-    )
-
-
 class AnalysisReportGenerator:
     """契约与 ReportGenerator 一致：(repositories, output_dir) 构造，导出返回 Path。"""
 
@@ -3146,58 +2752,6 @@ class AnalysisReportGenerator:
         )
         return self._export_personal(data, student_ids=student_ids, html_only=html_only,
             narrative_mode=narrative_mode, regenerate_existing=regenerate_existing, progress_callback=progress_callback, cancel_check=cancel_check)
-
-    def export_classes(
-        self,
-        session_id: int,
-        *,
-        class_names: set[str] | None = None,
-    ) -> list[Path]:
-        """以班级页面相同的数据批量导出自包含 HTML；叙述只复用已生成结果。"""
-        from backend.class_analysis import (
-            ClassAnalysisStateStore,
-            question_category_counts,
-            session_error_records,
-        )
-
-        data = assemble_session_analysis(self.repositories, session_id, data_root=self.data_root)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        enrich_personal_knowledge(self.repositories, data, self.data_root)
-        # 错因记录按整场装配（指纹口径），再按各班学生过滤统计；状态缺失时为空。
-        error_records = (
-            session_error_records(
-                self.repositories, session_id, self.reports_dir, data_root=self.data_root,
-            )
-            if self.reports_dir is not None else {}
-        )
-        # 班级叙述只复用「AI 整理」已保存的结果（含 stale/old_prompt，仍可读）；
-        # 导出任务不调用模型。
-        stored_reports = (
-            (
-                (ClassAnalysisStateStore(self.reports_dir).load(int(session_id)) or {})
-                .get("class_reports")
-            )
-            if self.reports_dir is not None
-            else None
-        ) or {}
-        files = []
-        for name, group in split_session_analysis_by_class(data).items():
-            if not group.students or (class_names is not None and name not in class_names):
-                continue
-            entry = stored_reports.get(name) or {}
-            narrative = (
-                entry.get("narrative")
-                if isinstance(entry.get("narrative"), dict)
-                else None
-            )
-            cause_counts = question_category_counts(
-                error_records, student_ids=[s.student_id for s in group.students])
-            target = self.output_dir / f"{safe_filename_fragment(name, '未分班')}_班级报告.html"
-            target.write_text(
-                render_class_html(group, narrative, cause_counts=cause_counts),
-                encoding="utf-8")
-            files.append(target)
-        return files
 
     def _client(self) -> Any:
         # 未配置内容生成模型时返回 None，全部报告降级为无 AI 叙述版，

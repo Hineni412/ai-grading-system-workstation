@@ -15,7 +15,6 @@ import {
 } from '../../api/class-analysis'
 import type { ResultsCenterResponse } from '../../api/results-center'
 import { exportsApi } from '../../api/exports'
-import { jobApi, TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import { useJobStore } from '../../stores/jobs'
 import { useSessionStore } from '../../stores/session'
 import AppButton from '../design-system/AppButton.vue'
@@ -31,26 +30,34 @@ import PaperWalkthrough from './PaperWalkthrough.vue'
 import { walkthroughDataFor } from './paper-walkthrough'
 import {
   OVERVIEW_BANDS,
-  buildOverviewTiles,
+  classDelta,
   classDisplayLabel,
   classKeysOf,
+  classRateGapOf,
+  compareByClassGap,
+  compareByRate,
+  compareByZeroShare,
   comparisonCandidates,
+  criticalStudents,
   defaultComparison,
   displayAnswer,
   formatCount,
   formatRate,
   formatScore,
   isCompleteStudent,
+  lowTailSummary,
   questionRatesFor,
   rankChangeGroups,
   rankChanges,
   scoreStructureFor,
   subQuestionLabelFor,
   summarizeStudents,
-  topCauseOf,
+  zeroShareOf,
+  type ClassDelta,
   type ClassSummary,
-  type OverviewBandId,
-  type OverviewTile,
+  type CriticalStudentEntry,
+  type OverviewBand,
+  type QuestionSort,
   type RankChange,
 } from './results-overview'
 
@@ -83,19 +90,15 @@ const scope = computed<string | null>({
   set: (value) => emit('update:scope', value),
 })
 
-const sortBy = ref<'rate' | 'number'>('rate')
+const sortBy = ref<QuestionSort>('rate')
 const analysis = ref<ClassAnalysisResponse | null>(null)
 const analysisState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const mergedAnalysis = ref<ClassAnalysisResponse | null>(null)
-const narrative = ref<ClassAnalysisResponse | null>(null)
-const narrativeState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
-const narrativeCache = new Map<string, ClassAnalysisResponse>()
 
 let loadGeneration = 0
 let shownAnalysisKey: string | null = null
 let scopeController: AbortController | null = null
 let mergedController: AbortController | null = null
-let narrativeController: AbortController | null = null
 let notesController: AbortController | null = null
 
 const reviewNotes = ref<AnalysisReviewNoteItem[]>([])
@@ -133,13 +136,7 @@ watch(
       mergedAnalysis.value = cachedClassAnalysis(sessionId, '')
       void loadReviewNotes(sessionId)
     }
-    // The existing full response contains both statistics and narrative;
-    // avoid assembling the same exam twice when neither is cached yet.
-    void loadScope(scopeKey, sessionId, true).then(() => {
-      if (scope.value === scopeKey && props.sessionId === sessionId) {
-        void loadNarrative(scopeKey, sessionId)
-      }
-    })
+    void loadScope(scopeKey, sessionId)
     if (scopeKey !== null) void ensureMerged(sessionId)
   },
   { immediate: true },
@@ -163,7 +160,6 @@ watch(succeededReportJobs, (value, previous) => {
 async function loadScope(
   scopeKey: string | null,
   sessionId: number,
-  includeNarrative = false,
 ): Promise<void> {
   // '' 的 class_name 在后端表示合并全部班级；范围 null 与未分班都落到同一请求。
   const apiScope = scopeKey ?? ''
@@ -193,11 +189,10 @@ async function loadScope(
       sessionId,
       controller.signal,
       apiScope,
-      includeNarrative ? 'full' : 'summary',
+      'summary',
     )
     if (generation !== loadGeneration || props.sessionId !== sessionId) return
     rememberClassAnalysis(sessionId, apiScope, result)
-    if (includeNarrative) narrativeCache.set(`${sessionId}::${apiScope}`, result)
     analysis.value = result
     analysisState.value = 'ready'
     shownAnalysisKey = analysisKey
@@ -236,98 +231,11 @@ async function ensureMerged(sessionId: number): Promise<void> {
   }
 }
 
-const narrativeActiveJob = computed(() => {
-  const id = narrative.value?.active_job_id ?? null
-  return id === null ? null : jobStore.jobs[id] ?? null
-})
-const narrativeGenerating = computed(() => (
-  narrative.value?.status === 'generating'
-  || (narrativeActiveJob.value !== null
-    && !TERMINAL_JOB_STATUSES.has(narrativeActiveJob.value.status))
-))
-const narrativeFindings = computed(() => (
-  narrative.value?.narrative?.key_findings.slice(0, 2) ?? []
-))
-
-watch(() => narrativeActiveJob.value?.status, (status) => {
-  if (status === undefined || !TERMINAL_JOB_STATUSES.has(status)) return
-  narrativeCache.delete(`${props.sessionId}::${scope.value ?? ''}`)
-  void loadNarrative(scope.value, props.sessionId)
-})
-
-async function loadNarrative(
-  scopeKey: string | null,
-  sessionId: number,
-): Promise<void> {
-  const apiScope = scopeKey ?? ''
-  const cacheKey = `${sessionId}::${apiScope}`
-  narrativeController?.abort()
-  const cached = narrativeCache.get(cacheKey)
-  if (cached) {
-    narrative.value = cached
-    narrativeState.value = 'ready'
-    return
-  }
-  narrative.value = null
-  narrativeState.value = 'loading'
-  const controller = new AbortController()
-  narrativeController = controller
-  try {
-    const result = await classAnalysisApi.getClassAnalysis(
-      sessionId,
-      controller.signal,
-      apiScope,
-      'narrative',
-    )
-    if (controller.signal.aborted || props.sessionId !== sessionId) return
-    narrativeCache.set(cacheKey, result)
-    narrative.value = result
-    narrativeState.value = 'ready'
-    void ensureNarrativeTracked(result.active_job_id)
-  } catch {
-    if (controller.signal.aborted || props.sessionId !== sessionId) return
-    narrativeState.value = 'error'
-  }
-}
-
-async function ensureNarrativeTracked(id: number | null): Promise<void> {
-  if (id === null) return
-  const existing = jobStore.jobs[id]
-  if (existing !== undefined && !TERMINAL_JOB_STATUSES.has(existing.status)) return
-  try {
-    const job = await jobApi.getJob(id)
-    if (jobStore.jobs[id] !== undefined) return
-    if (!TERMINAL_JOB_STATUSES.has(job.status)) jobStore.track(job)
-  } catch {
-    // 任务可能已结束或被清理；下次进入时按最新状态展示。
-  }
-}
-
-function reloadNarrative(): void {
-  narrativeCache.delete(`${props.sessionId}::${scope.value ?? ''}`)
-  void loadNarrative(scope.value, props.sessionId)
-}
-
-function reloadAnalysis(): void {
-  void loadScope(scope.value, props.sessionId)
-}
-
-function openReport(): void {
-  void router.push({
-    path: '/class-report',
-    query: {
-      session: String(props.sessionId),
-      ...(scope.value ? { class: scope.value } : {}),
-    },
-  })
-}
-
 onBeforeUnmount(() => {
   loadGeneration += 1
   scopeController?.abort()
   mergedController?.abort()
   comparisonController?.abort()
-  narrativeController?.abort()
   notesController?.abort()
 })
 
@@ -403,28 +311,40 @@ const scopeAnalysisQuestions = computed(() => (
     : null
 ))
 
-const causeIssue = computed<'missing' | 'legacy' | null>(() => {
-  if (analysisState.value === 'error') return 'missing'
-  if (analysisState.value !== 'ready') return null
-  const questions = analysis.value?.data?.questions ?? []
-  const hasStructured = questions.some(
-    (question) => (question.causes ?? []).some((cause) => cause.kind !== undefined),
-  )
-  if (hasStructured) return null
-  return questions.some((question) => (question.causes ?? []).length > 0)
-    ? 'legacy'
-    : 'missing'
+const lowTail = computed(() => lowTailSummary(studentsInScope.value))
+const critical = computed(() => criticalStudents(studentsInScope.value))
+const criticalExpanded = ref(false)
+
+const criticalGroups = computed(() => {
+  const maxScore = props.results.summary.max_score
+  const groups: { key: string; title: string; rows: CriticalStudentEntry[] }[] = []
+  if (critical.value.passing.length > 0) {
+    groups.push({
+      key: 'passing',
+      title: `差 5 分内及格（及格线 ${formatScore(maxScore * 0.6)} 分）`,
+      rows: critical.value.passing,
+    })
+  }
+  if (critical.value.excellent.length > 0) {
+    groups.push({
+      key: 'excellent',
+      title: `差 5 分内优秀（优秀线 ${formatScore(maxScore * 0.85)} 分）`,
+      rows: critical.value.excellent,
+    })
+  }
+  return groups
 })
 
-const tiles = computed(() => buildOverviewTiles({
-  scopeKey: scope.value,
-  scopeStudents: studentsInScope.value,
-  classes: classSummaries.value,
-  questionRates: scopeQuestionRates.value,
-  classQuestionRates: scope.value === null ? classQuestionRates.value : undefined,
-  analysisQuestions: scopeAnalysisQuestions.value,
-  scoreStructure: scopeScoreStructure.value,
-}))
+const criticalTileSub = computed(() => {
+  const parts: string[] = []
+  if (critical.value.passing.length > 0) {
+    parts.push(`差 5 分内及格 ${critical.value.passing.length} 人`)
+  }
+  if (critical.value.excellent.length > 0) {
+    parts.push(`差 5 分内优秀 ${critical.value.excellent.length} 人`)
+  }
+  return parts.join(' · ')
+})
 
 interface QuestionRow {
   questionId: string
@@ -435,14 +355,30 @@ interface QuestionRow {
   subIndex: number | null
   answer: string | null
   answerFull: string | null
-  causeLabel: string | null
-  causeCount: number | null
-  causeLegacy: boolean
   structure: { full: number; partial: number; zero: number; resolved: number }
+  zeroShare: number | null
   classRates: { key: string; label: string; rate: number | null; isLow: boolean }[]
+  classRateGap: number | null
 }
 
 const CLASS_RATE_GAP = 0.15
+
+const gapSortAvailable = computed(() => (
+  scope.value === null && classKeys.value.length >= 2
+))
+watch(gapSortAvailable, (available) => {
+  if (!available && sortBy.value === 'gap') sortBy.value = 'rate'
+})
+
+const sortOptions = computed<{ id: QuestionSort; label: string }[]>(() => {
+  const options: { id: QuestionSort; label: string }[] = [
+    { id: 'rate', label: '按得分率' },
+    { id: 'number', label: '按题号' },
+    { id: 'zero', label: '按 0 分占比' },
+  ]
+  if (gapSortAvailable.value) options.push({ id: 'gap', label: '按班级差距' })
+  return options
+})
 
 const questionRows = computed<QuestionRow[]>(() => {
   const analysisById = new Map(
@@ -463,7 +399,6 @@ const questionRows = computed<QuestionRow[]>(() => {
   }))
   const rows = props.results.questions.map((question) => {
     const analysisQuestion = analysisById.get(question.question_id)
-    const topCause = analysisQuestion ? topCauseOf(analysisQuestion) : null
     const classRates = perClass.map((entry) => ({
       key: entry.key,
       label: entry.label,
@@ -480,6 +415,8 @@ const questionRows = computed<QuestionRow[]>(() => {
     }
     const stem = analysisQuestion?.stem_summary ?? null
     const sub = subQuestionLabelFor(question.question_id, stem, stemList)
+    const structure = scopeScoreStructure.value.get(question.question_id)
+      ?? { full: 0, partial: 0, zero: 0, resolved: 0 }
     return {
       questionId: question.question_id,
       maxScore: question.max_score,
@@ -489,18 +426,18 @@ const questionRows = computed<QuestionRow[]>(() => {
       subIndex: sub?.index ?? null,
       answer: sub ? displayAnswer(analysisQuestion?.canonical_answer ?? null) : null,
       answerFull: sub ? (analysisQuestion?.canonical_answer ?? null) : null,
-      causeLabel: topCause !== null && topCause !== 'legacy' ? topCause.label : null,
-      causeCount: topCause !== null && topCause !== 'legacy' ? topCause.count : null,
-      causeLegacy: topCause === 'legacy',
-      structure: scopeScoreStructure.value.get(question.question_id)
-        ?? { full: 0, partial: 0, zero: 0, resolved: 0 },
+      structure,
+      zeroShare: zeroShareOf(structure),
       classRates,
+      classRateGap: classRateGapOf(classRates.map((entry) => entry.rate)),
     }
   })
   if (sortBy.value === 'rate') {
-    rows.sort((left, right) => (
-      left.rate === null ? 1 : right.rate === null ? -1 : left.rate - right.rate
-    ))
+    rows.sort(compareByRate)
+  } else if (sortBy.value === 'zero') {
+    rows.sort(compareByZeroShare)
+  } else if (sortBy.value === 'gap') {
+    rows.sort(compareByClassGap)
   }
   return rows
 })
@@ -525,51 +462,6 @@ const reviewBreakdown = computed(() => {
     parts.push(`失败 ${summary.failed_item_count}`)
   }
   return parts.join(' · ')
-})
-
-type MarkerTileId =
-  | 'review'
-  | 'report-notes'
-  | 'ai-report'
-  | 'ranks'
-  | 'cause-categories'
-type DisplayTile = OverviewTile | { id: MarkerTileId }
-
-interface TileSlot {
-  tile: DisplayTile
-  /** 行内宽度占比（4 列布局中的份数）；由数据决定，保证每行铺满无空位。 */
-  span: number
-}
-
-const tileRows = computed<TileSlot[][]>(() => {
-  const byId = new Map(tiles.value.map((tile) => [tile.id, tile]))
-  const fillers: TileSlot[] = []
-  for (const id of ['low-tail', 'weak-questions', 'zero-share'] as const) {
-    const tile = byId.get(id)
-    if (tile) fillers.push({ tile, span: 1 })
-  }
-  // 报告提示磁贴紧邻「复核」出现；行宽超出时把其余磁贴顺延到第三行。
-  const row1: TileSlot[] = [
-    { tile: { id: 'review' }, span: 1 },
-    ...(pendingReviewNotes.value.length > 0
-      ? [{ tile: { id: 'report-notes' } as DisplayTile, span: 1 }]
-      : []),
-    ...fillers.slice(0, pendingReviewNotes.value.length > 0 ? 2 : 3),
-  ]
-  const overflow = fillers.slice(pendingReviewNotes.value.length > 0 ? 2 : 3)
-  // 失分类型磁贴始终占位（加载/无数据/失败态都在格内展示），保证第二行恒为 1+3。
-  const categories = byId.get('cause-categories')
-  const row2: TileSlot[] = [
-    { tile: categories ?? { id: 'cause-categories' }, span: 1 },
-    { tile: { id: 'ranks' }, span: 3 },
-  ]
-  const classGap = byId.get('class-gap')
-  const row3: TileSlot[] = [
-    ...overflow,
-    ...(classGap ? [{ tile: classGap, span: 1 }] : []),
-    { tile: { id: 'ai-report' }, span: 1 },
-  ]
-  return [row1, row2, row3]
 })
 
 const currentSession = computed(() => (
@@ -681,18 +573,11 @@ function rankAria(entry: RankChange): string {
   return parts.join('，')
 }
 
-function bandTotal(summary: ClassSummary): number {
-  return OVERVIEW_BANDS.reduce(
-    (total, band) => total + summary.bandCounts[band.id],
-    0,
-  )
-}
-
-function bandWidth(summary: ClassSummary, bandId: OverviewBandId): string {
-  const total = bandTotal(summary)
-  return total === 0
-    ? '0%'
-    : `${(summary.bandCounts[bandId] / total) * 100}%`
+/** 分数分布条只渲染有人数的分数段；段宽按人数 flex-grow。 */
+function visibleBands(summary: ClassSummary): (OverviewBand & { count: number })[] {
+  return OVERVIEW_BANDS
+    .map((band) => ({ ...band, count: summary.bandCounts[band.id] }))
+    .filter((band) => band.count > 0)
 }
 
 function bandAriaLabel(summary: ClassSummary): string {
@@ -705,8 +590,70 @@ function isActiveRow(row: ClassSummary): boolean {
   return row.key === scope.value
 }
 
-function rateWidth(rate: number | null): string {
-  return rate === null ? '0%' : `${Math.max(0, Math.min(1, rate)) * 100}%`
+const previousClassSummaries = computed<Map<string | null, ClassSummary> | null>(() => {
+  if (previousState.value !== 'ready' || !previousResults.value) return null
+  const map = new Map<string | null, ClassSummary>()
+  for (const key of classKeys.value) {
+    map.set(key, summarizeStudents(
+      previousResults.value.students.filter(
+        (student) => (student.class_name ?? '') === key,
+      ),
+      key,
+    ))
+  }
+  map.set(null, summarizeStudents(previousResults.value.students, null))
+  return map
+})
+
+const comparisonName = computed(() => (
+  comparisonOptions.value.find((option) => option.id === comparisonId.value)?.name
+  ?? null
+))
+
+// 平均分只在两次满分相同且都 >0 时比较；两率始终按百分点比较。
+const sameFullScore = computed(() => (
+  previousResults.value !== null
+  && props.results.summary.max_score > 0
+  && previousResults.value.summary.max_score === props.results.summary.max_score
+))
+
+function rowDelta(row: ClassSummary): ClassDelta | null {
+  const previous = previousClassSummaries.value
+  if (previous === null) return null
+  return classDelta(row, previous.get(row.key) ?? null, sameFullScore.value)
+}
+
+function deltaText(delta: number | null, mode: 'score' | 'rate'): string | null {
+  if (delta === null) return null
+  const text = mode === 'rate'
+    ? String(Math.round(Math.abs(delta) * 100))
+    : formatScore(Math.abs(delta))
+  if (text === '0') return null
+  return `${delta > 0 ? '↑' : '↓'}${text}`
+}
+
+function deltaEntry(
+  delta: number | null,
+  mode: 'score' | 'rate',
+): { text: string; up: boolean } | null {
+  const text = deltaText(delta, mode)
+  return text === null ? null : { text, up: (delta ?? 0) > 0 }
+}
+
+const tableRows = computed(() => classRows.value.map((row) => {
+  const delta = rowDelta(row)
+  return {
+    row,
+    averageDelta: deltaEntry(delta?.average ?? null, 'score'),
+    passDelta: deltaEntry(delta?.passRate ?? null, 'rate'),
+    excellentDelta: deltaEntry(delta?.excellentRate ?? null, 'rate'),
+  }
+}))
+
+function deltaTitle(): string | undefined {
+  return comparisonName.value === null
+    ? undefined
+    : `较「${comparisonName.value}」`
 }
 
 function structureAria(structure: {
@@ -720,14 +667,6 @@ function structureAria(structure: {
 
 function structureWidth(count: number, resolved: number): string {
   return resolved === 0 ? '0%' : `${(count / resolved) * 100}%`
-}
-
-function axisPosition(value: number, maxScore: number): string {
-  return `${maxScore > 0 ? Math.max(0, Math.min(1, value / maxScore)) * 100 : 0}%`
-}
-
-function categoryColor(index: number): string {
-  return `var(--chart-${(index % 5) + 1})`
 }
 
 function openQuestion(questionId: string): void {
@@ -838,6 +777,16 @@ onMounted(() => {
           @click="scope = key"
         >{{ classDisplayLabel(key) }}</button>
       </div>
+      <label v-if="comparisonOptions.length" class="overview__compare">
+        <span>对比：</span>
+        <select class="app-input" v-model.number="comparisonId" aria-label="对比考试">
+          <option
+            v-for="option in comparisonOptions"
+            :key="option.id"
+            :value="option.id"
+          >{{ option.name }}</option>
+        </select>
+      </label>
     </div>
 
     <section class="overview__section" aria-labelledby="overview-classes-title">
@@ -859,7 +808,7 @@ onMounted(() => {
           </thead>
           <tbody>
             <tr
-              v-for="row in classRows"
+              v-for="({ row, averageDelta, passDelta, excellentDelta }) in tableRows"
               :key="row.key ?? '__all__'"
               :class="{ 'is-active': isActiveRow(row), 'is-total': row.key === null }"
             >
@@ -873,11 +822,26 @@ onMounted(() => {
               </th>
               <td class="is-num">{{ row.studentCount }}</td>
               <td class="is-num">{{ row.absentCount === null ? '—' : row.absentCount }}</td>
-              <td class="is-num">{{ formatScore(row.average) }}</td>
+              <td class="is-num">{{ formatScore(row.average) }}<small
+                v-if="averageDelta"
+                class="overview__delta"
+                :class="averageDelta.up ? 'is-up' : 'is-down'"
+                :title="deltaTitle()"
+              >{{ averageDelta.text }}</small></td>
               <td class="is-num">{{ formatScore(row.median) }}</td>
               <td class="is-num">{{ formatScore(row.highest) }} / {{ formatScore(row.lowest) }}</td>
-              <td class="is-num">{{ formatRate(row.passRate) }}</td>
-              <td class="is-num">{{ formatRate(row.excellentRate) }}</td>
+              <td class="is-num">{{ formatRate(row.passRate) }}<small
+                v-if="passDelta"
+                class="overview__delta"
+                :class="passDelta.up ? 'is-up' : 'is-down'"
+                :title="deltaTitle()"
+              >{{ passDelta.text }}</small></td>
+              <td class="is-num">{{ formatRate(row.excellentRate) }}<small
+                v-if="excellentDelta"
+                class="overview__delta"
+                :class="excellentDelta.up ? 'is-up' : 'is-down'"
+                :title="deltaTitle()"
+              >{{ excellentDelta.text }}</small></td>
               <td>
                 <span
                   class="overview__bandbar"
@@ -885,12 +849,12 @@ onMounted(() => {
                   :aria-label="bandAriaLabel(row)"
                 >
                   <i
-                    v-for="band in OVERVIEW_BANDS"
+                    v-for="band in visibleBands(row)"
                     :key="band.id"
                     :data-band="band.id"
-                    :style="{ width: bandWidth(row, band.id) }"
-                    :title="`${band.label} ${row.bandCounts[band.id]} 人`"
-                  ></i>
+                    :style="{ flexGrow: band.count }"
+                    :title="`${band.label} ${band.count} 人`"
+                  >{{ band.count }}</i>
                 </span>
               </td>
             </tr>
@@ -901,23 +865,17 @@ onMounted(() => {
         <span v-for="band in OVERVIEW_BANDS" :key="band.id">
           <i :data-band="band.id" aria-hidden="true"></i>{{ band.label }} {{ band.range }}
         </span>
+        <span
+          v-if="previousState === 'ready' && comparisonName !== null"
+          class="overview__legend-note"
+        >↑↓ 为较「{{ comparisonName }}」的变化；平均分仅在两次满分相同时比较，及格率、优秀率按百分点。</span>
       </p>
     </section>
 
     <section class="overview__section" aria-labelledby="overview-findings-title">
       <h2 id="overview-findings-title" class="overview__title">本次重点</h2>
       <div class="overview__tiles">
-        <div
-          v-for="(row, rowIndex) in tileRows"
-          :key="rowIndex"
-          class="overview__tile-row"
-        >
-        <template v-for="({ tile, span }) in row" :key="tile.id">
-          <section
-            v-if="tile.id === 'review'"
-            class="overview__tile"
-            :style="{ '--tile-span': span }"
-          >
+          <section class="overview__tile">
             <h3>复核</h3>
             <template v-if="reviewPending > 0">
               <strong class="overview__tile-num">{{ reviewPending }} 题待处理</strong>
@@ -958,9 +916,8 @@ onMounted(() => {
             </template>
           </section>
           <section
-            v-else-if="tile.id === 'report-notes'"
+            v-if="pendingReviewNotes.length > 0"
             class="overview__tile overview__tile--notes"
-            :style="{ '--tile-span': span }"
           >
             <h3>报告提示</h3>
             <strong class="overview__tile-num">
@@ -974,64 +931,12 @@ onMounted(() => {
               @click="reviewNotesExpanded = !reviewNotesExpanded"
             >{{ reviewNotesExpanded ? '收起' : '查看明细' }}</AppButton>
           </section>
-          <section
-            v-else-if="tile.id === 'low-tail'"
-            class="overview__tile"
-            :style="{ '--tile-span': span }"
-          >
+          <section v-if="lowTail.count > 0" class="overview__tile">
             <h3>低分学生</h3>
-            <strong class="overview__tile-num">{{ tile.count }} 人</strong>
+            <strong class="overview__tile-num">{{ lowTail.count }} 人</strong>
             <span class="overview__tile-sub">
-              低于 40%<template v-if="tile.zeroAverage !== null">
-                · 人均 0 分题 {{ formatCount(tile.zeroAverage) }} 道
-              </template>
+              低于 40% · 人均 0 分题 {{ formatCount(lowTail.zeroAverage) }} 道
             </span>
-            <template v-if="tile.perClass.length > 1">
-              <span
-                class="overview__tile-stack"
-                role="img"
-                :aria-label="tile.perClass.map((seg) => `${seg.label} ${seg.count} 人`).join('，')"
-              >
-                <i
-                  v-for="seg in tile.perClass"
-                  :key="seg.label"
-                  :style="{ width: `${(seg.count / tile.count) * 100}%` }"
-                  :title="`${seg.label} ${seg.count} 人`"
-                ></i>
-              </span>
-              <span class="overview__tile-legend">
-                {{ tile.perClass.map((seg) => `${seg.label} ${seg.count}`).join(' · ') }}
-              </span>
-            </template>
-            <template v-if="tile.medianGap">
-              <span
-                class="overview__tile-axis"
-                role="img"
-                :aria-label="`平均 ${formatScore(tile.medianGap.average)}，中位 ${formatScore(tile.medianGap.median)}，位置按 0–100 分`"
-              >
-                <i
-                  class="overview__tile-marker overview__tile-marker--avg"
-                  :style="{ left: axisPosition(tile.medianGap.average, results.summary.max_score) }"
-                  aria-hidden="true"
-                ></i>
-                <i
-                  class="overview__tile-marker overview__tile-marker--median"
-                  :style="{ left: axisPosition(tile.medianGap.median, results.summary.max_score) }"
-                  aria-hidden="true"
-                ></i>
-              </span>
-              <span class="overview__tile-legend">
-                <span>
-                  <i class="overview__tile-key overview__tile-key--avg" aria-hidden="true"></i>
-                  平均 {{ formatScore(tile.medianGap.average) }}
-                </span>
-                <span>
-                  <i class="overview__tile-key overview__tile-key--median" aria-hidden="true"></i>
-                  中位 {{ formatScore(tile.medianGap.median) }}
-                </span>
-              </span>
-              <p class="overview__tile-caption">低分拉低了平均</p>
-            </template>
             <AppButton
               variant="ghost"
               class="overview__tile-action"
@@ -1039,313 +944,18 @@ onMounted(() => {
               >看名单</AppButton>
           </section>
 
-          <section
-            v-else-if="tile.id === 'weak-questions'"
-            class="overview__tile"
-            :style="{ '--tile-span': span }"
-          >
-            <h3>最弱题目</h3>
-            <ol class="overview__weak">
-              <li v-for="row in tile.rows" :key="row.questionId">
-                <button
-                  type="button"
-                  class="overview__link overview__qid-link"
-                  @click="openQuestion(row.questionId)"
-                >{{ row.questionId }}</button>
-                <span class="overview__mini-bar" aria-hidden="true">
-                  <i :style="{ width: rateWidth(row.rate) }"></i>
-                </span>
-                <strong>{{ formatRate(row.rate) }}</strong>
-              </li>
-            </ol>
+          <section v-if="critical.total > 0" class="overview__tile">
+            <h3>临界学生</h3>
+            <strong class="overview__tile-num">{{ critical.total }} 人</strong>
+            <span class="overview__tile-sub">{{ criticalTileSub }}</span>
+            <AppButton
+              variant="ghost"
+              class="overview__tile-action"
+              :aria-expanded="criticalExpanded"
+              @click="criticalExpanded = !criticalExpanded"
+            >{{ criticalExpanded ? '收起' : '查看名单' }}</AppButton>
           </section>
-
-          <section
-            v-else-if="tile.id === 'zero-share'"
-            class="overview__tile"
-            :style="{ '--tile-span': span }"
-          >
-            <h3>0 分集中</h3>
-            <strong class="overview__tile-num">
-              <button
-                type="button"
-                class="overview__link overview__qid-link"
-                @click="openQuestion(tile.top.questionId)"
-              >{{ tile.top.questionId }}</button>
-              {{ formatRate(tile.top.share) }}
-            </strong>
-            <span class="overview__tile-sub">已给分学生中 0 分占比最高</span>
-            <span
-              class="overview__columns"
-              role="img"
-              :aria-label="tile.bars.map((bar) => `${bar.questionId} ${formatRate(bar.share)}`).join('，')"
-            >
-              <i
-                v-for="bar in tile.bars"
-                :key="bar.questionId"
-                :class="{ 'is-top': tile.topIds.includes(bar.questionId) }"
-                :style="{ height: `${Math.max(4, bar.share * 100)}%` }"
-                :title="`${bar.questionId} 0 分占比 ${formatRate(bar.share)}`"
-              ></i>
-            </span>
-            <p class="overview__tile-caption">
-              0 分最多：<template
-                v-for="(id, index) in tile.topIds"
-                :key="id"
-              ><template v-if="index">、</template><button
-                type="button"
-                class="overview__link"
-                @click="openQuestion(id)"
-              >{{ id }}</button></template>
-            </p>
-          </section>
-
-          <section
-            v-else-if="tile.id === 'class-gap'"
-            class="overview__tile"
-            :style="{ '--tile-span': span }"
-          >
-            <h3>班级差距</h3>
-            <strong class="overview__tile-num">差 {{ formatScore(tile.gap) }} 分</strong>
-            <span class="overview__tile-sub">
-              {{ tile.highLabel }} {{ formatScore(tile.highAverage) }} ·
-              {{ tile.lowLabel }} {{ formatScore(tile.lowAverage) }}
-            </span>
-            <span
-              class="overview__gapbars"
-              role="img"
-              :aria-label="`${tile.highLabel}平均 ${formatScore(tile.highAverage)}，${tile.lowLabel}平均 ${formatScore(tile.lowAverage)}`"
-            >
-              <span class="overview__gapbar">
-                <em>{{ tile.highLabel }}</em>
-                <span class="overview__mini-bar overview__mini-bar--high"><i
-                  :style="{ width: axisPosition(tile.highAverage, results.summary.max_score) }"
-                ></i></span>
-                <b>{{ formatScore(tile.highAverage) }}</b>
-              </span>
-              <span class="overview__gapbar">
-                <em>{{ tile.lowLabel }}</em>
-                <span class="overview__mini-bar overview__mini-bar--low"><i
-                  :style="{ width: axisPosition(tile.lowAverage, results.summary.max_score) }"
-                ></i></span>
-                <b>{{ formatScore(tile.lowAverage) }}</b>
-              </span>
-            </span>
-            <p v-if="tile.widest" class="overview__tile-caption">
-              差距最大
-              <button
-                type="button"
-                class="overview__link"
-                @click="openQuestion(tile.widest.questionId)"
-              >{{ tile.widest.questionId }}</button>
-              （{{ tile.highLabel }} {{ formatRate(tile.widest.highRate) }} /
-              {{ tile.lowLabel }} {{ formatRate(tile.widest.lowRate) }}）
-            </p>
-          </section>
-
-          <section
-            v-else-if="tile.id === 'cause-categories'"
-            class="overview__tile"
-            :style="{ '--tile-span': span }"
-          >
-            <h3>失分类型 <span class="overview__ai-tag" title="来自 AI 错因整理">AI 整理</span></h3>
-            <Skeleton
-              v-if="analysisState === 'loading'"
-              class="overview__skeleton-text"
-              aria-hidden="true"
-            />
-            <template v-else-if="analysisState === 'error'">
-              <span class="overview__tile-sub">暂时无法读取</span>
-              <AppButton
-                variant="ghost"
-                class="overview__tile-action"
-                @click="reloadAnalysis"
-              >重试</AppButton>
-            </template>
-            <template v-else-if="causeIssue === 'missing'">
-              <span class="overview__tile-sub">错因尚未整理</span>
-              <AppButton
-                variant="ghost"
-                class="overview__tile-action"
-                @click="emit('open-question', '', scope)"
-              >去试题诊断查看</AppButton>
-            </template>
-            <template v-else-if="causeIssue === 'legacy'">
-              <span class="overview__tile-sub">错因为旧版整理</span>
-              <AppButton
-                variant="ghost"
-                class="overview__tile-action"
-                @click="emit('open-question', '', scope)"
-              >去试题诊断查看</AppButton>
-            </template>
-            <template v-else-if="'segments' in tile">
-              <span
-                class="overview__tile-stack overview__tile-stack--cats"
-                role="img"
-                :aria-label="tile.segments.map((seg) => `${seg.category} ${seg.count} 人次`).join('，')"
-              >
-                <i
-                  v-for="(seg, index) in tile.segments"
-                  :key="seg.category"
-                  :style="{ width: `${(seg.count / tile.total) * 100}%`, background: categoryColor(index) }"
-                ></i>
-              </span>
-              <ul class="overview__tile-legend overview__tile-legend--cats">
-                <li v-for="(seg, index) in tile.segments" :key="seg.category">
-                  <i :style="{ background: categoryColor(index) }" aria-hidden="true"></i>
-                  {{ seg.category }} {{ seg.count }} 人次
-                </li>
-              </ul>
-            </template>
-            <span v-else class="overview__tile-sub">暂无错因分类</span>
-          </section>
-
-          <section
-            v-else-if="tile.id === 'ai-report'"
-            class="overview__tile overview__tile--ai-report"
-            :style="{ '--tile-span': span }"
-          >
-            <h3>班级分析 <span class="overview__ai-tag" title="来自 AI 班级分析">AI</span></h3>
-            <Skeleton
-              v-if="narrativeState === 'loading'"
-              class="overview__skeleton-text"
-              aria-hidden="true"
-            />
-            <template v-else-if="narrativeState === 'error'">
-              <span class="overview__tile-sub">暂时无法读取</span>
-              <AppButton
-                variant="ghost"
-                class="overview__tile-action"
-                @click="reloadNarrative"
-              >重试</AppButton>
-            </template>
-            <strong v-else-if="narrativeGenerating" class="overview__tile-num">AI 整理中…</strong>
-            <template v-else-if="narrative?.narrative && !narrative.stale">
-              <ul class="overview__tile-findings">
-                <li
-                  v-for="finding in narrativeFindings"
-                  :key="finding.title"
-                  :title="finding.title"
-                >{{ finding.title }}</li>
-              </ul>
-              <AppButton
-                variant="ghost"
-                class="overview__tile-action"
-                @click="openReport"
-              >查看完整报告</AppButton>
-            </template>
-            <template v-else-if="narrative?.stale">
-              <span class="overview__tile-sub">相关内容已修改，报告仍可查看；可在「AI 整理」中选择更新。</span>
-              <AppButton
-                variant="ghost"
-                class="overview__tile-action"
-                @click="openReport"
-              >查看报告</AppButton>
-            </template>
-            <template v-else>
-              <strong class="overview__tile-num">
-                {{ narrative?.narrative_failed ? 'AI 整理未成功' : 'AI 整理后显示' }}
-              </strong>
-              <span class="overview__tile-sub">点页面顶部「AI 整理」补齐</span>
-              <AppButton
-                variant="ghost"
-                class="overview__tile-action"
-                @click="openReport"
-              >查看报告</AppButton>
-            </template>
-          </section>
-
-          <section
-            v-else-if="tile.id === 'ranks'"
-            class="overview__tile overview__tile--ranks"
-            :style="{ '--tile-span': span }"
-          >
-            <div class="overview__tile-head">
-              <h3 id="overview-ranks-title">排名变化</h3>
-              <label v-if="comparisonOptions.length" class="overview__compare">
-                <span>对比：</span>
-                <select class="app-input" v-model.number="comparisonId" aria-label="对比考试">
-                  <option
-                    v-for="option in comparisonOptions"
-                    :key="option.id"
-                    :value="option.id"
-                  >{{ option.name }}</option>
-                </select>
-              </label>
-            </div>
-            <p v-if="!comparisonOptions.length" class="overview__tile-sub">
-              没有可对比的上一场考试
-            </p>
-            <Skeleton
-              v-else-if="previousState === 'loading'"
-              class="overview__skeleton-block"
-              aria-hidden="true"
-            />
-            <p v-else-if="previousState === 'error'" class="overview__tile-sub">
-              对比考试的成绩暂时无法读取。
-            </p>
-            <div v-else-if="previousState === 'ready'" class="overview__ranks">
-              <div
-                v-for="group in [
-                  { key: 'improved', title: '进步明显', rows: rankRows.improved },
-                  { key: 'declined', title: '退步明显', rows: rankRows.declined },
-                ]"
-                :key="group.key"
-                class="overview__rank-group"
-                :data-direction="group.key"
-              >
-                <h4>{{ group.title }}</h4>
-                <ol v-if="group.rows.length" class="overview__rank-list">
-                  <li v-for="entry in group.rows" :key="entry.student.student_id">
-                    <button
-                      type="button"
-                      class="overview__rank-row"
-                      :aria-label="rankAria(entry)"
-                      @click="emit('open-student', entry.student.student_id)"
-                    >
-                      <span class="overview__rank-name">
-                        {{ entry.student.student_name }}<small v-if="scope === null">
-                          {{ classDisplayLabel(entry.student.class_name) }}
-                        </small>
-                      </span>
-                      <span
-                        class="overview__ranktrack"
-                        :class="entry.change >= 0 ? 'is-up' : 'is-down'"
-                        aria-hidden="true"
-                      >
-                        <i class="overview__ranktrack-seg" :style="rankSegmentStyle(entry)"></i>
-                        <i
-                          class="overview__ranktrack-dot is-prev"
-                          :style="{ left: rankPosition(entry.previousRank, entry.currentSize) }"
-                        ></i>
-                        <i
-                          class="overview__ranktrack-dot is-curr"
-                          :style="{ left: rankPosition(entry.currentRank, entry.currentSize) }"
-                        ></i>
-                      </span>
-                      <span class="overview__rank-nums">
-                        {{ entry.previousRank }} → {{ entry.currentRank }}
-                      </span>
-                      <b
-                        class="overview__rank-change"
-                        :class="entry.change >= 0 ? 'is-up' : 'is-down'"
-                      >{{ entry.change >= 0 ? '↑' : '↓' }}{{ Math.abs(entry.change) }}</b>
-                    </button>
-                  </li>
-                </ol>
-                <StatePanel v-else kind="empty" compact title="无明显变化" />
-              </div>
-            </div>
-            <button
-              v-if="previousState === 'ready' && ranksExpandable"
-              type="button"
-              class="overview__link"
-              @click="ranksExpanded = !ranksExpanded"
-            >{{ ranksExpanded ? '收起' : '展开全部' }}</button>
-          </section>
-        </template>
         </div>
-      </div>
       <div
         v-if="reviewNotesExpanded && reviewNotes.length > 0"
         class="overview__notes"
@@ -1379,6 +989,116 @@ onMounted(() => {
           </li>
         </ul>
       </div>
+      <div
+        v-if="criticalExpanded && criticalGroups.length > 0"
+        class="overview__notes overview__critical"
+        data-testid="critical-students"
+      >
+        <div
+          v-for="group in criticalGroups"
+          :key="group.key"
+          class="overview__critical-group"
+        >
+          <h3 class="overview__critical-title">{{ group.title }}</h3>
+          <ul class="overview__notes-list overview__critical-list">
+            <li
+              v-for="entry in group.rows"
+              :key="entry.student.student_id"
+              class="overview__notes-item"
+            >
+              <button
+                type="button"
+                class="overview__link overview__notes-student"
+                @click="emit('open-student', entry.student.student_id)"
+              >
+                {{ entry.student.student_name }}<small v-if="scope === null">
+                  {{ classDisplayLabel(entry.student.class_name) }}
+                </small>
+              </button>
+              <span class="overview__notes-text">
+                {{ formatScore(entry.student.current_score) }} 分 · 差 {{ formatScore(entry.gap) }} 分
+              </span>
+            </li>
+          </ul>
+        </div>
+      </div>
+      <section
+        class="overview__tile overview__tile--ranks overview__ranks-card"
+        aria-labelledby="overview-ranks-title"
+      >
+        <div class="overview__tile-head">
+          <h3 id="overview-ranks-title">排名变化</h3>
+        </div>
+        <p v-if="!comparisonOptions.length" class="overview__tile-sub">
+          没有可对比的上一场考试
+        </p>
+        <Skeleton
+          v-else-if="previousState === 'loading'"
+          class="overview__skeleton-block"
+          aria-hidden="true"
+        />
+        <p v-else-if="previousState === 'error'" class="overview__tile-sub">
+          对比考试的成绩暂时无法读取。
+        </p>
+        <div v-else-if="previousState === 'ready'" class="overview__ranks">
+          <div
+            v-for="group in [
+              { key: 'improved', title: '进步明显', rows: rankRows.improved },
+              { key: 'declined', title: '退步明显', rows: rankRows.declined },
+            ]"
+            :key="group.key"
+            class="overview__rank-group"
+            :data-direction="group.key"
+          >
+            <h4>{{ group.title }}</h4>
+            <ol v-if="group.rows.length" class="overview__rank-list">
+              <li v-for="entry in group.rows" :key="entry.student.student_id">
+                <button
+                  type="button"
+                  class="overview__rank-row"
+                  :aria-label="rankAria(entry)"
+                  @click="emit('open-student', entry.student.student_id)"
+                >
+                  <span class="overview__rank-name">
+                    {{ entry.student.student_name }}<small v-if="scope === null">
+                      {{ classDisplayLabel(entry.student.class_name) }}
+                    </small>
+                  </span>
+                  <span
+                    class="overview__ranktrack"
+                    :class="entry.change >= 0 ? 'is-up' : 'is-down'"
+                    aria-hidden="true"
+                  >
+                    <i class="overview__ranktrack-seg" :style="rankSegmentStyle(entry)"></i>
+                    <i
+                      class="overview__ranktrack-dot is-prev"
+                      :style="{ left: rankPosition(entry.previousRank, entry.currentSize) }"
+                    ></i>
+                    <i
+                      class="overview__ranktrack-dot is-curr"
+                      :style="{ left: rankPosition(entry.currentRank, entry.currentSize) }"
+                    ></i>
+                  </span>
+                  <span class="overview__rank-nums">
+                    {{ entry.previousRank }} → {{ entry.currentRank }}
+                  </span>
+                  <b
+                    class="overview__rank-change"
+                    :class="entry.change >= 0 ? 'is-up' : 'is-down'"
+                  >{{ entry.change >= 0 ? '↑' : '↓' }}{{ Math.abs(entry.change) }}</b>
+                </button>
+              </li>
+            </ol>
+            <StatePanel v-else kind="empty" compact title="无明显变化" />
+          </div>
+        </div>
+        <button
+          v-if="previousState === 'ready' && ranksExpandable"
+          type="button"
+          class="overview__link"
+          @click="ranksExpanded = !ranksExpanded"
+        >{{ ranksExpanded ? '收起' : '展开全部' }}</button>
+      </section>
     </section>
 
     <section class="overview__section" aria-labelledby="overview-questions-title">
@@ -1386,17 +1106,13 @@ onMounted(() => {
         <h2 id="overview-questions-title" class="overview__title">题目得分率</h2>
         <div class="overview__sort" role="group" aria-label="题目排序">
           <button
+            v-for="option in sortOptions"
+            :key="option.id"
             type="button"
-            :class="{ 'is-active': sortBy === 'rate' }"
-            :aria-pressed="sortBy === 'rate'"
-            @click="sortBy = 'rate'"
-          >按得分率</button>
-          <button
-            type="button"
-            :class="{ 'is-active': sortBy === 'number' }"
-            :aria-pressed="sortBy === 'number'"
-            @click="sortBy = 'number'"
-          >按题号</button>
+            :class="{ 'is-active': sortBy === option.id }"
+            :aria-pressed="sortBy === option.id"
+            @click="sortBy = option.id"
+          >{{ option.label }}</button>
         </div>
       </div>
       <ol class="overview__questions">
@@ -1451,6 +1167,10 @@ onMounted(() => {
               </span>
               <strong>{{ formatRate(row.rate) }}</strong>
               <span
+                v-if="sortBy === 'zero' && row.zeroShare !== null"
+                class="overview__zero-share"
+              >0 分 {{ formatRate(row.zeroShare) }}</span>
+              <span
                 v-if="row.classRates.length"
                 class="overview__classrates"
               ><template
@@ -1459,21 +1179,6 @@ onMounted(() => {
               ><template v-if="index"> · </template><span
                 :class="{ 'is-gap': entry.isLow }"
               >{{ entry.label }} {{ formatRate(entry.rate) }}</span></template></span>
-            </span>
-            <span class="overview__cause">
-              <Skeleton
-                v-if="analysisState === 'loading'"
-                class="overview__skeleton-text"
-                aria-hidden="true"
-              />
-              <template v-else-if="row.causeLegacy">
-                <span class="overview__cause-legacy">旧版错因 · 去试题诊断更新</span>
-              </template>
-              <template v-else-if="row.causeLabel !== null">
-                <span class="overview__ai-tag" title="来自 AI 错因整理">AI</span>
-                {{ row.causeLabel }} <b>{{ row.causeCount }} 人</b>
-              </template>
-              <template v-else>—</template>
             </span>
           </button>
         </li>

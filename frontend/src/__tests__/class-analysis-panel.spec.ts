@@ -122,30 +122,7 @@ function makeAnalysis(
         },
       ],
     },
-    narrative: {
-      key_findings: [
-        { title: '两极分化严重', detail: '出现 47 分断层', severity: 'high' },
-      ],
-      common_issues: [
-        {
-          title: '证明题书写能力断层',
-          evidence: '第 11(3)、12(2)(3) 问得分率 25%',
-          teaching_action: '用第 12 题整题做板书示范',
-        },
-      ],
-      student_notes: [
-        {
-          alias: 'S1',
-          note: '会做的题完成质量高',
-          suggestion: '压轴小问不要轻易放弃',
-          flags: ['保持优势'],
-        },
-      ],
-      grouping_advice: '高分组布置压轴变式，低分组重做基础题。',
-    },
-    narrative_failed: false,
     generated_at: '2026-08-30T10:00:00Z',
-    stale: false,
     active_job_id: null,
     ...overrides,
   }
@@ -171,7 +148,6 @@ async function mountPanel(
       { path: '/', component: { render: () => h('div') } },
       { path: '/results', component: { render: () => h('div') } },
       { path: '/grading', component: { render: () => h('div', '合成深评页') } },
-      { path: '/class-report', component: { render: () => h('div', '合成班级报告页') } },
     ],
   })
   await router.push('/')
@@ -508,7 +484,6 @@ describe('class analysis panel', () => {
     apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
       status: 'no_data',
       data: null,
-      narrative: null,
       generated_at: null,
     }))
 
@@ -521,7 +496,6 @@ describe('class analysis panel', () => {
     apiMock.getClassAnalysis.mockResolvedValue(makeAnalysis({
       status: 'generating',
       data: null,
-      narrative: null,
       active_job_id: 91,
     }))
 

@@ -104,12 +104,8 @@ class ClassAnalysisResponse(BaseModel):
     auto_generate: bool
     small_sample: bool
     data: dict[str, Any] | None
-    narrative: dict[str, Any] | None
-    narrative_failed: bool
     generated_at: str | None
-    stale: bool
     read_error: str | None = None
-    narrative_state: Literal["current", "stale", "old_prompt", "missing"] | None = None
     active_job_id: int | None
     class_names: list[str] = Field(default_factory=list)
     selected_class: str | None = None
@@ -163,13 +159,6 @@ class ReportPipelineCausesStatus(BaseModel):
     estimated_tokens: int = Field(ge=0)
 
 
-class ReportPipelineClassesStatus(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    pending: int = Field(ge=0)
-    total: int = Field(ge=0)
-
-
 class ReportPipelinePersonalStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -181,7 +170,7 @@ class ReportPipelinePersonalStatus(BaseModel):
 
 
 class ReportPipelineStatusResponse(BaseModel):
-    """「AI 整理」统一管线状态：三阶段待补数量与是否有进行中任务。"""
+    """「AI 整理」统一管线状态：两阶段待补数量与是否有进行中任务。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -192,7 +181,6 @@ class ReportPipelineStatusResponse(BaseModel):
     active_job_id: int | None
     review_pending: int = Field(ge=0)
     causes: ReportPipelineCausesStatus
-    class_reports: ReportPipelineClassesStatus
     personal_reports: ReportPipelinePersonalStatus
     complete: bool
 

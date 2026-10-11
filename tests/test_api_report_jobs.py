@@ -300,34 +300,6 @@ def test_saved_personal_report_can_open_and_export_without_current_grade_or_mode
     assert before == {path: path.read_bytes() for path in reports.rglob('*.json')}
 
 
-def test_saved_class_report_keeps_original_class_and_table_after_rename(personal_api):
-    from backend.class_analysis import ClassAnalysisStateStore
-    from backend.session_analysis import assemble_session_analysis, split_session_analysis_by_class
-    from backend.reporting.analysis_report_exporter import build_class_page_data
-    from tests.test_analysis_report import CLASS_NARRATIVE
-    client, db, sid, _papers, reports, _manager = personal_api
-    group = next(iter(split_session_analysis_by_class(assemble_session_analysis(db, sid)).values()))
-    class_name = group.class_name
-    store = ClassAnalysisStateStore(reports)
-    store.save(sid, class_reports={class_name: dict(status='ready', narrative=CLASS_NARRATIVE,
-        source=build_class_page_data(group), generated_at='2026-01-01 00:00:00')})
-    with sqlite3.connect(db.db_path) as connection:
-        connection.execute("UPDATE students SET class_name='TEST-new-class'")
-    before = {path: path.read_bytes() for path in reports.rglob('*.json')}
-    overview = client.get(f'/api/sessions/{sid}/class-analysis', params={'class_name': class_name, 'view': 'narrative'})
-    assert overview.status_code == 200
-    assert class_name in overview.json()['class_names']
-    assert overview.json()['stale'] is True
-    assert overview.json()['generated_at'] == '2026-01-01 00:00:00'
-    assert overview.json()['narrative']['key_findings'][0]['title'] == '证明题得分率低'
-    html = client.get(f'/api/sessions/{sid}/class-analysis/report', params={'class_name': class_name})
-    assert html.status_code == 200
-    assert class_name in html.text
-    assert '按生成时保存的成绩展示' in html.text
-    assert '张三' in html.text and '李四' in html.text
-    assert before == {path: path.read_bytes() for path in reports.rglob('*.json')}
-
-
 def test_pipeline_update_flag_is_the_same_for_preflight_and_submit(personal_api, monkeypatch):
     import backend.report_pipeline as pipeline
     client, db, sid, _papers, _reports, manager = personal_api
@@ -426,54 +398,6 @@ def test_class_state_read_error_is_shown_without_moving_saved_file(personal_api)
     target.parent.mkdir(parents=True)
     target.write_text('TEST-unreadable-class-state', encoding='utf-8')
     before = target.read_bytes()
-    response = client.get(f'/api/sessions/{sid}/class-analysis', params={'view': 'narrative'})
+    response = client.get(f'/api/sessions/{sid}/class-analysis', params={'view': 'summary'})
     assert response.status_code == 200 and response.json()['read_error']
     assert target.read_bytes() == before
-
-
-@pytest.mark.parametrize('owner_location', ['top', 'source'])
-def test_legacy_top_level_class_body_is_read_at_its_saved_owner_without_migration(personal_api, owner_location):
-    from backend.session_analysis import assemble_session_analysis, split_session_analysis_by_class
-    from backend.reporting.analysis_report_exporter import build_class_page_data
-    from tests.test_analysis_report import CLASS_NARRATIVE
-    client, db, sid, _papers, reports, _manager = personal_api
-    group = next(iter(split_session_analysis_by_class(assemble_session_analysis(db, sid)).values()))
-    owner = group.class_name
-    source = build_class_page_data(group)
-    legacy = dict(version=99, narrative=CLASS_NARRATIVE, source=source,
-                  generated_at='2026-01-01T00:00:00')
-    if owner_location == 'top':
-        legacy['class_name'] = owner
-    else:
-        source['exam']['class_name'] = owner
-    saved = reports / '.class_analysis' / f'{sid}.json'
-    saved.parent.mkdir(parents=True, exist_ok=True)
-    saved.write_text(json.dumps(legacy, ensure_ascii=False), encoding='utf-8')
-    with sqlite3.connect(db.db_path) as connection:
-        connection.execute("UPDATE students SET class_name='TEST-renamed-class'")
-    before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in reports.rglob('*') if path.is_file()}
-    response = client.get(f'/api/sessions/{sid}/class-analysis', params={'class_name': owner, 'view': 'narrative'})
-    assert response.status_code == 200
-    assert response.json()['selected_class'] == owner
-    assert response.json()['narrative']['key_findings'][0]['title'] == '证明题得分率低'
-    html = client.get(f'/api/sessions/{sid}/class-analysis/report', params={'class_name': owner})
-    assert html.status_code == 200
-    assert '证明题得分率低' in html.text and '按生成时保存的成绩展示' in html.text
-    assert '张三' in html.text and '李四' in html.text
-    assert before == {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in reports.rglob('*') if path.is_file()}
-
-
-@pytest.mark.parametrize('owner_fields', [{}, {'class_name': 'TEST-one', 'source': {'class_name': 'TEST-another'}}])
-def test_legacy_top_level_class_body_with_unknown_or_conflicting_owner_is_not_attached_to_current_class(personal_api, owner_fields):
-    from tests.test_analysis_report import CLASS_NARRATIVE
-    client, _db, sid, _papers, reports, _manager = personal_api
-    narrative = {**CLASS_NARRATIVE, 'key_findings': [{'title': 'TEST-unassigned-body', 'detail': 'TEST-old', 'severity': 'info'}]}
-    saved = reports / '.class_analysis' / f'{sid}.json'
-    saved.parent.mkdir(parents=True, exist_ok=True)
-    saved.write_text(json.dumps(dict(narrative=narrative, **owner_fields), ensure_ascii=False), encoding='utf-8')
-    before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in reports.rglob('*') if path.is_file()}
-    response = client.get(f'/api/sessions/{sid}/class-analysis', params={'view': 'narrative'})
-    assert response.status_code == 200 and response.json()['narrative'] is None
-    html = client.get(f'/api/sessions/{sid}/class-analysis/report')
-    assert html.status_code == 200 and 'TEST-unassigned-body' not in html.text
-    assert before == {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in reports.rglob('*') if path.is_file()}

@@ -6,8 +6,6 @@
 .kn-intro { margin:12px 0; max-width:64em; }
 .kn-scope { font-size:13px; line-height:1.8; color:#395574; }
 .kn-thresholds { font-size:11px; color:#617086; }
-.kn-distribution { display:flex; flex-wrap:wrap; gap:4px 10px; padding-top:8px; margin-top:8px; border-top:1px solid #e8edf3; font-size:11px; color:#53667e; }
-.kn-distribution>span { display:inline-flex; align-items:center; gap:4px; }
 .kn-help { margin:12px 0 20px; }
 .kn-footnote { margin:18px 0 0; padding-top:12px; border-top:1px solid #e5ebf2; }
 .kn-legend { display:flex; flex-wrap:wrap; gap:8px 22px; font-size:12px; align-items:center; }

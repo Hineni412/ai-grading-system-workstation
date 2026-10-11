@@ -1,4 +1,4 @@
-"""班级与个人报告共用的错因保存、读取和统计。"""
+"""错因整理与个人报告共用的错因保存、读取和统计。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from backend.reporting.analysis_report_prompts import CLASS_MAX_TOKENS, CLASS_SYSTEM_PROMPT
 from backend.jobs.manager import (
     ActiveJobExistsError,
     JobContext,
@@ -1833,28 +1832,6 @@ def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _saved_class_reports(state: dict | None) -> dict:
-    """按保存归属读班级正文；旧顶层正文只有明确班级信息时才纳入。"""
-    if not isinstance(state, dict):
-        return {}
-    reports = dict(state.get('class_reports') or {}) if isinstance(state.get('class_reports'), dict) else {}
-    if not isinstance(state.get('narrative'), dict):
-        return reports
-    source = state.get('source') if isinstance(state.get('source'), dict) else {}
-    exam = source.get('exam') if isinstance(source.get('exam'), dict) else {}
-    owners = {name.strip() for name in (state.get('class_name'), source.get('class_name'), exam.get('class_name'))
-              if isinstance(name, str) and name.strip()}
-    if len(owners) != 1:
-        return reports
-    owner = next(iter(owners))
-    current = reports.get(owner)
-    if not isinstance(current, dict) or not isinstance(current.get('narrative'), dict):
-        reports[owner] = {key: state[key] for key in ('narrative', 'source', 'student_ids', 'generated_at', 'needs_update', 'status')
-                          if key in state}
-    return reports
-
-
-
 class ClassAnalysisStateStore:
     """每场次一个状态文件；旧格式原地读取，损坏时提示并保留原文件。"""
 
@@ -1871,7 +1848,6 @@ class ClassAnalysisStateStore:
             "status": None,
             "generated_at": None,
             "small_sample": False,
-            "class_reports": {},
             "cause_analysis": None,
             "error_records": {},
             "option_analysis": {},
@@ -1947,26 +1923,6 @@ def submit_class_analysis_generate(
         raise
 
 
-def _class_narrative(*, client: Any, prompt: str) -> dict[str, Any] | None:
-    """恰好调用 1 次模型，任何异常只降级不重发；结果由调用方存入班级条目。"""
-    try:
-        narrative = client.json_from_text(
-            prompt,
-            extra_kwargs={"temperature": 0.3, "max_tokens": CLASS_MAX_TOKENS},
-        )
-    except Exception as exc:
-        logging.getLogger(__name__).warning(
-            "optional operation unavailable: _class_narrative (%s)", type(exc).__name__,
-        )
-        return None
-    if not isinstance(narrative, dict):
-        return None
-    lists = ("key_findings", "common_issues", "student_notes")
-    if any(key in narrative and not isinstance(narrative[key], list) for key in lists):
-        return None
-    return narrative if any(narrative.get(key) for key in (*lists, "grouping_advice")) else None
-
-
 def run_class_analysis_generate(
     context: JobContext,
     *,
@@ -1976,7 +1932,7 @@ def run_class_analysis_generate(
     llm_client_factory: Callable[[], Any] | None,
     exporter_factory: Callable[..., Any] | None = None,
 ) -> dict[str, object]:
-    """错因、班级与个人报告的统一整理任务。"""
+    """错因整理与个人报告的统一整理任务。"""
     if context.payload.get("session_id") is None:
         raise ValueError("session_id is required")
     if str(context.payload.get("kind") or "") != "pipeline":

@@ -10,17 +10,20 @@ import pytest
 
 from backend.scan_grading.ai_grader import _normalize_grading_errors
 from backend.class_analysis import (
-    CAUSE_ANALYSIS_VERSION, CausePatternEditError,
+    CausePatternEditError,
     ClassAnalysisStateStore, edit_cause_pattern,
     plan_cause_question,
 )
 
 # 旧版提示词结果在会话内仍可修改错法名（迁移后 prompt_version 保留原值）。
 CAUSE_PRE_STEP_VERSION = "class_error_causes_v3"
+CAUSE_ANALYSIS_VERSION = "class_error_causes_v4"
 from backend.error_patterns import (
-    OPTION_ANALYSIS_VERSION, bank_confirmed_triggers, question_fingerprint, save_option_analysis,
+    bank_confirmed_triggers, save_option_analysis,
     synthesize_option_result,
 )
+
+OPTION_ANALYSIS_VERSION = "option_analysis_v1"
 from question_bank.database.schema import connect, initialize_database
 from question_bank.services.error_pattern_service import (
     list_patterns,
@@ -65,7 +68,7 @@ def test_report_preparation_reuses_current_results_without_model(tmp_path, monke
     import backend.class_analysis as causes
     path, _qid = _choice_question(tmp_path)
     source = {"question_id": "Q1", "question_text": "题干", "reference_analysis": "解析", "evidence": []}
-    fingerprint = causes._cause_input_fingerprint(source)
+    fingerprint = "fp-ignored"
     store = ClassAnalysisStateStore(tmp_path / "reports")
     store.save(3, cause_analysis={"questions": {"Q1": {"prompt_version": CAUSE_ANALYSIS_VERSION,
                "input": source, "input_digest": fingerprint, "result": {"groups": []}}}},
@@ -98,17 +101,16 @@ def test_diagnosis_and_history_ignore_stale_raw_state(tmp_path, monkeypatch):
 
 
 def test_backfill_skips_stale_state_and_is_idempotent(tmp_path):
-    from backend.class_analysis import _cause_input_fingerprint
     from backend.error_patterns import sync_session_patterns_to_bank
     path, qid = _choice_question(tmp_path)
     source = {"question_id": "Q1", "question_text": "题干\nA. 1\nB. 2\nC. 3\nD. 4", "canonical_answer": "B",
               "evidence": [{"id": "E1", "student_answer": "C"}]}
     store = ClassAnalysisStateStore(tmp_path / "reports")
     store.save(3, cause_analysis={"questions": {"Q1": {"prompt_version": CAUSE_ANALYSIS_VERSION,
-               "input": source, "input_digest": _cause_input_fingerprint(source), "origin": "option_map",
+               "input": source, "input_digest": "fp-ignored", "origin": "option_map",
                "result": {"groups": [{"evidence_ids": ["E1"]}]}}}},
                option_analysis={"Q1": {"version": OPTION_ANALYSIS_VERSION,
-                 "input_fingerprint": question_fingerprint(source["question_text"], "B"), "source": "model",
+                 "input_fingerprint": "fp-ignored", "source": "model",
                  "analysis": {"C": {"category": "计算与化简", "pattern": "误选C"}}}})
     context = {"Q1": {"bank_id": qid}}
     assert sync_session_patterns_to_bank(store, 3, path, context, current_sources=[{**source, "canonical_answer": "A"}]) == 0
@@ -121,7 +123,6 @@ def test_backfill_skips_stale_state_and_is_idempotent(tmp_path):
 
 def test_step_organized_result_syncs_rows_per_evidence_point(tmp_path):
     """v4 整理结果按物化记录的证据点写 step 触发行；无点成员补 observation。"""
-    from backend.class_analysis import _cause_input_fingerprint
     from backend.error_patterns import sync_session_patterns_to_bank
 
     path, qid = _choice_question(tmp_path)
@@ -137,7 +138,7 @@ def test_step_organized_result_syncs_rows_per_evidence_point(tmp_path):
             {"id": "E2", "student_answer": "作答二"},
         ],
     }
-    fingerprint = _cause_input_fingerprint(source)
+    fingerprint = "fp-ignored"
     store = ClassAnalysisStateStore(tmp_path / "reports")
     store.save(3, cause_analysis={"questions": {"Q2": {
         "prompt_version": CAUSE_ANALYSIS_VERSION, "origin": "model",
@@ -209,8 +210,10 @@ def test_failed_new_draft_does_not_reopen_review_when_teacher_version_still_matc
                      (qid, "b"*64, "a"*64, current_hash))
     reader = QuestionBankReadService(path)
     assert reader.get_question(qid)["criteria_needs_review"] is False
+    from question_bank.training_criteria import sync_criterion_source
     with connect(path) as conn:
         conn.execute("UPDATE questions SET question_text='TEST-题目正文已改变' WHERE id=?", (qid,))
+        sync_criterion_source(path, tmp_path, conn, qid)
     assert reader.get_question(qid)["criteria_needs_review"] is True
 
 
@@ -291,7 +294,7 @@ def test_unexplained_option_stays_uncertain_without_repeated_model_call(tmp_path
     store = ClassAnalysisStateStore(tmp_path / "reports")
     save_option_analysis(store, 7, "Q1", {
         "version": OPTION_ANALYSIS_VERSION,
-        "input_fingerprint": question_fingerprint(source["question_text"], "B"),
+        "source_input": {"question_text": source["question_text"], "canonical_answer": "B"},
         "bank_question_id": qid,
         "analysis": {"A": {
             "category": "计算与化简", "pattern": "误选A的计算",
@@ -349,7 +352,9 @@ def test_rejected_option_stays_uncertain_when_model_fills_other_options(monkeypa
         "text": "题干\nA. 1\nB. 2\nC. 3\nD. 4", "correct": "B",
         "letters": list("ABCD"), "required": ["A", "D"], "blocked": ["C"],
         "base_patterns": {"A": {"category": "计算与化简", "pattern": "已有A"}},
-        "patterns": None, "fingerprint": "synthetic", "bank_id": 1,
+        "patterns": None,
+        "source_input": {"question_text": "题干\nA. 1\nB. 2\nC. 3\nD. 4", "canonical_answer": "B"},
+        "bank_id": 1,
     }
     client = SimpleNamespace(json_from_text=lambda *args, **kwargs: {
         "options": [
@@ -467,7 +472,7 @@ def test_class_edit_uses_current_option_after_detail_edit(tmp_path):
         }]},
     }}}, option_analysis={"Q1": {
         "version": OPTION_ANALYSIS_VERSION,
-        "input_fingerprint": question_fingerprint(source["question_text"], "B"),
+        "input_fingerprint": "fp-ignored",
         "bank_question_id": qid, "source": "bank_confirmed", "failed": False,
         "analysis": {"C": {"category": "计算与化简", "pattern": old}},
     }})
@@ -891,7 +896,7 @@ def test_question_detail_skill_edit_endpoint(tmp_path):
     assert (row["skill_key"], row["skill_source"]) == (_SKILL_KEY, "criterion")
 
 
-# ── 并行错因整理与班级报告并发 ────────────────────────────────────
+# ── 并行错因整理 ────────────────────────────────────
 
 
 def _v3_cause_source(question_id: str) -> dict:
@@ -1063,65 +1068,3 @@ def test_cause_analysis_single_fresh_name_skips_merge_call(tmp_path, monkeypatch
     outcome, _store = _run_parallel_causes(tmp_path, monkeypatch, sources, client)
     assert outcome["status"] == "ready"
     assert len(client.calls) == 2 and client.merge_calls == 0
-
-
-def test_class_reports_generate_in_parallel(tmp_path, monkeypatch):
-    import backend.report_pipeline as pipeline
-    import backend.reporting.analysis_report_exporter as exporter_module
-    import backend.session_analysis as session_analysis
-
-    lock = threading.Lock()
-    inflight = [0]
-    peak = [0]
-    barrier = threading.Barrier(2, timeout=5)
-
-    class _Client:
-        config_gateway = SimpleNamespace(
-            execution_snapshot=SimpleNamespace(max_in_flight=4))
-
-        def json_from_text(self, prompt, extra_kwargs=None, **_kwargs):
-            with lock:
-                inflight[0] += 1
-                peak[0] = max(peak[0], inflight[0])
-            try:
-                barrier.wait()
-                return {"key_findings": [], "common_issues": [], "student_notes": []}
-            finally:
-                with lock:
-                    inflight[0] -= 1
-
-    groups = {
-        name: SimpleNamespace(
-            students=[SimpleNamespace(student_id=index, records=[])]
-        )
-        for index, name in enumerate(("1 班", "2 班"), start=1)
-    }
-    monkeypatch.setattr(
-        session_analysis, "assemble_session_analysis",
-        lambda *a, **k: SimpleNamespace(students=[object()], small_sample=False),
-    )
-    monkeypatch.setattr(
-        session_analysis, "split_session_analysis_by_class", lambda _data: groups)
-    monkeypatch.setattr(pipeline, "session_error_records", lambda *a, **k: {})
-    monkeypatch.setattr(exporter_module, "build_class_payload", lambda *a, **k: {})
-    monkeypatch.setattr(exporter_module, "build_report_prompt", lambda *a, **k: "prompt")
-
-    context = SimpleNamespace(
-        payload={"session_id": 3}, raise_if_cancelled=lambda: None,
-        report=lambda *a, **k: None,
-    )
-    reports_dir = tmp_path / "reports"
-    summary = pipeline.generate_session_class_reports(
-        context,
-        db=SimpleNamespace(
-            reviews=SimpleNamespace(list_teacher_score_locks=lambda _sid: [])
-        ),
-        session_id=3,
-        reports_dir=reports_dir, data_root=tmp_path, client=_Client(),
-    )
-    # 两班叙述请求互相等待：串行执行会超时，完成即证明并发 ≥2。
-    assert summary["status"] == "ready" and summary["generated"] == 2
-    assert peak[0] >= 2
-    state = ClassAnalysisStateStore(reports_dir).load(3)
-    assert all(
-        entry["status"] == "ready" for entry in state["class_reports"].values())

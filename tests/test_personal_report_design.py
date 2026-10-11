@@ -7,7 +7,7 @@ from tests.test_analysis_report import analysis_db  # noqa: F401
 
 
 def test_graph_uses_current_mastery_separately_from_exam_scores(analysis_db):
-    from backend.reporting.analysis_report_exporter import _personal_knowledge_view, _class_knowledge_view, _knowledge_view_html
+    from backend.reporting.analysis_report_exporter import _personal_knowledge_view, _knowledge_view_html
     from backend.session_analysis import assemble_session_analysis
 
     db, session, root = analysis_db
@@ -71,12 +71,6 @@ def test_graph_uses_current_mastery_separately_from_exam_scores(analysis_db):
     assert 'kn-node kn-missing" data-key="topic"' in html
     assert "明显薄弱" in html and "还不稳" in html
     assert "需巩固" not in html
-    class_view = _class_knowledge_view(data)
-    topic = next(n for n in class_view["nodes"] if n["key"] == "topic")
-    assert topic["mastery"] == .91
-    assert topic["coverage"] == 1
-    assert topic["distribution"] == {"weak": 0, "unsteady": 0, "stable": 0, "insufficient": 1}
-    assert topic["missing_count"] == len(data.students)-1
     data.knowledge_structure["catalog"] = [
         {"knowledge_key": "topic", "parent_knowledge_key": "section_ref", "knowledge_point": "根式", "node_kind": "topic"},
         {"knowledge_key": "section_ref", "knowledge_point": "本节", "node_kind": "section"},
@@ -93,7 +87,7 @@ def test_mixed_release_keeps_unconverted_reports_in_skill_mode(
     import sqlite3
     from openpyxl import load_workbook
     from backend.reporting.analysis_report_exporter import (
-        _class_knowledge_view, _knowledge_view_html, _personal_knowledge_view, render_class_html,
+        _knowledge_view_html, _personal_knowledge_view,
     )
     from backend.reporting.report import ReportGenerator
     from backend.session_analysis import assemble_session_analysis, enrich_personal_knowledge
@@ -120,8 +114,6 @@ def test_mixed_release_keeps_unconverted_reports_in_skill_mode(
         assert all(node["full"] == 100 and node["score"] == student.student_score for node in view["nodes"])
         if not semester_bound:
             assert all(node["mastery"] is None for node in view["nodes"])
-    assert _class_knowledge_view(data)["target_kind"] == "skill"
-    assert "班级知识与技能掌握图" in render_class_html(data, None)
     workbook = load_workbook(ReportGenerator(db, root / "out").export_session(session))
     try:
         assert "知识点分析" in workbook.sheetnames and "题型分析" not in workbook.sheetnames
@@ -137,8 +129,8 @@ def test_type_reports_group_current_types_without_changing_exam_scores(
     import sqlite3
     from bs4 import BeautifulSoup
     from backend.reporting.analysis_report_exporter import (
-        _class_knowledge_view, _knowledge_view_html, _personal_exam_points, _personal_knowledge_view,
-        _render_personal_html, render_class_html,
+        _knowledge_view_html, _personal_exam_points, _personal_knowledge_view,
+        _render_personal_html,
     )
     from backend.session_analysis import assemble_session_analysis, enrich_personal_knowledge
     from tests.test_analysis_report import _score_state, _seed_report_knowledge
@@ -176,25 +168,8 @@ def test_type_reports_group_current_types_without_changing_exam_scores(
         assert "这个题型是否做对" in report.get_text()
         assert "几个知识点" not in report.get_text()
 
-    class_view = _class_knowledge_view(data)
-    assert class_view["target_kind"] == "type"
-    (node,) = class_view["nodes"]
-    assert (node["score"], node["full"], class_view["student_count"]) == (140, 200, 2)
-    assert [(q["id"], q["score"], q["full"]) for q in node["questions"]] == [("Q1", 45, 60), ("Q2", 25, 40)]
-    if not semester_bound:
-        assert (node["mastery"], node["coverage"], node["missing_count"]) == (None, 0, 2)
-    html = BeautifulSoup(_knowledge_view_html(class_view), "html.parser")
-    assert html.select_one(".kn-heading h2").get_text() == "班级题型掌握图"
-    assert len(html.select(".kn-types .kn-node")) == 1
-    assert html.select(".kn-topics, .kn-skills") == []
-    report = BeautifulSoup(render_class_html(data, None), "html.parser")
-    assert report.select_one("#knowledge-map h2").get_text() == "班级题型掌握图"
     # A missing bank link leaves scored questions available and no invented target.
     data.knowledge_backfill = {}
-    empty = BeautifulSoup(render_class_html(data, None), "html.parser")
-    assert empty.select_one("#knowledge-map h2").get_text() == "班级题型掌握图"
-    assert "尚无可可靠匹配的题型标签" in empty.get_text()
-    assert "第1题" in empty.get_text() and "第2题" in empty.get_text()
     if not semester_bound:
         # With neither a volume nor confirmed targets, use legacy display;
         # another volume's type nodes cannot establish this exam's scope.

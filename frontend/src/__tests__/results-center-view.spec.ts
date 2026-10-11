@@ -275,9 +275,8 @@ describe('results center class filtering and return position', () => {
   it('keeps 看卷 10 分钟 enabled while a changed refresh revalidates the analysis', async () => {
     const analysis: ClassAnalysisResponse = {
       status: 'ready', auto_generate: true, small_sample: true, data: null,
-      cause_analysis: null, generated_at: null, stale: false, active_job_id: null,
-      narrative_failed: false, class_names: ['一班', '二班'], selected_class: null,
-      narrative: { key_findings: [], common_issues: [], student_notes: [], grouping_advice: '' },
+      cause_analysis: null, generated_at: null, active_job_id: null,
+      class_names: ['一班', '二班'], selected_class: null,
     }
     const { host } = await mountView('overview', analysis)
     const button = () => [...host.querySelectorAll<HTMLButtonElement>('button')]
@@ -363,42 +362,15 @@ describe('results center class filtering and return position', () => {
     expect(() => decodeResultsCenterResponse(invalid)).toThrow()
   })
 
-  it('loads overview statistics and narrative through one existing full response', async () => {
+  it('loads overview statistics through one summary response', async () => {
     const { host } = await mountView('overview', {
       status: 'ready', auto_generate: true, small_sample: true, data: null,
-      cause_analysis: null, generated_at: null, stale: false, active_job_id: null,
-      narrative_failed: false, class_names: ['一班', '二班'], selected_class: null,
-      narrative: { key_findings: [{ title: '合成观察', detail: '同一响应的分析文字', severity: 'info' }],
-        common_issues: [], student_notes: [], grouping_advice: '' },
+      cause_analysis: null, generated_at: null, active_job_id: null,
+      class_names: ['一班', '二班'], selected_class: null,
     })
-    await vi.waitFor(() => expect(host.textContent).toContain('合成观察'))
+    await vi.waitFor(() => expect(host.textContent).toContain('题目得分率'))
     expect(classAnalysisMock.getClassAnalysis).toHaveBeenCalledTimes(1)
-    expect(classAnalysisMock.getClassAnalysis).toHaveBeenCalledWith(7, expect.any(AbortSignal), '', 'full')
-  })
-
-  it('points the missing-narrative tile at the header button instead of a second entry', async () => {
-    const { host } = await mountView('overview', {
-      status: 'ready', auto_generate: true, small_sample: false, data: null,
-      cause_analysis: null, generated_at: null, stale: false, active_job_id: null,
-      narrative_failed: false, class_names: ['一班'], selected_class: '一班',
-      narrative: null,
-    })
-    await vi.waitFor(() => expect(host.textContent).toContain('AI 整理后显示'))
-    expect(host.textContent).toContain('点页面顶部「AI 整理」补齐')
-    expect(host.textContent).not.toContain('去 AI 整理')
-  })
-
-  it('points the stale-narrative tile at the header button instead of a second entry', async () => {
-    const { host } = await mountView('overview', {
-      status: 'ready', auto_generate: true, small_sample: false, data: null,
-      cause_analysis: null, generated_at: '2026-10-03', stale: true, active_job_id: null,
-      narrative_failed: false, class_names: ['一班'], selected_class: '一班',
-      narrative: { key_findings: [{ title: '合成观察', detail: '旧叙述', severity: 'info' }],
-        common_issues: [], student_notes: [], grouping_advice: '' },
-    })
-    await vi.waitFor(() => expect(host.textContent).toContain('相关内容已修改，报告仍可查看；可在「AI 整理」中选择更新。'))
-    expect(host.textContent).toContain('查看报告')
-    expect(host.textContent).not.toContain('去 AI 整理')
+    expect(classAnalysisMock.getClassAnalysis).toHaveBeenCalledWith(7, expect.any(AbortSignal), '', 'summary')
   })
 
   it('uses the visible class, status and search scope without averaging incomplete scores as zero', async () => {
@@ -542,7 +514,6 @@ describe('results center class filtering and return position', () => {
       active_job_id: null,
       review_pending: 1,
       causes: { pending_questions: 2, total_questions: 4, call_count: 3, estimated_tokens: 12000 },
-      class_reports: { pending: 2, total: 2 },
       personal_reports: { pending: 3, total: 4, call_count: 5, cache_hits: 1, estimated_tokens: 34000 },
       complete: false,
     })
@@ -594,7 +565,6 @@ describe('results center class filtering and return position', () => {
       active_job_id: null,
       review_pending: 0,
       causes: { pending_questions: 0, total_questions: 4, call_count: 0, estimated_tokens: 0 },
-      class_reports: { pending: 0, total: 2 },
       personal_reports: { pending: 0, total: 4, call_count: 0, cache_hits: 0, estimated_tokens: 0 },
       complete: true,
     })
@@ -620,7 +590,6 @@ describe('results center class filtering and return position', () => {
       active_job_id: 88,
       review_pending: 0,
       causes: { pending_questions: 2, total_questions: 4, call_count: 3, estimated_tokens: 12000 },
-      class_reports: { pending: 2, total: 2 },
       personal_reports: { pending: 3, total: 4, call_count: 5, cache_hits: 1, estimated_tokens: 34000 },
       complete: false,
     })
@@ -662,7 +631,6 @@ describe('results center class filtering and return position', () => {
       active_job_id: null,
       review_pending: 0,
       causes: { pending_questions: 2, total_questions: 4, call_count: 3, estimated_tokens: 12000 },
-      class_reports: { pending: 2, total: 2 },
       personal_reports: { pending: 3, total: 4, call_count: 5, cache_hits: 1, estimated_tokens: 34000 },
       complete: false,
     })

@@ -14,11 +14,6 @@ export interface ReportPipelineCausesStatus {
   estimated_tokens: number
 }
 
-export interface ReportPipelineClassesStatus {
-  pending: number
-  total: number
-}
-
 export interface ReportPipelinePersonalStatus {
   pending: number
   total: number
@@ -35,7 +30,6 @@ export interface ReportPipelineStatus {
   active_job_id: number | null
   review_pending: number
   causes: ReportPipelineCausesStatus
-  class_reports: ReportPipelineClassesStatus
   personal_reports: ReportPipelinePersonalStatus
   complete: boolean
 }
@@ -63,9 +57,6 @@ function decodeStatus(value: unknown): ReportPipelineStatus {
     || !isNonnegativeInteger(value.causes.total_questions)
     || !isNonnegativeInteger(value.causes.call_count)
     || !isNonnegativeInteger(value.causes.estimated_tokens)
-    || !isRecord(value.class_reports)
-    || !isNonnegativeInteger(value.class_reports.pending)
-    || !isNonnegativeInteger(value.class_reports.total)
     || !isRecord(value.personal_reports)
     || !isNonnegativeInteger(value.personal_reports.pending)
     || !isNonnegativeInteger(value.personal_reports.total)
@@ -84,7 +75,6 @@ function decodeStatus(value: unknown): ReportPipelineStatus {
     active_job_id: decodeActiveJobId(value.active_job_id),
     review_pending: value.review_pending,
     causes: value.causes as unknown as ReportPipelineCausesStatus,
-    class_reports: value.class_reports as unknown as ReportPipelineClassesStatus,
     personal_reports: value.personal_reports as unknown as ReportPipelinePersonalStatus,
     complete: value.complete,
   }

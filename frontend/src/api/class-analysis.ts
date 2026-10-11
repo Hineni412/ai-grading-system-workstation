@@ -170,44 +170,13 @@ export interface ClassAnalysisData {
   skipped: ClassAnalysisSkipped[]
 }
 
-export interface ClassNarrativeKeyFinding {
-  title: string
-  detail: string
-  severity: string
-}
-
-export interface ClassNarrativeCommonIssue {
-  title: string
-  evidence: string
-  teaching_action: string
-}
-
-export interface ClassNarrativeStudentNote {
-  alias: string
-  note: string
-  suggestion: string
-  flags: string[]
-}
-
-export interface ClassNarrative {
-  key_findings: ClassNarrativeKeyFinding[]
-  common_issues: ClassNarrativeCommonIssue[]
-  student_notes: ClassNarrativeStudentNote[]
-  grouping_advice: string
-}
-
 export interface ClassAnalysisResponse {
   status: ClassAnalysisStatus
   auto_generate: boolean
   small_sample: boolean
   data: ClassAnalysisData | null
-  narrative: ClassNarrative | null
-  narrative_failed: boolean
   generated_at: string | null
-  stale: boolean
   read_error?: string | null
-  /** 所选班级叙述条目的结果状态；summary 视图或未选班为 undefined。 */
-  narrative_state?: CauseResultState | null
   active_job_id: number | null
   class_names?: string[]
   selected_class?: string | null
@@ -510,39 +479,6 @@ function decodeData(value: unknown): ClassAnalysisData {
   }
 }
 
-function decodeNarrative(value: unknown): ClassNarrative {
-  if (
-    !isRecord(value)
-    || !Array.isArray(value.key_findings)
-    || !value.key_findings.every((finding) => (
-      isRecord(finding)
-      && typeof finding.title === 'string'
-      && typeof finding.detail === 'string'
-      && typeof finding.severity === 'string'
-    ))
-    || !Array.isArray(value.common_issues)
-    || !value.common_issues.every((issue) => (
-      isRecord(issue)
-      && typeof issue.title === 'string'
-      && typeof issue.evidence === 'string'
-      && typeof issue.teaching_action === 'string'
-    ))
-    || !Array.isArray(value.student_notes)
-    || !value.student_notes.every((note) => (
-      isRecord(note)
-      && typeof note.alias === 'string'
-      && typeof note.note === 'string'
-      && typeof note.suggestion === 'string'
-      && Array.isArray(note.flags)
-      && note.flags.every((flag) => typeof flag === 'string')
-    ))
-    || typeof value.grouping_advice !== 'string'
-  ) {
-    throw new Error('Invalid class narrative')
-  }
-  return value as unknown as ClassNarrative
-}
-
 // 后端 job id 是整数（与 JobResponse.id 一致）；兼容数字字符串，非法值返回 undefined。
 function decodeActiveJobId(value: unknown): number | null | undefined {
   if (value === null) return null
@@ -562,16 +498,11 @@ export function decodeClassAnalysisResponse(value: unknown): ClassAnalysisRespon
     || typeof value.auto_generate !== 'boolean'
     || typeof value.small_sample !== 'boolean'
     || !(value.data === null || isRecord(value.data))
-    || !(value.narrative === null || isRecord(value.narrative))
-    || typeof value.narrative_failed !== 'boolean'
     || !isNullableString(value.generated_at)
-    || typeof value.stale !== 'boolean'
     || (value.read_error !== undefined && !isNullableString(value.read_error))
     || decodeActiveJobId(value.active_job_id) === undefined
     || !(value.class_names === undefined || (Array.isArray(value.class_names) && value.class_names.every((item) => typeof item === 'string')))
     || !(value.selected_class === undefined || isNullableString(value.selected_class))
-    || !(value.narrative_state === undefined || value.narrative_state === null
-      || value.narrative_state === 'old_prompt' || CAUSE_RESULT_STATES.some((s) => s === value.narrative_state))
   ) {
     throw new Error('Invalid class analysis response')
   }
@@ -580,13 +511,8 @@ export function decodeClassAnalysisResponse(value: unknown): ClassAnalysisRespon
     auto_generate: value.auto_generate,
     small_sample: value.small_sample,
     data: value.data === null ? null : decodeData(value.data),
-    narrative: value.narrative === null ? null : decodeNarrative(value.narrative),
-    narrative_failed: value.narrative_failed,
     generated_at: value.generated_at,
-    stale: value.stale,
     read_error: typeof value.read_error === "string" ? value.read_error : null,
-    ...(value.narrative_state !== undefined
-      ? { narrative_state: value.narrative_state === null ? null : decodeCauseState(value.narrative_state) } : {}),
     active_job_id: decodeActiveJobId(value.active_job_id) ?? null,
     ...(value.cause_analysis === undefined ? {} : { cause_analysis: decodeCauseAnalysis(value.cause_analysis) }),
     ...(Array.isArray(value.class_names) ? { class_names: value.class_names as string[] } : {}),
@@ -614,7 +540,7 @@ export const classAnalysisApi = {
     sessionId: number,
     signal?: AbortSignal,
     className?: string,
-    view?: 'full' | 'summary' | 'narrative',
+    view?: 'full' | 'summary',
   ): Promise<ClassAnalysisResponse> {
     const id = requireSessionId(sessionId)
     const query = new URLSearchParams()

@@ -38,32 +38,6 @@ PERSONAL_NARRATIVE = {
     ],
 }
 
-CLASS_NARRATIVE = {
-    "key_findings": [
-        {
-            "title": "证明题得分率低",
-            "detail": "第 2 题全班得分率不足一半",
-            "severity": "high",
-        }
-    ],
-    "common_issues": [
-        {
-            "title": "证明步骤缺失",
-            "evidence": "S1、S2 均缺关键步骤",
-            "teaching_action": "板书示范 10 分钟",
-        }
-    ],
-    "student_notes": [
-        {"alias": "S1", "note": "高但证明扣分", "suggestion": "保持", "flags": []},
-        {
-            "alias": "S2",
-            "note": "客观题失分多",
-            "suggestion": "建议当面了解",
-            "flags": ["needs_review", "priority_talk"],
-        },
-    ],
-    "grouping_advice": "按分数断层分层布置作业",
-}
 from backend.repositories.grading_database import open_grading_repositories
 
 
@@ -621,7 +595,7 @@ def test_report_keeps_same_named_types_separate_by_current_identity(
     analysis_db, question_bank_database,
 ):
     from openpyxl import load_workbook
-    from backend.reporting.analysis_report_exporter import _class_knowledge_view
+    from backend.reporting.analysis_report_exporter import _personal_knowledge_view
     from backend.reporting.report import ReportGenerator
     from backend.session_analysis import assemble_session_analysis, enrich_personal_knowledge
 
@@ -636,10 +610,9 @@ def test_report_keeps_same_named_types_separate_by_current_identity(
     before = _score_state(db.db_path)
     data = assemble_session_analysis(db, session, data_root=root)
     enrich_personal_knowledge(db, data, root)
-    nodes = _class_knowledge_view(data)["nodes"]
+    nodes = _personal_knowledge_view(data, data.students[0])["nodes"]
     assert {node["key"] for node in nodes} == {bank.type_key, second_type}
     assert [node["label"] for node in nodes] == ["合成题型", "合成题型"]
-    assert sorted((node["score"], node["full"]) for node in nodes) == [(50, 80), (90, 120)]
     workbook = load_workbook(ReportGenerator(db, root / "out").export_session(session))
     try:
         rows = list(workbook["题型分析"].iter_rows(values_only=True))

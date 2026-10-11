@@ -1,4 +1,4 @@
-"""错因、班级报告与个人报告的统一整理流程。
+"""错因整理与个人报告的统一整理流程。
 
 默认补缺失。手动整理可重试失败项；明确勾选更新才重新生成已有内容。
 查看与更新提醒不触发模型。成功替换一份主结果，失败保留已有内容。
@@ -9,20 +9,15 @@ from __future__ import annotations
 import logging
 import tempfile
 from collections.abc import Callable
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
 from backend.class_analysis import (
     ClassAnalysisStateStore,
-    _saved_class_reports,
-    _class_narrative,
     _now_iso,
     run_cause_analysis,
-    session_error_records,
     submit_class_analysis_generate,
 )
-from backend.report_results import resolve_result_state
 from backend.jobs.manager import JobContext, JobManager
 from backend.jobs.store import JobRecord
 from backend.repositories.access import as_grading_repositories
@@ -43,7 +38,7 @@ def run_report_pipeline(
     llm_client_factory: Callable[[], Any] | None,
     exporter_factory: Callable[..., Any] | None = None,
 ) -> dict[str, object]:
-    """顺序执行错因整理、班级叙述与个人叙述；每步只补缺失内容。"""
+    """顺序执行错因整理与个人报告生成；每步只补缺失内容。"""
 
     session_id = int(context.payload["session_id"])
     mode = "auto" if str(context.payload.get("mode") or "") == "auto" else "manual"
@@ -55,7 +50,7 @@ def run_report_pipeline(
     client = llm_client_factory() if llm_client_factory is not None else None
     if client is None:
         # 未配置内容生成模型：不静默换模型，记 not_configured 供页面降级显示；
-        # 只写状态字段，已有叙述与班级条目原样保留。
+        # 只写状态字段，已有内容原样保留。
         store.save(
             session_id,
             status="not_configured",
@@ -79,31 +74,17 @@ def run_report_pipeline(
             llm_client_factory=lambda: client,
             retry_failed=(mode == "manual"),
             regenerate_existing=context.payload.get("regenerate_existing") is True and mode == "manual",
-            progress_band=(0.02, 0.35),
+            progress_band=(0.02, 0.45),
             progress_stage="report_pipeline",
         )
     except Exception:
         context.raise_if_cancelled()
-        # 整理整体异常不阻断班级与个人阶段，结果中如实记录。
+        # 整理整体异常不阻断个人报告阶段，结果中如实记录。
         LOGGER.warning("report pipeline causes stage failed", exc_info=True)
         causes = {"kind": "causes", "status": "error"}
 
     context.raise_if_cancelled()
-    context.report(0.4, "report_pipeline", "正在生成班级报告")
-    class_summary = generate_session_class_reports(
-        context,
-        db=db,
-        session_id=session_id,
-        reports_dir=Path(reports_dir),
-        data_root=data_root,
-        client=client,
-        regenerate_existing=context.payload.get("regenerate_existing") is True and mode == "manual",
-        progress_band=(0.4, 0.65),
-        progress_stage="report_pipeline",
-    )
-
-    context.raise_if_cancelled()
-    context.report(0.7, "report_pipeline", "正在生成个人报告")
+    context.report(0.5, "report_pipeline", "正在生成个人报告")
     personal_summary = generate_pending_personal_reports(
         context,
         db=db,
@@ -113,13 +94,12 @@ def run_report_pipeline(
         client=client,
         exporter_factory=exporter_factory,
         regenerate_existing=context.payload.get("regenerate_existing") is True and mode == "manual",
-        progress_band=(0.7, 0.98),
+        progress_band=(0.5, 0.98),
         progress_stage="report_pipeline",
     )
 
     ready = (
         causes.get("status") == "ready"
-        and class_summary.get("status") == "ready"
         and int(personal_summary.get("failed") or 0) == 0
     )
     context.report(0.99, "report_pipeline", "ready" if ready else "partial")
@@ -128,107 +108,11 @@ def run_report_pipeline(
         "kind": PIPELINE_KIND,
         "mode": mode,
         "causes": causes,
-        "class_reports": {
-            key: class_summary[key] for key in ("generated", "failed", "skipped")
-        },
         "personal_reports": {
             key: personal_summary.get(key, 0) for key in ("generated", "failed", "skipped")
         },
         "status": "ready" if ready else "partial",
     }
-
-
-def generate_session_class_reports(
-    context: JobContext,
-    *, db: Any, session_id: int, reports_dir: Path, data_root: Path | None,
-    client: Any, regenerate_existing: bool = False,
-    progress_band: tuple[float, float] = (0.0, 1.0),
-    progress_stage: str = "report_pipeline",
-) -> dict[str, Any]:
-    """默认补缺失；明确更新成功才替换同一份班级正文与成绩副本。"""
-    from backend.reporting.analysis_report_exporter import (
-        build_class_payload, build_class_page_data, build_report_prompt,
-    )
-    from backend.reporting.analysis_report_prompts import CLASS_SYSTEM_PROMPT
-    from backend.session_analysis import assemble_session_analysis, split_session_analysis_by_class
-
-    store = ClassAnalysisStateStore(Path(reports_dir))
-    context.raise_if_cancelled()
-    data = assemble_session_analysis(db, int(session_id), data_root=data_root)
-    state = store.load(int(session_id)) or {}
-    stored_reports = _saved_class_reports(state)
-    class_reports = dict(stored_reports)
-    generated_at = _now_iso()
-    groups = split_session_analysis_by_class(data)
-    if not data.students:
-        return {"status": "ready" if stored_reports else "failed", "generated": 0,
-                "failed": 0, "skipped": len(stored_reports), "generated_at": generated_at}
-    pending = []
-    skipped = 0
-    for name, group in groups.items():
-        if not group.students:
-            continue
-        available = resolve_result_state(stored_reports.get(name), "class_report")["status"] != "missing"
-        if available and not regenerate_existing:
-            skipped += 1
-        else:
-            pending.append((name, group))
-    if not pending:
-        return {"status": "ready", "generated": 0, "failed": 0, "skipped": skipped,
-                "generated_at": max((str(entry.get("generated_at") or "") for entry in stored_reports.values()
-                                      if isinstance(entry, dict)), default="") or None}
-    error_records = session_error_records(db, int(session_id), Path(reports_dir), data_root=data_root)
-    lo, hi = progress_band
-    generated = failed = 0
-    execution = getattr(getattr(client, "config_gateway", None), "execution_snapshot", None)
-    parallel_limit = max(1, int(getattr(execution, "max_in_flight", 1)))
-    if pending:
-        def call(item):
-            name, group = item
-            narrative = _class_narrative(client=client, prompt=build_report_prompt(CLASS_SYSTEM_PROMPT, build_class_payload(group, error_records)))
-            return narrative
-
-        with ThreadPoolExecutor(max_workers=min(len(pending), parallel_limit), thread_name_prefix="class-report") as executor:
-            inflight = {executor.submit(call, item): item for item in pending}
-            done = 0
-            while inflight:
-                finished, _ = wait(inflight, return_when=FIRST_COMPLETED)
-                for future in finished:
-                    name, group = inflight.pop(future)
-                    context.raise_if_cancelled()
-                    try:
-                        narrative = future.result()
-                    except Exception:
-                        context.raise_if_cancelled()
-                        narrative = None
-                    if narrative is not None:
-                        source = build_class_page_data(group, compact=False)
-                        source["generated_at"] = generated_at
-                        entry = {"narrative": narrative, "generated_at": generated_at,
-                                 "status": "ready", "needs_update": False,
-                                 "last_generation_failed": False,
-                                 "class_name": name, "source": source,
-                                 "student_ids": [student.student_id for student in group.students]}
-                        class_ids = {getattr(student, "class_id", None) for student in group.students}
-                        if len(class_ids) == 1 and next(iter(class_ids)) is not None:
-                            entry["class_id"] = next(iter(class_ids))
-                        class_reports[name] = entry
-                        generated += 1
-                    else:
-                        previous = class_reports.get(name)
-                        class_reports[name] = {**previous, "last_generation_failed": True} if isinstance(previous, dict) else {
-                            "narrative": None, "status": "failed", "last_generation_failed": True,
-                        }
-                        failed += 1
-                    done += 1
-                    context.report(lo + (hi-lo)*done/max(1,len(pending)), progress_stage, f"正在生成班级报告 {name}")
-                context.raise_if_cancelled()
-    context.raise_if_cancelled()
-    status = "failed" if failed else "ready"
-    store.save(int(session_id), status=status, generated_at=generated_at,
-               small_sample=data.small_sample, class_reports=class_reports)
-    return {"status": status, "generated": generated, "failed": failed,
-            "skipped": skipped, "generated_at": generated_at}
 
 
 def generate_pending_personal_reports(
@@ -330,7 +214,7 @@ def build_report_pipeline_status(
     retry_failed: bool = True,
     regenerate_existing: bool = False,
 ) -> dict[str, Any]:
-    """「AI 整理」状态：配置、复核待办与三阶段待补数量（默认按手动口径）。
+    """「AI 整理」状态：配置、复核待办与两阶段待补数量（默认按手动口径）。
 
     待补 = stale + missing；old_prompt 的结果仍可读，不计入待补、不自动重算。
     """
@@ -342,10 +226,6 @@ def build_report_pipeline_status(
     from backend.reporting.analysis_report_exporter import (
         build_analysis_preflight,
         plan_cause_calls,
-    )
-    from backend.session_analysis import (
-        assemble_session_analysis,
-        split_session_analysis_by_class,
     )
 
     repositories = as_grading_repositories(db)
@@ -361,22 +241,6 @@ def build_report_pipeline_status(
         retry_failed=retry_failed,
         regenerate_existing=regenerate_existing,
     )
-    causes_pending = int(cause_plan["pending_questions"]) > 0
-
-    data = assemble_session_analysis(repositories, int(session_id), page_only=True)
-    error_records = session_error_records(
-        repositories, int(session_id), Path(reports_dir)
-    )
-    stored_reports = _saved_class_reports(state)
-    class_total = 0
-    class_pending = 0
-    for name, group in split_session_analysis_by_class(data).items():
-        if not group.students:
-            continue
-        class_total += 1
-        available = resolve_result_state(stored_reports.get(name), "class_report")["status"] != "missing"
-        if regenerate_existing or not available:
-            class_pending += 1
 
     personal_states = personal_report_states(
         repositories, int(session_id), Path(reports_dir)
@@ -405,7 +269,6 @@ def build_report_pipeline_status(
     }
     complete = (
         int(cause_plan["pending_questions"]) == 0
-        and class_pending == 0
         and not personal_pending_ids
     )
     return {
@@ -421,7 +284,6 @@ def build_report_pipeline_status(
             "call_count": int(cause_plan["call_count"]),
             "estimated_tokens": int(cause_plan["estimated_tokens"]),
         },
-        "class_reports": {"pending": class_pending, "total": class_total},
         "personal_reports": {
             "pending": len(personal_pending_ids),
             "total": personal_total,
@@ -485,7 +347,7 @@ def maybe_auto_generate_report_pipeline(
     if status["complete"]:
         return None
     if not status["configured"]:
-        # 只写状态字段，已有叙述与班级条目原样保留。
+        # 只写状态字段，已有内容原样保留。
         store.save(
             int(session_id),
             status="not_configured",

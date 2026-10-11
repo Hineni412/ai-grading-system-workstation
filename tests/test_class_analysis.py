@@ -17,7 +17,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.test_analysis_report import (
-    CLASS_NARRATIVE,
     PERSONAL_NARRATIVE,
     FakeLLMClient,
     _patch_configured,
@@ -30,7 +29,7 @@ class BlockingLLMClient(FakeLLMClient):
     """json_from_text 阻塞到 release，用于构造 generating 中间态。"""
 
     def __init__(self) -> None:
-        super().__init__(narrative=CLASS_NARRATIVE)
+        super().__init__(narrative=PERSONAL_NARRATIVE)
         self.started = threading.Event()
         self.release = threading.Event()
 
@@ -41,10 +40,10 @@ class BlockingLLMClient(FakeLLMClient):
 
 
 class PipelineClient(FakeLLMClient):
-    """「AI 整理」管线用 fake：按请求内容分派错因分组、班级叙述与个人叙述。"""
+    """「AI 整理」管线用 fake：按请求内容分派错因分组与个人报告正文。"""
 
     def __init__(self) -> None:
-        super().__init__(narrative=CLASS_NARRATIVE)
+        super().__init__(narrative=PERSONAL_NARRATIVE)
         self.kinds: list[str] = []
 
     def _respond(self, prompt, images, extra_kwargs, kwargs):
@@ -73,7 +72,7 @@ class PipelineClient(FakeLLMClient):
                 "positive_ids": [],
                 "uncertain_ids": [],
             }
-        return dict(CLASS_NARRATIVE if kind == "class" else PERSONAL_NARRATIVE)
+        return dict(PERSONAL_NARRATIVE)
 
     @staticmethod
     def _classify(prompt: str) -> str:
@@ -131,7 +130,7 @@ def class_analysis_api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
-    llm_holder = {"client": FakeLLMClient(narrative=CLASS_NARRATIVE)}
+    llm_holder = {"client": FakeLLMClient(narrative=PERSONAL_NARRATIVE)}
     manager.register(
         "class_analysis_generate",
         _build_class_analysis_generate_handler(
@@ -466,7 +465,7 @@ def test_cause_answer_context_reuses_saved_result_and_preserves_it_on_failed_upd
 
 
 
-def test_class_analysis_switches_classes_and_persists_separate_narratives(
+def test_class_analysis_switches_classes(
     class_analysis_api_client,
 ) -> None:
     client, db, session_id, reports_dir, manager, llm, monkeypatch = (
@@ -478,11 +477,11 @@ def test_class_analysis_switches_classes_and_persists_separate_narratives(
     llm["client"] = PipelineClient()
     job = _pipeline_via_api(client, session_id)
     manager.wait(job["id"], timeout=10)
-    # 管线顺序：错因整理（2 题）→ 班级叙述（2 班）→ 个人叙述（2 人）。
+    # 管线顺序：错因整理（2 题）→ 个人报告（2 人）；不再生成班级叙述。
     assert llm["client"].kinds == [
-        "cause", "cause", "class", "class", "personal", "personal"
+        "cause", "cause", "personal", "personal"
     ]
-    assert llm["client"].calls == 6
+    assert llm["client"].calls == 4
     for name, score, student in (("1 班", 90, "张三"), ("2 班", 50, "李四")):
         page = client.get(
             f"/api/sessions/{session_id}/class-analysis", params={"class_name": name}
@@ -492,13 +491,13 @@ def test_class_analysis_switches_classes_and_persists_separate_narratives(
         assert page["data"]["score_distribution"]["avg"] == score
         assert len(page["data"]["students"]) == 1
         assert page["data"]["students"][0]["rank"] == 1
-        assert page["narrative"]["student_notes"][0]["student_name"] == student
+        assert page["data"]["students"][0]["student_name"] == student
     state = json.loads(
         (reports_dir / ".class_analysis" / f"{session_id}.json").read_text(
             encoding="utf-8"
         )
     )
-    assert set(state["class_reports"]) == {"1 班", "2 班"}
+    assert "class_reports" not in state
     assert state.get("narrative") is None
 
 
@@ -515,9 +514,11 @@ def test_report_pipeline_second_run_without_changes_makes_zero_model_calls(
     first = _pipeline_via_api(client, session_id)
     manager.wait(first["id"], timeout=10)
     assert manager.get(first["id"]).status == "succeeded", manager.get(first["id"]).error
-    assert fake.calls == 5  # 错因 2 + 班级 1 + 个人 2。
+    assert fake.calls == 4  # 错因 2 + 个人 2；管线不再为班级调用模型。
+    assert "class" not in fake.kinds
+    assert "class_reports" not in manager.get(first["id"]).result
 
-    # 无成绩/错因变化时再次触发：三个阶段全部幂等跳过，零模型调用。
+    # 无成绩/错因变化时再次触发：两个阶段全部幂等跳过，零模型调用。
     from backend.class_analysis import submit_class_analysis_generate
 
     second = submit_class_analysis_generate(
@@ -528,7 +529,7 @@ def test_report_pipeline_second_run_without_changes_makes_zero_model_calls(
     manager.wait(second.id, timeout=10)
     result = manager.get(second.id).result
     assert result["kind"] == "pipeline" and result["status"] == "ready"
-    assert fake.calls == 5
+    assert fake.calls == 4
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +550,7 @@ def auto_generate_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
-    fake = FakeLLMClient(narrative=CLASS_NARRATIVE)
+    fake = FakeLLMClient(narrative=PERSONAL_NARRATIVE)
     manager.register(
         "class_analysis_generate",
         _build_class_analysis_generate_handler(
@@ -1073,118 +1074,6 @@ def test_session_error_records_and_category_counts(tmp_path: Path, monkeypatch) 
     ]
 
 
-def test_class_narrative_payload_carries_organized_causes(
-    class_analysis_api_client, tmp_path: Path
-) -> None:
-    """已归类错因进入班级叙述入参：按大类/错法聚类，不再带旧 error_category。"""
-    import backend.jobs
-    from backend.class_analysis import (
-        ClassAnalysisStateStore,
-        assemble_cause_data,
-        save_cause_result,
-    )
-
-    client, db, sid, reports_dir, manager, holder, monkeypatch = (
-        class_analysis_api_client
-    )
-    store = ClassAnalysisStateStore(reports_dir)
-    data = assemble_cause_data(db, sid, data_root=tmp_path)
-    source = _cause_source(data, "Q2")
-    ids = [item["id"] for item in source["evidence"]]
-    save_cause_result(
-        store,
-        sid,
-        source,
-        {
-            "groups": [
-                {
-                    "kind": "error",
-                    "category": "概念理解",
-                    "reason": "垂直关系用错",
-                    "manifestation": "未证垂直",
-                    "evidence_ids": ids,
-                },
-            ]
-        },
-        data=data,
-    )
-    _patch_configured(monkeypatch, True)
-    job = _pipeline_via_api(client, sid)
-    manager.wait(job["id"], timeout=10)
-    fake = holder["client"]
-    # Q1 错因 1 次 + 班级 1 次 + 个人 2 次；Q2 已有整理结果不再调用。
-    assert fake.calls == 4
-    class_payloads = [
-        json.loads(request["prompt"].split("输入 JSON：\n", 1)[1])
-        for request in fake.requests
-        if "输入 JSON：\n" in request["prompt"]
-    ]
-    payload = next(p for p in class_payloads if "students" in p)
-    questions = {q["question_id"]: q for q in payload["questions"]}
-    q2 = questions["Q2"]
-    expected = {"category": "概念理解", "pattern": "垂直关系用错"}
-    assert q2["causes"] == [
-        {**expected, "students": sorted(r["alias"] for r in q2["records"])}
-    ]
-    assert all("error_category" not in r for r in q2["records"])
-    assert all(r["cause"] == [expected] for r in q2["records"])
-    # 未归类错因的题保留原有字段。
-    q1_records = questions["Q1"]["records"]
-    assert q1_records
-    assert all("error_category" in r for r in q1_records)
-    assert all("cause" not in r for r in q1_records)
-
-
-def test_old_prompt_class_report_still_readable_without_regeneration(
-    class_analysis_api_client,
-) -> None:
-    """提示词版本升级后：旧叙述仍展示（old_prompt），读取与整理都不自动重发。"""
-    from backend.class_analysis import (
-        CLASS_ANALYSIS_JOB_TYPE,
-        ClassAnalysisStateStore,
-    )
-
-    client, _db, sid, reports_dir, manager, holder, monkeypatch = (
-        class_analysis_api_client
-    )
-    _patch_configured(monkeypatch, True)
-    fake = PipelineClient()
-    holder["client"] = fake
-    job = _pipeline_via_api(client, sid)
-    manager.wait(job["id"], timeout=10)
-    assert fake.calls == 5
-
-    store = ClassAnalysisStateStore(reports_dir)
-    # 模拟旧提示词版本生成的就绪叙述：prompt_version 落后但输入未变。
-    reports = dict(store.load(sid)["class_reports"])
-    reports["1 班"] = {
-        **reports["1 班"],
-        "prompt_version": "class_analysis_page_v3_class_scope",
-    }
-    store.save(sid, class_reports=reports)
-
-    page = client.get(
-        f"/api/sessions/{sid}/class-analysis", params={"class_name": "1 班"}
-    ).json()
-    # old_prompt 不算过期（stale 留给输入变化）；叙述仍展示，不触发模型。
-    assert page["stale"] is False
-    assert page["narrative"] is not None
-    assert fake.calls == 5
-    _jobs, total = manager.list(
-        session_id=sid, job_types=(CLASS_ANALYSIS_JOB_TYPE,), limit=10
-    )
-    assert total == 1
-
-    # 手动「AI 整理」同样跳过 old_prompt（新版重发由按对象的入口负责）。
-    job = _pipeline_via_api(client, sid)
-    manager.wait(job["id"], timeout=10)
-    assert fake.calls == 5
-    assert (
-        store.load(sid)["class_reports"]["1 班"]["prompt_version"]
-        == "class_analysis_page_v3_class_scope"
-    )
-
-
 # ---------------------------------------------------------------------------
 # 复核确认占位词不得作为错因类别外显
 # ---------------------------------------------------------------------------
@@ -1192,12 +1081,9 @@ def test_old_prompt_class_report_still_readable_without_regeneration(
 
 def test_review_confirmed_marker_never_surfaces_as_error_type() -> None:
     """已复核/教师已确认等确认占位词在所有错因类别出口一律剔除。"""
-    from types import SimpleNamespace
-
     from backend.error_causes import display_error_category
     from backend.repositories.results import _normalize_error_category
     from integration.mastery_adapter import _normalize_error_types
-    from backend.reporting.analysis_report_exporter import _record_brief_text
     from backend.reporting.report import _loss_entry_label
 
     for marker in (
@@ -1218,11 +1104,7 @@ def test_review_confirmed_marker_never_surfaces_as_error_type() -> None:
     assert _normalize_error_category("教师已确认", "人工复核已确认") == "其他"
     # 掌握度错因列表：占位词剔除，真实类别保留。
     assert _normalize_error_types(["已复核", "答错"]) == ["答错"]
-    # 班级叙述记录摘要与成绩表「主要错因」回退。
-    record = SimpleNamespace(
-        deduction_reason="", error_category="已复核", error_summary=""
-    )
-    assert _record_brief_text(record) == "未作答或无批改记录"
+    # 成绩表「主要错因」回退。
     assert _loss_entry_label({"error_category": "已复核"}) == "原因未记录"
 
 
@@ -1876,7 +1758,7 @@ def test_session_error_record_skill_enrichment_is_nonfatal(
 def test_report_pipeline_status_counts_then_complete(
     class_analysis_api_client,
 ) -> None:
-    """状态预检：错因待整理时全部班级记为待生成；管线跑完后 complete=true。"""
+    """状态预检：错因与个人报告记为待生成；管线跑完后 complete=true。"""
     client, db, sid, _reports_dir, manager, holder, monkeypatch = (
         class_analysis_api_client
     )
@@ -1891,8 +1773,8 @@ def test_report_pipeline_status_counts_then_complete(
     # 2 题整理 + 1 次统一错法名的合并预估调用。
     assert status["causes"]["call_count"] == 3
     assert status["causes"]["estimated_tokens"] > 0
-    # 错因摘要随整理结果变化：有错因待整理时全部有学生的班记为待做。
-    assert status["class_reports"] == {"pending": 1, "total": 1}
+    # 班级报告已移除：状态不再含 class_reports 字段。
+    assert "class_reports" not in status
     assert status["personal_reports"]["pending"] == 2
     assert status["personal_reports"]["total"] == 2
     assert status["personal_reports"]["call_count"] == 2
@@ -1905,7 +1787,7 @@ def test_report_pipeline_status_counts_then_complete(
     done = client.get(f"/api/sessions/{sid}/report-pipeline").json()
     assert done["complete"] is True
     assert done["causes"]["pending_questions"] == 0
-    assert done["class_reports"]["pending"] == 0
+    assert "class_reports" not in done
     assert done["personal_reports"]["pending"] == 0
     assert done["personal_reports"]["call_count"] == 0
 
@@ -1970,8 +1852,8 @@ def test_report_pipeline_manual_retries_failed_causes_but_auto_does_not(
         manager=manager, session_id=sid, mode="auto",
     )
     manager.wait(auto.id, timeout=10)
-    # 自动口径不重发失败题：错因未就绪 → 班级无摘要 → 叙述用无错因键生成。
-    assert good.kinds == ["class", "personal", "personal"]
+    # 自动口径不重发失败题：只补齐个人报告。
+    assert good.kinds == ["personal", "personal"]
     saved = store.load(sid)["cause_analysis"]["questions"]
     assert all(q["failed"] for q in saved.values())
     # 本轮未产生失败调用，自动口径下任务自身记 ready；失败标记留给手动重试。
@@ -2159,16 +2041,12 @@ def test_report_pipeline_not_configured_makes_zero_calls(
     assert record.result["status"] == "not_configured"
     state = ClassAnalysisStateStore(reports_dir).load(sid)
     assert state["status"] == "not_configured"
-    # 无既有叙述的班级仍走 narrative_failed → 页面显示未配置横幅。
-    page = client.get(f"/api/sessions/{sid}/class-analysis").json()
-    assert page["narrative"] is None
-    assert page["narrative_failed"] is True
 
 
-def test_report_pipeline_not_configured_preserves_existing_narrative(
+def test_report_pipeline_not_configured_preserves_saved_state_fields(
     class_analysis_api_client,
 ) -> None:
-    """未配置兜底只写状态：已生成的班级叙述与班级条目原样保留可展示。"""
+    """未配置兜底只写状态字段；已保存的旧字段（含 class_reports）原样保留。"""
     client, db, sid, reports_dir, manager, holder, monkeypatch = (
         class_analysis_api_client
     )
@@ -2181,20 +2059,18 @@ def test_report_pipeline_not_configured_preserves_existing_narrative(
     manager.wait(job["id"], timeout=10)
     assert manager.get(job["id"]).result["status"] == "ready"
 
-    # 任务内工厂返回 None → not_configured；已就绪的班级叙述不清空。
+    # 遗留状态字段不迁移不删除；合并写后原样留在 JSON 里。
+    store = ClassAnalysisStateStore(reports_dir)
+    store.save(sid, class_reports={"1 班": {"narrative": {"key_findings": []}, "status": "ready"}})
+
+    # 任务内工厂返回 None → not_configured；已有字段不清空。
     holder["client"] = None
     second = _pipeline_via_api(client, sid)
     manager.wait(second["id"], timeout=10)
     assert manager.get(second["id"]).result["status"] == "not_configured"
-    state = ClassAnalysisStateStore(reports_dir).load(sid)
+    state = store.load(sid)
     assert state["status"] == "not_configured"
-    assert state["class_reports"]["1 班"]["status"] == "ready"
-    assert state["class_reports"]["1 班"]["narrative"]["key_findings"]
-
-    page = client.get(f"/api/sessions/{sid}/class-analysis").json()
-    assert page["narrative"] is not None
-    assert page["narrative"]["student_notes"][0]["student_name"]
-    assert page["narrative_failed"] is False
+    assert state["class_reports"] == {"1 班": {"narrative": {"key_findings": []}, "status": "ready"}}
 
 
 def test_report_pipeline_cancel_stops_between_units(
@@ -2215,27 +2091,20 @@ def test_report_pipeline_cancel_stops_between_units(
     assert manager.get(job["id"]).status == "cancelled"
 
 
-def test_cause_edit_retains_saved_reports_until_explicit_update(
+def test_cause_edit_updates_saved_reason_and_pipeline_keeps_it(
     class_analysis_api_client,
 ) -> None:
-    """错因变化 → 班级摘要变化 → 页面 stale，重整理重新生成叙述。"""
+    """教师修改错法名写回物化记录并在页面生效；再次整理不重新生成。"""
     client, db, sid, reports_dir, manager, holder, monkeypatch = (
         class_analysis_api_client
     )
-    from backend.class_analysis import ClassAnalysisStateStore
 
     _patch_configured(monkeypatch, True)
     fake = PipelineClient()
     holder["client"] = fake
     job = _pipeline_via_api(client, sid)
     manager.wait(job["id"], timeout=10)
-    entry = ClassAnalysisStateStore(reports_dir).load(sid)["class_reports"]["1 班"]
-    # 错因摘要已并入 input_digest：不再单列 cause_digest 字段。
-    assert entry["status"] == "ready" and "input_digest" not in entry
-    page = client.get(f"/api/sessions/{sid}/class-analysis").json()
-    assert page["stale"] is False
 
-    # 教师修改错法名 → 物化记录变化 → 该班摘要不再匹配。
     edit = client.post(
         f"/api/sessions/{sid}/class-analysis/causes/edit",
         json={
@@ -2248,59 +2117,17 @@ def test_cause_edit_retains_saved_reports_until_explicit_update(
     )
     assert edit.status_code == 200, edit.text
     page = client.get(f"/api/sessions/{sid}/class-analysis").json()
-    assert page["narrative"]["key_findings"] == entry["narrative"]["key_findings"]
-    assert ClassAnalysisStateStore(reports_dir).load(sid)["class_reports"]["1 班"]["narrative"] == entry["narrative"]
+    q2 = next(q for q in page["data"]["questions"] if q["question_id"] == "Q2")
+    assert any(cause["reason"] == "垂直条件误用" for cause in q2["causes"])
 
     fake.kinds.clear()
     second = _pipeline_via_api(client, sid)
     manager.wait(second["id"], timeout=10)
-    # 错法名变化同时进入个人报告输入指纹：该班叙述与两名学生的报告都重生成。
+    # 输入口径未变：再次整理不重新调用模型。
     assert fake.kinds == []
     page = client.get(f"/api/sessions/{sid}/class-analysis").json()
-    assert page["stale"] is False
-
-
-
-def test_class_narrative_store_hit_skips_model_call(
-    class_analysis_api_client,
-) -> None:
-    """已生成的班级叙述（input_digest 与当前输入一致）在再次整理时直接复用。"""
-    client, db, sid, reports_dir, manager, holder, monkeypatch = (
-        class_analysis_api_client
-    )
-    from backend.class_analysis import ClassAnalysisStateStore
-    _patch_configured(monkeypatch, True)
-    store = ClassAnalysisStateStore(reports_dir)
-    store.save(sid, class_reports={"1 班": {
-        "narrative": dict(CLASS_NARRATIVE),
-        "input_digest": "legacy-input",
-        "prompt_version": "legacy-class-report",
-        "generated_at": "2024-01-01T00:00:00",
-        "status": "ready",
-    }})
-
-    fake = CauseFailClient()  # 错因始终失败 → 无摘要；班级叙述命中已存结果
-    holder["client"] = fake
-    job = _pipeline_via_api(client, sid)
-    manager.wait(job["id"], timeout=10)
-    assert fake.kinds == ["cause", "cause", "personal", "personal"]
-    entry = store.load(sid)["class_reports"]["1 班"]
-    assert entry["status"] == "ready"
-    assert entry["narrative"]["key_findings"] == CLASS_NARRATIVE["key_findings"]
-
-
-
-def test_class_report_renders_data_with_placeholder_before_pipeline(
-    class_analysis_api_client,
-) -> None:
-    """报告页先出数据段：叙述未整理时 AI 段显示占位文案而不是 409。"""
-    client, db, sid, _reports_dir, manager, holder, monkeypatch = (
-        class_analysis_api_client
-    )
-    response = client.get(f"/api/sessions/{sid}/class-analysis/report")
-    assert response.status_code == 200
-    assert "AI 整理后在此显示" in response.text
-    assert "成绩分布" in response.text or "参考人数" in response.text
+    q2 = next(q for q in page["data"]["questions"] if q["question_id"] == "Q2")
+    assert any(cause["reason"] == "垂直条件误用" for cause in q2["causes"])
 
 
 def _auto_workspace(db, tmp_path: Path):
@@ -2452,36 +2279,6 @@ def test_auto_pipeline_trigger_closure_used_by_grading_run(
     assert manager.get(jobs[0].id).status == "succeeded"
 
 
-
-@pytest.mark.parametrize("outcome", ["timeout", "invalid", "success"])
-def test_class_update_replaces_only_success_and_preserves_source_on_failure(class_analysis_api_client, outcome):
-    from types import SimpleNamespace
-    from backend.class_analysis import ClassAnalysisStateStore
-    from backend.report_pipeline import generate_session_class_reports
-    client, db, sid, reports_dir, manager, holder, monkeypatch = class_analysis_api_client
-    store = ClassAnalysisStateStore(reports_dir)
-    previous = {"narrative": dict(CLASS_NARRATIVE), "status": "ready", "generated_at": "2000-01-01T00:00:00",
-                "source": {"TEST-saved-table": True}, "student_ids": [1, 2]}
-    store.save(sid, class_reports={"1 班": previous})
-    context = SimpleNamespace(raise_if_cancelled=lambda: None, report=lambda *args: None)
-    fake = FakeLLMClient(error=TimeoutError("TEST-failed")) if outcome == "timeout" else FakeLLMClient(
-        narrative={"invalid": True} if outcome == "invalid" else CLASS_NARRATIVE)
-    args = dict(db=db, session_id=sid, reports_dir=reports_dir, data_root=reports_dir.parent, client=fake)
-    reused = generate_session_class_reports(context, **args)
-    assert reused["skipped"] == 1 and fake.calls == 0
-    result = generate_session_class_reports(context, **args, regenerate_existing=True)
-    saved = store.load(sid)["class_reports"]["1 班"]
-    if outcome == "success":
-        assert result["generated"] == 1 and result["failed"] == 0
-        assert saved["source"] != previous["source"]
-        assert saved["generated_at"] != previous["generated_at"]
-        assert "input_digest" not in saved and "prompt_version" not in saved
-    else:
-        assert result["generated"] == 0 and result["failed"] == 1
-        assert {key: saved[key] for key in previous} == previous
-        assert saved["last_generation_failed"] is True
-
-
 def test_corrupt_class_state_read_is_unchanged_and_generation_makes_no_calls(tmp_path):
     from types import SimpleNamespace
     from backend.class_analysis import ClassAnalysisStateStore, run_cause_analysis
@@ -2610,28 +2407,30 @@ def test_key_step_diagnosis_keeps_final_scores_and_deduplicates_saved_causes(tmp
     assert all("Q1" not in items for items in objective.students.values())
 
 
-def test_legacy_class_body_is_reused_in_preflight_and_pipeline_without_rewriting(class_analysis_api_client):
+def test_pipeline_preserves_legacy_class_reports_field_without_reading_it(
+    class_analysis_api_client,
+) -> None:
+    """状态 JSON 中遗留的 class_reports 字段：不迁移、不删除，管线读写后原样保留。"""
+    client, db, sid, reports_dir, manager, holder, monkeypatch = (
+        class_analysis_api_client
+    )
     from backend.class_analysis import ClassAnalysisStateStore
-    client, db, sid, reports_dir, manager, holder, monkeypatch = class_analysis_api_client
+
     _patch_configured(monkeypatch, True)
+    store = ClassAnalysisStateStore(reports_dir)
+    legacy = {"旧班": {"narrative": {"key_findings": [{"title": "TEST-旧"}]},
+                       "status": "ready", "generated_at": "2020-01-01T00:00:00"}}
+    store.save(sid, class_reports=legacy)
+
     fake = PipelineClient()
     holder["client"] = fake
-    first = _pipeline_via_api(client, sid)
-    manager.wait(first["id"], timeout=10)
-    assert manager.get(first["id"]).status == "succeeded"
-    store = ClassAnalysisStateStore(reports_dir)
-    entry = store.load(sid)["class_reports"]["1 班"]
-    store.save(sid, class_reports={}, **entry)
-    path = store._path(sid)
-    before = path.read_bytes()
-    generated_at = entry["generated_at"]
-    fake.kinds.clear()
-    preflight = client.get(f"/api/sessions/{sid}/report-pipeline")
-    assert preflight.status_code == 200
-    assert preflight.json()["class_reports"] == {"pending": 0, "total": 1}
-    second = _pipeline_via_api(client, sid)
-    manager.wait(second["id"], timeout=10)
-    assert manager.get(second["id"]).status == "succeeded"
-    assert fake.kinds == []
-    assert path.read_bytes() == before
-    assert store.load(sid)["generated_at"] == generated_at
+    job = _pipeline_via_api(client, sid)
+    manager.wait(job["id"], timeout=10)
+    record = manager.get(job["id"])
+    assert record.status == "succeeded"
+    # 管线结果与状态接口都不含 class_reports；班级叙述不调用模型。
+    assert "class_reports" not in record.result
+    assert "class" not in fake.kinds
+    assert "class_reports" not in client.get(f"/api/sessions/{sid}/report-pipeline").json()
+    # 合并写保留遗留字段原值。
+    assert store.load(sid)["class_reports"] == legacy
