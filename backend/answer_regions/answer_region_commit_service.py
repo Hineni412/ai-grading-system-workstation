@@ -218,7 +218,10 @@ class AnswerRegionCommitService:
             if not all(path.is_file() for path in paths):
                 return False
             return (
-                self._draft_service.compute_template_fingerprint(paths[0], paths[1])
+                self._draft_service.compute_template_fingerprint(
+                    str(template.get("front_template_path") or ""),
+                    str(template.get("back_template_path") or ""),
+                )
                 == expected_template_fingerprint
             )
         except Exception:

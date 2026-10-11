@@ -87,13 +87,11 @@ class IngestUploadCommand:
     expected_revision: int
     filename: str
     media_type: str
-    content_sha256: str
     actor_ref: str
 
     def __post_init__(self) -> None:
         filename = Path(str(self.filename or "")).name
         media_type = str(self.media_type or "").strip().casefold()
-        digest = str(self.content_sha256 or "").strip().casefold()
         suffix = Path(filename).suffix.casefold()
         if media_type not in SUPPORTED_UPLOADS:
             raise ValueError("unsupported scan media type")
@@ -105,8 +103,6 @@ class IngestUploadCommand:
             or (expected_suffix != ".jpg" and suffix != expected_suffix)
         ):
             raise ValueError("scan filename does not match media type")
-        if not _HASH.fullmatch(digest):
-            raise ValueError("content_sha256 is invalid")
         revision = int(self.expected_revision)
         if revision < 1:
             raise ValueError("expected_revision must be positive")
@@ -114,7 +110,6 @@ class IngestUploadCommand:
         object.__setattr__(self, "expected_revision", revision)
         object.__setattr__(self, "filename", filename)
         object.__setattr__(self, "media_type", media_type)
-        object.__setattr__(self, "content_sha256", digest)
         object.__setattr__(self, "actor_ref", _text(self.actor_ref, "actor_ref", 100))
 
 
@@ -307,8 +302,6 @@ class TrainingSubmissionModule:
         initialize_database(self.db_path)
         content = _read_limited(source, MAX_UPLOAD_BYTES)
         digest = hashlib.sha256(content).hexdigest()
-        if digest != command.content_sha256:
-            raise InvalidSubmissionUpload("scan content hash does not match")
         if not _has_file_signature(content, command.media_type):
             raise InvalidSubmissionUpload("scan file signature is invalid")
         fingerprint = _payload_hash(

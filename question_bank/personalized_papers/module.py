@@ -158,20 +158,16 @@ class CreatePaperCommand:
 class FreezePaperCommand:
     operation_token: str
     expected_revision: int
-    content_sha256: str
     filename: str
     actor_ref: str
 
     def __post_init__(self) -> None:
         token = _token(self.operation_token)
-        digest = str(self.content_sha256 or "").strip().casefold()
         filename = Path(str(self.filename or "")).name
         actor = _required_text(self.actor_ref, "actor_ref", 100)
         revision = int(self.expected_revision)
         if revision < 1:
             raise ValueError("expected_revision must be positive")
-        if not _HASH_PATTERN.fullmatch(digest):
-            raise ValueError("content_sha256 is invalid")
         if (
             not filename
             or len(filename) > 180
@@ -179,7 +175,6 @@ class FreezePaperCommand:
         ):
             raise ValueError("filename must identify a DOCX file")
         object.__setattr__(self, "operation_token", token)
-        object.__setattr__(self, "content_sha256", digest)
         object.__setattr__(self, "filename", filename)
         object.__setattr__(self, "actor_ref", actor)
         object.__setattr__(self, "expected_revision", revision)
@@ -408,11 +403,6 @@ class PersonalizedPaperModule:
                     uploaded,
                     limit=MAX_REVIEW_DOCX_BYTES,
                 )
-                if not hmac.compare_digest(
-                    received_hash,
-                    command.content_sha256,
-                ):
-                    raise PaperInvalid("reviewed DOCX hash does not match")
                 try:
                     inspect_docx(
                         uploaded,
@@ -458,13 +448,13 @@ class PersonalizedPaperModule:
         freeze_command = FreezePaperCommand(
             operation_token=_direct_freeze_token(command.operation_token),
             expected_revision=int(row["revision"]),
-            content_sha256=str(row["review_docx_sha256"]),
             filename="review.docx",
             actor_ref=command.actor_ref,
         )
         fingerprint = _hash_payload(
             {
                 "paper_instance_id": paper_instance_id,
+                "content_sha256": str(row["review_docx_sha256"]),
                 **asdict(freeze_command),
             }
         )

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from urllib.parse import quote
 
@@ -73,11 +72,9 @@ def test_scan_upload_routes_publish_safe_queue_and_freeze_it(tmp_path, monkeypat
     client, db, manager = _client(tmp_path)
     session_id = db.sessions.create_grading_session("匿名月考", "rubric.json", "answer.json")
     content = _jpeg(b"anonymous-jpeg")
-    digest = hashlib.sha256(content).hexdigest()
     headers = {
         "content-type": "image/jpeg",
         "x-upload-filename": quote("七年级-001.jpg"),
-        "x-content-sha256": digest,
     }
     try:
         created = client.post(
@@ -129,7 +126,6 @@ def test_scan_upload_routes_publish_safe_queue_and_freeze_it(tmp_path, monkeypat
             headers={
                 **headers,
                 "x-upload-filename": "002.jpg",
-                "x-content-sha256": hashlib.sha256(b"second").hexdigest(),
             },
         )
         assert rejected.status_code == 409
@@ -160,7 +156,6 @@ def test_preflight_routes_return_safe_snapshot_and_revisioned_decisions(
                 headers={
                     "content-type": "image/jpeg",
                     "x-upload-filename": f"{index}.jpg",
-                    "x-content-sha256": hashlib.sha256(content).hexdigest(),
                 },
             )
         frozen = client.post(
@@ -326,7 +321,6 @@ def test_scan_analysis_uses_frozen_server_batch_and_rejects_client_paths(
             headers={
                 "content-type": "image/jpeg",
                 "x-upload-filename": "front.jpg",
-                "x-content-sha256": hashlib.sha256(content).hexdigest(),
             },
         )
         frozen = client.post(

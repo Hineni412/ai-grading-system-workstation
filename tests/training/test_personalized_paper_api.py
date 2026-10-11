@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import warnings
 from pathlib import Path
 
@@ -98,13 +97,12 @@ def test_paper_create_list_freeze_and_download_use_public_contract(
                 "wordprocessingml.document"
             ),
             "x-operation-token": "2" * 32,
-            "x-content-sha256": hashlib.sha256(payload).hexdigest(),
             "x-upload-filename": "reviewed.docx",
         },
     )
     assert frozen.status_code == 200
     assert frozen.json()["status"] == "frozen"
-    assert module.frozen[1].content_sha256 == hashlib.sha256(payload).hexdigest()
+    assert module.frozen[1].filename == "reviewed.docx"
     assert module.frozen[2] == payload
 
     downloaded = client.get(

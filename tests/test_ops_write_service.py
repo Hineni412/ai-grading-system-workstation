@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from backend.ops.models import OpsOperation
 from backend.ops.plan_store import OpsPlanStore
 from backend.ops.write_service import (
     OpsPreflightStale,
@@ -190,5 +191,42 @@ def test_consumed_plan_rejects_changed_restore_resource(tmp_path: Path) -> None:
     with zipfile.ZipFile(archive, "a") as opened:
         opened.writestr("user_data/config/changed.json", "changed")
 
+    with pytest.raises(OpsPreflightStale):
+        service.consume_plan(str(response["confirmation_token"]))
+
+
+def test_backup_and_export_plans_consume_after_data_changes(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    service = _service(tmp_path, paths)
+    backup = service.preflight(_request("backup", reason="manual"))
+    export = service.preflight(_request("transfer_export", scope="full"))
+    with sqlite3.connect(paths.db_path) as connection:
+        connection.execute("INSERT INTO sample(value) VALUES ('changed')")
+
+    consumed_backup = service.consume_plan(str(backup["confirmation_token"]))
+    consumed_export = service.consume_plan(str(export["confirmation_token"]))
+    assert consumed_backup.operation is OpsOperation.BACKUP
+    assert consumed_export.operation is OpsOperation.TRANSFER_EXPORT
+
+
+def test_consumed_migration_plan_checks_migration_files_not_data(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    service = _service(tmp_path, paths)
+    response = service.preflight(_request("migration", target="all"))
+    with sqlite3.connect(paths.db_path) as connection:
+        connection.execute("INSERT INTO sample(value) VALUES ('changed')")
+    assert (
+        service.consume_plan(str(response["confirmation_token"])).operation
+        is OpsOperation.MIGRATION
+    )
+
+    response = service.preflight(_request("migration", target="all"))
+    pending = _migration_dirs(tmp_path)["grading"] / "001_add_preview.sql"
+    pending.write_text(
+        pending.read_text(encoding="utf-8") + "-- changed\n",
+        encoding="utf-8",
+    )
     with pytest.raises(OpsPreflightStale):
         service.consume_plan(str(response["confirmation_token"]))

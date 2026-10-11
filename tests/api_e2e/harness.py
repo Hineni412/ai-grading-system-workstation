@@ -926,9 +926,7 @@ def serve_browser_review() -> None:
                 digest = hashlib.sha256(content).hexdigest()
                 response = client.post(
                     f"/api/sessions/{session_id}/scan-uploads", content=content,
-                    headers={"content-type": "image/png", "x-upload-filename": source.name,
-                             "x-content-sha256": digest},
-                )
+                    headers={"content-type": "image/png", "x-upload-filename": source.name})
                 assert response.status_code == 201, response.text
                 uploaded[source.name] = digest
             frozen = client.post(

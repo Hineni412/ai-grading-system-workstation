@@ -279,3 +279,24 @@ def test_transfer_import_prepare_uses_server_upload_and_preparation_backup(
     assert result["outcome"] == "prepared_restart_required"
     assert result["operation"] == "transfer_import"
     assert result["backup_filename"]
+
+
+def test_transfer_export_runs_after_business_database_changes(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    service = _service(paths)
+    request = SimpleNamespace(operation="transfer_export", scope="lean")
+    preflight = service.preflight(request)
+    plan = service.consume_plan(str(preflight["confirmation_token"]))
+    payload = service.build_job_payload(plan)
+    payload["operation_id"] = "11111111-1111-4111-8111-111111111111"
+    with sqlite3.connect(paths.db_path) as connection:
+        connection.execute("INSERT INTO sample(value) VALUES ('late change')")
+
+    context = _Context(payload)
+    result = run_ops_transfer_export_job(context=context, paths=paths)
+
+    assert result["operation"] == "transfer_export"
+    assert result["outcome"] == "published"
+    assert Path(str(result["file_path"])).is_file()

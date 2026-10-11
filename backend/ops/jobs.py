@@ -30,7 +30,7 @@ from .journal import OpsOperationJournal, OpsOperationManifest
 from .lock import OpsOperationLock
 from .models import OpsOperation
 from .plan_store import OpsPlanStore
-from .write_service import OpsWriteService
+from .write_service import _RESOURCE_BOUND_OPERATIONS, OpsWriteService
 
 
 class OpsPreBackupFailed(RuntimeError):
@@ -357,11 +357,12 @@ def _validate_online_payload(
     parameters = context.payload.get("parameters")
     if not isinstance(parameters, dict):
         raise ValueError("ops job parameters are invalid")
-    expected = str(context.payload.get("resource_fingerprint") or "")
-    service = OpsWriteService(paths, plan_store=OpsPlanStore())
-    current = service.resource_fingerprint(operation, parameters)
-    if not expected or current != expected:
-        raise ValueError("preflight resource changed")
+    if operation in _RESOURCE_BOUND_OPERATIONS:
+        expected = str(context.payload.get("resource_fingerprint") or "")
+        service = OpsWriteService(paths, plan_store=OpsPlanStore())
+        current = service.resource_fingerprint(operation, parameters)
+        if not expected or current != expected:
+            raise ValueError("preflight resource changed")
     return dict(parameters)
 
 

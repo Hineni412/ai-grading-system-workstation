@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterable, Callable
@@ -60,6 +59,16 @@ _JOB_TYPES = {
     OpsOperation.TRANSFER_IMPORT: "ops_transfer_import_prepare",
     OpsOperation.TRANSFER_EXPORT: "ops_transfer_export",
 }
+# Operations whose preview binds to a fingerprinted resource that is rechecked
+# at consume time. BACKUP and TRANSFER_EXPORT are read-only and carry no
+# resource fingerprint.
+_RESOURCE_BOUND_OPERATIONS = frozenset(
+    {
+        OpsOperation.RESTORE,
+        OpsOperation.MIGRATION,
+        OpsOperation.TRANSFER_IMPORT,
+    }
+)
 
 
 class OpsWriteService:
@@ -141,9 +150,10 @@ class OpsWriteService:
 
     def consume_plan(self, confirmation_token: str) -> OpsInternalPlan:
         plan = self.plan_store.consume(confirmation_token)
-        current = self._fingerprint_for_plan(plan)
-        if current != plan.resource_fingerprint:
-            raise OpsPreflightStale("preflight resource has changed")
+        if plan.operation in _RESOURCE_BOUND_OPERATIONS:
+            current = self._fingerprint_for_plan(plan)
+            if current != plan.resource_fingerprint:
+                raise OpsPreflightStale("preflight resource has changed")
         return plan
 
     def build_job_payload(self, plan: OpsInternalPlan) -> dict[str, object]:
@@ -339,18 +349,10 @@ class OpsWriteService:
             "total_size_bytes": sum(entry.size_bytes for entry in entries),
             "warnings": [],
         }
-        fingerprint = _entry_fingerprint(
-            entries,
-            sqlite_ignored_data_tables={
-                Path(self.paths.db_path): frozenset({"jobs"}),
-                Path(self.paths.qb_db_path): frozenset(),
-            },
-        )
         return self._plan(
             OpsOperation.TRANSFER_EXPORT,
             {"scope": scope},
             summary,
-            resource_fingerprint=fingerprint,
         )
 
     def _plan(
@@ -368,7 +370,7 @@ class OpsWriteService:
             summary=summary,
             created_monotonic=time.monotonic(),
         )
-        if resource_fingerprint is None:
+        if resource_fingerprint is None and operation in _RESOURCE_BOUND_OPERATIONS:
             plan = OpsInternalPlan(
                 operation=operation,
                 parameters=parameters,
@@ -383,45 +385,9 @@ class OpsWriteService:
             return _file_sha256(self._controlled_backup(str(plan.parameters["backup_filename"])))
         if plan.operation is OpsOperation.TRANSFER_IMPORT:
             return _file_sha256(self._upload_path(str(plan.parameters["upload_id"])))
-        if plan.operation is OpsOperation.TRANSFER_EXPORT:
-            entries = build_export_manifest(
-                default_export_sources(Path(self.paths.project_root), Path(self.paths.data_root)),
-                scope=str(plan.parameters["scope"]),
-            )
-            return _entry_fingerprint(
-                entries,
-                sqlite_ignored_data_tables={
-                    Path(self.paths.db_path): frozenset({"jobs"}),
-                    Path(self.paths.qb_db_path): frozenset(),
-                },
-            )
         if plan.operation is OpsOperation.MIGRATION:
-            target = str(plan.parameters["target"])
-            targets = ("grading", "question_bank") if target == "all" else (target,)
-            digest = hashlib.sha256()
-            for item in targets:
-                source = self.paths.db_path if item == "grading" else self.paths.qb_db_path
-                digest.update(_file_sha256(Path(source)).encode("ascii"))
-                for migration in sorted(Path(self.migration_dirs[item]).glob("*.sql")):
-                    digest.update(migration.name.encode("utf-8"))
-                    digest.update(_file_sha256(migration).encode("ascii"))
-            return digest.hexdigest()
-        scopes = (
-            list(plan.parameters.get("scopes") or [])
-            if plan.operation is OpsOperation.BACKUP
-            else None
-        )
-        preview = preview_backup(path_manager=self.paths, scopes=scopes)
-        return _path_entries_fingerprint(
-            [
-                (str(name), self._path_for_backup_name(str(name)))
-                for name in preview["files"]
-            ],
-            sqlite_ignored_data_tables={
-                Path(self.paths.db_path): frozenset({"jobs"}),
-                Path(self.paths.qb_db_path): frozenset(),
-            },
-        )
+            return self.migration_files_fingerprint(str(plan.parameters["target"]))
+        return ""
 
     def _migration_preview(self, target: str) -> dict[str, Any]:
         from question_bank.services.question_read_service import (
@@ -459,167 +425,12 @@ class OpsWriteService:
             raise OpsResourceNotFound("upload resource not found")
         return path
 
-    def _path_for_backup_name(self, name: str) -> Path:
-        from update_tools.backup_core import taxonomy_backup_target
-        if target := taxonomy_backup_target(self.paths, name):
-            return target
-        parts = Path(name).parts
-        if parts[0] == "user_data":
-            return Path(self.paths.data_root).joinpath(*parts[1:])
-        if parts[0] == "config":
-            return Path(self.paths.project_root).joinpath(*parts)
-        if parts[0] == "logs":
-            return Path(self.paths.logs_dir).joinpath(*parts[1:])
-        raise OpsRequestInvalid("invalid backup manifest")
-
-
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _entry_fingerprint(
-    entries: list[Any],
-    *,
-    sqlite_ignored_data_tables: dict[Path, frozenset[str]] | None = None,
-) -> str:
-    return _path_entries_fingerprint(
-        [
-            (str(entry.arc_name), Path(entry.source_path))
-            for entry in entries
-        ],
-        sqlite_ignored_data_tables=sqlite_ignored_data_tables,
-    )
-
-
-def _path_entries_fingerprint(
-    entries: list[tuple[str, Path]],
-    *,
-    sqlite_ignored_data_tables: dict[Path, frozenset[str]] | None = None,
-) -> str:
-    digest = hashlib.sha256()
-    sqlite_tables_by_path = {
-        Path(path).resolve(strict=False): ignored_tables
-        for path, ignored_tables in (sqlite_ignored_data_tables or {}).items()
-    }
-    for arc_name, source_path in entries:
-        digest.update(arc_name.encode("utf-8"))
-        ignored_tables = sqlite_tables_by_path.get(
-            source_path.resolve(strict=False)
-        )
-        if ignored_tables is not None:
-            digest.update(
-                _sqlite_logical_fingerprint(
-                    source_path,
-                    ignored_data_tables=ignored_tables,
-                ).encode("ascii")
-            )
-            continue
-        try:
-            stat_result = source_path.stat()
-            digest.update(str(stat_result.st_size).encode("ascii"))
-            digest.update(str(stat_result.st_mtime_ns).encode("ascii"))
-        except OSError:
-            digest.update(b"missing")
-    return digest.hexdigest()
-
-
-def _sqlite_logical_fingerprint(
-    path: Path,
-    *,
-    ignored_data_tables: frozenset[str],
-) -> str:
-    digest = hashlib.sha256()
-    ignored = {name.casefold() for name in ignored_data_tables}
-    uri = f"{Path(path).resolve(strict=True).as_uri()}?mode=ro"
-    connection = sqlite3.connect(uri, uri=True)
-    try:
-        connection.execute("PRAGMA query_only = ON")
-        connection.execute("BEGIN")
-        schema_rows = connection.execute(
-            "SELECT type, name, tbl_name, sql "
-            "FROM sqlite_schema "
-            "WHERE name NOT LIKE 'sqlite_%' "
-            "ORDER BY type, name"
-        ).fetchall()
-        for row in schema_rows:
-            _digest_sqlite_row(digest, row)
-
-        table_rows = connection.execute(
-            "SELECT name FROM sqlite_schema "
-            "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' "
-            "ORDER BY name"
-        ).fetchall()
-        for (table_name_value,) in table_rows:
-            table_name = str(table_name_value)
-            if table_name.casefold() in ignored:
-                continue
-            quoted = _quote_sqlite_identifier(table_name)
-            table_info = connection.execute(
-                f"PRAGMA table_info({quoted})"
-            ).fetchall()
-            primary_key_columns = [
-                str(row[1])
-                for row in sorted(table_info, key=lambda row: int(row[5]))
-                if int(row[5]) > 0
-            ]
-            digest.update(table_name.encode("utf-8"))
-            if primary_key_columns:
-                order_by = ", ".join(
-                    _quote_sqlite_identifier(name)
-                    for name in primary_key_columns
-                )
-                rows = connection.execute(
-                    f"SELECT * FROM {quoted} ORDER BY {order_by}"
-                )
-            else:
-                rows = connection.execute(
-                    f"SELECT rowid, * FROM {quoted} ORDER BY rowid"
-                )
-            for row in rows:
-                _digest_sqlite_row(digest, row)
-
-        has_sequence = connection.execute(
-            "SELECT 1 FROM sqlite_schema "
-            "WHERE type = 'table' AND name = 'sqlite_sequence'"
-        ).fetchone()
-        if has_sequence is not None:
-            for row in connection.execute(
-                "SELECT name, seq FROM sqlite_sequence ORDER BY name"
-            ):
-                if str(row[0]).casefold() not in ignored:
-                    _digest_sqlite_row(digest, row)
-        connection.rollback()
-    finally:
-        connection.close()
-    return digest.hexdigest()
-
-
-def _quote_sqlite_identifier(value: str) -> str:
-    return '"' + str(value).replace('"', '""') + '"'
-
-
-def _digest_sqlite_row(
-    digest: Any,
-    row: Any,
-) -> None:
-    for value in row:
-        if value is None:
-            marker, encoded = b"N", b""
-        elif isinstance(value, bytes):
-            marker, encoded = b"B", value
-        elif isinstance(value, int):
-            marker, encoded = b"I", str(value).encode("ascii")
-        elif isinstance(value, float):
-            marker, encoded = b"F", value.hex().encode("ascii")
-        else:
-            marker, encoded = b"T", str(value).encode("utf-8")
-        digest.update(marker)
-        digest.update(len(encoded).to_bytes(8, "big"))
-        digest.update(encoded)
 
 
 __all__ = [

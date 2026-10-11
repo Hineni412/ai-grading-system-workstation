@@ -33,15 +33,17 @@ class AnswerRegionDraftService:
         self.temp_path = resolved_dir / "region_draft.json.tmp"
         self._lock = _lock_for(self.draft_path)
 
-    def compute_template_fingerprint(self, front_path: Path, back_path: Path) -> str:
+    def compute_template_fingerprint(
+        self, front_path: str | Path, back_path: str | Path
+    ) -> str:
         digest = hashlib.sha256()
-        for page, path in (("front", front_path), ("back", back_path)):
-            content = path.read_bytes()
+        for page, value in (("front", front_path), ("back", back_path)):
+            encoded = str(value).encode("utf-8")
             label = page.encode("ascii")
             digest.update(len(label).to_bytes(1, "big"))
             digest.update(label)
-            digest.update(len(content).to_bytes(8, "big"))
-            digest.update(content)
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
         return digest.hexdigest()
 
     def save(
@@ -117,6 +119,23 @@ class AnswerRegionDraftService:
         with self._lock:
             self.draft_path.unlink(missing_ok=True)
             self.temp_path.unlink(missing_ok=True)
+
+
+def legacy_template_content_hash(front_path: Path, back_path: Path) -> str:
+    """The pre-upgrade fingerprint: a SHA-256 over the two image contents.
+
+    Only used to recognise template bindings recorded before the fingerprint
+    became a hash of the stored template path strings.
+    """
+    digest = hashlib.sha256()
+    for page, path in (("front", Path(front_path)), ("back", Path(back_path))):
+        content = path.read_bytes()
+        label = page.encode("ascii")
+        digest.update(len(label).to_bytes(1, "big"))
+        digest.update(label)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
 
 
 def _normalize_saved_draft(value: object) -> dict[str, Any]:

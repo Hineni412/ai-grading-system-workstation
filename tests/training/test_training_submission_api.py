@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import warnings
 from pathlib import Path
 
@@ -108,7 +107,6 @@ def test_scan_batch_upload_resolution_cancel_and_preview_contract(
         headers={
             "content-type": "image/png",
             "x-operation-token": "2" * 32,
-            "x-content-sha256": hashlib.sha256(content).hexdigest(),
             "x-upload-filename": "scan.png",
         },
     )

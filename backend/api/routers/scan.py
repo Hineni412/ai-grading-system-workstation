@@ -106,12 +106,6 @@ def get_scan_student_options(
                 "required": True,
                 "schema": {"type": "string", "minLength": 5},
             },
-            {
-                "name": "X-Content-SHA256",
-                "in": "header",
-                "required": True,
-                "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
-            },
         ],
         "requestBody": {
             "required": True,
@@ -136,7 +130,6 @@ async def upload_session_scan(
     if replacement and append:
         raise ApiError(422, "scan_upload_mode_conflict", "Conflicting upload modes")
     filename = unquote(str(request.headers.get("x-upload-filename") or ""))
-    digest = str(request.headers.get("x-content-sha256") or "")
     media_type = str(request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
     try:
         try:
@@ -157,7 +150,6 @@ async def upload_session_scan(
                 session_id,
                 filename=filename,
                 media_type=media_type,
-                content_sha256=digest,
                 source=upload,
                 replacement=replacement,
                 append=append,

@@ -831,7 +831,6 @@ class ScanGradingWorkspace:
         *,
         filename: str,
         media_type: str,
-        content_sha256: str,
         source: BinaryIO,
         replacement: bool = False,
         append: bool = False,
@@ -848,24 +847,14 @@ class ScanGradingWorkspace:
                 self._require_appendable(session_id, manifest)
             else:
                 self._require_draft(manifest)
-            digest = str(content_sha256 or "").strip().lower()
             safe_name = Path(str(filename or "")).name
             suffix = Path(safe_name).suffix.lower()
-            if (
-                not re.fullmatch(r"[0-9a-f]{64}", digest)
-                or self._allowed_uploads.get(suffix) != str(media_type or "").lower()
-            ):
+            if self._allowed_uploads.get(suffix) != str(media_type or "").lower():
                 raise InvalidScanUploadError("scan upload metadata is invalid")
-            duplicate = next(
-                (item for item in manifest["files"] if item["sha256"] == digest),
-                None,
-            )
 
             batch_dir = self._batch_dir(session_id, manifest["batch_id"])
             files_dir = batch_dir / "files"
             files_dir.mkdir(parents=True, exist_ok=True)
-            storage_name = f"{digest}{suffix}"
-            target = files_dir / storage_name
             temporary_path: Path | None = None
             calculated = hashlib.sha256()
             header = bytearray()
@@ -892,15 +881,19 @@ class ScanGradingWorkspace:
                         temporary.write(chunk)
                     temporary.flush()
                     os.fsync(temporary.fileno())
-                if calculated.hexdigest() != digest:
-                    raise ScanGradingWorkspaceError("uploaded content digest does not match")
                 if not bytes(header).startswith(self._upload_signatures[suffix]):
                     raise InvalidScanUploadError(
                         "scan upload content does not match its declared type"
                     )
+                digest = calculated.hexdigest()
+                duplicate = next(
+                    (item for item in manifest["files"] if item["sha256"] == digest),
+                    None,
+                )
                 if duplicate is not None:
                     return {"duplicate": True, "file": self._public_file(duplicate)}
-                os.replace(temporary_path, target)
+                storage_name = f"{digest}{suffix}"
+                os.replace(temporary_path, files_dir / storage_name)
                 temporary_path = None
             finally:
                 if temporary_path is not None:
@@ -1297,7 +1290,9 @@ class ScanGradingWorkspace:
             not current.is_confirmed
             or current.regions_snapshot_pending
             or current.template_id != expected_template_id
-            or current.template_fingerprint != expected_fingerprint
+            or not _preflight_template_fingerprint_matches(
+                current, expected_fingerprint
+            )
             or current.first_page_role != expected_role
         ):
             raise GradingConfigChangedError(
@@ -2088,3 +2083,21 @@ class ScanGradingWorkspace:
     @staticmethod
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _preflight_template_fingerprint_matches(current: Any, expected: str) -> bool:
+    if current.template_fingerprint == expected:
+        return True
+    # Preflights recorded before the fingerprint became a hash of the stored
+    # template paths contain a hash of the image contents instead.
+    from backend.answer_regions.answer_region_draft_service import (
+        legacy_template_content_hash,
+    )
+
+    try:
+        return (
+            legacy_template_content_hash(current.front.path, current.back.path)
+            == expected
+        )
+    except OSError:
+        return False

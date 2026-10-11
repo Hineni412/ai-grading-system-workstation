@@ -503,7 +503,9 @@ def get_answer_region_auto_proposal(
     session_dir = Path(templates_dir) / f"session_{int(session_id)}"
     front, back = _template_paths(template, session_dir)
     draft_service = AnswerRegionDraftService(session_dir)
-    fingerprint = draft_service.compute_template_fingerprint(front, back)
+    fingerprint = draft_service.compute_template_fingerprint(
+        *_stored_template_paths(template)
+    )
     rubric_path = resolve_stored_file_path(
         session.get("rubric_path"),
         search_roots=[session_dir, templates_dir, Path(db.db_path).parent],
@@ -515,9 +517,11 @@ def get_answer_region_auto_proposal(
     except Exception:
         raise ApiError(503, "answer_region_auto_unavailable", "未能自动框题，请手动框选") from None
     current = _require_template(db, session_id)
-    current_front, current_back = _template_paths(current, session_dir)
+    _template_paths(current, session_dir)
     if (current["id"] != template["id"] or
-            draft_service.compute_template_fingerprint(current_front, current_back) != fingerprint):
+            draft_service.compute_template_fingerprint(
+                *_stored_template_paths(current)
+            ) != fingerprint):
         raise ApiError(409, "region_draft_template_changed", "Session template changed during recognition")
     return RegionAutoProposalResponse(**proposal, template_fingerprint=fingerprint)
 
@@ -582,15 +586,26 @@ def _draft_service(templates_dir: Path, session_id: int) -> AnswerRegionDraftSer
     return AnswerRegionDraftService(_session_dir(templates_dir, session_id))
 
 
+def _stored_template_paths(template: dict[str, Any]) -> tuple[str, str]:
+    return (
+        str(template.get("front_template_path") or "").strip(),
+        str(template.get("back_template_path") or "").strip(),
+    )
+
+
 def _template_fingerprint(
     template: dict[str, Any],
     draft_service: AnswerRegionDraftService,
 ) -> str:
-    front_path, back_path = _template_paths(
+    # Resolve only to verify the template files still exist; the fingerprint
+    # itself hashes the stored path strings and never opens the images.
+    _template_paths(
         template,
         Path(draft_service.draft_path).parent,
     )
-    return draft_service.compute_template_fingerprint(front_path, back_path)
+    return draft_service.compute_template_fingerprint(
+        *_stored_template_paths(template)
+    )
 
 
 def _draft_response(

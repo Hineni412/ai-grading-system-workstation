@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 from pathlib import Path
@@ -45,7 +44,6 @@ def scan_workspace(tmp_path):
         7,
         filename="scan.jpg",
         media_type="image/jpeg",
-        content_sha256=hashlib.sha256(content).hexdigest(),
         source=io.BytesIO(content),
     )
     frozen = workspace.freeze_uploads(7, expected_revision=1)

@@ -1222,12 +1222,6 @@ def get_personalized_paper_instance(
                 "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{32}$"},
             },
             {
-                "name": "X-Content-SHA256",
-                "in": "header",
-                "required": True,
-                "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
-            },
-            {
                 "name": "X-Upload-Filename",
                 "in": "header",
                 "required": True,
@@ -1284,9 +1278,6 @@ async def freeze_personalized_paper_instance(
                 request.headers.get("x-operation-token") or ""
             ).lower(),
             expected_revision=expected_revision,
-            content_sha256=str(
-                request.headers.get("x-content-sha256") or ""
-            ).lower(),
             filename=unquote(
                 str(request.headers.get("x-upload-filename") or "")
             ),
@@ -1508,12 +1499,6 @@ def get_training_scan_batch(
                 "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{32}$"},
             },
             {
-                "name": "X-Content-SHA256",
-                "in": "header",
-                "required": True,
-                "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
-            },
-            {
                 "name": "X-Upload-Filename",
                 "in": "header",
                 "required": True,
@@ -1564,9 +1549,6 @@ async def ingest_training_scan_upload(
                 str(request.headers.get("x-upload-filename") or "")
             ),
             media_type=media_type,
-            content_sha256=str(
-                request.headers.get("x-content-sha256") or ""
-            ).lower(),
             actor_ref="local_teacher",
         )
         with SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b") as upload:

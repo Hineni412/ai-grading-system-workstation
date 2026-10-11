@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -145,7 +144,6 @@ def _prepare_ready_scan_batch(client, db, tmp_path, session_id: int) -> dict:
         headers={
             "content-type": "image/jpeg",
             "x-upload-filename": "ready.jpg",
-            "x-content-sha256": hashlib.sha256(content).hexdigest(),
         },
     )
     assert uploaded.status_code == 201
@@ -275,7 +273,6 @@ def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None
         headers={
             "content-type": "image/jpeg",
             "x-upload-filename": "front.jpg",
-            "x-content-sha256": hashlib.sha256(content).hexdigest(),
         },
     )
     frozen = client.post(
@@ -390,8 +387,7 @@ def test_start_requires_current_frozen_preflight_and_pending_issue_confirmation(
             headers={
                 "content-type": "image/jpeg",
                 "x-upload-filename": "front.jpg",
-                "x-content-sha256": hashlib.sha256(content).hexdigest(),
-            },
+                },
         )
         frozen = client.post(
             f"/api/sessions/{session_id}/scan-uploads/freeze",
@@ -575,7 +571,6 @@ def test_appended_scan_blocks_supplement_until_preflight_rerun(tmp_path) -> None
     headers = {
         "content-type": "image/jpeg",
         "x-upload-filename": "late.jpg",
-        "x-content-sha256": hashlib.sha256(late_content).hexdigest(),
     }
     try:
         draft_append = client.post(

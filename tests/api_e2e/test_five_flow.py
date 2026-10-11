@@ -97,8 +97,7 @@ def test_auto_regions_supplement_commit_scan_and_complete_grading_plan(api_e2e, 
         content = source.read_bytes()
         digest = hashlib.sha256(content).hexdigest()
         response = client.post(f'/api/sessions/{sid}/scan-uploads', content=content,
-                               headers={'content-type': 'image/png', 'x-upload-filename': source.name,
-                                        'x-content-sha256': digest})
+                               headers={'content-type': 'image/png', 'x-upload-filename': source.name})
         assert response.status_code == 201, response.json()
         uploaded[source.name] = digest
     frozen = client.post(f'/api/sessions/{sid}/scan-uploads/freeze', json={'expected_revision': len(uploaded)})

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 
@@ -13,14 +12,14 @@ def test_released_scans_cannot_be_reanalyzed_and_replacement_resets_receipt(tmp_
     from types import SimpleNamespace
     workspace = ScanGradingWorkspace(exams_root=tmp_path / "exams", templates_root=tmp_path / "templates", data_root=tmp_path, job_manager=SimpleNamespace(list=lambda **kwargs: ([], 0)), replacement_reset=lambda sid: [])
     old = _jpeg(b"test old")
-    workspace.add_upload(1, filename="old.jpg", media_type="image/jpeg", content_sha256=hashlib.sha256(old).hexdigest(), source=io.BytesIO(old))
+    workspace.add_upload(1, filename="old.jpg", media_type="image/jpeg", source=io.BytesIO(old))
     workspace.freeze_uploads(1, expected_revision=1)
     receipt_path(tmp_path, 1).write_text("broken", encoding="utf-8")
     with pytest.raises(ScanSourcesReleased):
         workspace.submit_scan_analysis(1, {})
     replacement = workspace.begin_replacement_upload(1)
     new = _jpeg(b"test replacement")
-    uploaded = workspace.add_upload(1, replacement=True, filename="new.jpg", media_type="image/jpeg", content_sha256=hashlib.sha256(new).hexdigest(), source=io.BytesIO(new))
+    uploaded = workspace.add_upload(1, replacement=True, filename="new.jpg", media_type="image/jpeg", source=io.BytesIO(new))
     workspace.commit_replacement_upload(1, expected_revision=1)
     assert originals_state(tmp_path, 1) == "complete"
     assert not receipt_path(tmp_path, 1).exists()
@@ -48,7 +47,6 @@ def test_new_batch_archive_failure_keeps_previous_batch_intact(
         5,
         filename="old.jpg",
         media_type="image/jpeg",
-        content_sha256=hashlib.sha256(content).hexdigest(),
         source=io.BytesIO(content),
     )
     old_batch = workspace.freeze_uploads(5, expected_revision=1)
@@ -97,7 +95,6 @@ def test_restart_rolls_back_interrupted_batch_archive(tmp_path, monkeypatch) -> 
         8,
         filename="restart.jpg",
         media_type="image/jpeg",
-        content_sha256=hashlib.sha256(content).hexdigest(),
         source=io.BytesIO(content),
     )
     old_batch = workspace.freeze_uploads(8, expected_revision=1)
@@ -141,7 +138,6 @@ def _upload_scan(workspace, session_id, name, payload, *, append=False):
         session_id,
         filename=name,
         media_type="image/jpeg",
-        content_sha256=hashlib.sha256(data).hexdigest(),
         source=io.BytesIO(data),
         append=append,
     )
@@ -437,3 +433,80 @@ def test_grading_start_requires_current_preflight_after_append(tmp_path):
             max_workers=None,
             requests_per_minute=None,
         )
+
+
+def test_preflight_template_binding_accepts_legacy_content_hash(tmp_path):
+    import fitz
+    from backend.answer_regions.answer_region_draft_service import (
+        legacy_template_content_hash,
+    )
+    from backend.exam_intake.template_upload_service import TemplateUploadService
+    from backend.repositories.grading_database import open_grading_repositories
+    from backend.scan_grading.workspace import (
+        GradingConfigChangedError,
+        ScanGradingWorkspace,
+    )
+
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
+    db.initialize()
+    rubric_path = tmp_path / "databases" / "rubric.json"
+    answer_path = tmp_path / "databases" / "answer.json"
+    rubric_path.write_text(
+        json.dumps(
+            {
+                "questions": [
+                    {
+                        "question_id": "Q1",
+                        "question_type": "subjective",
+                        "max_score": 10,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    answer_path.write_text(
+        json.dumps({"questions": [{"question_id": "Q1"}]}),
+        encoding="utf-8",
+    )
+    session_id = db.sessions.create_grading_session(
+        "Legacy Exam", str(rubric_path), str(answer_path)
+    )
+    document = fitz.open()
+    try:
+        document.new_page(width=320, height=480)
+        document.new_page(width=420, height=640)
+        pdf = document.tobytes()
+    finally:
+        document.close()
+    uploaded = TemplateUploadService(tmp_path / "templates").upload(
+        db=db, session_id=session_id, pdf_bytes=pdf, first_page_role="front"
+    )
+    db.templates.mark_template_confirmed(session_id, True)
+
+    workspace = ScanGradingWorkspace(
+        exams_root=tmp_path / "exams",
+        templates_root=tmp_path / "templates",
+        data_root=tmp_path,
+        grading_db_path=db.db_path,
+    )
+    _upload_scan(workspace, session_id, "scan.jpg", b"scan-page")
+    batch = workspace.freeze_uploads(session_id, expected_revision=1)
+    analysis_path = _write_analysis(tmp_path, session_id, batch)
+    # Preflights recorded before the identity switch stored a hash of the
+    # image contents; the binding must still verify against it.
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    analysis["template_id"] = uploaded.template_id
+    analysis["template_fingerprint"] = legacy_template_content_hash(
+        uploaded.front.path, uploaded.back.path
+    )
+    analysis["template_first_page_role"] = "front"
+    analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+    current = workspace._require_current_preflight_template(session_id)
+    assert current.template_id == uploaded.template_id
+
+    analysis["template_fingerprint"] = "0" * 64
+    analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+    with pytest.raises(GradingConfigChangedError):
+        workspace._require_current_preflight_template(session_id)

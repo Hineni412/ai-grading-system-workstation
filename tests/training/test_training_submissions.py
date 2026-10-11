@@ -86,7 +86,6 @@ def test_shuffled_pages_group_by_signed_identity_and_survive_restart(
             _upload(
                 token=f"{index + 1:x}",
                 revision=int(batch["revision"]),
-                content=content,
             ),
             BytesIO(content),
         )
@@ -366,7 +365,7 @@ def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
     for index, content in enumerate(_pdf_pages(path), 1):
         batch = scans.ingest(
             batch["batch_id"],
-            _upload(token=str(index), revision=batch["revision"], content=content),
+            _upload(token=str(index), revision=batch["revision"]),
             BytesIO(content),
         )
     submission_id = batch["submissions"][0]["submission_id"]
@@ -543,7 +542,7 @@ def test_duplicate_conflict_external_and_manual_replacement_are_explicit(
     )
     batch = module.ingest(
         str(batch["batch_id"]),
-        _upload(token="9", revision=1, content=first),
+        _upload(token="9", revision=1),
         BytesIO(first),
     )
     duplicate_pdf = _images_pdf((first, first))
@@ -554,7 +553,6 @@ def test_duplicate_conflict_external_and_manual_replacement_are_explicit(
             expected_revision=int(batch["revision"]),
             filename="duplicate.pdf",
             media_type="application/pdf",
-            content_sha256=hashlib.sha256(duplicate_pdf).hexdigest(),
             actor_ref="teacher-1",
         ),
         BytesIO(duplicate_pdf),
@@ -564,7 +562,7 @@ def test_duplicate_conflict_external_and_manual_replacement_are_explicit(
     altered = _mark_image(first)
     batch = module.ingest(
         str(batch["batch_id"]),
-        _upload(token="b", revision=int(batch["revision"]), content=altered),
+        _upload(token="b", revision=int(batch["revision"])),
         BytesIO(altered),
     )
     conflicts = [
@@ -578,7 +576,7 @@ def test_duplicate_conflict_external_and_manual_replacement_are_explicit(
     blank = _blank_png()
     batch = module.ingest(
         str(batch["batch_id"]),
-        _upload(token="c", revision=int(batch["revision"]), content=blank),
+        _upload(token="c", revision=int(batch["revision"])),
         BytesIO(blank),
     )
     assert any(page["issue_code"] == "identity_unreadable" for page in batch["pages"])
@@ -620,7 +618,7 @@ def test_duplicate_conflict_external_and_manual_replacement_are_explicit(
 
     batch = module.ingest(
         str(batch["batch_id"]),
-        _upload(token="f", revision=int(batch["revision"]), content=second),
+        _upload(token="f", revision=int(batch["revision"])),
         BytesIO(second),
     )
     if not any(
@@ -696,7 +694,6 @@ def test_blur_crop_and_invalid_signature_stay_in_manual_review(
             _upload(
                 token=token,
                 revision=int(batch["revision"]),
-                content=content,
             ),
             BytesIO(content),
         )
@@ -722,7 +719,6 @@ def _freeze(paper, draft, *, token: str):
         FreezePaperCommand(
             operation_token=f"{int(token, 16) + 1:x}" * 32,
             expected_revision=int(instance["revision"]),
-            content_sha256=hashlib.sha256(content).hexdigest(),
             filename="reviewed.docx",
             actor_ref="teacher-1",
         ),
@@ -753,14 +749,12 @@ def _upload(
     *,
     token: str,
     revision: int,
-    content: bytes,
 ) -> IngestUploadCommand:
     return IngestUploadCommand(
         operation_token=token * 32,
         expected_revision=revision,
         filename="scan.png",
         media_type="image/png",
-        content_sha256=hashlib.sha256(content).hexdigest(),
         actor_ref="teacher-1",
     )
 

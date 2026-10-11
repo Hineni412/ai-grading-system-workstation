@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from copy import deepcopy
 import json
 import threading
@@ -286,7 +285,6 @@ def test_freeze_stamps_every_page_and_rejects_identity_tampering(
     command = FreezePaperCommand(
         operation_token="6" * 32,
         expected_revision=instance["revision"],
-        content_sha256=hashlib.sha256(payload).hexdigest(),
         filename="reviewed.docx",
         actor_ref="teacher-1",
     )
@@ -389,7 +387,7 @@ def test_conversion_failure_and_concurrent_confirmation_leave_no_half_pdf(
     with pytest.raises(PaperRenderUnavailable):
         failing.freeze(
             instance["paper_instance_id"],
-            _freeze_command("8", instance, payload),
+            _freeze_command("8", instance),
             BytesIO(payload),
         )
     assert module.get(instance["paper_instance_id"])["status"] == "review_pending"
@@ -400,7 +398,7 @@ def test_conversion_failure_and_concurrent_confirmation_leave_no_half_pdf(
         try:
             module.freeze(
                 instance["paper_instance_id"],
-                _freeze_command(token, instance, payload),
+                _freeze_command(token, instance),
                 BytesIO(payload),
             )
             return "frozen"
@@ -428,12 +426,10 @@ def _create_command(
 def _freeze_command(
     token_character: str,
     instance: dict[str, object],
-    payload: bytes,
 ) -> FreezePaperCommand:
     return FreezePaperCommand(
         operation_token=token_character * 32,
         expected_revision=int(instance["revision"]),
-        content_sha256=hashlib.sha256(payload).hexdigest(),
         filename="reviewed.docx",
         actor_ref="teacher-1",
     )

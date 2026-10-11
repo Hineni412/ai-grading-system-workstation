@@ -373,11 +373,6 @@ export function decodeGradingPlan(value: unknown): GradingPlan {
   }
 }
 
-async function sha256(file: File): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', await file.arrayBuffer())
-  return [...new Uint8Array(digest)].map((item) => item.toString(16).padStart(2, '0')).join('')
-}
-
 export function fetchGradingWorkspace(sessionId: number, signal?: AbortSignal): Promise<GradingWorkspace> {
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/grading-workspace`, {
     decode: decodeGradingWorkspace, signal,
@@ -387,14 +382,12 @@ export function fetchGradingWorkspace(sessionId: number, signal?: AbortSignal): 
 export type ScanUploadMode = 'default' | 'replacement' | 'append'
 
 export async function uploadScan(sessionId: number, file: File, mode: ScanUploadMode = 'default', signal?: AbortSignal): Promise<{ duplicate: boolean, file: ScanUploadFile }> {
-  const digest = await sha256(file)
   const suffix = mode === 'replacement' ? '?replacement=true' : mode === 'append' ? '?append=true' : ''
   return apiClient.request(`/api/sessions/${positiveSessionId(sessionId)}/scan-uploads${suffix}`, {
     method: 'POST', rawBody: file, signal, timeoutMs: 120_000,
     headers: {
       'content-type': file.type,
       'x-upload-filename': encodeURIComponent(file.name),
-      'x-content-sha256': digest,
     },
     decode(value) {
       if (!isRecord(value) || typeof value.duplicate !== 'boolean') throw new Error('Invalid upload response')

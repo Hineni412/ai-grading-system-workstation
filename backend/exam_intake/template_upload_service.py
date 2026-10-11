@@ -163,8 +163,12 @@ class TemplateUploadService:
                 finally:
                     document.close()
 
+                # The identity hashes the stored template path strings of the
+                # final version directory, not the image contents.
+                front_path = version_path / front_temp.name
+                back_path = version_path / back_temp.name
                 fingerprint = AnswerRegionDraftService(session_dir).compute_template_fingerprint(
-                    front_temp, back_temp
+                    front_path, back_path
                 )
                 _write_manifest(
                     manifest_temp,
@@ -191,8 +195,6 @@ class TemplateUploadService:
                 }
                 version_path.parent.mkdir(parents=True, exist_ok=True)
                 package_dir.replace(version_path)
-                front_path = version_path / front_temp.name
-                back_path = version_path / back_temp.name
                 mapping_targets = {
                     key: version_path / path.name for key, path in mapping_sources.items()
                 }
@@ -256,20 +258,30 @@ class TemplateUploadService:
             for role, path in paths.items():
                 with Image.open(path) as image:
                     sizes[role] = (int(image.width), int(image.height))
-            fingerprint = AnswerRegionDraftService(session_dir).compute_template_fingerprint(
-                paths["front"], paths["back"]
+            draft_service = AnswerRegionDraftService(session_dir)
+            stored_paths = {
+                page: str(template.get(f"{page}_template_path") or "")
+                for page in ("front", "back")
+            }
+            fingerprint = draft_service.compute_template_fingerprint(
+                stored_paths["front"], stored_paths["back"]
             )
-            manifest = (
-                _read_json(paths["front"].parent / "template_upload_manifest.json")
-                or _read_json(session_dir / "template_upload_manifest.json")
-                or {}
-            )
+            manifest_path = paths["front"].parent / "template_upload_manifest.json"
+            manifest = _read_json(manifest_path)
+            if not manifest:
+                manifest_path = session_dir / "template_upload_manifest.json"
+                manifest = _read_json(manifest_path)
+            if not manifest:
+                manifest_path = None
+                manifest = {}
             manifest_fingerprint = str(manifest.get("template_fingerprint") or "")
             role = str(manifest.get("first_page_role") or "front")
             orientation = _generated_page_orientation(
                 paths=paths,
                 manifest=manifest,
-                draft_service=AnswerRegionDraftService(session_dir),
+                manifest_path=manifest_path,
+                stored_paths=stored_paths,
+                draft_service=draft_service,
             )
             if orientation is not None:
                 first_page_role = orientation.first_page_role
@@ -315,14 +327,23 @@ class TemplateUploadService:
             if not all(path.is_file() for path in paths.values()):
                 raise TemplateUploadError("session template file is missing")
             draft_service = AnswerRegionDraftService(session_dir)
-            manifest = (
-                _read_json(paths["front"].parent / "template_upload_manifest.json")
-                or _read_json(session_dir / "template_upload_manifest.json")
-                or {}
-            )
+            manifest_path = paths["front"].parent / "template_upload_manifest.json"
+            manifest = _read_json(manifest_path)
+            if not manifest:
+                manifest_path = session_dir / "template_upload_manifest.json"
+                manifest = _read_json(manifest_path)
+            if not manifest:
+                manifest_path = None
+                manifest = {}
+            stored_paths = {
+                page: str(template.get(f"{page}_template_path") or "")
+                for page in ("front", "back")
+            }
             orientation = _generated_page_orientation(
                 paths=paths,
                 manifest=manifest,
+                manifest_path=manifest_path,
+                stored_paths=stored_paths,
                 draft_service=draft_service,
             )
             if orientation is None:
@@ -330,10 +351,10 @@ class TemplateUploadService:
                     "current template does not support page reassignment"
                 )
             current_fingerprint = draft_service.compute_template_fingerprint(
-                paths["front"], paths["back"]
+                stored_paths["front"], stored_paths["back"]
             )
             reversed_fingerprint = draft_service.compute_template_fingerprint(
-                paths["back"], paths["front"]
+                stored_paths["back"], stored_paths["front"]
             )
             requested_is_current = first_page_role == orientation.first_page_role
             expected_matches = expected_template_fingerprint == current_fingerprint
@@ -678,6 +699,8 @@ def _generated_page_orientation(
     *,
     paths: dict[str, Path],
     manifest: dict[str, object],
+    manifest_path: Path | None,
+    stored_paths: dict[str, str],
     draft_service: AnswerRegionDraftService,
 ) -> _TemplatePageOrientation | None:
     front_path = paths["front"]
@@ -689,27 +712,34 @@ def _generated_page_orientation(
         and back_path.name == _BACK_PAGE_FILENAME
     ):
         reversed_pages = False
-        original_front = front_path
-        original_back = back_path
+        original_order = (stored_paths["front"], stored_paths["back"])
     elif (
         front_path.name == _BACK_PAGE_FILENAME
         and back_path.name == _FRONT_PAGE_FILENAME
     ):
         reversed_pages = True
-        original_front = back_path
-        original_back = front_path
+        original_order = (stored_paths["back"], stored_paths["front"])
     else:
         return None
     role = str(manifest.get("first_page_role") or "")
     if role not in {"front", "back"}:
         return None
     manifest_fingerprint = str(manifest.get("template_fingerprint") or "")
-    original_fingerprint = draft_service.compute_template_fingerprint(
-        original_front,
-        original_back,
+    fingerprint_matches = manifest_fingerprint == draft_service.compute_template_fingerprint(
+        *original_order
     )
-    if manifest_fingerprint != original_fingerprint:
-        return None
+    if not fingerprint_matches:
+        # Older manifests recorded a hash of the image contents, which is not
+        # recomputed here. A manifest sitting next to the rendered page pair is
+        # still trustworthy: each version directory is written once and is
+        # never mutated afterwards, and a page swap only exchanges the two
+        # stored database paths.
+        manifest_is_sibling = (
+            manifest_path is not None
+            and Path(manifest_path).parent == front_path.parent
+        )
+        if not manifest_is_sibling:
+            return None
     original_role: TemplatePageRole = "front" if role == "front" else "back"
     current_role = (
         _opposite_page_role(original_role) if reversed_pages else original_role

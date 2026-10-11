@@ -1706,16 +1706,6 @@ function decodeTrainingEvidenceReplay(value: unknown): {
   }
 }
 
-async function fileSha256(file: File): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest(
-    'SHA-256',
-    await file.arrayBuffer(),
-  )
-  return [...new Uint8Array(digest)]
-    .map((item) => item.toString(16).padStart(2, '0'))
-    .join('')
-}
-
 export interface TrainingPendingItem {
   draft_id: string
   draft_name: string
@@ -1942,7 +1932,6 @@ export const trainingApi = {
     file: File,
     operationToken: string,
   ): Promise<PersonalizedPaperInstance> {
-    const digest = await fileSha256(file)
     return apiClient.request(
       `/api/training/paper-instances/${instance.paper_instance_id}/freeze`
       + `?expected_revision=${instance.revision}`,
@@ -1955,7 +1944,6 @@ export const trainingApi = {
             + 'wordprocessingml.document'
           ),
           'x-operation-token': operationToken,
-          'x-content-sha256': digest,
           'x-upload-filename': encodeURIComponent(file.name),
         },
         decode: decodePersonalizedPaperInstance,
@@ -2003,7 +1991,6 @@ export const trainingApi = {
     file: File,
     operationToken: string,
   ): Promise<TrainingScanBatch> {
-    const digest = await fileSha256(file)
     const suffix = file.name.toLocaleLowerCase()
     const mediaType = file.type || (
       suffix.endsWith('.pdf')
@@ -2021,7 +2008,6 @@ export const trainingApi = {
         headers: {
           'content-type': mediaType,
           'x-operation-token': operationToken,
-          'x-content-sha256': digest,
           'x-upload-filename': encodeURIComponent(file.name),
         },
         decode: decodeTrainingScanBatch,
