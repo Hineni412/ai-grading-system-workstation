@@ -165,7 +165,8 @@ def test_type_reports_group_current_types_without_changing_exam_scores(
         assert [point["key"] for point in points] == [bank.type_key]
         report = BeautifulSoup(_render_personal_html(data, student, None, {}), "html.parser")
         assert "合成题型" in report.get_text()
-        assert "这个题型是否做对" in report.get_text()
+        # 小问只关联这一个题型，无观测时直接按整题得分判定，不再暂不能判断。
+        assert report.select_one("details.pt-unknown") is None
         assert "几个知识点" not in report.get_text()
 
     # A missing bank link leaves scored questions available and no invented target.
@@ -219,6 +220,57 @@ def test_exam_points_require_specific_evidence_for_losses(analysis_db):
     assert by_key["sk_calculate"]["recur"][0]["question_id"] == "Q3(P2)"
     assert by_key["sk_unknown"]["recur"] == []
     assert before == [(r.score, r.max_score) for r in student.records]
+
+    # 只关联一个考查点且无观测的失分小问，按整题得分判定；多点关联仍暂不能判断。
+    from backend.session_analysis import StudentQuestionRecord
+    student.records.append(StudentQuestionRecord(
+        question_id="Q9", score=0, max_score=5, deduction_reason="",
+        error_category="", error_summary=""))
+    data.knowledge_backfill["Q9"] = [{"stable_key": "sk_scored", "label": "得分判定"}]
+    student.knowledge_mastery["sk_scored"] = {"source_question_refs": []}
+    points = _personal_exam_points(_personal_knowledge_view(data, student), student,
+        {q.question_id: q for q in data.questions}, session, {99})
+    by_key = {p["key"]: p for p in points}
+    assert by_key["sk_scored"]["status"] == "bad"
+    assert by_key["sk_unknown"]["status"] == "unknown"
+
+    from backend.reporting.analysis_report_exporter import _render_personal_html
+    html = _render_personal_html(data, student, None, {}, history=[
+        {"session_id": session, "name": "本次测试", "score": 90, "full": 100}],
+        error_map={"Q2": [{"category": "未作答", "pattern": "未作答"}]})
+    assert 'class="pt-unknown"' in html  # 有暂不能判断才有折叠块
+    assert html.index("这次做得好") < html.index('<div class="pt-row">')
+    assert "未作答 · 未作答" not in html and "未作答" in html
+    assert "灰色“？”" in html
+
+    # 无 unknown 行：不显示折叠块与灰色问号说明。
+    data.knowledge_backfill = {"Q9": data.knowledge_backfill["Q9"]}
+    html_clean = _render_personal_html(data, student, None, {}, history=[
+        {"session_id": session, "name": "本次测试", "score": 90, "full": 100}])
+    assert 'class="pt-unknown"' not in html_clean
+    assert "灰色“？”" not in html_clean
+    assert "这次做得好" not in html_clean
+
+    # 学情肖像：有成绩的考试 ≥2 场时在失分题附录之前，1 场时不显示。
+    data.knowledge_structure["catalog"] = [
+        {"knowledge_key": "sk_scored", "knowledge_point": "得分判定",
+         "node_kind": "type", "parent_knowledge_key": "sec1"},
+        {"knowledge_key": "sec1", "knowledge_point": "1 本节",
+         "node_kind": "section", "parent_knowledge_key": "chap1"},
+        {"knowledge_key": "chap1", "knowledge_point": "第一章",
+         "node_kind": "chapter", "parent_knowledge_key": None},
+    ]
+    student.portrait_mastery = {"sk_scored": {"tier": "stable",
+        "observation_count": 5, "full_correct_count": 5, "recent_trend": None}}
+    history = [
+        {"session_id": 8, "name": "上次测试", "score": 80, "full": 100},
+        {"session_id": session, "name": "本次测试", "score": 90, "full": 100},
+    ]
+    html_p = _render_personal_html(data, student, None, {}, history=history)
+    p, a = html_p.find('details class="portrait"'), html_p.find('class="appendix"')
+    assert 0 < p < a  # 肖像在本次考查点之后、失分题附录之前
+    html_one = _render_personal_html(data, student, None, {}, history=history[:1])
+    assert 'details class="portrait"' not in html_one
 
 
 def test_followups_show_actions_and_overlapping_question_losses(analysis_db):

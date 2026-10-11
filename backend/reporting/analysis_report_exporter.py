@@ -805,6 +805,11 @@ font-size:11px;font-style:normal;line-height:1}
 .dot i.zero{background:var(--bad-soft);color:var(--bad);border:1px solid #eec6c0}
 .dot i.unknown{background:var(--gray-soft);color:var(--muted);border:1px dashed #c2cbd6}
 .pt-row .unconfirmed{font-size:11.5px;color:var(--muted);display:block}
+.pt-good-head{color:var(--good);font-size:13.5px;font-weight:600;margin-top:10px}
+.pt-good-head small{color:var(--muted);font-size:12px;font-weight:400;margin-left:6px}
+details.pt-unknown{margin-top:8px}
+details.pt-unknown>summary{cursor:pointer;font-size:12.5px;color:var(--accent)}
+details.pt-unknown .note{margin:4px 0 6px}
 .tagcloud{margin-top:8px}
 .tagcloud .sec{font-size:12px;color:var(--muted);margin:6px 0 3px}
 .tagcloud .tg{display:inline-block;background:var(--good-soft);color:var(--good);border-radius:6px;
@@ -1669,6 +1674,32 @@ def _personal_exam_points(
                 "recur": _point_recurrence_sessions(student, node["key"], session_id, historical_session_ids),
             }
         )
+    # 只关联一个考查点的小问没有步骤观测时，直接按整题得分判定；
+    # 关联多个点的题仍保持 unknown，不把整题失分套到每个点。
+    targets_by_qid: dict[str, int] = {}
+    for p in points:
+        for q in p["questions"]:
+            targets_by_qid[q["id"]] = targets_by_qid.get(q["id"], 0) + 1
+    for p in points:
+        results = []
+        resolved = False
+        for q, r in p["results"]:
+            if r == "unknown" and targets_by_qid.get(q["id"]) == 1:
+                r = ("full" if q["full"] > 0 and q["score"] >= q["full"]
+                     else "zero" if q["score"] == 0 else "part")
+                resolved = True
+            results.append((q, r))
+        if resolved:
+            p["results"] = results
+            syms = [r for _q, r in results]
+            if all(s == "full" for s in syms):
+                p["status"] = "good"
+            elif "unknown" in syms:
+                p["status"] = "unknown"
+            elif all(s == "zero" for s in syms):
+                p["status"] = "bad"
+            else:
+                p["status"] = "mid"
     return points
 
 
@@ -1878,6 +1909,14 @@ def _stem_block_html(info: QuestionInfo | None, fallback: str, title: str) -> st
     return html_text
 
 
+def _error_label_text(category: Any, pattern: Any) -> str:
+    """大类 · 错法名；错法名与大类相同或以大类开头时只显示错法名。"""
+    cat, pat = str(category or ""), str(pattern or "")
+    if cat and pat and pat.startswith(cat):
+        return pat
+    return " · ".join(part for part in (cat, pat) if part)
+
+
 def _question_detail_template(
     record: StudentQuestionRecord,
     info: QuestionInfo | None,
@@ -1904,10 +1943,7 @@ def _question_detail_template(
         body.append(_personal_review_link(record.question_id))
     if record.lost and errors:
         labels = "；".join(dict.fromkeys(
-            " · ".join(
-                part for part in (str(row.get("category") or ""), str(row.get("pattern") or ""))
-                if part
-            )
+            _error_label_text(row.get("category"), row.get("pattern"))
             for row in errors
         ))
         if labels:
@@ -2028,10 +2064,7 @@ def _lost_appendix_html(
                 kv.append(f"<dt>老师批语</dt><dd>{_report_inline_math(teacher_comment)}</dd>")
             error_rows = (error_map or {}).get(record.question_id) or []
             error_text = "；".join(dict.fromkeys(
-                " · ".join(
-                    part for part in (str(row.get("category") or ""), str(row.get("pattern") or ""))
-                    if part
-                )
+                _error_label_text(row.get("category"), row.get("pattern"))
                 for row in error_rows
             ))
             if error_text:
@@ -2120,15 +2153,25 @@ def _load_student_histories(
                     "score": None,
                     "rank": None,
                     "present": None,
+                    "blank": 0,
+                    "items": 0,
+                    "lost": [],
                 }
                 hit = by_student.get(student.student_id)
                 if hit is not None:
                     group, matched = hit
+                    scored = [r for r in matched.records if r.max_score > 0]
                     entry.update(
                         score=matched.student_score,
                         rank=matched.rank,
                         present=group.present,
                         avg=group.stats.get("avg"),
+                        blank=sum(
+                            1 for r in scored
+                            if _personal_cell_status(r) == "blank"
+                        ),
+                        items=len(scored),
+                        lost=[r.question_id for r in scored if r.lost],
                     )
                 histories[student.student_id].append(entry)
         return histories
@@ -2201,10 +2244,11 @@ def _load_personal_error_histories(
             for qid, records in questions.items():
                 for row in records:
                     evidence = {"session_name": name, "question_id": qid,
+                                "session_id": sid,
                                 "category": str(row.get("category") or ""),
                                 "pattern": str(row.get("pattern") or "")}
                     for key, value in (("categories", evidence["category"]), ("patterns", evidence["pattern"])):
-                        if value:
+                        if value and not (key == "patterns" and value == evidence["category"]):
                             entries = bucket[key].setdefault(value, [])
                             if evidence not in entries:
                                 entries.append(evidence)
@@ -2241,9 +2285,7 @@ def _render_personal_html(
         """本题错误归类文案：大类 · 典型错法；多条用「；」连接。"""
         parts = []
         for row in question_errors(question_id):
-            text = " · ".join(
-                part for part in (str(row.get("category") or ""), str(row.get("pattern") or "")) if part
-            )
+            text = _error_label_text(row.get("category"), row.get("pattern"))
             if text and text not in parts:
                 parts.append(text)
         return "；".join(parts)
@@ -2254,7 +2296,7 @@ def _render_personal_html(
         for qid in question_ids:
             for row in question_errors(qid):
                 for key, value in (("categories", row.get("category")), ("patterns", row.get("pattern"))):
-                    if not value:
+                    if not value or (key == "patterns" and value == row.get("category")):
                         continue
                     for evidence in (error_history.get(key) or {}).get(str(value), []):
                         if evidence and evidence not in matches[key]:
@@ -2570,10 +2612,8 @@ def _render_personal_html(
     n_mid = sum(1 for p in points if p["status"] == "mid")
     n_bad = sum(1 for p in points if p["status"] == "bad")
     n_unknown = sum(1 for p in points if p["status"] == "unknown")
-    rows_html = []
-    for p in [p for p in points if p["status"] == "bad"] + [
-        p for p in points if p["status"] == "mid"
-    ] + [p for p in points if p["status"] == "unknown"]:
+
+    def _point_row(p: dict[str, Any]) -> str:
         sym_map = {"full": "✓", "part": "△", "zero": "✗", "unknown": "?"}
         dots = "".join(
             f'<span class="dot"><i class="{r}">{sym_map[r]}</i>'
@@ -2586,34 +2626,67 @@ def _render_personal_html(
             + _recurrence_evidence_html(p["recur"], "该考查点曾失分") + '</details>'
             if p["recur"] else ""
         )
-        rows_html.append(
+        return (
             f'<div class="pt-row"><span class="nm">{esc(p["label"])}{uncertainty}{recurrence}</span>'
             f'<span class="dots">{dots}</span></div>'
         )
+
+    rows_html = [
+        _point_row(p) for status in ("bad", "mid")
+        for p in points if p["status"] == status
+    ]
+    unknown_rows = [_point_row(p) for p in points if p["status"] == "unknown"]
     good_sections: dict[str, list[str]] = {}
     for p in points:
         if p["status"] == "good":
             good_sections.setdefault(p["section"] or "其他", []).append(p["label"])
+
+    def _section_key(name: str) -> tuple[int, int]:
+        num = re.match(r"\s*(\d+)", name)
+        return (0, int(num.group(1))) if num else (1, 0)
+
     cloud = "".join(
         f'<div class="sec">{esc(sec)}</div><div>'
         + "".join(f'<span class="tg">{esc(label)}</span>' for label in labels)
         + "</div>"
-        for sec, labels in good_sections.items()
+        for sec, labels in sorted(good_sections.items(), key=lambda kv: _section_key(kv[0]))
     )
     card_e = ""
     if points:
         target_label = {'type': '题型', 'mixed': '训练目标'}.get(data.knowledge_structure.get('target_kind'), '知识点')
         score_note = ('这里只反映本次考试表现；题型下列出的分数是相关题目的整体得分。'
                       if target_label == '题型' else '这里只反映本次考试表现；同一道题可能同时考几个知识点。')
+        good_head = (f'<div class="pt-good-head">这次做得好（{n_good} 项）'
+                     f'<small>相关题目这次都做对了</small></div>' if cloud else "")
+        unknown_details = ""
+        if unknown_rows:
+            unknown_details = (
+                f'<details class="pt-unknown"><summary>暂不能判断的失分点'
+                f'（{n_unknown} 项）</summary>'
+                f'<div class="note">灰色“？”表示这道题有失分，但现有记录还不能确定这个{target_label}是否做对；'
+                f'不代表孩子一定不会，也不需要家长逐项确认。可先看“这次重点跟进”了解具体问题。</div>'
+                f'{"".join(unknown_rows)}</details>')
         card_e = f"""
 <div class="card">
   <h2>本次考查点</h2>
   <div class="pt-counts"><b class="g">做得好 {n_good}</b><b class="m">部分做到 {n_mid}</b><b class="b">需要补 {n_bad}</b><b class="u">暂不能判断 {n_unknown}</b></div>
-  <div class="note">灰色“？”表示这道题有失分，但现有记录还不能确定这个{target_label}是否做对；不代表孩子一定不会，也不需要家长逐项确认。可先看“这次重点跟进”了解具体问题。</div>
-  {''.join(rows_html)}
+  {good_head}
   {f'<div class="tagcloud">{cloud}</div>' if cloud else ''}
+  {''.join(rows_html)}
+  {unknown_details}
   <div class="note" style="margin-top:8px">{score_note}</div>
 </div>"""
+
+    # ---- 学情肖像（本次考查点之后、失分题附录之前） ----
+    from backend.reporting.personal_portrait import (
+        PORTRAIT_CSS, build_portrait_view, portrait_card_html)
+    try:
+        card_portrait = portrait_card_html(
+            build_portrait_view(data, student, history, error_map, error_history))
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "optional operation unavailable: portrait card (%s)", type(exc).__name__)
+        card_portrait = ""
 
     # ---- F 附录 ----
     appendix = _lost_appendix_html(
@@ -2639,7 +2712,7 @@ def _render_personal_html(
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{esc(student.student_name)} · 家长报告 · {esc(data.session_name)}</title>
-<style>{_PERSONAL_CSS}</style>
+<style>{_PERSONAL_CSS}{PORTRAIT_CSS}</style>
 {_report_math_assets()}
 </head>
 <body>
@@ -2651,6 +2724,7 @@ def _render_personal_html(
 {released_note}
 {card_d}
 {card_e}
+{card_portrait}
 {card_f}
 <footer>
 <p>本报告根据阅卷记录自动生成；标“{esc(AI_DISCLAIMER)}”的内容由人工智能辅助生成，仅供参考，如有疑问请联系任课老师。</p>

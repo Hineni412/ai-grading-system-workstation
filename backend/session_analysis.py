@@ -165,6 +165,7 @@ class StudentReportData:
     records: list[StudentQuestionRecord] = field(default_factory=list)
     material_notes: list[str] = field(default_factory=list)
     knowledge_mastery: dict[str, dict[str, Any]] = field(default_factory=dict)
+    portrait_mastery: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def lost_points_total(self) -> float:
@@ -1244,6 +1245,25 @@ def enrich_personal_knowledge(
                 scope={'mode': 'selected', 'student_ids': [str(student.student_id) for student in selected], 'use_historical_fallback': False},
                 exam_scope={'mode': 'semester', 'curriculum_volume_id': volume},
             )
+            try:
+                # 学情肖像按本场时间截取掌握度：之后的考试与训练不影响本场报告。
+                from question_bank.mastery.current import _parse_datetime
+                cutoff = _parse_datetime(service.mastery_session_times(
+                    exam_scope={'mode': 'semester', 'curriculum_volume_id': volume}
+                ).get(str(data.session_id)))
+                if cutoff is not None:
+                    mastery = service.semester_mastery(profile, as_of=cutoff, evidence_until=cutoff)
+                    parents = {r.target_key for r in resolver.relations if r.relation_type == 'parent'}
+                    for student in selected:
+                        student.portrait_mastery = {
+                            key: {field: getattr(item, field) for field in
+                                  ('tier', 'observation_count', 'full_correct_count', 'recent_trend')}
+                            for (sid, key), item in mastery.items()
+                            if sid == str(student.student_id) and key not in parents
+                            and int(item.observation_count or 0) > 0
+                            and is_training_target(key, resolver)}
+            except (CurrentKnowledgeUnavailable, OSError, sqlite3.Error, ValueError, TypeError):
+                pass  # 肖像只是附加汇总，缺失不阻断报告。
         snapshot.update(catalog=profile.get('knowledge_catalog') or [],
                         associations=profile.get('knowledge_associations') or [],
                         target_kind=profile.get('target_kind') or snapshot['target_kind'],

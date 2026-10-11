@@ -126,6 +126,7 @@ class CurrentMasteryCalculator:
         self, profile: Mapping[str, Any], *,
         exclude_training_evidence_ids: frozenset[str] = frozenset(),
         allowed_student_ids: frozenset[str] | None = None,
+        evidence_until: datetime | None = None,
     ) -> dict[tuple[str, str], CurrentMastery]:
         if self.parameters is None:
             raise ValueError("current mastery parameters are unavailable")
@@ -133,11 +134,16 @@ class CurrentMasteryCalculator:
         if not isinstance(as_of, datetime) or as_of.tzinfo is None:
             raise ValueError("mastery clock must include a timezone")
         if self.semester_mastery is not None:
+            extra = {"evidence_until": evidence_until} if evidence_until is not None else {}
             all_values = self.semester_mastery(profile, exclude_training_evidence_ids=exclude_training_evidence_ids,
-                                              as_of=as_of, parameters=self.parameters)
+                                              as_of=as_of, parameters=self.parameters, **extra)
             selected = allowed_student_ids if allowed_student_ids is not None else frozenset(str(s["student_id"]) for s in profile.get("students", []))
             return {identity: item for identity, item in all_values.items() if identity[0] in selected}
         observations = self.model_observations(profile, exclude_training_evidence_ids=exclude_training_evidence_ids)
+        if evidence_until is not None:
+            observations = [o for o in observations
+                            if not isinstance(o.get("occurred_at"), datetime)
+                            or o["occurred_at"] <= evidence_until]
         if not observations:
             return {}
         # Never fit a page's selected students: the supplied snapshot determines

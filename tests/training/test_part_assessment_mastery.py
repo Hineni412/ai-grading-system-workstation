@@ -318,6 +318,25 @@ def test_current_mastery_filters_after_fitting_and_counts_activity_trends(tmp_pa
         assert later["high", "spare"].logit_sd > untested.logit_sd
     else:
         assert later == selected
+    # evidence_until 早于最新合成活动 → 与其缺席完全一致；None 结果不变。
+    cut = datetime(2026, 9, 20, tzinfo=UTC)
+    trimmed = calculator.calculate(profile, evidence_until=cut)
+    manual = calculator.calculate({"_mastery_observations": [
+        o for o in observations if o["occurred_at"] <= cut]})
+    assert trimmed.keys() == manual.keys()
+    for identity, item in trimmed.items():
+        expected = manual[identity]
+        assert (item.observation_count, item.full_correct_count,
+                item.value, item.tier) == (expected.observation_count,
+                expected.full_correct_count, expected.value, expected.tier)
+    assert trimmed["middle", "leaf"].observation_count < \
+        values["middle", "leaf"].observation_count
+    assert trimmed["middle", "leaf"].training_evidence_count == 0
+    baseline = calculator.calculate(profile)
+    assert baseline.keys() == values.keys() and all(
+        baseline[i].observation_count == v.observation_count
+        for i, v in values.items())
+
     next(relation for relation in calculator.resolver.relations
          if relation.source_key == "spare").target_key = "outside"
     updated = calculator.calculate(profile, allowed_student_ids=frozenset({"high"}))

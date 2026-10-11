@@ -285,7 +285,7 @@ class DiagnosisProfileService:
         finally:
             _release_tag_profile_flight(key, error)
 
-    def semester_mastery(self, profile, *, exclude_training_evidence_ids=frozenset(), as_of=None, parameters=None):
+    def semester_mastery(self, profile, *, exclude_training_evidence_ids=frozenset(), as_of=None, parameters=None, evidence_until=None):
         from datetime import UTC, datetime
         from question_bank.mastery.current import CURRENT_MASTERY_PARAMETERS
         from question_bank.mastery.model import week_of
@@ -295,16 +295,17 @@ class DiagnosisProfileService:
         key = (*self.tag_profile_cache_key(scope={"mode": "all", "use_historical_fallback": False}, exam_scope=exam_scope),
             "mastery", str(week_of(as_of)), ",".join(sorted(exclude_training_evidence_ids)),
             tuple((item.name, getattr(parameters, item.name)) for item in fields(parameters)
-                  if "version" not in item.name))
+                  if "version" not in item.name),
+            evidence_until.isoformat() if evidence_until is not None else "")
         cached = _claim_or_wait_tag_profile(key)
         if cached is not None:
-            if getattr(self, "persist_snapshots", False) and not exclude_training_evidence_ids:
+            if getattr(self, "persist_snapshots", False) and not exclude_training_evidence_ids and evidence_until is None:
                 self._save_local_profile(key, cached)
             return pickle.loads(cached[0])
         error = None
         try:
             local_reader = getattr(self, "_read_local_profile", None)
-            local = local_reader(key) if callable(local_reader) else None
+            local = local_reader(key) if callable(local_reader) and evidence_until is None else None
             if local is not None:
                 with _TAG_PROFILE_CACHE_LOCK:
                     _TAG_PROFILE_CACHE[key] = local
@@ -323,20 +324,21 @@ class DiagnosisProfileService:
                 *_path_generation(self.grading_db_path),
                 *_path_generation(self.question_bank_db_path, _QB_VERSION_DOMAINS),
             )
-            input_key = (origins[0], origins[3], tuple(origins[3:6]), key[-3:],
+            input_key = (origins[0], origins[3], tuple(origins[3:6]), key[-4:],
                          cache_values(calculation_profile))
             values = _MASTERY_INPUT_RESULTS.get_or_compute(input_key, lambda:
                 CurrentMasteryCalculator(
                     self.question_bank_db_path, resolver, parameters=parameters,
                     clock=lambda: as_of, data_root=self.data_root,
                 ).calculate(calculation_profile,
-                            exclude_training_evidence_ids=exclude_training_evidence_ids))
+                            exclude_training_evidence_ids=exclude_training_evidence_ids,
+                            evidence_until=evidence_until))
             entry = (pickle.dumps(values, pickle.HIGHEST_PROTOCOL), pickle.dumps({}, pickle.HIGHEST_PROTOCOL))
             with _TAG_PROFILE_CACHE_LOCK:
                 _TAG_PROFILE_CACHE[key] = entry
                 while len(_TAG_PROFILE_CACHE) > _TAG_PROFILE_CACHE_LIMIT:
                     _TAG_PROFILE_CACHE.pop(next(iter(_TAG_PROFILE_CACHE)))
-            if getattr(self, "persist_snapshots", False) and not exclude_training_evidence_ids:
+            if getattr(self, "persist_snapshots", False) and not exclude_training_evidence_ids and evidence_until is None:
                 self._save_local_profile(key, entry)
             return values
         except BaseException as exc:
