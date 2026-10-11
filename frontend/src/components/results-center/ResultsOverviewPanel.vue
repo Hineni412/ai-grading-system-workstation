@@ -14,11 +14,11 @@ import {
   type ClassAnalysisResponse,
 } from '../../api/class-analysis'
 import type { ResultsCenterResponse } from '../../api/results-center'
-import type { SessionSummary } from '../../api/sessions'
 import { exportsApi } from '../../api/exports'
 import { useJobStore } from '../../stores/jobs'
 import { useSessionStore } from '../../stores/session'
 import AppButton from '../design-system/AppButton.vue'
+import StatePanel from '../design-system/StatePanel.vue'
 import { Skeleton } from '../ui/skeleton'
 import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
 import {
@@ -45,21 +45,18 @@ import {
   formatScore,
   isCompleteStudent,
   questionRatesFor,
+  rankChangeGroups,
   rankChanges,
-  rankTierChanges,
-  consecutiveRankChanges,
   scoreStructureFor,
   subQuestionLabelFor,
   summarizeStudents,
   zeroShareOf,
   type ClassDelta,
   type ClassSummary,
-  type ConsecutiveRankEntry,
   type CriticalStudentEntry,
   type OverviewBand,
   type QuestionSort,
   type RankChange,
-  type RankTierEntry,
 } from './results-overview'
 
 const props = defineProps<{
@@ -500,139 +497,64 @@ watch(comparisonId, (sessionId) => {
 }, { immediate: true })
 
 const rankEntries = computed<RankChange[]>(() => {
-  const previous = previousScopeStudents.value
-  if (!previous) return []
-  return rankChanges(studentsInScope.value, previous)
-})
-
-const tierGroups = computed(() => {
-  const previous = previousScopeStudents.value
-  if (!previous) {
-    return {
-      enteringTop: [] as RankTierEntry[],
-      leavingTop: [] as RankTierEntry[],
-      leavingBottom: [] as RankTierEntry[],
-      enteringBottom: [] as RankTierEntry[],
-    }
-  }
-  return rankTierChanges(studentsInScope.value, previous)
-})
-
-const tierHint = computed(() => {
-  const sizes = new Set<number>()
-  for (const entry of rankEntries.value) {
-    sizes.add(Math.ceil(entry.currentSize / 4))
-    sizes.add(Math.ceil(entry.previousSize / 4))
-  }
-  return sizes.size === 1
-    ? `前 1/4 = 本班前 ${[...sizes][0]} 名`
-    : '前 1/4 = 各班前 1/4'
-})
-
-// 第三场 = 同卷别候选中早于所选对比考试的最近一场；顺序要求 第三场 < 对比 < 本场。
-const earlierSession = computed<SessionSummary | null>(() => {
-  const comparison = comparisonOptions.value.find(
-    (option) => option.id === comparisonId.value,
-  )
-  const created = currentSession.value?.created_at
-  if (!comparison?.created_at || !created) return null
-  if (!(comparison.created_at < created)) return null
-  return comparisonOptions.value.find((option) => (
-    option.id !== comparison.id
-    && option.created_at !== null
-    && option.created_at < comparison.created_at!
-  )) ?? null
-})
-
-const earlierResults = ref<ResultsCenterResponse | null>(null)
-const earlierState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
-let earlierController: AbortController | null = null
-
-watch(() => earlierSession.value?.id ?? null, (sessionId) => {
-  earlierController?.abort()
-  earlierResults.value = null
-  if (sessionId === null) {
-    earlierState.value = 'idle'
-    return
-  }
-  earlierState.value = 'loading'
-  const controller = new AbortController()
-  earlierController = controller
-  void loadComparisonResults(sessionId)
-    .then((result) => {
-      if (controller.signal.aborted || earlierSession.value?.id !== sessionId) return
-      earlierResults.value = result
-      earlierState.value = 'ready'
-    })
-    .catch(() => {
-      if (!controller.signal.aborted && earlierSession.value?.id === sessionId) {
-        earlierState.value = 'error'
-      }
-    })
-}, { immediate: true })
-
-const earlierScopeStudents = computed(() => {
-  if (!earlierResults.value) return null
-  return scope.value === null
-    ? earlierResults.value.students
-    : earlierResults.value.students.filter(
+  if (!previousResults.value) return []
+  const current = studentsInScope.value
+  const previous = scope.value === null
+    ? previousResults.value.students
+    : previousResults.value.students.filter(
       (student) => (student.class_name ?? '') === scope.value,
     )
+  return rankChanges(current, previous)
 })
 
-const consecGroups = computed(() => {
-  const previous = previousScopeStudents.value
-  const earlier = earlierScopeStudents.value
-  if (!previous || !earlier) {
-    return {
-      improving: [] as ConsecutiveRankEntry[],
-      declining: [] as ConsecutiveRankEntry[],
-    }
-  }
-  return consecutiveRankChanges(studentsInScope.value, previous, earlier)
-})
+const rankGroups = computed(() => rankChangeGroups(
+  rankEntries.value,
+  5,
+  10,
+))
+const ranksExpanded = ref(false)
 
-const RANK_LIST_LIMIT = 8
-const rankListExpanded = ref<Record<string, boolean>>({})
+const rankRows = computed(() => ({
+  improved: ranksExpanded.value
+    ? rankGroups.value.improved
+    : rankGroups.value.improved.slice(0, 5),
+  declined: ranksExpanded.value
+    ? rankGroups.value.declined
+    : rankGroups.value.declined.slice(0, 5),
+}))
 
-interface RankSection<E> {
-  key: string
-  title: string
-  rows: E[]
+const ranksExpandable = computed(() => (
+  rankGroups.value.improved.length > 5 || rankGroups.value.declined.length > 5
+))
+
+/** 名次→横轴位置：第 1 名在右端，最后一名在左端；范围外按边缘截断。 */
+function rankFraction(rank: number, size: number): number {
+  if (size <= 1) return 0.5
+  const clamped = Math.max(1, Math.min(size, rank))
+  return 1 - (clamped - 1) / (size - 1)
 }
 
-const tierSections = computed<RankSection<RankTierEntry>[]>(() => {
-  const groups = tierGroups.value
-  return [
-    { key: 'enteringTop', title: '进入前 1/4', rows: groups.enteringTop },
-    { key: 'leavingTop', title: '跌出前 1/4', rows: groups.leavingTop },
-    { key: 'leavingBottom', title: '走出后 1/4', rows: groups.leavingBottom },
-    { key: 'enteringBottom', title: '跌入后 1/4', rows: groups.enteringBottom },
-  ]
-})
-
-const consecSections = computed<RankSection<ConsecutiveRankEntry>[]>(() => {
-  const sequence = earlierSession.value !== null && comparisonName.value !== null
-    ? `（「${earlierSession.value.name}」→「${comparisonName.value}」→本场，每次 ≥3 名）`
-    : ''
-  const groups = consecGroups.value
-  return [
-    { key: 'improving', title: `连续进步${sequence}`, rows: groups.improving },
-    { key: 'declining', title: `连续退步${sequence}`, rows: groups.declining },
-  ]
-})
-
-function shownRankRows<E>(section: RankSection<E>): E[] {
-  return rankListExpanded.value[section.key]
-    ? section.rows
-    : section.rows.slice(0, RANK_LIST_LIMIT)
+function rankPosition(rank: number, size: number): string {
+  return `${rankFraction(rank, size) * 100}%`
 }
 
-function toggleRankSection(key: string): void {
-  rankListExpanded.value = {
-    ...rankListExpanded.value,
-    [key]: !rankListExpanded.value[key],
+function rankSegmentStyle(entry: RankChange): Record<string, string> {
+  const from = rankFraction(entry.previousRank, entry.currentSize)
+  const to = rankFraction(entry.currentRank, entry.currentSize)
+  return {
+    left: `${Math.min(from, to) * 100}%`,
+    width: `${Math.abs(from - to) * 100}%`,
   }
+}
+
+function rankAria(entry: RankChange): string {
+  const parts = [entry.student.student_name]
+  if (scope.value === null) parts.push(classDisplayLabel(entry.student.class_name))
+  parts.push(
+    `名次从第 ${entry.previousRank} 名到第 ${entry.currentRank} 名`,
+    `${entry.change >= 0 ? '进步' : '退步'} ${Math.abs(entry.change)} 名`,
+  )
+  return parts.join('，')
 }
 
 /** 分数分布条只渲染有人数的分数段；段宽按人数 flex-grow。 */
@@ -1063,11 +985,7 @@ onMounted(() => {
     <section class="overview__section" aria-labelledby="overview-ranks-title">
       <div class="overview__tile overview__tile--ranks">
         <div class="overview__tile-head">
-          <h3 id="overview-ranks-title">进退步</h3>
-          <span
-            v-if="previousState === 'ready' && comparisonName !== null"
-            class="overview__tile-sub"
-          >对比「{{ comparisonName }}」 · 两场都有完整成绩且同班的 {{ rankEntries.length }} 人</span>
+          <h3 id="overview-ranks-title">排名变化</h3>
         </div>
         <p v-if="!comparisonOptions.length" class="overview__tile-sub">
           没有可对比的上一场考试
@@ -1080,104 +998,64 @@ onMounted(() => {
         <p v-else-if="previousState === 'error'" class="overview__tile-sub">
           对比考试的成绩暂时无法读取。
         </p>
-        <template v-else-if="previousState === 'ready'">
-          <div class="overview__tier-grid">
-            <div
-              v-for="section in tierSections"
-              :key="section.key"
-              class="overview__rank-group"
-            >
-              <h4 :title="tierHint">{{ section.title }} · {{ section.rows.length }} 人</h4>
-              <p v-if="section.rows.length === 0" class="overview__tile-sub">无</p>
-              <template v-else>
-                <ul class="overview__notes-list overview__tier-list">
-                  <li
-                    v-for="entry in shownRankRows(section)"
-                    :key="entry.student.student_id"
-                    class="overview__notes-item"
-                  >
-                    <button
-                      type="button"
-                      class="overview__link overview__notes-student"
-                      @click="emit('open-student', entry.student.student_id)"
-                    >
-                      {{ entry.student.student_name }}<small v-if="scope === null">
-                        {{ classDisplayLabel(entry.student.class_name) }}
-                      </small>
-                    </button>
-                    <span class="overview__notes-text">
-                      <b
-                        class="overview__tier-ranks"
-                        :class="entry.change >= 0 ? 'is-up' : 'is-down'"
-                      >{{ entry.previousRank }}→{{ entry.currentRank }}</b>
-                    </span>
-                  </li>
-                </ul>
+        <div v-else-if="previousState === 'ready'" class="overview__ranks">
+          <div
+            v-for="group in [
+              { key: 'improved', title: '进步明显', rows: rankRows.improved },
+              { key: 'declined', title: '退步明显', rows: rankRows.declined },
+            ]"
+            :key="group.key"
+            class="overview__rank-group"
+            :data-direction="group.key"
+          >
+            <h4>{{ group.title }}</h4>
+            <ol v-if="group.rows.length" class="overview__rank-list">
+              <li v-for="entry in group.rows" :key="entry.student.student_id">
                 <button
-                  v-if="section.rows.length > RANK_LIST_LIMIT"
                   type="button"
-                  class="overview__link overview__tier-more"
-                  @click="toggleRankSection(section.key)"
-                >{{ rankListExpanded[section.key] ? '收起' : '展开' }}</button>
-              </template>
-            </div>
+                  class="overview__rank-row"
+                  :aria-label="rankAria(entry)"
+                  @click="emit('open-student', entry.student.student_id)"
+                >
+                  <span class="overview__rank-name">
+                    {{ entry.student.student_name }}<small v-if="scope === null">
+                      {{ classDisplayLabel(entry.student.class_name) }}
+                    </small>
+                  </span>
+                  <span
+                    class="overview__ranktrack"
+                    :class="entry.change >= 0 ? 'is-up' : 'is-down'"
+                    aria-hidden="true"
+                  >
+                    <i class="overview__ranktrack-seg" :style="rankSegmentStyle(entry)"></i>
+                    <i
+                      class="overview__ranktrack-dot is-prev"
+                      :style="{ left: rankPosition(entry.previousRank, entry.currentSize) }"
+                    ></i>
+                    <i
+                      class="overview__ranktrack-dot is-curr"
+                      :style="{ left: rankPosition(entry.currentRank, entry.currentSize) }"
+                    ></i>
+                  </span>
+                  <span class="overview__rank-nums">
+                    {{ entry.previousRank }} → {{ entry.currentRank }}
+                  </span>
+                  <b
+                    class="overview__rank-change"
+                    :class="entry.change >= 0 ? 'is-up' : 'is-down'"
+                  >{{ entry.change >= 0 ? '↑' : '↓' }}{{ Math.abs(entry.change) }}</b>
+                </button>
+              </li>
+            </ol>
+            <StatePanel v-else kind="empty" compact title="无明显变化" />
           </div>
-          <div class="overview__consec">
-            <h4 class="overview__consec-heading">连续变化（近三场）</h4>
-            <p v-if="earlierSession === null" class="overview__tile-sub">
-              需要三场同卷别考试才能看连续变化
-            </p>
-            <Skeleton
-              v-else-if="earlierState !== 'ready' && earlierState !== 'error'"
-              class="overview__skeleton-block"
-              aria-hidden="true"
-            />
-            <p v-else-if="earlierState === 'error'" class="overview__tile-sub">
-              第三场考试的成绩暂时无法读取。
-            </p>
-            <div v-else class="overview__tier-grid">
-              <div
-                v-for="section in consecSections"
-                :key="section.key"
-                class="overview__rank-group"
-              >
-                <h4>{{ section.title }} · {{ section.rows.length }} 人</h4>
-                <p v-if="section.rows.length === 0" class="overview__tile-sub">无</p>
-                <template v-else>
-                  <ul class="overview__notes-list overview__tier-list">
-                    <li
-                      v-for="entry in shownRankRows(section)"
-                      :key="entry.student.student_id"
-                      class="overview__notes-item"
-                    >
-                      <button
-                        type="button"
-                        class="overview__link overview__notes-student"
-                        @click="emit('open-student', entry.student.student_id)"
-                      >
-                        {{ entry.student.student_name }}<small v-if="scope === null">
-                          {{ classDisplayLabel(entry.student.class_name) }}
-                        </small>
-                      </button>
-                      <span class="overview__notes-text">
-                        <b
-                          class="overview__tier-ranks"
-                          :class="entry.totalChange >= 0 ? 'is-up' : 'is-down'"
-                        >{{ entry.earlierRank }}→{{ entry.previousRank }}→{{ entry.currentRank }}</b>
-                      </span>
-                    </li>
-                  </ul>
-                  <button
-                    v-if="section.rows.length > RANK_LIST_LIMIT"
-                    type="button"
-                    class="overview__link overview__tier-more"
-                    @click="toggleRankSection(section.key)"
-                  >{{ rankListExpanded[section.key] ? '收起' : '展开' }}</button>
-                </template>
-              </div>
-            </div>
-          </div>
-        </template>
+        </div>
+        <button
+          v-if="previousState === 'ready' && ranksExpandable"
+          type="button"
+          class="overview__link"
+          @click="ranksExpanded = !ranksExpanded"
+        >{{ ranksExpanded ? '收起' : '展开全部' }}</button>
       </div>
     </section>
 
