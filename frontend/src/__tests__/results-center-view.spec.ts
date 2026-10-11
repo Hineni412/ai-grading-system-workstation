@@ -461,13 +461,15 @@ describe('results center class filtering and return position', () => {
     })
     const { host, router } = await mountView('overview')
     await vi.waitFor(() => expect(host.textContent).toContain('1 条待核对'))
-    const tile = [...host.querySelectorAll<HTMLElement>('.overview__tile')]
+    const tile = [...host.querySelectorAll<HTMLElement>('.overview__todo-item')]
       .find((element) => element.textContent?.includes('报告提示'))!
     tile.querySelector<HTMLButtonElement>('button')!.click()
     await vi.waitFor(() => expect(
       host.querySelector('[data-testid="report-review-notes"]'),
     ).not.toBeNull())
-    const rows = host.querySelectorAll('.overview__notes-item')
+    const rows = host.querySelectorAll(
+      '[data-testid="report-review-notes"] .overview__notes-item',
+    )
     expect(rows).toHaveLength(2)
     expect(rows[0]!.textContent).toContain('合成乙')
     expect(rows[0]!.textContent).toContain('第1题')
@@ -496,7 +498,7 @@ describe('results center class filtering and return position', () => {
     )
     const second = await mountView('overview')
     expect(
-      [...second.host.querySelectorAll('.overview__tile')]
+      [...second.host.querySelectorAll('.overview__todo-item')]
         .some((el) => el.textContent?.includes('报告提示')),
     ).toBe(true)
     expect(second.host.textContent).toContain('1 条待核对')

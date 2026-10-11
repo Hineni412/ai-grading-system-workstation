@@ -45,30 +45,6 @@ export interface ScoreStructure {
   resolved: number
 }
 
-export interface LowTailSummary {
-  count: number
-  /** 低分学生人均 0 分题数 */
-  zeroAverage: number
-}
-
-export function lowTailSummary(
-  students: readonly ResultsCenterStudent[],
-): LowTailSummary {
-  const low = students
-    .filter(isCompleteStudent)
-    .filter((student) => {
-      const rate = studentRate(student)
-      return rate !== null && rate < 0.4
-    })
-  return {
-    count: low.length,
-    zeroAverage: low.length
-      ? low.reduce((total, student) => total + zeroScoreCount(student), 0)
-        / low.length
-      : 0,
-  }
-}
-
 /** 临界名单的最大分差：距及格线/优秀线 5 分内入组。 */
 export const CRITICAL_GAP = 5
 
@@ -234,10 +210,6 @@ export function resolvedItemScore(
   return item.score_awarded
 }
 
-export function zeroScoreCount(student: ResultsCenterStudent): number {
-  return student.items.filter((item) => resolvedItemScore(item) === 0).length
-}
-
 export function summarizeStudents(
   students: readonly ResultsCenterStudent[],
   key: string | null,
@@ -303,10 +275,6 @@ export { formatScore }
 
 export function formatRate(value: number | null): string {
   return value === null ? '—' : `${Math.round(value * 100)}%`
-}
-
-export function formatCount(value: number): string {
-  return formatScore(value)
 }
 
 export function scoreStructureFor(

@@ -12,7 +12,6 @@ import {
   compareByZeroShare,
   criticalStudents,
   displayAnswer,
-  lowTailSummary,
   medianOf,
   questionRatesFor,
   rankChangeGroups,
@@ -242,19 +241,6 @@ describe('results overview pure helpers', () => {
     expect(groups.improved.every((row) => row.change >= 5)).toBe(true)
     expect(groups.declined.map((row) => row.student.student_id)).toEqual([2, 3])
     expect(groups.declined.every((row) => row.change <= -5)).toBe(true)
-  })
-
-  it('summarizes the low tail with the per-student zero-question average', () => {
-    const summary = lowTailSummary([
-      student(1, 30, 100, '9', { items: [item('Q1', 0), item('Q2', 0)] }),
-      student(2, 39, 100, '9', { items: [item('Q1', 0)] }),
-      student(3, 40, 100), // 40% 不算低分
-      student(4, 20, 100, '9', { ungraded_count: 1, status: 'incomplete' }),
-      student(5, 0, 0), // 无满分 → 无得分率
-    ])
-    expect(summary.count).toBe(2)
-    expect(summary.zeroAverage).toBeCloseTo(1.5)
-    expect(lowTailSummary([student(1, 60, 100)])).toEqual({ count: 0, zeroAverage: 0 })
   })
 
   it('groups critical students by gap to the pass and excellent lines', () => {

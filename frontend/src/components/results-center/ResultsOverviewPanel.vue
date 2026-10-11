@@ -41,11 +41,9 @@ import {
   criticalStudents,
   defaultComparison,
   displayAnswer,
-  formatCount,
   formatRate,
   formatScore,
   isCompleteStudent,
-  lowTailSummary,
   questionRatesFor,
   rankChangeGroups,
   rankChanges,
@@ -70,7 +68,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   'open-student': [studentId: number]
   'open-question': [questionId: string, className: string | null]
-  'open-low-list': [scope: string | null]
   'open-review': [scope: 'teacher_pending' | 'all']
   'update:scope': [scope: string | null]
 }>()
@@ -311,9 +308,7 @@ const scopeAnalysisQuestions = computed(() => (
     : null
 ))
 
-const lowTail = computed(() => lowTailSummary(studentsInScope.value))
 const critical = computed(() => criticalStudents(studentsInScope.value))
-const criticalExpanded = ref(false)
 
 const criticalGroups = computed(() => {
   const maxScore = props.results.summary.max_score
@@ -333,17 +328,6 @@ const criticalGroups = computed(() => {
     })
   }
   return groups
-})
-
-const criticalTileSub = computed(() => {
-  const parts: string[] = []
-  if (critical.value.passing.length > 0) {
-    parts.push(`差 5 分内及格 ${critical.value.passing.length} 人`)
-  }
-  if (critical.value.excellent.length > 0) {
-    parts.push(`差 5 分内优秀 ${critical.value.excellent.length} 人`)
-  }
-  return parts.join(' · ')
 })
 
 interface QuestionRow {
@@ -789,6 +773,92 @@ onMounted(() => {
       </label>
     </div>
 
+    <section class="overview__section overview__todo-section" aria-label="待办">
+      <div class="overview__todo">
+        <div class="overview__todo-item">
+          <template v-if="reviewPending > 0">
+            <span class="overview__todo-text">
+              复核 · {{ reviewPending }} 题待处理<template v-if="reviewBreakdown">（{{ reviewBreakdown }}）</template>
+            </span>
+            <AppButton
+              variant="ghost"
+              @click="emit('open-review', 'teacher_pending')"
+            >去复核</AppButton>
+            <AppButton
+              v-if="walkthroughAvailable"
+              variant="ghost"
+              :disabled="!walkthroughReady"
+              :title="walkthroughReady ? undefined : '正在准备数据…'"
+              @click="openWalkthrough"
+            >看卷 10 分钟</AppButton>
+          </template>
+          <template v-else>
+            <span class="overview__todo-text">
+              复核 · 已全部确认（教师确认 {{ results.summary.teacher_final_item_count }} · AI 评分 {{ results.summary.ai_ready_item_count }}）
+            </span>
+            <AppButton
+              v-if="walkthroughAvailable"
+              variant="primary"
+              :disabled="!walkthroughReady"
+              :title="walkthroughReady ? undefined : '正在准备数据…'"
+              @click="openWalkthrough"
+            >看卷 10 分钟</AppButton>
+            <AppButton
+              variant="ghost"
+              @click="emit('open-review', 'all')"
+            >抽查复核</AppButton>
+          </template>
+        </div>
+        <div
+          v-if="pendingReviewNotes.length > 0"
+          class="overview__todo-item overview__todo-item--end"
+        >
+          <span class="overview__todo-text">
+            报告提示 · {{ pendingReviewNotes.length }} 条待核对
+          </span>
+          <AppButton
+            variant="ghost"
+            :aria-expanded="reviewNotesExpanded"
+            @click="reviewNotesExpanded = !reviewNotesExpanded"
+          >{{ reviewNotesExpanded ? '收起' : '查看明细' }}</AppButton>
+        </div>
+      </div>
+      <div
+        v-if="reviewNotesExpanded && reviewNotes.length > 0"
+        class="overview__notes"
+        data-testid="report-review-notes"
+      >
+        <ul class="overview__notes-list">
+          <li
+            v-for="(note, index) in reviewNotes"
+            :key="`${note.student_id}:${note.question_id}:${index}`"
+            class="overview__notes-item"
+            :class="{ 'is-confirmed': note.status === 'confirmed' }"
+          >
+            <span class="overview__notes-student">
+              {{ note.student_name }}<small v-if="note.class_name">
+                {{ classDisplayLabel(note.class_name) }}
+              </small>
+            </span>
+            <span class="overview__notes-question">{{ note.display_label }}</span>
+            <span class="overview__notes-text">{{ note.note }}</span>
+            <span
+              v-if="note.status === 'confirmed'"
+              class="overview__notes-status"
+            >已核对</span>
+            <AppButton
+              v-else
+              variant="ghost"
+              size="small"
+              class="overview__notes-action"
+              @click="openReviewNote(note)"
+            >去核对</AppButton>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <div class="overview__duo">
     <section class="overview__section" aria-labelledby="overview-classes-title">
       <h2 id="overview-classes-title" class="overview__title">班级对比</h2>
       <div class="overview__table-wrap">
@@ -871,161 +941,49 @@ onMounted(() => {
         >↑↓ 为较「{{ comparisonName }}」的变化；平均分仅在两次满分相同时比较，及格率、优秀率按百分点。</span>
       </p>
     </section>
-
-    <section class="overview__section" aria-labelledby="overview-findings-title">
-      <h2 id="overview-findings-title" class="overview__title">本次重点</h2>
-      <div class="overview__tiles">
-          <section class="overview__tile">
-            <h3>复核</h3>
-            <template v-if="reviewPending > 0">
-              <strong class="overview__tile-num">{{ reviewPending }} 题待处理</strong>
-              <span class="overview__tile-sub">{{ reviewBreakdown }}</span>
-              <AppButton
-                variant="ghost"
-                class="overview__tile-action"
-                @click="emit('open-review', 'teacher_pending')"
-              >去复核</AppButton>
-              <AppButton
-                v-if="walkthroughAvailable"
-                variant="ghost"
-                class="overview__tile-action"
-                :disabled="!walkthroughReady"
-                :title="walkthroughReady ? undefined : '正在准备数据…'"
-                @click="openWalkthrough"
-              >看卷 10 分钟</AppButton>
-            </template>
-            <template v-else>
-              <strong class="overview__tile-num">已全部确认</strong>
-              <span class="overview__tile-sub">
-                教师确认 {{ results.summary.teacher_final_item_count }} ·
-                AI 评分 {{ results.summary.ai_ready_item_count }}
-              </span>
-              <AppButton
-                v-if="walkthroughAvailable"
-                variant="primary"
-                class="overview__tile-action"
-                :disabled="!walkthroughReady"
-                :title="walkthroughReady ? undefined : '正在准备数据…'"
-                @click="openWalkthrough"
-              >看卷 10 分钟</AppButton>
-              <AppButton
-                variant="ghost"
-                class="overview__tile-action"
-                @click="emit('open-review', 'all')"
-              >抽查复核</AppButton>
-            </template>
-          </section>
-          <section
-            v-if="pendingReviewNotes.length > 0"
-            class="overview__tile overview__tile--notes"
-          >
-            <h3>报告提示</h3>
-            <strong class="overview__tile-num">
-              {{ pendingReviewNotes.length }} 条待核对
-            </strong>
-            <span class="overview__tile-sub">个人报告中的建议核对点</span>
-            <AppButton
-              variant="ghost"
-              class="overview__tile-action"
-              :aria-expanded="reviewNotesExpanded"
-              @click="reviewNotesExpanded = !reviewNotesExpanded"
-            >{{ reviewNotesExpanded ? '收起' : '查看明细' }}</AppButton>
-          </section>
-          <section v-if="lowTail.count > 0" class="overview__tile">
-            <h3>低分学生</h3>
-            <strong class="overview__tile-num">{{ lowTail.count }} 人</strong>
-            <span class="overview__tile-sub">
-              低于 40% · 人均 0 分题 {{ formatCount(lowTail.zeroAverage) }} 道
-            </span>
-            <AppButton
-              variant="ghost"
-              class="overview__tile-action"
-              @click="emit('open-low-list', scope)"
-              >看名单</AppButton>
-          </section>
-
-          <section v-if="critical.total > 0" class="overview__tile">
-            <h3>临界学生</h3>
-            <strong class="overview__tile-num">{{ critical.total }} 人</strong>
-            <span class="overview__tile-sub">{{ criticalTileSub }}</span>
-            <AppButton
-              variant="ghost"
-              class="overview__tile-action"
-              :aria-expanded="criticalExpanded"
-              @click="criticalExpanded = !criticalExpanded"
-            >{{ criticalExpanded ? '收起' : '查看名单' }}</AppButton>
-          </section>
-        </div>
-      <div
-        v-if="reviewNotesExpanded && reviewNotes.length > 0"
-        class="overview__notes"
-        data-testid="report-review-notes"
-      >
-        <ul class="overview__notes-list">
-          <li
-            v-for="(note, index) in reviewNotes"
-            :key="`${note.student_id}:${note.question_id}:${index}`"
-            class="overview__notes-item"
-            :class="{ 'is-confirmed': note.status === 'confirmed' }"
-          >
-            <span class="overview__notes-student">
-              {{ note.student_name }}<small v-if="note.class_name">
-                {{ classDisplayLabel(note.class_name) }}
-              </small>
-            </span>
-            <span class="overview__notes-question">{{ note.display_label }}</span>
-            <span class="overview__notes-text">{{ note.note }}</span>
-            <span
-              v-if="note.status === 'confirmed'"
-              class="overview__notes-status"
-            >已核对</span>
-            <AppButton
-              v-else
-              variant="ghost"
-              size="small"
-              class="overview__notes-action"
-              @click="openReviewNote(note)"
-            >去核对</AppButton>
-          </li>
-        </ul>
-      </div>
-      <div
-        v-if="criticalExpanded && criticalGroups.length > 0"
-        class="overview__notes overview__critical"
+      <section
+        class="overview__section overview__critical-card"
+        aria-labelledby="overview-critical-title"
         data-testid="critical-students"
       >
-        <div
-          v-for="group in criticalGroups"
-          :key="group.key"
-          class="overview__critical-group"
-        >
-          <h3 class="overview__critical-title">{{ group.title }}</h3>
-          <ul class="overview__notes-list overview__critical-list">
-            <li
-              v-for="entry in group.rows"
-              :key="entry.student.student_id"
-              class="overview__notes-item"
-            >
-              <button
-                type="button"
-                class="overview__link overview__notes-student"
-                @click="emit('open-student', entry.student.student_id)"
+        <h2 id="overview-critical-title" class="overview__title">临界学生</h2>
+        <div class="overview__critical-body">
+          <div
+            v-for="group in criticalGroups"
+            :key="group.key"
+            class="overview__critical-group"
+          >
+            <h3 class="overview__critical-title">{{ group.title }}</h3>
+            <ul class="overview__notes-list overview__critical-list">
+              <li
+                v-for="entry in group.rows"
+                :key="entry.student.student_id"
+                class="overview__notes-item"
               >
-                {{ entry.student.student_name }}<small v-if="scope === null">
-                  {{ classDisplayLabel(entry.student.class_name) }}
-                </small>
-              </button>
-              <span class="overview__notes-text">
-                {{ formatScore(entry.student.current_score) }} 分 · 差 {{ formatScore(entry.gap) }} 分
-              </span>
-            </li>
-          </ul>
+                <button
+                  type="button"
+                  class="overview__link overview__notes-student"
+                  @click="emit('open-student', entry.student.student_id)"
+                >
+                  {{ entry.student.student_name }}<small v-if="scope === null">
+                    {{ classDisplayLabel(entry.student.class_name) }}
+                  </small>
+                </button>
+                <span class="overview__notes-text">
+                  {{ formatScore(entry.student.current_score) }} 分 · 差 {{ formatScore(entry.gap) }} 分
+                </span>
+              </li>
+            </ul>
+          </div>
+          <p v-if="criticalGroups.length === 0" class="overview__tile-sub">
+            没有差 5 分内及格或优秀的学生
+          </p>
         </div>
-      </div>
-      <section
-        class="overview__tile overview__tile--ranks overview__ranks-card"
-        aria-labelledby="overview-ranks-title"
-      >
+      </section>
+    </div>
+
+    <section class="overview__section" aria-labelledby="overview-ranks-title">
+      <div class="overview__tile overview__tile--ranks">
         <div class="overview__tile-head">
           <h3 id="overview-ranks-title">排名变化</h3>
         </div>
@@ -1098,7 +1056,7 @@ onMounted(() => {
           class="overview__link"
           @click="ranksExpanded = !ranksExpanded"
         >{{ ranksExpanded ? '收起' : '展开全部' }}</button>
-      </section>
+      </div>
     </section>
 
     <section class="overview__section" aria-labelledby="overview-questions-title">

@@ -782,6 +782,7 @@
 
 .overview__table th,
 .overview__table td {
+  padding: 6px var(--space-2);
   white-space: nowrap;
 }
 
@@ -806,7 +807,7 @@
 
 .overview__bandbar {
   display: inline-flex;
-  min-width: 120px;
+  min-width: 96px;
   height: 18px;
   border-radius: var(--radius-control);
   background: var(--muted);
@@ -886,12 +887,32 @@
   color: var(--color-danger);
 }
 
-/* 磁贴行：等宽铺满一行，磁贴最多 4 个。 */
-.overview__tiles {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
-  gap: var(--space-3);
+.overview__todo-section {
+  padding-block: var(--space-3);
+}
+
+.overview__todo {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+}
+
+.overview__todo-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-height: 44px;
+}
+
+.overview__todo-item--end {
+  margin-inline-start: auto;
+}
+
+.overview__todo-text {
+  color: var(--foreground);
+  font-size: var(--font-size-dense);
 }
 
 .overview__tile {
@@ -912,21 +933,10 @@
   font-weight: var(--font-weight-medium);
 }
 
-.overview__tile-num {
-  color: var(--foreground);
-  font-size: var(--font-size-h3);
-  font-variant-numeric: tabular-nums;
-  line-height: var(--line-height-tight);
-}
-
 .overview__tile-sub {
   margin: 0;
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
-}
-
-.overview__tile-action {
-  margin-top: auto;
 }
 
 .overview__notes {
@@ -1003,9 +1013,31 @@
   width: 100%;
 }
 
-.overview__critical {
+.overview__duo {
   display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  border-top: var(--border-width) solid var(--border);
+}
+
+.overview__duo > .overview__section {
+  border-top: 0;
+}
+
+.overview__critical-card {
+  display: flex;
+  flex-direction: column;
+  contain: size;
+  border-inline-start: var(--border-width) solid var(--border);
+}
+
+.overview__critical-body {
+  display: grid;
+  align-content: start;
+  flex: 1;
   gap: var(--space-3);
+  max-height: 460px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .overview__critical-title {
@@ -1034,10 +1066,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.overview__ranks-card {
-  margin-top: var(--space-3);
 }
 
 .overview__compare {
@@ -1210,6 +1238,7 @@
 
 .overview__questions {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   margin: 0;
   padding: 0;
   list-style: none;
@@ -1218,9 +1247,9 @@
 .overview__question {
   display: grid;
   width: 100%;
-  grid-template-columns: 72px minmax(0, 1fr) 210px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   padding: var(--space-2);
   border: 0;
   border-top: var(--border-width) solid var(--color-border-subtle);
@@ -1249,6 +1278,7 @@
 
 .overview__rate {
   display: grid;
+  min-width: 150px;
   gap: 2px;
 }
 
@@ -1299,10 +1329,21 @@
   font-variant-numeric: tabular-nums;
 }
 
+@media (max-width: 1360px) {
+  .overview__duo {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .overview__critical-card {
+    contain: none;
+    border-top: var(--border-width) solid var(--border);
+    border-inline-start: 0;
+  }
+}
+
 @media (max-width: 1200px) {
-  .overview__tiles {
-    grid-auto-flow: row;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .overview__questions {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -1330,10 +1371,6 @@
 
   .overview__ranks {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .overview__question {
-    grid-template-columns: 64px minmax(0, 1fr) auto;
   }
 
   .overview__table-wrap {

@@ -797,20 +797,6 @@ function openReview(scope: 'teacher_pending' | 'all'): void {
   })
 }
 
-function openLowList(className: string | null): void {
-  selectedClass.value = className !== null && classOptions.value.includes(className)
-    ? className
-    : null
-  void router.replace({
-    path: '/results',
-    query: {
-      tab: 'details',
-      ...selectedSessionQuery(),
-      sort: 'total-asc',
-    },
-  })
-}
-
 function setOverviewScope(className: string | null): void {
   const query: Record<string, string> = {
     tab: 'overview',
@@ -941,7 +927,6 @@ function closeStudentDrawer(restoreFocus = true): void {
           :scope="overviewScope"
           @open-student="openStudentById"
           @open-question="openQuestionInAnalysis"
-          @open-low-list="openLowList"
           @open-review="openReview"
           @update:scope="setOverviewScope"
         />
