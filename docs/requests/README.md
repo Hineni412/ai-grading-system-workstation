@@ -5,7 +5,7 @@
 | 主题 | 保留入口 | 用途与未完成范围 |
 |---|---|---|
 | 待办 | [未完成事项](open-items.md) | 汇总仍未完成或待核实的候选，不充当已实现功能说明 |
-| 设置布局与本机空间 | [调查与改进建议](settings-space-investigation-20261011.md) | 设置布局调整与本次清理依据；快照保留、备份范围展示及推荐正文压缩仍是待讨论方案 |
+| 设置布局与本机空间 | [调查与改进建议](settings-space-investigation-20261011.md)、[两周前副本清单](older-backup-inventory-20261011.md) | 设置布局调整与本次清理依据；快照保留、备份范围展示及推荐正文压缩仍是待讨论方案 |
 | 页面与性能巡检 | [问题与根因记录](ui-performance-audit-20261007.md)、[概览](ui-performance-audit-20261007.html) | 九项修复完成，8035 三种桌面尺寸复测及同输入核心、实际接口核验通过；模型、改分、生成与恢复流程未执行 |
 | 首次分组与推荐计算 | [优化与调查记录](training-first-compute-audit-20261009.md)、[测量概览](training-first-compute-audit-20261009.html) | 进一步四步优化已实施；91 人两章同输入各 5 次完整重算，分组与掌握度精确一致，首次重算仍未达到 5 秒 |
 | 首次重算剩余空间 | [完整评价与实施交接](training-performance-remaining-handoff-20261009.md)、[实施与自测交接](training-performance-implementation-handoff-20261009.md)、[独立验收](training-performance-independent-acceptance-20261010.md) | 保留原 22 项评价与失败守护；实施 7 项，独立复跑 297 项测试及完整响应、掌握度和三范围组卷对照通过。独立同条件中位数降低 26.39%，当前单版本五次完整重算中位数 73.27 秒，首次 5 秒目标未达成；正式 HTTP、页面和真实改分后刷新未验收 |
