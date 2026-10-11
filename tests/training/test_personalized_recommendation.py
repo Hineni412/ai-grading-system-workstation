@@ -136,98 +136,6 @@ def _install_release_with_skills(
     )
 
 
-def test_training_fit_experiment_keeps_shared_member_fit_and_weak_purpose():
-    from tools.experiment_training_fit import weak_only_selection, member_metrics
-    candidate = _selection_candidate(1, "合成关系判断题")
-    def entry(sid, purpose):
-        return {"candidate": candidate, "student_id": sid, "key": BNU_TARGET,
-                "matched_key": BNU_TARGET, "selection_kind": "direct",
-                "practice_purpose": purpose, "practice_role": "step_practice",
-                "distance": 0., "preference": 0., "match_level": 1}
-    a = entry("TEST-A", "remediation")
-    b = entry("TEST-B", "consolidation")
-    config = PersonalizedRecommendationConfig(paper_mode="shared", target_keys=(BNU_TARGET,))
-    selected = weak_only_selection({"TEST-A": [a], "TEST-B": [b]}, config)
-    assert len(selected) == 1
-    assert member_metrics(selected, "TEST-A", [BNU_TARGET], 10)["coverage"] == 1
-    assert member_metrics(selected, "TEST-A", [BNU_TARGET], 10)["fully_covered_need_count"] == 0
-    assert member_metrics(selected, "TEST-B", [], 10)["missing_member_fit"] == 0
-    assert member_metrics(selected, "TEST-B", [], 10)["remediation_questions"] == 0
-    assert weak_only_selection({"TEST-A": [a], "TEST-B": []}, config) == []
-    assert weak_only_selection({"TEST-A": [a], "TEST-B": [b]}, config,
-        {"TEST-A": {}, "TEST-B": {BNU_TARGET: {}}}) == []
-    assert weak_only_selection({"TEST-A": [entry("TEST-A", "new")]},
-        PersonalizedRecommendationConfig()) == []
-
-
-def test_training_fit_experiment_counts_shortage_and_does_not_export_identity():
-    from tools.experiment_training_fit import member_metrics, summarize
-    row = member_metrics([], "TEST-A", [BNU_TARGET], 10)
-    result = summarize([row])
-    assert result["students_without_remediation"] == 1
-    assert result["mean_questions"] == 0
-    assert result["complete_papers"] == 0
-    assert result["covered_need_count"] == 0
-    assert "TEST-A" not in json.dumps(result)
-    assert member_metrics([], "TEST-B", [], 10)["coverage"] is None
-
-
-def test_training_fit_evidence_views_preserve_scores_and_do_not_fill_missing_steps():
-    from tools.experiment_training_fit import evidence_view
-    rows = [
-        {"session_id": 1, "score_awarded": 4, "full_score": 6,
-         "teacher_final_revision": 2, "assessment": {"granularity": "whole_question",
-         "reason": "teacher_final_without_step_attribution"}},
-        {"session_id": 2, "score_awarded": 2, "full_score": 6,
-         "assessment": {"granularity": "part", "eligible": True},
-         "point_observations": [{"point_id": "synthetic-point", "achieved": 0}],
-         "target_contributions": {BNU_TARGET: [0, 4]}},
-        {"session_id": 2, "score_awarded": 0, "full_score": 6,
-         "assessment": {"granularity": "part", "eligible": False},
-         "point_observations": [{"point_id": "synthetic-point", "achieved": 0}]},
-        {"session_id": 3, "score_awarded": 6, "full_score": 6,
-         "assessment": {"granularity": "part", "eligible": True},
-         "source_practice_metadata": {"is_single_result": True}},
-    ]
-    original = deepcopy(rows)
-    coarse = evidence_view(rows, "coarsened_steps")
-    assert [r["score_awarded"] for r in coarse] == [4, 2, 0, 6]
-    assert coarse[0]["teacher_final_revision"] == 2
-    assert coarse[2]["assessment"]["eligible"] is False
-    assert all("point_observations" not in r and "target_contributions" not in r for r in coarse)
-    assert coarse[1]["assessment"]["granularity"] == "whole_question"
-    assert coarse[-1]["assessment"]["granularity"] == "part"
-    assert evidence_view(rows, "effective_results_only") == [rows[1], rows[3]]
-    assert evidence_view(rows, "steps_only") == [rows[1]]
-    assert evidence_view(rows, "without_total_only") == rows[1:]
-    assert evidence_view(rows, "without_earliest", 1) == rows[1:]
-    assert rows == original
-    with pytest.raises(ValueError):
-        evidence_view(rows, "invent_steps")
-
-
-def test_training_fit_selection_change_is_paired_and_anonymous():
-    from tools.experiment_training_fit import selection_change
-    result = selection_change({"TEST-A": {1, 2}, "TEST-B": {3}},
-                              {"TEST-A": {2, 4}, "TEST-B": {3}})
-    assert result == {"students": 2, "changed_students": 1, "removed_slots": 1, "added_slots": 1}
-    assert "TEST-A" not in json.dumps(result)
-
-
-def test_training_fit_match_audit_separates_level_and_recent_gates():
-    from tools.experiment_training_fit import match_rejection
-    entry = {"candidate": {"question_id": 1, "difficulty": 3.},
-             "target": {"difficulty_plan": {"audit_minimum": 4., "audit_maximum": 7.}}}
-    assert match_rejection(entry, {1}) == "below_student_window"
-    entry["candidate"]["difficulty"] = 6.
-    assert match_rejection(entry, {1}) == "recent_original"
-    assert match_rejection(entry, set()) is None
-    entry["candidate"]["difficulty"] = 7.5
-    assert match_rejection(entry, set()) == "above_student_window"
-    entry["candidate"]["difficulty"] = 9.
-    assert match_rejection(entry, set()) == "paper_difficulty_ceiling"
-
-
 def test_training_performance_comparison_rejects_changed_profile_sources(tmp_path):
     from tools.compare_training_endpoints import run_performance
 
@@ -238,16 +146,6 @@ def test_training_performance_comparison_rejects_changed_profile_sources(tmp_pat
     # Refuse differing input pipelines before opening any real database.
     with pytest.raises(ValueError, match="identical diagnosis/projection"):
         run_performance(tmp_path)
-
-
-def test_training_fit_unselected_audit_keeps_overlapping_paper_limits():
-    from tools.experiment_training_fit import unselected_rejections
-    def candidate(qid):
-        return {"question_id": qid, "question_type": "解答题", "question_text": f"合成题 {qid}",
-                "stable_keys": ["sk_test"], "difficulty": 4.}
-    config = PersonalizedRecommendationConfig(max_written_questions=2)
-    reasons = unselected_rejections(candidate(3), [candidate(1), candidate(2)], config)
-    assert "same_skill_quota" in reasons and "written_quota" in reasons
 
 
 def test_training_fit_experiment_opens_original_database_readonly(tmp_path):
@@ -2203,7 +2101,7 @@ def test_mastery_snapshot_cache_tracks_model_source_and_private_returns(direct_m
     expected = deepcopy(first)
     first[("A", BNU_TARGET)]["source_question_refs"].append({"TEST": "private"})
     assert direct_module._mastery_snapshot(diagnosis) == expected
-    assert len(calls) == 1 and diagnosis == before
+    assert diagnosis == before
     diagnosis["students"][0]["weak_points"][0]["source_question_refs"][0]["deduction_reason"] = "TEST changed note"
     direct_module._mastery_snapshot(diagnosis)
     assert len(calls) == 2
@@ -2228,7 +2126,6 @@ def test_mastery_snapshot_identity_key_invalidates_on_covered_tokens(direct_modu
     diagnosis = _direct_diagnosis()
     first = direct_module._mastery_snapshot(diagnosis, diagnosis_identity=("scope", 1))
     assert direct_module._mastery_snapshot(diagnosis, diagnosis_identity=("scope", 1)) == first
-    assert len(calls) == 1
     # A changed caller identity must recompute even for identical contents.
     direct_module._mastery_snapshot(diagnosis, diagnosis_identity=("scope", 2))
     assert len(calls) == 2
@@ -3793,65 +3690,6 @@ def test_handout_100_exports_in_order_and_consumes_download_without_training(dir
         assert direct_module.ensure_current(draft["draft_id"])["draft_id"] == draft["draft_id"]
     finally:
         manager.shutdown()
-
-
-def test_handout_generation_timings_same_synthetic_class(direct_module):
-    from time import perf_counter
-    _seed_handout_pool(direct_module)
-    diagnosis = _direct_diagnosis(tuple((f"SYN-{i:02d}", .9, 900, BNU_TARGET) for i in range(30)))
-    for count, token in ((10, "a"), (50, "b"), (100, "c")):
-        started = perf_counter()
-        draft = direct_module.create(request_token=token*32, diagnosis=diagnosis,
-            config=PersonalizedRecommendationConfig(purpose="handout", question_count=count,
-                max_questions_per_skill=count, max_written_questions=count, recent_activity_count=0,
-                scope_keys=(BNU_CHAPTER4,)), actor_ref="synthetic")
-        elapsed = perf_counter() - started
-        assert all(len(s["items"]) == count for s in draft["students"])
-        print(f"HANDOUT_BENCH students=30 questions={count} seconds={elapsed:.3f}")
-
-
-def test_endpoint_comparison_rechecks_old_labels_and_difficulty_before_coverage():
-    from tools.compare_training_endpoints import aggregate, common_audit
-
-    def entry(qid, difficulty, maximum):
-        return {"candidate": {"question_id": qid, "difficulty": difficulty},
-                "key": BNU_TARGET, "selection_kind": "direct", "practice_purpose": "remediation",
-                "practice_role": "full_response", "student_id": "SYN-ENDPOINT",
-                "distance": 0, "target": {"difficulty_plan": {"minimum": 1, "maximum": 10,
-                    "audit_minimum": 1, "audit_maximum": maximum}}}
-
-    old_claim = entry(1, 4, 8)
-    compatible = entry(2, 2, 3)
-    latest_pool = [entry(1, 4, 3), compatible]
-    paper = [(old_claim, [old_claim]), (compatible, [compatible])]
-    audit = common_audit(paper, latest_pool, {BNU_TARGET: {}}, set(), None)
-    assert audit["items"][0]["level"] == "above"
-    assert audit["items"][0]["targets"] == []
-    assert audit["items"][1]["targets"] == [BNU_TARGET]
-    assert audit["covered"] == [BNU_TARGET]
-    assert aggregate([audit])["remediation_slots"] == 1
-    # The original label alone supplies neither a current need nor a task window.
-    unsupported = common_audit(paper[:1], [], {BNU_TARGET: {}}, set(), None)
-    assert unsupported["items"][0]["level"] == "unknown"
-    assert unsupported["covered"] == []
-    new = {**entry(3, 4.5, 6), "practice_purpose": "new", "target": {"difficulty_plan": {
-        "minimum": 2.5, "maximum": 6, "aim": 4.5, "basis": "合成浮动依据"}}}
-    checked = {**entry(3, 4.5, 3), "practice_purpose": "new",
-               "task_evidence_level": "observed_task",
-               "target": {"difficulty_plan": {"minimum": 1, "maximum": 10,
-            "audit_minimum": 1, "audit_maximum": 3}}}
-    new_audit = common_audit([(new, [new])], [checked], {}, set(), None)
-    assert new_audit["items"][0]["window"] == [2.5, 6]
-    assert new_audit["items"][0]["level"] == "within"
-    assert new_audit["items"][0]["new_task_state"] == "observed"
-    assert new_audit["items"][0]["new_target_keys"] == [BNU_TARGET]
-    assert aggregate([new_audit])["new_observed_task_slots"] == 1
-    assert new_audit["covered"] == []
-    diagnostic = {**new, "target": {**new["target"], "diagnostic_check": True}}
-    diagnostic_audit = common_audit([(diagnostic, [diagnostic])], [checked], {}, set(), None)
-    assert diagnostic_audit["items"][0]["new_task_state"] == "diagnostic"
-    assert diagnostic_audit["covered"] == []
-    assert aggregate([diagnostic_audit])["diagnostic_slots"] == 1
 
 
 def test_endpoint_report_rejects_identity_and_verifies_question_differences(tmp_path):

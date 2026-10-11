@@ -303,11 +303,190 @@ def validate_chapter_result(response: object, payload: Mapping[str, Any]) -> dic
     return {"types": types, "assignments": cleaned}
 
 
+def _normalized(value: object) -> str:
+    return "".join(str(value or "").split()).casefold()
+
+
+def _build_type_release(
+    base_payload: Mapping[str, Any],
+    base_vocabulary: Mapping[str, Any],
+    types: Sequence[Mapping[str, Any]],
+    *,
+    release_id: str,
+    taxonomy_revision: int,
+    source_id: str,
+    source_locator: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, str]]:
+    """Base release + one core node per type; mirrors build_release_v5.build_v5."""
+    from question_bank.knowledge_graph_release.contracts import compute_content_hash, stable_record_hash
+    from tools.build_release_v3 import build_vocabulary
+    nodes = {node["stable_key"]: node for node in base_payload["core_nodes"]}
+    taken_names = {
+        _normalized(value)
+        for term in base_vocabulary.get("terms", [])
+        if term.get("dimension") == "knowledge"
+        for value in (term.get("id"), term.get("name"), *term.get("aliases", []))
+    }
+    rows: list[dict[str, Any]] = []
+    key_map: dict[str, str] = {}
+    for item in types:
+        section_key = str(item["section_key"])
+        if section_key not in nodes:
+            raise ChapterTypeInvalid(f"题型 {item['type_id']} 的小节 {section_key} 不在当前标准中。")
+        stable_key = str(item["stable_key"])
+        if stable_key in nodes or stable_key in key_map.values():
+            raise ChapterTypeInvalid(f"题型 {item['type_id']} 的稳定键 {stable_key} 已被占用。")
+        section = nodes[section_key]
+        display_name = f"{section['display_name']}｜题型·{item['name']}"
+        if _normalized(display_name) in taken_names:
+            raise ChapterTypeInvalid(f"type term name collides: {display_name}")
+        taken_names.add(_normalized(display_name))
+        taken_names.add(_normalized(stable_key))
+        section_anchor = (section.get("curriculum_anchors") or [""])[0]
+        anchor = (
+            f"{section_anchor}/题型·{item['name']}"
+            if section_anchor
+            else f"题型·{item['name']}"
+        )
+        rows.append(
+            {
+                "id": stable_key,
+                "type_id": str(item["type_id"]),
+                "section_key": section_key,
+                "chapter_key": section_key.rsplit("_", 1)[0],
+                "name": str(item["name"]),
+                "display_name": display_name,
+                "anchor": anchor,
+                "definition": str(item["definition"]),
+                "include": str(item["include"]),
+                "exclude": str(item["exclude"]),
+                "anchors": list(item.get("anchors") or []),
+                "source_leaves": str(item.get("source_leaves") or ""),
+                "rationale": str(item["rationale"]),
+                "aliases": [],
+            }
+        )
+        key_map[str(item["type_id"])] = stable_key
+
+    vocabulary = build_vocabulary(base_vocabulary, rows, nodes)
+    definitions = {row["id"]: row for row in rows}
+    for term in vocabulary["terms"]:
+        if term["id"] in definitions:
+            row = definitions[term["id"]]
+            term.update(
+                name=row["display_name"],
+                origin=source_id,
+                retrieval_hints=[row["name"], *row["anchors"]],
+            )
+    vocabulary["revision"] = taxonomy_revision
+
+    payload = dict(base_payload)
+    payload["release_id"] = release_id
+    payload["taxonomy_revision"] = taxonomy_revision
+    payload["predecessor_release_id"] = base_payload["release_id"]
+    node_list = [dict(node) for node in base_payload["core_nodes"]]
+    dispositions = [dict(item) for item in base_payload["fine_term_dispositions"]]
+    mappings = [dict(item) for item in base_payload["mappings"]]
+    relations = [dict(item) for item in base_payload["relations"]]
+
+    for row in rows:
+        anchors_note = (
+            f"锚题 {'；'.join(row['anchors'])}。" if row["anchors"] else ""
+        )
+        node_list.append(
+            {
+                "stable_key": row["id"],
+                "display_name": row["display_name"],
+                "aliases": [],
+                "node_kind": "core",
+                "status": "active",
+                "definition": row["definition"],
+                "include_scope": row["include"],
+                "exclude_scope": row["exclude"],
+                "curriculum_anchors": [row["anchor"]],
+                "observable_evidence": f"{row['definition']}{anchors_note}",
+                "rationale": f"{row['rationale']}来源叶子：{row['source_leaves']}。",
+                "evidence_source_ids": [source_id],
+            }
+        )
+        dispositions.append(
+            {
+                "fine_term_id": row["id"],
+                "display_name": row["display_name"],
+                "disposition": "direct_core",
+                "definition": row["definition"],
+                "include_scope": row["include"],
+                "exclude_scope": row["exclude"],
+                "curriculum_anchors": [row["anchor"]],
+                "rationale": (
+                    "题型由教师批准的章节词表逐条定义，一对一映射到同名题型节点。"
+                ),
+                "confidence": 0.9,
+                "review_priority": "normal",
+                "evidence_source_ids": [source_id],
+            }
+        )
+        mappings.append(
+            {
+                "fine_term_id": row["id"],
+                "stable_key": row["id"],
+                "mapping_role": "primary",
+                "rationale": "题型词一对一映射到同名题型节点。",
+            }
+        )
+        relations.append(
+            {
+                "relation_key": "",
+                "source_key": row["id"],
+                "target_key": row["section_key"],
+                "relation_type": "parent",
+                "basis_kind": "empirical_evidence",
+                "strength": "required",
+                "rationale": (
+                    f"题型“{row['name']}”由教师批准的章节词表定义，挂靠本节。"
+                ),
+                "evidence_source_ids": [source_id],
+                "source_locator": source_locator,
+            }
+        )
+
+    for relation in relations:
+        relation["relation_key"] = stable_record_hash(
+            "release-relation",
+            release_id,
+            relation["source_key"],
+            relation["target_key"],
+            relation["relation_type"],
+        )
+    payload["core_nodes"] = node_list
+    payload["fine_term_dispositions"] = dispositions
+    payload["mappings"] = mappings
+    payload["relations"] = relations
+
+    seen: set[str] = set()
+    deduped = []
+    for source in payload.get("sources", []):
+        sid = str(source.get("source_id") or "")
+        if sid in seen:
+            continue
+        seen.add(sid)
+        deduped.append(source)
+    payload["sources"] = deduped + [
+        {
+            "source_id": source_id,
+            "kind": "question_type_vocabulary",
+            "title": "本章题型自动整理与本地检查",
+            "reference": source_locator,
+        }
+    ]
+    payload["content_hash"] = compute_content_hash(payload)
+    return payload, vocabulary, key_map
+
+
 def build_chapter_release(base, chapter_results, *, taxonomy_revision: int | None = None):
     from question_bank.knowledge_graph_release.contracts import KnowledgeGraphRelease, compute_content_hash
     from question_bank.knowledge_graph_release.validation import validate_release
     from question_bank.taxonomy.attribute_definitions import enrich_attribute_definitions
-    from tools.build_type_release import build_type_release
     vocabulary = enrich_attribute_definitions(load_taxonomy_catalog_for_release(base))
     keys = {node["stable_key"] for node in base.payload["core_nodes"]}
     new_types = []
@@ -339,12 +518,9 @@ def build_chapter_release(base, chapter_results, *, taxonomy_revision: int | Non
                 "evidence_hash": source["evidence_hash"], "question_revision": source["question_revision"]}
     revision = max(13, int(base.taxonomy_revision) + 1, int(taxonomy_revision or 0))
     release_id = "kgr_auto_types_" + _hash([base.release_id, revision, chapter_results])[:24]
-    payload, catalog, _ = build_type_release(base.to_dict(), vocabulary, new_types,
+    payload, catalog, _ = _build_type_release(base.to_dict(), vocabulary, new_types,
         release_id=release_id, taxonomy_revision=revision,
         source_id="automatic_chapter_question_types", source_locator="local:automatic-chapter-types")
-    for source in payload["sources"]:
-        if source["source_id"] == "automatic_chapter_question_types":
-            source["title"] = "本章题型自动整理与本地检查"
     anchors_by_key = {row["stable_key"]: row["anchors"] for row in new_types}
     for term in catalog["terms"]:
         if term["id"] in anchors_by_key:

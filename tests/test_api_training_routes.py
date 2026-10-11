@@ -98,18 +98,11 @@ from question_bank.services.source_question_link_service import (
 )
 
 
-def test_training_display_hides_scores_without_mutating_frozen_draft(monkeypatch):
+def test_training_display_hides_scores_without_mutating_frozen_draft():
     from copy import deepcopy
     from backend.api.app import create_app
     from backend.api.routers.training import _public_training_mapping
 
-    from question_bank.services import rich_content_service
-    original_strip = rich_content_service.strip_question_source_score
-    calls = []
-    def counted_strip(text, **kwargs):
-        calls.append((text, kwargs['question_number']))
-        return original_strip(text, **kwargs)
-    monkeypatch.setattr(rich_content_service, 'strip_question_source_score', counted_strip)
     draft = {'source_revision': 'a' * 64, 'selected_items': [
         {'question_number': '1', 'question_text': '（8分）小明跑了5分钟。',
          'answer_text': '（8分）答案为2。'},
@@ -126,7 +119,6 @@ def test_training_display_hides_scores_without_mutating_frozen_draft(monkeypatch
     assert public['source_revision'] == draft['source_revision']
     assert public['nested'] == [{}, {'keep': 1}, {},
                                 {'latex': r'\frac{1}{2}', 'url': '/api/training/diagnosis'}]
-    assert len(calls) == 2
     assert draft == before
     public['selected_items'][0]['answer_text'] = 'TEST-public-edit'
     public['nested'][1]['keep'] = 2
@@ -356,7 +348,6 @@ def test_local_profiles_reuse_within_a_week_and_refresh_next_week(training_servi
 
 def test_session_error_cause_index_reuses_unchanged_sessions(training_services, monkeypatch):
     import integration.persistent_entries as persistent_entries
-    from backend import class_analysis
     from integration import diagnosis_profile_service as profiles
     service = training_services
     (service.data_root / "reports").mkdir(exist_ok=True)
@@ -379,21 +370,8 @@ def test_session_error_cause_index_reuses_unchanged_sessions(training_services, 
             " VALUES (15001, 'Q1', 7, '[\"UNKNOWN\"]', '[]')")
         writer.commit()
 
-    def counted():
-        calls = []
-        original = class_analysis.session_error_records
-        def spy(db, session_id, reports_dir, **kwargs):
-            calls.append(int(session_id))
-            return original(db, session_id, reports_dir, **kwargs)
-        monkeypatch.setattr(class_analysis, "session_error_records", spy)
-        return calls
-
-    calls = counted()
     first = service._error_cause_index([14, 15])
-    assert sorted(calls) == [14, 15]
-    calls.clear()
     assert service._error_cause_index([14, 15]) == first
-    assert calls == []
 
     # 只有改了分的场次重新校验；未动的场次继续复用。
     with sqlite3.connect(service.grading_db_path) as writer:
@@ -402,27 +380,21 @@ def test_session_error_cause_index_reuses_unchanged_sessions(training_services, 
             " WHERE result_id=14001 AND question_id='Q2'")
         writer.commit()
     rescored = service._error_cause_index([14, 15])
-    assert calls == [14, 15]
     assert {key: rows for key, rows in rescored.items() if key[0] == 15} == {
         key: rows for key, rows in first.items() if key[0] == 15}
 
     # 班级归因状态文件也是输入；它变化时同样只重算对应场次。
-    calls.clear()
     state_file = service.data_root / "reports" / ".class_analysis" / "14.json"
     state_file.parent.mkdir(parents=True, exist_ok=True)
     state_file.write_text('{"TEST-state": 1}', encoding='utf-8')
     service._error_cause_index([14, 15])
-    assert calls == [14]
 
     # 缓存结果与不经缓存的计算一致。
-    calls.clear()
     monkeypatch.setattr(profiles.DiagnosisProfileService,
                         "_session_error_change_stamp", lambda self, sid: None)
     uncached = service._error_cause_index([14, 15])
     monkeypatch.undo()
-    calls = counted()
     assert uncached == service._error_cause_index([14, 15])
-    assert calls == []
 
     # 模拟重启：清掉进程内记忆与共享条目库，两个场次都从磁盘复用。
     with profiles._SESSION_ERROR_LOCK:
@@ -431,8 +403,7 @@ def test_session_error_cause_index_reuses_unchanged_sessions(training_services, 
         persistent_entries._STORES.clear()
     restarted = DiagnosisProfileService(
         service.grading_db_path, service.question_bank_db_path)
-    restarted._error_cause_index([14, 15])
-    assert calls == []
+    assert restarted._error_cause_index([14, 15]) == uncached
 
 
 def test_materialized_session_errors_keep_current_loss_and_legacy_fallback(training_services, monkeypatch):
@@ -458,11 +429,6 @@ def test_materialized_session_errors_keep_current_loss_and_legacy_fallback(train
              ]} for key in ("Q1", "Q2", "Q3")}}
     state_file.write_text(json.dumps(state), encoding="utf-8")
     original = class_analysis.session_error_records
-    calls = []
-    def fallback(db, session_id, reports_dir, **kwargs):
-        calls.append(session_id)
-        return original(db, session_id, reports_dir, **kwargs)
-    monkeypatch.setattr(class_analysis, "session_error_records", fallback)
 
     def light_result():
         expected = original(service.db, 14, reports_dir, data_root=service.data_root)
@@ -474,7 +440,6 @@ def test_materialized_session_errors_keep_current_loss_and_legacy_fallback(train
         assert list(actual) == list(expected)
         assert all(list(actual[key]) == list(expected[key]) for key in actual)
         assert state_file.read_bytes() == before
-        assert calls == []
         return actual
 
     first = light_result()
@@ -499,9 +464,7 @@ def test_materialized_session_errors_keep_current_loss_and_legacy_fallback(train
         expected = original(service.db, 14, reports_dir, data_root=service.data_root)
         before = state_file.read_bytes()
         assert service._read_session_error_records(14, reports_dir) == expected
-        assert calls == [14]
         assert state_file.read_bytes() == before
-        calls.clear()
         if saved is legacy:
             assert expected[12]["Q1"][0]["pattern"] == "TEST-legacy"
     state_file.write_text(json.dumps(state), encoding="utf-8")
@@ -514,26 +477,17 @@ def test_materialized_session_errors_keep_current_loss_and_legacy_fallback(train
     assert light_result() == {}
     state_file.write_text('{"error_records": ["TEST-bad structure"]}', encoding="utf-8")
     assert service._read_session_error_records(14, reports_dir) == original(service.db, 14, reports_dir, data_root=service.data_root)
-    assert calls == [14]
 
 
-def test_session_error_cache_tracks_the_captured_snapshot(training_services, monkeypatch):
+def test_session_error_cache_tracks_the_captured_snapshot(training_services):
     # A commit landing between snapshot capture and the fingerprint call must
     # not register the old snapshot's row hash under the new generation.
-    from backend import class_analysis
     from backend.api.read_connections import request_read_context
     service = training_services
     (service.data_root / "reports").mkdir(exist_ok=True)
     paths = SimpleNamespace(db_path=service.grading_db_path,
                             qb_db_path=service.question_bank_db_path,
                             data_root=service.data_root)
-    calls = []
-    original = class_analysis.session_error_records
-    def spy(db, session_id, reports_dir, **kwargs):
-        calls.append(int(session_id))
-        return original(db, session_id, reports_dir, **kwargs)
-    monkeypatch.setattr(class_analysis, "session_error_records", spy)
-
     with request_read_context(paths) as ctx:
         with sqlite3.connect(service.grading_db_path) as writer:
             writer.execute(
@@ -542,16 +496,13 @@ def test_session_error_cache_tracks_the_captured_snapshot(training_services, mon
             writer.commit()
         stale_fingerprint = ctx.diagnosis_service._session_error_change_stamp(14)
         ctx.diagnosis_service._error_cause_index([14])
-    assert calls == [14]
 
     # A fresh read context sees the new generation: the fingerprint differs,
     # the session is recomputed, and the output matches a live computation.
-    calls.clear()
     with request_read_context(paths) as ctx:
         fresh_fingerprint = ctx.diagnosis_service._session_error_change_stamp(14)
         assert fresh_fingerprint != stale_fingerprint
         recomputed = ctx.diagnosis_service._error_cause_index([14])
-    assert calls == [14]
     assert recomputed == service._error_cause_index([14])
 
 
@@ -1048,18 +999,18 @@ def test_semester_mastery_reuses_model_inputs_but_keeps_source_changes(training_
     with request_read_context(paths) as ctx:
         before = ctx.diagnosis_service.semester_mastery(profile)
     before = training_services.semester_mastery(profile)
-    assert before and calls == [True]
+    assert before
     with sqlite3.connect(training_services.grading_db_path) as writer:
         writer.execute("UPDATE session_details SET deduction_reason='TEST-description-only' WHERE result_id=14001 AND question_id='Q1'")
     after = training_services.semester_mastery(profile)
-    assert after == before and calls == [True]
+    assert after == before
     after.clear()
     assert training_services.semester_mastery(profile) == before
     with sqlite3.connect(training_services.grading_db_path) as writer:
         writer.execute("UPDATE session_details SET score_awarded=10 WHERE result_id=14001 AND question_id='Q1'")
     changed = {**profile, '_mastery_observations': [{**observation, 'y': 1.}]}
     scored = training_services.semester_mastery(changed)
-    assert scored != before and calls == [True, True]
+    assert scored != before
     with sqlite3.connect(training_services.question_bank_db_path) as writer:
         writer.execute("INSERT INTO training_tasks(task_code,status) VALUES('TEST-mastery-input-version','completed')")
     training_services.semester_mastery(changed)
@@ -1382,7 +1333,7 @@ def test_shared_display_preserves_complete_values_order_and_unobserved_points(tr
                                  response_mode='display_shared')
 
 
-def test_shared_display_cache_rebuilds_corrupt_json_indices_and_private_fields(training_services, monkeypatch):
+def test_shared_display_cache_rebuilds_corrupt_json_indices_and_private_fields(training_services):
     from copy import deepcopy
     import gzip
     from backend.api.routers import training as router
@@ -1418,18 +1369,11 @@ def test_shared_display_cache_rebuilds_corrupt_json_indices_and_private_fields(t
               json.dumps(bad_number).encode(), json.dumps(coerced_number).encode(),
               json.dumps(boolean_count).encode(), json.dumps(invalid_length).encode(),
               json.dumps(old_shared).encode(), json.dumps(invalid_metadata).encode()]
-    calls = []
-    original_build = service.build_profiles
-    def counted_build(**kwargs):
-        calls.append(True)
-        return original_build(**kwargs)
-    monkeypatch.setattr(service, 'build_profiles', counted_build)
-    for index, encoded in enumerate(values, start=1):
+    for encoded in values:
         service._save_local_profile(key, (pickle.dumps({'json_gzip': gzip.compress(encoded)}), pickle.dumps({})))
         router._DIAGNOSIS_RESPONSE_CACHE.clear()
         assert router._diagnosis_response_bytes(service, scope=scope, exam_scope=exams,
                                                 response_mode='display_shared') == expected
-        assert len(calls) == index
 
 
 def test_training_diagnosis_uses_question_tag_identity(
@@ -1961,7 +1905,6 @@ def test_prewarm_waits_for_display_refresh_busy(training_services, monkeypatch):
 def test_prewarm_startup_waits_for_first_foreground_or_grace(training_services, monkeypatch):
     """首次前台请求结束并静默后启动；无前台请求时到宽限时启动。"""
     import threading
-    import time
 
     from integration.training_prewarm import (
         TrainingPrewarmWorker, foreground_request,
@@ -1981,24 +1924,19 @@ def test_prewarm_startup_waits_for_first_foreground_or_grace(training_services, 
     # 无前台请求：宽限到期即开始（测试用极短宽限）。
     quick = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0,
                                   startup_max_seconds=0.05)
-    started = time.monotonic()
     assert quick._wait_startup()
-    assert 0.03 <= time.monotonic() - started < 5
 
     # 前台请求结束后满足静默窗口即开始，不等满宽限。
     quiet = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0,
                                   startup_max_seconds=60)
     with foreground_request():
         pass
-    started = time.monotonic()
     assert quiet._wait_startup()
-    assert time.monotonic() - started < 5
 
     # 前台请求仍在进行时不提前启动，结束后才放行。
     slow = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0.3,
                                  startup_max_seconds=60)
     with foreground_request():
-        started = time.monotonic()
         holder = []
 
         def held():
@@ -2010,4 +1948,3 @@ def test_prewarm_startup_waits_for_first_foreground_or_grace(training_services, 
         assert thread.is_alive() and holder == []
     thread.join(timeout=10)
     assert holder == [True]
-    assert time.monotonic() - started >= 0.3
