@@ -44,6 +44,7 @@ import {
   formatRate,
   formatScore,
   isCompleteStudent,
+  lineCrossings,
   questionRatesFor,
   rankChangeGroups,
   rankChanges,
@@ -54,6 +55,7 @@ import {
   type ClassDelta,
   type ClassSummary,
   type CriticalStudentEntry,
+  type LineCrossing,
   type OverviewBand,
   type QuestionSort,
   type RankChange,
@@ -527,6 +529,21 @@ const ranksExpandable = computed(() => (
   rankGroups.value.improved.length > 5 || rankGroups.value.declined.length > 5
 ))
 
+const crossings = computed(() => lineCrossings(rankEntries.value))
+
+const crossGroups = computed(() => ([
+  { key: 'passGained', title: '新达及格', up: true, rows: crossings.value.passGained },
+  { key: 'passLost', title: '跌破及格', up: false, rows: crossings.value.passLost },
+  { key: 'excellentGained', title: '新进优秀', up: true, rows: crossings.value.excellentGained },
+  { key: 'excellentLost', title: '跌出优秀', up: false, rows: crossings.value.excellentLost },
+]))
+
+function crossText(entry: LineCrossing): string {
+  return sameFullScore.value
+    ? `${formatScore(entry.previousScore)} → ${formatScore(entry.student.current_score)} 分`
+    : `${formatRate(entry.previousRate)} → ${formatRate(entry.currentRate)}`
+}
+
 /** 名次→横轴位置：第 1 名在右端，最后一名在左端；范围外按边缘截断。 */
 function rankFraction(rank: number, size: number): number {
   if (size <= 1) return 0.5
@@ -982,23 +999,21 @@ onMounted(() => {
       </section>
     </div>
 
+    <div class="overview__duo">
     <section class="overview__section" aria-labelledby="overview-ranks-title">
-      <div class="overview__tile overview__tile--ranks">
-        <div class="overview__tile-head">
-          <h3 id="overview-ranks-title">排名变化</h3>
-        </div>
-        <p v-if="!comparisonOptions.length" class="overview__tile-sub">
-          没有可对比的上一场考试
-        </p>
-        <Skeleton
-          v-else-if="previousState === 'loading'"
-          class="overview__skeleton-block"
-          aria-hidden="true"
-        />
-        <p v-else-if="previousState === 'error'" class="overview__tile-sub">
-          对比考试的成绩暂时无法读取。
-        </p>
-        <div v-else-if="previousState === 'ready'" class="overview__ranks">
+      <h2 id="overview-ranks-title" class="overview__title">排名变化</h2>
+      <p v-if="!comparisonOptions.length" class="overview__tile-sub">
+        没有可对比的上一场考试
+      </p>
+      <Skeleton
+        v-else-if="previousState === 'loading'"
+        class="overview__skeleton-block"
+        aria-hidden="true"
+      />
+      <p v-else-if="previousState === 'error'" class="overview__tile-sub">
+        对比考试的成绩暂时无法读取。
+      </p>
+      <div v-else-if="previousState === 'ready'" class="overview__ranks">
           <div
             v-for="group in [
               { key: 'improved', title: '进步明显', rows: rankRows.improved },
@@ -1049,15 +1064,71 @@ onMounted(() => {
             </ol>
             <StatePanel v-else kind="empty" compact title="无明显变化" />
           </div>
-        </div>
-        <button
-          v-if="previousState === 'ready' && ranksExpandable"
-          type="button"
-          class="overview__link"
-          @click="ranksExpanded = !ranksExpanded"
-        >{{ ranksExpanded ? '收起' : '展开全部' }}</button>
       </div>
+      <button
+        v-if="previousState === 'ready' && ranksExpandable"
+        type="button"
+        class="overview__link"
+        @click="ranksExpanded = !ranksExpanded"
+      >{{ ranksExpanded ? '收起' : '展开全部' }}</button>
     </section>
+    <section
+      class="overview__section overview__cross-card"
+      aria-labelledby="overview-cross-title"
+      data-testid="line-crossings"
+    >
+      <h2 id="overview-cross-title" class="overview__title">及格线、优秀线进出</h2>
+      <p v-if="!comparisonOptions.length" class="overview__tile-sub">
+        没有可对比的上一场考试
+      </p>
+      <Skeleton
+        v-else-if="previousState === 'loading'"
+        class="overview__skeleton-block"
+        aria-hidden="true"
+      />
+      <p v-else-if="previousState === 'error'" class="overview__tile-sub">
+        对比考试的成绩暂时无法读取。
+      </p>
+      <template v-else-if="previousState === 'ready'">
+        <p class="overview__tile-sub">
+          较「{{ comparisonName }}」，两场都有完整成绩且同班的 {{ crossings.comparedCount }} 人
+        </p>
+        <div class="overview__cross-body">
+          <div
+            v-for="group in crossGroups"
+            :key="group.key"
+            class="overview__critical-group"
+          >
+            <h3 class="overview__critical-title">{{ group.title }} {{ group.rows.length }} 人</h3>
+            <ul
+              v-if="group.rows.length"
+              class="overview__notes-list overview__critical-list"
+            >
+              <li
+                v-for="entry in group.rows"
+                :key="entry.student.student_id"
+                class="overview__notes-item"
+              >
+                <button
+                  type="button"
+                  class="overview__link overview__notes-student"
+                  @click="emit('open-student', entry.student.student_id)"
+                >
+                  {{ entry.student.student_name }}<small v-if="scope === null">
+                    {{ classDisplayLabel(entry.student.class_name) }}
+                  </small>
+                </button>
+                <span
+                  class="overview__notes-text"
+                  :class="group.up ? 'is-up' : 'is-down'"
+                >{{ crossText(entry) }}</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </template>
+    </section>
+    </div>
 
     <section class="overview__section" aria-labelledby="overview-questions-title">
       <div class="overview__section-head">

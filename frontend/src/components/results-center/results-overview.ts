@@ -403,6 +403,69 @@ export function rankChangeGroups(
   }
 }
 
+export interface LineCrossing {
+  student: ResultsCenterStudent
+  previousScore: number
+  previousMax: number
+  previousRate: number
+  currentRate: number
+}
+
+export interface LineCrossings {
+  /** 参与比较的学生数：两场都完整、同班且两场满分都 >0 */
+  comparedCount: number
+  /** 上次 <60%、本次 ≥60% */
+  passGained: LineCrossing[]
+  /** 上次 ≥60%、本次 <60% */
+  passLost: LineCrossing[]
+  /** 上次 <85%、本次 ≥85% */
+  excellentGained: LineCrossing[]
+  /** 上次 ≥85%、本次 <85% */
+  excellentLost: LineCrossing[]
+}
+
+/** 与班级及格率、优秀率相同的 60%/85% 口径，列出跨线学生；组间不互斥。 */
+export function lineCrossings(
+  entries: readonly RankChange[],
+): LineCrossings {
+  const result: LineCrossings = {
+    comparedCount: 0,
+    passGained: [],
+    passLost: [],
+    excellentGained: [],
+    excellentLost: [],
+  }
+  for (const entry of entries) {
+    if (entry.previousMax <= 0 || entry.student.max_score <= 0) continue
+    result.comparedCount += 1
+    const item: LineCrossing = {
+      student: entry.student,
+      previousScore: entry.previousScore,
+      previousMax: entry.previousMax,
+      previousRate: entry.previousScore / entry.previousMax,
+      currentRate: entry.student.current_score / entry.student.max_score,
+    }
+    const wasPass = item.previousRate >= 0.6
+    const isPass = item.currentRate >= 0.6
+    const wasExcellent = item.previousRate >= 0.85
+    const isExcellent = item.currentRate >= 0.85
+    if (!wasPass && isPass) result.passGained.push(item)
+    if (wasPass && !isPass) result.passLost.push(item)
+    if (!wasExcellent && isExcellent) result.excellentGained.push(item)
+    if (wasExcellent && !isExcellent) result.excellentLost.push(item)
+  }
+  const byMagnitude = (left: LineCrossing, right: LineCrossing) => (
+    Math.abs(right.currentRate - right.previousRate)
+      - Math.abs(left.currentRate - left.previousRate)
+    || left.student.student_id - right.student.student_id
+  )
+  result.passGained.sort(byMagnitude)
+  result.passLost.sort(byMagnitude)
+  result.excellentGained.sort(byMagnitude)
+  result.excellentLost.sort(byMagnitude)
+  return result
+}
+
 /** 同一学期卷别下可作对比的其他已完成考试，按创建时间从近到远。 */
 export function comparisonCandidates(
   current: SessionSummary | null,

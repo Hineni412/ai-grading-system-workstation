@@ -13,6 +13,7 @@ import {
   criticalStudents,
   displayAnswer,
   medianOf,
+  lineCrossings,
   questionRatesFor,
   rankChangeGroups,
   rankChanges,
@@ -217,6 +218,40 @@ describe('results overview pure helpers', () => {
     expect(changes[0]!.currentRank).toBe(1)
     expect(changes[0]!.previousRank).toBe(2)
     expect(changes[0]!.change).toBe(1)
+  })
+
+  it('lists students crossing the pass and excellent lines between exams', () => {
+    const previous = [
+      student(1, 59, 100),
+      student(2, 60, 100),
+      student(3, 84, 100),
+      student(4, 90, 100),
+      student(5, 70, 100),
+      student(6, 50, 100),
+      student(7, 50, 100),
+      student(8, 50, 100),
+      student(9, 50, 100, '9', { ungraded_count: 1, status: 'incomplete' }),
+    ]
+    const current = [
+      student(1, 60, 100),
+      student(2, 59, 100),
+      student(3, 85, 100),
+      student(4, 50, 100),
+      student(5, 75, 100),
+      student(6, 70, 100),
+      student(7, 90, 100, '10'),
+      student(8, 90, 100, '9', { ungraded_count: 1, status: 'incomplete' }),
+      student(9, 90, 100),
+    ]
+    const crossings = lineCrossings(rankChanges(current, previous))
+    const ids = (rows: { student: ResultsCenterStudent }[]) => (
+      rows.map((row) => row.student.student_id)
+    )
+    expect(crossings.comparedCount).toBe(6)
+    expect(ids(crossings.passGained)).toEqual([6, 1])
+    expect(ids(crossings.passLost)).toEqual([4, 2])
+    expect(ids(crossings.excellentGained)).toEqual([3])
+    expect(ids(crossings.excellentLost)).toEqual([4])
   })
 
   it('groups rank changes by direction with threshold 5 and the requested limit', () => {
