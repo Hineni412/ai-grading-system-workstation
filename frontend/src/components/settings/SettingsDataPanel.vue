@@ -179,7 +179,7 @@ onBeforeUnmount(() => controller.abort())
               <dd>{{ formatBytes(category.bytes) }}</dd>
             </div>
           </dl>
-          <div v-if="storage.legacy_annotations.bytes" class="settings-inline settings-legacy"><span class="settings-note">旧批注图 {{ formatBytes(storage.legacy_annotations.bytes) }} · 可随时重新生成</span><AppButton variant="ghost" :disabled="busy" @click="dialog = 'legacy'">清理</AppButton></div>
+          <div v-if="storage.legacy_annotations.bytes" class="settings-inline settings-legacy"><span class="settings-note">旧批注图 {{ formatBytes(storage.legacy_annotations.bytes) }} · 已不再使用，可清理</span><AppButton variant="ghost" :disabled="busy" @click="dialog = 'legacy'">清理</AppButton></div>
         </template>
       </div>
     </section>
@@ -218,7 +218,7 @@ onBeforeUnmount(() => controller.abort())
       <FeedbackBanner v-if="ops.backupsError" role="alert" tone="error" :description="ops.backupsError.message"><AppButton variant="ghost" size="small" @click="ops.refreshBackups(opsApi)">刷新</AppButton></FeedbackBanner><StatePanel v-else-if="!zipBackups.length" kind="empty" compact title="当前没有可恢复的备份" />
     </section>
     <AppDialog :open="dialog !== null" :title="dialogTitle" class="settings-ops-dialog" :dismissible="!(busy || ops.submitting)" @update:open="closeDialog">
-        <p v-if="dialog === 'legacy'">清理后，查看批注卷时会重新生成。</p>
+        <p v-if="dialog === 'legacy'">这些标注图片已不再使用，清理不影响分数与原卷。</p>
         <p v-if="dialog === 'release'">可腾出 {{ formatBytes(freedEstimate) }}。分数、查看原卷、AI 继续批改都不受影响；之后不能再重新扫描归卷。</p>
         <template v-if="dialog === 'clear'">
           <div class="settings-keep-columns"><div><strong>会保留</strong><ul><li v-for="item in ['分数和排名', '每题得分与扣分原因', '识别出的作答内容', '成绩报告', '掌握度和训练记录', '老师改分']" :key="item">{{ item }}</li></ul></div><div><strong>之后无法</strong><ul><li v-for="item in ['查看原卷和批注图', 'AI 重新批改', '重新扫描归卷', '导出批注原卷', '个人报告里的作答截图']" :key="item">{{ item }}</li></ul></div></div>

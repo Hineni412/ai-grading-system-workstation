@@ -228,14 +228,6 @@ class ReviewRepository:
     def session(self) -> RepositorySession:
         return self._session
 
-    def invalidate_result_annotations(self, session_id: int, result_ids: list[int]) -> list[dict[str, Any]]:
-        previous = []
-        for result_id in sorted(set(result_ids)):
-            old = self.upsert_annotated_result(session_id, result_id, None, None)
-            if old:
-                previous.append(old)
-        return previous
-
     def clear_session_annotation_paths(self, session_id: int, *, legacy_root: Path | None = None) -> None:
         rows = self._session.connection.execute(
             "SELECT result_id, annotated_front_path, annotated_back_path FROM annotated_results WHERE session_id = ?",
@@ -1131,35 +1123,6 @@ class ReviewRepository:
             )
         return dict(existing) if existing else None
 
-    def is_annotated_result_path_referenced(
-        self,
-        path_value: str,
-    ) -> bool:
-        row = self.session.connection.execute(
-            """
-            SELECT 1
-            FROM annotated_results
-            WHERE annotated_front_path = ? OR annotated_back_path = ?
-            LIMIT 1
-            """,
-            (str(path_value), str(path_value)),
-        ).fetchone()
-        return row is not None
-
-    def referenced_annotation_paths(self, paths: set[str]) -> set[str]:
-        values = sorted(paths)
-        referenced: set[str] = set()
-        for start in range(0, len(values), 400):
-            batch = values[start:start + 400]
-            marks = ','.join('?' for _ in batch)
-            rows = self.session.connection.execute(
-                f"SELECT annotated_front_path, annotated_back_path FROM annotated_results "
-                f"WHERE annotated_front_path IN ({marks}) OR annotated_back_path IN ({marks})",
-                batch + batch,
-            ).fetchall()
-            referenced.update(value for row in rows for value in row if value in paths)
-        return referenced
-
     def get_annotated_result(
         self,
         result_id: int,
@@ -1290,20 +1253,13 @@ class ReviewRepositoryGateway:
         session_id: int,
         scan_batch_id: str,
         confirmations: list[dict[str, Any]],
-        *,
-        defer_annotations: bool = False,
     ) -> dict[str, Any]:
         with self._sessions.session() as session:
             with session.transaction(immediate=True):
                 repository = ReviewRepository(session)
-                result = repository.confirm_teacher_score_locks(
+                return repository.confirm_teacher_score_locks(
                     session_id, scan_batch_id, confirmations,
                 )
-                if defer_annotations:
-                    result["invalidated_annotations"] = repository.invalidate_result_annotations(
-                        session_id, [int(item["result_id"]) for item in confirmations if item.get("result_id")],
-                    )
-                return result
 
     def confirm_teacher_score_locks(
         self,
@@ -1341,20 +1297,12 @@ class ReviewRepositoryGateway:
         self,
         session_id: int,
         adjustments: list[dict[str, Any]],
-        *,
-        defer_annotations: bool = False,
     ) -> dict[str, Any]:
         if not adjustments:
             return {"updated_details": 0, "updated_results": 0}
         with self._sessions.session() as session:
             with session.transaction(immediate=True):
-                repository = ReviewRepository(session)
-                result = repository.apply_session_review_adjustments(session_id, adjustments)
-                if defer_annotations:
-                    result["invalidated_annotations"] = repository.invalidate_result_annotations(
-                        session_id, [int(item["result_id"]) for item in adjustments],
-                    )
-                return result
+                return ReviewRepository(session).apply_session_review_adjustments(session_id, adjustments)
 
     def get_session_review_rows(
         self,
@@ -1420,8 +1368,8 @@ class ReviewRepositoryGateway:
         self,
         session_id: int,
         result_id: int,
-        annotated_front_path: str,
-        annotated_back_path: str,
+        annotated_front_path: str | None,
+        annotated_back_path: str | None,
     ) -> dict[str, Any] | None:
         with self._sessions.session() as session:
             with session.transaction(immediate=True):
@@ -1431,22 +1379,6 @@ class ReviewRepositoryGateway:
                     annotated_front_path,
                     annotated_back_path,
                 )
-
-    def is_annotated_result_path_referenced(
-        self,
-        path_value: str,
-    ) -> bool:
-        with self._sessions.session(read_only=True) as session:
-            return ReviewRepository(
-                session
-            ).is_annotated_result_path_referenced(path_value)
-
-    def referenced_annotation_paths(self, paths: set[str]) -> set[str]:
-        """Check a saved batch with one connection instead of one per page."""
-        if not paths:
-            return set()
-        with self._sessions.session(read_only=True) as session:
-            return ReviewRepository(session).referenced_annotation_paths(paths)
 
     def get_annotated_result(
         self,

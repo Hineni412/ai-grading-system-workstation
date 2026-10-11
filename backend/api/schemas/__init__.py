@@ -56,7 +56,6 @@ from .question_bank import (
     QuestionWriteResponse,
 )
 from .review import (
-    ReviewAnnotationOutcomeResponse,
     ReviewConfirmItem,
     ReviewConfirmRequest,
     ReviewConfirmResponse,
@@ -184,7 +183,6 @@ __all__ = [
     "OpsDirectoryCheck",
     "OpsSelfCheckResponse",
     "OpsToolCheck",
-    "ReviewAnnotationOutcomeResponse",
     "ReviewConfirmItem",
     "ReviewConfirmRequest",
     "ReviewConfirmResponse",

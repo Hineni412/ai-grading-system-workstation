@@ -111,7 +111,7 @@ def test_recent_review_counts_honor_teacher_confirmation_independent_of_selectio
             conn.execute("UPDATE session_results SET session_id=? WHERE id=?", (session_id, result_id))
             conn.execute("UPDATE exam_papers SET session_id=? WHERE id=?", (session_id, paper_id))
 
-    review_service = ReviewApplicationService(db, ManualReviewService(db, tmp_path / "annotated"))
+    review_service = ReviewApplicationService(db, ManualReviewService(db))
     for session_id in ids[:2]:
         session = db.sessions.get_grading_session(session_id)
         item = review_service.list_items(session_id, session, requested_question_id="Q1")[0]
@@ -119,7 +119,7 @@ def test_recent_review_counts_honor_teacher_confirmation_independent_of_selectio
         review_service.confirm(session_id, session, "Q1", [ReviewConfirmationInput(
             result_id=item.result_id, detail_id=item.detail_id,
             score_awarded=item.score_awarded, expected_revision=item.revision,
-        )], defer_annotations=True)
+        )])
 
     service = WorkbenchService(db, review_service, SimpleNamespace(list=lambda **kwargs: ([], 0)))
     expected = {ids[0]: 0, ids[1]: 0, ids[2]: 1}

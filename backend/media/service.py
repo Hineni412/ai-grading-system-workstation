@@ -19,7 +19,7 @@ from backend.file_access import (
 )
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.question_id_contract import question_id_coordinates
-from backend.files.session_originals import OriginalPagesCleared, require_original_pages
+from backend.files.session_originals import require_original_pages
 
 IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".webp"})
 _CROP_RENDER_VERSION = "review-crop-v1"
@@ -45,7 +45,6 @@ class ReviewMediaService:
         data_root: Path,
         exams_dir: Path,
         templates_dir: Path,
-        annotated_dir: Path,
         crop_cache_dir: Path | None = None,
         max_crop_cache_bytes: int = _DEFAULT_CROP_CACHE_BYTES,
         enable_crop_cache: bool = True,
@@ -54,7 +53,6 @@ class ReviewMediaService:
         self.data_root = Path(data_root)
         self.exams_dir = Path(exams_dir)
         self.templates_dir = Path(templates_dir)
-        self.annotated_dir = Path(annotated_dir)
         self.crop_cache_dir = Path(
             crop_cache_dir or self.data_root / "cache" / "review_crops"
         )
@@ -69,57 +67,22 @@ class ReviewMediaService:
         session_id: int,
         result_id: int,
         page: str,
-        variant: str,
     ) -> ResolvedFile:
         require_original_pages(self.data_root, session_id)
         normalized_page = str(page or "").strip().lower()
-        normalized_variant = str(variant or "").strip().lower()
         if normalized_page not in {"front", "back"}:
             raise ReviewMediaNotFound("Review media resource was not found.")
 
-        if normalized_variant == "original":
-            context = self.db.results.get_result_context(int(result_id))
-            if context is None or int(context["session_id"]) != int(session_id):
-                raise ReviewMediaNotFound("Review media resource was not found.")
-            path_value = context[f"{normalized_page}_image"]
-            root = self.exams_dir
-        elif normalized_variant == "annotated":
-            context = self.db.results.get_result_context(int(result_id))
-            annotated = self.db.reviews.get_annotated_result(int(result_id))
-            if (
-                context is None
-                or int(context["session_id"]) != int(session_id)
-                or (annotated is not None and int(annotated["session_id"]) != int(session_id))
-            ):
-                raise ReviewMediaNotFound("Review media resource was not found.")
-            from backend.review.manual_review_service import ManualReviewService
-            renderer = ManualReviewService(self.db, self.annotated_dir)
-            if not annotated or not all(renderer._is_cached_annotation(annotated.get(f"annotated_{side}_path")) for side in ("front", "back")):
-                from backend.review.manual_review_service import ManualReviewService
-
-                try:
-                    renderer.ensure_result_annotation(int(result_id))
-                except OriginalPagesCleared:
-                    raise
-                except Exception as exc:
-                    raise ReviewMediaUnreadable("Annotation could not be refreshed; retry the image.") from exc
-                annotated = self.db.reviews.get_annotated_result(int(result_id))
-                if not annotated:
-                    raise ReviewMediaNotFound("Review media resource was not found.")
-            path_value = annotated[f"annotated_{normalized_page}_path"]
-            root = self.annotated_dir
-        else:
+        context = self.db.results.get_result_context(int(result_id))
+        if context is None or int(context["session_id"]) != int(session_id):
             raise ReviewMediaNotFound("Review media resource was not found.")
 
-        resolved = resolve_controlled_file(
-            path_value,
-            root=root,
+        return resolve_controlled_file(
+            context[f"{normalized_page}_image"],
+            root=self.exams_dir,
             data_root=self.data_root,
             allowed_suffixes=IMAGE_SUFFIXES,
         )
-        if normalized_variant == "annotated":
-            os.utime(resolved.path, None)
-        return resolved
 
     def render_detail_crop(
         self,

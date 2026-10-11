@@ -84,7 +84,6 @@ class ReviewConfirmItem(BaseModel):
 
 class ReviewConfirmRequest(BaseModel):
     items: list[ReviewConfirmItem]
-    annotation_mode: Literal["immediate", "on_demand"] = "immediate"
 
     @field_validator("items")
     @classmethod
@@ -94,13 +93,6 @@ class ReviewConfirmRequest(BaseModel):
         return value
 
 
-class ReviewAnnotationOutcomeResponse(BaseModel):
-    result_id: int
-    status: Literal["succeeded", "retry_required", "on_demand"]
-    message: str | None = None
-
-
 class ReviewConfirmResponse(BaseModel):
     updated_details: int
     updated_results: int
-    annotation_outcomes: list[ReviewAnnotationOutcomeResponse] = Field(default_factory=list)

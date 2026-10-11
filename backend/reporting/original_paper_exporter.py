@@ -104,8 +104,6 @@ class OriginalPaperExporter:
                 question_anchors=question_anchors,
                 output_front=front_out,
                 output_back=back_out,
-                annotate_only_deductions=False,
-                annotation_layout="question_score_boxes",
             )
             page_images.extend([front_out, back_out])
 

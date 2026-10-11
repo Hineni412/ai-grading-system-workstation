@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import AppButton from '../design-system/AppButton.vue'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 
 import { resolveReviewItem, type ReviewItemLike } from '../../api/review'
+import type { ResultsCenterResponse } from '../../api/results-center'
+import type { PageRole, RegionWorkspace } from '../../api/template-regions'
 import {
   useEvidenceViewer,
   type EvidenceSource,
   type ViewerPoint,
 } from '../../composables/use-evidence-viewer'
+import PaperMarksLayer from '../results-center/PaperMarksLayer.vue'
+import { loadSessionResults } from '../results-center/session-results-cache'
+import { paperMarks, regionWorkspaceFor, type PaperMark } from '../results-center/student-paper'
 
 const props = withDefaults(defineProps<{
   item: ReviewItemLike
@@ -15,7 +20,8 @@ const props = withDefaults(defineProps<{
   nextItem: ReviewItemLike | null
   source: EvidenceSource
   expandable?: boolean
-}>(), { expandable: true })
+  marksVersion?: number
+}>(), { expandable: true, marksVersion: 0 })
 
 const emit = defineEmits<{ expand: [] }>()
 
@@ -23,8 +29,6 @@ const sourceLabels: Record<EvidenceSource, string> = {
   crop: '裁剪证据',
   original_front: '原卷正面',
   original_back: '原卷反面',
-  annotated_front: '标注正面',
-  annotated_back: '标注反面',
 }
 
 const viewer = useEvidenceViewer()
@@ -35,8 +39,6 @@ const mediaUrls = computed<Record<EvidenceSource, string | null>>(() => ({
   crop: reviewItem.value.media.crop_url,
   original_front: reviewItem.value.media.original_front_url,
   original_back: reviewItem.value.media.original_back_url,
-  annotated_front: reviewItem.value.media.annotated_front_url,
-  annotated_back: reviewItem.value.media.annotated_back_url,
 }))
 const effectiveSource = computed<EvidenceSource>(() =>
   mediaUrls.value[props.source] !== null ? props.source : 'crop',
@@ -50,11 +52,58 @@ const imageRenderKey = computed(() =>
   `${recordKey.value}:${viewer.source.value}:${viewer.imageKey.value}`,
 )
 const scaleLabel = computed(() => `${Math.round(viewer.scale.value * 100)}%`)
+const isOriginalSource = computed(() =>
+  viewer.source.value === 'original_front' || viewer.source.value === 'original_back',
+)
 const errorMessage = computed(() => {
   if (viewer.source.value === 'crop') return '裁剪图暂时无法读取。'
-  if (viewer.source.value.startsWith('annotated')) return '标注图暂时无法读取。'
   return '原卷页暂时无法读取。'
 })
+
+const naturalSize = ref({ width: 0, height: 0 })
+const marksVisible = ref(true)
+const sessionResults = shallowRef<ResultsCenterResponse | null>(null)
+const regionWorkspace = shallowRef<RegionWorkspace | null>(null)
+let marksGeneration = 0
+
+const pageMarks = computed<PaperMark[]>(() => {
+  const results = sessionResults.value
+  const workspace = regionWorkspace.value
+  if (!results || !workspace) return []
+  const student = results.students.find(
+    (entry) => entry.student_id === reviewItem.value.student_id,
+  )
+  if (!student) return []
+  const page: PageRole = viewer.source.value === 'original_back' ? 'back' : 'front'
+  return paperMarks(
+    workspace.formal_regions,
+    workspace.template.pages,
+    student.items,
+  ).filter((mark) => mark.page === page)
+})
+
+watch(
+  () => [
+    reviewItem.value.session_id,
+    reviewItem.value.student_id,
+    props.marksVersion,
+  ] as const,
+  ([sessionId, studentId]) => {
+    const generation = ++marksGeneration
+    sessionResults.value = null
+    regionWorkspace.value = null
+    if (!sessionId || !studentId || reviewItem.value.result_id === null) return
+    Promise.all([
+      loadSessionResults(sessionId),
+      regionWorkspaceFor(sessionId),
+    ]).then(([results, workspace]) => {
+      if (generation !== marksGeneration) return
+      sessionResults.value = results
+      regionWorkspace.value = workspace
+    }).catch(() => undefined)
+  },
+  { immediate: true },
+)
 
 let resizeObserver: ResizeObserver | null = null
 let activeLoad = { key: '', generation: 0 }
@@ -92,6 +141,10 @@ function onImageLoad(event: Event): void {
   const image = event.currentTarget as HTMLImageElement
   const key = image.dataset.loadKey ?? ''
   if (key !== activeLoad.key) return
+  naturalSize.value = {
+    width: image.naturalWidth,
+    height: image.naturalHeight,
+  }
   viewer.acceptImage(activeLoad.generation, {
     width: image.naturalWidth,
     height: image.naturalHeight,
@@ -230,6 +283,14 @@ onBeforeUnmount(() => {
       <AppButton type="button" variant="ghost" size="small" @click="viewer.rotateBy(-90)">向左旋转</AppButton>
       <AppButton type="button" variant="ghost" size="small" @click="viewer.rotateBy(90)">向右旋转</AppButton>
       <AppButton v-if="expandable !== false" type="button" variant="ghost" size="small" @click="emit('expand')">弹窗放大</AppButton>
+      <AppButton
+        v-if="isOriginalSource"
+        type="button"
+        variant="ghost"
+        size="small"
+        :aria-pressed="marksVisible"
+        @click="marksVisible = !marksVisible"
+      >批改标记</AppButton>
     </div>
 
     <div
@@ -247,7 +308,35 @@ onBeforeUnmount(() => {
       @lostpointercapture="stopDragging"
       @click="expandable !== false && pointerTravel < 5 && emit('expand')"
     >
+      <div
+        v-if="isOriginalSource"
+        :key="imageRenderKey"
+        class="review-evidence-page"
+        :style="{
+          width: `${naturalSize.width}px`,
+          height: `${naturalSize.height}px`,
+          transform: viewer.transform.value,
+        }"
+      >
+        <img
+          :src="sourceUrl ?? undefined"
+          :data-load-key="imageRenderKey"
+          :alt="`${item.student_name} 的${sourceLabel}`"
+          :class="{ 'is-unavailable': viewer.loadState.value === 'error' }"
+          draggable="false"
+          decoding="async"
+          @load="onImageLoad"
+          @error="onImageError"
+        >
+        <PaperMarksLayer
+          v-if="marksVisible && pageMarks.length"
+          :marks="pageMarks"
+          :selected-item-key="reviewItem.review_item_id"
+          :interactive="false"
+        />
+      </div>
       <img
+        v-else
         :key="imageRenderKey"
         :src="sourceUrl ?? undefined"
         :data-load-key="imageRenderKey"

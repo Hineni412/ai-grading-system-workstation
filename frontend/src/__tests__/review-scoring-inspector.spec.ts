@@ -20,8 +20,6 @@ const media = {
   crop_url: '/api/crop',
   original_front_url: '/api/front',
   original_back_url: '/api/back',
-  annotated_front_url: '/api/annotated-front',
-  annotated_back_url: '/api/annotated-back',
 }
 
 const item: ReviewItem = {
@@ -87,9 +85,7 @@ async function mountInspector(items: ReviewItem[] = [item]) {
   queue.replaceItems(items, items[0]?.detail_id)
   const host = document.createElement('div')
   const confirmed = vi.fn()
-  const annotationRetry = vi.fn()
   const app = createApp(ReviewScoringInspector, {
-    registerAnnotationRetry: annotationRetry,
     onConfirmed: confirmed,
   })
   app.use(pinia)
@@ -98,7 +94,7 @@ async function mountInspector(items: ReviewItem[] = [item]) {
   // 共享评分标准缓存的多步异步链需要一次宏任务才能完全落回组件状态。
   await new Promise((resolve) => setTimeout(resolve, 0))
   await nextTick()
-  return { app, host, pinia, confirmed, annotationRetry }
+  return { app, host, pinia, confirmed }
 }
 
 describe('review scoring inspector', () => {
@@ -288,7 +284,6 @@ describe('review scoring inspector', () => {
     vi.mocked(confirmReviewItem).mockResolvedValue({
       updated_details: 1,
       updated_results: 1,
-      annotation_outcomes: [],
     })
   })
 
@@ -326,7 +321,7 @@ describe('review scoring inspector', () => {
     vi.mocked(confirmReviewItem).mockImplementation(() => new Promise((resolve) => {
       resolveConfirmation = resolve
     }))
-    const { app, host, pinia, annotationRetry, confirmed } = await mountInspector([item, second])
+    const { app, host, pinia, confirmed } = await mountInspector([item, second])
     const queue = useReviewQueueStore(pinia)
     const input = host.querySelector<HTMLInputElement>('[data-testid="teacher-score"]')!
     input.value = '4'
@@ -339,7 +334,6 @@ describe('review scoring inspector', () => {
     resolveConfirmation!({
       updated_details: 1,
       updated_results: 1,
-      annotation_outcomes: [{ result_id: 11, status: 'retry_required' }],
     })
 
     await vi.waitFor(() => expect(confirmed).toHaveBeenCalledTimes(1))
@@ -347,17 +341,6 @@ describe('review scoring inspector', () => {
     expect(useReviewDraftStore(pinia).drafts['review-item:7:Q1:21']).toBeUndefined()
     expect(queue.selectedDetailId).toBe(22)
     expect(fetchReviewItems).not.toHaveBeenCalled()
-    expect(annotationRetry).toHaveBeenCalledWith({
-      input: {
-        review_item_id: '7:Q1:21',
-        expected_revision: 0,
-        student_id: 11,
-        result_id: 11,
-        detail_id: 21,
-        score_awarded: 4,
-      },
-      item: expect.objectContaining(item),
-    })
     app.unmount()
   })
 
@@ -386,7 +369,7 @@ describe('review scoring inspector', () => {
     queue.selectQuestion('Q2')
     queue.replaceItems([reusedDetail], reusedDetail.detail_id)
     await nextTick()
-    resolveConfirmation!({ updated_details: 1, updated_results: 1, annotation_outcomes: [] })
+    resolveConfirmation!({ updated_details: 1, updated_results: 1 })
 
     await vi.waitFor(() => expect(confirmed).toHaveBeenCalledTimes(1))
     expect(document.body.querySelectorAll('[data-testid="review-feedback-toast"]')).toHaveLength(0)

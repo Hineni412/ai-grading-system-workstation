@@ -39,8 +39,6 @@ export interface ReviewMediaLinks {
   crop_url: string | null
   original_front_url: string | null
   original_back_url: string | null
-  annotated_front_url: string | null
-  annotated_back_url: string | null
 }
 
 /**
@@ -149,16 +147,9 @@ export interface ReviewConfirmInput {
   step_scores?: { part_id: string; step_id: string; score_awarded: number; teacher_note?: string | null; carried_error_from?: string | null }[]
 }
 
-export interface ReviewAnnotationOutcome {
-  result_id: number
-  status: 'succeeded' | 'retry_required' | 'on_demand'
-  message?: string
-}
-
 export interface ReviewConfirmResponse {
   updated_details: number
   updated_results: number
-  annotation_outcomes: ReviewAnnotationOutcome[]
 }
 
 const isApiUrl = (value: unknown): value is string => typeof value === 'string' && /^\/api\//.test(value)
@@ -198,8 +189,6 @@ function isReviewMedia(value: unknown): value is ReviewMediaLinks {
     && (value.originals_available === undefined || typeof value.originals_available === 'boolean')
     && (value.originals_available === false ? value.crop_url === null && value.original_front_url === null : isApiUrl(value.crop_url) && isApiUrl(value.original_front_url))
     && isNullableApiUrl(value.original_back_url)
-    && isNullableApiUrl(value.annotated_front_url)
-    && isNullableApiUrl(value.annotated_back_url)
 }
 
 function isReviewItem(value: unknown): value is ReviewItemLike {
@@ -343,19 +332,9 @@ export function isReviewRubricSection(
 }
 
 export function isReviewConfirmResponse(value: unknown): value is ReviewConfirmResponse {
-  if (
-    !isRecord(value) ||
-    !isNonnegativeInteger(value.updated_details) ||
-    !isNonnegativeInteger(value.updated_results) ||
-    !Array.isArray(value.annotation_outcomes)
-  ) return false
-  return value.annotation_outcomes.every((outcome) =>
-    isRecord(outcome) &&
-    isNonnegativeInteger(outcome.result_id) &&
-    outcome.result_id > 0 &&
-    (outcome.status === 'succeeded' || outcome.status === 'retry_required' || outcome.status === 'on_demand') &&
-    (outcome.message === undefined || typeof outcome.message === 'string'),
-  )
+  return isRecord(value)
+    && isNonnegativeInteger(value.updated_details)
+    && isNonnegativeInteger(value.updated_results)
 }
 
 function isAbortSignal(value: unknown): value is AbortSignal {
@@ -462,7 +441,7 @@ export async function confirmReviewItems(
     `/api/sessions/${sessionId}/review/questions/${encodedQuestion}/confirm`,
     {
       method: 'POST',
-      body: { items: [...inputs], annotation_mode: 'on_demand' },
+      body: { items: [...inputs] },
       signal,
       decode: (value) => {
         if (!isReviewConfirmResponse(value)) throw new Error('invalid review confirmation')

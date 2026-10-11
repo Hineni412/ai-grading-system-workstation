@@ -21,7 +21,6 @@ from backend.repositories.grading_database import open_grading_repositories
 def _seed_review_db(tmp_path: Path, *, result_count: int = 1):
     from backend.api.app import create_app
     from backend.api.dependencies import (
-        get_annotated_dir,
         get_grading_db,
         get_job_manager,
     )
@@ -160,7 +159,6 @@ def _seed_review_db(tmp_path: Path, *, result_count: int = 1):
 
     app = create_app()
     manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
-    app.dependency_overrides[get_annotated_dir] = lambda: tmp_path / "annotated"
     app.dependency_overrides[get_grading_db] = lambda: db
     app.dependency_overrides[get_job_manager] = lambda: manager
     return TestClient(app), db, session_id, result_id, q1_detail_id

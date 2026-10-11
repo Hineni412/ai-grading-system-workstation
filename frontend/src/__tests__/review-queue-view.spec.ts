@@ -41,8 +41,6 @@ const media = {
   crop_url: '/api/crop',
   original_front_url: '/api/front',
   original_back_url: '/api/back',
-  annotated_front_url: '/api/front?variant=annotated',
-  annotated_back_url: '/api/back?variant=annotated',
 }
 
 const item = (index: number, overrides: Partial<ReviewItem> = {}): ReviewItem => ({
@@ -283,12 +281,10 @@ beforeEach(() => {
   vi.mocked(confirmReviewItems).mockResolvedValue({
     updated_details: 2,
     updated_results: 2,
-    annotation_outcomes: [],
   })
   vi.mocked(confirmReviewItem).mockResolvedValue({
     updated_details: 1,
     updated_results: 1,
-    annotation_outcomes: [],
   })
   vi.mocked(fetchReviewItems).mockImplementation(async (sessionId, questionId) =>
     (itemsByQuestion[questionId] ?? []).map((entry) => ({
@@ -397,35 +393,13 @@ describe('source-recalibrated review view', () => {
       .toEqual(Array.from({ length: 25 }, (_, offset) => offset + 1))
   })
 
-  it('keeps saved scores and retries annotations only after an explicit action', async () => {
-    vi.mocked(confirmReviewItems)
-      .mockResolvedValueOnce({
-        updated_details: 2,
-        updated_results: 2,
-        annotation_outcomes: [
-          { result_id: 11, status: 'retry_required' },
-          { result_id: 12, status: 'retry_required' },
-        ],
-      })
-      .mockResolvedValueOnce({
-        updated_details: 2,
-        updated_results: 2,
-        annotation_outcomes: [
-          { result_id: 11, status: 'succeeded' },
-          { result_id: 12, status: 'succeeded' },
-        ],
-      })
+  it('confirms the batch and shows the plain saved feedback', async () => {
     const { host } = await mountView()
 
     host.querySelector<HTMLButtonElement>('[data-testid="confirm-batch"]')!.click()
-    await vi.waitFor(() => expect(host.textContent).toContain('分数已保存，2 份标注图需要重试'))
+    await vi.waitFor(() => expect(document.body.textContent).toContain('本批 2 份评分已确认'))
     expect(confirmReviewItems).toHaveBeenCalledTimes(1)
-
-    const retry = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent === '重试标注图')!
-    retry.click()
-    await vi.waitFor(() => expect(confirmReviewItems).toHaveBeenCalledTimes(2))
-    await vi.waitFor(() => expect(host.textContent).not.toContain('标注图需要重试'))
+    expect(vi.mocked(confirmReviewItems).mock.calls[0]?.[2]).toHaveLength(2)
   })
 
   it('does not let a completed batch from a previous session mutate the new session view', async () => {
@@ -460,7 +434,6 @@ describe('source-recalibrated review view', () => {
     pendingConfirmation.resolve({
       updated_details: 2,
       updated_results: 2,
-      annotation_outcomes: [],
     })
     await settleUi()
 

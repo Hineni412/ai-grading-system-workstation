@@ -31,21 +31,38 @@ def _scans(seed):
     return pdf, image, unrendered, full_class
 
 
-def test_legacy_cleanup_includes_orphan_directory_and_invalidates_missing_relative_paths(tmp_path):
+def test_legacy_cleanup_includes_orphan_directory_cache_and_shared_references(tmp_path):
     seed = _seed_media(tmp_path)
     old = _write(seed.data_root / "annotated" / "session_1" / "test_annotated.jpg")
     orphan = _write(seed.data_root / "annotated" / "session_999" / "test_annotated.jpg")
     cached = _write(seed.data_root / "cache" / "annotated_pages" / "session_1" / "test.jpg")
+    shared_cached = _write(seed.data_root / "cache" / "annotated_pages" / "session_1" / "shared.jpg")
     unrelated = _write(old.parent / "teacher-notes.txt")
     seed.db.reviews.upsert_annotated_result(seed.session_id, seed.result_id, "annotated/session_1/missing_annotated.jpg", str(cached))
-    expected = old.stat().st_size + orphan.stat().st_size
+    other_session = seed.db.sessions.create_grading_session("Shared ref", "rubric.json", "answer.json")
+    with sqlite3.connect(seed.db.db_path) as conn:
+        other_result = int(conn.execute(
+            "INSERT INTO session_results (session_id, student_id, paper_id, total_score, student_score, needs_human_review, raw_json) VALUES (?, 1, 1, 0, 0, 0, '{}')",
+            (other_session,),
+        ).lastrowid)
+    seed.db.reviews.upsert_annotated_result(other_session, other_result, str(shared_cached), None)
+    overview = storage_overview(seed.data_root)
+    assert overview["legacy_annotations"]["files"] == 4
+    expected = old.stat().st_size + orphan.stat().st_size + cached.stat().st_size
     result = clear_legacy_annotations(seed.db, seed.data_root)
-    assert result == {"freed_bytes": expected, "deleted_files": 2}
+    assert result == {"freed_bytes": expected, "deleted_files": 3}
     row = seed.db.reviews.get_annotated_result(seed.result_id)
     assert row["annotated_front_path"] is None
-    assert row["annotated_back_path"] == str(cached)
-    assert cached.exists() and unrelated.exists()
-    assert clear_legacy_annotations(seed.db, seed.data_root)["freed_bytes"] == 0
+    assert row["annotated_back_path"] is None
+    assert not cached.exists() and shared_cached.exists() and unrelated.exists()
+    # The shared file is kept while another session still references it; the
+    # first pass already cleared that legacy row, so a repeat run removes the
+    # now-orphaned file and further runs are no-ops.
+    shared_size = shared_cached.stat().st_size
+    second = clear_legacy_annotations(seed.db, seed.data_root)
+    assert second == {"freed_bytes": shared_size, "deleted_files": 1}
+    assert not shared_cached.exists() and unrelated.exists()
+    assert clear_legacy_annotations(seed.db, seed.data_root) == {"freed_bytes": 0, "deleted_files": 0}
 
 
 def test_release_keeps_working_pages_json_unrendered_and_shared_files(tmp_path):
@@ -93,9 +110,8 @@ def test_clear_preserves_score_rows_locks_json_and_templates(tmp_path):
     receipt = json.loads(receipt_path(seed.data_root, seed.session_id).read_text(encoding="utf-8"))
     assert receipt["state"] == "cleared" and sum(receipt["freed_bytes"].values()) == result["freed_bytes"]
     assert clear_session_originals(seed.db, seed.data_root, seed.session_id, clear_crop_cache=lambda: 0)["freed_bytes"] == 0
-    for variant in ("original", "annotated"):
-        with pytest.raises(OriginalPagesCleared):
-            seed.service.resolve_result_page(seed.session_id, seed.result_id, "front", variant=variant)
+    with pytest.raises(OriginalPagesCleared):
+        seed.service.resolve_result_page(seed.session_id, seed.result_id, "front")
     with pytest.raises(OriginalPagesCleared):
         seed.service.render_detail_crop(seed.session_id, seed.result_id, seed.detail_id)
 
@@ -125,7 +141,7 @@ def test_storage_categories_add_up_without_writes(tmp_path):
     overview = storage_overview(tmp_path)
     assert overview["total_bytes"] == 24
     assert {item["key"]: item["bytes"] for item in overview["categories"]} == {"originals": 3, "annotations": 6, "question_bank": 3, "reports": 3, "backups": 3, "databases": 3, "other": 3}
-    assert overview["legacy_annotations"] == {"bytes": 3, "files": 1}
+    assert overview["legacy_annotations"] == {"bytes": 6, "files": 2}
     assert sorted(str(p) for p in tmp_path.rglob("*")) == before
 
 

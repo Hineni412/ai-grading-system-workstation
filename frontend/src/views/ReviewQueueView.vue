@@ -18,7 +18,7 @@ import ReviewBatchWorkspace from '../components/review/ReviewBatchWorkspace.vue'
 import ReviewDeepWorkspace from '../components/review/ReviewDeepWorkspace.vue'
 import ReviewFeedbackToast from '../components/review/ReviewFeedbackToast.vue'
 import ReviewStudentStrip from '../components/review/ReviewStudentStrip.vue'
-import { useReviewAnnotationRetry } from '../components/review/useReviewAnnotationRetry'
+import { invalidateSessionResults } from '../components/results-center/session-results-cache'
 import { useReviewKeyboard } from '../components/review/useReviewKeyboard'
 import { useReviewStudentNav } from '../components/review/useReviewStudentNav'
 import '../styles/review-queue.css'
@@ -49,15 +49,6 @@ const ANSWER_PANEL_STORAGE_KEY = 'ai-grading:review-answer-panel:v1'
 const answerPanelOpen = ref(false)
 
 let unmounting = false
-
-const {
-  annotationRetryEntries,
-  annotationRetryTitle,
-  mergeAnnotationRetryEntries,
-  retryEntriesFromResponse,
-  retryAnnotations,
-  handleDeepAnnotationRetry,
-} = useReviewAnnotationRetry({ batchSubmitting, feedback, feedbackTone })
 
 const studentNavContext = useReviewStudentNav({ mode, openStudentQuestion })
 const {
@@ -169,14 +160,9 @@ async function confirmBatch(
   batchSubmitting.value = true
   feedback.value = ''
   try {
-    const response = await confirmReviewItems(sessionId, questionId, inputs)
-    const nextRetryEntries = retryEntriesFromResponse(
-      response,
-      inputs,
-      submittedItems,
-    )
+    await confirmReviewItems(sessionId, questionId, inputs)
+    invalidateSessionResults(sessionId)
     draftStore.markConfirmedMany(draftKeys)
-    mergeAnnotationRetryEntries(nextRetryEntries)
 
     const stillOnSubmittedContext =
       !unmounting
@@ -192,13 +178,10 @@ async function confirmBatch(
         reviewStore.questionLoadState === 'error'
         || reviewStore.itemLoadState === 'error'
       )
-    feedbackTone.value =
-      nextRetryEntries.length > 0 || refreshFailed ? 'warning' : 'success'
+    feedbackTone.value = refreshFailed ? 'warning' : 'success'
     feedback.value = refreshFailed
       ? `本批 ${inputs.length} 份评分已保存，但页面刷新失败；可安全重新加载。`
-      : nextRetryEntries.length > 0
-        ? '本批分数已保存；部分标注图需要单独重试。'
-        : `本批 ${inputs.length} 份评分已确认。`
+      : `本批 ${inputs.length} 份评分已确认。`
   } catch (error) {
     feedbackTone.value = 'error'
     feedback.value = error instanceof ApiError && error.kind === 'conflict'
@@ -233,7 +216,6 @@ async function closeDeepReview(): Promise<void> {
 
 async function handleDeepConfirmed(payload: {
   reviewItemId: string
-  annotationRetry: boolean
 }): Promise<void> {
   const sessionId = sessionStore.selectedSessionId
   const questionId = reviewStore.selectedQuestionId
@@ -248,12 +230,10 @@ async function handleDeepConfirmed(payload: {
       selectionChanged ? selectedReviewItemId : payload.reviewItemId,
     )
   }
-  feedbackTone.value = payload.annotationRetry ? 'warning' : 'success'
-  feedback.value = payload.annotationRetry
-    ? '此份分数已保存；标注图需要显式重试。'
-    : reviewStore.itemLoadState === 'error'
-      ? '此份评分已确认，但页面刷新失败；可安全重新加载。'
-      : '此份评分已确认。'
+  feedbackTone.value = reviewStore.itemLoadState === 'error' ? 'warning' : 'success'
+  feedback.value = reviewStore.itemLoadState === 'error'
+    ? '此份评分已确认，但页面刷新失败；可安全重新加载。'
+    : '此份评分已确认。'
   // 成绩明细入口确认后留在深查页继续复核；其他入口维持返回行为。
   if (!resultsReturnPath.value && !selectionChanged) {
     await closeDeepReview()
@@ -347,15 +327,6 @@ onBeforeUnmount(() => {
       @action="retry"
     />
 
-    <FeedbackBanner
-      v-if="annotationRetryEntries.length > 0"
-      tone="warning"
-      :title="annotationRetryTitle"
-      description="评分结果已经保存；这里只重试受影响答卷的标注图。"
-      action-label="重试标注图"
-      @action="retryAnnotations"
-    />
-
     <StatePanel
       v-if="sessionStore.selectedSessionId === null"
       kind="empty"
@@ -397,7 +368,6 @@ onBeforeUnmount(() => {
       :answer-panel-open="answerPanelOpen"
       :switching="deepSwitching"
       :stay-after-confirm="resultsReturnPath !== null"
-      :register-annotation-retry="handleDeepAnnotationRetry"
       @back="closeDeepReview"
       @student-nav="openStudentNav"
       @student-pick="openStudentPick"

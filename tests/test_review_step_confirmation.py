@@ -86,7 +86,7 @@ def seed_step_review(tmp_path):
         "papers": [{"student_id": 1, "target_type": "group", "target_id": "test"}],
     }
     service = ReviewApplicationService(
-        seed.db, ManualReviewService(seed.db, seed.annotated_dir)
+        seed.db, ManualReviewService(seed.db)
     )
     return seed, session, context, service
 
@@ -107,14 +107,14 @@ def confirmation(seed, **overrides):
 def test_original_cleanup_keeps_teacher_score_lock_and_allows_later_confirmation(tmp_path):
     from backend.files.session_originals import clear_session_originals
     seed, session, context, service = seed_step_review(tmp_path)
-    service.confirm(seed.session_id, session, "Q1", [confirmation(seed)], manual_context=context, defer_annotations=True)
+    service.confirm(seed.session_id, session, "Q1", [confirmation(seed)], manual_context=context)
     (before,) = service.list_items(seed.session_id, session, manual_context=context)
     clear_session_originals(seed.db, seed.data_root, seed.session_id, clear_crop_cache=lambda: 0)
     (retained,) = service.list_items(seed.session_id, session, manual_context=context)
     assert retained.teacher_locked and retained.score_awarded == before.score_awarded
     assert retained.revision == before.revision and retained.metadata["teacher_review"] == before.metadata["teacher_review"]
     request = replace(confirmation(seed), expected_revision=retained.revision, score_awarded=5, step_scores=None)
-    service.confirm(seed.session_id, session, "Q1", [request], manual_context=context, defer_annotations=True)
+    service.confirm(seed.session_id, session, "Q1", [request], manual_context=context)
     (after,) = service.list_items(seed.session_id, session, manual_context=context)
     assert after.teacher_locked and after.score_awarded == 5 and after.revision == retained.revision + 1
     assert not seed.front_path.exists()
@@ -130,10 +130,8 @@ def test_step_confirmation_roundtrip_partial_means_not_achieved_and_total_only_c
         "Q1",
         [confirmation(seed)],
         manual_context=context,
-        defer_annotations=True,
     )
     assert outcome.updated_details == 1
-    assert outcome.annotation_outcomes[0].status == "on_demand"
     (item,) = service.list_items(seed.session_id, session, manual_context=context)
     assert item.score_awarded == 6 and item.revision == 1
     assert item.metadata["ai_score_awarded"] == 7
@@ -157,7 +155,6 @@ def test_step_confirmation_roundtrip_partial_means_not_achieved_and_total_only_c
             "Q1",
             [confirmation(seed)],
             manual_context=context,
-            defer_annotations=True,
         )
     (unchanged,) = service.list_items(seed.session_id, session, manual_context=context)
     assert unchanged.metadata["teacher_review"] == review
@@ -170,7 +167,6 @@ def test_step_confirmation_roundtrip_partial_means_not_achieved_and_total_only_c
         "Q1",
         [total_only],
         manual_context=context,
-        defer_annotations=True,
     )
     (final,) = service.list_items(seed.session_id, session, manual_context=context)
     assert (
@@ -190,7 +186,6 @@ def test_teacher_steps_survive_full_ai_regrade_and_missing_ai_metadata(tmp_path)
         "Q1",
         [confirmation(seed)],
         manual_context=context,
-        defer_annotations=True,
     )
     with sqlite3.connect(seed.db.db_path) as conn:
         paper_id = conn.execute(
@@ -233,32 +228,6 @@ def _detail_reason_and_lock(seed):
     return detail, lock[0]
 
 
-def test_old_annotation_cleanup_failure_does_not_report_a_failed_save(
-    tmp_path, monkeypatch
-):
-    seed, session, context, service = seed_step_review(tmp_path)
-
-    def fail_cleanup(_paths):
-        raise sqlite3.OperationalError("synthetic cleanup unavailable")
-
-    monkeypatch.setattr(
-        service.manual_review_service.review,
-        "referenced_annotation_paths",
-        fail_cleanup,
-    )
-    result = service.confirm(
-        seed.session_id,
-        session,
-        "Q1",
-        [confirmation(seed)],
-        manual_context=context,
-        defer_annotations=True,
-    )
-    assert result.updated_details == 1
-    (item,) = service.list_items(seed.session_id, session, manual_context=context)
-    assert item.score_awarded == 6 and item.revision == 1
-
-
 @pytest.mark.parametrize("ai_score,teacher_score,note,source,expected_note", [
     (0, 4, "ignored", "none", None),
     (0, 2, "ignored", "ai", None),
@@ -277,7 +246,7 @@ def test_teacher_step_deduction_rules_roundtrip(tmp_path, ai_score, teacher_scor
         {"part_id": "Q1", "step_id": "S1", "score_awarded": teacher_score, "teacher_note": note, "carried_error_from": None},
         {"part_id": "Q1", "step_id": "S2", "score_awarded": 3},
     ])
-    service.confirm(seed.session_id, session, "Q1", [request], manual_context=context, defer_annotations=True)
+    service.confirm(seed.session_id, session, "Q1", [request], manual_context=context)
     (item,) = service.list_items(seed.session_id, session, manual_context=context)
     step = item.metadata["teacher_review"]["steps"][0]
     assert step["ai_score_awarded"] == ai_score

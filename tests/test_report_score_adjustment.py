@@ -104,7 +104,7 @@ def test_batch_score_adjustment_checks_a_legacy_part_against_its_own_maximum(
         )
         conn.commit()
 
-    service = ManualReviewService(db, tmp_path / "annotated")
+    service = ManualReviewService(db)
     with pytest.raises(ValueError, match=r"Q1\(P1\)"):
         service.apply_batch_score_adjustments(
             1,

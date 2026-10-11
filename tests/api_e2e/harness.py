@@ -19,7 +19,6 @@ from PIL import Image
 
 from backend.domain_models import GradingResult, QuestionGradingDetail
 from backend.api.dependencies import (
-    get_annotated_dir,
     get_backups_dir,
     get_data_root,
     get_exams_dir,
@@ -856,7 +855,6 @@ def install_dependency_overrides(
             get_data_root: lambda: paths.data_root,
             get_exams_dir: lambda: paths.exams_dir,
             get_reports_dir: lambda: paths.reports_dir,
-            get_annotated_dir: lambda: paths.annotated_dir,
             get_outputs_dir: lambda: paths.outputs_dir,
             get_backups_dir: lambda: paths.backups_dir,
             get_job_file_service: lambda: job_files,

@@ -153,7 +153,6 @@ function reviewItems(qid: string): ResolvedReviewItem[] {
       media: {
         crop_url: `/api/test/${s.student_id}/${qid}/crop`,
         original_front_url: `/api/test/${s.student_id}/front`, original_back_url: null,
-        annotated_front_url: null, annotated_back_url: null,
       },
     })))
 }

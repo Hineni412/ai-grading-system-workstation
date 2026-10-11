@@ -4,7 +4,6 @@ import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import {
   confirmReviewItem,
   type ReviewConfirmInput,
-  type ReviewItemLike,
   type ReviewRubricPoint,
   type ReviewRubricSection,
 } from '../../api/review'
@@ -35,12 +34,8 @@ import { reviewStatus } from './review-status'
 
 const reviewStore = useReviewQueueStore()
 const draftStore = useReviewDraftStore()
-const props = withDefaults(
+withDefaults(
   defineProps<{
-    registerAnnotationRetry: (entry: {
-      input: ReviewConfirmInput
-      item: ReviewItemLike
-    }) => void
     stayAfterConfirm?: boolean
   }>(),
   { stayAfterConfirm: false },
@@ -57,7 +52,6 @@ let rubricGeneration = 0
 const emit = defineEmits<{
   confirmed: [payload: {
     reviewItemId: string
-    annotationRetry: boolean
   }]
 }>()
 
@@ -340,19 +334,14 @@ async function submitCurrent(): Promise<void> {
   submitting.value = true
   feedback.value = ''
   try {
-    const response = await confirmReviewItem(
+    await confirmReviewItem(
       submittedSessionId,
       submittedQuestionId,
       confirmInput,
     )
     draftStore.markConfirmed(draft.key)
-    const annotationRetry = response.annotation_outcomes.some(
-      (outcome) => outcome.status === 'retry_required',
-    )
-    if (annotationRetry) props.registerAnnotationRetry({ input: confirmInput, item: submittedItem })
     emit('confirmed', {
       reviewItemId: submittedItem.review_item_id,
-      annotationRetry,
     })
 
   } catch (error) {

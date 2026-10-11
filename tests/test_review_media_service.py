@@ -1,49 +1,11 @@
 from __future__ import annotations
 
-import multiprocessing
 import sqlite3
-import threading
 from dataclasses import dataclass
-from io import BytesIO
 from pathlib import Path
 
-import pytest
 from PIL import Image
 from backend.repositories.grading_database import open_grading_repositories
-
-
-def test_legacy_annotations_regenerate_in_cache_and_remain_until_cleanup(tmp_path, monkeypatch):
-    import backend.review.manual_review_service as manual_review_service
-    from backend.review.manual_review_service import ManualReviewService
-    seed = _seed_media(tmp_path)
-    legacy = seed.data_root / "annotated" / "session_1" / "front_annotated.jpg"
-    _image(legacy)
-    seed.db.reviews.upsert_annotated_result(seed.session_id, seed.result_id, str(legacy), str(legacy))
-    def render(**kwargs):
-        _image(kwargs["output_front"])
-        _image(kwargs["output_back"])
-        return kwargs["output_front"], kwargs["output_back"]
-    monkeypatch.setattr(manual_review_service, "render_annotated_paper", render)
-    ManualReviewService(seed.db, seed.annotated_dir).ensure_result_annotation(seed.result_id)
-    row = seed.db.reviews.get_annotated_result(seed.result_id)
-    assert Path(row["annotated_front_path"]).is_relative_to(seed.data_root / "cache" / "annotated_pages")
-    assert legacy.exists()
-
-
-def test_annotation_cache_prunes_oldest_but_keeps_recent_and_current(tmp_path):
-    import os
-    import time
-    from backend.review.manual_review_service import ManualReviewService
-    seed = _seed_media(tmp_path)
-    directory = seed.annotated_dir / "session_1"
-    directory.mkdir(parents=True)
-    paths = [directory / f"test-{i}.jpg" for i in range(4)]
-    for i, path in enumerate(paths):
-        path.write_bytes(b"1234")
-        stamp = time.time() - 1200 + i if i < 3 else time.time()
-        os.utime(path, (stamp, stamp))
-    ManualReviewService(seed.db, seed.annotated_dir)._trim_annotation_cache(8, keep={paths[2]})
-    assert [p.exists() for p in paths] == [False, False, True, True]
 
 
 @dataclass(frozen=True)
@@ -66,46 +28,9 @@ def _image(path: Path, *, color: tuple[int, int, int] = (245, 245, 245)) -> None
     Image.new("RGB", (400, 300), color).save(path, format="JPEG", quality=95)
 
 
-def _render_annotation_in_separate_process(
-    db_path: str,
-    annotated_dir: str,
-    result_id: int,
-    worker_ready,
-    render_started,
-    release_first_render,
-    completed,
-) -> None:
-    import backend.review.manual_review_service as manual_review_module
-    
-    from backend.review.manual_review_service import ManualReviewService
-
-    def fake_render(**kwargs):
-        score = int(float(kwargs["question_scores"]["Q1"]["score_awarded"]))
-        render_started.set()
-        if score == 8:
-            if not release_first_render.wait(10):
-                raise TimeoutError("first render was not released")
-        output_front = kwargs["output_front"]
-        output_back = kwargs["output_back"]
-        output_front.parent.mkdir(parents=True, exist_ok=True)
-        output_front.write_text(str(score), encoding="utf-8")
-        output_back.write_text(str(score), encoding="utf-8")
-        return output_front, output_back
-
-    manual_review_module.render_annotated_paper = fake_render
-    worker_ready.set()
-    try:
-        ManualReviewService(
-            open_grading_repositories(Path(db_path)),
-            Path(annotated_dir),
-        ).render_result_annotation(result_id, highlight_qids=["Q1"])
-    finally:
-        completed.set()
-
-
 def _seed_media(tmp_path: Path) -> SeededMedia:
     from backend.media.service import ReviewMediaService
-    
+
 
     data_root = tmp_path / "data"
     exams_dir = data_root / "exams"
@@ -192,7 +117,6 @@ def _seed_media(tmp_path: Path) -> SeededMedia:
         data_root=data_root,
         exams_dir=exams_dir,
         templates_dir=templates_dir,
-        annotated_dir=annotated_dir,
         crop_cache_dir=data_root / "cache" / "review_crops",
     )
     return SeededMedia(
@@ -207,112 +131,4 @@ def _seed_media(tmp_path: Path) -> SeededMedia:
         detail_id=detail_id,
         front_path=front_path,
         back_path=back_path,
-    )
-
-
-def test_annotation_rerender_failure_preserves_previous_published_pair(
-    tmp_path: Path,
-) -> None:
-    from backend.review.manual_review_service import ManualReviewService
-
-    seed = _seed_media(tmp_path)
-    service = ManualReviewService(seed.db, seed.annotated_dir)
-    initial_paths = service.render_result_annotation(seed.result_id)
-    assert initial_paths is not None
-    published_before = seed.db.reviews.get_annotated_result(seed.result_id)
-    assert published_before is not None
-    previous_front = Path(published_before["annotated_front_path"]).read_bytes()
-    previous_back = Path(published_before["annotated_back_path"]).read_bytes()
-
-    _image(seed.front_path, color=(40, 180, 220))
-    seed.back_path.write_text("not an image", encoding="utf-8")
-
-    with pytest.raises(Exception):
-        service.render_result_annotation(seed.result_id)
-
-    published_after = seed.db.reviews.get_annotated_result(seed.result_id)
-    assert published_after is not None
-    assert (
-        published_after["annotated_front_path"]
-        == published_before["annotated_front_path"]
-    )
-    assert (
-        published_after["annotated_back_path"]
-        == published_before["annotated_back_path"]
-    )
-    assert Path(published_after["annotated_front_path"]).read_bytes() == previous_front
-    assert Path(published_after["annotated_back_path"]).read_bytes() == previous_back
-
-
-def test_annotation_render_lock_prevents_cross_process_stale_publish(
-    tmp_path: Path,
-) -> None:
-    seed = _seed_media(tmp_path)
-    context = multiprocessing.get_context("spawn")
-    first_worker_ready = context.Event()
-    first_render_started = context.Event()
-    release_first_render = context.Event()
-    first_done = context.Event()
-    second_worker_ready = context.Event()
-    second_render_started = context.Event()
-    second_done = context.Event()
-    first = context.Process(
-        target=_render_annotation_in_separate_process,
-        args=(
-            str(seed.db.db_path),
-            str(seed.annotated_dir),
-            seed.result_id,
-            first_worker_ready,
-            first_render_started,
-            release_first_render,
-            first_done,
-        ),
-    )
-    second = None
-    first.start()
-    try:
-        assert first_worker_ready.wait(15)
-        assert first_render_started.wait(15)
-        with sqlite3.connect(seed.db.db_path) as conn:
-            conn.execute(
-                "UPDATE session_details SET score_awarded = 9 WHERE id = ?",
-                (seed.detail_id,),
-            )
-            conn.commit()
-
-        second = context.Process(
-            target=_render_annotation_in_separate_process,
-            args=(
-                str(seed.db.db_path),
-                str(seed.annotated_dir),
-                seed.result_id,
-                second_worker_ready,
-                second_render_started,
-                release_first_render,
-                second_done,
-            ),
-        )
-        second.start()
-        assert second_worker_ready.wait(15)
-        assert not second_render_started.wait(2)
-    finally:
-        release_first_render.set()
-        first.join(15)
-        if second is not None:
-            second.join(15)
-        for worker in (first, second):
-            if worker is not None and worker.is_alive():
-                worker.terminate()
-                worker.join(5)
-
-    assert first.exitcode == 0
-    assert second is not None
-    assert second.exitcode == 0
-    current_record = seed.db.reviews.get_annotated_result(seed.result_id)
-    assert current_record is not None
-    assert (
-        Path(current_record["annotated_front_path"]).read_text(encoding="utf-8") == "9"
-    )
-    assert (
-        Path(current_record["annotated_back_path"]).read_text(encoding="utf-8") == "9"
     )

@@ -270,7 +270,12 @@ def storage_overview(data_root: Path) -> dict[str, Any]:
             key = head if head in {"question_bank", "databases"} else "other"
         size = info.st_size
         totals[key] += size
-        if head == "annotated" and len(parts) == 3 and parts[1].startswith("session_") and path.name.endswith("_annotated.jpg"):
+        if (
+            (head == "annotated" and len(parts) == 3 and parts[1].startswith("session_")
+             and path.name.endswith("_annotated.jpg"))
+            or (parts[:2] == ("cache", "annotated_pages") and len(parts) == 4
+                and parts[2].startswith("session_") and path.suffix.lower() == ".jpg")
+        ):
             legacy_bytes += size
             legacy_files += 1
     return {"total_bytes": sum(totals.values()), "unreadable_count": unreadable, "categories": [{"key": k, "label": label, "bytes": totals[k]} for k, label in categories],
@@ -281,26 +286,31 @@ def clear_legacy_annotations(db: Any, data_root: Path) -> dict[str, int]:
     db = as_grading_repositories(db)
     freed = count = 0
     legacy_root = data_root / "annotated"
+    cache_root = data_root / "cache" / "annotated_pages"
     session_ids = {int(session["id"]) for session in db.sessions.list_grading_sessions(include_deleted=True)}
-    if _is_under(legacy_root, data_root) and not legacy_root.is_symlink() and not legacy_root.is_junction() and legacy_root.is_dir():
-        with os.scandir(legacy_root) as directories:
-            for entry in directories:
-                match = re.fullmatch(r"session_([1-9][0-9]*)", entry.name)
-                if match and entry.is_dir(follow_symlinks=False) and not Path(entry.path).is_junction():
-                    session_ids.add(int(match[1]))
+    for root in (legacy_root, cache_root):
+        if _is_under(root, data_root) and not root.is_symlink() and not root.is_junction() and root.is_dir():
+            with os.scandir(root) as directories:
+                for entry in directories:
+                    match = re.fullmatch(r"session_([1-9][0-9]*)", entry.name)
+                    if match and entry.is_dir(follow_symlinks=False) and not Path(entry.path).is_junction():
+                        session_ids.add(int(match[1]))
     for sid in sorted(session_ids):
-        with session_lifecycle_guard(sid), get_answer_region_session_lock(data_root / "cache" / "annotated_pages" / f"session_{sid}"):
+        with session_lifecycle_guard(sid), get_answer_region_session_lock(cache_root / f"session_{sid}"):
             shared = _collect_other_session_references(db, sid, data_root)
-            db.reviews.clear_session_annotation_paths(sid, legacy_root=legacy_root)
-            directory = legacy_root / f"session_{sid}"
-            for path in _files(directory, data_root):
-                if (path.parent == directory.resolve() and path.name.endswith("_annotated.jpg")
-                        and path not in shared and _is_under(path, data_root) and not path.is_symlink()):
-                    try:
-                        size = path.stat().st_size
-                        path.unlink()
-                    except FileNotFoundError:
-                        continue
-                    freed += size
-                    count += 1
+            db.reviews.clear_session_annotation_paths(sid)
+            for directory, matches in (
+                (legacy_root / f"session_{sid}", lambda p: p.name.endswith("_annotated.jpg")),
+                (cache_root / f"session_{sid}", lambda p: p.suffix.lower() == ".jpg"),
+            ):
+                for path in _files(directory, data_root):
+                    if (path.parent == directory.resolve() and matches(path)
+                            and path not in shared and _is_under(path, data_root) and not path.is_symlink()):
+                        try:
+                            size = path.stat().st_size
+                            path.unlink()
+                        except FileNotFoundError:
+                            continue
+                        freed += size
+                        count += 1
     return {"freed_bytes": freed, "deleted_files": count}

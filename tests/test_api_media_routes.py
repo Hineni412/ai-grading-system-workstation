@@ -57,7 +57,7 @@ def test_media_routes_show_originals_cleared(media_client) -> None:
     from backend.files.session_originals import clear_session_originals
     client, seed, _ = media_client
     clear_session_originals(seed.db, seed.data_root, seed.session_id, clear_crop_cache=seed.service.clear_detail_crop_cache)
-    for suffix in ("front", "front?variant=annotated"):
+    for suffix in ("front", "back"):
         response = client.get(f"/api/sessions/{seed.session_id}/results/{seed.result_id}/pages/{suffix}")
         assert response.status_code == 410
         assert response.json()["error"]["code"] == "original_pages_cleared"

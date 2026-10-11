@@ -117,7 +117,7 @@ const workspacePromises = new Map<number, Promise<RegionWorkspace>>()
 export function regionWorkspaceFor(sessionId: number): Promise<RegionWorkspace> {
   const cached = workspacePromises.get(sessionId)
   if (cached) return cached
-  const promise = fetchRegionWorkspace(sessionId)
+  const promise = Promise.resolve().then(() => fetchRegionWorkspace(sessionId))
   workspacePromises.set(sessionId, promise)
   void promise.catch(() => {
     if (workspacePromises.get(sessionId) === promise) {

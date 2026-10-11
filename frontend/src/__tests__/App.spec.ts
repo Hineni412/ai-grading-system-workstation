@@ -77,8 +77,6 @@ describe('App', () => {
         crop_url: '/api/crop',
         original_front_url: '/api/front',
         original_back_url: '/api/back',
-        annotated_front_url: '/api/annotated-front',
-        annotated_back_url: '/api/annotated-back',
       },
     } satisfies ReviewItem
     const draft = draftStore.ensureDraft(item)

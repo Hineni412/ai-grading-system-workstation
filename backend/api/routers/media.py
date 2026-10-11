@@ -44,21 +44,18 @@ def get_result_page(
     session_id: int,
     result_id: int,
     page: Literal["front", "back"],
-    variant: Literal["original", "annotated"] = "original",
     media_service: ReviewMediaService = Depends(get_media_service),
 ) -> FileResponse:
     details = {
         "session_id": int(session_id),
         "result_id": int(result_id),
         "page": page,
-        "variant": variant,
     }
     try:
         resolved = media_service.resolve_result_page(
             session_id,
             result_id,
             page,
-            variant,
         )
     except (
         OriginalPagesCleared,

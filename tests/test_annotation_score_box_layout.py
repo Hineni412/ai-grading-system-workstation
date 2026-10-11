@@ -51,7 +51,6 @@ def _render_score_box(
         },
         output_front=output_front,
         output_back=output_back,
-        annotation_layout="question_score_boxes",
     )
     return output_front
 

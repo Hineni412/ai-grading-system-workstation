@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import math
 import re
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -110,17 +109,9 @@ class ReviewConfirmationInput:
 
 
 @dataclass(frozen=True, slots=True)
-class ReviewAnnotationOutcome:
-    result_id: int
-    status: str
-    message: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class ReviewConfirmationResult:
     updated_details: int
     updated_results: int
-    annotation_outcomes: list[ReviewAnnotationOutcome] = field(default_factory=list)
 
 
 class ReviewApplicationService:
@@ -752,20 +743,11 @@ class ReviewApplicationService:
         items: list[ReviewConfirmationInput],
         *,
         manual_context: dict[str, Any] | None = None,
-        defer_annotations: bool = False,
     ) -> ReviewConfirmationResult:
-        from backend.answer_regions.answer_region_session_lock import get_answer_region_session_lock
-
-        lock = (
-            get_answer_region_session_lock(
-                self.manual_review_service.annotated_dir / f"session_{session_id}"
-            ) if defer_annotations and self.manual_review_service is not None else nullcontext()
+        return self._confirm(
+            session_id, session, question_id, items,
+            manual_context=manual_context,
         )
-        with lock:
-            return self._confirm(
-                session_id, session, question_id, items,
-                manual_context=manual_context, defer_annotations=defer_annotations,
-            )
 
     def _confirm(
         self,
@@ -775,7 +757,6 @@ class ReviewApplicationService:
         items: list[ReviewConfirmationInput],
         *,
         manual_context: dict[str, Any] | None = None,
-        defer_annotations: bool = False,
     ) -> ReviewConfirmationResult:
         if manual_context is not None:
             return self._confirm_unified_items(
@@ -784,7 +765,6 @@ class ReviewApplicationService:
                 str(question_id),
                 items,
                 manual_context,
-                defer_annotations=defer_annotations,
             )
         if self.manual_review_service is None:
             raise RuntimeError("Manual review service is required for confirmation.")
@@ -800,8 +780,6 @@ class ReviewApplicationService:
             result = self.manual_review_service.apply_review_adjustments(
                 session_id,
                 adjustments,
-                highlight_qids=[question_id],
-                **({"defer_annotations": True} if defer_annotations else {}),
             )
         except ReviewAdjustmentOwnershipError as exc:
             raise ReviewDetailNotFoundError(
@@ -810,18 +788,9 @@ class ReviewApplicationService:
                 result_id=exc.result_id,
                 detail_id=exc.detail_id,
             ) from exc
-        annotation_outcomes = [
-            ReviewAnnotationOutcome(
-                result_id=int(item["result_id"]),
-                status=str(item["status"]),
-                message=item.get("message"),
-            )
-            for item in result.get("annotation_outcomes", [])
-        ]
         return ReviewConfirmationResult(
             updated_details=int(result.get("updated_details") or 0),
             updated_results=int(result.get("updated_results") or 0),
-            annotation_outcomes=annotation_outcomes,
         )
 
     def _confirm_unified_items(
@@ -831,8 +800,6 @@ class ReviewApplicationService:
         question_id: str,
         inputs: list[ReviewConfirmationInput],
         manual_context: dict[str, Any],
-        *,
-        defer_annotations: bool = False,
     ) -> ReviewConfirmationResult:
         requested_question_id = str(question_id or "").strip()
         if not requested_question_id or not inputs:
@@ -873,7 +840,6 @@ class ReviewApplicationService:
             except (OSError, ValueError) as exc:
                 raise ReviewValidationError("The step scoring standard is unavailable.") from exc
         seen_ids: set[str] = set()
-        result_ids: set[int] = set()
         for raw in inputs:
             item = (
                 by_review_item_id.get(str(raw.review_item_id))
@@ -953,15 +919,12 @@ class ReviewApplicationService:
                     ),
                 }
             )
-            if item.result_id is not None:
-                result_ids.add(item.result_id)
 
         try:
             result = self.db.reviews.confirm_teacher_scores(
                 session_id,
                 scan_batch_id,
                 confirmations,
-                **({"defer_annotations": True} if defer_annotations else {}),
             )
         except ValueError as exc:
             message = str(exc).lower()
@@ -973,38 +936,6 @@ class ReviewApplicationService:
                 "Teacher score could not be saved safely."
             ) from exc
 
-        annotation_outcomes: list[ReviewAnnotationOutcome] = []
-        if defer_annotations:
-            if self.manual_review_service is not None:
-                self.manual_review_service.cleanup_invalidated_annotations(result.pop("invalidated_annotations", []))
-            annotation_outcomes = [
-                ReviewAnnotationOutcome(result_id=result_id, status="on_demand")
-                for result_id in sorted(result_ids)
-            ]
-        elif self.manual_review_service is not None:
-            for result_id in sorted(result_ids):
-                try:
-                    rendered = self.manual_review_service.render_result_annotation(
-                        result_id,
-                        highlight_qids=[requested_question_id],
-                    )
-                except Exception:
-                    rendered = None
-                annotation_outcomes.append(
-                    ReviewAnnotationOutcome(
-                        result_id=result_id,
-                        status=(
-                            "succeeded"
-                            if rendered is not None
-                            else "retry_required"
-                        ),
-                        message=(
-                            None
-                            if rendered is not None
-                            else "Annotation rendering failed; retry required."
-                        ),
-                    )
-                )
         return ReviewConfirmationResult(
             updated_details=int(
                 result.get("updated_details")
@@ -1012,7 +943,6 @@ class ReviewApplicationService:
                 or 0
             ),
             updated_results=int(result.get("updated_results") or 0),
-            annotation_outcomes=annotation_outcomes,
         )
 
 

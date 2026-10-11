@@ -7,7 +7,6 @@ from typing import Any
 import pytest
 
 from backend.repositories.db_manager import DBManager
-from backend.review.manual_review_service import ManualReviewService
 from backend.repositories.grading_database import open_grading_repositories
 
 
@@ -196,88 +195,3 @@ def test_second_result_detail_failure_rolls_back_entire_review_batch(
         db.reviews.apply_session_review_adjustments(session_id, _adjustments(session_id, ids))
 
     assert _review_state(db, ids) == before
-
-
-def test_review_adjustments_commit_before_annotation_and_allow_retry(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db, session_id, ids = _seed_two_review_results(tmp_path)
-    service = ManualReviewService(db, tmp_path / "annotated")
-    rendered_result_ids: list[int] = []
-    private_path = r"C:\Users\teacher\private\first-front.jpg"
-    raw_error = f"renderer failed for {private_path}"
-
-    def fail_first_annotation(
-        result_id: int,
-        highlight_qids: list[str] | None = None,
-    ) -> dict[str, str] | None:
-        rendered_result_ids.append(result_id)
-        assert highlight_qids == ["Q1"]
-        if result_id == ids["first_result_id"]:
-            raise RuntimeError(raw_error)
-        return {"front": "second-front.jpg", "back": "second-back.jpg"}
-
-    monkeypatch.setattr(service, "render_result_annotation", fail_first_annotation)
-
-    outcome = service.apply_review_adjustments(
-        session_id,
-        _adjustments(session_id, ids),
-        highlight_qids=["Q1"],
-    )
-
-    assert _review_state(db, ids)[0] == [
-        (
-            ids["first_detail_id"],
-            8.0,
-            "first reviewed reason",
-            "first reviewed category",
-            "first reviewed summary",
-        ),
-        (
-            ids["second_detail_id"],
-            7.0,
-            "second reviewed reason",
-            "second reviewed category",
-            "second reviewed summary",
-        ),
-    ]
-    assert outcome["updated_details"] == 2
-    assert outcome["updated_results"] == 2
-    assert outcome["annotation_outcomes"] == [
-        {
-            "result_id": ids["first_result_id"],
-            "status": "retry_required",
-            "message": outcome["annotation_outcomes"][0]["message"],
-        },
-        {"result_id": ids["second_result_id"], "status": "succeeded"},
-    ]
-    failure_message = outcome["annotation_outcomes"][0]["message"]
-    assert failure_message
-    assert failure_message != raw_error
-    assert raw_error not in failure_message
-    assert private_path not in failure_message
-    assert "annotated_paths" not in outcome
-    assert rendered_result_ids == sorted(
-        [ids["first_result_id"], ids["second_result_id"]]
-    )
-
-    monkeypatch.setattr(
-        service,
-        "render_result_annotation",
-        lambda result_id, highlight_qids=None: {
-            "front": f"retry-{result_id}-front.jpg",
-            "back": f"retry-{result_id}-back.jpg",
-        },
-    )
-
-    retried = service.apply_review_adjustments(
-        session_id,
-        _adjustments(session_id, ids),
-        highlight_qids=["Q1"],
-    )
-
-    assert retried["annotation_outcomes"] == [
-        {"result_id": ids["first_result_id"], "status": "succeeded"},
-        {"result_id": ids["second_result_id"], "status": "succeeded"},
-    ]

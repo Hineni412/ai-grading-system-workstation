@@ -206,7 +206,6 @@ def confirm_review_question_items(
                 for item in request.items
             ],
             manual_context=manual_context,
-            **({"defer_annotations": True} if request.annotation_mode == "on_demand" else {}),
         )
     except ReviewDetailNotFoundError as exc:
         raise ApiError(
@@ -347,16 +346,6 @@ def _review_item_response(item: object, *, data_root: Path | None = None) -> Rev
             original_back_url=metadata.get(
                 "preflight_back_media_url"
             ),
-            annotated_front_url=(
-                f"{result_root}/pages/front?variant=annotated"
-                if result_root
-                else None
-            ),
-            annotated_back_url=(
-                f"{result_root}/pages/back?variant=annotated"
-                if result_root
-                else None
-            ),
         )
     else:
         result_id = int(values["result_id"])
@@ -366,7 +355,5 @@ def _review_item_response(item: object, *, data_root: Path | None = None) -> Rev
             crop_url=f"{result_root}/details/{detail_id}/crop",
             original_front_url=f"{result_root}/pages/front",
             original_back_url=f"{result_root}/pages/back",
-            annotated_front_url=f"{result_root}/pages/front?variant=annotated",
-            annotated_back_url=f"{result_root}/pages/back?variant=annotated",
         )
     return ReviewItemResponse.model_validate(values)

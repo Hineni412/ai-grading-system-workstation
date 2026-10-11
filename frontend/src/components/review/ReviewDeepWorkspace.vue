@@ -4,10 +4,10 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   resolveReviewItem,
   type ReviewMediaLinks,
-  type ReviewConfirmInput,
   type ReviewItemLike,
 } from '../../api/review'
 import type { EvidenceSource } from '../../composables/use-evidence-viewer'
+import { invalidateSessionResults } from '../results-center/session-results-cache'
 import type { ScanStudentMatchOption } from '../../api/scan-grading'
 import AppIcon from '../shell/AppIcon.vue'
 import AppButton from '../design-system/AppButton.vue'
@@ -38,10 +38,6 @@ const props = defineProps<{
   answerPanelOpen?: boolean
   switching?: boolean
   stayAfterConfirm?: boolean
-  registerAnnotationRetry: (entry: {
-    input: ReviewConfirmInput
-    item: ReviewItemLike
-  }) => void
 }>()
 
 const imageExpanded = ref(false)
@@ -144,9 +140,17 @@ const emit = defineEmits<{
   'toggle-answer-panel': []
   confirmed: [payload: {
     reviewItemId: string
-    annotationRetry: boolean
   }]
 }>()
+
+// 保存分数后题框数据作废：下一次查看重新读取成绩中心数据。
+const marksVersion = ref(0)
+
+function onConfirmed(payload: { reviewItemId: string }): void {
+  if (props.sessionId !== null) invalidateSessionResults(props.sessionId)
+  marksVersion.value += 1
+  emit('confirmed', payload)
+}
 </script>
 
 <template>
@@ -257,6 +261,7 @@ const emit = defineEmits<{
           :previous-item="previousItem"
           :next-item="nextItem"
           :source="selectedSource"
+          :marks-version="marksVersion"
           @expand="imageExpanded = true"
         />
       </div>
@@ -283,9 +288,8 @@ const emit = defineEmits<{
       </template>
       <div class="review-deep-workspace__scoring">
         <ReviewScoringInspector
-          :register-annotation-retry="registerAnnotationRetry"
           :stay-after-confirm="stayAfterConfirm === true"
-          @confirmed="emit('confirmed', $event)"
+          @confirmed="onConfirmed"
         />
       </div>
     </div>
