@@ -20,11 +20,13 @@
 | 排版 | [排版调查](question-bank-latex-layout-evaluation-20261002.md)、[一手来源](latex-question-bank-primary-sources-20261002.md) | 已有合成实排依据，以及高中、断网新工作机和纸面验收的限制 |
 | 相似题向量 | [实验](vector-similarity-experiment-20261001.md) | 只读实验依据；正式持久化、增量更新和模型接入尚未实现 |
 | 外观审查 | [历史组件审查](frontend-component-audit-20261001.html) | 保留视觉比较材料；历史快照与旧数量不代表当前状态 |
+| 页面文字与阅读层次 | [Impeccable 只读检查](impeccable-ui-audit-20261012.md) | 教师页面与两份保存报告的阅读检查、图例和展开层次建议；技能已安装，全部页面优化建议尚未实现 |
 | 题型改版 | [方案](question-type-redesign-plan-20261006.md)、[交接](question-type-redesign-handoff-20261007.md)、[进度网页](question-type-redesign-status-20261007.html) | 八上按题型诊断与配题；页面已人工验收，新导入、报告和权威文档已补齐。真实 v9 已获授权并启用；57 道预存失效题全部恢复，2 道歧义文字按用户确认修正。1292 道已标题型题均纳入；3 道低置信度题型抽查及实际训练收益仍待验证 |
 | 题库标签与新册自动题型 | [方案](question-bank-labels-and-auto-types-plan-20261008.md) | 已确认的标签分层、知识点恢复可写、新册按章自动整理题型、按章切换训练目标与各模块影响；全部尚未实现，模型调用、数据库迁移与真实重打需逐次授权 |
 | 关键步骤诊断 | [交接](key-step-diagnosis-handoff-20261009.md) | 技能改作失分步骤诊断的已确认决定、统计口径、只读原型与复用入口；试题诊断热点、学生作答证据与学情肖像的“反复卡点”、题型详情“卡在哪一步”和训练草稿“对应卡点”标签已实现，当前规则见阅卷与知识训练产品文档；跨考试同章复测的卡点追踪尚无数据 |
 | 按标签多维筛选 | [重设计方案](question-bank-tag-filter-redesign-plan-20261008.md)、[交互原型](question-bank-tag-filter-prototype-20261008.html) | 已实施章节树与多维标签组合筛选、知识点精确匹配、旧地址兼容和本页技能入口退役；保留设计依据，当前规则见题库产品文档，原型只用合成数据 |
 | 教研提升·试卷评价 | [实施方案](paper-review-implementation-plan-20261011.md)、本机原型 `paper-review-prototype-20261011/` | 已实现并通过正式 8035 的只读页面验收；组卷页显示标记、阈值校准尚未实现。方案和本机原型保留取舍依据，当前规则见阅卷产品文档 |
+| 教研提升·命题训练 | [设计方案](teacher-item-writing-training-design-20261012.md)、[实施交接](item-writing-implementation-20261012/README.md)、[中考官方要求](teacher-item-writing-research-20261012/zhongkao-standards.md)、[比赛与遴选调研](teacher-item-writing-research-20261012/competitions.md) | 单人按给定材料命一道题：八步分维度作答、上传识别核对、AI 评价与九维量表；本机原型 `item-writing-prototype-20261012/` 只用合成材料与示例评价。已确认复用 authoring 表并由 AI 从题库抽取原生情境作材料；迁移已授权、情境抽取已试运行 10 道；实施交接已写好，代码全部尚未实现，批量抽取与真实 AI 评价需另行授权 |
 | 知识与训练页合并 | [合并方案](knowledge-training-merge-plan-20261009.md)、[交互原型](knowledge-training-merge-prototype-20261009.html) | 学情总览与知识结构合并为学情页，按章节与按学生合并为出训练页，去掉综合／专项并增加批量选人；已确认方向，原型只用合成数据，正式页面全部尚未实现 |
 | 八下关键步骤种子词表 | [调查候选](g8-lower-key-step-seed-research-20261011.md) | 北师大版（2024）八下 113 条关键步骤候选与跨册前置、排除项清单；仅供老师审阅，系统不读取，判定点覆盖筛选与正式标准发布尚未进行 |
 | 八上关键步骤词表审查 | [只读审查](g8-upper-key-step-audit-20261011.md) | 已启用 111 条关键步骤逐条处理意见（保留 81／仅客观题 13／改名 6／合并 5／退役 5／拆分 1）、473 个未挂判定点归类与多挂点主技能规则；仅调查建议，未改任何数据，执行须发布新知识标准并另行授权 |

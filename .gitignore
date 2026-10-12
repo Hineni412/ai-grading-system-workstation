@@ -67,6 +67,7 @@ analysis_outputs/
 
 # Local agent/tool session state
 .superpowers/
+/.audit/
 
 # OS/editor noise
 .DS_Store

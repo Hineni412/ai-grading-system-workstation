@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设置页改版原型 · 静态演示</title>
+<link rel="stylesheet" href="/frontend/src/styles/tokens.css">
+<link rel="stylesheet" href="/frontend/src/styles/base.css">
+<link rel="stylesheet" href="/frontend/src/styles/settings.css">
+<link rel="stylesheet" href="/frontend/src/styles/model-profiles.css">
+<link rel="stylesheet" href="/frontend/src/styles/students.css">
+<link rel="stylesheet" href="./prototype.css">
+<link rel="stylesheet" href="./prototype-log.css">
+</head>
+<body>
+<div class="proto-banner" role="note">设置页改版原型 · 静态演示，数据为虚构，未接入系统</div>
+
+<div class="proto-main settings-hub">
+  <header class="page-header">
+    <div class="page-header__lead">
+      <h1 class="page-header__title">设置</h1>
+    </div>
+    <div class="page-header__navigation">
+      <nav class="page-tabs" id="page-tabs" role="tablist" aria-label="设置分类"></nav>
+    </div>
+  </header>
+
+  <div class="settings-content" id="settings-content">
+    <div class="proto-compare" id="compare-bar">
+      <span>对比方案</span>
+      <div class="app-segmented" id="compare-seg" role="group" aria-label="对比方案">
+        <button type="button" data-variant="a" class="is-active">A · 调用记录独立页签</button>
+        <button type="button" data-variant="b">B · 调用记录与配置同页</button>
+      </div>
+    </div>
+
+    <section class="tab-pane" id="pane-log" aria-label="调用记录"></section>
+    <section class="tab-pane" id="pane-ai" aria-label="AI 服务" hidden></section>
+    <section class="tab-pane" id="pane-students" aria-label="学生名单" hidden></section>
+    <section class="tab-pane" id="pane-data" aria-label="数据与空间" hidden></section>
+  </div>
+</div>
+
+<div id="toast-root" aria-live="polite"></div>
+<div id="dialog-root"></div>
+
+<script src="./data.js"></script>
+<script src="./app.js"></script>
+<script src="./app-log-bodies.js"></script>
+<script src="./app-log.js"></script>
+<script src="./app-ai.js"></script>
+<script src="./app-students.js"></script>
+<script src="./app-data.js"></script>
+<script>window.ProtoApp.init();</script>
+</body>
+</html>

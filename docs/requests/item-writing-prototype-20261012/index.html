@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>原型 · 教研提升 · 命题训练</title>
+<link rel="stylesheet" href="../paper-review-prototype-20261011/style.css">
+<link rel="stylesheet" href="item-writing.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">阅</span>
+      <span class="brand-copy"><strong>AI 阅卷</strong><small>工作机版</small></span>
+    </div>
+    <nav class="nav">
+      <a class="nav-link" href="javascript:void(0)"><i>⌂</i><span>工作台</span></a>
+      <div class="nav-group">
+        <p>考试与阅卷</p>
+        <a class="nav-link" href="javascript:void(0)"><i>▦</i><span>考试配置</span></a>
+        <a class="nav-link" href="javascript:void(0)"><i>✎</i><span>考试批改</span></a>
+        <a class="nav-link" href="javascript:void(0)"><i>▤</i><span>成绩中心</span></a>
+      </div>
+      <div class="nav-group">
+        <p>题库与组卷</p>
+        <a class="nav-link" href="javascript:void(0)"><i>▣</i><span>题库管理</span></a>
+        <a class="nav-link" href="javascript:void(0)"><i>⧉</i><span>组卷工作台</span></a>
+      </div>
+      <div class="nav-group">
+        <p>教学分析</p>
+        <a class="nav-link" href="javascript:void(0)"><i>◈</i><span>知识与训练</span></a>
+        <a class="nav-link active" aria-current="page" href="javascript:void(0)"><i>✦</i><span>教研提升</span></a>
+      </div>
+    </nav>
+  </aside>
+
+  <div class="main">
+    <header class="page-head">
+      <h1>教研提升</h1>
+      <div class="subtabs">
+        <a class="subtab" href="../paper-review-prototype-20261011/index.html">试卷评价</a>
+        <button class="subtab on">命题训练</button>
+      </div>
+      <span class="proto-badge">原型 · 合成材料与示例评价 · 不调用模型</span>
+    </header>
+
+    <div class="toolbar">
+      <span class="tool-field">材料：<b id="iw-crumb">—</b></span>
+      <span class="tool-field">用时：<span id="iw-timer" class="mono">—</span></span>
+      <span class="tool-hint">单人命题训练；作品只保存在本浏览器（原型）。</span>
+    </div>
+
+    <main class="content" id="content">
+      <div id="app-root"></div>
+    </main>
+  </div>
+</div>
+
+<div class="iw-dlg" id="iw-dlg" hidden>
+  <div class="iw-dlg-box" id="iw-dlg-box"></div>
+</div>
+
+<script src="rubric-data.js"></script>
+<script src="sample-data.js"></script>
+<script src="render-materials.js"></script>
+<script src="render-form.js"></script>
+<script src="render-form2.js"></script>
+<script src="render-eval.js"></script>
+<script src="app-core.js"></script>
+</body>
+</html>

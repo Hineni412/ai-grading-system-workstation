@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>原型 · 教研提升 · 试卷评价</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="hero.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">阅</span>
+      <span class="brand-copy"><strong>AI 阅卷</strong><small>工作机版</small></span>
+    </div>
+    <nav class="nav">
+      <a class="nav-link" href="javascript:void(0)"><i>⌂</i><span>工作台</span></a>
+      <div class="nav-group">
+        <p>考试与阅卷</p>
+        <a class="nav-link" href="javascript:void(0)"><i>▦</i><span>考试配置</span></a>
+        <a class="nav-link" href="javascript:void(0)"><i>✎</i><span>考试批改</span></a>
+        <a class="nav-link" href="javascript:void(0)"><i>▤</i><span>成绩中心</span></a>
+      </div>
+      <div class="nav-group">
+        <p>题库与组卷</p>
+        <a class="nav-link" href="javascript:void(0)"><i>▣</i><span>题库管理</span></a>
+        <a class="nav-link" href="javascript:void(0)"><i>⧉</i><span>组卷工作台</span></a>
+      </div>
+      <div class="nav-group">
+        <p>教学分析</p>
+        <a class="nav-link" href="javascript:void(0)"><i>◈</i><span>知识与训练</span></a>
+        <a class="nav-link active" aria-current="page" href="javascript:void(0)"><i>✦</i><span>教研提升</span></a>
+      </div>
+    </nav>
+  </aside>
+
+  <div class="main">
+    <header class="page-head">
+      <h1>教研提升</h1>
+      <div class="subtabs"><button class="subtab on">试卷评价</button></div>
+      <span class="proto-badge">原型 · 真实考试汇总 · 不含学生姓名</span>
+    </header>
+
+    <div class="toolbar">
+      <label class="tool-field">考试
+        <select id="exam-select"></select>
+      </label>
+      <span class="tool-field">班级
+        <span class="seg" id="class-seg">
+          <button data-cls="all" class="on">全部</button>
+          <button data-cls="9">9班</button>
+          <button data-cls="10">10班</button>
+        </span>
+      </span>
+      <span class="tool-hint">得分率随班级切换；区分度与题目类别始终按整场考试计算。</span>
+    </div>
+
+    <main class="content" id="content">
+      <div id="app-root"></div>
+    </main>
+  </div>
+</div>
+
+<script src="../../../tmp_paper_review_prototype/data.js"></script>
+<script src="render-dimdetail.js"></script>
+<script src="render-hero.js"></script>
+<script src="render-scatter.js"></script>
+<script src="render-watch.js"></script>
+<script src="render-table.js"></script>
+<script src="render-coverage.js"></script>
+<script src="app-core.js"></script>
+</body>
+</html>
