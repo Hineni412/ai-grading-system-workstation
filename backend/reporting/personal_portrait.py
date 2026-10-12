@@ -289,7 +289,8 @@ def portrait_card_html(view: dict | None) -> str:
         return ""
     from backend.session_analysis import esc, fmt_num
     from backend.question_id_contract import question_id_coordinates as _qcoords
-    from backend.reporting.analysis_report_exporter import _question_display_label
+    from backend.reporting.analysis_report_exporter import (
+        _STEP_REASON_BOILERPLATE_RE, _question_display_label)
 
     tl = view["target_label"]
     n = view["n_sessions"]
@@ -334,10 +335,9 @@ def portrait_card_html(view: dict | None) -> str:
             f'<details class="pchap-det"><summary>看各节{tl}</summary>{rows}</details>')
     section_a = f"""<div class="psec">
 <h3>本学期各{tl}情况（截至本场，共 {n} 场考试）</h3>
-<div class="note" style="margin-bottom:6px">“本次考查点”只看这一场；这里综合本学期全部考试。</div>
 <div class="legend">{legend}</div>
 {''.join(chap_rows)}
-<div class="note" style="margin-top:8px">颜色表示截至本场的掌握情况，不显示百分比。“都做对了”：本学期做过的都对了，次数还少，暂不能定为较稳定；“待观察”：做对做错都有，或只做过一次，现有记录还不能下结论，不代表不会。</div>
+<div class="note" style="margin-top:8px">“都做对了”：做过的都对，次数还少；“待观察”：记录还少，不代表不会。</div>
 </div>"""
 
     order_idx = {name: i for i, name in enumerate(view["session_order"])}
@@ -380,11 +380,11 @@ def portrait_card_html(view: dict | None) -> str:
         rows.append((cat, view["cat_counts"].get(cat, 0), per))
     maxc = max([r[1] for r in rows] + [1])
     bars = "".join(
-        f'<div class="cbar{" zero" if n == 0 else ""}"><span class="cname">{esc(cat)}</span>'
+        f'<div class="cbar"><span class="cname">{esc(cat)}</span>'
         f'<span class="track"><i style="width:{n / maxc * 100:.0f}%"></i></span>'
         f'<span class="cnt">{n} 次</span>'
         f'<span class="cbreak">{esc(" · ".join(f"{_week_name(name)} {c}" for name, c in per))}</span></div>'
-        for cat, n, per in rows)
+        for cat, n, per in rows if n)
     pat_lines = [
         f'{pat}：{"；".join(f"{s} {_question_display_label(q)}" for _sid, s, q in sorted(hits, key=lambda h: (order_idx.get(h[1], 10 ** 9), _qcoords(h[2]) or (10 ** 9, 0))))}'
         for pat, hits in view["patterns"]]
@@ -393,16 +393,16 @@ def portrait_card_html(view: dict | None) -> str:
             + "".join(f'<div class="patline">{esc(l)}</div>' for l in rest)
             + "</details>" if rest else "")
     pats = ('<div class="pats"><b style="font-size:13px">反复出现的同一错法</b>'
-            + ("".join(f'<div class="patline">{esc(l)}</div>' for l in shown) + more
-               if shown
-               else '<div class="patline">目前没有在两场及以上考试重复出现的同一错法。</div>')
-            + "</div>")
+            + "".join(f'<div class="patline">{esc(l)}</div>' for l in shown) + more
+            + "</div>") if shown else ""
 
     def _key_step_item(item: dict) -> str:
+        reason = str(item.get("reason") or "").strip()
         return (f'<span class="kstuck-line"><b>{esc(_week_name(item.get("session_name")))} '
                 f'{esc(_question_display_label(item.get("question_id")))}</b>'
                 f'<span class="ksgoal">{esc(item.get("goal") or "该步要求暂无记录")}</span>'
-                + (f'<span class="ksreason">{esc(item.get("reason"))}</span>' if item.get("reason") else "")
+                + (f'<span class="ksreason">{esc(reason)}</span>'
+                   if reason and not _STEP_REASON_BOILERPLATE_RE.match(reason) else "")
                 + '</span>')
 
     key_steps = ""
@@ -417,25 +417,23 @@ def portrait_card_html(view: dict | None) -> str:
             blocks.append(f'<section class="kstuck-block"><p><b>{esc(entry.get("name") or entry.get("key"))}：</b>'
                           f'{int(entry.get("fails") or 0)} 道小问独立失分</p>{lines}</section>')
         key_steps = ('<div class="kstuck"><h4>反复卡在哪一步</h4>'
-                     + ("".join(blocks)
-                        if blocks else '<p class="patline">目前没有在两道及以上小问反复卡住的关键步骤。</p>')
-                     + '</div>')
-    blank = (f'<div class="blankline">未作答小问：{esc(view["blank_bits"])}'
-             '（空白多少不能说明实际作答用时）</div>' if view["blank_bits"] else "")
+                     + "".join(blocks) + '</div>') if blocks else ""
+    blank = (f'<div class="blankline">未作答小问：{esc(view["blank_bits"])}</div>'
+             if view["blank_bits"] else "")
     section_c = f"""<div class="psec">
 <h3>错因结构</h3>
 {bars}
 {blank}
 {pats}
 {key_steps}
-<div class="note" style="margin-top:8px">统计单位：失分小问次数。本学期截至本场共有失分小问 {view["lost_total"]} 个，其中 {view["categorized"]} 个已整理错因；同一小问可能归入多个大类，各类次数相加不等于失分小问数。</div>
+<div class="note" style="margin-top:8px">按失分小问计，一题可归入多类。</div>
 </div>"""
 
     return f"""<div class="card">
 <details class="portrait">
 <summary><span class="ptoggle">展开 / 收起</span>
 <span class="psum">学情肖像 · 本学期 {n} 场考试（截至{esc(view["session_name"])}）</span>
-<span class="pdigest">本学期 {n} 场考试涉及 {sum(counts.values())} 个{tl}：{esc(digest)}</span></summary>
+<span class="pdigest">{sum(counts.values())} 个{tl}：{esc(digest)}</span></summary>
 {strengths}
 {section_a}
 {section_b}

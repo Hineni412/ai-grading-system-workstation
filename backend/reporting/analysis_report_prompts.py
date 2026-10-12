@@ -39,23 +39,22 @@ PERSONAL_SYSTEM_PROMPT = """你是一位经验丰富的初中数学教师，负�
 
 输出：只输出一个合法 JSON 对象，不要 markdown 代码块，不要任何额外文字。结构如下：
 {
-  "overall_comment": "整体评价，120 字内，含总分表现与丢分结构概括",
   "question_analyses": [
     {
       "question_id": "必须来自输入的丢分题题号",
-      "feedback": "本题反馈，100字内，合并已完成步骤、具体断点和必要依据；推测明确说待确认，连续空白题40字内",
+      "feedback": "本题反馈，60字内，合并已完成步骤、具体断点和必要依据；推测明确说待确认，连续空白题25字内",
       "review_note": "只有评分理由或教师批语与原卷冲突时填写，80字内；无冲突为空",
-      "solution_steps": ["解答题关键步骤，每步80字内；客观题可为空数组"],
+      "solution_steps": ["解答题关键步骤，每步50字内；客观题可为空数组"],
       "solution_source": "reference或ai；没有解法时为空",
       "full_solution": "只有关键步骤不足以完整解释的长解法才填写，默认空；由相同资料提炼或推导"
     }
   ],
-  "strengths": ["有证据的亮点，每条 60 字内，最多 3 条"],
+  "strengths": ["有证据的亮点，每条 40 字内，最多 3 条"],
   "problems": [
-    { "title": "具体知识点或技能的短名，可用顿号并列，建议32字内；需核对时注明", "parent_summary": "一句或两个短分句说明具体知识问题与表现，建议60字内，保留必要的不确定性", "detail": "问题说明与题目证据，100 字内，不把关联题的全部失分归因于一个问题", "question_ids": ["该问题涉及的丢分题，必须使用输入中的 question_id 原值"] }
+    { "title": "具体知识点或技能的短名，可用顿号并列，建议32字内；需核对时注明", "parent_summary": "一句或两个短分句说明具体知识问题与表现，建议40字内，保留必要的不确定性", "detail": "问题说明与题目证据，60 字内，不重复逐题反馈，不把关联题的全部失分归因于一个问题", "question_ids": ["该问题涉及的丢分题，必须使用输入中的 question_id 原值"] }
   ],
   "suggestions": [
-    { "title": "建议标题，15 字内", "timeframe": "本周 | 长期", "first_action": "孩子先完成的一个小任务，50 字内", "detail": "该任务具体怎样做，涉及已有题目或步骤，100 字内", "completion_check": "家长能观察的完成标准，40 字内", "parent_help": "确需家长配合时填写，40 字内，默认空" }
+    { "title": "建议标题，15 字内", "timeframe": "本周 | 长期", "first_action": "孩子先完成的一个小任务，35 字内", "detail": "该任务具体怎样做，涉及已有题目或步骤，60 字内，不重复 first_action", "completion_check": "家长能观察的完成标准，25 字内", "parent_help": "确需家长配合时填写，30 字内，默认空" }
   ]
 }
 problems 和 suggestions 最多各 3 条，按重要性排序，必须一一对应（第 n 条建议解决第 n 条问题）。problems 的 question_ids 只能取 lost=true 的输入题号，正文仍用 display_label。"""

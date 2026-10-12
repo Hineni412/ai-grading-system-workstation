@@ -732,15 +732,13 @@ text-align:center;cursor:pointer;position:relative;font-family:inherit}
 #qpanel{margin-top:10px}
 .qdetail-box{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:#fcfdfe}
 .qdetail-box .qd-head{font-size:14px;font-weight:700}
-.qdetail-box .qd-points{font-size:13px;color:var(--muted);margin-top:4px}
-.qdetail-box .qd-points .pt-tag{display:inline-block;background:var(--gray-soft);border-radius:6px;
+.qdetail-box .pt-tag{display:inline-block;background:var(--gray-soft);border-radius:6px;
 padding:0 8px;margin:2px 4px 2px 0;font-size:12px;color:var(--ink)}
 .qd-fb{font-size:13.5px;margin-top:8px}
 .errline{font-size:12.5px;color:var(--warn);margin-top:5px}
 .qmore-btn{margin-top:10px;border:1px solid var(--accent);color:var(--accent);background:#fff;
 border-radius:8px;padding:5px 14px;min-height:44px;font-size:14px;cursor:pointer;font-family:inherit}
 .qmore{margin-top:10px;border-top:1px dashed var(--line);padding-top:10px}
-.qdetail-box:has(> .qmore:not([hidden])) > .qd-fb{display:none}
 /* 共用题干/截图/分析 */
 .stem{white-space:normal;overflow-wrap:anywhere;font-size:13.5px;color:var(--ink)}
 .stem table{border-collapse:collapse;width:100%;margin:8px 0}
@@ -1377,13 +1375,13 @@ def _report_display_text(value: object) -> str:
     )
 
 
-def _question_analysis_html(item: dict[str, Any] | None) -> str:
+def _question_analysis_html(item: dict[str, Any] | None, *, include_feedback: bool = True) -> str:
     if not item:
         return _ai_block("", failed=True)
-    feedback = _narrative_text(item.get("feedback")) or "\n".join(dict.fromkeys(
+    feedback = (_narrative_text(item.get("feedback")) or "\n".join(dict.fromkeys(
         text for key in ("observation", "possible_cause", "analysis")
         if (text := _narrative_text(item.get(key)))
-    ))
+    ))) if include_feedback else ""
     review = _narrative_text(item.get("review_note"))
     body = f'<div class="feedback"><b>本题反馈</b>{_report_paragraphs(feedback)}</div>' if feedback else ""
     if review:
@@ -2078,11 +2076,12 @@ def _analysis_or_fallback_html(
     *,
     show_answer: bool = True,
     show_comment: bool = True,
+    include_feedback: bool = True,
 ) -> str:
     """AI 叙述项为空或没有可展示内容时退化为老师批语/参考答案，不显示生成失败提示。"""
     rendered = ""
     if analysis:
-        rendered = _question_analysis_html(analysis)
+        rendered = _question_analysis_html(analysis, include_feedback=include_feedback)
         if AI_FAILED_NOTE in rendered:
             rendered = ""
     if not rendered:
@@ -2090,7 +2089,12 @@ def _analysis_or_fallback_html(
             record, info, show_answer=show_answer, show_comment=show_comment
         )
     if info is not None and info.reference_analysis and not _narrative_items(analysis, "solution_steps"):
-        rendered += f'<div class="solution"><b>参考解法</b>{_report_paragraphs(info.reference_analysis)}</div>'
+        reference = _strip_repeated_stem(
+            info.reference_analysis,
+            (info.question_text or info.stem_summary) or "",
+        )
+        if reference:
+            rendered += f'<div class="solution"><b>参考解法</b>{_report_paragraphs(reference)}</div>'
     return rendered
 
 
@@ -2107,12 +2111,32 @@ def _stem_block_html(info: QuestionInfo | None, fallback: str, title: str) -> st
     return html_text
 
 
-def _error_label_text(category: Any, pattern: Any) -> str:
-    """大类 · 错法名；错法名与大类相同或以大类开头时只显示错法名。"""
-    cat, pat = str(category or ""), str(pattern or "")
-    if cat and pat and pat.startswith(cat):
-        return pat
-    return " · ".join(part for part in (cat, pat) if part)
+def _wrong_way_text(row: dict[str, Any]) -> str:
+    """单行错因的报告用词：错法名，无错法名时用错误大类。"""
+    return str(row.get("pattern") or row.get("category") or "").strip()
+
+
+_STEP_REASON_BOILERPLATE_RE = re.compile(r"^按.{0,8}(?:有效)?步骤给分[。.]?$")
+_STEM_STRIP_RE = re.compile(r"[\s\^_(){}\（\）．.,、，:：；;　\$\\]")
+
+
+def _normalized_stem_text(text: object) -> str:
+    line = re.sub(r"^\s*\d+\s*[．.、]\s*", "", str(text or ""))
+    return _STEM_STRIP_RE.sub("", line)
+
+
+def _strip_repeated_stem(reference_analysis: str, stem: str) -> str:
+    """题库参考解法开头照抄题面（含题号、选项与[图片]行）的部分不再重复显示。"""
+    norm_stem = _normalized_stem_text(stem)
+    lines = str(reference_analysis or "").splitlines()
+    while lines:
+        first = lines[0].strip()
+        normalized = _normalized_stem_text(first)
+        if first == "[图片]" or (normalized and normalized in norm_stem):
+            lines.pop(0)
+            continue
+        break
+    return "\n".join(lines).strip()
 
 
 def _question_detail_template(
@@ -2141,23 +2165,24 @@ def _question_detail_template(
     body = [f'<div class="qdetail-box"><div class="qd-head">{esc(head)}</div>']
     if review_links:
         body.append(_personal_review_link(record.question_id))
-    if record.lost and errors:
-        labels = "；".join(dict.fromkeys(
-            _error_label_text(row.get("category"), row.get("pattern"))
-            for row in errors
-        ))
-        if labels:
-            body.append(
-                f'<div class="errline">错误归类（AI 辅助）：{esc(labels)}</div>'
-            )
+    errline_parts = []
     if points_labels:
-        tags = "".join(f'<span class="pt-tag">{esc(t)}</span>' for t in points_labels)
-        body.append(f'<div class="qd-points">考这些：{tags}</div>')
+        tags = "、".join(f'<span class="pt-tag">{esc(t)}</span>' for t in points_labels)
+        errline_parts.append(f"考点：{tags}")
+    if record.lost and errors:
+        wrong = "；".join(dict.fromkeys(
+            text for row in errors if (text := _wrong_way_text(row))
+        ))
+        if wrong:
+            errline_parts.append(f"错在：{esc(wrong)}（AI 辅助）")
+    if errline_parts:
+        body.append(f'<div class="errline">{" · ".join(errline_parts)}</div>')
     objective = _objective_question(info)
     if objective:
         body.append(_objective_answers_html(record, info))
     feedback = _narrative_text((analysis or {}).get("feedback"))
-    if record.lost and feedback:
+    top_feedback = bool(record.lost and feedback)
+    if top_feedback:
         body.append(f'<div class="qd-fb">{_report_paragraphs(feedback)}</div>')
     more = ['<div class="qmore" hidden>']
     fallback = ((info.question_text or info.stem_summary) if info is not None else "") or title
@@ -2166,19 +2191,22 @@ def _question_detail_template(
     more.append(evidence or ('<div class="note">原卷已释放，无法显示作答图；分数与批语不受影响。</div>'
                             if originals_released else '<div class="note">未找到本题作答截图；分数与批语保留。</div>'))
     kv = []
-    if not objective:
+    if not objective and not evidence:
         answer = record.student_answer or ("未作答" if _personal_cell_status(record) == "blank" else "未记录")
         kv.append(f'<dt>学生作答</dt><dd>{_report_inline_math(answer)}</dd>')
     comment = _real_teacher_comment(record)
     if comment:
         kv.append(f'<dt>老师批语</dt><dd>{_report_inline_math(comment)}</dd>')
     if record.lost:
-        kv.append(_step_diagnosis_html(step_diagnosis))
+        step_row = _step_diagnosis_html(step_diagnosis, _personal_cell_status(record))
+        if step_row:
+            kv.append(step_row)
     if kv:
         more.append(f'<dl class="kv">{"".join(kv)}</dl>')
     if analysis and analysis.get("solution_source") == "reference" and not (info and info.reference_analysis):
         analysis = {**analysis, "solution_source": "ai"}
-    more.append(_analysis_or_fallback_html(record, info, analysis, show_answer=not objective, show_comment=False))
+    more.append(_analysis_or_fallback_html(record, info, analysis, show_answer=not objective,
+                                           show_comment=False, include_feedback=not top_feedback))
     more.append("</div>")
     body.append('<button type="button" class="qmore-btn">看题目、作答和解法</button>')
     body.append("".join(more))
@@ -2186,27 +2214,35 @@ def _question_detail_template(
     return "".join(body)
 
 
-def _step_diagnosis_html(diagnosis: dict[str, Any] | None) -> str:
-    if not diagnosis:
+def _step_diagnosis_html(
+    diagnosis: dict[str, Any] | None,
+    record_status: str = "",
+) -> str:
+    if not diagnosis or record_status == "blank":
         return ""
     from backend.step_diagnosis import STEP_STATE_LABELS, STEP_SOURCE_LABELS
-    if diagnosis.get("availability") == "teacher_total_only":
-        return "<dt>卡在哪一步</dt><dd>缺少与教师最终分相符的步骤记录，暂不能定位失分步骤。</dd>"
     if diagnosis.get("availability") != "available":
-        return "<dt>卡在哪一步</dt><dd>未保存逐步记录，暂不能定位失分步骤。</dd>"
+        return ""
+    independent = next(
+        (key for key, label in STEP_STATE_LABELS.items() if label == "独立失分"),
+        "independent",
+    )
     rows = []
     for step in diagnosis.get("steps") or []:
-        if step["state"] == "met":
+        if step.get("state") != independent:
             continue
-        names = "、".join(target["name"] for target in step.get("key_steps") or []) or ("" if diagnosis.get("scope") == "point_text" else "未挂关键步骤")
-        text = " · ".join(value for value in (STEP_STATE_LABELS[step["state"]], step["step_id"], step["goal"], names) if value)
-        reason = f'<div class="note">阅卷说明：{_report_inline_math(step["reason"])}</div>' if step.get("reason") else ""
-        rows.append(f'<div>{_report_inline_math(text)}{reason}</div>')
-    completed = "、".join(step["step_id"] for step in diagnosis.get("steps") or [] if step["state"] == "met")
-    if completed:
-        rows.append(f'<div class="note">已完成：{esc(completed)}</div>')
-    source = STEP_SOURCE_LABELS[diagnosis["source"]]
-    return f'<dt>卡在哪一步</dt><dd><div class="note">{esc(source)}</div>{"".join(rows)}</dd>'
+        reason = str(step.get("reason") or "").strip()
+        note = (
+            f'<div class="note">{_report_inline_math(reason)}</div>'
+            if reason and not _STEP_REASON_BOILERPLATE_RE.match(reason)
+            else ""
+        )
+        rows.append(f'<div>{_report_inline_math(str(step.get("goal") or ""))}{note}</div>')
+    if not rows:
+        return ""
+    source = STEP_SOURCE_LABELS.get(diagnosis.get("source"), "")
+    title = f"卡在哪一步（{source}）" if source else "卡在哪一步"
+    return f'<dt>{esc(title)}</dt><dd>{"".join(rows)}</dd>'
 
 
 def _lost_appendix_html(
@@ -2251,6 +2287,7 @@ def _lost_appendix_html(
         ]
         if not objective:
             parts.append(_stem_block_html(info, fallback, title))
+        group_has_shots = bool(_shots_for_parent(shots, parent))
         for record in sorted(recs, key=lambda r: question_id_coordinates(r.question_id) or (10**9, 0)):
             part_info = info_by_qid.get(record.question_id)
             analysis = analysis_by_qid.get(record.question_id)
@@ -2260,13 +2297,18 @@ def _lost_appendix_html(
                 and not (part_info and part_info.reference_analysis)
             ):
                 analysis = {**analysis, "solution_source": "ai"}
-            kv = [_step_diagnosis_html((step_diagnoses or {}).get(record.question_id))]
-            if record.student_answer:
-                kv.append(f"<dt>学生作答</dt><dd>{_report_inline_math(record.student_answer)}</dd>")
-            elif _personal_cell_status(record) == "blank":
-                kv.append("<dt>学生作答</dt><dd>未作答</dd>")
-            elif objective:
-                kv.append("<dt>学生作答</dt><dd>未记录</dd>")
+            step_row = _step_diagnosis_html(
+                (step_diagnoses or {}).get(record.question_id),
+                _personal_cell_status(record),
+            )
+            kv = [step_row] if step_row else []
+            if objective or not group_has_shots:
+                if record.student_answer:
+                    kv.append(f"<dt>学生作答</dt><dd>{_report_inline_math(record.student_answer)}</dd>")
+                elif _personal_cell_status(record) == "blank":
+                    kv.append("<dt>学生作答</dt><dd>未作答</dd>")
+                elif objective:
+                    kv.append("<dt>学生作答</dt><dd>未记录</dd>")
             answer = part_info.canonical_answer if part_info is not None else ""
             if answer and (objective or not (analysis and analysis.get("solution_steps"))):
                 kv.append(f'<dt>标准答案</dt><dd><b class="ans">{_report_inline_math(answer)}</b></dd>')
@@ -2277,11 +2319,10 @@ def _lost_appendix_html(
                 kv.append(f"<dt>老师批语</dt><dd>{_report_inline_math(teacher_comment)}</dd>")
             error_rows = (error_map or {}).get(record.question_id) or []
             error_text = "；".join(dict.fromkeys(
-                _error_label_text(row.get("category"), row.get("pattern"))
-                for row in error_rows
+                text for row in error_rows if (text := _wrong_way_text(row))
             ))
             if error_text:
-                kv.append(f"<dt>错误归类</dt><dd>{esc(error_text)}（AI 辅助）</dd>")
+                kv.append(f"<dt>错在</dt><dd>{esc(error_text)}（AI 辅助）</dd>")
             heading = (
                 f'<h3>{esc(_question_display_label(record.question_id))}'
                 f'<span>得 {fmt_num(record.score)} / {fmt_num(record.max_score)} 分</span></h3>'
@@ -2401,11 +2442,11 @@ def _load_student_histories(
 
 def _follow_up_action_html(suggestion: dict[str, Any] | None) -> str:
     suggestion = suggestion or {}
-    action = _narrative_text(suggestion.get("first_action")) or _narrative_text(suggestion.get("detail")) or "先看相关题，问清错在哪里，再订正。"
-    check = _narrative_text(suggestion.get("completion_check")) or "不看解析，能说明订正理由并独立重做；仍有疑问的题请老师核对。"
+    action = _narrative_text(suggestion.get("first_action")) or _narrative_text(suggestion.get("detail")) or "先看相关题，弄清错在哪里再订正。"
+    check = _narrative_text(suggestion.get("completion_check")) or "不看解析能独立重做。"
     parts = [
-        f'<div class="help"><b>先做：</b>{_report_inline_math(_report_display_text(action))}</div>',
-        f'<div class="help"><b>检查：</b>{_report_inline_math(_report_display_text(check))}</div>',
+        f'<div class="help"><b>先做：</b>{_report_inline_math(_report_display_text(action))}'
+        f'<span class="check">　做到：{_report_inline_math(_report_display_text(check))}</span></div>',
     ]
     parent_help = _narrative_text(suggestion.get("parent_help"))
     if parent_help:
@@ -2433,8 +2474,7 @@ def _recurrence_evidence_html(rows: list[Any], label: str) -> str:
             items.append(item)
     if not items:
         return ""
-    note = '<p>仅匹配错误大类，不能据此认定是同一错法。</p>' if label == "同类问题曾出现" else ""
-    return f'<div class="history-evidence"><b>{esc(label)}的依据</b>{note}<ul>{"".join(items)}</ul></div>'
+    return f'<div class="history-evidence"><b>{esc(label)}的依据</b><ul>{"".join(items)}</ul></div>'
 
 
 def _load_personal_error_histories(
@@ -2501,29 +2541,27 @@ def _render_personal_html(
         return error_map.get(question_id) or []
 
     def error_label(question_id: str) -> str:
-        """本题错误归类文案：大类 · 典型错法；多条用「；」连接。"""
+        """本题错法文案：错法名，无错法名时用大类；多条用「；」连接。"""
         parts = []
         for row in question_errors(question_id):
-            text = _error_label_text(row.get("category"), row.get("pattern"))
+            text = _wrong_way_text(row)
             if text and text not in parts:
                 parts.append(text)
         return "；".join(parts)
 
     def error_recurrence(question_ids: list[str]) -> tuple[str, list[Any]]:
-        """同错法与同大类分别表达；优先展示更具体的同错法证据。"""
-        matches: dict[str, list[Any]] = {"patterns": [], "categories": []}
+        """只在错法名一致时提示同一错法再次出现；仅同大类不提示。"""
+        matches: list[Any] = []
         for qid in question_ids:
             for row in question_errors(qid):
-                for key, value in (("categories", row.get("category")), ("patterns", row.get("pattern"))):
-                    if not value or (key == "patterns" and value == row.get("category")):
-                        continue
-                    for evidence in (error_history.get(key) or {}).get(str(value), []):
-                        if evidence and evidence not in matches[key]:
-                            matches[key].append(evidence)
-        if matches["patterns"]:
-            return "同一错法再次出现", matches["patterns"]
-        if matches["categories"]:
-            return "同类问题曾出现", matches["categories"]
+                pattern = row.get("pattern")
+                if not pattern or pattern == row.get("category"):
+                    continue
+                for evidence in (error_history.get("patterns") or {}).get(str(pattern), []):
+                    if evidence and evidence not in matches:
+                        matches.append(evidence)
+        if matches:
+            return "同一错法再次出现", matches
         return "", []
 
     def question_tags(question_ids: list[str]) -> str:
@@ -2637,7 +2675,7 @@ def _render_personal_html(
 <div class="card">
   <h2>历次成绩</h2>
   <div class="hist">{_history_chart_html(history, data.session_id)}</div>
-  <div class="note">实线：孩子的分数；虚线：班级平均。试卷难度和参考人数可能不同，进退仅作参考。</div>
+  <div class="note">实线是孩子，虚线是班级平均；各次难度不同，仅供参考。</div>
 </div>"""
 
     # ---- C 答题一览 ----
@@ -2715,7 +2753,14 @@ def _render_personal_html(
             elif recurrence_rows:
                 recurrence_label = "该考查点曾失分"
             badge = f'<span class="recur">{esc(recurrence_label)}</span>' if recurrence_rows else ""
-            why = [f'<div class="qd-fb">{_report_paragraphs(_narrative_text(problem.get("detail")))}</div>']
+            any_feedback = any(
+                _narrative_text((analysis_by_qid.get(q) or {}).get("feedback"))
+                for q in qids
+            )
+            why = (
+                [] if any_feedback
+                else [f'<div class="qd-fb">{_report_paragraphs(_narrative_text(problem.get("detail")))}</div>']
+            )
             full_action = _narrative_text((suggestion or {}).get("detail"))
             if _narrative_text((suggestion or {}).get("first_action")) and full_action:
                 why.append(f'<div class="help"><b>具体做法：</b>{_report_inline_math(_report_display_text(full_action))}</div>')
@@ -2757,7 +2802,7 @@ def _render_personal_html(
                 f'{_follow_up_action_html(suggestion)}'
                 f'<details><summary>看具体题目{f" · {len(qids)}个小问" if qids else ""}</summary>{meta_line}{badge}{"".join(why)}</details></div>'
             )
-        overlap_note = '<div class="note">同一道题可能涉及多个问题，各项关联失分不能相加，也不表示某个问题单独造成全部失分。</div>' if overlapping else ""
+        overlap_note = '<div class="note">题目有重叠，各项失分不能相加。</div>' if overlapping else ""
         card_d = f"""
 <div class="card">
   <h2>这次重点跟进<span class="aitag">{esc(AI_DISCLAIMER)}</span></h2>
@@ -2811,7 +2856,7 @@ def _render_personal_html(
                     + f'<div class="meta2">关联题目失分 {fmt_num(lost_sum)} 分{question_tags(qids)}</div>{badge}'
                     + objective_evidence
                     + (
-                        f'<div class="errline">错误归类（AI 辅助）：{esc("；".join(dict.fromkeys(error_labels)))}</div>'
+                        f'<div class="errline">错在：{esc("；".join(dict.fromkeys(error_labels)))}（AI 辅助）</div>'
                         if error_labels
                         else ""
                     )
@@ -2882,22 +2927,27 @@ def _render_personal_html(
     card_e = ""
     if points:
         target_label = {'type': '题型', 'mixed': '训练目标'}.get(data.knowledge_structure.get('target_kind'), '知识点')
-        score_note = ('这里只反映本次考试表现；题型下列出的分数是相关题目的整体得分。'
-                      if target_label == '题型' else '这里只反映本次考试表现；同一道题可能同时考几个知识点。')
-        good_head = (f'<div class="pt-good-head">这次做得好（{n_good} 项）'
-                     f'<small>相关题目这次都做对了</small></div>' if cloud else "")
+        score_note = ('只看本场。' if target_label == '题型'
+                      else '只看本场；一题可能考几个知识点。')
+        pt_counts = "".join(
+            f'<b class="{cls}">{label} {num}</b>'
+            for cls, label, num in (
+                ("g", "做得好", n_good), ("m", "部分做到", n_mid),
+                ("b", "需要补", n_bad), ("u", "暂不能判断", n_unknown),
+            ) if num
+        )
+        good_head = (f'<div class="pt-good-head">这次做得好（{n_good} 项）</div>' if cloud else "")
         unknown_details = ""
         if unknown_rows:
             unknown_details = (
                 f'<details class="pt-unknown"><summary>暂不能判断的失分点'
                 f'（{n_unknown} 项）</summary>'
-                f'<div class="note">灰色“？”表示这道题有失分，但现有记录还不能确定这个{target_label}是否做对；'
-                f'不代表孩子一定不会，也不需要家长逐项确认。可先看“这次重点跟进”了解具体问题。</div>'
+                f'<div class="note">“？”表示这题有失分，但不能确定是不是这一点出错，不代表不会。</div>'
                 f'{"".join(unknown_rows)}</details>')
         card_e = f"""
 <div class="card">
   <h2>本次考查点</h2>
-  <div class="pt-counts"><b class="g">做得好 {n_good}</b><b class="m">部分做到 {n_mid}</b><b class="b">需要补 {n_bad}</b><b class="u">暂不能判断 {n_unknown}</b></div>
+  <div class="pt-counts">{pt_counts}</div>
   <details class="point-details">
   <summary>查看全部考查点及对应题目</summary>
   {good_head}
@@ -2962,8 +3012,7 @@ def _render_personal_html(
 {card_portrait}
 {card_f}
 <footer>
-<p>本报告根据阅卷记录自动生成；标“{esc(AI_DISCLAIMER)}”的内容由人工智能辅助生成，仅供参考，如有疑问请联系任课老师。</p>
-<p>班级对比只用匿名统计。{time_label}：{esc(generated_at)}。</p>
+<p>标“{esc(AI_DISCLAIMER)}”的内容由 AI 辅助生成，有疑问请联系任课老师；班级对比只用匿名统计。{time_label}：{esc(generated_at)}。</p>
 </footer>
 </div>
 {_shot_sources_html(remaining_sources)}
