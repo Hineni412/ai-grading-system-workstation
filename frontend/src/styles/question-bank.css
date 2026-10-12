@@ -2451,6 +2451,8 @@
 }
 
 .qb-workspace { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; padding: var(--page-inset-top) var(--page-inset-x) var(--space-5); overflow: hidden; }
+.qb-workspace-wrap { flex: 1; min-height: 0; min-width: 0; display: flex; }
+.qb-workspace-wrap > .assembly-basket { position: static; max-height: none; margin: var(--page-inset-top) var(--page-inset-x) var(--space-5) 14px; }
 #qb-library-actions { display: flex; align-items: center; gap: 14px; }
 .question-bank .paper-library__header.is-relocated { display: none; }
 .qb-skill-layout { --skill-width: 280px; display: grid; grid-template-columns: var(--skill-width) minmax(0,1fr); gap: 14px; flex: 1; min-width: 0; min-height: 0; height: 100%; }
@@ -2687,23 +2689,11 @@ details[open] > summary > .qb-caret, details[open] > summary > .qb-switcher-care
 .qb-todo-group .app-button { --app-control-height: var(--control-height-small); --app-control-padding: 10px; --app-control-font: var(--font-size-caption); }
 .qb-todo-group > .qb-link { margin: 8px 16px; }
 .qb-todo-note { margin-top: 12px; padding: 10px 14px; border-radius: 10px; background: var(--color-info-subtle); color: var(--color-info); font-size: var(--font-size-caption); flex: none; }
-[data-slot="sheet-content"].qb-basket-drawer { width: min(360px,94vw); max-width: 94vw; border-radius: var(--radius-overlay) 0 0 var(--radius-overlay); gap: 0; }
-.qb-basket-drawer [data-slot="sheet-header"] { border-bottom: 1px solid var(--color-border-subtle); flex: none; }
-.qb-basket-summary { padding: 10px 16px 9px; margin: 0; font-size: var(--font-size-caption); color: var(--color-text-secondary); border-bottom: 1px solid var(--color-border-subtle); }
-.qb-basket-drawer > .feedback-banner { margin: 0 var(--space-4); }
-.qb-basket-drawer ol { flex: 1; min-height: 0; overflow-y: auto; list-style: none; padding: 8px 10px; margin: 0; }
-.qb-basket-drawer li { display: flex; align-items: center; gap: 8px; padding: 7px 6px; border-radius: 8px; font-size: var(--font-size-caption); }
-.qb-basket-drawer li > span { flex: none; width: 18px; color: var(--color-text-muted); text-align: right; }
-.qb-basket-drawer li > div { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
-.qb-basket-drawer li strong { font-weight: var(--font-weight-medium); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.qb-basket-drawer small { font-size: var(--font-size-caption); color: var(--color-text-muted); flex: none; }
-.qb-basket-drawer footer { display: flex; justify-content: flex-end; gap: var(--space-2); padding: var(--space-4) var(--space-5); border-top: 1px solid var(--color-border-subtle); flex: none; }
 [data-slot="sheet-content"].qb-similar-drawer { gap: 0; width: min(720px, 58vw); max-width: 100%; }
 @media(max-width:900px) { .question-bank > .page-header, .assembly > .page-header { height: auto; min-height: 56px; flex-wrap: wrap; padding: 8px 16px; gap: 8px; } .question-bank .page-header__lead, .assembly .page-header__lead { flex-wrap: wrap; } .question-bank .page-header__navigation, .assembly .page-header__navigation { margin-left: 0; min-height: 34px; } .question-bank .page-header__meta, .assembly .page-header__meta { white-space: normal; } .qb-workspace { padding: 12px; overflow-y: auto; } .qb-skill-layout, .qb-tag-layout, .qb-paper-layout { display: flex; flex-direction: column; height: auto; flex: none; } .qb-skill-pane, .qb-chapter-pane, .qb-paper-sidebar { max-height: 300px; flex: none; } .qb-question-pane, .qb-paper-detail { min-height: 500px; } .qb-properties dl { grid-template-columns: 1fr; } }
 
 .question-bank .qb-link { min-height: 0; padding: 0; font-weight: var(--font-weight-regular); }
 
-.qb-basket-drawer { --app-control-height: var(--control-height-small); --app-control-padding: 10px; }
 .qb-inline-card { --app-control-height: var(--control-height-small); --app-control-padding: 10px; }
 .qb-filter-line .app-input.app-input.app-input { font-size: var(--font-size-caption); padding-left: 8px; }
 .qb-progress-filter select.app-input.app-input.app-input { width: auto; border: 0; background-color: transparent; }

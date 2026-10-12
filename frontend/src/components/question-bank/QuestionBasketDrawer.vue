@@ -1,29 +1,118 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
-import { RouterLink } from 'vue-router'
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../ui/sheet'
-import FeedbackBanner from '../design-system/FeedbackBanner.vue'
-import AppButton from '../design-system/AppButton.vue'
+import { RouterLink, useRouter } from 'vue-router'
+
 import { useAssemblyStore } from '../../stores/assembly'
 import { useConfirm } from '../../composables/useConfirm'
-import { defaultPaperRules, paperRulesSummary } from '../../api/assembly'
-const props = defineProps<{ open: boolean }>()
-const emit = defineEmits<{ 'update:open': [open: boolean] }>()
+import AppButton from '../design-system/AppButton.vue'
+import FeedbackBanner from '../design-system/FeedbackBanner.vue'
+import AssemblyPaperSheet from '../question-assembly/AssemblyPaperSheet.vue'
+import '../../styles/question-assembly.css'
+
+const props = defineProps<{ open: boolean; context: 'class' | 'bank'; covered?: number; total?: number }>()
+const emit = defineEmits<{ 'update:open': [open: boolean]; replace: [id: number]; proceed: [] }>()
+
 const assembly = useAssemblyStore()
+const router = useRouter()
 const { confirm } = useConfirm()
-const ruleSummary = computed(() => paperRulesSummary(typeof assembly.draft.practice_rules === 'object' && assembly.draft.practice_rules ? assembly.draft.practice_rules : defaultPaperRules(), assembly.draft.assembly_context?.target_kind))
-const counts = computed(() => assembly.orderedQuestions.reduce((counts, question) => { if (/选择/.test(question.question_type || '')) counts.choice++; else if (question.question_type === '填空题') counts.fill++; else counts.essay++; return counts }, { choice: 0, fill: 0, essay: 0 }))
-watch(() => props.open, open => { if (open && assembly.loadState === 'idle') void assembly.load() })
-async function clear() {
+
+const rules = computed(() => (
+  typeof assembly.draft.practice_rules === 'object' && assembly.draft.practice_rules
+    ? assembly.draft.practice_rules
+    : null
+))
+const isTraining = computed(() => rules.value?.purpose === 'training')
+const minutes = computed(() => assembly.orderedQuestions.reduce(
+  (sum, question) => sum + (/选择/.test(question.question_type ?? '') ? 2 : question.question_type === '填空题' ? 3 : 8),
+  0,
+))
+const counts = computed(() => assembly.orderedQuestions.reduce(
+  (result, question) => {
+    if (/选择/.test(question.question_type || '')) result.choice += 1
+    else if (question.question_type === '填空题') result.fill += 1
+    else result.essay += 1
+    return result
+  },
+  { choice: 0, fill: 0, essay: 0 },
+))
+const difficultyText = computed(() => {
+  const values = assembly.orderedQuestions
+    .map((question) => Number(question.difficulty))
+    .filter((value) => Number.isFinite(value) && value > 0)
+  if (!values.length) return '—'
+  return `${Math.min(...values)}–${Math.max(...values)}`
+})
+const unmetRules = computed(() => {
+  if (!rules.value) return 0
+  const codes = new Set((assembly.draft.rule_violations ?? []).map((violation) => violation.code))
+  let unmet = codes.size
+  if (isTraining.value && (assembly.selectedQuestionCount < 8 || assembly.selectedQuestionCount > 12)) unmet += 1
+  return unmet
+})
+
+watch(() => props.open, (open) => {
+  if (open && assembly.loadState === 'idle') void assembly.load()
+})
+
+function openRules(): void {
+  void router.push({ path: '/question-assembly', query: { mode: 'edit', rules: '1' } })
+}
+
+async function clear(): Promise<void> {
   if (!await confirm({
     title: `清空试卷篮中的 ${assembly.selectedQuestionCount} 道题？`,
     message: '题库题目仍保留。',
     confirmLabel: '清空',
     danger: true,
   })) return
-  await assembly.save({ ...assembly.draft, basket_ids: [], order_ids: [], sections: assembly.draft.sections.map(section => ({ ...section, question_ids: [] })), practice_rules: false })
+  await assembly.save({
+    ...assembly.draft,
+    basket_ids: [],
+    order_ids: [],
+    sections: assembly.draft.sections.map((section) => ({ ...section, question_ids: [] })),
+    practice_rules: false,
+  })
 }
 </script>
+
 <template>
-  <Sheet :open="open" @update:open="emit('update:open', $event)"><SheetContent class="qb-basket-drawer gap-0" :aria-describedby="undefined"><SheetHeader><SheetTitle>试卷篮 · {{ assembly.selectedQuestionCount }}</SheetTitle></SheetHeader><p class="qb-basket-summary">{{ assembly.selectedQuestionCount }} 题 · 选择 {{ counts.choice }} · 填空 {{ counts.fill }} · 解答 {{ counts.essay }}</p><FeedbackBanner v-if="assembly.draft.practice_rules" tone="warning">出卷设置：{{ ruleSummary }}；导出前核对全部限制。</FeedbackBanner><p v-if="assembly.loadState === 'loading'" role="status">正在读取试卷篮…</p><FeedbackBanner v-if="assembly.message" role="status" tone="info" :description="assembly.message" /><FeedbackBanner v-if="assembly.missingQuestionIds.length" tone="warning" description="部分篮中题目已不可用，请到编辑页核对。" /><ol><li v-for="(question, index) in assembly.orderedQuestions" :key="question.id"><span>{{ index + 1 }}</span><div><strong>第 {{ question.question_number }} 题 · {{ question.paper_title }}</strong><small>{{ question.question_type }}</small></div><AppButton variant="ghost" size="small" @click="assembly.removeQuestion(question.id)">移出</AppButton></li></ol><p v-if="!assembly.selectedQuestionCount">试卷篮为空，可从题卡加入。</p><footer><AppButton :disabled="!assembly.selectedQuestionCount" variant="ghost" size="small" @click="clear">清空</AppButton><AppButton :to="{ path: '/question-assembly', query: { mode: 'edit' } }" variant="secondary" :as="RouterLink" @click="emit('update:open', false)">编辑与导出 →</AppButton></footer></SheetContent></Sheet>
+  <aside v-if="open" class="assembly-basket" aria-label="试卷篮">
+    <header class="assembly-basket__head">
+      <h2>试卷篮</h2>
+      <span class="assembly-basket__title" :title="assembly.draft.title">{{ assembly.draft.title || '未命名试卷' }}</span>
+      <button type="button" class="assembly-basket__x" aria-label="收起试卷篮" @click="emit('update:open', false)">×</button>
+    </header>
+    <div class="assembly-basket__scroll">
+      <div class="assembly-basket__sum">
+        <p class="assembly-basket__line"><b>{{ assembly.selectedQuestionCount }} 题</b> · 约 {{ minutes }} 分钟<template v-if="context === 'class' && total"> · 覆盖失分题 {{ covered ?? 0 }}/{{ total }}</template></p>
+        <p class="assembly-basket__comp">选 {{ counts.choice }} · 填 {{ counts.fill }} · 解 {{ counts.essay }}<template v-if="rules">/{{ rules.max_written_questions }}</template> · 难度 {{ difficultyText }}</p>
+        <button
+          v-if="rules"
+          type="button"
+          class="assembly-basket__rules"
+          :class="unmetRules ? 'is-warning' : 'is-ok'"
+          title="查看出卷设置"
+          @click="openRules"
+        >{{ unmetRules ? `有 ${unmetRules} 条未满足` : '规则全部满足 ✓' }}</button>
+      </div>
+      <p v-if="assembly.loadState === 'loading'" role="status" class="assembly-basket__note">正在读取试卷篮…</p>
+      <FeedbackBanner v-if="assembly.message" role="status" tone="info" :description="assembly.message" />
+      <FeedbackBanner v-if="assembly.missingQuestionIds.length" tone="warning" description="部分篮中题目已不可用，请到编辑页核对。" />
+      <AssemblyPaperSheet variant="drawer" :swap="context === 'class'" @replace="(id) => emit('replace', id)" />
+    </div>
+    <footer class="assembly-basket__foot">
+      <AppButton
+        v-if="context === 'class'"
+        variant="primary"
+        @click="emit('proceed')"
+      >{{ isTraining ? '去整理与生成 →' : '去整理与导出 →' }}</AppButton>
+      <AppButton
+        v-else
+        variant="primary"
+        :to="{ path: '/question-assembly', query: { mode: 'edit' } }"
+        :as="RouterLink"
+      >{{ isTraining ? '去整理与生成 →' : '去整理与导出 →' }}</AppButton>
+      <AppButton variant="ghost" class="is-danger" :disabled="!assembly.selectedQuestionCount" @click="clear">清空</AppButton>
+    </footer>
+  </aside>
 </template>
