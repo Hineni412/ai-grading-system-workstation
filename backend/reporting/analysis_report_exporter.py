@@ -545,7 +545,9 @@ def capture_lost_question_shots(repositories, data, student, *, regions, data_ro
         if used_bytes + encoded_size > _SHOT_BUDGET_BYTES:
             continue
         used_bytes += encoded_size
-        shots[spec["key"]] = {k: spec[k] for k in ("parent_question_id", "region_question_id", "caption")}
+        shots[spec["key"]] = {
+            k: spec[k] for k in ("parent_question_id", "region_question_id", "caption", "page", "region")
+        }
         shots[spec["key"]]["data_uri"] = data_uri
     return shots
 
@@ -745,6 +747,13 @@ border-radius:8px;padding:5px 14px;font-size:13px;cursor:pointer;font-family:inh
 .shot{border:1px solid var(--line);border-radius:8px;padding:8px;margin:10px 0 2px;background:#fcfcfd}
 .shot img{max-width:100%;display:block;margin:0 auto;border-radius:4px}
 .shot .cap{font-size:11.5px;color:var(--muted);margin-top:6px;text-align:center}
+.shot-evidence{margin-top:10px;border-top:1px dashed var(--line);padding-top:8px}
+.shot-evidence>summary,.question-stem>summary{cursor:pointer;font-size:13px;color:var(--accent)}
+.shot-reference{font-size:12.5px;margin-top:8px}
+.shot-reference a{color:var(--accent)}
+.objective-answers{margin:8px 0}
+.question-stem{margin-top:8px}
+.question-stem .stem{margin-top:6px}
 .kv{display:grid;grid-template-columns:88px 1fr;gap:4px 10px;font-size:13px}
 .kv dt{color:var(--muted)} .kv dd{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
 .kv dd b.ans{color:var(--good)}
@@ -844,7 +853,13 @@ footer{font-size:12px;color:var(--muted);padding:6px 4px;line-height:1.8}
  #qpanel{display:none!important}
  .qcell{outline:none!important}
  .shot img{max-height:95mm;width:auto;object-fit:contain}
- .dcard .shot{display:none} /* 同一作答图在失分题附录完整打印，避免跟进卡重复占页。 */
+ .shot-reference{display:none}
+ .shot-evidence>summary{color:var(--ink);font-weight:600}
+ .qcard.objective{padding:8px 12px;margin:8px 0}
+ .qcard.objective .head{margin-bottom:4px}
+ .qcard.objective .qpart+.qpart{margin-top:8px;padding-top:8px}
+ .qcard.objective .shot{padding:5px;margin-top:6px}
+ .question-stem>summary{display:none}
  .qpart,.shot,.dcard .help,.dcard .qd-fb,.qgrid,.pt-row,footer{break-inside:avoid}
  .dcard{break-inside:auto}
  .card h2,.dcard .dhead,.qcard .head,.qpart h3{break-after:avoid}
@@ -891,6 +906,18 @@ _PERSONAL_GRID_JS = """
         panel.scrollIntoView({block:'start',behavior:'smooth'});
       }
     });
+  });
+  document.addEventListener('click', function(e){
+    var link = e.target.closest('[data-evidence-target]');
+    if(!link) return;
+    var evidence = document.getElementById(link.dataset.evidenceTarget);
+    if(!evidence) return;
+    e.preventDefault();
+    for(var node = evidence; node; node = node.parentElement){
+      if(node.tagName === 'DETAILS') node.open = true;
+    }
+    evidence.scrollIntoView({block:'start',behavior:'smooth'});
+    evidence.querySelector('summary').focus({preventScroll:true});
   });
   panel.addEventListener('click', function(e){
     var t = e.target.closest('.qmore-btn');
@@ -1825,20 +1852,127 @@ document.addEventListener('click', function(event) {
 """
 
 
-def _shots_for_parent(shots: dict[str, dict[str, str]], parent: str) -> list[dict[str, str]]:
+def _objective_question(info: QuestionInfo | None) -> bool:
+    return _question_type_label(info.question_type if info is not None else "") in {"选择", "填空"}
+
+
+def _shot_region_bounds(shot: dict[str, Any]) -> tuple[Any, ...] | None:
+    region = shot.get("region") or {}
+    try:
+        x, y, w, h = (float(region[name]) for name in ("x", "y", "w", "h"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in (x, y, w, h)) or w <= 0 or h <= 0:
+        return None
+    width = next((region.get(key) for key in ("source_image_width", "template_image_width", "image_width")
+                  if region.get(key)), None)
+    height = next((region.get(key) for key in ("source_image_height", "template_image_height", "image_height")
+                   if region.get(key)), None)
+    if width and height:
+        x, w = x / float(width), w / float(width)
+        y, h = y / float(height), h / float(height)
+    frame = (shot.get("page") or _region_page(region), bool(width and height))
+    return frame, x, y, x + w, y + h
+
+
+def _same_evidence_row(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    a, b = _shot_region_bounds(left), _shot_region_bounds(right)
+    if a is None or b is None or a[0] != b[0]:
+        return False
+    overlap_x = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    overlap_y = max(0.0, min(a[4], b[4]) - max(a[2], b[2]))
+    return (
+        overlap_x >= .9 * max(a[3] - a[1], b[3] - b[1])
+        and overlap_y >= .9 * max(a[4] - a[2], b[4] - b[2])
+    )
+
+
+def _display_shot_groups(
+    shots: dict[str, dict[str, Any]], info_by_qid: dict[str, QuestionInfo],
+) -> dict[str, dict[str, Any]]:
+    """只组织报告显示；模型仍使用原始截图与题号。"""
+    groups: list[dict[str, Any]] = []
+    for key, shot in shots.items():
+        parent = shot.get("parent_question_id") or key
+        region_id = shot.get("region_question_id") or parent
+        info = info_by_qid.get(region_id) or info_by_qid.get(parent)
+        objective = _objective_question(info)
+        group = next((item for item in groups
+                      if item["objective"] == objective and (
+                          all(_same_evidence_row(shot, existing) for existing in item["items"])
+                          if objective else item["parents"] == [parent]
+                      )), None)
+        if group is None:
+            group = {"parents": [], "region_ids": [], "items": [], "objective": objective}
+            groups.append(group)
+        if parent not in group["parents"]:
+            group["parents"].append(parent)
+        if region_id not in group["region_ids"]:
+            group["region_ids"].append(region_id)
+        group["items"].append(shot)
+    result = {}
+    for index, group in enumerate(groups):
+        kept = []
+        for shot in group["items"]:
+            bounds = _shot_region_bounds(shot)
+            contained = False
+            if group["objective"] and bounds is not None:
+                for other in group["items"]:
+                    if other is shot:
+                        continue
+                    outer = _shot_region_bounds(other)
+                    if outer is None or outer[0] != bounds[0]:
+                        continue
+                    contains = outer[1] <= bounds[1] and outer[2] <= bounds[2] and outer[3] >= bounds[3] and outer[4] >= bounds[4]
+                    if contains and (outer != bounds or any(other is previous for previous in kept)):
+                        contained = True
+                        break
+            if not contained:
+                kept.append(shot)
+        group["items"] = kept
+        group["region_ids"].sort(key=lambda q: question_id_coordinates(q) or (10**9, 0))
+        group["label"] = "、".join(_question_display_label(q) for q in group["region_ids"])
+        result[f"answer-evidence-{index + 1}"] = group
+    return result
+
+
+def _shots_for_parent(shots: dict[str, dict[str, Any]], parent: str) -> list[tuple[str, dict[str, Any]]]:
     return [
-        shot
+        (key, shot)
         for key, shot in shots.items()
-        if (shot.get("parent_question_id") or key) == parent
+        if parent in shot["parents"]
     ]
 
 
-def _shots_html(shots: dict[str, dict[str, str]], parent: str, title: str) -> str:
-    return "".join(
-        f'<div class="shot"><img src="{esc(shot.get("src") or shot["data_uri"])}" alt="{esc(title)}作答截图">'
-        f'<div class="cap">{esc(shot.get("caption") or "学生作答（原卷截图）")}</div></div>'
-        for shot in _shots_for_parent(shots, parent)
-    )
+def _shots_html(
+    shots: dict[str, dict[str, Any]], parent: str, title: str, *,
+    inline: bool = False, shown_groups: set[str] | None = None,
+) -> str:
+    parts = []
+    for key, group in _shots_for_parent(shots, parent):
+        label = group["label"] or title
+        if not inline or (shown_groups is not None and key in shown_groups):
+            parts.append(f'<div class="shot-reference"><a href="#{esc(key)}" data-evidence-target="{esc(key)}">'
+                         f'查看作答截图 · {esc(label)}</a></div>')
+            continue
+        if shown_groups is not None:
+            shown_groups.add(key)
+        images = "".join(
+            f'<div class="shot"><img src="{esc(shot.get("src") or shot["data_uri"])}" alt="{esc(label)}作答截图">'
+            f'<div class="cap">{esc(shot.get("caption") or "学生作答（原卷截图）")}</div></div>'
+            for shot in group["items"]
+        )
+        note = '<div class="note">区域只部分重叠，保留各张截图，避免遗漏边缘作答。</div>' if group["objective"] and len(group["items"]) > 1 else ""
+        parts.append(f'<details class="shot-evidence" id="{esc(key)}"><summary>作答截图 · {esc(label)}</summary>'
+                     f'{note}{images}</details>')
+    return "".join(parts)
+
+
+def _objective_answers_html(record: StudentQuestionRecord, info: QuestionInfo | None) -> str:
+    student_answer = record.student_answer or ("未作答" if _personal_cell_status(record) == "blank" else "未记录")
+    answer = info.canonical_answer if info is not None else ""
+    return (f'<dl class="kv objective-answers"><dt>学生作答</dt><dd>{_report_inline_math(student_answer)}</dd>'
+            f'<dt>标准答案</dt><dd><b class="ans">{_report_inline_math(answer or "未记录")}</b></dd></dl>')
 
 
 # 教师确认流程写入 teacher_comment 的占位文案：不算真实批语，不向家长展示。
@@ -1922,7 +2056,7 @@ def _question_detail_template(
     info: QuestionInfo | None,
     points_labels: list[str],
     analysis: dict[str, Any] | None,
-    shots: dict[str, dict[str, str]],
+    shots: dict[str, dict[str, Any]],
     errors: list[dict[str, Any]] | None = None,
     review_links: bool = False,
 ) -> str:
@@ -1954,6 +2088,10 @@ def _question_detail_template(
         tags = "".join(f'<span class="pt-tag">{esc(t)}</span>' for t in points_labels)
         body.append(f'<div class="qd-points">考这些：{tags}</div>')
     if record.lost:
+        objective = _objective_question(info)
+        if objective:
+            body.append(_objective_answers_html(record, info))
+            body.append(_shots_html(shots, parent, title))
         feedback = _narrative_text((analysis or {}).get("feedback"))
         if analysis and feedback:
             body.append(f'<div class="qd-fb">{_report_paragraphs(feedback)}</div>')
@@ -1963,15 +2101,16 @@ def _question_detail_template(
         ) or title
         parent_title = _question_display_label(parent)
         more.append(_stem_block_html(info, fallback, parent_title))
-        more.append(_shots_html(shots, parent, parent_title))
+        if not objective:
+            more.append(_shots_html(shots, parent, parent_title))
         kv = []
-        if record.student_answer:
+        if record.student_answer and not objective:
             kv.append(f"<dt>学生作答</dt><dd>{_report_inline_math(record.student_answer)}</dd>")
-        elif _personal_cell_status(record) == "blank":
+        elif not objective and _personal_cell_status(record) == "blank":
             kv.append("<dt>学生作答</dt><dd>未作答</dd>")
         if kv:
             more.append(f'<dl class="kv">{"".join(kv)}</dl>')
-        more.append(_analysis_or_fallback_html(record, info, analysis))
+        more.append(_analysis_or_fallback_html(record, info, analysis, show_answer=not objective))
         more.append("</div>")
         body.append('<button type="button" class="qmore-btn">看原卷和解法</button>')
         body.append("".join(more))
@@ -2006,7 +2145,7 @@ def _lost_appendix_html(
     student: StudentReportData,
     info_by_qid: dict[str, QuestionInfo],
     analysis_by_qid: dict[str, dict[str, Any]],
-    shots: dict[str, dict[str, str]],
+    shots: dict[str, dict[str, Any]],
     error_map: dict[str, list[dict[str, Any]]] | None = None,
     review_links: bool = False,
     step_diagnoses: dict[str, dict[str, Any]] | None = None,
@@ -2022,6 +2161,7 @@ def _lost_appendix_html(
         groups.items(), key=lambda kv: question_id_coordinates(kv[0]) or (10**9, 0)
     )
     cards = []
+    shown_groups: set[str] = set()
     for parent, recs in ordered:
         info = info_by_qid.get(parent) or next(
             (info_by_qid.get(r.question_id) for r in recs), None
@@ -2033,15 +2173,16 @@ def _lost_appendix_html(
         gmax = sum(r.max_score for r in parent_records)
         title = _question_display_label(parent)
         type_label = _question_type_label(info.question_type if info is not None else "")
+        objective = _objective_question(info)
         fallback = ((info.question_text or info.stem_summary) if info is not None else "") or title
         parts = [
-            f'<div class="qcard"><div class="head"><b>{esc(title)}'
+            f'<div class="qcard{" objective" if objective else ""}"><div class="head"><b>{esc(title)}'
             f'{(" · " + esc(type_label)) if type_label else ""}</b>'
             f'<span class="score">得 {fmt_num(gscore)} 分 / 满分 {fmt_num(gmax)} 分</span></div>',
             _personal_review_link(parent) if review_links else "",
-            _stem_block_html(info, fallback, title),
-            _shots_html(shots, parent, title),
         ]
+        if not objective:
+            parts.append(_stem_block_html(info, fallback, title))
         for record in sorted(recs, key=lambda r: question_id_coordinates(r.question_id) or (10**9, 0)):
             part_info = info_by_qid.get(record.question_id)
             analysis = analysis_by_qid.get(record.question_id)
@@ -2056,9 +2197,13 @@ def _lost_appendix_html(
                 kv.append(f"<dt>学生作答</dt><dd>{_report_inline_math(record.student_answer)}</dd>")
             elif _personal_cell_status(record) == "blank":
                 kv.append("<dt>学生作答</dt><dd>未作答</dd>")
+            elif objective:
+                kv.append("<dt>学生作答</dt><dd>未记录</dd>")
             answer = part_info.canonical_answer if part_info is not None else ""
-            if answer and not (analysis and analysis.get("solution_steps")):
+            if answer and (objective or not (analysis and analysis.get("solution_steps"))):
                 kv.append(f'<dt>标准答案</dt><dd><b class="ans">{_report_inline_math(answer)}</b></dd>')
+            elif objective and not answer:
+                kv.append("<dt>标准答案</dt><dd>未记录</dd>")
             teacher_comment = _real_teacher_comment(record)
             if teacher_comment:
                 kv.append(f"<dt>老师批语</dt><dd>{_report_inline_math(teacher_comment)}</dd>")
@@ -2085,6 +2230,10 @@ def _lost_appendix_html(
                 + analysis_html
                 + "</div>"
             )
+        if objective:
+            parts.append(f'<details class="question-stem"><summary>查看题面 · {esc(title)}</summary>'
+                         f'{_stem_block_html(info, fallback, title)}</details>')
+        parts.append(_shots_html(shots, parent, title, inline=True, shown_groups=shown_groups))
         parts.append("</div>")
         cards.append("".join(parts))
     return (
@@ -2259,7 +2408,7 @@ def _render_personal_html(
     data: SessionAnalysisData,
     student: StudentReportData,
     narrative: dict[str, Any] | None,
-    shots: dict[str, dict[str, str]],
+    shots: dict[str, dict[str, Any]],
     history: list[dict[str, Any]] | None = None,
     error_map: dict[str, list[dict[str, Any]]] | None = None,
     error_history: dict[str, dict[str, list[Any]]] | None = None,
@@ -2273,6 +2422,7 @@ def _render_personal_html(
         ai_placeholder = online and narrative is None
     pending_ai = bool(ai_placeholder) and narrative is None
     info_by_qid = {info.question_id: info for info in data.questions}
+    shots = _display_shot_groups(shots, info_by_qid)
     analysis_by_qid = _narrative_analysis_index(narrative, info_by_qid)
     history = [e for e in (history or []) if isinstance(e, dict)]
     error_map = error_map or {}
@@ -2503,30 +2653,31 @@ def _render_personal_html(
                 why.append(_recurrence_evidence_html(recurrence_rows, recurrence_label))
             shown_parents = set()
             for q in qids:
+                rec = next((r for r in student.records if r.question_id == q), None)
+                info = info_by_qid.get(q)
+                objective = _objective_question(info)
+                if rec is not None and objective:
+                    why.append(f'<div class="qd-fb"><b>{esc(_question_display_label(q))}</b></div>')
+                    why.append(_objective_answers_html(rec, info))
                 item = analysis_by_qid.get(q)
                 fb = _narrative_text((item or {}).get("feedback"))
                 if fb:
                     why.append(
-                        f'<div class="qd-fb"><b>{esc(_question_display_label(q))}</b>'
-                        f'{_report_paragraphs(fb)}</div>'
+                        '<div class="qd-fb">'
+                        + ("" if objective else f'<b>{esc(_question_display_label(q))}</b>')
+                        + f'{_report_paragraphs(fb)}</div>'
                     )
                 elif item is None:
-                    rec = next((r for r in student.records if r.question_id == q), None)
                     if rec is not None:
                         fallback = _grading_fallback_html(
-                            rec, info_by_qid.get(q), heading=_question_display_label(q)
+                            rec, info, heading="" if objective else _question_display_label(q), show_answer=not objective
                         )
                         if fallback:
                             why.append(fallback)
                 parent = parent_question_id(q)
                 if parent not in shown_parents:
                     shown_parents.add(parent)
-                    first = next(iter(_shots_for_parent(shots, parent)), None)
-                    if first:
-                        why.append(
-                            f'<div class="shot"><img src="{esc(first.get("src") or first["data_uri"])}" alt="作答截图">'
-                            f'<div class="cap">{esc(first.get("caption") or "学生作答（原卷截图）")}</div></div>'
-                        )
+                    why.append(_shots_html(shots, parent, _question_display_label(parent)))
             timeframe = _narrative_text((suggestion or {}).get("timeframe"))
             when = f'<span class="when">{esc(timeframe)}</span>' if timeframe in {"本周", "长期"} else ""
             dcards.append(
@@ -2570,6 +2721,11 @@ def _render_personal_html(
                     error_label(r.question_id) for r in recs if error_label(r.question_id)
                 ]
                 qids = [r.question_id for r in recs]
+                objective_evidence = "".join(
+                    f'<div class="qd-fb"><b>{esc(_question_display_label(r.question_id))}</b></div>'
+                    + _objective_answers_html(r, info_by_qid.get(r.question_id))
+                    for r in recs if _objective_question(info_by_qid.get(r.question_id))
+                )
                 recurrence_label, recurrence_rows = error_recurrence(qids)
                 badge = (
                     f'<span class="recur">{esc(recurrence_label)}</span>'
@@ -2583,6 +2739,7 @@ def _render_personal_html(
                     + _follow_up_action_html(None)
                     + f'<details><summary>看具体题目 · {len(recs)}个小问</summary>'
                     + f'<div class="meta2">关联题目失分 {fmt_num(lost_sum)} 分{question_tags(qids)}</div>{badge}'
+                    + objective_evidence
                     + (
                         f'<div class="errline">错误归类（AI 辅助）：{esc("；".join(dict.fromkeys(error_labels)))}</div>'
                         if error_labels
@@ -2597,6 +2754,7 @@ def _render_personal_html(
                         _recurrence_evidence_html(recurrence_rows, recurrence_label)
                         if recurrence_rows else ""
                     )
+                    + _shots_html(shots, parent, _question_display_label(parent))
                     + "</details></div>"
                 )
             inner = "".join(cards)

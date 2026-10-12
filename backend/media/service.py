@@ -12,6 +12,7 @@ from uuid import uuid4
 from PIL import Image, ImageDraw, UnidentifiedImageError
 
 from backend.answer_regions.answer_region_geometry import attach_region_source_image_sizes, scaled_region_bbox
+from backend.media.annotation_renderer import _load_font
 from backend.file_access import (
     ControlledFileError,
     ResolvedFile,
@@ -99,27 +100,32 @@ class ReviewMediaService:
         if context is None:
             raise ReviewMediaNotFound("Review media resource was not found.")
 
-        region = self._find_region(
+        regions = self._find_regions(
             int(session_id),
             str(context.get("question_id") or ""),
         )
-        if region is None:
+        if not regions:
             raise ReviewMediaNotFound("Review media resource was not found.")
 
-        page = "back" if str(region.get("page") or "").lower() == "back" else "front"
-        source = resolve_controlled_file(
-            context[f"{page}_image"],
-            root=self.exams_dir,
-            data_root=self.data_root,
-            allowed_suffixes=IMAGE_SUFFIXES,
-        )
-        try:
-            source_bytes = source.path.read_bytes()
-        except OSError as exc:
-            raise ReviewMediaUnreadable(
-                "Review media resource could not be decoded."
-            ) from exc
-        return self._cached_crop(source_bytes, region, page)
+        crops = []
+        sources: dict[str, bytes] = {}
+        for region in regions:
+            page = "back" if str(region.get("page") or "").lower() == "back" else "front"
+            if page not in sources:
+                source = resolve_controlled_file(
+                    context[f"{page}_image"],
+                    root=self.exams_dir,
+                    data_root=self.data_root,
+                    allowed_suffixes=IMAGE_SUFFIXES,
+                )
+                try:
+                    sources[page] = source.path.read_bytes()
+                except OSError as exc:
+                    raise ReviewMediaUnreadable(
+                        "Review media resource could not be decoded."
+                    ) from exc
+            crops.append((page, self._cached_crop(sources[page], region, page)))
+        return _combine_region_crops(crops)
 
     def render_preflight_crop(
         self,
@@ -130,31 +136,32 @@ class ReviewMediaService:
         front_source: Path,
         back_source: Path | None,
     ) -> bytes:
-        """Render one teacher-grading crop before an AI result exists."""
+        """Render all areas of one teacher-grading question before AI results."""
         require_original_pages(self.data_root, session_id)
 
-        region = self._find_region(
+        regions = self._find_regions(
             int(session_id),
             str(question_id or "").strip(),
             source_region_id=source_region_id,
         )
-        if region is None:
+        if not regions:
             raise ReviewMediaNotFound("Review media resource was not found.")
-        page = (
-            "back"
-            if str(region.get("page") or "").lower() == "back"
-            else "front"
-        )
-        source = back_source if page == "back" else front_source
-        if source is None:
-            raise ReviewMediaNotFound("Review media resource was not found.")
-        try:
-            source_bytes = Path(source).read_bytes()
-        except OSError as exc:
-            raise ReviewMediaUnreadable(
-                "Review media resource could not be decoded."
-            ) from exc
-        return self._cached_crop(source_bytes, region, page)
+        crops = []
+        sources: dict[str, bytes] = {}
+        for region in regions:
+            page = "back" if str(region.get("page") or "").lower() == "back" else "front"
+            if page not in sources:
+                source = back_source if page == "back" else front_source
+                if source is None:
+                    raise ReviewMediaNotFound("Review media resource was not found.")
+                try:
+                    sources[page] = Path(source).read_bytes()
+                except OSError as exc:
+                    raise ReviewMediaUnreadable(
+                        "Review media resource could not be decoded."
+                    ) from exc
+            crops.append((page, self._cached_crop(sources[page], region, page)))
+        return _combine_region_crops(crops)
 
     def _cached_crop(
         self, source_bytes: bytes, region: dict[str, Any], page: str,
@@ -237,50 +244,67 @@ class ReviewMediaService:
             keep=cache_path,
         )
 
-    def _find_region(
+    def _find_regions(
         self,
         session_id: int,
         question_id: str,
         *,
         source_region_id: int | None = None,
-    ) -> dict[str, Any] | None:
-        regions = self._regions_with_template_sizes(session_id)
+    ) -> list[dict[str, Any]]:
+        regions = sorted(
+            self._regions_with_template_sizes(session_id),
+            key=lambda region: (
+                str(region.get("page") or "front").lower() == "back",
+                int(region.get("region_order") or 0),
+                float(region.get("y") or 0),
+                float(region.get("x") or 0),
+            ),
+        )
 
         if source_region_id is not None:
             try:
                 requested_region_id = int(source_region_id)
             except (TypeError, ValueError):
-                return None
+                return []
             if requested_region_id <= 0:
-                return None
-            for region in regions:
-                if int(region.get("id") or 0) != requested_region_id:
-                    continue
-                if _region_matches_question(region, question_id):
-                    return region
-                if _is_unique_child_for_parent(
-                    regions,
-                    region,
-                    question_id,
-                ):
-                    return region
-            return None
+                return []
+            selected = next(
+                (region for region in regions if int(region.get("id") or 0) == requested_region_id),
+                None,
+            )
+            if selected is None:
+                return []
+            if not (
+                _region_matches_question(selected, question_id)
+                or _is_unique_child_for_parent(regions, selected, question_id)
+            ):
+                return []
+            selected_identity = question_id_coordinates(_region_question_id(selected))
+            if selected_identity is not None:
+                return [
+                    region for region in regions
+                    if question_id_coordinates(_region_question_id(region)) == selected_identity
+                ]
+            return [
+                region for region in regions
+                if _region_question_id(region) == _region_question_id(selected)
+            ]
 
         requested_identity = question_id_coordinates(question_id)
         if requested_identity is not None:
-            for region in regions:
-                if question_id_coordinates(
-                    _region_question_id(region)
-                ) == requested_identity:
-                    return region
+            exact = [
+                region for region in regions
+                if question_id_coordinates(_region_question_id(region)) == requested_identity
+            ]
+            if exact:
+                return exact
 
             requested_parent, requested_part = requested_identity
             if requested_part is not None:
-                for region in regions:
-                    if question_id_coordinates(
-                        _region_question_id(region)
-                    ) == (requested_parent, None):
-                        return region
+                return [
+                    region for region in regions
+                    if question_id_coordinates(_region_question_id(region)) == (requested_parent, None)
+                ]
             else:
                 child_regions = [
                     region
@@ -294,9 +318,13 @@ class ReviewMediaService:
                         and identity[1] is not None
                     )
                 ]
-                if len(child_regions) == 1:
-                    return child_regions[0]
-            return None
+                child_identities = {
+                    question_id_coordinates(_region_question_id(region))
+                    for region in child_regions
+                }
+                if len(child_identities) == 1:
+                    return child_regions
+            return []
 
         normalized_question_id = str(question_id or "").strip()
         exact_values = {
@@ -307,10 +335,7 @@ class ReviewMediaService:
                 else f"Q{normalized_question_id}"
             ),
         }
-        for region in regions:
-            if _region_question_id(region) in exact_values:
-                return region
-        return None
+        return [region for region in regions if _region_question_id(region) in exact_values]
 
     def _regions_with_template_sizes(self, session_id: int) -> list[dict[str, Any]]:
         regions = [dict(region) for region in self.db.templates.list_answer_regions(session_id)]
@@ -401,9 +426,11 @@ def _is_unique_child_for_parent(
         )
     ]
     return (
-        len(child_regions) == 1
-        and int(child_regions[0].get("id") or 0)
-        == int(selected_region.get("id") or 0)
+        {question_id_coordinates(_region_question_id(region)) for region in child_regions} == {selected}
+        and any(
+            int(region.get("id") or 0) == int(selected_region.get("id") or 0)
+            for region in child_regions
+        )
     )
 
 
@@ -495,6 +522,40 @@ def _render_crop_jpeg(
             crop.close()
     finally:
         image.close()
+
+
+def _combine_region_crops(crops: list[tuple[str, bytes]]) -> bytes:
+    if len(crops) == 1:
+        return crops[0][1]
+    images: list[Image.Image] = []
+    try:
+        for _page, payload in crops:
+            with Image.open(BytesIO(payload)) as source:
+                images.append(source.convert("RGB"))
+        width = max(image.width for image in images)
+        font_size = max(18, min(32, width // 45))
+        label_height = font_size + 18
+        height = sum(image.height + label_height for image in images)
+        with Image.new("RGB", (width, height), "white") as combined:
+            draw = ImageDraw.Draw(combined)
+            font = _load_font(font_size)
+            top = 0
+            for index, ((page, _payload), image) in enumerate(zip(crops, images), start=1):
+                draw.rectangle((0, top, width, top + label_height), fill=(241, 245, 249))
+                draw.text(
+                    (10, top + 7),
+                    f"作答区域 {index} · {'反面' if page == 'back' else '正面'}",
+                    font=font,
+                    fill=(51, 65, 85),
+                )
+                combined.paste(image, ((width - image.width) // 2, top + label_height))
+                top += image.height + label_height
+            output = BytesIO()
+            combined.save(output, format="JPEG", quality=90)
+            return output.getvalue()
+    finally:
+        for image in images:
+            image.close()
 
 
 def _trim_cache(cache_dir: Path, *, max_bytes: int, keep: Path | None) -> None:

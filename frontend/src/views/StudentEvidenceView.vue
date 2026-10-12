@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useResizeObserver } from '@vueuse/core'
 
 import { fetchGraphEvidence, type GraphEvidenceItem, type GraphQueryInput } from '../api/graph'
 import { formatScore } from '../lib/format'
@@ -29,6 +30,7 @@ import QuestionContentRenderer from '../components/question-bank/QuestionContent
 import { loadEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
 import { useSessionStore } from '../stores/session'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
+import { useEvidenceViewer, type ViewerPoint } from '../composables/use-evidence-viewer'
 
 interface KnowledgeRow {
   key: string
@@ -103,7 +105,14 @@ function openWrongBook() {
 }
 const loadState = ref<'loading' | 'ready' | 'error'>('loading')
 const loadingMore = ref(false)
-const previewUrl = ref('')
+const preview = ref<{ url: string; label: string } | null>(null)
+const previewViewer = useEvidenceViewer()
+const previewCanvas = ref<HTMLElement | null>(null)
+const previewDragging = ref(false)
+const previewKey = computed(() => `${preview.value?.url ?? ''}:${previewViewer.imageKey.value}`)
+let previewLoad = { key: '', generation: 0 }
+let previewPointerId: number | null = null
+let previewPointer: ViewerPoint = { x: 0, y: 0 }
 const knowledgeSessions = ref<KnowledgeSessionGroup[]>([])
 const questionSessions = ref<QuestionSessionGroup[]>([])
 const knowledgeStudentName = ref('')
@@ -283,12 +292,69 @@ function toggleQuestion(key: string): void {
     : [...expandedQuestions.value, key]
 }
 
-function openPreview(url: string): void {
-  previewUrl.value = url
+function openPreview(url: string, label: string): void {
+  preview.value = { url, label }
+  previewViewer.resetForRecord(url)
 }
 
 function closePreview(): void {
-  previewUrl.value = ''
+  stopPreviewDragging()
+  preview.value = null
+}
+
+watch(previewKey, (key) => {
+  previewLoad = { key, generation: previewViewer.beginImageLoad() }
+}, { flush: 'sync' })
+useResizeObserver(previewCanvas, ([entry]) => {
+  if (entry) previewViewer.setCanvasSize({ width: entry.contentRect.width, height: entry.contentRect.height })
+})
+
+function onPreviewLoad(event: Event): void {
+  if (!(event.currentTarget instanceof HTMLImageElement)) return
+  const image = event.currentTarget
+  if (image.dataset.loadKey !== previewLoad.key) return
+  previewViewer.acceptImage(previewLoad.generation, { width: image.naturalWidth, height: image.naturalHeight })
+}
+
+function onPreviewError(event: Event): void {
+  if (!(event.currentTarget instanceof HTMLImageElement)) return
+  if (event.currentTarget.dataset.loadKey === previewLoad.key) previewViewer.failImage(previewLoad.generation)
+}
+
+function onPreviewPointerDown(event: PointerEvent): void {
+  if (event.button !== 0 || !(event.currentTarget instanceof HTMLElement)) return
+  if (event.target instanceof Element && event.target.closest('button')) return
+  previewPointerId = event.pointerId
+  previewPointer = { x: event.clientX, y: event.clientY }
+  previewDragging.value = true
+  event.currentTarget.setPointerCapture?.(event.pointerId)
+}
+
+function onPreviewPointerMove(event: PointerEvent): void {
+  if (!previewDragging.value || previewPointerId !== event.pointerId) return
+  previewViewer.panBy({ x: event.clientX - previewPointer.x, y: event.clientY - previewPointer.y })
+  previewPointer = { x: event.clientX, y: event.clientY }
+}
+
+function stopPreviewDragging(event?: PointerEvent): void {
+  if (event && event.pointerId !== previewPointerId) return
+  const canvas = previewCanvas.value
+  const pointerId = previewPointerId
+  previewPointerId = null
+  previewDragging.value = false
+  if (canvas && pointerId !== null && canvas.hasPointerCapture?.(pointerId)) canvas.releasePointerCapture?.(pointerId)
+}
+
+function onPreviewKeydown(event: KeyboardEvent): void {
+  if (event.target !== event.currentTarget) return
+  const deltas: Record<string, ViewerPoint> = {
+    ArrowLeft: { x: -32, y: 0 }, ArrowRight: { x: 32, y: 0 },
+    ArrowUp: { x: 0, y: -32 }, ArrowDown: { x: 0, y: 32 },
+  }
+  const delta = deltas[event.key]
+  if (!delta) return
+  event.preventDefault()
+  previewViewer.panBy(delta)
 }
 
 // 「原题」右侧面板：复用题库详情接口与富文本渲染，只读展示，不跳路由。
@@ -398,6 +464,7 @@ onMounted(() => {
   reloadSemester()
 })
 onBeforeUnmount(() => {
+  stopPreviewDragging()
   controller?.abort()
   questionPanelController?.abort()
 })
@@ -472,7 +539,7 @@ onBeforeUnmount(() => {
                 type="button"
                 class="student-evidence__thumb"
                 :aria-label="`放大查看 ${row.studentName} ${row.questionId} 的作答图像`"
-                @click="openPreview(row.evidenceUrl)"
+                @click="openPreview(row.evidenceUrl, `${row.studentName} · ${row.questionId}`)"
               >
                 <img :src="row.evidenceUrl" :alt="`${row.studentName} ${row.questionId} 作答图像`" loading="lazy">
               </button>
@@ -511,7 +578,7 @@ onBeforeUnmount(() => {
                   type="button"
                   class="student-evidence__thumb"
                   :aria-label="`放大查看 ${row.questionId} 的作答图像`"
-                  @click="openPreview(row.evidenceUrl)"
+                  @click="openPreview(row.evidenceUrl, `${row.studentName} · ${row.questionId}`)"
                 >
                   <img :src="row.evidenceUrl" :alt="`${row.questionId} 作答图像`" loading="lazy">
                 </button>
@@ -583,7 +650,7 @@ onBeforeUnmount(() => {
                     type="button"
                     class="student-evidence__thumb"
                     :aria-label="`放大查看 ${item.question_id} 的作答图像`"
-                    @click="openPreview(item.evidence_url)"
+                    @click="openPreview(item.evidence_url, `${student?.name ?? ''} · ${item.question_id}`)"
                   >
                     <img :src="item.evidence_url" :alt="`${item.question_id} 作答图像`" loading="lazy">
                   </button>
@@ -616,8 +683,31 @@ onBeforeUnmount(() => {
       </template>
     </template>
 
-    <AppDialog :open="Boolean(previewUrl)" title="作答证据大图" class="student-evidence__preview" @update:open="(value: boolean) => { if (!value) closePreview() }">
-      <img v-if="previewUrl" :src="previewUrl" alt="作答证据大图" @click="closePreview">
+    <AppDialog :open="preview !== null" title="作答证据大图" class="student-evidence__preview" @update:open="(value: boolean) => { if (!value) closePreview() }">
+      <template #header-extra><strong>{{ preview?.label }}</strong></template>
+      <div v-if="preview" class="student-evidence__preview-viewer">
+        <div class="student-evidence__preview-tools" role="toolbar" aria-label="作答证据图片查看工具">
+          <AppButton variant="ghost" size="small" @click="previewViewer.fitWidth">适应宽度</AppButton>
+          <AppButton variant="ghost" size="small" @click="previewViewer.setActualSize">原比例</AppButton>
+          <AppButton variant="ghost" size="small" @click="previewViewer.zoomBy(-0.25)">缩小</AppButton>
+          <output aria-label="当前缩放比例">{{ Math.round(previewViewer.scale.value * 100) }}%</output>
+          <AppButton variant="ghost" size="small" @click="previewViewer.zoomBy(0.25)">放大</AppButton>
+          <span>拖动或用方向键查看</span>
+        </div>
+        <div ref="previewCanvas" class="student-evidence__preview-canvas" :class="{ 'is-dragging': previewDragging }"
+          tabindex="0" :aria-label="`${preview.label} 作答图片画布`" @keydown="onPreviewKeydown"
+          @pointerdown="onPreviewPointerDown" @pointermove="onPreviewPointerMove"
+          @pointerup="stopPreviewDragging" @pointercancel="stopPreviewDragging" @lostpointercapture="stopPreviewDragging">
+          <img :key="previewKey" :src="preview.url" :data-load-key="previewKey" :alt="`${preview.label} 作答图像`"
+            :style="{ transform: previewViewer.transform.value }" :class="{ 'is-unavailable': previewViewer.loadState.value === 'error' }"
+            draggable="false" @load="onPreviewLoad" @error="onPreviewError">
+          <p v-if="previewViewer.loadState.value === 'loading'" class="student-evidence__preview-state">正在读取图片…</p>
+          <div v-else-if="previewViewer.loadState.value === 'error'" class="student-evidence__preview-state" role="alert">
+            <p>作答图片暂时无法读取。</p>
+            <AppButton variant="secondary" size="small" @click="previewViewer.retry">重新加载</AppButton>
+          </div>
+        </div>
+      </div>
     </AppDialog>
 
     <Sheet :open="questionPanelState !== 'idle'" @update:open="(value: boolean) => { if (!value) closeQuestionPanel() }">
@@ -743,10 +833,18 @@ onBeforeUnmount(() => {
 .student-evidence__question-student small { color: var(--color-text-muted); }
 .student-evidence__question-reason { color: var(--color-text-secondary); }
 .student-evidence__thumb { padding: 0; border: 1px solid var(--color-border-default); border-radius: calc(var(--radius) - 2px); background: var(--color-bg-subtle); cursor: zoom-in; }
-.student-evidence__thumb img { display: block; width: 96px; height: 64px; object-fit: cover; }
+.student-evidence__thumb img { display: block; width: clamp(112px, 16vw, 224px); height: 96px; object-fit: contain; }
 .student-evidence__more { margin-bottom: var(--space-4); }
-.student-evidence__preview { width: auto; max-width: min(90vw, 960px); }
-.student-evidence__preview img { display: block; max-width: 100%; max-height: 80vh; }
+.student-evidence__preview { width: min(94vw, 1200px); height: min(88dvh, 900px); }
+.student-evidence__preview :deep(.app-dialog__body) { display: flex; min-height: 0; overflow: hidden; padding: 0; }
+.student-evidence__preview-viewer { display: grid; flex: 1; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr); }
+.student-evidence__preview-tools { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-2) var(--space-3); background: var(--color-bg-surface); }
+.student-evidence__preview-tools output, .student-evidence__preview-tools span { font-size: var(--font-size-caption); color: var(--color-text-secondary); }
+.student-evidence__preview-canvas { position: relative; min-height: 240px; overflow: hidden; background: var(--color-text-primary); cursor: grab; touch-action: none; user-select: none; }
+.student-evidence__preview-canvas.is-dragging { cursor: grabbing; }
+.student-evidence__preview-canvas > img { position: absolute; top: 50%; left: 50%; max-width: none; max-height: none; transform-origin: center; pointer-events: none; }
+.student-evidence__preview-canvas > img.is-unavailable { visibility: hidden; }
+.student-evidence__preview-state { position: absolute; inset: 0; display: grid; align-content: center; justify-items: center; gap: var(--space-2); margin: 0; color: var(--color-text-secondary); background: var(--color-bg-subtle); }
 .student-evidence__question-bar { display: flex; align-items: center; gap: var(--space-2); padding-right: var(--space-3); }
 .student-evidence__question-bar .student-evidence__question-heading { flex: 1; min-width: 0; }
 .student-evidence__original { flex: none; padding: 3px 10px; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-accent-active); font-size: var(--font-size-caption); cursor: pointer; }

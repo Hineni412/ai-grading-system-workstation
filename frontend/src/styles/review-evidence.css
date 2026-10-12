@@ -389,6 +389,13 @@
   text-align: center;
 }
 
+.review-evidence-current {
+  flex: none;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+
 .review-evidence-canvas {
   position: relative;
   min-width: 0;

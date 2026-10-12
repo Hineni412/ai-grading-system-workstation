@@ -24,18 +24,53 @@ const emit = defineEmits<{
   'select-item': [item: ResultsCenterItem]
 }>()
 
-const selectedMarkKey = computed(() => {
-  if (props.selectedItemKey === null) return null
-  for (const mark of props.marks) {
-    if (mark.items.some((item) => item.review_item_id === props.selectedItemKey)) {
-      return mark.key
+const selectedMarkKeys = computed(() => new Set(props.marks
+  .filter((mark) => mark.items.some((item) => item.review_item_id === props.selectedItemKey))
+  .map((mark) => mark.key)))
+
+function nearSameRegion(left: PaperMark, right: PaperMark): boolean {
+  if (left.page !== right.page) return false
+  const width = Math.max(0, Math.min(left.left + left.width, right.left + right.width) - Math.max(left.left, right.left))
+  const height = Math.max(0, Math.min(left.top + left.height, right.top + right.height) - Math.max(left.top, right.top))
+  const intersection = width * height
+  const union = left.width * left.height + right.width * right.height - intersection
+  return union > 0 && intersection / union >= 0.8
+}
+
+const overlapGroups = computed(() => {
+  const remaining = new Set(props.marks)
+  const groups: { key: string; anchor: PaperMark; marks: PaperMark[]; items: ResultsCenterItem[] }[] = []
+  for (const first of props.marks) {
+    if (!remaining.delete(first)) continue
+    const marks = [first]
+    for (let index = 0; index < marks.length; index += 1) {
+      const current = marks[index]
+      if (!current) continue
+      for (const candidate of remaining) {
+        if (!nearSameRegion(current, candidate)) continue
+        remaining.delete(candidate)
+        marks.push(candidate)
+      }
     }
+    if (marks.length < 2) continue
+    const items = [...new Map(marks.flatMap((mark) => mark.items)
+      .map((item) => [item.review_item_id, item])).values()]
+    groups.push({ key: first.key, anchor: first, marks, items })
   }
-  return null
+  return groups
 })
+const overlapByMark = computed(() => new Map(overlapGroups.value
+  .flatMap((group) => group.marks.map((mark) => [mark.key, group] as const))))
+
+function hideOverlapMark(mark: PaperMark): boolean {
+  const group = overlapByMark.value.get(mark.key)
+  if (!group) return false
+  const selected = group.marks.find((entry) => selectedMarkKeys.value.has(entry.key))
+  return mark.key !== (selected ?? group.anchor).key
+}
 
 const multiMarks = computed(() => (
-  props.marks.filter((mark) => mark.items.length > 1)
+  props.marks.filter((mark) => mark.items.length > 1 && !overlapByMark.value.has(mark.key))
 ))
 
 function selectMark(mark: PaperMark): void {
@@ -69,6 +104,11 @@ function subChipTitle(item: ResultsCenterItem): string {
   return parts.join(' · ')
 }
 
+function overlapChipLabel(item: ResultsCenterItem): string {
+  const score = resolvedItemScore(item)
+  return `${item.question_id} ${score === null ? '—' : formatScore(score)}/${formatScore(item.max_score)}`
+}
+
 function markTitle(mark: PaperMark): string {
   const detail = mark.items.map((item) => {
     const sub = subQuestionOf(item.question_id)
@@ -92,7 +132,11 @@ function markTitle(mark: PaperMark): string {
       :key="mark.key"
       :type="interactive ? 'button' : undefined"
       class="paper-mark"
-      :class="[`is-${mark.state}`, { 'is-selected': selectedMarkKey === mark.key }]"
+      :class="[`is-${mark.state}`, {
+        'is-selected': selectedMarkKeys.has(mark.key),
+        'is-overlap-hidden': hideOverlapMark(mark),
+        'is-overlap': overlapByMark.has(mark.key),
+      }]"
       :style="{
         left: `${mark.left}%`,
         top: `${mark.top}%`,
@@ -100,12 +144,23 @@ function markTitle(mark: PaperMark): string {
         height: `${mark.height}%`,
       }"
       :aria-label="interactive ? markTitle(mark) : undefined"
+      :aria-hidden="hideOverlapMark(mark) ? 'true' : undefined"
+      :tabindex="interactive && hideOverlapMark(mark) ? -1 : undefined"
       :title="markTitle(mark)"
       @click="selectMark(mark)"
     >
-      <span class="paper-mark__label">{{ mark.questionId }} {{ markLabel(mark) }}</span>
-      <span v-if="mark.needsReview" class="paper-mark__review">待复核</span>
+      <span v-if="!overlapByMark.has(mark.key) || selectedMarkKeys.has(mark.key)" class="paper-mark__label">{{ mark.questionId }} {{ markLabel(mark) }}</span>
+      <span v-if="mark.needsReview && (!overlapByMark.has(mark.key) || selectedMarkKeys.has(mark.key))" class="paper-mark__review">待复核</span>
     </component>
+    <div v-for="group in interactive ? overlapGroups : []" :key="`overlap-${group.key}`" class="paper-mark__overlap-items"
+      :style="{ left: `${group.anchor.left}%`, top: `${group.anchor.top + group.anchor.height}%`, width: `${group.anchor.width}%` }"
+      :aria-label="interactive ? '同一区域的题目，可逐题选择' : undefined">
+      <component :is="interactive ? 'button' : 'span'" v-for="item in group.items" :key="item.review_item_id"
+        :type="interactive ? 'button' : undefined" class="paper-mark__sub"
+        :class="[`is-${itemMarkState(item)}`, { 'is-selected': selectedItemKey === item.review_item_id }]"
+        :title="`${item.question_id} · ${subChipTitle(item)}`" :aria-current="selectedItemKey === item.review_item_id ? 'true' : undefined"
+        @click.stop="emit('select-item', item)">{{ overlapChipLabel(item) }}<i v-if="itemNeedsReview(item)" class="paper-mark__sub-dot"></i></component>
+    </div>
     <div
       v-for="mark in multiMarks"
       :key="`subs-${mark.key}`"
@@ -184,6 +239,16 @@ function markTitle(mark: PaperMark): string {
   outline-offset: 1px;
 }
 
+.paper-mark.is-overlap-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.paper-mark.is-overlap:not(.is-selected) {
+  border-color: var(--color-border-strong);
+  background: transparent;
+}
+
 .paper-mark__label {
   position: absolute;
   top: 0;
@@ -221,6 +286,15 @@ function markTitle(mark: PaperMark): string {
   gap: 2px;
   padding: 2px;
   padding-inline-end: 60px;
+  pointer-events: none;
+}
+
+.paper-mark__overlap-items {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
   pointer-events: none;
 }
 

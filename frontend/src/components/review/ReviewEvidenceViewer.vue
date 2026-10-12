@@ -275,6 +275,7 @@ onBeforeUnmount(() => {
   <section class="review-evidence-viewer" aria-label="答卷证据查看器">
     <p v-if="reviewItem.media.originals_available === false" class="review-evidence-cleared" role="status">原卷已清理，分数和作答记录仍保留。</p>
     <div v-else class="review-evidence-toolbar" role="toolbar" aria-label="图片查看工具">
+      <strong class="review-evidence-current">当前题 {{ reviewItem.question_id }}</strong>
       <AppButton type="button" variant="ghost" size="small" @click="viewer.fitWidth">适应宽度</AppButton>
       <AppButton type="button" variant="ghost" size="small" @click="viewer.setActualSize">原比例</AppButton>
       <AppButton type="button" variant="ghost" size="small" @click="viewer.zoomBy(-0.25)">缩小</AppButton>
@@ -299,7 +300,7 @@ onBeforeUnmount(() => {
       class="review-evidence-canvas"
       :class="{ 'is-dragging': isDragging }"
       tabindex="0"
-      aria-label="答卷图片画布"
+      :aria-label="`当前题 ${reviewItem.question_id} 的答卷图片画布，可拖动或用方向键查看`"
       @keydown="onCanvasKeydown"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"

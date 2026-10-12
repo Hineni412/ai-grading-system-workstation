@@ -21,12 +21,14 @@ const props = defineProps<{
 const emit = defineEmits<{
   openItem: [reviewItemId: string]
   scoreKeydown: [event: KeyboardEvent, reviewItemId: string]
+  imageAspect: [cropUrl: string, aspect: number]
 }>()
 
 const draftStore = useReviewDraftStore()
 const imageFailed = ref(false)
 const imageKey = ref(0)
 const imageExpanded = ref(false)
+const imageAspect = ref(0)
 const reviewItem = computed(() => resolveReviewItem(props.item))
 const draft = computed(() => draftStore.drafts[reviewDraftKey(props.item)]!)
 const issue = computed(() => reviewDraftIssue(draft.value, reviewItem.value.max_score))
@@ -101,11 +103,19 @@ function retryImage(): void {
   imageKey.value += 1
 }
 
+function onImageLoad(event: Event): void {
+  if (!(event.currentTarget instanceof HTMLImageElement)) return
+  const image = event.currentTarget
+  imageAspect.value = image.naturalWidth / Math.max(1, image.naturalHeight)
+  if (reviewItem.value.media.crop_url) emit('imageAspect', reviewItem.value.media.crop_url, imageAspect.value)
+}
+
 watch(
   () => props.item,
   (item) => {
     draftStore.ensureDraft(item)
     imageFailed.value = false
+    imageAspect.value = 0
     imageKey.value += 1
   },
   { immediate: true },
@@ -119,6 +129,7 @@ watch(
     :data-review-item-id="reviewItem.review_item_id"
     :data-detail-id="reviewItem.detail_id ?? undefined"
     :data-score-status="reviewItem.score_status"
+    :data-image-layout="imageAspect >= 3 ? 'wide' : 'standard'"
     :style="{ '--review-status-color': reviewStatus[reviewItem.score_status].color }"
     :aria-labelledby="`review-answer-name-${position}`"
   >
@@ -148,6 +159,7 @@ watch(
         @click="imageExpanded = true"
         @keydown.enter.prevent="imageExpanded = true"
         @keydown.space.prevent="imageExpanded = true"
+        @load="onImageLoad"
         @error="imageFailed = true"
       >
       <div v-else class="review-answer-sheet__image-error" role="status">

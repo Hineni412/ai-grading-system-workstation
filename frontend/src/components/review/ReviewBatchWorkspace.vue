@@ -63,6 +63,14 @@ const answerPanelWidth = computed(() => {
   catch { return 420 }
 })
 const currentQuestion = computed(() => props.questions.find((entry) => entry.question_id === props.selectedQuestionId))
+const imageAspects = ref<Record<string, number>>({})
+const wideAnswers = computed(() => props.items.some((item) =>
+  (imageAspects.value[item.media.crop_url ?? ''] ?? 0) >= 3,
+))
+function recordImageAspect(cropUrl: string, aspect: number): void {
+  imageAspects.value[cropUrl] = aspect
+}
+watch(() => props.selectedQuestionId, () => { imageAspects.value = {} })
 const sessionId = computed(() => props.queueItems[0]?.session_id ?? props.items[0]?.session_id)
 const selectedQuestionLayout = computed<'compact' | 'expanded'>(() => {
   const questionType = props.questions
@@ -316,6 +324,7 @@ watch([sessionId, () => props.selectedQuestionId], async ([session, question]) =
       class="review-contact-sheet"
       data-testid="review-contact-sheet"
       :data-question-layout="selectedQuestionLayout"
+      :data-image-layout="wideAnswers ? 'wide' : 'standard'"
     >
       <ReviewAnswerSheet
         v-for="(item, index) in items"
@@ -326,6 +335,7 @@ watch([sessionId, () => props.selectedQuestionId], async ([session, question]) =
         :rubric="rubric"
         @open-item="emit('openItem', $event)"
         @score-keydown="onScoreKeydown"
+        @image-aspect="recordImageAspect"
       />
     </div>
 
