@@ -13,7 +13,6 @@ import {
 import { useSessionStore } from '../../stores/session'
 import AppIcon from './AppIcon.vue'
 import ExamContextSwitcher from './ExamContextSwitcher.vue'
-import TaskCenterPopover from './TaskCenterPopover.vue'
 import { resolveNavigationTarget } from './navigation-target'
 
 type SidebarMode = 'expanded' | 'rail' | 'drawer'
@@ -195,7 +194,6 @@ onBeforeUnmount(() => {
         :class="{ 'has-indicator': settingsIndicator !== null }"
         aria-label="设置导航"
       >
-        <TaskCenterPopover />
         <span
           v-if="settingsIndicator"
           class="app-sidebar__indicator"

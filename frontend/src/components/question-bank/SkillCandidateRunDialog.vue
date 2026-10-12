@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { DialogRoot, DialogPortal, DialogContent, DialogTitle, DialogDescription } from 'reka-ui'
 import AppButton from '../design-system/AppButton.vue'
+import AppIconButton from '../design-system/AppIconButton.vue'
 import {
   questionBankApi,
   type SkillCandidateRunInfo,
@@ -103,7 +104,7 @@ async function start() {
     const result = await questionBankApi.startSkillCandidateRun(props.volumeId, pendingFingerprint, token)
     clearPending()
     run.value = result.run
-    jobs.track(result.job)
+    jobs.track(result.job, { announce: false })
     state.value = 'running'
   } catch (error) {
     if (isAmbiguousWriteError(error)) {
@@ -143,7 +144,7 @@ async function retryFailed() {
     clearPending()
     run.value = result.run
     suggestionCount.value = null
-    jobs.track(result.job)
+    jobs.track(result.job, { announce: false })
     state.value = 'running'
   } catch (error) {
     if (isAmbiguousWriteError(error)) {
@@ -157,14 +158,11 @@ async function retryFailed() {
   }
 }
 
-async function cancelRun() {
-  if (!run.value) return
-  try { run.value = await questionBankApi.cancelSkillCandidateRun(run.value.run_id) }
-  catch { message.value = '取消未能提交，请稍后再试。' }
-}
-
-watch(() => props.open, (open) => {
-  if (!open) { controller?.abort(); stopPoll(); return }
+watch(() => props.open, (open, previous) => {
+  if (!open) {
+    if (previous && activeJob.value) jobs.announce(activeJob.value.id)
+    controller?.abort(); stopPoll(); return
+  }
   returnTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null
   suggestionCount.value = null
   const pendingRaw = localStorage.getItem(storageKey.value)
@@ -215,7 +213,7 @@ onBeforeUnmount(() => { controller?.abort(); stopPoll() })
       <DialogContent class="qb-skill-run-dialog qb-import-dialog" @close-auto-focus="restoreFocus">
         <header>
           <DialogTitle as="h2">整理成关键步骤候选</DialogTitle>
-          <button class="qb-link" aria-label="关闭整理面板" @click="emit('close')">关闭</button>
+          <AppIconButton label="关闭整理面板" icon="close" @click="emit('close')" />
         </header>
         <DialogDescription>把挂不上关键步骤的判定点整理成候选，供你逐一审核。</DialogDescription>
         <p v-if="state === 'loading'" role="status">正在统计关键步骤缺口，此步骤不调用模型…</p>
@@ -240,7 +238,7 @@ onBeforeUnmount(() => { controller?.abort(); stopPoll() })
             <li v-for="batch in failedBatches" :key="batch.batch_id">第 {{ batch.chapter_key }} 章：{{ batch.error?.message || '整理未完成' }}</li>
           </ul>
           <footer>
-            <AppButton v-if="running" variant="secondary" @click="cancelRun">取消整理</AppButton>
+            <AppButton v-if="running" variant="primary" @click="emit('close')">转到后台</AppButton>
             <template v-else>
               <AppButton v-if="failedBatches.length && run.retryable" variant="secondary"
                 @click="retryFailed">重试失败的部分</AppButton>

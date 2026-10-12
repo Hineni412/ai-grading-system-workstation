@@ -1,4 +1,4 @@
-import { onScopeDispose, ref } from 'vue'
+import { onScopeDispose, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import { ApiError } from '../api/errors'
@@ -16,6 +16,8 @@ export interface PersistedJobReference {
   jobType: string
   trackedAt: string
   terminal?: true
+  readAt?: string
+  dismissedAt?: string
 }
 
 export interface JobSyncError {
@@ -71,6 +73,8 @@ function isPersistedReference(value: unknown): value is PersistedJobReference {
     candidate.jobType.length > 0 &&
     typeof candidate.trackedAt === 'string' &&
     candidate.trackedAt.length > 0 &&
+    (candidate.readAt === undefined || (typeof candidate.readAt === 'string' && Number.isFinite(Date.parse(candidate.readAt)))) &&
+    (candidate.dismissedAt === undefined || (typeof candidate.dismissedAt === 'string' && Number.isFinite(Date.parse(candidate.dismissedAt)))) &&
     (candidate.terminal === undefined || candidate.terminal === true)
   )
 }
@@ -120,9 +124,9 @@ function shouldReplaceJob(
 export const useJobStore = defineStore('jobs', () => {
   const jobs = ref<Record<number, JobResponse>>({})
   const syncErrors = ref<Record<number, JobSyncError>>({})
-  const latestTrackedJobId = ref<number | null>(null)
-  const jobNoticeRevision = ref(0)
-  const references = new Map<number, PersistedJobReference>()
+  const announcements = ref<number[]>([])
+  const completions = ref<{ id: number; live: boolean }[]>([])
+  const references = reactive(new Map<number, PersistedJobReference>())
   const timers = new Map<number, ReturnType<typeof setTimeout>>()
   const controllers = new Map<number, AbortController>()
   const inFlight = new Map<number, Promise<void>>()
@@ -132,6 +136,7 @@ export const useJobStore = defineStore('jobs', () => {
   const retryCounts = new Map<number, number>()
   let dependencies = defaultDependencies
   let initialized = false
+  let restoring = false
   let initializationPromise: Promise<void> | null = null
 
   function configure(next?: JobStoreDependencies) {
@@ -162,7 +167,10 @@ export const useJobStore = defineStore('jobs', () => {
           jobType: reference.jobType,
           trackedAt: reference.trackedAt,
           ...(reference.terminal === true ? { terminal: true as const } : {}),
+          ...(reference.readAt ? { readAt: reference.readAt } : {}),
+          ...(reference.dismissedAt ? { dismissedAt: reference.dismissedAt } : {}),
         }))
+        .filter(reference => !reference.dismissedAt || dependencies.now().getTime() - Date.parse(reference.dismissedAt) < 86_400_000)
       references.clear()
       for (const reference of valid) references.set(reference.id, reference)
       persistReferences()
@@ -176,6 +184,18 @@ export const useJobStore = defineStore('jobs', () => {
 
   function currentGeneration(id: number): number {
     return generations.get(id) ?? 0
+  }
+
+  function updateSnapshot(job: JobResponse): void {
+    const previous = jobs.value[job.id]
+    if (!shouldReplaceJob(previous, job)) return
+    const reference = references.get(job.id)
+    const wasActive = previous ? !TERMINAL_JOB_STATUSES.has(previous.status)
+      : reference !== undefined && reference.terminal !== true
+    jobs.value[job.id] = job
+    if (wasActive && TERMINAL_JOB_STATUSES.has(job.status)) {
+      completions.value.push({ id: job.id, live: !restoring && previous !== undefined })
+    }
   }
 
   const dueIds = new Set<number>()
@@ -228,7 +248,7 @@ export const useJobStore = defineStore('jobs', () => {
             continue
           }
           const job = item.job
-          if (shouldReplaceJob(jobs.value[id], job)) jobs.value[id] = job
+          updateSnapshot(job)
           delete syncErrors.value[id]
           retryCounts.delete(id)
           const snapshot = jobs.value[id]!
@@ -297,10 +317,8 @@ export const useJobStore = defineStore('jobs', () => {
     const reference = references.get(id)
     if (!reference || (reference.terminal === true) === terminal) return
     references.set(id, {
-      id: reference.id,
-      jobType: reference.jobType,
-      trackedAt: reference.trackedAt,
-      ...(terminal ? { terminal: true as const } : {}),
+      ...reference,
+      terminal: terminal ? true : undefined,
     })
     persistReferences()
   }
@@ -317,7 +335,7 @@ export const useJobStore = defineStore('jobs', () => {
       try {
         const job = await dependencies.api.getJob(id, controller.signal)
         if (currentGeneration(id) !== generation || !references.has(id)) return
-        if (shouldReplaceJob(jobs.value[id], job)) jobs.value[id] = job
+        updateSnapshot(job)
         delete syncErrors.value[id]
         retryCounts.delete(id)
         const snapshot = jobs.value[id]!
@@ -362,11 +380,24 @@ export const useJobStore = defineStore('jobs', () => {
     if (initializationPromise) return initializationPromise
     configure(next)
     const attempt = (async () => {
-      const stored = readReferences()
-      const activeOrUnknown = stored.filter(reference => reference.terminal !== true)
-      const terminal = stored.filter(reference => reference.terminal === true)
-      await Promise.all(activeOrUnknown.map(reference => refresh(reference.id)))
-      await Promise.all(terminal.map(reference => refresh(reference.id)))
+      restoring = true
+      try {
+        const stored = readReferences()
+        const activeOrUnknown = stored.filter(reference => reference.terminal !== true)
+        const terminal = stored.filter(reference => reference.terminal === true)
+        await Promise.all(activeOrUnknown.map(reference => refresh(reference.id)))
+        await Promise.all(terminal.map(reference => refresh(reference.id)))
+        try {
+          const active = await dependencies.api.listActiveJobs()
+          const missing = active.items.filter(item => !references.has(item.id)).map(item => item.id)
+          if (missing.length) {
+            const records = await dependencies.api.getJobStatusBatch(missing)
+            for (const item of records) if (item.found && item.job) track(item.job, { announce: false })
+          }
+        } catch {
+          // 已有引用继续恢复和轮询；找回列表失败不阻断这些任务。
+        }
+      } finally { restoring = false }
     })()
     initializationPromise = attempt
     void attempt.then(
@@ -381,9 +412,8 @@ export const useJobStore = defineStore('jobs', () => {
     return attempt
   }
 
-  function track(job: JobResponse, next?: JobStoreDependencies): void {
-    configure(next)
-    jobs.value[job.id] = job
+  function track(job: JobResponse, options?: { announce?: boolean }): void {
+    updateSnapshot(job)
     delete syncErrors.value[job.id]
     const isNew = !references.has(job.id)
     if (isNew) {
@@ -392,10 +422,11 @@ export const useJobStore = defineStore('jobs', () => {
         jobType: job.job_type,
         trackedAt: dependencies.now().toISOString(),
         ...(TERMINAL_JOB_STATUSES.has(job.status) ? { terminal: true as const } : {}),
+        ...(TERMINAL_JOB_STATUSES.has(job.status) ? { readAt: dependencies.now().toISOString() } : {}),
       })
       persistReferences()
-      latestTrackedJobId.value = job.id
-      jobNoticeRevision.value += 1
+      const age = dependencies.now().getTime() - Date.parse(job.created_at)
+      if (options?.announce !== false && age >= 0 && age <= 15_000) announce(job.id)
     } else {
       const snapshot = jobs.value[job.id]!
       persistTerminalState(job.id, TERMINAL_JOB_STATUSES.has(snapshot.status))
@@ -419,7 +450,7 @@ export const useJobStore = defineStore('jobs', () => {
       try {
         const next = await dependencies.api.cancelJob(id, controller.signal)
         if (currentGeneration(id) !== generation || !references.has(id)) return
-        if (shouldReplaceJob(jobs.value[id], next)) jobs.value[id] = next
+        updateSnapshot(next)
         delete syncErrors.value[id]
         trackResultJobs(jobs.value[id]!)
         const terminal = TERMINAL_JOB_STATUSES.has(jobs.value[id]!.status)
@@ -446,9 +477,32 @@ export const useJobStore = defineStore('jobs', () => {
   }
 
   function clearCompleted(): void {
-    for (const [id, job] of Object.entries(jobs.value)) {
-      if (TERMINAL_JOB_STATUSES.has(job.status)) remove(Number(id))
+    dismiss(Object.values(jobs.value).filter(job => TERMINAL_JOB_STATUSES.has(job.status)).map(job => job.id))
+  }
+
+  function announce(id: number): void {
+    const job = jobs.value[id]
+    if (job && !TERMINAL_JOB_STATUSES.has(job.status)) announcements.value.push(id)
+  }
+
+  function markRead(id: number): void {
+    const reference = references.get(id)
+    if (!reference || reference.readAt) return
+    references.set(id, { ...reference, readAt: dependencies.now().toISOString() })
+    persistReferences()
+  }
+
+  function dismiss(ids: number[]): void {
+    const now = dependencies.now().toISOString()
+    let changed = false
+    for (const id of ids) {
+      const reference = references.get(id)
+      const job = jobs.value[id]
+      if (!reference || reference.dismissedAt || !job || !TERMINAL_JOB_STATUSES.has(job.status)) continue
+      references.set(id, { ...reference, dismissedAt: now })
+      changed = true
     }
+    if (changed) persistReferences()
   }
 
   function stopAllPolling(): void {
@@ -460,10 +514,14 @@ export const useJobStore = defineStore('jobs', () => {
   return {
     jobs,
     syncErrors,
-    latestTrackedJobId,
-    jobNoticeRevision,
+    references,
+    announcements,
+    completions,
     initialize,
     track,
+    announce,
+    markRead,
+    dismiss,
     refresh,
     cancel,
     stopPolling,

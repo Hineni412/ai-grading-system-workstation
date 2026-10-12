@@ -90,8 +90,12 @@ watch(() => bank.repairPreviews.get(`${props.volumeId}:all`), () => {
   state.value = 'ready'
   revalidating.value = true
 })
-watch(() => props.open, open => {
-  if (!open) { controller?.abort(); return }
+watch(() => props.open, (open, previous) => {
+  if (!open) {
+    if (previous && job.value && !TERMINAL_JOB_STATUSES.has(job.value.status)) jobs.announce(job.value.id)
+    controller?.abort()
+    return
+  }
   returnTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null
   const restored = Object.values(jobs.jobs).filter(j => j.job_type === 'question_bank_repair'
     && j.payload.curriculum_volume_id === props.volumeId && j.payload.kind === props.kind).sort((a, b) => b.id - a.id)[0]
@@ -118,7 +122,7 @@ async function start() {
   state.value = 'submitting'; message.value = ''
   try {
     const result = await questionBankApi.submitRepair(original, targetIds.value, token)
-    activeJobId.value = result.id; jobs.track(result); state.value = 'running'
+    activeJobId.value = result.id; jobs.track(result, { announce: false }); state.value = 'running'
     localStorage.removeItem(storageKey.value)
   } catch (error) {
     if (isAmbiguousWriteError(error)) { state.value = 'ambiguous'; message.value = '提交结果尚未确认。找回本次任务会沿用原请求编号。'; return }
@@ -165,9 +169,12 @@ onBeforeUnmount(() => controller?.abort())
           <p class="qb-repair-cost">确认后将使用配置的 AI 模型，按服务商计费，金额取决于题目长度和模型。已有完整题不提交；失败或结果不确定时不自动追加请求。</p>
         </template>
         <AppButton v-if="state === 'error' || refreshFailed" variant="secondary" @click="load">重新统计</AppButton>
-        <template v-if="state === 'submitting' || state === 'ambiguous' || state === 'ready'" #footer>
-          <AppButton variant="secondary" @click="emit('close')">取消</AppButton>
-          <AppButton variant="primary" :disabled="revalidating || refreshFailed || !targetIds.length || state === 'submitting'" @click="start">{{ state === 'ambiguous' ? '找回本次任务' : state === 'submitting' ? '正在提交…' : `确认补齐 ${targetIds.length} 题` }}</AppButton>
+        <template #footer>
+          <AppButton v-if="state === 'running' && job && !TERMINAL_JOB_STATUSES.has(job.status)" variant="primary" @click="emit('close')">转到后台</AppButton>
+          <template v-else-if="state === 'submitting' || state === 'ambiguous' || state === 'ready'">
+            <AppButton variant="secondary" @click="emit('close')">取消</AppButton>
+            <AppButton variant="primary" :disabled="revalidating || refreshFailed || !targetIds.length || state === 'submitting'" @click="start">{{ state === 'ambiguous' ? '找回本次任务' : state === 'submitting' ? '正在提交…' : `确认补齐 ${targetIds.length} 题` }}</AppButton>
+          </template>
         </template>
   </AppDialog>
 </template>

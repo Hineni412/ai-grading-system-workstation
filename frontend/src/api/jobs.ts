@@ -71,6 +71,7 @@ export function chapterTypeJobSummary(parent: JobResponse | null, jobs: Readonly
 }
 
 export interface JobApi {
+  listActiveJobs(): Promise<JobIdListResponse>
   getJob(id: number, signal?: AbortSignal): Promise<JobResponse>
   cancelJob(id: number, signal?: AbortSignal): Promise<JobResponse>
   getJobStatusBatch(ids: number[], signal?: AbortSignal): Promise<JobStatusBatchItem[]>
@@ -192,6 +193,11 @@ export async function findLatestJob(
 }
 
 export const jobApi: JobApi = {
+  async listActiveJobs() {
+    return apiClient.request('/api/jobs?status=queued&status=running&page_size=50', {
+      decode: decodeJobIdList,
+    })
+  },
   async getJob(id, signal) {
     const jobId = requireJobId(id)
     return apiClient.request(`/api/jobs/${jobId}`, {

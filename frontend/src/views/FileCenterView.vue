@@ -96,7 +96,7 @@ watch(() => Object.values(jobStore.jobs).map(j => `${j.id}:${j.status}`).join('|
 onBeforeUnmount(() => { personalController?.abort() })
 function exportedPersonal() {
   personalExportOpen.value = false
-  actionMessage.value = '已加入任务中心，完成后在任务中心下载。'
+  actionMessage.value = '已加入右下角任务中心，完成后在那里下载。'
 }
 async function openPersonalExport() {
   const sid = sessionStore.selectedSessionId

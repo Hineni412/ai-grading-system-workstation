@@ -5,6 +5,7 @@ import { RouterView, useRoute } from 'vue-router'
 import AppSidebar from '../components/shell/AppSidebar.vue'
 import AppTopbar from '../components/shell/AppTopbar.vue'
 import CommandPalette from '../components/shell/CommandPalette.vue'
+import TaskCenterDock from '../components/shell/TaskCenterDock.vue'
 import { gradingRunRouteDefinition } from '../navigation'
 import { useReviewDraftStore } from '../stores/review-drafts'
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
@@ -55,19 +56,6 @@ const sidebarMode = computed<'expanded' | 'rail' | 'drawer'>(() => {
   if ((wideViewport.value || questionWorkspace.value) && !sidebarCollapsed.value) return 'expanded'
   return 'rail'
 })
-
-/* 任务中心浮卡（已 Teleport 到 body）据此贴住侧栏右侧，避免遮挡工作区操作 */
-const SIDEBAR_OFFSETS: Record<string, string> = { expanded: '180px', rail: '56px', drawer: '0px' }
-watch(
-  sidebarMode,
-  (mode) => {
-    document.documentElement.style.setProperty(
-      '--shell-sidebar-offset',
-      SIDEBAR_OFFSETS[mode] ?? '0px',
-    )
-  },
-  { immediate: true },
-)
 
 function syncNavigationMode(
   mediaQuery: MediaQueryList | MediaQueryListEvent,
@@ -199,7 +187,6 @@ onBeforeUnmount(() => {
   navigationMediaQuery?.removeEventListener('change', syncNavigationMode)
   wideMediaQuery?.removeEventListener('change', syncWideViewport)
   window.removeEventListener('beforeunload', onBeforeUnload)
-  document.documentElement.style.removeProperty('--shell-sidebar-offset')
   cancelScanPrefetch()
 })
 </script>
@@ -236,5 +223,6 @@ onBeforeUnmount(() => {
       </RouterView>
     </main>
     <CommandPalette v-model:open="paletteOpen" />
+    <TaskCenterDock />
   </div>
 </template>

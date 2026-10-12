@@ -1,5 +1,7 @@
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 import { reportTypeLabel } from '../file-center/report-format'
+import type { RouteLocationRaw } from 'vue-router'
+import type { WorkspaceRouteId } from '../../navigation'
 
 const names: Record<string, string> = {
   personal_report_bundle: '导出学生个人报告',
@@ -141,4 +143,65 @@ export function taskScope(job: JobResponse, examNames: Map<number, string>, pape
   if (['taxonomy_suggestion', 'knowledge_link', 'criterion_backfill'].includes(job.job_type)) return '题库知识与判定标准'
   if (job.job_type.startsWith('workspace_ai.')) return '工作台'
   return '所属对象未记录'
+}
+
+export function needsAttention(job: JobResponse): boolean {
+  return TERMINAL_JOB_STATUSES.has(job.status)
+    && (job.status === 'failed' || ['部分完成', '等待教师核对', '未完成'].includes(taskOutcome(job).label))
+}
+
+export interface TaskTarget {
+  route: RouteLocationRaw
+  source: WorkspaceRouteId | 'grading-run'
+  sessionId: number | null
+}
+
+export function taskSessionId(job: JobResponse): number | null {
+  const id = job.payload.session_id ?? job.result.session_id
+  return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? id : null
+}
+
+const pageTargets: Record<string, { path: string; source: WorkspaceRouteId }> = {
+  question_import: { path: '/question-bank', source: 'question-bank' },
+  tagging_sync: { path: '/question-bank', source: 'question-bank' },
+  question_bank_repair: { path: '/question-bank', source: 'question-bank' },
+  criterion_backfill: { path: '/question-bank', source: 'question-bank' },
+  knowledge_link: { path: '/question-bank', source: 'question-bank' },
+  answer_draft: { path: '/question-bank', source: 'question-bank' },
+  taxonomy_suggestion: { path: '/question-bank', source: 'question-bank' },
+  chapter_type_organize: { path: '/question-bank', source: 'question-bank' },
+  assembly_export: { path: '/question-assembly', source: 'question-assembly' },
+  ai_assembly_spec: { path: '/question-assembly', source: 'question-assembly' },
+  wrong_question_export: { path: '/training', source: 'training' },
+  personalized_handout_export: { path: '/training', source: 'training' },
+}
+
+export function taskTarget(job: JobResponse, paperId?: number): TaskTarget | null {
+  const sessionId = taskSessionId(job)
+  if (['config_generation', 'config_generate', 'question_bank_sync'].includes(job.job_type)) {
+    return sessionId === null ? null : { route: '/sessions', source: 'sessions', sessionId }
+  }
+  if (['scan_analysis', 'grading_run', 'grading'].includes(job.job_type)) {
+    return sessionId === null ? null : {
+      route: taskOutcome(job).label === '等待教师核对' ? '/grading' : `/sessions/${sessionId}/grading-run`,
+      source: 'grading-run', sessionId,
+    }
+  }
+  if (['class_analysis_generate', 'class_analysis', 'individual_report', 'report_export'].includes(job.job_type)) {
+    return sessionId === null ? null : {
+      route: { path: '/results', query: { session: sessionId } }, source: 'results', sessionId: null,
+    }
+  }
+  if (job.job_type === 'personal_report_bundle') {
+    return { route: { path: '/results', query: { tab: 'exports' } }, source: 'results', sessionId: null }
+  }
+  if (job.job_type.startsWith('ops_')) {
+    return { route: { path: '/settings', query: { section: 'data' } }, source: 'settings', sessionId: null }
+  }
+  const target = pageTargets[job.job_type]
+  if (!target) return null
+  return {
+    route: { path: target.path, query: target.source === 'question-bank' && paperId ? { paper: paperId } : {} },
+    source: target.source, sessionId: null,
+  }
 }

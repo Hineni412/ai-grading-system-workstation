@@ -106,7 +106,7 @@ async function exportHtml() {
   try {
     const job = await personalReportsApi.bundle([reportSession.value], [currentStudentId.value], '指定1人')
     await jobs.track(job)
-    message.value = '已加入任务中心，完成后在任务中心下载。'
+    message.value = '已加入右下角任务中心，完成后在那里下载。'
   } catch { error.value = '导出请求未能提交，请稍后重试。' }
 }
 onMounted(() => {
