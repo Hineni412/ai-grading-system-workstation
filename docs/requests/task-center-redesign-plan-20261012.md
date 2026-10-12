@@ -94,7 +94,7 @@
 
 凡是在 `AppDialog` 内显示任务进度的组件，运行中页脚只留一个主按钮“转到后台”；标题栏关闭叉号保留，效果相同。两者都只关闭弹框，不取消任务；关闭时任务仍在运行则调用 `jobs.announce(id)` 显示开始提示。提交时用 `track(job, { announce: false })`。
 
-已知需要改的：`components/question-bank/QuestionRepairDialog.vue`；`components/question-bank/SkillCandidateRunDialog.vue`（入口在 `QuestionBankTodo.vue`）。实施时搜索其他在弹框内显示 `job.progress` 的组件一并处理。在页面内显示进度的流程（考试配置、扫描批改、题库导入列表等）不加弹框，只靠开始提示。
+已知需要改的：`components/question-bank/QuestionRepairDialog.vue`；`components/question-bank/SkillCandidateRunDialog.vue`（入口在 `QuestionBankTodo.vue`）。当前 `QuestionImportJobs.vue` 位于 `QuestionBankView.vue` 已有的“上传试卷与任务”弹框内，也按相同规则处理；关闭后仍在提交的后续任务照常提示。其他在弹框内显示 `job.progress` 的组件使用同一规则。在页面内显示进度的流程（考试配置、扫描批改等）不加弹框，只靠开始提示。
 
 “已加入任务中心，完成后在任务中心下载。”（`PersonalReportReader.vue`、`FileCenterView.vue`）改为“已加入右下角任务中心，完成后在那里下载。”
 

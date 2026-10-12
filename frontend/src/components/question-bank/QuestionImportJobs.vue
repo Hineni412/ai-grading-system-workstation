@@ -3,7 +3,7 @@ import FeedbackBanner from '@/components/design-system/FeedbackBanner.vue'
 import AppButton from '@/components/design-system/AppButton.vue'
 import StatePanel from '@/components/design-system/StatePanel.vue'
 
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import {
   questionBankApi,
@@ -44,6 +44,7 @@ const { confirm } = useConfirm()
 const busy = ref(false)
 const feedback = ref('')
 const queuedFiles = ref<Array<{ name: string; state: string }>>([])
+let announceNewJobs = false
 
 // 导入时可指定教材册别，用来补齐文件名推断不出的年级/学期/教材版本。
 const volumeOptions = ref<CurriculumVolume[]>([])
@@ -70,6 +71,12 @@ const jobs = computed(() => {
     || (job.job_type === 'question_bank_sync' && (Number.isSafeInteger(job.result.chapter_type_job_id) || typeof job.result.chapter_type_state === 'string')))
   const attached = new Set(parents.map(job => job.result.chapter_type_job_id))
   return [...parents, ...all.filter(job => job.job_type === 'chapter_type_organize' && !attached.has(job.id))].sort((left, right) => right.id - left.id)
+})
+const hasRunningJobs = computed(() => jobs.value.some(job => !TERMINAL_JOB_STATUSES.has(job.status)))
+defineExpose({ hasRunningJobs })
+onBeforeUnmount(() => {
+  announceNewJobs = true
+  for (const job of jobs.value) if (!TERMINAL_JOB_STATUSES.has(job.status)) jobStore.announce(job.id)
 })
 const jobTypeLabels: Record<string, string> = { question_import: '试卷导入', tagging_sync: 'AI 标注', question_bank_sync: '考试题目入库', chapter_type_organize: '章节题型整理' }
 
@@ -220,7 +227,7 @@ async function chooseFiles(event: Event): Promise<void> {
       jobStore.track(await questionBankApi.submitImportJob(
         request.request_id,
         importVolumeId.value || undefined,
-      ))
+      ), { announce: announceNewJobs })
     } catch {
       row.state = '提交失败'
     }
@@ -253,7 +260,7 @@ async function startTagging(): Promise<void> {
       bank.selectedQuestionIds, volumeId, undefined, undefined, false, undefined,
       preview.planned_requests ? { ...preview, confirmed: true, request_limit: preview.planned_requests } : undefined,
     )
-    jobStore.track(job)
+    jobStore.track(job, { announce: announceNewJobs })
     feedback.value = `已提交 ${count} 道题的 AI 标注任务。`
   } catch {
     feedback.value = 'AI 标注任务没有提交，当前选择保持不变。'
@@ -278,7 +285,7 @@ async function retry(job: JobResponse): Promise<void> {
     if (!confirmed) return
     busy.value = true
     try {
-      jobStore.track(await questionBankApi.retryTagging(job.id, ids))
+      jobStore.track(await questionBankApi.retryTagging(job.id, ids), { announce: announceNewJobs })
       feedback.value = '失败题目已提交新的重试任务。'
     } catch {
       feedback.value = '重试任务没有提交，原任务记录保持不变。'
@@ -290,7 +297,7 @@ async function retry(job: JobResponse): Promise<void> {
 
   busy.value = true
   try {
-    jobStore.track(await questionBankApi.retryImport(job.id))
+    jobStore.track(await questionBankApi.retryImport(job.id), { announce: announceNewJobs })
     feedback.value = '导入重试已经提交。'
   } catch {
     feedback.value = '导入重试没有提交，原任务记录保持不变。'

@@ -134,6 +134,7 @@ const jobStore = useJobStore()
 const taxonomyReview = useTaxonomyReviewStore()
 const activePaper = ref<QuestionBankPaper | null>(null)
 const showImport = ref(false)
+const importJobs = ref<InstanceType<typeof QuestionImportJobs> | null>(null)
 const showBasket = ref(false)
 const showTaxonomyReview = ref(false)
 const showCriteriaReview = ref(false)
@@ -260,10 +261,14 @@ async function openCandidateQuestion(ref: { questionId: number; paperId: number 
     <QuestionRepairDialog :open="repairOpen" :volume-id="scope.selectedVolumeId || ''" :volume-label="scope.selectedVolume?.label || ''" :kind="repairKind" @close="repairOpen = false" @refreshed="afterRepairRefresh" />
     <AppDialog :open="showImport" title="上传试卷与任务" class="qb-import-dialog" @update:open="(value: boolean) => { showImport = value }">
       <QuestionImportJobs
+        ref="importJobs"
         :pending-taxonomy-count="taxonomyReview.pendingCount"
         :pending-taxonomy-state="taxonomyReview.loadState"
         @review-taxonomy="openTaxonomyReview"
       />
+      <template v-if="importJobs?.hasRunningJobs" #footer>
+        <AppButton variant="primary" @click="showImport = false">转到后台</AppButton>
+      </template>
     </AppDialog>
 
     <TaxonomyCandidateReview

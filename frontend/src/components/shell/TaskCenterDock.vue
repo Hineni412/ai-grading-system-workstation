@@ -52,6 +52,7 @@ const ringTone = computed(() => active.value.length ? 'active'
   : unread.value.some(needsAttention) ? 'warning' : unread.value.length ? 'success' : 'neutral')
 const ringLabel = computed(() => `任务中心，${active.value.length} 个任务进行中${active.value.length ? `，平均 ${Math.round(averageProgress.value * 100)}%` : ''}；${unread.value.length} 项结果待查看`)
 const cardJobs = computed(() => cards.value.map(id => jobs.jobs[id]).filter((job): job is JobResponse => !!job && !jobs.references.get(job.id)?.dismissedAt))
+watch(() => entries.value.length, count => { if (!count) open.value = false })
 const examNames = computed(() => new Map(sessions.sessions.map(session => [session.id, session.name])))
 const paperLabels = ref<Record<number, string>>({})
 const paperIds = ref<Record<number, number | undefined>>({})
@@ -256,7 +257,7 @@ onBeforeUnmount(() => {
   <Teleport to="body">
     <div class="task-center-dock" :style="{ '--task-center-bottom': `${dockBottom}px` }">
       <PopoverRoot v-model:open="open" @update:open="setOpen">
-        <PopoverTrigger v-if="entries.length || open" as-child>
+        <PopoverTrigger v-if="entries.length" as-child>
           <button type="button" class="task-center-ring" :class="`is-${ringTone}`" :aria-label="ringLabel" :title="ringLabel">
             <span class="task-center-ring__graphic" aria-hidden="true">
               <svg width="20" height="20" viewBox="0 0 20 20">
