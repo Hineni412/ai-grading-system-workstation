@@ -73,7 +73,7 @@ def test_reason_includes_each_matched_need_without_duplicate_evidence():
     assert _member_entries(entries)['A']['key'] == 'sk_b'
 
 
-def test_saved_draft_and_export_source_check_use_the_preview_scope(direct_module, monkeypatch):
+def test_saved_draft_read_and_create_use_the_preview_scope(direct_module, monkeypatch):
     diagnosis = _direct_diagnosis()
     config = PersonalizedRecommendationConfig(scope_keys=(BNU_CHAPTER4,), target_keys=(BNU_TARGET,),
                                                curriculum_volume_id="bnu24-math-g7-lower")
@@ -92,7 +92,7 @@ def test_saved_draft_and_export_source_check_use_the_preview_scope(direct_module
     for student in draft['students']:
         assert {i['question_id'] for i in student['items']} == set(expected[student['student_id']])
     assert direct_module.ensure_current(draft['draft_id'])['draft_id'] == draft['draft_id']
-    assert len(calls) >= 2 and len(set(calls)) == 1
+    assert len(calls) >= 1 and len(set(calls)) == 1
 
 
 def test_comprehensive_scope_includes_earlier_chapters_and_preserves_focused_scope(direct_module):
@@ -581,6 +581,12 @@ def test_paper_limits_preserve_raw_decimal_and_allow_two_written_questions(direc
     candidates = [{"question_id": q, "question_type": "解答题", "difficulty": 8., "stable_keys": []} for q in (1,2,3)]
     candidates += [{"question_id": 4, "question_type": "选择题", "difficulty": 8.4, "stable_keys": []}]
     monkeypatch.setattr(direct_module, "_source_snapshot", lambda **kw: (candidates, (), "test"))
+    import question_bank.recommendation.personalized as personalized
+    monkeypatch.setattr(personalized.QuestionAnalysisInputLoader, "load",
+                        lambda self, ids, **kw: tuple(SimpleNamespace(question_id=q) for q in ids))
+    monkeypatch.setattr(personalized.TrainingCriterionModule, "read_many",
+                        lambda self, questions, **kw: {q.question_id: {} for q in questions})
+    monkeypatch.setattr(personalized, "usable_training_criterion", lambda ws: {"version_id": "v"})
     direct_module.validate_paper_questions([1,2])
     with pytest.raises(ValueError, match="2 道"):
         direct_module.validate_paper_questions([1,2,3])

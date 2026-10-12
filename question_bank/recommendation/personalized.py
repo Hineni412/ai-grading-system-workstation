@@ -800,6 +800,9 @@ def _valid_difficulty_features(question: Mapping[str, Any], rows: Sequence[Any],
     from question_bank.models.tag_schema import PART_FEATURE_ORDER
     result = []
     for row in rows:
+        if not standard_difficulty.difficulty_source_content_hash_matches(
+                question, str(row["source_content_hash"]), analysis_input=analysis_input):
+            continue
         try:
             payload = json.loads(row["features_json"])
         except (TypeError, ValueError):
