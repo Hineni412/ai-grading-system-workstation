@@ -190,6 +190,70 @@ def test_teacher_type_edit_updates_all_current_point_copies_and_keeps_other_link
         assert [tuple(row) for row in conn.execute("SELECT tag_type,tag_value,confidence,source,model_name FROM question_tags WHERE tag_type IN ('knowledge_point','secondary_type','prerequisite') ORDER BY tag_type,tag_value")] == protected_before
         assert [tuple(row) for row in conn.execute('SELECT * FROM evidence_point_knowledge_links')] == links_before
 
+    # 关键步骤词表规则：客观题判定点不产生缺口、不计入“缺关键步骤”。
+    from question_bank.services.question_skill_index import build_skill_snapshot
+    from question_bank.solution_evidence.knowledge_links import project_embedded_links
+    with connect(service.db_path) as conn:
+        for new_id, number in ((2, '2'), (3, '3')):
+            conn.execute("INSERT INTO questions (id, paper_id, question_number, question_text) VALUES (?, 1, ?, 'KeyStepRule')", (new_id, number))
+        conn.execute(
+            "INSERT INTO question_solution_evidence_versions(evidence_version_id,question_id,source_content_hash,schema_version,content_hash,evidence_json,status,source_kind,source_reference,created_by) VALUES(?,2,?, 'question-solution-evidence-v2',?,?,'approved','combined_model','TEST-skill-gaps','test')",
+            ('e' * 64, 'a' * 64, 'b' * 64, json.dumps({'parts': [
+                {'part_id': 'part-1', 'response_mode': 'exact_objective',
+                 'evidence_points': [{'evidence_point_id': 'o2', 'target': '作答为'}]},
+                {'part_id': 'part-2',
+                 'evidence_points': [{'evidence_point_id': 's2', 'target': '写出过程'}]},
+            ]})),
+        )
+        conn.execute(
+            "INSERT INTO question_solution_evidence_versions(evidence_version_id,question_id,source_content_hash,schema_version,content_hash,evidence_json,status,source_kind,source_reference,created_by) VALUES(?,3,?, 'question-solution-evidence-v2',?,?,'approved','combined_model','TEST-skill-gaps','test')",
+            ('f' * 64, 'a' * 64, 'b' * 64, json.dumps({'parts': [
+                {'part_id': 'part-1', 'response_mode': 'exact_objective',
+                 'evidence_points': [{'evidence_point_id': 'o3', 'target': '作答为'}]},
+            ]})),
+        )
+        snapshot = build_skill_snapshot(conn, service.db_path, service.data_root)
+    assert qid not in snapshot['unlinked']
+    assert 2 in snapshot['unlinked']
+    assert 3 not in snapshot['unlinked']
+    assert [gap['point_id'] for gap in snapshot['gap_points'][2]] == ['s2']
+    assert 3 not in snapshot['gap_points']
+
+    # 内嵌挂接写入同样遵守：客观题点不落 sk、每点最多一条 direct sk。
+    embedded = {'parts': [
+        {'part_id': 'obj', 'response_mode': 'exact_objective', 'evidence_points': [
+            {'evidence_point_id': 'eo', 'fine_term_links': [
+                {'fine_term_id': 'sk_TEST', 'role': 'direct',
+                 'core_resolution': {'status': 'resolved', 'stable_keys': ['sk_TEST']}}]}]},
+        {'part_id': 'subj', 'evidence_points': [
+            {'evidence_point_id': 'es', 'fine_term_links': [
+                {'fine_term_id': 'sk_TEST', 'role': 'direct',
+                 'core_resolution': {'status': 'resolved', 'stable_keys': ['sk_TEST']}},
+                {'fine_term_id': 'sk_TEST2', 'role': 'direct',
+                 'core_resolution': {'status': 'resolved', 'stable_keys': ['sk_TEST2']}}]}]},
+    ]}
+    with connect(service.db_path) as conn:
+        project_embedded_links(conn, evidence_version_id='f' * 64, question_id=3,
+                               evidence_payload=embedded, default_release_id=release_id)
+        rows = conn.execute(
+            "SELECT part_id,evidence_point_id,stable_key FROM evidence_point_knowledge_links "
+            "WHERE evidence_version_id=? AND role='direct' AND stable_key LIKE 'sk_%' ORDER BY rowid",
+            ('f' * 64,)).fetchall()
+    assert [(r[0], r[1], r[2]) for r in rows] == [('subj', 'es', 'sk_TEST')]
+
+    # sk_ 链接不参与小节归属：增删 direct sk 后重算，scope summary 不变。
+    from question_bank.solution_evidence.knowledge_links import refresh_question_scope_summary
+    scope_fields = ("SELECT question_id,evidence_version_id,graph_release_id,primary_section_id,"
+                    "direct_section_ids_json,supporting_max_volume_order,has_cross_chapter_direct"
+                    " FROM question_scope_summary WHERE question_id=?")
+    with connect(service.db_path) as conn:
+        refresh_question_scope_summary(conn, qid)
+        scope_row = tuple(conn.execute(scope_fields, (qid,)).fetchone())
+        conn.execute("INSERT INTO evidence_point_knowledge_links(evidence_version_id,question_id,part_id,evidence_point_id,graph_release_id,role,term_id,stable_key,resolution_status,weight,source_kind) VALUES(?,?,'part-1','p1',?,'direct','sk_NEW','sk_NEW','resolved',9.0,'link_job')", ('a' * 64, qid, release_id))
+        conn.execute("DELETE FROM evidence_point_knowledge_links WHERE stable_key='sk_TEST' AND role='direct'")
+        refresh_question_scope_summary(conn, qid)
+        assert tuple(conn.execute(scope_fields, (qid,)).fetchone()) == scope_row
+
 
 question_bank_paper_trash__CURRENT_PAPER_QUESTION_FK_CHILDREN = {
     ("authoring_works", "questions", "source_question_id"),

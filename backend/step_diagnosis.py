@@ -24,6 +24,52 @@ STEP_SOURCE_LABELS = {
     "teacher": "教师逐步确认", "ai": "AI 步骤判断",
     "teacher_confirmed_ai": "教师确认总分，步骤为 AI 判断",
 }
+# 3_3_206 是 3_3_201 在 2026-10 词表中拆出的子键；冻结快照里只挂 3_3_201
+# 而题库当前挂 3_3_206 时，视为同一主关键步骤。
+_SPLIT_CHILD_OF = {
+    "sk_bnu24_math_g8_upper_3_3_206": "sk_bnu24_math_g8_upper_3_3_201",
+}
+
+
+def _release_skill_key_rules(bank) -> tuple[set[str], dict[str, str], str]:
+    """Active sk keys plus the replacement chain of the current release."""
+    try:
+        row = bank.execute(
+            "SELECT release_id, payload_json FROM knowledge_graph_releases "
+            "WHERE status = 'active'"
+        ).fetchone()
+    except Exception:
+        return set(), {}, ""
+    if row is None:
+        return set(), {}, ""
+    payload = json.loads(row["payload_json"])
+    active = {
+        str(node["stable_key"])
+        for node in payload.get("core_nodes") or ()
+        if node.get("status") == "active"
+    }
+    replacements = {
+        str(item["retired_key"]): str(item["replacement_key"])
+        for item in payload.get("replacements") or ()
+    }
+    return active, replacements, str(row["release_id"] or "")
+
+
+def _resolve_snapshot_skill_key(
+    key: str, active: set[str], replacements: dict[str, str]
+) -> str | None:
+    """Follow replacements until an active sk node; None when it lands on kp/nowhere."""
+    seen = set()
+    while key and key not in seen:
+        if key in active and key.startswith("sk_"):
+            return key
+        seen.add(key)
+        key = replacements.get(key, "")
+        if key.startswith("kp_"):
+            return None
+        if not key:
+            return None
+    return None
 
 
 @dataclass
@@ -74,6 +120,49 @@ def build_session_step_diagnosis(
                           for question in rubric.get("questions") or []}
         items = {item.item_ref: item for item in projection.items
                  if question_types.get(item.parent_ref) not in OBJECTIVE_TYPES}
+        active_sk, replacements, active_release_id = (
+            _release_skill_key_rules(bank) if key_step_scope else (set(), {}, "")
+        )
+
+        def _current_point_sk(version_id: str, pid: str) -> set[str]:
+            if not version_id or not active_release_id:
+                return set()
+            return {
+                str(row[0]) for row in bank.execute(
+                    "SELECT stable_key FROM evidence_point_knowledge_links "
+                    "WHERE evidence_version_id = ? AND evidence_point_id = ? "
+                    "AND graph_release_id = ? AND role = 'direct' "
+                    "AND resolution_status = 'resolved' AND stable_key LIKE 'sk_%'",
+                    (version_id, pid, active_release_id))
+            }
+
+        def _point_keys(frozen: dict[str, Any], pid: str) -> list[str]:
+            raw = []
+            for link in (frozen.get("links") or {}).get(str(pid), ()):
+                key = str(link.get("stable_key") or link.get("term_id") or "")
+                if (link.get("role") == "direct"
+                        and link.get("resolution_status") == "resolved"
+                        and key.startswith("sk_") and key not in raw):
+                    raw.append(key)
+            if not active_sk:
+                return raw
+            resolved: list[str] = []
+            for key in raw:
+                mapped = _resolve_snapshot_skill_key(key, active_sk, replacements)
+                if mapped and mapped not in resolved:
+                    resolved.append(mapped)
+            if len(resolved) >= 2:
+                version_id = str(frozen.get("source_evidence_version_id") or "")
+                current = _current_point_sk(version_id, str(pid))
+                picked = [key for key in resolved if key in current]
+                picked += [
+                    c for c in current
+                    if _SPLIT_CHILD_OF.get(c) in resolved and c not in picked
+                ]
+                if len(picked) == 1:
+                    return picked
+            return resolved
+
         info = {}
         for item in items.values():
             frozen = (snapshot.get("questions") or {}).get(item.parent_ref) or {}
@@ -81,9 +170,8 @@ def build_session_step_diagnosis(
                 sid = str(step["step_id"])
                 keys = []
                 for pid in step.get("evidence_point_ids") or []:
-                    for link in (frozen.get("links") or {}).get(str(pid), ()):
-                        key = str(link.get("stable_key") or link.get("term_id") or "")
-                        if link.get("role") == "direct" and link.get("resolution_status") == "resolved" and key.startswith("sk_") and key not in keys:
+                    for key in _point_keys(frozen, str(pid)):
+                        if key not in keys:
                             keys.append(key)
                 if not key_step_scope:
                     keys = []

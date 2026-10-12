@@ -569,6 +569,9 @@ def refresh_question_scope_summary(
         for link in links:
             if link.resolution_status != "resolved" or not link.stable_key:
                 continue
+            # 关键步骤（sk_）只是失分诊断层，不决定题目的小节归属。
+            if str(link.stable_key).startswith("sk_"):
+                continue
             if link.role == "direct":
                 direct_weight[link.stable_key] = (
                     direct_weight.get(link.stable_key, 0.0) + link.weight
@@ -735,8 +738,30 @@ def project_embedded_links(
     projected, _dropped = drop_later_chapter_supporting_links(
         _iter_embedded_links(evidence_payload)
     )
-    inserted = 0
+    # 客观题判定点不挂关键步骤；同一判定点 direct 关键步骤只保留第一条。
+    parts = evidence_payload.get("parts")
+    if parts is None:
+        parts = [evidence_payload] if "evidence_points" in evidence_payload else []
+    objective_parts = {
+        str(part.get("part_id") or "")
+        for part in parts
+        if isinstance(part, Mapping)
+        and str(part.get("response_mode") or "") == "exact_objective"
+    }
+    seen_direct_skill: set[tuple[str, str]] = set()
+    constrained: list[dict[str, Any]] = []
     for item in projected:
+        point_key = (str(item["part_id"]), str(item["evidence_point_id"]))
+        if str(item.get("stable_key") or "").startswith("sk_"):
+            if point_key[0] in objective_parts:
+                continue
+            if item["role"] == "direct":
+                if point_key in seen_direct_skill:
+                    continue
+                seen_direct_skill.add(point_key)
+        constrained.append(item)
+    inserted = 0
+    for item in constrained:
         if not item["term_id"]:
             continue
         release = item["release_hint"]

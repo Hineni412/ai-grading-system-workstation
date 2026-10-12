@@ -145,10 +145,13 @@ def _profile_parts(
         gaps: list[dict[str, Any]] = []
         knowledge: set[str] = set()
         coverage: set[str] = set()
+        nonobjective = 0
         for part in profile["evidence"].get("parts", []):
             part_id = str(part.get("part_id") or "")
+            objective = str(part.get("response_mode") or "") == "exact_objective"
             for point in part.get("evidence_points", []):
                 number += 1
+                nonobjective += 0 if objective else 1
                 point_id = str(point["evidence_point_id"])
                 point_link_rows = point_links.get(point_id, ())
                 has_skill_link = False
@@ -171,7 +174,7 @@ def _profile_parts(
                         hit = {"point_id": point_id, "point_label": f"判定点 {number}：{point.get('target', '')}"}
                         if hit not in skills.setdefault(link.stable_key, []):
                             skills[link.stable_key].append(hit)
-                if not has_skill_link:
+                if not has_skill_link and not objective:
                     gaps.append({"point_id": point_id, "part_id": part_id, "number": number,
                                  "target": str(point.get("target") or ""),
                                  "observable_evidence": str(point.get("observable_evidence") or ""),
@@ -179,6 +182,7 @@ def _profile_parts(
                                                  if link.role == "direct" and link.resolution_status == "resolved"
                                                  and link.stable_key and not link.stable_key.startswith("sk_")]})
         parts[qid] = {"skills": skills, "types": types, "point_count": number,
+                      "nonobjective_points": nonobjective,
                       "gaps": gaps, "evidence_version_id": str(profile["evidence_version_id"]),
                       "knowledge": knowledge, "coverage": coverage}
     return parts
@@ -274,7 +278,9 @@ def _assemble_skill_snapshot(
     return {"release": release, "nodes": nodes, "questions": questions, "members": dict(members),
             "volumes": dict(volumes), "by_skill": dict(by_skill), "by_question": by_question,
             "point_counts": point_counts, "no_usable": set(questions) - set(usable),
-            "unlinked": {qid for qid in questions if not by_question.get(qid)},
+            # 只含最终结果的客观题判定点不挂关键步骤，纯客观题不算“缺关键步骤”。
+            "unlinked": {qid for qid in questions if not by_question.get(qid)
+                         and parts.get(qid, {}).get("nonobjective_points", 0) > 0},
             "evidence_versions": evidence_versions, "gap_points": gap_points,
             "primary_types": tag_aggregates["primary_types"],
             "secondary_types": tag_aggregates["secondary_types"],
