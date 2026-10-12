@@ -25,7 +25,10 @@ export function questionTypeName(type: string): string {
 export function dimLine(d: PaperDimension): string {
   if (d.score == null) return '数据不足，未计入总分'
   switch (d.key) {
-    case 'coverage': return d.detail.missing.length ? `漏选更高频：${d.detail.missing[0]?.replace(/^题型·/, '')}${d.detail.missing.length > 1 ? `等${d.detail.missing.length}项` : ''}` : '已选的都是高频题型'
+    case 'coverage': {
+      const s = d.detail.suggestions
+      return s.length ? `${s.length} 处可替换：用 ${s[0]!.in_name.replace(/^题型·/, '')} 换 ${s[0]!.out_name.replace(/^题型·/, '')}` : '已选题型没有更优的同条件替换'
+    }
     case 'time_fit': return `中档生 ${d.detail.unfinished}/${d.detail.mid_students} 人疑似没做完`
     case 'distribution': return `均分 ${pct(d.detail.mean, 0)} · 40%以下占 ${pct(d.detail.floor_share, 0)}`
     case 'basic_hits': return `${d.detail.hit_items.length}/${d.detail.basic_items.length} 道基础题考出了问题`
@@ -37,7 +40,7 @@ export function dimLine(d: PaperDimension): string {
   }
 }
 export const rules = [
-  '典型题覆盖：每个小节按本卷实际选了几个题型（k 个）计，用所选题型的出现套数之和，比该节最高频 k 个题型的套数之和；常见难度 ≥7 的偏难题型没选不扣分；只作为次要题型考到算一半。',
+  '典型题覆盖：同一小节按同等名额比较，只计入本小节题目占用的名额；其他小节已考的题型不参与比较。没选的题型若更高频、难度在本节已选范围 ±1 内、且考前掌握不高于被替换项（至少低 10 个百分点，缺考前数据时只比频次），记一处可替换；一对一配对，每条已选名额至多被替换一次。选题效率为未被替换名额的套数（次要题算一半）占已选名额套数之比。常见难度 ≥7 的偏难候选不进入比较。考前掌握度为组卷同款当前掌握度，按本场时间截止且不含本场，只聚合本场参考学生。',
   '题量与时间：总分居中一半的学生里，末尾连续空白达满分 15% 的人数比例；≤5% 得 100，≥40% 得 0。空白是得 0 分且已有记录明确写未作答或 blank 类。',
   '分数分布：均分率在 60%至80%、标准差在 0.12至0.25、满分段（≥95%）和 40% 以下各不超过 10% 时满分，三项取平均。',
   '易错暴露：题库预估难度 <4 的基础题里，得分率 0.40至0.85 且区分度 ≥0.30 的分值占比。',

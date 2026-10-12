@@ -7,9 +7,15 @@ export type Prediction = 'harder' | 'easier' | 'none' | 'fit'
 export interface PaperError { reason: string; category: string | null; count: number }
 export interface CoverageType {
   key: string; name: string; group_count: number; credit: number; difficulty: number | null
-  hard: boolean; shown: boolean; skipped: boolean
+  hard: boolean; shown: boolean; prior: number | null
+  status: 'picked' | 'replace' | 'swap_in' | 'tradeoff' | 'out_of_range' | 'hard' | 'low' | 'elsewhere'
 }
-export interface CoverageSection { section: string; floor: number; ratio: number; types: CoverageType[] }
+export interface CoverageSuggestion {
+  out_key: string; out_name: string; out_count: number; out_prior: number | null; out_difficulty: number | null
+  in_key: string; in_name: string; in_count: number; in_prior: number | null; in_difficulty: number | null
+  by_frequency_only: boolean
+}
+export interface CoverageSection { section: string; floor: number; ratio: number; band: [number, number] | null; types: CoverageType[]; suggestions: CoverageSuggestion[] }
 export interface IndependencePair { a: string; b: string; q3: number }
 export interface IndependenceSameType extends IndependencePair { types: string[] }
 export interface PaperChain { parent: string; from: string; to: string; zero_from: number; zero_both: number; others_rate: number }
@@ -17,7 +23,7 @@ export interface OrderInversion { earlier: string; later: string; type: string; 
 export interface PaperReliability { alpha: number; units: number; students: number }
 interface DimensionBase { name: string; weight: number; score: number | null }
 export type PaperDimension =
-  | DimensionBase & { key: 'coverage'; detail: { sections: CoverageSection[]; missing: string[] } }
+  | DimensionBase & { key: 'coverage'; detail: { sections: CoverageSection[]; suggestions: CoverageSuggestion[] } }
   | DimensionBase & { key: 'time_fit'; detail: { mid_students: number; unfinished: number; share: number; last_item: string; last_item_blank_mid: number; order_inversions: OrderInversion[] } }
   | DimensionBase & { key: 'distribution'; detail: { mean: number; sd: number; ceiling_share: number; floor_share: number; bins: number[]; parts: { mean: number; spread: number; extremes: number } } }
   | DimensionBase & { key: 'basic_hits'; detail: { basic_items: string[]; hit_items: string[]; too_easy: string[]; weak: string[] } }
@@ -73,13 +79,16 @@ function dimension(v: unknown): PaperDimension {
   const d = object(v), dt = object(d.detail)
   const base = { name: str(d.name), weight: num(d.weight), score: nullable(d.score) }
   switch (d.key) {
-    case 'coverage': return { ...base, key: 'coverage', detail: { missing: list(dt.missing, str), sections: list(dt.sections, value => {
-      const s = object(value)
-      return { section: str(s.section), floor: num(s.floor), ratio: num(s.ratio), types: list(s.types, value => {
-        const t = object(value)
-        return { key: str(t.key), name: str(t.name), group_count: num(t.group_count), credit: num(t.credit), difficulty: nullable(t.difficulty), hard: bool(t.hard), shown: bool(t.shown), skipped: bool(t.skipped) }
-      }) }
-    }) } }
+    case 'coverage': { const sugg = (v: unknown): CoverageSuggestion => { const g = object(v)
+      return { out_key: str(g.out_key), out_name: str(g.out_name), out_count: num(g.out_count), out_prior: nullable(g.out_prior), out_difficulty: nullable(g.out_difficulty),
+        in_key: str(g.in_key), in_name: str(g.in_name), in_count: num(g.in_count), in_prior: nullable(g.in_prior), in_difficulty: nullable(g.in_difficulty), by_frequency_only: bool(g.by_frequency_only) } }
+      return { ...base, key: 'coverage', detail: { suggestions: list(dt.suggestions, sugg), sections: list(dt.sections, value => {
+        const s = object(value)
+        return { section: str(s.section), floor: num(s.floor), ratio: num(s.ratio), band: s.band === null ? null : list(s.band, num) as [number, number], suggestions: list(s.suggestions, sugg), types: list(s.types, value => {
+          const t = object(value)
+          return { key: str(t.key), name: str(t.name), group_count: num(t.group_count), credit: num(t.credit), difficulty: nullable(t.difficulty), hard: bool(t.hard), shown: bool(t.shown), prior: nullable(t.prior), status: str(t.status) as CoverageType['status'] }
+        }) }
+      }) } } }
     case 'time_fit': return { ...base, key: 'time_fit', detail: { mid_students: num(dt.mid_students), unfinished: num(dt.unfinished), share: num(dt.share), last_item: str(dt.last_item), last_item_blank_mid: num(dt.last_item_blank_mid), order_inversions: list(dt.order_inversions, v => {
       const e = object(v)
       return { earlier: str(e.earlier), later: str(e.later), type: str(e.type), earlier_rate: num(e.earlier_rate), later_rate: num(e.later_rate) }

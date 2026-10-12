@@ -9,6 +9,8 @@ HARD_TYPE = 7.0         # 题型常见难度（期中期末该题型各题题库
 MIN_SECTION_ITEMS = 2   # 本卷不少于 2 个评分项的小节才做覆盖对照
 TAIL_SHARE = 0.15       # 末尾连续空白达满分 15% 视为疑似没做完
 BASIC_MAX = 4.0         # 题库预估难度 < 4 为基础题
+WEAKER_MARGIN = 0.10    # 建议替换要求候选题型的考前掌握至少低 10 个百分点
+DIFF_SLACK = 1.0        # 替换比较限定候选难度在本节已选题型难度 ±1 内
 
 
 def clamp(v):
@@ -22,41 +24,88 @@ def ramp(x, zero, full):
     return clamp(100.0 * (x - zero) / (full - zero))
 
 
-def coverage(items, cov):
-    """每个小节按本卷实际选了 k 个题型计：选中题型的出现套数之和，
-    比上该小节可选（非偏难，或本卷已选）题型中最高频 k 个的套数之和。
-    只看已选名额是否给了高频题型，不要求塞满全部典型题。"""
-    secs, num, den, missing = [], 0.0, 0.0, []
+def coverage(items, cov, priors):
+    """同等名额替换规则：本节已选名额不变（只计本小节题目占用的名额，
+    其他小节已考的题型不参与比较），没选的题型更高频、难度在本节已选
+    范围 ±1 内、且考前掌握不更高（至少低 10 个百分点或缺数据）才算一处
+    可替换；被替换的名额不计入选题效率。"""
+    secs, num, den = [], 0.0, 0.0
     for sec in cov:
         if sec.get("chapter") is None or len(sec["items"]) < MIN_SECTION_ITEMS:
             continue
+        in_section = set(sec["items"])
         rows = []
         for t in sorted(sec["types"], key=lambda t: -int(t.get("group_count") or 0)):
             if int(t.get("group_count") or 0) < 2:
                 continue
-            credit = 1.0 if t["covered_by"] else (0.5 if t["secondary_by"] else 0.0)
+            primary_here = any(i in in_section for i in t["covered_by"])
+            secondary_here = any(i in in_section for i in t["secondary_by"])
+            credit = 1.0 if primary_here else (0.5 if secondary_here else 0.0)
             d = t.get("difficulty")
             rows.append({"key": t["key"], "name": t["name"], "group_count": int(t.get("group_count") or 0),
-                         "credit": credit, "difficulty": d, "hard": d is not None and d >= HARD_TYPE})
+                         "credit": credit, "difficulty": d, "hard": d is not None and d >= HARD_TYPE,
+                         "prior": priors.get(t["key"]),
+                         "elsewhere": credit == 0 and bool(t["covered_by"] or t["secondary_by"])})
         picked = [r for r in rows if r["credit"] > 0]
         if not picked:
             continue
-        ideal = [r for r in rows if r["credit"] > 0 or not r["hard"]][:len(picked)]
-        s_num = sum(r["group_count"] * r["credit"] for r in picked)
-        s_den = sum(r["group_count"] for r in ideal)
-        ratio = min(1.0, s_num / s_den) if s_den else 1.0
+        ds = [r["difficulty"] for r in picked if r["difficulty"] is not None]
+        band = (min(ds) - DIFF_SLACK, max(ds) + DIFF_SLACK) if ds else None
+
+        def feasible(s):
+            return (not s["hard"] and (band is None or s["difficulty"] is None
+                                       or band[0] <= s["difficulty"] <= band[1]))
+
+        def dominates(s, p):
+            return (feasible(s) and s["group_count"] > p["group_count"]
+                    and (s["prior"] is None or p["prior"] is None
+                         or s["prior"] <= p["prior"] - WEAKER_MARGIN))
+
+        skipped = [r for r in rows if r["credit"] == 0 and not r["elsewhere"]]
+        used, replaced, suggestions = set(), set(), []
+        for p in sorted(picked, key=lambda r: (r["group_count"], -(r["prior"] or 0))):
+            candidates = [s for s in skipped if s["key"] not in used and dominates(s, p)]
+            if not candidates:
+                continue
+            s = min(candidates, key=lambda r: (-r["group_count"],
+                                               r["prior"] if r["prior"] is not None else float("inf")))
+            used.add(s["key"])
+            replaced.add(p["key"])
+            suggestions.append({"out_key": p["key"], "out_name": p["name"], "out_count": p["group_count"],
+                                "out_prior": p["prior"], "out_difficulty": p["difficulty"],
+                                "in_key": s["key"], "in_name": s["name"], "in_count": s["group_count"],
+                                "in_prior": s["prior"], "in_difficulty": s["difficulty"],
+                                "by_frequency_only": s["prior"] is None or p["prior"] is None})
         floor = min(r["group_count"] for r in picked)
         for r in rows:
             r["shown"] = r["credit"] > 0 or r["group_count"] > floor
-            r["skipped"] = r["credit"] == 0 and r["group_count"] > floor and not r["hard"]
-        missing += [r for r in rows if r["skipped"]]
-        num += ratio * s_den
+            if r["credit"] > 0:
+                r["status"] = "replace" if r["key"] in replaced else "picked"
+            elif r["elsewhere"]:
+                r["status"] = "elsewhere"
+            elif r["key"] in used:
+                r["status"] = "swap_in"
+            elif r["hard"]:
+                r["status"] = "hard"
+            elif not feasible(r) and r["group_count"] > floor:
+                r["status"] = "out_of_range"
+            elif r["group_count"] > floor:
+                r["status"] = "tradeoff"
+            else:
+                r["status"] = "low"
+        s_num = sum(r["group_count"] * r["credit"] for r in picked if r["key"] not in replaced)
+        s_den = sum(r["group_count"] * r["credit"] for r in picked)
+        num += s_num
         den += s_den
-        secs.append({"section": sec["label"], "floor": floor, "ratio": round(ratio, 3), "types": rows})
+        secs.append({"section": sec["label"], "floor": floor,
+                     "ratio": round(s_num / s_den, 3) if s_den else 1.0,
+                     "band": [round(band[0], 1), round(band[1], 1)] if band else None,
+                     "types": rows, "suggestions": suggestions})
     if not den:
-        return None, {"sections": secs, "missing": []}
-    missing.sort(key=lambda r: -r["group_count"])
-    return round(100 * num / den), {"sections": secs, "missing": [r["name"] for r in missing][:3]}
+        return None, {"sections": secs, "suggestions": []}
+    all_suggestions = sorted((g for s in secs for g in s["suggestions"]),
+                             key=lambda g: -(g["in_count"] - g["out_count"]))
+    return round(100 * num / den), {"sections": secs, "suggestions": all_suggestions}
 
 
 def time_fit(order, max_by_id, scores_by_student, blank_ids):
@@ -261,11 +310,11 @@ def order_inversions(questions, siblings, scores, complete):
                   key=lambda e: -(e["later_rate"] - e["earlier_rate"]))[:5]
 
 
-def evaluate(items, cov, order, max_by_id, scores_by_student, blank_ids, independence):
+def evaluate(items, cov, priors, order, max_by_id, scores_by_student, blank_ids, independence):
     totals = [sum(v.values()) for v in scores_by_student.values()]
     full = sum(max_by_id.values())
     results = {
-        "coverage": coverage(items, cov),
+        "coverage": coverage(items, cov, priors),
         "time_fit": time_fit(order, max_by_id, scores_by_student, blank_ids),
         "distribution": distribution(totals, full),
         "basic_hits": basic_hits(items),
@@ -386,6 +435,42 @@ def _evidence_parts(data, data_root, bank_map):
             result[item_ref] = resolved
     return result
 
+def _pre_exam_type_priors(repositories, bank_path, data_root, session_id, data):
+    """各题型在本场之前的班级当前掌握度（组卷同款口径，只算本场参考学生）。
+    任何一步不可用都返回空表，按考前无数据处理，不阻断页面。"""
+    from datetime import timedelta
+    import sqlite3
+    from integration.diagnosis_profile_service import DiagnosisProfileService
+    from question_bank.current_knowledge import CurrentKnowledgeUnavailable
+    from question_bank.mastery.current import _parse_datetime, aggregate_current_mastery
+    from question_bank.solution_evidence.part_assessments import reading
+    session = repositories.sessions.get_grading_session(int(session_id)) or {}
+    volume = str(session.get("curriculum_volume_id") or "").strip()
+    if not volume or bank_path is None or data_root is None or not data.students:
+        return {}
+    try:
+        exam_scope = {"mode": "semester", "curriculum_volume_id": volume}
+        with reading(bank_path) as connection:
+            service = DiagnosisProfileService(repositories.db_path, bank_path,
+                                              grading_db=repositories,
+                                              question_bank_connection=connection,
+                                              data_root=data_root)
+            session_time = _parse_datetime(
+                service.mastery_session_times(exam_scope=exam_scope).get(str(session_id)))
+            if session_time is None:
+                return {}
+            cutoff = session_time - timedelta(seconds=1)  # 严格早于本场，不纳入本场作答
+            per_student = service.semester_mastery({"exam_scope": exam_scope},
+                                                   as_of=cutoff, evidence_until=cutoff)
+        reference = {str(s.student_id) for s in data.students}
+        own = {key: item for key, item in per_student.items() if key[0] in reference}
+        return {key: round(item.value, 3)
+                for key, item in aggregate_current_mastery(own).items()
+                if item.value is not None}
+    except (CurrentKnowledgeUnavailable, OSError, sqlite3.Error, ValueError, TypeError):
+        return {}
+
+
 def _coverage_materials(items, materials, difficulties, read_service):
     from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
     section_volumes = {}
@@ -490,8 +575,13 @@ def _code_stamps():
     import backend.class_analysis
     import backend.reporting.analysis_report_exporter
     import backend.session_analysis
+    import integration.diagnosis_profile_service
+    import question_bank.mastery.current
+    import question_bank.mastery.model
     modules = (sys.modules[__name__], backend.class_analysis,
-               backend.session_analysis, backend.reporting.analysis_report_exporter)
+               backend.session_analysis, backend.reporting.analysis_report_exporter,
+               question_bank.mastery.current, question_bank.mastery.model,
+               integration.diagnosis_profile_service)
     return tuple((str(getattr(m, "__file__", None)),
                   _stamp(getattr(m, "__file__", None))) for m in modules)
 
@@ -534,6 +624,7 @@ def _build_paper_review(db, session_id, reports_dir):
     )
     from backend.error_patterns import session_bank_map
     from backend.reporting.analysis_report_exporter import build_class_page_data, _personal_cell_status
+    from backend.repositories.access import as_grading_repositories
     from backend.session_analysis import parent_question_id, question_bank_db_path, infer_data_root
     from question_bank.services.question_read_service import QuestionBankReadService
 
@@ -592,13 +683,15 @@ def _build_paper_review(db, session_id, reports_dir):
             "typical_error": typical, "distractors": None})
     read_service = QuestionBankReadService(bank_path, data_root=infer_data_root(db.db_path)) if bank_path else None
     cov, coverage_types, unlinked = _coverage_materials(items, materials, difficulties, read_service)
+    priors = _pre_exam_type_priors(as_grading_repositories(db), bank_path,
+                                   infer_data_root(db.db_path), session_id, data)
     blank_ids = {q.question_id: {sid for sid, row in records.items() if q.question_id in row and _personal_cell_status(row[q.question_id]) == "blank"} for q in questions}
     complete = [sid for sid, row in scores.items() if all(q.question_id in row for q in questions)]
     cov_names = {t["key"]: t["name"] for sec in cov for t in sec["types"]}
     ind_score, ind_detail = independence(
         questions, siblings, scores, complete, bank_map, materials,
         lambda key: _type_name(key, read_service, cov_names))
-    evaluation = evaluate(items, cov, [q.question_id for q in questions],
+    evaluation = evaluate(items, cov, priors, [q.question_id for q in questions],
                           {q.question_id: q.max_score for q in questions}, scores, blank_ids,
                           (ind_score, ind_detail))
     next(d["detail"] for d in evaluation["dimensions"] if d["key"] == "time_fit")["order_inversions"] = \

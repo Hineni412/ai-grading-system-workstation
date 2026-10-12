@@ -65,7 +65,7 @@ function toggle(key: PaperDimension['key']) { openKey.value = openKey.value === 
     <h3>{{ open.name }} · {{ open.score == null ? '数据不足' : `${open.score} 分` }}</h3>
     <p v-if="open.score == null" class="pr-hint">该维度数据不足，未计入总分。</p>
     <template v-else-if="open.key === 'coverage'">
-      <div v-for="s in open.detail.sections" :key="s.section" class="pr-cov-row"><b>{{ s.section }}</b><span class="pr-bar"><i :style="{width: `${s.ratio*100}%`}"></i></span><b>{{ pct(s.ratio,0) }}</b><span><span v-for="t in s.types.filter(t => t.skipped)" :key="t.key" class="pr-chip amber">{{ t.name.replace(/^题型·/, '') }}</span></span></div>
+      <div v-for="s in open.detail.sections" :key="s.section" class="pr-cov-row"><b>{{ s.section }}</b><span class="pr-bar"><i :style="{width: `${s.ratio*100}%`}"></i></span><b>{{ pct(s.ratio,0) }}</b><span><span v-for="g in s.suggestions.slice(0,2)" :key="g.in_key" class="pr-cov-swap">可考虑用 {{ g.in_name.replace(/^题型·/, '') }} 换 {{ g.out_name.replace(/^题型·/, '') }}</span></span></div>
       <a href="#paper-coverage">查看全部题型 ↓</a>
     </template>
     <template v-else-if="open.key === 'time_fit'">
