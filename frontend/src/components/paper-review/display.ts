@@ -18,6 +18,10 @@ export function dots(r: number | null): number {
 export function band(score: number | null): string {
   return score == null ? 'na' : score >= 80 ? 'good' : score >= 60 ? 'amber' : 'red'
 }
+const questionTypeNames: Record<string, string> = { choice: '选择题', multiple_choice: '多选题', fill_blank: '填空题' }
+export function questionTypeName(type: string): string {
+  return questionTypeNames[type] ?? (type.endsWith('题') ? type : '解答题')
+}
 export function dimLine(d: PaperDimension): string {
   if (d.score == null) return '数据不足，未计入总分'
   switch (d.key) {
@@ -26,6 +30,10 @@ export function dimLine(d: PaperDimension): string {
     case 'distribution': return `均分 ${pct(d.detail.mean, 0)} · 40%以下占 ${pct(d.detail.floor_share, 0)}`
     case 'basic_hits': return `${d.detail.hit_items.length}/${d.detail.basic_items.length} 道基础题考出了问题`
     case 'discrimination': return d.detail.low.length ? `${d.detail.low.length} 题区分偏弱：${d.detail.low.join('、')}` : '每题都能分出强弱'
+    case 'independence': {
+      const pairs = d.detail.pairs
+      return pairs.length ? `${pairs.length} 组同题型作答联动：${pairs[0]!.a}–${pairs[0]!.b}${pairs.length > 1 ? ' 等' : ''}` : '没有发现重复考查'
+    }
   }
 }
 export const rules = [
@@ -34,7 +42,11 @@ export const rules = [
   '分数分布：均分率在 60%至80%、标准差在 0.12至0.25、满分段（≥95%）和 40% 以下各不超过 10% 时满分，三项取平均。',
   '易错暴露：题库预估难度 <4 的基础题里，得分率 0.40至0.85 且区分度 ≥0.30 的分值占比。',
   '题目区分：按分值加权，区分度 ≥0.4 记满分，0.3至0.4 记 0.8，0.2至0.3 记 0.4，<0.2 或为空记 0。',
-  '总分：五项按权重加权平均；数据不足的项不计入，权重按剩余项重新分配。',
+  '题间独立：只看每题都作答的学生，把每道整题总分对其余题得分回归取残差，再两两算相关；相关明显高出全场平均（≥0.20）判为作答联动。联动且题库题型相同的题对按簇合并，簇内除最大分值题以外的分值记重复分；重复分占满分 ≤5% 得 100，≥30% 得 0。',
+  '总分：六项按权重加权平均（典型题覆盖 20、题量与时间 10、分数分布 15、易错暴露 30、题目区分 15、题间独立 10）；数据不足的项不计入，权重按剩余项重新分配。',
+  '信度 α：整题总分的内部一致性，只显示不计分。',
+  '题序倒挂：同题型内靠前的整题明显难于靠后的整题，只显示不计分。',
+  '连锁失分：大题内前问 0 分的学生后问也 0 分，前问结果被后问使用时属正常设计，只显示不计分。',
   '题型常见难度：期中期末卷里该题型各题题库难度的中位数，按整题难度，含多问大题时可能偏高。',
   '以上分界线是当前初值，待和老师一起校准。',
 ]

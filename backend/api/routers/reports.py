@@ -29,8 +29,6 @@ from backend.api.schemas.reports import (
     CausePatternEditResponse,
     ClassAnalysisResponse,
     PaperReviewResponse,
-    PaperReviewMarkRequest,
-    PaperReviewMarksResponse,
     ClassAnalysisSettingsRequest,
     ClassAnalysisSettingsResponse,
     ReportExportContextResponse,
@@ -707,23 +705,3 @@ def get_paper_review(
 
     _require_session(db.sessions, session_id)
     return PaperReviewResponse(**build_paper_review(db, session_id, reports_dir))
-
-
-@router.put("/sessions/{session_id}/paper-review/marks/{parent_question_id}", response_model=PaperReviewMarksResponse)
-def put_paper_review_mark(
-    session_id: int,
-    parent_question_id: str,
-    request: PaperReviewMarkRequest,
-    db: GradingRepositoryAccess = Depends(get_grading_db),
-    reports_dir: Path = Depends(get_reports_dir),
-) -> PaperReviewMarksResponse:
-    from backend.reporting.paper_review import save_paper_review_mark
-
-    _require_session(db.sessions, session_id)
-    try:
-        result = save_paper_review_mark(db, session_id, parent_question_id, request.mark, reports_dir)
-    except ValueError as exc:
-        raise ApiError(422, "invalid_paper_review_parent", str(exc)) from exc
-    except OSError as exc:
-        raise ApiError(409, "paper_review_mark_save_failed", str(exc)) from exc
-    return PaperReviewMarksResponse(**result)

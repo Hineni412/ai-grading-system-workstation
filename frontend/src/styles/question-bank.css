@@ -2450,10 +2450,6 @@
   .question-bank > header.page-header .page-header__navigation { grid-area: tabs; margin-left: 0; min-height: 34px; }
 }
 
-.question-bank .page-tabs, .assembly .page-tabs { align-items: stretch; gap: 2px; }
-.question-bank .page-tabs button, .assembly .page-tabs button { padding: 0 12px; font-size: var(--font-size-dense); position: relative; white-space: nowrap; }
-.question-bank .page-tabs .is-active, .assembly .page-tabs .is-active { box-shadow: none; font-weight: var(--font-weight-medium); }
-.question-bank .page-tabs .is-active::after, .assembly .page-tabs .is-active::after { content: ''; position: absolute; bottom: 0; left: 10px; right: 10px; height: 2px; background: var(--color-accent); }
 .qb-workspace { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; padding: var(--page-inset-top) var(--page-inset-x) var(--space-5); overflow: hidden; }
 #qb-library-actions { display: flex; align-items: center; gap: 14px; }
 .question-bank .paper-library__header.is-relocated { display: none; }

@@ -258,15 +258,5 @@ class PaperReviewResponse(BaseModel):
     groups: list[dict[str, Any]]
     coverage_types: dict[str, dict[str, Any]]
     unlinked_sections: int = 0
+    reliability: dict[str, Any] | None = None
     review_lists: dict[str, list[dict[str, str]]]
-    marks: dict[str, Literal["keep", "fix"]]
-
-
-class PaperReviewMarkRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    mark: Literal["keep", "fix"] | None
-
-
-class PaperReviewMarksResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    marks: dict[str, Literal["keep", "fix"]]

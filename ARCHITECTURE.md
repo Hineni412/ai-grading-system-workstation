@@ -107,7 +107,7 @@ JobManager 在应用进程内用线程池执行任务，阅卷与扫描流程使
 
 | 领域 | 入口 |
 |---|---|
-| 试卷评价 | `backend/reporting/paper_review.py` 只读组合班级分析的成绩快照、已保存错因、题库关联与难度、所属册章节考情，计算五维评价和整题汇总。`reports.py` 提供 GET 读取和 PUT 留改标记；标记复用 `ClassAnalysisStateStore` 的 `paper_review_marks` 字段，不新增数据库或迁移 |
+| 试卷评价 | `backend/reporting/paper_review.py` 只读组合班级分析的成绩快照、已保存错因、题库关联与难度、所属册章节考情，计算六维评价和整题汇总。`reports.py` 提供 GET 读取 |
 | 当前知识标准 | `question_bank/taxonomy/curriculum_catalog.py` |
 | 个人报告在线读取与批量导出 | `backend/personal_reports.py` 负责输入指纹、结果状态与只读渲染，叙述按学生保存于 `user_data/reports/.personal_reports/session_<场次>/<学生>.json`；`backend/jobs/personal_report_bundle.py` 只读叙述后暂存、打包并发布下载副本，下载成功后删除。在线与离线共用 `backend/reporting/analysis_report_exporter.py` 的个人报告渲染器，在线作答图从受控原卷裁切返回，不保存副本 |
 | 关键步骤诊断 | `backend/step_diagnosis.py` 在现有班级分析、学生作答证据和个人报告读取阶段准备诊断，复用有效教师步骤校验、判定点依赖观察与考试冻结快照的原始 sk_ 关联。题库以原位置只读连接提供活动名称及已确认步骤错法；不写题库或诊断持久存储，不改变掌握度、成绩与教师最终分锁 |

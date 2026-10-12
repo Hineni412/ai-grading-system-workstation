@@ -10,13 +10,19 @@ export interface CoverageType {
   hard: boolean; shown: boolean; skipped: boolean
 }
 export interface CoverageSection { section: string; floor: number; ratio: number; types: CoverageType[] }
+export interface IndependencePair { a: string; b: string; q3: number }
+export interface IndependenceSameType extends IndependencePair { types: string[] }
+export interface PaperChain { parent: string; from: string; to: string; zero_from: number; zero_both: number; others_rate: number }
+export interface OrderInversion { earlier: string; later: string; type: string; earlier_rate: number; later_rate: number }
+export interface PaperReliability { alpha: number; units: number; students: number }
 interface DimensionBase { name: string; weight: number; score: number | null }
 export type PaperDimension =
   | DimensionBase & { key: 'coverage'; detail: { sections: CoverageSection[]; missing: string[] } }
-  | DimensionBase & { key: 'time_fit'; detail: { mid_students: number; unfinished: number; share: number; last_item: string; last_item_blank_mid: number } }
+  | DimensionBase & { key: 'time_fit'; detail: { mid_students: number; unfinished: number; share: number; last_item: string; last_item_blank_mid: number; order_inversions: OrderInversion[] } }
   | DimensionBase & { key: 'distribution'; detail: { mean: number; sd: number; ceiling_share: number; floor_share: number; bins: number[]; parts: { mean: number; spread: number; extremes: number } } }
   | DimensionBase & { key: 'basic_hits'; detail: { basic_items: string[]; hit_items: string[]; too_easy: string[]; weak: string[] } }
   | DimensionBase & { key: 'discrimination'; detail: { low: string[] } }
+  | DimensionBase & { key: 'independence'; detail: { pairs: IndependenceSameType[]; linked_other: IndependencePair[]; overlap_points: number; share: number; mean_q3: number | null; chains: PaperChain[] } }
 export interface PaperPoint {
   id: string; max: number; rate: number; class_rates: Record<string, number | null>; r_rest: number | null
   predicted_difficulty: number | null; quadrant: Quadrant; pred_flag: Prediction
@@ -35,7 +41,7 @@ export interface PaperReview {
   total: number | null; dimensions: PaperDimension[]; items: PaperItem[]; groups: PaperGroup[]
   coverage_types: Record<string, { covered_by: string[]; secondary_by: string[]; typical: { role: string; stem: string }[] }>
   unlinked_sections: number; review_lists: Record<PaperMark, { id: string; reason: string }[]>
-  marks: Record<string, PaperMark>
+  reliability: PaperReliability | null
 }
 
 function object(v: unknown): Record<string, unknown> {
@@ -54,7 +60,6 @@ function list<T>(v: unknown, decode: (value: unknown) => T): T[] {
 function dictionary<T>(v: unknown, decode: (value: unknown) => T): Record<string, T> {
   return Object.fromEntries(Object.entries(object(v)).map(([key, value]) => [key, decode(value)]))
 }
-function mark(v: unknown): PaperMark { if (v !== 'keep' && v !== 'fix') throw new Error('标记不正确'); return v }
 function paperError(v: unknown): PaperError { const d = object(v); return { reason: str(d.reason), category: nullableText(d.category), count: num(d.count) } }
 function point(v: unknown): PaperPoint {
   const d = object(v)
@@ -75,7 +80,15 @@ function dimension(v: unknown): PaperDimension {
         return { key: str(t.key), name: str(t.name), group_count: num(t.group_count), credit: num(t.credit), difficulty: nullable(t.difficulty), hard: bool(t.hard), shown: bool(t.shown), skipped: bool(t.skipped) }
       }) }
     }) } }
-    case 'time_fit': return { ...base, key: 'time_fit', detail: { mid_students: num(dt.mid_students), unfinished: num(dt.unfinished), share: num(dt.share), last_item: str(dt.last_item), last_item_blank_mid: num(dt.last_item_blank_mid) } }
+    case 'time_fit': return { ...base, key: 'time_fit', detail: { mid_students: num(dt.mid_students), unfinished: num(dt.unfinished), share: num(dt.share), last_item: str(dt.last_item), last_item_blank_mid: num(dt.last_item_blank_mid), order_inversions: list(dt.order_inversions, v => {
+      const e = object(v)
+      return { earlier: str(e.earlier), later: str(e.later), type: str(e.type), earlier_rate: num(e.earlier_rate), later_rate: num(e.later_rate) }
+    }) } }
+    case 'independence': return { ...base, key: 'independence', detail: {
+      pairs: list(dt.pairs, v => { const p = object(v); return { a: str(p.a), b: str(p.b), types: list(p.types, str), q3: num(p.q3) } }),
+      linked_other: list(dt.linked_other, v => { const p = object(v); return { a: str(p.a), b: str(p.b), q3: num(p.q3) } }),
+      overlap_points: num(dt.overlap_points), share: num(dt.share), mean_q3: nullable(dt.mean_q3),
+      chains: list(dt.chains, v => { const c = object(v); return { parent: str(c.parent), from: str(c.from), to: str(c.to), zero_from: num(c.zero_from), zero_both: num(c.zero_both), others_rate: num(c.others_rate) } }) } }
     case 'distribution': { const p = object(dt.parts); return { ...base, key: 'distribution', detail: { mean: num(dt.mean), sd: num(dt.sd), ceiling_share: num(dt.ceiling_share), floor_share: num(dt.floor_share), bins: list(dt.bins, num), parts: { mean: num(p.mean), spread: num(p.spread), extremes: num(p.extremes) } } } }
     case 'basic_hits': return { ...base, key: 'basic_hits', detail: { basic_items: list(dt.basic_items, str), hit_items: list(dt.hit_items, str), too_easy: list(dt.too_easy, str), weak: list(dt.weak, str) } }
     case 'discrimination': return { ...base, key: 'discrimination', detail: { low: list(dt.low, str) } }
@@ -101,11 +114,9 @@ function decodePaperReview(v: unknown): PaperReview {
     }), coverage_types: dictionary(d.coverage_types, v => {
       const t = object(v)
       return { covered_by: list(t.covered_by, str), secondary_by: list(t.secondary_by, str), typical: list(t.typical, v => { const r = object(v); return { role: str(r.role), stem: str(r.stem) } }) }
-    }), unlinked_sections: num(d.unlinked_sections), review_lists: { fix: list(lists.fix, reviewEntry), keep: list(lists.keep, reviewEntry) }, marks: dictionary(d.marks, mark) }
+    }), unlinked_sections: num(d.unlinked_sections), review_lists: { fix: list(lists.fix, reviewEntry), keep: list(lists.keep, reviewEntry) },
+    reliability: d.reliability === null ? null : (() => { const r = object(d.reliability); return { alpha: num(r.alpha), units: num(r.units), students: num(r.students) } })() }
 }
 export const paperReviewApi = {
   get: (sessionId: number, signal?: AbortSignal) => apiClient.request(`/api/sessions/${sessionId}/paper-review`, { decode: decodePaperReview, signal, timeoutMs: 120000 }),
-  setMark: (sessionId: number, parentId: string, value: PaperMark | null) => apiClient.request(`/api/sessions/${sessionId}/paper-review/marks/${encodeURIComponent(parentId)}`, {
-    method: 'PUT', body: { mark: value }, decode: v => dictionary(object(v).marks, mark),
-  }),
 }

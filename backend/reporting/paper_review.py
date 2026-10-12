@@ -1,10 +1,10 @@
-"""试卷评价的只读汇总、五维评分与整题标记。"""
+"""试卷评价的只读汇总与维度评分。"""
 import statistics as st
 
-WEIGHTS = {"coverage": 20, "time_fit": 15, "distribution": 15,
-           "basic_hits": 35, "discrimination": 15}
+WEIGHTS = {"coverage": 20, "time_fit": 10, "distribution": 15,
+           "basic_hits": 30, "discrimination": 15, "independence": 10}
 NAMES = {"coverage": "典型题覆盖", "time_fit": "题量与时间", "distribution": "分数分布",
-         "basic_hits": "易错暴露", "discrimination": "题目区分"}
+         "basic_hits": "易错暴露", "discrimination": "题目区分", "independence": "题间独立"}
 HARD_TYPE = 7.0         # 题型常见难度（期中期末该题型各题题库难度中位数）≥7 视为偏难，漏选不扣分
 MIN_SECTION_ITEMS = 2   # 本卷不少于 2 个评分项的小节才做覆盖对照
 TAIL_SHARE = 0.15       # 末尾连续空白达满分 15% 视为疑似没做完
@@ -121,7 +121,147 @@ def discrimination(items):
     return round(score), {"low": [it["id"] for it in items if (it["r_rest"] or 0) < 0.3]}
 
 
-def evaluate(items, cov, order, max_by_id, scores_by_student, blank_ids):
+def _residual(values, rest):
+    """values 对 rest 一元回归的残差；rest 无波动时只做去均值。"""
+    vbar, rbar = st.fmean(values), st.fmean(rest)
+    var = sum((r - rbar) ** 2 for r in rest)
+    beta = sum((r - rbar) * (v - vbar) for r, v in zip(rest, values)) / var if var else 0.0
+    return [v - vbar - beta * (r - rbar) for r, v in zip(rest, values)]
+
+
+def _clusters(pairs):
+    """冗余题对做并查集，返回成员数 ≥2 的簇。"""
+    root = {}
+
+    def find(x):
+        root.setdefault(x, x)
+        while root[x] != x:
+            root[x] = root[root[x]]
+            x = root[x]
+        return x
+
+    for a, b in pairs:
+        root[find(a)] = find(b)
+    clusters = {}
+    for a, b in pairs:
+        clusters.setdefault(find(a), set()).update((a, b))
+    return list(clusters.values())
+
+
+def _chains(siblings, scores, complete):
+    """大题内相邻小问：前问 0 分的学生后问也 0 分的比例异常偏高（提示，不计分）。"""
+    flagged = []
+    for parent, parts in siblings.items():
+        if len(parts) < 2:
+            continue
+        best = None
+        for p, q in zip(parts, parts[1:]):
+            zero = [sid for sid in complete if scores[sid][p] <= 1e-9]
+            others = [sid for sid in complete if scores[sid][p] > 1e-9]
+            if len(zero) < 5 or not others:
+                continue
+            both = sum(scores[sid][q] <= 1e-9 for sid in zero)
+            ch, base = both / len(zero), sum(scores[sid][q] <= 1e-9 for sid in others) / len(others)
+            if ch >= 0.8 and ch - base >= 0.5 and (best is None or ch - base > best[0]):
+                best = (ch - base, {"parent": parent, "from": p, "to": q,
+                                    "zero_from": len(zero), "zero_both": both,
+                                    "others_rate": round(base, 3)})
+        if best is not None:
+            flagged.append(best[1])
+    return flagged
+
+
+def _type_name(key, read_service, cov_names):
+    """题型键的显示名：优先题库现行知识节点短名，退回覆盖小节里的题型名。"""
+    from question_bank.services.question_skill_index import short_node_name
+    resolver = getattr(read_service, "current_knowledge", None) if read_service else None
+    node = resolver.node(key) if resolver else None
+    return short_node_name(str(node.display_name)) if node is not None else cov_names.get(key)
+
+
+def independence(questions, siblings, scores, complete, bank_map, materials, type_name):
+    """整题两两比较：剔除其余题得分后残差仍明显相关且题型相同，视为重复考查。"""
+    parents = [p for p, _ in siblings.items()]
+    types = {p: set(materials.get(bank_map.get(p), {}).get("primary") or ()) for p in parents}
+    detail = {"pairs": [], "linked_other": [], "overlap_points": 0,
+              "share": 0.0, "mean_q3": None,
+              "chains": _chains(siblings, scores, complete)}
+    if len(complete) < 10 or len(parents) < 3 or sum(bool(t) for t in types.values()) < 2:
+        return None, detail
+    max_by_id = {q.question_id: q.max_score for q in questions}
+    pmax = {p: sum(max_by_id[part] for part in parts) for p, parts in siblings.items()}
+    full = sum(pmax.values())
+    ptotal = {p: [sum(scores[sid][part] for part in parts) for sid in complete]
+              for p, parts in siblings.items()}
+    total = [sum(scores[sid].values()) for sid in complete]
+    q3 = {}
+    for i, a in enumerate(parents):
+        for b in parents[i + 1:]:
+            rest = [t - pa - pb for t, pa, pb in zip(total, ptotal[a], ptotal[b])]
+            q3[(a, b)] = pearson(_residual(ptotal[a], rest), _residual(ptotal[b], rest))
+    values = [q for q in q3.values() if q is not None]
+    mean_q3 = st.fmean(values) if values else None
+    pairs, linked_other = [], []
+    for (a, b), q in q3.items():
+        if q is None or mean_q3 is None or q - mean_q3 < 0.20:
+            continue
+        shared = types[a] & types[b]
+        if shared:
+            pairs.append({"a": a, "b": b, "q3": q,
+                          "types": sorted(n for n in (type_name(k) for k in shared) if n)})
+        else:
+            linked_other.append({"a": a, "b": b, "q3": round(q, 2)})
+    pairs.sort(key=lambda e: -e["q3"])
+    linked_other.sort(key=lambda e: -e["q3"])
+    clusters = _clusters([(e["a"], e["b"]) for e in pairs])
+    overlap = sum(sum(pmax[p] for p in c) - max(pmax[p] for p in c) for c in clusters)
+    share = overlap / full if full else 0.0
+    score = round(ramp(share, 0.30, 0.05))
+    detail.update(pairs=[{**e, "q3": round(e["q3"], 2)} for e in pairs],
+                  linked_other=linked_other[:3], overlap_points=overlap,
+                  share=round(share, 3),
+                  mean_q3=round(mean_q3, 3) if mean_q3 is not None else None)
+    return score, detail
+
+
+def reliability(siblings, scores, complete):
+    """整题总分的 Cronbach α；学生或整题不足时返回 None。"""
+    n, k = len(complete), len(siblings)
+    if n < 10 or k < 3:
+        return None
+    ptotal = [[sum(scores[sid][part] for part in parts) for sid in complete]
+              for _, parts in siblings.items()]
+    total_var = st.pvariance([sum(scores[sid].values()) for sid in complete])
+    if total_var <= 0:
+        return None
+    alpha = k / (k - 1) * (1 - sum(st.pvariance(t) for t in ptotal) / total_var)
+    return {"alpha": round(alpha, 3), "units": k, "students": n}
+
+
+def order_inversions(questions, siblings, scores, complete):
+    """同题型内靠前的整题明显难于靠后的整题（提示，不计分）。"""
+    if not complete:
+        return []
+    max_by_id = {q.question_id: q.max_score for q in questions}
+    type_by_id = {q.question_id: q.question_type for q in questions}
+    parents = list(siblings.items())
+    rate = {p: st.fmean(sum(scores[sid][part] for part in parts) for sid in complete)
+            / sum(max_by_id[part] for part in parts) for p, parts in parents}
+    ptype = {p: type_by_id.get(parts[0]) for p, parts in parents}
+    best = {}
+    for i, (a, _) in enumerate(parents):
+        for b, _ in parents[i + 1:]:
+            if not ptype[a] or ptype[b] != ptype[a]:
+                continue
+            gap = rate[b] - rate[a]
+            if rate[a] + 0.25 < rate[b] and (a not in best or gap > best[a][0]):
+                best[a] = (gap, {"earlier": a, "later": b, "type": ptype[a],
+                                 "earlier_rate": round(rate[a], 3), "later_rate": round(rate[b], 3)})
+    return sorted((e for _, e in best.values()),
+                  key=lambda e: -(e["later_rate"] - e["earlier_rate"]))[:5]
+
+
+def evaluate(items, cov, order, max_by_id, scores_by_student, blank_ids, independence):
     totals = [sum(v.values()) for v in scores_by_student.values()]
     full = sum(max_by_id.values())
     results = {
@@ -130,6 +270,7 @@ def evaluate(items, cov, order, max_by_id, scores_by_student, blank_ids):
         "distribution": distribution(totals, full),
         "basic_hits": basic_hits(items),
         "discrimination": discrimination(items),
+        "independence": independence,
     }
     dims = [{"key": k, "name": NAMES[k], "weight": WEIGHTS[k], "score": s, "detail": d}
             for k, (s, d) in results.items()]
@@ -302,11 +443,57 @@ def _coverage_materials(items, materials, difficulties, read_service):
     return coverage, coverage_types, sum(section not in sections for section in touched)
 
 
-def public_marks(state):
-    return {qid: value["mark"] for qid, value in ((state or {}).get("paper_review_marks") or {}).items()
-            if isinstance(value, dict) and value.get("mark") in {"keep", "fix"}}
+_CACHE: dict[int, tuple[tuple, dict]] = {}
+
+
+def _stamp(path):
+    """文件的 (mtime_ns, size)；缺失或不可统计记 None。"""
+    if path is None:
+        return None
+    import os
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _paper_review_signature(db, session_id, reports_dir):
+    """试卷评价全部只读输入的廉价签名；任一输入文件变化即重新计算。"""
+    from pathlib import Path
+    from backend.class_analysis import ClassAnalysisStateStore
+    from backend.repositories.access import as_grading_repositories
+    from backend.session_analysis import infer_data_root, question_bank_db_path
+    from path_manager import resolve_stored_file_path
+    from question_bank.solution_evidence.evidence_snapshot import snapshot_path
+
+    repositories = as_grading_repositories(db)
+    db_path = repositories.db_path
+    bank_path = question_bank_db_path(db_path)
+    data_root = infer_data_root(db_path)
+    session_row = repositories.sessions.get_grading_session(int(session_id)) or {}
+    paths = [db_path, Path(f"{db_path}-wal"), bank_path,
+             Path(f"{bank_path}-wal") if bank_path else None,
+             ClassAnalysisStateStore(reports_dir)._path(session_id)]
+    if session_row.get("rubric_path"):
+        paths.append(resolve_stored_file_path(session_row["rubric_path"], data_root=data_root))
+    if data_root is not None:
+        paths.append(snapshot_path(data_root / "config" / "uploaded", session_id))
+    return tuple((str(path), _stamp(path)) if path is not None else None for path in paths)
+
 
 def build_paper_review(db, session_id, reports_dir):
+    """按输入文件签名做进程内缓存：签名未变直接返回上次结果。"""
+    signature = _paper_review_signature(db, session_id, reports_dir)
+    cached = _CACHE.get(int(session_id))
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    result = _build_paper_review(db, session_id, reports_dir)
+    _CACHE[int(session_id)] = (signature, result)
+    return result
+
+
+def _build_paper_review(db, session_id, reports_dir):
     from collections import Counter
     from backend.class_analysis import (
         ClassAnalysisStateStore, assemble_cause_data, build_cause_inputs,
@@ -325,8 +512,8 @@ def build_paper_review(db, session_id, reports_dir):
         "graded_at": data.graded_at or None, "full_score": sum(q.max_score for q in questions),
         "students": len(data.students), "classes": dict(Counter(s.class_name for s in data.students)),
         "small_sample": len(data.students) < 10, "total": None, "dimensions": [], "items": [],
-        "groups": [], "coverage_types": {}, "unlinked_sections": 0,
-        "review_lists": {"fix": [], "keep": []}, "marks": public_marks(state)}
+        "groups": [], "coverage_types": {}, "unlinked_sections": 0, "reliability": None,
+        "review_lists": {"fix": [], "keep": []}}
     if not data.students or not questions:
         return result
     bank_path = question_bank_db_path(db.db_path)
@@ -373,8 +560,17 @@ def build_paper_review(db, session_id, reports_dir):
     read_service = QuestionBankReadService(bank_path, data_root=infer_data_root(db.db_path)) if bank_path else None
     cov, coverage_types, unlinked = _coverage_materials(items, materials, difficulties, read_service)
     blank_ids = {q.question_id: {sid for sid, row in records.items() if q.question_id in row and _personal_cell_status(row[q.question_id]) == "blank"} for q in questions}
+    complete = [sid for sid, row in scores.items() if all(q.question_id in row for q in questions)]
+    cov_names = {t["key"]: t["name"] for sec in cov for t in sec["types"]}
+    ind_score, ind_detail = independence(
+        questions, siblings, scores, complete, bank_map, materials,
+        lambda key: _type_name(key, read_service, cov_names))
     evaluation = evaluate(items, cov, [q.question_id for q in questions],
-                          {q.question_id: q.max_score for q in questions}, scores, blank_ids)
+                          {q.question_id: q.max_score for q in questions}, scores, blank_ids,
+                          (ind_score, ind_detail))
+    next(d["detail"] for d in evaluation["dimensions"] if d["key"] == "time_fit")["order_inversions"] = \
+        order_inversions(questions, siblings, scores, complete)
+    result["reliability"] = reliability(siblings, scores, complete)
     lists, flagged = review_lists(items, evaluation["dimensions"])
     by_id = {item["id"]: item for item in items}
     groups = []
@@ -398,26 +594,3 @@ def build_paper_review(db, session_id, reports_dir):
     result.update(status="ready", items=items, groups=groups, coverage_types=coverage_types,
                   unlinked_sections=unlinked, review_lists=lists, **evaluation)
     return result
-
-
-def save_paper_review_mark(db, session_id, parent_id, mark, reports_dir):
-    from datetime import datetime
-    from backend.class_analysis import ClassAnalysisStateStore
-    from backend.error_patterns import session_bank_map
-    from backend.session_analysis import assemble_session_analysis, parent_question_id, question_bank_db_path
-
-    data = assemble_session_analysis(db, session_id, page_only=True)
-    if parent_id not in {parent_question_id(q.question_id) for q in data.questions}:
-        raise ValueError("本场不存在该父级题号")
-    store = ClassAnalysisStateStore(reports_dir)
-    state = store.load(session_id) or {}
-    if state.get("read_error"):
-        raise OSError(state["read_error"])
-    marks = dict(state.get("paper_review_marks") or {})
-    if mark is None:
-        marks.pop(parent_id, None)
-    else:
-        bank_map = session_bank_map(question_bank_db_path(db.db_path), session_id)
-        marks[parent_id] = {"mark": mark, "bank_question_id": bank_map.get(parent_id),
-                            "updated_at": datetime.now().isoformat(timespec="seconds")}
-    return {"marks": public_marks(store.save(session_id, paper_review_marks=marks))}
