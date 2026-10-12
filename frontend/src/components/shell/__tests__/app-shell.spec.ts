@@ -435,7 +435,6 @@ describe('AppShell', () => {
         expect.arrayContaining([expect.stringContaining('成绩中心')]),
       )
 
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/grading?scope=all'))
       expect(document.body.querySelector('.command-palette')).toBeNull()
