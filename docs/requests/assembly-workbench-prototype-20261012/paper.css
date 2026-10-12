@@ -1,0 +1,42 @@
+/* 卷面（A4 观感）与左侧题号轨道：整卷预览、整理与导出方案 A/B 共用 */
+
+.sheet-wrap { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 14px; align-items: start; }
+.sheet-wrap--embed { grid-template-columns: 56px minmax(0, 1fr); }
+
+/* 题号轨道 */
+.rail { position: sticky; top: 72px; display: flex; flex-direction: column; gap: 5px; padding: 6px; border: 1px solid var(--border-subtle); border-radius: 10px; background: var(--bg-surface); }
+.rail__chip { position: relative; display: grid; place-items: center; width: 100%; aspect-ratio: 1; border: 1px solid var(--border-subtle); border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: grab; user-select: none; }
+.rail__chip:hover { border-color: var(--border-strong); }
+.rail__chip.tt--c { color: #3e6a8e; background: #e3edf5; }
+.rail__chip.tt--f { color: #2f7d5c; background: #e2f0e9; }
+.rail__chip.tt--s { color: #7c5a24; background: #f2e9d8; }
+.rail__chip.is-current { outline: 2px solid var(--accent); outline-offset: 1px; }
+.rail__chip.drop-before { box-shadow: 0 -2px 0 var(--accent) !important; }
+.rail__chip.drop-after { box-shadow: 0 2px 0 var(--accent) !important; }
+
+/* 卷面 */
+.sheet { width: min(780px, 100%); margin-inline: auto; background: #fff; border: 1px solid var(--border-default); border-radius: 4px; box-shadow: var(--shadow-floating); padding: 40px 48px 56px; font-family: var(--font-sans); }
+.sheet--embed { padding: 30px 36px 40px; }
+.sheet__title { text-align: center; font-size: 22px; font-weight: 600; margin: 0 0 6px; letter-spacing: .04em; font-family: var(--font-doc); }
+.sheet__meta { text-align: center; color: var(--text-secondary); font-size: 13px; margin: 0 0 18px; white-space: nowrap; }
+.sheet__meta b { font-weight: 400; border-bottom: 1px solid var(--border-strong); display: inline-block; min-width: 54px; }
+.sheet__section { margin: 14px 0 4px; font-size: 15px; font-weight: 600; }
+.sheet__q { position: relative; padding: 9px 8px 9px 34px; margin: 0 -8px; border-radius: 8px; }
+.sheet__q:hover { background: var(--bg-app); }
+.sheet__num { position: absolute; left: 4px; top: 11px; font-weight: 600; }
+.sheet__handle { position: absolute; left: -14px; top: 12px; opacity: 0; }
+.sheet__q:hover .sheet__handle { opacity: 1; }
+.sheet__tools { position: absolute; right: 6px; top: 8px; display: none; gap: 3px; font-family: var(--font-sans); }
+.sheet__q:hover .sheet__tools { display: inline-flex; }
+.sheet__tools button { min-height: 22px; padding: 0 7px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--bg-surface); font-size: 11.5px; color: var(--text-secondary); }
+.sheet__tools button:hover { border-color: var(--accent); color: var(--accent); }
+.sheet__stem { font-size: 15px; line-height: 1.75; }
+.sheet__opts { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 20px; margin-top: 5px; font-size: 15px; }
+.sheet .imgph { font-family: var(--font-sans); height: 72px; }
+.sheet__meta-line { font-family: var(--font-sans); font-size: 11.5px; color: var(--text-muted); margin-top: 6px; }
+.sheet__answer { font-family: var(--font-sans); margin-top: 8px; border-left: 3px solid var(--border-subtle); padding: 4px 10px; background: var(--bg-app); border-radius: 0 8px 8px 0; font-size: 13px; }
+.sheet__answer .ans-line { font-weight: 600; }
+.sheet__answer .ana { color: var(--text-secondary); line-height: 1.6; margin-top: 4px; }
+.sheet__answer .ana.clamp::after { background: linear-gradient(transparent, var(--bg-app)); }
+.sheet__more { border: 0; background: transparent; color: var(--accent); font-size: 12px; padding: 2px 0; }
+.sheet__drop { height: 3px; border-radius: 2px; background: var(--accent); margin: 2px 0; }

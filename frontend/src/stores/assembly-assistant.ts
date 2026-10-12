@@ -27,7 +27,7 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   const refreshing = ref(false)
   const refreshMessage = ref('')
   const threshold = ref(70)
-  const sort = ref<'loss' | 'chapter'>('loss')
+  const sort = ref<'weak' | 'rate'>('weak')
   const includeTraining = ref(true)
   let examController: AbortController | null = null
   let examSerial = 0

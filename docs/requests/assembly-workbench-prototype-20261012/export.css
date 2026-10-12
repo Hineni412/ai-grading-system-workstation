@@ -1,0 +1,41 @@
+/* 整理与导出视图：设置/导出面板、方案 B 卡片墙（卷面样式在 paper.css） */
+.export-grid { display: grid; grid-template-columns: 240px minmax(0, 1fr) 230px; gap: 14px; align-items: start; }
+.exp-center { min-width: 0; }
+.vsw[hidden] { display: none; }
+.exp-panel { font-size: 13px; }
+.exp-panel .panel__body { display: grid; gap: 10px; padding: 12px 13px; }
+.exp-field { display: grid; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.exp-field .app-input { height: 30px; font-size: 12.5px; }
+.exp-check { display: flex; gap: 6px; align-items: center; font-size: 12.5px; color: var(--text-secondary); }
+.exp-kicker { color: var(--accent); font-size: 11px; font-weight: 600; letter-spacing: .14em; margin: 0 0 2px; }
+.exp-recs { border-top: 1px solid var(--border-subtle); padding-top: 9px; font-size: 12.5px; color: var(--text-muted); }
+.sec-list { display: grid; gap: 5px; }
+.sec-list > div { display: grid; grid-template-columns: 1fr auto auto; gap: 5px; align-items: center; }
+.sec-list .app-input { height: 28px; font-size: 12px; }
+.sec-list small { color: var(--text-muted); font-size: 11.5px; }
+.sec-list button { width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); }
+.sec-list button:hover { background: var(--bg-subtle); color: var(--text-primary); }
+
+/* 方案 B：卡片墙（跟随试题排版分组，最多 5 张一行，窄列自动折行） */
+.wall-caption { font-size: 12px; color: var(--text-muted); margin: 8px 0 6px; }
+.wall-groups { min-width: 0; }
+.wall-group-title { margin: 10px 0 6px; font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+.wall-group-title:first-child { margin-top: 0; }
+.wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(max(140px, calc((100% - 36px) / 5)), 1fr)); gap: 9px; min-width: 0; }
+.wcard { position: relative; border: 1px solid var(--border-default); border-radius: 10px; background: var(--bg-surface); padding: 8px 9px; cursor: grab; min-width: 0; overflow: hidden; }
+.wcard:hover { border-color: var(--accent); box-shadow: var(--shadow-floating); }
+.wcard__top { display: flex; align-items: center; gap: 5px; }
+.wcard__num { font-size: 17px; font-weight: 600; font-family: var(--font-doc); }
+.wcard__x { position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); display: none; }
+.wcard:hover .wcard__x { display: grid; place-items: center; }
+.wcard__x:hover { background: var(--danger-subtle); color: var(--danger); }
+.wcard__pt { font-size: 11px; font-weight: 600; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wcard__stem { font-size: 11px; color: var(--text-muted); margin-top: 3px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.wcard__meta { display: flex; gap: 5px; margin-top: 4px; font-size: 11px; color: var(--text-muted); }
+.wall .drop-before { box-shadow: -2px 0 0 var(--accent) !important; }
+.wall .drop-after { box-shadow: 2px 0 0 var(--accent) !important; }
+details.sheet-fold { margin-top: 14px; border: 1px solid var(--border-subtle); border-radius: 10px; background: var(--bg-surface); }
+details.sheet-fold > summary { cursor: pointer; padding: 10px 13px; font-size: 13px; font-weight: 600; list-style: none; }
+details.sheet-fold > summary::before { content: '▸ '; color: var(--text-muted); }
+details.sheet-fold[open] > summary::before { content: '▾ '; }
+.sheet-fold__body { padding: 0 13px 13px; }
