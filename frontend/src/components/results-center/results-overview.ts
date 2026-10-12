@@ -45,62 +45,6 @@ export interface ScoreStructure {
   resolved: number
 }
 
-/** 分数线两侧窗口：距及格线/优秀线 5 分内入组。 */
-export const CRITICAL_GAP = 5
-
-export interface NearLineEntry {
-  student: ResultsCenterStudent
-  /** 本次分数 − 分数线（分），落在 [−gap, gap) 内 */
-  offset: number
-}
-
-export interface NearLineGroup {
-  line: 'pass' | 'excellent'
-  /** 分数线 = 考试满分 × 60% / 85% */
-  lineScore: number
-  /** −gap ≤ offset < 0，按 offset 降序（离线最近在前） */
-  below: NearLineEntry[]
-  /** 0 ≤ offset < gap（恰好在线上算刚过线），按 offset 升序 */
-  above: NearLineEntry[]
-}
-
-export function nearLineGroups(
-  students: readonly ResultsCenterStudent[],
-  maxScore: number,
-  gap = CRITICAL_GAP,
-): NearLineGroup[] {
-  const groups: NearLineGroup[] = [
-    { line: 'pass', lineScore: maxScore * 0.6, below: [], above: [] },
-    { line: 'excellent', lineScore: maxScore * 0.85, below: [], above: [] },
-  ]
-  const ratios = [0.6, 0.85] as const
-  for (const student of students) {
-    if (!isCompleteStudent(student) || student.max_score <= 0) continue
-    const offsets = ratios.map(
-      (ratio) => student.current_score - student.max_score * ratio,
-    )
-    const inside = offsets.map((offset) => offset >= -gap && offset < gap)
-    if (!inside[0] && !inside[1]) continue
-    // 小卷两线窗口可能重叠：只归入更近的线，平局归及格线。
-    const index = inside[0] && (!inside[1]
-      || Math.abs(offsets[0]!) <= Math.abs(offsets[1]!)) ? 0 : 1
-    const entry = { student, offset: offsets[index]! }
-    if (entry.offset < 0) groups[index]!.below.push(entry)
-    else groups[index]!.above.push(entry)
-  }
-  for (const group of groups) {
-    group.below.sort((left, right) => (
-      right.offset - left.offset
-      || left.student.student_id - right.student.student_id
-    ))
-    group.above.sort((left, right) => (
-      left.offset - right.offset
-      || left.student.student_id - right.student.student_id
-    ))
-  }
-  return groups
-}
-
 export interface ClassDelta {
   /** 平均分变化（分）；满分不同或任一侧无完整学生时为 null */
   average: number | null

@@ -15,7 +15,6 @@ import {
 } from '../../api/class-analysis'
 import type {
   ResultsCenterResponse,
-  ResultsCenterStudent,
 } from '../../api/results-center'
 import { exportsApi } from '../../api/exports'
 import { useJobStore } from '../../stores/jobs'
@@ -47,7 +46,6 @@ import {
   formatScore,
   isCompleteStudent,
   lineCrossings,
-  nearLineGroups,
   questionRatesFor,
   rankChangeGroups,
   rankChanges,
@@ -58,7 +56,6 @@ import {
   type ClassDelta,
   type ClassSummary,
   type LineCrossing,
-  type NearLineEntry,
   type OverviewBand,
   type QuestionSort,
   type RankChange,
@@ -313,24 +310,6 @@ const scopeAnalysisQuestions = computed(() => (
     : null
 ))
 
-const nearLineView = computed(() => (
-  nearLineGroups(studentsInScope.value, props.results.summary.max_score)
-    .filter((group) => group.below.length > 0 || group.above.length > 0)
-    .map((group) => ({
-      ...group,
-      rows: Array.from({ length: 10 }, (_, index) => {
-        const bucket = 4 - index
-        const entries = [...group.below, ...group.above]
-          .filter((entry) => Math.floor(entry.offset) === bucket)
-          .sort((left, right) => (
-            right.offset - left.offset
-            || left.student.student_id - right.student.student_id
-          ))
-        return { bucket, entries, tick: formatScore(group.lineScore + bucket) }
-      }),
-    }))
-))
-
 interface QuestionRow {
   questionId: string
   maxScore: number
@@ -513,69 +492,12 @@ const rankGroups = computed(() => rankChangeGroups(
   5,
   10,
 ))
-const ranksExpanded = ref(false)
-
-const rankRows = computed(() => ({
-  improved: ranksExpanded.value
-    ? rankGroups.value.improved
-    : rankGroups.value.improved.slice(0, 5),
-  declined: ranksExpanded.value
-    ? rankGroups.value.declined
-    : rankGroups.value.declined.slice(0, 5),
-}))
-
-const ranksExpandable = computed(() => (
-  rankGroups.value.improved.length > 5 || rankGroups.value.declined.length > 5
-))
-
 const crossings = computed(() => lineCrossings(rankEntries.value))
 
 function crossText(entry: LineCrossing): string {
   return sameFullScore.value
     ? `${formatScore(entry.previousScore)} → ${formatScore(entry.student.current_score)} 分`
     : `${formatRate(entry.previousRate)} → ${formatRate(entry.currentRate)}`
-}
-
-const previousByStudent = computed(() => new Map(
-  rankEntries.value.map((entry) => [entry.student.student_id, entry] as const),
-))
-
-function nearLineDelta(
-  student: ResultsCenterStudent,
-): { arrow: string; direction: string; text: string } | null {
-  if (previousState.value !== 'ready') return null
-  const entry = previousByStudent.value.get(student.student_id)
-  if (!entry) return null
-  const delta = sameFullScore.value
-    ? student.current_score - entry.previousScore
-    : (entry.previousMax > 0 && student.max_score > 0
-      ? student.current_score / student.max_score
-        - entry.previousScore / entry.previousMax
-      : 0)
-  if (delta === 0) return null
-  const amount = sameFullScore.value
-    ? `${formatScore(Math.abs(delta))} 分`
-    : `${Math.abs(Math.round(delta * 100))}%`
-  return {
-    arrow: delta > 0 ? '↑' : '↓',
-    direction: delta > 0 ? 'is-up' : 'is-down',
-    text: `${delta > 0 ? '+' : '−'}${amount}`,
-  }
-}
-
-function nearLineChipTitle(entry: NearLineEntry): string {
-  const parts = [
-    scope.value === null
-      ? `${entry.student.student_name} ${classDisplayLabel(entry.student.class_name)}`
-      : entry.student.student_name,
-    `${formatScore(entry.student.current_score)} 分`,
-    entry.offset < 0
-      ? `差 ${formatScore(Math.abs(entry.offset))} 分`
-      : `过线 ${formatScore(entry.offset)} 分`,
-  ]
-  const delta = nearLineDelta(entry.student)
-  if (delta !== null) parts.push(`较上次 ${delta.text}`)
-  return parts.join(' · ')
 }
 
 const SCATTER_W = 340
@@ -740,6 +662,23 @@ const scatterListHeader = computed(() => {
   return `跨线学生 · ${count} 人`
 })
 
+const scatterLists = computed(() => (
+  scatterSearch.value !== null || selectedScatterCell.value !== null
+    ? [{ key: 'filtered', title: scatterListHeader.value, rows: scatterRows.value }]
+    : [
+      {
+        key: 'excellent',
+        title: `跨优秀线 · ${crossings.value.excellentGained.length + crossings.value.excellentLost.length} 人`,
+        rows: [...crossings.value.excellentGained, ...crossings.value.excellentLost].sort(byDeltaDesc),
+      },
+      {
+        key: 'pass',
+        title: `跨及格线 · ${crossings.value.passGained.length + crossings.value.passLost.length} 人`,
+        rows: [...crossings.value.passGained, ...crossings.value.passLost].sort(byDeltaDesc),
+      },
+    ]
+))
+
 function scatterDelta(entry: LineCrossing): { text: string; cls: string } {
   const delta = sameFullScore.value
     ? entry.student.current_score - entry.previousScore
@@ -784,17 +723,21 @@ function rankAria(entry: RankChange): string {
   return parts.join('，')
 }
 
-/** 分数分布条只渲染有人数的分数段；段宽按人数 flex-grow。 */
-function visibleBands(summary: ClassSummary): (OverviewBand & { count: number })[] {
+function visibleBands(summary: ClassSummary): (OverviewBand & { count: number; rate: number })[] {
+  const total = Object.values(summary.bandCounts).reduce((sum, count) => sum + count, 0)
   return OVERVIEW_BANDS
-    .map((band) => ({ ...band, count: summary.bandCounts[band.id] }))
+    .map((band) => ({
+      ...band,
+      count: summary.bandCounts[band.id],
+      rate: total > 0 ? summary.bandCounts[band.id] / total : 0,
+    }))
     .filter((band) => band.count > 0)
 }
 
 function bandAriaLabel(summary: ClassSummary): string {
-  return OVERVIEW_BANDS.map(
-    (band) => `${band.label} ${summary.bandCounts[band.id]} 人`,
-  ).join('，')
+  return visibleBands(summary).map(
+    (band) => `${band.label} ${formatRate(band.rate)}，${band.count} 人`,
+  ).join('，') || '暂无完整成绩'
 }
 
 function isActiveRow(row: ClassSummary): boolean {
@@ -1086,7 +1029,7 @@ onMounted(() => {
     </section>
 
     <div class="overview__duo">
-    <section class="overview__section" aria-labelledby="overview-classes-title">
+    <section class="overview__section overview__classes-card" aria-labelledby="overview-classes-title">
       <h2 id="overview-classes-title" class="overview__title">班级对比</h2>
       <div class="overview__table-wrap">
         <table class="app-table overview__table">
@@ -1100,7 +1043,7 @@ onMounted(() => {
               <th scope="col" class="is-num">最高/最低</th>
               <th scope="col" class="is-num">及格率</th>
               <th scope="col" class="is-num">优秀率</th>
-              <th scope="col">分数分布</th>
+              <th scope="col">分数分布（%）</th>
             </tr>
           </thead>
           <tbody>
@@ -1141,6 +1084,7 @@ onMounted(() => {
               >{{ excellentDelta.text }}</small></td>
               <td>
                 <span
+                  v-if="row.passRate !== null"
                   class="overview__bandbar"
                   role="img"
                   :aria-label="bandAriaLabel(row)"
@@ -1149,10 +1093,11 @@ onMounted(() => {
                     v-for="band in visibleBands(row)"
                     :key="band.id"
                     :data-band="band.id"
-                    :style="{ flexGrow: band.count }"
-                    :title="`${band.label} ${band.count} 人`"
-                  >{{ band.count }}</i>
+                    :style="{ width: `${band.rate * 100}%` }"
+                    :title="`${band.label} ${formatRate(band.rate)} · ${band.count} 人`"
+                  >{{ band.rate >= 0.08 ? formatRate(band.rate) : '' }}</i>
                 </span>
+                <span v-else>—</span>
               </td>
             </tr>
           </tbody>
@@ -1162,144 +1107,12 @@ onMounted(() => {
         <span v-for="band in OVERVIEW_BANDS" :key="band.id">
           <i :data-band="band.id" aria-hidden="true"></i>{{ band.label }} {{ band.range }}
         </span>
+        <span class="overview__legend-note">分数分布按评分完整的参考学生计算占比；窄色段悬停查看。</span>
         <span
           v-if="previousState === 'ready' && comparisonName !== null"
           class="overview__legend-note"
         >↑↓ 为较「{{ comparisonName }}」的变化；平均分仅在两次满分相同时比较，及格率、优秀率按百分点。</span>
       </p>
-    </section>
-      <section
-        class="overview__section overview__nearline-card"
-        aria-labelledby="overview-nearline-title"
-        data-testid="near-line"
-      >
-        <h2 id="overview-nearline-title" class="overview__title">分数线附近</h2>
-        <p class="overview__tile-sub">
-          按本次分数，线下与刚过线各 5 分内<template
-            v-if="previousState === 'ready' && comparisonName !== null"
-          >；↑↓ 为较「{{ comparisonName }}」</template>
-        </p>
-        <div class="overview__nearline-body">
-          <div
-            v-for="group in nearLineView"
-            :key="group.line"
-            class="overview__nl-group"
-          >
-            <h3 class="overview__nl-title">
-              {{ group.line === 'pass' ? '及格线' : '优秀线' }}
-              {{ formatScore(group.lineScore) }} 分 · 差 5 分内 {{ group.below.length }} 人
-              · 刚过线 {{ group.above.length }} 人
-            </h3>
-            <div class="overview__nl-rows">
-              <template v-for="row in group.rows" :key="row.bucket">
-                <div v-if="row.bucket === -1" class="overview__nl-line">
-                  <b>{{ group.line === 'pass' ? '及格线' : '优秀线' }}
-                    {{ formatScore(group.lineScore) }}</b>
-                </div>
-                <div
-                  class="overview__nl-row"
-                  :class="row.bucket >= 0 ? 'is-above' : 'is-below'"
-                >
-                  <span class="overview__nl-tick">{{ row.tick }}</span>
-                  <span class="overview__nl-chips">
-                    <button
-                      v-for="entry in row.entries"
-                      :key="entry.student.student_id"
-                      type="button"
-                      class="overview__nl-chip"
-                      :class="entry.offset < 0 ? 'is-below' : 'is-above'"
-                      :title="nearLineChipTitle(entry)"
-                      :aria-label="nearLineChipTitle(entry)"
-                      @click="emit('open-student', entry.student.student_id)"
-                    >{{ entry.student.student_name }}<i
-                      v-if="nearLineDelta(entry.student) !== null"
-                      class="overview__nl-arrow"
-                      :class="nearLineDelta(entry.student)!.direction"
-                    >{{ nearLineDelta(entry.student)!.arrow }}</i></button>
-                  </span>
-                </div>
-              </template>
-            </div>
-          </div>
-          <p v-if="nearLineView.length === 0" class="overview__tile-sub">
-            分数线两侧 5 分内没有学生
-          </p>
-        </div>
-      </section>
-    </div>
-
-    <div class="overview__duo">
-    <section class="overview__section" aria-labelledby="overview-ranks-title">
-      <h2 id="overview-ranks-title" class="overview__title">排名变化</h2>
-      <p v-if="!comparisonOptions.length" class="overview__tile-sub">
-        没有可对比的上一场考试
-      </p>
-      <Skeleton
-        v-else-if="previousState === 'loading'"
-        class="overview__skeleton-block"
-        aria-hidden="true"
-      />
-      <p v-else-if="previousState === 'error'" class="overview__tile-sub">
-        对比考试的成绩暂时无法读取。
-      </p>
-      <div v-else-if="previousState === 'ready'" class="overview__ranks">
-          <div
-            v-for="group in [
-              { key: 'improved', title: '进步明显', rows: rankRows.improved },
-              { key: 'declined', title: '退步明显', rows: rankRows.declined },
-            ]"
-            :key="group.key"
-            class="overview__rank-group"
-            :data-direction="group.key"
-          >
-            <h4>{{ group.title }}</h4>
-            <ol v-if="group.rows.length" class="overview__rank-list">
-              <li v-for="entry in group.rows" :key="entry.student.student_id">
-                <button
-                  type="button"
-                  class="overview__rank-row"
-                  :aria-label="rankAria(entry)"
-                  @click="emit('open-student', entry.student.student_id)"
-                >
-                  <span class="overview__rank-name">
-                    {{ entry.student.student_name }}<small v-if="scope === null">
-                      {{ classDisplayLabel(entry.student.class_name) }}
-                    </small>
-                  </span>
-                  <span
-                    class="overview__ranktrack"
-                    :class="entry.change >= 0 ? 'is-up' : 'is-down'"
-                    aria-hidden="true"
-                  >
-                    <i class="overview__ranktrack-seg" :style="rankSegmentStyle(entry)"></i>
-                    <i
-                      class="overview__ranktrack-dot is-prev"
-                      :style="{ left: rankPosition(entry.previousRank, entry.currentSize) }"
-                    ></i>
-                    <i
-                      class="overview__ranktrack-dot is-curr"
-                      :style="{ left: rankPosition(entry.currentRank, entry.currentSize) }"
-                    ></i>
-                  </span>
-                  <span class="overview__rank-nums">
-                    {{ entry.previousRank }} → {{ entry.currentRank }}
-                  </span>
-                  <b
-                    class="overview__rank-change"
-                    :class="entry.change >= 0 ? 'is-up' : 'is-down'"
-                  >{{ entry.change >= 0 ? '↑' : '↓' }}{{ Math.abs(entry.change) }}</b>
-                </button>
-              </li>
-            </ol>
-            <StatePanel v-else kind="empty" compact title="无明显变化" />
-          </div>
-      </div>
-      <button
-        v-if="previousState === 'ready' && ranksExpandable"
-        type="button"
-        class="overview__link"
-        @click="ranksExpanded = !ranksExpanded"
-      >{{ ranksExpanded ? '收起' : '展开全部' }}</button>
     </section>
     <section
       class="overview__section overview__cross-card"
@@ -1446,55 +1259,125 @@ onMounted(() => {
               :y="cell.y + 12"
             >{{ cell.count }}人</text>
           </svg>
-          <p class="overview__scatter-list-head">
-            {{ scatterListHeader }}
-            <button
-              v-if="selectedScatterCell !== null"
-              type="button"
-              class="overview__link"
-              @click="scatterCellKey = null"
-            >显示全部跨线学生</button>
-          </p>
-          <ol v-if="scatterRows.length" class="overview__scatter-list">
-            <li
-              v-for="row in scatterRows"
-              :key="row.student.student_id"
-            >
-              <button
-                type="button"
-                class="overview__scatter-row"
-                :class="{ 'is-hot': scatterHotId === row.student.student_id }"
-                @mouseenter="scatterHotId = row.student.student_id"
-                @mouseleave="scatterHotId = null"
-                @focus="scatterHotId = row.student.student_id"
-                @blur="scatterHotId = null"
-                @click="emit('open-student', row.student.student_id)"
-              >
-                <span class="overview__scatter-rowname">
-                  {{ row.student.student_name }}<small v-if="scope === null">
-                    {{ classDisplayLabel(row.student.class_name) }}
-                  </small>
-                </span>
-                <span class="overview__scatter-rowscore">{{ crossText(row) }}</span>
-                <b
-                  class="overview__scatter-rowdelta"
-                  :class="scatterDelta(row).cls"
-                >{{ scatterDelta(row).text }}</b>
-              </button>
-            </li>
-          </ol>
-          <p v-else class="overview__scatter-empty">
-            {{ scatterSearch !== null ? '没有匹配的学生' : '没有学生' }}
-          </p>
+          <div class="overview__scatter-lists" :class="{ 'is-filtered': scatterLists.length === 1 }">
+            <section v-for="list in scatterLists" :key="list.key" class="overview__scatter-list-group">
+              <h3 class="overview__scatter-list-head">
+                {{ list.title }}
+                <button
+                  v-if="selectedScatterCell !== null"
+                  type="button"
+                  class="overview__link"
+                  @click="scatterCellKey = null"
+                >显示全部跨线学生</button>
+              </h3>
+              <ol v-if="list.rows.length" class="overview__scatter-list">
+                <li
+                  v-for="row in list.rows"
+                  :key="row.student.student_id"
+                >
+                  <button
+                    type="button"
+                    class="overview__scatter-row"
+                    :class="{ 'is-hot': scatterHotId === row.student.student_id }"
+                    @mouseenter="scatterHotId = row.student.student_id"
+                    @mouseleave="scatterHotId = null"
+                    @focus="scatterHotId = row.student.student_id"
+                    @blur="scatterHotId = null"
+                    @click="emit('open-student', row.student.student_id)"
+                  >
+                    <span class="overview__scatter-rowname">
+                      {{ row.student.student_name }}<small v-if="scope === null">
+                        {{ classDisplayLabel(row.student.class_name) }}
+                      </small>
+                    </span>
+                    <span class="overview__scatter-rowscore">{{ crossText(row) }}</span>
+                    <b
+                      class="overview__scatter-rowdelta"
+                      :class="scatterDelta(row).cls"
+                    >{{ scatterDelta(row).text }}</b>
+                  </button>
+                </li>
+              </ol>
+              <p v-else class="overview__scatter-empty">
+                {{ scatterSearch !== null ? '没有匹配的学生' : '没有学生' }}
+              </p>
+            </section>
+          </div>
           <figcaption class="overview__scatter-legend">
             新达及格 <b class="is-up">{{ crossings.passGained.length }}</b>
             · 跌破及格 <b class="is-down">{{ crossings.passLost.length }}</b>
             · 新进优秀 <b class="is-up">{{ crossings.excellentGained.length }}</b>
             · 跌出优秀 <b class="is-down">{{ crossings.excellentLost.length }}</b>
-            <small>虚线为两次持平；同一人可同时计入跌出优秀与跌破及格</small>
+            <small>虚线为两次持平；同一人跨过两条线时，两份名单都会列出</small>
           </figcaption>
         </figure>
       </template>
+    </section>
+    <section class="overview__section overview__ranks-card" aria-labelledby="overview-ranks-title">
+      <h2 id="overview-ranks-title" class="overview__title">排名变化</h2>
+      <p v-if="!comparisonOptions.length" class="overview__tile-sub">
+        没有可对比的上一场考试
+      </p>
+      <Skeleton
+        v-else-if="previousState === 'loading'"
+        class="overview__skeleton-block"
+        aria-hidden="true"
+      />
+      <p v-else-if="previousState === 'error'" class="overview__tile-sub">
+        对比考试的成绩暂时无法读取。
+      </p>
+      <div v-else-if="previousState === 'ready'" class="overview__ranks">
+          <div
+            v-for="group in [
+              { key: 'improved', title: '进步明显 · 前 10 位', rows: rankGroups.improved },
+              { key: 'declined', title: '退步明显 · 前 10 位', rows: rankGroups.declined },
+            ]"
+            :key="group.key"
+            class="overview__rank-group"
+            :data-direction="group.key"
+          >
+            <h4>{{ group.title }}</h4>
+            <ol v-if="group.rows.length" class="overview__rank-list">
+              <li v-for="entry in group.rows" :key="entry.student.student_id">
+                <button
+                  type="button"
+                  class="overview__rank-row"
+                  :aria-label="rankAria(entry)"
+                  @click="emit('open-student', entry.student.student_id)"
+                >
+                  <span class="overview__rank-name">
+                    {{ entry.student.student_name }}<small v-if="scope === null">
+                      {{ classDisplayLabel(entry.student.class_name) }}
+                    </small>
+                  </span>
+                  <span
+                    class="overview__ranktrack"
+                    :class="entry.change >= 0 ? 'is-up' : 'is-down'"
+                    aria-hidden="true"
+                  >
+                    <i class="overview__ranktrack-seg" :style="rankSegmentStyle(entry)"></i>
+                    <i
+                      class="overview__ranktrack-dot is-prev"
+                      :style="{ left: rankPosition(entry.previousRank, entry.currentSize) }"
+                    ></i>
+                    <i
+                      class="overview__ranktrack-dot is-curr"
+                      :style="{ left: rankPosition(entry.currentRank, entry.currentSize) }"
+                    ></i>
+                  </span>
+                  <span class="overview__rank-nums">
+                    {{ entry.previousRank }} → {{ entry.currentRank }}
+                  </span>
+                  <b
+                    class="overview__rank-change"
+                    :class="entry.change >= 0 ? 'is-up' : 'is-down'"
+                  >{{ entry.change >= 0 ? '↑' : '↓' }}{{ Math.abs(entry.change) }}</b>
+                </button>
+              </li>
+            </ol>
+            <StatePanel v-else kind="empty" compact title="无明显变化" />
+          </div>
+      </div>
     </section>
     </div>
 
