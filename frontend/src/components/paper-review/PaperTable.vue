@@ -35,6 +35,12 @@ function toggle(row: Row) {
   openGroups.value = next
 }
 function errorFor(row: Row) { return row.kind === 'group' ? row.value.top_error : row.value.typical_error }
+function partLabel(parent: string, part: string) { return part.startsWith(parent) ? part.slice(parent.length) : part }
+function errorText(row: Row) {
+  const e = errorFor(row)
+  if (!e) return ''
+  return row.kind === 'group' && 'part_id' in e ? `${partLabel(row.value.id, e.part_id)} ${e.reason}` : e.reason
+}
 function errorGroups(errors: PaperItem['errors']) {
   const byCategory = new Map<string, {name: string; total: number; errors: PaperItem['errors']}>()
   for (const error of errors) {
@@ -71,7 +77,7 @@ defineExpose({go})
           <td><span class="pr-dots" :title="row.value.r_rest==null ? '数据不足' : String(row.value.r_rest)"><i v-for="n in 4" :key="n" :class="{filled:n<=dots(row.value.r_rest)}"></i></span><small>{{ row.value.r_rest?.toFixed(2) ?? '数据不足' }}</small></td>
           <td><span class="pr-quad" :class="row.value.quadrant">{{ quadrantNames[row.value.quadrant] }}</span></td>
           <td :title="row.kind==='item' ? row.value.predicted_source : '整题难度'"><span v-if="row.value.pred_flag==='harder'" class="red">↑ 比预估难</span><span v-else-if="row.value.pred_flag==='easier'" class="amber">↓ 比预估容易</span><small v-else-if="row.value.pred_flag==='fit'">{{ row.value.predicted_difficulty?.toFixed(1) }}</small></td>
-          <td :title="errorFor(row)?.reason"><span v-if="errorFor(row)" class="red">⚠ {{ errorFor(row)?.count }}人</span><span v-else class="pr-hint">—</span></td>
+          <td class="pr-err-cell"><span v-if="errorFor(row)" class="red pr-err-text" :title="`⚠ ${errorFor(row)?.count}人 ${errorText(row)}`">⚠ {{ errorFor(row)?.count }}人 {{ errorText(row) }}</span><span v-else class="pr-hint">—</span></td>
         </tr>
         <tr v-if="row.kind==='item' && expanded===row.value.id" class="pr-detail-row"><td colspan="6"><div class="pr-item-detail"><div><h3>{{ row.value.id }} · 题干</h3><QuestionContentRenderer :fallback="row.value.stem" typeset-text /><p v-if="row.value.answer">参考答案：{{ row.value.answer }}</p><p class="pr-hint">预估难度 {{ row.value.predicted_difficulty?.toFixed(1) ?? '暂无' }} · {{ row.value.predicted_source }}</p></div><div class="pr-detail-errors"><h3>已保存错法（前 5 条）</h3><template v-if="row.value.errors.length"><section class="pr-err-group" v-for="group in errorGroups(row.value.errors)" :key="group.name"><h4><span class="pr-chip pr-cat">{{ group.name }}</span><span class="pr-err-total">共 {{ group.total }} 人次</span></h4><ol><li v-for="(error,i) in group.errors" :key="i"><b>{{ error.count }}人</b> {{ error.reason }}</li></ol></section></template><p v-else class="pr-hint">本项没有已保存的错法。</p><template v-if="row.value.distractors"><h3>选项分布</h3><p v-for="(n,key) in row.value.distractors.counts" :key="key">{{ key }}：{{ n }}人</p><p>{{ row.value.distractors.note }}</p></template></div></div></td></tr>
       </template><tr v-if="!rows.length"><td colspan="6" class="pr-empty">没有符合条件的评分项。</td></tr></tbody>

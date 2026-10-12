@@ -434,7 +434,8 @@ def _coverage_materials(items, materials, difficulties, read_service):
                 if not ref.get("question_id"):
                     continue
                 if ref["question_id"] in reference_stems:
-                    typical.append({"role": ref.get("role") or "参考典型题", "stem": reference_stems[ref["question_id"]] or ""})
+                    typical.append({"role": ref.get("role") or "参考典型题", "stem": reference_stems[ref["question_id"]] or "",
+                                    "question_id": ref["question_id"]})
             types.append({"key": skill["key"], "name": skill["name"], "group_count": skill["group_count"],
                 "difficulty": round(st.median(diffs), 1) if diffs else None,
                 "covered_by": primary, "secondary_by": secondary})
@@ -479,17 +480,49 @@ def _paper_review_signature(db, session_id, reports_dir):
         paths.append(resolve_stored_file_path(session_row["rubric_path"], data_root=data_root))
     if data_root is not None:
         paths.append(snapshot_path(data_root / "config" / "uploaded", session_id))
-    return tuple((str(path), _stamp(path)) if path is not None else None for path in paths)
+    return tuple((str(path), _stamp(path)) if path is not None else None
+                 for path in paths) + _code_stamps()
+
+
+def _code_stamps():
+    """定义本计算的代码文件签名；实现更新后旧结果自动失效。"""
+    import sys
+    import backend.class_analysis
+    import backend.reporting.analysis_report_exporter
+    import backend.session_analysis
+    modules = (sys.modules[__name__], backend.class_analysis,
+               backend.session_analysis, backend.reporting.analysis_report_exporter)
+    return tuple((str(getattr(m, "__file__", None)),
+                  _stamp(getattr(m, "__file__", None))) for m in modules)
+
+
+def _disk_store(data_root):
+    from pathlib import Path
+    from integration.persistent_entries import persistent_entry_store
+    return persistent_entry_store(
+        Path(data_root) / "cache" / "paper_reviews",
+        max_entries=64, max_bytes=64 * 1024 * 1024)
 
 
 def build_paper_review(db, session_id, reports_dir):
-    """按输入文件签名做进程内缓存：签名未变直接返回上次结果。"""
+    """先查进程内缓存，再查磁盘持久副本；输入或计算代码变化即重算。"""
     signature = _paper_review_signature(db, session_id, reports_dir)
     cached = _CACHE.get(int(session_id))
     if cached is not None and cached[0] == signature:
         return cached[1]
+    from backend.session_analysis import infer_data_root
+    data_root = infer_data_root(db.db_path)
+    store = _disk_store(data_root) if data_root is not None else None
+    key = ("paper_review", int(session_id))
+    if store is not None:
+        saved = store.get(key, signature)
+        if saved is not None:
+            _CACHE[int(session_id)] = (signature, saved)
+            return saved
     result = _build_paper_review(db, session_id, reports_dir)
     _CACHE[int(session_id)] = (signature, result)
+    if store is not None:
+        store.put(key, signature, result)
     return result
 
 

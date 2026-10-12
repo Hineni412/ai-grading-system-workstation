@@ -39,7 +39,7 @@ export interface PaperReview {
   status: 'ready' | 'no_data'; session_id: number; title: string; graded_at: string | null
   full_score: number; students: number; classes: Record<string, number>; small_sample: boolean
   total: number | null; dimensions: PaperDimension[]; items: PaperItem[]; groups: PaperGroup[]
-  coverage_types: Record<string, { covered_by: string[]; secondary_by: string[]; typical: { role: string; stem: string }[] }>
+  coverage_types: Record<string, { covered_by: string[]; secondary_by: string[]; typical: { role: string; stem: string; question_id: number | null }[] }>
   unlinked_sections: number; review_lists: Record<PaperMark, { id: string; reason: string }[]>
   reliability: PaperReliability | null
 }
@@ -113,7 +113,7 @@ function decodePaperReview(v: unknown): PaperReview {
       return { ...point(d), parts: list(d.parts, str), flagged: bool(d.flagged), top_error: e ? { part_id: str(e.part_id), reason: str(e.reason), count: num(e.count) } : null }
     }), coverage_types: dictionary(d.coverage_types, v => {
       const t = object(v)
-      return { covered_by: list(t.covered_by, str), secondary_by: list(t.secondary_by, str), typical: list(t.typical, v => { const r = object(v); return { role: str(r.role), stem: str(r.stem) } }) }
+      return { covered_by: list(t.covered_by, str), secondary_by: list(t.secondary_by, str), typical: list(t.typical, v => { const r = object(v); return { role: str(r.role), stem: str(r.stem), question_id: r.question_id == null ? null : num(r.question_id) } }) }
     }), unlinked_sections: num(d.unlinked_sections), review_lists: { fix: list(lists.fix, reviewEntry), keep: list(lists.keep, reviewEntry) },
     reliability: d.reliability === null ? null : (() => { const r = object(d.reliability); return { alpha: num(r.alpha), units: num(r.units), students: num(r.students) } })() }
 }

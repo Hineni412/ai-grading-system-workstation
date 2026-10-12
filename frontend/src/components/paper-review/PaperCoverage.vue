@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { CoverageType, PaperReview } from '../../api/paper-review'
+import { assemblyApi, type AssemblyQuestion } from '../../api/assembly'
 import AppDialog from '../design-system/AppDialog.vue'
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
 import { pct } from './display'
@@ -8,16 +9,29 @@ const props = defineProps<{ review: PaperReview }>()
 defineEmits<{ go: [id: string] }>()
 const coverage = computed(() => props.review.dimensions.find(d => d.key === 'coverage'))
 const reference = ref<{ name: string; role: string; stem: string } | null>(null)
+const referenceQuestion = ref<AssemblyQuestion | null>(null)
+const referenceLoading = ref(false)
 const showReference = ref(false)
 function ids(t: CoverageType) { const d = props.review.coverage_types[t.key]; return [...new Set([...(d?.covered_by ?? []),...(d?.secondary_by ?? [])])] }
 function parents(t: CoverageType) {
   return [...new Set(ids(t).map(id => props.review.items.find(i => i.id === id)?.parent_id ?? id))].sort((a,b) => a.localeCompare(b,undefined,{numeric:true}))
 }
 function tier(d: number | null) { return d == null ? '难度暂无' : `${d<4 ? '基础' : d<7 ? '中档' : '偏难'} ${d.toFixed(1)}` }
-function openReference(t: CoverageType) {
+async function openReference(t: CoverageType) {
   const typical = props.review.coverage_types[t.key]?.typical[0]
   reference.value = {name:t.name.replace(/^题型·/,''),role:typical?.role ?? '参考典型题',stem:typical?.stem ?? ''}
+  referenceQuestion.value = null
   showReference.value = true
+  if (typical?.question_id == null) return
+  referenceLoading.value = true
+  try {
+    const list = await assemblyApi.resolveQuestions([typical.question_id])
+    referenceQuestion.value = list.items.find(q => q.id === typical.question_id) ?? null
+  } catch {
+    referenceQuestion.value = null
+  } finally {
+    referenceLoading.value = false
+  }
 }
 </script>
 <template>
@@ -40,7 +54,7 @@ function openReference(t: CoverageType) {
     </template>
     <p v-if="review.unlinked_sections" class="pr-hint">另有 {{ review.unlinked_sections }} 个小节未关联章节，未做对照。</p>
     <AppDialog v-model:open="showReference" :title="reference?.name ?? '参考典型题'" description="来自章节考情的参考题，供核对题型。">
-      <template v-if="reference"><p>{{ reference.role }}</p><QuestionContentRenderer v-if="reference.stem" :fallback="reference.stem" typeset-text /><p v-else>该题型暂无参考典型题。</p></template>
+      <template v-if="reference"><p>{{ reference.role }}</p><p v-if="referenceLoading">正在读取参考题…</p><QuestionContentRenderer v-else-if="referenceQuestion || reference.stem" :blocks="referenceQuestion?.rich_content?.question_blocks" :fallback="reference.stem" media-mode="list" typeset-text /><p v-else>该题型暂无参考典型题。</p></template>
     </AppDialog>
   </section>
 </template>
