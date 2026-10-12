@@ -146,7 +146,7 @@ onBeforeUnmount(() => {
       </nav>
       <FeedbackBanner v-if="exam?.read_error" tone="info" :description="exam.read_error" />
       <FeedbackBanner v-if="exam?.status === 'stale'" tone="info" description="相关内容已修改，这份报告仍可查看和导出。需要更新时，在成绩中心「AI 整理」中勾选「更新本场已保存结果」。" />
-      <FeedbackBanner v-else-if="exam?.status === 'missing' && !exam.read_error" tone="info" description="AI 分析部分尚未整理：复核完成后自动整理，或在成绩中心顶部点「AI 整理」。" />
+      <FeedbackBanner v-else-if="exam?.status === 'missing' && !exam.read_error" tone="info" description="AI 分析部分尚未整理：可在成绩中心顶部点「AI 整理」。" />
       <FeedbackBanner v-if="message" role="status" tone="success" :description="message" />
       <FeedbackBanner v-if="error" role="alert" tone="info" :description="error" />
       <StatePanel v-if="loading" kind="loading" title="正在读取个人报告…" />

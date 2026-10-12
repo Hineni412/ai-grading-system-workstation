@@ -86,7 +86,9 @@ const causeAnalysis = computed(() => analysis.value?.cause_analysis ?? null)
 const causeStatusText = computed(() => {
   const state = causeAnalysis.value
   if (generating.value) return 'AI 整理中…'
-  const organizeTip = '复核完成后自动整理，或点页面顶部「AI 整理」。'
+  const organizeTip = analysis.value?.auto_generate === false
+    ? '点页面顶部「AI 整理」。'
+    : '复核完成后自动整理，或点页面顶部「AI 整理」。'
   const questionStates = state?.question_states
   if (questionStates?.stale) return `${questionStates.stale} 题作答或批语已变化，显示上次整理结果；${organizeTip}`
   if (!state || state.status === 'not_generated') return state?.failed_questions

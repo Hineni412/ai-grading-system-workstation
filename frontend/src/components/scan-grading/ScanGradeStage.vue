@@ -6,11 +6,20 @@ import type {
   GradingPlanMetrics,
   SelectableGradingMode,
 } from '../../api/scan-grading'
+import { classAnalysisApi } from '../../api/class-analysis'
+import { jobApi, TERMINAL_JOB_STATUSES } from '../../api/jobs'
+import type { ReportPipelineStatus } from '../../api/report-pipeline'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import { BorderBeam } from '@/components/ui/border-beam'
+import { useJobStore } from '../../stores/jobs'
 import { useScanGradingStore } from '../../stores/scan-grading'
 import { useConfirm } from '../../composables/useConfirm'
+import {
+  cachedPipelineStatus,
+  invalidatePipelineStatus,
+  requestPipelineStatus,
+} from '../results-center/pipeline-status-cache'
 import type { InterventionSummary, ScanStageId } from './scan-stage'
 
 const props = defineProps<{
@@ -26,9 +35,98 @@ const emit = defineEmits<{
 
 const router = useRouter()
 const store = useScanGradingStore()
+const jobStore = useJobStore()
 const { confirm } = useConfirm()
 
 const confirmPending = ref(false)
+
+// 每一场考试的「复核完成后自动整理」开关与管线状态；与成绩中心共用读取缓存。
+const pipelineStatus = ref<ReportPipelineStatus | null>(null)
+const pipelineStatusLoading = ref(false)
+const pipelineSaving = ref(false)
+const pipelineError = ref('')
+let pipelineRequestId = 0
+
+const pipelineJob = computed(() => (
+  Object.values(jobStore.jobs)
+    .filter((job) => (
+      job.job_type === 'class_analysis_generate'
+      && job.payload.session_id === props.sessionId
+    ))
+    .sort((left, right) => right.id - left.id)[0] ?? null
+))
+const pipelineActive = computed(() => (
+  (pipelineJob.value !== null && !TERMINAL_JOB_STATUSES.has(pipelineJob.value.status))
+  || pipelineStatus.value?.active_job_id != null
+))
+const pipelineToggleDisabled = computed(() => (
+  pipelineStatus.value === null || pipelineSaving.value
+))
+const pipelineEligibleCount = computed(() => planNumber(
+  store.gradingPlan?.counts,
+  ['eligible_papers', 'ready_to_grade', 'matched_papers'],
+))
+const pipelineFollowupLine = computed(() => {
+  const status = pipelineStatus.value
+  if (status === null) return '正在读取整理状态…'
+  if (status.auto_generate) {
+    return status.review_pending > 0
+      ? `还有 ${status.review_pending} 项待复核，全部复核完成后自动整理。`
+      : '复核已完成；尚未整理的部分可在成绩中心「AI 整理」手动发起。'
+  }
+  return '已关闭自动整理；需要时在成绩中心「AI 整理」手动发起。'
+})
+
+async function loadPipelineStatus(sessionId: number, fresh = false): Promise<void> {
+  const requestId = ++pipelineRequestId
+  if (fresh) invalidatePipelineStatus(sessionId)
+  else pipelineStatus.value = cachedPipelineStatus(sessionId)
+  pipelineStatusLoading.value = true
+  try {
+    const value = await requestPipelineStatus(sessionId)
+    if (requestId !== pipelineRequestId || props.sessionId !== sessionId) return
+    pipelineStatus.value = value
+    void ensurePipelineJobTracked(value.active_job_id)
+  } catch {
+    // 状态读不到时开关保持禁用，不打扰批改流程。
+  } finally {
+    if (requestId === pipelineRequestId) pipelineStatusLoading.value = false
+  }
+}
+
+async function ensurePipelineJobTracked(id: number | null): Promise<void> {
+  if (id === null) return
+  const existing = jobStore.jobs[id]
+  if (existing !== undefined && !TERMINAL_JOB_STATUSES.has(existing.status)) return
+  try {
+    const job = await jobApi.getJob(id)
+    if (jobStore.jobs[id] !== undefined) return
+    jobStore.track(job)
+  } catch {
+    // 任务可能已结束或被清理；下次刷新状态时按最新结果展示。
+  }
+}
+
+async function onAutoGenerateChange(event: Event): Promise<void> {
+  const input = event.target
+  if (!(input instanceof HTMLInputElement)) return
+  const sessionId = props.sessionId
+  const enabled = input.checked
+  pipelineSaving.value = true
+  pipelineError.value = ''
+  try {
+    await classAnalysisApi.updateSettings(sessionId, enabled)
+    if (pipelineStatus.value) {
+      pipelineStatus.value = { ...pipelineStatus.value, auto_generate: enabled }
+    }
+    invalidatePipelineStatus(sessionId)
+  } catch {
+    input.checked = !enabled
+    pipelineError.value = '自动整理开关未能保存，请重试。'
+  } finally {
+    pipelineSaving.value = false
+  }
+}
 
 interface GradingModeOption {
   mode: SelectableGradingMode
@@ -231,6 +329,29 @@ watch(
   () => `${store.uploadBatch?.batch_id ?? ''}:${store.uploadBatch?.revision ?? -1}:${store.preflight?.revision ?? -1}`,
   () => { confirmPending.value = false },
 )
+
+watch(
+  () => props.sessionId,
+  (sessionId) => {
+    pipelineStatus.value = null
+    pipelineError.value = ''
+    void loadPipelineStatus(sessionId)
+  },
+  { immediate: true },
+)
+
+watch(runTerminal, (terminal) => {
+  if (terminal) void loadPipelineStatus(props.sessionId, true)
+})
+
+watch(
+  () => pipelineJob.value?.status,
+  (status, previous) => {
+    if (status && TERMINAL_JOB_STATUSES.has(status) && status !== previous) {
+      void loadPipelineStatus(props.sessionId, true)
+    }
+  },
+)
 </script>
 
 <template>
@@ -295,6 +416,27 @@ watch(
         v-if="store.gradingRun.allowed_actions.includes('pause') || store.gradingRun.allowed_actions.includes('cancel')"
         class="run-control-help"
       >安全暂停后可继续；取消后未完成的答卷需重新发起。已保存的成绩都会保留。</p>
+      <section v-if="runTerminal" class="pipeline-followup" aria-label="后续整理" data-pipeline-followup>
+        <div v-if="pipelineActive || pipelineStatus?.complete" class="pipeline-followup__row">
+          <p>{{ pipelineActive ? '正在整理错因和个人报告…' : '错因和个人报告已整理完成' }}</p>
+          <AppButton variant="secondary" data-action="open-results-pipeline" @click="openResults">去成绩中心查看</AppButton>
+        </div>
+        <template v-else>
+          <label class="pipeline-auto__toggle">
+            <input
+              type="checkbox"
+              data-pipeline-auto-toggle
+              :checked="pipelineStatus?.auto_generate ?? false"
+              :disabled="pipelineToggleDisabled"
+              @change="onAutoGenerateChange"
+            >
+            复核完成后自动整理错因和个人报告
+          </label>
+          <p>{{ pipelineFollowupLine }}</p>
+          <p v-if="pipelineStatus && !pipelineStatus.configured">未配置内容生成模型，自动整理不会发起。</p>
+          <p v-if="pipelineError" class="pipeline-auto__error" role="alert">{{ pipelineError }}</p>
+        </template>
+      </section>
       <div class="scan-stage__actions">
         <AppButton v-if="runTerminal" variant="primary" data-action="go-review" @click="selectStage('review')">去复核</AppButton>
         <AppButton v-if="store.gradingRun.allowed_actions.includes('pause')" data-action="pause" variant="secondary" @click="store.control('pause')">安全暂停（可继续）</AppButton>
@@ -390,6 +532,23 @@ watch(
           解答题 {{ formatPlanNumber(store.gradingPlan.requests, ['subjective_batches', 'subjective_requests']) }} 次
           （每位考生每道解答题一次，整页原图）。<span data-teacher-score-priority-note>已人工确认的分数始终有效，AI 不会替代人工分。</span>
         </p>
+
+        <div class="grading-plan__batching pipeline-auto" data-pipeline-auto-plan>
+          <label class="pipeline-auto__toggle">
+            <input
+              type="checkbox"
+              data-pipeline-auto-toggle
+              :checked="pipelineStatus?.auto_generate ?? false"
+              :disabled="pipelineToggleDisabled"
+              @change="onAutoGenerateChange"
+            >
+            复核完成后自动整理错因和个人报告
+          </label>
+          <p class="pipeline-auto__note">
+            全部复核完成后，用内容生成模型整理错因、生成个人报告：约每名学生 1 次请求<template v-if="pipelineEligibleCount !== null">（本场约 {{ pipelineEligibleCount }} 次）</template>，另加需整理的失分题每题约 1 次；不计入上方批改请求。未配置内容生成模型时不会发起。
+          </p>
+          <p v-if="pipelineError" class="pipeline-auto__error" role="alert">{{ pipelineError }}</p>
+        </div>
 
         <ul v-if="store.gradingPlan.warnings.length" class="grading-plan__issues grading-plan__issues--warning">
           <li v-for="issue in store.gradingPlan.warnings" :key="`warning:${issue.code}:${issue.message}`">

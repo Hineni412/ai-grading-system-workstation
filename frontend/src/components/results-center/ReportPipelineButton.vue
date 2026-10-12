@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Sparkles } from '@lucide/vue'
-import { classAnalysisApi } from '../../api/class-analysis'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 import { reportPipelineApi, type ReportPipelineStatus } from '../../api/report-pipeline'
 import { useJobStore } from '../../stores/jobs'
@@ -23,7 +22,6 @@ const revalidating = ref(false)
 const submitting = ref(false)
 const status = ref<ReportPipelineStatus | null>(null)
 const error = ref('')
-const settingsSaving = ref(false)
 const regenerateExisting = ref(false)
 let controller: AbortController | null = null
 
@@ -127,19 +125,6 @@ async function updateScope(event: Event) {
     }
   } finally {
     if (controller === next) revalidating.value = false
-  }
-}
-
-async function toggleAutoGenerate(event: Event) {
-  const enabled = (event.target as HTMLInputElement).checked
-  settingsSaving.value = true
-  try {
-    await classAnalysisApi.updateSettings(props.sessionId, enabled)
-    if (status.value) status.value = { ...status.value, auto_generate: enabled }
-  } catch {
-    error.value = '自动整理开关未能保存，请重试。'
-  } finally {
-    settingsSaving.value = false
   }
 }
 
@@ -259,15 +244,9 @@ onBeforeUnmount(() => controller?.abort())
         </p>
         <p v-if="error" class="file-center__warning" role="alert">{{ error }}</p>
 
-        <label class="excel-settings-dialog__explanation" data-testid="pipeline-auto-generate">
-          <input
-            type="checkbox"
-            :checked="status.auto_generate"
-            :disabled="settingsSaving"
-            @change="toggleAutoGenerate"
-          >
-          复核完成后自动整理（本场考试）
-        </label>
+        <p class="excel-settings-dialog__explanation" data-testid="pipeline-auto-generate">
+          复核完成后自动整理：{{ status.auto_generate ? '已开启' : '已关闭' }}（在考试批改页修改）
+        </p>
       </template>
 
       <div class="excel-settings-dialog__actions">
