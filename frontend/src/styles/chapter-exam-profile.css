@@ -1383,3 +1383,10 @@ button.cep-tv-answer-toggle {
   color: var(--color-text-muted);
   font-size: var(--font-size-caption);
 }
+.chapter-exam .cep-reading-details { color:var(--color-text-secondary); font-size:var(--font-size-caption); margin-top:8px; }
+.chapter-exam .cep-reading-details > summary { cursor:pointer; width:fit-content; padding:4px 0; }
+.chapter-exam .cep-reading-details .cep-note { max-width:40em; line-height:var(--line-height-body); }
+.chapter-exam .cep-reading-details > summary:focus-visible { outline:2px solid var(--color-accent); outline-offset:3px; border-radius:var(--radius-control); }
+@media (min-width:901px) {
+  .chapter-exam .cep-dumb-row { grid-template-columns:minmax(130px,200px) 1fr 128px; }
+}

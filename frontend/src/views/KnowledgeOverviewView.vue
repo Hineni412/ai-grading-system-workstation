@@ -346,9 +346,13 @@ onBeforeUnmount(() => {
           <button type="button" :aria-pressed="arrangement === 'chapters'" :class="{ 'is-active': arrangement === 'chapters' }" @click="router.replace({ query: { ...queryFor(), view: 'chapters' } })">按教材章节</button>
         </div>
         <div class="app-segmented" role="group" aria-label="地图筛选"><button v-for="option in filters" :key="option.key" type="button" :aria-pressed="filter === option.key" :class="{ 'is-active': filter === option.key }" @click="router.replace({ name: 'knowledge-overview', query: queryFor(selectedKey, option.key) })">{{ option.label }}</button></div>
-        <div class="mastery-map-legend" aria-label="掌握度与得分率数值配色"><span v-for="band in RATE_BANDS" :key="band.key"><i :class="`rate-${band.key}`" />{{ band.label }}</span><span><i class="rate-none" />暂无数据</span></div>
-        <p>题型配色＝群体掌握度；学生数字配色＝考试得分率。底部细条＝四档人数分布，数值配色不改变掌握档位。</p>
-        <div class="mastery-tier-legend"><span class="is-weak">明显薄弱</span><span class="is-unsteady">还不稳</span><span class="is-stable">较稳定</span><span class="is-insufficient">证据不足</span><span v-if="!typeMode">实线：同一小问 · 虚线：仅同题出现</span></div>
+        <details class="overview-reading-key">
+          <summary>配色说明</summary>
+          <div class="mastery-map-legend" aria-label="掌握度与得分率数值配色"><span v-for="band in RATE_BANDS" :key="band.key"><i :class="`rate-${band.key}`" />{{ band.label }}</span><span><i class="rate-none" />暂无数据</span></div>
+          <p>题型数字：群体掌握度。学生数字：考试得分率。数值配色不改变掌握档位。</p>
+          <p v-if="!typeMode">实线：同一小问。虚线：仅同题出现。</p>
+        </details>
+        <div class="mastery-tier-legend overview-distribution-key"><span>人数分布</span><span class="is-weak">明显薄弱</span><span class="is-unsteady">还不稳</span><span class="is-stable">较稳定</span><span class="is-insufficient">证据不足</span></div>
       </div>
       <p v-if="typeMode && hiddenTypeCount" class="mastery-map-hidden-note">尚未考查的 {{ hiddenTypeCount }} 个题型已隐藏</p>
       <div class="mastery-map-layout has-drawer">
@@ -362,7 +366,11 @@ onBeforeUnmount(() => {
               <span class="overview-priority-mastery"><span class="overview-mastery-value" :class="`rate-${rateBand(nodeMastery(node))}`">掌握度 {{ formatPercent(nodeMastery(node)) }}</span><OverviewTierBar :distribution="node.distribution" /></span>
               <span class="overview-weak-count">{{ node.distribution.weak }} 人明显薄弱</span>
             </button>
-            <StudentTierChips v-if="priorityRanks.has(node.knowledge_key)" :node="node" :students="overview.students" weak-only :limit="8" />
+            <details v-if="priorityRanks.has(node.knowledge_key)" class="overview-student-details">
+              <summary>查看明显薄弱学生</summary>
+              <p>学生数字：考试得分率</p>
+              <StudentTierChips :node="node" :students="overview.students" weak-only :limit="8" />
+            </details>
           </article>
           <AppButton v-if="ranked.length > 10" variant="ghost" @click="showAllItems = !showAllItems">{{ showAllItems ? '收起清单' : '显示全部 ' + ranked.length + ' 项' }}</AppButton>
         </section>

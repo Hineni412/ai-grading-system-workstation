@@ -126,3 +126,14 @@
   .mastery-map-connections { display:none; }
   .mastery-map-legend { margin-left:0; }
 }
+.overview-reading-key { margin-left:auto; color:var(--color-text-secondary); font-size:var(--font-size-caption); }
+.overview-reading-key > summary, .overview-student-details > summary { cursor:pointer; width:fit-content; padding:6px 0; }
+.overview-reading-key[open] { flex-basis:100%; margin-left:0; }
+.overview-reading-key .mastery-map-legend { margin:6px 0; }
+.overview-reading-key p { max-width:40em; line-height:var(--line-height-body); }
+.overview-distribution-key { flex-basis:100%; }
+.overview-distribution-key > span:first-child::before { display:none; }
+.overview-student-details { margin:0 0 0 36px; font-size:var(--font-size-caption); color:var(--color-text-secondary); }
+.overview-student-details > p { margin:4px 0; color:var(--color-text-muted); }
+.overview-student-details .student-tier-groups { margin:6px 0; }
+.overview-reading-key > summary:focus-visible, .overview-student-details > summary:focus-visible { outline:2px solid var(--color-accent); outline-offset:3px; border-radius:var(--radius-control); }

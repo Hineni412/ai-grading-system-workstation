@@ -63,7 +63,7 @@ function coverageDeltaText(section: ChapterExamSection): string {
   const delta = coverageDelta(section)
   if (delta === null) return '—'
   if (delta === 0) return '持平'
-  return `${delta > 0 ? '▲ +' : '▼ −'}${Math.abs(delta)} ppt`
+  return `${delta > 0 ? '▲ +' : '▼ −'}${Math.abs(delta)} 个百分点`
 }
 
 function coverageAria(section: ChapterExamSection, stage: ChapterExamStage): string {
@@ -275,7 +275,7 @@ function difficultyLine(stage: ChapterExamStage): string {
   <section class="cep-block cep-card" aria-labelledby="cep-coverage-title">
     <header class="cep-card-head">
       <h3 id="cep-coverage-title" class="cep-block-title">{{ chapter.label }} · 出卷率</h3>
-      <p class="cep-card-sub">{{ stageSample('midterm') }} · {{ stageSample('final') }}　青点期中、琥珀点期末，连线为同一小节；右侧为两阶段差值</p>
+      <p class="cep-card-sub">{{ stageSample('midterm') }} · {{ stageSample('final') }} · 右侧为出卷率差值</p>
     </header>
     <div class="cep-dumb">
       <div v-for="section in chapter.sections" :key="section.id" class="cep-dumb-row" :class="{ 'is-empty': !section.main_count }">
@@ -325,14 +325,14 @@ function difficultyLine(stage: ChapterExamStage): string {
       </div>
     </div>
     <p class="cep-info">本章主考整题（同源卷已合并）　期中平均 {{ averageMain('midterm') }} 题/{{ stageInfo.midterm?.unit ?? '组' }}　期末平均 {{ averageMain('final') }} 题/{{ stageInfo.final?.unit ?? '份' }}</p>
-    <p class="cep-legend cep-legend--stages"><i class="is-midterm" />期中　<i class="is-final" />期末<span class="cep-legend__tail">0–100% · 点击圆点看该小节该阶段覆盖题</span></p>
-    <p class="cep-note">同小节同卷组只计一次 · ppt＝百分点 · 不同阶段样本独立，变化并非同一批学生的追踪。</p>
+    <p class="cep-legend cep-legend--stages"><i class="is-midterm" />期中　<i class="is-final" />期末<span class="cep-legend__tail">0–100% · 点击圆点查看题目</span></p>
+    <details class="cep-reading-details"><summary>出卷率统计口径</summary><p class="cep-note">连线连接同一小节的期中与期末出卷率。同小节同卷组只计一次。不同阶段样本独立，变化并非同一批学生的追踪。</p></details>
   </section>
 
   <section class="cep-block cep-card" aria-labelledby="cep-overview-title">
     <header class="cep-card-head">
       <h3 id="cep-overview-title" class="cep-block-title">命题结构</h3>
-      <p class="cep-card-sub">期中向左、期末向右　条长＝每{{ stageInfo.midterm?.unit ?? '组' }}/{{ stageInfo.final?.unit ?? '份' }}平均题数（该阶段题数÷卷组数），按难度档堆叠</p>
+      <p class="cep-card-sub">条长：期中平均题数/{{ stageInfo.midterm?.unit ?? '组' }}，期末平均题数/{{ stageInfo.final?.unit ?? '份' }}</p>
     </header>
     <div class="cep-bfly">
       <div class="cep-bfly-axis">
@@ -387,7 +387,7 @@ function difficultyLine(stage: ChapterExamStage): string {
       <i class="is-hard" />提高 7–10
       <span class="cep-legend__tail">点击分段看题单</span>
     </p>
-    <p class="cep-note">无难度题不进入难度档统计；两阶段卷组数不同，条长按平均每{{ stageInfo.midterm?.unit ?? '组' }}/{{ stageInfo.final?.unit ?? '份' }}折算后才可比较。</p>
+    <details class="cep-reading-details"><summary>命题结构统计口径</summary><p class="cep-note">期中向左、期末向右，按难度档堆叠。条长＝该阶段题数÷卷组数。无难度题不进入难度档统计。两阶段卷组数不同，条长按平均每{{ stageInfo.midterm?.unit ?? '组' }}/{{ stageInfo.final?.unit ?? '份' }}折算后才可比较。</p></details>
     <div class="cep-diff-summary">
       <p v-for="stage in STAGES" :key="stage">{{ difficultyLine(stage) }}</p>
     </div>
@@ -402,7 +402,7 @@ function difficultyLine(stage: ChapterExamStage): string {
   <section class="cep-block cep-card" aria-labelledby="cep-quad-title">
     <header class="cep-card-head">
       <h3 id="cep-quad-title" class="cep-block-title">本章优先讲题型</h3>
-      <p class="cep-card-sub">横轴＝两阶段主考题数 n，纵轴＝本班明显薄弱占比，气泡大小＝出现卷组数；虚线＝“常考且薄弱”规则（n≥3 且 ≥30%）</p>
+      <p class="cep-card-sub">优先讲：主考题数 ≥3 且明显薄弱占比 ≥30%</p>
     </header>
     <p v-if="masteryState === 'error'" class="cep-note">学情暂不可用，仅列出题数分布无法判断薄弱。</p>
     <p v-else-if="masteryState !== 'ready'" class="cep-note">正在读取本班学情…</p>
@@ -445,7 +445,7 @@ function difficultyLine(stage: ChapterExamStage): string {
     </div>
     <p v-if="quadInsufficient.length" class="cep-note cep-quad-list">证据不足：{{ quadInsufficient.map(row => row.name).join('、') }}</p>
     <p v-if="quadNoEvidence.length" class="cep-note cep-quad-list">暂无学情证据：{{ quadNoEvidence.map(row => row.name).join('、') }}</p>
-    <p class="cep-note">同名行按键跨小节合并：n 与各档题数取合计，卷组数取各小节最大值；明显薄弱占比＝明显薄弱÷（明显薄弱＋不稳＋掌握），证据不足的学生不进分母。</p>
+    <details class="cep-reading-details"><summary>气泡与薄弱占比说明</summary><p class="cep-note">横轴＝两阶段主考题数 n，纵轴＝本班明显薄弱占比，气泡大小＝出现卷组数。虚线表示“常考且薄弱”规则：n≥3 且明显薄弱占比≥30%。</p><p class="cep-note">同名行按键跨小节合并：n 与各档题数取合计，卷组数取各小节最大值。明显薄弱占比＝明显薄弱÷（明显薄弱＋不稳＋掌握）；证据不足的学生不进分母。</p></details>
   </section>
   </div>
 </template>

@@ -20,7 +20,7 @@
 | 排版 | [排版调查](question-bank-latex-layout-evaluation-20261002.md)、[一手来源](latex-question-bank-primary-sources-20261002.md) | 已有合成实排依据，以及高中、断网新工作机和纸面验收的限制 |
 | 相似题向量 | [实验](vector-similarity-experiment-20261001.md) | 只读实验依据；正式持久化、增量更新和模型接入尚未实现 |
 | 外观审查 | [历史组件审查](frontend-component-audit-20261001.html) | 保留视觉比较材料；历史快照与旧数量不代表当前状态 |
-| 页面文字与阅读层次 | [Impeccable 只读检查](impeccable-ui-audit-20261012.md) | 教师页面与两份保存报告的阅读检查、图例和展开层次建议；技能已安装，全部页面优化建议尚未实现 |
+| 页面文字与阅读层次 | [Impeccable 只读检查](impeccable-ui-audit-20261012.md)、[家长报告逐题整合评估](personal-report-question-detail-evaluation-20261012.md) | 学情与题库说明折叠、报告考查点折叠和手机正文字号已实现；报告原有页面顺序保留。逐题截图与完整分析整合、屏幕端取消重复附录仍待讨论 |
 | 题型改版 | [方案](question-type-redesign-plan-20261006.md)、[交接](question-type-redesign-handoff-20261007.md)、[进度网页](question-type-redesign-status-20261007.html) | 八上按题型诊断与配题；页面已人工验收，新导入、报告和权威文档已补齐。真实 v9 已获授权并启用；57 道预存失效题全部恢复，2 道歧义文字按用户确认修正。1292 道已标题型题均纳入；3 道低置信度题型抽查及实际训练收益仍待验证 |
 | 题库标签与新册自动题型 | [方案](question-bank-labels-and-auto-types-plan-20261008.md) | 已确认的标签分层、知识点恢复可写、新册按章自动整理题型、按章切换训练目标与各模块影响；全部尚未实现，模型调用、数据库迁移与真实重打需逐次授权 |
 | 关键步骤诊断 | [交接](key-step-diagnosis-handoff-20261009.md) | 技能改作失分步骤诊断的已确认决定、统计口径、只读原型与复用入口；试题诊断热点、学生作答证据与学情肖像的“反复卡点”、题型详情“卡在哪一步”和训练草稿“对应卡点”标签已实现，当前规则见阅卷与知识训练产品文档；跨考试同章复测的卡点追踪尚无数据 |

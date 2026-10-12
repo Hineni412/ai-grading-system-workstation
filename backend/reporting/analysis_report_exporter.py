@@ -837,10 +837,17 @@ gap:6px;margin-bottom:8px}
 .qpart h3 span{color:var(--muted);font-weight:400}
 /* footer */
 footer{font-size:12px;color:var(--muted);padding:6px 4px;line-height:1.8}
-@media(max-width:560px){
- body{font-size:14px}
+.point-details{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
+.point-details>summary{cursor:pointer;color:var(--accent);font-size:14px;font-weight:600;padding:4px 0}
+.point-details[open]>summary{margin-bottom:12px}
+.point-details>summary:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+@media screen and (max-width:560px){
+ body{font-size:16px}
  .page{padding:10px 8px 28px}
  .card{padding:16px 14px}
+ .dcard .help{font-size:16px;line-height:1.8}
+ .dcard .ttl{font-size:16px;line-height:1.6}
+ .dcard summary,.point-details>summary{font-size:14px;line-height:1.7}
  .qgrid{grid-template-columns:repeat(6,1fr)}
  .kv{grid-template-columns:70px minmax(0,1fr)}
 }
@@ -2830,10 +2837,13 @@ def _render_personal_html(
 <div class="card">
   <h2>本次考查点</h2>
   <div class="pt-counts"><b class="g">做得好 {n_good}</b><b class="m">部分做到 {n_mid}</b><b class="b">需要补 {n_bad}</b><b class="u">暂不能判断 {n_unknown}</b></div>
+  <details class="point-details">
+  <summary>查看全部考查点及对应题目</summary>
   {good_head}
   {f'<div class="tagcloud">{cloud}</div>' if cloud else ''}
   {''.join(rows_html)}
   {unknown_details}
+  </details>
   <div class="note" style="margin-top:8px">{score_note}</div>
 </div>"""
 
