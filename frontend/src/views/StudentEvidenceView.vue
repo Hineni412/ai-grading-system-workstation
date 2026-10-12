@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useResizeObserver } from '@vueuse/core'
 
@@ -25,6 +25,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/s
 import BackButton from '../components/design-system/BackButton.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
+import StudentKeyStepRepeatsCard from '../components/students/StudentKeyStepRepeatsCard.vue'
 import { presetWrongQuestionBook } from '../features/training/paper-selection-session'
 import QuestionContentRenderer from '../components/question-bank/QuestionContentRenderer.vue'
 import { loadEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
@@ -97,7 +98,9 @@ const sessions = ref<StudentExamResultSession[]>([])
 const totalSessions = ref(0)
 const page = ref(1)
 const totalPages = ref(0)
+const EVIDENCE_PAGE_SIZE = 10
 const onlyDeducted = ref(true)
+const keyStepJumpMessage = ref('')
 function openWrongBook() {
   if (!student.value) return
   presetWrongQuestionBook({ studentId: String(student.value.id), classId: student.value.class_name })
@@ -134,6 +137,40 @@ function reasonText(item: StudentExamResultItem): string {
   return item.deduction_reason || item.error_summary || '—'
 }
 
+async function scrollToKeyStepItem(payload: {
+  sessionId: number
+  questionId: string
+  key: string
+  page: number | null
+}): Promise<void> {
+  keyStepJumpMessage.value = ''
+  const findRow = () => document.querySelector<HTMLElement>(
+    `[data-key-step-qref="${payload.sessionId}|${CSS.escape(payload.questionId)}"]`,
+  )
+  let row = findRow()
+  while (!row && payload.page !== null && page.value < payload.page) {
+    const previousPage = page.value
+    await load(page.value + 1)
+    if (page.value === previousPage) break
+    await nextTick()
+    row = findRow()
+  }
+  if (!row) {
+    keyStepJumpMessage.value = payload.page === null
+      ? '暂时无法确定该小问所在页码，请展开全部作答后重试。'
+      : `该小问在第 ${payload.page} 页；已尝试加载，当前列表中未找到对应题行。`
+    return
+  }
+  row.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  row.classList.add('is-key-step-flash')
+  const step = row.querySelector<HTMLElement>(`[data-key-step-keys~="${CSS.escape(payload.key)}"]`)
+  step?.classList.add('is-key-step-flash')
+  window.setTimeout(() => {
+    row.classList.remove('is-key-step-flash')
+    step?.classList.remove('is-key-step-flash')
+  }, 2600)
+}
+
 async function load(nextPage: number): Promise<void> {
   controller?.abort()
   const active = new AbortController()
@@ -144,7 +181,7 @@ async function load(nextPage: number): Promise<void> {
     const response = await fetchStudentExamResults(studentId.value, {
       onlyDeducted: onlyDeducted.value,
       page: nextPage,
-      pageSize: 10,
+      pageSize: EVIDENCE_PAGE_SIZE,
       curriculumVolumeId: curriculumScope.selectedVolumeId ?? '',
     }, active.signal)
     student.value = response.student
@@ -273,6 +310,7 @@ async function loadKnowledgeEvidence(): Promise<void> {
 function toggleDeducted(next: boolean): void {
   if (onlyDeducted.value === next) return
   onlyDeducted.value = next
+  keyStepJumpMessage.value = ''
   void load(1)
 }
 
@@ -453,6 +491,7 @@ function closeQuestionPanel(): void {
 
 function reloadSemester(): void {
   if (curriculumScope.loadState !== 'ready') return
+  keyStepJumpMessage.value = ''
   sessions.value = []
   knowledgeSessions.value = []
   questionSessions.value = []
@@ -601,6 +640,14 @@ onBeforeUnmount(() => {
     </template>
 
     <template v-else>
+      <StudentKeyStepRepeatsCard
+        :student-id="studentId"
+        :curriculum-volume-id="curriculumScope.selectedVolumeId ?? ''"
+        :only-deducted="onlyDeducted"
+        :page-size="EVIDENCE_PAGE_SIZE"
+        :jump-message="keyStepJumpMessage"
+        @jump="scrollToKeyStepItem"
+      />
       <StatePanel v-if="!sessions.length" kind="empty" title="该学生暂无考试作答记录。" />
       <template v-else>
         <article v-for="session in sessions" :key="session.session_id" class="student-evidence__session">
@@ -623,7 +670,11 @@ onBeforeUnmount(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="item in session.items" :key="item.detail_id">
+              <tr
+                v-for="item in session.items"
+                :key="item.detail_id"
+                :data-key-step-qref="`${session.session_id}|${item.question_id}`"
+              >
                 <td>{{ item.question_id }}</td>
                 <td class="is-num">{{ formatScore(item.score_awarded) }} / {{ item.max_score === null ? '—' : formatScore(item.max_score) }}</td>
                 <td class="is-num">{{ item.deduction_amount === null ? '—' : formatScore(item.deduction_amount) }}</td>
@@ -632,7 +683,12 @@ onBeforeUnmount(() => {
                   <div v-if="item.step_diagnosis" class="student-evidence__steps" data-testid="student-key-steps">
                     <template v-if="item.step_diagnosis.availability === 'available'">
                       <strong>卡在哪一步</strong><small>{{ STEP_SOURCE_LABELS[item.step_diagnosis.source] }}</small>
-                      <div v-for="step in item.step_diagnosis.steps.filter(entry => entry.state !== 'met')" :key="step.step_id" class="student-evidence__step">
+                      <div
+                        v-for="step in item.step_diagnosis.steps.filter(entry => entry.state !== 'met')"
+                        :key="step.step_id"
+                        class="student-evidence__step"
+                        :data-key-step-keys="step.key_steps.map(target => target.key).join(' ')"
+                      >
                         <span>{{ STEP_STATE_LABELS[step.state] }} · {{ step.step_id }}</span>
                         <QuestionHtmlBlock :text="step.goal" inline typeset-text />
                         <small v-if="item.step_diagnosis.scope === 'key_steps'">{{ step.key_steps.map(target => target.name).join('、') || '未挂关键步骤' }}</small>
@@ -810,6 +866,7 @@ onBeforeUnmount(() => {
 .student-evidence__steps small { display: block; color: var(--color-text-muted); }
 .student-evidence__steps p { margin: var(--space-1) 0; }
 .student-evidence__step { padding-block: var(--space-1); }
+.is-key-step-flash { background: var(--color-warning-subtle); outline: 1px solid var(--color-warning); }
 
 .student-evidence { padding-block-end: var(--page-inset-bottom); }
 .student-evidence > :not(.page-header):not(.page-header__sentinel) { margin-inline: var(--page-inset-x); }

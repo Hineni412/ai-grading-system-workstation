@@ -12,6 +12,7 @@ import io
 import json
 import math
 import re
+import sqlite3
 import statistics
 import zipfile
 from collections.abc import Callable
@@ -2416,6 +2417,7 @@ def _render_personal_html(
     ai_placeholder: bool | None = None,
     narrative_saved_at: str | None = None,
     step_diagnoses: dict[str, dict[str, Any]] | None = None,
+    key_step_repeats: list[dict[str, Any]] | None = None,
 ) -> str:
     # 在线页 narrative_mode="none" 的数据版：AI 段落显示占位文案而不是失败提示。
     if ai_placeholder is None:
@@ -2840,7 +2842,8 @@ def _render_personal_html(
         PORTRAIT_CSS, build_portrait_view, portrait_card_html)
     try:
         card_portrait = portrait_card_html(
-            build_portrait_view(data, student, history, error_map, error_history))
+            build_portrait_view(data, student, history, error_map, error_history,
+                                key_step_repeats=key_step_repeats))
     except Exception as exc:
         logging.getLogger(__name__).warning(
             "optional operation unavailable: portrait card (%s)", type(exc).__name__)
@@ -3128,14 +3131,17 @@ class AnalysisReportGenerator:
             raise ValueError("所选学生没有可生成个人报告的成绩。")
         session_data = data
         bank_path = question_bank_db_path(Path(self.repositories.db_path))
+        batch_student_ids = [student.student_id for _group, student in scoped_students]
+        current_step_diagnosis = None
         step_diagnoses = {}
         if bank_path is not None:
             from backend.step_diagnosis import build_session_step_diagnosis
-            step_diagnoses = build_session_step_diagnosis(
+            current_step_diagnosis = build_session_step_diagnosis(
                 self.repositories, data.session_id,
-                student_ids=[student.student_id for _group, student in scoped_students],
+                student_ids=batch_student_ids,
                 question_bank_path=bank_path,
-            ).students
+            )
+            step_diagnoses = current_step_diagnosis.students
         # Resolve once on the caller thread. Only model work runs in workers;
         # repository access, result-store writes, image preparation and rendering
         # stay on this thread.
@@ -3176,6 +3182,43 @@ class AnalysisReportGenerator:
         histories = _load_student_histories(
             self.repositories, session_data, self.data_root
         )
+        history_step_diagnoses: dict[int, Any | None] = {}
+        if bank_path is not None:
+            history_student_ids = [student.student_id for _group, student in scoped_students]
+            batch_session_ids = {
+                int(entry["session_id"])
+                for student_id in history_student_ids
+                for entry in histories.get(student_id, [])
+                if entry.get("score") is not None and int(entry.get("session_id") or 0) > 0
+            }
+            for history_session_id in sorted(batch_session_ids):
+                if history_session_id == data.session_id and current_step_diagnosis is not None:
+                    history_step_diagnoses[history_session_id] = current_step_diagnosis
+                    continue
+                try:
+                    history_step_diagnoses[history_session_id] = build_session_step_diagnosis(
+                        self.repositories, history_session_id,
+                        student_ids=history_student_ids,
+                        question_bank_path=bank_path,
+                    )
+                except (OSError, sqlite3.Error):
+                    history_step_diagnoses[history_session_id] = None
+        def _student_key_step_repeats(student_id: int):
+            if bank_path is None:
+                return None
+            from backend.step_diagnosis import collect_student_key_step_repeats
+            session_ids = {
+                int(entry["session_id"])
+                for entry in histories.get(student_id, [])
+                if entry.get("score") is not None and int(entry.get("session_id") or 0) > 0
+            }
+            diagnoses = []
+            for history_session_id in sorted(session_ids):
+                diagnosis = history_step_diagnoses.get(history_session_id)
+                if diagnosis is None:
+                    return None
+                diagnoses.append(diagnosis)
+            return collect_student_key_step_repeats(diagnoses, int(student_id))["repeated"]
         # "建议核对"提示集中存档：与教师复核锁的修订号对账，导出后可在
         # 成绩中心集中查看并跳转复核。
         note_info_by_qid = {info.question_id: info for info in session_data.questions}
@@ -3317,6 +3360,7 @@ class AnalysisReportGenerator:
                             error_map=error_maps.get(student.student_id),
                             error_history=error_history,
                             step_diagnoses=step_diagnoses.get(student.student_id),
+                            key_step_repeats=_student_key_step_repeats(student.student_id),
                             originals_released=self.data_root is not None and originals_state(self.data_root, data.session_id) in {"clearing", "cleared"},
                             narrative_saved_at=(personal_store.load(data.session_id, student.student_id) or {}).get("generated_at") if personal_store is not None else None,
                         )

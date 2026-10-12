@@ -208,3 +208,30 @@ class StudentExamResultsResponse(BaseModel):
     page: int
     page_size: int
     total_pages: int
+
+
+class KeyStepRepeatItem(BaseModel):
+    session_id: int
+    session_name: str
+    question_id: str
+    step_id: str
+    goal: str
+    reason: str
+    source: str | None = None
+    evidence_page: int | None = Field(default=None, ge=1)
+
+
+class KeyStepRepeat(BaseModel):
+    key: str
+    name: str
+    fails: int = Field(ge=0)
+    mets: int = Field(ge=0)
+    carried: int = Field(ge=0)
+    blank: int = Field(ge=0)
+    items: list[KeyStepRepeatItem]
+
+
+class StudentKeyStepRepeatsResponse(BaseModel):
+    student: StudentResponse
+    repeated: list[KeyStepRepeat]
+    singles: list[KeyStepRepeat]

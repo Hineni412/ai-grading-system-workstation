@@ -25,6 +25,10 @@ const segments = computed(() => {
       width: total > 0 ? (count / total) * 100 : 0,
     }))
 })
+
+function countVisible(segment: { width: number; count: number }): boolean {
+  return props.showCounts === true && segment.width >= 4 + String(segment.count).length * 3
+}
 </script>
 
 <template>
@@ -35,6 +39,6 @@ const segments = computed(() => {
       :class="`is-${segment.tier}`"
       :title="segment.label"
       :style="{ width: `${segment.width}%` }"
-    >{{ showCounts ? segment.count : '' }}</i>
+    >{{ countVisible(segment) ? segment.count : '' }}</i>
   </span>
 </template>

@@ -11,6 +11,7 @@ import {
   type PersonalizedRecommendationDraft,
   type PersonalizedRecommendationItem,
   type TrainingDiagnosis,
+  type TrainingDraftKeyStepMatchesResponse,
   type TrainingEvidenceReference,
   type TrainingExamScopeRequest,
   type TrainingStage,
@@ -100,7 +101,20 @@ const workspaceSteps = computed<StepProgressStep[]>(() => [
 function selectWorkspaceStep(id: string): void {
   if (id === 'review' || id === 'print' || (id === 'scan' && hasPrintablePapers.value)) viewStep.value = id
 }
-watch(() => draft.value?.draft_id, () => { viewStep.value = 'review'; scanProgress.value = { received: 0, total: 0, completed: false }; confirmDiscard.value = false })
+const keyStepMatches = ref<TrainingDraftKeyStepMatchesResponse['students']>({})
+let keyStepController: AbortController | null = null
+watch(() => draft.value?.draft_id, async (draftId) => {
+  viewStep.value = 'review'; scanProgress.value = { received: 0, total: 0, completed: false }; confirmDiscard.value = false
+  keyStepController?.abort()
+  keyStepMatches.value = {}
+  if (!draftId) return
+  const active = new AbortController()
+  keyStepController = active
+  try {
+    const response = await trainingApi.getPersonalizedDraftKeyStepMatches(draftId, active.signal)
+    if (!active.signal.aborted) keyStepMatches.value = response.students
+  } catch { /* 标签只作说明；接口失败不影响草稿。 */ }
+})
 watch(draft, value => emit('contextChange', value ? {
   mode: effectivePaperMode.value, studentCount: value.students.length,
   questionCount: Number(value.config.question_count ?? props.questionCount), difficultyMax: Number(value.config.difficulty_max ?? difficultyMax.value),
@@ -109,7 +123,7 @@ watch(draft, value => emit('contextChange', value ? {
 const isHandout = computed(() => (draft.value?.config.purpose ?? props.purpose ?? 'training') === 'handout')
 let handoutPollGeneration = 0
 let componentActive = true
-onBeforeUnmount(() => { componentActive = false; handoutPollGeneration += 1; paperBatchPollGeneration += 1 })
+onBeforeUnmount(() => { componentActive = false; handoutPollGeneration += 1; paperBatchPollGeneration += 1; keyStepController?.abort() })
 const paperBusy = ref('')
 // 整卷体积上限对教师不可见：固定取最大档，硬上限（题量/判定点/图片/页数）仍会拦截。
 const PAPER_CONTEXT_WINDOW = 128000
@@ -308,6 +322,12 @@ function itemLabel(item: PersonalizedRecommendationItem): string {
   if (item.selection_kind === 'task_matched') return item.match_label || '原小问任务匹配'
   if (item.match_level && item.match_label) return `匹配${item.match_level}级 · ${item.match_label}`
   return item.selection_kind === 'supplement' ? '补充练习' : stageLabel(item.stage)
+}
+
+function keyStepTagFor(studentId: string, questionId: number | null | undefined): string {
+  if (!questionId) return ''
+  const matches = keyStepMatches.value[studentId]?.[String(questionId)] ?? []
+  return matches.map(entry => entry.name).join('、')
 }
 
 function difficultySummary(items: PersonalizedRecommendationItem[]): string {
@@ -826,7 +846,7 @@ async function editItem(
               <li v-if="isHandout && item.knowledge_section && (index === 0 || student.items[index - 1]?.knowledge_section?.title !== item.knowledge_section.title)" class="personalized-section-heading">{{ item.knowledge_section.title }}</li>
               <li class="personalized-match">
                 <p v-if="isHandout && item.primary_skill_name" class="personalized-skill-note">{{ targetLabel }}：{{ item.primary_skill_name }}</p>
-                <div class="personalized-match__head"><strong>第 {{ item.item_order }} 题</strong><span class="personalized-stage-badge" :class="`is-${item.stage}`">{{ itemLabel(item) }}</span><span>{{ knowledgeLeafLabel(item.matched_name) }}</span><span class="personalized-match__difficulty">难度 {{ item.difficulty }} · {{ item.criterion_point_count }} 个判定点</span></div>
+                <div class="personalized-match__head"><strong>第 {{ item.item_order }} 题</strong><span class="personalized-stage-badge" :class="`is-${item.stage}`">{{ itemLabel(item) }}</span><span>{{ knowledgeLeafLabel(item.matched_name) }}</span><span v-if="keyStepTagFor(student.student_id, item.question_id)" class="key-step-match-tag" title="只作说明，不改变选题和排序">对应卡点：{{ keyStepTagFor(student.student_id, item.question_id) }}</span><span class="personalized-match__difficulty">难度 {{ item.difficulty }} · {{ item.criterion_point_count }} 个判定点</span></div>
                 <p class="personalized-match__stem">{{ item.question_text || '旧草稿未包含题干，请预览原题。' }}</p>
                 <div class="personalized-item-actions">
                   <AppButton variant="ghost" @click="openPreview(item.question_id, '推荐题预览')">预览</AppButton>
@@ -894,6 +914,7 @@ async function editItem(
 .personalized-match__head{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2) var(--space-3);font-size:var(--font-size-dense)}
 .personalized-match__head>span:not(.personalized-stage-badge){color:var(--color-text-secondary)}
 .personalized-match__difficulty{margin-left:auto;font-size:var(--font-size-caption)}
+.personalized-match__head>.key-step-match-tag{padding:1px 6px;border:1px dashed var(--color-warning);border-radius:var(--radius-sm);color:var(--color-warning);font-size:var(--font-size-caption);cursor:help}
 .personalized-stage-badge{padding:2px var(--space-2);border-radius:var(--radius-tag);font-size:var(--font-size-caption);background:var(--color-accent-subtle);color:var(--color-accent)}
 .personalized-stage-badge.is-prerequisite{background:var(--color-warning-subtle);color:var(--color-warning)}
 .personalized-stage-badge.is-transfer{background:var(--color-ai-subtle);color:var(--color-ai)}

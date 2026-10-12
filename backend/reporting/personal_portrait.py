@@ -78,10 +78,20 @@ padding:4px 0;font-size:13px}
 .pats{margin-top:10px}
 .patline{font-size:13px;padding:4px 0;border-top:1px dashed var(--line)}
 .patline:first-of-type{border-top:none}
+.kstuck{margin-top:12px}
+.kstuck h4{font-size:13px;margin:0 0 4px}
+.kstuck-block{padding:6px 0;border-top:1px dashed var(--line)}
+.kstuck-block>p{margin:0 0 4px;font-size:13px}
+.kstuck-line{display:block;font-size:12.5px;line-height:1.7;padding:2px 0}
+.kstuck-line .ksgoal{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+.kstuck-line .ksreason{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--bad)}
+.kstuck-more>summary{cursor:pointer;font-size:12.5px;color:var(--accent)}
 .blankline{font-size:13px;color:var(--muted);margin-top:8px}
 @media(max-width:560px){.cbar{grid-template-columns:66px 1fr 40px}}
 @media print{
-.chip,.pitem,.cbar,.patline,.blankline,.prow{break-inside:avoid}
+.chip,.pitem,.cbar,.patline,.blankline,.prow,.kstuck-block{break-inside:avoid}
+details.kstuck-more{display:contents}
+details.kstuck-more>summary{display:none}
 .psec h3{break-after:avoid}
 details.portrait>summary{break-after:avoid}
 }
@@ -106,7 +116,8 @@ def _week_name(name: Any) -> str:
 
 
 def _clean_label(name: Any) -> str:
-    return re.sub(r"^(?:技能|题型)[·・：:]\s*", "", str(name or "")).strip()
+    leaf = str(name or "").split("｜")[-1].split("|")[-1]
+    return re.sub(r"^(?:技能|题型)[·・：:]\s*", "", leaf).strip()
 
 
 def _lineage(catalog: dict[str, dict], key: str) -> tuple[str, str]:
@@ -122,7 +133,7 @@ def _lineage(catalog: dict[str, dict], key: str) -> tuple[str, str]:
     return chapter, section
 
 
-def build_portrait_view(data, student, history, error_map, error_history):
+def build_portrait_view(data, student, history, error_map, error_history, key_step_repeats=None):
     """汇总本教学学期截至本场的考试与训练证据；有成绩的考试少于两场时不显示。"""
     sessions = [e for e in history if e.get("score") is not None]
     if len(sessions) < 2:
@@ -239,6 +250,7 @@ def build_portrait_view(data, student, history, error_map, error_history):
             for e in sessions if int(e.get("blank") or 0) > 0),
         "lost_total": sum(len(e.get("lost") or []) for e in sessions),
         "categorized": len(categorized),
+        "key_step_repeats": key_step_repeats,
     }
 
 
@@ -385,6 +397,29 @@ def portrait_card_html(view: dict | None) -> str:
                if shown
                else '<div class="patline">目前没有在两场及以上考试重复出现的同一错法。</div>')
             + "</div>")
+
+    def _key_step_item(item: dict) -> str:
+        return (f'<span class="kstuck-line"><b>{esc(_week_name(item.get("session_name")))} '
+                f'{esc(_question_display_label(item.get("question_id")))}</b>'
+                f'<span class="ksgoal">{esc(item.get("goal") or "该步要求暂无记录")}</span>'
+                + (f'<span class="ksreason">{esc(item.get("reason"))}</span>' if item.get("reason") else "")
+                + '</span>')
+
+    key_steps = ""
+    if view.get("key_step_repeats") is not None:
+        blocks = []
+        for entry in sorted(view["key_step_repeats"], key=lambda item: (-int(item.get("fails") or 0), str(item.get("name") or "")))[:3]:
+            items = entry.get("items") or []
+            lines = "".join(_key_step_item(item) for item in items[:3])
+            if len(items) > 3:
+                lines += (f'<details class="kstuck-more"><summary>还有 {len(items) - 3} 处</summary>'
+                          + "".join(_key_step_item(item) for item in items[3:]) + "</details>")
+            blocks.append(f'<section class="kstuck-block"><p><b>{esc(entry.get("name") or entry.get("key"))}：</b>'
+                          f'{int(entry.get("fails") or 0)} 道小问独立失分</p>{lines}</section>')
+        key_steps = ('<div class="kstuck"><h4>反复卡在哪一步</h4>'
+                     + ("".join(blocks)
+                        if blocks else '<p class="patline">目前没有在两道及以上小问反复卡住的关键步骤。</p>')
+                     + '</div>')
     blank = (f'<div class="blankline">未作答小问：{esc(view["blank_bits"])}'
              '（空白多少不能说明实际作答用时）</div>' if view["blank_bits"] else "")
     section_c = f"""<div class="psec">
@@ -392,6 +427,7 @@ def portrait_card_html(view: dict | None) -> str:
 {bars}
 {blank}
 {pats}
+{key_steps}
 <div class="note" style="margin-top:8px">统计单位：失分小问次数。本学期截至本场共有失分小问 {view["lost_total"]} 个，其中 {view["categorized"]} 个已整理错因；同一小问可能归入多个大类，各类次数相加不等于失分小问数。</div>
 </div>"""
 

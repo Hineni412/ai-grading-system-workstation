@@ -1703,6 +1703,83 @@ export interface TrainingPendingItem {
 }
 export interface TrainingPendingSummary { items: TrainingPendingItem[] }
 
+export interface KeyStepRepeatedStudent {
+  student_id: string
+  student_name: string
+  fails: number
+}
+export interface KeyStepTypeQuestion {
+  session_id: number
+  session_name: string
+  parent_label: string
+  sub_count: number
+}
+export interface KeyStepTypeStat {
+  key: string
+  name: string
+  independent: number
+  observed: number
+  rate: number
+  common: boolean
+  repeated_students: KeyStepRepeatedStudent[]
+  questions: KeyStepTypeQuestion[]
+}
+export interface TrainingKeyStepTypeStatsResponse { types: Record<string, KeyStepTypeStat[]> }
+export interface TrainingDraftKeyStepMatch { key: string; name: string }
+export interface TrainingDraftKeyStepMatchesResponse {
+  students: Record<string, Record<string, TrainingDraftKeyStepMatch[]>>
+}
+
+function isKeyStepRepeatedStudent(value: unknown): value is KeyStepRepeatedStudent {
+  return isRecord(value)
+    && isNonEmptyString(value.student_id)
+    && isNonEmptyString(value.student_name)
+    && isInteger(value.fails, 0)
+}
+
+function isKeyStepTypeQuestion(value: unknown): value is KeyStepTypeQuestion {
+  return isRecord(value)
+    && isInteger(value.session_id, 1)
+    && isNonEmptyString(value.session_name)
+    && isNonEmptyString(value.parent_label)
+    && isInteger(value.sub_count, 1)
+}
+
+function isKeyStepTypeStat(value: unknown): value is KeyStepTypeStat {
+  return isRecord(value)
+    && isNonEmptyString(value.key)
+    && isNonEmptyString(value.name)
+    && isInteger(value.independent, 0)
+    && isInteger(value.observed, 0)
+    && isRate(value.rate)
+    && typeof value.common === 'boolean'
+    && Array.isArray(value.repeated_students)
+    && value.repeated_students.every(isKeyStepRepeatedStudent)
+    && Array.isArray(value.questions)
+    && value.questions.every(isKeyStepTypeQuestion)
+}
+
+function decodeKeyStepTypeStats(value: unknown): TrainingKeyStepTypeStatsResponse {
+  if (!isRecord(value) || !isRecord(value.types)
+    || !Object.values(value.types).every(rows => Array.isArray(rows) && rows.every(isKeyStepTypeStat))) {
+    throw new Error('Invalid key step type stats')
+  }
+  return value as unknown as TrainingKeyStepTypeStatsResponse
+}
+
+function isTrainingDraftKeyStepMatch(value: unknown): value is TrainingDraftKeyStepMatch {
+  return isRecord(value) && isNonEmptyString(value.key) && isNonEmptyString(value.name)
+}
+
+function decodeTrainingDraftKeyStepMatches(value: unknown): TrainingDraftKeyStepMatchesResponse {
+  if (!isRecord(value) || !isRecord(value.students)
+    || !Object.values(value.students).every(byQuestion => isRecord(byQuestion)
+      && Object.values(byQuestion).every(matches => Array.isArray(matches) && matches.every(isTrainingDraftKeyStepMatch)))) {
+    throw new Error('Invalid draft key step matches')
+  }
+  return value as unknown as TrainingDraftKeyStepMatchesResponse
+}
+
 export const trainingApi = {
   async getPendingSummary(signal?: AbortSignal): Promise<TrainingPendingSummary> {
     return apiClient.request('/api/training/pending-summary', { signal, decode(value) {
@@ -1734,6 +1811,29 @@ export const trainingApi = {
       signal,
       timeoutMs: 120_000,
       onResponseHeaders: refreshHeaderHandler(onRefreshing),
+    })
+  },
+
+  keyStepTypeStats(
+    body: TrainingOverviewRequest,
+    signal?: AbortSignal,
+  ): Promise<TrainingKeyStepTypeStatsResponse> {
+    return apiClient.request('/api/training/key-step-type-stats', {
+      method: 'POST',
+      body,
+      signal,
+      decode: decodeKeyStepTypeStats,
+      timeoutMs: 120_000,
+    })
+  },
+
+  getPersonalizedDraftKeyStepMatches(
+    draftId: string,
+    signal?: AbortSignal,
+  ): Promise<TrainingDraftKeyStepMatchesResponse> {
+    return apiClient.request(`/api/training/personalized-drafts/${draftId}/key-step-matches`, {
+      signal,
+      decode: decodeTrainingDraftKeyStepMatches,
     })
   },
 

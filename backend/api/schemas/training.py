@@ -772,6 +772,43 @@ class TrainingOverviewResponse(_TrainingModel):
     summary: TrainingOverviewSummary
 
 
+class KeyStepRepeatedStudent(_TrainingModel):
+    student_id: str
+    student_name: str
+    fails: int = Field(ge=0)
+
+
+class KeyStepTypeQuestion(_TrainingModel):
+    session_id: int = Field(ge=1)
+    session_name: str
+    parent_label: str
+    sub_count: int = Field(ge=1)
+
+
+class KeyStepTypeStat(_TrainingModel):
+    key: str
+    name: str
+    independent: int = Field(ge=0)
+    observed: int = Field(ge=0)
+    rate: float = Field(ge=0, le=1)
+    common: bool = False
+    repeated_students: list[KeyStepRepeatedStudent] = Field(default_factory=list)
+    questions: list[KeyStepTypeQuestion] = Field(default_factory=list)
+
+
+class TrainingKeyStepTypeStatsResponse(_TrainingModel):
+    types: dict[str, list[KeyStepTypeStat]] = Field(default_factory=dict)
+
+
+class TrainingDraftKeyStepMatch(_TrainingModel):
+    key: str
+    name: str
+
+
+class TrainingDraftKeyStepMatchesResponse(_TrainingModel):
+    students: dict[str, dict[str, list[TrainingDraftKeyStepMatch]]] = Field(default_factory=dict)
+
+
 __all__ = [
     "PersonalizedPaperBatchCreateRequest",
     "PersonalizedPaperBatchResponse",
@@ -783,6 +820,8 @@ __all__ = [
     "PersonalizedRecommendationEditRequest",
     "TrainingDiagnosisRequest",
     "TrainingDiagnosisResponse",
+    "TrainingDraftKeyStepMatchesResponse",
+    "TrainingKeyStepTypeStatsResponse",
     "TrainingExamScopeRequest",
     "TrainingOverviewRequest",
     "TrainingOverviewResponse",

@@ -30,6 +30,8 @@ from backend.api.dependencies import (
     get_request_diagnosis_profile_service,
     get_training_assessment_module,
     get_training_submission_module,
+    get_grading_db,
+    get_question_bank_db_path,
 )
 from backend.api.schemas.training import (
     PersonalizedPaperBatchCreateRequest,
@@ -51,6 +53,8 @@ from backend.api.schemas.training import (
     TrainingDiagnosisRequest,
     TrainingDiagnosisResponse,
     TrainingDiagnosisSummaryResponse,
+    TrainingDraftKeyStepMatchesResponse,
+    TrainingKeyStepTypeStatsResponse,
     TrainingWeakPointSummary,
     TrainingDisplayDiagnosisResponse,
     TrainingDisplaySharedDiagnosisResponse,
@@ -666,6 +670,147 @@ def build_training_overview(
     return TrainingOverviewResponse.model_validate(overview)
 
 
+def _parent_question_label(question_id: str) -> str:
+    return question_id.rsplit("(P", 1)[0] if "(P" in question_id else question_id
+
+
+@router.post(
+    "/key-step-type-stats",
+    response_model=TrainingKeyStepTypeStatsResponse,
+    responses=TRAINING_DATABASE_RESPONSES,
+)
+def build_key_step_type_stats(
+    body: TrainingOverviewRequest,
+    service: DiagnosisProfileService = Depends(get_request_diagnosis_profile_service),
+) -> TrainingKeyStepTypeStatsResponse:
+    """Read-only semester key-step concentration by current primary question type."""
+    try:
+        profile = service.build_profiles(
+            scope=body.scope.model_dump(exclude_none=True),
+            exam_scope=body.exam_scope.model_dump(exclude_none=True),
+        )
+        student_ids = [int(student["student_id"]) for student in profile.get("students") or []]
+        sessions = profile.get("exam_scope", {}).get("sessions") or []
+        session_ids = [int(session["session_id"]) for session in sessions]
+        if not student_ids or not session_ids:
+            return TrainingKeyStepTypeStatsResponse()
+        student_names = {
+            str(student.get("student_id")): str(student.get("student_name") or student.get("student_code") or student.get("student_id"))
+            for student in profile.get("students") or []
+        }
+        session_names = {
+            int(session["session_id"]): str(session.get("session_name") or "")
+            for session in sessions
+        }
+        from backend.step_diagnosis import build_session_step_diagnosis
+        diagnoses = [
+            build_session_step_diagnosis(
+                service.db, session_id, student_ids=student_ids,
+                question_bank_path=service.question_bank_db_path,
+            )
+            for session_id in session_ids
+        ]
+        from backend.students.exam_evidence import confirmed_bank_question_links, lookup_bank_question_id
+        links = confirmed_bank_question_links(service.question_bank_db_path, session_ids)
+        bank_ids = sorted({bank_id for session_id in session_ids for diagnosis in diagnoses
+                           if diagnosis.session_id == session_id
+                           for student_items in diagnosis.students.values()
+                           for qid in student_items
+                           if (bank_id := lookup_bank_question_id(links, session_id, qid)) is not None})
+        type_by_bank: dict[int, str] = {}
+        if bank_ids:
+            marks = ",".join("?" for _ in bank_ids)
+            tag_sql = (
+                "SELECT question_id,tag_value FROM question_tags "
+                "WHERE tag_type='knowledge_point' AND tag_value LIKE 'kp\\_%' ESCAPE '\\' "
+                f"AND question_id IN ({marks}) ORDER BY id"
+            )
+            if service.question_bank_connection is not None:
+                tag_rows = service.question_bank_connection.execute(tag_sql, bank_ids).fetchall()
+            else:
+                from contextlib import closing
+                from question_bank.services.question_read_service import _open_direct_read_connection
+                with closing(_open_direct_read_connection(service.question_bank_db_path)) as bank:
+                    tag_rows = bank.execute(tag_sql, bank_ids).fetchall()
+            for row in tag_rows:
+                type_by_bank.setdefault(int(row["question_id"]), str(row["tag_value"]))
+        grouped: dict[str, dict[str, Any]] = {}
+        for diagnosis in diagnoses:
+            for student_id, student_items in diagnosis.students.items():
+                for qid, item in student_items.items():
+                    bank_id = lookup_bank_question_id(links, diagnosis.session_id, str(qid))
+                    type_key = type_by_bank.get(bank_id or -1)
+                    if not type_key:
+                        continue
+                    for step in item.get("steps") or []:
+                        state = str(step.get("state") or "")
+                        if state not in {"independent", "met"}:
+                            continue
+                        for target in step.get("key_steps") or []:
+                            key = str(target.get("key") or "")
+                            if not key:
+                                continue
+                            bucket = grouped.setdefault(type_key, {}).setdefault(key, {
+                                "key": key, "name": str(target.get("name") or key),
+                                "observed": set(), "independent": set(),
+                                "fails": {}, "questions": {},
+                            })
+                            bucket["observed"].add(student_id)
+                            question_group = bucket["questions"].setdefault(
+                                (diagnosis.session_id, _parent_question_label(str(qid))),
+                                {"session_id": diagnosis.session_id,
+                                 "session_name": session_names.get(diagnosis.session_id, diagnosis.session_name),
+                                 "parent_label": _parent_question_label(str(qid)),
+                                 "question_ids": set()},
+                            )
+                            question_group["question_ids"].add(str(qid))
+                            if state == "independent":
+                                bucket["independent"].add(student_id)
+                                bucket["fails"].setdefault(student_id, set()).add(str(qid))
+        rates_by_type = {
+            type_key: {
+                key: len(values["independent"]) / len(values["observed"])
+                for key, values in type_steps.items() if values["observed"]
+            }
+            for type_key, type_steps in grouped.items()
+        }
+        common_counts = {
+            key: sum(1 for type_rates in rates_by_type.values()
+                     if type_rates.get(key, 0) >= 0.30)
+            for type_rates in rates_by_type.values() for key in type_rates
+        }
+        result: dict[str, list[dict[str, Any]]] = {}
+        for type_key, steps in grouped.items():
+            result[type_key] = sorted((
+                {
+                    "key": key,
+                    "name": values["name"],
+                    "independent": len(values["independent"]),
+                    "observed": len(values["observed"]),
+                    "rate": rates_by_type[type_key][key],
+                    "common": common_counts.get(key, 0) >= 2,
+                    "repeated_students": sorted((
+                        {"student_id": str(student_id),
+                         "student_name": student_names.get(str(student_id), f"学生 {student_id}"),
+                         "fails": len(question_ids)}
+                        for student_id, question_ids in values["fails"].items()
+                        if len(question_ids) >= 2),
+                        key=lambda item: (-item["fails"], item["student_name"], item["student_id"])),
+                    "questions": sorted((
+                        {"session_id": group["session_id"],
+                         "session_name": group["session_name"],
+                         "parent_label": group["parent_label"],
+                         "sub_count": len(group["question_ids"])}
+                        for group in values["questions"].values()),
+                        key=lambda item: (item["session_id"], item["parent_label"])),
+                }
+                for key, values in steps.items() if values["observed"]),
+                key=lambda item: (-item["rate"], -item["independent"], item["name"]))
+        return TrainingKeyStepTypeStatsResponse(types=result)
+    except (OSError, sqlite3.Error, QuestionBankSnapshotError, RequestReadContextCleanupError, ValueError) as exc:
+        raise ApiError(503, "training_database_unavailable", "Training data is temporarily unavailable") from exc
+
+
 @router.post(
     "/personalized-drafts",
     response_model=PersonalizedRecommendationDraftResponse,
@@ -847,6 +992,82 @@ def get_personalized_recommendation_draft(
     return PersonalizedRecommendationDraftResponse.model_validate(
         _public_training_mapping(draft)
     )
+
+
+@router.get(
+    "/personalized-drafts/{draft_id}/key-step-matches",
+    response_model=TrainingDraftKeyStepMatchesResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Personalized recommendation draft was not found"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def get_personalized_draft_key_step_matches(
+    draft_id: str,
+    module: PersonalizedRecommendationModule = Depends(get_personalized_recommendation_module),
+    db=Depends(get_grading_db),
+    question_bank_db_path: Path = Depends(get_question_bank_db_path),
+) -> TrainingDraftKeyStepMatchesResponse:
+    """Read-only labels: repeated student key steps also directly linked to draft questions."""
+    try:
+        draft = module.get(draft_id)
+    except (RecommendationDraftNotFound, ValueError) as exc:
+        raise ApiError(404, "personalized_recommendation_not_found",
+                       "Personalized recommendation draft was not found") from exc
+    students = draft.get("students") or []
+    volume_id = str((draft.get("config") or {}).get("curriculum_volume_id") or "")
+    question_ids = sorted({int(item["question_id"]) for student in students
+                           for item in student.get("items") or []
+                           if int(item.get("question_id") or 0) > 0})
+    if not students or not volume_id or not question_ids:
+        return TrainingDraftKeyStepMatchesResponse()
+    try:
+        session_ids = [
+            int(row["id"]) for row in db.sessions.list_grading_sessions()
+            if not row.get("is_deleted")
+            and str(row.get("curriculum_volume_id") or "") == volume_id
+        ]
+        from backend.step_diagnosis import build_session_step_diagnosis, collect_student_key_step_repeats
+        student_ids = [int(student["student_id"]) for student in students]
+        diagnoses = [
+            build_session_step_diagnosis(
+                db, session_id, student_ids=student_ids,
+                question_bank_path=question_bank_db_path,
+            )
+            for session_id in session_ids
+        ]
+        from contextlib import closing
+        from question_bank.services.question_read_service import _open_direct_read_connection
+        from question_bank.services.question_skill_index import build_skill_snapshot, short_node_name
+        with closing(_open_direct_read_connection(question_bank_db_path)) as bank:
+            snapshot = build_skill_snapshot(
+                bank, question_bank_db_path, question_bank_db_path.parent.parent,
+                question_ids=tuple(question_ids),
+            )
+        question_steps = {
+            qid: set((snapshot.get("by_question") or {}).get(qid) or {})
+            for qid in question_ids
+        }
+        result: dict[str, dict[str, list[dict[str, str]]]] = {}
+        for student in students:
+            student_id = str(student["student_id"])
+            repeated_keys = {
+                entry["key"] for entry in collect_student_key_step_repeats(
+                    diagnoses, int(student_id))["repeated"]
+            }
+            for item in student.get("items") or []:
+                qid = int(item.get("question_id") or 0)
+                matches = repeated_keys & question_steps.get(qid, set())
+                if not matches:
+                    continue
+                result.setdefault(student_id, {})[str(qid)] = sorted((
+                    {"key": key,
+                     "name": short_node_name(str((snapshot.get("nodes") or {}).get(key, {}).get("display_name") or key))}
+                    for key in matches), key=lambda entry: entry["name"])
+        return TrainingDraftKeyStepMatchesResponse(students=result)
+    except (OSError, sqlite3.Error, QuestionBankSnapshotError) as exc:
+        raise ApiError(503, "training_database_unavailable",
+                       "Training data is temporarily unavailable") from exc
 
 
 @router.post(

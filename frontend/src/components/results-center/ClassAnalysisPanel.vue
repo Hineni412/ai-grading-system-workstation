@@ -161,6 +161,17 @@ const sortedQuestions = computed(() => {
 })
 
 const hotspots = computed(() => data.value?.step_diagnosis?.hotspots ?? [])
+const expandedRepeatedStep = ref<string | null>(null)
+function toggleRepeatedStudents(stepKey: string): void {
+  expandedRepeatedStep.value = expandedRepeatedStep.value === stepKey ? null : stepKey
+}
+function openRepeatedStudent(studentId: string, stepKey: string): void {
+  void router.push({
+    name: 'student-evidence',
+    params: { studentId },
+    query: { keyStep: stepKey },
+  })
+}
 const selectedHotspot = computed(() => hotspots.value.find((entry) => entry.key === selectedStepKey.value) ?? hotspots.value[0] ?? null)
 const hotspotQuestions = computed(() => {
   const key = selectedHotspot.value?.key
@@ -592,14 +603,34 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
                 >按关键步骤</button>
               </div>
               <div v-if="sortMode === 'step'" class="class-analysis__list-items" role="listbox" aria-label="关键步骤">
-                <button v-for="hotspot in hotspots" :key="hotspot.key" type="button" role="option"
-                  class="class-analysis__list-row" :class="{ 'is-selected': hotspot.key === selectedHotspot?.key }"
-                  :aria-selected="hotspot.key === selectedHotspot?.key" :data-step-key="hotspot.key"
-                  @click="selectKeyStep(hotspot.key)">
-                  <span class="class-analysis__list-head"><strong>{{ hotspot.name }}</strong><span>{{ hotspotRate(hotspot.independent, hotspot.observed) }}</span></span>
-                  <span class="class-analysis__ratebar class-analysis__ratebar--low" aria-hidden="true"><i :style="{ width: hotspotRate(hotspot.independent, hotspot.observed) }"></i></span>
-                  <span class="class-analysis__list-stem">独立失分 {{ hotspot.independent }}/{{ hotspot.observed }} 人 · {{ hotspot.questions.length }} 题</span>
-                </button>
+                <div v-for="hotspot in hotspots" :key="hotspot.key" class="class-analysis__hotspot-row">
+                  <button type="button" role="option"
+                    class="class-analysis__list-row" :class="{ 'is-selected': hotspot.key === selectedHotspot?.key }"
+                    :aria-selected="hotspot.key === selectedHotspot?.key" :data-step-key="hotspot.key"
+                    @click="selectKeyStep(hotspot.key)">
+                    <span class="class-analysis__list-head"><strong>{{ hotspot.name }}</strong><span>{{ hotspotRate(hotspot.independent, hotspot.observed) }}</span></span>
+                    <span class="class-analysis__ratebar class-analysis__ratebar--low" aria-hidden="true"><i :style="{ width: hotspotRate(hotspot.independent, hotspot.observed) }"></i></span>
+                    <span class="class-analysis__list-stem">独立失分 {{ hotspot.independent }}/{{ hotspot.observed }} 人 · {{ hotspot.questions.length }} 题</span>
+                  </button>
+                  <div class="key-step-repeats" data-testid="key-step-repeats">
+                    <button
+                      type="button"
+                      class="key-step-repeats__count"
+                      :class="{ 'is-empty': !hotspot.repeated_students.length }"
+                      :disabled="!hotspot.repeated_students.length"
+                      :title="hotspot.repeated_students.length ? '展开反复卡住的学生名单' : '本关键步骤没有反复卡住的学生'"
+                      @click.stop="toggleRepeatedStudents(hotspot.key)"
+                    >其中反复卡住 {{ hotspot.repeated_students.length }} 人</button>
+                    <ul v-if="expandedRepeatedStep === hotspot.key" class="key-step-repeats__list">
+                      <li v-for="student in hotspot.repeated_students" :key="student.student_id">
+                        <button type="button" class="key-step-repeats__student" @click.stop="openRepeatedStudent(student.student_id, hotspot.key)">
+                          {{ student.student_name }}
+                        </button>
+                        <span>{{ student.fails }} 道小问</span>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
               </div>
               <div v-else class="class-analysis__list-items" role="listbox" aria-label="题目">
                 <button

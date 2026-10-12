@@ -465,7 +465,10 @@ def get_class_analysis(
             db, int(session_id), student_ids=[student.student_id for student in data.students],
             include_patterns=True, question_bank_path=bank_path,
         )
-        apply_step_diagnosis(page_data, step_diagnosis)
+        apply_step_diagnosis(
+            page_data, step_diagnosis,
+            student_names={student.student_id: student.student_name for student in data.students},
+        )
     return ClassAnalysisResponse(
         status=(
             "generating"

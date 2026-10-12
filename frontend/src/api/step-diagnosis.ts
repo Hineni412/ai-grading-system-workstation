@@ -36,6 +36,11 @@ export interface KeyStepCause {
   questions: string[]
   examples: string[]
 }
+export interface KeyStepRepeatedStudent {
+  student_id: string
+  student_name: string
+  fails: number
+}
 export interface KeyStepHotspot {
   key: string
   name: string
@@ -49,6 +54,7 @@ export interface KeyStepHotspot {
   causes_status: 'ready' | 'partial' | 'unclassified' | 'missing'
   causes: KeyStepCause[]
   patterns: { pattern: string; actual: number; question_id: number }[]
+  repeated_students: KeyStepRepeatedStudent[]
 }
 export interface StepDiagnosisSummary {
   students: number
@@ -96,6 +102,10 @@ function isKeyStepPattern(value: unknown): value is KeyStepHotspot['patterns'][n
   return isRecord(value) && typeof value.pattern === 'string'
     && isNonnegativeInteger(value.actual) && isNonnegativeInteger(value.question_id)
 }
+function isKeyStepRepeatedStudent(value: unknown): value is KeyStepRepeatedStudent {
+  return isRecord(value) && typeof value.student_id === 'string'
+    && typeof value.student_name === 'string' && isNonnegativeInteger(value.fails)
+}
 function isKeyStepHotspot(value: unknown): value is KeyStepHotspot {
   return isRecord(value) && typeof value.key === 'string' && typeof value.name === 'string'
     && isNonnegativeInteger(value.independent) && isNonnegativeInteger(value.observed)
@@ -107,6 +117,7 @@ function isKeyStepHotspot(value: unknown): value is KeyStepHotspot {
       || value.causes_status === 'unclassified' || value.causes_status === 'missing')
     && Array.isArray(value.causes) && value.causes.every(isKeyStepCause)
     && Array.isArray(value.patterns) && value.patterns.every(isKeyStepPattern)
+    && Array.isArray(value.repeated_students) && value.repeated_students.every(isKeyStepRepeatedStudent)
 }
 export function decodeStepDiagnosisSummary(value: unknown): StepDiagnosisSummary {
   if (!isRecord(value) || !isNonnegativeInteger(value.students)

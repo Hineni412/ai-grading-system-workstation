@@ -1,10 +1,11 @@
 import { apiClient } from './client'
-import { isStepDiagnosis, type StepDiagnosis } from './step-diagnosis'
+import { isStepDiagnosis, type StepDiagnosis, type StepSource } from './step-diagnosis'
 import { decodeJobResponse, type JobResponse } from './jobs'
 import {
   hasExactKeys,
   isFiniteNumber,
   isInteger,
+  isNonnegativeInteger,
   isNullableString,
   isRecord,
   isRevision,
@@ -256,6 +257,85 @@ export function fetchStudentExamResults(
       }
       return response
     },
+    signal,
+  })
+}
+
+export interface KeyStepRepeatItem {
+  session_id: number
+  session_name: string
+  question_id: string
+  step_id: string
+  goal: string
+  reason: string
+  source: StepSource | null
+  evidence_page: number | null
+}
+
+export interface KeyStepRepeat {
+  key: string
+  name: string
+  fails: number
+  mets: number
+  carried: number
+  blank: number
+  items: KeyStepRepeatItem[]
+}
+
+export interface StudentKeyStepRepeats {
+  student: StudentSummary
+  repeated: KeyStepRepeat[]
+  singles: KeyStepRepeat[]
+}
+
+function isKeyStepRepeatItem(value: unknown): value is KeyStepRepeatItem {
+  return isRecord(value)
+    && isInteger(value.session_id, 1)
+    && typeof value.session_name === 'string'
+    && typeof value.question_id === 'string'
+    && typeof value.step_id === 'string'
+    && typeof value.goal === 'string'
+    && typeof value.reason === 'string'
+    && isNullableString(value.source)
+    && (value.evidence_page === null || isInteger(value.evidence_page, 1))
+}
+
+function isKeyStepRepeat(value: unknown): value is KeyStepRepeat {
+  return isRecord(value)
+    && typeof value.key === 'string'
+    && typeof value.name === 'string'
+    && isNonnegativeInteger(value.fails)
+    && isNonnegativeInteger(value.mets)
+    && isNonnegativeInteger(value.carried)
+    && isNonnegativeInteger(value.blank)
+    && Array.isArray(value.items)
+    && value.items.every(isKeyStepRepeatItem)
+}
+
+function decodeKeyStepRepeats(value: unknown): StudentKeyStepRepeats {
+  if (!isRecord(value) || !isStudentSummary(value.student)
+    || !Array.isArray(value.repeated) || !value.repeated.every(isKeyStepRepeat)
+    || !Array.isArray(value.singles) || !value.singles.every(isKeyStepRepeat)) {
+    throw new Error('Invalid key step repeats')
+  }
+  return value as unknown as StudentKeyStepRepeats
+}
+
+export function fetchStudentKeyStepRepeats(
+  studentId: string | number,
+  curriculumVolumeId: string,
+  options: { onlyDeducted?: boolean; pageSize?: number } = {},
+  signal?: AbortSignal,
+): Promise<StudentKeyStepRepeats> {
+  const id = Number(studentId)
+  if (!isInteger(id, 1)) throw new Error('Invalid student id')
+  const parameters = new URLSearchParams({
+    curriculum_volume_id: curriculumVolumeId,
+    only_deducted: String(options.onlyDeducted !== false),
+    page_size: String(isInteger(options.pageSize ?? 10, 1) ? options.pageSize ?? 10 : 10),
+  })
+  return apiClient.request(`/api/students/${id}/key-step-repeats?${parameters.toString()}`, {
+    decode: decodeKeyStepRepeats,
     signal,
   })
 }

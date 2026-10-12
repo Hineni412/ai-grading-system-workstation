@@ -25,6 +25,7 @@ from backend.api.schemas.students import (
     StudentImportCommitRequest,
     StudentImportCommitResponse,
     StudentImportPreviewResponse,
+    StudentKeyStepRepeatsResponse,
     StudentListResponse,
     StudentMutationResponse,
     StudentResponse,
@@ -386,6 +387,65 @@ def get_student_exam_results(
         page=page,
         page_size=page_size,
         total_pages=(total + page_size - 1) // page_size,
+    )
+
+
+@router.get(
+    "/students/{student_id}/key-step-repeats",
+    response_model=StudentKeyStepRepeatsResponse,
+    responses={404: {"model": ErrorResponse, "description": "Student not found"}},
+)
+def get_student_key_step_repeats(
+    student_id: int,
+    curriculum_volume_id: str | None = Query(default=None, max_length=100),
+    only_deducted: bool = Query(default=True),
+    page_size: int = Query(default=10, ge=1, le=100),
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    students: StudentRepositoryGateway = Depends(get_student_repository),
+    question_bank_db_path: Path = Depends(get_question_bank_db_path),
+) -> StudentKeyStepRepeatsResponse:
+    student_row = next(
+        (row for row in students.list_students() if int(row["id"]) == int(student_id)),
+        None,
+    )
+    if student_row is None:
+        raise ApiError(404, "student_not_found", "Student not found", {"student_id": int(student_id)})
+    rows = student_exam_evidence(db, question_bank_db_path, [int(student_id)], curriculum_volume_id)
+    session_ids = sorted({int(row["session_id"]) for row in rows})
+    evidence_rows = [row for row in rows if row.get("is_deducted")] if only_deducted else rows
+    evidence_sessions = {
+        int(row["session_id"]): row
+        for row in evidence_rows
+    }
+    ordered_sessions = sorted(
+        evidence_sessions.values(),
+        key=lambda row: (
+            str(row.get("graded_at") or row.get("exam_created_at") or ""),
+            int(row["session_id"]),
+        ),
+        reverse=True,
+    )
+    session_pages = {
+        int(row["session_id"]): index // page_size + 1
+        for index, row in enumerate(ordered_sessions)
+    }
+    from backend.step_diagnosis import build_session_step_diagnosis, collect_student_key_step_repeats
+    repeats = collect_student_key_step_repeats(
+        [
+            build_session_step_diagnosis(
+                db, session_id, student_ids=[int(student_id)],
+                question_bank_path=question_bank_db_path,
+            )
+            for session_id in session_ids
+        ],
+        int(student_id),
+    )
+    for entries in (repeats["repeated"], repeats["singles"]):
+        for entry in entries:
+            for item in entry["items"]:
+                item["evidence_page"] = session_pages.get(int(item["session_id"]))
+    return StudentKeyStepRepeatsResponse(
+        student=_student_response(student_row), **repeats,
     )
 
 

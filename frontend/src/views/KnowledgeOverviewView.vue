@@ -2,7 +2,13 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { assemblyApi, type AssemblyQuestion } from '../api/assembly'
-import type { TrainingOverviewNode, TrainingOverviewStudent } from '../api/training'
+import {
+  trainingApi,
+  type TrainingKeyStepTypeStatsResponse,
+  type TrainingOverviewNode,
+  type TrainingOverviewRequest,
+  type TrainingOverviewStudent,
+} from '../api/training'
 import AppIconButton from '../components/design-system/AppIconButton.vue'
 import AppButton from '../components/design-system/AppButton.vue'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
@@ -56,6 +62,124 @@ const hoveredKey = ref('')
 const activeKey = computed(() => hoveredKey.value || selectedKey.value)
 const activeKeys = computed(() => new Set([activeKey.value, ...(typeMode.value ? [] : (overview.value ? relatedNodes(overview.value, activeKey.value).map(r => r.node.knowledge_key) : []))]))
 const related = computed(() => !typeMode.value && overview.value && selected.value ? relatedNodes(overview.value, selectedKey.value) : [])
+const keyStepStats = ref<TrainingKeyStepTypeStatsResponse | null>(null)
+const keyStepStatsLoading = ref(false)
+const definitionOpen = ref(false)
+const definitionClamped = ref(false)
+const keyStepsAll = ref(false)
+const openKeyStep = ref('')
+const typicalOpen = ref(false)
+const openOtherGroups = ref<Set<string>>(new Set())
+let keyStepStatsScope = ''
+let keyStepController: AbortController | null = null
+
+function overviewRequestBody(): TrainingOverviewRequest | null {
+  if (!curriculum.selectedVolumeId) return null
+  const scope = store.scopeSelection === 'all'
+    ? { mode: 'all' as const }
+    : { mode: 'class' as const, class_id: store.scopeSelection, class_ids: [store.scopeSelection] }
+  const query = semesterEvidenceQuery(scope, curriculum.selectedVolumeId)
+  return {
+    scope: { student_ids: [], ...query.scope },
+    exam_scope: { session_ids: [], ...query.exam_scope },
+  }
+}
+
+async function loadKeyStepStats(): Promise<void> {
+  const body = overviewRequestBody()
+  if (!body) return
+  const scopeKey = JSON.stringify(body)
+  if (keyStepStatsScope === scopeKey && keyStepStats.value) return
+  keyStepController?.abort()
+  const active = new AbortController()
+  keyStepController = active
+  keyStepStatsLoading.value = true
+  try {
+    const result = await trainingApi.keyStepTypeStats(body, active.signal)
+    if (active.signal.aborted) return
+    keyStepStats.value = result
+    keyStepStatsScope = scopeKey
+  } catch {
+    if (!active.signal.aborted) keyStepStats.value = null
+  } finally {
+    if (keyStepController === active) keyStepStatsLoading.value = false
+  }
+}
+
+const typeKeySteps = computed(() => {
+  const rows = selected.value?.kind === 'type'
+    ? keyStepStats.value?.types[selected.value.knowledge_key] ?? []
+    : []
+  return rows.filter(step => step.observed > 0).slice().sort((a, b) => b.rate - a.rate)
+})
+const visibleTypeKeySteps = computed(() => keyStepsAll.value ? typeKeySteps.value : typeKeySteps.value.slice(0, 5))
+
+function openKeyStepStudent(studentId: string, key: string): void {
+  void router.push({ name: 'student-evidence', params: { studentId }, query: { keyStep: key } })
+}
+
+function sessionShortName(name: string): string {
+  return name.replace(/学情反馈$/, '') || name
+}
+
+function questionParent(label: string): string {
+  return label.replace(/[（(].*$/, '').replace(/^Q/i, '')
+}
+
+function measureDefinitionClamp(): void {
+  if (definitionOpen.value) return
+  const element = drawer.value?.querySelector<HTMLElement>('.mastery-map-definition')
+  definitionClamped.value = Boolean(element && element.scrollHeight > element.clientHeight + 1)
+}
+
+function toggleDefinition(): void {
+  definitionOpen.value = !definitionOpen.value
+  if (!definitionOpen.value) void nextTick(measureDefinitionClamp)
+}
+
+const otherQuestionGroups = computed(() => {
+  const items = selected.value?.other_questions ?? []
+  const groups = new Map<string, { session: string; parent: string; items: typeof items; min: number | null }>()
+  for (const item of items) {
+    const parent = questionParent(item.question_label)
+    const key = `${item.session_name}|${parent}`
+    const group = groups.get(key) ?? { session: item.session_name, parent, items: [], min: null as number | null }
+    group.items.push(item)
+    if (item.class_rate !== null && (group.min === null || item.class_rate < group.min)) group.min = item.class_rate
+    groups.set(key, group)
+  }
+  return [...groups.entries()].map(([key, group]) => {
+    const rates = group.items.map(item => item.class_rate).filter((rate): rate is number => rate !== null).sort((a, b) => a - b)
+    const low = rates[0]
+    const high = rates[rates.length - 1]
+    return {
+      key,
+      session: sessionShortName(group.session),
+      parent: group.parent,
+      items: group.items,
+      min: group.min ?? 0,
+      range: low === undefined ? '暂无' : low === high ? formatPercent(low) : `${formatPercent(low)}–${formatPercent(high)}`,
+    }
+  }).sort((a, b) => a.min - b.min)
+})
+
+function toggleOtherGroup(key: string): void {
+  const next = new Set(openOtherGroups.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  openOtherGroups.value = next
+}
+
+watch([selected, () => curriculum.selectedVolumeId, () => store.scopeSelection], ([node]) => {
+  definitionOpen.value = false
+  definitionClamped.value = false
+  void nextTick(measureDefinitionClamp)
+  keyStepsAll.value = false
+  openKeyStep.value = ''
+  typicalOpen.value = false
+  openOtherGroups.value = new Set()
+  if (node?.kind === 'type') void loadKeyStepStats()
+})
 const hiddenTypeCount = computed(() => typeMode.value
   ? (overview.value?.nodes ?? []).filter(n => n.kind === 'type' && n.in_volume !== false && n.evidence_student_count === 0).length
   : 0)
@@ -134,7 +258,7 @@ function drawConnections() {
 }
 function scheduleLines() {
   if (frame !== null) cancelAnimationFrame(frame)
-  frame = requestAnimationFrame(() => { frame = null; drawConnections() })
+  frame = requestAnimationFrame(() => { frame = null; drawConnections(); measureDefinitionClamp() })
 }
 function train(node: TrainingOverviewNode) {
   const student_ids = node.students.filter(s => s.tier === 'weak').map(s => s.student_id)
@@ -178,6 +302,7 @@ onMounted(() => {
   document.addEventListener('keydown', onEscape)
 })
 onBeforeUnmount(() => {
+  keyStepController?.abort()
   observer?.disconnect()
   if (frame !== null) cancelAnimationFrame(frame)
   window.removeEventListener('resize', scheduleLines)
@@ -287,17 +412,56 @@ onBeforeUnmount(() => {
           </template>
         </aside>
         <aside v-else ref="drawer" class="mastery-map-drawer fx-drawer-right" tabindex="-1" role="region" :aria-label="`${shortNodeName(selected)}详情`">
-          <header><div><span class="mastery-map-type">{{ selected.kind === 'skill' ? '技能' : selected.kind === 'type' ? '题型' : '知识点' }}</span><h2>{{ shortNodeName(selected) }}</h2></div><AppIconButton label="关闭详情" @click="close" icon="close" /></header>
-          <p class="overview-location">属于 {{ nodeLocation(selected, overview.nodes) }}</p>
-          <p v-if="selected.definition" class="mastery-map-definition">{{ selected.definition }}</p>
-          <div class="mastery-map-mastery"><span>群体掌握度</span><strong>{{ formatPercent(selected.group_mastery) }}</strong><small>80% 群体区间 {{ formatPercent(selected.group_interval_low) }}–{{ formatPercent(selected.group_interval_high) }}</small></div>
-          <OverviewTierBar :distribution="selected.distribution" show-counts /><p class="overview-location">有证据 {{ selected.evidence_student_count }} 人</p>
+          <header class="mastery-map-drawer__top"><div><span class="mastery-map-type">{{ selected.kind === 'skill' ? '技能' : selected.kind === 'type' ? '题型' : '知识点' }}</span><h2>{{ shortNodeName(selected) }}</h2><p class="overview-location">属于 {{ nodeLocation(selected, overview.nodes) }}</p></div><AppIconButton label="关闭详情" @click="close" icon="close" /></header>
+          <template v-if="selected.definition">
+            <p class="mastery-map-definition" :class="{ 'is-clamped': !definitionOpen }">{{ selected.definition }}</p>
+            <button v-if="definitionOpen || definitionClamped" type="button" class="drawer-inline-toggle" @click="toggleDefinition">{{ definitionOpen ? '收起' : '展开' }}</button>
+          </template>
+          <div class="mastery-map-overview">
+            <div class="mastery-map-mastery"><span>群体掌握度</span><strong>{{ formatPercent(selected.group_mastery) }}</strong><small>80% 群体区间 {{ formatPercent(selected.group_interval_low) }}–{{ formatPercent(selected.group_interval_high) }}</small></div>
+            <p class="overview-location">有证据 {{ selected.evidence_student_count }} 人</p>
+          </div>
+          <div class="mastery-map-tier-strip"><OverviewTierBar :distribution="selected.distribution" show-counts /></div>
+          <div class="mastery-map-drawer-actions mastery-map-drawer-actions--top"><AppButton v-if="(selected.kind === 'skill' || selected.kind === 'type' || selected.target_kind === 'knowledge') && selected.distribution.weak > 0" variant="primary" @click="train(selected)">给明显薄弱的 {{ selected.distribution.weak }} 人出训练卷</AppButton><AppButton @click="questions(selected)">看错题</AppButton></div>
+          <section v-if="selected.kind === 'type' && typeKeySteps.length" class="drawer-key-steps" data-testid="drawer-key-steps">
+            <h3>卡在哪一步</h3>
+            <div v-for="step in visibleTypeKeySteps" :key="step.key" class="drawer-key-step">
+              <button type="button" class="drawer-key-step__head" :aria-expanded="openKeyStep === step.key" :title="`独立失分 ${step.independent} 人 · 有记录 ${step.observed} 人，点击展开反复卡住的学生与出现位置`" @click="openKeyStep = openKeyStep === step.key ? '' : step.key">
+                <span class="drawer-key-step__name">{{ step.name }}</span>
+                <span class="drawer-key-step__bar" aria-hidden="true"><i :style="{ width: formatPercent(step.rate) }"></i></span>
+                <span class="drawer-key-step__count">{{ step.independent }}/{{ step.observed }} 人</span>
+                <span v-if="step.common" class="drawer-key-step__common" title="同一关键步骤在 ≥2 个题型中独立失分率 ≥30%：该步骤是跨题型的共性卡点，不只在这一类题上卡住学生">共性</span>
+              </button>
+              <div v-if="openKeyStep === step.key" class="drawer-key-step__detail">
+                <template v-if="step.repeated_students.length">
+                  <p class="drawer-key-step__label">其中反复卡住</p>
+                  <div class="student-tier-chips drawer-key-step__chips">
+                    <button v-for="student in step.repeated_students" :key="student.student_id" type="button" class="student-tier-chip" :title="`打开 ${student.student_name} 的作答证据并定位到此关键步骤`" @click="openKeyStepStudent(student.student_id, step.key)">{{ student.student_name }}</button>
+                  </div>
+                </template>
+                <p v-else class="drawer-key-step__label drawer-key-step__label--muted">本关键步骤暂无反复卡住的学生（需同一学生 ≥2 道小问独立失分）。</p>
+                <template v-if="step.questions.length">
+                  <p class="drawer-key-step__label">出现在</p>
+                  <ul class="drawer-key-step__questions"><li v-for="question in step.questions" :key="`${question.session_id}|${question.parent_label}`">{{ sessionShortName(question.session_name) }} 第{{ questionParent(question.parent_label) }}题 · {{ question.sub_count }} 个小问</li></ul>
+                </template>
+              </div>
+            </div>
+            <button v-if="typeKeySteps.length > 5" type="button" class="drawer-inline-toggle" @click="keyStepsAll = !keyStepsAll">{{ keyStepsAll ? '收起' : `展开全部（${typeKeySteps.length}）` }}</button>
+          </section>
+          <p v-else-if="selected.kind === 'type' && keyStepStatsLoading" class="overview-location">正在汇总关键步骤…</p>
+          <p v-if="selected.kind === 'type'" class="drawer-section-label">明显薄弱学生</p>
           <StudentTierChips :node="selected" :students="overview.students" :weak-only="selected.kind === 'type'" />
           <section v-if="selected.kind === 'type' && selected.typical_question" class="mastery-map-typical">
-            <p class="mastery-map-typical-lead">典型题：本班考过的这类题中得分率最低的一道 · {{ selected.typical_question.session_name }} 第{{ selected.typical_question.question_label }}题 · 本班得分率 {{ formatPercent(selected.typical_question.class_rate) }}</p>
-            <QuestionContentRenderer v-if="typicalQuestion" :blocks="typicalQuestion.rich_content?.question_blocks" :fallback="typicalQuestion.question_text" media-mode="detail" typeset-text />
-            <template v-if="selected.other_questions?.length"><p class="mastery-map-typical-lead">本班还考过这类题：</p>
-              <ul class="mastery-map-others"><li v-for="item in selected.other_questions" :key="`${item.session_name}|${item.question_label}`">{{ item.session_name }} 第{{ item.question_label }}题 · 得分率 {{ formatPercent(item.class_rate) }}</li></ul>
+            <p class="mastery-map-typical-lead">典型题：本班考过的这类题中得分率最低的一道 · {{ sessionShortName(selected.typical_question.session_name) }} 第{{ questionParent(selected.typical_question.question_label) }}题 · 本班得分率 {{ formatPercent(selected.typical_question.class_rate) }}</p>
+            <div class="mastery-map-typical-stem" :class="{ 'is-clamped': !typicalOpen }"><QuestionContentRenderer v-if="typicalQuestion" :blocks="typicalQuestion.rich_content?.question_blocks" :fallback="typicalQuestion.question_text" media-mode="detail" typeset-text /></div>
+            <button type="button" class="drawer-inline-toggle" data-testid="typical-toggle" @click="typicalOpen = !typicalOpen">{{ typicalOpen ? '收起' : '展开全文' }}</button>
+            <template v-if="otherQuestionGroups.length"><p class="mastery-map-typical-lead">本班还考过这类题：</p>
+              <div v-for="group in otherQuestionGroups" :key="group.key" class="drawer-other-group">
+                <button type="button" class="drawer-other-group__head" :aria-expanded="openOtherGroups.has(group.key)" @click="toggleOtherGroup(group.key)">
+                  {{ group.session }} 第{{ group.parent }}题 · {{ group.items.length }} 个小问 · 得分率 {{ group.range }}
+                </button>
+                <ul v-if="openOtherGroups.has(group.key)" class="drawer-other-group__items"><li v-for="item in group.items" :key="`${item.session_name}|${item.question_label}`">{{ item.session_name }} 第{{ item.question_label }}题 · 得分率 {{ formatPercent(item.class_rate) }}</li></ul>
+              </div>
             </template>
           </section>
           <section v-if="!typeMode && related.length" class="mastery-map-related"><h3>{{ selected.kind === 'skill' ? '相关知识点' : '相关技能' }}</h3>
@@ -306,7 +470,6 @@ onBeforeUnmount(() => {
             </button>
             <p>关联来自题库里同时考查两者的题目，不代表两者掌握度相同。</p>
           </section>
-          <div class="mastery-map-drawer-actions"><AppButton v-if="(selected.kind === 'skill' || selected.kind === 'type' || selected.target_kind === 'knowledge') && selected.distribution.weak > 0" variant="primary" @click="train(selected)">给明显薄弱的 {{ selected.distribution.weak }} 人出训练卷</AppButton><AppButton @click="questions(selected)">看错题</AppButton></div>
         </aside>
       </div>
       <details v-if="overview.warnings.length" class="overview-data-notes"><summary>数据说明（{{ overview.warnings.length }}）</summary><ul><li v-for="warning in overview.warnings" :key="warning">{{ warning }}</li></ul></details>

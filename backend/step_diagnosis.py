@@ -77,6 +77,8 @@ class SessionStepDiagnosis:
     summary: dict[str, Any]
     questions: dict[str, list[dict[str, Any]]]
     students: dict[int, dict[str, dict[str, Any]]]
+    session_id: int = 0
+    session_name: str = ""
 
 
 def build_session_step_diagnosis(
@@ -88,7 +90,7 @@ def build_session_step_diagnosis(
 
     result = SessionStepDiagnosis(
         {"students": 0, "confirmed_ai_rows": 0, "excluded_teacher_total_only": 0, "hotspots": []},
-        {}, {},
+        {}, {}, int(session_id), "",
     )
     if not student_ids:
         return result
@@ -100,6 +102,7 @@ def build_session_step_diagnosis(
         return result
     rubric = db.results._load_session_rubric(session_id) or {}
     session = db.sessions.get_grading_session(session_id) or {}
+    result.session_name = str(session.get("session_name") or session.get("name") or "")
     key_step_scope = session.get("curriculum_volume_id") in {None, "", "bnu24-math-g8-upper"}
     root = bank_path.parent.parent
     snapshot = load_snapshot(root / "config" / "uploaded", session_id) or {}
@@ -331,13 +334,85 @@ def _add_patterns(hotspots, bank, bank_path, knowledge) -> None:
         hotspot["patterns"].sort(key=lambda pattern: (-pattern["actual"], pattern["pattern"]))
 
 
-def apply_step_diagnosis(page_data: dict, diagnosis: SessionStepDiagnosis) -> None:
+def collect_student_key_step_repeats(
+    diagnoses: Sequence[SessionStepDiagnosis], student_id: int,
+) -> dict[str, list[dict[str, Any]]]:
+    """Aggregate one student's repeated key-step losses without changing scoring state."""
+    stats: dict[str, dict[str, Any]] = {}
+    for diagnosis in diagnoses:
+        for question_id, item in (diagnosis.students.get(int(student_id)) or {}).items():
+            for step in item.get("steps") or []:
+                state = str(step.get("state") or "")
+                if state not in {"independent", "met", "carried", "blank"}:
+                    continue
+                for target in step.get("key_steps") or []:
+                    key = str(target.get("key") or "")
+                    if not key:
+                        continue
+                    entry = stats.setdefault(key, {
+                        "key": key, "name": str(target.get("name") or key),
+                        "fails": 0, "mets": 0, "carried": 0, "blank": 0,
+                        "_items": {}, "_met_items": set(), "_carried_items": set(),
+                        "_blank_items": set(),
+                    })
+                    item_key = (diagnosis.session_id, str(question_id))
+                    if state == "independent":
+                        entry["_items"][item_key] = {
+                            "session_id": diagnosis.session_id,
+                            "session_name": diagnosis.session_name,
+                            "question_id": str(question_id),
+                            "step_id": str(step.get("step_id") or ""),
+                            "goal": str(step.get("goal") or ""),
+                            "reason": str(step.get("reason") or ""),
+                            "source": item.get("source"),
+                        }
+                    elif state == "met":
+                        entry["_met_items"].add(item_key)
+                    elif state == "carried":
+                        entry["_carried_items"].add(item_key)
+                    else:
+                        entry["_blank_items"].add(item_key)
+    repeated, singles = [], []
+    for entry in stats.values():
+        entry["fails"] = len(entry["_items"])
+        entry["mets"] = len(entry["_met_items"])
+        entry["carried"] = len(entry["_carried_items"])
+        entry["blank"] = len(entry["_blank_items"])
+        entry["items"] = sorted(
+            entry.pop("_items").values(),
+            key=lambda item: (item["session_id"], item["question_id"], item["step_id"]),
+        )
+        for private in ("_met_items", "_carried_items", "_blank_items"):
+            entry.pop(private)
+        if entry["fails"] >= 2:
+            repeated.append(entry)
+        elif entry["fails"] == 1:
+            singles.append(entry)
+    repeated.sort(key=lambda item: (-item["fails"], -item["mets"], item["name"]))
+    singles.sort(key=lambda item: (item["name"], item["key"]))
+    return {"repeated": repeated, "singles": singles}
+
+
+def apply_step_diagnosis(page_data: dict, diagnosis: SessionStepDiagnosis, *, student_names: Mapping[int, str] | None = None) -> None:
     """Merge saved cause members with current independent failures, by student."""
     page_data["step_diagnosis"] = diagnosis.summary
     questions = {question["question_id"]: question for question in page_data.get("questions") or []}
     for qid, question in questions.items():
         question["key_steps"] = diagnosis.questions.get(qid, [])
     for hotspot in diagnosis.summary["hotspots"]:
+        repeated_fails: dict[int, set[str]] = defaultdict(set)
+        for student_id, student_items in diagnosis.students.items():
+            for qid in hotspot["questions"]:
+                for step in (student_items.get(qid) or {}).get("steps") or []:
+                    if (step.get("state") == "independent"
+                            and any(target.get("key") == hotspot["key"] for target in step.get("key_steps") or [])):
+                        repeated_fails[int(student_id)].add(str(qid))
+        hotspot["repeated_students"] = sorted((
+            {"student_id": str(student_id),
+             "student_name": str((student_names or {}).get(student_id) or f"学生 {student_id}"),
+             "fails": len(question_ids)}
+            for student_id, question_ids in repeated_fails.items() if len(question_ids) >= 2),
+            key=lambda item: (-item["fails"], item["student_name"], item["student_id"]))
         merged = {}
         mapped, unclassified = False, False
         for qid in hotspot["questions"]:
