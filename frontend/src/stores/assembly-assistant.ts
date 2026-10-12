@@ -22,7 +22,8 @@ export const useAssemblyAssistantStore = defineStore('assembly-assistant', () =>
   const result = shallowRef<AssemblyAssistantResult | null>(null)
   const examResult = shallowRef<AssemblyExamResult | null>(null)
   const examState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
-  // 服务端按上次结果先返回并在后台重算；写操作在重算期间保持禁用。
+  // 服务端按上次结果先返回并在后台重算；重算期间加入、换一题、排序、移出
+  // 保持可用（保存时服务端复查组卷规则），只有快速起草等重算完成。
   const refreshing = ref(false)
   const refreshMessage = ref('')
   const threshold = ref(70)

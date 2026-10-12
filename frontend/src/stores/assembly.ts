@@ -191,29 +191,96 @@ export const useAssemblyStore = defineStore('assembly', () => {
     }
   }
 
+  // Draft saves are optimistic and serialized: every edit applies to the UI
+  // at once, then a single in-flight PUT persists the latest draft. Edits
+  // that arrive while a PUT runs coalesce into one follow-up PUT, which
+  // reuses the revision the previous response returned.
+  let saveRunning = false
+  let saveQueued = false
+  let saveQueuePromise: Promise<void> | null = null
+  const saveWaiters: Array<(ok: boolean) => void> = []
+
+  function enqueueSave(): Promise<boolean> {
+    saveQueued = true
+    saveState.value = 'saving'
+    message.value = ''
+    const done = new Promise<boolean>((resolve) => saveWaiters.push(resolve))
+    if (!saveRunning) saveQueuePromise = runSaveQueue()
+    return done
+  }
+
+  /** Resolves once every save queued so far has settled. */
+  function whenSaved(): Promise<void> {
+    return saveQueuePromise ?? Promise.resolve()
+  }
+
+  async function runSaveQueue(): Promise<void> {
+    saveRunning = true
+    try {
+      while (saveQueued) {
+        saveQueued = false
+        const waiters = saveWaiters.splice(0)
+        try {
+          const response = await dependencies.api.saveDraft(
+            draft.value.revision,
+            draftPayload(draft.value),
+          )
+          // Edits made while this PUT was in flight stay applied; adopt only
+          // the server-computed fields, never a superseded snapshot.
+          draft.value = saveQueued
+            ? {
+                ...draft.value,
+                revision: response.revision,
+                rule_violations: response.rule_violations,
+              }
+            : response
+          if (!saveQueued) {
+            loadState.value = draft.value.order_ids.length ? 'ready' : 'empty'
+          }
+          for (const done of waiters) done(true)
+        } catch (error) {
+          saveQueued = false
+          // A failed edit reverts to the authoritative draft; nothing stays
+          // half-applied and the message explains what happened.
+          try {
+            draft.value = await dependencies.api.getDraft()
+            loadState.value = draft.value.order_ids.length ? 'ready' : 'empty'
+            void loadQuestions(true)
+          } catch { /* Keep the local draft when even the reload fails. */ }
+          saveState.value = error instanceof ApiError && error.code === 'assembly_draft_conflict'
+            ? 'conflict'
+            : 'error'
+          message.value = safeMessage(error)
+          for (const done of waiters) done(false)
+          for (const done of saveWaiters.splice(0)) done(false)
+          // Edits queued during the reload were reverted and already failed.
+          saveQueued = false
+        }
+      }
+      if (saveState.value === 'saving') saveState.value = 'idle'
+    } finally {
+      saveRunning = false
+    }
+  }
+
   async function persistDraft(
     nextDraft: AssemblyDraft,
     skipQuestionReloadWhenOrderUnchanged: boolean,
   ): Promise<boolean> {
-    saveState.value = 'saving'
-    message.value = ''
     const previousOrderIds = [...draft.value.order_ids]
-    try {
-      draft.value = await dependencies.api.saveDraft(draft.value.revision, draftPayload(nextDraft))
-      saveState.value = 'idle'
-      loadState.value = draft.value.order_ids.length ? 'ready' : 'empty'
-      if (
-        !skipQuestionReloadWhenOrderUnchanged
-        || !sameQuestionOrder(previousOrderIds, draft.value.order_ids)
-      ) await loadQuestions()
-      return true
-    } catch (error) {
-      saveState.value = error instanceof ApiError && error.code === 'assembly_draft_conflict'
-        ? 'conflict'
-        : 'error'
-      message.value = safeMessage(error)
-      return false
+    // Apply the edit immediately; the server stays the owner of revision and
+    // rule_violations until its response lands.
+    draft.value = {
+      ...draftPayload(nextDraft),
+      revision: draft.value.revision,
+      rule_violations: draft.value.rule_violations,
     }
+    loadState.value = draft.value.order_ids.length ? 'ready' : 'empty'
+    if (
+      !skipQuestionReloadWhenOrderUnchanged
+      || !sameQuestionOrder(previousOrderIds, draft.value.order_ids)
+    ) void loadQuestions()
+    return enqueueSave()
   }
 
   async function save(nextDraft = draft.value): Promise<boolean> {
@@ -351,6 +418,8 @@ export const useAssemblyStore = defineStore('assembly', () => {
   }
 
   async function submitExport(format: AssemblyExportSubmitFormat): Promise<JobResponse | null> {
+    // Export must use a settled revision, so queued saves flush first.
+    await whenSaved()
     if (!canExport.value || submitting.value) return null
     submitting.value = true
     message.value = ''
@@ -398,6 +467,8 @@ export const useAssemblyStore = defineStore('assembly', () => {
   }
 
   async function restoreRecord(recordId: string): Promise<boolean> {
+    // Restoring replaces the whole draft, so it must not race a queued save.
+    await whenSaved()
     saveState.value = 'saving'
     message.value = ''
     try {
@@ -438,6 +509,7 @@ export const useAssemblyStore = defineStore('assembly', () => {
     load,
     loadQuestions,
     loadRecords,
+    whenSaved,
     save,
     addQuestions,
     removeQuestion,

@@ -46,7 +46,7 @@ async function ensureAssembly(): Promise<void> {
 }
 
 async function addSelectionToAssembly(): Promise<void> {
-  if (store.selectedCount === 0 || assembly.saveState === 'saving') return
+  if (store.selectedCount === 0) return
   await ensureAssembly()
   await assembly.addQuestions(store.selectedQuestionIds)
 }
@@ -87,7 +87,6 @@ function closeSimilar(): void {
       <span class="qb-selection-bar__actions">
         <AppButton
           variant="primary"
-          :disabled="assembly.saveState === 'saving'"
           @click="addSelectionToAssembly"
         >
           加入试卷篮

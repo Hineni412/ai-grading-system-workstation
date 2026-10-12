@@ -356,7 +356,7 @@ async function deleteRecord(recordId: string): Promise<void> {
                   @drop.prevent.stop="dropOnSlot()"
                 >{{ orderIndexById.get(question.id) }}</span>
                 <span class="assembly-tile__text" :title="question.question_text || ''">{{ (question.question_text || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ') }}</span><span class="assembly-tile__type">{{ (question.question_type || '未分类').replace('题', '') }}</span><span class="assembly-tile__difficulty">{{ question.difficulty ?? '—' }}</span>
-                <button type="button" class="assembly-tile__move" :aria-label="`上移第 ${orderIndexById.get(question.id)} 题`" :disabled="assembly.saveState === 'saving' || orderIndexById.get(question.id) === 1" @click="assembly.moveQuestion(question.id, -1)">↑</button><button type="button" class="assembly-tile__move" :aria-label="`下移第 ${orderIndexById.get(question.id)} 题`" :disabled="assembly.saveState === 'saving' || orderIndexById.get(question.id) === assembly.selectedQuestionCount" @click="assembly.moveQuestion(question.id, 1)">↓</button>
+                <button type="button" class="assembly-tile__move" :aria-label="`上移第 ${orderIndexById.get(question.id)} 题`" :disabled="orderIndexById.get(question.id) === 1" @click="assembly.moveQuestion(question.id, -1)">↑</button><button type="button" class="assembly-tile__move" :aria-label="`下移第 ${orderIndexById.get(question.id)} 题`" :disabled="orderIndexById.get(question.id) === assembly.selectedQuestionCount" @click="assembly.moveQuestion(question.id, 1)">↓</button>
                 <button
                   type="button"
                   class="assembly-tile__remove"

@@ -241,7 +241,7 @@ function onOpenChange(open: boolean): void {
     </div>
     <template v-if="card" #footer>
       <span class="cep-tv-source">{{ question?.paper_title || '未命名试卷' }} · 第 {{ question?.question_number || question?.id || '—' }} 题</span>
-      <AppButton type="button" variant="secondary" :disabled="assembly.saveState === 'saving'" @click="toggleBasket">{{ inBasket ? '移出试卷篮' : '加入试卷篮' }}</AppButton>
+      <AppButton type="button" variant="secondary" @click="toggleBasket">{{ inBasket ? '移出试卷篮' : '加入试卷篮' }}</AppButton>
       <AppButton type="button" variant="ghost" :disabled="index <= 0" @click="step(-1)">‹ 上一{{ examTargetKind(card.row) }}</AppButton>
       <AppButton type="button" variant="ghost" :disabled="index >= cards.length - 1" @click="step(1)">下一{{ examTargetKind(card.row) }} ›</AppButton>
       <small class="cep-tv-hint">← → 切换{{ examTargetKind(card.row) }} · 1 2 3 难度档 · A 答案 · B 试卷篮 · F 放大图 · Esc 关闭</small>

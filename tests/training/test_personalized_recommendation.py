@@ -1318,7 +1318,7 @@ def _seed_handout_pool(module, count=120):
     _approve_synthetic_criteria(module.db_path, module.data_root, tuple(row[0] for row in rows))
 
 
-def test_fixed_class_assembly_preserves_all_members_order_and_idempotency(direct_module):
+def test_fixed_class_assembly_preserves_all_members_order_and_idempotency(direct_module, tmp_path):
     """Teacher selection reuses freezing while retaining evidence-free members."""
     _seed_handout_pool(direct_module, count=8)
     diagnosis = _direct_diagnosis((("A", .6, 900, BNU_TARGET),))
@@ -1366,6 +1366,64 @@ def test_fixed_class_assembly_preserves_all_members_order_and_idempotency(direct
     assert client.post('/api/training/personalized-drafts/from-assembly', json=body).json() == result
     assert client.post('/api/training/personalized-drafts/from-assembly', json={**body,'draft_revision':'0'*64}).status_code == 409
     client.close()
+
+    # Draft saves recompute recent original ids on every call; the memoized
+    # result must stay equal until graded evidence or links commit.
+    from backend.repositories.db_manager import DBManager
+    from integration.diagnosis_profile_service import DiagnosisProfileService
+    from question_bank.services.source_question_link_service import SourceQuestionLinkService
+    db_dir = tmp_path / "databases"
+    db_dir.mkdir()
+    grading_db_path = db_dir / "grading.db"
+    grading_db = DBManager(grading_db_path)
+    grading_db.initialize()
+    rubric_path = tmp_path / "rubric.json"
+    rubric_path.write_text(json.dumps(
+        {"questions": [{"question_id": "Q1", "max_score": 10}]}, ensure_ascii=False),
+        encoding="utf-8")
+    with grading_db._connect() as conn:
+        conn.execute(
+            "INSERT INTO students (id, student_code, name, class_name) VALUES (12, 'S12', '学生甲', '合成班')")
+        conn.execute(
+            "INSERT INTO grading_sessions (id, session_name, rubric_path, answer_key_path, status, is_deleted)"
+            " VALUES (7, '合成考试', ?, '', 'completed', 0)", (str(rubric_path),))
+        conn.execute(
+            "INSERT INTO exam_papers (id, session_id, front_image, back_image, student_id, match_status, processing_status)"
+            " VALUES (701, 7, '', '', 12, 'matched', 'graded')")
+        conn.execute(
+            "INSERT INTO session_results (id, session_id, student_id, paper_id, total_score, student_score, needs_human_review, raw_json)"
+            " VALUES (7001, 7, 12, 701, 10, 6, 0, '{}')")
+        conn.execute(
+            "INSERT INTO session_details (result_id, question_id, score_awarded, deduction_reason, knowledge_ids, error_category, error_summary, secondary_errors_json)"
+            " VALUES (7001, 'Q1', 6, '缺少辅助线', '[\"UNKNOWN\"]', '逻辑断裂', '辅助线思路缺失', '[]')")
+    links = SourceQuestionLinkService(direct_module.db_path)
+    links.confirm_link(grading_session_id=7, source_question_id='Q1', bank_question_id=900,
+                       link_method='paper_question_number')
+    diagnosis_service = DiagnosisProfileService(grading_db_path, direct_module.db_path)
+    context = {'class_ids': ['合成班'], 'session_ids': [7]}
+    rules = {'recent_activity_count': 3, 'purpose': 'handout'}
+    first = diagnosis_service.assembly_recent_question_ids(direct_module, context, rules)
+    assert 900 in first
+    assert diagnosis_service.assembly_recent_question_ids(direct_module, context, rules) == first
+    # A newly committed graded result must be reflected on the next call.
+    with grading_db._connect() as conn:
+        conn.execute(
+            "INSERT INTO grading_sessions (id, session_name, rubric_path, answer_key_path, status, is_deleted)"
+            " VALUES (8, '合成考试二', ?, '', 'completed', 0)", (str(rubric_path),))
+        conn.execute(
+            "INSERT INTO exam_papers (id, session_id, front_image, back_image, student_id, match_status, processing_status)"
+            " VALUES (801, 8, '', '', 12, 'matched', 'graded')")
+        conn.execute(
+            "INSERT INTO session_results (id, session_id, student_id, paper_id, total_score, student_score, needs_human_review, raw_json)"
+            " VALUES (8001, 8, 12, 801, 10, 7, 0, '{}')")
+        conn.execute(
+            "INSERT INTO session_details (result_id, question_id, score_awarded, deduction_reason, knowledge_ids, error_category, error_summary, secondary_errors_json)"
+            " VALUES (8001, 'Q1', 7, '', '[\"UNKNOWN\"]', NULL, NULL, '[]')")
+    links.confirm_link(grading_session_id=8, source_question_id='Q1', bank_question_id=901,
+                       link_method='paper_question_number')
+    updated = diagnosis_service.assembly_recent_question_ids(direct_module, context, rules)
+    assert first <= updated
+    assert 901 in updated
 
 
 def test_handout_100_exports_in_order_and_consumes_download_without_training(direct_module, tmp_path):

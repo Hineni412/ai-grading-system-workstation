@@ -149,7 +149,6 @@ function similarReasonTitle(reason: SimilarityReason): string | undefined {
               <AppButton variant="secondary"
                 type="button"
                 :class="{ 'is-selected': isInBasket(item.id) }"
-                :disabled="assembly.saveState === 'saving'"
                 @click="toggleBasket(item.id)"
               >
                 {{ isInBasket(item.id) ? '移出试卷篮' : '加入试卷篮' }}

@@ -2,6 +2,7 @@
 .ca-panel{border:1px solid var(--color-border-default);border-radius:12px;background:var(--card);box-shadow:var(--shadow-raised);min-width:0}
 .ca-scope{padding:10px 15px;margin-bottom:12px;display:grid;gap:9px}
 .ca-scope-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.ca-refresh-pill{margin-left:auto;font-size:var(--font-size-caption);color:var(--color-text-muted);background:var(--color-bg-subtle);padding:2px 9px;border-radius:999px;white-space:nowrap}
 .ca-label{color:var(--color-text-muted);width:54px;flex:none}
 .ca-chip{padding:4px 10px;border:1px solid var(--color-border-default);background:var(--card);border-radius:8px;color:var(--color-text-secondary);font-size:var(--font-size-caption);cursor:pointer}
 .ca-chip.selected,.ca-need.is-selected{border-color:var(--color-accent);background:var(--color-accent-subtle);color:var(--color-accent)}

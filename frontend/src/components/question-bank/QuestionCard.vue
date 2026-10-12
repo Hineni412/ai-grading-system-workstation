@@ -65,7 +65,7 @@ watch(expanded, async (value, wasExpanded) => {
       <button v-if="!expanded" type="button" class="qb-inline-card__chevron" aria-label="展开题目详情" @click="toggle"><ChevronDown class="qb-caret" aria-hidden="true" /></button>
       <div v-if="expanded" class="qb-inline-card__heading-actions">
       <template v-if="expanded">
-        <AppButton variant="secondary" :disabled="assembly.saveState === 'saving'" @click="basket">{{ inBasket ? '已在试卷篮' : '加入试卷篮' }}</AppButton>
+        <AppButton variant="secondary" @click="basket">{{ inBasket ? '已在试卷篮' : '加入试卷篮' }}</AppButton>
         <details class="qb-card-menu"><summary aria-label="题目更多操作">⋯</summary><div>
           <button type="button" @click="emit('similar', question)">相似题</button>
           <a v-if="preview?.url" :href="preview.url" target="_blank" rel="noopener">打开原卷</a>
@@ -86,7 +86,7 @@ watch(expanded, async (value, wasExpanded) => {
         <span v-if="knowledgePoints.length > 2" :title="`另有 ${knowledgePoints.length - 2} 个知识点`">+{{ knowledgePoints.length - 2 }}</span>
       </div>
       <details v-if="question.duplicate_members?.length" class="qb-duplicate-members"><summary>另有 {{ question.duplicate_members.length }} 道相同题 ▸</summary><p v-for="member in question.duplicate_members" :key="member.id"><AppButton :to="{ path: '/question-bank', query: { tab: 'paper', paper: member.paper_id, question: member.id } }" variant="ghost" size="small" :as="RouterLink">第 {{ member.question_number }} 题 · {{ member.paper_title }}</AppButton></p></details>
-      <footer><small>判定点 {{ question.evidence_point_count ?? '待核对' }}<template v-if="question.criteria_needs_review"> · 判定点待审核</template></small><div class="qb-inline-card__footer-actions"><AppButton type="button" variant="ghost" size="small" @click="toggle">展开标注</AppButton><AppButton type="button" variant="ghost" size="small" @click="emit('similar', question)">相似题</AppButton><AppButton variant="secondary" :disabled="assembly.saveState === 'saving'" @click="basket">{{ inBasket ? '已在试卷篮' : '加入试卷篮' }}</AppButton></div></footer>
+      <footer><small>判定点 {{ question.evidence_point_count ?? '待核对' }}<template v-if="question.criteria_needs_review"> · 判定点待审核</template></small><div class="qb-inline-card__footer-actions"><AppButton type="button" variant="ghost" size="small" @click="toggle">展开标注</AppButton><AppButton type="button" variant="ghost" size="small" @click="emit('similar', question)">相似题</AppButton><AppButton variant="secondary" @click="basket">{{ inBasket ? '已在试卷篮' : '加入试卷篮' }}</AppButton></div></footer>
     </div>
     <QuestionAnnotationPanel v-else :id="`qb-annotation-${question.id}`"><template #similar><AppButton type="button" variant="ghost" size="small" @click="emit('similar', question)">相似题</AppButton></template></QuestionAnnotationPanel>
   </article>

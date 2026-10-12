@@ -307,7 +307,7 @@ async function ensureAssembly(): Promise<void> {
 }
 
 async function addSelectionToAssembly(): Promise<void> {
-  if (bank.selectedCount === 0 || assembly.saveState === 'saving') return
+  if (bank.selectedCount === 0) return
   await ensureAssembly()
   await assembly.addQuestions(bank.selectedQuestionIds)
 }
@@ -592,7 +592,6 @@ function sectionCoverage(section: ChapterExamSectionData, stageKey: ChapterExamS
         <AppButton
           variant="primary"
           size="small"
-          :disabled="assembly.saveState === 'saving'"
           @click="addSelectionToAssembly"
         >加入试卷篮</AppButton>
         <AppButton type="button" variant="ghost" size="small" @click="bank.clearSelection">清空选择</AppButton>

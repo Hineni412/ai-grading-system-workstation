@@ -1258,11 +1258,39 @@ class DiagnosisProfileService:
         """Use the same roster and graded-activity contract as recommendations."""
         if not context.get('class_ids') or not rules.get('recent_activity_count', 3):
             return set()
+        # The scan below walks every graded activity plus three question-bank
+        # domains; draft saves call it on each GET/PUT, so memoize by the data
+        # versions of both databases and return copies callers may mutate.
+        grading_identity = (
+            self.cache_identity[:3]
+            if self.cache_identity and len(self.cache_identity) == 6
+            else _path_generation(self.grading_db_path)
+        )
+        key = (
+            tuple(grading_identity),
+            _path_generation(Path(recommendations.db_path), _ASSEMBLY_QB_VERSION_DOMAINS),
+            str(Path(recommendations.data_root).resolve())
+                if getattr(recommendations, 'data_root', None) else "",
+            tuple(sorted(str(c) for c in context['class_ids'])),
+            int(rules.get('recent_activity_count', 3)),
+            str(rules.get('purpose', 'handout')),
+        )
+        with _ASSEMBLY_RECENT_LOCK:
+            cached = _ASSEMBLY_RECENT_CACHE.get(key)
+            if cached is not None:
+                _ASSEMBLY_RECENT_CACHE.move_to_end(key)
+                return set(cached)
         students = [{'student_id': str(s['id'])} for s in self.db.students.list_students()
                     if s.get('class_name') in context['class_ids']]
-        return recommendations.current_exam_question_ids({'students': students},
+        result = frozenset(recommendations.current_exam_question_ids({'students': students},
             graded_activities=self.graded_activities(s['student_id'] for s in students),
-            recent_activity_count=rules.get('recent_activity_count', 3), purpose=rules.get('purpose', 'handout'))
+            recent_activity_count=rules.get('recent_activity_count', 3), purpose=rules.get('purpose', 'handout')))
+        with _ASSEMBLY_RECENT_LOCK:
+            _ASSEMBLY_RECENT_CACHE[key] = result
+            _ASSEMBLY_RECENT_CACHE.move_to_end(key)
+            while len(_ASSEMBLY_RECENT_CACHE) > _ASSEMBLY_RECENT_CACHE_LIMIT:
+                _ASSEMBLY_RECENT_CACHE.popitem(last=False)
+        return set(result)
 
     def assembly_exam_questions(self, *, class_ids: list[str], volume_id: str) -> dict[str, Any]:
         """Read scored exam items through the existing evidence boundary; no persistence."""
@@ -1763,6 +1791,13 @@ class DiagnosisProfileService:
 
 _GRADING_VERSION_DOMAINS = ("results",)
 _QB_VERSION_DOMAINS = ("materials", "training_records")
+# _recent_question_ids also reads training_ops (personalized_paper_items,
+# training_submissions, training_assessment_runs), so the assembly cache keys
+# on all three question-bank domains.
+_ASSEMBLY_QB_VERSION_DOMAINS = ("materials", "training_ops", "training_records")
+_ASSEMBLY_RECENT_CACHE: OrderedDict[tuple, frozenset] = OrderedDict()
+_ASSEMBLY_RECENT_LOCK = threading.Lock()
+_ASSEMBLY_RECENT_CACHE_LIMIT = 32
 
 
 def _path_generation(path: Path, domains: tuple[str, ...] = _GRADING_VERSION_DOMAINS) -> tuple[str, ...]:
