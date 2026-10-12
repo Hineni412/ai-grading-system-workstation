@@ -462,8 +462,21 @@ def training_part_observations(profile: Mapping[str, Any], criteria: Mapping[str
                    for field in ("target", "observable_evidence")):
                 return None
         embedded = saved
-    source_points = {str(p["evidence_point_id"]): p for part in embedded["parts"]
-                     for p in part.get("evidence_points", [])}
+    embedded_points = [
+        point
+        for part in embedded["parts"]
+        for point in part.get("evidence_points", [])
+    ]
+    point_ids = [str(point.get("evidence_point_id") or "") for point in embedded_points]
+    if not all(point_ids):
+        # Saved criteria may embed evidence points without stored identity;
+        # their points were flattened in this same part order, so pair by
+        # position.
+        flat_ids = [str(p.get("point_id") or "") for p in criteria.get("points", [])]
+        if len(flat_ids) != len(embedded_points):
+            return None
+        point_ids = flat_ids
+    source_points = dict(zip(point_ids, embedded_points))
     if not source_points:
         return None
     states = {str(p.get("point_id")): p.get("state") for p in final_points}
@@ -471,22 +484,25 @@ def training_part_observations(profile: Mapping[str, Any], criteria: Mapping[str
         return None
     estimates = {p["part_id"]: p for p in profile["parts"]}
     result = []
+    position = 0
     for part in embedded["parts"]:
         observed = []
         for point in part["evidence_points"]:
+            point_id = point_ids[position]
+            position += 1
             # An unobserved dependent failure does not establish another deficit.
-            if states[point["evidence_point_id"]] == "not_met" and any(states.get(dep) != "met" for dep in point.get("depends_on", [])):
+            if states[point_id] == "not_met" and any(states.get(dep) != "met" for dep in point.get("depends_on", [])):
                 continue
             targets = direct_links_for_part({"evidence_points": [point]}, links)
             if targets:
-                observed.append((point, targets))
-        for point, targets in observed:
+                observed.append((point, point_id, targets))
+        for point, point_id, targets in observed:
             for target in targets:
                 name = next((str(raw.get("fine_term_name") or "") for raw in point.get("fine_term_links", [])
                              if target.stable_key in (raw.get("core_resolution") or {}).get("stable_keys", [])), "")
-                result.append({"part_id": part["part_id"], "point_id": point["evidence_point_id"],
+                result.append({"part_id": part["part_id"], "point_id": point_id,
                                "stable_key": target.stable_key, "display_name": name,
-                               "achieved": int(states[point["evidence_point_id"]] == "met"),
+                               "achieved": int(states[point_id] == "met"),
                                "weight": target.weight / len(observed),
                                "difficulty": estimates.get(part["part_id"], {}).get("difficulty")})
     return result
