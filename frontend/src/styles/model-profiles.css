@@ -1,56 +1,75 @@
-.model-profiles-view { min-width: 0; }
-table.model-task-table tbody { display: grid; gap: var(--space-2); padding: var(--space-3) var(--space-4); }
-table.model-task-table tr { display: grid; grid-template-columns: 200px 180px minmax(320px, 420px); gap: var(--space-3); align-items: center; justify-content: start; }
-table.model-task-table td { display: block; min-width: 0; border-bottom: 0; padding: 0; }
-table.model-task-table select { width: 100%; min-width: 0; }
-table.model-task-table input { width: 100%; max-width: none; }
-.model-task-actions { padding-left: calc(var(--space-4) + 200px + var(--space-3)); }
+.model-profiles-view { min-width: 0; container-type: inline-size; }
+.ai-services-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+@container (max-width: 1099px) { .ai-services-grid { grid-template-columns: minmax(0, 1fr); } }
+.ai-task { padding: 12px 15px 13px; }
+.ai-task + .ai-task { border-top: 1px solid var(--color-border-subtle); }
+.ai-task h3 { margin: 0; font-size: var(--font-size-dense); font-weight: var(--font-weight-semibold); }
+.ai-task__features { display: flex; flex-wrap: wrap; gap: 5px; margin: 7px 0 11px; padding: 0; list-style: none; }
+.ai-task__features li { font-size: var(--font-size-caption); color: var(--color-text-secondary); background: var(--color-bg-subtle); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-tag); padding: 2px 8px; }
+.ai-task__fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+@media (max-width: 560px) { .ai-task__fields { grid-template-columns: minmax(0, 1fr); } }
+.model-task-actions { border-top: 1px solid var(--color-border-subtle); }
 .model-accounts { padding: 4px 5px; }
 .model-account-row { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-bottom: 1px solid var(--color-border-subtle); font-size: var(--font-size-caption); flex-wrap: wrap; }
 .model-account-row:last-child { border-bottom: 0; }
 .model-account-row strong { font-weight: var(--font-weight-medium); }
 .model-account-host { font-family: var(--font-family-mono); font-size: var(--font-size-caption); color: var(--color-text-muted); overflow-wrap: anywhere; }
 .model-account-runtime { font-size: var(--font-size-caption); color: var(--color-info); }
+.model-account-usage { width: 100%; font-size: var(--font-size-caption); color: var(--color-text-muted); }
 .model-account-actions { margin-left: auto; display: flex; gap: 2px; }
 .model-advanced { padding: 2px 12px 12px; display: grid; gap: 10px; }
 .model-advanced p { margin: 0; }
-.ai-diagnostics { min-width: 0; }
-.ai-diagnostics__header { padding: 9px 15px; border-bottom: 1px solid var(--color-border-subtle); }
-.ai-diagnostics__filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.ai-diagnostics__filters label { display: flex; align-items: center; gap: 6px; color: var(--color-text-muted); font-size: var(--font-size-caption); }
-.ai-diagnostics__filters select { width: auto; }
-.ai-diagnostics-disclosure { margin: 8px 15px; }
-.ai-diagnostics__privacy { padding: 0 12px; font-size: var(--font-size-caption); color: var(--color-text-muted); line-height: 1.7; overflow-wrap: anywhere; }
-.ai-diagnostics__workspace { display: grid; grid-template-columns: 290px minmax(0,1fr); min-height: 280px; border-top: 1px solid var(--color-border-subtle); }
-.ai-diagnostics-ledger { padding: 6px; border-right: 1px solid var(--color-border-subtle); }
-.ai-diagnostics-ledger > header { display: flex; align-items: center; gap: 8px; font-size: var(--font-size-caption); color: var(--color-text-muted); padding: 6px 9px; }
-.ai-diagnostics-ledger > header span { margin-left: auto; }
-.ai-diagnostics-ledger > ul { list-style: none; padding: 0; margin: 0; max-height: 400px; overflow-y: auto; }
-.ai-diagnostic-call { width: 100%; padding: 7px 9px; border-radius: 8px; border: 0; border-left: 3px solid transparent; background: transparent; text-align: left; }
-.ai-diagnostic-call:hover { background: var(--color-bg-subtle); }
-.ai-diagnostic-call--selected { background: var(--color-accent-subtle); border-left-color: var(--color-accent); }
-.ai-diagnostic-call__heading { display: flex; gap: 8px; align-items: center; font-size: var(--font-size-caption); }
-.ai-diagnostic-call__heading strong { font-weight: var(--font-weight-medium); }
-.ai-diagnostic-call__heading .ai-diagnostic-status { margin-left: auto; }
-.ai-diagnostic-call__model { display: inline; font-size: var(--font-size-caption); color: var(--color-text-muted); overflow-wrap: anywhere; }
-.ai-diagnostic-call__meta { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 7px; font-size: var(--font-size-caption); color: var(--color-text-muted); margin-left: 6px; }
-.ai-diagnostic-status { display: inline-flex; padding: 2px 7px; border-radius: var(--radius-tag); font-size: var(--font-size-caption); white-space: nowrap; background: var(--color-bg-subtle); }
-.ai-diagnostic-status--success { background: var(--color-success-subtle); color: var(--color-success); }
-.ai-diagnostic-status--failure { background: var(--color-danger-subtle); color: var(--color-danger); }
-.ai-diagnostic-status--pending { background: var(--color-warning-subtle); color: var(--color-warning); }
-.ai-diagnostic-detail { min-width: 0; }
-.ai-diagnostic-detail__header { display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: var(--font-size-caption); color: var(--color-text-muted); }
-.ai-diagnostic-detail__header > div { min-width: 0; }
-.ai-diagnostic-detail__header h3 { font-size: var(--font-size-caption); font-weight: var(--font-weight-medium); margin: 3px 0 0; overflow-wrap: anywhere; }
-.ai-diagnostic-detail__header > .ai-diagnostic-status { margin-left: auto; }
-.ai-diagnostic-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--color-border-subtle); padding: 0 14px; flex-wrap: wrap; }
-.ai-diagnostic-tabs button { padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; background: transparent; font-size: var(--font-size-caption); color: var(--color-text-secondary); }
-.ai-diagnostic-tabs button[aria-selected=true] { color: var(--color-accent); border-bottom-color: var(--color-accent); }
-.ai-diagnostic-panel { padding: 12px 14px; min-width: 0; }
-.ai-diagnostic-panel pre, .ai-diagnostic-detail pre { margin: 0; font: var(--font-size-caption)/1.6 var(--font-family-mono); color: var(--color-text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; max-height: 360px; }
-.ai-diagnostic-panel dl, .ai-diagnostic-error dl { font-size: var(--font-size-caption); display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; }
-.ai-diagnostic-panel dd { margin: 0; overflow-wrap: anywhere; }
 
-.ai-diagnostics-ledger__more { width: 100%; border: 0; padding: 8px; background: transparent; font-size: var(--font-size-caption); color: var(--color-accent); }
-.ai-diagnostic-attachments { display: grid; gap: 8px; font-size: var(--font-size-caption); }
-@media (max-width: 720px) { .ai-diagnostics__workspace { grid-template-columns: 1fr; } .ai-diagnostics-ledger { border-right: 0; border-bottom: 1px solid var(--color-border-subtle); } }
+.ai-diagnostics { font-size: var(--font-size-caption); container-type: inline-size; display: flex; flex-direction: column; height: calc(100dvh - 96px); }
+.ai-diagnostics__toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 15px; }
+.ai-diagnostics__toolbar-side { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.ai-diagnostics__scope { position: relative; }
+.ai-diagnostics__scope-pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 360px; max-width: 86vw; padding: 10px 12px; background: var(--color-bg-surface); border: 1px solid var(--color-border-default); border-radius: var(--radius-panel); box-shadow: var(--shadow-floating); }
+.ai-diagnostics__scope-pop p { margin: 0 0 8px; }
+.ai-diagnostics__scope-pop p:last-child { margin-bottom: 0; }
+.ai-diagnostics__scope-pop code { font-family: var(--font-family-mono); font-size: 0.92em; }
+.ai-diagnostics__privacy { font-size: var(--font-size-caption); color: var(--color-text-muted); line-height: 1.7; overflow-wrap: anywhere; }
+.ai-diagnostics__summary { margin: 0; padding: 0 15px 10px; font-size: var(--font-size-caption); color: var(--color-text-muted); }
+.ai-diagnostics__summary-failures { min-height: 0; border: 0; padding: 0; background: none; font: inherit; color: var(--color-danger); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.ai-diagnostic { display: flex; flex: 1; min-height: 0; border-top: 1px solid var(--color-border-subtle); }
+.ai-diagnostic__sidebar { width: 380px; flex: none; overflow: auto; border-right: 1px solid var(--color-border-subtle); }
+.ai-diagnostic__day-label { position: sticky; top: 0; z-index: 1; margin: 0; padding: 8px 12px 5px; font-size: var(--font-size-caption); font-weight: var(--font-weight-semibold); color: var(--color-text-muted); background: var(--color-bg-surface); }
+.ai-diagnostic__entry { display: block; width: 100%; min-height: 0; text-align: left; font: inherit; color: inherit; background: none; border: 0; border-left: 3px solid transparent; border-radius: 0; padding: 8px 12px 8px 9px; cursor: pointer; }
+.ai-diagnostic__entry + .ai-diagnostic__entry { border-top: 1px solid var(--color-border-subtle); }
+.ai-diagnostic__entry:hover { background: var(--color-accent-subtle); }
+.ai-diagnostic__entry.is-active { background: var(--color-accent-subtle); }
+.ai-diagnostic__entry--failure { border-left-color: var(--color-danger); }
+.ai-diagnostic__entry-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ai-diagnostic__entry-head strong { font-size: var(--font-size-caption); font-weight: var(--font-weight-medium); }
+.ai-diagnostic__entry-model { display: block; margin-top: 2px; font-family: var(--font-family-mono); font-size: var(--font-size-caption); color: var(--color-text-muted); overflow-wrap: anywhere; }
+.ai-diagnostic__entry-meta { display: block; margin-top: 2px; font-size: var(--font-size-caption); color: var(--color-text-muted); font-variant-numeric: tabular-nums; }
+.ai-diagnostic__content { flex: 1; min-width: 0; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.ai-diagnostic__head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.ai-diagnostic__head h3 { margin: 0; font-size: var(--font-size-h2); font-weight: var(--font-weight-semibold); overflow-wrap: anywhere; }
+.ai-diagnostic__meta-line { margin: 0 0 4px; font-size: var(--font-size-caption); color: var(--color-text-muted); }
+.ai-diagnostic__meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.ai-diagnostic__meta-cell { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-control); }
+.ai-diagnostic__meta-cell span { font-size: var(--font-size-caption); color: var(--color-text-muted); }
+.ai-diagnostic__meta-cell strong { font-size: var(--font-size-dense); font-weight: var(--font-weight-medium); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ai-diagnostic__body { min-width: 0; }
+.ai-diagnostic__body-tools { display: flex; justify-content: flex-end; gap: 6px; margin-bottom: 4px; }
+.ai-diagnostic__body pre { margin: 0; font: var(--font-size-caption)/1.6 var(--font-family-mono); color: var(--color-text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; max-height: 360px; }
+.ai-diagnostic__parse { font-size: var(--font-size-caption); display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; }
+.ai-diagnostic__parse dd { margin: 0; overflow-wrap: anywhere; }
+.ai-diagnostic__error-card { margin: 8px 0 0; padding: 10px 12px; display: grid; gap: 4px; background: var(--color-danger-subtle); border: 1px solid color-mix(in srgb, var(--color-danger) 30%, transparent); border-radius: var(--radius-control); font-size: var(--font-size-caption); }
+.ai-diagnostic__error-card strong { color: var(--color-danger); }
+.ai-diagnostic__error-card span { color: var(--color-text-secondary); }
+.ai-diagnostic__error-card p { margin: 0; color: var(--color-text-primary); overflow-wrap: anywhere; }
+.ai-diagnostic__tabs { margin-bottom: 8px; }
+.ai-diagnostic__note { margin: 0 0 8px; font-size: var(--font-size-caption); color: var(--color-text-muted); }
+.ai-diagnostic__error-text { margin: 0 0 8px; font-size: var(--font-size-caption); color: var(--color-danger); overflow-wrap: anywhere; }
+.ai-diagnostic__attachments { display: grid; gap: 8px; font-size: var(--font-size-caption); }
+.ai-diagnostic__attachment { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--color-border-subtle); border-radius: var(--radius-control); }
+.ai-diagnostic__attachment span { color: var(--color-text-muted); }
+.ai-diagnostic__attachment code { font-family: var(--font-family-mono); color: var(--color-text-secondary); overflow-wrap: anywhere; }
+@container (max-width: 899px) {
+  .ai-diagnostics { height: auto; }
+  .ai-diagnostic { flex-direction: column; height: auto; min-height: 0; }
+  .ai-diagnostic__sidebar { width: auto; max-height: 320px; border-right: 0; border-bottom: 1px solid var(--color-border-subtle); }
+  .ai-diagnostic__content { overflow: visible; }
+}

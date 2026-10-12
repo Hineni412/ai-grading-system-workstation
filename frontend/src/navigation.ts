@@ -210,7 +210,7 @@ export const settingsRouteDefinition = {
   label: '设置',
   path: '/settings',
   title: '设置',
-  description: '学生名单、AI 服务、数据与空间',
+  description: '调用记录、AI 服务、学生名单、数据与空间',
   breadcrumb: '设置',
   icon: 'settings',
 } as const satisfies WorkspaceRouteDefinition
@@ -218,7 +218,7 @@ export const settingsRouteDefinition = {
 export const aiTraceRouteDefinition = {
   id: 'ai-trace',
   label: '调用记录',
-  path: '/settings?section=ai#ai-call-log',
+  path: '/settings?section=log',
   title: 'AI 调用记录',
   description: '查看每次模型调用的发送、返回与解析',
   breadcrumb: '设置 / AI 调用记录',

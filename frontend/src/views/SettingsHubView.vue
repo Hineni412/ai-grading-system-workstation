@@ -6,21 +6,22 @@ import { useConfirm } from '../composables/useConfirm'
 import '../styles/settings.css'
 const SettingsStudentsPanel = defineAsyncComponent(() => import('../components/settings/SettingsStudentsPanel.vue'))
 const ModelProfilesView = defineAsyncComponent(() => import('./ModelProfilesView.vue'))
+const AiDiagnosticsPanel = defineAsyncComponent(() => import('../components/settings/AiDiagnosticsPanel.vue'))
 const SettingsDataPanel = defineAsyncComponent(() => import('../components/settings/SettingsDataPanel.vue'))
-type Section = 'students' | 'ai' | 'data'
+type Section = 'log' | 'ai' | 'students' | 'data'
 const sections = [
-  { key: 'students', label: '学生名单' }, { key: 'ai', label: 'AI 服务' },
-  { key: 'data', label: '数据与空间' },
+  { key: 'log', label: '调用记录' }, { key: 'ai', label: 'AI 服务' },
+  { key: 'students', label: '学生名单' }, { key: 'data', label: '数据与空间' },
 ] as const
-const aliases: Record<string, Section> = { 'ai-trace': 'ai', backup: 'data', maintenance: 'students', system: 'students', models: 'ai' }
-const storageKey = 'ai-grading:settings-section:v2'
+const aliases: Record<string, Section> = { 'ai-trace': 'log', backup: 'data', maintenance: 'students', system: 'students', models: 'ai' }
+const storageKey = 'ai-grading:settings-section:v3'
 const route = useRoute()
 const router = useRouter()
 const modelView = ref<(ComponentPublicInstance & { hasUnsavedChanges: boolean }) | null>(null)
 function valid(value: unknown): value is Section { return sections.some(s => s.key === value) }
 function stored(): Section {
   try { const value = localStorage.getItem(storageKey); if (valid(value)) return value } catch { /* unavailable */ }
-  return 'students'
+  return 'log'
 }
 const section = computed(() => valid(route.query.section) ? route.query.section : stored())
 const { confirm } = useConfirm()
@@ -34,13 +35,16 @@ onBeforeRouteUpdate(async to => {
     })
   }
 })
-watch(() => route.query.section, value => {
+watch(() => [route.query.section, route.hash], ([value]) => {
+  if (route.hash === '#ai-call-log') {
+    void router.replace({ query: { ...route.query, section: 'log' }, hash: '' })
+    return
+  }
   if (valid(value)) {
     try { localStorage.setItem(storageKey, value) } catch { /* unavailable */ }
   } else {
     const alias = typeof value === 'string' ? aliases[value] : undefined
-    const logLink = value === 'ai-trace' || (['system', 'maintenance'].includes(String(value)) && route.hash === '#ai-call-log')
-    void router.replace({ query: { ...route.query, section: logLink ? 'ai' : alias ?? stored() }, hash: logLink ? '#ai-call-log' : route.hash })
+    void router.replace({ query: { ...route.query, section: alias ?? stored() }, hash: route.hash })
   }
 }, { immediate: true })
 </script>
@@ -53,9 +57,10 @@ watch(() => route.query.section, value => {
         </nav>
       </template>
     </PageHeader>
-    <div class="settings-content" :class="{ 'settings-content--students': section === 'students' }">
-      <SettingsStudentsPanel v-if="section === 'students'" />
-      <ModelProfilesView v-else-if="section === 'ai'" ref="modelView" :scroll-to-log="route.hash === '#ai-call-log'" />
+    <div class="settings-content" :class="{ 'settings-content--wide': section === 'log' || section === 'students' }">
+      <AiDiagnosticsPanel v-if="section === 'log'" />
+      <ModelProfilesView v-else-if="section === 'ai'" ref="modelView" />
+      <SettingsStudentsPanel v-else-if="section === 'students'" />
       <SettingsDataPanel v-else-if="section === 'data'" />
     </div>
   </section>

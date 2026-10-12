@@ -40,10 +40,10 @@ function isActive(item: WorkspaceRouteDefinition): boolean {
     && ['knowledge-graph', 'training', 'student-evidence'].includes(String(route.name))
   ) return true
   if (item.id === 'ai-trace') {
-    return route.path === '/settings' && route.query.section === 'ai-trace'
+    return route.path === '/settings' && route.query.section === 'log'
   }
   if (item.id === 'settings') {
-    return route.path === '/settings' && route.query.section !== 'ai-trace'
+    return route.path === '/settings' && route.query.section !== 'log'
   }
   return route.path === item.path || route.path.startsWith(`${item.path}/`)
 }

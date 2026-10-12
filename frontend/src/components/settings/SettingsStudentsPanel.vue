@@ -6,7 +6,7 @@ import StudentRosterTable from '../students/StudentRosterTable.vue'
 import { useStudentRosterStore } from '../../stores/students'
 import '../../styles/students.css'
 const roster = useStudentRosterStore()
-onMounted(() => { void roster.load({ page: 1, page_size: 50 }) })
+onMounted(() => { void roster.load({ page: 1, page_size: 200 }) })
 </script>
 <template>
   <section aria-label="学生名单">

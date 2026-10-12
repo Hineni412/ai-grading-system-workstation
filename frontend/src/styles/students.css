@@ -1,16 +1,16 @@
-.student-ledger { width: 100%; container-type: inline-size; }
-.student-roster-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); }
-.student-roster-entry { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--color-border-subtle); border-right: 1px solid var(--color-border-subtle); }
-.student-roster-entry:hover { background: var(--color-bg-subtle); }
-.student-roster-entry__identity { min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; column-gap: 8px; }
-.student-roster-entry__identity strong { min-width: 0; max-width: 100%; font-size: var(--font-size-body); font-weight: var(--font-weight-medium); line-height: 1.4; overflow-wrap: anywhere; }
-.student-roster-entry__identity > span { min-width: 0; max-width: 100%; font-size: var(--font-size-caption); line-height: 1.4; color: var(--color-text-muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.student-roster-entry__class { font-size: var(--font-size-caption); color: var(--color-text-secondary); max-width: 72px; overflow-wrap: anywhere; }
-.student-roster-entry > button { white-space: nowrap; }
-@container (max-width: 520px) { .student-roster-entry { border-right: 0; } .student-ledger__toolbar > input { flex: 1; min-width: 0; } }
+.settings-panel.student-ledger { width: 100%; container-type: inline-size; overflow: clip; }
+.student-ledger__group-title { position: sticky; top: 0; z-index: 1; margin: 0; padding: 8px 15px 6px; font-size: var(--font-size-caption); font-weight: var(--font-weight-semibold); color: var(--color-text-secondary); background: var(--color-bg-surface); border-bottom: 1px solid var(--color-border-subtle); }
+.student-ledger__columns { column-width: 190px; column-gap: 0; padding: 2px 0 6px; }
+.student-ledger__entry { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 0; break-inside: avoid; text-align: left; font: inherit; color: inherit; background: none; border: 0; border-radius: 0; padding: 5px 15px; cursor: pointer; }
+.student-ledger__entry:hover { background: var(--color-bg-subtle); }
+.student-ledger__entry mark { background: var(--color-warning-subtle); color: inherit; padding: 0; border-radius: 2px; }
+.student-ledger__code { flex: none; min-width: 62px; font-size: var(--font-size-caption); color: var(--color-text-muted); font-variant-numeric: tabular-nums; }
+.student-ledger__name { min-width: 0; font-size: var(--font-size-body); font-weight: var(--font-weight-medium); overflow-wrap: anywhere; }
+.student-ledger__edit-icon { flex: none; margin-left: auto; color: var(--color-text-muted); opacity: .65; }
+.student-ledger__entry:hover .student-ledger__edit-icon, .student-ledger__entry:focus-visible .student-ledger__edit-icon { color: var(--color-accent); opacity: 1; }
+@container (max-width: 520px) { .student-ledger__toolbar > input { flex: 1; min-width: 0; } }
 .student-ledger__toolbar { display: flex; align-items: center; gap: 8px; padding: 9px 15px; border-bottom: 1px solid var(--color-border-subtle); flex-wrap: wrap; }
-.student-ledger__toolbar > input { width: 210px; }
-.student-ledger__toolbar > select { width: auto; max-width: 150px; }
+.student-ledger__toolbar > input { width: 240px; }
 .student-import-trigger { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .student-pagination { display: flex; justify-content: flex-end; align-items: center; gap: 8px; border-top: 1px solid var(--color-border-subtle); padding: 6px 12px; font-size: var(--font-size-caption); color: var(--color-text-muted); }
 .student-danger { border-top: 1px solid var(--color-border-subtle); padding-top: 14px; margin-top: 5px; display: grid; gap: 10px; justify-items: start; }

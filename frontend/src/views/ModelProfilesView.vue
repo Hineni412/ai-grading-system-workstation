@@ -8,13 +8,11 @@ import StatusBadge from '@/components/design-system/StatusBadge.vue'
 
 import {
   computed,
-  defineAsyncComponent,
   nextTick,
   onBeforeUnmount,
   onMounted,
   reactive,
   ref,
-  watch,
 } from 'vue'
 
 import {
@@ -30,17 +28,6 @@ import {
 import { useConfirm } from '../composables/useConfirm'
 import { useModelProfilesStore } from '../stores/model-profiles'
 import '../styles/model-profiles.css'
-
-const AiDiagnosticsPanel = defineAsyncComponent(() => import('../components/settings/AiDiagnosticsPanel.vue'))
-const props = defineProps<{ scrollToLog?: boolean }>()
-const diagnosticsOpen = ref(false)
-const diagnosticsDisclosure = ref<HTMLDetailsElement | null>(null)
-watch(() => props.scrollToLog, async value => {
-  if (!value) return
-  diagnosticsOpen.value = true
-  await nextTick()
-  diagnosticsDisclosure.value?.scrollIntoView({ block: 'start' })
-}, { immediate: true })
 
 const drawerOpen = ref(false)
 const accountStatuses = ref<Record<string, ModelExecutionStatus>>({})
@@ -80,9 +67,25 @@ const taskBindingsDraft = ref<ModelTaskBindings>({
   grading: { profile_name: null, model: '' },
 })
 const taskRows = [
-  { key: 'content_generation', title: '出题、评分标准与报告', detail: '题库标注、评分标准、组卷、班级与个人分析报告' },
-  { key: 'grading', title: '批改试卷', detail: '含姓名补充识别' },
+  { key: 'grading', title: '批改试卷', features: ['姓名识别', '客观题识别', 'AI 批改'] },
+  {
+    key: 'content_generation',
+    title: '题库资料、评分标准与报告',
+    features: ['题库标注与判定点', '知识点关联', '章节题型整理', '评分标准生成', 'AI 补答案', '错因整理', '班级与个人报告', '训练回收批改'],
+  },
 ] as const
+function tasksUsingProfile(name: string): string {
+  const used = taskRows.filter(row => {
+    const bound = profilesStore.taskBindings[row.key].profile_name
+    const effective = bound && profilesStore.profiles.some(({ name: n }) => n === bound)
+      ? bound
+      : profilesStore.activeProfileName
+    return effective === name
+  })
+  return used.length
+    ? `用于：${used.map(row => row.title).join('、')}`
+    : '暂未用于任何任务'
+}
 let executionStatusController: AbortController | null = null
 
 const draft = reactive<ModelProfileDraft>({
@@ -454,40 +457,37 @@ onBeforeUnmount(() => {
     <StatePanel v-if="profilesStore.loadState === 'loading'" kind="loading" title="正在读取本机 AI 服务…" />
     <StatePanel v-else-if="profilesStore.loadState === 'error'" kind="error" title="服务列表暂时无法读取" retry-label="重新加载" @retry="reloadProfiles" />
     <template v-else>
-      <section class="settings-panel" aria-labelledby="model-task-routing-title">
-        <header class="settings-panel__heading"><h2 id="model-task-routing-title">用哪个 AI</h2></header>
-        <table class="app-table model-task-table"><tbody>
-          <tr v-for="row in taskRows" :key="row.key">
-            <td><strong>{{ row.title }}</strong><small>{{ row.detail }}</small></td>
-            <td><select v-model="taskBindingsDraft[row.key].profile_name" class="app-input" :aria-label="`${row.title}使用的服务账号`" :disabled="isBusy || !profilesStore.profiles.length"><option :value="null" disabled>选择服务账号</option><option v-for="profile in profilesStore.profiles" :key="profile.name" :value="profile.name">{{ profile.name }}</option></select></td>
-            <td><input v-model="taskBindingsDraft[row.key].model" class="app-input" :aria-label="`${row.title}使用的模型`" :maxlength="MODEL_PROFILE_LIMITS.model" :disabled="isBusy || !profilesStore.profiles.length" placeholder="填写模型名称"></td>
-          </tr>
-        </tbody></table>
-        <div class="settings-panel__body settings-inline model-task-actions"><AppButton variant="primary" :disabled="isBusy || !bindingsDirty || !profilesStore.profiles.length" @click="saveTaskBindings">保存</AppButton><span class="settings-note settings-saved" :style="{ visibility: profilesStore.noticeMessage ? 'visible' : 'hidden' }" :aria-label="profilesStore.noticeMessage" role="status">已保存</span></div>
-      </section>
-      <section class="settings-panel" aria-labelledby="model-accounts-title">
-        <header class="settings-panel__heading"><h2 id="model-accounts-title">服务账号</h2><AppButton variant="secondary" :disabled="isBusy" @click="beginNewProfile">添加服务</AppButton></header>
-        <div class="model-accounts">
-          <StatePanel v-if="!profilesStore.profiles.length" kind="empty" compact title="还没有服务账号">
-            <template #actions><AppButton variant="ghost" @click="beginNewProfile">添加服务</AppButton></template>
-          </StatePanel>
-          <div v-for="profile in profilesStore.profiles" :key="profile.name" class="model-account-row">
-            <strong>{{ profile.name }}</strong><span class="model-account-host">{{ hostname(profile.base_url) }}</span>
-            <StatusBadge :tone="profile.has_api_key ? 'success' : 'warning'" :label="profile.has_api_key ? '密钥已保存' : '未保存密钥'" />
-            <StatusBadge v-if="profile.name === profilesStore.activeProfileName" tone="neutral" label="默认" />
-            <span v-if="accountStatuses[profile.name] && (accountStatuses[profile.name]!.active + accountStatuses[profile.name]!.queued > 0)" class="model-account-runtime">运行中：{{ accountStatuses[profile.name]!.active }} 个请求，排队 {{ accountStatuses[profile.name]!.queued }} 个</span>
-            <div class="model-account-actions"><AppButton variant="ghost" :disabled="isBusy" @click="chooseProfile(profile)">编辑</AppButton><AppButton variant="ghost" class="settings-danger-ghost" :disabled="isBusy" @click="deleteProfile(profile)">删除</AppButton></div>
+      <div class="ai-services-grid">
+        <section class="settings-panel" aria-labelledby="model-task-routing-title">
+          <header class="settings-panel__heading"><h2 id="model-task-routing-title">用哪个 AI</h2></header>
+          <div v-for="row in taskRows" :key="row.key" class="ai-task">
+            <h3>{{ row.title }}</h3>
+            <ul class="ai-task__features"><li v-for="feature in row.features" :key="feature">{{ feature }}</li></ul>
+            <div class="ai-task__fields">
+              <label class="settings-field"><span>服务账号</span><select v-model="taskBindingsDraft[row.key].profile_name" class="app-input" :aria-label="`${row.title}使用的服务账号`" :disabled="isBusy || !profilesStore.profiles.length"><option :value="null" disabled>选择服务账号</option><option v-for="profile in profilesStore.profiles" :key="profile.name" :value="profile.name">{{ profile.name }}</option></select></label>
+              <label class="settings-field"><span>模型</span><input v-model="taskBindingsDraft[row.key].model" class="app-input" :aria-label="`${row.title}使用的模型`" :maxlength="MODEL_PROFILE_LIMITS.model" :disabled="isBusy || !profilesStore.profiles.length" placeholder="填写模型名称"></label>
+            </div>
           </div>
-        </div>
-      </section>
-    </template>
-    <details id="ai-call-log" ref="diagnosticsDisclosure" class="settings-panel settings-disclosure settings-log-panel" :open="diagnosticsOpen" @toggle="diagnosticsOpen = ($event.target as HTMLDetailsElement).open">
-      <summary>AI 调用记录</summary>
-      <div v-if="diagnosticsOpen" class="settings-panel__body">
-        <p class="settings-note">记录只保存在本机。</p>
-        <AiDiagnosticsPanel />
+          <div class="settings-panel__body settings-inline model-task-actions"><AppButton variant="primary" :disabled="isBusy || !bindingsDirty || !profilesStore.profiles.length" @click="saveTaskBindings">保存</AppButton><span class="settings-note settings-saved" :style="{ visibility: profilesStore.noticeMessage ? 'visible' : 'hidden' }" :aria-label="profilesStore.noticeMessage" role="status">已保存</span></div>
+        </section>
+        <section class="settings-panel" aria-labelledby="model-accounts-title">
+          <header class="settings-panel__heading"><h2 id="model-accounts-title">服务账号</h2><AppButton variant="secondary" :disabled="isBusy" @click="beginNewProfile">添加服务</AppButton></header>
+          <div class="model-accounts">
+            <StatePanel v-if="!profilesStore.profiles.length" kind="empty" compact title="还没有服务账号">
+              <template #actions><AppButton variant="ghost" @click="beginNewProfile">添加服务</AppButton></template>
+            </StatePanel>
+            <div v-for="profile in profilesStore.profiles" :key="profile.name" class="model-account-row">
+              <strong>{{ profile.name }}</strong><span class="model-account-host">{{ hostname(profile.base_url) }}</span>
+              <StatusBadge :tone="profile.has_api_key ? 'success' : 'warning'" :label="profile.has_api_key ? '密钥已保存' : '未保存密钥'" />
+              <StatusBadge v-if="profile.name === profilesStore.activeProfileName" tone="neutral" label="默认" />
+              <span v-if="accountStatuses[profile.name] && (accountStatuses[profile.name]!.active + accountStatuses[profile.name]!.queued > 0)" class="model-account-runtime">运行中：{{ accountStatuses[profile.name]!.active }} 个请求，排队 {{ accountStatuses[profile.name]!.queued }} 个</span>
+              <span class="model-account-usage">{{ tasksUsingProfile(profile.name) }}</span>
+              <div class="model-account-actions"><AppButton variant="ghost" :disabled="isBusy" @click="chooseProfile(profile)">编辑</AppButton><AppButton variant="ghost" class="settings-danger-ghost" :disabled="isBusy" @click="deleteProfile(profile)">删除</AppButton></div>
+            </div>
+          </div>
+        </section>
       </div>
-    </details>
+    </template>
     <Sheet :open="drawerOpen" @update:open="closeDrawer">
       <SheetContent class="settings-drawer" :aria-describedby="undefined" @interact-outside="event => { if (isBusy) event.preventDefault() }" @escape-key-down="event => { if (isBusy) event.preventDefault() }">
         <SheetHeader class="settings-drawer__header"><SheetTitle>{{ isNew ? '添加服务' : '编辑服务' }}</SheetTitle></SheetHeader>
